@@ -8,8 +8,8 @@ output influenced by the live input.
 Requires: GPU, TRT engines, base audio fixture.
 
 Usage:
-    uv run python tests/integration/test_live_audio_input.py
-    uv run python tests/integration/test_live_audio_input.py --sim-input path/to/other.wav
+    uv run python scripts/spikes/test_live_audio_input.py
+    uv run python scripts/spikes/test_live_audio_input.py --sim-input path/to/other.wav
 """
 
 import os

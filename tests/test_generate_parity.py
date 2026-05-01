@@ -2,7 +2,7 @@
 
 Captures a byte-level baseline of ``generate()`` output for every feature
 configuration that production workflows exercise (mirroring
-``workflows/covers/*.py``). Purpose: guard against regressions during the
+``examples/covers/*.py``). Purpose: guard against regressions during the
 diffusion-primitive unification refactor.
 
 Design — why we cache the inputs, not just outputs
@@ -65,7 +65,7 @@ FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "generate_parity"
 CAPTURE = os.environ.get("CAPTURE_FIXTURES", "0") == "1"
 TOL = 1e-4
 
-# Keep knobs in sync with workflows/covers/*.py for parity with production.
+# Keep knobs in sync with examples/covers/*.py for parity with production.
 SEED = 1528
 STEPS = 8
 SHIFT = 3.0
@@ -230,7 +230,7 @@ def stable_inputs(session):
 
 
 # ---------------------------------------------------------------------------
-# Parity tests — one per feature combination exercised by workflows/covers/*
+# Parity tests — one per feature combination exercised by examples/covers/*
 # ---------------------------------------------------------------------------
 
 

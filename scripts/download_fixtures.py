@@ -3,7 +3,7 @@
 import os
 import urllib.request
 
-FIXTURES_DIR = os.path.dirname(os.path.abspath(__file__))
+FIXTURES_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tests", "fixtures"))
 
 FILES = {
     "new_order_confusion_60seconds.wav": "https://github.com/user-attachments/files/26225505/new_order_confusion_60seconds.wav",

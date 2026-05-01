@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pure text-to-music workflow, TensorRT backend.
 
-Mirrors workflows/text_to_music.py but routes the decoder and VAE through
+Mirrors examples/text_to_music.py but routes the decoder and VAE through
 TensorRT engines instead of PyTorch eager. The engine variant (60s vs
 240s) is chosen by ``select_trt_engines(duration_s=DURATION)``.
 """

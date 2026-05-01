@@ -19,7 +19,7 @@ resident regardless of the executed shape.
 
 Usage::
 
-    uv run python tests/benchmarks/bench_vram_60s_vs_240s.py
+    uv run python scripts/benchmarks/bench_vram_60s_vs_240s.py
 
 Results from the most recent run live alongside this file in
 ``vram_60s_vs_240s_results.md``.

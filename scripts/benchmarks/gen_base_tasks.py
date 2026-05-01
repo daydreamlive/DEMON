@@ -12,8 +12,8 @@ Task mechanics (from upstream generate_audio):
     adds specified instruments to a partial track
 
 Usage:
-    uv run python tests/benchmarks/gen_base_tasks.py
-    uv run python tests/benchmarks/gen_base_tasks.py --extract-track drums --lego-track bass
+    uv run python scripts/benchmarks/gen_base_tasks.py
+    uv run python scripts/benchmarks/gen_base_tasks.py --extract-track drums --lego-track bass
 """
 
 import argparse

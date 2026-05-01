@@ -4,9 +4,9 @@ Compares latency for the base model DiT with classifier-free guidance,
 which is required for quality output from the base model.
 
 Usage:
-    uv run python tests/benchmarks/bench_base_trt.py
-    uv run python tests/benchmarks/bench_base_trt.py --trt-engine trt_engines/decoder_base_mixed_b8_60s/decoder_base_mixed_b8_60s.engine
-    uv run python tests/benchmarks/bench_base_trt.py --steps 25 50 --duration 30
+    uv run python scripts/benchmarks/bench_base_trt.py
+    uv run python scripts/benchmarks/bench_base_trt.py --trt-engine trt_engines/decoder_base_mixed_b8_60s/decoder_base_mixed_b8_60s.engine
+    uv run python scripts/benchmarks/bench_base_trt.py --steps 25 50 --duration 30
 """
 
 import argparse

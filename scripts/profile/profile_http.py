@@ -12,7 +12,7 @@ import io, json, os, sys, time, urllib.request
 
 BASE = "http://127.0.0.1:8731"
 AUDIO_FILE = os.path.join(
-    os.path.dirname(__file__), "..", "tests/fixtures", "new_order_confusion_60seconds.wav"
+    os.path.dirname(__file__), "..", "..", "tests/fixtures", "new_order_confusion_60seconds.wav"
 )
 
 

@@ -99,19 +99,19 @@ Each tick produces a finished 60-second generation. The output file splices cons
 
 ```bash
 uv sync
-uv run python tests/fixtures/download.py
+uv run python scripts/download_fixtures.py
 ```
 
 The second command downloads test audio fixtures (~44MB) used by all demos and tests.
 
-LoRAs are not auto-downloaded yet. If you want to use LoRA-conditioned generation (`workflows/covers/lora_generation.py`, the realtime demo's `--lora` flag, or the web demo's LoRA picker), drop a `.safetensors` file into `demos/realtime_motion_graph/assets/loras/` and reference it by path. See `demos/realtime_motion_graph/assets/loras/README.md`.
+LoRAs are not auto-downloaded yet. If you want to use LoRA-conditioned generation (`examples/covers/lora_generation.py`, the realtime demo's `--lora` flag, or the web demo's LoRA picker), drop a `.safetensors` file into `demos/realtime_motion_graph/assets/loras/` and reference it by path. See `demos/realtime_motion_graph/assets/loras/README.md`.
 
 ## Quick start
 
 The Session API is the simplest path to generating audio programmatically:
 
 ```bash
-uv run python workflows/session_demo.py
+uv run python examples/session_demo.py
 ```
 
 Loads the model once, then generates covers in ~310ms per iteration after warmup.
@@ -124,13 +124,13 @@ Loads the model once, then generates covers in ~310ms per iteration after warmup
 | `demos/realtime_motion_graph_web/` | Same pipeline, browser front-end |
 | `demos/test_stream_cover_graph.py` | StreamPipeline stress test with denoise sweep |
 | `demos/test_noise_sharing.py` | Noise sharing for temporal continuity between generations |
-| `workflows/session_demo.py` | Session API basics: load once, generate many |
-| `workflows/realtime_cover.py` | Interactive cover generation with live parameter control |
-| `workflows/session_test_all.py` | Exercises all node system features end-to-end |
+| `examples/session_demo.py` | Session API basics: load once, generate many |
+| `examples/realtime_cover.py` | Interactive cover generation with live parameter control |
+| `examples/session_test_all.py` | Exercises all node system features end-to-end |
 
-## Workflow examples
+## Examples
 
-The `workflows/covers/` directory contains standalone scripts demonstrating individual features. Each loads the model, runs one workflow, and saves output audio.
+The `examples/covers/` directory contains standalone scripts demonstrating individual features. Each loads the model, runs one example, and saves output audio.
 
 | Workflow | Feature |
 |---|---|

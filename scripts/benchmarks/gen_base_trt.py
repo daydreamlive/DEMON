@@ -4,8 +4,8 @@ Generates 2 wavs: PyTorch CFG and TRT CFG (batched).
 Same seed so differences are purely from backend/precision.
 
 Usage:
-    uv run python tests/benchmarks/gen_base_trt.py
-    uv run python tests/benchmarks/gen_base_trt.py --tags "jazz piano trio" --steps 50 --cfg 7.5
+    uv run python scripts/benchmarks/gen_base_trt.py
+    uv run python scripts/benchmarks/gen_base_trt.py --tags "jazz piano trio" --steps 50 --cfg 7.5
 """
 
 import argparse

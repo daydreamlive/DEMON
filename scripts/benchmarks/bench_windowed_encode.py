@@ -5,7 +5,7 @@ Measures the GPU time for encoding different window sizes to validate
 the performance advantage of windowed encoding.
 
 Usage:
-    uv run python tests/integration/bench_windowed_encode.py
+    uv run python scripts/benchmarks/bench_windowed_encode.py
 """
 
 import sys

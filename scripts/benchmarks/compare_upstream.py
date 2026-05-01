@@ -5,7 +5,7 @@ for each task, then runs the same task through our Session pipeline (no TRT).
 Saves both outputs for A/B listening comparison.
 
 Usage:
-    uv run python tests/benchmarks/compare_upstream.py
+    uv run python scripts/benchmarks/compare_upstream.py
 """
 
 import argparse

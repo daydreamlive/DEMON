@@ -1,6 +1,6 @@
 # 60s vs 240s TRT engine — VRAM at identical 60s input
 
-Captured by `tests/benchmarks/bench_vram_60s_vs_240s.py` on an RTX 5090.
+Captured by `scripts/benchmarks/bench_vram_60s_vs_240s.py` on an RTX 5090.
 Each engine ran in its own subprocess; VRAM was measured at the driver
 level via `torch.cuda.mem_get_info()` so TRT's non-PyTorch allocations
 are included. Inputs were sized to 60 seconds for every engine
@@ -25,8 +25,8 @@ is workspace reserved at context-creation time, not transient activations.
 ## How to reproduce
 
 ```
-uv run python tests/benchmarks/bench_vram_60s_vs_240s.py
+uv run python scripts/benchmarks/bench_vram_60s_vs_240s.py
 ```
 
 Raw per-engine numbers are written to
-`tests/benchmarks/bench_vram_60s_vs_240s.json`.
+`scripts/benchmarks/bench_vram_60s_vs_240s.json`.

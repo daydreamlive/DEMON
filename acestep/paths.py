@@ -92,7 +92,7 @@ def select_trt_engines(duration_s: float = 60.0) -> dict[str, str]:
     context-creation time, so they sit on ~9 GB more VRAM than the 60s
     engines even when fed identical 60-second input (decoder +2.4 GB,
     vae_encode +6.4 GB, vae_decode +0.3 GB; see
-    ``tests/benchmarks/vram_60s_vs_240s_results.md``).
+    ``scripts/benchmarks/vram_60s_vs_240s_results.md``).
 
     Default to the 60s set; only escalate to 240s when the requested
     duration would exceed the 60s engines' max profile (1500 latent
