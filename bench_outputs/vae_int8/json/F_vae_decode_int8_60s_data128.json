@@ -1,0 +1,66 @@
+{
+  "label": "F (entropy + 128 transient-biased latents)",
+  "int8_engine": "C:\\Users\\ryanf\\.daydream-scope\\models\\demon\\trt_engines\\vae_decode_int8_60s_data128\\vae_decode_int8_60s_data128.engine",
+  "fp16_engine": "C:\\Users\\ryanf\\.daydream-scope\\models\\demon\\trt_engines\\vae_decode_fp16_60s\\vae_decode_fp16_60s.engine",
+  "engine_size_mb": 258.650532,
+  "chunk_frames": 1500,
+  "runs": 5,
+  "synthetic": {
+    "pt": {
+      "median_ms": 165.44489981606603,
+      "peak_alloc_gb": 10.62325248
+    },
+    "fp16": {
+      "median_ms": 55.39770005270839,
+      "peak_alloc_gb": 6.621028864,
+      "mse_vs_pt": 3.456802460277686e-06
+    },
+    "int8": {
+      "median_ms": 33.92499987967312,
+      "peak_alloc_gb": 6.644068864,
+      "mse_vs_pt": 0.0008029966847971082
+    },
+    "fp16_vs_int8": {
+      "rmse": 0.028085749596357346,
+      "psnr_db": 31.831875602505324
+    }
+  },
+  "wav_roundtrip": {
+    "wav": "tests/fixtures/inside_confusion.wav",
+    "samples": 2880000,
+    "decode": {
+      "pt": {
+        "median_ms": 164.44809990935028,
+        "peak_alloc_gb": 10.826786304
+      },
+      "fp16": {
+        "median_ms": 55.91420014388859,
+        "peak_alloc_gb": 6.826502144,
+        "mse_vs_pt": 5.354124823497841e-06
+      },
+      "int8": {
+        "median_ms": 33.51079998537898,
+        "peak_alloc_gb": 6.849542144,
+        "mse_vs_pt": 0.0021719029173254967
+      }
+    },
+    "vs_original_audio": {
+      "pt": {
+        "rmse": 0.07311069965362549,
+        "psnr_db": 18.093677868265303
+      },
+      "fp16": {
+        "rmse": 0.07301351428031921,
+        "psnr_db": 18.105231621455317
+      },
+      "int8": {
+        "rmse": 0.07141627371311188,
+        "psnr_db": 18.297352943543334
+      }
+    },
+    "fp16_vs_int8": {
+      "rmse": 0.04643680900335312,
+      "psnr_db": 25.896179021348576
+    }
+  }
+}

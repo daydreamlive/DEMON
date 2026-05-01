@@ -38,7 +38,7 @@ from acestep.nodes.types import Audio, Latent
 from acestep.paths import checkpoints_dir, project_root, trt_engine_path, select_trt_engines
 
 PROJECT_ROOT = project_root()
-SOURCE_AUDIO = PROJECT_ROOT / "tests/fixtures" / "new_order_confusion_60seconds.wav"
+DEFAULT_SOURCE_AUDIO = PROJECT_ROOT / "tests/fixtures" / "new_order_confusion_60seconds.wav"
 OUTPUT_DIR = PROJECT_ROOT / "_debug_tests" / "stream_output"
 
 SAMPLE_RATE = 48000
@@ -60,6 +60,13 @@ def _get_arg(name, default=None, cast=str):
 vae_window = _get_arg("--vae-window", 0.0, float)
 depth = _get_arg("--depth", 8, int)
 use_fast_vae = "--fast-vae" in _args
+vae_decode_engine_override = _get_arg("--vae-decode-engine", None, str)
+source_audio_override = _get_arg("--source-audio", None, str)
+if source_audio_override is not None:
+    _p = Path(source_audio_override)
+    SOURCE_AUDIO = _p if _p.is_absolute() else PROJECT_ROOT / _p
+else:
+    SOURCE_AUDIO = DEFAULT_SOURCE_AUDIO
 use_lora = "--lora" in _args
 if use_lora:
     _i = _args.index("--lora")
@@ -200,6 +207,11 @@ if use_fast_vae:
         print(f"[Setup] WARNING: {fast_name} engine missing, using {Path(trt_engines['vae_decode']).stem}")
     else:
         trt_engines["vae_decode"] = str(trt_engine_path(fast_name))
+if vae_decode_engine_override is not None:
+    override_path = trt_engine_path(vae_decode_engine_override)
+    if not Path(str(override_path)).exists():
+        raise FileNotFoundError(f"--vae-decode-engine {vae_decode_engine_override}: engine not found at {override_path}")
+    trt_engines["vae_decode"] = str(override_path)
 if not no_trt_decoder:
     trt_engines["decoder"] = str(TRT_ENGINE)
 
@@ -208,6 +220,7 @@ print(
     f"[Setup] decoder backend={'PT' if no_trt_decoder else 'TRT (' + decoder_engine_name + ')'}"
 )
 print(f"[Setup] vae backend=TRT  vae_window={vae_window}  depth={depth}")
+print(f"[Setup] vae_decode engine: {Path(trt_engines['vae_decode']).stem}")
 if use_dcw:
     print(
         f"[Setup] DCW=ON  mode={dcw_mode}  scaler={dcw_scaler}  "

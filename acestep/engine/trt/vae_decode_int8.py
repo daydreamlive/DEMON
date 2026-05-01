@@ -5,9 +5,10 @@ Strategy
 - Pure 1D conv network → TRT's mature INT8 CNN path is a natural fit.
 - Snake activation (sin/exp/reciprocal/pow) isn't int8-friendly → enable FP16
   fallback so TRT auto-chooses per-layer precision.
-- Narrow dynamic profile matching ``vae_window`` in production (min=125,
-  opt=250, max=375 frames). Tighter profile = better tactic search.
-- PTQ via IInt8EntropyCalibrator2 over a directory of saved latents.
+- Narrow dynamic profile matching ``vae_window`` in production.
+- PTQ via IInt8EntropyCalibrator2 (default) or IInt8MinMaxCalibrator.
+- Optional fp16 pinning for the first / last conv layers, which sit closest
+  to the audio output and dominate quantization-induced reconstruction error.
 
 The engine's I/O binding names (``latents``, ``audio``) match
 :func:`acestep.nodes.vae_nodes._trt_vae_decode` so no wiring changes are
@@ -17,9 +18,9 @@ needed on the runtime side.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Optional, Union
+from typing import Iterable, List, Optional, Sequence, Union
 
 from loguru import logger
 import torch
@@ -29,12 +30,26 @@ import torch
 # Calibrator
 # ------------------------------------------------------------------
 
-def _make_calibrator(latent_dir: Path, cache_path: Path, batch_size: int = 1):
-    """Construct an IInt8EntropyCalibrator2 over .pt latents in ``latent_dir``.
+def _make_calibrator(
+    latent_dir: Path,
+    cache_path: Path,
+    *,
+    batch_size: int = 1,
+    kind: str = "entropy",
+):
+    """Construct an INT8 calibrator over .pt latents in ``latent_dir``.
 
     Each .pt must be a tensor of shape ``[1, 64, opt_frames]`` (matching
-    the TRT optimization profile's ``opt`` shape). The calibrator iterates
+    the calibration profile's pinned shape). The calibrator iterates
     them once, feeding one batch at a time from a persistent GPU buffer.
+
+    Args:
+        kind: "entropy" → IInt8EntropyCalibrator2 (KL divergence; default,
+              tuned for image classifiers but works fine on most CNNs).
+              "minmax" → IInt8MinMaxCalibrator (uses observed min/max,
+              clipping nothing). Better when activations have heavy
+              tails the entropy method clips off; worse when there are
+              outlier activations that should be clipped.
     """
     import tensorrt as trt
 
@@ -44,9 +59,16 @@ def _make_calibrator(latent_dir: Path, cache_path: Path, batch_size: int = 1):
             f"No calibration latents found in {latent_dir}. "
             f"Run scripts/collect_vae_calibration.py first."
         )
-    logger.info(f"Calibrator: found {len(latents)} latent samples in {latent_dir}")
+    logger.info(f"Calibrator[{kind}]: {len(latents)} latent samples in {latent_dir}")
 
-    class LatentCalibrator(trt.IInt8EntropyCalibrator2):
+    if kind == "entropy":
+        Base = trt.IInt8EntropyCalibrator2
+    elif kind == "minmax":
+        Base = trt.IInt8MinMaxCalibrator
+    else:
+        raise ValueError(f"Unknown calibrator kind: {kind}")
+
+    class LatentCalibrator(Base):
         def __init__(self):
             super().__init__()
             self._idx = 0
@@ -91,6 +113,40 @@ def _make_calibrator(latent_dir: Path, cache_path: Path, batch_size: int = 1):
 
 
 # ------------------------------------------------------------------
+# Layer pinning
+# ------------------------------------------------------------------
+
+def _pin_first_last_conv(network, *, n_first: int = 1, n_last: int = 1) -> List[str]:
+    """Force the first ``n_first`` and last ``n_last`` Conv layers (in
+    topological order) to fp16. These sit closest to the latent input
+    and audio output respectively, where quantization error is most
+    audible.
+
+    Returns the list of pinned layer names.
+    """
+    import tensorrt as trt
+
+    convs = [
+        i for i in range(network.num_layers)
+        if network.get_layer(i).type == trt.LayerType.CONVOLUTION
+    ]
+    if not convs:
+        logger.warning("No Conv layers found to pin")
+        return []
+
+    indices = list(dict.fromkeys(convs[:n_first] + convs[-n_last:]))
+    pinned: List[str] = []
+    for i in indices:
+        layer = network.get_layer(i)
+        layer.precision = trt.float16
+        for j in range(layer.num_outputs):
+            layer.set_output_type(j, trt.float16)
+        pinned.append(f"#{i} {layer.name}")
+    logger.info(f"Pinned to fp16: {pinned}")
+    return pinned
+
+
+# ------------------------------------------------------------------
 # Build
 # ------------------------------------------------------------------
 
@@ -98,15 +154,19 @@ def _make_calibrator(latent_dir: Path, cache_path: Path, batch_size: int = 1):
 class VAEDecodeInt8Config:
     """Configuration for INT8 VAE decoder engine build.
 
-    Default dynamic profile (5s/10s/15s) matches typical ``vae_window``
-    usage. For a fixed-window deployment, set min=opt=max for sharper
-    tactic selection.
+    Default dynamic profile (5s/10s/15s) matches typical short ``vae_window``
+    usage. For 60s engines pass min=125, opt=1500, max=1500 to match the
+    fp16 60s engine profile.
     """
     workspace_gb: float = 6.0
     # latent frames @ 25 Hz
     min_frames: int = 125   # 5s
     opt_frames: int = 250   # 10s (== default vae_window)
     max_frames: int = 375   # 15s
+
+    calibrator_kind: str = "entropy"  # entropy | minmax
+    pin_first_conv: int = 0           # how many leading Conv layers to fp16-pin
+    pin_last_conv: int = 0            # how many trailing Conv layers to fp16-pin
 
 
 def build_vae_decode_int8_engine(
@@ -117,18 +177,7 @@ def build_vae_decode_int8_engine(
     config: Optional[VAEDecodeInt8Config] = None,
     cache_path: Optional[Union[str, Path]] = None,
 ) -> Path:
-    """Build an INT8-quantized TRT engine for the VAE decoder.
-
-    ``onnx_path`` should point at a decoder-only ONNX with inputs
-    ``latents[B,64,T]`` and output ``audio[B,2,samples]`` (both DreamVAE's
-    onnx/model.onnx and the output of
-    :func:`acestep.engine.trt.vae_export.export_vae_decoder_onnx` satisfy
-    this contract).
-
-    FP16 fallback is enabled so TRT keeps Snake1d (sin/exp/reciprocal/pow)
-    layers in fp16 where int8 tactics don't exist — no manual per-layer
-    precision annotations needed.
-    """
+    """Build an INT8-quantized TRT engine for the VAE decoder."""
     import tensorrt as trt
 
     if config is None:
@@ -162,6 +211,16 @@ def build_vae_decode_int8_engine(
     build_config.set_flag(trt.BuilderFlag.INT8)
     build_config.set_flag(trt.BuilderFlag.FP16)
 
+    # Optional layer pinning.
+    if config.pin_first_conv or config.pin_last_conv:
+        _pin_first_last_conv(
+            network,
+            n_first=config.pin_first_conv,
+            n_last=config.pin_last_conv,
+        )
+        # OBEY = TRT must honour layer.precision (vs PREFER which is advisory).
+        build_config.set_flag(trt.BuilderFlag.OBEY_PRECISION_CONSTRAINTS)
+
     # Optimization profile + calibration profile (both required for dynamic
     # INT8 on TRT 10+).
     profile = builder.create_optimization_profile()
@@ -182,12 +241,17 @@ def build_vae_decode_int8_engine(
     )
     build_config.set_calibration_profile(calib_profile)
 
-    calibrator = _make_calibrator(calibration_dir, cache_path)
+    calibrator = _make_calibrator(
+        calibration_dir, cache_path, kind=config.calibrator_kind,
+    )
     build_config.int8_calibrator = calibrator
 
     logger.info(
         f"Building INT8 VAE decode engine: frames min={config.min_frames} "
-        f"opt={config.opt_frames} max={config.max_frames}  calib_dir={calibration_dir}"
+        f"opt={config.opt_frames} max={config.max_frames}  "
+        f"calibrator={config.calibrator_kind}  "
+        f"pin_first={config.pin_first_conv} pin_last={config.pin_last_conv}  "
+        f"calib_dir={calibration_dir}"
     )
     serialized = builder.build_serialized_network(network, build_config)
     if serialized is None:
