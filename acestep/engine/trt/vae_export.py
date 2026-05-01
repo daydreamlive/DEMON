@@ -166,7 +166,10 @@ def export_vae_decoder_onnx(
 class VAETRTBuildConfig:
     """Configuration for VAE TensorRT engine build."""
     fp16: bool = True
-    workspace_gb: float = 8.0
+    workspace_gb: float = 16.0
+    # See note in build_vae_trt_engine: must stay at 1 to avoid TRT 10.15+ Myelin
+    # codegen segfault on the oobleck VAE graph.
+    builder_optimization_level: int = 1
 
     # VAE decoder profile (latent frames)
     decode_min_frames: int = 125      # ~5s
@@ -249,6 +252,15 @@ def build_vae_trt_engine(
     )
     if config.fp16:
         build_config.set_flag(trt.BuilderFlag.FP16)
+
+    # TensorRT 10.15+ Myelin codegen bug: at builder_optimization_level >= 2 the
+    # oobleck VAE graph (Snake activation + WeightNorm convs + ConvTranspose1d)
+    # produces a fused kernel that segfaults inside execute_async_v3 on RTX 5090.
+    # Bisected: optlvl 0 and 1 produce a working ~360 MB engine using the same
+    # kernel set; optlvl 2 introduces the broken fusion. Tactic source bisection
+    # (no JIT_CONVOLUTIONS, no EDGE_MASK_CONVOLUTIONS) does not rescue optlvl >= 2,
+    # so the bug is in core Myelin and not a single tactic source. Pin to 1.
+    build_config.builder_optimization_level = config.builder_optimization_level
 
     profile = builder.create_optimization_profile()
     profile.set_shape(

@@ -136,6 +136,15 @@ class DiffusionEngine:
         }
         hs_trt_dtype = self._trt_engine.get_tensor_dtype("hidden_states")
         self._trt_io_dtype = _trt_dtype_map.get(hs_trt_dtype, torch.float32)
+        # Per-input dtype map. timestep may be fp32 or bf16 depending on
+        # the export recipe (older bf16_mixed code put time_embed in fp32,
+        # current bf16_mixed code leaves it in bf16). Reading the engine's
+        # declared dtype avoids silent corruption when the buffer dtype
+        # mismatches what TRT expects under STRONGLY_TYPED.
+        self._trt_input_dtypes = {
+            n: _trt_dtype_map.get(self._trt_engine.get_tensor_dtype(n), torch.float32)
+            for n in ("hidden_states", "timestep", "encoder_hidden_states", "context_latents")
+        }
         logger.info("TRT decoder engine ready (io_dtype=%s)", self._trt_io_dtype)
 
         # Try to initialize LoRA refit manager (requires REFIT-enabled engine)
@@ -316,11 +325,12 @@ class DiffusionEngine:
             hs_shape, ts_shape, enc_shape, cl_shape = key
             io_dtype = self._trt_io_dtype
 
+            in_dt = self._trt_input_dtypes
             bufs = {
-                "hidden_states": torch.empty(hs_shape, dtype=io_dtype, device=dev),
-                "timestep": torch.empty(ts_shape, dtype=torch.float32, device=dev),
-                "encoder_hidden_states": torch.empty(enc_shape, dtype=io_dtype, device=dev),
-                "context_latents": torch.empty(cl_shape, dtype=io_dtype, device=dev),
+                "hidden_states": torch.empty(hs_shape, dtype=in_dt["hidden_states"], device=dev),
+                "timestep": torch.empty(ts_shape, dtype=in_dt["timestep"], device=dev),
+                "encoder_hidden_states": torch.empty(enc_shape, dtype=in_dt["encoder_hidden_states"], device=dev),
+                "context_latents": torch.empty(cl_shape, dtype=in_dt["context_latents"], device=dev),
             }
             for name, buf in bufs.items():
                 ctx.set_input_shape(name, tuple(buf.shape))
@@ -436,3 +446,4 @@ class DiffusionEngine:
             t_schedule = t_schedule[-(steps + 1):]
 
         return t_schedule
+
