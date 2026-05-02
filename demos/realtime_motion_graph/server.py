@@ -27,6 +27,7 @@ torch._dynamo.config.disable = True
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.server import serve
 
+from acestep.audio.key_detection import detect_key
 from acestep.constants import TASK_INSTRUCTIONS
 from acestep.engine.session import Session
 from acestep.nodes.types import Audio
@@ -194,12 +195,13 @@ def handle_client(ws):
 
     audio_in = Audio(waveform=waveform, sample_rate=SAMPLE_RATE)
 
-    print("[Server] Detecting BPM...")
+    print("[Server] Detecting BPM + key...")
     import librosa
     mono_np = waveform.mean(dim=0).numpy()
     detected_bpm, _ = librosa.beat.beat_track(y=mono_np, sr=SAMPLE_RATE)
     detected_bpm = int(round(float(np.asarray(detected_bpm).flat[0])))
-    print(f"  BPM: {detected_bpm}")
+    detected_key = detect_key(mono_np, SAMPLE_RATE)
+    print(f"  BPM: {detected_bpm}  Key: {detected_key}")
 
     print("[Server] Preparing source...")
     source = session.prepare_source(audio_in)
@@ -209,7 +211,7 @@ def handle_client(ws):
         tags=prompt,
         instruction=TASK_INSTRUCTIONS["cover"],
         refer_latent=source.latent,
-        bpm=detected_bpm, duration=60.0, key="G# minor",
+        bpm=detected_bpm, duration=60.0, key=detected_key,
     )
 
     print("[Server] Creating stream...")
