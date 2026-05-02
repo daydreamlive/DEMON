@@ -195,7 +195,13 @@ class TRTLoRAManager:
             lora_id=lora_id, path=lora_path, strength=strength, deltas=deltas,
         ))
 
-        self._refit_weights(set(deltas.keys()))
+        # Strength-0 contributes nothing to any param's recomputed value,
+        # so the refit would be a mathematical no-op (engine already has
+        # the correct weights from the prior state). Skip it. The LoRA's
+        # deltas are still cached and will participate in the next refit
+        # once strength != 0.
+        if strength != 0.0:
+            self._refit_weights(set(deltas.keys()))
 
         elapsed = (time.perf_counter() - t0) * 1000
         logger.info(
@@ -233,6 +239,10 @@ class TRTLoRAManager:
         for lora in self._active_loras:
             if lora.lora_id == lora_id:
                 old = lora.strength
+                if old == strength:
+                    # Slider sometimes lands back on the previous value;
+                    # skip the full refit + GPU re-upload in that case.
+                    return
                 lora.strength = strength
                 self._refit_weights(set(lora.deltas.keys()))
                 logger.info(
@@ -293,8 +303,14 @@ class TRTLoRAManager:
             buf = self._refit_bufs[param_name]
             buf.copy_(self._base_weights[param_name])
 
-            # Accumulate LoRA contributions in-place (native dtype)
+            # Accumulate LoRA contributions in-place (native dtype). Skip
+            # strength-0 LoRAs; their delta contributes nothing but the
+            # add_ traverses the full weight, which is wasteful when the
+            # caller leaves placeholders in the stack at strength 0
+            # (a common pattern for slider-driven UIs).
             for lora in self._active_loras:
+                if lora.strength == 0.0:
+                    continue
                 if param_name in lora.deltas:
                     buf.add_(lora.deltas[param_name], alpha=lora.strength)
 
