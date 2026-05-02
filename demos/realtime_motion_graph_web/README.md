@@ -36,7 +36,14 @@ uv run python -u -m demos.realtime_motion_graph_web
 # or with explicit binds:
 uv run python -u -m demos.realtime_motion_graph_web \
     --host 0.0.0.0 --http-port 8080 --ws-port 8765
+# pick the acceleration mode explicitly (default is tensorrt):
+uv run python -u -m demos.realtime_motion_graph_web --accel tensorrt
+uv run python -u -m demos.realtime_motion_graph_web --accel compile
+uv run python -u -m demos.realtime_motion_graph_web --accel eager
 ```
+
+`--accel {tensorrt,compile,eager}` sets BOTH `decoder_backend` and
+`vae_backend` on the underlying `Session`. Default is `tensorrt`.
 
 Then from any laptop on the same network:
 

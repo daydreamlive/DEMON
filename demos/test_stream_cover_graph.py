@@ -38,7 +38,7 @@ from acestep.nodes.types import Audio, Latent
 from acestep.paths import checkpoints_dir, project_root, trt_engine_path, select_trt_engines
 
 PROJECT_ROOT = project_root()
-SOURCE_AUDIO = PROJECT_ROOT / "tests/fixtures" / "new_order_confusion_60seconds.wav"
+DEFAULT_SOURCE_AUDIO = PROJECT_ROOT / "tests/fixtures" / "new_order_confusion_60seconds.wav"
 OUTPUT_DIR = PROJECT_ROOT / "_debug_tests" / "stream_output"
 
 SAMPLE_RATE = 48000
@@ -97,6 +97,17 @@ else:
 
 # Pure-PyTorch decoder mode (skip TRT decoder; VAE engines still used).
 no_trt_decoder = "--no-trt-decoder" in _args
+# Pure-PyTorch everywhere: skip TRT decoder AND TRT VAE engines.
+no_acceleration = "--no-acceleration" in _args
+if no_acceleration:
+    no_trt_decoder = True
+
+source_audio_override = _get_arg("--source-audio", None, str)
+if source_audio_override is not None:
+    _p = Path(source_audio_override)
+    SOURCE_AUDIO = _p if _p.is_absolute() else PROJECT_ROOT / _p
+else:
+    SOURCE_AUDIO = DEFAULT_SOURCE_AUDIO
 
 TRT_ENGINE = trt_engine_path(decoder_engine_name)
 
@@ -189,12 +200,15 @@ print("=" * 60)
 # Setup -- all through Session API
 # ------------------------------------------------------------------
 # load_audio() defaults to 60s, so 60s engines are the right default.
-_base_engines = select_trt_engines(duration_s=60.0)
-trt_engines = {
-    "vae_encode": _base_engines["vae_encode"],
-    "vae_decode": _base_engines["vae_decode"],
-}
-if use_fast_vae:
+if no_acceleration:
+    trt_engines = {}
+else:
+    _base_engines = select_trt_engines(duration_s=60.0)
+    trt_engines = {
+        "vae_encode": _base_engines["vae_encode"],
+        "vae_decode": _base_engines["vae_decode"],
+    }
+if use_fast_vae and not no_acceleration:
     fast_name = "dreamvae_decode_fp16_60s"
     if not Path(str(trt_engine_path(fast_name))).exists():
         print(f"[Setup] WARNING: {fast_name} engine missing, using {Path(trt_engines['vae_decode']).stem}")
@@ -207,7 +221,7 @@ print(f"\n[Setup] checkpoint={checkpoint}")
 print(
     f"[Setup] decoder backend={'PT' if no_trt_decoder else 'TRT (' + decoder_engine_name + ')'}"
 )
-print(f"[Setup] vae backend=TRT  vae_window={vae_window}  depth={depth}")
+print(f"[Setup] vae backend={'PT (eager)' if no_acceleration else 'TRT'}  vae_window={vae_window}  depth={depth}")
 if use_dcw:
     print(
         f"[Setup] DCW=ON  mode={dcw_mode}  scaler={dcw_scaler}  "
@@ -223,7 +237,7 @@ with timed("model_load"):
         project_root=str(checkpoints_dir()),
         config_path=checkpoint,
         decoder_backend="tensorrt" if not no_trt_decoder else "eager",
-        vae_backend="tensorrt",
+        vae_backend="eager" if no_acceleration else "tensorrt",
         trt_engines=trt_engines,
         vae_window=vae_window,
     )

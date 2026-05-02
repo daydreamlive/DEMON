@@ -124,8 +124,8 @@ class VirtualMidiKnobs:
 # WebSocket handler
 # ---------------------------------------------------------------------------
 
-def handle_client(ws):
-    print("[Server] Client connected")
+def handle_client(ws, *, decoder_backend: str = "tensorrt", vae_backend: str = "tensorrt"):
+    print(f"[Server] Client connected (decoder={decoder_backend}, vae={vae_backend})")
 
     # ---- Phase 1: Init ----
     config = json.loads(ws.recv())
@@ -174,21 +174,36 @@ def handle_client(ws):
 
     # --- Session setup ---
     audio_duration_s = waveform.shape[1] / SAMPLE_RATE
-    trt_engines = select_trt_engines(duration_s=audio_duration_s)
-    if fast_vae:
+    use_trt = decoder_backend == "tensorrt" or vae_backend == "tensorrt"
+    if use_trt:
+        trt_engines = select_trt_engines(duration_s=audio_duration_s)
+        # validate_backends() rejects engine entries whose backend isn't
+        # tensorrt, so prune the unused half on mixed-backend setups.
+        if decoder_backend != "tensorrt":
+            trt_engines.pop("decoder", None)
+        if vae_backend != "tensorrt":
+            trt_engines.pop("vae_encode", None)
+            trt_engines.pop("vae_decode", None)
+    else:
+        trt_engines = None
+    if fast_vae and vae_backend == "tensorrt":
+        # fast_vae uses the dreamvae distilled decoder; profile must match.
         fast_name = "dreamvae_decode_fp16_60s" if audio_duration_s <= 60.0 else "dreamvae_decode_fp16_240s"
         if Path(str(trt_engine_path(fast_name))).exists():
             trt_engines["vae_decode"] = str(trt_engine_path(fast_name))
         else:
             print(f"[Server] WARNING: {fast_name} engine missing, falling back to {Path(trt_engines['vae_decode']).stem}")
             fast_vae = False
+    elif fast_vae:
+        print(f"[Server] WARNING: fast_vae requires vae_backend=tensorrt; ignoring with vae_backend={vae_backend}")
+        fast_vae = False
 
-    print("[Server] Loading model...")
+    print(f"[Server] Loading model... (decoder={decoder_backend}, vae={vae_backend})")
     t0 = time.time()
     session = Session(
         project_root=str(checkpoints_dir()),
-        decoder_backend="tensorrt",
-        vae_backend="tensorrt",
+        decoder_backend=decoder_backend,
+        vae_backend=vae_backend,
         trt_engines=trt_engines,
         vae_window=vae_window,
     )

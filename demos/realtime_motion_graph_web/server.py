@@ -38,6 +38,8 @@ VIDEOS_DIR = STATIC_DIR / "videos"
 # Set in main() based on --no-backend; read by _process_request when the
 # client polls /api/server-info on startup.
 _NO_BACKEND = False
+# Set in main() based on --accel; read by the WS handler wrapper.
+_ACCEL = "tensorrt"
 
 # Keep the wire compact and don't cache anything so the product team
 # always sees the latest JS after a redeploy.
@@ -238,6 +240,7 @@ def _stub_handle_client(ws):
 def main():
     host = "0.0.0.0"
     port = 8765  # single port: serves both HTTP and WebSocket
+    accel = "tensorrt"  # decoder + vae backend; overridden by --accel
 
     args = sys.argv[1:]
     no_backend = "--no-backend" in args or "--ui-only" in args
@@ -254,12 +257,21 @@ def main():
     if "--ws-port" in args and "--http-port" not in args:
         idx = args.index("--ws-port")
         port = int(args[idx + 1])
+    if "--accel" in args:
+        idx = args.index("--accel")
+        accel = args[idx + 1]
+    _VALID_ACCEL = ("tensorrt", "compile", "eager")
+    if accel not in _VALID_ACCEL:
+        raise SystemExit(
+            f"[Server] --accel must be one of {_VALID_ACCEL}, got {accel!r}"
+        )
 
     if not STATIC_DIR.exists():
         raise SystemExit(f"[Server] static dir missing: {STATIC_DIR}")
 
-    global _NO_BACKEND
+    global _NO_BACKEND, _ACCEL
     _NO_BACKEND = no_backend
+    _ACCEL = accel
 
     if no_backend:
         ws_handler = _stub_handle_client
@@ -269,7 +281,9 @@ def main():
         # loads torch + acestep + TRT machinery; in --no-backend we never
         # touch any of it.
         from demos.realtime_motion_graph.server import handle_client
-        ws_handler = handle_client
+
+        def ws_handler(ws):
+            handle_client(ws, decoder_backend=accel, vae_backend=accel)
 
     print(f"[Server] Starting single-port HTTP+WS on :{port}")
     srv = ws_serve(
@@ -283,7 +297,7 @@ def main():
     ws_thread.start()
 
     browsable_host = "localhost" if host in ("0.0.0.0", "::", "") else host
-    mode = "UI-ONLY (no backend)" if no_backend else "WEB APP, single port"
+    mode = "UI-ONLY (no backend)" if no_backend else f"WEB APP, single port, accel={accel}"
     print()
     print("=" * 60)
     print(f"  Real-Time Motion-to-Music  ({mode})")
