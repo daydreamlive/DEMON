@@ -702,6 +702,26 @@ class StreamPipeline:
         """
         tick_start = time.time()
 
+        # T-coherence: a source swap to a different-length audio leaves
+        # in-flight slots holding xt of the old T while fresh submits
+        # carry the new T. _tick_pt cats xt across slots in dim 0, which
+        # requires the time dim to match — drop stale slots and stale
+        # queued requests so the next batch is uniform. The "target" T
+        # is the most recently submitted request's; older queued ones
+        # from before the swap are filtered out alongside the slots.
+        if self._queue:
+            target_T = self._queue[-1].context_latents.shape[1]
+            if any(
+                r.context_latents.shape[1] != target_T for r in self._queue
+            ):
+                self._queue = [
+                    r for r in self._queue
+                    if r.context_latents.shape[1] == target_T
+                ]
+            for i, slot in enumerate(self._slots):
+                if slot is not None and slot.xt.shape[1] != target_T:
+                    self._slots[i] = None
+
         # Check for finished slot (slot at final step of its schedule)
         finished = None
         for i, slot in enumerate(self._slots):

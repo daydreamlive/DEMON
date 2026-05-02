@@ -326,6 +326,8 @@ def handle_client(ws, *, decoder_backend: str = "tensorrt", vae_backend: str = "
         "lora_dir": str(loras_dir()),
         "lora_catalog": _catalog_payload(),
         "lora_pending_enable": list(initial_enable_ids),
+        "bpm": detected_bpm,
+        "key": detected_key,
     }))
     ws.send(src_np.astype(np.float16).tobytes())
     print(f"[Server] Sent initial buffer ({len(src_np) / SAMPLE_RATE:.1f}s)")
@@ -344,8 +346,27 @@ def handle_client(ws, *, decoder_backend: str = "tensorrt", vae_backend: str = "
     motion_val = [0.0]
     motion_lock = threading.Lock()
 
-    client_mirror = src_np.copy()
+    # Mutable refs so the swap path can replace these in place from the
+    # runner thread without invalidating closures captured by recv_loop /
+    # on_audio_ready. Values are read via the [0] indirection everywhere
+    # that needs the *current* (post-swap) version.
+    source_ref = [source]
+    bpm_ref = [detected_bpm]
+    key_ref = [detected_key]
+    n_channels_ref = [n_channels]
+
+    # Client mirror: tracks what audio the client currently has. Replaced
+    # wholesale on swap so deltas continue to be computed against the
+    # buffer the client just crossfaded into.
+    client_mirror_ref = [src_np.copy()]
     zctx = zstd.ZstdCompressor(level=1)
+
+    # Source-swap rendezvous between the recv thread (sets pending) and
+    # the runner thread (consumes pending in before_tick). The recv loop
+    # only stages audio bytes here; all GPU work happens on the runner
+    # thread so we don't race the streaming pipeline.
+    swap_pending: dict = {"bytes": None, "tags": None}
+    swap_lock = threading.Lock()
 
     # Cross-thread LoRA mutation rendezvous.  The recv thread enqueues
     # ids; the runner thread drains the queues in before_tick so the
@@ -419,6 +440,16 @@ def handle_client(ws, *, decoder_backend: str = "tensorrt", vae_backend: str = "
             ss, se = 0, len(wav_np)
         if se <= ss:
             return
+
+        client_mirror = client_mirror_ref[0]
+        # If the runner emitted a slice that's longer than the freshly
+        # swapped mirror (different source length), clip to the smaller
+        # of the two; the client has no addressable space past mirror.
+        se = min(se, len(client_mirror), len(wav_np))
+        if se <= ss:
+            return
+
+        # Delta = what server has now minus what client has
         region = wav_np[ss:se]
         mirror_region = client_mirror[ss:se]
         delta = (region - mirror_region).astype(np.float16)
@@ -427,7 +458,7 @@ def handle_client(ws, *, decoder_backend: str = "tensorrt", vae_backend: str = "
         hdr = struct.pack(
             SLICE_HDR_FMT,
             SLICE_FLAG_DELTA,
-            ss, se - ss, n_channels,
+            ss, se - ss, n_channels_ref[0],
             params.get("tick_ms", 0), params.get("dec_ms", 0),
             params.get("num_gens", 0),
         )
@@ -453,12 +484,15 @@ def handle_client(ws, *, decoder_backend: str = "tensorrt", vae_backend: str = "
                             latest_raw = data.get("raw", {})
                             latest_pp = data.get("playback_pos", 0.0)
                         elif mtype == "prompt":
+                            # Re-encode on server. Prefer the key sent by the
+                            # client (operator override); fall back to the
+                            # auto-detected key from the loaded source.
                             cond = session.encode_text(
                                 tags=data["tags"],
                                 instruction=TASK_INSTRUCTIONS["cover"],
-                                refer_latent=source.latent,
-                                bpm=detected_bpm, duration=60.0,
-                                key=detected_key,
+                                refer_latent=source_ref[0].latent,
+                                bpm=bpm_ref[0], duration=60.0,
+                                key=data.get("key") or key_ref[0],
                             )
                             stream.conditioning = cond
                             prompt_text[0] = data["tags"]
@@ -490,6 +524,22 @@ def handle_client(ws, *, decoder_backend: str = "tensorrt", vae_backend: str = "
                             if lid:
                                 with pending_lock:
                                     pending_disable.append(str(lid))
+                        elif mtype == "swap_source":
+                            # Followed by a binary audio frame in the same
+                            # format as the init handshake. Block on that
+                            # next message so we don't have to multiplex
+                            # halfway through; the client only sends one
+                            # swap_source at a time.
+                            tags = data.get("tags") or prompt_text[0]
+                            try:
+                                audio_msg = ws.recv()
+                            except ConnectionClosed:
+                                running[0] = False
+                                break
+                            with swap_lock:
+                                swap_pending["bytes"] = audio_msg
+                                swap_pending["tags"] = tags
+                                swap_pending["key"] = data.get("key")
             except TimeoutError:
                 pass
             except ConnectionClosed:
@@ -523,6 +573,110 @@ def handle_client(ws, *, decoder_backend: str = "tensorrt", vae_backend: str = "
                     (lid, lora_strengths_init.get(lid)),
                 )
 
+    # --- Source swap (runs on the runner thread via before_tick) ---
+    # Forward decl so the closure can call runner._rebuild_silence_latent
+    # after replacing stream.source. ``runner`` is assigned just below.
+    runner_holder: list = [None]
+
+    def apply_swap_if_pending():
+        with swap_lock:
+            audio_msg = swap_pending.get("bytes")
+            tags = swap_pending.get("tags")
+            requested_key = swap_pending.get("key")
+            if audio_msg is None:
+                return
+            swap_pending["bytes"] = None
+            swap_pending["tags"] = None
+            swap_pending["key"] = None
+        try:
+            new_channels, new_samples = struct.unpack("<II", audio_msg[:8])
+            new_np = np.frombuffer(audio_msg[8:], dtype=np.float32).reshape(
+                new_samples, new_channels,
+            )
+            new_wf = torch.from_numpy(new_np.T.copy())
+            new_wf = new_wf[:2, :int(60.0 * SAMPLE_RATE)]
+            rem = new_wf.shape[-1] % pool
+            if rem:
+                new_wf = new_wf[:, :new_wf.shape[-1] - rem]
+            print(
+                f"[Server] Swapping source ({new_wf.shape[1] / SAMPLE_RATE:.1f}s, "
+                f"{new_wf.shape[0]}ch)..."
+            )
+
+            # Detect on the new audio. Same code path as init.
+            new_mono = new_wf.mean(dim=0).numpy()
+            new_bpm, _ = librosa.beat.beat_track(y=new_mono, sr=SAMPLE_RATE)
+            new_bpm = int(round(float(np.asarray(new_bpm).flat[0])))
+            new_key = detect_key(new_mono, SAMPLE_RATE)
+            print(f"  new BPM: {new_bpm}  new Key: {new_key}")
+
+            new_audio_in = Audio(waveform=new_wf, sample_rate=SAMPLE_RATE)
+            new_source = session.prepare_source(new_audio_in)
+            new_cond = session.encode_text(
+                tags=tags,
+                instruction=TASK_INSTRUCTIONS["cover"],
+                refer_latent=new_source.latent,
+                bpm=new_bpm, duration=60.0,
+                key=requested_key or new_key,
+            )
+
+            stream.source = new_source
+            stream.conditioning = new_cond
+            stream.context_latent = new_source.context_latent
+            source_ref[0] = new_source
+            bpm_ref[0] = new_bpm
+            key_ref[0] = new_key
+            prompt_text[0] = tags
+            r = runner_holder[0]
+            if r is not None:
+                # Source latent length may have changed; rebuild silence so
+                # _update_hint_strength's blend operands match shapes.
+                r._rebuild_silence_latent()
+
+            new_src_np = new_wf.numpy().T
+            new_n_channels = new_src_np.shape[1] if new_src_np.ndim > 1 else 1
+            n_channels_ref[0] = new_n_channels
+            client_mirror_ref[0] = new_src_np.copy()
+            audio_eng.swap(new_src_np)
+            audio_eng.position = 0
+
+            # Notify the client. swap_ready is the streaming-phase analog
+            # of "ready"; the binary follow-up is the new initial buffer
+            # that the audio worklet swaps in with a 50ms crossfade.
+            with send_lock:
+                ws.send(json.dumps({
+                    "type": "swap_ready",
+                    "duration": len(new_src_np) / SAMPLE_RATE,
+                    "sample_rate": SAMPLE_RATE,
+                    "channels": new_n_channels,
+                    "bpm": new_bpm,
+                    "key": new_key,
+                }))
+                ws.send(new_src_np.astype(np.float16).tobytes())
+            print(f"[Server] Source swap complete ({len(new_src_np) / SAMPLE_RATE:.1f}s)")
+        except ConnectionClosed:
+            running[0] = False
+        except Exception as exc:
+            print(f"[Server] Swap error: {exc}")
+            import traceback
+            traceback.print_exc()
+            try:
+                with send_lock:
+                    ws.send(json.dumps({
+                        "type": "swap_failed",
+                        "error": str(exc),
+                    }))
+            except Exception:
+                pass
+
+    # Combined before_tick callback.  Both kinds of cross-thread
+    # mutation (LoRA enable/disable refits and source swaps) are GPU-
+    # bound and must run on the runner thread between ticks.  Drain
+    # both queues each iteration so they share one rendezvous point.
+    def apply_pending():
+        apply_lora_pending()
+        apply_swap_if_pending()
+
     # --- PipelineRunner: the SAME code as local ---
     runner = PipelineRunner(
         session, stream, audio_eng,
@@ -536,8 +690,9 @@ def handle_client(ws, *, decoder_backend: str = "tensorrt", vae_backend: str = "
         prompt_text=prompt_text, running=running,
         motion_val=motion_val, motion_lock=motion_lock,
         on_audio_ready=on_audio_ready,
-        before_tick=apply_lora_pending,
+        before_tick=apply_pending,
     )
+    runner_holder[0] = runner
 
     try:
         print("[Server] Pipeline running...")

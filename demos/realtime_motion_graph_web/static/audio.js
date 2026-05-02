@@ -119,6 +119,28 @@ export class AudioPlayer {
     }
   }
 
+  // Replace the entire loop buffer with a new source. The worklet
+  // crossfades the old and new buffers over CROSSFADE_SECONDS (50 ms by
+  // default), so callers don't hear a click. ScriptProcessor fallback
+  // does an instant swap (the seam-fade still hides the wrap).
+  swap(interleavedBuffer, channels) {
+    this.channels = channels || this.channels;
+    this.frameCount = interleavedBuffer.length / this.channels;
+    this._mirror = interleavedBuffer.slice();
+    this.swapCount++;
+    for (const fn of this._listeners) fn();
+    if (this._useWorklet) {
+      const send = interleavedBuffer.slice();
+      this.node.port.postMessage(
+        { type: "swap", buffer: send, channels: this.channels },
+        [send.buffer],
+      );
+    } else {
+      this._spBuffer = interleavedBuffer.slice();
+      this._spPosition = 0;
+    }
+  }
+
   // Delta-add into a region of the worklet's buffer.
   addDelta(startFrame, deltaInterleaved) {
     this._writeMirror(startFrame, deltaInterleaved, /*add=*/true);

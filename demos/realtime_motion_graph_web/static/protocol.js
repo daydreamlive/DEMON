@@ -128,6 +128,8 @@ export class RemoteBackend extends EventTarget {
             this.sampleRate = msg.sample_rate;
             this.loraCatalog = msg.lora_catalog || [];
             this.loraDir = msg.lora_dir || "";
+            this.detectedBpm = msg.bpm ?? null;
+            this.detectedKey = msg.key ?? null;
             phase = "initial-buffer";
           } catch (e) { reject(e); }
           return;
@@ -145,6 +147,21 @@ export class RemoteBackend extends EventTarget {
           return;
         }
 
+        // The pending-swap state turns the next binary frame into a full
+        // buffer replacement (sent right after the swap_ready JSON).
+        if (this._pendingSwap && ev.data instanceof ArrayBuffer) {
+          const u16 = new Uint16Array(ev.data);
+          const interleaved = float16ArrayToFloat32(u16);
+          const meta = this._pendingSwap;
+          this._pendingSwap = null;
+          this.duration = meta.duration;
+          this.channels = meta.channels;
+          this.dispatchEvent(new CustomEvent("swap_ready", {
+            detail: { ...meta, interleaved },
+          }));
+          return;
+        }
+
         // --- Streaming phase ---
         if (typeof ev.data === "string") {
           let msg;
@@ -156,6 +173,11 @@ export class RemoteBackend extends EventTarget {
           } else if (msg.type === "lora_catalog") {
             this.loraCatalog = msg.catalog || [];
             this.dispatchEvent(new CustomEvent("lora_catalog", { detail: this.loraCatalog }));
+          } else if (msg.type === "swap_ready") {
+            // Stage the metadata; the next binary frame is the new buffer.
+            this._pendingSwap = msg;
+          } else if (msg.type === "swap_failed") {
+            this.dispatchEvent(new CustomEvent("swap_failed", { detail: msg.error }));
           } else {
             this.dispatchEvent(new CustomEvent("json", { detail: msg }));
           }
@@ -256,6 +278,40 @@ export class RemoteBackend extends EventTarget {
     try {
       this.ws.send(JSON.stringify({ type: "disable_lora", id }));
     } catch {}
+  }
+
+  /**
+   * Replace the source audio in-flight. The server pauses generation,
+   * re-runs prepare_source / encode_text on the new waveform, swaps
+   * stream.source/conditioning, and replies with a swap_ready event +
+   * binary buffer. Caller should hand the buffer to AudioPlayer.swap().
+   * @param {Float32Array} interleaved
+   * @param {number} channels
+   * @param {string} [tags]  current prompt; falls back to server-side
+   * @param {string} [key]   override; otherwise server uses detected key
+   */
+  sendSwapSource(interleaved, channels, tags, key) {
+    if (this.ws?.readyState !== WebSocket.OPEN) return false;
+    try {
+      const msg = { type: "swap_source" };
+      if (tags) msg.tags = tags;
+      if (key) msg.key = key;
+      this.ws.send(JSON.stringify(msg));
+      const samples = interleaved.length / channels;
+      const hdr = new ArrayBuffer(8);
+      const dv = new DataView(hdr);
+      dv.setUint32(0, channels, true);
+      dv.setUint32(4, samples, true);
+      const pcm = new Uint8Array(interleaved.buffer);
+      const combined = new Uint8Array(hdr.byteLength + pcm.byteLength);
+      combined.set(new Uint8Array(hdr), 0);
+      combined.set(pcm, hdr.byteLength);
+      this.ws.send(combined);
+      return true;
+    } catch (e) {
+      console.error("[protocol] sendSwapSource failed:", e);
+      return false;
+    }
   }
 
   close() {

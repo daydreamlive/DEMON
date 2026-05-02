@@ -37,6 +37,37 @@ const modeToggle = $("mode-toggle");
 const graphCanvas = $("graph");
 const effectsCanvas = $("effects-canvas");
 const fixtureSelect = $("fixture-select");
+const keySelect = $("key-select");
+
+// Full keyscale set, generated the same way Python does in
+// acestep.constants.VALID_KEYSCALES (7 notes × 5 accidentals × 2 modes
+// = 70 entries, including ASCII / Unicode sharp & flat spellings the
+// model accepts verbatim).
+const KEYSCALE_NOTES = ["A", "B", "C", "D", "E", "F", "G"];
+const KEYSCALE_ACCIDENTALS = ["", "#", "b", "♯", "♭"];
+const KEYSCALE_MODES = ["major", "minor"];
+const VALID_KEYSCALES = (() => {
+  const out = [];
+  for (const note of KEYSCALE_NOTES) {
+    for (const acc of KEYSCALE_ACCIDENTALS) {
+      for (const mode of KEYSCALE_MODES) {
+        out.push(`${note}${acc} ${mode}`);
+      }
+    }
+  }
+  return out;
+})();
+
+function populateKeySelect(selected) {
+  keySelect.innerHTML = "";
+  for (const k of VALID_KEYSCALES) {
+    const opt = document.createElement("option");
+    opt.value = k;
+    opt.textContent = k;
+    if (k === selected) opt.selected = true;
+    keySelect.appendChild(opt);
+  }
+}
 
 // ── Config ──
 // All initial values come from config.json (next to this file). Edit + refresh
@@ -1022,6 +1053,27 @@ function sendCurrentPrompt() {
   session?.remote?.sendPrompt(activePrompt, activeKey);
 }
 
+// Single funnel for activeKey edits. ``source`` is "auto" when the server
+// just told us its detected key (no need to re-send — the server already
+// encoded with that key); "user" when the operator picked from the
+// dropdown (re-send so the next generation reflects the override).
+function setActiveKey(key, source) {
+  if (!key) return;
+  activeKey = key;
+  if (keySelect && Array.from(keySelect.options).some((o) => o.value === key)) {
+    keySelect.value = key;
+  }
+  if (source === "user") sendCurrentPrompt();
+}
+
+function initKeySelect() {
+  populateKeySelect(activeKey);
+  keySelect.addEventListener("change", () => {
+    bumpIdleTimer();
+    setActiveKey(keySelect.value, "user");
+  });
+}
+
 function initPrompts() {
   promptAInput.addEventListener("keydown", (e) => e.stopPropagation());
   promptBInput.addEventListener("keydown", (e) => e.stopPropagation());
@@ -1449,6 +1501,7 @@ async function startSession(interleaved, channels, frames, videos) {
     showStatus("Connected. Starting audio...");
     initialBuffer = remote.initialBuffer;
     initialChannels = remote.channels;
+    if (remote.detectedKey) setActiveKey(remote.detectedKey, "auto");
     // Server is now the source of truth.  Reconcile our local catalog
     // with what the server actually loaded (handles cases where the
     // server registered ad-hoc paths or a row in our pre-Play list
@@ -1554,6 +1607,72 @@ playBtn.addEventListener("click", async () => {
     }
 
     await startWithFixture(selected);
+  } catch (e) {
+    showStatus(`Error: ${e.message}`);
+  }
+});
+
+// Switching fixtures: if there's a live session with a backend, swap the
+// source in-place (server keeps the model loaded; the audio worklet
+// crossfades the new buffer in over 50 ms — no cold restart, no audio
+// gap). If there's no live session, or no backend, fall back to a full
+// startSession.
+async function swapToFixture(name) {
+  showStatus(`Decoding ${name}...`);
+  const { interleaved, channels, frames } = await loadFixtureAudio(name);
+
+  const remote = session?.remote;
+  if (!remote || serverInfo.no_backend) {
+    await startSession(interleaved, channels, frames, availableVideos);
+    return;
+  }
+
+  // Race-safe: hook the swap_ready listener BEFORE sending so we never
+  // miss a fast server reply. Server eventually emits exactly one of
+  // swap_ready / swap_failed per request.
+  showStatus(`Swapping to ${name}...`);
+  const swapped = await new Promise((resolve) => {
+    const onReady = (e) => {
+      remote.removeEventListener("swap_ready", onReady);
+      remote.removeEventListener("swap_failed", onFail);
+      session.audio.swap(e.detail.interleaved, e.detail.channels);
+      // Server already encoded with this key; just align the UI/state so
+      // future prompt re-sends carry the right key. "auto" prevents a
+      // redundant prompt re-send (server is already on the new key).
+      if (e.detail.key) setActiveKey(e.detail.key, "auto");
+      resolve(true);
+    };
+    const onFail = (e) => {
+      remote.removeEventListener("swap_ready", onReady);
+      remote.removeEventListener("swap_failed", onFail);
+      console.warn("Server swap_failed:", e.detail);
+      resolve(false);
+    };
+    remote.addEventListener("swap_ready", onReady);
+    remote.addEventListener("swap_failed", onFail);
+    const ok = remote.sendSwapSource(interleaved, channels, activePrompt, activeKey);
+    if (!ok) {
+      remote.removeEventListener("swap_ready", onReady);
+      remote.removeEventListener("swap_failed", onFail);
+      resolve(false);
+    }
+  });
+
+  if (!swapped) {
+    // Server-side swap failed; fall back to a full session restart so
+    // the user still ends up on the requested fixture.
+    await startSession(interleaved, channels, frames, availableVideos);
+    return;
+  }
+  hideStatus();
+}
+
+fixtureSelect.addEventListener("change", async () => {
+  const name = fixtureSelect.value;
+  if (!name) return;
+  bumpIdleTimer();
+  try {
+    await swapToFixture(name);
   } catch (e) {
     showStatus(`Error: ${e.message}`);
   }
@@ -1921,6 +2040,7 @@ try {
 } catch (e) { console.error("applyLoraCatalog(initial) failed:", e); }
 try { initEdgeBars(); } catch (e) { console.error("initEdgeBars failed:", e); }
 try { initPrompts(); } catch (e) { console.error("initPrompts failed:", e); }
+try { initKeySelect(); } catch (e) { console.error("initKeySelect failed:", e); }
 try { initKeyboard(); } catch (e) { console.error("initKeyboard failed:", e); }
 try { initIdleReset(); } catch (e) { console.error("initIdleReset failed:", e); }
 try { initCursorAutoHide(); } catch (e) { console.error("initCursorAutoHide failed:", e); }

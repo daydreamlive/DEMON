@@ -89,15 +89,29 @@ class PipelineRunner:
             on_audio_ready = lambda wav, *_args: audio_eng.swap(wav)
         self.on_audio_ready = on_audio_ready
         # before_tick: optional callable invoked at the top of every loop
-        # iteration on the runner thread. Used by the server to apply
-        # LoRA enable/disable mutations (which trigger refits) on the
-        # GPU-owning thread, serializing them with inference.
+        # iteration on the runner thread.  Used by the web server to
+        # apply cross-thread mutations safely:
+        #   - LoRA enable/disable (which triggers a refit; refit and
+        #     inference are mutually exclusive)
+        #   - source swap (prepare_source / encode_text / replace stream
+        #     fields, which can't race the recv thread that holds the
+        #     WebSocket)
+        # The server's apply_pending() callback drains both queues each
+        # iteration so they share one rendezvous point.
         self.before_tick = before_tick
 
         # Cache silence once; used by the hint-strength blend node.
-        T_frames = stream.source.latent.tensor.shape[1]
+        self._rebuild_silence_latent()
+
+    def _rebuild_silence_latent(self) -> None:
+        """(Re)build the silence latent used by hint-strength blending.
+
+        Tracks the current ``stream.source`` length, so call this after a
+        source swap if the new source has a different latent length.
+        """
+        T_frames = self.stream.source.latent.tensor.shape[1]
         self._silence_latent = EmptyLatent().execute(
-            model=stream.model, duration=T_frames / 25.0,
+            model=self.stream.model, duration=T_frames / 25.0,
         )["latent"]
 
     def _update_hint_strength(self, hint_str: float) -> None:
@@ -152,13 +166,28 @@ class PipelineRunner:
         last_hint_str = 1.0
         last_channel_gains = [1.0] * (len(CHANNEL_GROUPS) + len(KEYSTONE_CHANNELS))
         current_shift = self.stream.base_kwargs["shift"]
+        prev_src_T = self.stream.source.latent.tensor.shape[1]
 
         while self.running[0]:
             if self.before_tick is not None:
-                # Hook for cross-thread mutations (e.g. LoRA enable/disable).
-                # Runs on the runner thread so any refit work the callback
-                # does is serialized with the tick body.
+                # Hook for cross-thread mutations (LoRA enable/disable
+                # AND source swap).  Runs on the runner thread so any
+                # GPU/refit work the callback does is serialized with
+                # the tick body.
                 self.before_tick()
+
+            # If a swap changed the source latent length, the cached
+            # last_latent / last_wav / last_decode_pos are dimensioned
+            # against the old source and would crash both the feedback
+            # blend (source_lat = ... + feedback * last_latent) and the
+            # skip-decode MSE check below. Reset them so the next tick
+            # re-initializes against the new source cleanly.
+            cur_src_T = self.stream.source.latent.tensor.shape[1]
+            if cur_src_T != prev_src_T:
+                last_latent = None
+                last_wav = None
+                last_decode_pos = None
+                prev_src_T = cur_src_T
             if self.use_midi:
                 raw = self.midi_knobs.get_all_values()
             else:

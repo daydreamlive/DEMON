@@ -85,6 +85,7 @@
       <div class="install-section-operator">
         <input type="text" id="ws-url" class="ws-url-input" placeholder="ws://host:port">
         <select id="fixture-select" class="fixture-select" title="Audio source (test fixture)"></select>
+        <select id="key-select" class="fixture-select" title="Musical key — auto-detected; override re-sends prompt"></select>
         <button id="pause-btn" class="pause-btn" data-midi-learn="pause" title="Pause/Resume (right-click to MIDI-learn)">&#9654;</button>
         <button id="mode-toggle" class="pause-btn" data-midi-learn="mode_toggle" title="Switch display mode (right-click to MIDI-learn)">GRAPH</button>
         <!-- MIDI badge + diag are injected here by app.js at startup. -->
@@ -174,6 +175,6 @@
 <div class="cursor-cluster" aria-hidden="true"></div>
 <div class="cursor-dot" aria-hidden="true"></div>
 
-<script type="module" src="app.js?v=36"></script>
+<script type="module" src="app.js?v=39"></script>
 </body>
 </html>
