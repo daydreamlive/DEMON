@@ -981,6 +981,24 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   width: 100%;
 }
 
+.fixture-select {
+  background: var(--input-bg);
+  border: 1px solid var(--frame-line);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  min-height: 32px;
+  font-size: 0.7em;
+  max-width: 240px;
+  transition: border-color 120ms, color 120ms;
+}
+.fixture-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  color: var(--text);
+}
+
 .prompt-input {
   padding: 6px 8px;
   font-family: inherit;

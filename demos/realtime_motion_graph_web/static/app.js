@@ -36,6 +36,7 @@ const pauseBtn = $("pause-btn");
 const modeToggle = $("mode-toggle");
 const graphCanvas = $("graph");
 const effectsCanvas = $("effects-canvas");
+const fixtureSelect = $("fixture-select");
 
 // ── Config ──
 // All initial values come from config.json (next to this file). Edit + refresh
@@ -1176,17 +1177,30 @@ class Session {
   async start() {
     pauseBtn.innerHTML = "&#9646;&#9646;";
 
-    this.videoLayer.setVideos(this.videos);
-    this.videoLayer.play(this.videos[0], "none");
+    // Video is secondary: only attach the VideoLayer when at least one
+    // video file is present. With no video, the audio drives the demo on
+    // its own and the focal canvas falls back to its CSS-only state.
+    this.hasAnyVideo = this.videos.length > 0;
+    if (this.hasAnyVideo) {
+      this.videoLayer.setVideos(this.videos);
+      this.videoLayer.play(this.videos[0], "none");
 
-    // Mirror the playing video into the blurred ambient back layer so
-    // the side gutters fill with motion-matched ambience.
-    const ambient = document.getElementById("install-ambient");
-    if (ambient && this.videos[0]) {
-      ambient.src = `videos/${this.videos[0]}`;
-      ambient.muted = true;
-      ambient.loop = true;
-      ambient.play().catch(() => {});
+      // Mirror the playing video into the blurred ambient back layer so
+      // the side gutters fill with motion-matched ambience.
+      const ambient = document.getElementById("install-ambient");
+      if (ambient) {
+        ambient.src = `videos/${this.videos[0]}`;
+        ambient.muted = true;
+        ambient.loop = true;
+        ambient.play().catch(() => {});
+      }
+    } else {
+      // Hide video DOM so the focal area stays dark instead of showing
+      // a stuck black <video> tile. Effects canvas is also a no-op below.
+      const ambient = document.getElementById("install-ambient");
+      if (ambient) ambient.removeAttribute("src");
+      videoA.removeAttribute("src");
+      videoB.removeAttribute("src");
     }
 
     if (this.remote) {
@@ -1287,7 +1301,10 @@ class Session {
         ? sliderValues[loraStrengthKey(ids[1])] / LORA_SLIDER_MAX : 0;
       this.effects.setDaftPunk(slot0);
       this.effects.setDubstep(slot1);
-      this.effects.tick(this.videoLayer.activeVideo, t, kick);
+      // With no video attached, _uploadVideo() returns false and the
+      // shader clears to transparent — the focal area is empty but the
+      // HUD bars and graph still drive off the audio.
+      this.effects.tick(this.hasAnyVideo ? this.videoLayer.activeVideo : null, t, kick);
     }
     tickRibbons(this.ribbons, t, kick);
 
@@ -1456,23 +1473,87 @@ async function startSession(interleaved, channels, frames, videos) {
 
 // ── Init ──
 
+// Test-fixture audio is the primary source. Videos are best-effort and
+// purely visual: if /api/videos returns at least one file we attach the
+// VideoLayer to the active session, otherwise the audio plays alone.
+let availableFixtures = [];
+let availableVideos = [];
+
+// Pick the file containing "new_order_confusion" if present; fall back to
+// the first fixture. The user requested new_order_confusion as the default
+// audio source.
+function pickDefaultFixture(fixtures) {
+  if (fixtures.length === 0) return null;
+  const m = fixtures.find((f) => f.toLowerCase().includes("new_order_confusion"));
+  return m || fixtures[0];
+}
+
+function populateFixtureSelect(fixtures, selected) {
+  fixtureSelect.innerHTML = "";
+  for (const name of fixtures) {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    if (name === selected) opt.selected = true;
+    fixtureSelect.appendChild(opt);
+  }
+}
+
+async function loadFixtureAudio(name) {
+  const resp = await fetch(`/fixtures/${encodeURIComponent(name)}`);
+  if (!resp.ok) throw new Error(`Failed to fetch fixture: ${resp.status}`);
+  const arrayBuf = await resp.arrayBuffer();
+  return decodeAudioBuffer(arrayBuf);
+}
+
+async function startWithFixture(name) {
+  showStatus(`Decoding ${name}...`);
+  const { interleaved, channels, frames } = await loadFixtureAudio(name);
+  await startSession(interleaved, channels, frames, availableVideos);
+}
+
+// Populate the fixture selector on page load so the user can pick a
+// different track before clicking Play. The /api/videos result is also
+// cached here so Play and the fixture-switch handler don't refetch.
+async function preloadCatalog() {
+  try {
+    const [fixturesResp, videosResp] = await Promise.all([
+      fetch("/api/fixtures"),
+      fetch("/api/videos").catch(() => null),
+    ]);
+    if (fixturesResp.ok) availableFixtures = await fixturesResp.json();
+    if (videosResp && videosResp.ok) availableVideos = await videosResp.json();
+    if (availableFixtures.length > 0) {
+      populateFixtureSelect(availableFixtures, pickDefaultFixture(availableFixtures));
+    }
+  } catch (e) {
+    console.warn("Catalog preload failed:", e);
+  }
+}
+preloadCatalog();
+
 playBtn.addEventListener("click", async () => {
   startOverlay.classList.add("hidden");
 
-  showStatus("Loading video...");
+  showStatus("Loading fixtures...");
   try {
-    const resp = await fetch("/api/videos");
-    if (!resp.ok) throw new Error("Could not fetch video list");
-    const videos = await resp.json();
-    if (videos.length === 0) throw new Error("No videos found on server");
+    // If preload succeeded the selector is already populated; if not,
+    // refetch here so a transient startup race doesn't strand the user.
+    if (availableFixtures.length === 0) {
+      await preloadCatalog();
+    }
+    if (availableFixtures.length === 0) {
+      throw new Error(
+        "No audio fixtures found. Run `python tests/fixtures/download.py` to fetch them."
+      );
+    }
 
-    showStatus("Decoding audio from video...");
-    const videoResp = await fetch(`videos/${videos[0]}`);
-    if (!videoResp.ok) throw new Error(`Failed to fetch video: ${videoResp.status}`);
-    const arrayBuf = await videoResp.arrayBuffer();
-    const { interleaved, channels, frames } = await decodeAudioBuffer(arrayBuf);
+    const selected = fixtureSelect.value || pickDefaultFixture(availableFixtures);
+    if (!fixtureSelect.value) {
+      populateFixtureSelect(availableFixtures, selected);
+    }
 
-    await startSession(interleaved, channels, frames, videos);
+    await startWithFixture(selected);
   } catch (e) {
     showStatus(`Error: ${e.message}`);
   }

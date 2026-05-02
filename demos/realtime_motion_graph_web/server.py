@@ -34,6 +34,10 @@ from websockets.sync.server import serve as ws_serve
 
 STATIC_DIR = Path(__file__).parent / "static"
 VIDEOS_DIR = STATIC_DIR / "videos"
+# tests/fixtures lives at the repo root, two levels above this module
+# (demos/realtime_motion_graph_web/ -> repo root -> tests/fixtures).
+FIXTURES_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
+_AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
 
 # Set in main() based on --no-backend; read by _process_request when the
 # client polls /api/server-info on startup.
@@ -188,6 +192,62 @@ def _process_request(connection, request):
             body,
         )
 
+    # API: list audio fixtures from tests/fixtures/
+    if url.split("?", 1)[0] == "/api/fixtures":
+        fixtures = []
+        if FIXTURES_DIR.is_dir():
+            fixtures = sorted(
+                f.name for f in FIXTURES_DIR.iterdir()
+                if f.is_file() and f.suffix.lower() in _AUDIO_EXTS
+            )
+        body = json.dumps(fixtures).encode()
+        _log_http(remote, 200, "GET", url)
+        return Response(
+            200, "OK",
+            Headers([
+                ("Content-Type", "application/json; charset=utf-8"),
+                ("Content-Length", str(len(body))),
+                *_NO_CACHE_HEADERS,
+            ]),
+            body,
+        )
+
+    # Serve files from tests/fixtures/ under /fixtures/<name>.
+    fixture_match = url.split("?", 1)[0].split("#", 1)[0]
+    if fixture_match.startswith("/fixtures/"):
+        rel = fixture_match[len("/fixtures/"):]
+        if rel and "/" not in rel and "\\" not in rel and not rel.startswith("."):
+            candidate = (FIXTURES_DIR / rel).resolve()
+            try:
+                candidate.relative_to(FIXTURES_DIR.resolve())
+            except ValueError:
+                candidate = None  # path escape attempt
+            if candidate and candidate.is_file() and candidate.suffix.lower() in _AUDIO_EXTS:
+                try:
+                    body = candidate.read_bytes()
+                except OSError as e:
+                    msg = f"500 {e}\n".encode()
+                    _log_http(remote, 500, "GET", url)
+                    return Response(
+                        500, "Internal Server Error",
+                        Headers([
+                            ("Content-Type", "text/plain; charset=utf-8"),
+                            ("Content-Length", str(len(msg))),
+                            *_NO_CACHE_HEADERS,
+                        ]),
+                        msg,
+                    )
+                _log_http(remote, 200, "GET", url)
+                return Response(
+                    200, "OK",
+                    Headers([
+                        ("Content-Type", _content_type_for(candidate)),
+                        ("Content-Length", str(len(body))),
+                        *_NO_CACHE_HEADERS,
+                    ]),
+                    body,
+                )
+
     target = _resolve_static(url)
     if target is None:
         body = b"404 not found\n"
@@ -304,6 +364,7 @@ def main():
     print("=" * 60)
     print(f"  Open:      http://{browsable_host}:{port}/")
     print(f"  WebSocket: ws://{browsable_host}:{port}/")
+    print(f"  Fixtures:  {FIXTURES_DIR}")
     print("  Ctrl+C to stop")
     print("=" * 60)
     print()

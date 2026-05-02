@@ -29,13 +29,19 @@ replacement for the pygame/OpenCV client with the same feature set:
 
 ## Run
 
-From the remote 5090 box (the machine with the GPU):
+First-run only — fetch the bundled audio fixtures:
+
+```bash
+python tests/fixtures/download.py
+```
+
+Then from the remote 5090 box (the machine with the GPU):
 
 ```bash
 uv run python -u -m demos.realtime_motion_graph_web
 # or with explicit binds:
 uv run python -u -m demos.realtime_motion_graph_web \
-    --host 0.0.0.0 --http-port 8080 --ws-port 8765
+    --host 0.0.0.0 --port 8765
 # pick the acceleration mode explicitly (default is tensorrt):
 uv run python -u -m demos.realtime_motion_graph_web --accel tensorrt
 uv run python -u -m demos.realtime_motion_graph_web --accel compile
@@ -47,14 +53,24 @@ uv run python -u -m demos.realtime_motion_graph_web --accel eager
 
 Then from any laptop on the same network:
 
-1. Open `http://<server-host>:8080/`
-2. Paste the WebSocket URL if it's not already pre-filled
-   (`ws://<server-host>:8765`)
-3. Drop in a source audio file (any format the browser can decode;
-   resampled to 48 kHz stereo in-browser before upload)
-4. Tweak the options, click **Connect & start**
-5. Cold start takes ~15 s while the server loads the model + TRT
-   engines; once it's ready the UI switches to the live HUD view
+1. Open `http://<server-host>:8765/`
+2. Click **Play** — the demo loads the default fixture
+   (`new_order_confusion_60seconds.wav`).
+3. Switch fixtures any time using the selector at the top of the
+   Advanced drawer; switching tears down the session and restarts with
+   the new audio.
+4. Cold start takes ~15 s while the server loads the model + TRT
+   engines (or longer on `--accel compile`); once it's ready the UI
+   switches to the live HUD view.
+
+### Audio source vs. video
+
+Audio is the **primary** source: the demo always loads from
+`tests/fixtures/`, served by the web server at `/fixtures/<name>`.
+Video is **optional and secondary** — drop any `.mp4`/`.webm`/`.mov`
+into `static/videos/` to attach the audio-reactive shader pipeline.
+With no videos present the demo runs audio-only (graph mode is the
+default and looks the same).
 
 ## Layout
 

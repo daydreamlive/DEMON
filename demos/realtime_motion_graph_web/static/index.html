@@ -9,7 +9,7 @@
 <title>Daydream Music</title>
 <link rel="manifest" href="manifest.json">
 <link rel="stylesheet" href="tokens.css?v=10">
-<link rel="stylesheet" href="style.css?v=45">
+<link rel="stylesheet" href="style.css?v=46">
 <script src="lib/fzstd.min.js" onerror="this.onerror=null; var s=document.createElement('script'); s.src='https://cdn.jsdelivr.net/npm/fzstd@0.1.1/umd/index.min.js'; document.head.appendChild(s);"></script>
 </head>
 <body>
@@ -84,6 +84,7 @@
       <!-- Operator strip across the top — connection + transport + MIDI. -->
       <div class="install-section-operator">
         <input type="text" id="ws-url" class="ws-url-input" placeholder="ws://host:port">
+        <select id="fixture-select" class="fixture-select" title="Audio source (test fixture)"></select>
         <button id="pause-btn" class="pause-btn" data-midi-learn="pause" title="Pause/Resume (right-click to MIDI-learn)">&#9654;</button>
         <button id="mode-toggle" class="pause-btn" data-midi-learn="mode_toggle" title="Switch display mode (right-click to MIDI-learn)">GRAPH</button>
         <!-- MIDI badge + diag are injected here by app.js at startup. -->
