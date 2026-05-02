@@ -58,12 +58,13 @@ class PipelineRunner:
     def __init__(
         self, session, stream, audio_eng, *,
         use_midi, use_sde, use_lora,
-        midi_knobs, lora_ids, engine_obj,
+        midi_knobs, engine_obj,
         vae_window, crop_seconds,
         k1_name, seed, skip_threshold,
         sde_curve_display, params, prompt_text, running,
         motion_val, motion_lock,
         on_audio_ready=None,
+        before_tick=None,
     ):
         self.session = session
         self.stream = stream  # StreamHandle
@@ -72,7 +73,6 @@ class PipelineRunner:
         self.use_sde = use_sde
         self.use_lora = use_lora
         self.midi_knobs = midi_knobs
-        self.lora_ids = lora_ids or []
         self.engine_obj = engine_obj
         self.vae_window = vae_window
         self.crop_seconds = crop_seconds
@@ -88,6 +88,11 @@ class PipelineRunner:
         if on_audio_ready is None:
             on_audio_ready = lambda wav, *_args: audio_eng.swap(wav)
         self.on_audio_ready = on_audio_ready
+        # before_tick: optional callable invoked at the top of every loop
+        # iteration on the runner thread. Used by the server to apply
+        # LoRA enable/disable mutations (which trigger refits) on the
+        # GPU-owning thread, serializing them with inference.
+        self.before_tick = before_tick
 
         # Cache silence once; used by the hint-strength blend node.
         T_frames = stream.source.latent.tensor.shape[1]
@@ -149,6 +154,11 @@ class PipelineRunner:
         current_shift = self.stream.base_kwargs["shift"]
 
         while self.running[0]:
+            if self.before_tick is not None:
+                # Hook for cross-thread mutations (e.g. LoRA enable/disable).
+                # Runs on the runner thread so any refit work the callback
+                # does is serialized with the tick body.
+                self.before_tick()
             if self.use_midi:
                 raw = self.midi_knobs.get_all_values()
             else:
@@ -172,12 +182,20 @@ class PipelineRunner:
             if abs(shift_val - current_shift) > 0.05:
                 current_shift = shift_val
 
-            if self.use_lora and self.lora_ids:
-                for idx, lid in enumerate(self.lora_ids):
-                    key = f"lora_str_{idx + 1}"
-                    lora_str = raw.get(key, 0.0)
+            if self.use_lora and self.engine_obj is not None:
+                # Iterate the catalog so the active set can change at
+                # runtime (enable/disable from the client).  Strength
+                # only flows to the engine for ENABLED LoRAs; sliders
+                # for non-enabled rows are ignored, matching the UI
+                # contract that strength sliders are only interactive
+                # while the LoRA is on.
+                for desc in self.engine_obj.list_trt_loras():
+                    if desc.state != "enabled":
+                        continue
+                    key = f"lora_str_{desc.id}"
+                    lora_str = raw.get(key, desc.strength)
                     if abs(lora_str - self.params.get(key, -1)) > 0.02:
-                        self.engine_obj.set_trt_lora_strength(lid, lora_str)
+                        self.engine_obj.set_trt_lora_strength(desc.id, lora_str)
 
             hint_str = self.midi_knobs.get_param("hint_strength") if self.use_midi else 1.0
             if abs(hint_str - last_hint_str) > 0.02:
@@ -338,10 +356,12 @@ class PipelineRunner:
                 self.params["seed"] = seed
                 self.params["feedback"] = round(feedback, 2)
                 self.params["shift"] = round(shift_val, 2)
-                if self.use_lora:
-                    for idx in range(len(self.lora_ids)):
-                        key = f"lora_str_{idx + 1}"
-                        self.params[key] = round(raw.get(key, 0.0), 2)
+                if self.use_lora and self.engine_obj is not None:
+                    for desc in self.engine_obj.list_trt_loras():
+                        if desc.state != "enabled":
+                            continue
+                        key = f"lora_str_{desc.id}"
+                        self.params[key] = round(raw.get(key, desc.strength), 2)
                 if self.use_sde:
                     self.params["periodicity"] = round(raw.get("periodicity", 0.0), 2)
                 self.params["hint_strength"] = round(hint_str, 2)

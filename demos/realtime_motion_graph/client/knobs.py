@@ -34,7 +34,23 @@ class KnobBank:
     knobs: dict
 
 
-def build_banks(sde: bool, lora: int = 0) -> list:
+def build_banks(sde: bool, loras=None) -> list:
+    """Build the knob banks driving the streaming pipeline.
+
+    ``loras`` is an iterable of LoRA ids (filename stems).  Each id gets a
+    ``lora_str_<id>`` knob with a freshly allocated CC slot.  Ids replace
+    the old positional ``lora_str_1`` / ``lora_str_2`` naming so toggling
+    catalog entries on and off doesn't shuffle knob identities.
+
+    Backward-compat: an int ``loras`` is accepted and treated as
+    ``[f"slot{i}" for i in range(1, n+1)]`` so callers that haven't
+    migrated still get something usable, with the old-style names.
+    """
+    if isinstance(loras, int):
+        lora_ids = [f"slot{i}" for i in range(1, loras + 1)]
+    else:
+        lora_ids = list(loras or [])
+
     core = {}
     cc = 70
     if sde:
@@ -46,8 +62,11 @@ def build_banks(sde: bool, lora: int = 0) -> list:
     core["shift"] = KnobDef(cc=cc, default=0.5, sensitivity=1.0); cc += 1
     if sde:
         core["periodicity"] = KnobDef(cc=cc, sensitivity=2.0, max_val=12.5); cc += 1
-    for i in range(1, int(lora) + 1):
-        core[f"lora_str_{i}"] = KnobDef(cc=cc, default=0.0, sensitivity=2.0, max_val=2.0); cc += 1
+    for lid in lora_ids:
+        core[f"lora_str_{lid}"] = KnobDef(
+            cc=cc, default=0.0, sensitivity=2.0, max_val=2.0,
+        )
+        cc += 1
     core["hint_strength"] = KnobDef(cc=cc, default=1.0, sensitivity=2.0); cc += 1
     core["noise_share"] = KnobDef(cc=cc, default=0.0, sensitivity=2.0); cc += 1
     core["ode_noise"] = KnobDef(cc=cc, default=0.0, sensitivity=2.0, max_val=0.5); cc += 1

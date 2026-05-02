@@ -55,12 +55,15 @@
       <span class="install-edge-label">Remix Strength</span>
       <div class="install-edge-bar"></div>
     </div>
-    <div class="install-edge install-edge-left" data-bar="lora_str_1">
-      <span class="install-edge-label">Daft Punk Style</span>
+    <!-- Left/right perimeter bars track the first/second currently
+         enabled LoRA.  Their data-bar and label text are written by
+         refreshLoraEdgeBars() whenever the catalog state changes. -->
+    <div class="install-edge install-edge-left">
+      <span class="install-edge-label"></span>
       <div class="install-edge-bar"></div>
     </div>
-    <div class="install-edge install-edge-right" data-bar="lora_str_2">
-      <span class="install-edge-label">Dubstep Style</span>
+    <div class="install-edge install-edge-right">
+      <span class="install-edge-label"></span>
       <div class="install-edge-bar"></div>
     </div>
   </div>
@@ -105,24 +108,10 @@
               <div class="slider-value">0.80</div>
               <kbd class="desktop-only">A + &#9650;&#9660;</kbd>
             </div>
-            <div class="slider-group" data-param="lora_str_1">
-              <div class="slider-label">daft punk style</div>
-              <div class="slider-track">
-                <div class="slider-fill" style="height: 0%"></div>
-                <div class="slider-thumb" style="bottom: 0%"></div>
-              </div>
-              <div class="slider-value">0.00</div>
-              <kbd class="desktop-only">S + &#9650;&#9660;</kbd>
-            </div>
-            <div class="slider-group" data-param="lora_str_2">
-              <div class="slider-label">dubstep style</div>
-              <div class="slider-track">
-                <div class="slider-fill" style="height: 0%"></div>
-                <div class="slider-thumb" style="bottom: 0%"></div>
-              </div>
-              <div class="slider-value">0.00</div>
-              <kbd class="desktop-only">D + &#9650;&#9660;</kbd>
-            </div>
+            <!-- LoRA strength sliders live in the dynamic Library tile
+                 (inserted by app.js when the server's catalog arrives).
+                 Keyboard shortcuts S + arrow / D + arrow drive the
+                 first / second currently-enabled LoRA. -->
             <div class="slider-group" data-param="hint_strength">
               <div class="slider-label">structure strength</div>
               <div class="slider-track">

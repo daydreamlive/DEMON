@@ -84,6 +84,8 @@ export class RemoteBackend extends EventTarget {
     this.duration = 0;
     this.channels = 0;
     this.sampleRate = SAMPLE_RATE;
+    this.loraCatalog = [];
+    this.loraDir = "";
   }
 
   async connect() {
@@ -124,6 +126,8 @@ export class RemoteBackend extends EventTarget {
             this.duration = msg.duration;
             this.channels = msg.channels;
             this.sampleRate = msg.sample_rate;
+            this.loraCatalog = msg.lora_catalog || [];
+            this.loraDir = msg.lora_dir || "";
             phase = "initial-buffer";
           } catch (e) { reject(e); }
           return;
@@ -149,6 +153,9 @@ export class RemoteBackend extends EventTarget {
             this.dispatchEvent(new CustomEvent("params", { detail: msg.params }));
           } else if (msg.type === "prompt_applied") {
             this.dispatchEvent(new CustomEvent("prompt_applied", { detail: msg.tags }));
+          } else if (msg.type === "lora_catalog") {
+            this.loraCatalog = msg.catalog || [];
+            this.dispatchEvent(new CustomEvent("lora_catalog", { detail: this.loraCatalog }));
           } else {
             this.dispatchEvent(new CustomEvent("json", { detail: msg }));
           }
@@ -228,6 +235,26 @@ export class RemoteBackend extends EventTarget {
       const msg = { type: "prompt", tags };
       if (key) msg.key = key;
       this.ws.send(JSON.stringify(msg));
+    } catch {}
+  }
+
+  sendEnableLora(id, strength) {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    try {
+      const msg = { type: "enable_lora", id };
+      // Pass the target strength so the server refits at it in one
+      // shot — enabling at 0 and waiting for the next params tick to
+      // ramp up produces a one-decode-window glitch where the LoRA
+      // sounds missing.
+      if (typeof strength === "number") msg.strength = strength;
+      this.ws.send(JSON.stringify(msg));
+    } catch {}
+  }
+
+  sendDisableLora(id) {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(JSON.stringify({ type: "disable_lora", id }));
     } catch {}
   }
 

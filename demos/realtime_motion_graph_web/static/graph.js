@@ -5,8 +5,6 @@ const GRAPH_COLORS = {
   denoise:       [0, 255, 0],
   feedback:      [0, 200, 255],
   shift:         [180, 0, 255],
-  lora_str_1:    [255, 50, 200],
-  lora_str_2:    [200, 50, 255],
   hint_strength: [255, 200, 50],
   noise_share:   [120, 120, 255],
   ode_noise:     [200, 200, 200],
@@ -16,6 +14,23 @@ const GRAPH_COLORS = {
   ch13: [255, 100, 100], ch14: [255, 180, 80],  ch19: [220, 255, 80],
   ch23: [80, 255, 180],  ch29: [80, 180, 255],  ch56: [180, 80, 255],
 };
+
+// Hash a LoRA id to a stable hue so per-LoRA history lines stay visually
+// distinct on the graph without requiring config-driven colors.
+const _LORA_HUE_PALETTE = [
+  [255, 50, 200], [200, 50, 255], [50, 200, 255], [255, 150, 50],
+  [120, 255, 80], [255, 80, 120], [180, 255, 200], [255, 200, 100],
+];
+function _loraColor(id) {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+  return _LORA_HUE_PALETTE[Math.abs(h) % _LORA_HUE_PALETTE.length];
+}
+function _colorFor(name) {
+  if (name in GRAPH_COLORS) return GRAPH_COLORS[name];
+  if (name.startsWith("lora_str_")) return _loraColor(name.slice("lora_str_".length));
+  return [255, 255, 255];
+}
 
 const HISTORY_LEN = 600;
 
@@ -86,7 +101,7 @@ export class GraphRenderer {
     ctx.lineWidth = 3 + 2 * pulse;
     const glowAlpha = 0.8 + 0.2 * pulse;
     for (const [name, hist] of this.histories) {
-      this._polyline(ctx, hist, playheadX, GRAPH_COLORS[name] || [255, 255, 255], glowAlpha);
+      this._polyline(ctx, hist, playheadX, _colorFor(name), glowAlpha);
     }
     ctx.restore();
 
@@ -94,7 +109,7 @@ export class GraphRenderer {
     ctx.save();
     ctx.lineWidth = 1;
     for (const [name, hist] of this.histories) {
-      this._polyline(ctx, hist, playheadX, GRAPH_COLORS[name] || [255, 255, 255], 1);
+      this._polyline(ctx, hist, playheadX, _colorFor(name), 1);
     }
     ctx.restore();
 

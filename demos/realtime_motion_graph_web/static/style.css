@@ -416,9 +416,157 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
 .install-edge-left  .install-edge-bar { right: 0; transform-origin: right bottom; }
 .install-edge-right .install-edge-bar { left:  0; transform-origin: left  bottom; }
 
+/* When no LoRA is enabled in the corresponding slot, the perimeter bar
+   collapses to a thin static line so it doesn't shout for attention. */
+.install-edge-empty .install-edge-bar { transform: scaleY(0.05); opacity: 0.3; }
+.install-edge-empty .install-edge-label { opacity: 0.4; }
+
 /* The bottom HUD edge has been replaced by the Advanced drawer — the
    drawer's handle bar lives at the bottom of the viewport now and serves
    the same visual role. No `.install-edge-bottom` rule needed. */
+
+/* ============================================================================
+   LoRA Library tile.  One row per catalog entry:
+       [switch]  name              [horizontal slider]  0.30
+   The body scrolls internally — adding LoRAs to the catalog grows the
+   list, not the Advanced drawer's height.  Width is bounded so the
+   tile sits comfortably alongside the other mixer tiles.
+   ============================================================================ */
+.mixer-tile-library {
+  min-width: 280px;
+  max-width: 360px;
+}
+.mixer-tile-library .lora-library-body {
+  display: flex; flex-direction: column;
+  gap: 6px;
+  padding: 4px 8px;
+  /* Internal scroll: the Library tile holds its own height and
+     scrolls when there are too many rows to fit.  The Advanced drawer
+     stays at its natural size. */
+  max-height: 240px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* Subtle scrollbar styling (Firefox + WebKit) so it doesn't shout. */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
+.mixer-tile-library .lora-library-body::-webkit-scrollbar { width: 6px; }
+.mixer-tile-library .lora-library-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2); border-radius: 3px;
+}
+.mixer-tile-library .lora-library-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.lora-library-empty {
+  font-size: 11px; opacity: 0.55; padding: 14px 6px;
+  text-align: center; font-style: italic;
+}
+
+.lora-row {
+  display: grid;
+  grid-template-columns: 32px 1fr auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 4px;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.lora-row:last-child { border-bottom: none; }
+
+.lora-row-name {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  opacity: 0.9;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lora-row[data-state="disabled"] .lora-row-name { opacity: 0.55; }
+
+/* Toggle switch.  Sliding-pill style so the visual position alone
+   communicates state — no ON/OFF text needed (which would duplicate
+   the row name and confuse scan order). */
+.lora-switch {
+  width: 28px; height: 16px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 9px;
+  position: relative;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 0.12s ease, background 0.18s ease;
+}
+.lora-switch:hover { opacity: 0.85; }
+.lora-switch[aria-checked="true"] {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.06);
+}
+.lora-switch-thumb {
+  position: absolute;
+  top: 1px; left: 1px;
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.5;
+  transition: transform 0.16s cubic-bezier(.3,1.3,.5,1), opacity 0.12s ease;
+  pointer-events: none;
+}
+.lora-switch[aria-checked="true"] .lora-switch-thumb {
+  transform: translateX(12px);
+  opacity: 1;
+}
+.lora-switch.midi-learning {
+  outline: 1px dashed currentColor;
+  outline-offset: 2px;
+}
+
+/* Horizontal strength slider.  Spans the full row width below the
+   switch+name line, giving the operator a wide drag surface without
+   making each row tall. */
+.lora-strength {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; gap: 8px;
+}
+.lora-strength-track {
+  position: relative;
+  flex: 1;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.lora-strength-track:hover { background: rgba(255, 255, 255, 0.14); }
+.lora-strength-fill {
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  width: 0%;
+  background: currentColor;
+  opacity: 0.75;
+  border-radius: 2px;
+  transition: width 0.06s linear;
+}
+.lora-strength-value {
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  min-width: 3ch;
+  text-align: right;
+  opacity: 0.7;
+}
+
+/* Disabled state: lock the slider, dim the name, dim the fill — but
+   leave the switch alone so the operator can re-enable. */
+.lora-row[data-state="disabled"] .lora-strength-track {
+  cursor: not-allowed;
+  background: rgba(255, 255, 255, 0.04);
+}
+.lora-row[data-state="disabled"] .lora-strength-fill { opacity: 0.25; }
+.lora-row[data-state="disabled"] .lora-strength-value { opacity: 0.35; }
 
 /* ============================================================================
    Buttons — single shared "outline + accent on hover" language. The Seed /

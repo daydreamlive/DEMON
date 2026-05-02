@@ -132,6 +132,39 @@ def _process_request(connection, request):
             body,
         )
 
+    # API: list LoRAs in MODELS_DIR/loras/.  Cheap (filesystem glob, no
+    # torch / no engine load), so the browser can render the Library
+    # panel before the user even clicks Play.  Uses the same path
+    # resolution the WebSocket pipeline uses, so everyone agrees on
+    # what's in the catalog.
+    if url.split("?", 1)[0] == "/api/loras":
+        from acestep.paths import discover_loras, loras_dir
+        try:
+            d = loras_dir()
+            entries = [
+                {
+                    "id": p.stem, "name": p.stem, "path": str(p),
+                    "state": "registered", "strength": 0.0,
+                    "materialized_bytes": 0,
+                }
+                for p in discover_loras(d)
+            ]
+        except Exception as e:
+            entries = []
+            sys.stdout.write(f"[HTTP] /api/loras error: {e}\n")
+            sys.stdout.flush()
+        body = json.dumps({"dir": str(loras_dir()), "loras": entries}).encode()
+        _log_http(remote, 200, "GET", url)
+        return Response(
+            200, "OK",
+            Headers([
+                ("Content-Type", "application/json; charset=utf-8"),
+                ("Content-Length", str(len(body))),
+                *_NO_CACHE_HEADERS,
+            ]),
+            body,
+        )
+
     # API: list video files in static/videos/
     if url.split("?", 1)[0] == "/api/videos":
         _VIDEO_EXTS = {".mp4", ".webm", ".mov"}

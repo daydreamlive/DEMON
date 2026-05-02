@@ -11,14 +11,10 @@
     "crop": 0,
     "steps": 8,
     "fast_vae": false,
-    "key": "G# minor"
+    "key": "G# minor",
+    "_enabled_loras_help": "List of LoRA ids (filename stems) to auto-enable at session start. Ids must exist in MODELS_DIR/loras. Empty = catalog-only, operator toggles via the Library panel.",
+    "enabled_loras": []
   },
-
-  "lora_dir": "demos/realtime_motion_graph_web/loras",
-  "loras": [
-    { "file": "daftpunkstyle1200.safetensors", "label": "daft" },
-    { "file": "deathsteap_1.safetensors", "label": "death" }
-  ],
 
   "prompts": {
     "a": "heavy dubstep loop, deathstep, afxdump, growl heavy bass distortion",
@@ -28,8 +24,8 @@
 
   "controls": {
     "denoise": 0.7,
-    "lora_str_1": 0.3,
-    "lora_str_2": 0.5,
+    "_lora_default_strength_help": "Initial value for any LoRA strength slider. The first two LoRAs in the catalog auto-enable at page load and start at this value, so a non-zero default lets the demo sound immediately like the LoRAs are doing something.",
+    "lora_default_strength": 0.4,
     "hint_strength": 1.4,
 
     "feedback": 0.0,

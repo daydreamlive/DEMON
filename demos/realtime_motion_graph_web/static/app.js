@@ -41,10 +41,13 @@ const effectsCanvas = $("effects-canvas");
 // All initial values come from config.json (next to this file). Edit + refresh
 // to re-tune the installation; no rebuild needed. The schema is:
 //   ws_url_default — string; takes effect when ?ws= isn't passed.
-//   engine         — passed verbatim to the WebSocket /init handshake.
-//   lora_dir, loras
+//   engine         — passed verbatim to the WebSocket /init handshake;
+//                    notably engine.enabled_loras is the list of LoRA ids
+//                    (filename stems) to auto-enable at session start.
 //   prompts.{a, b, blend}
 //   controls.<param> — initial value for each slider.
+//   controls.lora_default_strength — initial value for any LoRA strength
+//                                    slider (per-id defaults are not used).
 //   seed, video_bpm
 // SLIDER_META below is *behavior* (max range / arrow-key step / pro flag) —
 // not a starting value, so it stays in code.
@@ -62,14 +65,27 @@ const serverInfo = await fetch("/api/server-info")
   .then((r) => (r.ok ? r.json() : { no_backend: false }))
   .catch(() => ({ no_backend: false }));
 
-const LORA_DIR = userConfig.lora_dir;
-const LORAS = userConfig.loras;
+// LoRA catalog comes from /api/loras — a cheap filesystem scan of
+// MODELS_DIR/loras/ that runs on the static-file server, so we can
+// render the Library panel immediately on page load (no Play required,
+// no WebSocket required, no model load required).  When Play kicks
+// off, the WS init config carries `enabled_loras` derived from
+// whatever rows the operator has toggled on, so the pipeline starts
+// with exactly the right LoRAs from the jump.
+const loraInitial = await fetch("/api/loras")
+  .then((r) => (r.ok ? r.json() : { dir: "", loras: [] }))
+  .catch(() => ({ dir: "", loras: [] }));
 
 const CONFIG = {
   ...userConfig.engine,
   prompt: userConfig.prompts.a,
-  lora_paths: LORAS.map((l) => `${LORA_DIR}/${l.file}`),
 };
+
+// LoRA UI defaults.  Per-id slider behavior is uniform; the catalog drives
+// identity, the user names them on disk via the filename stem.
+const LORA_SLIDER_MAX = 2.0;
+const LORA_SLIDER_STEP = 0.2;
+const LORA_DEFAULT_STRENGTH = userConfig.controls?.lora_default_strength ?? 0.0;
 
 const VIDEO_BPM = userConfig.video_bpm;
 
@@ -84,11 +100,11 @@ function resolveDefaultWsUrl() {
 wsUrlInput.value = resolveDefaultWsUrl();
 
 // Slider behavior (max range, arrow-key step, pro-pane membership). Initial
-// values are loaded separately from userConfig.controls below.
+// values are loaded separately from userConfig.controls below.  Per-LoRA
+// `lora_str_<id>` sliders are added dynamically when the server's catalog
+// arrives — they are NOT listed here.
 const SLIDER_META = {
   denoise:       { max: 1.0, step: 0.10 },
-  lora_str_1:    { max: 1.2, step: 0.12 },
-  lora_str_2:    { max: 2.0, step: 0.20 },
   hint_strength: { max: 2.0, step: 0.20 },
 
   feedback:      { max: 1.0, step: 0.10, pro: true },
@@ -132,7 +148,38 @@ const SLIDER_DEFS = Object.fromEntries(
   ])
 );
 
-const SLIDER_KEYS = { a: "denoise", s: "lora_str_1", d: "lora_str_2", g: "hint_strength" };
+// LoRA library state.  Populated from the server's `ready` payload and any
+// later `lora_catalog` updates.  Source of truth for what the UI renders
+// in the Library tile and which entries the perimeter / hotkey / MIDI / FX
+// slots target.  Each entry: {id, name, state, strength}.
+let loraCatalog = [];
+const loraStrengths = {};  // id -> client-side slider value
+
+function enabledLoraIds() {
+  return loraCatalog.filter((d) => d.state === "enabled").map((d) => d.id);
+}
+
+function loraStrengthKey(id) {
+  return `lora_str_${id}`;
+}
+
+// Hotkey (a/s/d/g) -> slider param name.  `s` and `d` are dynamic: they
+// resolve to the first / second currently enabled LoRA at lookup time, so
+// toggling LoRAs in the Library panel doesn't dangle the keyboard
+// shortcuts.  Returns null when no LoRA fills that slot.
+const STATIC_SLIDER_KEYS = { a: "denoise", g: "hint_strength" };
+
+function resolveSliderKey(letter) {
+  if (letter in STATIC_SLIDER_KEYS) return STATIC_SLIDER_KEYS[letter];
+  if (letter === "s" || letter === "d") {
+    const ids = enabledLoraIds();
+    const idx = letter === "s" ? 0 : 1;
+    return ids[idx] ? loraStrengthKey(ids[idx]) : null;
+  }
+  return null;
+}
+
+const SLIDER_KEYS_LETTERS = ["a", "s", "d", "g"];
 
 // Display modes. Graph is the default; the toggle button cycles to the
 // video subtree. CSS swaps visibility based on body[data-mode].
@@ -380,17 +427,25 @@ function bindSlider(group) {
 const DISPLAY_NAMES = {
   noise_share: "nshare",
   ode_noise: "ode",
-  lora_str_1: LORAS[0].label,
-  lora_str_2: LORAS[1].label,
   hint_strength: "structure strength",
   dcw_scaler: "DCW low",
   dcw_high_scaler: "DCW high",
 };
 
+function displayNameFor(param) {
+  if (param in DISPLAY_NAMES) return DISPLAY_NAMES[param];
+  if (param.startsWith("lora_str_")) {
+    const id = param.slice("lora_str_".length);
+    const entry = loraCatalog.find((d) => d.id === id);
+    return entry?.name || id;
+  }
+  return param.replace(/_/g, " ");
+}
+
 function createSliderGroup(param) {
   const def = SLIDER_DEFS[param];
   const frac = (sliderValues[param] / def.max * 100).toFixed(1);
-  const label = DISPLAY_NAMES[param] || param.replace(/_/g, " ");
+  const label = displayNameFor(param);
   const group = document.createElement("div");
   group.className = "slider-group";
   group.dataset.param = param;
@@ -464,6 +519,261 @@ function initSliders() {
   tilesContainer.insertBefore(dcwTile, seedTile);
   bindSlider(dcwLow);
   bindSlider(dcwHigh);
+
+  // Library tile placeholder.  Filled in by applyLoraCatalog() once the
+  // server publishes its catalog.  Inserted after Main so it sits next
+  // to the user-facing faders.
+  const libTile = document.createElement("div");
+  libTile.className = "mixer-tile mixer-tile-library";
+  libTile.dataset.tile = "lora-library";
+  const libLabel = document.createElement("div");
+  libLabel.className = "mixer-tile-label";
+  libLabel.textContent = "LoRA library";
+  const libBody = document.createElement("div");
+  libBody.className = "lora-library-body";
+  libBody.dataset.role = "lora-library-body";
+  libTile.appendChild(libLabel);
+  libTile.appendChild(libBody);
+  const mainTile = tilesContainer.querySelector('[data-tile="main"]');
+  tilesContainer.insertBefore(libTile, mainTile?.nextSibling ?? seedTile);
+}
+
+// ── LoRA library state mgmt ──
+// Source of truth is `loraCatalog`.  Lifecycle:
+//   1. /api/loras at page load -> initial catalog (all REGISTERED).  The
+//      first DEFAULT_AUTO_ENABLE_COUNT entries are flipped to ENABLED in
+//      the local UI by default — that's the demo policy, the server
+//      doesn't impose it.
+//   2. User toggles in the Library panel pre-Play -> mutates
+//      loraCatalog locally (no network).
+//   3. On Play, the WS init config carries `enabled_loras` derived from
+//      whatever is currently ENABLED in loraCatalog.
+//   4. Post-Play, toggling sends enable_lora / disable_lora over the WS;
+//      the server pushes a `lora_catalog` update and we re-render from
+//      that authoritative state.
+const DEFAULT_AUTO_ENABLE_COUNT = 2;
+
+function applyLoraCatalog(newCatalog) {
+  loraCatalog = Array.isArray(newCatalog) ? newCatalog.slice() : [];
+  const seen = new Set();
+  for (const d of loraCatalog) {
+    seen.add(d.id);
+    const key = loraStrengthKey(d.id);
+    if (!(key in SLIDER_DEFS)) {
+      SLIDER_DEFS[key] = {
+        max: LORA_SLIDER_MAX,
+        step: LORA_SLIDER_STEP,
+        default: LORA_DEFAULT_STRENGTH,
+      };
+    }
+    if (!(key in sliderValues)) {
+      // Server sometimes echoes back a non-zero strength (e.g. when a
+      // LoRA was already enabled on a prior connect).  Honor it.
+      sliderValues[key] = typeof d.strength === "number" && d.strength > 0
+        ? d.strength : LORA_DEFAULT_STRENGTH;
+    }
+  }
+  // Drop SLIDER_DEFS / sliderValues entries for ids that left the catalog.
+  for (const k of Object.keys(SLIDER_DEFS)) {
+    if (!k.startsWith("lora_str_")) continue;
+    const id = k.slice("lora_str_".length);
+    if (!seen.has(id)) {
+      delete SLIDER_DEFS[k];
+      delete sliderValues[k];
+    }
+  }
+  rebuildLoraLibraryUI();
+  refreshLoraEdgeBars();
+}
+
+// Local-only mutation: flip a row's enabled state in the catalog without
+// touching the network.  Used pre-Play and as the optimistic update
+// while a WS message is in flight.
+function setLoraEnabledLocal(id, enabled) {
+  const desc = loraCatalog.find((d) => d.id === id);
+  if (!desc) return;
+  desc.state = enabled ? "enabled" : "registered";
+  rebuildLoraLibraryUI();
+  refreshLoraEdgeBars();
+}
+
+function getEnabledLoraIdsForConfig() {
+  return loraCatalog.filter((d) => d.state === "enabled").map((d) => d.id);
+}
+
+// Strength dict keyed by id, for the WS init config.  The server uses
+// this to enable each LoRA at its target strength in one refit, so the
+// first decoded window already has the LoRA contributing — without
+// this, enabling at 0 and waiting for per-tick set_strength to ramp it
+// up produces a "first ~5s sounds like the LoRA is missing" glitch
+// because the streaming pipeline depth covers several decoded seconds.
+function getEnabledLoraStrengthsForConfig() {
+  const out = {};
+  for (const d of loraCatalog) {
+    if (d.state !== "enabled") continue;
+    const v = sliderValues[loraStrengthKey(d.id)];
+    if (typeof v === "number") out[d.id] = v;
+  }
+  return out;
+}
+
+function rebuildLoraLibraryUI() {
+  const body = document.querySelector('[data-role="lora-library-body"]');
+  if (!body) return;
+  body.innerHTML = "";
+  if (loraCatalog.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "lora-library-empty";
+    empty.textContent = "No LoRAs in MODELS_DIR/loras/";
+    body.appendChild(empty);
+    return;
+  }
+  for (const d of loraCatalog) {
+    body.appendChild(buildLoraRow(d));
+  }
+}
+
+// One row per catalog entry.  Layout:
+//   [switch]  name              [horizontal slider]  0.30
+// Switch and slider are interactive in both pre-Play and post-Play; the
+// slider is locked while the LoRA is off so the operator can see the
+// stored value but can't accidentally drag it.
+function buildLoraRow(desc) {
+  const enabled = desc.state === "enabled";
+  const param = loraStrengthKey(desc.id);
+
+  const row = document.createElement("div");
+  row.className = "lora-row";
+  row.dataset.loraId = desc.id;
+  row.dataset.state = enabled ? "enabled" : "disabled";
+  row.dataset.param = param;  // makes the row a MIDI-learn target
+
+  // Toggle switch.  Visual: pill with a sliding thumb.  No text label
+  // (text labels for ON/OFF read as redundant when the thumb position
+  // already says it).  aria-checked carries semantics for screen readers.
+  const sw = document.createElement("button");
+  sw.type = "button";
+  sw.className = "lora-switch";
+  sw.setAttribute("role", "switch");
+  sw.setAttribute("aria-checked", enabled ? "true" : "false");
+  sw.setAttribute("aria-label", `${desc.name || desc.id} — ${enabled ? "enabled" : "disabled"}, click to toggle`);
+  sw.innerHTML = `<span class="lora-switch-thumb" aria-hidden="true"></span>`;
+  sw.addEventListener("click", () => {
+    const wasEnabled = loraCatalog.find((d) => d.id === desc.id)?.state === "enabled";
+    const willEnable = !wasEnabled;
+    // Optimistic local update so the UI feels instant.  Pre-Play this is
+    // the only update; post-Play the server's lora_catalog broadcast
+    // confirms or corrects.
+    setLoraEnabledLocal(desc.id, willEnable);
+    if (session?.remote) {
+      if (willEnable) {
+        // Pass the slider's current value so the server refits at it
+        // in one shot, avoiding the "first decode window sounds like
+        // the LoRA is missing" glitch.
+        const strength = sliderValues[loraStrengthKey(desc.id)];
+        session.remote.sendEnableLora(desc.id, strength);
+      } else {
+        session.remote.sendDisableLora(desc.id);
+      }
+    }
+    bumpIdleTimer();
+  });
+
+  const name = document.createElement("span");
+  name.className = "lora-row-name";
+  name.textContent = desc.name || desc.id;
+  // Click the name to toggle too — bigger hit target than the 32px switch.
+  name.addEventListener("click", () => sw.click());
+
+  // Horizontal strength slider.  Backed by sliderValues[param] so the
+  // rest of the system (sendParams, graph history, MIDI binding,
+  // perimeter bars, FX) reads it like any other slider.
+  const slider = createLoraStrengthSlider(param);
+  row.dataset.strengthSlider = "1";  // marker for findStrengthSlider
+
+  row.appendChild(sw);
+  row.appendChild(name);
+  row.appendChild(slider);
+  return row;
+}
+
+// Horizontal slider tailored for the Library rows.  Doesn't reuse
+// .slider-group because that one is vertical and carries its own label.
+// Registered with sliderEls so updateSliderUI() drives both this and the
+// (hypothetical) vertical slider.
+function createLoraStrengthSlider(param) {
+  const wrap = document.createElement("div");
+  wrap.className = "lora-strength";
+  wrap.dataset.param = param;
+
+  const track = document.createElement("div");
+  track.className = "lora-strength-track";
+  const fill = document.createElement("div");
+  fill.className = "lora-strength-fill";
+  track.appendChild(fill);
+
+  const valEl = document.createElement("div");
+  valEl.className = "lora-strength-value";
+
+  wrap.appendChild(track);
+  wrap.appendChild(valEl);
+
+  // Adapter that exposes the same shape updateSliderUI() expects.
+  // ``thumb`` is null because this slider has no separate thumb element
+  // (the right edge of the fill is the visual position indicator).
+  sliderEls.set(param, {
+    group: wrap, track, fill, thumb: null, valEl,
+    horizontal: true,
+  });
+  updateSliderUI(param);
+
+  bindHorizontalSlider(wrap, param);
+  return wrap;
+}
+
+function bindHorizontalSlider(wrap, param) {
+  const track = wrap.querySelector(".lora-strength-track");
+  const def = SLIDER_DEFS[param];
+  if (!track || !def) return;
+
+  let dragging = false;
+  let lastDownAt = 0;
+  const DBLCLICK_MS = 280;
+
+  const setFromX = (clientX) => {
+    const rect = track.getBoundingClientRect();
+    const frac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    sliderValues[param] = frac * def.max;
+    updateSliderUI(param);
+    bumpIdleTimer();
+  };
+
+  track.addEventListener("pointerdown", (e) => {
+    // Only respond when the row is enabled.  Reading data-state at
+    // pointerdown time so the lock follows the catalog state without
+    // needing to rebind on toggle.
+    const row = wrap.closest(".lora-row");
+    if (row?.dataset.state !== "enabled") return;
+    if (e.button !== 0) return;
+    const now = performance.now();
+    if (now - lastDownAt < DBLCLICK_MS) {
+      sliderValues[param] = SLIDER_DEFS[param].default;
+      updateSliderUI(param);
+      bumpIdleTimer();
+      lastDownAt = 0;
+      return;
+    }
+    lastDownAt = now;
+    dragging = true;
+    track.setPointerCapture(e.pointerId);
+    setFromX(e.clientX);
+  });
+  track.addEventListener("pointermove", (e) => {
+    if (dragging) setFromX(e.clientX);
+  });
+  const endDrag = () => { dragging = false; };
+  track.addEventListener("pointerup", endDrag);
+  track.addEventListener("pointercancel", endDrag);
 }
 
 // DCW control strip: enable toggle + mode + wavelet selects. Numeric
@@ -520,8 +830,12 @@ function updateSliderUI(param) {
     const def = SLIDER_DEFS[param];
     const frac = Math.max(0, Math.min(1, sliderValues[param] / def.max));
     const pct = (frac * 100).toFixed(1) + "%";
-    el.fill.style.height = pct;
-    el.thumb.style.bottom = pct;
+    if (el.horizontal) {
+      el.fill.style.width = pct;
+    } else {
+      el.fill.style.height = pct;
+      if (el.thumb) el.thumb.style.bottom = pct;
+    }
     el.valEl.textContent = sliderValues[param].toFixed(2);
   }
   updateInstallBar(param);
@@ -534,8 +848,12 @@ function updateSliderUI(param) {
 // through the same updateSliderUI path the sliders + MIDI use, so the
 // Advanced sheet, the bar fill, and any backend sendParams all stay in
 // sync. bumpIdleTimer() keeps the 60s reset clock alive.
+// Edge bar binding.  Top bar is fixed to "denoise"; left/right bars track
+// the first and second currently-enabled LoRA at pointer-time.  The
+// resolver runs on every drag, so toggling the catalog re-aims the bars
+// without rebinding.
 function initEdgeBars() {
-  const bind = (selector, param, axis) => {
+  const bindStatic = (selector, param, axis) => {
     const edge = document.querySelector(selector);
     const def = SLIDER_DEFS[param];
     if (!edge || !def) return;
@@ -560,9 +878,61 @@ function initEdgeBars() {
     edge.addEventListener("pointerup", () => { dragging = false; });
     edge.addEventListener("pointercancel", () => { dragging = false; });
   };
-  bind(".install-edge-top",   "denoise",    "x");
-  bind(".install-edge-left",  "lora_str_1", "y");
-  bind(".install-edge-right", "lora_str_2", "y");
+  const bindLoraSlot = (selector, slotIdx) => {
+    const edge = document.querySelector(selector);
+    if (!edge) return;
+    let dragging = false;
+    const setFromPointer = (clientY) => {
+      const ids = enabledLoraIds();
+      const id = ids[slotIdx];
+      if (!id) return;
+      const param = loraStrengthKey(id);
+      const def = SLIDER_DEFS[param];
+      if (!def) return;
+      const rect = edge.getBoundingClientRect();
+      const frac = 1 - Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+      sliderValues[param] = frac * def.max;
+      updateSliderUI(param);
+      bumpIdleTimer();
+    };
+    edge.addEventListener("pointerdown", (e) => {
+      dragging = true;
+      edge.setPointerCapture(e.pointerId);
+      setFromPointer(e.clientY);
+    });
+    edge.addEventListener("pointermove", (e) => {
+      if (dragging) setFromPointer(e.clientY);
+    });
+    edge.addEventListener("pointerup", () => { dragging = false; });
+    edge.addEventListener("pointercancel", () => { dragging = false; });
+  };
+  bindStatic(".install-edge-top", "denoise", "x");
+  bindLoraSlot(".install-edge-left",  0);
+  bindLoraSlot(".install-edge-right", 1);
+}
+
+// Refresh `data-bar` on the left/right perimeter edges so they point at
+// the first/second enabled LoRA's id.  Called whenever the catalog state
+// changes so updateInstallBar's query still hits the right element.
+function refreshLoraEdgeBars() {
+  const ids = enabledLoraIds();
+  const left = document.querySelector(".install-edge-left");
+  const right = document.querySelector(".install-edge-right");
+  const updateEdge = (edge, slotIdx) => {
+    if (!edge) return;
+    const id = ids[slotIdx];
+    edge.dataset.bar = id ? loraStrengthKey(id) : "";
+    edge.classList.toggle("install-edge-empty", !id);
+    const labelEl = edge.querySelector(".install-edge-label");
+    if (labelEl) {
+      const desc = id ? loraCatalog.find((d) => d.id === id) : null;
+      labelEl.textContent = desc ? (desc.name || id) : "";
+    }
+  };
+  updateEdge(left, 0);
+  updateEdge(right, 1);
+  if (ids[0]) updateInstallBar(loraStrengthKey(ids[0]));
+  if (ids[1]) updateInstallBar(loraStrengthKey(ids[1]));
 }
 
 // ── Installation HUD bars ──
@@ -678,10 +1048,13 @@ function initKeyboard() {
 
     const key = e.key.toLowerCase();
 
-    if (key in SLIDER_KEYS) {
-      heldKeys.add(key);
-      const el = sliderEls.get(SLIDER_KEYS[key]);
-      if (el) el.group.classList.add("active");
+    if (SLIDER_KEYS_LETTERS.includes(key)) {
+      const param = resolveSliderKey(key);
+      if (param) {
+        heldKeys.add(key);
+        const el = sliderEls.get(param);
+        if (el) el.group.classList.add("active");
+      }
       return;
     }
 
@@ -689,7 +1062,8 @@ function initKeyboard() {
       e.preventDefault();
       const dir = key === "arrowup" ? 1 : -1;
       for (const k of heldKeys) {
-        if (k in SLIDER_KEYS) adjustSlider(SLIDER_KEYS[k], dir);
+        const param = resolveSliderKey(k);
+        if (param) adjustSlider(param, dir);
       }
       return;
     }
@@ -704,9 +1078,12 @@ function initKeyboard() {
   window.addEventListener("keyup", (e) => {
     const key = e.key.toLowerCase();
     heldKeys.delete(key);
-    if (key in SLIDER_KEYS) {
-      const el = sliderEls.get(SLIDER_KEYS[key]);
-      if (el) el.group.classList.remove("active");
+    if (SLIDER_KEYS_LETTERS.includes(key)) {
+      const param = resolveSliderKey(key);
+      if (param) {
+        const el = sliderEls.get(param);
+        if (el) el.group.classList.remove("active");
+      }
     }
   });
 }
@@ -898,14 +1275,18 @@ class Session {
 
     const t = performance.now() / 1000;
     if (this.effects) {
-      // Knob-driven flavors: lora_str_1 = daft punk (rose bloom tint +
-      // always-on bloom), lora_str_2 = dubstep (chromatic aberration).
-      // Normalize to 0..1 against each slider's max so the shader can
-      // assume a clean range regardless of how SLIDER_META is retuned.
-      const daftN = sliderValues.lora_str_1 / SLIDER_DEFS.lora_str_1.max;
-      const dubN  = sliderValues.lora_str_2 / SLIDER_DEFS.lora_str_2.max;
-      this.effects.setDaftPunk(daftN);
-      this.effects.setDubstep(dubN);
+      // FX flavors slot off the first/second currently-enabled LoRA:
+      // slot 0 -> daft (rose bloom tint), slot 1 -> dubstep (chromatic
+      // aberration).  Decoupled from any specific LoRA id so toggling
+      // the catalog re-aims them.  Both default to 0 when no LoRA fills
+      // the slot.
+      const ids = enabledLoraIds();
+      const slot0 = ids[0]
+        ? sliderValues[loraStrengthKey(ids[0])] / LORA_SLIDER_MAX : 0;
+      const slot1 = ids[1]
+        ? sliderValues[loraStrengthKey(ids[1])] / LORA_SLIDER_MAX : 0;
+      this.effects.setDaftPunk(slot0);
+      this.effects.setDubstep(slot1);
       this.effects.tick(this.videoLayer.activeVideo, t, kick);
     }
     tickRibbons(this.ribbons, t, kick);
@@ -1028,10 +1409,20 @@ async function startSession(interleaved, channels, frames, videos) {
     showStatus(`Loaded ${(frames / SAMPLE_RATE).toFixed(1)}s audio. UI-only mode.`);
     initialBuffer = interleaved;
     initialChannels = channels;
+    applyLoraCatalog([]);
   } else {
     showStatus(`Loaded ${(frames / SAMPLE_RATE).toFixed(1)}s audio. Connecting...`);
     try {
-      const config = { ...CONFIG, prompt: activePrompt, key: activeKey };
+      // Carry the operator's pre-Play LoRA selections through to the
+      // pipeline.  Server enables exactly these ids on first tick — no
+      // mid-stream "now turn it on" round-trip needed.
+      const config = {
+        ...CONFIG,
+        prompt: activePrompt,
+        key: activeKey,
+        enabled_loras: getEnabledLoraIdsForConfig(),
+        lora_strengths: getEnabledLoraStrengthsForConfig(),
+      };
       remote = new RemoteBackend(wsUrlInput.value.trim(), interleaved, channels, config);
       await remote.connect();
     } catch (e) {
@@ -1041,6 +1432,16 @@ async function startSession(interleaved, channels, frames, videos) {
     showStatus("Connected. Starting audio...");
     initialBuffer = remote.initialBuffer;
     initialChannels = remote.channels;
+    // Server is now the source of truth.  Reconcile our local catalog
+    // with what the server actually loaded (handles cases where the
+    // server registered ad-hoc paths or a row in our pre-Play list
+    // was missing from the catalog).
+    if (Array.isArray(remote.loraCatalog) && remote.loraCatalog.length) {
+      applyLoraCatalog(remote.loraCatalog);
+    }
+    remote.addEventListener("lora_catalog", (e) => {
+      applyLoraCatalog(e.detail);
+    });
   }
 
   const player = new AudioPlayer();
@@ -1090,11 +1491,17 @@ pauseBtn.addEventListener("click", () => {
 // last mapping survives a reload. Reset by clearing the entry or via the
 // midi-status badge (shift-click toggles diag, includes a reset hint).
 
+// CC 71/72 use the magic strings "lora_slot_0" / "lora_slot_1"; the
+// handler resolves them at message time to the first / second currently
+// enabled LoRA so toggling the catalog re-aims the knobs without a
+// remap.  All other ccs are static slider names.
+const LORA_SLOT_MARKER = ["lora_slot_0", "lora_slot_1"];
+
 const DEFAULT_MIDI_MAP = {
   cc: {
     70: "denoise",
-    71: "lora_str_1",
-    72: "lora_str_2",
+    71: LORA_SLOT_MARKER[0],
+    72: LORA_SLOT_MARKER[1],
     73: "hint_strength",
     74: "feedback",
     75: "shift",
@@ -1106,6 +1513,15 @@ const DEFAULT_MIDI_MAP = {
     37: "send_prompt",
   },
 };
+
+function resolveCcParam(name) {
+  if (name === LORA_SLOT_MARKER[0] || name === LORA_SLOT_MARKER[1]) {
+    const ids = enabledLoraIds();
+    const idx = name === LORA_SLOT_MARKER[0] ? 0 : 1;
+    return ids[idx] ? loraStrengthKey(ids[idx]) : null;
+  }
+  return name;
+}
 
 // Note actions are looked up by name (the value in midiMap.notes) so
 // localStorage can serialize the binding without holding function refs.
@@ -1190,8 +1606,10 @@ function decodeKnob(cc, value) {
 }
 
 function handleMidiCC(cc, value) {
-  const param = midiMap.cc[cc];
-  if (!param) return;
+  const rawName = midiMap.cc[cc];
+  if (!rawName) return;
+  const param = resolveCcParam(rawName);
+  if (!param) return;  // dynamic slot with no LoRA enabled
   const def = SLIDER_DEFS[param];
   if (!def) return;
   const decoded = decodeKnob(cc, value);
@@ -1251,6 +1669,16 @@ function initMidiLearnUI() {
     if (sliderGroup?.dataset?.param) {
       e.preventDefault();
       startMidiLearn("cc", sliderGroup.dataset.param, sliderGroup);
+      return;
+    }
+    // LoRA library rows are slider-group-equivalent for MIDI learn:
+    // right-click anywhere on the row (switch, name, slider track) to
+    // bind the next CC to that LoRA's strength.  data-param on the row
+    // is set by buildLoraRow to lora_str_<id>.
+    const loraRow = e.target.closest?.(".lora-row");
+    if (loraRow?.dataset?.param) {
+      e.preventDefault();
+      startMidiLearn("cc", loraRow.dataset.param, loraRow);
       return;
     }
     const learnEl = e.target.closest?.("[data-midi-learn]");
@@ -1398,6 +1826,18 @@ midiStatus.addEventListener("click", (e) => {
 // Init UI -- each in try/catch so one failure can't kill the rest.
 try { applyConfigToDom(); } catch (e) { console.error("applyConfigToDom failed:", e); }
 try { initSliders(); } catch (e) { console.error("initSliders failed:", e); }
+// Library tile must be populated AFTER initSliders() (which inserts the
+// tile placeholder) but before initEdgeBars() (which queries the
+// perimeter slot bindings).  Demo policy: pre-toggle the first
+// DEFAULT_AUTO_ENABLE_COUNT rows on so a fresh page-load looks staged
+// and ready; the operator can flip them off before pressing Play.
+try {
+  const initial = (loraInitial.loras || []).map((d, i) => ({
+    ...d,
+    state: i < DEFAULT_AUTO_ENABLE_COUNT ? "enabled" : "registered",
+  }));
+  applyLoraCatalog(initial);
+} catch (e) { console.error("applyLoraCatalog(initial) failed:", e); }
 try { initEdgeBars(); } catch (e) { console.error("initEdgeBars failed:", e); }
 try { initPrompts(); } catch (e) { console.error("initPrompts failed:", e); }
 try { initKeyboard(); } catch (e) { console.error("initKeyboard failed:", e); }
