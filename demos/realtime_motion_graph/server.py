@@ -338,7 +338,7 @@ def handle_client(ws):
                                 instruction=TASK_INSTRUCTIONS["cover"],
                                 refer_latent=source.latent,
                                 bpm=detected_bpm, duration=60.0,
-                                key="G# minor",
+                                key=detected_key,
                             )
                             stream.conditioning = cond
                             prompt_text[0] = data["tags"]
