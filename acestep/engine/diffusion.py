@@ -162,6 +162,14 @@ class DiffusionEngine:
                 trt_weight_prefix="decoder.",
                 checkpoint_path=ckpt_path,
             )
+            # Pre-register the on-disk library (MODELS_DIR/loras).  This
+            # is the catalog backing the "infinite library" workflow:
+            # register every .safetensors as REGISTERED (zero RAM cost),
+            # callers materialize on demand via enable_trt_lora.
+            try:
+                self._lora_manager.register_library()
+            except Exception as e:
+                logger.warning("Failed to scan LoRA library: %s", e)
         except RuntimeError as e:
             # Engine not built with REFIT, or TRT version too old
             logger.info("TRT LoRA refit not available: %s", e)
@@ -209,6 +217,70 @@ class DiffusionEngine:
         """Remove all LoRAs and restore the TRT engine to base weights."""
         if self._lora_manager is not None:
             self._lora_manager.remove_all()
+
+    # ------------------------------------------------------------------
+    # Lifecycle API: register / enable / disable / prewarm
+    # ------------------------------------------------------------------
+
+    def register_trt_lora(self, lora_path: str, name: str | None = None) -> str:
+        """Add a LoRA to the catalog without materializing deltas.
+
+        Returns the (filename-stem) id used for subsequent enable/disable
+        calls.  Idempotent on path.
+        """
+        if self._lora_manager is None:
+            raise RuntimeError("TRT LoRA refit not available")
+        return self._lora_manager.register_lora(lora_path, name=name)
+
+    def enable_trt_lora(
+        self, lora_id: str, strength: float | None = None,
+    ) -> None:
+        """Promote a registered LoRA to ENABLED (materialize + refit).
+
+        ``strength``, when provided, sets the entry's strength BEFORE the
+        refit so the streaming pipeline's first decode window already
+        sees the LoRA at its target strength — avoids the "first ~5s
+        sounds like the LoRA is missing" glitch caused by enabling at
+        strength 0 and waiting for the next per-tick set_strength call
+        to ramp it up.
+
+        Synchronous; if a prewarm is in flight, blocks on it.  Refit only
+        fires when the resulting strength is non-zero.
+        """
+        if self._lora_manager is None:
+            raise RuntimeError("TRT LoRA refit not available")
+        self._lora_manager.enable_lora(lora_id, strength=strength)
+
+    def disable_trt_lora(self, lora_id: str) -> None:
+        """Drop a LoRA's deltas from CPU RAM.  Strength is preserved."""
+        if self._lora_manager is None:
+            raise RuntimeError("TRT LoRA refit not available")
+        self._lora_manager.disable_lora(lora_id)
+
+    def prewarm_trt_lora(self, lora_id: str):
+        """Kick off background materialization.  Returns a Future.
+
+        Use this when the catalog is large but only some LoRAs will
+        actually be enabled — call ``prewarm_trt_lora`` for the
+        likely-enabled subset at session start so the eventual
+        ``enable_trt_lora`` call is fast.
+        """
+        if self._lora_manager is None:
+            raise RuntimeError("TRT LoRA refit not available")
+        return self._lora_manager.prewarm_lora(lora_id)
+
+    def list_trt_loras(self):
+        """Return a list of :class:`LoRADescriptor` for every entry in
+        the catalog.  Empty list if the manager is unavailable."""
+        if self._lora_manager is None:
+            return []
+        return self._lora_manager.list_loras()
+
+    def get_trt_lora(self, lora_id: str):
+        """Return the current :class:`LoRADescriptor` for ``lora_id``."""
+        if self._lora_manager is None:
+            raise RuntimeError("TRT LoRA refit not available")
+        return self._lora_manager.get_lora(lora_id)
 
     @property
     def trt_lora_available(self) -> bool:

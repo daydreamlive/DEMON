@@ -6,6 +6,7 @@ Nothing should hardcode paths or use relative symlinks.
 Directory layout under MODELS_DIR:
     checkpoints/          Model weights (acestep-v15-turbo, etc.)
     trt_engines/          TensorRT engines and ONNX exports
+    loras/                LoRA .safetensors files (flat — id is filename stem)
 
 Resolution order for MODELS_DIR:
     1. ACESTEP_MODELS_DIR environment variable
@@ -34,6 +35,28 @@ def checkpoints_dir() -> Path:
 def trt_engines_dir() -> Path:
     """Directory containing TensorRT engines and ONNX exports."""
     return models_dir() / "trt_engines"
+
+
+def loras_dir() -> Path:
+    """Directory containing LoRA .safetensors files.
+
+    Flat layout: each ``*.safetensors`` becomes one library entry whose
+    id is the filename stem. Subdirectories are not scanned.
+    """
+    return models_dir() / "loras"
+
+
+def discover_loras(directory: Path | None = None) -> list[Path]:
+    """List ``*.safetensors`` files in ``directory`` (default: ``loras_dir()``).
+
+    Returns an empty list if the directory does not exist; callers should
+    treat that as "no library", not as an error. Hidden files
+    (``.gitignore``, etc.) and subdirectories are ignored.
+    """
+    d = Path(directory) if directory is not None else loras_dir()
+    if not d.is_dir():
+        return []
+    return sorted(p for p in d.glob("*.safetensors") if p.is_file())
 
 
 def trt_engine_path(engine_name: str) -> Path:
