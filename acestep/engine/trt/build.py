@@ -9,11 +9,15 @@ directory.  Existing ONNX files are auto-detected and reused; the model is
 only loaded when an ONNX export is actually needed.
 
 Usage:
-    # Build all engines (60s + 240s, VAE + decoder, refit + non-refit):
+    # Build the canonical engine matrix (60s + 120s + 240s, VAE + decoder,
+    # refit + non-refit). Matches acestep.paths._TRT_ENGINE_PROFILES.
     python -m acestep.engine.trt.build --all
 
-    # Build 60s engines only:
-    python -m acestep.engine.trt.build --all --duration 60
+    # Build a single duration (e.g. just 120s):
+    python -m acestep.engine.trt.build --all --duration 120
+
+    # Build a custom subset:
+    python -m acestep.engine.trt.build --all --duration 60 240
 
     # Build only decoders (skip VAE):
     python -m acestep.engine.trt.build --all --decoder-only
@@ -512,7 +516,8 @@ def main():
                             "refit + non-refit, across durations)")
     batch.add_argument("--duration", nargs="*", type=int, default=None,
                        help="Duration(s) in seconds for --all mode "
-                            "(default: 60 240)")
+                            "(default: 60 120 240 — the canonical profile set "
+                            "registered in acestep.paths._TRT_ENGINE_PROFILES)")
     batch.add_argument("--force-rebuild", action="store_true",
                        help="Rebuild engines even if they already exist "
                             "(default: skip existing engines)")
@@ -572,7 +577,7 @@ def main():
 
 def _run_all(args, project_root, onnx_dir):
     """Build the full engine matrix."""
-    durations = tuple(args.duration) if args.duration else (240,)
+    durations = tuple(args.duration) if args.duration else (60, 120, 240)
     build_vae = not args.decoder_only
     build_decoder = not args.vae_only
 

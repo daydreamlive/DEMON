@@ -71,11 +71,25 @@ def trt_engine_path(engine_name: str) -> Path:
     return trt_engines_dir() / engine_name / f"{engine_name}.engine"
 
 
+# Canonical engine profiles. Key is the maximum audio duration in seconds
+# the engine context will accept. Engines are named by duration so the
+# build script (`acestep.engine.trt.build --all --duration N`) can drive
+# both halves from a single integer.
+#
+# Larger profiles reserve more workspace at TRT context-creation time and
+# sit on more VRAM regardless of the actual input — see
+# tests/benchmarks/vram_60s_vs_240s_results.md. Pick the smallest profile
+# that fits the audio (see `select_trt_engines` and `available_trt_engines`).
 _TRT_ENGINE_PROFILES: dict[float, dict[str, str]] = {
     60.0: {
         "decoder": "decoder_mixed_refit_b8_60s",
         "vae_encode": "vae_encode_fp16_60s",
         "vae_decode": "vae_decode_fp16_60s",
+    },
+    120.0: {
+        "decoder": "decoder_mixed_refit_b8_120s",
+        "vae_encode": "vae_encode_fp16_120s",
+        "vae_decode": "vae_decode_fp16_120s",
     },
     240.0: {
         "decoder": "decoder_mixed_refit_b8_240s",
@@ -83,6 +97,8 @@ _TRT_ENGINE_PROFILES: dict[float, dict[str, str]] = {
         "vae_decode": "vae_decode_fp16_240s",
     },
 }
+
+_DEFAULT_TRT_NEEDS: tuple[str, ...] = ("decoder", "vae_encode", "vae_decode")
 
 
 def default_trt_engines(
@@ -109,26 +125,115 @@ def default_trt_engines(
 
 
 def select_trt_engines(duration_s: float = 60.0) -> dict[str, str]:
-    """Pick the smallest engine set that can handle ``duration_s`` of audio.
+    """Pick the smallest engine profile that can handle ``duration_s``.
 
-    The 240s engines reserve workspace sized for their max profile at TRT
-    context-creation time, so they sit on ~9 GB more VRAM than the 60s
-    engines even when fed identical 60-second input (decoder +2.4 GB,
-    vae_encode +6.4 GB, vae_decode +0.3 GB; see
-    ``tests/benchmarks/vram_60s_vs_240s_results.md``).
-
-    Default to the 60s set; only escalate to 240s when the requested
-    duration would exceed the 60s engines' max profile (1500 latent
-    frames at 25 fps).
+    Pure: returns paths without checking the filesystem. Use
+    :func:`available_trt_engines` when you want existence-aware picking
+    that falls back to the next-larger profile if the smallest fitting
+    one isn't built. If ``duration_s`` exceeds every registered profile,
+    the largest profile is returned (the caller then fails at engine
+    load with a TRT-side error, same as before).
 
     Args:
         duration_s: Generation duration in seconds.
 
     Returns:
-        Dict suitable for passing to ``Session(trt_engines=...)``.
+        Dict with ``decoder`` / ``vae_encode`` / ``vae_decode`` keys
+        mapping to absolute engine file paths as strings.
     """
-    profile = _TRT_ENGINE_PROFILES[60.0] if duration_s <= 60.0 else _TRT_ENGINE_PROFILES[240.0]
-    return default_trt_engines(**profile)
+    for max_dur in sorted(_TRT_ENGINE_PROFILES.keys()):
+        if max_dur >= duration_s:
+            return default_trt_engines(**_TRT_ENGINE_PROFILES[max_dur])
+    largest = max(_TRT_ENGINE_PROFILES.keys())
+    return default_trt_engines(**_TRT_ENGINE_PROFILES[largest])
+
+
+class EngineNotBuiltError(RuntimeError):
+    """Raised when no built TRT engine profile satisfies a request.
+
+    Carries enough context for callers (the demo server, primarily) to
+    surface an actionable error to the operator: which duration was
+    asked for, which engine keys were needed, what was checked, and the
+    exact build command that would fix it.
+    """
+
+    def __init__(
+        self,
+        duration_s: float,
+        needs: tuple[str, ...],
+        missing: dict[float, list[str]],
+    ) -> None:
+        self.duration_s = float(duration_s)
+        self.needs = tuple(needs)
+        # Map of profile_max_dur -> list of missing engine paths for that
+        # profile. Empty if no profile could even fit the duration.
+        self.missing = dict(missing)
+
+        fitting = sorted(d for d in _TRT_ENGINE_PROFILES if d >= duration_s)
+        if fitting:
+            recommended = int(fitting[0])
+            self.build_command = (
+                f"python -m acestep.engine.trt.build --all --duration {recommended}"
+            )
+            msg = (
+                f"No TRT engine profile is built that can handle "
+                f"{self.duration_s:.1f}s of audio. To build the smallest "
+                f"fitting profile, run: {self.build_command}"
+            )
+        else:
+            largest = max(_TRT_ENGINE_PROFILES.keys())
+            self.build_command = None
+            msg = (
+                f"Audio duration {self.duration_s:.1f}s exceeds the largest "
+                f"registered profile ({largest:.0f}s). Either use shorter "
+                f"audio or add a larger profile to acestep/paths.py and "
+                f"build it."
+            )
+        super().__init__(msg)
+
+
+def available_trt_engines(
+    duration_s: float = 60.0,
+    *,
+    needs: tuple[str, ...] = _DEFAULT_TRT_NEEDS,
+) -> tuple[dict[str, str], float]:
+    """Pick the smallest profile that fits ``duration_s`` AND is built.
+
+    Walks profiles in ascending order. Returns the first one whose
+    requested ``needs`` keys all exist on disk. Falls back to the
+    next-larger profile (with the VRAM cost that implies) when the
+    smallest fitting profile isn't built.
+
+    Args:
+        duration_s: Audio duration the engines must handle.
+        needs: Which engine keys must be present on disk. Pass only the
+            keys the caller will actually use; for a mixed-backend
+            session that runs only the decoder on TRT, pass
+            ``("decoder",)`` so missing VAE engines don't disqualify
+            an otherwise-usable profile.
+
+    Returns:
+        ``(paths, max_dur)`` — ``paths`` is the dict of engine paths
+        (with all keys, not just ``needs``), ``max_dur`` is the chosen
+        profile's max duration. Caller can compare ``max_dur`` against
+        ``duration_s`` to decide whether to log a "using larger profile"
+        warning.
+
+    Raises:
+        EngineNotBuiltError: No profile can handle ``duration_s`` with
+            the requested ``needs`` keys present on disk.
+    """
+    missing: dict[float, list[str]] = {}
+    for max_dur in sorted(_TRT_ENGINE_PROFILES.keys()):
+        if max_dur < duration_s:
+            continue
+        profile = _TRT_ENGINE_PROFILES[max_dur]
+        paths = default_trt_engines(**profile)
+        absent = [paths[k] for k in needs if not Path(paths[k]).exists()]
+        if not absent:
+            return paths, max_dur
+        missing[max_dur] = absent
+    raise EngineNotBuiltError(duration_s=duration_s, needs=needs, missing=missing)
 
 
 def project_root() -> Path:

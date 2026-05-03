@@ -35,7 +35,11 @@ from acestep.constants import TASK_INSTRUCTIONS
 from acestep.engine.session import Session
 from acestep.nodes.types import Audio
 from acestep.paths import (
-    checkpoints_dir, loras_dir, select_trt_engines, trt_engine_path,
+    EngineNotBuiltError,
+    available_trt_engines,
+    checkpoints_dir,
+    loras_dir,
+    trt_engine_path,
 )
 
 from .client.audio_engine import AudioEngine
@@ -176,9 +180,49 @@ def handle_client(ws, *, decoder_backend: str = "tensorrt", vae_backend: str = "
     audio_duration_s = waveform.shape[1] / SAMPLE_RATE
     use_trt = decoder_backend == "tensorrt" or vae_backend == "tensorrt"
     if use_trt:
-        trt_engines = select_trt_engines(duration_s=audio_duration_s)
+        # Tell the picker exactly which engines this session will use, so a
+        # mixed-backend setup (e.g. tensorrt decoder + eager VAE) doesn't
+        # disqualify an otherwise-usable profile because of missing VAE
+        # engines we wouldn't load anyway.
+        needs: list[str] = []
+        if decoder_backend == "tensorrt":
+            needs.append("decoder")
+        if vae_backend == "tensorrt":
+            needs.extend(["vae_encode", "vae_decode"])
+        try:
+            trt_engines, picked_dur = available_trt_engines(
+                duration_s=audio_duration_s, needs=tuple(needs),
+            )
+        except EngineNotBuiltError as exc:
+            # Surface to the operator (server log) AND the client UI.
+            # WebSocket close reason is capped at 123 bytes by the
+            # protocol, so the build command goes in a JSON message
+            # first and the close reason carries a short summary.
+            print(f"[Server] {exc}")
+            try:
+                ws.send(json.dumps({
+                    "type": "error",
+                    "code": "engine_not_built",
+                    "message": str(exc),
+                    "build_command": exc.build_command,
+                    "duration_s": exc.duration_s,
+                }))
+            except Exception:
+                pass
+            ws.close(1011, "TRT engine not built")
+            return
+        if picked_dur > audio_duration_s and picked_dur > 60.0:
+            # Fell back to a larger profile than strictly needed. Worth
+            # logging because the larger profile reserves noticeably more
+            # VRAM at TRT context-creation time.
+            print(
+                f"[Server] WARNING: using {picked_dur:.0f}s engine for "
+                f"{audio_duration_s:.1f}s audio (fallback; smaller profile "
+                f"not built — extra VRAM cost)"
+            )
+        # Prune unused keys for the same reason as before:
         # validate_backends() rejects engine entries whose backend isn't
-        # tensorrt, so prune the unused half on mixed-backend setups.
+        # tensorrt.
         if decoder_backend != "tensorrt":
             trt_engines.pop("decoder", None)
         if vae_backend != "tensorrt":
@@ -187,8 +231,11 @@ def handle_client(ws, *, decoder_backend: str = "tensorrt", vae_backend: str = "
     else:
         trt_engines = None
     if fast_vae and vae_backend == "tensorrt":
-        # fast_vae uses the dreamvae distilled decoder; profile must match.
-        fast_name = "dreamvae_decode_fp16_60s" if audio_duration_s <= 60.0 else "dreamvae_decode_fp16_240s"
+        # fast_vae uses the dreamvae distilled decoder; profile must match
+        # the same duration we picked above. dreamvae engines aren't in
+        # _TRT_ENGINE_PROFILES (different decoder weights), so we resolve
+        # the path by name and check existence directly.
+        fast_name = f"dreamvae_decode_fp16_{int(picked_dur)}s"
         if Path(str(trt_engine_path(fast_name))).exists():
             trt_engines["vae_decode"] = str(trt_engine_path(fast_name))
         else:

@@ -119,6 +119,14 @@ export class RemoteBackend extends EventTarget {
           // Expect JSON {"type":"ready",...}
           try {
             const msg = JSON.parse(ev.data);
+            if (msg.type === "error") {
+              // Server reported a structured init failure (e.g. no TRT
+              // engine built for this audio duration). Use its full
+              // human-readable message so the connection-failed banner
+              // tells the operator what to do next, not just "closed".
+              reject(new Error(msg.message || `Server error: ${msg.code || "unknown"}`));
+              return;
+            }
             if (msg.type !== "ready") {
               reject(new Error(`Unexpected init message: ${ev.data}`));
               return;
