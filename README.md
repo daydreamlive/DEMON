@@ -39,34 +39,16 @@ Pipeline depth trades latency-to-first-effect for throughput:
 
 `depth=4` is a good middle ground: 92% of max throughput at ~2.6x faster control response.
 
-## Live demo: MIDI-controlled generation
+## Live demo: realtime_motion_graph_web
 
-The realtime demo turns a MIDI controller into a diffusion synthesizer. Feed it source audio and a text prompt; twist physical knobs to control denoise strength, SDE curve shape, latent feedback, and diffusion shift while the engine generates and plays back audio continuously.
-
-```bash
-# Local dev: launches both server and client, MIDI knobs, SDE curves
-uv run python -m demos.realtime_motion_graph --midi --sde --audio path/to/source.wav
-
-# Webcam motion mode (no MIDI controller needed)
-uv run python -m demos.realtime_motion_graph --audio path/to/source.wav
-```
-
-The client controls all per-session options (`--depth`, `--vae-window`, `--lora`, `--fast-vae`, `--prompt`). For server/client deploys on separate machines, see `demos/realtime_motion_graph/README.md`.
-
-MIDI knobs use CC 70-77 across three banks (Core / Groups / Keystones); see the demo README for the full mapping. Tested with the Akai MPK Mini.
-
-Requires `uv sync --group demo` for `pygame`, `sounddevice`, and `opencv-python`.
-
-## Browser demo: realtime_motion_graph_web
-
-Same pipeline as the native demo, but with a browser front-end (no Python client install). The server requires the full project install plus a video file in `demos/realtime_motion_graph_web/static/videos/` for the audio-reactive background. Drop any `.mp4` in there before starting.
+Browser front-end + GPU server in a single package. Feed it source audio and a text prompt; twist on-screen knobs (or a connected MIDI controller via Web MIDI) to control denoise strength, SDE curve shape, latent feedback, and diffusion shift while the engine generates and plays back audio continuously. Optional audio-reactive video: drop any `.mp4` into `demos/realtime_motion_graph_web/static/videos/`.
 
 ```bash
 uv run python -u -m demos.realtime_motion_graph_web --port 8765
 # then open http://<server-host>:8765/
 ```
 
-See `demos/realtime_motion_graph_web/README.md` for the full setup.
+MIDI knobs use CC 70-77 across three banks (Core / Groups / Keystones); see `demos/realtime_motion_graph_web/README.md` for the full mapping and the rest of the setup.
 
 ## Offline benchmark: stream pipeline stress test
 
@@ -104,7 +86,7 @@ uv run python tests/fixtures/download.py
 
 The second command downloads test audio fixtures (~44MB) used by all demos and tests.
 
-LoRAs are not auto-downloaded yet. If you want to use LoRA-conditioned generation (`workflows/covers/lora_generation.py`, the realtime demo's `--lora` flag, or the web demo's LoRA picker), drop a `.safetensors` file into `demos/realtime_motion_graph/assets/loras/` and reference it by path. See `demos/realtime_motion_graph/assets/loras/README.md`.
+LoRAs are not auto-downloaded yet. If you want to use LoRA-conditioned generation (`workflows/covers/lora_generation.py` or the web demo's LoRA picker), drop a `.safetensors` file into `$ACESTEP_MODELS_DIR/loras/` (defaults to `~/.daydream-scope/models/demon/loras/`). See `acestep/paths.py::loras_dir`.
 
 ## Quick start
 
@@ -120,8 +102,7 @@ Loads the model once, then generates covers in ~310ms per iteration after warmup
 
 | Script | What it does |
 |---|---|
-| `demos/realtime_motion_graph/` | MIDI/webcam-driven real-time generation with audio playback (server + thin client) |
-| `demos/realtime_motion_graph_web/` | Same pipeline, browser front-end |
+| `demos/realtime_motion_graph_web/` | Real-time generation with browser front-end + GPU server (single port) |
 | `demos/test_stream_cover_graph.py` | StreamPipeline stress test with denoise sweep |
 | `demos/test_noise_sharing.py` | Noise sharing for temporal continuity between generations |
 | `workflows/session_demo.py` | Session API basics: load once, generate many |

@@ -1,16 +1,14 @@
 """
-Remote GPU backend for the realtime motion-to-music demo.
+GPU backend for the realtime motion-to-music demo.
 
-Runs the SAME PipelineRunner as :mod:`full_demo`, with:
+Provides :func:`handle_client`, the per-WebSocket coroutine wired in by
+:mod:`.server`. Drives a :class:`~acestep.engine.session.StreamHandle`
+through :class:`.pipeline.PipelineRunner`, with:
   - VirtualMidiKnobs fed by WebSocket params from the client
   - on_audio_ready callback that sends slices back over WebSocket
   - Catalog-driven LoRA library (MODELS_DIR/loras): client toggles
     individual entries on/off via WebSocket messages instead of the
     server hardcoding which LoRAs to load.
-
-Usage:
-    uv run python -u -m demos.realtime_motion_graph.server
-    uv run python -u -m demos.realtime_motion_graph.server --host 0.0.0.0 --port 8765
 """
 
 import json
@@ -28,7 +26,6 @@ torch.set_grad_enabled(False)
 torch._dynamo.config.disable = True
 
 from websockets.exceptions import ConnectionClosed
-from websockets.sync.server import serve
 
 from acestep.audio.key_detection import detect_key
 from acestep.constants import TASK_INSTRUCTIONS
@@ -42,9 +39,9 @@ from acestep.paths import (
     trt_engine_path,
 )
 
-from .client.audio_engine import AudioEngine
-from .client.knobs import build_banks, CHANNEL_GROUPS, KEYSTONE_CHANNELS
-from .client.protocol import (
+from .audio_engine import AudioEngine
+from .knobs import build_banks, CHANNEL_GROUPS, KEYSTONE_CHANNELS
+from .protocol import (
     SAMPLE_RATE,
     SLICE_FLAG_DELTA,
     SLICE_HDR_FMT,
@@ -752,41 +749,3 @@ def handle_client(ws, *, decoder_backend: str = "tensorrt", vae_backend: str = "
         running[0] = False
         recv_t.join(timeout=2)
         print(f"[Server] Client disconnected ({params.get('num_gens', 0)} generations)")
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-def main():
-    host = "0.0.0.0"
-    port = 8765
-    args = sys.argv[1:]
-    if "--host" in args:
-        idx = args.index("--host")
-        host = args[idx + 1]
-    if "--port" in args:
-        idx = args.index("--port")
-        port = int(args[idx + 1])
-
-    print(f"[Server] Starting on ws://{host}:{port}")
-    srv = serve(
-        handle_client,
-        host,
-        port,
-        max_size=50 * 1024 * 1024,
-    )
-    srv_thread = threading.Thread(target=srv.serve_forever, daemon=True)
-    srv_thread.start()
-    print(f"[Server] Listening... (Ctrl+C to stop)")
-    try:
-        while True:
-            time.sleep(0.5)
-    except KeyboardInterrupt:
-        print("\n[Server] Shutting down...")
-        import os
-        os._exit(0)
-
-
-if __name__ == "__main__":
-    main()

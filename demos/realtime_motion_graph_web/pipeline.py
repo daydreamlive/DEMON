@@ -1,14 +1,8 @@
 """PipelineRunner: the torch-heavy streaming loop (graph-driven).
 
-Used by :mod:`full_demo` (local mode) and :mod:`server` (remote mode).
-Not imported by the thin client under :mod:`client`.
-
-Phase 3 migrated the per-tick path to the node graph: the runner now
-drives a :class:`~acestep.engine.session.StreamHandle` by calling
+Drives a :class:`~acestep.engine.session.StreamHandle` by calling
 ``handle.tick(**kwargs)`` each iteration, where the kwargs mirror the
-knob state. Every ``set_*`` mutator on the old ``SessionStream`` is
-expressed as either a per-tick kwarg or a direct edit of handle fields
-(``handle.conditioning``, ``handle.context_latent``).
+knob state.
 """
 
 import time
@@ -19,8 +13,8 @@ import torch
 from acestep.nodes.types import ChannelGuidanceEntry, Latent
 from acestep.nodes.vae_nodes import EmptyLatent, LatentBlend
 
-from .client.knobs import CHANNEL_GROUPS, KEYSTONE_CHANNELS
-from .client.protocol import SAMPLE_RATE, T
+from .knobs import CHANNEL_GROUPS, KEYSTONE_CHANNELS
+from .protocol import SAMPLE_RATE, T
 
 
 

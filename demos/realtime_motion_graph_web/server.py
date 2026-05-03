@@ -1,10 +1,9 @@
 """Single-port HTTP + WebSocket server for the web-app version of the demo.
 
-Serves the browser client from ``static/`` and runs the same
-:func:`demos.realtime_motion_graph.server.handle_client` pipeline on
-the **same** TCP port, using the websockets library's
-``process_request`` hook to short-circuit non-upgrade requests into
-static-file HTTP responses.
+Serves the browser client from ``static/`` and runs the
+:func:`.backend.handle_client` pipeline on the **same** TCP port,
+using the websockets library's ``process_request`` hook to
+short-circuit non-upgrade requests into static-file HTTP responses.
 
 Single-port matters for Vast.ai / Docker deploys where only one port
 is usually mapped into the container.
@@ -362,7 +361,7 @@ def main():
         # Defer the heavy import until we know we need it. Pulling this in
         # loads torch + acestep + TRT machinery; in --no-backend we never
         # touch any of it.
-        from demos.realtime_motion_graph.server import handle_client
+        from .backend import handle_client
 
         def ws_handler(ws):
             handle_client(ws, decoder_backend=accel, vae_backend=accel)

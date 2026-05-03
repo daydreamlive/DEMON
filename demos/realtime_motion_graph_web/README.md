@@ -1,8 +1,7 @@
 # Realtime Motion-to-Music (Web)
 
-Browser-based port of `demos.realtime_motion_graph`. The GPU server is
-byte-identical to the native server, so the browser client is a drop-in
-replacement for the pygame/OpenCV client with the same feature set:
+Browser-based real-time motion-to-music demo. Single-port HTTP +
+WebSocket server runs the GPU pipeline alongside the browser client:
 
 - Upload a source audio file, get a live ACE-Step stream back
 - Live-editable prompt
@@ -20,9 +19,7 @@ replacement for the pygame/OpenCV client with the same feature set:
 ## Requirements
 
 - **Server**: the full ACE-Step install (CUDA GPU, `uv sync`, prebuilt
-  TensorRT engines). Pulls in Python `http.server` and the existing
-  `demos.realtime_motion_graph.server.handle_client`; no extra
-  dependencies.
+  TensorRT engines). No extra dependencies beyond the main project.
 - **Client**: any modern Chromium or Firefox. Web MIDI and webcam
   support are optional. HTTPS is *not* required because the server
   binds on the same origin as the WebSocket endpoint.
@@ -79,7 +76,12 @@ demos/realtime_motion_graph_web/
 ├── README.md
 ├── __init__.py
 ├── __main__.py               # `python -m demos.realtime_motion_graph_web`
-├── server.py                 # HTTP (static) + WebSocket (reuses handle_client)
+├── server.py                 # HTTP (static) + WebSocket multiplex on one port
+├── backend.py                # GPU handle_client coroutine
+├── pipeline.py               # PipelineRunner (graph-driven streaming loop)
+├── audio_engine.py           # server-side audio buffer
+├── knobs.py                  # MIDI knob bank definitions
+├── protocol.py               # wire format (Python source of truth for protocol.js)
 └── static/
     ├── index.html            # launcher + live HUD DOM
     ├── style.css
@@ -96,8 +98,8 @@ demos/realtime_motion_graph_web/
 
 ## Protocol
 
-The WebSocket protocol is the *same* one defined in
-`demos/realtime_motion_graph/client/protocol.py`:
+The WebSocket protocol is defined in `protocol.py` (the Python source
+of truth that `static/protocol.js` mirrors):
 
 - **Init**: JSON config -> binary audio upload
   (`<uint32 channels><uint32 samples>` + float32 PCM)
@@ -106,8 +108,9 @@ The WebSocket protocol is the *same* one defined in
   zstd-compressed float16 delta) + `params_update` / `prompt_applied`
   JSON messages in
 
-All of `server.py` is imported unchanged: the web server just adds an
-HTTP static file server next to the same `handle_client` coroutine.
+`server.py` multiplexes HTTP static-file serving and the WebSocket
+upgrade onto one TCP port; the WS handshake hands off to
+`backend.handle_client`.
 
 ## Audio-reactive video
 

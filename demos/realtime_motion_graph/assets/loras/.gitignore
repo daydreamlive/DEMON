@@ -1,6 +1,0 @@
-# LoRA weights — too large to check in, sync out-of-band (rsync / scp
-# / storage bucket).  Keep the directory itself committed so the
-# server's relative path resolves on a fresh checkout.
-*
-!.gitignore
-!README.md
