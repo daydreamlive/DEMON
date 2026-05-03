@@ -80,22 +80,6 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = ["pytest>=9.0"]
-demo = ["opencv-python", "pygame", "sounddevice", "librosa", "mido", "python-rtmidi"]
-# Thin-client deps for demos/realtime_motion_graph/client.
-# Install without the main project:
-#   uv sync --only-group client --no-install-project
-client = [
-    "numpy",
-    "opencv-python",
-    "pygame",
-    "sounddevice",
-    "soundfile",
-    "soxr",
-    "mido",
-    "python-rtmidi",
-    "websockets>=13.0",
-    "zstandard>=0.21",
-]
 
 [tool.hatch.metadata]
 allow-direct-references = true

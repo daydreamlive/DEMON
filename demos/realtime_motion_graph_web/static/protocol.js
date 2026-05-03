@@ -1,6 +1,6 @@
 // WebSocket wire protocol for the realtime motion-to-music demo.
 //
-// Mirrors demos/realtime_motion_graph/client/protocol.py:
+// Mirrors demos/realtime_motion_graph_web/protocol.py:
 //   - init: json config, then binary (uint32 channels, uint32 samples) + float32 PCM
 //   - server sends: json ready, then binary initial buffer (float16)
 //   - streaming: json params/prompt out, binary slices + json params_update in

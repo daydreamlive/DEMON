@@ -1,5 +1,5 @@
 // AudioWorklet that plays a looping PCM buffer the main thread can
-// patch in place. Mirrors demos/realtime_motion_graph/client/audio_engine.py
+// patch in place. Mirrors demos/realtime_motion_graph_web/audio_engine.py
 // (swap / patch / crossfade behaviour).
 //
 // Messages from main thread:

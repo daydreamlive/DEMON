@@ -291,7 +291,7 @@ class StreamVAEDecode(BaseNode):
     injects this from ``AudioProcessingTrack._timestamp / 48000``), the
     node follows the playhead instead of the widget ``t_start`` and
     applies the same skip logic as
-    ``demos/realtime_motion_graph/pipeline.py:215-225``:
+    ``demos/realtime_motion_graph_web/pipeline.py``:
 
       * Decode is skipped when the current latent is close to the last
         one (``mse < mse_skip_threshold``) **and** the playhead has not
