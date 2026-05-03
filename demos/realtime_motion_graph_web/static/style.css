@@ -611,6 +611,11 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   font-size: 0.85em;
   letter-spacing: 0;
 }
+.pause-btn.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--text);
+}
 
 .seed-btn {
   width: 60px;

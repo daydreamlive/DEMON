@@ -34,6 +34,7 @@ const seedBtn = $("seed-btn");
 const seedValueEl = $("seed-value");
 const pauseBtn = $("pause-btn");
 const modeToggle = $("mode-toggle");
+const kioskToggle = $("kiosk-toggle");
 const graphCanvas = $("graph");
 const effectsCanvas = $("effects-canvas");
 const fixtureSelect = $("fixture-select");
@@ -93,9 +94,11 @@ const userConfig = await fetch(`config.json?t=${Date.now()}`).then((r) => {
 // {no_backend: true} and the Play handler skips the WebSocket path.
 // Best-effort: if the endpoint isn't there (older server) we treat it as
 // backend-present and let WS try as usual.
+// Defaults match the older server (no kiosk, graph mode) so an old server
+// + new client still boots cleanly.
 const serverInfo = await fetch("/api/server-info")
-  .then((r) => (r.ok ? r.json() : { no_backend: false }))
-  .catch(() => ({ no_backend: false }));
+  .then((r) => (r.ok ? r.json() : { no_backend: false, kiosk: false, default_mode: "graph" }))
+  .catch(() => ({ no_backend: false, kiosk: false, default_mode: "graph" }));
 
 // LoRA catalog comes from /api/loras — a cheap filesystem scan of
 // MODELS_DIR/loras/ that runs on the static-file server, so we can
@@ -226,7 +229,7 @@ modeToggle?.addEventListener("click", () => {
   const i = DISPLAY_MODES.indexOf(currentMode);
   setMode(DISPLAY_MODES[(i + 1) % DISPLAY_MODES.length]);
 });
-setMode("graph");
+setMode(DISPLAY_MODES.includes(serverInfo.default_mode) ? serverInfo.default_mode : "graph");
 
 // ── State ──
 
@@ -269,6 +272,13 @@ function applyConfigToDom() {
   blendValueEl.textContent = blendValue.toFixed(2);
   seedValueEl.textContent = seedValue.toFixed(2);
 }
+
+// ── Kiosk runtime state ──
+// Set by setKiosk() (server CLI default + the operator toggle in the
+// Advanced drawer). Consulted by bumpIdleTimer() and showCursor() so they
+// no-op when kiosk is off. Declared here because both functions below
+// reference it.
+let kioskActive = false;
 
 // ── Idle reset ──
 // After `reset_seconds` of no user interaction (pointer, key, MIDI), revert
@@ -318,6 +328,7 @@ function resetToDefaults() {
 }
 
 function bumpIdleTimer() {
+  if (!kioskActive) return;
   const secs = userConfig.reset_seconds ?? 0;
   if (secs <= 0) return;
   clearTimeout(idleTimer);
@@ -344,6 +355,7 @@ let cursorIdleTimer = null;
 function showCursor() {
   document.body.classList.remove("cursor-idle");
   clearTimeout(cursorIdleTimer);
+  if (!kioskActive) return;
   cursorIdleTimer = setTimeout(() => {
     document.body.classList.add("cursor-idle");
   }, CURSOR_IDLE_MS);
@@ -353,6 +365,31 @@ function initCursorAutoHide() {
   document.addEventListener("mousemove", showCursor, { passive: true });
   showCursor();
 }
+
+// Toggle kiosk behaviors at runtime. The CLI flag (--kiosk) seeds the
+// initial state via /api/server-info; the button in the Advanced drawer
+// flips it from there. Turning off cancels in-flight timers and brings
+// the cursor back so the operator isn't left with a half-applied state.
+function setKiosk(on) {
+  kioskActive = !!on;
+  if (kioskToggle) {
+    kioskToggle.textContent = kioskActive ? "EXIT KIOSK" : "KIOSK";
+    kioskToggle.classList.toggle("active", kioskActive);
+    kioskToggle.setAttribute("aria-pressed", kioskActive ? "true" : "false");
+  }
+  if (kioskActive) {
+    // Arm both timers immediately so the operator sees the effect right
+    // after toggling on, without having to first wiggle the mouse.
+    bumpIdleTimer();
+    showCursor();
+  } else {
+    clearTimeout(idleTimer);
+    clearTimeout(cursorIdleTimer);
+    document.body.classList.remove("cursor-idle");
+  }
+}
+
+kioskToggle?.addEventListener("click", () => setKiosk(!kioskActive));
 
 // Global timer state -- persists across reconnects.
 let globalTimerStart = null;
@@ -1726,10 +1763,11 @@ function resolveCcParam(name) {
 // Note actions are looked up by name (the value in midiMap.notes) so
 // localStorage can serialize the binding without holding function refs.
 const NOTE_ACTIONS = {
-  seed:        () => randomizeSeed(),
-  send_prompt: () => sendCurrentPrompt(),
-  mode_toggle: () => modeToggle?.click(),
-  pause:       () => pauseBtn?.click(),
+  seed:         () => randomizeSeed(),
+  send_prompt:  () => sendCurrentPrompt(),
+  mode_toggle:  () => modeToggle?.click(),
+  pause:        () => pauseBtn?.click(),
+  kiosk_toggle: () => kioskToggle?.click(),
 };
 
 const MIDI_STORAGE_KEY = "demon_midi_map_v1";
@@ -2042,7 +2080,13 @@ try { initEdgeBars(); } catch (e) { console.error("initEdgeBars failed:", e); }
 try { initPrompts(); } catch (e) { console.error("initPrompts failed:", e); }
 try { initKeySelect(); } catch (e) { console.error("initKeySelect failed:", e); }
 try { initKeyboard(); } catch (e) { console.error("initKeyboard failed:", e); }
+// Installation features (cursor auto-hide, idle settings reset) are gated
+// by the runtime `kioskActive` flag — see setKiosk() below. The init
+// functions only attach listeners; the bump/showCursor functions early-out
+// when kiosk is off, so a developer running locally isn't fighting an
+// auto-hiding cursor or having their tweaks reverted while they think.
 try { initIdleReset(); } catch (e) { console.error("initIdleReset failed:", e); }
 try { initCursorAutoHide(); } catch (e) { console.error("initCursorAutoHide failed:", e); }
+setKiosk(serverInfo.kiosk === true);
 try { initMidiLearnUI(); } catch (e) { console.error("initMidiLearnUI failed:", e); }
 initMidi();

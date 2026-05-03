@@ -44,6 +44,12 @@ _AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
 _NO_BACKEND = False
 # Set in main() based on --accel; read by the WS handler wrapper.
 _ACCEL = "tensorrt"
+# Set in main() based on --kiosk / --mode; surfaced to the client via
+# /api/server-info so installation-only behaviors (cursor auto-hide,
+# idle settings reset) and the initial display mode can be CLI-driven.
+_KIOSK = False
+_DEFAULT_MODE = "graph"
+_VALID_MODES = ("graph", "video")
 
 # Keep the wire compact and don't cache anything so the product team
 # always sees the latest JS after a redeploy.
@@ -126,7 +132,11 @@ def _process_request(connection, request):
     # In --no-backend mode the client takes the video-only path: it plays
     # the source audio directly and skips the WebSocket connection entirely.
     if url.split("?", 1)[0] == "/api/server-info":
-        body = json.dumps({"no_backend": _NO_BACKEND}).encode()
+        body = json.dumps({
+            "no_backend": _NO_BACKEND,
+            "kiosk": _KIOSK,
+            "default_mode": _DEFAULT_MODE,
+        }).encode()
         _log_http(remote, 200, "GET", url)
         return Response(
             200, "OK",
@@ -326,12 +336,24 @@ def main():
             f"[Server] --accel must be one of {_VALID_ACCEL}, got {accel!r}"
         )
 
+    kiosk = "--kiosk" in args
+    default_mode = "graph"
+    if "--mode" in args:
+        idx = args.index("--mode")
+        default_mode = args[idx + 1]
+    if default_mode not in _VALID_MODES:
+        raise SystemExit(
+            f"[Server] --mode must be one of {_VALID_MODES}, got {default_mode!r}"
+        )
+
     if not STATIC_DIR.exists():
         raise SystemExit(f"[Server] static dir missing: {STATIC_DIR}")
 
-    global _NO_BACKEND, _ACCEL
+    global _NO_BACKEND, _ACCEL, _KIOSK, _DEFAULT_MODE
     _NO_BACKEND = no_backend
     _ACCEL = accel
+    _KIOSK = kiosk
+    _DEFAULT_MODE = default_mode
 
     if no_backend:
         ws_handler = _stub_handle_client
@@ -357,7 +379,11 @@ def main():
     ws_thread.start()
 
     browsable_host = "localhost" if host in ("0.0.0.0", "::", "") else host
-    mode = "UI-ONLY (no backend)" if no_backend else f"WEB APP, single port, accel={accel}"
+    extras = [f"mode={default_mode}"]
+    if kiosk:
+        extras.append("kiosk")
+    extra_str = " " + " ".join(f"[{e}]" for e in extras)
+    mode = "UI-ONLY (no backend)" if no_backend else f"WEB APP, single port, accel={accel}{extra_str}"
     print()
     print("=" * 60)
     print(f"  Real-Time Motion-to-Music  ({mode})")
