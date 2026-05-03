@@ -284,22 +284,39 @@ class ModelContext:
         return "sdpa"
 
     def _load_dit(self, path: str, attn_impl: str):
-        from transformers import AutoModel
+        # Load the vendored class directly. Avoids `trust_remote_code=True`,
+        # which would let arbitrary .py files in the checkpoint dir execute
+        # in our process — exactly the failure mode that bit us when a
+        # mid-session pod sync rewrote the checkpoint's modeling file.
+        import json
+
+        from acestep.models.modeling_acestep_v15_turbo import (
+            AceStepConditionGenerationModel,
+        )
+
+        config_path = os.path.join(path, "config.json")
+        with open(config_path, "r", encoding="utf-8") as f:
+            architectures = json.load(f).get("architectures", [])
+        if architectures != ["AceStepConditionGenerationModel"]:
+            raise NotImplementedError(
+                f"Only the turbo DiT variant (AceStepConditionGenerationModel) "
+                f"is currently vendored. Checkpoint at {path} declares "
+                f"architectures={architectures}. To support other variants, "
+                f"vendor their modeling files into acestep/models/."
+            )
 
         try:
             logger.info(f"Loading model with attention={attn_impl}")
-            model = AutoModel.from_pretrained(
+            model = AceStepConditionGenerationModel.from_pretrained(
                 path,
-                trust_remote_code=True,
                 attn_implementation=attn_impl,
                 dtype="bfloat16",
             )
         except Exception as exc:
             if attn_impl == "sdpa":
                 logger.info("Falling back to eager attention")
-                model = AutoModel.from_pretrained(
+                model = AceStepConditionGenerationModel.from_pretrained(
                     path,
-                    trust_remote_code=True,
                     attn_implementation="eager",
                 )
                 attn_impl = "eager"
