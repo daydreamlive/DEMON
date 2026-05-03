@@ -81,10 +81,9 @@ Each tick produces a finished 60-second generation. The output file splices cons
 
 ```bash
 uv sync
-uv run python tests/fixtures/download.py
 ```
 
-The second command downloads test audio fixtures (~44MB) used by all demos and tests.
+That's it. Audio fixtures used by demos, workflows, and tests are pulled on first use from the [`daydreamlive/demon-fixtures`](https://huggingface.co/datasets/daydreamlive/demon-fixtures) Hugging Face dataset and cached under `~/.cache/huggingface/`. See `acestep/fixtures.py` to add or list the canonical set.
 
 LoRAs are not auto-downloaded yet. If you want to use LoRA-conditioned generation (`workflows/covers/lora_generation.py` or the web demo's LoRA picker), drop a `.safetensors` file into `$ACESTEP_MODELS_DIR/loras/` (defaults to `~/.daydream-scope/models/demon/loras/`). See `acestep/paths.py::loras_dir`.
 

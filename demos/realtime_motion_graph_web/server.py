@@ -26,6 +26,8 @@ from websockets.http11 import Response
 from websockets.datastructures import Headers
 from websockets.sync.server import serve as ws_serve
 
+from acestep.fixtures import KNOWN_FIXTURES, audio_fixture
+
 # The generative backend is imported lazily inside main(): in --no-backend
 # mode we skip the import entirely so torch and acestep don't load and the
 # GPU stays free for other work while iterating on the front-end.
@@ -33,9 +35,6 @@ from websockets.sync.server import serve as ws_serve
 
 STATIC_DIR = Path(__file__).parent / "static"
 VIDEOS_DIR = STATIC_DIR / "videos"
-# tests/fixtures lives at the repo root, two levels above this module
-# (demos/realtime_motion_graph_web/ -> repo root -> tests/fixtures).
-FIXTURES_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
 _AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
 
 # Set in main() based on --no-backend; read by _process_request when the
@@ -201,15 +200,12 @@ def _process_request(connection, request):
             body,
         )
 
-    # API: list audio fixtures from tests/fixtures/
+    # API: list audio fixtures (from the daydreamlive/demon-fixtures HF dataset).
+    # Files are downloaded on-demand by /fixtures/<name>; this endpoint just
+    # returns the canonical manifest from acestep.fixtures so the UI can render
+    # the picker before any download happens.
     if url.split("?", 1)[0] == "/api/fixtures":
-        fixtures = []
-        if FIXTURES_DIR.is_dir():
-            fixtures = sorted(
-                f.name for f in FIXTURES_DIR.iterdir()
-                if f.is_file() and f.suffix.lower() in _AUDIO_EXTS
-            )
-        body = json.dumps(fixtures).encode()
+        body = json.dumps(sorted(KNOWN_FIXTURES)).encode()
         _log_http(remote, 200, "GET", url)
         return Response(
             200, "OK",
@@ -221,41 +217,53 @@ def _process_request(connection, request):
             body,
         )
 
-    # Serve files from tests/fixtures/ under /fixtures/<name>.
+    # Serve files from the HF fixture dataset under /fixtures/<name>.
+    # audio_fixture() validates `name` against KNOWN_FIXTURES (so this is
+    # also our path-escape guard) and downloads on first access.
     fixture_match = url.split("?", 1)[0].split("#", 1)[0]
     if fixture_match.startswith("/fixtures/"):
         rel = fixture_match[len("/fixtures/"):]
-        if rel and "/" not in rel and "\\" not in rel and not rel.startswith("."):
-            candidate = (FIXTURES_DIR / rel).resolve()
+        try:
+            candidate = audio_fixture(rel)
+        except KeyError:
+            candidate = None
+        except Exception as e:
+            msg = f"500 {e}\n".encode()
+            _log_http(remote, 500, "GET", url)
+            return Response(
+                500, "Internal Server Error",
+                Headers([
+                    ("Content-Type", "text/plain; charset=utf-8"),
+                    ("Content-Length", str(len(msg))),
+                    *_NO_CACHE_HEADERS,
+                ]),
+                msg,
+            )
+        if candidate and candidate.is_file() and candidate.suffix.lower() in _AUDIO_EXTS:
             try:
-                candidate.relative_to(FIXTURES_DIR.resolve())
-            except ValueError:
-                candidate = None  # path escape attempt
-            if candidate and candidate.is_file() and candidate.suffix.lower() in _AUDIO_EXTS:
-                try:
-                    body = candidate.read_bytes()
-                except OSError as e:
-                    msg = f"500 {e}\n".encode()
-                    _log_http(remote, 500, "GET", url)
-                    return Response(
-                        500, "Internal Server Error",
-                        Headers([
-                            ("Content-Type", "text/plain; charset=utf-8"),
-                            ("Content-Length", str(len(msg))),
-                            *_NO_CACHE_HEADERS,
-                        ]),
-                        msg,
-                    )
-                _log_http(remote, 200, "GET", url)
+                body = candidate.read_bytes()
+            except OSError as e:
+                msg = f"500 {e}\n".encode()
+                _log_http(remote, 500, "GET", url)
                 return Response(
-                    200, "OK",
+                    500, "Internal Server Error",
                     Headers([
-                        ("Content-Type", _content_type_for(candidate)),
-                        ("Content-Length", str(len(body))),
+                        ("Content-Type", "text/plain; charset=utf-8"),
+                        ("Content-Length", str(len(msg))),
                         *_NO_CACHE_HEADERS,
                     ]),
-                    body,
+                    msg,
                 )
+            _log_http(remote, 200, "GET", url)
+            return Response(
+                200, "OK",
+                Headers([
+                    ("Content-Type", _content_type_for(candidate)),
+                    ("Content-Length", str(len(body))),
+                    *_NO_CACHE_HEADERS,
+                ]),
+                body,
+            )
 
     target = _resolve_static(url)
     if target is None:
@@ -389,7 +397,7 @@ def main():
     print("=" * 60)
     print(f"  Open:      http://{browsable_host}:{port}/")
     print(f"  WebSocket: ws://{browsable_host}:{port}/")
-    print(f"  Fixtures:  {FIXTURES_DIR}")
+    print(f"  Fixtures:  daydreamlive/demon-fixtures (HF, {len(KNOWN_FIXTURES)} files, on-demand)")
     print("  Ctrl+C to stop")
     print("=" * 60)
     print()

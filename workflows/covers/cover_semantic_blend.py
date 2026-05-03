@@ -26,9 +26,10 @@ from acestep.nodes.semantic_nodes import SemanticExtract
 from acestep.nodes.curve_nodes import CurveWave
 from acestep.nodes.diffusion_nodes import DiffusionConfigNode, Generate
 from acestep.constants import TASK_INSTRUCTIONS
+from acestep.fixtures import audio_fixture
 
-SOURCE_A = os.path.join(project_root, "tests/fixtures", "new_order_confusion_60seconds.wav")
-SOURCE_B = os.path.join(project_root, "tests/fixtures", "new_order_confusion_60seconds.wav")  # same file for demo
+SOURCE_A = str(audio_fixture("inside_confusion_loop_60s_gsm.wav"))
+SOURCE_B = str(audio_fixture("inside_confusion_loop_60s_gsm.wav"))  # same file for demo
 OUTPUT_DIR = os.path.join(project_root, "test_output", "workflows")
 
 

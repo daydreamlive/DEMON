@@ -73,7 +73,8 @@ SHIFT = 3.0
 # Audio clip used for all tests (same file existing tests use).
 SAMPLE_RATE = 48000
 TEST_DURATION = 30.0  # shorter than workflows' 60s — faster tests, same code paths.
-TEST_AUDIO = Path(__file__).parent / "fixtures" / "new_order_confusion_60seconds.wav"
+from acestep.fixtures import audio_fixture
+TEST_AUDIO = audio_fixture("inside_confusion_loop_60s_gsm.wav")
 
 
 # ---------------------------------------------------------------------------

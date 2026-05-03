@@ -29,9 +29,10 @@ from acestep.constants import TASK_INSTRUCTIONS
 from acestep.engine.audio_input import AudioCapture, SpectralTracker, LiveAudioEncoder, SAMPLE_RATE
 from acestep.engine.session import Session
 from acestep.nodes.types import Audio
+from acestep.fixtures import audio_fixture
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
-DEFAULT_BASE = PROJECT_ROOT / "tests/fixtures" / "new_order_confusion_60seconds.wav"
+DEFAULT_BASE = audio_fixture("inside_confusion_loop_60s_gsm.wav")
 OUTPUT_DIR = PROJECT_ROOT / "test_output" / "live_audio_input"
 
 

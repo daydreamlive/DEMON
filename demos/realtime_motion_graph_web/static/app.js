@@ -1634,7 +1634,7 @@ playBtn.addEventListener("click", async () => {
     }
     if (availableFixtures.length === 0) {
       throw new Error(
-        "No audio fixtures found. Run `python tests/fixtures/download.py` to fetch them."
+        "No audio fixtures listed. Server returned an empty manifest from /api/fixtures."
       );
     }
 

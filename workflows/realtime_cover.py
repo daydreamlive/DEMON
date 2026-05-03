@@ -38,12 +38,13 @@ from acestep.nodes import Audio, Latent, Mask, Conditioning
 from acestep.nodes.cond_nodes import ConditioningAverage, ConditioningCombine
 from acestep.nodes.curve_nodes import CurveRamp, CurveWave
 from acestep.nodes.mask_nodes import TemporalMask, SetLatentNoiseMask
+from acestep.fixtures import audio_fixture
 
 # ======================================================================
 # Configuration (these would be VST knobs / DAW parameters)
 # ======================================================================
 
-SOURCE_AUDIO = os.path.join(project_root, "tests/fixtures", "new_order_confusion_60seconds.wav")
+SOURCE_AUDIO = str(audio_fixture("inside_confusion_loop_60s_gsm.wav"))
 # Set to None to use source audio for timbre/hints, or a path to override
 TIMBRE_REF_AUDIO = None
 HINT_SOURCE_AUDIO = None
