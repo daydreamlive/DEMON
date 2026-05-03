@@ -9,8 +9,8 @@ generation's style/prompt toward the spectral content of the reference.
 Use case: you have a reference track whose texture or arrangement you
 want the output to gravitate toward, without fully covering it.
 
-  Source:    new_order_confusion_60seconds.wav  (structure + timbre donor)
-  Reference: Vesuvius_v2_edit_60s.wav           (x0 target, encoded latent)
+  Source:    inside_confusion_loop_60s_gsm.wav  (structure + timbre donor)
+  Reference: low_fi_Gm_loop_60s_gnm.wav         (x0 target, encoded latent)
   Prompt:    deathstep
 
 The ramp curve (0.0 -> 0.6) means the first half of the track is
@@ -38,9 +38,10 @@ from acestep.nodes.semantic_nodes import SemanticExtract
 from acestep.nodes.curve_nodes import CurveRamp
 from acestep.nodes.diffusion_nodes import DiffusionConfigNode, Generate
 from acestep.constants import TASK_INSTRUCTIONS
+from acestep.fixtures import audio_fixture
 
-SOURCE_AUDIO = os.path.join(project_root, "tests/fixtures", "new_order_confusion_60seconds.wav")
-REFERENCE_AUDIO = os.path.join(project_root, "tests/fixtures", "Vesuvius_v2_edit_60s.wav")
+SOURCE_AUDIO = str(audio_fixture("inside_confusion_loop_60s_gsm.wav"))
+REFERENCE_AUDIO = str(audio_fixture("low_fi_Gm_loop_60s_gnm.wav"))
 OUTPUT_DIR = os.path.join(project_root, "test_output", "workflows")
 
 

@@ -29,9 +29,10 @@ from acestep.constants import TASK_INSTRUCTIONS
 from acestep.engine.session import Session, PreparedSource
 from acestep.engine.diffusion import DiffusionConfig, DiffusionEngine
 from acestep.engine.stream import StreamPipeline, SlotRequest
+from acestep.fixtures import audio_fixture
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
-SOURCE_AUDIO = PROJECT_ROOT / "tests/fixtures" / "new_order_confusion_60seconds.wav"
+SOURCE_AUDIO = audio_fixture("inside_confusion_loop_60s_gsm.wav")
 
 SAMPLE_RATE = 48000
 SEED = 1528

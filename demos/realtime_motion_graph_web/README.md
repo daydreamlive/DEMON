@@ -26,13 +26,7 @@ WebSocket server runs the GPU pipeline alongside the browser client:
 
 ## Run
 
-First-run only — fetch the bundled audio fixtures:
-
-```bash
-python tests/fixtures/download.py
-```
-
-Then from the remote 5090 box (the machine with the GPU):
+From the remote 5090 box (the machine with the GPU):
 
 ```bash
 uv run python -u -m demos.realtime_motion_graph_web
@@ -52,7 +46,9 @@ Then from any laptop on the same network:
 
 1. Open `http://<server-host>:8765/`
 2. Click **Play** — the demo loads the default fixture
-   (`new_order_confusion_60seconds.wav`).
+   (`inside_confusion_loop_60s_gsm.wav`). Fixtures stream from the
+   `daydreamlive/demon-fixtures` Hugging Face dataset on first request
+   and are cached locally.
 3. Switch fixtures any time using the selector at the top of the
    Advanced drawer; switching tears down the session and restarts with
    the new audio.
@@ -62,8 +58,10 @@ Then from any laptop on the same network:
 
 ### Audio source vs. video
 
-Audio is the **primary** source: the demo always loads from
-`tests/fixtures/`, served by the web server at `/fixtures/<name>`.
+Audio is the **primary** source: the demo always loads from the
+canonical fixture set (`daydreamlive/demon-fixtures` on Hugging Face,
+listed in `acestep.fixtures.KNOWN_FIXTURES`), served by the web server
+at `/fixtures/<name>` via lazy HF download.
 Video is **optional and secondary** — drop any `.mp4`/`.webm`/`.mov`
 into `static/videos/` to attach the audio-reactive shader pipeline.
 With no videos present the demo runs audio-only (graph mode is the

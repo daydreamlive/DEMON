@@ -32,9 +32,10 @@ from acestep.engine.session import Session, PreparedSource
 from acestep.engine.diffusion import DiffusionConfig, DiffusionEngine
 from acestep.engine.stream import StreamPipeline, SlotRequest
 from acestep.nodes.types import Audio, Latent
+from acestep.fixtures import audio_fixture
 
 PROJECT_ROOT = Path(__file__).parent.parent
-SOURCE_AUDIO = PROJECT_ROOT / "tests/fixtures" / "new_order_confusion_60seconds.wav"
+SOURCE_AUDIO = audio_fixture("inside_confusion_loop_60s_gsm.wav")
 OUTPUT_DIR = PROJECT_ROOT / "_debug_tests" / "stream_output"
 OUTPUT_FILE = OUTPUT_DIR / "stream_sde_curve_sweep.wav"
 

@@ -13,7 +13,7 @@ torch.set_grad_enabled(False)
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 TRT_ENGINE = os.path.join(PROJECT_ROOT, "trt_engines", "decoder_mixed_b8_60s", "decoder_mixed_b8_60s.engine")
-SOURCE_AUDIO = os.path.join(PROJECT_ROOT, "tests/fixtures", "new_order_confusion_60seconds.wav")
+SOURCE_AUDIO = str(audio_fixture("inside_confusion_loop_60s_gsm.wav"))
 SAMPLE_RATE = 48000
 
 from acestep.constants import TASK_INSTRUCTIONS
@@ -21,6 +21,7 @@ from acestep.engine.session import Session
 from acestep.engine.diffusion import DiffusionConfig, DiffusionEngine
 from acestep.engine.stream import StreamPipeline, SlotRequest
 from acestep.nodes.types import Audio, Latent
+from acestep.fixtures import audio_fixture
 
 # ---------------------------------------------------------------
 # Init

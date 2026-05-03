@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from acestep.fixtures import audio_fixture
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 torch.set_grad_enabled(False)
@@ -17,7 +18,7 @@ torch.set_grad_enabled(False)
 PROJECT_ROOT = Path(__file__).parent.parent
 SAMPLE_RATE = 48000
 TEST_DURATION = 30.0  # seconds -- shorter for faster tests
-TEST_AUDIO = PROJECT_ROOT / "tests/fixtures" / "new_order_confusion_60seconds.wav"
+TEST_AUDIO = audio_fixture("inside_confusion_loop_60s_gsm.wav")
 
 
 def _find_trt_engines():

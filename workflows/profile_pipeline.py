@@ -19,6 +19,7 @@ from acestep.engine.session import Session, PreparedSource
 from acestep.engine.diffusion import DiffusionConfig
 from acestep.constants import TASK_INSTRUCTIONS
 from acestep.nodes import Audio
+from acestep.fixtures import audio_fixture
 
 
 def main():
@@ -37,7 +38,7 @@ def main():
     engine = handler._diffusion_engine
 
     data, sr = sf.read(
-        os.path.join(project_root, "tests/fixtures", "new_order_confusion_60seconds.wav"),
+        str(audio_fixture("inside_confusion_loop_60s_gsm.wav")),
         dtype="float32",
     )
     waveform = torch.from_numpy(data.T)[:2, :60 * 48000]

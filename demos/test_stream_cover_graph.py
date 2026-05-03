@@ -36,9 +36,10 @@ from acestep.constants import TASK_INSTRUCTIONS
 from acestep.engine.session import Session
 from acestep.nodes.types import Audio, Latent
 from acestep.paths import checkpoints_dir, project_root, trt_engine_path, select_trt_engines
+from acestep.fixtures import audio_fixture
 
 PROJECT_ROOT = project_root()
-DEFAULT_SOURCE_AUDIO = PROJECT_ROOT / "tests/fixtures" / "new_order_confusion_60seconds.wav"
+DEFAULT_SOURCE_AUDIO = audio_fixture("inside_confusion_loop_60s_gsm.wav")
 OUTPUT_DIR = PROJECT_ROOT / "_debug_tests" / "stream_output"
 
 SAMPLE_RATE = 48000

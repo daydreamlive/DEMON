@@ -19,9 +19,10 @@ if project_root not in sys.path:
 from acestep.constants import TASK_INSTRUCTIONS
 from acestep.engine.session import Session
 from acestep.nodes import Audio
+from acestep.fixtures import audio_fixture
 
 
-SOURCE_AUDIO = os.path.join(project_root, "tests/fixtures", "new_order_confusion_60seconds.wav")
+SOURCE_AUDIO = str(audio_fixture("inside_confusion_loop_60s_gsm.wav"))
 OUTPUT_DIR = os.path.join(project_root, "test_output", "session")
 
 

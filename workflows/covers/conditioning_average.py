@@ -25,8 +25,9 @@ from acestep.nodes.cond_nodes import TextEncode, ConditioningAverage
 from acestep.nodes.semantic_nodes import SemanticExtract
 from acestep.nodes.diffusion_nodes import DiffusionConfigNode, Generate
 from acestep.constants import TASK_INSTRUCTIONS
+from acestep.fixtures import audio_fixture
 
-SOURCE_AUDIO = os.path.join(project_root, "tests/fixtures", "new_order_confusion_60seconds.wav")
+SOURCE_AUDIO = str(audio_fixture("inside_confusion_loop_60s_gsm.wav"))
 OUTPUT_DIR = os.path.join(project_root, "test_output", "workflows")
 
 

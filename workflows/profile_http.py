@@ -10,10 +10,10 @@ Requires the server to be running:
 
 import io, json, os, sys, time, urllib.request
 
+from acestep.fixtures import audio_fixture
+
 BASE = "http://127.0.0.1:8731"
-AUDIO_FILE = os.path.join(
-    os.path.dirname(__file__), "..", "tests/fixtures", "new_order_confusion_60seconds.wav"
-)
+AUDIO_FILE = str(audio_fixture("inside_confusion_loop_60s_gsm.wav"))
 
 
 def post_json(path, data=None):

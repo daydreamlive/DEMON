@@ -39,7 +39,7 @@
         "type": "node",
         "node_type_id": "audio.AudioSource",
         "params": {
-          "file_id": "tests/fixtures/new_order_confusion_60seconds.wav",
+          "file_id": "tests/fixtures/inside_confusion_loop_60s_gsm.wav",
           "duration": 60,
           "mode": "full",
           "loop": false,
