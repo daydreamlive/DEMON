@@ -42,6 +42,24 @@ uv run python -u -m demos.realtime_motion_graph_web --accel eager
 `--accel {tensorrt,compile,eager}` sets BOTH `decoder_backend` and
 `vae_backend` on the underlying `Session`. Default is `tensorrt`.
 
+`--decoder-accel` and `--vae-accel` override `--accel` for one
+component at a time. Useful when, for example, only one of the two
+TRT engines exists for a given checkpoint, or when you want to debug
+one component in eager while the other stays on TRT:
+
+```bash
+# Mix-and-match: TRT decoder, eager VAE.
+uv run python -u -m demos.realtime_motion_graph_web \
+    --accel tensorrt --vae-accel eager
+```
+
+`--checkpoint <name>` selects which DiT checkpoint to load. The name
+must match a directory under `<checkpoints_dir>/` (auto-downloaded from
+HF on first use). Currently `acestep-v15-turbo` (default, 2B) is the
+only vendored variant; other entries in
+`acestep.model_downloader.SUBMODEL_REGISTRY` will load once their
+modeling files are vendored into `acestep/models/`.
+
 Then from any laptop on the same network:
 
 1. Open `http://<server-host>:8765/`
