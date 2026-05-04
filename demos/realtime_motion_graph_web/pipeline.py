@@ -212,13 +212,13 @@ class PipelineRunner:
                 # for non-enabled rows are ignored, matching the UI
                 # contract that strength sliders are only interactive
                 # while the LoRA is on.
-                for desc in self.engine_obj.list_trt_loras():
+                for desc in self.engine_obj.list_loras():
                     if desc.state != "enabled":
                         continue
                     key = f"lora_str_{desc.id}"
                     lora_str = raw.get(key, desc.strength)
                     if abs(lora_str - self.params.get(key, -1)) > 0.02:
-                        self.engine_obj.set_trt_lora_strength(desc.id, lora_str)
+                        self.engine_obj.set_lora_strength(desc.id, lora_str)
 
             hint_str = self.midi_knobs.get_param("hint_strength") if self.use_midi else 1.0
             if abs(hint_str - last_hint_str) > 0.02:
@@ -380,7 +380,7 @@ class PipelineRunner:
                 self.params["feedback"] = round(feedback, 2)
                 self.params["shift"] = round(shift_val, 2)
                 if self.use_lora and self.engine_obj is not None:
-                    for desc in self.engine_obj.list_trt_loras():
+                    for desc in self.engine_obj.list_loras():
                         if desc.state != "enabled":
                             continue
                         key = f"lora_str_{desc.id}"

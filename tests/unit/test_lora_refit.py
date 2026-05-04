@@ -43,6 +43,7 @@ def _make_mgr():
         "k.weight": torch.empty_like(base_k),
     }
     mgr._np_dtype = {"q.weight": np.float16, "k.weight": np.float16}
+    mgr._param_dtype = {"q.weight": torch.float16, "k.weight": torch.float16}
     mgr._loras = {}
     mgr._ever_dirty = set()
     mgr._executor = None

@@ -245,14 +245,14 @@ with timed("model_load"):
 
 if use_lora:
     engine_obj = session.handler._diffusion_engine
-    if engine_obj is not None and engine_obj.trt_lora_available:
+    if engine_obj is not None and engine_obj.lora_available:
         with timed("apply_lora"):
             print(
                 f"[Setup] Applying LoRA: {Path(LORA_PATH).name} (strength={LORA_STRENGTH})"
             )
-            engine_obj.apply_trt_lora(LORA_PATH, strength=LORA_STRENGTH)
+            engine_obj.apply_lora(LORA_PATH, strength=LORA_STRENGTH)
     else:
-        print("[Setup] WARNING: --lora requested but TRT LoRA refit not available")
+        print("[Setup] WARNING: --lora requested but LoRA backend unavailable")
 
 with timed("load_audio"):
     print("[Setup] Loading source audio...")

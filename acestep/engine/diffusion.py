@@ -93,12 +93,16 @@ class DiffusionEngine:
         self._trt_stream = None
         self._trt_buf_cache: dict[tuple, dict] = {}
 
-        # Dynamic LoRA via TRT weight refitting (initialized in load_trt_engine
-        # when the engine supports REFIT).
+        # Dynamic LoRA manager. TRT path constructs TRTLoRAManager inside
+        # load_trt_engine (after the engine is up and refit support is
+        # confirmed). Eager path constructs EagerLoRAManager up-front so
+        # the LoRA library is usable from tick 0 with no prerequisites.
         self._lora_manager = None
 
         if trt_engine_path is not None:
             self.load_trt_engine(trt_engine_path)
+        else:
+            self._init_eager_lora_manager()
 
     # ------------------------------------------------------------------
     # TRT engine management
@@ -165,7 +169,7 @@ class DiffusionEngine:
             # Pre-register the on-disk library (MODELS_DIR/loras).  This
             # is the catalog backing the "infinite library" workflow:
             # register every .safetensors as REGISTERED (zero RAM cost),
-            # callers materialize on demand via enable_trt_lora.
+            # callers materialize on demand via enable_lora.
             try:
                 self._lora_manager.register_library()
             except Exception as e:
@@ -177,115 +181,112 @@ class DiffusionEngine:
             logger.warning("Failed to init TRT LoRA manager: %s", e)
 
     # ------------------------------------------------------------------
-    # TRT LoRA management (delegates to TRTLoRAManager)
+    # LoRA management (backend-agnostic)
+    #
+    # Delegates to the active manager (TRTLoRAManager when a TRT engine
+    # is loaded with REFIT support, EagerLoRAManager otherwise). All
+    # public methods here are stable across backends; the manager
+    # subclass differs only in *where* the weight writeback lands.
     # ------------------------------------------------------------------
 
-    def apply_trt_lora(self, lora_path: str, strength: float = 1.0) -> int:
-        """Apply a LoRA to the TRT engine via weight refitting.
+    def _init_eager_lora_manager(self) -> None:
+        """Construct an EagerLoRAManager around the live decoder.
 
-        Args:
-            lora_path: Path to .safetensors LoRA file.
-            strength: LoRA strength (0.0 = no effect, 1.0 = full).
+        Skipped silently when the decoder has no parameters (e.g. the
+        skip_decoder TRT path before load_trt_engine has run, or a
+        pure-VAE/text-encoder ModelContext).
+        """
+        from acestep.engine.lora import EagerLoRAManager
 
-        Returns:
-            LoRA ID for later removal or strength adjustment.
+        try:
+            self._lora_manager = EagerLoRAManager(decoder=self.decoder)
+        except (RuntimeError, ValueError) as e:
+            logger.info("Eager LoRA manager not available: %s", e)
+            self._lora_manager = None
+            return
+
+        try:
+            self._lora_manager.register_library()
+        except Exception as e:
+            logger.warning("Failed to scan LoRA library: %s", e)
+
+    def apply_lora(self, lora_path: str, strength: float = 1.0) -> str:
+        """Register + enable a LoRA in one call. Returns the LoRA id.
 
         Raises:
-            RuntimeError: If TRT engine doesn't support refit.
+            RuntimeError: If no LoRA backend is available.
         """
-        if self._lora_manager is None:
-            raise RuntimeError(
-                "TRT LoRA refit not available. Rebuild the decoder engine "
-                "with refit=True (OnnxExportConfig.for_refit=True + "
-                "TRTBuildConfig.refit=True)."
-            )
+        self._require_lora_manager()
         return self._lora_manager.apply_lora(lora_path, strength)
 
-    def remove_trt_lora(self, lora_id: int = -1) -> bool:
-        """Remove a LoRA from the TRT engine. Default: most recent."""
+    def remove_lora(self, lora_id=-1) -> bool:
+        """Remove a LoRA (default: most recently registered)."""
         if self._lora_manager is None:
             return False
         return self._lora_manager.remove_lora(lora_id)
 
-    def set_trt_lora_strength(self, lora_id: int, strength: float) -> None:
-        """Adjust strength of an active TRT LoRA."""
-        if self._lora_manager is None:
-            raise RuntimeError("TRT LoRA refit not available")
+    def set_lora_strength(self, lora_id: str, strength: float) -> None:
+        """Adjust the strength of an ENABLED LoRA."""
+        self._require_lora_manager()
         self._lora_manager.set_lora_strength(lora_id, strength)
 
-    def remove_all_trt_loras(self) -> None:
-        """Remove all LoRAs and restore the TRT engine to base weights."""
+    def remove_all_loras(self) -> None:
+        """Remove all LoRAs and restore the decoder to base weights."""
         if self._lora_manager is not None:
             self._lora_manager.remove_all()
 
-    # ------------------------------------------------------------------
-    # Lifecycle API: register / enable / disable / prewarm
-    # ------------------------------------------------------------------
-
-    def register_trt_lora(self, lora_path: str, name: str | None = None) -> str:
-        """Add a LoRA to the catalog without materializing deltas.
-
-        Returns the (filename-stem) id used for subsequent enable/disable
-        calls.  Idempotent on path.
-        """
-        if self._lora_manager is None:
-            raise RuntimeError("TRT LoRA refit not available")
+    def register_lora(self, lora_path: str, name: str | None = None) -> str:
+        """Add a LoRA to the catalog without materializing deltas."""
+        self._require_lora_manager()
         return self._lora_manager.register_lora(lora_path, name=name)
 
-    def enable_trt_lora(
+    def enable_lora(
         self, lora_id: str, strength: float | None = None,
     ) -> None:
         """Promote a registered LoRA to ENABLED (materialize + refit).
 
         ``strength``, when provided, sets the entry's strength BEFORE the
-        refit so the streaming pipeline's first decode window already
-        sees the LoRA at its target strength — avoids the "first ~5s
-        sounds like the LoRA is missing" glitch caused by enabling at
-        strength 0 and waiting for the next per-tick set_strength call
-        to ramp it up.
-
-        Synchronous; if a prewarm is in flight, blocks on it.  Refit only
-        fires when the resulting strength is non-zero.
+        refit so the first decode window already sees the LoRA at its
+        target strength — avoids the "first ~5s sounds like the LoRA is
+        missing" glitch caused by enabling at strength 0 and waiting for
+        the next per-tick set_strength call to ramp it up.
         """
-        if self._lora_manager is None:
-            raise RuntimeError("TRT LoRA refit not available")
+        self._require_lora_manager()
         self._lora_manager.enable_lora(lora_id, strength=strength)
 
-    def disable_trt_lora(self, lora_id: str) -> None:
-        """Drop a LoRA's deltas from CPU RAM.  Strength is preserved."""
-        if self._lora_manager is None:
-            raise RuntimeError("TRT LoRA refit not available")
+    def disable_lora(self, lora_id: str) -> None:
+        """Drop a LoRA's deltas. Strength is preserved on the entry."""
+        self._require_lora_manager()
         self._lora_manager.disable_lora(lora_id)
 
-    def prewarm_trt_lora(self, lora_id: str):
-        """Kick off background materialization.  Returns a Future.
-
-        Use this when the catalog is large but only some LoRAs will
-        actually be enabled — call ``prewarm_trt_lora`` for the
-        likely-enabled subset at session start so the eventual
-        ``enable_trt_lora`` call is fast.
-        """
-        if self._lora_manager is None:
-            raise RuntimeError("TRT LoRA refit not available")
+    def prewarm_lora(self, lora_id: str):
+        """Kick off background delta materialization. Returns a Future."""
+        self._require_lora_manager()
         return self._lora_manager.prewarm_lora(lora_id)
 
-    def list_trt_loras(self):
-        """Return a list of :class:`LoRADescriptor` for every entry in
-        the catalog.  Empty list if the manager is unavailable."""
+    def list_loras(self):
+        """Return descriptors for every entry. Empty list when no manager."""
         if self._lora_manager is None:
             return []
         return self._lora_manager.list_loras()
 
-    def get_trt_lora(self, lora_id: str):
-        """Return the current :class:`LoRADescriptor` for ``lora_id``."""
-        if self._lora_manager is None:
-            raise RuntimeError("TRT LoRA refit not available")
+    def get_lora(self, lora_id: str):
+        """Return the current descriptor for ``lora_id``."""
+        self._require_lora_manager()
         return self._lora_manager.get_lora(lora_id)
 
     @property
-    def trt_lora_available(self) -> bool:
-        """True if the TRT engine supports dynamic LoRA via refit."""
+    def lora_available(self) -> bool:
+        """True if a LoRA backend is initialized for this engine."""
         return self._lora_manager is not None
+
+    def _require_lora_manager(self) -> None:
+        if self._lora_manager is None:
+            raise RuntimeError(
+                "LoRA manager not available. For the TRT path, rebuild "
+                "the decoder engine with refit=True. For the PyTorch "
+                "path, the decoder must have parameters loaded."
+            )
 
     def _trt_decoder_step(
         self,

@@ -78,7 +78,6 @@ class ModelContext:
         self._compile_vae = compile_vae
         self._offload_text_encoder = False
         self._diffusion_engine = None
-        self._active_lora_deltas: list = []
 
         self._load_models(
             project_root=project_root,

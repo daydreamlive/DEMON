@@ -473,34 +473,30 @@ class Session:
             latent_a=a, latent_b=b, alpha=alpha,
         )["latent"]
 
-    def apply_lora(self, path: str, scale: float = 1.0) -> None:
-        """Load and apply a LoRA. Stackable (call multiple times)."""
-        from acestep.nodes.lora_nodes import LoadLoRA, ApplyLoRA
+    def apply_lora(self, path: str, scale: float = 1.0) -> str:
+        """Load and apply a LoRA. Stackable (call multiple times).
 
-        lora = LoadLoRA().execute(path=path, scale=scale)["lora"]
-        ApplyLoRA().execute(model=self.model, lora=lora)
+        Returns the LoRA id (filename stem) for selective removal.
+        """
+        engine = self.model.handler._diffusion_engine
+        lora_id = engine.apply_lora(path, strength=scale)
         if not hasattr(self, '_lora_stack'):
             self._lora_stack = []
-        self._lora_stack.append(lora)
+        self._lora_stack.append(lora_id)
+        return lora_id
 
     def remove_loras(self) -> None:
         """Remove all applied LoRAs in reverse order."""
-        from acestep.nodes.lora_nodes import RemoveLoRA
-
+        engine = self.model.handler._diffusion_engine
         if hasattr(self, '_lora_stack'):
             while self._lora_stack:
-                RemoveLoRA().execute(
-                    model=self.model, lora=self._lora_stack.pop(),
-                )
+                engine.remove_lora(self._lora_stack.pop())
 
     def remove_last_lora(self) -> None:
         """Remove the most recently applied LoRA."""
-        from acestep.nodes.lora_nodes import RemoveLoRA
-
+        engine = self.model.handler._diffusion_engine
         if hasattr(self, '_lora_stack') and self._lora_stack:
-            RemoveLoRA().execute(
-                model=self.model, lora=self._lora_stack.pop(),
-            )
+            engine.remove_lora(self._lora_stack.pop())
 
     # ------------------------------------------------------------------
     # Streaming

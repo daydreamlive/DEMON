@@ -169,7 +169,7 @@ def handle_client(
     # MODELS_DIR/loras catalog.  Both can be combined.
     #
     # ``lora_strengths`` is a dict {id: strength} — the value passed to
-    # enable_trt_lora at init time.  Setting strength at enable time
+    # enable_lora at init time.  Setting strength at enable time
     # (rather than enabling at 0 and waiting for the first per-tick
     # set_strength) is what keeps the first VAE-decode window from
     # sounding like the LoRA is missing.
@@ -269,7 +269,7 @@ def handle_client(
     # subset to enable for this client and prewarm them in the background
     # so the eventual enable_lora is fast.
     engine_obj = session.handler._diffusion_engine
-    lora_available = bool(engine_obj and engine_obj.trt_lora_available)
+    lora_available = bool(engine_obj and engine_obj.lora_available)
     if use_lora and not lora_available:
         print("[Server] WARNING: LoRA engine unavailable on this decoder")
         use_lora = False
@@ -278,7 +278,7 @@ def handle_client(
     if use_lora:
         # Resolve any explicit enable-by-id requests (these must already
         # be in the catalog from the auto-scan).
-        catalog_ids = {d.id for d in engine_obj.list_trt_loras()}
+        catalog_ids = {d.id for d in engine_obj.list_loras()}
         for lid in enabled_lora_ids:
             if lid in catalog_ids:
                 initial_enable_ids.append(lid)
@@ -291,7 +291,7 @@ def handle_client(
                 print(f"[Server] WARNING: LoRA path missing: {p}")
                 continue
             try:
-                lid = engine_obj.register_trt_lora(str(pp))
+                lid = engine_obj.register_lora(str(pp))
                 if lid not in initial_enable_ids:
                     initial_enable_ids.append(lid)
             except Exception as e:
@@ -301,7 +301,7 @@ def handle_client(
         # future if the worker hasn't finished yet.
         for lid in initial_enable_ids:
             try:
-                engine_obj.prewarm_trt_lora(lid)
+                engine_obj.prewarm_lora(lid)
             except Exception as e:
                 print(f"[Server] Prewarm failed for {lid}: {e}")
         if not initial_enable_ids:
@@ -368,7 +368,7 @@ def handle_client(
                 "state": d.state, "strength": d.strength,
                 "materialized_bytes": d.materialized_bytes,
             }
-            for d in engine_obj.list_trt_loras()
+            for d in engine_obj.list_loras()
         ]
 
     # Send ready + initial buffer
@@ -459,13 +459,13 @@ def handle_client(
             return
         for lid in local_disable:
             try:
-                engine_obj.disable_trt_lora(lid)
+                engine_obj.disable_lora(lid)
                 virtual_knobs.remove_knob(f"lora_str_{lid}")
             except Exception as e:
                 print(f"[Server] disable_lora({lid}) failed: {e}")
         for lid, strength in local_enable:
             try:
-                engine_obj.enable_trt_lora(lid, strength=strength)
+                engine_obj.enable_lora(lid, strength=strength)
                 # Allocate a knob slot so set_lora_strength can be driven
                 # by the client's params dict.  Default the slot to the
                 # strength we just enabled at, so the runner's slider-
@@ -619,7 +619,7 @@ def handle_client(
     # comes out as if the LoRA were missing, because the runner's
     # set_strength catch-up only kicks in after tick 1.  The prewarm
     # started at session setup is likely complete by now; any leftover
-    # work is awaited synchronously inside enable_trt_lora.
+    # work is awaited synchronously inside enable_lora.
     if use_lora and initial_enable_ids:
         with pending_lock:
             for lid in initial_enable_ids:
