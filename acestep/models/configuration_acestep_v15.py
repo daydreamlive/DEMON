@@ -184,6 +184,7 @@ class AceStepConfig(PretrainedConfig):
         patch_size=2,
         num_attention_pooler_hidden_layers=2,
         num_audio_decoder_hidden_layers=24,
+        lyric_alignment_layers_config=None,
         model_version="turbo",
         **kwargs,
     ):
@@ -221,6 +222,7 @@ class AceStepConfig(PretrainedConfig):
         self.timbre_fix_frame = timbre_fix_frame
         self.num_attention_pooler_hidden_layers = num_attention_pooler_hidden_layers
         self.num_audio_decoder_hidden_layers = num_audio_decoder_hidden_layers
+        self.lyric_alignment_layers_config = lyric_alignment_layers_config
         self.vocab_size = vocab_size
 
         # Backward compatibility: ensure num_key_value_heads is set

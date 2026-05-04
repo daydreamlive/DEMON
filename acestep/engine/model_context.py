@@ -283,31 +283,50 @@ class ModelContext:
                 pass
         return "sdpa"
 
+    # Maps the upstream `auto_map["AutoModel"]` string in a checkpoint's
+    # config.json to the vendored class DEMON ships. Both turbo and XL turbo
+    # checkpoints declare architectures=["AceStepConditionGenerationModel"],
+    # so the auto_map module path is what actually distinguishes them.
+    _VENDORED_DIT_CLASSES = {
+        "modeling_acestep_v15_turbo.AceStepConditionGenerationModel":
+            ("acestep.models.modeling_acestep_v15_turbo", "AceStepConditionGenerationModel"),
+        "modeling_acestep_v15_xl_turbo.AceStepConditionGenerationModel":
+            ("acestep.models.modeling_acestep_v15_xl_turbo", "AceStepConditionGenerationModel"),
+    }
+
     def _load_dit(self, path: str, attn_impl: str):
         # Load the vendored class directly. Avoids `trust_remote_code=True`,
         # which would let arbitrary .py files in the checkpoint dir execute
         # in our process — exactly the failure mode that bit us when a
         # mid-session pod sync rewrote the checkpoint's modeling file.
+        import importlib
         import json
-
-        from acestep.models.modeling_acestep_v15_turbo import (
-            AceStepConditionGenerationModel,
-        )
 
         config_path = os.path.join(path, "config.json")
         with open(config_path, "r", encoding="utf-8") as f:
-            architectures = json.load(f).get("architectures", [])
+            cfg = json.load(f)
+        architectures = cfg.get("architectures", [])
+        auto_model = cfg.get("auto_map", {}).get("AutoModel", "")
+
         if architectures != ["AceStepConditionGenerationModel"]:
             raise NotImplementedError(
-                f"Only the turbo DiT variant (AceStepConditionGenerationModel) "
-                f"is currently vendored. Checkpoint at {path} declares "
-                f"architectures={architectures}. To support other variants, "
-                f"vendor their modeling files into acestep/models/."
+                f"Unexpected architectures={architectures} in {config_path}; "
+                f"the vendored DiT path only handles AceStepConditionGenerationModel."
             )
 
+        target = self._VENDORED_DIT_CLASSES.get(auto_model)
+        if target is None:
+            raise NotImplementedError(
+                f"No vendored class for auto_map AutoModel={auto_model!r} "
+                f"(checkpoint at {path}). Vendor its modeling file into "
+                f"acestep/models/ and add it to ModelContext._VENDORED_DIT_CLASSES."
+            )
+        module_name, class_name = target
+        ModelClass = getattr(importlib.import_module(module_name), class_name)
+
         try:
-            logger.info(f"Loading model with attention={attn_impl}")
-            model = AceStepConditionGenerationModel.from_pretrained(
+            logger.info(f"Loading {class_name} from {module_name} with attention={attn_impl}")
+            model = ModelClass.from_pretrained(
                 path,
                 attn_implementation=attn_impl,
                 dtype="bfloat16",
@@ -315,7 +334,7 @@ class ModelContext:
         except Exception as exc:
             if attn_impl == "sdpa":
                 logger.info("Falling back to eager attention")
-                model = AceStepConditionGenerationModel.from_pretrained(
+                model = ModelClass.from_pretrained(
                     path,
                     attn_implementation="eager",
                 )
