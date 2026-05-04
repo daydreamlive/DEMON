@@ -50,9 +50,26 @@ known reason for the upgrade above 10.13 in the first place.
 
 ## What's in this branch
 
-### `pyproject.toml` — pinned to `tensorrt>=10.16,<10.17`
-The whole point. H100 needs 10.16. We do not want two versions, two code
-paths, or two engine sets.
+### `pyproject.toml` — base stays on `tensorrt>=10.13,<10.14`
+
+Base deps stay on 10.13: that's the version turbo's decoder and
+Oobleck VAE engines were built against, and the only one without the
+Myelin VAE codegen segfault that 10.15+ introduces. The XL bump to
+10.16 is **not** expressed as a uv dependency-group, because uv
+resolves all groups against base for the lockfile and the two pins
+conflict even when the XL group isn't selected. To switch a checkout
+to the XL pin, manually:
+
+```bash
+uv pip install --upgrade --reinstall 'tensorrt>=10.16,<10.17'
+```
+
+(invert the version to switch back). XL stays on a separate code path
+until either (a) we confirm 10.13 actually fails for XL on H100 —
+currently unverified; the original upgrade was driven by the 10.14
+STRONGLY_TYPED segfault, not by 10.13 testing — or (b) the in-session
+VAE 240s slowdown on 10.16 is solved so 10.16 can replace 10.13 as
+the base pin.
 
 ### `acestep/engine/trt/vae_export.py` — Myelin segfault workaround
 
@@ -264,7 +281,8 @@ python _remote_scripts/test_vae_encode_alone.py
 
 ## Files changed by this branch
 
-- `pyproject.toml` — `tensorrt>=10.16,<10.17`
+- `pyproject.toml` — base stays on `tensorrt>=10.13,<10.14`; XL pin
+  is documented but not expressed as a uv group (group/base conflict)
 - `acestep/engine/trt/vae_export.py` — `builder_optimization_level = 1`
 - `acestep/engine/diffusion.py` — per-input TRT dtype map
 - `XL_ACCEL_TRT_NOTES.md` (this file)
