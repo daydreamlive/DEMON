@@ -70,6 +70,14 @@ def build_banks(sde: bool, loras=None) -> list:
     core["hint_strength"] = KnobDef(cc=cc, default=1.0, sensitivity=2.0); cc += 1
     core["noise_share"] = KnobDef(cc=cc, default=0.0, sensitivity=2.0); cc += 1
     core["ode_noise"] = KnobDef(cc=cc, default=0.0, sensitivity=2.0, max_val=0.5); cc += 1
+    # StreamA2A feature-bank strength (eager backend only). 0 = bank
+    # masked out, 1 = banked tokens get equal softmax weight to current
+    # K, >1 makes the bank attend more strongly than the current
+    # sequence (log(strength) is applied as the per-step softmax bias).
+    # Ceiling is 3.0; beyond ~2-3 the bank dominates and the source
+    # gets mostly ignored. The TRT backend refuses enable_feature_bank,
+    # so this knob is only meaningful with --accel eager / compile.
+    core["bank_strength"] = KnobDef(cc=cc, default=0.0, sensitivity=3.0, max_val=3.0); cc += 1
 
     channels = {}
     for i, (name, _start, _end) in enumerate(CHANNEL_GROUPS):

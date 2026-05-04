@@ -194,6 +194,8 @@ class PipelineRunner:
         last_decode_pos = None
         last_hint_str = 1.0
         last_channel_gains = [1.0] * (len(CHANNEL_GROUPS) + len(KEYSTONE_CHANNELS))
+        last_bank_strength = -1.0  # force first-tick apply
+        last_bank_clear_seq = 0
         current_shift = self.stream.base_kwargs["shift"]
         prev_src_T = self.stream.source.latent.tensor.shape[1]
 
@@ -260,6 +262,40 @@ class PipelineRunner:
                 self._hint_dirty = False
                 last_hint_str = hint_str
                 self._update_hint_strength(hint_str)
+
+            # streamA2A bank: lazy install on the first tick where
+            # stream.pipeline is built. ``enable_feature_bank`` raises
+            # when a TRT engine is loaded, so gate on _trt_engine. Once
+            # installed, the runner just sweeps strength via the knob;
+            # the strength setter recomputes bank_bias on device, so we
+            # only push when the knob actually moved.
+            bank_pipe = getattr(self.stream, "pipeline", None)
+            if (
+                bank_pipe is not None
+                and bank_pipe.feature_bank is None
+                and getattr(bank_pipe, "_trt_engine", None) is None
+            ):
+                initial = self.midi_knobs.get_param("bank_strength") if self.use_midi else 0.0
+                try:
+                    bank_pipe.enable_feature_bank(strength=float(initial))
+                    last_bank_strength = float(initial)
+                    print(f"[Pipeline] FeatureBank installed (strength={initial:.2f})")
+                except Exception as exc:
+                    print(f"[Pipeline] WARNING: enable_feature_bank failed: {exc}")
+
+            bank = getattr(bank_pipe, "feature_bank", None) if bank_pipe is not None else None
+            if bank is not None:
+                bank_str = self.midi_knobs.get_param("bank_strength") if self.use_midi else 0.0
+                if abs(bank_str - last_bank_strength) > 0.02:
+                    last_bank_strength = bank_str
+                    bank.strength = float(bank_str)
+                want_enabled = bool(raw.get("bank_enabled", True))
+                if want_enabled != bank.enabled:
+                    bank.enabled = want_enabled
+                clear_seq = int(raw.get("bank_clear_seq", 0))
+                if clear_seq != last_bank_clear_seq:
+                    last_bank_clear_seq = clear_seq
+                    bank.reset()
 
             noise_sharing = self.midi_knobs.get_param("noise_share") if self.use_midi else 0.0
 

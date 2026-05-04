@@ -575,6 +575,10 @@ def handle_client(
         pipeline_depth=depth,
     )
     print("[Server] Stream handle ready (pipeline built on first tick)")
+    # streamA2A feature bank is installed lazily by the PipelineRunner
+    # the first time stream.pipeline becomes non-None (the StreamDenoise
+    # node only constructs the StreamPipeline on its first execute()).
+    # That avoids racing the lazy build here.
 
     # Initial buffer
     src_np = waveform.numpy().T

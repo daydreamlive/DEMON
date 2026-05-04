@@ -25,6 +25,7 @@ from .dcw import DCWCorrector
 
 if TYPE_CHECKING:
     from .masking import LatentNoiseMask
+    from .feature_bank import FeatureBank
 
 
 @dataclass
@@ -252,6 +253,12 @@ class StreamPipeline:
             high_scaler=config.dcw_high_scaler,
             wavelet=config.dcw_wavelet,
         )
+
+        # Feature bank (StreamV2V-style K/V re-injection across successive
+        # generations). None until enable_feature_bank() is called. The
+        # patch lives on individual self_attn modules; this reference
+        # lets the tick loop set step_indices and gate writes.
+        self._feature_bank: Optional["FeatureBank"] = None
 
         # Stats
         self.ticks: int = 0
@@ -875,6 +882,10 @@ class StreamPipeline:
             xt_b = torch.cat(
                 [xt_decoder_list[si] for si in pair_slot_idx], dim=0,
             )
+            if self._feature_bank is not None:
+                self._feature_bank.step_indices = [
+                    slots[si].step_idx for si in pair_slot_idx
+                ]
             return self._decoder_forward(
                 xt_batch=xt_b,
                 timestep_list=[
@@ -904,9 +915,17 @@ class StreamPipeline:
             for c in neg_conds_per_slot[si]:
                 neg_pair_si.append(si)
                 neg_pair_cond.append(c)
-        vt_neg_all = (
-            _forward_pairs(neg_pair_si, neg_pair_cond) if neg_pair_si else None
-        )
+        if neg_pair_si:
+            # Don't poison the bank with null-cond features.
+            if self._feature_bank is not None:
+                self._feature_bank.write_enabled = False
+            try:
+                vt_neg_all = _forward_pairs(neg_pair_si, neg_pair_cond)
+            finally:
+                if self._feature_bank is not None:
+                    self._feature_bank.write_enabled = True
+        else:
+            vt_neg_all = None
 
         # --- Per-slot: blend pos, blend neg (if CFG), APG-combine ---
         vt_per_slot: List[torch.Tensor] = [None] * len(slots)  # type: ignore[list-item]
@@ -1181,6 +1200,68 @@ class StreamPipeline:
             if v is None:
                 return None
         return ode_steps.normalize_curve(v)
+
+    # ------------------------------------------------------------------
+    # Feature bank (StreamV2V-style cross-generation K/V re-injection)
+    # ------------------------------------------------------------------
+
+    def enable_feature_bank(
+        self,
+        layer_indices: Optional[Tuple[int, ...]] = None,
+        strength: float = 1.0,
+    ) -> "FeatureBank":
+        """Install the feature-bank patch on the PyTorch decoder.
+
+        ``strength`` controls how much softmax mass the banked tokens
+        receive relative to current K/V. 1.0 = equal weighting (raw
+        concat); 0.5 = banked positions get half the weight current
+        would; 0.0 = bank fully masked out. Hot-updatable via
+        ``pipe.feature_bank.strength = ...`` between ticks.
+
+        Refuses when a TRT engine is loaded -- the eager bank path
+        requires the PyTorch decoder. The decoder must also not be
+        ``torch.compile``'d at install time; compile after if needed.
+
+        ``num_steps`` for the bank's step axis is taken from
+        ``config.infer_steps``, which equals the number of forward
+        passes per slot (slots at step_idx == infer_steps are
+        evicted before forward). Bank tensors are lazy-allocated on
+        first forward.
+
+        Returns the ``FeatureBank`` for ``reset()`` / ``strength``
+        / ``num_entries()`` access.
+        """
+        if self._trt_engine is not None:
+            raise RuntimeError(
+                "Feature bank is incompatible with the TRT decoder path. "
+                "Drop the TRT engine (or use a PT-only DiffusionEngine) "
+                "before enabling."
+            )
+        from .feature_bank import (
+            FeatureBank, DEFAULT_BANKED_LAYERS,
+            enable_feature_bank_on_decoder,
+        )
+        layers = layer_indices if layer_indices is not None else DEFAULT_BANKED_LAYERS
+        bank = FeatureBank(
+            banked_layers=tuple(layers),
+            num_steps=self.config.infer_steps,
+            strength=strength,
+        )
+        enable_feature_bank_on_decoder(self.decoder, bank)
+        self._feature_bank = bank
+        return bank
+
+    def disable_feature_bank(self) -> None:
+        """Restore the un-patched self-attn forward and clear the bank."""
+        if self._feature_bank is None:
+            return
+        from .feature_bank import disable_feature_bank_on_decoder
+        disable_feature_bank_on_decoder(self.decoder)
+        self._feature_bank = None
+
+    @property
+    def feature_bank(self) -> Optional["FeatureBank"]:
+        return self._feature_bank
 
     def set_dcw(
         self,

@@ -45,6 +45,10 @@ _VIDEO_EXTS = {".mp4", ".webm", ".mov"}
 _NO_BACKEND = False
 # Set in main() based on --accel; read by the WS handler wrapper.
 _ACCEL = "tensorrt"
+# Set in main() based on --decoder-accel (or --accel as fallback); reported on
+# /api/server-info so the client can gate eager-only UI like the streamA2A
+# bank-strength slider, which the TRT decoder backend refuses to install.
+_DECODER_ACCEL = "tensorrt"
 # Set in main() based on --kiosk / --mode; surfaced to the client via
 # /api/server-info so installation-only behaviors (cursor auto-hide,
 # idle settings reset) and the initial display mode can be CLI-driven.
@@ -109,6 +113,7 @@ def _process_request(connection, request):
             "no_backend": _NO_BACKEND,
             "kiosk": _KIOSK,
             "default_mode": _DEFAULT_MODE,
+            "decoder_accel": _DECODER_ACCEL,
         }).encode()
         _log_http(remote, 200, "GET", url)
         return Response(
@@ -355,9 +360,10 @@ def main():
             f"[Server] --mode must be one of {_VALID_MODES}, got {default_mode!r}"
         )
 
-    global _NO_BACKEND, _ACCEL, _KIOSK, _DEFAULT_MODE
+    global _NO_BACKEND, _ACCEL, _DECODER_ACCEL, _KIOSK, _DEFAULT_MODE
     _NO_BACKEND = no_backend
     _ACCEL = accel
+    _DECODER_ACCEL = decoder_accel
     _KIOSK = kiosk
     _DEFAULT_MODE = default_mode
 
