@@ -9,8 +9,8 @@
     "depth": 8,
     "vae_window": 6.0,
     "crop": 0,
-    "steps": 8,
-    "fast_vae": false,
+    "steps": 4,
+    "fast_vae": true,
     "key": "G# minor",
     "_enabled_loras_help": "List of LoRA ids (filename stems) to auto-enable at session start. Ids must exist in MODELS_DIR/loras. Empty = catalog-only, operator toggles via the Library panel.",
     "enabled_loras": []

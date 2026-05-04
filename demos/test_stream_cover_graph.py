@@ -40,7 +40,7 @@ from acestep.fixtures import audio_fixture
 
 PROJECT_ROOT = project_root()
 DEFAULT_SOURCE_AUDIO = audio_fixture("inside_confusion_loop_60s_gsm.wav")
-OUTPUT_DIR = PROJECT_ROOT / "_debug_tests" / "stream_output"
+OUTPUT_DIR = PROJECT_ROOT / "demos" / "outputs" / "stream_cover_graph"
 
 SAMPLE_RATE = 48000
 SEED = 1528
