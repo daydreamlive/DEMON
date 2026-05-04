@@ -318,6 +318,7 @@ def main():
     host = "0.0.0.0"
     port = 8765  # single port: serves both HTTP and WebSocket
     accel = "tensorrt"  # decoder + vae backend; overridden by --accel
+    checkpoint = "acestep-v15-turbo"  # DiT variant; overridden by --checkpoint
 
     args = sys.argv[1:]
     no_backend = "--no-backend" in args or "--ui-only" in args
@@ -342,6 +343,29 @@ def main():
         raise SystemExit(
             f"[Server] --accel must be one of {_VALID_ACCEL}, got {accel!r}"
         )
+    # Per-component overrides. Default each to the bulk --accel value so
+    # `--accel eager` still sets both. Use case for splitting: a checkpoint
+    # whose TRT engines exist for one component but not the other, or
+    # debugging one path in eager while the other stays on TRT.
+    decoder_accel = accel
+    vae_accel = accel
+    if "--decoder-accel" in args:
+        idx = args.index("--decoder-accel")
+        decoder_accel = args[idx + 1]
+    if "--vae-accel" in args:
+        idx = args.index("--vae-accel")
+        vae_accel = args[idx + 1]
+    if decoder_accel not in _VALID_ACCEL:
+        raise SystemExit(
+            f"[Server] --decoder-accel must be one of {_VALID_ACCEL}, got {decoder_accel!r}"
+        )
+    if vae_accel not in _VALID_ACCEL:
+        raise SystemExit(
+            f"[Server] --vae-accel must be one of {_VALID_ACCEL}, got {vae_accel!r}"
+        )
+    if "--checkpoint" in args:
+        idx = args.index("--checkpoint")
+        checkpoint = args[idx + 1]
 
     kiosk = "--kiosk" in args
     default_mode = "graph"
@@ -372,7 +396,12 @@ def main():
         from .backend import handle_client
 
         def ws_handler(ws):
-            handle_client(ws, decoder_backend=accel, vae_backend=accel)
+            handle_client(
+                ws,
+                decoder_backend=decoder_accel,
+                vae_backend=vae_accel,
+                checkpoint=checkpoint,
+            )
 
     print(f"[Server] Starting single-port HTTP+WS on :{port}")
     srv = ws_serve(
@@ -389,8 +418,13 @@ def main():
     extras = [f"mode={default_mode}"]
     if kiosk:
         extras.append("kiosk")
+    extras.append(f"ckpt={checkpoint}")
     extra_str = " " + " ".join(f"[{e}]" for e in extras)
-    mode = "UI-ONLY (no backend)" if no_backend else f"WEB APP, single port, accel={accel}{extra_str}"
+    if decoder_accel == vae_accel:
+        accel_str = f"accel={decoder_accel}"
+    else:
+        accel_str = f"accel=decoder:{decoder_accel}+vae:{vae_accel}"
+    mode = "UI-ONLY (no backend)" if no_backend else f"WEB APP, single port, {accel_str}{extra_str}"
     print()
     print("=" * 60)
     print(f"  Real-Time Motion-to-Music  ({mode})")

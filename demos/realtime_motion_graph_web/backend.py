@@ -125,8 +125,17 @@ class VirtualMidiKnobs:
 # WebSocket handler
 # ---------------------------------------------------------------------------
 
-def handle_client(ws, *, decoder_backend: str = "tensorrt", vae_backend: str = "tensorrt"):
-    print(f"[Server] Client connected (decoder={decoder_backend}, vae={vae_backend})")
+def handle_client(
+    ws,
+    *,
+    decoder_backend: str = "tensorrt",
+    vae_backend: str = "tensorrt",
+    checkpoint: str = "acestep-v15-turbo",
+):
+    print(
+        f"[Server] Client connected "
+        f"(decoder={decoder_backend}, vae={vae_backend}, ckpt={checkpoint})"
+    )
 
     # ---- Phase 1: Init ----
     config = json.loads(ws.recv())
@@ -242,10 +251,11 @@ def handle_client(ws, *, decoder_backend: str = "tensorrt", vae_backend: str = "
         print(f"[Server] WARNING: fast_vae requires vae_backend=tensorrt; ignoring with vae_backend={vae_backend}")
         fast_vae = False
 
-    print(f"[Server] Loading model... (decoder={decoder_backend}, vae={vae_backend})")
+    print(f"[Server] Loading model... (decoder={decoder_backend}, vae={vae_backend}, ckpt={checkpoint})")
     t0 = time.time()
     session = Session(
         project_root=str(checkpoints_dir()),
+        config_path=checkpoint,
         decoder_backend=decoder_backend,
         vae_backend=vae_backend,
         trt_engines=trt_engines,
