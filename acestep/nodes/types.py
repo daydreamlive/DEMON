@@ -201,15 +201,6 @@ class Config:
 
 @_register
 @dataclass
-class LoRA:
-    """Loaded LoRA adapter weights."""
-    TYPE_NAME: ClassVar[str] = "LORA"
-    path: str
-    scale: float = 1.0
-
-
-@_register
-@dataclass
 class TextEmbed:
     """Tokenized + text-encoder-embedded prompt payload.
 

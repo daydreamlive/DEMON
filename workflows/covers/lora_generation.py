@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """LoRA generation workflow: cover with LoRA style adapter.
 
-Replaces test_lora_solo.py. Demonstrates:
-  - LoadLoRA -> ApplyLoRA to inject style adapter
-  - Standard cover generation with LoRA-modified model
-  - RemoveLoRA to restore base weights after generation
+Demonstrates the unified LoRA path on top of the model handle's
+DiffusionEngine — works against eager, torch.compile, and TRT
+decoders without any per-backend branching.
 
-Requires a LoRA safetensors file. Default path points to the
-daftpunk style LoRA used in the original test.
+Requires a LoRA safetensors file. Update ``LORA_PATH`` below.
 """
 
 import os
@@ -26,7 +24,6 @@ from acestep.nodes.model_nodes import LoadModel
 from acestep.nodes.vae_nodes import VAEEncodeAudio, VAEDecodeAudio
 from acestep.nodes.cond_nodes import TextEncode
 from acestep.nodes.semantic_nodes import SemanticExtract
-from acestep.nodes.lora_nodes import LoadLoRA, ApplyLoRA, RemoveLoRA
 from acestep.nodes.diffusion_nodes import DiffusionConfigNode, Generate
 from acestep.constants import TASK_INSTRUCTIONS
 from acestep.fixtures import audio_fixture
@@ -77,10 +74,10 @@ def main():
     )
     model, clip, vae = handles["model"], handles["clip"], handles["vae"]
 
-    # --- Load and apply LoRA ---
-    print("\n[LoadLoRA + ApplyLoRA]")
-    lora = LoadLoRA().execute(path=LORA_PATH, scale=LORA_STRENGTH)["lora"]
-    model = ApplyLoRA().execute(model=model, lora=lora)["model"]
+    # --- Apply LoRA via the model's DiffusionEngine ---
+    print("\n[apply_lora]")
+    engine = model.handler._diffusion_engine
+    lora_id = engine.apply_lora(LORA_PATH, strength=LORA_STRENGTH)
 
     # --- Encode source ---
     source_audio = load_audio(SOURCE_AUDIO)
@@ -111,8 +108,8 @@ def main():
     print(f"Generated in {time.time() - t0:.2f}s")
 
     # --- Remove LoRA (restore base weights) ---
-    print("\n[RemoveLoRA]")
-    model = RemoveLoRA().execute(model=model)["model"]
+    print("\n[remove_lora]")
+    engine.remove_lora(lora_id)
 
     # --- Decode ---
     output_audio = VAEDecodeAudio().execute(vae=vae, latent=output_latent)["audio"]

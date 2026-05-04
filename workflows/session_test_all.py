@@ -18,7 +18,6 @@ from acestep.nodes import Audio, Latent, Mask
 from acestep.nodes.cond_nodes import TextEncode, ConditioningZeroOut, ConditioningAverage, ConditioningCombine
 from acestep.nodes.curve_nodes import CurveRamp, CurveWave
 from acestep.nodes.diffusion_nodes import DiffusionConfigNode, Generate
-from acestep.nodes.lora_nodes import LoadLoRA, ApplyLoRA, RemoveLoRA
 from acestep.nodes.mask_nodes import TemporalMask, SetLatentNoiseMask
 from acestep.nodes.vae_nodes import VAEDecodeAudio, LatentBlend
 from acestep.fixtures import audio_fixture
@@ -422,9 +421,8 @@ def main():
     name = "lora_generation"
     tm = Timer()
     t_ext = time.perf_counter()
-    tm.start("load_lora")
-    lora = LoadLoRA().execute(path=LORA_PATH, scale=1.3)["lora"]
-    ApplyLoRA().execute(model=s.model, lora=lora)
+    tm.start("apply_lora")
+    lora_id = s.apply_lora(LORA_PATH, scale=1.3)
     tm.start("generate")
     out = s.generate(
         conditioning=deathstep_cond,
@@ -433,7 +431,7 @@ def main():
         seed=1528,
     )
     tm.start("remove_lora")
-    RemoveLoRA().execute(model=s.model, lora=lora)
+    s.remove_last_lora()
     tm.start("decode")
     audio_out = s.decode(out)
     tm.stop()
