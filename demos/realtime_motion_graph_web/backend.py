@@ -39,6 +39,7 @@ from acestep.paths import (
     dreamvae_decode_engine_name,
     loras_dir,
     max_profile_duration_s,
+    smallest_fitting_profile_duration_s,
     trt_engine_path,
 )
 
@@ -226,14 +227,16 @@ def handle_client(
                 pass
             ws.close(1011, "TRT engine not built")
             return
-        if picked_dur > audio_duration_s and picked_dur > 60.0:
-            # Fell back to a larger profile than strictly needed. Worth
-            # logging because the larger profile reserves noticeably more
-            # VRAM at TRT context-creation time.
+        # Only warn when a *smaller* registered profile would have fit
+        # but wasn't built (so we genuinely fell back). For a 119.8 s
+        # source the 120 s engine is the smallest fitting profile, not
+        # a fallback — the previous predicate fired on that case.
+        ideal_dur = smallest_fitting_profile_duration_s(audio_duration_s)
+        if picked_dur > ideal_dur:
             print(
                 f"[Server] WARNING: using {picked_dur:.0f}s engine for "
-                f"{audio_duration_s:.1f}s audio (fallback; smaller profile "
-                f"not built — extra VRAM cost)"
+                f"{audio_duration_s:.1f}s audio (fallback; {ideal_dur:.0f}s "
+                f"profile not built — extra VRAM cost)"
             )
         # Prune unused keys for the same reason as before:
         # validate_backends() rejects engine entries whose backend isn't

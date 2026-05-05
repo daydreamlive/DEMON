@@ -135,6 +135,21 @@ def max_profile_duration_s() -> float:
     return max(_TRT_ENGINE_PROFILES.keys())
 
 
+def smallest_fitting_profile_duration_s(duration_s: float) -> float:
+    """Smallest registered profile duration that can hold ``duration_s``.
+
+    Pure: ignores filesystem state. Returns the registered profile,
+    not whichever was *built* — so callers can compare against the
+    actually-loaded profile to decide whether a fallback happened.
+    Falls back to ``max_profile_duration_s()`` when no registered
+    profile is large enough (matches ``select_trt_engines``).
+    """
+    for max_dur in sorted(_TRT_ENGINE_PROFILES.keys()):
+        if max_dur >= duration_s:
+            return max_dur
+    return max(_TRT_ENGINE_PROFILES.keys())
+
+
 def select_trt_engines(duration_s: float = 60.0) -> dict[str, str]:
     """Pick the smallest engine profile that can handle ``duration_s``.
 
