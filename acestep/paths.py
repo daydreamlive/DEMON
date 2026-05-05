@@ -124,6 +124,17 @@ def default_trt_engines(
     }
 
 
+def max_profile_duration_s() -> float:
+    """Largest registered TRT engine duration profile, in seconds.
+
+    Useful as the upper bound on user-supplied audio: anything longer
+    than this can't be handled by any built engine and would fail at
+    inference time anyway. Demos cap at this value rather than
+    hardcoding a single duration.
+    """
+    return max(_TRT_ENGINE_PROFILES.keys())
+
+
 def select_trt_engines(duration_s: float = 60.0) -> dict[str, str]:
     """Pick the smallest engine profile that can handle ``duration_s``.
 
@@ -234,6 +245,48 @@ def available_trt_engines(
             return paths, max_dur
         missing[max_dur] = absent
     raise EngineNotBuiltError(duration_s=duration_s, needs=needs, missing=missing)
+
+
+# ------------------------------------------------------------------
+# DreamVAE (distilled student decoder, drop-in for vae_decode)
+# ------------------------------------------------------------------
+#
+# The dreamvae engines are NOT in ``_TRT_ENGINE_PROFILES`` because they
+# don't replace the standard profile triple — they ride alongside it,
+# selected per-session by the demo's ``fast_vae`` flag. Naming follows
+# the same ``<component>_fp16_<dur>s`` convention as the teacher
+# engines so the duration sweep stays consistent.
+
+def dreamvae_decode_engine_name(duration_s: int) -> str:
+    """Engine directory/file stem for a dreamvae decoder at duration_s."""
+    return f"dreamvae_decode_fp16_{int(duration_s)}s"
+
+
+def dreamvae_decode_engine_path(duration_s: int) -> Path:
+    """Path to a dreamvae decode engine for a specific duration.
+
+    Pure: does not check existence. Use
+    :func:`available_dreamvae_decode_engine` for existence-aware lookup
+    that mirrors the standard ``available_trt_engines`` fallback.
+    """
+    return trt_engine_path(dreamvae_decode_engine_name(duration_s))
+
+
+def available_dreamvae_decode_engine(duration_s: float) -> Path | None:
+    """Pick the smallest *built* dreamvae engine that fits ``duration_s``.
+
+    Returns ``None`` if no fitting dreamvae engine is built, so callers
+    (the demo's ``fast_vae`` path) can fall back to the teacher decoder
+    without raising.
+    """
+    candidates = sorted(d for d in _TRT_ENGINE_PROFILES if d >= duration_s)
+    if not candidates:
+        candidates = [max(_TRT_ENGINE_PROFILES.keys())]
+    for dur in candidates:
+        path = dreamvae_decode_engine_path(int(dur))
+        if path.exists():
+            return path
+    return None
 
 
 def project_root() -> Path:

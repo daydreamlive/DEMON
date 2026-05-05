@@ -33,9 +33,12 @@ from acestep.engine.session import Session
 from acestep.nodes.types import Audio
 from acestep.paths import (
     EngineNotBuiltError,
+    available_dreamvae_decode_engine,
     available_trt_engines,
     checkpoints_dir,
+    dreamvae_decode_engine_name,
     loras_dir,
+    max_profile_duration_s,
     trt_engine_path,
 )
 
@@ -147,7 +150,13 @@ def handle_client(
         num_samples, channels,
     )
     waveform = torch.from_numpy(audio_np.T.copy())
-    waveform = waveform[:2, :int(60.0 * SAMPLE_RATE)]
+    # Cap at the largest registered TRT engine profile rather than
+    # hardcoding 60 s. Anything longer than the largest profile can't
+    # be handled by any built engine, but we let the operator stretch
+    # all the way up to that ceiling — picking the smallest-fitting
+    # engine happens below in available_trt_engines().
+    max_seconds = max_profile_duration_s()
+    waveform = waveform[:2, :int(max_seconds * SAMPLE_RATE)]
     pool = 1920 * 5
     rem = waveform.shape[-1] % pool
     if rem:
@@ -239,13 +248,16 @@ def handle_client(
     if fast_vae and vae_backend == "tensorrt":
         # fast_vae uses the dreamvae distilled decoder; profile must match
         # the same duration we picked above. dreamvae engines aren't in
-        # _TRT_ENGINE_PROFILES (different decoder weights), so we resolve
-        # the path by name and check existence directly.
-        fast_name = f"dreamvae_decode_fp16_{int(picked_dur)}s"
-        if Path(str(trt_engine_path(fast_name))).exists():
-            trt_engines["vae_decode"] = str(trt_engine_path(fast_name))
+        # _TRT_ENGINE_PROFILES (different decoder weights), so we look
+        # them up via the dedicated helper which knows the naming
+        # convention and falls back to a larger fitting profile when the
+        # exact one isn't built (same logic as available_trt_engines).
+        dv_path = available_dreamvae_decode_engine(picked_dur)
+        if dv_path is not None:
+            trt_engines["vae_decode"] = str(dv_path)
         else:
-            print(f"[Server] WARNING: {fast_name} engine missing, falling back to {Path(trt_engines['vae_decode']).stem}")
+            wanted = dreamvae_decode_engine_name(int(picked_dur))
+            print(f"[Server] WARNING: {wanted} engine missing, falling back to {Path(trt_engines['vae_decode']).stem}")
             fast_vae = False
     elif fast_vae:
         print(f"[Server] WARNING: fast_vae requires vae_backend=tensorrt; ignoring with vae_backend={vae_backend}")
