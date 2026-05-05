@@ -172,7 +172,20 @@ void main() {
 }`;
 
 const BLOOM_DOWNSCALE = 0.5;
-const BLOOM_BLUR_RADIUS_PX = 18;
+// We want the blur to span a fixed *fraction of UV* regardless of the
+// bloom RT's pixel dims: at the previous default (canvas-sized RTs, bloom
+// at 0.5× → ~960 px wide on a 1080p×DPR2 canvas) the kernel covered
+// 18 / 960 ≈ 0.01875 UV. Scale uRadius from bloomW so smaller RTs blur
+// the same amount on screen.
+const BLOOM_BLUR_UV = 18 / 960;
+
+// Internal RT pixel cap. Scene/bloom RTs don't need to track the canvas
+// resolution — the source is video, the pipeline is parallax + warp +
+// bloom + chroma split (none of which preserve sub-source-pixel detail),
+// and the composite blit upsamples to canvas with a linear filter.
+// Sizing internal RTs to min(video native, canvas, this cap) keeps VRAM
+// flat with the source instead of growing 4–16× with display DPR/4K.
+const MAX_INTERNAL_SIDE = 1920;
 
 function compileShader(gl, type, src) {
   const sh = gl.createShader(type);
@@ -298,8 +311,16 @@ export class EffectsRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    // Set unpack flip once at construction — toggling this per-upload
+    // can re-trigger driver slow paths even if the value is unchanged.
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     this._srcW = 0;
     this._srcH = 0;
+    // Track the last uploaded video frame so we can skip redundant
+    // texSubImage2D calls when the <video> hasn't advanced (paused,
+    // wrapped, decoder stalled). Saves a per-frame upload + GPU sync.
+    this._lastVideoTime = -1;
+    this._lastVideoEl = null;
 
     this._scene = null;
     this._bloom0 = null;
@@ -334,20 +355,55 @@ export class EffectsRenderer {
   setDaftPunk(v) { this._daft = v < 0 ? 0 : v > 1 ? 1 : v; }
 
   _resize() {
-    const gl = this.gl;
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     const rect = this.canvas.getBoundingClientRect();
     const w = Math.max(2, Math.floor(rect.width * dpr));
     const h = Math.max(2, Math.floor(rect.height * dpr));
-    if (this.canvas.width === w && this.canvas.height === h && this._scene) return;
-    this.canvas.width = w;
-    this.canvas.height = h;
+    if (this.canvas.width !== w || this.canvas.height !== h) {
+      this.canvas.width = w;
+      this.canvas.height = h;
+    }
+    this._reallocateRTs();
+  }
+
+  // Choose internal scene/bloom dims based on:
+  //   - video native size (cap detail at the source — anything larger is
+  //     bilinear upsample and burns VRAM for nothing)
+  //   - canvas backing size (don't render bigger than the display)
+  //   - MAX_INTERNAL_SIDE (absolute ceiling so 4K monitors with 4K source
+  //     still don't allocate gigabytes of FX render targets)
+  // Aspect always matches the canvas so the composite shader's vUv
+  // sampling lines up with the original screen-space coordinates.
+  _reallocateRTs() {
+    const gl = this.gl;
+    const cw = this.canvas.width;
+    const ch = this.canvas.height;
+    const aspect = cw / ch;
+
+    // Default budget: canvas dims (capped at MAX_INTERNAL_SIDE).
+    let target = Math.min(Math.max(cw, ch), MAX_INTERNAL_SIDE);
+    // If the video is smaller than the canvas, drop the budget further —
+    // the source can't supply more detail than its native res.
+    if (this._srcW > 0 && this._srcH > 0) {
+      target = Math.min(target, Math.max(this._srcW, this._srcH));
+    }
+
+    let iw, ih;
+    if (aspect >= 1) {
+      iw = target;
+      ih = Math.max(2, Math.round(target / aspect));
+    } else {
+      ih = target;
+      iw = Math.max(2, Math.round(target * aspect));
+    }
+
+    if (this._scene && this._scene.w === iw && this._scene.h === ih) return;
 
     disposeRT(gl, this._scene);
-    this._scene = makeRT(gl, w, h);
+    this._scene = makeRT(gl, iw, ih);
 
-    const bw = Math.max(2, Math.round(w * BLOOM_DOWNSCALE));
-    const bh = Math.max(2, Math.round(h * BLOOM_DOWNSCALE));
+    const bw = Math.max(2, Math.round(iw * BLOOM_DOWNSCALE));
+    const bh = Math.max(2, Math.round(ih * BLOOM_DOWNSCALE));
     disposeRT(gl, this._bloom0);
     disposeRT(gl, this._bloom1);
     this._bloom0 = makeRT(gl, bw, bh);
@@ -368,16 +424,30 @@ export class EffectsRenderer {
       // below 2. Reuse the previous texture instead of clearing.
       return this._srcW > 0;
     }
+    // Skip the upload if the video element hasn't advanced since last
+    // frame (paused, decoder stalled, rAF firing faster than playback).
+    // Re-uploading the same frame is one of the dominant per-frame VRAM
+    // bandwidth costs and produces zero visual change.
+    const t = videoEl.currentTime;
+    if (videoEl === this._lastVideoEl
+        && this._srcW === vw && this._srcH === vh
+        && t === this._lastVideoTime) {
+      return true;
+    }
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this._srcTex);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     if (this._srcW !== vw || this._srcH !== vh) {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoEl);
       this._srcW = vw;
       this._srcH = vh;
+      // Source dims changed — reallocate internal RTs so we don't carry
+      // a giant scene RT for a tiny video (or vice versa).
+      this._reallocateRTs();
     } else {
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, videoEl);
     }
+    this._lastVideoEl = videoEl;
+    this._lastVideoTime = t;
     return true;
   }
 
@@ -395,6 +465,11 @@ export class EffectsRenderer {
   }
 
   tick(videoEl, timeSeconds, kick) {
+    // Backgrounded tab — don't burn the GPU on warp/bloom passes nobody
+    // can see. The browser already throttles rAF here, but skipping the
+    // shader chain entirely also frees the video decoder to coast.
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+
     const gl = this.gl;
     if (!this._uploadVideo(videoEl)) {
       // Cold load — no frame ever decoded. Clear the default
@@ -432,9 +507,12 @@ export class EffectsRenderer {
     this._drawTo(this._bloom0);
 
     // 3+4. Two-pass Gaussian blur: bloom0 -> bloom1 -> bloom0
+    // Radius scales with bloom RT width so the blur covers the same
+    // fraction of UV regardless of internal resolution — visual spread
+    // stays constant when the bloom RT shrinks with the source video.
     gl.useProgram(this._blur);
     gl.uniform2f(this._u.blur.uTexel, 1 / this._bloom0.w, 1 / this._bloom0.h);
-    gl.uniform1f(this._u.blur.uRadius, BLOOM_BLUR_RADIUS_PX);
+    gl.uniform1f(this._u.blur.uRadius, Math.max(2, this._bloom0.w * BLOOM_BLUR_UV));
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this._bloom0.tex);

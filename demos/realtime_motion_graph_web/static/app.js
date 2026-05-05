@@ -1273,21 +1273,14 @@ class Session {
     if (this.hasAnyVideo) {
       this.videoLayer.setVideos(this.videos);
       this.videoLayer.play(this.videos[0], "none");
-
-      // Mirror the playing video into the blurred ambient back layer so
-      // the side gutters fill with motion-matched ambience.
-      const ambient = document.getElementById("install-ambient");
-      if (ambient) {
-        ambient.src = `videos/${this.videos[0]}`;
-        ambient.muted = true;
-        ambient.loop = true;
-        ambient.play().catch(() => {});
-      }
+      // The legacy #install-ambient back-layer video is permanently
+      // display:none in style.css (the design settled on a pure-black
+      // backdrop with the focal square as the only thing the eye locks
+      // onto). Loading + decoding it would just cost a second video
+      // pipeline for zero visible output, so leave its src empty.
     } else {
       // Hide video DOM so the focal area stays dark instead of showing
       // a stuck black <video> tile. Effects canvas is also a no-op below.
-      const ambient = document.getElementById("install-ambient");
-      if (ambient) ambient.removeAttribute("src");
       videoA.removeAttribute("src");
       videoB.removeAttribute("src");
     }
