@@ -175,13 +175,18 @@ def step_ode_euler(
     vt: torch.Tensor,
     t_curr: float,
     t_next: float,
-    vs: torch.Tensor,   # [1,1,1] sentinel (ones) or [1,T,1]/[B,T,1] curve
-    onc: torch.Tensor,  # [1,1,1] sentinel (zeros) or normalized ode_noise_curve
+    vs: torch.Tensor,         # [1,1,1] sentinel (ones) or [1,T,1]/[B,T,1] curve
+    onc: torch.Tensor,        # [1,1,1] sentinel (zeros) or normalized ode_noise_curve
+    ode_noise: torch.Tensor,  # caller-supplied ``randn_like(xt)`` (seeded or global)
 ) -> torch.Tensor:
     """Deterministic Euler ODE step with optional per-step noise injection.
 
     ``xt_next = xt + (t_next - t_curr) * (vt * vs)``
-    ``xt_next = xt_next + randn_like(xt) * onc * t_next``
+    ``xt_next = xt_next + ode_noise * onc * t_next``
+
+    Noise is supplied by the caller so a per-slot ``torch.Generator``
+    can keep streaming output reproducible across ticks; passing
+    ``torch.randn_like(xt)`` matches the pre-generator behavior.
 
     The ``vs`` / ``onc`` sentinels (ones / zeros) let the compiled
     graph stay branch-free: multiplying by the sentinel is a no-op in
@@ -194,7 +199,7 @@ def step_ode_euler(
     vt = vt * vs
     dt = t_next - t_curr
     xt = xt + dt * vt
-    xt = xt + torch.randn_like(xt) * onc * t_next
+    xt = xt + ode_noise * onc * t_next
     return xt
 
 
@@ -204,21 +209,24 @@ def step_sde_curve(
     t_next: float,
     sdc: torch.Tensor,                 # normalized sde_denoise_curve
     source_latents: torch.Tensor,      # [1, T, D]
+    sde_noise: torch.Tensor,           # caller-supplied ``randn_like(xt)`` (seeded or global)
 ) -> torch.Tensor:
     """SDE step with per-frame source blending (paper §3.5).
 
     Blends two re-noised candidates per frame::
 
-        noise     = randn_like(xt)
-        xt_full   = t_next * noise + (1 - t_next) * x0_pred
-        xt_source = t_next * noise + (1 - t_next) * source_latents
+        xt_full   = t_next * sde_noise + (1 - t_next) * x0_pred
+        xt_source = t_next * sde_noise + (1 - t_next) * source_latents
         xt_next   = sdc * xt_full + (1 - sdc) * xt_source
 
     ``x0_pred`` is supplied by the caller; callers may pre-blend it
     via :func:`mask_post_blend_x0` and/or :func:`blend_x0_target`
     before calling in.
+
+    Noise is supplied by the caller so a per-slot ``torch.Generator``
+    can keep streaming output reproducible across ticks; passing
+    ``torch.randn_like(xt)`` matches the pre-generator behavior.
     """
-    sde_noise = torch.randn_like(xt)
     xt_full = t_next * sde_noise + (1.0 - t_next) * x0_pred
     xt_source = t_next * sde_noise + (1.0 - t_next) * source_latents
     return sdc * xt_full + (1.0 - sdc) * xt_source

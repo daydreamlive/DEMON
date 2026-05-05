@@ -140,6 +140,7 @@ wsUrlInput.value = resolveDefaultWsUrl();
 // arrives — they are NOT listed here.
 const SLIDER_META = {
   denoise:       { max: 1.0, step: 0.10 },
+  sde_amp:       { max: 1.0, step: 0.10 },
   hint_strength: { max: 2.0, step: 0.20 },
 
   feedback:      { max: 1.0, step: 0.10, pro: true },
@@ -251,6 +252,23 @@ const dcwState = {
   wavelet: userConfig.controls.dcw_wavelet ?? "haar",
 };
 
+// SDE-mode toggle. The python pipeline reads raw["sde_mode"] each tick and
+// flips integration paths (per-frame source-blending curve vs plain ODE).
+// Initial value comes from engine.sde so the operator sees the same starting
+// state as the launch config.
+const sdeState = {
+  enabled: userConfig.engine?.sde ?? false,
+};
+
+// Toggle the visibility of any slider tagged data-sde-only="1" (the SDE
+// remix-strength fader lives in the Main tile alongside denoise but is only
+// meaningful while SDE mode is on).
+function refreshSdeVisibility() {
+  for (const el of document.querySelectorAll('[data-sde-only="1"]')) {
+    el.style.display = sdeState.enabled ? "" : "none";
+  }
+}
+
 function randomizeSeed() {
   seedValue = Math.random();
   seedValueEl.textContent = seedValue.toFixed(2);
@@ -310,6 +328,13 @@ function resetToDefaults() {
     const key = parentLabel.includes("mode") ? "mode" : "wavelet";
     sel.value = dcwState[key];
   }
+  sdeState.enabled = userConfig.engine?.sde ?? false;
+  const sdeToggle = document.querySelector('[data-role="sde-enabled"]');
+  if (sdeToggle) {
+    sdeToggle.textContent = `SDE: ${sdeState.enabled ? "ON" : "OFF"}`;
+    sdeToggle.classList.toggle("active", sdeState.enabled);
+  }
+  refreshSdeVisibility();
 
   promptAInput.value = userConfig.prompts.a;
   promptBInput.value = userConfig.prompts.b;
@@ -500,6 +525,7 @@ const DISPLAY_NAMES = {
   noise_share: "nshare",
   ode_noise: "ode",
   hint_strength: "structure strength",
+  sde_amp: "SDE remix",
   dcw_scaler: "DCW low",
   dcw_high_scaler: "DCW high",
 };
@@ -555,9 +581,22 @@ function initSliders() {
     bindSlider(group);
   }
 
+  // SDE remix-strength fader rides inline with the Main tile (between
+  // denoise and hint_strength) so the operator can compose denoise +
+  // sde_amp side by side. Tagged data-sde-only so refreshSdeVisibility()
+  // can pop it in/out as the SDE toggle flips.
+  const mainSliders = document.getElementById("sliders");
+  if (mainSliders) {
+    const sdeSlider = createSliderGroup("sde_amp");
+    sdeSlider.dataset.sdeOnly = "1";
+    const hintGroup = mainSliders.querySelector('[data-param="hint_strength"]');
+    mainSliders.insertBefore(sdeSlider, hintGroup);
+    bindSlider(sdeSlider);
+  }
+
   // Build and insert the dynamic tiles between the Main tile and the
-  // (already-in-HTML) Seed tile. Order: Main → Engine → Channel Gains →
-  // Channels → DCW → Seed → Prompts.
+  // (already-in-HTML) Seed tile. Order: Main → Engine → SDE → Channel
+  // Gains → Channels → DCW → Seed → Prompts.
   const tilesContainer = document.getElementById("mixer-tiles");
   const seedTile = tilesContainer.querySelector('[data-tile="seed"]');
 
@@ -567,6 +606,7 @@ function initSliders() {
     for (const el of channelEls) bindSlider(el);
   };
   insertTile("Engine",        ["feedback", "shift", "noise_share", "ode_noise"]);
+  tilesContainer.insertBefore(buildSdeTile(), seedTile);
   insertTile("Channel Gains", ["ch_g0", "ch_g1", "ch_g2", "ch_g3", "ch_g4", "ch_g5", "ch_g6", "ch_g7"]);
   insertTile("Channels",      ["ch13", "ch14", "ch19", "ch23", "ch29", "ch56"]);
 
@@ -608,6 +648,8 @@ function initSliders() {
   libTile.appendChild(libBody);
   const mainTile = tilesContainer.querySelector('[data-tile="main"]');
   tilesContainer.insertBefore(libTile, mainTile?.nextSibling ?? seedTile);
+
+  refreshSdeVisibility();
 }
 
 // ── LoRA library state mgmt ──
@@ -894,6 +936,40 @@ function buildDcwPanel() {
   wrap.appendChild(makeSelect("DCW mode", DCW_MODES, "mode"));
   wrap.appendChild(makeSelect("wavelet", DCW_WAVELETS, "wavelet"));
   return wrap;
+}
+
+// SDE-mode tile: a single on/off toggle. Flipping it sends raw.sde_mode on the
+// next tick (per-tick params dict, same channel as DCW state) and shows/hides
+// the SDE remix-strength fader in the Main tile.
+function buildSdeTile() {
+  const tile = document.createElement("div");
+  tile.className = "mixer-tile";
+  tile.dataset.tile = "sde";
+  const labelEl = document.createElement("div");
+  labelEl.className = "mixer-tile-label";
+  labelEl.textContent = "SDE";
+  const body = document.createElement("div");
+  body.className = "dcw-panel";
+
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "dcw-toggle";
+  toggle.dataset.role = "sde-enabled";
+  const renderToggle = () => {
+    toggle.textContent = `SDE: ${sdeState.enabled ? "ON" : "OFF"}`;
+    toggle.classList.toggle("active", sdeState.enabled);
+  };
+  renderToggle();
+  toggle.addEventListener("click", () => {
+    sdeState.enabled = !sdeState.enabled;
+    renderToggle();
+    refreshSdeVisibility();
+  });
+
+  body.appendChild(toggle);
+  tile.appendChild(labelEl);
+  tile.appendChild(body);
+  return tile;
 }
 
 function updateSliderUI(param) {
@@ -1339,6 +1415,9 @@ class Session {
     raw.dcw_enabled = dcwState.enabled;
     raw.dcw_mode = dcwState.mode;
     raw.dcw_wavelet = dcwState.wavelet;
+    // SDE mode toggle: server reads raw["sde_mode"] each tick to decide
+    // between the SDE per-frame curve path and the plain ODE path.
+    raw.sde_mode = sdeState.enabled;
     this.remote.sendParams(raw, this.audio.positionSec);
   }
 

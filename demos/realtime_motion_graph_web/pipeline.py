@@ -187,16 +187,17 @@ class PipelineRunner:
             else:
                 with self.motion_lock:
                     m = self.motion_val[0]
-                raw = {self.k1_name: m, "seed": 0.0, "feedback": 0.0, "shift": 0.5}
-                if self.use_sde:
-                    raw["periodicity"] = 0.0
+                raw = {
+                    "denoise": m, "sde_amp": m,
+                    "seed": 0.0, "feedback": 0.0, "shift": 0.5,
+                    "periodicity": 0.0,
+                }
 
             # Actual source latent length. Hardcoded T=1500 is a 60s default
             # but sources can be shorter (e.g. 25s → 645 frames). Curves must
             # match this T or broadcasting fails in _init_slot / _step_sde.
             src_T = self.stream.source.latent.tensor.shape[1]
 
-            k1 = raw[self.k1_name]
             seed = int(raw["seed"] * 1000) if self.use_midi else self.SEED
             feedback = raw["feedback"]
             shift_raw = raw["shift"]
@@ -232,10 +233,15 @@ class PipelineRunner:
                 src_tensor = self.stream.source.latent.tensor
                 source_lat = (1.0 - feedback) * src_tensor + feedback * last_latent
 
+            # SDE mode is now a runtime flag the client sends in the raw
+            # dict. Falls back to self.use_sde for the first tick before
+            # the client has shipped its first params message.
+            sde_active = bool(raw.get("sde_mode", self.use_sde))
+            denoise = float(raw.get("denoise", 1.0))
+            sde_amp = float(raw.get("sde_amp", 0.0))
+
             sde_curve = None
-            if self.use_sde:
-                denoise = 1.0
-                amplitude = k1
+            if sde_active:
                 client_sde = _curve_from_spec(raw.get("sde_denoise_curve"), src_T)
                 if client_sde is not None:
                     sde_curve = client_sde
@@ -244,12 +250,11 @@ class PipelineRunner:
                     if periodicity > 0.01:
                         cycles = periodicity * (src_T / 25.0)
                         t = torch.linspace(0, 1, src_T).unsqueeze(0).unsqueeze(-1)
-                        sde_curve = amplitude * (0.5 + 0.5 * torch.sin(2 * 3.14159 * cycles * t))
+                        sde_curve = sde_amp * (0.5 + 0.5 * torch.sin(2 * 3.14159 * cycles * t))
                     else:
-                        sde_curve = torch.full((1, src_T, 1), amplitude, dtype=torch.float32)
+                        sde_curve = torch.full((1, src_T, 1), sde_amp, dtype=torch.float32)
                 self.sde_curve_display[0] = sde_curve.squeeze().numpy()
             else:
-                denoise = k1
                 self.sde_curve_display[0] = None
 
             effective_seed = None if noise_sharing > 0.01 else seed
@@ -278,6 +283,21 @@ class PipelineRunner:
             if self.use_midi:
                 last_channel_gains = self._sync_channel_guidance(raw, last_channel_gains)
 
+            # Push the SDE curve through the pipeline's shared override
+            # instead of passing it per-tick into stream.tick(). The shared
+            # path applies on the very next tick to ALL in-flight slots, so
+            # slider moves take 1-tick effect; the per-tick path only flows
+            # onto NEW slots, forcing the user to wait depth*steps ticks
+            # (~1s with depth=8/steps=8) before they hear the change.
+            #
+            # StreamDenoise._pipeline is constructed lazily on first execute,
+            # so the pipeline accessor returns None on the warmup tick. Skip
+            # silently — by tick 2 the pipeline exists and the shared curve
+            # takes effect on every in-flight slot from there on.
+            pipe = self.stream.pipeline
+            if pipe is not None:
+                pipe.set_shared_sde_curve(sde_curve)
+
             torch.cuda.synchronize()
             t0 = time.perf_counter()
             result_latent = self.stream.tick(
@@ -287,7 +307,6 @@ class PipelineRunner:
                     Latent(tensor=source_lat) if source_lat is not None
                     else self.stream.source.latent
                 ),
-                sde_denoise_curve=sde_curve,
                 ode_noise_curve=ode_curve,
                 x0_target=x0_tgt,
                 x0_target_strength=x0_str,
@@ -384,7 +403,11 @@ class PipelineRunner:
                 self.params["num_gens"] = self.params.get("num_gens", 0) + 1
                 self.params["tick_ms"] = tick_ms
                 self.params["dec_ms"] = dec_ms
-                self.params[self.k1_name] = round(k1, 2)
+                self.params["denoise"] = round(denoise, 2)
+                self.params["sde_mode"] = sde_active
+                if sde_active:
+                    self.params["sde_amp"] = round(sde_amp, 2)
+                    self.params["periodicity"] = round(raw.get("periodicity", 0.0), 2)
                 self.params["seed"] = seed
                 self.params["feedback"] = round(feedback, 2)
                 self.params["shift"] = round(shift_val, 2)
@@ -394,8 +417,6 @@ class PipelineRunner:
                             continue
                         key = f"lora_str_{desc.id}"
                         self.params[key] = round(raw.get(key, desc.strength), 2)
-                if self.use_sde:
-                    self.params["periodicity"] = round(raw.get("periodicity", 0.0), 2)
                 self.params["hint_strength"] = round(hint_str, 2)
                 self.params["noise_share"] = round(raw.get("noise_share", 0.0), 2)
                 self.params["ode_noise"] = round(ode_noise_val, 2)

@@ -4,7 +4,7 @@
   "ws_url_default": "",
 
   "engine": {
-    "sde": false,
+    "sde": true,
     "lora": true,
     "depth": 8,
     "vae_window": 6.0,
@@ -24,6 +24,7 @@
 
   "controls": {
     "denoise": 0.7,
+    "sde_amp": 0.7,
     "_lora_default_strength_help": "Initial value for any LoRA strength slider. The first two LoRAs in the catalog auto-enable at page load and start at this value, so a non-zero default lets the demo sound immediately like the LoRAs are doing something.",
     "lora_default_strength": 0.4,
     "hint_strength": 1.4,

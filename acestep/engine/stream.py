@@ -126,6 +126,13 @@ class _Slot:
     # APG momentum accumulator, one per slot with CFG. None for slots
     # without CFG (cheaper than allocating an unused buffer).
     momentum_buffer: Optional[ode_steps.MomentumBuffer] = None
+    # Per-slot RNG generator. Seeded from ``request.seed`` in
+    # :meth:`StreamPipeline._init_slot` and used for every per-step
+    # noise draw (SDE renoise, ode_noise injection) so a streamed
+    # generation is reproducible tick-to-tick when nothing else
+    # changes. ``None`` falls back to global RNG (matching pre-fix
+    # behavior, used when ``request.seed is None`` or is a List[int]).
+    gen: Optional[torch.Generator] = None
 
 
 class StreamPipeline:
@@ -375,11 +382,36 @@ class StreamPipeline:
             ode_steps.MomentumBuffer() if request.has_cfg else None
         )
 
+        # Per-slot generator seeded from request.seed. Drives every
+        # per-step noise draw via _slot_randn_like so consecutive
+        # ticks with identical inputs produce identical trajectories.
+        # List[int] seeds (multi-row batched generation) skip the
+        # per-slot generator; their reproducibility is handled at
+        # init noise time via torch.manual_seed in _make_noise.
+        gen: Optional[torch.Generator] = None
+        if isinstance(request.seed, int):
+            gen = torch.Generator(device=self._device)
+            gen.manual_seed(int(request.seed))
+
         return _Slot(
             request=request, xt=xt,
             t_schedule=t_schedule, step_idx=0,
             momentum_buffer=momentum_buffer,
+            gen=gen,
         )
+
+    def _slot_randn_like(
+        self, slot: "_Slot", x: torch.Tensor,
+    ) -> torch.Tensor:
+        """Draw ``randn_like(x)`` from the slot's generator if seeded,
+        else from the global RNG (pre-fix behavior).
+
+        Generator is bound to ``self._device`` at slot-init time, so it
+        composes cleanly with CUDA tensors.
+        """
+        if slot.gen is None:
+            return torch.randn_like(x)
+        return torch.empty_like(x).normal_(generator=slot.gen)
 
     # ------------------------------------------------------------------
     # Sentinel tensors + compiled step helpers (PyTorch backend)
@@ -991,7 +1023,8 @@ class StreamPipeline:
                 # velocity. Byte-identical to the pre-refactor
                 # ``_step_simple_ode``. When ``onc`` is the zeros sentinel
                 # the post-step noise injection is a no-op.
-                xt_new = step_ode(xt, vt, t_curr, t_next, vs, onc)
+                ode_noise = self._slot_randn_like(slot, xt)
+                xt_new = step_ode(xt, vt, t_curr, t_next, vs, onc, ode_noise)
                 slot.xt = self._maybe_dcw(xt, vt, xt_new, t_curr)
                 slot.step_idx += 1
                 continue
@@ -1032,8 +1065,9 @@ class StreamPipeline:
                 # sdc mix still applies), matching the pre-refactor
                 # ``_step_simple_sde_curve`` behavior on the last step.
                 if sde_curve_active:
+                    sde_noise = self._slot_randn_like(slot, xt)
                     xt_new = step_sde_curve(
-                        xt, x0_pred, t_next, sdc, req.source_latents,
+                        xt, x0_pred, t_next, sdc, req.source_latents, sde_noise,
                     )
                 else:
                     xt_new = x0_pred
@@ -1042,17 +1076,19 @@ class StreamPipeline:
                 continue
 
             if sde_curve_active:
+                sde_noise = self._slot_randn_like(slot, xt)
                 xt_new = step_sde_curve(
-                    xt, x0_pred, t_next, sdc, req.source_latents,
+                    xt, x0_pred, t_next, sdc, req.source_latents, sde_noise,
                 )
             elif use_sde:
                 # Bare SDE (no curve). Use the mask's fixed noise when a
                 # latent_mask is active so inpainting semantics are
-                # preserved; otherwise draw fresh noise.
+                # preserved; otherwise draw fresh noise from the slot's
+                # seeded generator.
                 noise = (
                     req.latent_mask.ensure_noise(xt.device, xt.dtype)
                     if req.latent_mask is not None
-                    else torch.randn_like(xt)
+                    else self._slot_randn_like(slot, xt)
                 )
                 xt_new = step_sde_renoise(xt, x0_pred, t_next, noise)
             else:
@@ -1061,8 +1097,9 @@ class StreamPipeline:
                 # the kernel byte-identical to the fast path.
                 v_blended = (xt - x0_pred) / t_curr
                 ones_3d, _ = self._ensure_sentinels()
+                ode_noise = self._slot_randn_like(slot, xt)
                 xt_new = step_ode(
-                    xt, v_blended, t_curr, t_next, ones_3d, onc,
+                    xt, v_blended, t_curr, t_next, ones_3d, onc, ode_noise,
                 )
 
             slot.xt = self._maybe_dcw(xt, vt, xt_new, t_curr)

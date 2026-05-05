@@ -45,6 +45,11 @@ def build_banks(sde: bool, loras=None) -> list:
     Backward-compat: an int ``loras`` is accepted and treated as
     ``[f"slot{i}" for i in range(1, n+1)]`` so callers that haven't
     migrated still get something usable, with the old-style names.
+
+    The ``sde`` flag picks the *initial* mode reported to the UI; the bank
+    itself always carries both ``denoise`` and ``sde_amp`` (and the
+    ``periodicity`` curve knob) so the operator can flip SDE on/off at
+    runtime without reshaping the knob registry.
     """
     if isinstance(loras, int):
         lora_ids = [f"slot{i}" for i in range(1, loras + 1)]
@@ -53,15 +58,12 @@ def build_banks(sde: bool, loras=None) -> list:
 
     core = {}
     cc = 70
-    if sde:
-        core["sde_amp"] = KnobDef(cc=cc, sensitivity=2.0); cc += 1
-    else:
-        core["denoise"] = KnobDef(cc=cc, sensitivity=2.0); cc += 1
+    core["denoise"] = KnobDef(cc=cc, sensitivity=2.0); cc += 1
+    core["sde_amp"] = KnobDef(cc=cc, sensitivity=2.0); cc += 1
     core["seed"] = KnobDef(cc=cc, sensitivity=0.5); cc += 1
     core["feedback"] = KnobDef(cc=cc, sensitivity=2.0); cc += 1
     core["shift"] = KnobDef(cc=cc, default=0.5, sensitivity=1.0); cc += 1
-    if sde:
-        core["periodicity"] = KnobDef(cc=cc, sensitivity=2.0, max_val=12.5); cc += 1
+    core["periodicity"] = KnobDef(cc=cc, sensitivity=2.0, max_val=12.5); cc += 1
     for lid in lora_ids:
         core[f"lora_str_{lid}"] = KnobDef(
             cc=cc, default=0.0, sensitivity=2.0, max_val=2.0,
