@@ -337,7 +337,7 @@ def handle_client(
         tags=prompt,
         instruction=TASK_INSTRUCTIONS["cover"],
         refer_latent=source.latent,
-        bpm=detected_bpm, duration=60.0, key=detected_key,
+        bpm=detected_bpm, duration=audio_duration_s, key=detected_key,
     )
 
     print("[Server] Creating stream...")
@@ -419,6 +419,7 @@ def handle_client(
     source_ref = [source]
     bpm_ref = [detected_bpm]
     key_ref = [detected_key]
+    duration_ref = [audio_duration_s]
     n_channels_ref = [n_channels]
 
     # Client mirror: tracks what audio the client currently has. Replaced
@@ -557,7 +558,7 @@ def handle_client(
                                 tags=data["tags"],
                                 instruction=TASK_INSTRUCTIONS["cover"],
                                 refer_latent=source_ref[0].latent,
-                                bpm=bpm_ref[0], duration=60.0,
+                                bpm=bpm_ref[0], duration=duration_ref[0],
                                 key=data.get("key") or key_ref[0],
                             )
                             stream.conditioning = cond
@@ -660,12 +661,16 @@ def handle_client(
                 new_samples, new_channels,
             )
             new_wf = torch.from_numpy(new_np.T.copy())
-            new_wf = new_wf[:2, :int(60.0 * SAMPLE_RATE)]
+            # Cap at the same ceiling the initial upload used so swaps
+            # take advantage of every built engine profile, not a stale
+            # 60 s default.
+            new_wf = new_wf[:2, :int(max_seconds * SAMPLE_RATE)]
             rem = new_wf.shape[-1] % pool
             if rem:
                 new_wf = new_wf[:, :new_wf.shape[-1] - rem]
+            new_audio_duration_s = new_wf.shape[1] / SAMPLE_RATE
             print(
-                f"[Server] Swapping source ({new_wf.shape[1] / SAMPLE_RATE:.1f}s, "
+                f"[Server] Swapping source ({new_audio_duration_s:.1f}s, "
                 f"{new_wf.shape[0]}ch)..."
             )
 
@@ -682,7 +687,7 @@ def handle_client(
                 tags=tags,
                 instruction=TASK_INSTRUCTIONS["cover"],
                 refer_latent=new_source.latent,
-                bpm=new_bpm, duration=60.0,
+                bpm=new_bpm, duration=new_audio_duration_s,
                 key=requested_key or new_key,
             )
 
@@ -692,6 +697,7 @@ def handle_client(
             source_ref[0] = new_source
             bpm_ref[0] = new_bpm
             key_ref[0] = new_key
+            duration_ref[0] = new_audio_duration_s
             prompt_text[0] = tags
             r = runner_holder[0]
             if r is not None:

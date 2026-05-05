@@ -328,7 +328,16 @@ class PipelineRunner:
 
                 if not skipped:
                     t1 = time.perf_counter()
-                    eff_dur = self.crop_seconds if self.crop_seconds > 0 else 60.0
+                    # eff_dur clamps the windowed-decode playhead so the
+                    # window stays inside the latent. Falling back to a
+                    # hardcoded 60 s would re-introduce the truncation
+                    # bug we're fixing — read it from the live source
+                    # latent (25 fps) so it tracks source swaps and any
+                    # duration the engine matrix actually supports.
+                    eff_dur = (
+                        self.crop_seconds if self.crop_seconds > 0
+                        else self.stream.source.latent.tensor.shape[1] / 25.0
+                    )
                     if self.vae_window > 0:
                         t_pos = self.audio_eng.position / SAMPLE_RATE
                         max_t = max(0.0, eff_dur - self.vae_window)

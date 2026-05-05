@@ -420,7 +420,10 @@ async function decodeAudioBuffer(arrayBuf) {
   const rendered = await offline.startRendering();
 
   let frames = rendered.length;
-  frames = Math.min(frames, Math.floor(60.0 * SAMPLE_RATE));
+  // Cap at the largest engine profile the server is built for (240 s).
+  // The server applies the same cap via max_profile_duration_s(); a
+  // client cap shorter than that just truncates uploads needlessly.
+  frames = Math.min(frames, Math.floor(240.0 * SAMPLE_RATE));
   const pool = 1920 * 5;
   frames = frames - (frames % pool);
 
