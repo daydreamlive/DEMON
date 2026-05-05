@@ -363,6 +363,58 @@ def _build_vae_engines(
     return results
 
 
+def _build_windowed_vae_decode_engine(
+    *,
+    output_dir: str,
+    onnx_paths: dict[str, str],
+    workspace_gb: float,
+    force_rebuild: bool = False,
+) -> tuple[str, str, float, str]:
+    """Build the single windowed (3-30 s) VAE decode engine.
+
+    This profile is shared across all duration tiers — it's selected
+    by the runtime when ``vae_window > 0`` regardless of the song
+    length, because the chunk size fed to the engine is bounded by
+    the user-facing window (5-30 s) plus overlap, never by the full
+    song duration. Building it costs ~75 s and saves ~7.7 GB of TRT
+    workspace at session-creation time vs the canonical 240 s engine.
+    """
+    from .vae_export import build_vae_decode_engine, VAETRTBuildConfig
+    from acestep.paths import (
+        WINDOWED_VAE_DECODE_NAME,
+        WINDOWED_VAE_PROFILE_FRAMES,
+    )
+
+    name = WINDOWED_VAE_DECODE_NAME
+    engine_dir = os.path.join(output_dir, name)
+    engine_path = os.path.join(engine_dir, f"{name}.engine")
+    label = "VAE decode windowed (3-30s)"
+
+    if not force_rebuild and os.path.exists(engine_path):
+        size_mb = os.path.getsize(engine_path) / 1e6
+        logger.info("SKIP %s (%.0f MB)", name, size_mb)
+        return (label, engine_path, 0.0, "SKIPPED")
+
+    min_f, opt_f, max_f = WINDOWED_VAE_PROFILE_FRAMES
+    config = VAETRTBuildConfig(
+        workspace_gb=workspace_gb,
+        decode_min_frames=min_f,
+        decode_opt_frames=opt_f,
+        decode_max_frames=max_f,
+    )
+
+    logger.info("=" * 60)
+    logger.info("VAE TRT BUILD (windowed): %s (min=%d opt=%d max=%d)",
+                name, min_f, opt_f, max_f)
+    logger.info("=" * 60)
+
+    t0 = time.time()
+    build_vae_decode_engine(onnx_paths["vae_decode"], engine_path, config=config)
+    elapsed = time.time() - t0
+    logger.info("Built in %.0fs", elapsed)
+    return (label, engine_path, elapsed, "OK")
+
+
 def _checkpoint_to_variant(checkpoint: str) -> str:
     """Extract short variant name from checkpoint path.
 
@@ -444,6 +496,11 @@ def _print_matrix(durations, build_vae, build_decoder, output_dir, batch_max,
     variant = _checkpoint_to_variant(checkpoint)
     vtag = f"_{variant}" if variant != "turbo" else ""
 
+    from acestep.paths import (
+        WINDOWED_VAE_DECODE_NAME,
+        WINDOWED_DREAMVAE_DECODE_NAME,
+    )
+
     # (label, engine_dir_name) pairs
     jobs = []
     for dur in durations:
@@ -454,6 +511,13 @@ def _print_matrix(durations, build_vae, build_decoder, output_dir, batch_max,
             jobs.append((f"Decoder {variant} {dur}s, refit", f"decoder{vtag}_mixed_refit_b{batch_max}_{dur}s"))
         if build_dreamvae:
             jobs.append((f"DreamVAE decode {dur}s", f"dreamvae_decode_fp16_{dur}s"))
+
+    # Windowed engines are duration-independent (single shared 3-30s
+    # profile) so they're appended once, outside the duration loop.
+    if build_vae:
+        jobs.append(("VAE decode windowed (3-30s)", WINDOWED_VAE_DECODE_NAME))
+    if build_dreamvae:
+        jobs.append(("DreamVAE decode windowed (3-30s)", WINDOWED_DREAMVAE_DECODE_NAME))
 
     to_build = 0
     to_skip = 0
@@ -682,15 +746,33 @@ def _run_all(args, project_root, onnx_dir):
                 checkpoint=args.checkpoint,
             ))
 
+    # Windowed VAE decode (single 3-30s profile, duration-independent).
+    # Auto-selected by Session when vae_window > 0.
+    if build_vae:
+        results.append(_build_windowed_vae_decode_engine(
+            output_dir=args.output_dir,
+            onnx_paths=onnx_paths,
+            workspace_gb=args.workspace_gb,
+            force_rebuild=args.force_rebuild,
+        ))
+
     if build_dreamvae:
         # dreamvae fetches its own ONNX from HF on first use; no shared
         # ONNX state with the loop above. Built last so a missing HF
         # token / network error doesn't tank an otherwise-successful
         # standard build.
-        from .dreamvae_export import build_dreamvae_engines
+        from .dreamvae_export import (
+            build_dreamvae_engines,
+            build_windowed_dreamvae_engine,
+        )
         results.extend(build_dreamvae_engines(
             output_dir=args.output_dir,
             durations=durations,
+            workspace_gb=args.workspace_gb,
+            force_rebuild=args.force_rebuild,
+        ))
+        results.append(build_windowed_dreamvae_engine(
+            output_dir=args.output_dir,
             workspace_gb=args.workspace_gb,
             force_rebuild=args.force_rebuild,
         ))

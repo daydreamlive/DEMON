@@ -159,12 +159,19 @@ def _find_best_vae_engine(component: str) -> Optional[str]:
     `Session(vae_backend="tensorrt", trt_engines={...})`). There is no
     filesystem discovery: TRT is opt-in, never magic.
 
+    Matches both ``vae_<action>_*`` and ``dreamvae_<action>_*`` for the
+    same component, since the distilled DreamVAE engines are drop-in
+    replacements for the standard decoder.
+
     Args:
         component: "vae_decode" or "vae_encode"
     """
+    # component is "vae_decode" or "vae_encode" -> action is "decode"/"encode".
+    action = component.split("_", 1)[-1]
+    accepted = (f"vae_{action}_", f"dreamvae_{action}_")
     for cached_path in _trt_vae_cache:
         basename = os.path.basename(cached_path).lower()
-        if basename.startswith(component):
+        if basename.startswith(accepted):
             return cached_path
     return None
 
@@ -350,9 +357,13 @@ class StreamVAEDecode(BaseNode):
             ),
             params=(
                 NodeParam(
-                    name="vae_window", type="number", default=3.0,
-                    description="Decode window (s); <=0 decodes full latent",
-                    min=0.0, max=60.0, step=0.1,
+                    name="vae_window", type="number", default=5.0,
+                    description=(
+                        "Decode window (s); <=0 decodes full latent. "
+                        "Positive values are clamped to [5, 30] to fit "
+                        "the windowed VAE engine profile."
+                    ),
+                    min=0.0, max=30.0, step=0.1,
                 ),
                 NodeParam(
                     name="vae_overlap", type="number", default=0.5,
@@ -397,10 +408,19 @@ class StreamVAEDecode(BaseNode):
         )
 
     def execute(self, **kwargs: Any) -> dict[str, Any]:
+        from acestep.paths import WINDOWED_VAE_WINDOW_RANGE_S
+
         vae: VAEHandle = kwargs["vae"]
         latent: Latent = kwargs["latent"]
         window_s = float(kwargs.get("vae_window", 0.0))
         overlap_s = float(kwargs.get("vae_overlap", 0.5))
+
+        # Hard-clamp positive windows to the engine-supported range.
+        # ``<= 0`` is the disable sentinel and falls through to a full
+        # decode, so we leave it untouched.
+        if window_s > 0:
+            lo, hi = WINDOWED_VAE_WINDOW_RANGE_S
+            window_s = max(lo, min(hi, window_s))
 
         follow_playhead = bool(kwargs.get("follow_playhead", False))
         playhead_seconds = kwargs.get("playhead_seconds")
