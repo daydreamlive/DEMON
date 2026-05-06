@@ -54,6 +54,7 @@ class ModelContext:
         use_flash_attention: bool = False,
         offload_to_cpu: bool = False,
         offload_dit_to_cpu: bool = False,
+        offload_text_encoder: bool = False,
         quantization: Optional[str] = None,
         prefer_source: Optional[str] = None,
         skip_decoder: bool = False,
@@ -86,6 +87,7 @@ class ModelContext:
             compile_decoder=compile_decoder,
             compile_vae=compile_vae,
             use_flash_attention=use_flash_attention,
+            offload_text_encoder=offload_text_encoder,
             prefer_source=prefer_source,
             skip_decoder=skip_decoder,
             skip_vae=skip_vae,
@@ -138,6 +140,7 @@ class ModelContext:
         compile_decoder: bool,
         compile_vae: bool,
         use_flash_attention: bool,
+        offload_text_encoder: bool,
         prefer_source: Optional[str],
         skip_decoder: bool,
         skip_vae: bool,
@@ -229,13 +232,13 @@ class ModelContext:
             self.vae = torch.compile(self.vae, dynamic=True)
 
         # --- 3. Load text encoder / tokenizer ------------------------------
-        self._offload_text_encoder = skip_decoder
+        self._offload_text_encoder = offload_text_encoder
         text_enc_path = os.path.join(checkpoint_dir, "Qwen3-Embedding-0.6B")
         if not os.path.exists(text_enc_path):
             raise FileNotFoundError(f"Text encoder not found at {text_enc_path}")
         self.text_tokenizer = AutoTokenizer.from_pretrained(text_enc_path)
         self.text_encoder = AutoModel.from_pretrained(text_enc_path)
-        if not self.offload_to_cpu and not skip_decoder:
+        if not self.offload_to_cpu and not self._offload_text_encoder:
             self.text_encoder = self.text_encoder.to(device).to(self.dtype)
         else:
             self.text_encoder = self.text_encoder.to("cpu").to(self.dtype)

@@ -62,6 +62,10 @@ uv run python -u -m demos.realtime_motion_graph_web.run -- \
     --accel tensorrt --vae-accel eager
 ```
 
+The text encoder stays resident in VRAM by default so live prompt edits do not
+pay CPU/GPU transfer cost. Add `--offload-text-encoder` on lower-VRAM GPUs to
+restore the previous lower-memory behavior.
+
 `--checkpoint <name>` selects which DiT checkpoint to load. The name
 must match a directory under `<checkpoints_dir>/` (auto-downloaded from
 HF on first use). Currently `acestep-v15-turbo` (default, 2B) is the

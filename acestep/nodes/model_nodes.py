@@ -25,6 +25,8 @@ class LoadModel(BaseNode):
             and no dict is provided, ``acestep.paths.default_trt_engines()``
             is used.
         offload_to_cpu: Whether to offload models when not in use.
+        offload_text_encoder: Whether to offload the text encoder between
+            prompt encodes to reduce steady VRAM at the cost of prompt latency.
         quantization: Quantization type (None, "int8_weight_only", etc.).
 
     The ``compile_decoder`` / ``compile_vae`` flags are still accepted for
@@ -79,6 +81,11 @@ class LoadModel(BaseNode):
                 NodeParam(
                     name="offload_to_cpu", type="boolean", default=False,
                     description="Offload to CPU when idle",
+                    hidden=True,
+                ),
+                NodeParam(
+                    name="offload_text_encoder", type="boolean", default=False,
+                    description="Offload text encoder between prompt encodes",
                     hidden=True,
                 ),
                 NodeParam(
@@ -149,6 +156,7 @@ class LoadModel(BaseNode):
             device=kwargs.get("device", "auto"),
             use_flash_attention=kwargs.get("use_flash_attention", False),
             offload_to_cpu=kwargs.get("offload_to_cpu", False),
+            offload_text_encoder=kwargs.get("offload_text_encoder", False),
             quantization=kwargs.get("quantization", None),
             **ctx_flags,
         )

@@ -160,6 +160,7 @@ class Session:
         vae_backend: str = "eager",
         use_flash_attention: bool = True,
         offload_to_cpu: bool = False,
+        offload_text_encoder: bool = False,
         quantization: Optional[str] = None,
         trt_engines: Optional[dict[str, str]] = None,
         vae_window: float = 0.0,
@@ -180,6 +181,9 @@ class Session:
             trt_engines: Engine paths, used iff a *_backend is "tensorrt".
                 Keys: "decoder", "vae_encode", "vae_decode". Use
                 acestep.paths.default_trt_engines() for the canonical paths.
+            offload_text_encoder: Override text encoder placement policy.
+                Defaults to ``False`` so prompt edits do not pay CPU/GPU
+                transfer cost. Set ``True`` for lower steady VRAM usage.
         """
         from acestep.engine.model_context import ModelContext
         from acestep.engine.runtime_init import (
@@ -208,6 +212,7 @@ class Session:
             device=device,
             use_flash_attention=use_flash_attention,
             offload_to_cpu=offload_to_cpu,
+            offload_text_encoder=offload_text_encoder,
             quantization=quantization,
             **ctx_flags,
         )
