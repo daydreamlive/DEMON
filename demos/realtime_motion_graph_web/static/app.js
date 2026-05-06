@@ -27,6 +27,8 @@ const videoA = $("video-a");
 const videoB = $("video-b");
 const promptAInput = $("prompt-a");
 const promptBInput = $("prompt-b");
+const promptLyricsInput = $("prompt-lyrics");
+const lmHintsBtn = $("lm-hints-btn");
 const blendSlider = $("prompt-blend");
 const blendValueEl = $("blend-value");
 const sendPromptBtn = $("send-prompt");
@@ -257,6 +259,8 @@ function randomizeSeed() {
 }
 
 let activePrompt = CONFIG.prompt;
+let activeLyrics = userConfig.prompts.lyrics ?? "";
+let lmHintsOn = !!(userConfig.prompts.use_lm_hints ?? false);
 let activeKey = userConfig.engine.key ?? "G# minor";
 let blendValue = userConfig.prompts.blend;
 let heldKeys = new Set();
@@ -268,6 +272,7 @@ let heldKeys = new Set();
 function applyConfigToDom() {
   promptAInput.value = userConfig.prompts.a;
   promptBInput.value = userConfig.prompts.b;
+  promptLyricsInput.value = userConfig.prompts.lyrics ?? "";
   blendSlider.value = String(blendValue);
   blendValueEl.textContent = blendValue.toFixed(2);
   seedValueEl.textContent = seedValue.toFixed(2);
@@ -313,6 +318,7 @@ function resetToDefaults() {
 
   promptAInput.value = userConfig.prompts.a;
   promptBInput.value = userConfig.prompts.b;
+  promptLyricsInput.value = userConfig.prompts.lyrics ?? "";
   blendSlider.value = String(blendValue);
   blendValueEl.textContent = blendValue.toFixed(2);
   seedValueEl.textContent = seedValue.toFixed(2);
@@ -324,7 +330,8 @@ function resetToDefaults() {
 
   // Re-send the default prompt so audio character actually reverts.
   activePrompt = computeBlendedPrompt();
-  session?.remote?.sendPrompt(activePrompt, activeKey);
+  activeLyrics = promptLyricsInput.value;
+  session?.remote?.sendPrompt(activePrompt, activeKey, activeLyrics);
 }
 
 function bumpIdleTimer() {
@@ -1090,7 +1097,8 @@ function computeBlendedPrompt() {
 
 function sendCurrentPrompt() {
   activePrompt = computeBlendedPrompt();
-  session?.remote?.sendPrompt(activePrompt, activeKey);
+  activeLyrics = promptLyricsInput.value;
+  session?.remote?.sendPrompt(activePrompt, activeKey, activeLyrics);
 }
 
 // Single funnel for activeKey edits. ``source`` is "auto" when the server
@@ -1114,9 +1122,25 @@ function initKeySelect() {
   });
 }
 
+function updateLmHintsBtn() {
+  if (!lmHintsBtn) return;
+  lmHintsBtn.textContent = `LM Hints: ${lmHintsOn ? "ON" : "OFF"}`;
+  lmHintsBtn.classList.toggle("active", lmHintsOn);
+}
+
 function initPrompts() {
   promptAInput.addEventListener("keydown", (e) => e.stopPropagation());
   promptBInput.addEventListener("keydown", (e) => e.stopPropagation());
+  promptLyricsInput.addEventListener("keydown", (e) => e.stopPropagation());
+
+  if (lmHintsBtn) {
+    updateLmHintsBtn();
+    lmHintsBtn.addEventListener("click", () => {
+      lmHintsOn = !lmHintsOn;
+      updateLmHintsBtn();
+      session?.remote?.sendLmHints(lmHintsOn);
+    });
+  }
 
   // Slider just updates the value display; doesn't auto-send.
   blendSlider.addEventListener("input", () => {
@@ -1521,6 +1545,8 @@ async function startSession(interleaved, channels, frames, videos) {
       const config = {
         ...CONFIG,
         prompt: activePrompt,
+        lyrics: activeLyrics,
+        use_lm_hints: lmHintsOn,
         key: activeKey,
         enabled_loras: getEnabledLoraIdsForConfig(),
         lora_strengths: getEnabledLoraStrengthsForConfig(),
@@ -1683,7 +1709,7 @@ async function swapToFixture(name) {
     };
     remote.addEventListener("swap_ready", onReady);
     remote.addEventListener("swap_failed", onFail);
-    const ok = remote.sendSwapSource(interleaved, channels, activePrompt, activeKey);
+    const ok = remote.sendSwapSource(interleaved, channels, activePrompt, activeKey, activeLyrics);
     if (!ok) {
       remote.removeEventListener("swap_ready", onReady);
       remote.removeEventListener("swap_failed", onFail);

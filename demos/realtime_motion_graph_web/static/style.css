@@ -905,8 +905,40 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
    that the textareas inside have somewhere to grow into (the wrap
    container uses align-content:flex-start, so rows are content-sized —
    without a minimum the second row would collapse). */
+.mixer-tile-lyrics {
+  flex: 0 1 280px;
+  min-width: 220px;
+  max-width: 360px;
+  min-height: 110px;
+}
+.mixer-tile-lyrics .prompt-slot {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.lm-hints-btn {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-family: inherit;
+  font-size: 0.7em;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: color 120ms, border-color 120ms, background 120ms;
+}
+.lm-hints-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.lm-hints-btn.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--text);
+}
 .mixer-tile-prompts {
-  flex: 1 1 100%;
+  flex: 1 1 480px;
   width: auto;
   max-width: 100%;
   min-height: 110px;

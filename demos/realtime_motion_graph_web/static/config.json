@@ -19,7 +19,11 @@
   "prompts": {
     "a": "heavy dubstep loop, deathstep, afxdump, growl heavy bass distortion",
     "b": "daft punk style loop, beautiful, four to the floor, angelic",
-    "blend": 0.4
+    "blend": 0.4,
+    "_lyrics_help": "Lyrics conditioning for the cover. Empty string keeps the cover instrumental. Section tags like [Verse 1] / [Chorus] are honored.",
+    "lyrics": "",
+    "_use_lm_hints_help": "Initial state of the LM Hints toggle. When true, the alpha=0 endpoint of the structure-strength fader is the 5Hz LM's hints from current tags+lyrics instead of silence. Loads ~3.4 GB into VRAM on first ON.",
+    "use_lm_hints": false
   },
 
   "controls": {

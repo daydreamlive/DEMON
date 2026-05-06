@@ -150,6 +150,10 @@ class EncodeText(BaseNode):
         else:
             lyrics_prompt = f"# Languages\n{language}\n\n# Lyric\n<|endoftext|><|endoftext|>"
 
+        print(f"[LYRIC-TRACE] EncodeText: lyrics_in_chars={len(lyrics)}, "
+              f"prompt_chars={len(lyrics_prompt)}, "
+              f"is_instrumental={not bool(lyrics)}")
+
         # --- Tokenize and embed ---
         with handler._load_model_context("text_encoder"):
             tokens = handler.text_tokenizer(
@@ -169,6 +173,10 @@ class EncodeText(BaseNode):
             lyric_mask = torch.ones(
                 lyric_hidden.shape[:2], device=device, dtype=torch.bool
             )
+
+        print(f"[LYRIC-TRACE] EncodeText: lyric_token_ids.shape={tuple(lyric_tokens['input_ids'].shape)}, "
+              f"lyric_hidden.shape={tuple(lyric_hidden.shape)}, "
+              f"hidden_abs_mean={lyric_hidden.abs().mean().item():.4f}")
 
         return {
             "text_embed": TextEmbed(
@@ -237,6 +245,10 @@ class EncodeConditioning(BaseNode):
         refer_order_mask = torch.zeros(1, device=device, dtype=torch.long)
 
         with handler._load_model_context("model"):
+            print(f"[LYRIC-TRACE] EncodeConditioning: feeding encoder, "
+                  f"text_hs={tuple(text_embed.text_hidden_states.shape)}, "
+                  f"lyric_hs={tuple(text_embed.lyric_hidden_states.shape)}, "
+                  f"lyric_mask_sum={int(text_embed.lyric_attention_mask.sum().item())}")
             enc_hidden, enc_mask = handler.model.encoder(
                 text_hidden_states=text_embed.text_hidden_states.to(dtype),
                 text_attention_mask=text_embed.text_attention_mask,
@@ -245,6 +257,9 @@ class EncodeConditioning(BaseNode):
                 refer_audio_acoustic_hidden_states_packed=refer_packed,
                 refer_audio_order_mask=refer_order_mask,
             )
+            print(f"[LYRIC-TRACE] EncodeConditioning: encoder out hs={tuple(enc_hidden.shape)}, "
+                  f"hs_abs_mean={enc_hidden.abs().mean().item():.4f}, "
+                  f"mask_sum={int(enc_mask.sum().item())}")
 
         return {
             "conditioning": Conditioning(

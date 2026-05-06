@@ -310,6 +310,64 @@ class Session:
 
         return PreparedSource(latent=latent, context_latent=context_latent)
 
+    def generate_lm_hints(
+        self,
+        *,
+        lm_generator,
+        tags: str,
+        lyrics: str = "",
+        bpm: int = 120,
+        key: str = "C major",
+        duration: float = 60.0,
+        language: str = "en",
+        time_signature: str = "4",
+        target_T_25Hz: int,
+        seed: Optional[int] = None,
+        temperature: float = 0.85,
+    ) -> Latent:
+        """Run the 5Hz LM and dequantize its codes into a 25Hz hint latent.
+
+        Bypasses the broken in-DiT ``self.tokenize.quantizer.*`` reference
+        (upstream typo: ``self.tokenize`` is a method, not the tokenizer
+        attribute) by going directly through ``model.tokenizer.quantizer``
+        and ``model.detokenizer``.
+
+        Args:
+            lm_generator: An ``LMHintGenerator`` instance.
+            tags, lyrics, bpm, key, duration, language, time_signature:
+                Forwarded to ``LMHintGenerator.generate_codes``.
+            target_T_25Hz: Truncate the 25Hz output to this many frames
+                so the result aligns with the source latent length.
+            seed, temperature: Sampling controls.
+
+        Returns:
+            A ``Latent`` of shape ``[1, target_T_25Hz, D]`` ready to be
+            used as a ``context_latent``.
+        """
+        codes = lm_generator.generate_codes(
+            tags=tags, lyrics=lyrics, bpm=bpm, key=key,
+            duration=duration, language=language,
+            time_signature=time_signature,
+            seed=seed, temperature=temperature,
+        )
+
+        handler = self.handler
+        with handler._load_model_context("model"):
+            dit = handler.model
+            quantizer = dit.tokenizer.quantizer
+            # ResidualFSQ.get_output_from_indices wants [B, N, Q] where Q
+            # is num_quantizers. Single-quantizer FSQ here, so add a
+            # trailing Q=1 dim. Clamp tokens to the codebook range — the
+            # LM vocab has ~65k audio_code tokens but the codebook is
+            # 64000 entries, so out-of-range emissions need clipping.
+            codebook_size = quantizer.codebooks.shape[1]
+            codes_clamped = codes.clamp(0, codebook_size - 1).unsqueeze(-1)
+            lm_hints_5Hz = quantizer.get_output_from_indices(codes_clamped)
+            lm_hints_25Hz = dit.detokenizer(lm_hints_5Hz)
+
+        lm_hints_25Hz = lm_hints_25Hz[:, :target_T_25Hz, :]
+        return Latent(tensor=lm_hints_25Hz)
+
     # ------------------------------------------------------------------
     # Text encoding
     # ------------------------------------------------------------------

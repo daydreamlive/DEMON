@@ -96,6 +96,9 @@ class PipelineRunner:
 
         # Cache silence once; used by the hint-strength blend node.
         self._rebuild_silence_latent()
+        # Optional override for the alpha=0 endpoint of the structure-
+        # strength fader (e.g. LM-generated hints). None = use silence.
+        self._alt_hint_latent = None
 
     def _rebuild_silence_latent(self) -> None:
         """(Re)build the silence latent used by hint-strength blending.
@@ -108,17 +111,35 @@ class PipelineRunner:
             model=self.stream.model, duration=T_frames / 25.0,
         )["latent"]
 
-    def _update_hint_strength(self, hint_str: float) -> None:
-        """Blend source context with silence by ``hint_str`` into the handle.
+    def set_alt_hint_latent(self, latent) -> None:
+        """Replace the alpha=0 endpoint of the structure-strength blend.
 
-        0.0 = no structural guidance, 1.0 = full hints. Takes effect on
-        the next ``handle.tick`` call.
+        ``None`` falls back to the silence latent (current default).
+        Setter is the runner-thread mutation point: when the demo
+        backend toggles LM-generated hints on/off (or regenerates them
+        on prompt change), it stages the new ``Latent`` here via the
+        ``before_tick`` hook so the blend swap is GPU-safe.
+        """
+        self._alt_hint_latent = latent
+
+    def _hint_endpoint_a(self):
+        """Pick the latent that hint_strength=0 corresponds to."""
+        if self._alt_hint_latent is not None:
+            return self._alt_hint_latent
+        return self._silence_latent
+
+    def _update_hint_strength(self, hint_str: float) -> None:
+        """Blend the alpha=0 endpoint with source.context_latent.
+
+        0.0 = pure endpoint-A (silence by default, LM-hints when set
+        via :meth:`set_alt_hint_latent`); 1.0 = full source hints.
+        Takes effect on the next ``handle.tick`` call.
         """
         if hint_str >= 1.0:
             self.stream.context_latent = self.stream.source.context_latent
             return
         self.stream.context_latent = LatentBlend().execute(
-            latent_a=self._silence_latent,
+            latent_a=self._hint_endpoint_a(),
             latent_b=self.stream.source.context_latent,
             alpha=hint_str,
         )["latent"]

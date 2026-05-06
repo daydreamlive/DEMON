@@ -259,11 +259,12 @@ export class RemoteBackend extends EventTarget {
     } catch {}
   }
 
-  sendPrompt(tags, key) {
+  sendPrompt(tags, key, lyrics) {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     try {
       const msg = { type: "prompt", tags };
       if (key) msg.key = key;
+      if (lyrics !== undefined && lyrics !== null) msg.lyrics = lyrics;
       this.ws.send(JSON.stringify(msg));
     } catch {}
   }
@@ -289,21 +290,37 @@ export class RemoteBackend extends EventTarget {
   }
 
   /**
+   * Toggle 5Hz-LM-generated hints on/off. When ON, the server runs the
+   * 5Hz LM against the current tags+lyrics, dequantizes via the DiT's
+   * FSQ codebook, and uses the resulting 25Hz tensor as the alpha=0
+   * endpoint of the structure-strength fader (replacing silence).
+   * Regenerated server-side on prompt changes and source swaps.
+   */
+  sendLmHints(on) {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(JSON.stringify({ type: "lm_hints", on: !!on }));
+    } catch {}
+  }
+
+  /**
    * Replace the source audio in-flight. The server pauses generation,
    * re-runs prepare_source / encode_text on the new waveform, swaps
    * stream.source/conditioning, and replies with a swap_ready event +
    * binary buffer. Caller should hand the buffer to AudioPlayer.swap().
    * @param {Float32Array} interleaved
    * @param {number} channels
-   * @param {string} [tags]  current prompt; falls back to server-side
-   * @param {string} [key]   override; otherwise server uses detected key
+   * @param {string} [tags]   current prompt; falls back to server-side
+   * @param {string} [key]    override; otherwise server uses detected key
+   * @param {string} [lyrics] lyrics to re-encode against the new source
    */
-  sendSwapSource(interleaved, channels, tags, key) {
+  sendSwapSource(interleaved, channels, tags, key, lyrics) {
     if (this.ws?.readyState !== WebSocket.OPEN) return false;
     try {
       const msg = { type: "swap_source" };
       if (tags) msg.tags = tags;
       if (key) msg.key = key;
+      if (lyrics !== undefined && lyrics !== null) msg.lyrics = lyrics;
       this.ws.send(JSON.stringify(msg));
       const samples = interleaved.length / channels;
       const hdr = new ArrayBuffer(8);

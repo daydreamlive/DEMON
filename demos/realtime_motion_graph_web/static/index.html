@@ -140,6 +140,20 @@
           </div>
         </div>
 
+        <!-- LYRICS: single textarea, sits to the left of the prompts tile.
+             Sent together with tags when "Send Prompt" is pressed.
+             Also hosts the "LM Hints" toggle that swaps the alpha=0
+             endpoint of the structure-strength fader from silence to
+             5Hz-LM-generated hints driven by the current tags+lyrics. -->
+        <div class="mixer-tile mixer-tile-lyrics" data-tile="lyrics">
+          <div class="mixer-tile-label">Lyrics</div>
+          <div class="prompt-slot">
+            <label class="prompt-label" for="prompt-lyrics">Lyrics (empty = instrumental)</label>
+            <textarea id="prompt-lyrics" class="prompt-input" rows="6" placeholder="[Verse 1]&#10;..."></textarea>
+          </div>
+          <button id="lm-hints-btn" class="lm-hints-btn" title="Swap structure-strength alpha=0 endpoint from silence to 5Hz-LM hints from current tags+lyrics. Regenerates on prompt change.">LM Hints: OFF</button>
+        </div>
+
         <!-- PROMPTS: A/B textareas, blend, send. -->
         <div class="mixer-tile mixer-tile-prompts" data-tile="prompts">
           <div class="mixer-tile-label">Prompts</div>
@@ -176,6 +190,6 @@
 <div class="cursor-cluster" aria-hidden="true"></div>
 <div class="cursor-dot" aria-hidden="true"></div>
 
-<script type="module" src="app.js?v=39"></script>
+<script type="module" src="app.js?v=41"></script>
 </body>
 </html>
