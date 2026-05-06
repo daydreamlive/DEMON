@@ -1,0 +1,14 @@
+{
+  "audio": "D:\\huggingface_cache\\hub\\datasets--daydreamlive--demon-fixtures\\snapshots\\8171bb9ab348a11f5727b41bf5f340889aebd25e\\thrash_metal_loop_120s_enm.wav",
+  "audio_seconds": 117.45066666666666,
+  "load_seconds": 14.002947499975562,
+  "inference_seconds": 10.278805600013584,
+  "rtf": 0.08751594087742018,
+  "weights_vram_gib": 20.83840560913086,
+  "peak_vram_gib": 19.25309944152832,
+  "dtype": "bfloat16",
+  "attn": "sdpa",
+  "max_new_tokens": 4096,
+  "output_chars": 957,
+  "output": "# Languages\nen\n\n# Lyrics\n[Intro - Guitar Riff]\n\n[Verse 1]\nTeeth on steel\nTongue drips rust\nEvery promise\nGround to dust\nSkull full of sirens, static in my lungs\nBite down on the fuse, feel the planet come undone\n\n[Chorus]\nI am the shrapnel of the sun\n(Hey!)\nBurning holes in everyone\nSpit that venom, choke that lie\nIf the world wants war, then let it die\nShrapnel of the sun\nTear the sky\n\n[Guitar Solo]\n\n[Verse 2]\nCheap blue pills for a dead-end dream\nLeaders line up for the guillotine\nBillboard halos over rot and mold\nSmile for the camera while your heart gets sold\n\n[Chorus]\nI am the shrapnel of the sun\n(Woah! Woah!)\nBurning holes in everyone\nSpit that venom, choke that lie\nIf the world wants war, then let it die\nShrapnel of the sun\nTear the sky\n\n[Bridge]\nTear the sky!\nTear the sky!\nTear the sky!\nDrink the ash to the glass, count your sins on broken hands\nAll your gods built of sand, I'm the crack you can't withstand\nYeah!\n\n[Outro - Guitar Solo]"
+}

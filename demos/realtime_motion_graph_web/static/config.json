@@ -19,7 +19,9 @@
   "prompts": {
     "a": "heavy dubstep loop, deathstep, afxdump, growl heavy bass distortion",
     "b": "daft punk style loop, beautiful, four to the floor, angelic",
-    "blend": 0.4
+    "blend": 0.4,
+    "_lyrics_help": "Lyrics conditioning for the cover. Empty string keeps the cover instrumental. Section tags like [Verse 1] / [Chorus] are honored.",
+    "lyrics": ""
   },
 
   "controls": {

@@ -171,6 +171,7 @@ def handle_client(
     depth = config.get("depth", 4)
     steps = config.get("steps", 8)
     prompt = config.get("prompt", "instrumental music")
+    lyrics = config.get("lyrics", "")
     fast_vae = config.get("fast_vae", False)
 
     # LoRA selection.  ``enabled_loras`` is the new id-keyed protocol;
@@ -336,8 +337,12 @@ def handle_client(
     source = session.prepare_source(audio_in)
 
     print("[Server] Text encode...")
+    _lyric_first = lyrics.splitlines()[0] if lyrics else "<empty>"
+    print(f"[LYRIC-TRACE] backend: passing lyrics, len={len(lyrics)} chars, "
+          f"first_line={_lyric_first!r}")
     conditioning = session.encode_text(
         tags=prompt,
+        lyrics=lyrics,
         instruction=TASK_INSTRUCTIONS["cover"],
         refer_latent=source.latent,
         bpm=detected_bpm, duration=audio_duration_s, key=detected_key,
@@ -411,6 +416,7 @@ def handle_client(
     virtual_knobs = VirtualMidiKnobs(banks)
     params = {"num_gens": 0, "tick_ms": 0.0, "dec_ms": 0.0}
     prompt_text = [prompt]
+    lyrics_text = [lyrics]
     sde_curve_display = [None]
     motion_val = [0.0]
     motion_lock = threading.Lock()
@@ -435,7 +441,7 @@ def handle_client(
     # the runner thread (consumes pending in before_tick). The recv loop
     # only stages audio bytes here; all GPU work happens on the runner
     # thread so we don't race the streaming pipeline.
-    swap_pending: dict = {"bytes": None, "tags": None}
+    swap_pending: dict = {"bytes": None, "tags": None, "lyrics": None}
     swap_lock = threading.Lock()
 
     # Cross-thread LoRA mutation rendezvous.  The recv thread enqueues
@@ -557,8 +563,10 @@ def handle_client(
                             # Re-encode on server. Prefer the key sent by the
                             # client (operator override); fall back to the
                             # auto-detected key from the loaded source.
+                            new_lyrics = data.get("lyrics", lyrics_text[0])
                             cond = session.encode_text(
                                 tags=data["tags"],
+                                lyrics=new_lyrics,
                                 instruction=TASK_INSTRUCTIONS["cover"],
                                 refer_latent=source_ref[0].latent,
                                 bpm=bpm_ref[0], duration=duration_ref[0],
@@ -566,11 +574,13 @@ def handle_client(
                             )
                             stream.conditioning = cond
                             prompt_text[0] = data["tags"]
+                            lyrics_text[0] = new_lyrics
                             try:
                                 with send_lock:
                                     ws.send(json.dumps({
                                         "type": "prompt_applied",
                                         "tags": data["tags"],
+                                        "lyrics": new_lyrics,
                                     }))
                             except ConnectionClosed:
                                 running[0] = False
@@ -601,6 +611,7 @@ def handle_client(
                             # halfway through; the client only sends one
                             # swap_source at a time.
                             tags = data.get("tags") or prompt_text[0]
+                            swap_lyrics = data.get("lyrics", lyrics_text[0])
                             try:
                                 audio_msg = ws.recv()
                             except ConnectionClosed:
@@ -609,6 +620,7 @@ def handle_client(
                             with swap_lock:
                                 swap_pending["bytes"] = audio_msg
                                 swap_pending["tags"] = tags
+                                swap_pending["lyrics"] = swap_lyrics
                                 swap_pending["key"] = data.get("key")
             except TimeoutError:
                 pass
@@ -652,11 +664,13 @@ def handle_client(
         with swap_lock:
             audio_msg = swap_pending.get("bytes")
             tags = swap_pending.get("tags")
+            swap_lyrics = swap_pending.get("lyrics")
             requested_key = swap_pending.get("key")
             if audio_msg is None:
                 return
             swap_pending["bytes"] = None
             swap_pending["tags"] = None
+            swap_pending["lyrics"] = None
             swap_pending["key"] = None
         try:
             new_channels, new_samples = struct.unpack("<II", audio_msg[:8])
@@ -686,8 +700,10 @@ def handle_client(
 
             new_audio_in = Audio(waveform=new_wf, sample_rate=SAMPLE_RATE)
             new_source = session.prepare_source(new_audio_in)
+            effective_lyrics = swap_lyrics if swap_lyrics is not None else lyrics_text[0]
             new_cond = session.encode_text(
                 tags=tags,
+                lyrics=effective_lyrics,
                 instruction=TASK_INSTRUCTIONS["cover"],
                 refer_latent=new_source.latent,
                 bpm=new_bpm, duration=new_audio_duration_s,
@@ -702,6 +718,7 @@ def handle_client(
             key_ref[0] = new_key
             duration_ref[0] = new_audio_duration_s
             prompt_text[0] = tags
+            lyrics_text[0] = effective_lyrics
             r = runner_holder[0]
             if r is not None:
                 # Source latent length may have changed; rebuild silence so

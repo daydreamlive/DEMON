@@ -259,11 +259,12 @@ export class RemoteBackend extends EventTarget {
     } catch {}
   }
 
-  sendPrompt(tags, key) {
+  sendPrompt(tags, key, lyrics) {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     try {
       const msg = { type: "prompt", tags };
       if (key) msg.key = key;
+      if (lyrics !== undefined && lyrics !== null) msg.lyrics = lyrics;
       this.ws.send(JSON.stringify(msg));
     } catch {}
   }
@@ -295,15 +296,17 @@ export class RemoteBackend extends EventTarget {
    * binary buffer. Caller should hand the buffer to AudioPlayer.swap().
    * @param {Float32Array} interleaved
    * @param {number} channels
-   * @param {string} [tags]  current prompt; falls back to server-side
-   * @param {string} [key]   override; otherwise server uses detected key
+   * @param {string} [tags]   current prompt; falls back to server-side
+   * @param {string} [key]    override; otherwise server uses detected key
+   * @param {string} [lyrics] lyrics to re-encode against the new source
    */
-  sendSwapSource(interleaved, channels, tags, key) {
+  sendSwapSource(interleaved, channels, tags, key, lyrics) {
     if (this.ws?.readyState !== WebSocket.OPEN) return false;
     try {
       const msg = { type: "swap_source" };
       if (tags) msg.tags = tags;
       if (key) msg.key = key;
+      if (lyrics !== undefined && lyrics !== null) msg.lyrics = lyrics;
       this.ws.send(JSON.stringify(msg));
       const samples = interleaved.length / channels;
       const hdr = new ArrayBuffer(8);

@@ -180,6 +180,8 @@ SUBMODEL_REGISTRY: Dict[str, str] = {
     "acestep-v15-xl-base": "ACE-Step/acestep-v15-xl-base",
     "acestep-v15-xl-sft": "ACE-Step/acestep-v15-xl-sft",
     "acestep-v15-xl-turbo": "ACE-Step/acestep-v15-xl-turbo",
+    # Annotation model (Qwen2.5-Omni-7B fine-tune used to label the v1.5 corpus)
+    "acestep-transcriber": "ACE-Step/acestep-transcriber",
 }
 
 # Components that come from the main model repo (ACE-Step/Ace-Step1.5)
