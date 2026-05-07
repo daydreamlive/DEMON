@@ -44,6 +44,11 @@ eggs/
 .eggs/
 lib/
 lib64/
+# The Python "lib/" rule above is from the cookiecutter Python .gitignore;
+# whitelist the realtime_motion_graph_web Next.js demo's lib/ tree (audio
+# encoders, etc.) so the React UI source tracks normally.
+!demos/realtime_motion_graph_web/web/lib/
+!demos/realtime_motion_graph_web/web/lib/**
 parts/
 sdist/
 var/
