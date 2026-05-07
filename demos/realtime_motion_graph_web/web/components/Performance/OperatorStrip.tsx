@@ -42,11 +42,7 @@ export function OperatorStrip() {
   // power users will keep relying on while the advanced controls strip
   // is open. Both surfaces drive the same setFixture() / addCustomTrack()
   // path, so picking from either re-triggers useFixtureSwap identically.
-  const sessionWsUrl = useSessionStore((s) => s.wsUrl);
   useEffect(() => {
-    // Pre-admit the proxy returns 401, so don't fetch until the queue
-    // hands us a wsUrl.
-    if (!sessionWsUrl) return;
     void listFixtures()
       .then((names) => {
         setFixtures(names);
@@ -55,7 +51,7 @@ export function OperatorStrip() {
         }
       })
       .catch(() => setFixtures([]));
-  }, [setFixture, sessionWsUrl]);
+  }, [setFixture]);
 
   async function onFilePicked(file: File) {
     const { setStatus } = useSessionStore.getState();

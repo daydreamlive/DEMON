@@ -132,16 +132,10 @@ function LoraRow({ id, name }: RowProps) {
 export function LibraryTile() {
   const catalog = useLoraStore((s) => s.catalog);
   const setCatalog = useLoraStore((s) => s.setCatalog);
-  // /api/pod/* requires ?session=<id>; without it the proxy 401s. Wait
-  // for the queue to admit us before fetching so we don't spam 401s
-  // pre-admission. The fetch fires the moment sessionWsUrl flips truthy
-  // and re-runs whenever it changes.
-  const sessionWsUrl = useSessionStore((s) => s.wsUrl);
 
   useEffect(() => {
-    if (!sessionWsUrl) return;
     void listLoras().then(setCatalog).catch(() => {});
-  }, [setCatalog, sessionWsUrl]);
+  }, [setCatalog]);
 
   if (catalog.length === 0) {
     return (

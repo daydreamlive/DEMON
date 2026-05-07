@@ -40,7 +40,6 @@ function UploadIcon() {
 export function LiteTrackCarousel() {
   const fixture = usePerformanceStore((s) => s.fixture);
   const setFixture = usePerformanceStore((s) => s.setFixture);
-  const sessionWsUrl = useSessionStore((s) => s.wsUrl);
 
   const [fixtures, setFixtures] = useState<string[]>([]);
   const customNames = useCustomTracksStore((s) => s.names);
@@ -50,9 +49,7 @@ export function LiteTrackCarousel() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
 
-  // Same fetch contract as AudioSourceCrate — wait for queue admission.
   useEffect(() => {
-    if (!sessionWsUrl) return;
     void listFixtures()
       .then((names) => {
         setFixtures(names);
@@ -61,7 +58,7 @@ export function LiteTrackCarousel() {
         }
       })
       .catch(() => setFixtures([]));
-  }, [setFixture, sessionWsUrl]);
+  }, [setFixture]);
 
   // Auto-scroll the current chip into view when fixture changes from
   // elsewhere (e.g. AudioSourceCrate, MobileFullSheet config tab).

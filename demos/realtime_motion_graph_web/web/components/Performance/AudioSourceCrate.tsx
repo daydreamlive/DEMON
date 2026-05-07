@@ -47,7 +47,6 @@ export function AudioSourceCrate() {
   const fixture = usePerformanceStore((s) => s.fixture);
   const setFixture = usePerformanceStore((s) => s.setFixture);
   const kiosk = usePerformanceStore((s) => s.kiosk);
-  const sessionWsUrl = useSessionStore((s) => s.wsUrl);
 
   const [fixtures, setFixtures] = useState<string[]>([]);
   const customNames = useCustomTracksStore((s) => s.names);
@@ -60,11 +59,7 @@ export function AudioSourceCrate() {
   const placardRef = useRef<HTMLButtonElement | null>(null);
   const fanRef = useRef<HTMLDivElement | null>(null);
 
-  // Fetch the catalog only AFTER the queue admits us. The pod proxy at
-  // /api/pod/* returns 401 without a session id, so calling pre-admit
-  // would just spam 401s in the network tab for no benefit.
   useEffect(() => {
-    if (!sessionWsUrl) return;
     void listFixtures()
       .then((names) => {
         setFixtures(names);
@@ -73,7 +68,7 @@ export function AudioSourceCrate() {
         }
       })
       .catch(() => setFixtures([]));
-  }, [setFixture, sessionWsUrl]);
+  }, [setFixture]);
 
   useEffect(() => {
     if (!open) return;
