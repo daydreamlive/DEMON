@@ -47,6 +47,47 @@ import {
 const WAVEFORM_BUCKETS_DESIRED = 720;
 const POINT_HIT_RADIUS_PX = 12;
 const CURVE_TESSELLATION = 256;
+// Inset for the drawable curve area, in CSS pixels. Endpoints (x∈{0,1},
+// y∈{0,1}) render at this distance from the canvas edges so the entire
+// control-point glyph stays inside the canvas — without this margin,
+// dots at the extremes get clipped by the tab strip below, the close
+// button above, and the overlay border on the sides, which makes them
+// hard to grab and drag. The waveform/grid/curve/playhead all share
+// the same inset so they line up visually.
+const EDGE_PADDING_PX = 16;
+
+/** Curve-space (x,y∈[0,1]) → canvas-local pixels, applying the edge
+ *  inset so an extreme point renders EDGE_PADDING_PX from the boundary. */
+function curveToPx(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): { cx: number; cy: number } {
+  const innerW = Math.max(0, w - 2 * EDGE_PADDING_PX);
+  const innerH = Math.max(0, h - 2 * EDGE_PADDING_PX);
+  return {
+    cx: EDGE_PADDING_PX + x * innerW,
+    cy: EDGE_PADDING_PX + (1 - y) * innerH,
+  };
+}
+
+/** Inverse of curveToPx. Clamps to [0,1] so points can't be dragged
+ *  outside the curve domain even if the cursor wanders into the
+ *  margin. */
+function pxToCurve(
+  px: number,
+  py: number,
+  w: number,
+  h: number,
+): { x: number; y: number } {
+  const innerW = Math.max(1, w - 2 * EDGE_PADDING_PX);
+  const innerH = Math.max(1, h - 2 * EDGE_PADDING_PX);
+  return {
+    x: Math.min(1, Math.max(0, (px - EDGE_PADDING_PX) / innerW)),
+    y: Math.min(1, Math.max(0, 1 - (py - EDGE_PADDING_PX) / innerH)),
+  };
+}
 
 function ensureCanvasSize(
   canvas: HTMLCanvasElement,
@@ -250,13 +291,6 @@ export function ScheduleCurvesOverlay() {
       };
     };
 
-    /** Convert pixel coords → curve-space (x ∈ [0,1], y ∈ [0,1]).
-     *  Y is inverted (top of canvas = y=1, bottom = y=0). */
-    const localToCurve = (px: number, py: number, w: number, h: number) => ({
-      x: Math.min(1, Math.max(0, px / w)),
-      y: Math.min(1, Math.max(0, 1 - py / h)),
-    });
-
     /** Hit-test a click against existing points. Returns the point's
      *  index in `pointsRef.current`, or null if no point under the
      *  cursor within POINT_HIT_RADIUS_PX. */
@@ -270,8 +304,7 @@ export function ScheduleCurvesOverlay() {
       let bestIdx: number | null = null;
       let bestDist = POINT_HIT_RADIUS_PX * POINT_HIT_RADIUS_PX;
       for (let i = 0; i < points.length; i++) {
-        const cx = points[i].x * w;
-        const cy = (1 - points[i].y) * h;
+        const { cx, cy } = curveToPx(points[i].x, points[i].y, w, h);
         const dx = cx - px;
         const dy = cy - py;
         const d2 = dx * dx + dy * dy;
@@ -292,15 +325,19 @@ export function ScheduleCurvesOverlay() {
 
       const points = pointsRef.current;
 
-      // Grid: horizontal thirds + dashed midline. Helps users eyeball
-      // where 0.5 / 0.33 / 0.67 sit on the y axis.
+      // Grid: horizontal thirds + midline. Helps users eyeball where
+      // 0.25 / 0.5 / 0.75 sit on the y axis. Drawn within the inset
+      // drawable rect so the lines line up with control points at
+      // the same y values.
       ctx.strokeStyle = "rgba(255, 255, 255, 0.06)";
       ctx.lineWidth = 1;
       for (const yFrac of [0.25, 0.5, 0.75]) {
-        const y = h - yFrac * h;
+        const { cy: y } = curveToPx(0, yFrac, w, h);
+        const { cx: xL } = curveToPx(0, yFrac, w, h);
+        const { cx: xR } = curveToPx(1, yFrac, w, h);
         ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(w, y);
+        ctx.moveTo(xL, y);
+        ctx.lineTo(xR, y);
         ctx.stroke();
       }
 
@@ -312,8 +349,8 @@ export function ScheduleCurvesOverlay() {
       ctx.shadowBlur = 8;
       ctx.beginPath();
       for (let i = 0; i < samples.length; i++) {
-        const x = (i / (samples.length - 1)) * w;
-        const y = (1 - samples[i]) * h;
+        const sx = i / (samples.length - 1);
+        const { cx: x, cy: y } = curveToPx(sx, samples[i], w, h);
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       }
@@ -323,8 +360,7 @@ export function ScheduleCurvesOverlay() {
       // Control points — circle (smooth), diamond (linear), square (step).
       for (let i = 0; i < points.length; i++) {
         const p = points[i];
-        const cx = p.x * w;
-        const cy = (1 - p.y) * h;
+        const { cx, cy } = curveToPx(p.x, p.y, w, h);
         const isHover = hoverIndex === i;
         const isDrag = dragIndex === i;
         const r = isHover || isDrag ? 7 : 5;
@@ -356,19 +392,22 @@ export function ScheduleCurvesOverlay() {
       }
 
       // Playhead — vertical orange line at currentPositionSec / duration.
+      // Spans the inset's vertical extent so it lines up with the curve.
       const session = useSessionStore.getState();
       const player = session.player;
       const remote = session.remote;
       if (player && remote && remote.duration > 0) {
         const t = Math.min(1, Math.max(0, player.positionSec / remote.duration));
-        const xp = t * w;
+        const { cx: xp } = curveToPx(t, 0, w, h);
+        const { cy: yTop } = curveToPx(0, 1, w, h);
+        const { cy: yBot } = curveToPx(0, 0, w, h);
         ctx.strokeStyle = "rgba(240, 138, 72, 0.85)";
         ctx.lineWidth = 1.5;
         ctx.shadowColor = "rgba(240, 138, 72, 0.6)";
         ctx.shadowBlur = 6;
         ctx.beginPath();
-        ctx.moveTo(xp, 0);
-        ctx.lineTo(xp, h);
+        ctx.moveTo(xp, yTop);
+        ctx.lineTo(xp, yBot);
         ctx.stroke();
         ctx.shadowBlur = 0;
       }
@@ -390,7 +429,7 @@ export function ScheduleCurvesOverlay() {
         return;
       }
       // Click on empty area → insert a new smooth point at that x.
-      const { x, y } = localToCurve(px, py, w, h);
+      const { x, y } = pxToCurve(px, py, w, h);
       const points = pointsRef.current.slice();
       // Don't insert at the very edges — those are pinned endpoints.
       if (x <= 0.001 || x >= 0.999) return;
@@ -407,7 +446,7 @@ export function ScheduleCurvesOverlay() {
       if (dragIndex !== null) {
         const points = pointsRef.current.slice();
         const i = dragIndex;
-        const { x, y } = localToCurve(px, py, w, h);
+        const { x, y } = pxToCurve(px, py, w, h);
         // Endpoint x is pinned; midpoint x must stay strictly between
         // its neighbours so the curve stays well-formed.
         const isFirst = i === 0;
