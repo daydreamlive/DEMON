@@ -273,20 +273,13 @@ export class GraphRenderer {
       ctx.stroke();
     }
 
-    // Whimsical orbital dots + beat-triggered sparks. Each signal gets
-    // a colored disc anchored on the line at the playhead, plus a
-    // colored satellite orbiting it. Speed and radius are hashed from
-    // the line name (cursor.ts:47-50 PARTICLE_CONFIG vocabulary) so the
-    // cluster reads as a flock, not a metronome — different lines orbit
-    // at different rates, in different directions, on different shells.
-    //
-    // Orbits are time-driven so the cluster never freezes between data
-    // samples. Each line fires a leftward comet trail on its own
-    // jittered ~250ms schedule (independent across lines), so the
-    // graph reads as a constant chromatic party flowing past the
-    // playhead. `pulse` doesn't gate the trigger — it just thickens
-    // each burst (more sparks) on loud moments. Sparks live in
-    // `this._sparks`, capped at MAX_SPARKS.
+    // Per-line dot at the playhead intersection + leftward confetti
+    // trails shed from the dot. Each line fires on its own jittered
+    // ~250ms schedule (independent across lines) so the graph reads as
+    // a constant chromatic party flowing past the playhead. `pulse`
+    // doesn't gate the trigger — it just thickens each burst (more
+    // sparks) on loud moments. Sparks live in `this._sparks`, capped
+    // at MAX_SPARKS.
     {
       const dt = this._lastNow ? Math.min(50, now - this._lastNow) : 16;
       this._lastNow = now;
@@ -295,8 +288,6 @@ export class GraphRenderer {
       const burstCount =
         SPARKS_PER_BURST_BASE + Math.round(SPARKS_PER_BURST_PULSE * pulse);
 
-      const orbitTheta = (now / 1800) * Math.PI * 2; // ~1.8s base period
-      const baseOrbitR = 6 * (1 + 0.4 * pulse);
       const pxPerSample = w / (VISIBLE_SAMPLES - 1);
       const samplesFromHead = Math.round((w - playheadX) / pxPerSample);
 
@@ -313,35 +304,10 @@ export class GraphRenderer {
         const yAtHead = h - Y_PAD - v * (h - 2 * Y_PAD);
         const [r, g, b] = _colorFor(name);
 
-        // Hash → phase, spin direction, speed mul ∈ [0.7, 1.4],
-        // radius mul ∈ [0.85, 1.15]. Different bits feed each so a
-        // small name change scrambles all four — no two signals end up
-        // visually paired by accident.
-        let hash = 0;
-        for (let i = 0; i < name.length; i++) {
-          hash = (hash * 31 + name.charCodeAt(i)) | 0;
-        }
-        const phase = ((Math.abs(hash) % 1000) / 1000) * Math.PI * 2;
-        const dir = hash & 1 ? 1 : -1;
-        const speedMul = 0.7 + ((Math.abs(hash >> 5) % 1000) / 1000) * 0.7;
-        const radiusMul =
-          0.85 + ((Math.abs(hash >> 11) % 1000) / 1000) * 0.3;
-
-        const orbitR = baseOrbitR * radiusMul;
-        const angle = phase + dir * orbitTheta * speedMul;
-        const satX = playheadX + Math.cos(angle) * orbitR;
-        const satY = yAtHead + Math.sin(angle) * orbitR;
-
-        // Disc anchored on the line.
+        // Disc anchored on the line at the playhead.
         ctx.fillStyle = `rgb(${r},${g},${b})`;
         ctx.beginPath();
         ctx.arc(playheadX, yAtHead, 3, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Colored satellite head (slightly larger than the line disc so
-        // it reads as the lead element of the pair).
-        ctx.beginPath();
-        ctx.arc(satX, satY, 2.5, 0, Math.PI * 2);
         ctx.fill();
 
         // Per-line burst: fire whenever the wall clock passes the
@@ -350,8 +316,8 @@ export class GraphRenderer {
         // constantly but desynced — there's almost always a trail in
         // flight from somewhere on the graph. Direction is fixed
         // leftward (LEFT_ANGLE = π) so the trail streaks toward the
-        // past instead of orbiting outward — reads as the playhead
-        // shedding history behind itself as time flows.
+        // past, reading as the playhead shedding history behind itself
+        // as time flows.
         const nextFireAt = this._nextFireAt.get(name) ?? 0;
         if (now >= nextFireAt) {
           this._nextFireAt.set(
@@ -367,8 +333,8 @@ export class GraphRenderer {
               SPARK_MIN_SPEED +
               Math.random() * (SPARK_MAX_SPEED - SPARK_MIN_SPEED);
             this._sparks.push({
-              x: satX,
-              y: satY,
+              x: playheadX,
+              y: yAtHead,
               vx: Math.cos(sa) * sp,
               vy: Math.sin(sa) * sp,
               age: 0,
