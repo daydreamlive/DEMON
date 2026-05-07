@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 
 import { decodeAudioFile, listFixtures } from "@/engine/audio/loadFixture";
+import { LOCAL_MODE } from "@/lib/runtime";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
@@ -47,6 +48,7 @@ export function AudioSourceCrate() {
   const fixture = usePerformanceStore((s) => s.fixture);
   const setFixture = usePerformanceStore((s) => s.setFixture);
   const kiosk = usePerformanceStore((s) => s.kiosk);
+  const sessionWsUrl = useSessionStore((s) => s.wsUrl);
 
   const [fixtures, setFixtures] = useState<string[]>([]);
   const customNames = useCustomTracksStore((s) => s.names);
@@ -59,7 +61,11 @@ export function AudioSourceCrate() {
   const placardRef = useRef<HTMLButtonElement | null>(null);
   const fanRef = useRef<HTMLDivElement | null>(null);
 
+  // Daydream-webapp queue-admit gate: /api/pod/* returns 401 pre-admit,
+  // so prod waits for wsUrl before fetching. Standalone DEMON has no
+  // queue (LOCAL_MODE), so we skip the wait there.
   useEffect(() => {
+    if (!sessionWsUrl && !LOCAL_MODE) return;
     void listFixtures()
       .then((names) => {
         setFixtures(names);
@@ -68,7 +74,7 @@ export function AudioSourceCrate() {
         }
       })
       .catch(() => setFixtures([]));
-  }, [setFixture]);
+  }, [setFixture, sessionWsUrl]);
 
   useEffect(() => {
     if (!open) return;

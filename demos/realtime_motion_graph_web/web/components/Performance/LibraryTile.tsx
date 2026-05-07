@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef } from "react";
 
 import { listLoras } from "@/engine/lora/listLoras";
+import { LOCAL_MODE } from "@/lib/runtime";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
@@ -132,10 +133,14 @@ function LoraRow({ id, name }: RowProps) {
 export function LibraryTile() {
   const catalog = useLoraStore((s) => s.catalog);
   const setCatalog = useLoraStore((s) => s.setCatalog);
+  // Daydream-webapp queue-admit gate: standalone DEMON has no queue
+  // (LOCAL_MODE), so we skip the wait there.
+  const sessionWsUrl = useSessionStore((s) => s.wsUrl);
 
   useEffect(() => {
+    if (!sessionWsUrl && !LOCAL_MODE) return;
     void listLoras().then(setCatalog).catch(() => {});
-  }, [setCatalog]);
+  }, [setCatalog, sessionWsUrl]);
 
   if (catalog.length === 0) {
     return (
