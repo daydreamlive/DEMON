@@ -52,7 +52,12 @@ function buildConfig(): SessionConfig {
   return {
     sde: false,
     lora: true,
-    depth: 8,
+    // depth=4 over depth=8: ~½ VRAM, ~⅛ param latency, ~11.3/s vs 12.3/s
+    // throughput on a 32 GB card per Ryan's measurements. The VRAM
+    // headroom is what unlocks longer audio uploads (the user-facing
+    // cap is the WebSocket frame size in loadFixture.ts; depth=4
+    // makes future bumps to that cap VRAM-safe).
+    depth: 4,
     vae_window: 6,
     crop: 0,
     steps: 8,
