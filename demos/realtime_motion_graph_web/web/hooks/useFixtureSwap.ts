@@ -79,6 +79,7 @@ export function useFixtureSwap() {
           channels,
           perf.promptA,
           perf.activeKey,
+          name,
         );
         if (!sent) {
           remote.removeEventListener("swap_ready", onReady);

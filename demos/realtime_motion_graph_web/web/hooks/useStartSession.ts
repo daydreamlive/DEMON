@@ -40,7 +40,7 @@ function resolveWsUrl(serverWsUrl: string | null): string {
 //   5. wire slice → patch/addDelta, lora_catalog → useLoraStore, etc.
 //   6. resume audio context
 
-function buildConfig(): SessionConfig {
+function buildConfig(fixtureName: string): SessionConfig {
   const perf = usePerformanceStore.getState();
   const lora = useLoraStore.getState();
   const enabledLoras = Array.from(lora.enabled);
@@ -66,6 +66,9 @@ function buildConfig(): SessionConfig {
     enabled_loras: enabledLoras,
     prompt: perf.promptA,
     lora_strengths: loraStrengths,
+    // Lets the server look up a precomputed sidecar (BPM, key, source
+    // latent, context_latent). Absent / unknown name -> live path.
+    fixture_name: fixtureName,
   };
 }
 
@@ -117,7 +120,7 @@ export function useStartSession() {
     }
 
     setStatus("connecting", "Connecting…");
-    const config = buildConfig();
+    const config = buildConfig(fixtureName);
     const wsUrl = resolveWsUrl(useSessionStore.getState().wsUrl);
     const remote = new RemoteBackend(
       wsUrl,

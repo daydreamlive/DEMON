@@ -416,14 +416,21 @@ export class RemoteBackend extends EventTarget {
     channels: number,
     tags?: string,
     key?: string,
+    fixtureName?: string,
   ): boolean {
     if (this.ws?.readyState !== WebSocket.OPEN) return false;
     try {
-      const msg: { type: string; tags?: string; key?: string } = {
+      const msg: {
+        type: string;
+        tags?: string;
+        key?: string;
+        fixture_name?: string;
+      } = {
         type: "swap_source",
       };
       if (tags) msg.tags = tags;
       if (key) msg.key = key;
+      if (fixtureName) msg.fixture_name = fixtureName;
       this.ws.send(JSON.stringify(msg));
       const samples = interleaved.length / channels;
       const hdr = new ArrayBuffer(8);
