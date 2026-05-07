@@ -60,19 +60,26 @@ def _tee(stream: IO[bytes], label: str) -> None:
         print(f"{prefix} {line}", flush=True)
 
 
-def _ensure_node_modules() -> None:
-    if (WEB_DIR / "node_modules").is_dir():
-        return
-    if shutil.which("npm") is None:
+def _resolve_npm() -> str:
+    # On Windows `npm` is `npm.cmd`; subprocess without shell=True only
+    # resolves `.exe` via CreateProcess, so we look it up explicitly.
+    npm = shutil.which("npm")
+    if npm is None:
         sys.exit(
             "npm not found on PATH. Install Node.js 20+ "
             "(https://nodejs.org) and re-run."
         )
+    return npm
+
+
+def _ensure_node_modules(npm: str) -> None:
+    if (WEB_DIR / "node_modules").is_dir():
+        return
     print(
         f"{_PREFIXES['web']} node_modules missing — running `npm install`...",
         flush=True,
     )
-    rc = subprocess.call(["npm", "install"], cwd=WEB_DIR)
+    rc = subprocess.call([npm, "install"], cwd=WEB_DIR)
     if rc != 0:
         sys.exit(f"npm install exited with {rc}")
 
@@ -107,8 +114,9 @@ def main() -> int:
     if backend_extras and backend_extras[0] == "--":
         backend_extras = backend_extras[1:]
 
+    npm = _resolve_npm()
     if not args.no_install:
-        _ensure_node_modules()
+        _ensure_node_modules(npm)
 
     backend_cmd = [
         sys.executable,
@@ -121,7 +129,7 @@ def main() -> int:
         str(args.port),
         *backend_extras,
     ]
-    web_cmd = ["npm", "run", "dev", "--", "-p", str(args.web_port)]
+    web_cmd = [npm, "run", "dev", "--", "-p", str(args.web_port)]
 
     web_env = os.environ.copy()
     web_env["NEXT_PUBLIC_POD_BASE_URL"] = f"http://{args.host}:{args.port}"
@@ -129,6 +137,12 @@ def main() -> int:
     print(f"{_PREFIXES['backend']} {' '.join(backend_cmd)}", flush=True)
     print(
         f"{_PREFIXES['web']} (cwd={WEB_DIR}) {' '.join(web_cmd)}",
+        flush=True,
+    )
+    banner = _color("\x1b[1;32m")
+    print(
+        f"\n{banner}>>> Open http://localhost:{args.web_port}/ "
+        f"(NOT :{args.port} — that's the legacy static UI){_RESET}\n",
         flush=True,
     )
 
