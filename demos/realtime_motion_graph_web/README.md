@@ -24,7 +24,32 @@ WebSocket server runs the GPU pipeline alongside the browser client:
   support are optional. HTTPS is *not* required because the server
   binds on the same origin as the WebSocket endpoint.
 
-## Run
+## Run (Next.js front-end)
+
+The recommended layout runs the Python backend on `:8765` and a Next.js
+dev server on `:3000`. A single launcher starts both with combined output:
+
+```bash
+uv run python -u -m demos.realtime_motion_graph_web.run
+# forward backend args after `--`:
+uv run python -u -m demos.realtime_motion_graph_web.run -- --accel eager
+```
+
+First run installs `web/node_modules` automatically (Node.js 20+ required).
+Open `http://localhost:3000`. Next.js rewrites `/api/*`, `/fixtures/*`,
+`/loras/*`, and `/videos/*` to the backend at `:8765`; the WebSocket
+URL comes from `NEXT_PUBLIC_POD_BASE_URL` (set by the launcher).
+
+The full UI lives under `web/` (React + zustand, mirrored from the
+internal `daydreamlive/demon-react` package). See `web/components/`,
+`web/engine/`, `web/hooks/`, and `web/store/` for the source.
+
+## Run (legacy single-port server)
+
+The original `python -m demos.realtime_motion_graph_web` entry still
+works and serves the older vanilla-JS client out of `static/` on the
+same port as the WebSocket. Useful for Vast.ai-style single-port
+deploys where binding two ports isn't an option.
 
 From the remote 5090 box (the machine with the GPU):
 
