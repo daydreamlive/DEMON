@@ -1998,7 +1998,14 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   text-transform: uppercase;
   color: rgba(255, 255, 255, 0.72);
   z-index: 11;
-  white-space: nowrap;
+  /* Long messages (e.g. "Track too long — 322s (max 240s). Trim it.")
+     wrap onto multiple lines. The bar is centered and clamped at a
+     readable width; line-height gives the wrapped lines breathing room.
+     overflow-wrap: anywhere covers pathological inputs (URLs, hashes). */
+  max-width: min(80vw, 520px);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
   pointer-events: none;
   opacity: 0;
   transition:

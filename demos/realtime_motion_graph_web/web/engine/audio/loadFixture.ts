@@ -82,25 +82,18 @@ export async function loadFixtureAudio(name: string): Promise<DecodedFixture> {
   return decodeArrayBuffer(bytes);
 }
 
-// DEMON's WebSocket server caps incoming frames at ~50 MiB
-// (websockets.serve(max_size=…)). swap_source sends an 8-byte header +
-// interleaved Float32 PCM, so the decoded buffer must fit under that cap.
-// Practical limit at 48 kHz stereo Float32 (8 B/frame) ≈ 130 s of audio.
-const MAX_SWAP_SOURCE_BYTES = 50 * 1024 * 1024;
-const SWAP_SOURCE_HEADER_BYTES = 8;
+// Cap user-supplied audio at DEMON's largest TRT engine profile
+// (240 s; see acestep/paths.py:_TRT_ENGINE_PROFILES). Anything longer
+// would fail server-side at session init regardless of WS frame size.
+// The server's websockets.serve(max_size=...) is sized to fit this
+// duration with a comfortable margin.
+const MAX_FIXTURE_DURATION_S = 240;
 
 function ensureFitsSwapLimit(decoded: DecodedFixture): void {
-  const totalBytes = decoded.interleaved.byteLength + SWAP_SOURCE_HEADER_BYTES;
-  if (totalBytes <= MAX_SWAP_SOURCE_BYTES) return;
   const seconds = decoded.frames / decoded.sampleRate;
-  const bytesPerSecond = decoded.sampleRate * decoded.channels * 4;
-  const maxSeconds = Math.floor(
-    (MAX_SWAP_SOURCE_BYTES - SWAP_SOURCE_HEADER_BYTES) / bytesPerSecond,
-  );
+  if (seconds <= MAX_FIXTURE_DURATION_S) return;
   throw new Error(
-    `Track too long for the engine — ${Math.round(seconds)} s decoded ` +
-      `(${(totalBytes / 1024 / 1024).toFixed(1)} MB), engine accepts ` +
-      `up to ~${maxSeconds} s. Trim the file or pick a shorter clip.`,
+    `Track too long — ${Math.round(seconds)}s (max ${MAX_FIXTURE_DURATION_S}s). Trim it.`,
   );
 }
 

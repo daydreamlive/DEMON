@@ -408,7 +408,10 @@ def main():
         ws_handler,
         host,
         port,
-        max_size=50 * 1024 * 1024,
+        # Sized to fit the React UI's MAX_FIXTURE_DURATION_S (240 s)
+        # at 48 kHz stereo Float32 (~88 MiB) with comfortable headroom.
+        # See web/engine/audio/loadFixture.ts.
+        max_size=100 * 1024 * 1024,
         process_request=_process_request,
     )
     ws_thread = threading.Thread(target=srv.serve_forever, daemon=True)
