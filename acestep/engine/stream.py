@@ -254,6 +254,13 @@ class StreamPipeline:
     def has_trt(self) -> bool:
         return self._trt_engine is not None
 
+    def reset(self, *, clear_noise: bool = True) -> None:
+        """Drop queued and in-flight slots without rebuilding the pipeline."""
+        self._slots = [None] * self._depth
+        self._queue.clear()
+        if clear_noise:
+            self._last_noise = None
+
     def _detect_trt_max_batch(self) -> Optional[int]:
         """Return the decoder engine's max batch profile, if discoverable."""
         engine = self._trt_engine

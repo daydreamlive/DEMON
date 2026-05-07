@@ -12,6 +12,10 @@
     "steps": 8,
     "fast_vae": true,
     "key": "G# minor",
+    "_loop_guard_help": "Continuous-section playback: skip generated intro/fade-in and outro/fade-out material by looping only the middle of the buffer. Set both guards to 0 to play the full buffer.",
+    "loop_head_guard": 8.0,
+    "loop_tail_guard": 8.0,
+    "playback_loop_seconds": 0.0,
     "_enabled_loras_help": "List of LoRA ids (filename stems) to auto-enable at session start. Ids must exist in MODELS_DIR/loras. Empty = catalog-only, operator toggles via the Library panel.",
     "enabled_loras": []
   },

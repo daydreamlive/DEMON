@@ -110,6 +110,23 @@ By default, `--skip-threshold -1` disables decode skipping so VAE decode
 latency is measured on every completed generation. Set `--no-decode` for
 decoder-only throughput.
 
+For continuous playback, the browser can loop only the stable middle of the
+generated buffer. `engine.loop_head_guard` skips generated intro/fade-in material
+and `engine.loop_tail_guard` skips generated outro/fade-out material without
+changing latent length or the TRT profile.
+
+The web server also accepts runtime overrides for the seamless-section test:
+
+```bash
+uv run python -u -m demos.realtime_motion_graph_web \
+    --duration 60 --loop-head-guard 10 --loop-tail-guard 10
+```
+
+`--duration` caps the uploaded source in the browser, while the head/tail guards
+make the audio worklet wrap inside the generated buffer so trained intro/outro
+material is not played. For an exact audible section length, use
+`--loop-head-guard 8 --playback-loop-seconds 44` instead of the tail guard.
+
 To isolate live prompt-change cost, use the prompt benchmark. It keeps setup
 timings separate, then repeatedly runs the same server-side path used for
 prompt edits: text encode, conditioning fusion with the current source latent,

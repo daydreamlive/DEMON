@@ -160,6 +160,7 @@ class PipelineRunner:
         last_hint_str = 1.0
         last_channel_gains = [1.0] * (len(CHANNEL_GROUPS) + len(KEYSTONE_CHANNELS))
         current_shift = self.stream.base_kwargs["shift"]
+        prev_source_id = id(self.stream.source)
         prev_src_T = self.stream.source.latent.tensor.shape[1]
 
         while self.running[0]:
@@ -170,17 +171,16 @@ class PipelineRunner:
                 # the tick body.
                 self.before_tick()
 
-            # If a swap changed the source latent length, the cached
-            # last_latent / last_wav / last_decode_pos are dimensioned
-            # against the old source and would crash both the feedback
-            # blend (source_lat = ... + feedback * last_latent) and the
-            # skip-decode MSE check below. Reset them so the next tick
-            # re-initializes against the new source cleanly.
+            # Any source swap invalidates runner-local history. Length
+            # changes can crash shape-dependent blends; same-length swaps
+            # would otherwise leak the old track into the first new window.
+            cur_source_id = id(self.stream.source)
             cur_src_T = self.stream.source.latent.tensor.shape[1]
-            if cur_src_T != prev_src_T:
+            if cur_source_id != prev_source_id or cur_src_T != prev_src_T:
                 last_latent = None
                 last_wav = None
                 last_decode_pos = None
+                prev_source_id = cur_source_id
                 prev_src_T = cur_src_T
             if self.use_midi:
                 raw = self.midi_knobs.get_all_values()

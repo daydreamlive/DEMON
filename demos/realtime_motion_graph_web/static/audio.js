@@ -12,21 +12,38 @@ export class AudioPlayer {
     this.swapCount = 0;
     this.channels = 2;
     this.frameCount = 0;
+    this.loopStartFrame = 0;
+    this.loopEndFrame = 0;
     this._listeners = new Set();
     this._mirror = null;  // Float32Array, interleaved, kept in sync with worklet
     this._useWorklet = false;
+    this._loopHeadGuardSeconds = 0;
+    this._playbackLoopSeconds = 0;
+    this._loopTailGuardSeconds = 0;
     // ScriptProcessor fallback state
     this._spBuffer = null;
     this._spPosition = 0;
   }
 
-  get duration() { return this.frameCount / SAMPLE_RATE; }
+  get duration() {
+    return Math.max(1, this.loopEndFrame - this.loopStartFrame) / SAMPLE_RATE;
+  }
 
-  async init(initialBufferInterleaved, channels) {
+  get playbackPositionSec() {
+    return Math.max(0, this.positionSec - this.loopStartFrame / SAMPLE_RATE);
+  }
+
+  async init(initialBufferInterleaved, channels, options = {}) {
     this.ctx = new AudioContext({ sampleRate: SAMPLE_RATE, latencyHint: "interactive" });
 
+    this._loopHeadGuardSeconds = Number(options.loopHeadGuardSeconds || 0);
+    this._playbackLoopSeconds = Number(options.playbackLoopSeconds || 0);
+    this._loopTailGuardSeconds = Number(options.loopTailGuardSeconds || 0);
+    const startSuspended = !!options.startSuspended;
     this.channels = channels;
     this.frameCount = initialBufferInterleaved.length / channels;
+    this._applyLoopWindow(this.frameCount);
+    this.positionSec = this.loopStartFrame / SAMPLE_RATE;
     this._mirror = initialBufferInterleaved.slice();
 
     this._useWorklet = !!(this.ctx.audioWorklet);
@@ -50,14 +67,20 @@ export class AudioPlayer {
 
       const send = initialBufferInterleaved.slice();
       this.node.port.postMessage(
-        { type: "init", buffer: send, channels },
+        {
+          type: "init",
+          buffer: send,
+          channels,
+          loopStartFrame: this.loopStartFrame,
+          loopEndFrame: this.loopEndFrame,
+        },
         [send.buffer],
       );
     } else {
       // ScriptProcessorNode fallback for non-secure contexts
       console.warn("AudioWorklet unavailable (non-secure context). Using ScriptProcessor fallback.");
       this._spBuffer = initialBufferInterleaved.slice();
-      this._spPosition = 0;
+      this._spPosition = this.loopStartFrame;
       const BUFFER_SIZE = 4096;
       this.node = this.ctx.createScriptProcessor(BUFFER_SIZE, 0, channels);
       this.node.onaudioprocess = (e) => {
@@ -69,7 +92,9 @@ export class AudioPlayer {
           for (let c = 0; c < output.numberOfChannels; c++) output.getChannelData(c).fill(0);
           return;
         }
-        const nFrames = this.frameCount;
+        const loopStart = this.loopStartFrame || 0;
+        const loopEnd = this.loopEndFrame || this.frameCount;
+        const nFrames = Math.max(1, loopEnd - loopStart);
         // Mirror the worklet's loop-seam crossfade so non-secure-context
         // playback (ScriptProcessor fallback) gets the same smooth wrap.
         const seamFadeLen = Math.max(1, Math.floor(this.ctx.sampleRate * 0.05));
@@ -78,10 +103,10 @@ export class AudioPlayer {
         for (let c = 0; c < output.numberOfChannels; c++) outChs.push(output.getChannelData(c));
         let pos = this._spPosition;
         for (let i = 0; i < frames; i++) {
-          if (seam > 0 && (nFrames - pos) <= seam) {
-            const distFromEnd = nFrames - pos;
+          if (seam > 0 && (loopEnd - pos) <= seam) {
+            const distFromEnd = loopEnd - pos;
             const t = (seam - distFromEnd) / seam;
-            const headPos = seam - distFromEnd;
+            const headPos = loopStart + seam - distFromEnd;
             for (let c = 0; c < outChs.length; c++) {
               const cc = Math.min(c, ch - 1);
               const sTail = buf[pos * ch + cc];
@@ -95,7 +120,7 @@ export class AudioPlayer {
             }
           }
           pos++;
-          if (pos >= nFrames) pos = seam;
+          if (pos >= loopEnd) pos = loopStart + seam;
         }
         this._spPosition = pos;
         this.positionSec = this._spPosition / SAMPLE_RATE;
@@ -103,6 +128,9 @@ export class AudioPlayer {
     }
 
     this.node.connect(this.ctx.destination);
+    if (startSuspended) {
+      await this.ctx.suspend();
+    }
   }
 
   // Overwrite a region of the worklet's buffer.
@@ -123,21 +151,31 @@ export class AudioPlayer {
   // crossfades the old and new buffers over CROSSFADE_SECONDS (50 ms by
   // default), so callers don't hear a click. ScriptProcessor fallback
   // does an instant swap (the seam-fade still hides the wrap).
-  swap(interleavedBuffer, channels) {
+  swap(interleavedBuffer, channels, options = {}) {
+    const resetPosition = !!options.resetPosition;
     this.channels = channels || this.channels;
     this.frameCount = interleavedBuffer.length / this.channels;
+    this._applyLoopWindow(this.frameCount);
     this._mirror = interleavedBuffer.slice();
+    if (resetPosition) this.positionSec = this.loopStartFrame / SAMPLE_RATE;
     this.swapCount++;
     for (const fn of this._listeners) fn();
     if (this._useWorklet) {
       const send = interleavedBuffer.slice();
       this.node.port.postMessage(
-        { type: "swap", buffer: send, channels: this.channels },
+        {
+          type: "swap",
+          buffer: send,
+          channels: this.channels,
+          loopStartFrame: this.loopStartFrame,
+          loopEndFrame: this.loopEndFrame,
+          resetPosition,
+        },
         [send.buffer],
       );
     } else {
       this._spBuffer = interleavedBuffer.slice();
-      this._spPosition = 0;
+      if (resetPosition) this._spPosition = this.loopStartFrame;
     }
   }
 
@@ -181,6 +219,36 @@ export class AudioPlayer {
     }
     this.swapCount++;
     for (const fn of this._listeners) fn();
+  }
+
+  _applyLoopWindow(totalFrames) {
+    const minFrames = Math.min(totalFrames, Math.floor(SAMPLE_RATE));
+    let start = Math.floor(Math.max(0, this._loopHeadGuardSeconds) * SAMPLE_RATE);
+    start = Math.max(0, Math.min(Math.max(0, totalFrames - 1), start));
+
+    let end;
+    if (this._playbackLoopSeconds > 0) {
+      end = Math.min(
+        totalFrames,
+        start + Math.floor(this._playbackLoopSeconds * SAMPLE_RATE),
+      );
+    } else if (this._loopTailGuardSeconds > 0) {
+      end = totalFrames - Math.floor(this._loopTailGuardSeconds * SAMPLE_RATE);
+    } else {
+      end = totalFrames;
+    }
+
+    if (end - start < minFrames) {
+      if (totalFrames - start >= minFrames) {
+        end = start + minFrames;
+      } else {
+        end = totalFrames;
+        start = Math.max(0, end - minFrames);
+      }
+    }
+
+    this.loopStartFrame = start;
+    this.loopEndFrame = Math.max(start + 1, Math.min(totalFrames, end));
   }
 
   // Read-only view of the current buffer (for waveform rendering).

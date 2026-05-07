@@ -48,6 +48,8 @@ _ACCEL = "tensorrt"
 _KIOSK = False
 _DEFAULT_MODE = "graph"
 _VALID_MODES = ("graph", "video")
+_CONFIG_OVERRIDES = {}
+_AUDIO_DURATION_S = None
 
 # Keep the wire compact and don't cache anything so the product team
 # always sees the latest JS after a redeploy.
@@ -134,6 +136,8 @@ def _process_request(connection, request):
             "no_backend": _NO_BACKEND,
             "kiosk": _KIOSK,
             "default_mode": _DEFAULT_MODE,
+            "config_overrides": _CONFIG_OVERRIDES,
+            "audio_duration_s": _AUDIO_DURATION_S,
         }).encode()
         _log_http(remote, 200, "GET", url)
         return Response(
@@ -368,6 +372,22 @@ def main():
         idx = args.index("--checkpoint")
         checkpoint = args[idx + 1]
 
+    def _float_flag(name: str):
+        if name not in args:
+            return None
+        idx = args.index(name)
+        try:
+            return float(args[idx + 1])
+        except (IndexError, ValueError) as exc:
+            raise SystemExit(f"[Server] {name} requires a numeric value") from exc
+
+    audio_duration_s = _float_flag("--duration")
+    playback_loop_seconds = _float_flag("--playback-loop-seconds")
+    loop_head_guard_s = _float_flag("--loop-head-guard")
+    if loop_head_guard_s is None:
+        loop_head_guard_s = _float_flag("--loop-guard-head")
+    loop_tail_guard_s = _float_flag("--loop-tail-guard")
+
     kiosk = "--kiosk" in args
     default_mode = "graph"
     if "--mode" in args:
@@ -381,11 +401,19 @@ def main():
     if not STATIC_DIR.exists():
         raise SystemExit(f"[Server] static dir missing: {STATIC_DIR}")
 
-    global _NO_BACKEND, _ACCEL, _KIOSK, _DEFAULT_MODE
+    global _NO_BACKEND, _ACCEL, _KIOSK, _DEFAULT_MODE, _CONFIG_OVERRIDES, _AUDIO_DURATION_S
     _NO_BACKEND = no_backend
     _ACCEL = accel
     _KIOSK = kiosk
     _DEFAULT_MODE = default_mode
+    _AUDIO_DURATION_S = audio_duration_s
+    _CONFIG_OVERRIDES = {}
+    if playback_loop_seconds is not None:
+        _CONFIG_OVERRIDES["playback_loop_seconds"] = playback_loop_seconds
+    if loop_head_guard_s is not None:
+        _CONFIG_OVERRIDES["loop_head_guard"] = loop_head_guard_s
+    if loop_tail_guard_s is not None:
+        _CONFIG_OVERRIDES["loop_tail_guard"] = loop_tail_guard_s
 
     if no_backend:
         ws_handler = _stub_handle_client
@@ -418,6 +446,14 @@ def main():
 
     browsable_host = "localhost" if host in ("0.0.0.0", "::", "") else host
     extras = [f"mode={default_mode}"]
+    if audio_duration_s is not None:
+        extras.append(f"duration={audio_duration_s:g}s")
+    if playback_loop_seconds is not None:
+        extras.append(f"playback_loop={playback_loop_seconds:g}s")
+    if loop_head_guard_s is not None:
+        extras.append(f"loop_head_guard={loop_head_guard_s:g}s")
+    if loop_tail_guard_s is not None:
+        extras.append(f"loop_tail_guard={loop_tail_guard_s:g}s")
     if kiosk:
         extras.append("kiosk")
     if offload_text_encoder:

@@ -113,6 +113,7 @@ const loraInitial = await fetch("/api/loras")
 
 const CONFIG = {
   ...userConfig.engine,
+  ...(serverInfo.config_overrides || {}),
   prompt: userConfig.prompts.a,
 };
 
@@ -250,6 +251,19 @@ const dcwState = {
   mode: userConfig.controls.dcw_mode ?? "double",
   wavelet: userConfig.controls.dcw_wavelet ?? "haar",
 };
+
+function buildRawParams() {
+  const raw = { seed: seedValue };
+  for (const name of Object.keys(SLIDER_DEFS)) {
+    raw[name] = sliderValues[name];
+  }
+  // Non-slider DCW state (boolean toggle + two enum strings). The Python
+  // side reads raw.get("dcw_enabled") etc. and forwards to pipe.set_dcw().
+  raw.dcw_enabled = dcwState.enabled;
+  raw.dcw_mode = dcwState.mode;
+  raw.dcw_wavelet = dcwState.wavelet;
+  return raw;
+}
 
 function randomizeSeed() {
   seedValue = Math.random();
@@ -420,10 +434,10 @@ async function decodeAudioBuffer(arrayBuf) {
   const rendered = await offline.startRendering();
 
   let frames = rendered.length;
-  // Cap at the largest engine profile the server is built for (240 s).
-  // The server applies the same cap via max_profile_duration_s(); a
-  // client cap shorter than that just truncates uploads needlessly.
-  frames = Math.min(frames, Math.floor(240.0 * SAMPLE_RATE));
+  // Cap to the CLI-requested upload duration when present, otherwise to
+  // the largest engine profile the server is built for (240 s).
+  const maxUploadSeconds = serverInfo.audio_duration_s || 240.0;
+  frames = Math.min(frames, Math.floor(maxUploadSeconds * SAMPLE_RATE));
   const pool = 1920 * 5;
   frames = frames - (frames % pool);
 
@@ -1192,13 +1206,14 @@ function updateGlobalTimer() { /* no-op */ }
 // ── Session (connection + video + render loop) ──
 
 class Session {
-  constructor(remote, audio, videos) {
+  constructor(remote, audio, videos, options = {}) {
     this.remote = remote;
     this.audio = audio;
     this.videos = videos;
     this.hud = new HUD(hudCanvas);
     this.running = true;
     this.paused = false;
+    this._resumeOnFirstSlice = !!options.resumeOnFirstSlice;
     this._lastWavSwap = -1;
     this._sendInterval = null;
     this._renderRaf = null;
@@ -1296,6 +1311,10 @@ class Session {
         } else {
           this.audio.patch(d.startSample, d.audio);
         }
+        if (this._resumeOnFirstSlice) {
+          this._resumeOnFirstSlice = false;
+          if (!this.paused) void this.audio.resume();
+        }
       });
 
       this.remote.addEventListener("close", () => {
@@ -1328,17 +1347,16 @@ class Session {
     }
   }
 
+  async prepareForSourceSwap() {
+    if (!this.remote || !this.audio.ctx) return;
+    this._resumeOnFirstSlice = true;
+    this.audio.positionSec = this.audio.loopStartFrame / SAMPLE_RATE;
+    await this.audio.ctx.suspend();
+  }
+
   _sendTick() {
     if (!this.running || !this.remote || this.paused) return;
-    const raw = { seed: seedValue };
-    for (const name of Object.keys(SLIDER_DEFS)) {
-      raw[name] = sliderValues[name];
-    }
-    // Non-slider DCW state (boolean toggle + two enum strings). The Python
-    // side reads raw.get("dcw_enabled") etc. and forwards to pipe.set_dcw().
-    raw.dcw_enabled = dcwState.enabled;
-    raw.dcw_mode = dcwState.mode;
-    raw.dcw_wavelet = dcwState.wavelet;
+    const raw = buildRawParams();
     this.remote.sendParams(raw, this.audio.positionSec);
   }
 
@@ -1352,7 +1370,7 @@ class Session {
     }
 
     const dur = this.audio.duration || 1;
-    const frac = Math.max(0, Math.min(1, this.audio.positionSec / dur));
+    const frac = Math.max(0, Math.min(1, this.audio.playbackPositionSec / dur));
     const kick = this._computeKick();
 
     // Bloom amplitude exposed to CSS so the perimeter HUD bars and the
@@ -1522,6 +1540,7 @@ async function startSession(interleaved, channels, frames, videos) {
         ...CONFIG,
         prompt: activePrompt,
         key: activeKey,
+        initial_params: buildRawParams(),
         enabled_loras: getEnabledLoraIdsForConfig(),
         lora_strengths: getEnabledLoraStrengthsForConfig(),
       };
@@ -1548,9 +1567,16 @@ async function startSession(interleaved, channels, frames, videos) {
   }
 
   const player = new AudioPlayer();
-  await player.init(initialBuffer, initialChannels);
+  await player.init(initialBuffer, initialChannels, {
+    loopHeadGuardSeconds: CONFIG.loop_head_guard || 0,
+    playbackLoopSeconds: CONFIG.playback_loop_seconds || 0,
+    loopTailGuardSeconds: CONFIG.loop_tail_guard || 0,
+    startSuspended: !!remote,
+  });
   hideStatus();
-  session = new Session(remote, player, videos);
+  session = new Session(remote, player, videos, {
+    resumeOnFirstSlice: !!remote,
+  });
 
   await new Promise((r) => requestAnimationFrame(r));
   session.hud.resize();
@@ -1664,11 +1690,14 @@ async function swapToFixture(name) {
   // miss a fast server reply. Server eventually emits exactly one of
   // swap_ready / swap_failed per request.
   showStatus(`Swapping to ${name}...`);
+  await session.prepareForSourceSwap();
   const swapped = await new Promise((resolve) => {
     const onReady = (e) => {
       remote.removeEventListener("swap_ready", onReady);
       remote.removeEventListener("swap_failed", onFail);
-      session.audio.swap(e.detail.interleaved, e.detail.channels);
+      session.audio.swap(e.detail.interleaved, e.detail.channels, {
+        resetPosition: true,
+      });
       // Server already encoded with this key; just align the UI/state so
       // future prompt re-sends carry the right key. "auto" prevents a
       // redundant prompt re-send (server is already on the new key).

@@ -44,7 +44,7 @@ from acestep.paths import (
 )
 
 from .audio_engine import AudioEngine
-from .knobs import build_banks, CHANNEL_GROUPS, KEYSTONE_CHANNELS
+from .knobs import build_banks, CHANNEL_GROUPS, KEYSTONE_CHANNELS, KnobDef
 from .protocol import (
     SAMPLE_RATE,
     SLICE_FLAG_DELTA,
@@ -188,10 +188,14 @@ def handle_client(
     use_lora = config.get("lora", False)
     vae_window = config.get("vae_window", 3.0)
     crop_seconds = config.get("crop", 0.0)
+    loop_head_guard_seconds = max(0.0, float(config.get("loop_head_guard", 0.0) or 0.0))
     depth = config.get("depth", 4)
     steps = config.get("steps", 8)
     prompt = config.get("prompt", "instrumental music")
     fast_vae = config.get("fast_vae", False)
+    initial_params = config.get("initial_params")
+    if not isinstance(initial_params, dict):
+        initial_params = {}
 
     # LoRA selection.  ``enabled_loras`` is the new id-keyed protocol;
     # ``lora_paths`` / ``lora_path`` are interpreted as filesystem paths
@@ -398,6 +402,11 @@ def handle_client(
         src_np[-_seam_fade_samples:] = _tail * _fade_out + _head * _fade_in
 
     audio_eng = AudioEngine(src_np, SAMPLE_RATE)
+    if loop_head_guard_seconds > 0:
+        audio_eng.position = min(
+            max(0, int(loop_head_guard_seconds * SAMPLE_RATE)),
+            max(0, len(src_np) - 1),
+        )
 
     def _catalog_payload():
         if not lora_available:
@@ -434,6 +443,8 @@ def handle_client(
     initial_knob_ids = list(initial_enable_ids) if use_lora else []
     banks = build_banks(use_sde, loras=initial_knob_ids)
     virtual_knobs = VirtualMidiKnobs(banks)
+    if initial_params:
+        virtual_knobs.update(initial_params)
     params = {"num_gens": 0, "tick_ms": 0.0, "dec_ms": 0.0}
     prompt_text = [prompt]
     sde_curve_display = [None]
@@ -513,7 +524,6 @@ def handle_client(
                 # delta check (set_lora_strength only when the new value
                 # differs by > 0.02) doesn't immediately fire a redundant
                 # refit on tick 1.
-                from .client.knobs import KnobDef
                 virtual_knobs.add_knob(
                     f"lora_str_{lid}",
                     KnobDef(
@@ -722,6 +732,9 @@ def handle_client(
             stream.source = new_source
             stream.conditioning = new_cond
             stream.context_latent = new_source.context_latent
+            pipeline = getattr(stream.stream_node, "_pipeline", None)
+            if pipeline is not None:
+                pipeline.reset()
             source_ref[0] = new_source
             bpm_ref[0] = new_bpm
             key_ref[0] = new_key
@@ -738,7 +751,10 @@ def handle_client(
             n_channels_ref[0] = new_n_channels
             client_mirror_ref[0] = new_src_np.copy()
             audio_eng.swap(new_src_np)
-            audio_eng.position = 0
+            audio_eng.position = min(
+                max(0, int(loop_head_guard_seconds * SAMPLE_RATE)),
+                max(0, len(new_src_np) - 1),
+            )
 
             # Notify the client. swap_ready is the streaming-phase analog
             # of "ready"; the binary follow-up is the new initial buffer
