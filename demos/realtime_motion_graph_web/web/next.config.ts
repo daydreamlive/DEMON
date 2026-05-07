@@ -1,6 +1,6 @@
 import type { NextConfig } from "next";
 
-// During development, Next runs on :3000 and the Python engine on :8765.
+// During development, Next runs on :6660 and the Python engine on :1318.
 // The UI's engine-URL builder fetches /api/* and /fixtures/* (etc.) at
 // the same origin; rewrites bridge those to the engine. Same trick the
 // vanilla static demo gets for free since it's served by the engine
@@ -12,10 +12,10 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   async rewrites() {
     return [
-      { source: "/api/:path*", destination: "http://localhost:8765/api/:path*" },
-      { source: "/fixtures/:path*", destination: "http://localhost:8765/fixtures/:path*" },
-      { source: "/loras/:path*", destination: "http://localhost:8765/loras/:path*" },
-      { source: "/videos/:path*", destination: "http://localhost:8765/videos/:path*" },
+      { source: "/api/:path*", destination: "http://localhost:1318/api/:path*" },
+      { source: "/fixtures/:path*", destination: "http://localhost:1318/fixtures/:path*" },
+      { source: "/loras/:path*", destination: "http://localhost:1318/loras/:path*" },
+      { source: "/videos/:path*", destination: "http://localhost:1318/videos/:path*" },
     ];
   },
 };

@@ -92,7 +92,7 @@ def main() -> int:
             "(e.g. `-- --accel eager`)."
         ),
     )
-    parser.add_argument("--port", type=int, default=8765, help="Backend port.")
+    parser.add_argument("--port", type=int, default=1318, help="Backend port.")
     parser.add_argument(
         "--host",
         default="127.0.0.1",
@@ -101,8 +101,8 @@ def main() -> int:
     parser.add_argument(
         "--web-port",
         type=int,
-        default=3000,
-        help="Next.js dev port (default 3000).",
+        default=6660,
+        help="Next.js dev port (default 6660).",
     )
     parser.add_argument(
         "--no-install",
