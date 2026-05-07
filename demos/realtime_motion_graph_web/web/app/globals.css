@@ -660,13 +660,21 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
      of where the moving-lines graph (#graph-wrap) sits, and regardless
      of whether the AdvancedDrawer is open underneath. Z-index above
      the drawer (z=50) so it covers the drawer when both would overlap.
-     Insets leave room for the top HaloBadge + ribbon bleed; the
-     drawing area below extends as far down as the bottom HUD. */
+
+     The horizontal insets clear the DesktopEdgeDrag LoRA sliders on
+     the left and right edges (each takes
+     hud-thickness + ribbon-bleed + remix-hint-extend ≈ 145-195px from
+     its viewport edge). The bottom inset clears the AdvancedDrawer
+     handle (always visible at the bottom of the viewport, drawer open
+     or closed). +12px breathing room on each side so the curve area
+     never butts directly against neighbouring chrome — combined with
+     EDGE_PADDING_PX inside the canvas, control points at the extremes
+     stay fully reachable without ever overlapping any other UI. */
   position: fixed;
   top: 70px;
-  left: 24px;
-  right: 24px;
-  bottom: 24px;
+  left: calc(var(--hud-thickness) + var(--ribbon-bleed) + var(--remix-hint-extend) + 12px);
+  right: calc(var(--hud-thickness) + var(--ribbon-bleed) + var(--remix-hint-extend) + 12px);
+  bottom: calc(var(--drawer-handle-h, 36px) + 12px);
   z-index: 51;
   display: flex;
   flex-direction: column;
