@@ -108,9 +108,17 @@ interface Spark {
   b: number;
 }
 
-const SPARK_GRAVITY = 0.15; // px/frame² @ 60fps; scaled by dt/16 each tick
-const SPARKS_PER_BEAT = 5;
-const MAX_SPARKS = 160;
+// Tuning lifted from engine/cursor.ts so a beat-spark burst reads
+// visually identical to a mousedown confetti burst — same disc size,
+// same speed range, same upward bias, same gravity, same life.
+const SPARK_GRAVITY = 0.16; // matches GRAVITY in cursor.ts
+const SPARK_RADIUS = 2; // matches SPARK_RADIUS in cursor.ts (4px diameter)
+const SPARK_MIN_SPEED = 3.2; // matches CONFETTI_MIN_SPEED
+const SPARK_MAX_SPEED = 7.0; // matches CONFETTI_MAX_SPEED
+const SPARK_LIFE_MS = 900; // matches CONFETTI_LIFE_MS (±100ms jitter applied per spark)
+const SPARK_UP_BIAS = 1.2; // matches the -1.2 vy bias on confetti
+const SPARKS_PER_BEAT = 8;
+const MAX_SPARKS = 240;
 const BEAT_THRESH = 0.4; // rising-edge pulse threshold for "beat hit"
 
 export class GraphRenderer {
@@ -313,25 +321,24 @@ export class GraphRenderer {
         ctx.arc(satX, satY, 2.5, 0, Math.PI * 2);
         ctx.fill();
 
-        // Beat → starburst of sparks from the satellite. Equal-spaced
-        // angles + a random rotation per burst + a touch of jitter →
-        // reads as "boom" rather than "scatter".
+        // Beat → confetti cloud from the satellite. Random angle per
+        // spark (chaotic, like a click) — not equal-spaced — so each
+        // burst feels like the cursor's mousedown burst rather than a
+        // symmetric starburst.
         if (beat) {
-          const baseAngle = Math.random() * Math.PI * 2;
           for (let i = 0; i < SPARKS_PER_BEAT; i++) {
             if (this._sparks.length >= MAX_SPARKS) this._sparks.shift();
-            const sa =
-              baseAngle +
-              (i / SPARKS_PER_BEAT) * Math.PI * 2 +
-              (Math.random() - 0.5) * 0.6;
-            const sp = 1.6 + Math.random() * 2.4;
+            const sa = Math.random() * Math.PI * 2;
+            const sp =
+              SPARK_MIN_SPEED +
+              Math.random() * (SPARK_MAX_SPEED - SPARK_MIN_SPEED);
             this._sparks.push({
               x: satX,
               y: satY,
               vx: Math.cos(sa) * sp,
-              vy: Math.sin(sa) * sp - 0.6, // slight upward bias
+              vy: Math.sin(sa) * sp - SPARK_UP_BIAS,
               age: 0,
-              life: 500 + Math.random() * 400,
+              life: SPARK_LIFE_MS - 100 + Math.random() * 200,
               r,
               g,
               b,
@@ -354,7 +361,7 @@ export class GraphRenderer {
         s.y += s.vy * dtScale;
         const f = s.age / s.life;
         const alpha = 1 - f;
-        const radius = 1.5 * (1 - f * 0.7);
+        const radius = SPARK_RADIUS * (1 - f * 0.7);
         if (radius <= 0.1) continue;
         ctx.fillStyle = `rgba(${s.r},${s.g},${s.b},${alpha.toFixed(3)})`;
         ctx.beginPath();
