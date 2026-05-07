@@ -115,8 +115,13 @@ export class RemoteBackend extends EventTarget {
   private _initDecoderWorker(): void {
     if (typeof Worker === "undefined") return;
     try {
+      // The .ts extension is intentional: Next.js / Turbopack and modern
+      // bundlers transpile worker source files referenced via
+      // `new URL(..., import.meta.url)` at build time. The previous .mjs
+      // path was a leftover from when this code shipped as a tsup-built
+      // npm package whose dist/ contained a pre-compiled .mjs sibling.
       const worker = new Worker(
-        new URL("./workers/sliceDecoder.worker.mjs", import.meta.url),
+        new URL("./workers/sliceDecoder.worker.ts", import.meta.url),
         { type: "module" },
       );
       worker.onmessage = (ev: MessageEvent) => {
