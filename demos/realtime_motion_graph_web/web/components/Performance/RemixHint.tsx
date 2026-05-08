@@ -56,6 +56,15 @@ interface Props {
   /** Copy shown while the user is actively dragging. Differs per slider
    * so each "string" has its own personality (rave / mosh / vibe). */
   draggingLabel?: string;
+  /** Override the idle copy. Used by the top ribbon's per-song "drag
+   * to start" gate, which is functional (not a one-time tutorial), so
+   * we want a stronger imperative than the default "drag →". */
+  idleLabel?: string;
+  /** Bump the hint to "do this" prominence — larger type, stronger
+   * weight, soft glow, brighter base opacity, and bigger bob. Used
+   * only by the top ribbon while the per-song remix gate is active,
+   * so a first-time user can't miss the affordance. */
+  prominent?: boolean;
 }
 
 export function RemixHint({
@@ -65,6 +74,8 @@ export function RemixHint({
   orientation,
   side = "left",
   draggingLabel = "— rave —",
+  idleLabel,
+  prominent = false,
 }: Props) {
   const [pulse, setPulse] = useState(0);
 
@@ -116,9 +127,14 @@ export function RemixHint({
     opacity = 0.9;
     bobAmt = 0;
   } else {
-    label = compose("drag", idleArrow);
-    opacity = 0.4 + pulse * 0.35;
-    bobAmt = pulse * 6;
+    // Idle. `idleLabel` overrides the default arrow-composed copy (the
+    // top ribbon's "drag to start" gate uses this). `prominent` bumps
+    // base opacity, bob amplitude, and tags the element so CSS can
+    // upsize/glow it — the gate is required to start the remix, so it
+    // needs to read as the next action, not a passive hint.
+    label = idleLabel ?? compose("drag", idleArrow);
+    opacity = prominent ? 0.75 + pulse * 0.25 : 0.4 + pulse * 0.35;
+    bobAmt = pulse * (prominent ? 12 : 6);
   }
 
   // Horizontal: hint below the bar at value's X, bobs down.
@@ -156,8 +172,11 @@ export function RemixHint({
     };
   }
 
+  const className = prominent
+    ? "remix-hint remix-hint--prominent"
+    : "remix-hint";
   return (
-    <div className="remix-hint" style={style}>
+    <div className={className} style={style}>
       {label}
     </div>
   );

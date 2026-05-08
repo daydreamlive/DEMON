@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef } from "react";
 
 import { listLoras } from "@/engine/lora/listLoras";
+import { displayLoraName } from "@/lib/loraLabels";
 import { LOCAL_MODE } from "@/lib/runtime";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
@@ -159,7 +160,7 @@ export function LibraryTile() {
           <LoraRow
             key={entry.id}
             id={entry.id}
-            name={entry.name ?? entry.id}
+            name={displayLoraName(entry.id, entry.name)}
           />
         ))}
       </div>

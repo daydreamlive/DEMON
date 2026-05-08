@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 
 import { useIsMobile } from "@/hooks/useIsMobile";
+import { displayLoraName } from "@/lib/loraLabels";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import {
@@ -65,7 +66,7 @@ function applyDesktopBindings(): void {
 
     if (labelEl) {
       const entry = catalog.find((e) => e.id === id);
-      labelEl.textContent = entry?.name ?? id;
+      labelEl.textContent = displayLoraName(id, entry?.name);
     }
 
     const strength = strengths[id] ?? 0;
@@ -116,7 +117,7 @@ function applyMobileRightEdge(
   const labelEl = edge.querySelector<HTMLElement>(".install-edge-label");
   const { catalog } = useLoraStore.getState();
   const nameOf = (id: string | null) =>
-    id ? catalog.find((e) => e.id === id)?.name ?? id : "—";
+    id ? displayLoraName(id, catalog.find((e) => e.id === id)?.name) : "—";
 
   edge.dataset.bar = "lora_blend";
   if (idA && idB) {

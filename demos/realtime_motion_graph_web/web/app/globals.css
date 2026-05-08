@@ -1086,6 +1086,21 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   z-index: 8;
 }
 
+/* Prominent variant: applied to the top edge ribbon's hint while the
+   per-song "drag to start" gate is active, so it reads as the next
+   action a first-time user must take — not a passive label. Larger
+   type, brighter color, and a soft glow only (single text-shadow,
+   no filter chain — see PERFORMANCE.md). */
+.remix-hint--prominent {
+  font-size: 15px;
+  letter-spacing: 0.22em;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.92);
+  text-shadow:
+    0 0 6px rgba(255, 255, 255, 0.45),
+    0 0 14px rgba(255, 255, 255, 0.25);
+}
+
 /* Desktop drag overlays — transparent click targets sized to each HUD
    edge bar. Pointer-events fall through the SVG ribbons (which set
    pointer-events: none) so dragging anywhere along the bar updates the
@@ -4097,6 +4112,21 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   opacity: 0.85;
   transition: transform 120ms, color 120ms, filter 120ms;
   filter: drop-shadow(0 0 6px rgba(0, 0, 0, 0.6));
+}
+
+/* "Drag to start" gate on the mobile remix rail. The sideways stepper
+   label is too subtle to act as a prompt, so the up chevron itself
+   pulses to read as the next action. Cleared the moment the user
+   crosses denoise > 0 (component drops `data-gate`). */
+.stepper-rail-zone[data-gate="up"] .stepper-rail-chevron {
+  opacity: 1;
+  color: var(--accent);
+  filter: drop-shadow(0 0 12px var(--accent-glow));
+  animation: stepper-rail-gate-pulse 1.4s ease-in-out infinite;
+}
+@keyframes stepper-rail-gate-pulse {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-5px) scale(1.18); }
 }
 
 .stepper-rail-readout {

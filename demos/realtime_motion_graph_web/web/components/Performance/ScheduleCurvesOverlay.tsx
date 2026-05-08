@@ -12,6 +12,7 @@ import {
   computePeaks,
   drawPeaks,
 } from "@/engine/curves/waveformPeaks";
+import { displayLoraName } from "@/lib/loraLabels";
 import { useCurveStore } from "@/store/useCurveStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
@@ -147,9 +148,10 @@ export function ScheduleCurvesOverlay() {
     return ids.map((id) => ({
       id,
       param: loraCurveParam(id),
-      label:
-        loraCatalog.find((e) => e.id === id)?.name?.toUpperCase() ??
-        id.toUpperCase(),
+      label: displayLoraName(
+        id,
+        loraCatalog.find((e) => e.id === id)?.name,
+      ).toUpperCase(),
     }));
   })();
 
@@ -619,6 +621,18 @@ export function ScheduleCurvesOverlay() {
             </button>
           );
         })}
+        {/* Discoverable "clear current curve" — same effect as the
+            right-click → Reset path in the preset menu, but visible as
+            a button in the toolbar so users know it exists. Acts on the
+            currently-active (selected) tab. */}
+        <button
+          type="button"
+          className="schedule-curves-master"
+          onClick={() => resetCurve(activeCurve)}
+          title={`Clear the current curve (${labelFor(activeCurve)}) — flattens it back to the midline.`}
+        >
+          CLEAR
+        </button>
         {/* Master enable / kill switch — flips ALL curves off without
             losing per-curve drawings. The application loop checks this
             first; when off, no slider gets driven. */}
