@@ -31,6 +31,7 @@ from websockets.exceptions import ConnectionClosed
 from acestep.audio.key_detection import detect_key
 from acestep.constants import TASK_INSTRUCTIONS
 from acestep.engine.session import PreparedSource, Session
+from acestep.engine.trt.profile_manager import TRTProfileManager
 from acestep.fixtures import FixtureSidecar, fixture_sidecar
 from acestep.nodes.types import Audio, Latent
 from acestep.paths import (
@@ -305,20 +306,16 @@ def handle_client(
     # --- Session setup ---
     audio_duration_s = waveform.shape[1] / SAMPLE_RATE
     use_trt = decoder_backend == "tensorrt" or vae_backend == "tensorrt"
+    # Profile manager owns the engine slots. When use_trt is False, it
+    # stays None and the swap path keeps the legacy engine-less behavior.
+    profile_mgr: TRTProfileManager | None = None
     if use_trt:
-        # Tell the picker exactly which engines this session will use, so a
-        # mixed-backend setup (e.g. tensorrt decoder + eager VAE) doesn't
-        # disqualify an otherwise-usable profile because of missing VAE
-        # engines we wouldn't load anyway.
-        needs: list[str] = []
-        if decoder_backend == "tensorrt":
-            needs.append("decoder")
-        if vae_backend == "tensorrt":
-            needs.extend(["vae_encode", "vae_decode"])
+        profile_mgr = TRTProfileManager(
+            decoder_backend=decoder_backend,
+            vae_backend=vae_backend,
+        )
         try:
-            trt_engines, picked_dur = available_trt_engines(
-                duration_s=audio_duration_s, needs=tuple(needs),
-            )
+            trt_engines, picked_dur = profile_mgr.resolve(audio_duration_s)
         except EngineNotBuiltError as exc:
             # Surface to the operator (server log) AND the client UI.
             # WebSocket close reason is capped at 123 bytes by the
@@ -387,6 +384,14 @@ def handle_client(
         vae_window=vae_window,
     )
     print(f"  Model loaded in {time.time() - t0:.1f}s")
+
+    # Bind the manager to the live engines so future swaps can compare
+    # against the loaded profile and skip the swap when the picked
+    # profile would be the same.
+    if profile_mgr is not None:
+        profile_mgr.bind(
+            session.handler._diffusion_engine, trt_engines, picked_dur,
+        )
 
     # --- LoRA library ---
     # The catalog was populated automatically by DiffusionEngine when it
@@ -786,6 +791,23 @@ def handle_client(
                 f"[Server] Swapping source ({new_audio_duration_s:.1f}s, "
                 f"{new_wf.shape[0]}ch)..."
             )
+
+            # Profile swap (no-op when the new duration fits the same
+            # profile that's currently loaded). Must run BEFORE
+            # prepare_source: VAE-encode is the first GPU consumer and
+            # needs the new vae_encode engine bound to its cache.
+            if profile_mgr is not None:
+                try:
+                    profile_mgr.ensure_profile(new_audio_duration_s)
+                except EngineNotBuiltError as exc:
+                    print(f"[Server] Swap aborted: {exc}")
+                    with send_lock:
+                        ws.send(json.dumps({
+                            "type": "swap_failed",
+                            "error": str(exc),
+                            "build_command": exc.build_command,
+                        }))
+                    return
 
             new_audio_in = Audio(waveform=new_wf, sample_rate=SAMPLE_RATE)
             new_source, new_bpm, new_key = _resolve_bpm_key_source(

@@ -187,13 +187,23 @@ class StreamPipeline:
         # Schedule cache: denoise -> cpu tensor
         self._schedule_cache: dict[float, torch.Tensor] = {}
 
-        # TRT state (mirrors DiffusionEngine pattern)
+        # TRT state (mirrors DiffusionEngine pattern). Snapshotted from
+        # the engine here, refreshed on profile swaps via the
+        # engine-swap listener registered below.
         self._trt_ctx = engine._trt_ctx
         self._trt_stream = engine._trt_stream
         self._trt_engine = engine._trt_engine
         self._trt_io_dtype = getattr(engine, '_trt_io_dtype', torch.float32)
         self._trt_bufs: Optional[dict] = None
         self._trt_out_buf: Optional[torch.Tensor] = None
+
+        # Re-pick up the snapshot after each profile swap. The new
+        # engine has different I/O profile bounds and its execution
+        # context owns different tensor addresses, so the previous
+        # ``_trt_bufs`` cache is invalidated and rebuilt on the next
+        # forward pass via :meth:`_ensure_trt_bufs`.
+        if hasattr(engine, "add_engine_swap_listener"):
+            engine.add_engine_swap_listener(self._on_engine_swapped)
 
         # Shared mutable curves: when a name is present, the corresponding
         # per-slot field on every in-flight SlotRequest is overridden for
@@ -263,6 +273,28 @@ class StreamPipeline:
     @property
     def has_trt(self) -> bool:
         return self._trt_engine is not None
+
+    def _on_engine_swapped(self) -> None:
+        """Re-snapshot TRT refs and drop the stale buffer cache.
+
+        Wired up in __init__ via ``engine.add_engine_swap_listener``.
+        Fires on the runner thread because the profile manager runs the
+        swap inside the streaming pipeline's ``before_tick`` rendezvous,
+        so no concurrent ``tick()`` can be reading these fields.
+
+        ``_trt_bufs`` is invalidated rather than reallocated: the next
+        forward pass calls :meth:`_ensure_trt_bufs` with the live
+        ``(B, T, max_L)`` shape, which binds against the new engine's
+        profile and only allocates if the shape actually differs from
+        the now-discarded one.
+        """
+        engine = self.engine
+        self._trt_engine = engine._trt_engine
+        self._trt_ctx = engine._trt_ctx
+        self._trt_stream = engine._trt_stream
+        self._trt_io_dtype = getattr(engine, "_trt_io_dtype", torch.float32)
+        self._trt_bufs = None
+        self._trt_out_buf = None
 
     def submit(self, request: SlotRequest) -> None:
         """Enqueue a generation request.

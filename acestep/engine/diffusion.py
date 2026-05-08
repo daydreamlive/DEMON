@@ -93,6 +93,13 @@ class DiffusionEngine:
         self._trt_stream = None
         self._trt_buf_cache: dict[tuple, dict] = {}
 
+        # Engine-swap listeners. StreamPipeline (and any other consumer
+        # that snapshots ``self._trt_*`` at construction time) registers
+        # a callback here so it can re-read the live refs and invalidate
+        # any cached I/O bindings after the profile manager swaps the
+        # underlying engine.
+        self._engine_swap_listeners: list = []
+
         # Dynamic LoRA manager. TRT path constructs TRTLoRAManager inside
         # load_trt_engine (after the engine is up and refit support is
         # confirmed). Eager path constructs EagerLoRAManager up-front so
@@ -179,6 +186,68 @@ class DiffusionEngine:
             logger.info("TRT LoRA refit not available: %s", e)
         except Exception as e:
             logger.warning("Failed to init TRT LoRA manager: %s", e)
+
+        # Notify subscribers AFTER LoRA wiring is up so a listener that
+        # eagerly probes the new engine sees a fully-initialized state.
+        # First-time loads (from __init__) hit this with an empty list,
+        # which is a cheap no-op.
+        self._fire_engine_swap_listeners()
+
+    def add_engine_swap_listener(self, callback) -> None:
+        """Register a zero-arg callback fired after every successful
+        ``load_trt_engine`` (including the implicit one from __init__).
+
+        Used by ``StreamPipeline`` to re-read the engine's ``_trt_ctx``
+        / ``_trt_engine`` / ``_trt_io_dtype`` and drop its shape-keyed
+        buffer cache so the next forward pass binds against the new
+        engine's profile.
+        """
+        if callback not in self._engine_swap_listeners:
+            self._engine_swap_listeners.append(callback)
+
+    def remove_engine_swap_listener(self, callback) -> None:
+        """Detach a listener previously added via
+        :meth:`add_engine_swap_listener`. Idempotent."""
+        try:
+            self._engine_swap_listeners.remove(callback)
+        except ValueError:
+            pass
+
+    def _fire_engine_swap_listeners(self) -> None:
+        """Invoke every registered listener; isolate exceptions so a
+        broken listener can't prevent others from running or leave the
+        engine in a half-swapped state."""
+        for cb in list(self._engine_swap_listeners):
+            try:
+                cb()
+            except Exception as e:
+                logger.warning("Engine swap listener raised: %s", e)
+
+    def unload_trt_engine(self) -> None:
+        """Drop the active TRT decoder engine and free its GPU workspace.
+
+        Pair with :meth:`load_trt_engine` to swap profiles in-place: the
+        TRT engine + execution context together pin several GB of
+        workspace, so we MUST release them before loading the next
+        engine or VRAM doubles up. The shared polygraphy stream
+        survives — it's process-global and reused by every TRT engine.
+
+        Active LoRAs are NOT preserved here: the new engine gets a fresh
+        ``TRTLoRAManager`` from ``load_trt_engine``. Callers who need
+        continuity should snapshot ENABLED entries before this call and
+        re-enable them after the new engine is up (see
+        ``acestep.engine.trt.profile_manager.TRTProfileManager``).
+        """
+        # Drop refit hooks first so a stray callback can't fire on the
+        # disposed engine.
+        self._lora_manager = None
+        # Per-shape buffers reference TRT-owned addresses; clear before
+        # the context goes.
+        self._trt_buf_cache = {}
+        self._trt_ctx = None
+        self._trt_engine = None
+        torch.cuda.empty_cache()
+        logger.info("Unloaded TRT decoder engine")
 
     # ------------------------------------------------------------------
     # LoRA management (backend-agnostic)

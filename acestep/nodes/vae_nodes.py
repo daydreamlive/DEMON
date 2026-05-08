@@ -61,6 +61,33 @@ def _get_trt_vae(engine_path: str, device: torch.device):
     return entry
 
 
+def _evict_trt_vae(engine_path: str) -> bool:
+    """Drop a cached TRT VAE engine and free its GPU buffers.
+
+    Used by the profile manager when swapping to a different-duration
+    engine: the old context, its workspace, and the cached output buffer
+    must be released before the new engine is loaded so VRAM doesn't
+    spike past the budget.
+
+    Returns True if an entry was evicted, False if the path wasn't cached.
+    """
+    engine_path = os.path.abspath(engine_path)
+    entry = _trt_vae_cache.pop(engine_path, None)
+    if entry is None:
+        return False
+    # Clear refs in deterministic order: cached I/O buffers first (so
+    # nothing still holds the device pointer), then the execution
+    # context, then the engine. Polygraphy releases workspace when the
+    # context's refcount hits zero.
+    entry.pop("_decode_buf", None)
+    entry.pop("_encode_buf", None)
+    entry["context"] = None
+    entry["engine"] = None
+    torch.cuda.empty_cache()
+    logger.info("Evicted TRT VAE engine: %s", engine_path)
+    return True
+
+
 def _trt_vae_decode(
     latents_bdt: torch.Tensor, engine_path: str, device: torch.device
 ) -> torch.Tensor:
