@@ -12,6 +12,7 @@ through :class:`.pipeline.PipelineRunner`, with:
 """
 
 import json
+import socket
 import struct
 import sys
 import threading
@@ -234,6 +235,17 @@ def handle_client(
         f"[Server] Client connected "
         f"(decoder={decoder_backend}, vae={vae_backend}, ckpt={checkpoint})"
     )
+
+    # Disable Nagle on the connection socket. Param frames are tiny (<1 KB
+    # of JSON each) and we send them at ~125 Hz; with Nagle on the kernel
+    # may coalesce them into batches up to ~40 ms wide, which adds latency
+    # on top of the recv-loop drain. The websockets sync server exposes
+    # the underlying socket as ``ws.socket``; swallow AttributeError so
+    # this stays a no-op if the library reorganizes.
+    try:
+        ws.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except (AttributeError, OSError):
+        pass
 
     # ---- Phase 1: Init ----
     config = json.loads(ws.recv())
@@ -641,7 +653,7 @@ def handle_client(
             latest_pp = None
             try:
                 while True:
-                    msg = ws.recv(timeout=0.005)
+                    msg = ws.recv(timeout=0.001)
                     if isinstance(msg, str):
                         data = json.loads(msg)
                         mtype = data.get("type")
@@ -857,7 +869,7 @@ def handle_client(
         midi_knobs=virtual_knobs,
         engine_obj=engine_obj,
         vae_window=vae_window, crop_seconds=crop_seconds,
-        k1_name=k1_name, seed=1528, skip_threshold=1e-3,
+        k1_name=k1_name, seed=1528, skip_threshold=5e-4,
         sde_curve_display=sde_curve_display, params=params,
         prompt_text=prompt_text, running=running,
         motion_val=motion_val, motion_lock=motion_lock,

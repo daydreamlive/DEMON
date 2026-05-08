@@ -67,7 +67,7 @@ function saveNum(key: string, n: number): void {
 // `sliderValues` chases `sliderTargets` along a cubic ease-out tween.
 //
 // Slider UIs read `sliderTargets` so dragging feels immediate. The
-// param-sync tick (hooks/useParamSync.ts, 33 ms) reads `sliderValues`
+// param-sync tick (hooks/useParamSync.ts, 8 ms) reads `sliderValues`
 // so the engine sees the smoothed curve. MIDI knobs hit bumpSlider
 // repeatedly; each bump retargets and the tween chases without stutter.
 

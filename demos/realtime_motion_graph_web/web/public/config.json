@@ -5,7 +5,7 @@
     "sde": false,
     "lora": true,
     "depth": 4,
-    "vae_window": 6,
+    "vae_window": 3,
     "crop": 0,
     "steps": 8,
     "fast_vae": true,
@@ -23,7 +23,7 @@
   "controls": {
     "denoise": 0.7,
     "_lora_default_strength_help": "Initial value applied to any LoRA strength slider whose server-reported strength is 0 (current Python backend behavior). Auto-enabled LoRAs land here on first paint.",
-    "lora_default_strength": 1.4,
+    "lora_default_strength": 0.7,
     "hint_strength": 1.4,
 
     "feedback": 0.0,

@@ -17,7 +17,7 @@ import { useSessionStore } from "@/store/useSessionStore";
 // flow also lets time-keyed curves (e.g. SDE denoise schedules) line up
 // against the real playhead in seconds.
 
-const TICK_MS = 33;
+const TICK_MS = 8;
 
 export function useParamSync() {
   useEffect(() => {

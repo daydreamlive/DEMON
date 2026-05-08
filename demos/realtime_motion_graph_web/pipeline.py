@@ -94,6 +94,19 @@ class PipelineRunner:
         # iteration so they share one rendezvous point.
         self.before_tick = before_tick
 
+        # Predictive decode: rolling EMA of (tick + decode) wall time. Each
+        # decode targets ``playhead + _predicted_advance_s`` so that by the
+        # time the freshly-decoded window is written into the buffer, its
+        # leading edge (and the per-window crossfade ramp) lines up with
+        # where the listener actually is. Without this, ``win_start`` is
+        # set to the playhead at decode-START, which by write-time is
+        # already ``dec_ms`` in the past — the listener has marched past
+        # the crossfade region and hears the new params start abruptly
+        # mid-window. Capped to half the VAE window so a transient stall
+        # can't lock the prediction onto a value that puts new audio
+        # arbitrarily far ahead of the actual playhead.
+        self._predicted_advance_s = 0.1
+
         # Cache silence once; used by the hint-strength blend node.
         self._rebuild_silence_latent()
 
@@ -332,7 +345,12 @@ class PipelineRunner:
                     if mse < self.skip_threshold and last_wav is not None:
                         if self.vae_window > 0:
                             t_pos = self.audio_eng.position / SAMPLE_RATE
-                            prefetch = min(1.0, self.vae_window * 0.2)
+                            # Larger prefetch fraction → re-decode sooner
+                            # before the playhead reaches the trailing
+                            # edge of the previous window. Bumped from 0.2
+                            # to 0.3 so fresh params land sooner at the
+                            # cost of slightly more GPU work.
+                            prefetch = min(1.0, self.vae_window * 0.3)
                             if last_decode_pos is not None and abs(t_pos - last_decode_pos) < self.vae_window - prefetch:
                                 skipped = True
                         else:
@@ -353,11 +371,24 @@ class PipelineRunner:
                         else self.stream.source.latent.tensor.shape[1] / 25.0
                     )
                     if self.vae_window > 0:
-                        t_pos = self.audio_eng.position / SAMPLE_RATE
-                        max_t = max(0.0, eff_dur - self.vae_window)
-                        t_pos = min(t_pos, max_t)
-                        last_decode_pos = t_pos
-                        audio_out = self.session.decode(result_latent, t_start=t_pos, cyclic=True)
+                        playhead_now = self.audio_eng.position / SAMPLE_RATE
+                        # Predictive decode start: target where the playhead
+                        # WILL be by the time this window lands in the buffer
+                        # (≈ tick + dec wall time from now). Cap at half the
+                        # VAE window so a noisy spike can't push new audio
+                        # arbitrarily far into the future. Wrap modulo
+                        # ``eff_dur`` since the decoder supports cyclic.
+                        advance_s = min(self._predicted_advance_s, self.vae_window * 0.5)
+                        decode_start = playhead_now + advance_s
+                        if eff_dur > 0:
+                            decode_start = decode_start % eff_dur
+                        # The skip-decode bookkeeping anchors on the
+                        # *predicted* start so the next iteration's drift
+                        # check measures distance from the start of the
+                        # window we actually decoded, not from the playhead
+                        # at decode-time.
+                        last_decode_pos = decode_start
+                        audio_out = self.session.decode(result_latent, t_start=decode_start, cyclic=True)
                         torch.cuda.synchronize()
                         dec_ms = (time.perf_counter() - t1) * 1000
                         win_wav = audio_out.waveform.detach().cpu().float().squeeze(0)
@@ -365,7 +396,10 @@ class PipelineRunner:
                         win_start = audio_out.start_sample
                         win_end = win_start + win_np.shape[0]
                         buf = self.audio_eng.current.copy()
-                        xfade = min(2400, win_np.shape[0] // 4)
+                        # 25 ms at 48 kHz — matches CROSSFADE_SECONDS.
+                        # Cuts perceived "smear" of param transitions in
+                        # half from the previous 50 ms.
+                        xfade = min(1200, win_np.shape[0] // 4)
                         if win_start > 0 and xfade > 0:
                             t_in = np.linspace(0.0, 1.0, xfade).reshape(-1, 1)
                             win_np[:xfade] = (
@@ -398,6 +432,17 @@ class PipelineRunner:
                 self.params["num_gens"] = self.params.get("num_gens", 0) + 1
                 self.params["tick_ms"] = tick_ms
                 self.params["dec_ms"] = dec_ms
+                # Update predictive-decode EMA from this iteration's actual
+                # wall time. alpha=0.3 reacts in a handful of ticks while
+                # smoothing out one-off spikes (e.g. a CUDA sync stall).
+                # Skipped ticks (no decode) leave dec_ms=0 and would
+                # otherwise pull the EMA toward zero, so only update when
+                # we actually decoded.
+                if dec_ms > 0:
+                    new_advance = (tick_ms + dec_ms) / 1000.0
+                    self._predicted_advance_s = (
+                        0.3 * new_advance + 0.7 * self._predicted_advance_s
+                    )
                 self.params[self.k1_name] = round(k1, 2)
                 self.params["seed"] = seed
                 self.params["feedback"] = round(feedback, 2)

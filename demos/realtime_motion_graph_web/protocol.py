@@ -11,7 +11,7 @@ import numpy as np
 
 SAMPLE_RATE = 48000
 T = 1500  # 60s at 25fps latents
-CROSSFADE_SECONDS = 0.05
+CROSSFADE_SECONDS = 0.025
 
 # Binary slice header: flags, start_sample, num_samples, channels, tick_ms, dec_ms, num_gens
 # flags: 0 = raw float16, 1 = zstd-compressed float16 delta

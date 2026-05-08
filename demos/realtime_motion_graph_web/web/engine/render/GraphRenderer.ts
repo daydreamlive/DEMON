@@ -67,20 +67,20 @@ function _colorFor(name: string): RGB {
 }
 
 const HISTORY_LEN = 600;
-// How many of the most-recent samples fill the canvas width. Sampling
-// runs at SAMPLE_INTERVAL_MS = 50 ms (see useRenderLoop), so 120 samples =
-// 6 s of visible history. Newest sample sits at the right edge; samples
-// older than this drift past the left edge and are clipped (not recycled
-// back onto the right). The playhead is offset rightward of center by
-// PLAYHEAD_LEAD_SEC so a fresh slider change drifts from the right edge
-// to the playhead in ~engine-latency seconds — i.e. the visual marker
-// reaches the playhead just as the audio change becomes audible.
+// Sampling runs at SAMPLE_INTERVAL_MS = 50 ms (see useRenderLoop), so 120
+// samples = 6 s of history. The newest sample is plotted AT the playhead;
+// the line extends leftward into the past and clips at x = 0. The area to
+// the right of the playhead is intentionally empty — that's "future" the
+// engine hasn't generated yet. Samples are drawn at the same horizontal
+// density as before, so the visual scroll rate hasn't changed; only the
+// anchor point moved from the right edge to the playhead.
 const VISIBLE_SAMPLES = 120;
-const VISIBLE_SEC = 6; // VISIBLE_SAMPLES * SAMPLE_INTERVAL_MS / 1000
-// Lead time between the right edge ("just sampled") and the playhead
-// ("audible now"). Tuned to the engine's round-trip latency. If the graph
-// reads ahead of the audio, raise; if behind, lower.
-const PLAYHEAD_LEAD_SEC = 1.0;
+// Distance from the right edge to the playhead. The playhead is the
+// anchor for new samples / dots / sparks — keeping it inset from the edge
+// gives sparks somewhere to fly into and reads as "now is here, not at
+// the boundary." Lower it (toward 0) to use more of the canvas for
+// history; raise it for more breathing room on the right.
+const PLAYHEAD_INSET_PX_FRAC = 1 / 6;
 // Vertical breathing room so polylines at v=0 / v=1 (e.g. side-LoRA
 // strengths pulled all the way) aren't clipped against the canvas edge.
 // Sized for the max stroke width (5 px) + shadow blur (~3 px) + a little
@@ -281,11 +281,9 @@ export class GraphRenderer {
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, w, h);
 
-    // Playhead offset rightward so the newest sample at the right edge takes
-    // PLAYHEAD_LEAD_SEC to drift to the playhead. That delay matches the
-    // engine round-trip, so a slider change reaches the playhead just as the
-    // audio change becomes audible.
-    const playheadX = w * (1 - PLAYHEAD_LEAD_SEC / VISIBLE_SEC);
+    // Playhead is inset from the right edge by PLAYHEAD_INSET_PX_FRAC. New
+    // samples spawn at this x; line history extends leftward.
+    const playheadX = w * (1 - PLAYHEAD_INSET_PX_FRAC);
 
     if (pulse > 0.02) {
       const grad = ctx.createRadialGradient(
@@ -315,7 +313,11 @@ export class GraphRenderer {
       const [r, g, b] = _colorFor(name);
 
       const pxPerSample = w / (VISIBLE_SAMPLES - 1);
-      const xStart = w - (n - 1) * pxPerSample;
+      // Anchor newest sample at the playhead, not at the right edge. With
+      // playheadX inset by ~w/6, the oldest few samples can land at x<0
+      // and clip naturally against the canvas — same horizontal density,
+      // just shifted left.
+      const xStart = playheadX - (n - 1) * pxPerSample;
       ctx.beginPath();
       for (let i = 0; i < n; i++) {
         // Walk the ring backward from the newest sample (head - 1) so we
@@ -406,18 +408,16 @@ export class GraphRenderer {
           Math.round(CHORUS_BURST_PEAK * chorusPeakStrength)
         : 0;
 
-      const pxPerSample = w / (VISIBLE_SAMPLES - 1);
-      const samplesFromHead = Math.round((w - playheadX) / pxPerSample);
-
       ctx.save();
       ctx.globalCompositeOperation = "source-over";
       ctx.shadowBlur = 0;
 
       for (const [name, hist] of this.histories) {
         const n = Math.min(hist.filled, VISIBLE_SAMPLES);
-        if (n < 2 || samplesFromHead >= n) continue;
-        const headIdx =
-          (hist.head - 1 - samplesFromHead + HISTORY_LEN) % HISTORY_LEN;
+        if (n < 2) continue;
+        // Newest sample lives at the playhead, so the dot/spark anchor
+        // value is just the most-recent entry in the ring buffer.
+        const headIdx = (hist.head - 1 + HISTORY_LEN) % HISTORY_LEN;
         const v = hist.buf[headIdx];
         const yAtHead = h - Y_PAD - v * (h - 2 * Y_PAD);
         const [r, g, b] = _colorFor(name);
