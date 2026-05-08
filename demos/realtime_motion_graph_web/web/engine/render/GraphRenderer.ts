@@ -86,6 +86,17 @@ const PLAYHEAD_INSET_PX_FRAC = 1 / 6;
 // Sized for the max stroke width (5 px) + shadow blur (~3 px) + a little
 // air.
 const Y_PAD = 12;
+// How far the line extends past the playhead before fading to alpha 0.
+// Sized as a fraction of the empty "future" space to the right of the
+// playhead (which itself is `w * PLAYHEAD_INSET_PX_FRAC` wide). Filling
+// ~70% of that gap gives a trail substantial enough to read as
+// continuation rather than a token nudge, while leaving 30% breathing
+// margin so the fade lands before the canvas edge. Scales with viewport
+// width — same visual ratio on ultrawide vs phone. Floored so the
+// trail stays visible on very narrow canvases. Drawn before dots +
+// playhead marker, so those still sit crisply on top.
+const OVERSHOOT_FUTURE_FRAC = 0.7;
+const OVERSHOOT_MIN_PX = 24;
 
 interface History {
   buf: Float32Array;
@@ -337,6 +348,12 @@ export class GraphRenderer {
     // Playhead is inset from the right edge by PLAYHEAD_INSET_PX_FRAC. New
     // samples spawn at this x; line history extends leftward.
     const playheadX = w * (1 - PLAYHEAD_INSET_PX_FRAC);
+    // Trail length scales with the right-side gap so the visual ratio
+    // holds across viewport widths. See OVERSHOOT_FUTURE_FRAC above.
+    const overshootPx = Math.max(
+      OVERSHOOT_MIN_PX,
+      w * PLAYHEAD_INSET_PX_FRAC * OVERSHOOT_FUTURE_FRAC,
+    );
 
     if (pulse > 0.02) {
       const grad = ctx.createRadialGradient(
@@ -372,6 +389,7 @@ export class GraphRenderer {
       // just shifted left.
       const xStart = playheadX - (n - 1) * pxPerSample;
       ctx.beginPath();
+      let lastY = 0;
       for (let i = 0; i < n; i++) {
         // Walk the ring backward from the newest sample (head - 1) so we
         // always plot the freshest n entries in chronological order.
@@ -381,12 +399,35 @@ export class GraphRenderer {
         const y = (h - Y_PAD) - v * (h - 2 * Y_PAD);
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
+        lastY = y;
       }
 
       // Line widens slightly with pulse so beats still register on the
       // line itself, but no shadowBlur — pure crisp stroke.
-      ctx.strokeStyle = `rgba(${r},${g},${b},${0.85 + 0.15 * pulse})`;
-      ctx.lineWidth = 1 + 0.5 * pulse;
+      const baseAlpha = 0.85 + 0.15 * pulse;
+      const lineWidth = 1 + 0.5 * pulse;
+      ctx.strokeStyle = `rgba(${r},${g},${b},${baseAlpha})`;
+      ctx.lineWidth = lineWidth;
+      ctx.stroke();
+
+      // Overshoot fade past the playhead. The polyline's newest point
+      // sits at (playheadX, lastY); we extend overshootPx further right
+      // at the same y, with a horizontal alpha gradient that ends at 0.
+      // Same per-frame gradient pattern as the kick wash above. Drawn
+      // before the per-line dots and the playhead marker so they stay
+      // crisp on top.
+      const grad = ctx.createLinearGradient(
+        playheadX,
+        0,
+        playheadX + overshootPx,
+        0,
+      );
+      grad.addColorStop(0, `rgba(${r},${g},${b},${baseAlpha})`);
+      grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
+      ctx.strokeStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(playheadX, lastY);
+      ctx.lineTo(playheadX + overshootPx, lastY);
       ctx.stroke();
     }
 

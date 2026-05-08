@@ -61,7 +61,12 @@ export function DesktopEdgeDrag({ side }: Props) {
   const strengths = useLoraStore((s) => s.strengths);
   // Reads the target (intent) so the visual responds immediately to the
   // drag, even when smooth-mode is on (sliderValues lags via tween).
-  const denoise = usePerformanceStore((s) => s.sliderTargets[TOP_PARAM] ?? 0);
+  // sliderDisplayOverride takes precedence when present: that's the
+  // "hear source first" intro demo gliding the ribbon down to 0 while
+  // the engine value is already at 0.
+  const denoise = usePerformanceStore(
+    (s) => s.sliderDisplayOverride[TOP_PARAM] ?? s.sliderTargets[TOP_PARAM] ?? 0,
+  );
   // Per-song "hear source first" gate. While false, the top ribbon
   // shows a prominent "drag to start" affordance and the side-rail
   // hints stay hidden. The first value-changing top drag flips it

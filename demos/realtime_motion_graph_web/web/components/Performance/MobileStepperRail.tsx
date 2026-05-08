@@ -83,7 +83,14 @@ export function MobileStepperRail({
   invertFill = false,
   pulseUp = false,
 }: Props) {
-  const value = usePerformanceStore((s) => s.sliderTargets[param] ?? 0);
+  // Override takes precedence so the rail's visual demo (the per-song
+  // "hear source first" glide) is reflected here too. The increment
+  // logic in `apply` below still reads sliderTargets directly via
+  // getState(), so taps compute deltas off the engine value, not the
+  // demo's transient visual.
+  const value = usePerformanceStore(
+    (s) => s.sliderDisplayOverride[param] ?? s.sliderTargets[param] ?? 0,
+  );
   const setSlider = usePerformanceStore((s) => s.setSlider);
   const meta = SLIDER_META[param];
   const step = meta?.step ?? 0.1;

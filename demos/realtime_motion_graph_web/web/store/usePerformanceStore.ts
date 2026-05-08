@@ -137,16 +137,16 @@ function cancelTween(param: string): void {
   dropTweens.delete(param);
 }
 
-// ── One-shot drop tweens ───────────────────────────────────────────────
-// The regular `tweens` machinery only animates `sliderValues` (the engine
-// value), assuming `sliderTargets` was set to its final destination
-// immediately so the UI snaps to where the user pointed. The "hear source
-// first" gate has the opposite need: when a song loads and we drop denoise
-// to 0, the visual ribbon SHOULD slide down (not jump), and the engine
-// SHOULD get the smooth ramp too. This tier drives both fields together
-// over a per-tween duration, independent of the global `smooth` toggle.
-// Cancelled implicitly by setSlider/cancelTween if the user grabs the
-// ribbon mid-drop.
+// ── Visual-only display tweens ─────────────────────────────────────────
+// The "hear source first" gate plays a purely visual demo on each song
+// load: the top-edge ribbon glides from its prior position down to 0 as
+// a hint that the ribbon is a slider. The engine's denoise value snaps
+// to 0 immediately at song load (so the user hears the source from
+// frame 1) — this tween is a separate UI-only field that ribbons read
+// in preference to sliderTargets. When the tween completes (or the
+// user touches the slider), the override key is deleted and ribbons
+// fall through to sliderTargets again. Cancelled implicitly by
+// setSlider / cancelTween if the user grabs the ribbon mid-demo.
 interface DropTween {
   start: number;
   startTime: number;
@@ -159,10 +159,13 @@ let dropTweenUnregister: (() => void) | null = null;
 function tickDropTweens(now: number): void {
   if (dropTweens.size === 0) return;
   const updates: Record<string, number> = {};
+  const removals: string[] = [];
   for (const [param, t] of dropTweens) {
     const elapsed = now - t.startTime;
     if (elapsed >= t.durationMs) {
-      updates[param] = t.target;
+      // Demo finished: drop the override entry so the ribbon falls
+      // through to sliderTargets[param] (already at the engine value).
+      removals.push(param);
       dropTweens.delete(param);
       continue;
     }
@@ -172,11 +175,12 @@ function tickDropTweens(now: number): void {
     const eased = 1 - Math.pow(1 - k, 3);
     updates[param] = t.start + (t.target - t.start) * eased;
   }
-  if (Object.keys(updates).length > 0) {
-    usePerformanceStore.setState((s) => ({
-      sliderValues: { ...s.sliderValues, ...updates },
-      sliderTargets: { ...s.sliderTargets, ...updates },
-    }));
+  if (Object.keys(updates).length > 0 || removals.length > 0) {
+    usePerformanceStore.setState((s) => {
+      const next = { ...s.sliderDisplayOverride, ...updates };
+      for (const p of removals) delete next[p];
+      return { sliderDisplayOverride: next };
+    });
   }
   if (dropTweens.size === 0 && dropTweenUnregister) {
     dropTweenUnregister();
@@ -250,6 +254,15 @@ interface PerformanceState {
    *  MobileRemixRail, DesktopEdgeDrag) read this so the visual position
    *  follows the cursor / MIDI knob without the smoothing lag. */
   sliderTargets: Record<string, number>;
+  /** Sparse visual-only override for slider position. When a key is
+   *  present, the top-edge ribbon and mobile rail render this value
+   *  instead of `sliderTargets[key]`. The engine still reads
+   *  `sliderValues`, untouched by this field. Used by the per-song
+   *  "hear source first" demo: the ribbon glides from its prior value
+   *  down to 0 while the engine value snaps to 0 immediately. Cleared
+   *  per-key when the demo finishes (tickDropTweens) or the user
+   *  touches the slider (setSlider / bumpSlider / setSliderDirect). */
+  sliderDisplayOverride: Record<string, number>;
   /** Random seed in 0..1; "dice" button reroll. */
   seed: number;
   /** Prompt A/B blend (0 = A, 1 = B). */
@@ -317,15 +330,20 @@ interface PerformanceState {
   setPaused: (p: boolean) => void;
   togglePause: () => void;
   setRemixStarted: (b: boolean) => void;
-  /** Animate a slider from its current value to `target` over `durationMs`
-   *  using a cubic ease-out, driving BOTH `sliderTargets` and
-   *  `sliderValues` together (the visual ribbon and the engine value
-   *  glide in lockstep). Used by the per-song "hear source first" gate
-   *  to slide denoise down to 0 on each song load. Cancelled implicitly
-   *  if the user drags the ribbon mid-drop. Does not stamp a
-   *  manual-override timestamp (this is a system action, not a user
-   *  touch — curves should not defer to it). */
-  animateSliderTo: (param: string, target: number, durationMs: number) => void;
+  /** Run a visual-only "slide to zero" demo on `param`. Seeds
+   *  `sliderDisplayOverride[param] = fromValue` and tweens it down to 0
+   *  over `durationMs` using a cubic ease-out, then deletes the key so
+   *  ribbons fall through to `sliderTargets`. The engine value
+   *  (`sliderValues[param]`) is untouched — call `setSliderDirect`
+   *  beforehand if you want the engine snapped to 0. Used by the
+   *  per-song "hear source first" gate. No-ops when fromValue <= 0 or
+   *  durationMs <= 0. Cancelled implicitly if the user drags the
+   *  ribbon mid-demo. */
+  animateSliderDisplayFrom: (
+    param: string,
+    fromValue: number,
+    durationMs: number,
+  ) => void;
   setDcwEnabled: (b: boolean) => void;
   toggleDcw: () => void;
   setDcwMode: (m: DcwMode) => void;
@@ -353,9 +371,26 @@ function clampToMeta(param: string, value: number): number {
   return Math.max(0, Math.min(max, value));
 }
 
+/** Returns a partial state that drops `param` from sliderDisplayOverride
+ *  if it's present. User-touch setters (setSlider / bumpSlider /
+ *  setSliderDirect) spread this so any in-flight visual demo tween for
+ *  that param is no longer rendered — the user's drag wins immediately.
+ *  Returns an empty object when there's nothing to clear, avoiding a
+ *  needless object reference change. */
+function clearOverridePatch(
+  state: PerformanceState,
+  param: string,
+): Partial<PerformanceState> {
+  if (!(param in state.sliderDisplayOverride)) return {};
+  const next = { ...state.sliderDisplayOverride };
+  delete next[param];
+  return { sliderDisplayOverride: next };
+}
+
 export const usePerformanceStore = create<PerformanceState>((set) => ({
   sliderValues: { ...DEFAULT_SLIDER_VALUES },
   sliderTargets: { ...DEFAULT_SLIDER_VALUES },
+  sliderDisplayOverride: {},
   seed: 0,
   blend: 0.4,
   promptA: "heavy dubstep, deathstep, afxdump, growl heavy bass distortion",
@@ -383,11 +418,15 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
     stampManualTouch(param);
     const target = clampToMeta(param, value);
     const state = usePerformanceStore.getState();
+    // Cancel both regular and drop-tween for this param: the user just
+    // touched the slider, no in-flight demo or smoothing should keep
+    // animating against their input.
+    cancelTween(param);
     if (!state.smooth || state.smoothMs <= 0) {
-      cancelTween(param);
       set((s) => ({
         sliderValues: { ...s.sliderValues, [param]: target },
         sliderTargets: { ...s.sliderTargets, [param]: target },
+        ...clearOverridePatch(s, param),
       }));
       return;
     }
@@ -395,6 +434,7 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
     // user wants), kick off a tween that pulls sliderValues toward it.
     set((s) => ({
       sliderTargets: { ...s.sliderTargets, [param]: target },
+      ...clearOverridePatch(s, param),
     }));
     ensureTween(param);
   },
@@ -408,6 +448,7 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
     set((s) => ({
       sliderValues: { ...s.sliderValues, [param]: target },
       sliderTargets: { ...s.sliderTargets, [param]: target },
+      ...clearOverridePatch(s, param),
     }));
   },
   bumpSlider: (param, delta) => {
@@ -417,11 +458,12 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
       param,
       (state.sliderTargets[param] ?? 0) + delta,
     );
+    cancelTween(param);
     if (!state.smooth || state.smoothMs <= 0) {
-      cancelTween(param);
       set((s) => ({
         sliderValues: { ...s.sliderValues, [param]: newTarget },
         sliderTargets: { ...s.sliderTargets, [param]: newTarget },
+        ...clearOverridePatch(s, param),
       }));
       return;
     }
@@ -430,6 +472,7 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
     // — no stutter, no per-bump 1 s lag.
     set((s) => ({
       sliderTargets: { ...s.sliderTargets, [param]: newTarget },
+      ...clearOverridePatch(s, param),
     }));
     ensureTween(param);
   },
@@ -455,23 +498,25 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   setPaused: (p) => set({ paused: p }),
   togglePause: () => set((s) => ({ paused: !s.paused })),
   setRemixStarted: (b) => set({ remixStarted: b }),
-  animateSliderTo: (param, target, durationMs) => {
+  animateSliderDisplayFrom: (param, fromValue, durationMs) => {
+    // Cancel any in-flight smoothing or prior demo tween for this param.
     cancelTween(param);
-    const current =
-      usePerformanceStore.getState().sliderTargets[param] ?? 0;
-    const clamped = clampToMeta(param, target);
-    if (current === clamped || durationMs <= 0) {
-      // No motion needed — write both fields to land at target instantly.
-      set((s) => ({
-        sliderValues: { ...s.sliderValues, [param]: clamped },
-        sliderTargets: { ...s.sliderTargets, [param]: clamped },
-      }));
+    if (fromValue <= 0 || durationMs <= 0) {
+      // Nothing to animate — just make sure no stale override lingers
+      // so the ribbon falls through to sliderTargets.
+      set((s) => clearOverridePatch(s, param));
       return;
     }
+    // Seed the override synchronously so the very first frame already
+    // shows the ribbon at fromValue (no pop), then let tickDropTweens
+    // ease it down to 0 and remove the key when done.
+    set((s) => ({
+      sliderDisplayOverride: { ...s.sliderDisplayOverride, [param]: fromValue },
+    }));
     dropTweens.set(param, {
-      start: current,
+      start: fromValue,
       startTime: performance.now(),
-      target: clamped,
+      target: 0,
       durationMs,
     });
     ensureDropTweenRunning();
@@ -516,9 +561,11 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
     }),
   resetToDefaults: () => {
     tweens.clear();
+    dropTweens.clear();
     set(() => ({
       sliderValues: { ...DEFAULT_SLIDER_VALUES },
       sliderTargets: { ...DEFAULT_SLIDER_VALUES },
+      sliderDisplayOverride: {},
       seed: 0,
       blend: 0.4,
       remixStarted: false,
@@ -532,6 +579,7 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
     set((s) => ({
       sliderValues: { ...s.sliderValues, [param]: def },
       sliderTargets: { ...s.sliderTargets, [param]: def },
+      ...clearOverridePatch(s, param),
     }));
   },
 }));

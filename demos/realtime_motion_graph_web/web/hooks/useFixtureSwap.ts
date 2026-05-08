@@ -74,15 +74,11 @@ export function useFixtureSwap() {
         remote.addEventListener("swap_failed", onFail);
 
         const perf = usePerformanceStore.getState();
-        // Key is intentionally not sent: server resolves via the new
-        // fixture's sidecar (or CNN-detects on a miss) and echoes the
-        // result in `swap_ready.key`, which we then write to the
-        // dropdown via setKey(detail.key) above.
         const sent = remote.sendSwapSource(
           interleaved,
           channels,
           perf.promptA,
-          undefined,
+          perf.activeKey,
           name,
         );
         if (!sent) {
@@ -98,13 +94,18 @@ export function useFixtureSwap() {
         return;
       }
       lastSwappedTo.current = name;
-      // Each new track re-enters the "hear source first" gate: glide
-      // denoise smoothly down to 0 (so the ribbon visibly retreats
-      // rather than snapping) and clear remixStarted so the top-edge
-      // ribbon shows "drag to start" again. Side-rail hints stay
-      // suppressed until the user drags the top ribbon up.
-      usePerformanceStore.getState().animateSliderTo("denoise", 0, 700);
-      usePerformanceStore.getState().setRemixStarted(false);
+      // Each new track re-enters the "hear source first" gate: snap the
+      // engine value to 0 instantly (user hears the source from frame
+      // 1) and play a visual-only glide on the ribbon from its prior
+      // position down to 0 as a "this is a slider" hint. Clear
+      // remixStarted so the top-edge ribbon shows "drag to start"
+      // again. Side-rail hints stay suppressed until the user drags
+      // the top ribbon up.
+      const perfState = usePerformanceStore.getState();
+      const prevDenoise = perfState.sliderTargets["denoise"] ?? 0;
+      perfState.setSliderDirect("denoise", 0);
+      perfState.animateSliderDisplayFrom("denoise", prevDenoise, 700);
+      perfState.setRemixStarted(false);
       setStatus("ready", "Playing");
     };
 

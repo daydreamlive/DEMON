@@ -64,14 +64,12 @@ function buildConfig(fixtureName: string): SessionConfig {
     crop: cfg.crop,
     steps: cfg.steps,
     fast_vae: cfg.fast_vae,
+    key: perf.activeKey,
     enabled_loras: enabledLoras,
     prompt: perf.promptA,
     lora_strengths: loraStrengths,
     // Lets the server look up a precomputed sidecar (BPM, key, source
     // latent, context_latent). Absent / unknown name -> live path.
-    // Key is intentionally not sent: the server picks sidecar.key for
-    // known fixtures and CNN-detects for live uploads, then echoes the
-    // result back in `ready` so the dropdown reflects what was used.
     fixture_name: fixtureName,
   };
 }
@@ -199,14 +197,18 @@ export function useStartSession() {
       useLoraStore.getState().setCatalog(remote.loraCatalog);
     }
 
-    // "Hear the source first" gate: every fresh session starts with
-    // denoise = 0 so the user hears the unmodified track. The top-edge
-    // ribbon glides smoothly from its current value down to 0 (instead
-    // of snapping) so the user sees the ribbon retreat as the prompt
-    // appears. The "drag to start" affordance prompts them to dial it
-    // back up; the first value-changing drag flips remixStarted true.
-    usePerformanceStore.getState().animateSliderTo("denoise", 0, 700);
-    usePerformanceStore.getState().setRemixStarted(false);
+    // "Hear the source first" gate: every fresh session starts with the
+    // engine value at 0 so the user hears the unmodified track from
+    // frame 1. The top-edge ribbon then plays a *visual-only* glide
+    // from its prior position down to 0 — purely a hint that the
+    // ribbon is a slider; the engine value never moves with it. The
+    // "drag to start" affordance prompts them to dial it back up; the
+    // first value-changing drag flips remixStarted true.
+    const perfState = usePerformanceStore.getState();
+    const prevDenoise = perfState.sliderTargets["denoise"] ?? 0;
+    perfState.setSliderDirect("denoise", 0);
+    perfState.animateSliderDisplayFrom("denoise", prevDenoise, 700);
+    perfState.setRemixStarted(false);
 
     setSession(remote, player);
     setStatus("ready", "Playing");
