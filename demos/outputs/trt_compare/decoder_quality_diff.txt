@@ -1,0 +1,14 @@
+--- 10.13 outputs: ['decoder_B1_T750_E200', 'decoder_B8_T750_E200', 'decoder_B8_T1500_E200', 'vae_decode_T750', 'vae_decode_T1500', 'vae_encode_30s', 'vae_encode_60s']
+--- 10.16 outputs: ['decoder_B1_T750_E200', 'decoder_B8_T750_E200', 'decoder_B8_T1500_E200']
+
+config                          shape                            mean_abs_diff    max_abs_diff      rel_l2
+--------------------------------------------------------------------------------------------------------------
+decoder_B1_T750_E200            1x750x64                          7.370790e-03    6.054688e-02  5.028583e-03
+decoder_B8_T1500_E200           8x1500x64                         8.494900e-03    1.406250e-01  5.577140e-03
+decoder_B8_T750_E200            8x750x64                          8.500877e-03    1.289062e-01  5.696075e-03
+
+Configs only in 10.13 (10.16 engines unusable):
+  vae_decode_T1500
+  vae_decode_T750
+  vae_encode_30s
+  vae_encode_60s

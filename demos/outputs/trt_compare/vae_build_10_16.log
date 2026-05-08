@@ -1,0 +1,128 @@
+[32m2026-05-07 18:26:48.088[0m | [1mINFO    [0m | [36m__main__[0m:[36m_preflight[0m:[36m193[0m - [1m============================================================[0m
+[32m2026-05-07 18:26:48.089[0m | [1mINFO    [0m | [36m__main__[0m:[36m_preflight[0m:[36m194[0m - [1mTensorRT build preflight[0m
+[32m2026-05-07 18:26:48.089[0m | [1mINFO    [0m | [36m__main__[0m:[36m_preflight[0m:[36m195[0m - [1m============================================================[0m
+[32m2026-05-07 18:26:48.089[0m | [1mINFO    [0m | [36m__main__[0m:[36m_preflight[0m:[36m196[0m - [1mTensorRT: 10.16.1.11[0m
+[32m2026-05-07 18:26:48.089[0m | [1mINFO    [0m | [36m__main__[0m:[36m_preflight[0m:[36m197[0m - [1mTensorRT cu13: 10.16.1.11[0m
+[32m2026-05-07 18:26:48.089[0m | [1mINFO    [0m | [36m__main__[0m:[36m_preflight[0m:[36m198[0m - [1mCUDA Python: 13.2.0[0m
+[32m2026-05-07 18:26:48.089[0m | [1mINFO    [0m | [36m__main__[0m:[36m_preflight[0m:[36m199[0m - [1mCUDA toolkit wheel: 13.2.1[0m
+[32m2026-05-07 18:26:48.089[0m | [1mINFO    [0m | [36m__main__[0m:[36m_preflight[0m:[36m200[0m - [1mPolygraphy: 0.49.26[0m
+[32m2026-05-07 18:26:48.089[0m | [1mINFO    [0m | [36m__main__[0m:[36m_preflight[0m:[36m201[0m - [1mONNX: 1.21.0[0m
+[32m2026-05-07 18:26:48.089[0m | [1mINFO    [0m | [36m__main__[0m:[36m_preflight[0m:[36m202[0m - [1mTorch: 2.9.1+cu128 (CUDA 12.8)[0m
+[32m2026-05-07 18:26:48.089[0m | [1mINFO    [0m | [36m__main__[0m:[36m_preflight[0m:[36m205[0m - [1mActive GPU: cuda:0 NVIDIA GeForce RTX 5090 (SM 12.0)[0m
+
+Build matrix: 2 to build, 1 existing (skipped)
+  [build]   VAE decode 60s
+  [build]   VAE encode 60s
+  [exists]  VAE decode windowed (3-30s)  (227 MB)
+
+[32m2026-05-07 18:26:48.097[0m | [1mINFO    [0m | [36m__main__[0m:[36m_ensure_onnx[0m:[36m440[0m - [1mReusing existing VAE encoder ONNX: C:\Users\ryanf\.daydream-scope\models\demon\trt_engines\_onnx_vae\vae_encode\vae_encode.onnx[0m
+[32m2026-05-07 18:26:48.097[0m | [1mINFO    [0m | [36m__main__[0m:[36m_ensure_onnx[0m:[36m444[0m - [1mReusing existing VAE decoder ONNX: C:\Users\ryanf\.daydream-scope\models\demon\trt_engines\_onnx_vae\vae_decode\vae_decode.onnx[0m
+[32m2026-05-07 18:26:48.097[0m | [1mINFO    [0m | [36m__main__[0m:[36m_ensure_onnx[0m:[36m463[0m - [1mAll ONNX exports found, --skip-onnx satisfied.[0m
+[32m2026-05-07 18:26:48.273[0m | [1mINFO    [0m | [36m__main__[0m:[36m_build_vae_engines[0m:[36m639[0m - [1m============================================================[0m
+[32m2026-05-07 18:26:48.274[0m | [1mINFO    [0m | [36m__main__[0m:[36m_build_vae_engines[0m:[36m640[0m - [1mVAE TRT BUILD: vae_decode_fp16_60s (max_duration=60s)[0m
+[32m2026-05-07 18:26:48.274[0m | [1mINFO    [0m | [36m__main__[0m:[36m_build_vae_engines[0m:[36m641[0m - [1m============================================================[0m
+[05/07/2026-18:26:48] [TRT] [I] [MemUsageChange] Init CUDA: CPU +60, GPU +0, now: CPU 69004, GPU 1679 (MiB)
+[05/07/2026-18:26:48] [TRT] [I] ----------------------------------------------------------------
+[05/07/2026-18:26:48] [TRT] [I] Input filename:   C:\Users\ryanf\.daydream-scope\models\demon\trt_engines\_onnx_vae\vae_decode\vae_decode.onnx
+[05/07/2026-18:26:48] [TRT] [I] ONNX IR version:  0.0.8
+[05/07/2026-18:26:48] [TRT] [I] Opset version:    18
+[05/07/2026-18:26:48] [TRT] [I] Producer name:    pytorch
+[05/07/2026-18:26:48] [TRT] [I] Producer version: 2.9.1
+[05/07/2026-18:26:48] [TRT] [I] Domain:           
+[05/07/2026-18:26:48] [TRT] [I] Model version:    0
+[05/07/2026-18:26:48] [TRT] [I] Doc string:       
+[05/07/2026-18:26:48] [TRT] [I] ----------------------------------------------------------------
+[32m2026-05-07 18:26:48.889[0m | [1mINFO    [0m | [36macestep.engine.trt.vae_export[0m:[36mbuild_vae_trt_engine[0m:[36m263[0m - [1mBuilding TRT engine: %s [%d, %d, %d][0m
+[05/07/2026-18:26:50] [TRT] [I] [MemUsageChange] Init builder kernel library: CPU +530, GPU +4, now: CPU 70164, GPU 1683 (MiB)
+[05/07/2026-18:26:53] [TRT] [I] Local timing cache in use. Profiling results in this builder pass will not be stored.
+[05/07/2026-18:26:53] [TRT] [I] Compiler backend is used during engine build.
+[05/07/2026-18:27:55] [TRT] [I] Detected 1 inputs and 1 output network tensors.
+[05/07/2026-18:27:55] [TRT] [I] Total Host Persistent Memory: 80 bytes
+[05/07/2026-18:27:55] [TRT] [I] Total Device Persistent Memory: 0 bytes
+[05/07/2026-18:27:55] [TRT] [I] Max Scratch Memory: 3317891072 bytes
+[05/07/2026-18:27:55] [TRT] [I] [BlockAssignment] Started assigning block shifts. This will take 1 steps to complete.
+[05/07/2026-18:27:55] [TRT] [I] [BlockAssignment] Algorithm ShiftNTopDown took 0.011ms to assign 1 blocks to 1 nodes requiring 3317891072 bytes.
+[05/07/2026-18:27:55] [TRT] [I] Total Activation Memory: 3317891072 bytes
+[05/07/2026-18:27:56] [TRT] [I] Total Weights Memory: 375803136 bytes
+[05/07/2026-18:27:56] [TRT] [I] Compiler backend is used during engine execution.
+[05/07/2026-18:27:56] [TRT] [I] Engine generation completed in 62.539 seconds.
+[05/07/2026-18:27:56] [TRT] [I] [MemUsageStats] Peak memory usage of TRT CPU/GPU memory allocators: CPU 0 MiB, GPU 2112 MiB
+[32m2026-05-07 18:27:56.362[0m | [1mINFO    [0m | [36macestep.engine.trt.vae_export[0m:[36mbuild_vae_trt_engine[0m:[36m276[0m - [1mEngine saved to %s (%.1f MB)[0m
+[32m2026-05-07 18:27:57.575[0m | [1mINFO    [0m | [36m__main__[0m:[36m_write_metadata[0m:[36m302[0m - [1mEngine metadata saved to C:\Users\ryanf\.daydream-scope\models\demon\trt_engines\vae_decode_fp16_60s\vae_decode_fp16_60s.engine.metadata.json[0m
+[32m2026-05-07 18:27:57.575[0m | [1mINFO    [0m | [36m__main__[0m:[36m_build_vae_engines[0m:[36m647[0m - [1mBuilt in 69s[0m
+[32m2026-05-07 18:27:57.762[0m | [1mINFO    [0m | [36m__main__[0m:[36m_build_vae_engines[0m:[36m639[0m - [1m============================================================[0m
+[32m2026-05-07 18:27:57.762[0m | [1mINFO    [0m | [36m__main__[0m:[36m_build_vae_engines[0m:[36m640[0m - [1mVAE TRT BUILD: vae_encode_fp16_60s (max_duration=60s)[0m
+[32m2026-05-07 18:27:57.762[0m | [1mINFO    [0m | [36m__main__[0m:[36m_build_vae_engines[0m:[36m641[0m - [1m============================================================[0m
+[05/07/2026-18:27:58] [TRT] [I] ----------------------------------------------------------------
+[05/07/2026-18:27:58] [TRT] [I] Input filename:   C:\Users\ryanf\.daydream-scope\models\demon\trt_engines\_onnx_vae\vae_encode\vae_encode.onnx
+[05/07/2026-18:27:58] [TRT] [I] ONNX IR version:  0.0.8
+[05/07/2026-18:27:58] [TRT] [I] Opset version:    18
+[05/07/2026-18:27:58] [TRT] [I] Producer name:    pytorch
+[05/07/2026-18:27:58] [TRT] [I] Producer version: 2.9.1
+[05/07/2026-18:27:58] [TRT] [I] Domain:           
+[05/07/2026-18:27:58] [TRT] [I] Model version:    0
+[05/07/2026-18:27:58] [TRT] [I] Doc string:       
+[05/07/2026-18:27:58] [TRT] [I] ----------------------------------------------------------------
+[32m2026-05-07 18:27:58.036[0m | [1mINFO    [0m | [36macestep.engine.trt.vae_export[0m:[36mbuild_vae_trt_engine[0m:[36m263[0m - [1mBuilding TRT engine: %s [%d, %d, %d][0m
+[05/07/2026-18:27:58] [TRT] [I] [MemUsageChange] Init builder kernel library: CPU +249, GPU +2, now: CPU 69805, GPU 1689 (MiB)
+[05/07/2026-18:27:58] [TRT] [I] Local timing cache in use. Profiling results in this builder pass will not be stored.
+[05/07/2026-18:27:58] [TRT] [I] Compiler backend is used during engine build.
+[05/07/2026-18:29:04] [TRT] [I] Detected 1 inputs and 1 output network tensors.
+[05/07/2026-18:29:04] [TRT] [I] Total Host Persistent Memory: 80 bytes
+[05/07/2026-18:29:04] [TRT] [I] Total Device Persistent Memory: 0 bytes
+[05/07/2026-18:29:04] [TRT] [I] Max Scratch Memory: 2960643584 bytes
+[05/07/2026-18:29:04] [TRT] [I] [BlockAssignment] Started assigning block shifts. This will take 1 steps to complete.
+[05/07/2026-18:29:04] [TRT] [I] [BlockAssignment] Algorithm ShiftNTopDown took 0.0095ms to assign 1 blocks to 1 nodes requiring 2960643584 bytes.
+[05/07/2026-18:29:04] [TRT] [I] Total Activation Memory: 2960643584 bytes
+[05/07/2026-18:29:04] [TRT] [I] Total Weights Memory: 336994048 bytes
+[05/07/2026-18:29:04] [TRT] [I] Compiler backend is used during engine execution.
+[05/07/2026-18:29:04] [TRT] [I] Engine generation completed in 66.1233 seconds.
+[05/07/2026-18:29:04] [TRT] [I] [MemUsageStats] Peak memory usage of TRT CPU/GPU memory allocators: CPU 0 MiB, GPU 2112 MiB
+[32m2026-05-07 18:29:05.271[0m | [1mINFO    [0m | [36macestep.engine.trt.vae_export[0m:[36mbuild_vae_trt_engine[0m:[36m276[0m - [1mEngine saved to %s (%.1f MB)[0m
+[32m2026-05-07 18:29:06.326[0m | [1mINFO    [0m | [36m__main__[0m:[36m_write_metadata[0m:[36m302[0m - [1mEngine metadata saved to C:\Users\ryanf\.daydream-scope\models\demon\trt_engines\vae_encode_fp16_60s\vae_encode_fp16_60s.engine.metadata.json[0m
+[32m2026-05-07 18:29:06.327[0m | [1mINFO    [0m | [36m__main__[0m:[36m_build_vae_engines[0m:[36m647[0m - [1mBuilt in 69s[0m
+[32m2026-05-07 18:29:06.327[0m | [1mINFO    [0m | [36m__main__[0m:[36m_build_windowed_vae_decode_engine[0m:[36m682[0m - [1mSKIP %s (%.0f MB)[0m
+
+============================================================
+BUILD SUMMARY
+============================================================
+  OK          69s  VAE decode 60s
+  OK          69s  VAE encode 60s
+  SKIPPED      0s  VAE decode windowed (3-30s)
+
+All done (2 built, 1 skipped).
+
+Engines in C:\Users\ryanf\.daydream-scope\models\demon\trt_engines:
+  decoder_base_mixed_b8_60s/                           3286.8 MB
+  decoder_base_mixed_refit_b8_60s/                     3305.9 MB
+  decoder_mixed_b8_240s/                               3286.9 MB
+  decoder_mixed_b8_60s/                                3286.7 MB
+  decoder_mixed_refit_b8_120s/                         3305.9 MB
+  decoder_mixed_refit_b8_240s/                         3305.8 MB
+  decoder_mixed_refit_b8_60s/                          3305.5 MB
+  decoder_xl-turbo_bf16mix_dynbatch_b8_60s/            8549.3 MB
+  dreamvae_decode_fp16_120s/                            113.1 MB
+  dreamvae_decode_fp16_240s/                            112.1 MB
+  dreamvae_decode_fp16_3to30s/                          172.6 MB
+  dreamvae_decode_fp16_60s/                             112.2 MB
+  fast_vae_decode_fp16_240s/                            112.0 MB
+  vae_decode_fp16_120s/                                 174.8 MB
+  vae_decode_fp16_240s/                                 181.1 MB
+  vae_decode_fp16_3to30s/                               227.1 MB
+  vae_decode_fp16_5s_fixed/                             293.5 MB
+  vae_decode_fp16_60s/                                  377.4 MB
+  vae_decode_int8_15s/                                  235.8 MB
+  vae_decode_int8_60s/                                  245.1 MB
+  vae_decode_int8_60s_combined/                         251.0 MB
+  vae_decode_int8_60s_data128/                          258.7 MB
+  vae_decode_int8_60s_hybrid/                           341.3 MB
+  vae_decode_int8_60s_minmax/                           250.4 MB
+  vae_decode_int8_60s_minmax_pin/                       226.4 MB
+  vae_decode_int8_60s_modelopt_ent32/                    87.9 MB
+  vae_decode_int8_60s_modelopt_pct128/                   87.8 MB
+  vae_decode_int8_60s_modelopt_pct32/                    87.8 MB
+  vae_decode_int8_60s_pin/                              239.9 MB
+  vae_encode_fp16_120s/                                 180.3 MB
+  vae_encode_fp16_240s/                                 202.3 MB
+  vae_encode_fp16_60s/                                  338.7 MB
+Build report appended to: C:\Users\ryanf\.daydream-scope\models\demon\trt_engines\build_report.csv

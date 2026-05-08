@@ -1,0 +1,333 @@
+============================================================
+Stream Cover - offline pipeline stress test
+============================================================
+
+[Setup] checkpoint=acestep-v15-turbo
+[Setup] decoder backend=TRT (decoder_mixed_refit_b8_60s)
+[Setup] vae backend=TRT  vae_window=0.0  depth=8
+[Setup] DCW=ON  mode=double  scaler=0.05  high_scaler=0.02  wavelet=haar
+[Setup] output=stream_cover_trt10_16_decoder_only.wav
+[Setup] Loading model...
+Skipping import of cpp extensions due to incompatible torch version. Please upgrade to torch >= 2.11.0 (found 2.9.1+cu128).
+W0507 18:45:07.905000 73240 Lib\site-packages\torch\distributed\elastic\multiprocessing\redirects.py:29] NOTE: Redirects are currently not supported in Windows or MacOs.
+Unable to import `torchao` Tensor objects. This may affect loading checkpoints serialized with `torchao`
+[32m2026-05-07 18:45:08.874[0m | [1mINFO    [0m | [36macestep.engine.model_context[0m:[36m_load_dit[0m:[36m333[0m - [1mLoading AceStepConditionGenerationModel from acestep.models.modeling_acestep_v15_turbo with attention=flash_attention_2[0m
+[32m2026-05-07 18:45:09.000[0m | [1mINFO    [0m | [36macestep.engine.model_context[0m:[36m_load_models[0m:[36m157[0m - [1mDecoder weights discarded (TRT engine will be used)[0m
+C:\_dev\projects\DEMON\.venv\Lib\site-packages\torch\nn\utils\weight_norm.py:144: FutureWarning: `torch.nn.utils.weight_norm` is deprecated in favor of `torch.nn.utils.parametrizations.weight_norm`.
+  WeightNorm.apply(module, name, dim)
+[32m2026-05-07 18:45:10.892[0m | [1mINFO    [0m | [36macestep.engine.model_context[0m:[36m_load_models[0m:[36m211[0m - [1mModelContext ready | device=cuda attn=flash_attention_2 compile_decoder=False compile_vae=False decoder=TRT vae=PT[0m
+[32m2026-05-07 18:45:10.977[0m | [1mINFO    [0m | [36macestep.engine.diffusion[0m:[36mload_trt_engine[0m:[36m128[0m - [1mLoading TRT decoder engine from %s ...[0m
+[W] 'colored' module is not installed, will not use colors when logging. To enable colors, please install the 'colored' module: python3 -m pip install colored
+[I] Loading bytes from C:\Users\ryanf\.daydream-scope\models\demon\trt_engines\decoder_mixed_refit_b8_60s\decoder_mixed_refit_b8_60s.engine
+[32m2026-05-07 18:45:13.259[0m | [1mINFO    [0m | [36macestep.engine.diffusion[0m:[36mload_trt_engine[0m:[36m154[0m - [1mTRT decoder engine ready (input_dtypes={'hidden_states': torch.float16, 'timestep': torch.float32, 'encoder_hidden_states': torch.float16, 'context_latents': torch.float16}, output_dtype=torch.float16)[0m
+[05/07/2026-18:45:13] [TRT] [W] WARNING The logger passed into createInferRefitter differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[32m2026-05-07 18:45:13.266[0m | [1mINFO    [0m | [36macestep.engine.trt.lora_refit[0m:[36m__init__[0m:[36m78[0m - [1mLoading base weights from checkpoint: %s[0m
+[32m2026-05-07 18:45:13.710[0m | [1mINFO    [0m | [36macestep.engine.trt.lora_refit[0m:[36m__init__[0m:[36m126[0m - [1mTRT LoRA manager ready: %d/%d engine weights mapped (prefix='%s')[0m
+[32m2026-05-07 18:45:14.072[0m | [1mINFO    [0m | [36macestep.engine.lora[0m:[36mregister_lora[0m:[36m173[0m - [1mRegistered LoRA: %s (path=%s)[0m
+[32m2026-05-07 18:45:14.072[0m | [1mINFO    [0m | [36macestep.engine.lora[0m:[36mregister_lora[0m:[36m173[0m - [1mRegistered LoRA: %s (path=%s)[0m
+[32m2026-05-07 18:45:14.072[0m | [1mINFO    [0m | [36macestep.engine.lora[0m:[36mregister_lora[0m:[36m173[0m - [1mRegistered LoRA: %s (path=%s)[0m
+[32m2026-05-07 18:45:14.072[0m | [1mINFO    [0m | [36macestep.engine.lora[0m:[36mregister_lora[0m:[36m173[0m - [1mRegistered LoRA: %s (path=%s)[0m
+[32m2026-05-07 18:45:14.072[0m | [1mINFO    [0m | [36macestep.engine.lora[0m:[36mregister_lora[0m:[36m173[0m - [1mRegistered LoRA: %s (path=%s)[0m
+[32m2026-05-07 18:45:14.072[0m | [1mINFO    [0m | [36macestep.engine.lora[0m:[36mregister_lora[0m:[36m173[0m - [1mRegistered LoRA: %s (path=%s)[0m
+[32m2026-05-07 18:45:14.072[0m | [1mINFO    [0m | [36macestep.engine.lora[0m:[36mregister_lora[0m:[36m173[0m - [1mRegistered LoRA: %s (path=%s)[0m
+[32m2026-05-07 18:45:14.072[0m | [1mINFO    [0m | [36macestep.engine.lora[0m:[36mregister_lora[0m:[36m173[0m - [1mRegistered LoRA: %s (path=%s)[0m
+[32m2026-05-07 18:45:14.072[0m | [1mINFO    [0m | [36macestep.engine.lora[0m:[36mregister_library[0m:[36m195[0m - [1mRegistered library: %d LoRAs from %s[0m
+  [model_load] 8270.2ms
+[Setup] Loading source audio...
+  [load_audio] 6.1ms
+[Setup] Preparing source...
+[32m2026-05-07 18:45:14.078[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m265[0m - [1mVAE encode via PyTorch[0m
+  [prepare_source] 527.7ms
+  Source: T=1415 frames (56.6s)
+[Setup] Encoding cover conditioning...
+[32m2026-05-07 18:45:14.623[0m | [1mINFO    [0m | [36macestep.engine.model_context[0m:[36m_load_model_context[0m:[36m470[0m - [1mLoading text_encoder to cuda[0m
+[32m2026-05-07 18:45:14.754[0m | [1mINFO    [0m | [36macestep.engine.model_context[0m:[36m_load_model_context[0m:[36m480[0m - [1mLoaded text_encoder in 0.131s[0m
+[32m2026-05-07 18:45:14.839[0m | [1mINFO    [0m | [36macestep.engine.model_context[0m:[36m_load_model_context[0m:[36m485[0m - [1mOffloading text_encoder to CPU[0m
+[32m2026-05-07 18:45:14.999[0m | [1mINFO    [0m | [36macestep.engine.model_context[0m:[36m_load_model_context[0m:[36m489[0m - [1mOffloaded text_encoder in 0.160s[0m
+  [text_encode] 476.7ms
+  [stream_setup] 33.9ms
+  Stream handle ready (pipeline builds on first tick)
+
+[Timeline] 160 submissions, ~176 ticks
+  Denoise range: 0.250 - 1.000
+
+[Run] Starting pipeline (0.3s slices, skip_threshold=0.001)...
+[32m2026-05-07 18:45:15.121[0m | [1mINFO    [0m | [36macestep.engine.stream[0m:[36m_ensure_trt_bufs[0m:[36m822[0m - [1mStream TRT bufs allocated: B=1 eff_T=1416 L=83[0m
+C:\_dev\projects\DEMON\.venv\Lib\site-packages\pytorch_wavelets\dtcwt\coeffs.py:7: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import resource_stream
+[32m2026-05-07 18:45:15.433[0m | [1mINFO    [0m | [36macestep.engine.dcw[0m:[36mget[0m:[36m84[0m - [1m[DCW] Built DWT1D for wavelet='haar' (low-pass filter taps=2, device=cuda:0, dtype=torch.bfloat16).[0m
+[32m2026-05-07 18:45:15.444[0m | [1mINFO    [0m | [36macestep.engine.stream[0m:[36m_ensure_trt_bufs[0m:[36m822[0m - [1mStream TRT bufs allocated: B=2 eff_T=1416 L=83[0m
+[32m2026-05-07 18:45:15.470[0m | [1mINFO    [0m | [36macestep.engine.stream[0m:[36m_ensure_trt_bufs[0m:[36m822[0m - [1mStream TRT bufs allocated: B=3 eff_T=1416 L=83[0m
+[32m2026-05-07 18:45:15.504[0m | [1mINFO    [0m | [36macestep.engine.stream[0m:[36m_ensure_trt_bufs[0m:[36m822[0m - [1mStream TRT bufs allocated: B=4 eff_T=1416 L=83[0m
+[32m2026-05-07 18:45:15.547[0m | [1mINFO    [0m | [36macestep.engine.stream[0m:[36m_ensure_trt_bufs[0m:[36m822[0m - [1mStream TRT bufs allocated: B=5 eff_T=1416 L=83[0m
+[32m2026-05-07 18:45:15.596[0m | [1mINFO    [0m | [36macestep.engine.stream[0m:[36m_ensure_trt_bufs[0m:[36m822[0m - [1mStream TRT bufs allocated: B=6 eff_T=1416 L=83[0m
+[32m2026-05-07 18:45:15.657[0m | [1mINFO    [0m | [36macestep.engine.stream[0m:[36m_ensure_trt_bufs[0m:[36m822[0m - [1mStream TRT bufs allocated: B=7 eff_T=1416 L=83[0m
+[32m2026-05-07 18:45:15.726[0m | [1mINFO    [0m | [36macestep.engine.stream[0m:[36m_ensure_trt_bufs[0m:[36m822[0m - [1mStream TRT bufs allocated: B=8 eff_T=1416 L=83[0m
+[32m2026-05-07 18:45:15.878[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #  1 dn=0.25  tick= 76.9ms  decode=271.9ms    (playback 5.0s-5.3s)
+  #  2 dn=0.25  tick= 77.2ms  decode=   SKIP  mse=7.21e-04  (playback 5.3s-5.6s)
+  #  3 dn=0.26  tick= 76.4ms  decode=   SKIP  mse=0.00e+00  (playback 5.6s-5.9s)
+  #  4 dn=0.26  tick= 77.3ms  decode=   SKIP  mse=8.66e-04  (playback 5.9s-6.2s)
+  #  5 dn=0.27  tick= 77.9ms  decode=   SKIP  mse=3.07e-04  (playback 6.2s-6.5s)
+[32m2026-05-07 18:45:16.538[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #  6 dn=0.28  tick= 77.2ms  decode=196.0ms  mse=1.11e-03  (playback 6.5s-6.8s)
+[32m2026-05-07 18:45:16.811[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #  7 dn=0.29  tick= 77.8ms  decode=199.0ms  mse=1.69e-03  (playback 6.8s-7.1s)
+[32m2026-05-07 18:45:17.087[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #  8 dn=0.30  tick= 77.1ms  decode=196.6ms  mse=1.40e-03  (playback 7.1s-7.4s)
+[32m2026-05-07 18:45:17.362[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #  9 dn=0.32  tick= 77.3ms  decode=197.7ms  mse=4.12e-03  (playback 7.4s-7.7s)
+[32m2026-05-07 18:45:17.638[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 10 dn=0.34  tick= 78.0ms  decode=197.5ms  mse=2.59e-03  (playback 7.7s-8.0s)
+[32m2026-05-07 18:45:17.913[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 11 dn=0.36  tick= 76.9ms  decode=195.7ms  mse=3.13e-03  (playback 8.0s-8.3s)
+[32m2026-05-07 18:45:18.185[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 12 dn=0.38  tick= 76.6ms  decode=196.1ms  mse=2.66e-02  (playback 8.3s-8.6s)
+[32m2026-05-07 18:45:18.459[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 13 dn=0.41  tick= 77.8ms  decode=196.4ms  mse=7.42e-03  (playback 8.6s-8.9s)
+[32m2026-05-07 18:45:18.735[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 14 dn=0.43  tick= 78.7ms  decode=194.8ms  mse=5.28e-03  (playback 8.9s-9.2s)
+[32m2026-05-07 18:45:19.008[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 15 dn=0.46  tick= 77.7ms  decode=195.7ms  mse=1.10e-02  (playback 9.2s-9.5s)
+[32m2026-05-07 18:45:19.281[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 16 dn=0.48  tick= 78.2ms  decode=195.0ms  mse=7.72e-03  (playback 9.5s-9.8s)
+[32m2026-05-07 18:45:19.554[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 17 dn=0.51  tick= 77.2ms  decode=199.8ms  mse=1.05e-02  (playback 9.8s-10.1s)
+[32m2026-05-07 18:45:19.830[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 18 dn=0.54  tick= 76.5ms  decode=195.3ms  mse=1.23e-02  (playback 10.1s-10.4s)
+  # 19 dn=0.57  tick= 77.3ms  decode=   SKIP  mse=0.00e+00  (playback 10.4s-10.7s)
+[32m2026-05-07 18:45:20.181[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 20 dn=0.60  tick= 77.8ms  decode=195.4ms  mse=1.78e-02  (playback 10.7s-11.0s)
+[32m2026-05-07 18:45:20.456[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 21 dn=0.62  tick= 79.2ms  decode=194.7ms  mse=2.23e-02  (playback 11.0s-11.3s)
+  # 22 dn=0.65  tick= 78.6ms  decode=   SKIP  mse=0.00e+00  (playback 11.3s-11.6s)
+[32m2026-05-07 18:45:20.807[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 23 dn=0.68  tick= 77.3ms  decode=195.3ms  mse=1.40e-01  (playback 11.6s-11.9s)
+  # 24 dn=0.71  tick= 77.1ms  decode=   SKIP  mse=0.00e+00  (playback 11.9s-12.2s)
+[32m2026-05-07 18:45:21.156[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 25 dn=0.74  tick= 76.2ms  decode=195.9ms  mse=9.57e-02  (playback 12.2s-12.5s)
+  # 26 dn=0.77  tick= 77.6ms  decode=   SKIP  mse=0.00e+00  (playback 12.5s-12.8s)
+  # 27 dn=0.80  tick= 76.7ms  decode=   SKIP  mse=0.00e+00  (playback 12.8s-13.1s)
+[32m2026-05-07 18:45:21.585[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 28 dn=0.82  tick= 77.3ms  decode=197.0ms  mse=2.45e-01  (playback 13.1s-13.4s)
+  # 29 dn=0.84  tick= 77.7ms  decode=   SKIP  mse=0.00e+00  (playback 13.4s-13.7s)
+  # 30 dn=0.87  tick= 76.8ms  decode=   SKIP  mse=0.00e+00  (playback 13.7s-14.0s)
+[32m2026-05-07 18:45:22.013[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 31 dn=0.89  tick= 77.1ms  decode=196.5ms  mse=4.20e-01  (playback 14.0s-14.3s)
+  # 32 dn=0.91  tick= 77.8ms  decode=   SKIP  mse=0.00e+00  (playback 14.3s-14.6s)
+  # 33 dn=0.93  tick= 77.3ms  decode=   SKIP  mse=0.00e+00  (playback 14.6s-14.9s)
+  # 34 dn=0.94  tick= 77.1ms  decode=   SKIP  mse=0.00e+00  (playback 14.9s-15.2s)
+  # 35 dn=0.96  tick= 77.5ms  decode=   SKIP  mse=0.00e+00  (playback 15.2s-15.5s)
+  # 36 dn=0.97  tick= 78.6ms  decode=   SKIP  mse=0.00e+00  (playback 15.5s-15.8s)
+  # 37 dn=0.98  tick= 78.2ms  decode=   SKIP  mse=0.00e+00  (playback 15.8s-16.1s)
+  # 38 dn=0.99  tick= 78.6ms  decode=   SKIP  mse=0.00e+00  (playback 16.1s-16.4s)
+  # 39 dn=0.99  tick= 77.9ms  decode=   SKIP  mse=0.00e+00  (playback 16.4s-16.7s)
+  # 40 dn=1.00  tick= 77.7ms  decode=   SKIP  mse=0.00e+00  (playback 16.7s-17.0s)
+  # 41 dn=1.00  tick= 78.2ms  decode=   SKIP  mse=0.00e+00  (playback 17.0s-17.3s)
+  # 42 dn=1.00  tick= 80.2ms  decode=   SKIP  mse=0.00e+00  (playback 17.3s-17.6s)
+  # 43 dn=0.99  tick= 76.6ms  decode=   SKIP  mse=0.00e+00  (playback 17.6s-17.9s)
+  # 44 dn=0.99  tick= 77.6ms  decode=   SKIP  mse=0.00e+00  (playback 17.9s-18.2s)
+  # 45 dn=0.98  tick= 78.0ms  decode=   SKIP  mse=0.00e+00  (playback 18.2s-18.5s)
+  # 46 dn=0.97  tick= 78.4ms  decode=   SKIP  mse=0.00e+00  (playback 18.5s-18.8s)
+  # 47 dn=0.96  tick= 77.8ms  decode=   SKIP  mse=0.00e+00  (playback 18.8s-19.1s)
+  # 48 dn=0.94  tick= 77.9ms  decode=   SKIP  mse=0.00e+00  (playback 19.1s-19.4s)
+  # 49 dn=0.93  tick= 78.2ms  decode=   SKIP  mse=0.00e+00  (playback 19.4s-19.7s)
+  # 50 dn=0.91  tick= 79.5ms  decode=   SKIP  mse=0.00e+00  (playback 19.7s-20.0s)
+  # 51 dn=0.89  tick= 78.4ms  decode=   SKIP  mse=0.00e+00  (playback 20.0s-20.3s)
+[32m2026-05-07 18:45:23.855[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 52 dn=0.87  tick= 78.7ms  decode=194.7ms  mse=4.20e-01  (playback 20.3s-20.6s)
+  # 53 dn=0.84  tick= 78.0ms  decode=   SKIP  mse=0.00e+00  (playback 20.6s-20.9s)
+  # 54 dn=0.82  tick= 76.4ms  decode=   SKIP  mse=0.00e+00  (playback 20.9s-21.2s)
+[32m2026-05-07 18:45:24.282[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 55 dn=0.80  tick= 77.2ms  decode=195.3ms  mse=2.45e-01  (playback 21.2s-21.5s)
+  # 56 dn=0.77  tick= 77.1ms  decode=   SKIP  mse=0.00e+00  (playback 21.5s-21.8s)
+  # 57 dn=0.74  tick= 77.7ms  decode=   SKIP  mse=0.00e+00  (playback 21.8s-22.1s)
+[32m2026-05-07 18:45:24.711[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 58 dn=0.71  tick= 78.5ms  decode=194.7ms  mse=9.57e-02  (playback 22.1s-22.4s)
+  # 59 dn=0.68  tick= 77.9ms  decode=   SKIP  mse=0.00e+00  (playback 22.4s-22.7s)
+[32m2026-05-07 18:45:25.061[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 60 dn=0.65  tick= 76.7ms  decode=196.2ms  mse=1.40e-01  (playback 22.7s-23.0s)
+  # 61 dn=0.62  tick= 77.0ms  decode=   SKIP  mse=0.00e+00  (playback 23.0s-23.3s)
+[32m2026-05-07 18:45:25.412[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 62 dn=0.60  tick= 77.7ms  decode=196.2ms  mse=2.23e-02  (playback 23.3s-23.6s)
+[32m2026-05-07 18:45:25.686[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 63 dn=0.57  tick= 77.0ms  decode=196.8ms  mse=1.78e-02  (playback 23.6s-23.9s)
+  # 64 dn=0.54  tick= 77.6ms  decode=   SKIP  mse=0.00e+00  (playback 23.9s-24.2s)
+[32m2026-05-07 18:45:26.038[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 65 dn=0.51  tick= 77.8ms  decode=196.4ms  mse=1.23e-02  (playback 24.2s-24.5s)
+[32m2026-05-07 18:45:26.313[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 66 dn=0.48  tick= 77.7ms  decode=194.7ms  mse=1.05e-02  (playback 24.5s-24.8s)
+[32m2026-05-07 18:45:26.586[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 67 dn=0.46  tick= 77.7ms  decode=196.5ms  mse=7.72e-03  (playback 24.8s-25.1s)
+[32m2026-05-07 18:45:26.859[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 68 dn=0.43  tick= 77.4ms  decode=197.0ms  mse=1.10e-02  (playback 25.1s-25.4s)
+[32m2026-05-07 18:45:27.135[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 69 dn=0.41  tick= 77.8ms  decode=195.4ms  mse=5.28e-03  (playback 25.4s-25.7s)
+[32m2026-05-07 18:45:27.407[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 70 dn=0.38  tick= 76.8ms  decode=197.3ms  mse=7.42e-03  (playback 25.7s-26.0s)
+[32m2026-05-07 18:45:27.682[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 71 dn=0.36  tick= 77.6ms  decode=195.9ms  mse=2.66e-02  (playback 26.0s-26.3s)
+[32m2026-05-07 18:45:27.955[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 72 dn=0.34  tick= 77.4ms  decode=196.5ms  mse=3.13e-03  (playback 26.3s-26.6s)
+[32m2026-05-07 18:45:28.230[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 73 dn=0.32  tick= 77.1ms  decode=196.2ms  mse=2.59e-03  (playback 26.6s-26.9s)
+[32m2026-05-07 18:45:28.503[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 74 dn=0.30  tick= 77.4ms  decode=198.2ms  mse=4.12e-03  (playback 26.9s-27.2s)
+[32m2026-05-07 18:45:28.779[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 75 dn=0.29  tick= 77.2ms  decode=196.0ms  mse=1.40e-03  (playback 27.2s-27.5s)
+[32m2026-05-07 18:45:29.053[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 76 dn=0.28  tick= 77.3ms  decode=196.6ms  mse=1.69e-03  (playback 27.5s-27.8s)
+[32m2026-05-07 18:45:29.327[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 77 dn=0.27  tick= 77.7ms  decode=198.6ms  mse=1.11e-03  (playback 27.8s-28.1s)
+  # 78 dn=0.26  tick= 78.7ms  decode=   SKIP  mse=3.07e-04  (playback 28.1s-28.4s)
+  # 79 dn=0.26  tick= 78.7ms  decode=   SKIP  mse=8.66e-04  (playback 28.4s-28.7s)
+  # 80 dn=0.25  tick= 77.9ms  decode=   SKIP  mse=0.00e+00  (playback 28.7s-29.0s)
+  # 81 dn=0.25  tick= 77.6ms  decode=   SKIP  mse=7.21e-04  (playback 29.0s-29.3s)
+  # 82 dn=0.25  tick= 78.0ms  decode=   SKIP  mse=7.21e-04  (playback 29.3s-29.6s)
+  # 83 dn=0.26  tick= 77.8ms  decode=   SKIP  mse=0.00e+00  (playback 29.6s-29.9s)
+  # 84 dn=0.26  tick= 77.3ms  decode=   SKIP  mse=8.66e-04  (playback 29.9s-30.2s)
+  # 85 dn=0.27  tick= 78.6ms  decode=   SKIP  mse=3.07e-04  (playback 30.2s-30.5s)
+[32m2026-05-07 18:45:30.231[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 86 dn=0.28  tick= 78.2ms  decode=196.4ms  mse=1.11e-03  (playback 30.5s-30.8s)
+[32m2026-05-07 18:45:30.504[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 87 dn=0.29  tick= 77.0ms  decode=197.0ms  mse=1.69e-03  (playback 30.8s-31.1s)
+[32m2026-05-07 18:45:30.779[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 88 dn=0.30  tick= 78.0ms  decode=195.8ms  mse=1.40e-03  (playback 31.1s-31.4s)
+[32m2026-05-07 18:45:31.052[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 89 dn=0.32  tick= 76.6ms  decode=196.0ms  mse=4.12e-03  (playback 31.4s-31.7s)
+[32m2026-05-07 18:45:31.326[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 90 dn=0.34  tick= 77.7ms  decode=197.3ms  mse=2.59e-03  (playback 31.7s-32.0s)
+[32m2026-05-07 18:45:31.601[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 91 dn=0.36  tick= 77.6ms  decode=198.4ms  mse=3.13e-03  (playback 32.0s-32.3s)
+[32m2026-05-07 18:45:31.878[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 92 dn=0.38  tick= 78.3ms  decode=195.2ms  mse=2.66e-02  (playback 32.3s-32.6s)
+[32m2026-05-07 18:45:32.151[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 93 dn=0.41  tick= 77.7ms  decode=196.6ms  mse=7.42e-03  (playback 32.6s-32.9s)
+[32m2026-05-07 18:45:32.426[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 94 dn=0.43  tick= 78.1ms  decode=195.7ms  mse=5.28e-03  (playback 32.9s-33.2s)
+[32m2026-05-07 18:45:32.701[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 95 dn=0.46  tick= 79.4ms  decode=196.3ms  mse=1.10e-02  (playback 33.2s-33.5s)
+[32m2026-05-07 18:45:32.976[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 96 dn=0.48  tick= 77.3ms  decode=195.0ms  mse=7.72e-03  (playback 33.5s-33.8s)
+[32m2026-05-07 18:45:33.248[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 97 dn=0.51  tick= 76.9ms  decode=196.4ms  mse=1.05e-02  (playback 33.8s-34.1s)
+[32m2026-05-07 18:45:33.522[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  # 98 dn=0.54  tick= 78.1ms  decode=196.2ms  mse=1.23e-02  (playback 34.1s-34.4s)
+  # 99 dn=0.57  tick= 77.8ms  decode=   SKIP  mse=0.00e+00  (playback 34.4s-34.7s)
+[32m2026-05-07 18:45:33.873[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #100 dn=0.60  tick= 77.4ms  decode=198.1ms  mse=1.78e-02  (playback 34.7s-35.0s)
+[32m2026-05-07 18:45:34.149[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #101 dn=0.62  tick= 76.6ms  decode=197.6ms  mse=2.23e-02  (playback 35.0s-35.3s)
+  #102 dn=0.65  tick= 78.6ms  decode=   SKIP  mse=0.00e+00  (playback 35.3s-35.6s)
+[32m2026-05-07 18:45:34.503[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #103 dn=0.68  tick= 77.7ms  decode=198.7ms  mse=1.40e-01  (playback 35.6s-35.9s)
+  #104 dn=0.71  tick= 77.1ms  decode=   SKIP  mse=0.00e+00  (playback 35.9s-36.2s)
+[32m2026-05-07 18:45:34.857[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #105 dn=0.74  tick= 77.7ms  decode=196.3ms  mse=9.57e-02  (playback 36.2s-36.5s)
+  #106 dn=0.77  tick= 77.5ms  decode=   SKIP  mse=0.00e+00  (playback 36.5s-36.8s)
+  #107 dn=0.80  tick= 77.2ms  decode=   SKIP  mse=0.00e+00  (playback 36.8s-37.1s)
+[32m2026-05-07 18:45:35.287[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #108 dn=0.82  tick= 78.8ms  decode=195.0ms  mse=2.45e-01  (playback 37.1s-37.4s)
+  #109 dn=0.84  tick= 78.6ms  decode=   SKIP  mse=0.00e+00  (playback 37.4s-37.7s)
+  #110 dn=0.87  tick= 78.0ms  decode=   SKIP  mse=0.00e+00  (playback 37.7s-38.0s)
+[32m2026-05-07 18:45:35.720[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #111 dn=0.89  tick= 80.1ms  decode=195.9ms  mse=4.20e-01  (playback 38.0s-38.3s)
+  #112 dn=0.91  tick= 77.7ms  decode=   SKIP  mse=0.00e+00  (playback 38.3s-38.6s)
+  #113 dn=0.93  tick= 78.9ms  decode=   SKIP  mse=0.00e+00  (playback 38.6s-38.9s)
+  #114 dn=0.94  tick= 78.2ms  decode=   SKIP  mse=0.00e+00  (playback 38.9s-39.2s)
+  #115 dn=0.96  tick= 78.1ms  decode=   SKIP  mse=0.00e+00  (playback 39.2s-39.5s)
+  #116 dn=0.97  tick= 79.2ms  decode=   SKIP  mse=0.00e+00  (playback 39.5s-39.8s)
+  #117 dn=0.98  tick= 78.9ms  decode=   SKIP  mse=0.00e+00  (playback 39.8s-40.1s)
+  #118 dn=0.99  tick= 77.4ms  decode=   SKIP  mse=0.00e+00  (playback 40.1s-40.4s)
+  #119 dn=0.99  tick= 79.1ms  decode=   SKIP  mse=0.00e+00  (playback 40.4s-40.7s)
+  #120 dn=1.00  tick= 78.4ms  decode=   SKIP  mse=0.00e+00  (playback 40.7s-41.0s)
+  #121 dn=1.00  tick= 79.7ms  decode=   SKIP  mse=0.00e+00  (playback 41.0s-41.3s)
+  #122 dn=1.00  tick= 78.8ms  decode=   SKIP  mse=0.00e+00  (playback 41.3s-41.6s)
+  #123 dn=0.99  tick= 78.0ms  decode=   SKIP  mse=0.00e+00  (playback 41.6s-41.9s)
+  #124 dn=0.99  tick= 78.8ms  decode=   SKIP  mse=0.00e+00  (playback 41.9s-42.2s)
+  #125 dn=0.98  tick= 85.8ms  decode=   SKIP  mse=0.00e+00  (playback 42.2s-42.5s)
+  #126 dn=0.97  tick= 78.2ms  decode=   SKIP  mse=0.00e+00  (playback 42.5s-42.8s)
+  #127 dn=0.96  tick= 78.3ms  decode=   SKIP  mse=0.00e+00  (playback 42.8s-43.1s)
+  #128 dn=0.94  tick= 78.1ms  decode=   SKIP  mse=0.00e+00  (playback 43.1s-43.4s)
+  #129 dn=0.93  tick= 78.6ms  decode=   SKIP  mse=0.00e+00  (playback 43.4s-43.7s)
+  #130 dn=0.91  tick= 79.0ms  decode=   SKIP  mse=0.00e+00  (playback 43.7s-44.0s)
+  #131 dn=0.89  tick= 77.4ms  decode=   SKIP  mse=0.00e+00  (playback 44.0s-44.3s)
+[32m2026-05-07 18:45:37.576[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #132 dn=0.87  tick= 79.0ms  decode=198.1ms  mse=4.20e-01  (playback 44.3s-44.6s)
+  #133 dn=0.84  tick= 77.9ms  decode=   SKIP  mse=0.00e+00  (playback 44.6s-44.9s)
+  #134 dn=0.82  tick= 77.8ms  decode=   SKIP  mse=0.00e+00  (playback 44.9s-45.2s)
+[32m2026-05-07 18:45:38.006[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #135 dn=0.80  tick= 76.9ms  decode=196.9ms  mse=2.45e-01  (playback 45.2s-45.5s)
+  #136 dn=0.77  tick= 77.6ms  decode=   SKIP  mse=0.00e+00  (playback 45.5s-45.8s)
+  #137 dn=0.74  tick= 77.6ms  decode=   SKIP  mse=0.00e+00  (playback 45.8s-46.1s)
+[32m2026-05-07 18:45:38.438[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #138 dn=0.71  tick= 78.0ms  decode=196.0ms  mse=9.57e-02  (playback 46.1s-46.4s)
+  #139 dn=0.68  tick= 78.8ms  decode=   SKIP  mse=0.00e+00  (playback 46.4s-46.7s)
+[32m2026-05-07 18:45:38.790[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #140 dn=0.65  tick= 77.5ms  decode=195.9ms  mse=1.40e-01  (playback 46.7s-47.0s)
+  #141 dn=0.62  tick= 77.7ms  decode=   SKIP  mse=0.00e+00  (playback 47.0s-47.3s)
+[32m2026-05-07 18:45:39.143[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #142 dn=0.60  tick= 78.5ms  decode=197.3ms  mse=2.23e-02  (playback 47.3s-47.6s)
+[32m2026-05-07 18:45:39.420[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #143 dn=0.57  tick= 79.6ms  decode=197.3ms  mse=1.78e-02  (playback 47.6s-47.9s)
+  #144 dn=0.54  tick= 80.3ms  decode=   SKIP  mse=0.00e+00  (playback 47.9s-48.2s)
+[32m2026-05-07 18:45:39.776[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #145 dn=0.51  tick= 78.0ms  decode=197.5ms  mse=1.23e-02  (playback 48.2s-48.5s)
+[32m2026-05-07 18:45:40.051[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #146 dn=0.48  tick= 77.6ms  decode=196.4ms  mse=1.05e-02  (playback 48.5s-48.8s)
+[32m2026-05-07 18:45:40.326[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #147 dn=0.46  tick= 78.4ms  decode=196.3ms  mse=7.72e-03  (playback 48.8s-49.1s)
+[32m2026-05-07 18:45:40.601[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #148 dn=0.43  tick= 77.9ms  decode=199.0ms  mse=1.10e-02  (playback 49.1s-49.4s)
+[32m2026-05-07 18:45:40.878[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #149 dn=0.41  tick= 78.2ms  decode=196.0ms  mse=5.28e-03  (playback 49.4s-49.7s)
+[32m2026-05-07 18:45:41.152[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #150 dn=0.38  tick= 77.2ms  decode=197.7ms  mse=7.42e-03  (playback 49.7s-50.0s)
+[32m2026-05-07 18:45:41.429[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #151 dn=0.36  tick= 79.6ms  decode=195.0ms  mse=2.66e-02  (playback 50.0s-50.3s)
+[32m2026-05-07 18:45:41.703[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #152 dn=0.34  tick= 79.1ms  decode=196.4ms  mse=3.13e-03  (playback 50.3s-50.6s)
+[32m2026-05-07 18:45:41.901[0m | [1mINFO    [0m | [36macestep.engine.stream[0m:[36m_ensure_trt_bufs[0m:[36m822[0m - [1mStream TRT bufs allocated: B=7 eff_T=1416 L=83[0m
+[32m2026-05-07 18:45:41.968[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #153 dn=0.32  tick= 67.9ms  decode=196.0ms  mse=2.59e-03  (playback 50.6s-50.9s)
+[32m2026-05-07 18:45:42.164[0m | [1mINFO    [0m | [36macestep.engine.stream[0m:[36m_ensure_trt_bufs[0m:[36m822[0m - [1mStream TRT bufs allocated: B=6 eff_T=1416 L=83[0m
+[32m2026-05-07 18:45:42.223[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #154 dn=0.30  tick= 58.9ms  decode=197.4ms  mse=4.12e-03  (playback 50.9s-51.2s)
+[32m2026-05-07 18:45:42.421[0m | [1mINFO    [0m | [36macestep.engine.stream[0m:[36m_ensure_trt_bufs[0m:[36m822[0m - [1mStream TRT bufs allocated: B=5 eff_T=1416 L=83[0m
+[32m2026-05-07 18:45:42.470[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #155 dn=0.29  tick= 49.6ms  decode=198.7ms  mse=1.40e-03  (playback 51.2s-51.5s)
+[32m2026-05-07 18:45:42.670[0m | [1mINFO    [0m | [36macestep.engine.stream[0m:[36m_ensure_trt_bufs[0m:[36m822[0m - [1mStream TRT bufs allocated: B=4 eff_T=1416 L=83[0m
+[32m2026-05-07 18:45:42.714[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #156 dn=0.28  tick= 44.5ms  decode=200.2ms  mse=1.69e-03  (playback 51.5s-51.8s)
+[32m2026-05-07 18:45:42.915[0m | [1mINFO    [0m | [36macestep.engine.stream[0m:[36m_ensure_trt_bufs[0m:[36m822[0m - [1mStream TRT bufs allocated: B=3 eff_T=1416 L=83[0m
+[32m2026-05-07 18:45:42.949[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m314[0m - [1mVAE decode via PyTorch (no TRT engine found)[0m
+  #157 dn=0.27  tick= 34.6ms  decode=196.8ms  mse=1.11e-03  (playback 51.8s-52.1s)
+[32m2026-05-07 18:45:43.146[0m | [1mINFO    [0m | [36macestep.engine.stream[0m:[36m_ensure_trt_bufs[0m:[36m822[0m - [1mStream TRT bufs allocated: B=2 eff_T=1416 L=83[0m
+  #158 dn=0.26  tick= 26.1ms  decode=   SKIP  mse=3.07e-04  (playback 52.1s-52.4s)
+[32m2026-05-07 18:45:43.172[0m | [1mINFO    [0m | [36macestep.engine.stream[0m:[36m_ensure_trt_bufs[0m:[36m822[0m - [1mStream TRT bufs allocated: B=1 eff_T=1416 L=83[0m
+  #159 dn=0.26  tick= 15.9ms  decode=   SKIP  mse=8.66e-04  (playback 52.4s-52.7s)
+  #160 dn=0.25  tick=  0.0ms  decode=   SKIP  mse=0.00e+00  (playback 52.7s-53.0s)
+
+[Run] 160 generations in 28071ms (175.4ms avg incl. decode)
+  Decoded: 77, Skipped: 83 (52% skip rate)
+  MSE: min=0.00e+00  median=8.66e-04  max=4.20e-01
+
+[Save] Output: 48.0s, torch.Size([2, 2304000])
+  Saved: C:\_dev\projects\DEMON\demos\outputs\trt_compare\stream_cover_trt10_16_decoder_only.wav
+  Source: C:\_dev\projects\DEMON_pr17\demos\..\demos\outputs\stream_cover_graph\source_reference.wav
+
+============================================================
+TIMING SUMMARY
+============================================================
+  model_load                8270.2ms  (1 call)
+  load_audio                   6.1ms  (1 call)
+  prepare_source             527.7ms  (1 call)
+  text_encode                476.7ms  (1 call)
+  stream_setup                33.9ms  (1 call)
+  tick                     12825.7ms total  avg=  76.3ms  min=   0.0ms  max= 324.6ms  (168 calls)
+  vae_decode               15210.0ms total  avg= 197.5ms  min= 194.7ms  max= 271.9ms  (77 calls)
+
+  Per-generation (amortized over 160 gens):
+    tick=80.2ms + decode=95.1ms (77 decoded, 83 skipped) = 175.2ms
+
+============================================================

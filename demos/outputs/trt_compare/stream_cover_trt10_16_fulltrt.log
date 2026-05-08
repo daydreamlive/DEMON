@@ -1,0 +1,42 @@
+============================================================
+Stream Cover - offline pipeline stress test
+============================================================
+
+[Setup] checkpoint=acestep-v15-turbo
+[Setup] decoder backend=TRT (decoder_mixed_refit_b8_60s)
+[Setup] vae backend=TRT  vae_window=0.0  depth=8
+[Setup] DCW=ON  mode=double  scaler=0.05  high_scaler=0.02  wavelet=haar
+[Setup] output=stream_cover_trt10_16_fulltrt.wav
+[Setup] Loading model...
+Skipping import of cpp extensions due to incompatible torch version. Please upgrade to torch >= 2.11.0 (found 2.9.1+cu128).
+W0507 18:44:28.285000 82612 Lib\site-packages\torch\distributed\elastic\multiprocessing\redirects.py:29] NOTE: Redirects are currently not supported in Windows or MacOs.
+Unable to import `torchao` Tensor objects. This may affect loading checkpoints serialized with `torchao`
+[32m2026-05-07 18:44:29.221[0m | [1mINFO    [0m | [36macestep.engine.model_context[0m:[36m_load_dit[0m:[36m333[0m - [1mLoading AceStepConditionGenerationModel from acestep.models.modeling_acestep_v15_turbo with attention=flash_attention_2[0m
+[32m2026-05-07 18:44:29.335[0m | [1mINFO    [0m | [36macestep.engine.model_context[0m:[36m_load_models[0m:[36m157[0m - [1mDecoder weights discarded (TRT engine will be used)[0m
+[32m2026-05-07 18:44:30.091[0m | [1mINFO    [0m | [36macestep.engine.model_context[0m:[36m_load_models[0m:[36m181[0m - [1mVAE weights skipped (TRT engines will be used)[0m
+[32m2026-05-07 18:44:30.930[0m | [1mINFO    [0m | [36macestep.engine.model_context[0m:[36m_load_models[0m:[36m211[0m - [1mModelContext ready | device=cuda attn=flash_attention_2 compile_decoder=False compile_vae=False decoder=TRT vae=TRT[0m
+[32m2026-05-07 18:44:31.031[0m | [1mINFO    [0m | [36macestep.engine.diffusion[0m:[36mload_trt_engine[0m:[36m128[0m - [1mLoading TRT decoder engine from %s ...[0m
+[W] 'colored' module is not installed, will not use colors when logging. To enable colors, please install the 'colored' module: python3 -m pip install colored
+[I] Loading bytes from C:\Users\ryanf\.daydream-scope\models\demon\trt_engines\decoder_mixed_refit_b8_60s\decoder_mixed_refit_b8_60s.engine
+[32m2026-05-07 18:44:33.505[0m | [1mINFO    [0m | [36macestep.engine.diffusion[0m:[36mload_trt_engine[0m:[36m154[0m - [1mTRT decoder engine ready (input_dtypes={'hidden_states': torch.float16, 'timestep': torch.float32, 'encoder_hidden_states': torch.float16, 'context_latents': torch.float16}, output_dtype=torch.float16)[0m
+[05/07/2026-18:44:33] [TRT] [W] WARNING The logger passed into createInferRefitter differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[32m2026-05-07 18:44:33.531[0m | [1mINFO    [0m | [36macestep.engine.trt.lora_refit[0m:[36m__init__[0m:[36m78[0m - [1mLoading base weights from checkpoint: %s[0m
+[32m2026-05-07 18:44:33.957[0m | [1mINFO    [0m | [36macestep.engine.trt.lora_refit[0m:[36m__init__[0m:[36m126[0m - [1mTRT LoRA manager ready: %d/%d engine weights mapped (prefix='%s')[0m
+[32m2026-05-07 18:44:34.429[0m | [1mINFO    [0m | [36macestep.engine.lora[0m:[36mregister_lora[0m:[36m173[0m - [1mRegistered LoRA: %s (path=%s)[0m
+[32m2026-05-07 18:44:34.429[0m | [1mINFO    [0m | [36macestep.engine.lora[0m:[36mregister_lora[0m:[36m173[0m - [1mRegistered LoRA: %s (path=%s)[0m
+[32m2026-05-07 18:44:34.429[0m | [1mINFO    [0m | [36macestep.engine.lora[0m:[36mregister_lora[0m:[36m173[0m - [1mRegistered LoRA: %s (path=%s)[0m
+[32m2026-05-07 18:44:34.429[0m | [1mINFO    [0m | [36macestep.engine.lora[0m:[36mregister_lora[0m:[36m173[0m - [1mRegistered LoRA: %s (path=%s)[0m
+[32m2026-05-07 18:44:34.429[0m | [1mINFO    [0m | [36macestep.engine.lora[0m:[36mregister_lora[0m:[36m173[0m - [1mRegistered LoRA: %s (path=%s)[0m
+[32m2026-05-07 18:44:34.429[0m | [1mINFO    [0m | [36macestep.engine.lora[0m:[36mregister_lora[0m:[36m173[0m - [1mRegistered LoRA: %s (path=%s)[0m
+[32m2026-05-07 18:44:34.429[0m | [1mINFO    [0m | [36macestep.engine.lora[0m:[36mregister_lora[0m:[36m173[0m - [1mRegistered LoRA: %s (path=%s)[0m
+[32m2026-05-07 18:44:34.429[0m | [1mINFO    [0m | [36macestep.engine.lora[0m:[36mregister_lora[0m:[36m173[0m - [1mRegistered LoRA: %s (path=%s)[0m
+[32m2026-05-07 18:44:34.429[0m | [1mINFO    [0m | [36macestep.engine.lora[0m:[36mregister_library[0m:[36m195[0m - [1mRegistered library: %d LoRAs from %s[0m
+[I] Loading bytes from C:\Users\ryanf\.daydream-scope\models\demon\trt_engines\vae_encode_fp16_60s\vae_encode_fp16_60s.engine
+[32m2026-05-07 18:44:34.672[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36m_get_trt_vae[0m:[36m72[0m - [1mLoaded TRT VAE engine: %s[0m
+[I] Loading bytes from C:\Users\ryanf\.daydream-scope\models\demon\trt_engines\vae_decode_fp16_60s\vae_decode_fp16_60s.engine
+[32m2026-05-07 18:44:35.009[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36m_get_trt_vae[0m:[36m72[0m - [1mLoaded TRT VAE engine: %s[0m
+  [model_load] 8702.0ms
+[Setup] Loading source audio...
+  [load_audio] 11.2ms
+[Setup] Preparing source...
+[32m2026-05-07 18:44:35.021[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36mexecute[0m:[36m260[0m - [1mVAE encode via TRT[0m

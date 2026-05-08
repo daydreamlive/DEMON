@@ -1,0 +1,6 @@
+[32m2026-05-07 18:23:39.853[0m | [1mINFO    [0m | [36macestep.engine.trt.runtime[0m:[36m__init__[0m:[36m73[0m - [1mLoading TRT engine from %s ...[0m
+[32m2026-05-07 18:23:41.769[0m | [1mINFO    [0m | [36macestep.engine.trt.runtime[0m:[36m__init__[0m:[36m99[0m - [1mTRT decoder ready (output_dtype=%s)[0m
+[32m2026-05-07 18:23:41.794[0m | [1mINFO    [0m | [36macestep.engine.trt.runtime[0m:[36m_get_bufs[0m:[36m135[0m - [1mAllocated TRT buffers for shapes: hs=%s enc=%s[0m
+[32m2026-05-07 18:23:42.128[0m | [1mINFO    [0m | [36macestep.engine.trt.runtime[0m:[36m_get_bufs[0m:[36m135[0m - [1mAllocated TRT buffers for shapes: hs=%s enc=%s[0m
+[32m2026-05-07 18:23:43.558[0m | [1mINFO    [0m | [36macestep.engine.trt.runtime[0m:[36m_get_bufs[0m:[36m135[0m - [1mAllocated TRT buffers for shapes: hs=%s enc=%s[0m
+[32m2026-05-07 18:23:46.577[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36m_get_trt_vae[0m:[36m57[0m - [1mLoaded TRT VAE engine: %s[0m

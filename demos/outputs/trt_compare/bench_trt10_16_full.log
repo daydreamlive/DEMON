@@ -1,0 +1,20 @@
+TensorRT: 10.16.1.11
+Torch: 2.9.1+cu128
+GPU: NVIDIA GeForce RTX 5090
+Tag: trt10_16
+
+=== decoder (decoder_mixed_refit_b8_60s.engine) ===
+[32m2026-05-07 18:43:50.281[0m | [1mINFO    [0m | [36macestep.engine.trt.runtime[0m:[36m__init__[0m:[36m73[0m - [1mLoading TRT engine from %s ...[0m
+[W] 'colored' module is not installed, will not use colors when logging. To enable colors, please install the 'colored' module: python3 -m pip install colored
+[I] Loading bytes from C:\Users\ryanf\.daydream-scope\models\demon\trt_engines\decoder_mixed_refit_b8_60s\decoder_mixed_refit_b8_60s.engine
+[32m2026-05-07 18:43:52.625[0m | [1mINFO    [0m | [36macestep.engine.trt.runtime[0m:[36m__init__[0m:[36m99[0m - [1mTRT decoder ready (output_dtype=%s)[0m
+[32m2026-05-07 18:43:52.654[0m | [1mINFO    [0m | [36macestep.engine.trt.runtime[0m:[36m_get_bufs[0m:[36m135[0m - [1mAllocated TRT buffers for shapes: hs=%s enc=%s[0m
+  decoder_B1_T750_E200: mean=8.91ms p50=8.94 p95=9.38 min=8.35 max=9.62  peak_alloc=0.00GiB
+[32m2026-05-07 18:43:53.010[0m | [1mINFO    [0m | [36macestep.engine.trt.runtime[0m:[36m_get_bufs[0m:[36m135[0m - [1mAllocated TRT buffers for shapes: hs=%s enc=%s[0m
+  decoder_B8_T750_E200: mean=42.23ms p50=42.32 p95=42.94 min=41.22 max=43.02  peak_alloc=0.03GiB
+[32m2026-05-07 18:43:54.484[0m | [1mINFO    [0m | [36macestep.engine.trt.runtime[0m:[36m_get_bufs[0m:[36m135[0m - [1mAllocated TRT buffers for shapes: hs=%s enc=%s[0m
+  decoder_B8_T1500_E200: mean=81.09ms p50=81.44 p95=83.45 min=77.80 max=84.32  peak_alloc=0.04GiB
+
+=== vae_decode (vae_decode_fp16_60s.engine) ===
+[I] Loading bytes from C:\Users\ryanf\.daydream-scope\models\demon\trt_engines\vae_decode_fp16_60s\vae_decode_fp16_60s.engine
+[32m2026-05-07 18:43:57.596[0m | [1mINFO    [0m | [36macestep.nodes.vae_nodes[0m:[36m_get_trt_vae[0m:[36m57[0m - [1mLoaded TRT VAE engine: %s[0m

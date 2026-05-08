@@ -1,0 +1,25 @@
+  #160 dn=0.25  tick=  0.0ms  decode=   SKIP  mse=0.00e+00  (playback 52.7s-53.0s)
+
+[Run] 160 generations in 17574ms (109.8ms avg incl. decode)
+  Decoded: 77, Skipped: 83 (52% skip rate)
+  MSE: min=0.00e+00  median=8.96e-04  max=4.79e-01
+
+[Save] Output: 48.0s, torch.Size([2, 2304000])
+  Saved: C:\_dev\projects\DEMON\demos\outputs\trt_compare\stream_cover_trt10_13.wav
+  Source: C:\_dev\projects\DEMON\demos\..\demos\outputs\stream_cover_graph\source_reference.wav
+
+============================================================
+TIMING SUMMARY
+============================================================
+  model_load                7321.9ms  (1 call)
+  load_audio                   6.2ms  (1 call)
+  prepare_source             297.9ms  (1 call)
+  text_encode                534.4ms  (1 call)
+  stream_setup                11.2ms  (1 call)
+  tick                     13316.3ms total  avg=  79.3ms  min=   0.0ms  max= 270.1ms  (168 calls)
+  vae_decode                4225.5ms total  avg=  54.9ms  min=  53.7ms  max=  60.4ms  (77 calls)
+
+  Per-generation (amortized over 160 gens):
+    tick=83.2ms + decode=26.4ms (77 decoded, 83 skipped) = 109.6ms
+
+============================================================

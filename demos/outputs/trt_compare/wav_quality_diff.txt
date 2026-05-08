@@ -1,0 +1,8 @@
+A: stream_cover_trt10_13.wav  shape=(2304000, 2)  sr=48000  rms=0.2645
+B: stream_cover_trt10_16_decoder_only.wav  shape=(2304000, 2)  sr=48000  rms=0.2643
+
+mean_abs_diff = 5.313014e-02
+max_abs_diff  = 1.375977e+00
+rms_diff      = 1.052724e-01
+rms_a         = 2.644554e-01
+snr (rms_a / rms_diff) = 2.51

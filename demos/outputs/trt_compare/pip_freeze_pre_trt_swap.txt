@@ -1,0 +1,13 @@
+cuda-python==13.2.0
+onnx==1.21.0
+onnx-graphsurgeon==0.6.1
+onnx-ir==0.2.1
+onnxconverter-common==1.16.0
+onnxruntime-gpu==1.22.0
+onnxscript==0.7.0
+onnxslim==0.1.92
+polygraphy==0.49.26
+tensorrt==10.13.3.9.post1
+tensorrt-cu13==10.13.3.9.post1
+tensorrt-cu13-bindings==10.13.3.9.post1
+tensorrt-cu13-libs==10.13.3.9.post1

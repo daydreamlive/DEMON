@@ -1,0 +1,15 @@
+engine: C:\Users\ryanf\.daydream-scope\models\demon\trt_engines\vae_decode_fp16_60s\vae_decode_fp16_60s.engine
+using PR-17 acestep
+tensorrt: 10.16.1.11
+[W] 'colored' module is not installed, will not use colors when logging. To enable colors, please install the 'colored' module: python3 -m pip install colored
+[I] Loading bytes from C:\Users\ryanf\.daydream-scope\models\demon\trt_engines\vae_decode_fp16_60s\vae_decode_fp16_60s.engine
+engine loaded, num_io=2
+  tensor 0: latents mode=TensorIOMode.INPUT dtype=DataType.FLOAT
+  tensor 1: audio mode=TensorIOMode.OUTPUT dtype=DataType.FLOAT
+lat: torch.Size([1, 64, 1500]) torch.float32
+set_input_shape: True
+set_tensor_address(in): True
+infer_shapes missing: []
+output shape: (1, 2, 2880000)
+set_tensor_address(out): True
+execute_async_v3 ...
