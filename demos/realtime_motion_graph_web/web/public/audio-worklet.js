@@ -11,9 +11,20 @@
 // Messages to main thread:
 //   {type:'position', positionSec:float, swapCount:int}
 
-const CROSSFADE_SECONDS = 0.05;
+const CROSSFADE_SECONDS = 0.025;
 const SEAM_FADE_SECONDS = 0.05;  // loop-seam crossfade at end-of-buffer
-const REPORT_EVERY = 1024;  // frames between position reports
+// ~5.3 ms at 48 kHz. Sets the cadence of {position, kick} postMessages
+// to the main thread. Two consumers: (1) visual kick reactivity in the
+// HUD/graph (190 Hz here is overkill for the eye but cheap), (2) the
+// param-sync loop reads `player.positionSec` and ships it to the server
+// as `playback_pos`, which the runner uses to set decode_start. Stale
+// position → leading edge of the new slice lands behind the listener
+// at write-time → wasted bytes + missed leading-edge xfade. 256 keeps
+// staleness ≤ ~5 ms; the alternative (1024 / ~21 ms) saves a bit of
+// main-thread postMessage overhead but costs decode-position accuracy.
+// The actual perf win — moving kick RMS into the worklet — is
+// independent of this cadence.
+const REPORT_EVERY = 256;
 // Kick / RMS window. 480 frames at 48 kHz is ~10 ms — long enough to
 // average a kick transient, short enough to track sub-beat dynamics.
 // Sliding sum-of-squares is maintained incrementally; periodic refresh

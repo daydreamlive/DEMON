@@ -316,14 +316,17 @@ def available_dreamvae_decode_engine(duration_s: float) -> Path | None:
 #     max = 750  (30 s)
 #
 # The ``StreamVAEDecode`` window+overlap chunks fit comfortably inside
-# this range for any user-facing window in [5, 30] seconds, which is
-# the range Session enforces when ``vae_window > 0``.
+# this range for any user-facing window in [3, 30] seconds, which is
+# the range Session enforces when ``vae_window > 0``. The lower bound
+# matches the engine profile's ``min_frames=75`` (3 s at 25 fps); the
+# previous defensive clamp at 5.0 silently rounded smaller user-set
+# windows up to 5 s and inflated every wire slice by ~67 % for nothing.
 # ------------------------------------------------------------------
 
 WINDOWED_VAE_DECODE_NAME = "vae_decode_fp16_3to30s"
 WINDOWED_DREAMVAE_DECODE_NAME = "dreamvae_decode_fp16_3to30s"
 WINDOWED_VAE_PROFILE_FRAMES: tuple[int, int, int] = (75, 125, 750)
-WINDOWED_VAE_WINDOW_RANGE_S: tuple[float, float] = (5.0, 30.0)
+WINDOWED_VAE_WINDOW_RANGE_S: tuple[float, float] = (3.0, 30.0)
 
 
 def windowed_vae_decode_engine_name(*, dreamvae: bool = False) -> str:

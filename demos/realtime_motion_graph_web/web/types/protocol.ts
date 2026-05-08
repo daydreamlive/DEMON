@@ -108,7 +108,7 @@ export interface SwapReadyDetail extends SwapReadyMessage {
 export const SAMPLE_RATE = 48000;
 /** 60 s of audio at 25 fps latents. */
 export const T = 1500;
-export const CROSSFADE_SECONDS = 0.05;
+export const CROSSFADE_SECONDS = 0.025;
 export const SLICE_HDR_SIZE = 23; // 1+4+4+2+4+4+4
 export const SLICE_FLAG_RAW = 0;
 export const SLICE_FLAG_DELTA = 1;

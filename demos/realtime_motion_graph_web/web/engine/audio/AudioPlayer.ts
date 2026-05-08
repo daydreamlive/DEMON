@@ -113,7 +113,7 @@ export class AudioPlayer {
 
   /**
    * Replace the entire loop buffer. The worklet crossfades old → new over
-   * CROSSFADE_SECONDS (50 ms); ScriptProcessor fallback does an instant
+   * CROSSFADE_SECONDS (25 ms); ScriptProcessor fallback does an instant
    * swap (the seam-fade still hides the wrap).
    */
   swap(interleavedBuffer: Float32Array, channels?: number): void {

@@ -360,7 +360,7 @@ class StreamVAEDecode(BaseNode):
                     name="vae_window", type="number", default=5.0,
                     description=(
                         "Decode window (s); <=0 decodes full latent. "
-                        "Positive values are clamped to [5, 30] to fit "
+                        "Positive values are clamped to [3, 30] to fit "
                         "the windowed VAE engine profile."
                     ),
                     min=0.0, max=30.0, step=0.1,
