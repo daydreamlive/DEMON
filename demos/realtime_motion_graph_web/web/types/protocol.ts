@@ -98,6 +98,11 @@ export interface AudioSlice {
   numGens: number;
   /** Decoded float32 PCM, interleaved. */
   audio: Float32Array;
+  /** Source-buffer epoch this slice was received under. Increments on each
+   *  swap_ready. Consumers compare against `AudioPlayer.swapCount` to drop
+   *  slices that were generated for a previous track but only finished
+   *  decoding (or arrived) after the swap. */
+  epoch: number;
 }
 
 /** Detail payload for `swap_ready` events on RemoteBackend. */

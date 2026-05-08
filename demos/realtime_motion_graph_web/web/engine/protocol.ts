@@ -98,6 +98,14 @@ export class RemoteBackend extends EventTarget {
   // and postMessage is FIFO, so audio slices stay in order.
   private _decoderWorker: Worker | null = null;
   private _nextDecodeId = 1;
+  // Source-buffer epoch. Bumped right before the swap_ready event is
+  // dispatched, so any binary slice that arrives at the WS afterwards is
+  // tagged for the new buffer. Slices in flight from before the bump
+  // (queued in the WS handler ahead of the swap, or sitting in the
+  // decoder worker mid-decode) keep their old epoch and get dropped by
+  // the listener — without this they'd land in the new track and bleed
+  // chunks of the previous song through.
+  private _sliceEpoch = 0;
 
   constructor(
     url: string,
@@ -140,6 +148,7 @@ export class RemoteBackend extends EventTarget {
           decMs: msg.decMs,
           numGens: msg.numGens,
           audio: msg.audio,
+          epoch: msg.epoch,
         };
         this.dispatchEvent(new CustomEvent("slice", { detail: slice }));
       };
@@ -229,6 +238,14 @@ export class RemoteBackend extends EventTarget {
           this._pendingSwap = null;
           this.duration = meta.duration;
           this.channels = meta.channels;
+          // Bump epoch BEFORE the dispatch so that the synchronous
+          // `player.swap()` call inside the listener (which bumps
+          // AudioPlayer.swapCount in lockstep) and any subsequent
+          // binary slice the WS hands us are all aligned on the new
+          // buffer. Stale slices already queued in the worker still
+          // carry the previous epoch and will be dropped by the
+          // listener.
+          this._sliceEpoch++;
           this.dispatchEvent(
             new CustomEvent("swap_ready", {
               detail: { ...meta, interleaved },
@@ -273,13 +290,18 @@ export class RemoteBackend extends EventTarget {
         if (this._decoderWorker) {
           const buf = ev.data as ArrayBuffer;
           this._decoderWorker.postMessage(
-            { id: this._nextDecodeId++, buffer: buf },
+            {
+              id: this._nextDecodeId++,
+              buffer: buf,
+              epoch: this._sliceEpoch,
+            },
             [buf],
           );
         } else {
           try {
             const slice = this._parseSlice(ev.data as ArrayBuffer);
             if (slice) {
+              slice.epoch = this._sliceEpoch;
               this.dispatchEvent(new CustomEvent("slice", { detail: slice }));
             }
           } catch (e) {
@@ -356,6 +378,9 @@ export class RemoteBackend extends EventTarget {
       decMs,
       numGens,
       audio,
+      // Caller (the WS onmessage fallback path) overwrites this with the
+      // current source epoch right before dispatching.
+      epoch: 0,
     };
   }
 

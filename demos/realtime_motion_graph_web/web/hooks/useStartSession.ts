@@ -137,6 +137,12 @@ export function useStartSession() {
       const detail = (e as CustomEvent<AudioSlice>).detail;
       const player = useSessionStore.getState().player;
       if (!player) return;
+      // Drop slices that were generated for a previous source. Without
+      // this, slices already in the WS queue (or mid-decode in the
+      // worker) at the moment the user swaps tracks would write into
+      // the new buffer — audible as chunks of the previous song
+      // bleeding through after a swap.
+      if (detail.epoch !== player.swapCount) return;
       const startFrame = Math.floor(detail.startSample);
       if (detail.flags === SLICE_FLAG_DELTA) {
         player.addDelta(startFrame, detail.audio);

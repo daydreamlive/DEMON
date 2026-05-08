@@ -11,6 +11,10 @@ import { SLICE_FLAG_DELTA, SLICE_HDR_SIZE } from "@/types/protocol";
 interface DecodeRequest {
   id: number;
   buffer: ArrayBuffer;
+  /** Snapshot of the protocol's source-buffer epoch at WS-receipt time.
+   *  Echoed back unchanged on the response so the main thread can drop
+   *  slices whose source has since been swapped out. */
+  epoch: number;
 }
 
 interface DecodeResponse {
@@ -24,12 +28,14 @@ interface DecodeResponse {
   decMs: number;
   numGens: number;
   audio: Float32Array;
+  epoch: number;
 }
 
 interface DecodeError {
   id: number;
   ok: false;
   error: string;
+  epoch: number;
 }
 
 // Reusable scratch overlay for half-precision decode (one allocation, not
@@ -69,10 +75,15 @@ function float16ArrayToFloat32(u16: Uint16Array): Float32Array {
 }
 
 self.onmessage = (ev: MessageEvent<DecodeRequest>) => {
-  const { id, buffer } = ev.data;
+  const { id, buffer, epoch } = ev.data;
   try {
     if (buffer.byteLength < SLICE_HDR_SIZE) {
-      const err: DecodeError = { id, ok: false, error: "slice too short" };
+      const err: DecodeError = {
+        id,
+        ok: false,
+        error: "slice too short",
+        epoch,
+      };
       (self as unknown as Worker).postMessage(err);
       return;
     }
@@ -113,6 +124,7 @@ self.onmessage = (ev: MessageEvent<DecodeRequest>) => {
       decMs,
       numGens,
       audio,
+      epoch,
     };
     (self as unknown as Worker).postMessage(reply, [audio.buffer]);
   } catch (e) {
@@ -120,6 +132,7 @@ self.onmessage = (ev: MessageEvent<DecodeRequest>) => {
       id,
       ok: false,
       error: e instanceof Error ? e.message : String(e),
+      epoch,
     };
     (self as unknown as Worker).postMessage(err);
   }
