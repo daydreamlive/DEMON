@@ -43,8 +43,29 @@ async function decodeArrayBuffer(bytes: ArrayBuffer): Promise<DecodedFixture> {
   // through, >2 → take front L/R only (Web Audio puts front-L=0,
   // front-R=1 for any layout).
   const srcChannels = audioBuffer.numberOfChannels;
-  const frames = audioBuffer.length;
+  const rawFrames = audioBuffer.length;
   const channels = 2;
+
+  // Length normalize: trim to a whole-second multiple. Browsers'
+  // decodeAudioData honours the mp3 encoder-padding header and returns
+  // a non-integer-second sample count for many real-world files (e.g.
+  // a 142.96 s mp3 with 23 ms of priming silence at the head). The
+  // server-side VAE encode then computes a latent count off that ragged
+  // tail and can underflow into a negative time dim — we saw
+  // `Trying to create tensor with negative dimension -1: [1, 128, -1]`
+  // on a track with exactly that shape. Whole-second alignment also
+  // matches what every TRT engine profile expects (60/120/240 s
+  // boundaries) and is what server-side fixture caches assume.
+  // Trimming the partial tail loses < 1 s of audio; padding with
+  // zeros would risk an audible click.
+  const sr = audioBuffer.sampleRate;
+  const frames = Math.floor(rawFrames / sr) * sr;
+  if (frames < sr) {
+    throw new Error(
+      `Audio too short — need ≥ 1 second, got ${(rawFrames / sr).toFixed(2)} s.`,
+    );
+  }
+
   const interleaved = new Float32Array(frames * channels);
 
   if (srcChannels === 1) {
@@ -63,7 +84,7 @@ async function decodeArrayBuffer(bytes: ArrayBuffer): Promise<DecodedFixture> {
     }
   }
 
-  return { interleaved, channels, frames, sampleRate: audioBuffer.sampleRate };
+  return { interleaved, channels, frames, sampleRate: sr };
 }
 
 export async function loadFixtureAudio(name: string): Promise<DecodedFixture> {
