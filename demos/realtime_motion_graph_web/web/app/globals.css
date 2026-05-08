@@ -630,6 +630,17 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
 #install-video-area #graph-wrap .graph-pause-overlay:focus-visible {
   outline: none;
 }
+/* Touch devices: every tap on the graph would call togglePauseAndAudio →
+   AudioContext.suspend(), and on Android that visibly blanks the audio-
+   driven render pipeline (analyser-fed bloom + FluidSim) for ~1 frame
+   while the ⏸/▶ glyph flashes in. The OperatorStrip play/pause button
+   is the canonical mobile control; leave the element in the DOM so the
+   one-shot discovery flash on first `ready` still surfaces. */
+@media (pointer: coarse) {
+  #install-video-area #graph-wrap .graph-pause-overlay {
+    pointer-events: none;
+  }
+}
 .graph-pause-overlay__glyph {
   position: absolute;
   top: 50%;
