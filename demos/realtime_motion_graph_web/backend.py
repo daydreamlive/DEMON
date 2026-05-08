@@ -889,3 +889,31 @@ def handle_client(
         running[0] = False
         recv_t.join(timeout=2)
         print(f"[Server] Client disconnected ({params.get('num_gens', 0)} generations)")
+
+        # ── STOPGAP: full-process restart for VRAM reclaim ────────────
+        # Cumulative VRAM leak across sessions (TRT execution contexts +
+        # pinned host buffers + refit weight buffers — most of it is
+        # NOT in PyTorch's allocator, so torch.cuda.empty_cache() can't
+        # reclaim it). After several sessions a 32 GB pod reaches the
+        # point where the next session's TRT engine init OOMs and the
+        # client gets 1011.
+        #
+        # Proper fix is explicit close() on each GPU-holding component
+        # — drafted in PR #52 on this repo (DRAFT). Until that lands,
+        # the cheapest reliable mitigation is to exit the engine
+        # process at the end of every session: scripts/vast/serve_demon.sh
+        # auto-respawns it (the supervisor relies on this for the CUDA
+        # / VRAM watchdog respawn path), and a fresh process is the
+        # only thing that reliably reclaims the non-PyTorch memory.
+        #
+        # Cost: ~12 sec engine reload (model + TRT engines load to
+        # GPU) before the NEXT user can start. The pool's queue layer
+        # routes around the brief unavailability.
+        # Benefit: no more 1011 cascade as VRAM leaks fill up the
+        # 32 GB.
+        # Revert: remove this block once PR #52 (or an equivalent
+        # close()-chain) lands and is verified to keep VRAM stable
+        # across N sessions.
+        import os as _os
+        print("[Server] exiting process for clean VRAM reclaim (supervisor will respawn)")
+        _os._exit(0)
