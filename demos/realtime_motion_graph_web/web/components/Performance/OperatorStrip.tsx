@@ -7,6 +7,7 @@ import { togglePauseAndAudio } from "@/engine/audio/togglePauseAndAudio";
 import { LOCAL_MODE } from "@/lib/runtime";
 import { useCurveStore } from "@/store/useCurveStore";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
+import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 import { VALID_KEYSCALES } from "@/types/engine";
@@ -222,6 +223,19 @@ export function OperatorStrip() {
         onClick={toggleKbdHints}
       >
         KBD: {showKbdHints ? "ON" : "OFF"}
+      </button>
+      <button
+        type="button"
+        className="pause-btn"
+        title="Reset all sliders + LoRAs to defaults. Does NOT touch MIDI mapping, automation curves, or persisted UI prefs."
+        onClick={() => {
+          if (typeof window === "undefined") return;
+          if (!window.confirm("Reset sliders and LoRAs to defaults?")) return;
+          usePerformanceStore.getState().resetToDefaults();
+          useLoraStore.getState().reset();
+        }}
+      >
+        RESET
       </button>
       <RecordToggle />
       <button

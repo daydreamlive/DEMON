@@ -197,6 +197,13 @@ export function useStartSession() {
       useLoraStore.getState().setCatalog(remote.loraCatalog);
     }
 
+    // "Hear the source first" gate: every fresh session starts with
+    // denoise = 0 so the user hears the unmodified track. The top-edge
+    // ribbon's "drag to start" affordance prompts them to dial it up;
+    // the first value-changing drag flips remixStarted true.
+    usePerformanceStore.getState().setSlider("denoise", 0);
+    usePerformanceStore.getState().setRemixStarted(false);
+
     setSession(remote, player);
     setStatus("ready", "Playing");
   }, []);

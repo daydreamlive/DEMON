@@ -61,6 +61,12 @@ export function DesktopEdgeDrag({ side }: Props) {
   // Reads the target (intent) so the visual responds immediately to the
   // drag, even when smooth-mode is on (sliderValues lags via tween).
   const denoise = usePerformanceStore((s) => s.sliderTargets[TOP_PARAM] ?? 0);
+  // Per-song "hear source first" gate. While false, the top ribbon
+  // shows a prominent "drag to start" affordance and the side-rail
+  // hints stay hidden. The first value-changing top drag flips it
+  // true (see onPointerUp below). Reset to false on every song load
+  // by useStartSession / useFixtureSwap.
+  const remixStarted = usePerformanceStore((s) => s.remixStarted);
 
   const isTop = side === "top";
   const orientation: "horizontal" | "vertical" = isTop
@@ -219,6 +225,14 @@ export function DesktopEdgeDrag({ side }: Props) {
         } catch {}
         setHintDismissed(true);
         document.dispatchEvent(new CustomEvent(HINT_DISMISSED_EVENT));
+        // Top ribbon's value-changing drag also flips the per-song
+        // "hear source first" gate, so the side-rail hints become
+        // eligible to show and the prominent "drag to start" copy
+        // gives way. Only count drags that actually moved off zero —
+        // a drag that ends back at 0 hasn't started the remix.
+        if (isTop && finalValue > 0) {
+          usePerformanceStore.getState().setRemixStarted(true);
+        }
       }
       cachedRect = null;
     };
@@ -248,11 +262,21 @@ export function DesktopEdgeDrag({ side }: Props) {
     };
   }, [readCurrentValue, isTop, slotIndex]);
 
-  // Always show the hint until dismissed — even for empty LoRA slots, so
-  // the user has a stable visual anchor through "connecting" / catalog
+  // Visibility:
+  //   - Top ribbon: shows whenever remix hasn't started this song —
+  //     this is a per-song functional gate, not a one-time tutorial,
+  //     so it overrides the localStorage `hintDismissed` flag.
+  //   - Side rails (LoRA-1/2): the existing one-time tutorial. Stay
+  //     hidden until the user has started the remix on this song,
+  //     and stay hidden forever after the first successful drag
+  //     anywhere (`hintDismissed`). Without the remixStarted gate,
+  //     a fresh user would see three competing hints stacked on
+  //     load; we want the top one alone first.
+  // Empty LoRA slots still render their hint (when eligible) so the
+  // user has a stable visual anchor through "connecting" / catalog
   // updates. Drag on an empty slot is a no-op (data-empty guards
-  // pointerdown), but the hint stays visible so nothing "disappears".
-  const showHint = !hintDismissed;
+  // pointerdown).
+  const showHint = isTop ? !remixStarted : remixStarted && !hintDismissed;
 
   return (
     <div
@@ -286,6 +310,8 @@ export function DesktopEdgeDrag({ side }: Props) {
                 ? "— vibe —"
                 : "— rave —"
           }
+          idleLabel={isTop ? "drag to start" : undefined}
+          prominent={isTop}
         />
       )}
     </div>

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef } from "react";
 
+import { displayLoraName } from "@/lib/loraLabels";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { SLIDER_META } from "@/types/engine";
@@ -51,6 +52,12 @@ interface Props {
   /** Visual writhe-fill orientation: when true, --fill = 1 - frac (top of
    *  rail bright when value is 0). Match the rail's `invert`. */
   invertFill?: boolean;
+  /** When true, marks the up chevron with `data-gate="up"` so CSS can
+   *  pulse it as a "do this" affordance. Used by the per-song "drag to
+   *  start" gate on the remix rail — the sideways stepper label isn't
+   *  visible enough to act as the prompt, so the chevron itself
+   *  becomes the cue. */
+  pulseUp?: boolean;
 }
 
 function vibrate(ms: number): void {
@@ -73,6 +80,7 @@ export function MobileStepperRail({
   sublabelBottom,
   invert = false,
   invertFill = false,
+  pulseUp = false,
 }: Props) {
   const value = usePerformanceStore((s) => s.sliderTargets[param] ?? 0);
   const setSlider = usePerformanceStore((s) => s.setSlider);
@@ -181,6 +189,7 @@ export function MobileStepperRail({
       <button
         type="button"
         className="stepper-rail-zone stepper-rail-zone--up"
+        data-gate={pulseUp ? "up" : undefined}
         aria-label={
           sublabelTop ? `${label} more ${sublabelTop}` : `Increase ${label}`
         }
@@ -251,12 +260,25 @@ export function MobileStepperRail({
 // reads that out for display.
 
 export function MobileRemixStepper() {
+  // Mobile equivalent of the desktop top-edge "drag to start" gate.
+  // The vertical sideways stepper label isn't visible enough to act as
+  // the prompt, so we pulse the up chevron itself as the "do this"
+  // affordance while remix hasn't started. Crossing denoise > 0 (via
+  // the up chevron, MIDI, or any other path) flips the gate true.
+  const remixStarted = usePerformanceStore((s) => s.remixStarted);
+  const denoise = usePerformanceStore((s) => s.sliderTargets["denoise"] ?? 0);
+  useEffect(() => {
+    if (!remixStarted && denoise > 0) {
+      usePerformanceStore.getState().setRemixStarted(true);
+    }
+  }, [remixStarted, denoise]);
   return (
     <MobileStepperRail
       side="left"
       param="denoise"
       max={1.0}
       label="Remix Strength"
+      pulseUp={!remixStarted}
     />
   );
 }
@@ -271,7 +293,7 @@ export function MobileLoraBlendStepper() {
     ids.push(next.id);
   }
   const nameOf = (id: string | undefined) =>
-    id ? catalog.find((c) => c.id === id)?.name ?? id : null;
+    id ? displayLoraName(id, catalog.find((c) => c.id === id)?.name) : null;
   // With invert=true: top button decreases blend → more LoRA A;
   // bottom button increases blend → more LoRA B. Pair the per-chevron
   // labels accordingly so the user reads "tap up to get more <A>".

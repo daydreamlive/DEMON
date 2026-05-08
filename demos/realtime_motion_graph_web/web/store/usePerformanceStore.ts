@@ -212,6 +212,13 @@ interface PerformanceState {
   kiosk: boolean;
   /** Pause flag (audio context state). */
   paused: boolean;
+  /** Per-session, non-persisted gate: when false, the user has loaded a
+   *  song but hasn't yet started the remix. Song-load hooks (start +
+   *  fixture swap) reset this to false so each new track plays the
+   *  source first; the top edge ribbon's first value-changing drag
+   *  flips it true. Drives the "drag to start" affordance and gates
+   *  the side-rail tutorial hints. */
+  remixStarted: boolean;
 
   /** DCW (wavelet-domain post-step correction) non-numeric state. The two
    * numeric knobs (dcw_scaler, dcw_high_scaler) live in sliderValues. */
@@ -251,6 +258,7 @@ interface PerformanceState {
   toggleKiosk: () => void;
   setPaused: (p: boolean) => void;
   togglePause: () => void;
+  setRemixStarted: (b: boolean) => void;
   setDcwEnabled: (b: boolean) => void;
   toggleDcw: () => void;
   setDcwMode: (m: DcwMode) => void;
@@ -292,6 +300,7 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   mode: "graph",
   kiosk: false,
   paused: false,
+  remixStarted: false,
 
   dcwEnabled: true,
   dcwMode: "double",
@@ -378,6 +387,7 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   toggleKiosk: () => set((s) => ({ kiosk: !s.kiosk })),
   setPaused: (p) => set({ paused: p }),
   togglePause: () => set((s) => ({ paused: !s.paused })),
+  setRemixStarted: (b) => set({ remixStarted: b }),
   setDcwEnabled: (b) => set({ dcwEnabled: b }),
   toggleDcw: () => set((s) => ({ dcwEnabled: !s.dcwEnabled })),
   setDcwMode: (m) => set({ dcwMode: m }),
@@ -423,6 +433,7 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
       sliderTargets: { ...DEFAULT_SLIDER_VALUES },
       seed: 0,
       blend: 0.4,
+      remixStarted: false,
     }));
   },
   resetSlider: (param) => {

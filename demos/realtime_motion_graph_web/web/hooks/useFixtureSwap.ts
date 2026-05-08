@@ -94,6 +94,12 @@ export function useFixtureSwap() {
         return;
       }
       lastSwappedTo.current = name;
+      // Each new track re-enters the "hear source first" gate: snap
+      // denoise to 0 and clear remixStarted so the top-edge ribbon
+      // shows "drag to start" again. Side-rail hints stay suppressed
+      // until the user drags the top ribbon up.
+      usePerformanceStore.getState().setSlider("denoise", 0);
+      usePerformanceStore.getState().setRemixStarted(false);
       setStatus("ready", "Playing");
     };
 
