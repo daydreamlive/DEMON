@@ -156,6 +156,15 @@ const CHORUS_BURST_PEAK = 6; // up to +6 more sparks per line scaled by peakPuls
 
 const MAX_SPARKS = 240;
 
+// Per-line vertical "dodge" so signals with similar values at the
+// playhead don't squish into a single visual blob during chorus. Hash
+// of the line name picks a stable offset, deterministic per line and
+// stable across frames. Dots dodge by a small amount (still close
+// enough to read as "on the line"); spark origins dodge by a larger
+// amount so trails fan out into distinct y-bands instead of stacking.
+const DOT_DODGE_PX = 2;
+const SPARK_DODGE_PX = 5;
+
 export class GraphRenderer {
   readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
@@ -387,10 +396,21 @@ export class GraphRenderer {
         const yAtHead = h - Y_PAD - v * (h - 2 * Y_PAD);
         const [r, g, b] = _colorFor(name);
 
+        // Hash → stable [-0.5, 0.5) per-line dodge factor. Reused for
+        // both the dot and the spark spawn origin so a line's burst
+        // always trails from a position related to where its dot sits.
+        let hash = 0;
+        for (let i = 0; i < name.length; i++) {
+          hash = (hash * 31 + name.charCodeAt(i)) | 0;
+        }
+        const dodgeT = ((Math.abs(hash >> 7) % 1000) / 1000) - 0.5;
+        const dotY = yAtHead + dodgeT * 2 * DOT_DODGE_PX;
+        const sparkY = yAtHead + dodgeT * 2 * SPARK_DODGE_PX;
+
         // Disc anchored on the line at the playhead.
         ctx.fillStyle = `rgb(${r},${g},${b})`;
         ctx.beginPath();
-        ctx.arc(playheadX, yAtHead, 3, 0, Math.PI * 2);
+        ctx.arc(playheadX, dotY, 3, 0, Math.PI * 2);
         ctx.fill();
 
         // Decide this line's burst size for this frame. Chorus fires
@@ -413,7 +433,7 @@ export class GraphRenderer {
             Math.random() * (SPARK_MAX_SPEED - SPARK_MIN_SPEED);
           this._sparks.push({
             x: playheadX,
-            y: yAtHead,
+            y: sparkY,
             vx: Math.cos(sa) * sp,
             vy: Math.sin(sa) * sp,
             age: 0,
