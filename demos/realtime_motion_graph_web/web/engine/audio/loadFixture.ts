@@ -103,12 +103,13 @@ export async function loadFixtureAudio(name: string): Promise<DecodedFixture> {
   return decodeArrayBuffer(bytes);
 }
 
-// Cap user-supplied audio at DEMON's largest TRT engine profile
-// (240 s; see acestep/paths.py:_TRT_ENGINE_PROFILES). Anything longer
-// would fail server-side at session init regardless of WS frame size.
-// The server's websockets.serve(max_size=...) is sized to fit this
-// duration with a comfortable margin.
-const MAX_FIXTURE_DURATION_S = 240;
+// Cap user-supplied audio at the smallest TRT engine profile (60 s; see
+// acestep/paths.py:_TRT_ENGINE_PROFILES). Larger profiles (120 s, 240 s)
+// require materially more VRAM at session init — we've been seeing 1011s
+// on cold-loads when the bigger profiles spin up. Operators that want
+// longer engines can raise this and the server's websockets.serve
+// max_size accordingly.
+const MAX_FIXTURE_DURATION_S = 60;
 
 function ensureFitsSwapLimit(decoded: DecodedFixture): void {
   const seconds = decoded.frames / decoded.sampleRate;
