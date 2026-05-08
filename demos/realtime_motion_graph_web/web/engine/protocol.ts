@@ -326,13 +326,23 @@ export class RemoteBackend extends EventTarget {
         // If the socket closes before we finished the init handshake, the
         // connect() promise must reject — otherwise the launcher sits on
         // "Uploading..." forever when the server crashes mid-init.
+        //
+        // Tailor the message by close code: 1011 (server internal error)
+        // and 1006 (abnormal closure) are the two shapes operators see
+        // most often, both recoverable by reloading. The previous
+        // "Check the server console" tail was useless to end users and
+        // made the error feel scarier than it is.
         if (!this.ready) {
-          const reason = e.reason || `code ${e.code}`;
-          reject(
-            new Error(
-              `WebSocket closed before server sent 'ready' (${reason}). Check the server console.`,
-            ),
-          );
+          let msg: string;
+          if (e.code === 1011) {
+            msg = "Server restarted to clear memory — refresh the page to retry.";
+          } else if (e.code === 1006) {
+            msg = "Connection lost — refresh to retry.";
+          } else {
+            const reason = e.reason || `code ${e.code}`;
+            msg = `Connection failed (${reason}) — refresh to retry.`;
+          }
+          reject(new Error(msg));
         }
         this.dispatchEvent(new CustomEvent("close", { detail: e }));
       };
