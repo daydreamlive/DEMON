@@ -4,6 +4,7 @@ import { useCallback } from "react";
 
 import { AudioPlayer } from "@/engine/audio/AudioPlayer";
 import { listFixtures, loadFixtureAudio, pickDefaultFixture } from "@/engine/audio/loadFixture";
+import { createNetworkMonitor } from "@/engine/networkMonitor";
 import { defaultWsUrl } from "@/engine/podUrl";
 import { RemoteBackend, SLICE_FLAG_DELTA } from "@/engine/protocol";
 import { getApiKey } from "@/engine/rtmgConfig";
@@ -212,5 +213,10 @@ export function useStartSession() {
 
     setSession(remote, player);
     setStatus("ready", "Playing");
+
+    // Start the network-quality monitor now that the WS is "ready".
+    // Lives on the session store so reset() (called at next session
+    // start) tears it down — no orphan intervals across hot reloads.
+    useSessionStore.getState().setMonitor(createNetworkMonitor(remote));
   }, []);
 }

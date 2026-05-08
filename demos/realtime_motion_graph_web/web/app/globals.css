@@ -4027,6 +4027,57 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   50%      { opacity: 0.55; transform: scale(0.86); }
 }
 
+/* ── Network-quality indicator (Zoom/Meet-style "unstable" pill) ─────
+   Subtle bottom-center pill that fades in only when the user is
+   probably experiencing stutter (slice arrival jitter, pod stress, or
+   a stall). Hidden when healthy via the component returning null.
+   Honors the project's single easing, the breathing keyframe, and the
+   --warn token. No --bloom-amount coupling. pointer-events disabled
+   so the canvas / drawer handle behind it stays interactive. */
+.network-indicator {
+  position: fixed;
+  left: 50%;
+  bottom: calc(
+    var(--drawer-handle-h, 28px) +
+    env(safe-area-inset-bottom, 0px) +
+    12px
+  );
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--overlay-bg);
+  -webkit-backdrop-filter: blur(6px);
+          backdrop-filter: blur(6px);
+  border: 1px solid rgba(255, 204, 0, 0.45);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.62em;
+  letter-spacing: var(--tracking-wide, 0.18em);
+  text-transform: uppercase;
+  color: var(--warn);
+  pointer-events: none;
+  z-index: 11;
+  opacity: 0;
+  animation:
+    network-indicator-fade-in 200ms cubic-bezier(.2, .8, .2, 1) forwards,
+    start-whisper-breathe 2.6s ease-in-out infinite 200ms;
+}
+.network-indicator__bars rect {
+  fill: currentColor;
+}
+@keyframes network-indicator-fade-in {
+  from { opacity: 0; transform: translate(-50%, 4px); }
+  to   { opacity: 1; transform: translate(-50%, 0);   }
+}
+@media (prefers-reduced-motion: reduce) {
+  .network-indicator {
+    animation:
+      network-indicator-fade-in 200ms cubic-bezier(.2, .8, .2, 1) forwards;
+  }
+}
+
 /* ── Universal press state on coarse pointers ───────────────────────── */
 @media (pointer: coarse) {
   button:not(:disabled):active {

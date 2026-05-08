@@ -33,6 +33,7 @@ import {
   MobileLoraBlendStepper,
   MobileRemixStepper,
 } from "./MobileStepperRail";
+import { NetworkIndicator } from "./NetworkIndicator";
 import { PortraitLockOverlay } from "./PortraitLockOverlay";
 import { RecordButton } from "./RecordButton";
 import { RecordingPreview } from "./RecordingPreview";
@@ -131,6 +132,8 @@ export function PerformanceShell() {
       <StatusBar />
 
       <LiveIndicator />
+
+      <NetworkIndicator />
 
       <RecordingPreview />
 
