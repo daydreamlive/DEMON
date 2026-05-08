@@ -161,7 +161,7 @@ const CHORUS_THRESH = 0.5;
 // (vs. falling through to a single-line baseline trail). Lower means
 // chorus moments stay rarer / more special; higher means more crowded
 // graph during dense passages. Tuned by feel.
-const CHORUS_FIRE_PROB = 0.45;
+const CHORUS_FIRE_PROB = 0.35;
 const CHORUS_BURST_BASE = 6;
 const CHORUS_BURST_PEAK = 6; // up to +6 more sparks per line scaled by peakPulse
 
