@@ -583,7 +583,7 @@ def handle_client(
                 # delta check (set_lora_strength only when the new value
                 # differs by > 0.02) doesn't immediately fire a redundant
                 # refit on tick 1.
-                from .client.knobs import KnobDef
+                from .knobs import KnobDef
                 virtual_knobs.add_knob(
                     f"lora_str_{lid}",
                     KnobDef(
