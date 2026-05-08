@@ -1249,6 +1249,11 @@ def handle_client(
     # wholesale on swap so deltas continue to be computed against the
     # buffer the client just crossfaded into.
     client_mirror_ref = [src_np.copy()]
+    # End frame (exclusive) of the last slice we transmitted. Used to trim
+    # off the overlapping head of subsequent slices: with vae_window ≈ 3 s
+    # and predictive advance ≈ 0.5 s, ~80% of every newly-decoded window
+    # repeats audio the client already has. Reset on source swap below.
+    last_sent_end_ref = [0]
     zctx = zstd.ZstdCompressor(level=1)
 
     # Source-swap rendezvous between the recv thread (sets pending) and
@@ -1382,6 +1387,26 @@ def handle_client(
         if not _first_slice[0]:
             _first_slice[0] = True
             _ms("first_generated_slice")
+
+        # Trim the leading edge of the slice when it overlaps with the
+        # previous one. The runner re-decodes the entire vae_window every
+        # tick (default 3 s) but only advances ~0.5 s, so ~80% of every
+        # window is audio the client already has. We keep an OVERLAP_PAD
+        # carryover so any param-driven micro-deltas in the immediate
+        # seam zone still propagate, and the runner's own xfade landing
+        # zone (1200 frames at win_start) gets one more rewrite from
+        # this same trimmed-overlap on the NEXT tick — so client/server
+        # divergence in that zone is bounded to one tick.
+        #
+        # Non-contiguous windows (loop wrap, source swap reset) skip the
+        # trim entirely and re-send the full slice from win_start.
+        last_sent_end = last_sent_end_ref[0]
+        if last_sent_end > 0 and ss < last_sent_end:
+            OVERLAP_PAD = 1200  # 25 ms at 48 kHz — matches runner xfade
+            new_ss = max(ss, last_sent_end - OVERLAP_PAD)
+            if new_ss < se:
+                ss = new_ss
+        last_sent_end_ref[0] = se
 
         # Delta = what server has now minus what client has
         delta = (region - mirror_region).astype(np.float16)
@@ -1996,6 +2021,9 @@ def handle_client(
             new_n_channels = new_src_np.shape[1] if new_src_np.ndim > 1 else 1
             n_channels_ref[0] = new_n_channels
             client_mirror_ref[0] = new_src_np.copy()
+            # Source changed — the next slice's win_start is unrelated to
+            # the previous track's end, so don't trim it.
+            last_sent_end_ref[0] = 0
             audio_eng.swap(new_src_np)
             audio_eng.position = 0
 
