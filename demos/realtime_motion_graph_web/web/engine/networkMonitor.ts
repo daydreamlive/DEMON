@@ -6,20 +6,39 @@ import type { AudioSlice } from "@/types/protocol";
 // Detect "experience is degraded" from existing WebSocket signals,
 // without protocol changes. Three inputs, one verdict:
 //
-//   1. Slice inter-arrival jitter — RemoteBackend already dispatches
-//      a CustomEvent("slice") on every audio chunk; we timestamp
-//      each one and compute p95/median over a 20-sample ring.
+//   1. Slice inter-arrival jitter — RemoteBackend already dispatches a
+//      CustomEvent("slice") on every audio chunk; we timestamp arrivals
+//      into a 20-sample ring and require BOTH a high p95/median ratio
+//      AND an absolute p95 above the audible threshold (~50ms per the
+//      VoIP/WebRTC consensus — Cisco, Obkio, MOS literature). Two-gate
+//      trigger so a 2.5× ratio of an 8ms cadence (= 20ms p95) doesn't
+//      fire — that's not audible jitter, it's just scheduling noise.
+//
 //   2. Server engine stress — each slice carries `tickMs` (engine
-//      generation time). High p95 means the pod isn't keeping up.
+//      generation time). Compared against the *measured* slice cadence
+//      (median inter-arrival delta) as a budget ratio: if p95 tickMs is
+//      consuming ≥85% of the slot, the buffer is one hitch from
+//      draining. Self-calibrating to whatever cadence the engine
+//      actually runs at, instead of a hardcoded ms threshold that
+//      would over-fire on slow cadences and under-fire on fast ones.
+//
 //   3. Stall watchdog — independent of the listener firing, so we
 //      can detect "no slice in N ms" while the connection is silent.
+//      1500ms is squarely in the WebRTC/VoIP convention for an
+//      audio-stream timeout (NetEQ concealment runs sub-100ms; the
+//      user-facing "stalled" indicator fires at 1–2s).
 //
 // Plus a session-status override: WS error/close forces "unstable".
 //
+// Asymmetric hysteresis: ~3s of sustained bad signal before showing
+// (don't cry wolf on a single GC pause or Wi-Fi roam), ~8s of clean
+// signal before hiding (don't flap). Bias is intentional — false
+// positives teach users to ignore the indicator, which is worse than
+// missing a real degradation.
+//
 // Runs entirely off the RAF render loop. The slice handler is a few
 // microseconds (two ring writes); the evaluator runs on a 500ms
-// setInterval. Asymmetric hysteresis (escalate fast, recover slow)
-// matches Zoom/Meet UX and prevents flicker at threshold boundaries.
+// setInterval.
 
 export interface NetworkMonitor {
   stop(): void;
@@ -31,17 +50,32 @@ const THRESHOLDS = {
   WINDOW_SIZE: 20,
   EVAL_INTERVAL_MS: 500,
 
-  /** p95 / median of inter-arrival deltas. 1 = steady, 1.8 = noticeable. */
-  JITTER_RATIO: 1.8,
-  /** Server engine generation time in ms (p95 over the window). */
-  TICK_MS_P95: 95,
-  /** No slice received in this long → unstable, no matter the jitter. */
+  /** p95 / median of inter-arrival deltas. Healthy networks routinely
+   *  hit 1.5–2.0× from kernel scheduling alone; 2.5× is where bursts
+   *  start to dominate. Required AND with JITTER_ABS_MS below. */
+  JITTER_RATIO: 2.5,
+  /** Absolute p95 inter-arrival in ms. Audio jitter becomes audibly
+   *  perceptible around 30–50ms in the VoIP/WebRTC consensus; use 50
+   *  as the conservative trigger so cadences with naturally tight
+   *  intervals don't false-positive on a high ratio. */
+  JITTER_ABS_MS: 50,
+  /** Server tickMs p95 as a fraction of the *measured* slice cadence.
+   *  >0.85 = ≤15% headroom = the buffer is the only thing saving you
+   *  from underrun. Self-calibrates: at a 100ms cadence this fires at
+   *  85ms; at a 24ms cadence at ~20ms. */
+  TICK_BUDGET_RATIO: 0.85,
+  /** No slice received in this long → unstable, no matter the jitter.
+   *  Squarely in the VoIP/WebRTC convention for an audio-stream
+   *  timeout (1–2s). */
   STALL_MS: 1500,
 
-  /** Consecutive bad ticks before showing the indicator (1s @ 500ms). */
-  ESCALATE_TICKS: 2,
-  /** Consecutive clean ticks before hiding it again (2s @ 500ms). */
-  RECOVERY_TICKS: 4,
+  /** Consecutive bad ticks before showing (3s @ 500ms). On the
+   *  conservative end of the Zoom/Meet "unstable" debounce range
+   *  (~1.5–3s). */
+  ESCALATE_TICKS: 6,
+  /** Consecutive clean ticks before hiding (8s @ 500ms). Asymmetric
+   *  ~2.7× the show debounce: easy to dismiss, hard to summon. */
+  RECOVERY_TICKS: 16,
 } as const;
 
 interface RingBuffer {
@@ -122,10 +156,15 @@ export function createNetworkMonitor(remote: RemoteBackend): NetworkMonitor {
     for (let i = 1; i < arrivalSamples.length; i++) {
       deltas.push(arrivalSamples[i] - arrivalSamples[i - 1]);
     }
-    const median = quantile(deltas, 0.5) || 1;
-    const p95 = quantile(deltas, 0.95);
-    const jitterRatio = deltas.length >= 2 ? p95 / median : 1;
+    const medianInterarrival = quantile(deltas, 0.5);
+    const p95Interarrival = quantile(deltas, 0.95);
+    const jitterRatio =
+      deltas.length >= 2 && medianInterarrival > 0
+        ? p95Interarrival / medianInterarrival
+        : 1;
     const tickMsP95 = quantile(ringToArray(ticks), 0.95);
+    const tickBudgetRatio =
+      medianInterarrival > 0 ? tickMsP95 / medianInterarrival : 0;
 
     const warmedUp =
       readyAt > 0 &&
@@ -134,11 +173,13 @@ export function createNetworkMonitor(remote: RemoteBackend): NetworkMonitor {
 
     let candidate: "healthy" | "unstable" = "healthy";
     if (warmedUp) {
-      if (
-        jitterRatio >= THRESHOLDS.JITTER_RATIO ||
-        tickMsP95 >= THRESHOLDS.TICK_MS_P95 ||
-        staleMs >= THRESHOLDS.STALL_MS
-      ) {
+      const jitterTriggered =
+        jitterRatio >= THRESHOLDS.JITTER_RATIO &&
+        p95Interarrival >= THRESHOLDS.JITTER_ABS_MS;
+      const tickTriggered =
+        tickBudgetRatio >= THRESHOLDS.TICK_BUDGET_RATIO;
+      const stallTriggered = staleMs >= THRESHOLDS.STALL_MS;
+      if (jitterTriggered || tickTriggered || stallTriggered) {
         candidate = "unstable";
       }
     }
