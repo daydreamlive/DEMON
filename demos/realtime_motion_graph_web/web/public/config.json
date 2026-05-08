@@ -8,7 +8,7 @@
     "vae_window": 6,
     "crop": 0,
     "steps": 8,
-    "fast_vae": false,
+    "fast_vae": true,
     "key": "G# minor",
     "_enabled_loras_help": "Filename stems (no .safetensors) to auto-enable on first catalog load. Empty = count-rule (first two from the sorted catalog, with name-fallback per slot — see useLoraStore.ts).",
     "enabled_loras": []
