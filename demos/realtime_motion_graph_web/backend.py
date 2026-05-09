@@ -642,9 +642,32 @@ def handle_client(
             wf = wf[:, :target]
         elif wf.shape[-1] < target:
             wf = torch.nn.functional.pad(wf, (0, target - wf.shape[-1]))
-        audio_in = Audio(waveform=wf, sample_rate=SAMPLE_RATE)
-        prepared = session.prepare_source(audio_in)
-        struct_context_ref[0] = prepared.context_latent
+        # Sidecar fast path: when the structure ref is a known fixture
+        # AND the post-pad/trim sample count matches what was precomputed,
+        # the cached context_latent is exactly what prepare_source would
+        # produce. Skips ~500ms of VAE+extract on the recv thread.
+        sc = (
+            _try_load_sidecar(
+                struct_name_ref[0],
+                checkpoint=checkpoint,
+                samples=int(wf.shape[-1]),
+            )
+            if struct_name_ref[0] else None
+        )
+        if sc is not None:
+            device = session.handler.device
+            dtype = session.handler.dtype
+            struct_context_ref[0] = Latent(
+                tensor=sc.context_latent.to(device, dtype).contiguous(),
+            )
+            print(
+                f"[Server] _apply_struct_override: sidecar hit "
+                f"({struct_name_ref[0]})"
+            )
+        else:
+            audio_in = Audio(waveform=wf, sample_rate=SAMPLE_RATE)
+            prepared = session.prepare_source(audio_in)
+            struct_context_ref[0] = prepared.context_latent
         # source_ref[0] keeps the unmodified playback PreparedSource so
         # clear can restore it as-is. stream.source carries the
         # overridden context_latent for the runner to read.
@@ -894,21 +917,46 @@ def handle_client(
                                     t_wf = t_wf[:, :t_wf.shape[-1] - rem]
                                 if t_wf.shape[-1] < pool:
                                     raise ValueError("timbre clip too short")
-                                timbre_audio = Audio(
-                                    waveform=t_wf, sample_rate=SAMPLE_RATE,
-                                )
                                 clip_s = t_wf.shape[-1] / SAMPLE_RATE
-                                print(
-                                    f"[Server] set_timbre_source: VAE "
-                                    f"encoding {clip_s:.1f}s ({t_wf.shape[0]}ch)..."
+                                # Sidecar fast path: a known fixture at
+                                # its precomputed sample count uses the
+                                # cached `latent` field (which is exactly
+                                # encode_audio's output) instead of
+                                # spending ~100ms on the VAE encode.
+                                sc = _try_load_sidecar(
+                                    name,
+                                    checkpoint=checkpoint,
+                                    samples=int(t_wf.shape[-1]),
                                 )
-                                timbre_latent = session.encode_audio(
-                                    timbre_audio,
-                                )
-                                print(
-                                    f"[Server] set_timbre_source: VAE done "
-                                    f"(latent {tuple(timbre_latent.tensor.shape)})"
-                                )
+                                if sc is not None:
+                                    device = session.handler.device
+                                    dtype = session.handler.dtype
+                                    timbre_latent = Latent(
+                                        tensor=sc.latent.to(
+                                            device, dtype,
+                                        ).contiguous(),
+                                    )
+                                    print(
+                                        f"[Server] set_timbre_source: "
+                                        f"sidecar hit ({name})"
+                                    )
+                                else:
+                                    timbre_audio = Audio(
+                                        waveform=t_wf,
+                                        sample_rate=SAMPLE_RATE,
+                                    )
+                                    print(
+                                        f"[Server] set_timbre_source: VAE "
+                                        f"encoding {clip_s:.1f}s ({t_wf.shape[0]}ch)..."
+                                    )
+                                    timbre_latent = session.encode_audio(
+                                        timbre_audio,
+                                    )
+                                    print(
+                                        f"[Server] set_timbre_source: VAE "
+                                        f"done (latent "
+                                        f"{tuple(timbre_latent.tensor.shape)})"
+                                    )
                                 timbre_latent_ref[0] = timbre_latent
                                 timbre_name_ref[0] = name
                                 print(
