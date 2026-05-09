@@ -110,6 +110,28 @@ class PipelineRunner:
         # Cache silence once; used by the hint-strength blend node.
         self._rebuild_silence_latent()
 
+        # Hint-strength gating: the run loop only re-runs the
+        # silence/context blend when the slider value moves by > 0.02.
+        # Outside callers that change ``stream.source.context_latent``
+        # under the runner's feet (e.g. the structure-override upload
+        # path on the recv thread) need a way to force the next tick
+        # to re-blend even when the slider hasn't moved. ``mark_hint_dirty``
+        # flips this flag and the run loop honors it on the next pass.
+        self._hint_dirty = False
+
+    def mark_hint_dirty(self) -> None:
+        """Force ``_update_hint_strength`` to fire on the next tick.
+
+        Use after replacing ``stream.source.context_latent`` (e.g. on
+        structure-override apply / clear or after a source swap) so the
+        runner re-blends silence ↔ context at the current
+        ``hint_strength`` and writes a fresh ``stream.context_latent``
+        for the diffusion step to read. Without this, the diffusion
+        keeps reading the previously-blended tensor until the operator
+        nudges the slider.
+        """
+        self._hint_dirty = True
+
     def _rebuild_silence_latent(self) -> None:
         """(Re)build the silence latent used by hint-strength blending.
 
@@ -234,7 +256,8 @@ class PipelineRunner:
                         self.engine_obj.set_lora_strength(desc.id, lora_str)
 
             hint_str = self.midi_knobs.get_param("hint_strength") if self.use_midi else 1.0
-            if abs(hint_str - last_hint_str) > 0.02:
+            if self._hint_dirty or abs(hint_str - last_hint_str) > 0.02:
+                self._hint_dirty = False
                 last_hint_str = hint_str
                 self._update_hint_strength(hint_str)
 

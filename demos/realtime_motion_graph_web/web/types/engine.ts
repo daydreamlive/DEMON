@@ -14,6 +14,7 @@ export interface SliderMeta {
 export const SLIDER_META: Record<string, SliderMeta> = {
   denoise: { max: 1.0, step: 0.1 },
   hint_strength: { max: 2.0, step: 0.2 },
+  timbre_strength: { max: 1.0, step: 0.05 },
   // 0 = LoRA A only, 1 = LoRA B only, 0.5 = both at half-max. UI-only knob —
   // useEdgeLoraBinding watches this and writes the paired lora_str_<id> values.
   lora_blend: { max: 1.0, step: 0.05 },

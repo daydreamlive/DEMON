@@ -281,6 +281,26 @@ export class RemoteBackend extends EventTarget {
             this.dispatchEvent(
               new CustomEvent("swap_failed", { detail: msg.error }),
             );
+          } else if (msg.type === "timbre_set") {
+            this.dispatchEvent(
+              new CustomEvent("timbre_set", { detail: msg }),
+            );
+          } else if (msg.type === "timbre_cleared") {
+            this.dispatchEvent(new CustomEvent("timbre_cleared"));
+          } else if (msg.type === "timbre_failed") {
+            this.dispatchEvent(
+              new CustomEvent("timbre_failed", { detail: msg.error }),
+            );
+          } else if (msg.type === "structure_set") {
+            this.dispatchEvent(
+              new CustomEvent("structure_set", { detail: msg }),
+            );
+          } else if (msg.type === "structure_cleared") {
+            this.dispatchEvent(new CustomEvent("structure_cleared"));
+          } else if (msg.type === "structure_failed") {
+            this.dispatchEvent(
+              new CustomEvent("structure_failed", { detail: msg.error }),
+            );
           } else {
             this.dispatchEvent(new CustomEvent("json", { detail: msg }));
           }
@@ -438,6 +458,140 @@ export class RemoteBackend extends EventTarget {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     try {
       this.ws.send(JSON.stringify({ type: "disable_lora", id }));
+    } catch {}
+  }
+
+  /**
+   * Live timbre-strength knob. Backend keeps a cached
+   * (cond_silence, cond_full) pair and lerp-blends their encoder hidden
+   * states by `value` ∈ [0,1] — 1.0 == full timbre reference, 0.0 ==
+   * silence-baseline timbre. Cheap enough to send per slider tick.
+   */
+  sendSetTimbreStrength(value: number): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(JSON.stringify({
+        type: "set_timbre_strength",
+        value: Math.max(0, Math.min(1, value)),
+      }));
+    } catch {}
+  }
+
+  /**
+   * Send a JSON header followed by a binary audio frame. Wire format
+   * matches the init handshake / swap_source: <II header (channels,
+   * samples) + interleaved float32 PCM. Used by both timbre and
+   * structure source uploads.
+   */
+  private sendAudioFrame(
+    messageType: string,
+    name: string,
+    interleaved: Float32Array,
+    channels: number,
+  ): boolean {
+    if (this.ws?.readyState !== WebSocket.OPEN) return false;
+    try {
+      this.ws.send(JSON.stringify({ type: messageType, name }));
+      const samples = interleaved.length / channels;
+      const hdr = new ArrayBuffer(8);
+      const dv = new DataView(hdr);
+      dv.setUint32(0, channels, true);
+      dv.setUint32(4, samples, true);
+      const pcm = new Uint8Array(interleaved.buffer);
+      const combined = new Uint8Array(hdr.byteLength + pcm.byteLength);
+      combined.set(new Uint8Array(hdr), 0);
+      combined.set(pcm, hdr.byteLength);
+      this.ws.send(combined);
+      return true;
+    } catch (e) {
+      console.error(`[protocol] ${messageType} failed:`, e);
+      return false;
+    }
+  }
+
+  /**
+   * Upload an audio clip as the active timbre reference. Server VAE-
+   * encodes it and replaces cond_full with one conditioned on the clip's
+   * latent. The clip is capped server-side to the playback source's
+   * duration to fit the loaded TRT profile. Replies with timbre_set on
+   * success or timbre_failed on error.
+   */
+  sendSetTimbreSource(
+    interleaved: Float32Array,
+    channels: number,
+    name: string,
+  ): boolean {
+    return this.sendAudioFrame(
+      "set_timbre_source", name, interleaved, channels,
+    );
+  }
+
+  /**
+   * Pick a Library fixture as the active timbre reference. The server
+   * resolves the WAV from its local HF cache and runs the same apply
+   * path as a PCM upload, so the browser doesn't have to fetch +
+   * decode + re-upload a file that already lives on the pod's disk.
+   * Replies with timbre_set on success or timbre_failed on error
+   * (e.g. unknown fixture name).
+   */
+  sendSetTimbreFixture(name: string): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(JSON.stringify({ type: "set_timbre_fixture", name }));
+    } catch {}
+  }
+
+  /**
+   * Drop the active timbre reference; server falls back to self-timbre
+   * (encode against the playback source's own latent). Replies with
+   * timbre_cleared on success.
+   */
+  sendClearTimbreSource(): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(JSON.stringify({ type: "clear_timbre_source" }));
+    } catch {}
+  }
+
+  /**
+   * Upload an audio clip as the active structure (semantic-hint)
+   * reference. Server pads/trims it to match the playback source's
+   * exact sample count, runs prepare_source to extract the override's
+   * context_latent, and replaces stream.source.context_latent so the
+   * runner's hint-strength blend reads the new structure. Replies with
+   * structure_set on success or structure_failed on error.
+   */
+  sendSetStructureSource(
+    interleaved: Float32Array,
+    channels: number,
+    name: string,
+  ): boolean {
+    return this.sendAudioFrame(
+      "set_structure_source", name, interleaved, channels,
+    );
+  }
+
+  /**
+   * Pick a Library fixture as the active structure reference. Server-
+   * side counterpart to sendSetTimbreFixture: avoids the wasteful
+   * fetch+decode+upload round trip for fixtures that already live on
+   * the pod's disk. Replies with structure_set / structure_failed.
+   */
+  sendSetStructureFixture(name: string): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(JSON.stringify({ type: "set_structure_fixture", name }));
+    } catch {}
+  }
+
+  /**
+   * Drop the active structure reference; server restores the playback
+   * source's own context_latent. Replies with structure_cleared.
+   */
+  sendClearStructureSource(): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(JSON.stringify({ type: "clear_structure_source" }));
     } catch {}
   }
 

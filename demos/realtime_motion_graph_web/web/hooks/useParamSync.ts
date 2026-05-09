@@ -42,6 +42,11 @@ export function useParamSync() {
       // lora_blend is a UI-only knob (useEdgeLoraBinding fans it out into
       // the paired lora_str_<id> values). The engine doesn't know it.
       delete raw.lora_blend;
+      // timbre_strength rides its own dedicated WS message
+      // (useTimbreSync → sendSetTimbreStrength) so the server can blend
+      // the cached cond_silence/cond_self pair on the spot. The params
+      // path doesn't recognize it.
+      delete raw.timbre_strength;
       // Per-LoRA strength sliders ride along under lora_str_<id> keys.
       // We prefer perf.sliderValues (smoothed via the tween) and only
       // fall back to lora.strengths when the perf store hasn't seen

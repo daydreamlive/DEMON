@@ -4633,3 +4633,182 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   line-height: 1.45;
   font-style: italic;
 }
+
+/* Reference picker (timbre / structure) — sits under the strength
+   sliders in MainTile. Compact one-row affordance: caption + custom
+   dropdown with "Input Track" and "Upload…" pinned, then the user's
+   uploaded tracks. Picks up the same retro mono treatment as the
+   other small in-tile bits. Multiple pickers stack with the top
+   border on each separating them.
+
+   The closed control is a <button> (not a native <select>) and the
+   open menu is position: absolute. The reason: .mixer-tile is
+   flex: 0 0 auto in mixer-rack-row, so its width is its children's
+   max-content. A native <select>'s max-content includes the longest
+   <option>, so a long filename ballooned the tile sideways. A button
+   only shows the current selection (truncated), and the menu is taken
+   out of flow entirely — option content cannot reach the tile's
+   intrinsic-size calculation. Belt-and-suspenders: the row itself
+   sets width: 0 / min-width: 100% so even the displayed selection's
+   length cannot push the tile wider. The percentage min-width
+   resolves to 0 during the tile's intrinsic-size pass, then to the
+   tile's resolved width during layout — a standard pattern for
+   "fill but don't grow the parent". */
+.ref-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.55em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-top: 4px;
+  padding: 4px 6px 0;
+  border-top: 1px solid var(--frame-line);
+  width: 0;
+  min-width: 100%;
+  box-sizing: border-box;
+}
+.ref-control-label {
+  flex: 0 0 auto;
+}
+.ref-control-anchor {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+}
+.ref-control-button {
+  flex: 1 1 0;
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: inherit;
+  font-size: inherit;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  cursor: pointer;
+  padding: 2px 22px 2px 6px;
+  line-height: 1.2;
+  transition: color 80ms linear, border-color 80ms linear;
+  position: relative;
+  text-align: left;
+}
+.ref-control-button-text {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ref-control-button-caret {
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  width: 10px;
+  height: 5px;
+  transform: translateY(-50%);
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 5px) 50%, 100% 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  pointer-events: none;
+}
+.ref-control-button:hover:not(:disabled) {
+  border-color: var(--text-dim);
+}
+.ref-control-button:focus-visible {
+  outline: none;
+  border-color: var(--text-dim);
+}
+.ref-control-button:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+.ref-control-menu {
+  /* Absolute so option content never feeds .mixer-tile's intrinsic
+     width. Opens upward — these controls live at the bottom of MainTile
+     so up keeps the menu from being clipped by anything below the
+     mixer rack. Min-width 100% so it's at least as wide as the closed
+     button; max-width caps growth so an extreme filename still fits
+     on screen, with internal scroll for very long lists. */
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  z-index: 9;
+  min-width: 100%;
+  max-width: min(360px, 90vw);
+  max-height: min(50vh, 320px);
+  overflow-y: auto;
+  background: var(--sheet-bg);
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+  text-transform: none;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55);
+  scrollbar-width: thin;
+  scrollbar-color: var(--frame-line) transparent;
+}
+.ref-control-menu::-webkit-scrollbar { width: 4px; }
+.ref-control-menu::-webkit-scrollbar-thumb {
+  background: var(--frame-line);
+  border-radius: 999px;
+}
+.ref-control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-top: 3px;
+  margin-top: 3px;
+  border-top: 1px solid var(--frame-line);
+}
+.ref-control-group:first-child {
+  padding-top: 0;
+  margin-top: 0;
+  border-top: 0;
+}
+.ref-control-group-label {
+  padding: 2px 6px 1px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.85em;
+  opacity: 0.7;
+}
+.ref-control-option {
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: none;
+  text-align: left;
+  cursor: pointer;
+  padding: 3px 6px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ref-control-option:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.ref-control-option--current {
+  color: var(--accent);
+}

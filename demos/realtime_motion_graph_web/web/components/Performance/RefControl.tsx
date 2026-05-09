@@ -1,0 +1,256 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+
+import {
+  decodeAudioFile,
+  listFixtures,
+  loadFixtureAudio,
+} from "@/engine/audio/loadFixture";
+import { LOCAL_MODE } from "@/lib/runtime";
+import { useCustomTracksStore } from "@/store/useCustomTracksStore";
+import { usePerformanceStore } from "@/store/usePerformanceStore";
+import { useSessionStore } from "@/store/useSessionStore";
+import type { RemoteBackend } from "@/engine/protocol";
+
+import { RefSelect } from "./RefSelect";
+
+// Unified picker for the timbre and structure references. Both
+// reference axes share the exact same UI shape (caption + dropdown
+// with "Input Track" / "Upload…" pinned, then library + your-tracks
+// optgroups) and the exact same upload flow (decode locally → push to
+// useCustomTracksStore → ship to the server). The only differences
+// are the store field for the displayed name, the remote send method,
+// and the status-bar prefix — everything else is shared.
+//
+// Default options at the top:
+//   "Input Track"  — clear any active override; server falls back to
+//                    encoding against the playback source's own latent.
+//   "Upload…"      — open a file picker. The new clip is added to
+//                    useCustomTracksStore (the same pool the audio-
+//                    source crate uses) so it shows up everywhere.
+// Then any tracks already in useCustomTracksStore appear underneath.
+
+const VAL_INPUT = "__input__";
+const VAL_UPLOAD = "__upload__";
+
+export type RefKind = "timbre" | "structure";
+
+interface KindBinding {
+  storeName: () => string | null;
+  label: string;
+  ariaLabel: string;
+  statusPrefix: string;
+  /** PCM upload path — for custom user tracks that only exist in the
+   *  browser. Returns false if the WS isn't open. */
+  send: (
+    remote: RemoteBackend,
+    interleaved: Float32Array,
+    channels: number,
+    name: string,
+  ) => boolean;
+  /** Wire-shortcut path for Library fixtures: server reads the WAV
+   *  from its local HF cache by name, no PCM round trip. */
+  sendFixture: (remote: RemoteBackend, name: string) => void;
+  clear: (remote: RemoteBackend) => void;
+}
+
+function bindingFor(kind: RefKind): KindBinding {
+  if (kind === "timbre") {
+    return {
+      storeName: () => usePerformanceStore.getState().timbreName,
+      label: "timbre ref",
+      ariaLabel: "Timbre reference",
+      statusPrefix: "timbre",
+      send: (r, i, c, n) => r.sendSetTimbreSource(i, c, n),
+      sendFixture: (r, n) => r.sendSetTimbreFixture(n),
+      clear: (r) => r.sendClearTimbreSource(),
+    };
+  }
+  return {
+    storeName: () => usePerformanceStore.getState().structName,
+    label: "structure ref",
+    ariaLabel: "Structure reference",
+    statusPrefix: "structure",
+    send: (r, i, c, n) => r.sendSetStructureSource(i, c, n),
+    sendFixture: (r, n) => r.sendSetStructureFixture(n),
+    clear: (r) => r.sendClearStructureSource(),
+  };
+}
+
+export function RefControl({ kind }: { kind: RefKind }) {
+  // Pick the right store field based on kind. Subscribing through the
+  // selector keeps the component reactive — switching kind would be
+  // unusual but the binding object below resolves on every render.
+  const timbreName = usePerformanceStore((s) => s.timbreName);
+  const structName = usePerformanceStore((s) => s.structName);
+  const currentName = kind === "timbre" ? timbreName : structName;
+  const customNames = useCustomTracksStore((s) => s.names);
+  const sessionWsUrl = useSessionStore((s) => s.wsUrl);
+  const [fixtures, setFixtures] = useState<string[]>([]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const bind = bindingFor(kind);
+  const value = currentName ?? VAL_INPUT;
+
+  // Same queue-admit gate as AudioSourceCrate: /api/pod/* returns 401
+  // pre-admit, so prod waits for wsUrl. Local mode has no queue.
+  useEffect(() => {
+    if (!sessionWsUrl && !LOCAL_MODE) return;
+    void listFixtures()
+      .then(setFixtures)
+      .catch(() => setFixtures([]));
+  }, [sessionWsUrl]);
+
+  function clearActive() {
+    const session = useSessionStore.getState();
+    if (session.status !== "ready" || !session.remote) return;
+    if (currentName) bind.clear(session.remote);
+  }
+
+  async function pickExisting(name: string) {
+    const session = useSessionStore.getState();
+    if (session.status !== "ready" || !session.remote) return;
+
+    // Library fixtures live on the server's disk (HF cache). The wire
+    // shortcut sends just the name; server reads the WAV and runs the
+    // same apply path as a PCM upload. Saves a fetch + decode + ~10×-
+    // bigger float32 re-upload that the browser was only doing on the
+    // server's behalf. Custom user tracks fall through to the upload
+    // path because they only exist in the browser.
+    if (fixtures.includes(name)) {
+      bind.sendFixture(session.remote, name);
+      useSessionStore
+        .getState()
+        .setStatus("ready", `Loading ${bind.statusPrefix} ${name}…`);
+      return;
+    }
+
+    setBusy(true);
+    useSessionStore
+      .getState()
+      .setStatus("ready", `Loading ${bind.statusPrefix} ${name}…`);
+    try {
+      // loadFixtureAudio short-circuits to useCustomTracksStore for
+      // user uploads — so this branch only handles the custom-track
+      // case. (Library picks took the wire shortcut above.)
+      const decoded = await loadFixtureAudio(name);
+      const ok = bind.send(
+        session.remote,
+        decoded.interleaved,
+        decoded.channels,
+        name,
+      );
+      if (!ok) {
+        useSessionStore
+          .getState()
+          .setStatus(
+            "ready",
+            `${bind.statusPrefix[0].toUpperCase()}${bind.statusPrefix.slice(1)} upload failed (socket)`,
+          );
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      useSessionStore
+        .getState()
+        .setStatus(
+          "ready",
+          `${bind.statusPrefix[0].toUpperCase()}${bind.statusPrefix.slice(1)}: ${msg}`,
+        );
+    } finally {
+      window.setTimeout(() => setBusy(false), 1500);
+    }
+  }
+
+  async function uploadAndPick(file: File) {
+    const session = useSessionStore.getState();
+    if (session.status !== "ready" || !session.remote) return;
+    const { setStatus } = useSessionStore.getState();
+    setBusy(true);
+    setStatus("ready", `Loading ${bind.statusPrefix} ${file.name}…`);
+    try {
+      const decoded = await decodeAudioFile(file);
+      // Mirror AudioSourceCrate's de-dup naming so uploads land in the
+      // shared "your tracks" pool without colliding.
+      const baseName = file.name;
+      let chosen = baseName;
+      let i = 1;
+      while (useCustomTracksStore.getState().has(chosen)) {
+        chosen = `${baseName} (${i++})`;
+      }
+      useCustomTracksStore.getState().add(chosen, decoded, file);
+      const ok = bind.send(
+        session.remote,
+        decoded.interleaved,
+        decoded.channels,
+        chosen,
+      );
+      if (!ok) {
+        setStatus(
+          "ready",
+          `${bind.statusPrefix[0].toUpperCase()}${bind.statusPrefix.slice(1)} upload failed (socket)`,
+        );
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setStatus(
+        "ready",
+        `${bind.statusPrefix[0].toUpperCase()}${bind.statusPrefix.slice(1)}: ${msg}`,
+      );
+    } finally {
+      window.setTimeout(() => setBusy(false), 1500);
+    }
+  }
+
+  function onSelect(v: string) {
+    if (v === VAL_INPUT) {
+      clearActive();
+      return;
+    }
+    if (v === VAL_UPLOAD) {
+      // The displayed value snaps back via the controlled `value` prop
+      // on the next render — no need to update store state here.
+      fileInputRef.current?.click();
+      return;
+    }
+    if (v !== currentName) void pickExisting(v);
+  }
+
+  return (
+    <>
+      <RefSelect
+        label={bind.label}
+        value={value}
+        pinned={[
+          { value: VAL_INPUT, label: "Input Track" },
+          { value: VAL_UPLOAD, label: "Upload…" },
+        ]}
+        groups={[
+          {
+            label: "Library",
+            options: fixtures.map((n) => ({ value: n, label: n })),
+          },
+          {
+            label: "Your tracks",
+            options: customNames.map((n) => ({ value: n, label: n })),
+          },
+        ]}
+        onSelect={onSelect}
+        disabled={busy}
+        ariaLabel={bind.ariaLabel}
+      />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="audio/*,.mp3,.wav,.flac,.ogg,.m4a,.aac"
+        style={{ display: "none" }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          if (file) void uploadAndPick(file);
+        }}
+      />
+    </>
+  );
+}

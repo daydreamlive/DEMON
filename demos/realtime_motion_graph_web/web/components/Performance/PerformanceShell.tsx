@@ -15,7 +15,9 @@ import { useParamSync } from "@/hooks/useParamSync";
 import { useRecording } from "@/hooks/useRecording";
 import { useRenderLoop } from "@/hooks/useRenderLoop";
 import { useScheduledCurves } from "@/hooks/useScheduledCurves";
+import { useRefSourceAcks } from "@/hooks/useRefSourceAcks";
 import { useStartSession } from "@/hooks/useStartSession";
+import { useTimbreSync } from "@/hooks/useTimbreSync";
 import { useVideoLayer } from "@/hooks/useVideoLayer";
 import { useConfig } from "@/lib/config";
 import { useCurveStore } from "@/store/useCurveStore";
@@ -64,6 +66,9 @@ export function PerformanceShell() {
   useRecording();
   useFixtureSwap();
   useEdgeLoraBinding();
+  useTimbreSync();
+  useRefSourceAcks("timbre");
+  useRefSourceAcks("structure");
   const config = useConfig();
   useIdleReset(config.reset_seconds);
 

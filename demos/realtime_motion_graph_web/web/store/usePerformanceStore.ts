@@ -221,6 +221,7 @@ export function isManualOverrideActive(param: string): boolean {
 const DEFAULT_SLIDER_VALUES: Record<string, number> = {
   denoise: 0.7,
   hint_strength: 1.4,
+  timbre_strength: 1.0,
   lora_blend: 0.5,
   feedback: 0.0,
   shift: 0.5,
@@ -274,6 +275,16 @@ interface PerformanceState {
   activeKey: string;
   /** Selected fixture name (from /api/fixtures). */
   fixture: string;
+  /** Display name of the active uploaded timbre-reference track, or
+   *  null when none (server uses self-timbre / playback source). Set
+   *  by the server's timbre_set ack and cleared by timbre_cleared.
+   *  Per-session — not persisted across reloads. */
+  timbreName: string | null;
+  /** Display name of the active uploaded structure-reference track, or
+   *  null when none (server uses self-structure / playback source's own
+   *  semantic hints). Set/cleared by structure_set / structure_cleared
+   *  acks. Per-session — not persisted. */
+  structName: string | null;
   /** Detected musical metadata from server's "ready" frame. */
   detectedBpm: number | null;
   detectedKey: string | null;
@@ -327,6 +338,8 @@ interface PerformanceState {
   setPromptB: (s: string) => void;
   setKey: (k: string) => void;
   setFixture: (name: string) => void;
+  setTimbreName: (name: string | null) => void;
+  setStructName: (name: string | null) => void;
   setDetected: (bpm: number | null, key: string | null) => void;
   /** One-shot key override consumed by useFixtureSwap when the next
    *  swap_ready arrives. Set by the AlmostReadyDialog when the user
@@ -407,6 +420,8 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   promptB: "daft punk style, beautiful, four to the floor, angelic",
   activeKey: "G# minor",
   fixture: "",
+  timbreName: null,
+  structName: null,
   detectedBpm: null,
   detectedKey: null,
   pendingKeyOverride: null,
@@ -494,6 +509,8 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   setPromptB: (s) => set({ promptB: s }),
   setKey: (k) => set({ activeKey: k }),
   setFixture: (name) => set({ fixture: name }),
+  setTimbreName: (name) => set({ timbreName: name }),
+  setStructName: (name) => set({ structName: name }),
   setDetected: (bpm, key) =>
     set((s) => ({
       detectedBpm: bpm,

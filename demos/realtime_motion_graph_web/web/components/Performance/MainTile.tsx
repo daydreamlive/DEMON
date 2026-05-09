@@ -1,5 +1,6 @@
 "use client";
 
+import { RefControl } from "./RefControl";
 import { SliderGroup } from "./SliderGroup";
 
 export function MainTile() {
@@ -13,7 +14,14 @@ export function MainTile() {
           label="structure strength"
           kbd="G + ▲▼"
         />
+        <SliderGroup
+          param="timbre_strength"
+          label="timbre strength"
+          kbd="C + ▲▼"
+        />
       </div>
+      <RefControl kind="timbre" />
+      <RefControl kind="structure" />
     </div>
   );
 }

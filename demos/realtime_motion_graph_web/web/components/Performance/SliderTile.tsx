@@ -25,6 +25,7 @@ const DISPLAY_NAMES: Record<string, string> = {
 const KBD_FOR_PARAM: Record<string, string> = {
   denoise: "A + ▲▼",
   hint_strength: "G + ▲▼",
+  timbre_strength: "C + ▲▼",
   feedback: "E + ▲▼",
   shift: "H + ▲▼",
   noise_share: "N + ▲▼",

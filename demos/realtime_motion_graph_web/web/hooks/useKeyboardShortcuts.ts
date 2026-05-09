@@ -13,6 +13,7 @@ import { DCW_MODES, DCW_WAVELETS, SLIDER_META } from "@/types/engine";
 //
 //   A + ▲▼      remix (denoise)
 //   G + ▲▼      structure (hint_strength)
+//   C + ▲▼      timbre (timbre_strength)
 //   B + ▲▼      prompt blend
 //   E/H/N/D + ▲▼   feedback / shift / nshare / ode (engine)
 //   W/Y + ▲▼    DCW low / DCW high
@@ -132,6 +133,11 @@ export function useKeyboardShortcuts() {
         if (HELD_KEYS.has("g")) {
           e.preventDefault();
           bumpParam("hint_strength", dir);
+          return;
+        }
+        if (HELD_KEYS.has("c")) {
+          e.preventDefault();
+          bumpParam("timbre_strength", dir);
           return;
         }
         if (HELD_KEYS.has("b")) {
