@@ -116,7 +116,7 @@ function LoraRow({ id, name }: RowProps) {
         onClick={toggle}
         title={enabled ? "Disable" : "Enable"}
       >
-        {enabled ? "ON" : "OFF"}
+        <span className="lora-switch-thumb" aria-hidden="true" />
       </button>
       <span className="lora-row-name" title={id} onClick={toggle}>
         {name}
