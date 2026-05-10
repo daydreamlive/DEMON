@@ -333,6 +333,11 @@ export class GraphRenderer {
   }
 
   draw(pulse = 0, now: number = performance.now()): void {
+    // Defense in depth: clamp must come BEFORE the Math.max/Math.min
+    // because those don't catch NaN. A single non-finite pulse value
+    // would otherwise propagate into baseAlpha and addColorStop, which
+    // throws `SyntaxError: rgba(...,NaN)` and kills the render loop.
+    if (!Number.isFinite(pulse)) pulse = 0;
     // ResizeObserver in the constructor already keeps {w, h} in sync,
     // including the display:none → block transition. The legacy
     // getBoundingClientRect() self-heal that used to live here forced a

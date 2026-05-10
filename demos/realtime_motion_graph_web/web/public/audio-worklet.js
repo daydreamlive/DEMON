@@ -174,7 +174,15 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
       let frameEnergy = 0;
       for (let c = 0; c < outChannels; c++) frameEnergy += output[c][i];
       frameEnergy /= outChannels;
-      const sq = frameEnergy * frameEnergy;
+      // Reject non-finite frames at the source. A single NaN sample
+      // (uninitialized buffer fragment, mid-swap zero-frame, etc.)
+      // poisons _kickSumSq permanently because the incremental update
+      // below propagates NaN forever — the consumer (main-thread
+      // useRenderLoop → GraphRenderer.draw → addColorStop) then crashes
+      // every frame with `rgba(...,NaN)`. Treating non-finite as silent
+      // (sq=0) keeps the ring valid and the visuals quiet for that
+      // sample, which is the right behaviour for a glitched frame.
+      const sq = Number.isFinite(frameEnergy) ? frameEnergy * frameEnergy : 0;
       const oldSq = this._kickRing[this._kickHead];
       this._kickSumSq += sq - oldSq;
       this._kickRing[this._kickHead] = sq;
@@ -201,7 +209,15 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
     // poll this at rAF cadence. RMS, soft-clip, clamp.
     const denom = this._kickFilled || 1;
     const rms = Math.sqrt(Math.max(0, this._kickSumSq) / denom);
-    this._lastKick = Math.max(0, Math.min(1, rms * KICK_SOFT_GAIN));
+    const scaled = rms * KICK_SOFT_GAIN;
+    // Belt-and-suspenders: even with the per-sample NaN guard above,
+    // recompute every frame so a corrupted ring (e.g. from a hostile
+    // postMessage) can't keep posting NaN to the main thread. The
+    // standard Math.max/Math.min clamp does NOT fix NaN — both calls
+    // pass it through untouched.
+    this._lastKick = Number.isFinite(scaled)
+      ? Math.max(0, Math.min(1, scaled))
+      : 0;
 
     this._framesSinceReport += frames;
     if (this._framesSinceReport >= REPORT_EVERY) {

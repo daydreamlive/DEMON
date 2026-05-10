@@ -51,7 +51,12 @@ export const DCW_WAVELETS = ["haar", "db4", "sym8", "db8"] as const;
 export type DcwMode = (typeof DCW_MODES)[number];
 export type DcwWavelet = (typeof DCW_WAVELETS)[number];
 
-export const LORA_SLIDER_MAX = 2.0;
+// Capped at 1.8 (was 2.0). Operator finding: most LoRAs we ship turn
+// to noise above ~1.7 (e.g. v5/discofunk noise at 2.0, hardrock noise
+// at 2.0). 1.8 still leaves room above the natural sweet spot for
+// every shipped LoRA without giving users a slider position that
+// reliably destroys the output.
+export const LORA_SLIDER_MAX = 1.8;
 export const LORA_SLIDER_STEP = 0.2;
 
 /** Default LoRA strength as a fraction of LORA_SLIDER_MAX. Used in two
