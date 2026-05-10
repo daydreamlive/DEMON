@@ -7,9 +7,12 @@
 //   {type:'patch',    start:int (frame),  audio:Float32Array (interleaved)}
 //   {type:'add',      start:int (frame),  audio:Float32Array (interleaved)}  // delta add
 //   {type:'swap',     buffer:Float32Array, channels:int}
+//   {type:'setLoop',  enabled:bool}                            // loop at end-of-buffer
+//   {type:'seek',     positionFrames:int}                      // jump playhead
 //
 // Messages to main thread:
-//   {type:'position', positionSec:float, swapCount:int}
+//   {type:'position',    positionSec:float, swapCount:int, kick:float}
+//   {type:'endOfBuffer'} // one-shot when loop=false and playhead reaches end
 
 const CROSSFADE_SECONDS = 0.025;
 const SEAM_FADE_SECONDS = 0.05;  // loop-seam crossfade at end-of-buffer
@@ -51,6 +54,14 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
     this.crossfadeLen = Math.max(1, Math.floor(sampleRate * CROSSFADE_SECONDS));
     this.seamFadeLen = Math.max(1, Math.floor(sampleRate * SEAM_FADE_SECONDS));
 
+    // Loop / end-of-buffer behaviour. When loop=true (default) the
+    // playhead wraps via the seam crossfade as before. When false,
+    // the playhead clamps at end-of-buffer, the processor outputs
+    // silence, and a one-shot {type:'endOfBuffer'} fires so the main
+    // thread can flip its paused flag.
+    this.loop = true;
+    this._endSignaled = false;
+
     this._framesSinceReport = 0;
 
     // Kick state: ring of squared frame energies, running sum.
@@ -83,6 +94,23 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
       this.swapCount++;
       this.fading = true;
       this.fadePos = 0;
+      return;
+    }
+    if (type === "setLoop") {
+      this.loop = !!msg.enabled;
+      // Re-arm the end-of-buffer one-shot so toggling loop off, hitting
+      // end, then toggling on/off again still posts on each transition.
+      this._endSignaled = false;
+      return;
+    }
+    if (type === "seek") {
+      const target = (msg.positionFrames | 0);
+      if (this.frameCount > 0) {
+        // Clamp to [0, frameCount-1]; the advance path will wrap or
+        // freeze based on `loop` on the next process() block.
+        this.position = Math.max(0, Math.min(this.frameCount - 1, target));
+      }
+      this._endSignaled = false;
       return;
     }
     if (type === "patch" || type === "add") {
@@ -133,6 +161,19 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
     for (let i = 0; i < frames; i++) {
       const pos = this.position;
 
+      // Loop-off freeze: position has been clamped at end-of-buffer,
+      // emit silence and stop advancing. Fire endOfBuffer once so the
+      // main thread can flip the paused flag and suspend the context.
+      if (!this.loop && pos >= nCur - 1) {
+        for (let c = 0; c < outChannels; c++) output[c][i] = 0;
+        if (!this._endSignaled) {
+          this.port.postMessage({ type: "endOfBuffer" });
+          this._endSignaled = true;
+        }
+        // Skip kick + advance below — the playhead is parked.
+        continue;
+      }
+
       if (this.fading && this.oldBuffer) {
         const fadeT = Math.min(1, this.fadePos / this.crossfadeLen);
         const oldPos = this.position % this.oldFrameCount;
@@ -147,7 +188,7 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
           this.fading = false;
           this.oldBuffer = null;
         }
-      } else if (seam > 0 && (nCur - pos) <= seam) {
+      } else if (this.loop && seam > 0 && (nCur - pos) <= seam) {
         const distFromEnd = nCur - pos;
         const t = (seam - distFromEnd) / seam;
         const headPos = seam - distFromEnd;
@@ -190,7 +231,12 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
       if (this._kickFilled < KICK_WINDOW) this._kickFilled++;
 
       this.position++;
-      if (this.position >= nCur) this.position = seam;
+      if (this.position >= nCur) {
+        // Loop: wrap to `seam` so the head frames blended by the
+        // crossfade above aren't replayed. No loop: clamp at end so
+        // the freeze branch on the next iteration takes over.
+        this.position = this.loop ? seam : nCur;
+      }
     }
 
     // Periodic refresh of _kickSumSq from the ring to bound float drift.

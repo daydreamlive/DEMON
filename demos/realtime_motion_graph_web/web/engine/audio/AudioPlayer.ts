@@ -67,6 +67,14 @@ export class AudioPlayer {
   private _spPosition = 0;
   private _recordDest: MediaStreamAudioDestinationNode | null = null;
 
+  // Loop + seek state. The worklet path owns its own copy of `loop` (set
+  // via postMessage); these fields are the main-thread mirror so the SP
+  // fallback path can read them directly. _spEndSignaled is the SP-path
+  // equivalent of the worklet's _endSignaled one-shot.
+  private _loop = true;
+  private _spEndSignaled = false;
+  private _endOfBufferListeners: Set<() => void> = new Set();
+
   // Loudness matching: a GainNode sits between the worklet and
   // destination. We measure the source's integrated loudness once at
   // init() / swap() and lock it as the target. The meter periodically
@@ -146,6 +154,8 @@ export class AudioPlayer {
           this.positionSec = msg.positionSec ?? 0;
           this.swapCount = msg.swapCount ?? this.swapCount;
           if (typeof msg.kick === "number") this.kick = msg.kick;
+        } else if (msg.type === "endOfBuffer") {
+          for (const fn of this._endOfBufferListeners) fn();
         }
       };
 
@@ -287,6 +297,51 @@ export class AudioPlayer {
       this._makeupGain.gain.cancelScheduledValues(t);
       this._makeupGain.gain.setTargetAtTime(1.0, t, LUFS_GAIN_RAMP_TC);
     }
+  }
+
+  /**
+   * Toggle loop-at-end. When true (default), the worklet wraps the
+   * playhead via the seam crossfade. When false, the playhead clamps
+   * at end-of-buffer, the processor emits silence, and a one-shot
+   * endOfBuffer event fires so callers can flip a paused flag.
+   */
+  setLoop(enabled: boolean): void {
+    this._loop = enabled;
+    this._spEndSignaled = false;
+    if (this._useWorklet && this.node) {
+      (this.node as AudioWorkletNode).port.postMessage({
+        type: "setLoop",
+        enabled,
+      });
+    }
+  }
+
+  /** Jump the playhead. Seconds are clamped into the current buffer. */
+  seek(positionSec: number): void {
+    if (this.frameCount === 0) return;
+    const target = Math.max(
+      0,
+      Math.min(this.frameCount - 1, Math.round(positionSec * SAMPLE_RATE)),
+    );
+    this.positionSec = target / SAMPLE_RATE;
+    this._spEndSignaled = false;
+    if (this._useWorklet && this.node) {
+      (this.node as AudioWorkletNode).port.postMessage({
+        type: "seek",
+        positionFrames: target,
+      });
+    } else {
+      this._spPosition = target;
+    }
+  }
+
+  /** Subscribe to end-of-buffer hits (only fires when loop is off).
+   *  Returns an unsubscribe. */
+  onEndOfBuffer(fn: () => void): () => void {
+    this._endOfBufferListeners.add(fn);
+    return () => {
+      this._endOfBufferListeners.delete(fn);
+    };
   }
 
   async close(): Promise<void> {
@@ -532,7 +587,15 @@ export class AudioPlayer {
     }
     let pos = this._spPosition;
     for (let i = 0; i < frames; i++) {
-      if (seam > 0 && nFrames - pos <= seam) {
+      if (!this._loop && pos >= nFrames - 1) {
+        for (let c = 0; c < outChs.length; c++) outChs[c][i] = 0;
+        if (!this._spEndSignaled) {
+          this._spEndSignaled = true;
+          for (const fn of this._endOfBufferListeners) fn();
+        }
+        continue;
+      }
+      if (this._loop && seam > 0 && nFrames - pos <= seam) {
         const distFromEnd = nFrames - pos;
         const t = (seam - distFromEnd) / seam;
         const headPos = seam - distFromEnd;
@@ -549,7 +612,7 @@ export class AudioPlayer {
         }
       }
       pos++;
-      if (pos >= nFrames) pos = seam;
+      if (pos >= nFrames) pos = this._loop ? seam : nFrames;
     }
     this._spPosition = pos;
     this.positionSec = this._spPosition / SAMPLE_RATE;

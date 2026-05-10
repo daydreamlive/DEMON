@@ -344,6 +344,10 @@ interface PerformanceState {
    *  In-session toggles via the LUFS button are not persisted; next
    *  reload returns to the config value. */
   lufsOn: boolean;
+  /** Loop-at-end. When true (default), the AudioPlayer's worklet wraps
+   *  the playhead via the seam crossfade. When false, the playhead
+   *  freezes at end-of-buffer and the transport auto-pauses. */
+  loopOn: boolean;
 
   // ── actions ───────────────────────────────────────────────────────────
   setSlider: (param: string, value: number) => void;
@@ -410,6 +414,7 @@ interface PerformanceState {
   toggleSmooth: () => void;
   setSmoothMs: (ms: number) => void;
   toggleLufs: () => void;
+  toggleLoop: () => void;
   /** Read localStorage-backed prefs (showKbdHints) and
    *  apply them to the store. Called from a client-only useEffect so SSR
    *  always renders with the defaults — without this, hydration mismatches
@@ -479,6 +484,7 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   smooth: false,
   smoothMs: DEFAULT_SMOOTH_MS,
   lufsOn: false,
+  loopOn: true,
 
   setSlider: (param, value) => {
     stampManualTouch(param);
@@ -632,6 +638,8 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
     }),
   toggleLufs: () =>
     set((s) => ({ lufsOn: !s.lufsOn })),
+  toggleLoop: () =>
+    set((s) => ({ loopOn: !s.loopOn })),
   hydratePersistedPrefs: () =>
     set({
       showKbdHints: loadBool(SHOW_KBD_HINTS_STORAGE_KEY, true),

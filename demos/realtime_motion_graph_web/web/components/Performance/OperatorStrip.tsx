@@ -39,6 +39,7 @@ export function OperatorStrip() {
   const smooth = usePerformanceStore((s) => s.smooth);
   const smoothMs = usePerformanceStore((s) => s.smoothMs);
   const lufsOn = usePerformanceStore((s) => s.lufsOn);
+  const loopOn = usePerformanceStore((s) => s.loopOn);
   const setFixture = usePerformanceStore((s) => s.setFixture);
   const setKey = usePerformanceStore((s) => s.setKey);
   const setTimeSignature = usePerformanceStore((s) => s.setTimeSignature);
@@ -49,6 +50,7 @@ export function OperatorStrip() {
   const toggleSmooth = usePerformanceStore((s) => s.toggleSmooth);
   const setSmoothMs = usePerformanceStore((s) => s.setSmoothMs);
   const toggleLufs = usePerformanceStore((s) => s.toggleLufs);
+  const toggleLoop = usePerformanceStore((s) => s.toggleLoop);
 
   const customNames = useCustomTracksStore((s) => s.names);
   const addCustomTrack = useCustomTracksStore((s) => s.add);
@@ -95,6 +97,25 @@ export function OperatorStrip() {
     if (!player) return;
     player.setLufs(lufsOn);
   }, [player, lufsOn]);
+
+  // Same pattern for loop. Default is on; flipping off makes the worklet
+  // freeze at end-of-buffer and emit silence instead of wrapping.
+  useEffect(() => {
+    if (!player) return;
+    player.setLoop(loopOn);
+  }, [player, loopOn]);
+
+  // End-of-buffer → auto-pause. Only fires when loop is off (the
+  // worklet's one-shot only emits in that mode). Suspends the audio
+  // context and flips the performance store's paused flag so the
+  // play/pause button immediately shows ▶.
+  useEffect(() => {
+    if (!player) return;
+    return player.onEndOfBuffer(() => {
+      void player.ctx?.suspend();
+      usePerformanceStore.getState().setPaused(true);
+    });
+  }, [player]);
 
   async function onFilePicked(file: File) {
     const { setStatus } = useSessionStore.getState();
@@ -380,14 +401,42 @@ export function OperatorStrip() {
       </button>
       <RecordToggle />
       <button
-        id="pause-btn"
+        type="button"
         className="pause-btn pause-btn--right"
+        data-midi-learn="seek_start"
+        title="Seek to beginning (right-click to MIDI-learn)"
+        aria-label="Seek to beginning"
+        onClick={() => {
+          const p = useSessionStore.getState().player;
+          p?.seek(0);
+        }}
+      >
+        ⏮
+      </button>
+      <button
+        id="pause-btn"
+        className="pause-btn"
         data-midi-learn="pause"
         title="Pause/Resume (right-click to MIDI-learn)"
         type="button"
         onClick={togglePauseAndAudio}
       >
         {paused ? "▶" : "⏸"}
+      </button>
+      <button
+        type="button"
+        className={`pause-btn${loopOn ? " active" : ""}`}
+        data-midi-learn="loop_toggle"
+        title={
+          loopOn
+            ? "Loop ON — playhead wraps at end-of-buffer (right-click to MIDI-learn)"
+            : "Loop OFF — playback stops at end-of-buffer; click ⏮ to restart"
+        }
+        aria-label="Toggle loop"
+        aria-pressed={loopOn}
+        onClick={toggleLoop}
+      >
+        ↻
       </button>
 
       {pending && (
