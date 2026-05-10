@@ -23,6 +23,52 @@ import type { LoraCatalogEntry } from "@/types/protocol";
 // explicitly disabled.
 const HARDCODED_PREFERRED_LORAS = ["deathstep", "synthpop"] as const;
 
+/** Build the default strengths + default-enabled set against a given
+ *  catalog. Pure: no store reads, no side effects. Used by both the
+ *  initial setCatalog seeding path and the reset() path so the two
+ *  agree on what "defaults" means. */
+function seedFromCatalog(catalog: LoraCatalogEntry[]): {
+  strengths: Record<string, number>;
+  enabled: Set<string>;
+} {
+  const cfg = getConfig();
+  const cfgStrength = cfg.controls.lora_default_strength;
+  const fallbackStrength =
+    typeof cfgStrength === "number" && cfgStrength > 0
+      ? cfgStrength
+      : LORA_DEFAULT_STRENGTH_FRACTION * LORA_SLIDER_MAX;
+  const strengths: Record<string, number> = {};
+  for (const entry of catalog) {
+    strengths[entry.id] =
+      typeof entry.strength === "number" && entry.strength > 0
+        ? entry.strength
+        : fallbackStrength;
+  }
+  const cfgPreferred = cfg.engine.enabled_loras;
+  const preferredList: readonly string[] =
+    cfgPreferred.length > 0 ? cfgPreferred : HARDCODED_PREFERRED_LORAS;
+  const enabled = new Set<string>();
+  const present = new Set(catalog.map((e) => e.id));
+  const claimed = new Set<string>();
+  for (let i = 0; i < preferredList.length; i++) {
+    const preferred = preferredList[i];
+    let pick: string | undefined;
+    if (present.has(preferred) && !claimed.has(preferred)) {
+      pick = preferred;
+    } else {
+      const slot = catalog[i]?.id;
+      pick = slot && !claimed.has(slot)
+        ? slot
+        : catalog.find((e) => !claimed.has(e.id))?.id;
+    }
+    if (pick) {
+      enabled.add(pick);
+      claimed.add(pick);
+    }
+  }
+  return { strengths, enabled };
+}
+
 interface LoraState {
   catalog: LoraCatalogEntry[];
   /** Per-id strength (0..LORA_SLIDER_MAX). */
@@ -131,5 +177,14 @@ export const useLoraStore = create<LoraState>((set) => ({
       return { enabled: next };
     }),
   reset: () =>
-    set({ catalog: [], strengths: {}, enabled: new Set(), _seeded: false }),
+    set((s) => {
+      // Keep the catalog — it's server-driven, not user state. Clearing
+      // it would flip LibraryTile to its "no LoRAs found" empty state
+      // until the next session start. Re-seed strengths + default-on
+      // enabled set against the existing catalog, matching the initial
+      // setCatalog seeding behaviour so "reset" actually means "back to
+      // defaults", not "lose the catalog".
+      const { strengths, enabled } = seedFromCatalog(s.catalog);
+      return { strengths, enabled };
+    }),
 }));

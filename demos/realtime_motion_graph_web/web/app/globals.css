@@ -1192,11 +1192,11 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
    list, not the Advanced drawer's height.  Width is bounded so the
    tile sits comfortably alongside the other mixer tiles.
    ============================================================================ */
-.mixer-tile-library {
+.mixer-tile[data-tile="library"] {
   min-width: 280px;
   max-width: 360px;
 }
-.mixer-tile-library .lora-library-body {
+.mixer-tile[data-tile="library"] .lora-list {
   display: flex; flex-direction: column;
   gap: 6px;
   padding: 4px 8px;
@@ -1210,15 +1210,15 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
 }
-.mixer-tile-library .lora-library-body::-webkit-scrollbar { width: 6px; }
-.mixer-tile-library .lora-library-body::-webkit-scrollbar-thumb {
+.mixer-tile[data-tile="library"] .lora-list::-webkit-scrollbar { width: 6px; }
+.mixer-tile[data-tile="library"] .lora-list::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.2); border-radius: 3px;
 }
-.mixer-tile-library .lora-library-body::-webkit-scrollbar-thumb:hover {
+.mixer-tile[data-tile="library"] .lora-list::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.35);
 }
 
-.lora-library-empty {
+.mixer-tile[data-tile="library"] .lora-empty {
   font-size: 11px; opacity: 0.55; padding: 14px 6px;
   text-align: center; font-style: italic;
 }
