@@ -116,7 +116,7 @@ function LoraRow({ id, name }: RowProps) {
         onClick={toggle}
         title={enabled ? "Disable" : "Enable"}
       >
-        <span className="lora-switch-thumb" aria-hidden="true" />
+        {enabled ? "ON" : "OFF"}
       </button>
       <span className="lora-row-name" title={id} onClick={toggle}>
         {name}
@@ -124,6 +124,11 @@ function LoraRow({ id, name }: RowProps) {
       <div className="lora-strength">
         <div className="lora-strength-track" ref={trackRef}>
           <div className="lora-strength-fill" style={{ width: `${pct}%` }} />
+          <div
+            className="lora-strength-thumb"
+            style={{ left: `${pct}%` }}
+            aria-hidden="true"
+          />
         </div>
         <span className="lora-strength-value">{value.toFixed(2)}</span>
       </div>

@@ -157,43 +157,40 @@ export function DesktopEdgeDrag({ side }: Props) {
     if (!el) return;
 
     // Cache the host rect at pointerdown and reuse for the lifetime of
-    // the drag. Without this, every pointermove called
-    // getBoundingClientRect(), forcing a synchronous layout flush per
-    // event. RAF-coalesce the store write so a 60–120 evt/sec pointer
-    // stream commits at most once per frame.
+    // the drag — without this, every pointermove forced a synchronous
+    // layout flush via getBoundingClientRect.
+    //
+    // Earlier versions also RAF-coalesced the store write to once per
+    // frame. That introduced a 16-24 ms gap between cursor and committed
+    // value AND, for LoRA sides, only updated useLoraStore — so the
+    // 8 ms param-sync tick saw stale values, and the advanced panel's
+    // slider (which reads from usePerformanceStore.sliderTargets) never
+    // moved when the user dragged a side bar. We now commit on every
+    // pointermove like LibraryTile does, and we mirror writes into BOTH
+    // stores so the advanced-panel slider tracks the side-bar drag.
     let isDragging = false;
     let dragInitialValue = 0;
     let cachedRect: DOMRect | null = null;
-    let pendingClientX = 0;
-    let pendingClientY = 0;
-    let rafId = 0;
 
-    const commitValue = () => {
+    const commitFromClient = (clientX: number, clientY: number) => {
       if (!cachedRect) return;
       if (isTop) {
-        const t = (pendingClientX - cachedRect.left) / cachedRect.width;
+        const t = (clientX - cachedRect.left) / cachedRect.width;
         usePerformanceStore
           .getState()
           .setSlider(TOP_PARAM, Math.max(0, Math.min(1, t)) * TOP_MAX);
         return;
       }
-      const t = 1 - (pendingClientY - cachedRect.top) / cachedRect.height;
+      const t = 1 - (clientY - cachedRect.top) / cachedRect.height;
       const ids = Array.from(useLoraStore.getState().enabled);
       const id = ids[slotIndex];
       if (!id) return;
-      useLoraStore
-        .getState()
-        .setStrength(id, Math.max(0, Math.min(1, t)) * LORA_SLIDER_MAX);
-    };
-
-    const flush = () => {
-      rafId = 0;
-      if (!cachedRect) return;
-      if (isDragging) commitValue();
-    };
-
-    const schedule = () => {
-      if (rafId === 0) rafId = requestAnimationFrame(flush);
+      const v = Math.max(0, Math.min(1, t)) * LORA_SLIDER_MAX;
+      // Mirror into BOTH stores so the engine sees it (perf →
+      // param-sync) and the LibraryTile slider (which reads from
+      // sliderTargets) reflects the side-bar drag in real time.
+      usePerformanceStore.getState().setSlider(`lora_str_${id}`, v);
+      useLoraStore.getState().setStrength(id, v);
     };
 
     const onPointerDown = (e: PointerEvent) => {
@@ -205,25 +202,17 @@ export function DesktopEdgeDrag({ side }: Props) {
       setDragging(true);
       dragInitialValue = readCurrentValue();
       cachedRect = el.getBoundingClientRect();
-      pendingClientX = e.clientX;
-      pendingClientY = e.clientY;
       el.setPointerCapture(e.pointerId);
       // Commit immediately so a click-without-drag still moves the value.
-      commitValue();
+      commitFromClient(e.clientX, e.clientY);
     };
     const onPointerMove = (e: PointerEvent) => {
       if (!isDragging) return;
-      pendingClientX = e.clientX;
-      pendingClientY = e.clientY;
-      schedule();
+      commitFromClient(e.clientX, e.clientY);
     };
     const onPointerUp = (e: PointerEvent) => {
       if (!isDragging) return;
       isDragging = false;
-      if (rafId !== 0) {
-        cancelAnimationFrame(rafId);
-        rafId = 0;
-      }
       el.releasePointerCapture(e.pointerId);
       setDragging(false);
       // First successful (value-changing) drag dismisses the hint forever.
@@ -264,7 +253,6 @@ export function DesktopEdgeDrag({ side }: Props) {
     el.addEventListener("pointerenter", onPointerEnter);
     el.addEventListener("pointerleave", onPointerLeave);
     return () => {
-      if (rafId !== 0) cancelAnimationFrame(rafId);
       el.removeEventListener("pointerdown", onPointerDown);
       el.removeEventListener("pointermove", onPointerMove);
       el.removeEventListener("pointerup", onPointerUp);
