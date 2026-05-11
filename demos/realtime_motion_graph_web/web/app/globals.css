@@ -3298,7 +3298,7 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
    color shift. */
 .turntable-caption {
   position: absolute;
-  top: 62px; /* 2px below disc bottom */
+  top: 66px; /* 6px below disc bottom — gives the label visual breathing room */
   left: 3px;
   width: 54px; /* same x-extent as the disc; centered text below it */
   text-align: center;
@@ -3466,11 +3466,13 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   transform: rotate(5deg);
 }
 
-/* Live timer — coral monospace text below the disc. Doesn't rotate. */
+/* Live timer — coral monospace text below the disc. Doesn't rotate.
+   Matches the .turntable-caption "REC" position so the two occupy the
+   same visual slot with the same breathing-room from the disc. */
 .turntable-time {
   position: absolute;
   left: 0;
-  bottom: -2px;
+  bottom: -6px;
   width: 60px;
   text-align: center;
   font-family: var(--font-mono);
