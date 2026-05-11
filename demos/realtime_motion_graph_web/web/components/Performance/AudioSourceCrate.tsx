@@ -32,12 +32,12 @@ interface TrackOption {
   kind: "fixture" | "custom";
 }
 
-function UploadIcon() {
+function UploadIcon({ size = 14 }: { size?: number }) {
   return (
     <svg
       viewBox="0 0 16 16"
-      width={14}
-      height={14}
+      width={size}
+      height={size}
       fill="none"
       stroke="currentColor"
       strokeWidth={1.4}
@@ -76,6 +76,7 @@ export function AudioSourceCrate() {
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const placardRef = useRef<HTMLButtonElement | null>(null);
+  const uploadBtnRef = useRef<HTMLButtonElement | null>(null);
   const fanRef = useRef<HTMLDivElement | null>(null);
 
   // Daydream-webapp queue-admit gate: /api/pod/* returns 401 pre-admit,
@@ -100,6 +101,7 @@ export function AudioSourceCrate() {
       const t = e.target as Node | null;
       if (!t) return;
       if (placardRef.current?.contains(t)) return;
+      if (uploadBtnRef.current?.contains(t)) return;
       if (fanRef.current?.contains(t)) return;
       setOpen(false);
     }
@@ -178,30 +180,46 @@ export function AudioSourceCrate() {
 
   return (
     <>
-      <button
-        ref={placardRef}
-        type="button"
-        className={`audio-source-crate${open ? " audio-source-crate--open" : ""}`}
-        onClick={() => setOpen((v) => !v)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label={`Pick audio track. Current: ${displayedName}`}
-        title={`Audio source: ${displayedName}`}
-      >
-        <span className="audio-source-marquee-rows">
-          <span className="audio-source-marquee-label">
-            {open ? "Pick a track" : "▶ Now playing"}
+      <div className="audio-source-dock">
+        <button
+          ref={placardRef}
+          type="button"
+          className={`audio-source-crate${open ? " audio-source-crate--open" : ""}`}
+          onClick={() => setOpen((v) => !v)}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-label={`Pick audio track. Current: ${displayedName}`}
+          title={`Audio source: ${displayedName}`}
+        >
+          <span className="audio-source-marquee-rows">
+            <span className="audio-source-marquee-label">
+              {open ? "Pick a track" : "▶ Now playing"}
+            </span>
+            <span className="audio-source-marquee-name" title={displayedName}>
+              {open ? "or upload your own" : displayedName}
+            </span>
           </span>
-          <span className="audio-source-marquee-name" title={displayedName}>
-            {open ? "or upload your own" : displayedName}
+          <span className="audio-source-crate-caret" aria-hidden="true">
+            <svg viewBox="0 0 10 10" width={10} height={10} fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+              <path d="M2 6.5L5 3.5L8 6.5" />
+            </svg>
           </span>
-        </span>
-        <span className="audio-source-crate-caret" aria-hidden="true">
-          <svg viewBox="0 0 10 10" width={10} height={10} fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
-            <path d="M2 6.5L5 3.5L8 6.5" />
-          </svg>
-        </span>
-      </button>
+        </button>
+        {/* Always-visible upload affordance. Discoverability beats the
+            "Upload your own" sleeve hidden inside the fan — same handler,
+            same dialog gate, just one click closer. */}
+        <button
+          ref={uploadBtnRef}
+          type="button"
+          className="audio-source-upload-btn"
+          disabled={uploading}
+          onClick={() => fileInputRef.current?.click()}
+          aria-label="Upload your own audio track"
+          title={uploading ? "Decoding…" : "Upload your own audio track"}
+        >
+          <UploadIcon size={16} />
+        </button>
+      </div>
 
       {open && (
         <div ref={fanRef} className="audio-source-fan" role="menu">

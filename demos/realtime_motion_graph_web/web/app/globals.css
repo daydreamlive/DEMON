@@ -3594,13 +3594,23 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
    dropdown + upload icon for power users who prefer the dropdown.
    ============================================================================ */
 
-.audio-source-crate {
+/* Bottom-left dock holding the now-playing placard + always-visible
+   upload icon button. The dock owns the fixed position; placard and
+   upload button are flex children so they share a baseline and
+   resize cleanly with the placard's variable width. */
+.audio-source-dock {
   position: fixed;
   /* Float above the bottom HUD bar, mirroring the turntable's right-side
      anchor on the left. 24px gap above the bar matches the turntable. */
   bottom: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-bottom, 0px));
   left: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-left, 0px));
   z-index: 8;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 6px;
+}
+.audio-source-crate {
   min-width: 140px;
   max-width: 260px;
   padding: 7px 12px 7px 14px;
@@ -3624,6 +3634,54 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
     background 160ms,
     border-color 160ms,
     filter 200ms;
+}
+/* Always-visible upload icon button. Visually attached to the placard
+   (matching height, gradient top-edge, blur/border treatment) so the
+   pair reads as one widget — two ways to pick audio. */
+.audio-source-upload-btn {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  background: rgba(6, 6, 12, 0.72);
+  -webkit-backdrop-filter: blur(6px);
+          backdrop-filter: blur(6px);
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-md);
+  color: var(--text-dim);
+  cursor: pointer;
+  filter: drop-shadow(0 0 calc(1px + var(--bloom-amount, 0) * 6px) var(--accent-glow));
+  transition:
+    transform 140ms cubic-bezier(.2, .8, .2, 1),
+    background 160ms,
+    border-color 160ms,
+    color 160ms,
+    filter 200ms;
+}
+.audio-source-upload-btn::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--dd-gradient);
+  pointer-events: none;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+}
+.audio-source-upload-btn:hover {
+  transform: translateY(-1px);
+  background: rgba(6, 6, 12, 0.85);
+  border-color: var(--accent-line);
+  color: var(--accent-hover);
+}
+.audio-source-upload-btn:active { transform: translateY(0); }
+.audio-source-upload-btn:disabled {
+  opacity: 0.5;
+  cursor: progress;
+  transform: none;
 }
 .audio-source-marquee-rows {
   display: flex;
@@ -3872,7 +3930,11 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
     max-width: none;
   }
   .audio-source-crate {
-    max-width: calc(100vw - 32px);
+    /* Leave room for the upload button + gap (38 + 6 + dock's own left
+       inset). The dock's inset is the same `var(--hud-thickness) + 24px`
+       used for the right margin, so cap at viewport width minus that
+       plus the button. */
+    max-width: calc(100vw - 32px - 44px);
   }
 }
 
@@ -4048,7 +4110,7 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
 
 /* ── Hide AudioSourceCrate when the mobile Lite drawer is open ──────── */
 @media (max-width: 768px) {
-  body.drawer-open .audio-source-crate,
+  body.drawer-open .audio-source-dock,
   body.drawer-open .audio-source-fan {
     display: none !important;
   }
