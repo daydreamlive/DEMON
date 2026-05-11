@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 
+import { loraStrengthDispatcher } from "@/engine/lora/dispatcher";
 import { readKnob } from "@/engine/midi/absoluteDelta";
 import { decodeKnob } from "@/engine/midi/knob";
 import { LORA_SLOT_MARKER, type NoteAction } from "@/engine/midi/types";
@@ -114,24 +115,31 @@ function handleCC(cc: number, value: number): void {
  *  lora_str_<id> params (drives the LoRA UI's strength display, since
  *  LoraRow reads from useLoraStore). Without the LoRA mirror, MIDI
  *  knobs would change the engine's behaviour but the visual slider in
- *  the Library tile would stay frozen. */
+ *  the Library tile would stay frozen.
+ *
+ *  lora_str_<id> params route through loraStrengthDispatcher so MIDI
+ *  knob sweeps debounce into one engine-side refit per gesture,
+ *  matching the touch/edge-drag paths. */
 function applyMidiSet(param: string, value: number): void {
-  usePerformanceStore.getState().setSlider(param, value);
   if (param.startsWith("lora_str_")) {
     const id = param.slice("lora_str_".length);
-    useLoraStore.getState().setStrength(id, value);
+    loraStrengthDispatcher.set(id, value);
+    return;
   }
+  usePerformanceStore.getState().setSlider(param, value);
 }
 
 function applyMidiBump(param: string, delta: number): void {
-  usePerformanceStore.getState().bumpSlider(param, delta);
   if (param.startsWith("lora_str_")) {
     const id = param.slice("lora_str_".length);
-    // Mirror the bumped value (the perf store already clamped) so the
-    // LoRA UI shows the same number.
-    const v = usePerformanceStore.getState().sliderTargets[param] ?? 0;
-    useLoraStore.getState().setStrength(id, v);
+    // Compute the new absolute target from sliderTargets (kept current
+    // by dispatcher.set on every prior bump) and route the result
+    // through the dispatcher; clamping happens inside.
+    const current = usePerformanceStore.getState().sliderTargets[param] ?? 0;
+    loraStrengthDispatcher.set(id, current + delta);
+    return;
   }
+  usePerformanceStore.getState().bumpSlider(param, delta);
 }
 
 function handleNote(note: number): void {

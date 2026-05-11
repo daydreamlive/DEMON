@@ -209,7 +209,7 @@ function ensureDropTweenRunning(): void {
 const MANUAL_OVERRIDE_WINDOW_MS = 500;
 const manualTouchedAt = new Map<string, number>();
 
-function stampManualTouch(param: string): void {
+export function stampManualTouch(param: string): void {
   manualTouchedAt.set(param, performance.now());
 }
 
