@@ -17,6 +17,15 @@ const PALETTE = [
   "#f08a48", // orange
   "#e84f3d", // coral
 ];
+// rgb triplets parsed once at module load — used to build per-frame
+// linear-gradient strokeStyles that fade each ribbon's leading end to
+// alpha 0. Kept in sync with PALETTE by index.
+const PALETTE_RGB: ReadonlyArray<readonly [number, number, number]> = [
+  [0x3d, 0xb6, 0xbe],
+  [0xc7, 0xb5, 0x66],
+  [0xf0, 0x8a, 0x48],
+  [0xe8, 0x4f, 0x3d],
+];
 
 const ALONG = 1000;
 const ACROSS = 100;
@@ -32,35 +41,31 @@ const INWARD_DISTANCE = 8;
 // max --bloom-amount, so 16 px leaves clear headroom on both ends.
 const ALONG_END_INSET_PX = 16;
 
-// "Filled" colored ribbons converge onto a shared meeting point in the
-// last HEAD_CONVERGE_START fraction of their writhe, then each ribbon's
-// path continues into a polar wrap around the halo center — so the four
-// ribbons LITERALLY become the halo at the slider's value position.
-// No separate halo draw call; the wrap is the halo.
-const HEAD_CONVERGE_START = 0.85;
-const HEAD_HALO_BASE_R_PX = 9;
-const HEAD_HALO_KICK_R_PX = 4;
-const HEAD_HALO_RADIAL_SPREAD_PX = 1.1;
-const HEAD_HALO_NOISE_AMP_BASE_PX = 0.9;
-const HEAD_HALO_NOISE_AMP_KICK_PX = 1.6;
-const HEAD_HALO_WRAP_STEPS = 28;
-// Wrap covers ~340° so the ribbon ends just shy of closing back on
-// itself — implies a coil at the thumb position without a visible seam.
-const HEAD_HALO_WRAP_SPAN = Math.PI * 2 * 0.95;
-const HEAD_HALO_FAN_FRACTION = 0.25; // radial offset ramps from 0 over first 25% of wrap
+// Half-revolution curl at each ribbon's leading edge — same geometry
+// as the pre-2026-05 version, restored after the per-ribbon coil and
+// halo-wrap variants were tried and rejected.
+const HEAD_CURL_STEPS = 8;
+const HEAD_CURL_BASE_R = 7;
+const HEAD_CURL_KICK_R = 3;
 
-// Gray "track" ribbons drawn full-length-minus-fill behind the colored
-// fill, so the slider reads as a traditional fill-up-to-value control
-// — but the track is itself moving ribbons, so it's cohesive with the
-// fill rather than a different visual language.
+// Leading-end fade — mirrors the trailing-end's CSS mask fade but
+// tracks the value position. Implemented via a createLinearGradient()
+// strokeStyle so it's a single stroke per ribbon (no sub-stroke alpha
+// juggling). Fade region: from FADE_START_T × drawLen (still full
+// color) → drawLen + FADE_END_EXTRA_PX (transparent), which makes
+// the visible ribbon look ~10% shorter than its drawLen + the curl
+// dissolves cleanly past the fade.
+const LEAD_FADE_START_T = 0.82;
+const LEAD_FADE_END_EXTRA_PX = 18;
+
+// Gray "track" ribbons drawn drawLen..ALONG behind the colored fill so
+// the slider reads as a traditional fill-up-to-value control — but the
+// track is itself moving ribbons, cohesive with the fill rather than a
+// different visual language.
 const TRACK_COLOR = "#5a5a60";
 // Multiplier on the canvas-wide alpha for the track pass — keeps the
 // track subordinate while still letting it breathe with --bloom-amount.
 const TRACK_ALPHA_MUL = 0.42;
-// How long the gray track fans out from the convergence point as the
-// along axis moves away from the halo. Mirrors HEAD_CONVERGE_START so
-// the track's start lines up with where the fill's wrap began.
-const TRACK_FAN_FRACTION = 0.15;
 
 // Floors for ribbon length, defined in types/engine. The side floor
 // is also consumed by DesktopEdgeDrag for the hint head position so
@@ -240,20 +245,11 @@ function viewBoxToCanvas(
   return { x: t.acrossOffset + across * t.sx, y: t.alongOffset + y * t.sy };
 }
 
-/** Unit vector (in canvas-pixel space) the ribbon travels as `along`
- *  increases. The "outboard" direction the halo center sits relative
- *  to the convergence point. */
-function travelDir(bar: RibbonBar): { dx: number; dy: number } {
-  if (bar.horizontal) {
-    return bar.flipAlong ? { dx: -1, dy: 0 } : { dx: 1, dy: 0 };
-  }
-  return bar.flipAlong ? { dx: 0, dy: -1 } : { dx: 0, dy: 1 };
-}
-
-/** Colored "fill" ribbon — 0..drawLen along the bar, converging
- *  laterally at the head, then continuing as a polar wrap around the
- *  halo center so the ribbon literally becomes the halo (no abrupt end,
- *  no separate halo-draw call). One ribbon = one stroked path. */
+/** Colored "fill" ribbon — 0..drawLen along the bar, terminating in
+ *  the original half-revolution curl. Stroked with a per-frame linear
+ *  gradient strokeStyle so the leading end fades to alpha 0 — mirrors
+ *  the trailing-end CSS mask fade but tracks the value position.
+ *  Single beginPath / stroke per ribbon. */
 function drawFillRibbon(
   ctx: CanvasRenderingContext2D,
   progress: number,
@@ -278,71 +274,112 @@ function drawFillRibbon(
     bar.innerSign > 0 ? ACROSS - INWARD_DISTANCE : INWARD_DISTANCE;
   const tform = barTransform(bar, bleedPx);
 
-  ctx.beginPath();
+  // ── Leading-end fade gradient ─────────────────────────────────────
+  // Build a linear gradient along the bar's along axis. Points where
+  // the path falls BEFORE the gradient's start get the first stop
+  // (full color); points AFTER the end get the last stop (transparent).
+  // So the writhe is full color from along=0 to ~82% of drawLen, then
+  // fades to 0 over the next ~18% + the curl extent.
+  const [cr, cg, cb] = PALETTE_RGB[ribbonIdx];
+  let g0x = 0, g0y = 0, g1x = 0, g1y = 0;
+  if (bar.horizontal) {
+    g0x = tform.alongOffset + drawLen * LEAD_FADE_START_T * tform.sx;
+    g1x = tform.alongOffset + drawLen * tform.sx + LEAD_FADE_END_EXTRA_PX;
+  } else if (bar.flipAlong) {
+    // Vertical bar, value end at TOP of canvas (small y).
+    g0y = tform.alongOffset + (ALONG - drawLen * LEAD_FADE_START_T) * tform.sy;
+    g1y = tform.alongOffset + (ALONG - drawLen) * tform.sy - LEAD_FADE_END_EXTRA_PX;
+  } else {
+    g0y = tform.alongOffset + drawLen * LEAD_FADE_START_T * tform.sy;
+    g1y = tform.alongOffset + drawLen * tform.sy + LEAD_FADE_END_EXTRA_PX;
+  }
+  const grad = ctx.createLinearGradient(g0x, g0y, g1x, g1y);
+  grad.addColorStop(0, `rgba(${cr},${cg},${cb},1)`);
+  grad.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
+  ctx.strokeStyle = grad;
 
-  // PHASE 1 — Writhe from along=0 → drawLen. Over the last
-  // (1 - HEAD_CONVERGE_START) of the writhe, both `lateral` and the
-  // writhe noise taper to 0, so all four ribbons land at exactly
-  // (drawLen, center) — a single shared convergence point.
+  // ── Writhe (full lateral spread, no convergence — pre-2026-05 look) ──
+  ctx.beginPath();
+  let prevVbX = 0,
+    prevVbY = 0,
+    lastVbX = 0,
+    lastVbY = 0;
   for (let i = 0; i <= SEGMENTS; i++) {
     const t = i / SEGMENTS;
     const along = t * drawLen;
     const noise =
       Math.sin(along * 0.012 + time * 1.3 + phase) * 0.7 +
       Math.sin(along * 0.025 - time * 0.9 + phase * 1.4) * 0.3;
-    const convergeT = t < HEAD_CONVERGE_START
-      ? 0
-      : (t - HEAD_CONVERGE_START) / (1 - HEAD_CONVERGE_START);
-    const lateralFactor = 1 - convergeT;
-    const writheFactor = 1 - convergeT; // → 0 at convergence: clean meeting point
-    const across =
-      center + lateral * lateralFactor + noise * writheAmp * writheFactor;
-    const { x, y } = viewBoxToCanvas(bar, tform, along, across);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+    const across = center + lateral + noise * writheAmp;
+
+    let vbX: number, vbY: number;
+    if (bar.horizontal) {
+      vbX = along;
+      vbY = across;
+    } else {
+      vbX = across;
+      vbY = bar.flipAlong ? ALONG - along : along;
+    }
+    const px = bar.horizontal
+      ? tform.alongOffset + vbX * tform.sx
+      : tform.acrossOffset + vbX * tform.sx;
+    const py = bar.horizontal
+      ? vbY * tform.sy
+      : tform.alongOffset + vbY * tform.sy;
+    if (i > 0) {
+      prevVbX = lastVbX;
+      prevVbY = lastVbY;
+    }
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+    lastVbX = vbX;
+    lastVbY = vbY;
   }
 
-  // PHASE 2 — Polar wrap around the halo center. The halo sits
-  // HEAD_HALO radius units outboard of the convergence point, so the
-  // convergence lies on the halo's back perimeter; the ribbon
-  // continues from there, fanning OUT to its concentric radial slot
-  // over the first HEAD_HALO_FAN_FRACTION of the wrap. No moveTo —
-  // same path as phase 1, so the visual transition has no seam.
+  // ── Half-revolution curl at the leading edge (original) ──
+  // Tangent from the writhe's last segment defines the curl plane;
+  // altSign / innerSign alternation gives adjacent ribbons opposite
+  // curl handedness. The gradient strokeStyle fades the curl out as
+  // it extends past drawLen, since the canvas position falls past
+  // the gradient's last stop.
   if (drawLen > 8) {
-    const conv = viewBoxToCanvas(bar, tform, drawLen, center);
-    const dir = travelDir(bar);
-    const haloR = HEAD_HALO_BASE_R_PX + kick * HEAD_HALO_KICK_R_PX;
-    const haloCx = conv.x + dir.dx * haloR;
-    const haloCy = conv.y + dir.dy * haloR;
-    // Angle from halo center pointing BACK at the convergence point.
-    const entryAngle = Math.atan2(-dir.dy, -dir.dx);
-    const radialSlot =
-      (ribbonIdx - (PALETTE.length - 1) / 2) * HEAD_HALO_RADIAL_SPREAD_PX;
-    const wrapWritheAmp =
-      HEAD_HALO_NOISE_AMP_BASE_PX + kick * HEAD_HALO_NOISE_AMP_KICK_PX;
-    const wrapPhase = ribbonIdx * 0.7;
-    const tw = time * 1.3;
-    for (let j = 1; j <= HEAD_HALO_WRAP_STEPS; j++) {
-      const wrapT = j / HEAD_HALO_WRAP_STEPS;
-      const theta = entryAngle + wrapT * HEAD_HALO_WRAP_SPAN;
-      const fanT = Math.min(1, wrapT / HEAD_HALO_FAN_FRACTION);
-      const noise =
-        Math.sin(theta * 3 + tw + wrapPhase) * 0.7 +
-        Math.sin(theta * 7 - tw * 0.7 + wrapPhase * 1.4) * 0.3;
-      const r = haloR + radialSlot * fanT + noise * wrapWritheAmp * fanT;
-      const x = haloCx + r * Math.cos(theta);
-      const y = haloCy + r * Math.sin(theta);
-      ctx.lineTo(x, y);
+    const dx = lastVbX - prevVbX;
+    const dy = lastVbY - prevVbY;
+    const segLen = Math.hypot(dx, dy) || 1;
+    const ux = dx / segLen;
+    const uy = dy / segLen;
+    const altSign = ribbonIdx % 2 === 0 ? 1 : -1;
+    const sign = altSign * (bar.innerSign > 0 ? 1 : -1);
+    const pvx = -uy * sign;
+    const pvy = ux * sign;
+    const rCurl = HEAD_CURL_BASE_R + kick * HEAD_CURL_KICK_R;
+    const cx = lastVbX + pvx * rCurl;
+    const cy = lastVbY + pvy * rCurl;
+    for (let j = 1; j <= HEAD_CURL_STEPS; j++) {
+      const a = (j / HEAD_CURL_STEPS) * Math.PI;
+      const sa = Math.sin(a);
+      const ca = Math.cos(a);
+      const rx = -pvx * ca + ux * sa;
+      const ry = -pvy * ca + uy * sa;
+      const tipAlong = bar.horizontal ? cx + rx * rCurl : cy + ry * rCurl;
+      const tipAcross = bar.horizontal ? cy + ry * rCurl : cx + rx * rCurl;
+      const tipX = bar.horizontal
+        ? tform.alongOffset + tipAlong * tform.sx
+        : tform.acrossOffset + tipAcross * tform.sx;
+      const tipY = bar.horizontal
+        ? tipAcross * tform.sy
+        : tform.alongOffset + tipAlong * tform.sy;
+      ctx.lineTo(tipX, tipY);
     }
   }
   ctx.stroke();
 }
 
-/** Gray "track" ribbon — drawLen..ALONG along the bar, mirroring the
- *  fill ribbon's writhe math so the unfilled portion looks like the
- *  same four ribbons, just dim. Starts at the convergence point
- *  (where the halo lives) and fans BACK OUT to the normal lateral
- *  spread over the first TRACK_FAN_FRACTION of the track. */
+/** Gray "track" ribbon — drawLen..ALONG along the bar. Uses the
+ *  identical writhe math (same noise function, same lateral spread,
+ *  same phase) as drawFillRibbon, so where fill ends and track begins
+ *  the two share the SAME point — no visual seam at the value
+ *  boundary, no special fan-in/fan-out treatment needed. */
 function drawTrackRibbon(
   ctx: CanvasRenderingContext2D,
   progress: number,
@@ -364,9 +401,9 @@ function drawTrackRibbon(
   const center =
     bar.innerSign > 0 ? ACROSS - INWARD_DISTANCE : INWARD_DISTANCE;
   const tform = barTransform(bar, bleedPx);
-  // Density: one segment per ~4% of bar length, floored at 8 so even
-  // a near-maxed slider still has enough segments for the fan-out
-  // arc to look smooth.
+  // Density: roughly proportional to track length, floored at 8 so
+  // a near-maxed slider still has enough segments for the writhe to
+  // read smoothly past the curl region.
   const segs = Math.max(8, Math.round(SEGMENTS * (trackLen / ALONG)));
 
   ctx.beginPath();
@@ -376,10 +413,7 @@ function drawTrackRibbon(
     const noise =
       Math.sin(along * 0.012 + time * 1.3 + phase) * 0.7 +
       Math.sin(along * 0.025 - time * 0.9 + phase * 1.4) * 0.3;
-    const fanT = trackT < TRACK_FAN_FRACTION
-      ? trackT / TRACK_FAN_FRACTION
-      : 1;
-    const across = center + lateral * fanT + noise * writheAmp * fanT;
+    const across = center + lateral + noise * writheAmp;
     const { x, y } = viewBoxToCanvas(bar, tform, along, across);
     if (i === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
@@ -421,14 +455,12 @@ export function tickRibbons(
       drawTrackRibbon(ctx, fill, i, time, kick, bar, bar.bleedPx);
     }
 
-    // PASS 2 — Colored fill ribbons (0..value), each ending in a
-    // polar wrap around the halo center. The four wraps overlay each
-    // other into a concentric multi-color ring — the slider's thumb
-    // — but it's literally part of each ribbon's path, so the
-    // morph from writhe → halo has no seam.
+    // PASS 2 — Colored fill ribbons (0..value), each terminating in
+    // the original half-revolution curl. Per-ribbon gradient
+    // strokeStyle (set inside drawFillRibbon) fades the leading end
+    // so the curl dissolves rather than ending abruptly.
     ctx.globalAlpha = alpha;
     for (let i = 0; i < PALETTE.length; i++) {
-      ctx.strokeStyle = PALETTE[i];
       drawFillRibbon(ctx, fill, i, time, kick, bar, bar.bleedPx);
     }
     ctx.restore();
