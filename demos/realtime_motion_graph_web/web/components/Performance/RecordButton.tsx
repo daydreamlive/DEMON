@@ -41,13 +41,31 @@ export function RecordButton() {
     prevKind.current = state.kind;
   }, [state.kind]);
 
-  const supported = isRecordingSupported();
-  if (!supported) return null;
-  if (status === "idle" || kiosk) return null;
-
+  // Derive everything we need from state UP FRONT so the one-shot
+  // tooltip hook below stays above the early returns (Rules of Hooks
+  // — hooks must run in the same order on every render).
   const active = isActive(state);
   const busy = state.kind === "arming" || state.kind === "finalizing";
   const elapsed = state.kind === "recording" ? elapsedMs(state, now) : 0;
+  const label =
+    state.kind === "recording"
+      ? `Stop recording (${fmtTime(elapsed)})`
+      : state.kind === "paused"
+        ? "Resume recording"
+        : state.kind === "arming"
+          ? "Starting…"
+          : state.kind === "finalizing"
+            ? "Saving…"
+            : "Record (R)";
+  // One-shot tooltip — shows the first time, never again. The
+  // permanent "REC" caption beneath the disc carries the affordance
+  // once the user has seen the tooltip; repeated tooltips become
+  // noise during active performance.
+  const tipProps = useOneShotTooltip("record", label);
+
+  const supported = isRecordingSupported();
+  if (!supported) return null;
+  if (status === "idle" || kiosk) return null;
 
   const onClick = () => {
     if (busy) return;
@@ -63,23 +81,6 @@ export function RecordButton() {
   ]
     .filter(Boolean)
     .join(" ");
-
-  const label =
-    state.kind === "recording"
-      ? `Stop recording (${fmtTime(elapsed)})`
-      : state.kind === "paused"
-        ? "Resume recording"
-        : state.kind === "arming"
-          ? "Starting…"
-          : state.kind === "finalizing"
-            ? "Saving…"
-            : "Record (R)";
-
-  // One-shot tooltip — shows the first time, never again. The
-  // permanent "REC" caption beneath the disc carries the affordance
-  // once the user has seen the tooltip; repeated tooltips become
-  // noise during active performance.
-  const tipProps = useOneShotTooltip("record", label);
 
   return (
     <div className="turntable-wrap">
