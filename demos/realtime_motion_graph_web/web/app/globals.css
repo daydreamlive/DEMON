@@ -3681,20 +3681,11 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
      gradient seam, no separate shadow halos. */
   filter: drop-shadow(0 0 calc(1px + var(--bloom-amount, 0) * 6px) var(--accent-glow));
 }
-.audio-source-dock::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: var(--dd-gradient);
-  pointer-events: none;
-  border-radius: var(--radius-md) var(--radius-md) 0 0;
-  /* Sit above both children's backgrounds so the strip reads as the
-     unified top edge. */
-  z-index: 1;
-}
+/* Brand gradient strip — split into two pseudo-elements (one per
+   child) so each piece pins to its own child's positioning context.
+   Since --dd-gradient is a 180deg gradient compressed into 1px, both
+   strips show the same top-stop color and visually meet seamlessly at
+   the placard/upload seam. */
 /* Hover anywhere on the pair lifts the whole widget together so the
    placard + upload read as one unit, not two. :has() supported in
    all modern evergreen browsers we target. */
@@ -3707,6 +3698,7 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   transform: translateY(0);
 }
 .audio-source-crate {
+  position: relative; /* positioning context for the brand gradient ::before */
   min-width: 140px;
   max-width: 260px;
   padding: 7px 12px 7px 14px;
@@ -3726,11 +3718,24 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   gap: 10px;
   cursor: pointer;
   text-align: left;
-  /* Drop-shadow + gradient strip live on the .audio-source-dock parent
-     so they span placard + upload as one unit. */
+  /* Drop-shadow lives on the .audio-source-dock parent so it traces
+     the merged outline; gradient strip lives on this ::before. */
   transition:
     background 160ms,
     border-color 160ms;
+}
+.audio-source-crate::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--dd-gradient);
+  pointer-events: none;
+  /* Top-left radius only — the right edge meets the upload's strip,
+     which owns the top-right radius. */
+  border-radius: var(--radius-md) 0 0 0;
 }
 /* Always-visible upload icon button. Sits flush against the placard's
    right edge — same height, same blur background, same bloom-coupled
@@ -3752,11 +3757,24 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   border-radius: 0 var(--radius-md) var(--radius-md) 0;
   color: var(--text-dim);
   cursor: pointer;
-  /* Drop-shadow + gradient strip live on the .audio-source-dock parent. */
+  /* Drop-shadow lives on the .audio-source-dock parent so it traces
+     the merged outline; gradient strip lives on this ::before. */
   transition:
     background 160ms,
     border-color 160ms,
     color 160ms;
+}
+.audio-source-upload-btn::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--dd-gradient);
+  pointer-events: none;
+  /* Top-right radius only — the left edge meets the placard's strip. */
+  border-radius: 0 var(--radius-md) 0 0;
 }
 .audio-source-upload-btn:hover {
   background: rgba(6, 6, 12, 0.85);
