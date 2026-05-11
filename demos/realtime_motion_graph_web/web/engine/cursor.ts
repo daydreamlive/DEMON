@@ -21,7 +21,7 @@
 // and double the per-frame draw surface. Caller renders
 // <canvas class="cursor-canvas"> (see <CustomCursor />).
 
-const ORBIT_RADIUS = 9;
+const ORBIT_RADIUS = 6;
 const SPRING_K = 0.18;
 const DAMPING = 0.78;
 const ROTATION_SPEED = 0.0004;
@@ -52,9 +52,15 @@ const PARTICLE_CONFIG: Array<{
 
 // Spark / confetti tuning. Gravity is per-frame at ~60fps; the loop scales
 // physics by dt / 16 so motion stays steady on uneven frame timing.
+//
+// SPARK_LIFE_MS + SPARK_MIN_SPEED tuned 2026-05 in response to user
+// feedback that the sparks felt like "glitter" and were annoying —
+// life dropped from 700ms (visible long trails) to 420ms (sparks
+// fade before the trail visually extends), and min-speed raised from
+// 3.2 to 5 so idle micro-jitter doesn't emit sparks at all.
 const GRAVITY = 0.16;
-const SPARK_LIFE_MS = 700;
-const SPARK_MIN_SPEED = 3.2;
+const SPARK_LIFE_MS = 420;
+const SPARK_MIN_SPEED = 5;
 const SPARK_PER_FRAME_CAP = 1;
 const CONFETTI_LIFE_MS = 900;
 const CONFETTI_COUNT = 16;
