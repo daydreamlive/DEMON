@@ -1025,14 +1025,15 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   top: 0;
   /* Bookended on BOTH sides by corner anchors. Right inset terminates
      before the halo badge (right: hud + 24, width 44 → left edge at
-     hud + 68; 12px gap = hud + 80). Left inset reserves room for an
-     anchor of comparable scale to the halo plus a generous 64px breathing
-     gap before the ribbon begins (left: hud + 144). The asymmetric gap
-     accommodates a downstream consumer with a hard-edged rectangular
-     anchor — demon-public-demo's saved-sessions Library cassette —
-     where the halo's soft writhing ring needs less air than a tilted
-     rectangle. With no consumer mounted, the slot is simply blank. */
-  left: calc(var(--hud-thickness) + 144px);
+     hud + 68; 12px gap = hud + 80). Left inset reserves room for the
+     downstream consumer's brand anchor — currently demon-public-demo's
+     DAYDREAM wordmark at ~30px tall × ~160px wide (888×167 PNG scaled
+     to 30px), anchored at `hud + 24`. The 200px inset clears the
+     wordmark + breathing room (24 anchor + 160 wordmark + 16 gap).
+     Reduce to 144px if the consumer reverts to a smaller anchor
+     like the previous LibraryButton cassette (64px wide). With no
+     consumer mounted, the slot is simply blank. */
+  left: calc(var(--hud-thickness) + 200px);
   right: calc(var(--hud-thickness) + 80px);
   height: var(--hud-thickness);
 }

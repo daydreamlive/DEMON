@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useIsMobile } from "@/hooks/useIsMobile";
+import { useOneShotTooltip } from "@/hooks/useOneShotTooltip";
 import { useCurveStore } from "@/store/useCurveStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
@@ -157,23 +158,7 @@ export function AdvancedDrawer() {
         className={`install-sheet${open ? " open" : ""}${isMobile ? " install-sheet--mobile" : ""}`}
         aria-hidden={!open}
       >
-        <button
-          id="install-adv-handle"
-          className={`install-drawer-handle${started ? "" : " install-drawer-handle--disabled"}`}
-          aria-label="Toggle advanced controls drawer"
-          aria-disabled={!started}
-          data-dd-tooltip={started ? "Advanced Controls (o)" : "Press Play to enable"}
-          onClick={() => {
-            if (!started) return;
-            setOpen((v) => !v);
-          }}
-          disabled={!started}
-          type="button"
-        >
-          <span className="install-drawer-handle-grip" aria-hidden="true" />
-          <span className="install-drawer-handle-label">Advanced Controls</span>
-          <span className="install-drawer-handle-grip" aria-hidden="true" />
-        </button>
+        <DrawerHandle started={started} open={open} setOpen={setOpen} />
 
         <div className="install-sheet-body">
           {isMobile ? (
@@ -217,5 +202,44 @@ export function AdvancedDrawer() {
         onDismiss={handleCoachmarkDismiss}
       />
     </>
+  );
+}
+
+// Extracted so useOneShotTooltip lives in its own component scope —
+// keeps AdvancedDrawer's hook list clean (it already runs five effects
+// + four store subscriptions) and avoids any chance of conditionally
+// calling the hook based on `started` early-returns. The tooltip only
+// applies the [data-dd-tooltip] attribute the first time a user hovers
+// the handle; afterwards the persistent label + the AdvancedCoachmark
+// (Stage D) carry the affordance.
+interface DrawerHandleProps {
+  started: boolean;
+  open: boolean;
+  setOpen: (fn: (v: boolean) => boolean) => void;
+}
+function DrawerHandle({ started, open, setOpen }: DrawerHandleProps) {
+  const tipProps = useOneShotTooltip(
+    "advanced-drawer",
+    started ? "Advanced Controls (o)" : "Press Play to enable",
+  );
+  void open; // accepted but no longer needed in this body — kept in signature for clarity
+  return (
+    <button
+      id="install-adv-handle"
+      className={`install-drawer-handle${started ? "" : " install-drawer-handle--disabled"}`}
+      aria-label="Toggle advanced controls drawer"
+      aria-disabled={!started}
+      {...tipProps}
+      onClick={() => {
+        if (!started) return;
+        setOpen((v) => !v);
+      }}
+      disabled={!started}
+      type="button"
+    >
+      <span className="install-drawer-handle-grip" aria-hidden="true" />
+      <span className="install-drawer-handle-label">Advanced Controls</span>
+      <span className="install-drawer-handle-grip" aria-hidden="true" />
+    </button>
   );
 }
