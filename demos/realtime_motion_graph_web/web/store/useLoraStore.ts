@@ -4,10 +4,18 @@ import { create } from "zustand";
 
 import { getConfig } from "@/lib/config";
 import {
+  containsTrigger,
+  getLoraTrigger,
+  withTrigger,
+  withoutTrigger,
+} from "@/lib/loraTriggers";
+import {
   LORA_DEFAULT_STRENGTH_FRACTION,
   LORA_SLIDER_MAX,
 } from "@/types/engine";
 import type { LoraCatalogEntry } from "@/types/protocol";
+
+import { usePerformanceStore } from "./usePerformanceStore";
 
 // Server-driven LoRA catalog + per-id strength + enabled set. The catalog
 // arrives via /api/loras (cheap filesystem scan, available before WS) and
@@ -77,6 +85,12 @@ interface LoraState {
   enabled: Set<string>;
   /** Whether default-on LoRAs have already been seeded for this session. */
   _seeded: boolean;
+  /** Trigger words this store has auto-prepended to promptA/B as a side
+   *  effect of LoRA toggles. Used to decide whether to strip a trigger
+   *  on toggle-off — if the user typed the trigger manually, it's NOT
+   *  in this set, so disabling the LoRA leaves the user's text alone.
+   *  Lower-case for case-insensitive set semantics. */
+  _autoTriggers: Set<string>;
 
   setCatalog: (catalog: LoraCatalogEntry[]) => void;
   setStrength: (id: string, value: number) => void;
@@ -86,11 +100,61 @@ interface LoraState {
   reset: () => void;
 }
 
+/** Side-effect helper — auto-prepend a LoRA's trigger to both prompts
+ *  if it's registered in lib/loraTriggers and not already present. Idem-
+ *  potent: re-calling for the same LoRA is a no-op. Updates the local
+ *  `_autoTriggers` set so we know which triggers we own and can later
+ *  strip cleanly. Returns the next set to fold into the LoRA store
+ *  state (the perf store mutation is fire-and-forget). */
+function applyTriggerOnEnable(
+  id: string,
+  prevAuto: Set<string>,
+): Set<string> {
+  const t = getLoraTrigger(id);
+  if (!t) return prevAuto;
+  const trigger = t.trigger.toLowerCase();
+  const perf = usePerformanceStore.getState();
+  let touched = false;
+  if (!containsTrigger(perf.promptA, t.trigger)) {
+    perf.setPromptA(withTrigger(perf.promptA, t.trigger));
+    touched = true;
+  }
+  if (!containsTrigger(perf.promptB, t.trigger)) {
+    perf.setPromptB(withTrigger(perf.promptB, t.trigger));
+    touched = true;
+  }
+  if (!touched && prevAuto.has(trigger)) return prevAuto;
+  const next = new Set(prevAuto);
+  next.add(trigger);
+  return next;
+}
+
+/** Side-effect helper — strip a LoRA's auto-injected trigger from both
+ *  prompts when we own the injection. If the trigger isn't in
+ *  `_autoTriggers` (e.g. the user typed it manually) we leave both
+ *  prompts untouched. */
+function stripTriggerOnDisable(
+  id: string,
+  prevAuto: Set<string>,
+): Set<string> {
+  const t = getLoraTrigger(id);
+  if (!t) return prevAuto;
+  const trigger = t.trigger.toLowerCase();
+  if (!prevAuto.has(trigger)) return prevAuto;
+  const perf = usePerformanceStore.getState();
+  perf.setPromptA(withoutTrigger(perf.promptA, t.trigger));
+  perf.setPromptB(withoutTrigger(perf.promptB, t.trigger));
+  const next = new Set(prevAuto);
+  next.delete(trigger);
+  return next;
+}
+
 export const useLoraStore = create<LoraState>((set) => ({
   catalog: [],
   strengths: {},
   enabled: new Set(),
   _seeded: false,
+  _autoTriggers: new Set<string>(),
 
   setCatalog: (catalog) =>
     set((s) => {
@@ -151,7 +215,26 @@ export const useLoraStore = create<LoraState>((set) => ({
         enabled = nextEnabled;
         seeded = true;
       }
-      return { catalog, strengths: next, enabled, _seeded: seeded };
+      // For every LoRA enabled by the initial seed, auto-prepend its
+      // trigger to both prompts so the default-on demo actually
+      // activates the style. Idempotent against the user's default
+      // promptA/B (e.g. `afxdump` is already hard-coded in the
+      // default promptA → withTrigger no-ops; the deathstep slot is
+      // covered without doubling). Skipped for LoRAs absent from
+      // loraTriggers.ts (e.g. synthpop).
+      let autoTriggers = s._autoTriggers;
+      if (seeded && !s._seeded) {
+        for (const id of enabled) {
+          autoTriggers = applyTriggerOnEnable(id, autoTriggers);
+        }
+      }
+      return {
+        catalog,
+        strengths: next,
+        enabled,
+        _seeded: seeded,
+        _autoTriggers: autoTriggers,
+      };
     }),
   setStrength: (id, value) =>
     set((s) => ({ strengths: { ...s.strengths, [id]: value } })),
@@ -160,21 +243,29 @@ export const useLoraStore = create<LoraState>((set) => ({
       if (s.enabled.has(id)) return {} as Partial<LoraState>;
       const next = new Set(s.enabled);
       next.add(id);
-      return { enabled: next };
+      const autoTriggers = applyTriggerOnEnable(id, s._autoTriggers);
+      return { enabled: next, _autoTriggers: autoTriggers };
     }),
   disable: (id) =>
     set((s) => {
       if (!s.enabled.has(id)) return {} as Partial<LoraState>;
       const next = new Set(s.enabled);
       next.delete(id);
-      return { enabled: next };
+      const autoTriggers = stripTriggerOnDisable(id, s._autoTriggers);
+      return { enabled: next, _autoTriggers: autoTriggers };
     }),
   toggle: (id) =>
     set((s) => {
       const next = new Set(s.enabled);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return { enabled: next };
+      let autoTriggers: Set<string>;
+      if (next.has(id)) {
+        next.delete(id);
+        autoTriggers = stripTriggerOnDisable(id, s._autoTriggers);
+      } else {
+        next.add(id);
+        autoTriggers = applyTriggerOnEnable(id, s._autoTriggers);
+      }
+      return { enabled: next, _autoTriggers: autoTriggers };
     }),
   reset: () =>
     set((s) => {
@@ -184,7 +275,19 @@ export const useLoraStore = create<LoraState>((set) => ({
       // enabled set against the existing catalog, matching the initial
       // setCatalog seeding behaviour so "reset" actually means "back to
       // defaults", not "lose the catalog".
+      //
+      // Strip every auto-injected trigger from the prompts before
+      // re-seeding so a fresh "reset" doesn't carry stale trigger
+      // residue from the previous enabled-set; the seed pass below
+      // re-applies whichever triggers belong to the default-on LoRAs.
+      let autoTriggers = s._autoTriggers;
+      for (const id of s.enabled) {
+        autoTriggers = stripTriggerOnDisable(id, autoTriggers);
+      }
       const { strengths, enabled } = seedFromCatalog(s.catalog);
-      return { strengths, enabled };
+      for (const id of enabled) {
+        autoTriggers = applyTriggerOnEnable(id, autoTriggers);
+      }
+      return { strengths, enabled, _autoTriggers: autoTriggers };
     }),
 }));
