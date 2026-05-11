@@ -100,9 +100,12 @@
   "_reset_seconds_help": "Idle timeout. After this many seconds of no interaction (pointer, key, or MIDI), every control reverts to the defaults above. Set to 0 to disable.",
   "reset_seconds": 0,
 
-  "_denoise_session_gate_help": "On every session start (clicking Play), snap the engine's denoise value to 0 and play a visual-only display glide from the slider's prior value down to 0 over glide_ms. The engine value never moves with the glide; it's a 'hear the source first' onboarding cue, and the slide doubles as a hint that the top ribbon is a slider. The slide is only visible when denoise is non-zero at session start (first session uses controls.denoise above; later sessions use wherever the operator left it). Set enabled to false to skip the snap and glide entirely. With the gate off, controls.denoise seeds first paint and the slider keeps the operator's last value across sessions.",
+  "_denoise_session_gate_help": "On every session start (clicking Play) AND on song swaps, snap the engine's denoise value to 0 and play a visual-only display glide from the slider's prior value down to 0 over glide_ms. The engine value never moves with the glide; it's a 'hear the source first' onboarding cue, and the slide doubles as a hint that the top ribbon is a slider. The slide is only visible when denoise is non-zero at the moment of the gate (first session uses controls.denoise above; later sessions and swaps use wherever the operator left it). Set enabled to false to skip the snap and glide entirely. With the gate off, controls.denoise seeds first paint and the slider keeps the operator's last value across sessions and swaps.",
   "denoise_session_gate": {
     "enabled": true,
     "glide_ms": 700
-  }
+  },
+
+  "_restart_song_on_swap_help": "When true, picking a different song mid-session restarts playback from frame 0 of the new song. When false, the worklet keeps the playhead's phase across the swap, so swapping at 1:30 into a 4:00 track starts the new track at 1:30. Default true matches the ScriptProcessor fallback's existing behavior.",
+  "restart_song_on_swap": true
 }

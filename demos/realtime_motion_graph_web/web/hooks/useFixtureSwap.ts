@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 
 import { loadFixtureAudio } from "@/engine/audio/loadFixture";
+import { getConfig } from "@/lib/config";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 import { isTimeSignature } from "@/types/engine";
@@ -63,6 +64,14 @@ export function useFixtureSwap() {
             time_signature?: string;
           }>).detail;
           session.player?.swap(detail.interleaved, detail.channels);
+          // Worklet's swap message keeps `position` untouched, so a swap
+          // at 1:30 into the old track would otherwise resume at 1:30 of
+          // the new track. The ScriptProcessor fallback already restarts
+          // (AudioPlayer.swap sets _spPosition = 0); this aligns the
+          // worklet path. Operator can disable via config.
+          if (getConfig().restart_song_on_swap) {
+            session.player?.seek(0);
+          }
           // Always update detectedKey / detectedTimeSignature so the
           // advanced strip's "Detected: …" readout reflects what the
           // server actually resolved — even when the user overrode it
@@ -154,17 +163,21 @@ export function useFixtureSwap() {
         return;
       }
       lastSwappedTo.current = name;
-      // Each new track re-enters the "hear source first" gate: snap the
-      // engine value to 0 instantly (user hears the source from frame
-      // 1) and play a visual-only glide on the ribbon from its prior
-      // position down to 0 as a "this is a slider" hint. Clear
-      // remixStarted so the top-edge ribbon shows "drag to start"
-      // again. Side-rail hints stay suppressed until the user drags
-      // the top ribbon up.
+      // Each new track re-enters the "hear source first" gate when
+      // enabled in config: snap engine denoise to 0 (user hears the
+      // source from frame 1) and play a visual-only glide on the ribbon
+      // from its prior position down to 0 as a "this is a slider" hint.
+      // remixStarted always clears so the "drag to start" affordance
+      // shows again; side-rail hints stay suppressed until the user
+      // drags the top ribbon up. Shares config with useStartSession so
+      // one knob controls both Play and swap.
       const perfState = usePerformanceStore.getState();
-      const prevDenoise = perfState.sliderTargets["denoise"] ?? 0;
-      perfState.setSliderDirect("denoise", 0);
-      perfState.animateSliderDisplayFrom("denoise", prevDenoise, 700);
+      const gate = getConfig().denoise_session_gate;
+      if (gate.enabled) {
+        const prevDenoise = perfState.sliderTargets["denoise"] ?? 0;
+        perfState.setSliderDirect("denoise", 0);
+        perfState.animateSliderDisplayFrom("denoise", prevDenoise, gate.glide_ms);
+      }
       perfState.setRemixStarted(false);
       setStatus("ready", "Playing");
     };

@@ -153,6 +153,12 @@ export interface RtmgConfig {
   audio: RtmgConfigAudio;
   reset_seconds: number;
   denoise_session_gate: RtmgConfigDenoiseSessionGate;
+  /** Swapping to a new song restarts playback from frame 0. When false,
+   * the worklet keeps its current phase across the swap, so a swap at
+   * 1:30 into a 4:00 track starts the new track at 1:30. The
+   * ScriptProcessor fallback already restarts on swap; this aligns the
+   * worklet path with that behavior and makes it operator-tunable. */
+  restart_song_on_swap: boolean;
 }
 
 export const DEFAULT_CONFIG: RtmgConfig = {
@@ -239,6 +245,7 @@ export const DEFAULT_CONFIG: RtmgConfig = {
     enabled: true,
     glide_ms: 700,
   },
+  restart_song_on_swap: true,
 };
 
 let _activeConfig: RtmgConfig = DEFAULT_CONFIG;
@@ -297,6 +304,10 @@ function mergeConfig(
       ...base.denoise_session_gate,
       ...(override.denoise_session_gate ?? {}),
     },
+    restart_song_on_swap:
+      typeof override.restart_song_on_swap === "boolean"
+        ? override.restart_song_on_swap
+        : base.restart_song_on_swap,
   };
 }
 
