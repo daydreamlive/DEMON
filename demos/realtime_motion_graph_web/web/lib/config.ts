@@ -89,6 +89,22 @@ export interface RtmgConfigAudio {
    *  cannot be fully closed). Higher values allow more boost at the
    *  cost of harder DAC clipping. */
   lufs_peak_headroom: number;
+  /** Disengage threshold in dB. When the chunk at the playhead reads
+   *  more than this far below target (or is fully silent), the matcher
+   *  ramps gain back to 1.0 instead of computing a makeup gain. Without
+   *  this, silence in the model's output (mid-song silence, end of
+   *  track, start of loop) gets multiplied by tens to hundreds of
+   *  times to "match" source loudness, amplifying low-level artifacts.
+   *  30 dB is well outside the range musical content reaches relative
+   *  to a gated integrated target; lowering it (e.g. 20 dB) makes the
+   *  matcher disengage earlier on quiet passages too. */
+  lufs_silence_floor_db: number;
+  /** Hysteresis band on the silence floor, in dB. Once the matcher has
+   *  disengaged, it re-engages only when the chunk reads back within
+   *  (floor - hysteresis) dB of target. Stops chunks hovering at the
+   *  threshold from flipping every tick (audible as volume swells).
+   *  Set to 0 for a hard threshold; raise to widen the dead band. */
+  lufs_silence_floor_hysteresis_db: number;
 }
 
 /** controls.* — initial slider values plus the DCW companion controls
@@ -167,6 +183,8 @@ export const DEFAULT_CONFIG: RtmgConfig = {
     lufs_window_sec: 3.0,
     lufs_metric: "lufs",
     lufs_peak_headroom: 4.0,
+    lufs_silence_floor_db: 30.0,
+    lufs_silence_floor_hysteresis_db: 6.0,
   },
   reset_seconds: 0,
 };

@@ -40,6 +40,21 @@ const LUFS_METER_INTERVAL_MS = 100;
 // tighter time resolution but K/A-weighting filter transients would
 // dominate the per-chunk reading.
 const LUFS_CHUNK_FRAMES = 14400;
+// Disengage the matcher when the chunk at the playhead is this many dB
+// or more below target. Below the floor, "match loudness" turns into
+// "amplify near-zero up to source loudness," which boosts low-level
+// model artifacts in silent regions (mid-song silence, end of track,
+// start of loop) by tens to hundreds of times. 30 dB is well outside
+// the range any real musical content reaches relative to a gated
+// integrated target, so normal loudness matching is unaffected.
+const LUFS_SILENCE_FLOOR_DB_DEFAULT = 30.0;
+// Hysteresis band on the silence floor. Once disengaged, the matcher
+// re-engages only when measured rises back to (target - floor +
+// hysteresis), i.e. comfortably inside the active band. Without this,
+// chunks whose loudness sits near the floor flip every tick and the
+// gain swells between 1.0 and the makeup value, audible as volume
+// fluctuations.
+const LUFS_SILENCE_FLOOR_HYSTERESIS_DB_DEFAULT = 6.0;
 
 interface AudioWorkletNodeWithPort extends AudioNode {
   port: MessagePort;
@@ -99,6 +114,9 @@ export class AudioPlayer {
   // headroom_factor) so a source with hot peaks doesn't pin the
   // never-attenuate clamp at unity for the entire session.
   private _peakCeiling = LUFS_PEAK_CEILING;
+  private _silenceFloorDb = LUFS_SILENCE_FLOOR_DB_DEFAULT;
+  private _silenceFloorHysteresisDb = LUFS_SILENCE_FLOOR_HYSTERESIS_DB_DEFAULT;
+  private _inSilence = false;
   // Per-chunk loudness/peak map of the mirror. The matcher consults
   // these arrays at meter time to know "what's at the playhead right
   // now" without waiting for a sliding window to fill -- which means
@@ -225,6 +243,7 @@ export class AudioPlayer {
     // Track changed: re-measure source loudness for the new buffer.
     this._sourceTarget = null;
     this.lufsMeasured = null;
+    this._inSilence = false;
     this._measureSourceTarget();
   }
 
@@ -369,6 +388,17 @@ export class AudioPlayer {
     );
     this._loudnessMetric =
       audioCfg.lufs_metric === "dba" ? "dba" : "lufs";
+    const cfgFloor = audioCfg.lufs_silence_floor_db;
+    this._silenceFloorDb =
+      Number.isFinite(cfgFloor) && cfgFloor > 0
+        ? cfgFloor
+        : LUFS_SILENCE_FLOOR_DB_DEFAULT;
+    const cfgHyst = audioCfg.lufs_silence_floor_hysteresis_db;
+    this._silenceFloorHysteresisDb =
+      Number.isFinite(cfgHyst) && cfgHyst >= 0
+        ? cfgHyst
+        : LUFS_SILENCE_FLOOR_HYSTERESIS_DB_DEFAULT;
+    this._inSilence = false;
     this._meterIntervalId = window.setInterval(
       () => this._meterTick(),
       LUFS_METER_INTERVAL_MS,
@@ -479,11 +509,31 @@ export class AudioPlayer {
     const measured = map[chunkIdx];
     const peak = peakMap[chunkIdx];
     this.lufsMeasured = Number.isFinite(measured) ? measured : null;
-    if (!Number.isFinite(measured)) return;
-    const matchGain = lufsMakeupGain(measured, target, peak, this._peakCeiling);
-    const gain = Math.max(1.0, matchGain);
     const t = this.ctx.currentTime;
     this._makeupGain.gain.cancelScheduledValues(t);
+    // Silence-floor disengage with Schmitt-trigger hysteresis: when the
+    // chunk at the playhead is more than _silenceFloorDb below target
+    // (or fully silent), computing makeup gain would amplify near-zero
+    // up to source loudness and explode any low-level model artifacts.
+    // Ramp toward unity instead. The hysteresis band stops chunks
+    // hovering at the threshold from flapping the gain every tick.
+    const gap = Number.isFinite(measured) ? target - measured : Infinity;
+    if (this._inSilence) {
+      if (gap < this._silenceFloorDb - this._silenceFloorHysteresisDb) {
+        this._inSilence = false;
+      }
+    } else {
+      if (gap > this._silenceFloorDb) {
+        this._inSilence = true;
+      }
+    }
+    let gain: number;
+    if (this._inSilence) {
+      gain = 1.0;
+    } else {
+      const matchGain = lufsMakeupGain(measured, target, peak, this._peakCeiling);
+      gain = Math.max(1.0, matchGain);
+    }
     this._makeupGain.gain.setTargetAtTime(gain, t, LUFS_GAIN_RAMP_TC);
     if ((globalThis as { __LUFS_TRACE__?: boolean }).__LUFS_TRACE__) {
       // Diagnostic trace: window.__LUFS_TRACE__ = true to log one line
@@ -493,12 +543,13 @@ export class AudioPlayer {
       console.log("[LUFS]", {
         positionSec: +this.positionSec.toFixed(2),
         chunk: chunkIdx,
-        measured: +measured.toFixed(2),
+        measured: Number.isFinite(measured) ? +measured.toFixed(2) : null,
         target: +target.toFixed(2),
         peak: +peak.toFixed(4),
         ceiling: +this._peakCeiling.toFixed(3),
         targetGain: +gain.toFixed(3),
         appliedGain: +this._makeupGain.gain.value.toFixed(3),
+        disengaged: this._inSilence,
       });
     }
   }

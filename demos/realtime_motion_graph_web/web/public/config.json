@@ -61,12 +61,14 @@
 
   "seed": 0,
 
-  "_audio_help": "Output audio chain. lufs_enabled toggles the loudness matcher on at boot (operator can still flip it via the LUFS button in-session). lufs_window_sec controls the meter's sliding window. 3s is the standard. Lower = faster response but noisier and prone to high-water spikes on transients. Practical floor ~1.5s. lufs_metric picks the metric: 'lufs' (BS.1770 K-weighted, broadcast standard) or 'dba' (IEC 61672 A-weighted, closer to perceived loudness on bright/distorted content). The matcher always seeds the high-water mark with the source's loudest short-term window at session start, so the louder of {source, denoised} defines the target from t=0 -- no need to wait for the meter to discover it.",
+  "_audio_help": "Output audio chain. lufs_enabled toggles the loudness matcher on at boot (operator can still flip it via the LUFS button in-session). lufs_window_sec controls the meter's sliding window. 3s is the standard. Lower = faster response but noisier and prone to high-water spikes on transients. Practical floor ~1.5s. lufs_metric picks the metric: 'lufs' (BS.1770 K-weighted, broadcast standard) or 'dba' (IEC 61672 A-weighted, closer to perceived loudness on bright/distorted content). lufs_silence_floor_db disengages the matcher when the chunk at the playhead reads more than this far below target (gain ramps to 1.0 instead of computing a boost), so silent regions of the model output don't get amplified into audible noise; 30 is well outside real musical content, lower to 20 to disengage on quiet passages too. lufs_silence_floor_hysteresis_db is the Schmitt-trigger band: once disengaged, the matcher re-engages only when the chunk reads within (floor - hysteresis) dB of target, preventing flapping at the threshold. Widen if you still hear volume swells at silence boundaries. The matcher always seeds the high-water mark with the source's loudest short-term window at session start, so the louder of {source, denoised} defines the target from t=0 -- no need to wait for the meter to discover it.",
   "audio": {
     "lufs_enabled": true,
     "lufs_window_sec": 1.5,
     "lufs_metric": "lufs",
-    "lufs_peak_headroom": 4.0
+    "lufs_peak_headroom": 4.0,
+    "lufs_silence_floor_db": 30.0,
+    "lufs_silence_floor_hysteresis_db": 6.0
   },
 
   "_effects_help": "Audio-reactive video shader pipeline (parallax + bloom-on-kick). Both effects pulse with the kick envelope; the perimeter ribbons + DEMON wordmark also pulse with kick via a CSS variable.",
