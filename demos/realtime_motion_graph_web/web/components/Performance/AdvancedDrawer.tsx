@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useCurveStore } from "@/store/useCurveStore";
@@ -79,13 +79,18 @@ export function AdvancedDrawer() {
     };
   }, [open]);
 
-  // First-run coachmark: show once per user on desktop, the first time
-  // the session reaches "ready". Mobile already has the LiteControls
-  // strip + "All controls" link, so the discoverability gap is desktop-
-  // shaped. Dismissal is persisted in localStorage; the actual hide
-  // (any pointerdown / Esc / 8s auto-hide) is wired inside the
-  // coachmark component, which calls back into handleCoachmarkDismiss.
+  // ─── HINT SEQUENCE — Stage D: advanced-controls coachmark ─────────
+  // See AdvancedCoachmark.tsx for the full multi-stage hint contract.
+  // tl;dr — don't fire on session-ready (would compete with the
+  // top-ribbon RemixHint, which is Stage B). Wait until the user
+  // clears the per-song remix gate (drags the top ribbon — Stage C
+  // signal: usePerformanceStore.remixStarted flips true), THEN delay
+  // ~12s so the side-ribbon RemixHints land + get noticed without our
+  // coachmark crowding them.
+  const remixStarted = usePerformanceStore((s) => s.remixStarted);
+  const remixGateClearedAt = useRef<number | null>(null);
   const [coachmarkVisible, setCoachmarkVisible] = useState(false);
+
   const handleCoachmarkDismiss = useCallback(() => {
     setCoachmarkVisible(false);
     try {
@@ -96,18 +101,47 @@ export function AdvancedDrawer() {
       // worth crashing the drawer over.
     }
   }, []);
+
+  // Capture the timestamp when the remix gate first clears this
+  // session. remixStarted resets to false per fixture swap (so each
+  // new song re-shows the "drag to start" hint), but the coachmark
+  // shouldn't get a second chance — once cleared, leave the
+  // timestamp pinned for the lifetime of the page.
+  useEffect(() => {
+    if (remixStarted && remixGateClearedAt.current === null) {
+      remixGateClearedAt.current = Date.now();
+    }
+  }, [remixStarted]);
+
+  // Schedule the coachmark once the gate + delay are satisfied.
   useEffect(() => {
     if (isMobile) return;
     if (status !== "ready") return;
     if (open) return; // user already discovered the drawer some other way
+    if (remixGateClearedAt.current === null) return; // remix gate not yet cleared
     try {
       if (localStorage.getItem(advancedCoachmarkStorageKey) === "1") return;
     } catch {
       // If we can't read localStorage, treat the user as first-run;
       // showing the coachmark once is friendlier than never showing it.
     }
-    setCoachmarkVisible(true);
-  }, [isMobile, status, open]);
+    const DELAY_MS = 12_000;
+    const elapsed = Date.now() - remixGateClearedAt.current;
+    if (elapsed >= DELAY_MS) {
+      setCoachmarkVisible(true);
+      return;
+    }
+    const t = window.setTimeout(() => {
+      // Re-check `open` at fire-time — user might have opened the
+      // drawer during the delay window.
+      if (useSessionStore.getState().status !== "ready") return;
+      // Note: we don't have access to `open` here without re-reading,
+      // but the next effect (open → dismiss) will catch that race.
+      setCoachmarkVisible(true);
+    }, DELAY_MS - elapsed);
+    return () => window.clearTimeout(t);
+  }, [isMobile, status, open, remixStarted]);
+
   // If the user opens the drawer some other way (keyboard, click on
   // the handle, future custom event), retire the coachmark.
   useEffect(() => {
