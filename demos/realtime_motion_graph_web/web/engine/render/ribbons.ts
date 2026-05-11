@@ -272,7 +272,15 @@ function drawRibbon(
     lastY = y;
   }
 
-  // Curling arrowhead at the leading edge (in viewBox space, then scaled).
+  // Coiled tail at the leading edge — replaces the old half-revolution
+  // "arrowhead curl" with a near-full logarithmic spiral. Stays purely
+  // stroke-based (no filled disk) so it reads as ribbon-material that
+  // happens to be wrapping itself, not a separate UI part stuck on the
+  // end. A 315° sweep stops short of closing back on itself, and a mild
+  // inward radius taper makes the loop look like it's actually coiling
+  // around something graspable. Same audio-reactive r so the coil still
+  // breathes with the kick. altSign / innerSign alternation kept so
+  // adjacent ribbons coil opposite ways (each color gets its own thumb).
   if (drawLen > 8) {
     const dx = lastX - prevX;
     const dy = lastY - prevY;
@@ -286,18 +294,25 @@ function drawRibbon(
     const r = 7 + kick * 3;
     const cx = lastX + px * r;
     const cy = lastY + py * r;
-    const curlSteps = 8;
+    const curlSteps = 24;
+    const curlSweep = Math.PI * 1.75; // 315° — close-but-not-closed loop
     for (let j = 1; j <= curlSteps; j++) {
-      const a = (j / curlSteps) * Math.PI;
+      const t = j / curlSteps;
+      const a = t * curlSweep;
       const sa = Math.sin(a);
       const ca = Math.cos(a);
+      // Logarithmic inward taper: tip orbits cx,cy at a shrinking
+      // radius so the coil tightens as it wraps. 0.18 keeps the taper
+      // gentle enough that the loop's "almost-a-ring" silhouette
+      // survives at the smallest kick values.
+      const rEff = r * (1 - 0.18 * t);
       const rx = -px * ca + ux * sa;
       const ry = -py * ca + uy * sa;
-      // The arrowhead tip lives in viewBox space as (cx + rx*r, cy + ry*r).
+      // The coil tip lives in viewBox space as (cx + rx*rEff, cy + ry*rEff).
       // For a horizontal bar this is (along, across); for vertical bars it's
       // (across, along). Match the same axis-aware offset as above.
-      const tipAlong = bar.horizontal ? cx + rx * r : cy + ry * r;
-      const tipAcross = bar.horizontal ? cy + ry * r : cx + rx * r;
+      const tipAlong = bar.horizontal ? cx + rx * rEff : cy + ry * rEff;
+      const tipAcross = bar.horizontal ? cy + ry * rEff : cx + rx * rEff;
       const tipX = bar.horizontal
         ? alongOffset + tipAlong * sx
         : acrossOffset + tipAcross * sx;
@@ -306,8 +321,31 @@ function drawRibbon(
         : alongOffset + tipAlong * sy;
       ctx.lineTo(tipX, tipY);
     }
+    ctx.stroke();
+
+    // Kick-gated shimmer dot at the coil's geometric center. Implies
+    // mass / something graspable inside the loop, but only on strong
+    // hits so the resting state stays pure-ribbon. Cheap: one extra
+    // fill() per ribbon per high-kick frame; uses the same palette
+    // color the stroke already used.
+    if (kick > 0.55) {
+      const dotAlong = bar.horizontal ? cx : cy;
+      const dotAcross = bar.horizontal ? cy : cx;
+      const dotPxX = bar.horizontal
+        ? alongOffset + dotAlong * sx
+        : acrossOffset + dotAcross * sx;
+      const dotPxY = bar.horizontal
+        ? dotAcross * sy
+        : alongOffset + dotAlong * sy;
+      const dotR = r * 0.28 * Math.min(sx, sy);
+      ctx.beginPath();
+      ctx.arc(dotPxX, dotPxY, dotR, 0, Math.PI * 2);
+      ctx.fillStyle = ctx.strokeStyle as string;
+      ctx.fill();
+    }
+  } else {
+    ctx.stroke();
   }
-  ctx.stroke();
 }
 
 export function tickRibbons(
