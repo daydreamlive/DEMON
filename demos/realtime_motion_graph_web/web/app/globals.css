@@ -4120,6 +4120,19 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   animation:
     network-indicator-fade-in 200ms cubic-bezier(.2, .8, .2, 1) forwards,
     start-whisper-breathe 2.6s ease-in-out infinite 200ms;
+  transition: bottom 240ms cubic-bezier(.2, .8, .2, 1);
+}
+/* Curve scheduler overlay docks its tab strip + close button against
+   the bottom of the viewport (≈48–56px tall). When that overlay is
+   open, hoist the pill above the tabs so it doesn't sit on top of the
+   curve tabs or the preset menus that grow upward from them. */
+.network-indicator[data-curves-open="true"] {
+  bottom: calc(
+    var(--drawer-handle-h, 28px) +
+    env(safe-area-inset-bottom, 0px) +
+    var(--curves-tab-strip-h, 64px) +
+    12px
+  );
 }
 .network-indicator__bars rect {
   fill: currentColor;

@@ -60,19 +60,24 @@ const THRESHOLDS = {
    *  intervals don't false-positive on a high ratio. */
   JITTER_ABS_MS: 50,
   /** Server tickMs p95 as a fraction of the *measured* slice cadence.
-   *  >0.85 = ≤15% headroom = the buffer is the only thing saving you
-   *  from underrun. Self-calibrates: at a 100ms cadence this fires at
-   *  85ms; at a 24ms cadence at ~20ms. */
-  TICK_BUDGET_RATIO: 0.85,
+   *  >0.92 = ≤8% headroom = the buffer is genuinely the only thing
+   *  saving you from underrun. Self-calibrates: at a 100ms cadence this
+   *  fires at 92ms; at a 24ms cadence at ~22ms. Bumped from 0.85 in
+   *  2026-05 after the pill was firing too often on otherwise-fine
+   *  sessions — 15% headroom is normal scheduler noise. */
+  TICK_BUDGET_RATIO: 0.92,
   /** No slice received in this long → unstable, no matter the jitter.
-   *  Squarely in the VoIP/WebRTC convention for an audio-stream
-   *  timeout (1–2s). */
-  STALL_MS: 1500,
+   *  Upper end of the VoIP/WebRTC convention for an audio-stream
+   *  timeout (1–2s). Bumped from 1500ms in 2026-05 to absorb brief
+   *  GC/JIT stalls without alarming. */
+  STALL_MS: 2200,
 
-  /** Consecutive bad ticks before showing (3s @ 500ms). On the
-   *  conservative end of the Zoom/Meet "unstable" debounce range
-   *  (~1.5–3s). */
-  ESCALATE_TICKS: 6,
+  /** Consecutive bad ticks before showing (6s @ 500ms). Above the
+   *  Zoom/Meet "unstable" debounce range (~1.5–3s) — we lean cautious
+   *  because false alarms erode trust faster than missed ones in this
+   *  app, where the canvas itself visibly degrades during real
+   *  trouble. Bumped from 6 (3s) in 2026-05. */
+  ESCALATE_TICKS: 12,
   /** Consecutive clean ticks before hiding (8s @ 500ms). Asymmetric
    *  ~2.7× the show debounce: easy to dismiss, hard to summon. */
   RECOVERY_TICKS: 16,
