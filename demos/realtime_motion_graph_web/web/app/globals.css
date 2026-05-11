@@ -3313,8 +3313,12 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
 .turntable:hover .turntable-caption {
   color: var(--accent-hover);
 }
-.turntable--recording .turntable-caption {
-  color: var(--accent);
+/* Hide the REC label while recording — the .turntable-time elapsed
+   counter renders in the same vertical slot and the two would stack.
+   Fade for continuity with the surrounding state changes. */
+.turntable--recording .turntable-caption,
+.turntable--paused .turntable-caption {
+  opacity: 0;
 }
 
 /* Disc — the rotating element. Holds platter, grooves, label, spindle. */
