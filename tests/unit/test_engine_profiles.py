@@ -92,7 +92,7 @@ class TestSelectTrtEngines:
             duration_s=30.0,
             checkpoint="acestep-v15-xl-turbo",
         )
-        assert "decoder_xl-turbo_mixed_refit_b1_60s" in paths["decoder"]
+        assert "decoder_xl-turbo_mixed_refit_b8_60s" in paths["decoder"]
         assert "vae_encode_fp16_60s" in paths["vae_encode"]
 
     def test_xl_checkpoint_has_120s_max_profile(self):
@@ -141,7 +141,7 @@ class TestAvailableTrtEnginesHappyPath:
             checkpoint="acestep-v15-xl-turbo",
         )
         assert picked == 120.0
-        assert "decoder_xl-turbo_mixed_refit_b1_120s" in paths["decoder"]
+        assert "decoder_xl-turbo_mixed_refit_b8_120s" in paths["decoder"]
 
 
 class TestAvailableTrtEnginesFallback:
@@ -238,5 +238,6 @@ class TestEngineNotBuiltError:
         assert "--checkpoint acestep-v15-xl-turbo" in command
         assert "--decoder-only" in command
         assert "--duration 60" in command
-        assert "--batch-max 1" in command
+        assert "--batch-max 8" in command
+        assert "--workspace-gb 20" in command
         assert "--decoder-precision bf16_mixed" in command

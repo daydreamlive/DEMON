@@ -70,12 +70,7 @@ _DECODER_PRECISION_CHOICES = (
     "auto",
     "fp32",
     "fp16_mixed",
-    "fp16_attn_safe",
-    "bf16",
     "bf16_mixed",
-    "bf16_layer_fp16",
-    "bf16_matmul_fp16",
-    "bf16_mlp_fp16",
 )
 
 
@@ -253,15 +248,58 @@ def _resolve_decoder_precision(
 def _decoder_precision_is_strongly_typed(decoder_precision: str, decoder_mixed: bool) -> bool:
     if decoder_precision == "fp16_mixed":
         return True
-    if decoder_precision in {
-        "fp16_attn_safe",
-        "bf16_mixed",
-        "bf16_layer_fp16",
-        "bf16_matmul_fp16",
-        "bf16_mlp_fp16",
-    }:
+    if decoder_precision == "bf16_mixed":
         return True
     return decoder_mixed
+
+
+def _decoder_onnx_needs_dynbatch_patch(
+    *,
+    checkpoint: str,
+    decoder_precision: str,
+    batch_max: int,
+) -> bool:
+    return (
+        batch_max > 1
+        and _looks_like_xl_checkpoint(checkpoint)
+        and decoder_precision == "bf16_mixed"
+    )
+
+
+def _patch_decoder_onnx_for_dynamic_batch(
+    onnx_paths: dict[str, str],
+    *,
+    need_decoder_std: bool,
+    need_decoder_refit: bool,
+    checkpoint: str,
+    decoder_precision: str,
+    batch_max: int,
+    force: bool,
+) -> dict[str, str]:
+    """Return ONNX paths, replacing XL decoder ONNX with dynbatch-patched copies."""
+    if not _decoder_onnx_needs_dynbatch_patch(
+        checkpoint=checkpoint,
+        decoder_precision=decoder_precision,
+        batch_max=batch_max,
+    ):
+        return onnx_paths
+
+    from .export import patch_decoder_onnx_dynamic_batch_reshapes
+
+    patched = dict(onnx_paths)
+    for key, needed in (
+        ("decoder", need_decoder_std),
+        ("decoder_refit", need_decoder_refit),
+    ):
+        if not needed:
+            continue
+        patched[key] = str(
+            patch_decoder_onnx_dynamic_batch_reshapes(
+                patched[key],
+                force=force,
+            )
+        )
+    return patched
 
 
 def _metadata_path(engine_path: str | os.PathLike[str]) -> Path:
@@ -1048,6 +1086,15 @@ def _run_all(args, project_root, onnx_dir, env):
             force_onnx=args.force_onnx,
             export_locally=args.export_locally,
         )
+        onnx_paths = _patch_decoder_onnx_for_dynamic_batch(
+            onnx_paths,
+            need_decoder_std=False,
+            need_decoder_refit=build_decoder,
+            checkpoint=args.checkpoint,
+            decoder_precision=decoder_precision,
+            batch_max=args.batch_max,
+            force=args.force_onnx,
+        )
     else:
         onnx_paths = {}
 
@@ -1144,6 +1191,15 @@ def _run_single(args, project_root, onnx_dir, env):
         skip_onnx=args.skip_onnx,
         force_onnx=args.force_onnx,
         export_locally=args.export_locally,
+    )
+    onnx_paths = _patch_decoder_onnx_for_dynamic_batch(
+        onnx_paths,
+        need_decoder_std=build_decoder and not args.decoder_refit,
+        need_decoder_refit=build_decoder and args.decoder_refit,
+        checkpoint=args.checkpoint,
+        decoder_precision=decoder_precision,
+        batch_max=args.batch_max,
+        force=args.force_onnx,
     )
 
     # Engine phase

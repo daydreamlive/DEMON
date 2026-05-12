@@ -69,8 +69,8 @@ restore the previous lower-memory behavior.
 `--checkpoint <name>` selects which DiT checkpoint to load. The name
 must match a directory under `<checkpoints_dir>/`. Full TensorRT mode is
 registered for `acestep-v15-turbo` (default, 2B) and
-`acestep-v15-xl-turbo` (XL). For XL, build the `b1` TRT decoder profile
-first, then launch with:
+`acestep-v15-xl-turbo` (XL). XL TRT uses dynamic-batch `b8` decoder
+profiles; build one first, then launch with:
 
 ```bash
 uv run python -u -m demos.realtime_motion_graph_web \

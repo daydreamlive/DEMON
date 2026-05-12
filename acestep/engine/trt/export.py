@@ -14,10 +14,10 @@ Precision strategy:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 import sys
-from typing import Optional, Tuple, Union
+from typing import Optional, Union
 
 from loguru import logger
 import torch
@@ -38,10 +38,8 @@ class _Transpose12(nn.Module):
 class _Fp32CastWrapper(nn.Module):
     """Run an inner module in fp32, casting around it.
 
-    Used for the bf16_mixed recipe where TRT has no bf16 kernel for some
-    op (e.g., the proj_out ConvTranspose1d). The inner module's weights
-    are cast to fp32 in-place; this wrapper bridges the dtype boundary at
-    the call site so PyTorch nn.Conv*/nn.Linear strict dtype checks pass.
+    Used for the XL bf16_mixed recipe where TensorRT has no bf16 kernel for
+    the proj_out ConvTranspose1d shape.
     """
 
     def __init__(self, inner: nn.Module):
@@ -52,146 +50,6 @@ class _Fp32CastWrapper(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out_dtype = x.dtype
         return self.inner(x.float()).to(out_dtype)
-
-
-def _cast_recursive(obj, dtype: torch.dtype):
-    """Recursively cast floating-point tensors in nested structures."""
-    if isinstance(obj, torch.Tensor):
-        if obj.is_floating_point():
-            return obj.to(dtype)
-        return obj
-    if isinstance(obj, tuple):
-        return tuple(_cast_recursive(x, dtype) for x in obj)
-    if isinstance(obj, list):
-        return [_cast_recursive(x, dtype) for x in obj]
-    if isinstance(obj, dict):
-        return {k: _cast_recursive(v, dtype) for k, v in obj.items()}
-    return obj
-
-
-class _AttnFp32Wrapper(nn.Module):
-    """Wrap a self-attention module to run entirely in fp32.
-
-    Used for the fp16_attn_safe recipe to handle XL turbo's outlier
-    attention layers (0 and 30) where q_norm/k_norm weights reach ~31
-    and amplify Q/K so far that the Q@K^T matmul output overflows fp16's
-    65 504 ceiling. Casting the attention into fp32 keeps the rest of
-    the model in fp16 for full tensor-core speed while making the few
-    overflowing layers numerically safe.
-
-    The wrapper accepts the same call signature as AceStepAttention.forward
-    (hidden_states + arbitrary kwargs) and handles the dtype crossing at
-    the call boundary.
-    """
-
-    def __init__(self, inner: nn.Module):
-        super().__init__()
-        inner.float()
-        self.inner = inner
-
-    def forward(self, hidden_states: torch.Tensor, *args, **kwargs):
-        out_dtype = hidden_states.dtype
-        hidden_states = _cast_recursive(hidden_states, torch.float32)
-        args = tuple(_cast_recursive(a, torch.float32) for a in args)
-        kwargs = {k: _cast_recursive(v, torch.float32) for k, v in kwargs.items()}
-        out = self.inner(hidden_states, *args, **kwargs)
-        return _cast_recursive(out, out_dtype)
-
-
-class _MlpFp16Wrapper(nn.Module):
-    """Wrap a Qwen3-style MLP (gate_proj/up_proj/down_proj + SiLU) to run
-    its body in fp16 with bf16 I/O.
-
-    Used for the bf16_mlp_fp16 recipe. The MLP is the biggest single
-    contributor to per-layer compute (gate+up+down matmuls plus the
-    activation), so wrapping it as a unit gives the biggest single
-    speedup per cast pair. Cast surface is 1 layer = 2 casts (in + out)
-    instead of 11 casts (one per Linear), so TRT's tactic search stays
-    tractable.
-
-    The MLP's input is the AdaLN-modulated post-RMSNorm output of
-    hidden_states, which is bounded; the output is fed into a gated
-    residual addition. Both fit in fp16.
-    """
-
-    def __init__(self, inner: nn.Module):
-        super().__init__()
-        inner.half()
-        self.inner = inner
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out_dtype = x.dtype
-        return self.inner(x.to(torch.float16)).to(out_dtype)
-
-
-class _LinearFp16Wrapper(nn.Module):
-    """Wrap a single nn.Linear (or any single-tensor-in / single-tensor-out
-    module) so it computes in fp16 with bf16 I/O.
-
-    Used for the bf16_matmul_fp16 recipe: instead of wrapping whole DiT
-    layers (which exposes a wide bf16<->fp16 cast boundary that TRT
-    fuses across, breaking the precision intent), we wrap the smallest
-    possible unit -- the individual matmul -- with a tight cast pair.
-    The trace records:
-        Cast(bf16 -> fp16) -> matmul (fp16 weights, fp16 inputs) -> Cast(fp16 -> bf16)
-    The cast surface is per-Linear, so TRT's fusion radius is limited
-    to the cast itself plus the matmul. Profiling shows the XL turbo
-    decoder spends ~77 % of its time in linear/matmul, so swapping
-    those to fp16 kernels recovers most of the bf16 throughput penalty
-    on Blackwell while leaving the residual stream in bf16 (which is
-    necessary because the residual peaks at ~190 000 in the middle
-    layers, well above fp16's 65 504 ceiling).
-
-    The wrapper assumes the inner module's input is bounded enough to
-    fit in fp16. For AceStepDiTLayer's Linears (q/k/v/o_proj and
-    mlp.gate/up/down_proj), the input is always post-RMSNorm output
-    multiplied by AdaLN scale/shift, which RMSNorm bounds to unit
-    magnitude times moderate scale weights -- well within fp16 range.
-    """
-
-    def __init__(self, inner: nn.Module):
-        super().__init__()
-        inner.half()
-        self.inner = inner
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out_dtype = x.dtype
-        return self.inner(x.to(torch.float16)).to(out_dtype)
-
-
-class _LayerFp16Wrapper(nn.Module):
-    """Wrap a full DiT layer so its body runs in fp16 with bf16 I/O.
-
-    The XL turbo decoder's residual stream grows past fp16's 65 504 ceiling
-    in the middle layers (peaks ~190k around layer 18 in bf16), so the
-    cumulative residual cannot be stored in fp16. But the *individual*
-    matmuls inside each layer (Q/K/V projections, attention output,
-    MLP gate/up/down) operate on per-layer hidden states that are bounded
-    by RMSNorm's unit-RMS output, so the matmuls themselves can run in
-    fp16 as long as the residual addition happens in bf16.
-
-    This wrapper casts the layer's weights to fp16 in-place and converts
-    every floating-point input to fp16 at the call boundary, then casts
-    the layer outputs back to bf16 so the upstream caller (the DiT
-    forward loop) can do the residual addition in bf16. The trace records:
-        Cast(bf16 -> fp16) -> layer body (fp16 matmuls) -> Cast(fp16 -> bf16)
-    With strongly_typed=True the engine respects these casts and uses
-    fp16 tensor cores for the layer body while preserving bf16 dynamic
-    range across the residual stream.
-    """
-
-    def __init__(self, inner: nn.Module):
-        super().__init__()
-        inner.half()
-        self.inner = inner
-
-    def forward(self, hidden_states: torch.Tensor, *args, **kwargs):
-        out_dtype = hidden_states.dtype
-        hidden_states = _cast_recursive(hidden_states, torch.float16)
-        args = tuple(_cast_recursive(a, torch.float16) for a in args)
-        kwargs = {k: _cast_recursive(v, torch.float16) for k, v in kwargs.items()}
-        out = self.inner(hidden_states, *args, **kwargs)
-        return _cast_recursive(out, out_dtype)
 
 
 # ------------------------------------------------------------------
@@ -233,16 +91,8 @@ class DecoderForExport(nn.Module):
                 2B turbo where activations stay inside fp16 dynamic range.
             precision: Used when ``mixed_precision`` is False. One of:
                 - "fp32": leave dtypes as-is for tracing in fp32 (default)
-                - "bf16": pure bf16 throughout. Use only for non-strongly-
-                  typed builds (TRT picks bf16 vs fp32 freely). The dynamo
-                  exporter is required for tracing.
-                - "bf16_mixed": bf16 bulk + fp32 islands for AdaLN, norms,
-                  timestep, AND proj_in/proj_out. The XL turbo decoder
-                  needs this because (a) q_norm/k_norm scales reaching ~31
-                  in layers 0/30 break fp16, so bf16 is the only safe
-                  bulk dtype, and (b) TRT lacks a bf16 ConvTranspose
-                  kernel for proj_out's [2560,64,2,1] shape, so the patch
-                  embedding has to stay fp32. Strongly-typed builds.
+                - "bf16_mixed": bf16 bulk with an fp32 proj_out deconv island
+                  for XL turbo. Requires the dynamo exporter.
         """
         super().__init__()
         self.decoder = decoder
@@ -262,20 +112,8 @@ class DecoderForExport(nn.Module):
 
         if mixed_precision:
             self._setup_mixed_precision()
-        elif precision == "bf16":
-            # Decoder weights already loaded as bf16 by from_pretrained;
-            # just ensure that's the case (no-op cast for safety).
-            self.decoder.to(torch.bfloat16)
         elif precision == "bf16_mixed":
             self._setup_bf16_mixed()
-        elif precision == "bf16_layer_fp16":
-            self._setup_bf16_layer_fp16()
-        elif precision == "bf16_matmul_fp16":
-            self._setup_bf16_matmul_fp16()
-        elif precision == "bf16_mlp_fp16":
-            self._setup_bf16_mlp_fp16()
-        elif precision == "fp16_attn_safe":
-            self._setup_fp16_attn_safe()
 
     # ---- internal helpers ----
 
@@ -324,66 +162,11 @@ class DecoderForExport(nn.Module):
             if hasattr(layer, "cross_attn_norm"):
                 layer.cross_attn_norm.float()
 
-    def _setup_fp16_attn_safe(self) -> None:
-        """fp16 mixed precision (2B recipe) + ALL self_attn modules in fp32.
-
-        XL turbo's hidden states reach ~30 000 in absolute magnitude (vs
-        2B's ~5 000), so Q@K^T intermediates inside self-attention can
-        exceed fp16's 65 504 ceiling in any layer, not just the q_norm
-        outliers. PyTorch's fused SDPA hides the overflow with fp32
-        accumulation, but TRT's unrolled SDPA writes fp16 intermediates
-        and NaNs.
-
-        Solution: wrap every self_attn in _AttnFp32Wrapper. The rest of
-        the model (MLP, cross-attn, AdaLN, norms, projections) stays on
-        the proven 2B fp16 + fp32 islands recipe so we keep TRT's mature
-        fp16 kernel path for everything except self-attention.
-
-        Cross-attention is left in fp16 because its q_norm/k_norm scales
-        are well-behaved across all XL layers (max ~2) and its inputs
-        are encoder hidden states which don't grow through the layer
-        cycle.
-        """
-        # First apply the standard fp16 mixed-precision recipe (decoder.half(),
-        # fp32 islands for timestep / AdaLN / RMSNorms).
-        self._setup_mixed_precision()
-
-        # Then wrap every self_attn in fp32.
-        decoder = self.decoder
-        for i, layer in enumerate(decoder.layers):
-            layer.self_attn = _AttnFp32Wrapper(layer.self_attn)
-
-        logger.info(
-            "fp16_attn_safe: wrapped all {} self_attn modules in fp32 "
-            "(cross_attn stays in fp16)",
-            len(decoder.layers),
-        )
-
     def _setup_bf16_mixed(self) -> None:
-        """bf16 bulk + minimal fp32 island for the XL turbo decoder.
-
-        Keep everything in bf16 (the model's training dtype, full
-        precision/range for this model) and only add an fp32 island
-        around the proj_out ConvTranspose1d. TRT has no bf16 kernel for
-        that specific deconv shape ([2560, 64, 2, 1]), so without the
-        island the strongly-typed bf16 build dies with "No matching
-        rules found for input operand types".
-
-        Unlike the 2B fp16_mixed recipe, no AdaLN/norm fp32 islands are
-        needed: bf16 has the same exponent range as fp32 and the q_norm
-        overflow that bites fp16 doesn't bite bf16.
-        """
+        """bf16 bulk + fp32 island for XL turbo's unsupported deconv op."""
         decoder = self.decoder
-
-        # Make sure everything is bf16 to start (no-op if the model was
-        # loaded with dtype="bfloat16", but defensive).
         decoder.to(torch.bfloat16)
 
-        # Patch unembedding: wrap the inner ConvTranspose1d so trace
-        # records cast(bf16->fp32) -> deconv(fp32) -> cast(fp32->bf16).
-        # proj_out is nn.Sequential(Lambda, ConvTranspose1d, Lambda); the
-        # Lambda -> _Transpose12 replacement already happened earlier in
-        # _replace_lambdas, so we look for the ConvTranspose1d by type.
         deconv_idx = None
         for i, mod in enumerate(decoder.proj_out):
             if isinstance(mod, nn.ConvTranspose1d):
@@ -394,145 +177,6 @@ class DecoderForExport(nn.Module):
                 "bf16_mixed: could not find ConvTranspose1d inside proj_out"
             )
         decoder.proj_out[deconv_idx] = _Fp32CastWrapper(decoder.proj_out[deconv_idx])
-
-    # XL turbo: layer indices that can run their bodies in fp16 without
-    # input or output overflowing.
-    #
-    # Determined empirically by running the bf16 forward on real cover
-    # inputs and recording per-layer absmax of the running residual.
-    # The pattern looks like:
-    #
-    #     layer 0..13:    residual ranges 4 288 -> 33 856 (fp16-safe)
-    #     layer 14..28:   residual peaks at 190 464 (FP16 OVERFLOW)
-    #     layer 29..31:   residual settles back to 9 856 -> 16 256
-    #
-    # A layer can be wrapped in fp16 only if BOTH its input residual
-    # AND its output residual fit in fp16 (the wrapper does an input
-    # cast to fp16). Layers 29..31 produce small outputs but RECEIVE
-    # the ~85 000 bf16 residual from layer 28, which overflows their
-    # input cast and cascades NaN through the rest of the forward.
-    # So the safe set is layers 0..13 only (14 of 32).
-    XL_FP16_SAFE_LAYERS = tuple(range(0, 14))
-
-    # XL turbo: list of (parent_module_attr, linear_attr_name) pairs that
-    # are safe to wrap in fp16 inside each AceStepDiTLayer. Inputs to
-    # these Linears are bounded by post-RMSNorm output * AdaLN scale,
-    # which fits comfortably in fp16. Outputs feed into residual adds
-    # that stay in bf16 outside the wrapper.
-    XL_LINEAR_WRAP_TARGETS = (
-        ("self_attn", "q_proj"),
-        ("self_attn", "k_proj"),
-        ("self_attn", "v_proj"),
-        ("self_attn", "o_proj"),
-        ("cross_attn", "q_proj"),
-        ("cross_attn", "k_proj"),
-        ("cross_attn", "v_proj"),
-        ("cross_attn", "o_proj"),
-        ("mlp", "gate_proj"),
-        ("mlp", "up_proj"),
-        ("mlp", "down_proj"),
-    )
-
-    def _setup_bf16_mlp_fp16(self) -> None:
-        """Hybrid: bf16 residual stream + fp16 MLP body in every DiT layer.
-
-        Builds on _setup_bf16_mixed (bf16 bulk + fp32 proj_out island),
-        then wraps every layer's `mlp` submodule with _MlpFp16Wrapper.
-        Cast surface is 32 in + 32 out = 64 casts total, well within
-        TRT's compilation tractability (compared to 704 casts for the
-        per-Linear wrap which segfaults the builder).
-
-        MLP is roughly 60-65 % of per-layer compute for these decoder
-        shapes (intermediate=9728 vs hidden=2560, three big GEMMs vs
-        attention's 2-3 smaller ones), so swapping just MLPs to fp16
-        recovers most of the bf16 throughput penalty without disturbing
-        attention or the residual stream.
-        """
-        self._setup_bf16_mixed()
-
-        decoder = self.decoder
-        wrapped = 0
-        for layer in decoder.layers:
-            if hasattr(layer, "mlp"):
-                layer.mlp = _MlpFp16Wrapper(layer.mlp)
-                wrapped += 1
-        logger.info(
-            "bf16_mlp_fp16: wrapped {}/{} layer MLPs in fp16",
-            wrapped, len(decoder.layers),
-        )
-
-    def _setup_bf16_matmul_fp16(self) -> None:
-        """Hybrid recipe: bf16 residual stream + per-matmul fp16 weights/compute.
-
-        Builds on _setup_bf16_mixed (bf16 bulk + fp32 proj_out island),
-        then wraps every nn.Linear inside every DiT layer with
-        _LinearFp16Wrapper. The wrapper casts the Linear's input to fp16,
-        runs the matmul with fp16 weights, then casts the output back
-        to bf16 before it flows into the residual addition.
-
-        This is the matmul-grain version of bf16_layer_fp16. The
-        layer-grain wrapper failed because TRT's optimizer fused across
-        the bf16<->fp16 cast boundary in ways that corrupted the
-        precision intent. The matmul-grain wrapper limits TRT's fusion
-        radius to a single matmul + its two casts, which empirically
-        survives compilation.
-
-        Profiling shows linear/matmul accounts for 77 % of the bf16
-        engine's runtime, with bf16 GEMM kernels running ~40 % slower
-        than the equivalent fp16 GEMMs on Blackwell. Swapping these to
-        fp16 should recover most of that gap without changing the
-        residual stream's dtype, which has to stay bf16 to handle XL
-        turbo's ~190 000 peak residual magnitude.
-        """
-        self._setup_bf16_mixed()
-
-        decoder = self.decoder
-        wrapped = 0
-        for layer in decoder.layers:
-            for parent_attr, lin_attr in self.XL_LINEAR_WRAP_TARGETS:
-                parent = getattr(layer, parent_attr, None)
-                if parent is None:
-                    continue
-                lin = getattr(parent, lin_attr, None)
-                if lin is None:
-                    continue
-                setattr(parent, lin_attr, _LinearFp16Wrapper(lin))
-                wrapped += 1
-        logger.info(
-            "bf16_matmul_fp16: wrapped {} Linears across {} layers",
-            wrapped, len(decoder.layers),
-        )
-
-    def _setup_bf16_layer_fp16(self) -> None:
-        """Hybrid recipe: bf16 residual stream + per-layer fp16 matmuls.
-
-        Builds on _setup_bf16_mixed (bf16 bulk + fp32 proj_out island),
-        then additionally wraps the safe XL turbo layers (those whose
-        residual stays under fp16's 65 504 ceiling) with _LayerFp16Wrapper
-        so their internal matmuls run in fp16 while the residual stream
-        between layers stays in bf16.
-
-        The cast-in / cast-out pattern produces a trace where ~53 % of
-        the DiT's layer compute uses fp16 tensor cores (faster on
-        Blackwell), while the remaining 47 % stays in bf16 to handle
-        the residual magnitude. End-to-end speedup vs pure bf16_mixed
-        is roughly proportional to the fraction of fp16 layers times
-        the bf16/fp16 throughput gap.
-        """
-        # First do everything bf16_mixed does (bf16 bulk + proj_out fp32 island).
-        self._setup_bf16_mixed()
-
-        decoder = self.decoder
-        n_layers = len(decoder.layers)
-        safe = [i for i in self.XL_FP16_SAFE_LAYERS if i < n_layers]
-        for i in safe:
-            decoder.layers[i] = _LayerFp16Wrapper(decoder.layers[i])
-
-        logger.info(
-            "bf16_layer_fp16: wrapped {}/{} layers in fp16 (indices {}); "
-            "remaining {} layers stay bf16",
-            len(safe), n_layers, safe, n_layers - len(safe),
-        )
 
     def _patch_decoder_for_trace(self) -> None:
         """Monkey-patch the decoder forward to be ONNX-trace-safe.
@@ -699,9 +343,7 @@ class OnnxExportConfig:
     mixed_precision: bool = False
 
     # Trace dtype for the wrapper. Used when ``mixed_precision`` is False.
-    # One of: "fp32" (default), "bf16". For XL turbo, use "bf16" to
-    # match the training dtype and avoid fp16 overflow in attention
-    # intermediates from layers with large q_norm/k_norm scales.
+    # Supported values: "fp32" and "bf16_mixed".
     precision: str = "fp32"
 
     # When True, disables ONNX constant folding to preserve PyTorch
@@ -749,49 +391,11 @@ def export_decoder_onnx(
         trace_dtype = torch.float16
         ts_dtype = torch.float32  # time_embed is fp32 in mixed mode
         logger.info("Exporting with mixed precision (fp16 bulk + fp32 critical ops)")
-    elif config.precision == "fp16_attn_safe":
-        # 2B-style fp16 mixed + extra fp32 islands around outlier
-        # attention layers (XL turbo's q_norm/k_norm overflow sites).
-        wrapper = wrapper.to(device)
-        trace_dtype = torch.float16
-        ts_dtype = torch.float32
-        logger.info("Exporting fp16_attn_safe (fp16 mixed + per-layer attn fp32 islands)")
-    elif config.precision == "bf16":
-        # bf16 throughout: weights are already bf16, just move to device.
-        wrapper = wrapper.to(device)
-        trace_dtype = torch.bfloat16
-        ts_dtype = torch.bfloat16  # time_embed runs in bf16
-        logger.info("Exporting in bf16 (matches training dtype)")
     elif config.precision == "bf16_mixed":
-        # bf16 bulk + minimal fp32 island around proj_out's deconv.
-        # Trace inputs are bf16; timestep also bf16 (no fp32 islands
-        # outside the deconv wrapper).
         wrapper = wrapper.to(device)
         trace_dtype = torch.bfloat16
         ts_dtype = torch.bfloat16
         logger.info("Exporting bf16 mixed (bf16 bulk + fp32 deconv island)")
-    elif config.precision == "bf16_layer_fp16":
-        # bf16 residual stream + per-layer fp16 matmul wrappers (XL turbo
-        # hybrid). Inputs to the engine are bf16 because that's what the
-        # cross-layer residual stream uses.
-        wrapper = wrapper.to(device)
-        trace_dtype = torch.bfloat16
-        ts_dtype = torch.bfloat16
-        logger.info("Exporting bf16_layer_fp16 (bf16 residual + per-layer fp16 matmuls)")
-    elif config.precision == "bf16_matmul_fp16":
-        # bf16 residual stream + per-Linear fp16 cast wrappers around
-        # every matmul inside the DiT layers. Tighter cast surface than
-        # bf16_layer_fp16; survives TRT compilation reliably.
-        wrapper = wrapper.to(device)
-        trace_dtype = torch.bfloat16
-        ts_dtype = torch.bfloat16
-        logger.info("Exporting bf16_matmul_fp16 (bf16 residual + per-Linear fp16 matmuls)")
-    elif config.precision == "bf16_mlp_fp16":
-        # bf16 residual stream + per-MLP fp16 wrappers (32 cast pairs total)
-        wrapper = wrapper.to(device)
-        trace_dtype = torch.bfloat16
-        ts_dtype = torch.bfloat16
-        logger.info("Exporting bf16_mlp_fp16 (bf16 residual + per-MLP fp16 wrappers)")
     else:
         # Full fp32 export
         wrapper = wrapper.float().to(device)
@@ -833,16 +437,9 @@ def export_decoder_onnx(
         do_constant_folding = False
         logger.info("REFIT mode: constant folding disabled to preserve weight names")
 
-    # The legacy torchscript-based ONNX exporter (dynamo=False) has a bug
-    # in its shape-type inference pass when tracing bf16 graphs: it produces
-    # complex tensors during constant folding, then fails with
-    # "ScalarType ComplexDouble is an unexpected tensor scalar type". The
-    # new dynamo-based exporter (torch.export) doesn't have this bug.
-    # Use dynamo for any bf16-containing trace; keep legacy for fp16 mixed
-    # and fp32.
     use_dynamo = (
         not config.mixed_precision
-        and config.precision in ("bf16", "bf16_mixed", "bf16_layer_fp16", "bf16_matmul_fp16", "bf16_mlp_fp16")
+        and config.precision == "bf16_mixed"
     )
 
     logger.info(
@@ -859,11 +456,8 @@ def export_decoder_onnx(
                 if hasattr(stream, "reconfigure"):
                     stream.reconfigure(encoding="utf-8", errors="replace")
 
-            # Dynamo path: pass tensors as positional args, use dynamic_shapes
-            # API instead of dynamic_axes. Dynamo requires opset >= 18; the
-            # downconversion to 17 fails for some ops, so don't force a
-            # version here (let dynamo pick its native default).
             from torch.export import Dim
+
             batch = Dim("batch", min=1, max=8)
             seq = Dim("seq", min=126, max=1500)
             enc = Dim("enc", min=32, max=512)
@@ -895,17 +489,110 @@ def export_decoder_onnx(
                 dynamo=False,
             )
 
-    # The ONNX file may exceed the 2GB protobuf limit since the decoder
-    # is ~6GB.  This is fine:
-    #   - OnnxRuntime uses its own parser (not protobuf) and handles it
-    #   - TRT's OnnxParser.parse_from_file also handles large inline ONNX
-    # The onnx Python library's load() cannot read >2GB files, which is
-    # why the previous external_data conversion produced 0-byte files.
-    # We skip it and rely on the native parsers.
+    # XL dynamo exports may use external data for the large weight payload.
+    # Keep patched ONNX protobufs next to the source file so those relative
+    # external_data references continue to resolve during TRT parsing.
 
     size_mb = onnx_path.stat().st_size / (1 << 20)
     logger.info("ONNX saved to {} ({:.1f} MB)", onnx_path, size_mb)
     return onnx_path
+
+
+def patch_decoder_onnx_dynamic_batch_reshapes(
+    onnx_path: Union[str, Path],
+    output_path: Optional[Union[str, Path]] = None,
+    *,
+    force: bool = False,
+) -> Path:
+    """Patch dynamo-exported reshape constants that accidentally bake B=1.
+
+    The XL bf16 dynamo exporter can emit `Reshape` shape constants like
+    ``[1, 6, 2560]`` even when dynamic batch was requested. TensorRT then
+    builds an engine with a dynamic input profile, but `infer_shapes` fails
+    at runtime for B>1. Rewriting the first dimension to ``-1`` preserves the
+    non-batch shape and lets TRT infer the active batch from the input tensor.
+    """
+    import numpy as np
+    import onnx
+    from onnx import numpy_helper
+
+    onnx_path = Path(onnx_path)
+    if output_path is None:
+        output_path = onnx_path.with_name(f"{onnx_path.stem}_dynbatch{onnx_path.suffix}")
+    output_path = Path(output_path)
+    if output_path.parent != onnx_path.parent:
+        raise ValueError(
+            "Dynamic-batch patched ONNX must live next to the source ONNX "
+            "so relative external_data references continue to resolve."
+        )
+    if (
+        output_path.exists()
+        and not force
+        and output_path.stat().st_mtime >= onnx_path.stat().st_mtime
+    ):
+        logger.info("Reusing dynamic-batch patched decoder ONNX: {}", output_path)
+        return output_path
+
+    logger.info(
+        "Patching decoder ONNX Reshape batch constants: {} -> {}",
+        onnx_path, output_path,
+    )
+    model = onnx.load(str(onnx_path), load_external_data=False)
+    graph = model.graph
+
+    def get_const_shape(name: str) -> list[int] | None:
+        for node in graph.node:
+            if node.op_type == "Constant" and name in node.output:
+                for attr in node.attribute:
+                    if attr.name == "value" and attr.type == onnx.AttributeProto.TENSOR:
+                        return numpy_helper.to_array(attr.t).flatten().tolist()
+        for init in graph.initializer:
+            if init.name == name:
+                return numpy_helper.to_array(init).flatten().tolist()
+        return None
+
+    def set_const_shape(name: str, new_shape: list[int]) -> bool:
+        new_arr = np.asarray(new_shape, dtype=np.int64)
+        for node in graph.node:
+            if node.op_type == "Constant" and name in node.output:
+                for attr in node.attribute:
+                    if attr.name == "value":
+                        attr.t.CopyFrom(numpy_helper.from_array(new_arr, name=name))
+                        return True
+        for init in graph.initializer:
+            if init.name == name:
+                init.CopyFrom(numpy_helper.from_array(new_arr, name=name))
+                return True
+        return False
+
+    seen: set[str] = set()
+    matching = 0
+    patched = 0
+    examples: list[tuple[str, str, list[int]]] = []
+    for node in graph.node:
+        if node.op_type != "Reshape" or len(node.input) < 2:
+            continue
+        shape_name = node.input[1]
+        shape = get_const_shape(shape_name)
+        if not shape or len(shape) < 2 or shape[0] != 1:
+            continue
+        matching += 1
+        if len(examples) < 8:
+            examples.append((node.name or "(no-name)", shape_name, shape))
+        if -1 in shape[1:] or shape_name in seen:
+            continue
+        if set_const_shape(shape_name, [-1] + list(shape[1:])):
+            patched += 1
+            seen.add(shape_name)
+
+    onnx.save(model, str(output_path))
+    logger.info(
+        "Patched {} unique Reshape constants ({} B=1 Reshapes found) in {}",
+        patched, matching, output_path,
+    )
+    for node_name, shape_name, shape in examples:
+        logger.info("  Reshape {} const {}: {}", node_name, shape_name, shape)
+    return output_path
 
 
 # ------------------------------------------------------------------

@@ -100,12 +100,12 @@ _TRT_ENGINE_PROFILES: dict[float, dict[str, str]] = {
 
 _XL_TURBO_TRT_ENGINE_PROFILES: dict[float, dict[str, str]] = {
     60.0: {
-        "decoder": "decoder_xl-turbo_mixed_refit_b1_60s",
+        "decoder": "decoder_xl-turbo_mixed_refit_b8_60s",
         "vae_encode": "vae_encode_fp16_60s",
         "vae_decode": "vae_decode_fp16_60s",
     },
     120.0: {
-        "decoder": "decoder_xl-turbo_mixed_refit_b1_120s",
+        "decoder": "decoder_xl-turbo_mixed_refit_b8_120s",
         "vae_encode": "vae_encode_fp16_120s",
         "vae_decode": "vae_decode_fp16_120s",
     },
@@ -251,8 +251,8 @@ def _trt_build_command(
     parts.extend(["--duration", str(duration)])
     if checkpoint == "acestep-v15-xl-turbo" and "decoder" in needs:
         parts.extend([
-            "--batch-max", "1",
-            "--workspace-gb", "16",
+            "--batch-max", "8",
+            "--workspace-gb", "20",
             "--export-locally",
             "--decoder-precision", "bf16_mixed",
         ])

@@ -16,7 +16,7 @@ TensorRT acceleration is implemented for:
 - ACE-Step VAE encode and decode.
 - Windowed VAE decode for low-VRAM streaming decode.
 - ACE-Step 1.5 2B turbo decoder engines.
-- ACE-Step 1.5 XL turbo decoder engines.
+- ACE-Step 1.5 XL turbo decoder engines with dynamic-batch ONNX patching.
 
 The default runtime still requires the ACE-Step text encoder and tokenizer for
 conditioning. TensorRT replaces the heavy decoder and/or VAE execution paths
@@ -94,7 +94,7 @@ models/demon/
     _onnx_acestep-v15-turbo/
     _onnx_acestep-v15-xl-turbo/
     decoder_mixed_refit_b8_60s/
-    decoder_xl-turbo_mixed_refit_b1_60s/
+    decoder_xl-turbo_mixed_refit_b8_60s/
     vae_decode_fp16_3to30s/
     build_report.csv
 ```
@@ -198,10 +198,12 @@ The build script resolves ONNX in this order:
 For 2B turbo, the default Hugging Face ONNX cache may be enough.
 
 For ACE-Step XL turbo, use local export unless an XL ONNX bundle has already
-been uploaded to the configured ONNX hub:
+been uploaded to the configured ONNX hub. The build step patches the exported
+ONNX before engine construction so reshape constants that baked in `B=1` become
+dynamic:
 
 ```powershell
-uv run python -m acestep.engine.trt.build --all --checkpoint acestep-v15-xl-turbo --decoder-only --duration 60 --batch-max 1 --workspace-gb 16 --export-locally
+uv run python -m acestep.engine.trt.build --all --checkpoint acestep-v15-xl-turbo --decoder-only --duration 60 --batch-max 8 --workspace-gb 20 --export-locally
 ```
 
 ## Decoder Precision Recipes
@@ -212,12 +214,7 @@ The decoder build now accepts:
 --decoder-precision auto
 --decoder-precision fp32
 --decoder-precision fp16_mixed
---decoder-precision fp16_attn_safe
---decoder-precision bf16
 --decoder-precision bf16_mixed
---decoder-precision bf16_layer_fp16
---decoder-precision bf16_matmul_fp16
---decoder-precision bf16_mlp_fp16
 ```
 
 `auto` behaves as follows:
@@ -235,10 +232,6 @@ Why XL uses `bf16_mixed`:
   `ConvTranspose1d` shape, so `bf16_mixed` keeps the model in bf16 while
   wrapping that deconvolution in fp32.
 
-The faster XL hybrid recipes (`bf16_mlp_fp16`, `bf16_matmul_fp16`,
-`bf16_layer_fp16`) exist for experiments, but the validated conservative path
-is `bf16_mixed`.
-
 ## Engine Naming
 
 Decoder engines use:
@@ -252,8 +245,8 @@ Examples:
 ```text
 decoder_mixed_refit_b8_60s.engine
 decoder_mixed_refit_b8_120s.engine
-decoder_xl-turbo_mixed_refit_b1_60s.engine
-decoder_xl-turbo_mixed_refit_b1_120s.engine
+decoder_xl-turbo_mixed_refit_b8_60s.engine
+decoder_xl-turbo_mixed_refit_b8_120s.engine
 ```
 
 VAE engines use:
@@ -275,8 +268,8 @@ The following artifacts have been built and validated locally:
 
 - `decoder_mixed_refit_b8_60s`: 2B turbo decoder, about 3299.6 MB.
 - `decoder_mixed_refit_b8_120s`: 2B turbo decoder, about 3299.4 MB.
-- `decoder_xl-turbo_mixed_refit_b1_60s`: XL turbo decoder, about 8363.9 MB.
-- `decoder_xl-turbo_mixed_refit_b1_120s`: XL turbo decoder, about 8363.8 MB.
+- `decoder_xl-turbo_mixed_refit_b8_60s`: XL turbo decoder.
+- `decoder_xl-turbo_mixed_refit_b8_120s`: XL turbo decoder.
 - `vae_decode_fp16_60s`: VAE decode, about 179.4 MB.
 - `vae_decode_fp16_120s`: VAE decode, about 347.2 MB.
 - `vae_decode_fp16_3to30s`: windowed VAE decode, about 269.1 MB.
@@ -301,24 +294,25 @@ uv run acestep-download --model acestep-v15-xl-turbo --skip-main
 Build 60s XL decoder:
 
 ```powershell
-uv run python -m acestep.engine.trt.build --all --checkpoint acestep-v15-xl-turbo --decoder-only --duration 60 --batch-max 1 --workspace-gb 16 --export-locally --decoder-precision bf16_mixed
+uv run python -m acestep.engine.trt.build --all --checkpoint acestep-v15-xl-turbo --decoder-only --duration 60 --batch-max 8 --workspace-gb 20 --export-locally --decoder-precision bf16_mixed
 ```
 
 Build 120s XL decoder after the 60s path validates:
 
 ```powershell
-uv run python -m acestep.engine.trt.build --all --checkpoint acestep-v15-xl-turbo --decoder-only --duration 120 --batch-max 1 --workspace-gb 16 --export-locally --decoder-precision bf16_mixed
+uv run python -m acestep.engine.trt.build --all --checkpoint acestep-v15-xl-turbo --decoder-only --duration 120 --batch-max 8 --workspace-gb 20 --export-locally --decoder-precision bf16_mixed
 ```
 
 If changing precision recipe or regenerating the ONNX:
 
 ```powershell
-uv run python -m acestep.engine.trt.build --all --checkpoint acestep-v15-xl-turbo --decoder-only --duration 60 --batch-max 1 --workspace-gb 16 --force-onnx --decoder-precision bf16_mixed
+uv run python -m acestep.engine.trt.build --all --checkpoint acestep-v15-xl-turbo --decoder-only --duration 60 --batch-max 8 --workspace-gb 20 --force-onnx --decoder-precision bf16_mixed
 ```
 
-Use `batch-max=1` for XL on a 24 GB 4090. The existing 2B turbo engines were
-built with `batch_max=8`; XL should not start there unless the target GPU has
-more headroom.
+Use `batch-max=8` for XL on high-memory GPUs when building the registered
+profiles. During the build, `acestep.engine.trt.build` writes a sibling
+`*_dynbatch.onnx` with `[1, ...]` Reshape shape constants rewritten to
+`[-1, ...]`, then builds the engine from that patched graph.
 
 ## Running With TensorRT
 
@@ -348,7 +342,7 @@ session = Session(
     decoder_backend="tensorrt",
     vae_backend="tensorrt",
     trt_engines={
-        "decoder": str(trt_engine_path("decoder_xl-turbo_mixed_refit_b1_120s")),
+        "decoder": str(trt_engine_path("decoder_xl-turbo_mixed_refit_b8_120s")),
         "vae_encode": str(trt_engine_path("vae_encode_fp16_120s")),
         "vae_decode": str(trt_engine_path("vae_decode_fp16_3to30s")),
     },
@@ -452,8 +446,8 @@ vae_decode_fp16_*
 For `acestep-v15-xl-turbo`, the decoder profiles are:
 
 ```text
-decoder_xl-turbo_mixed_refit_b1_60s
-decoder_xl-turbo_mixed_refit_b1_120s
+decoder_xl-turbo_mixed_refit_b8_60s
+decoder_xl-turbo_mixed_refit_b8_120s
 vae_encode_fp16_*
 vae_decode_fp16_*
 ```
@@ -528,13 +522,13 @@ Build the 60s XL TRT profile. This builds the XL decoder and any missing shared
 VAE engines for the same duration:
 
 ```powershell
-uv run python -m acestep.engine.trt.build --all --checkpoint acestep-v15-xl-turbo --duration 60 --batch-max 1 --workspace-gb 16 --export-locally --decoder-precision bf16_mixed
+uv run python -m acestep.engine.trt.build --all --checkpoint acestep-v15-xl-turbo --duration 60 --batch-max 8 --workspace-gb 20 --export-locally --decoder-precision bf16_mixed
 ```
 
 Build the 120s XL TRT profile when the source audio needs it:
 
 ```powershell
-uv run python -m acestep.engine.trt.build --all --checkpoint acestep-v15-xl-turbo --duration 120 --batch-max 1 --workspace-gb 16 --export-locally --decoder-precision bf16_mixed
+uv run python -m acestep.engine.trt.build --all --checkpoint acestep-v15-xl-turbo --duration 120 --batch-max 8 --workspace-gb 20 --export-locally --decoder-precision bf16_mixed
 ```
 
 Start the demo in full TRT mode:
@@ -543,12 +537,12 @@ Start the demo in full TRT mode:
 uv run python -u -m demos.realtime_motion_graph_web --port 8765 --accel tensorrt --checkpoint acestep-v15-xl-turbo
 ```
 
-The backend now passes `checkpoint` into `available_trt_engines()`, so this
-selects `decoder_xl-turbo_mixed_refit_b1_60s` or
-`decoder_xl-turbo_mixed_refit_b1_120s` instead of the 2B decoder profiles.
-The streaming decoder path micro-batches rows when the selected TRT engine has
-a smaller batch profile than the active pipeline batch, so the validated XL
-`b1` engines can run with normal demo pipeline depths.
+The backend passes `checkpoint` into `available_trt_engines()`, so this selects
+`decoder_xl-turbo_mixed_refit_b8_60s` or
+`decoder_xl-turbo_mixed_refit_b8_120s` instead of the 2B decoder profiles. The
+streaming decoder path submits the active ring-buffer rows as one batched TRT
+execution, so XL profiles must be built with enough batch capacity for the
+configured pipeline depth.
 
 ### Demo Troubleshooting
 
@@ -573,16 +567,23 @@ If cold start uses more VRAM than expected:
 - Use `--decoder-accel tensorrt --vae-accel eager` or the inverse to isolate a
   backend.
 
-If TensorRT reports a static batch mismatch such as:
+If TensorRT reports a static batch or reshape mismatch such as:
 
 ```text
 Static dimension mismatch while setting input shape for hidden_states.
 Set dimensions are [2,...]. Expected dimensions are [1,-1,64].
 ```
 
-make sure the stream micro-batching changes in `acestep/engine/stream.py` are
-present. XL turbo `b1` engines only accept one decoder row per TRT execution;
-the stream should split larger active batches into `B=1` chunks automatically.
+or:
+
+```text
+IExecutionContext::inferShapes: IShuffleLayer node_view: reshaping failed
+for tensor: linear_2
+RESHAPE input dims{2, 15360} reshape dims{1, 6, 2560}
+```
+
+make sure the XL engine was built from the dynamic-batch patched ONNX. The build
+logs should mention `*_dynbatch.onnx` and report patched `Reshape` constants.
 
 ## Validation Commands
 
@@ -620,13 +621,13 @@ import torch
 from acestep.engine.trt.runtime import TRTDecoder
 from acestep.paths import trt_engine_path
 
-engine = TRTDecoder(trt_engine_path("decoder_xl-turbo_mixed_refit_b1_120s"))
-hs = torch.randn(1, 3000, 64, device="cuda", dtype=torch.bfloat16)
-ts = torch.full((1,), 0.5, device="cuda", dtype=torch.bfloat16)
-enc = torch.randn(1, 200, 2048, device="cuda", dtype=torch.bfloat16)
-ctx = torch.randn(1, 3000, 128, device="cuda", dtype=torch.bfloat16)
+engine = TRTDecoder(trt_engine_path("decoder_xl-turbo_mixed_refit_b8_120s"))
+hs = torch.randn(2, 3000, 64, device="cuda", dtype=torch.bfloat16)
+ts = torch.full((2,), 0.5, device="cuda", dtype=torch.bfloat16)
+enc = torch.randn(2, 200, 2048, device="cuda", dtype=torch.bfloat16)
+ctx = torch.randn(2, 3000, 128, device="cuda", dtype=torch.bfloat16)
 out = engine(hs, ts, enc, ctx)
-assert out.shape == (1, 3000, 64), out.shape
+assert out.shape == (2, 3000, 64), out.shape
 assert torch.isfinite(out).all()
 print("XL 120s TRT decoder execution OK", tuple(out.shape), out.dtype, out.device)
 '@ | uv run python -
@@ -642,7 +643,7 @@ from acestep.paths import trt_engine_path
 from acestep.constants import TASK_INSTRUCTIONS
 
 trt_engines = {
-    "decoder": str(trt_engine_path("decoder_xl-turbo_mixed_refit_b1_60s")),
+    "decoder": str(trt_engine_path("decoder_xl-turbo_mixed_refit_b8_60s")),
     "vae_encode": str(trt_engine_path("vae_encode_fp16_60s")),
     "vae_decode": str(trt_engine_path("vae_decode_fp16_3to30s")),
 }
@@ -759,7 +760,8 @@ $env:PYTHONIOENCODING = "utf-8"
 XL out of memory:
 
 - Use `--decoder-only`.
-- Use `--batch-max 1`.
+- Use `--batch-max 4` for local experiments, then register only validated
+  dynamic-batch profiles.
 - Start with `--duration 60`.
 - Use `vae_decode_fp16_3to30s` with `vae_window > 0`.
 - Avoid loading PyTorch decoder weights at runtime by setting
