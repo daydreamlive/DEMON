@@ -530,6 +530,13 @@ class PipelineRunner:
                 )
                 tick_kwargs["rcfg_mode"] = rcfg_mode
                 tick_kwargs["guidance_curve"] = guidance_curve
+
+                cfg_rescale = float(raw.get("cfg_rescale", 0.0))
+                if cfg_rescale > 0.0:
+                    tick_kwargs["cfg_rescale"] = torch.full(
+                        (1, src_T, 1), cfg_rescale, dtype=torch.float32,
+                    )
+
                 if rcfg_mode in ("full", "initialize") and self.neg_conditioning is not None:
                     tick_kwargs["negative"] = self.neg_conditioning
             result_latent = self.stream.tick(

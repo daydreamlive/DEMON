@@ -125,6 +125,12 @@ class SlotRequest:
     # "self" mode ``neg_conditions`` is unused; for "initialize" the
     # initial uncond pass uses them just like full CFG.
     rcfg_mode: Optional[str] = None
+    # ``cfg_rescale_curve`` blends the APG output's per-frame norm back
+    # toward ``vt_pos``'s norm (Lin et al. "Common Diffusion Noise
+    # Schedules and Sample Steps are Flawed"). ``None`` disables;
+    # otherwise a scalar or ``[1, T, 1]`` curve in [0, 1] where 0 keeps
+    # raw APG output and 1 fully snaps magnitude back to ``vt_pos``.
+    cfg_rescale_curve: "Optional[float | torch.Tensor]" = None
 
     def all_conditions(self) -> List[SlotCondition]:
         """Return primary + extra conditions as a single ordered list."""
@@ -1061,12 +1067,18 @@ class StreamPipeline:
                     device=vt_pos.device, dtype=vt_pos.dtype,
                 )
                 mom = self._eff_shared(slot, "apg_momentum")
-                vt_per_slot[si] = ode_steps.apg_forward(
+                v_guided = ode_steps.apg_forward(
                     vt_pos, vt_neg,
                     guidance_scale=gc,
                     momentum_buffer=slot.momentum_buffer,
                     momentum=mom if mom is not None else -0.75,
                 )
+                rescale = self._eff_shared(slot, "cfg_rescale_curve")
+                if rescale is not None:
+                    v_guided = ode_steps.cfg_rescale(
+                        v_guided, vt_pos, rescale,
+                    )
+                vt_per_slot[si] = v_guided
             else:
                 vt_per_slot[si] = vt_pos
 

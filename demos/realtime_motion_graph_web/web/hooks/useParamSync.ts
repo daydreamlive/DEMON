@@ -69,9 +69,9 @@ export function useParamSync() {
       raw.dcw_mode = perf.dcwMode;
       raw.dcw_wavelet = perf.dcwWavelet;
       // RCFG mode (off/full/initialize/self). pipeline.py reads
-      // raw.rcfg_mode and pairs it with raw.guidance_scale (already in
-      // the sliderValues spread above) to build the engine's
-      // guidance_curve.
+      // raw.rcfg_mode and pairs it with raw.guidance_scale / raw.cfg_rescale
+      // (already in the sliderValues spread above) to build the engine's
+      // guidance_curve / cfg_rescale_curve.
       raw.rcfg_mode = perf.rcfgMode;
 
       // Playback position is *seconds* (raw audio.positionSec), not a 0..1

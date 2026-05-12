@@ -360,3 +360,33 @@ def apg_forward(
     _parallel, diff_orthogonal = apg_project(diff, pred_cond, dims)
     normalized_update = diff_orthogonal + eta * _parallel
     return pred_cond + (guidance_scale - 1) * normalized_update
+
+
+def cfg_rescale(
+    v_guided: torch.Tensor,
+    v_pos: torch.Tensor,
+    rescale: "float | int | torch.Tensor",
+    dims: Tuple[int, ...] = (1,),
+    eps: float = 1e-12,
+) -> torch.Tensor:
+    """Rescale the APG output's per-frame norm toward ``v_pos``'s norm.
+
+    Fix for the magnitude blow-up that high guidance scales cause: the
+    APG output's direction is good but its magnitude can be 2x+ of
+    ``v_pos``, producing the saturated/clipped sound characteristic of
+    over-guided diffusion outputs. Reference: Lin et al., "Common
+    Diffusion Noise Schedules and Sample Steps are Flawed."
+
+    ``rescale`` is a scalar or per-frame ``[1, T, 1]`` curve in [0, 1].
+    0 returns ``v_guided`` unchanged; 1 fully snaps its per-frame norm
+    to ``v_pos``'s while keeping the APG-derived direction. The norm
+    computation runs in fp32 for stability, then casts back.
+    """
+    rescale_t = normalize_curve(rescale).to(
+        device=v_guided.device, dtype=v_guided.dtype,
+    )
+    norm_pos = v_pos.float().norm(p=2, dim=dims, keepdim=True)
+    norm_g = v_guided.float().norm(p=2, dim=dims, keepdim=True).clamp_min(eps)
+    scale = (norm_pos / norm_g).to(v_guided.dtype)
+    rescaled = v_guided * scale
+    return rescale_t * rescaled + (1.0 - rescale_t) * v_guided

@@ -250,9 +250,11 @@ const DEFAULT_SLIDER_VALUES: Record<string, number> = {
   dcw_mult_blend: 0.0,
   dcw_mag_phase: 0.0,
   dcw_soft_thresh: 0.0,
-  // Only consumed when rcfgMode != "off". The server reads raw.guidance_scale
-  // and lifts it to a uniform [1, T, 1] curve before passing to the engine.
+  // CFG-path sliders. Only consumed when rcfgMode != "off". The server
+  // reads raw.guidance_scale / raw.cfg_rescale and lifts them to
+  // uniform [1, T, 1] curves.
   guidance_scale: 7.0,
+  cfg_rescale: 0.0,
 };
 
 interface PerformanceState {

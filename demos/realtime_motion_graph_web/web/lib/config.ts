@@ -247,6 +247,7 @@ export const DEFAULT_CONFIG: RtmgConfig = {
     dcw_wavelet: "haar",
     lora_default_strength: 1.4,
     guidance_scale: 7.0,
+    cfg_rescale: 0.0,
     rcfg_mode: "off",
   },
   channel_ranges: {

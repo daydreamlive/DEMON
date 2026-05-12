@@ -7,13 +7,14 @@ import { SliderGroup } from "./SliderGroup";
 import { defaultLabelFor, kbdHintFor } from "./SliderTile";
 
 // Engine tile. Engine-internal scalars on the top (feedback, shift,
-// noise_share, ode_noise) plus a conditional CFG slider, plus an RCFG
+// noise_share, ode_noise), plus a conditional CFG cluster
+// (guidance_scale, cfg_rescale) when RCFG is not off, plus the RCFG
 // mode dropdown in the bottom strip mirroring DcwTile's layout.
 //
-// The CFG slider only appears when ``rcfgMode != "off"`` — keeping it
-// visible when guidance is disabled is just visual noise (the server
-// ignores guidance_scale entirely on the off path). The param-sync
-// tick still ships the current value so flipping the dropdown back on
+// The CFG sliders only appear when ``rcfgMode != "off"`` — keeping
+// them visible when guidance is disabled is just visual noise (the
+// server ignores them entirely on the off path). The param-sync tick
+// still ships the current values so flipping the dropdown back on
 // resumes at whatever the operator last set.
 
 const ALWAYS_SLIDERS = [
@@ -40,11 +41,18 @@ export function EngineTile() {
           />
         ))}
         {rcfgMode !== "off" && (
-          <SliderGroup
-            param="guidance_scale"
-            label={defaultLabelFor("guidance_scale")}
-            kbd={kbdHintFor("guidance_scale")}
-          />
+          <>
+            <SliderGroup
+              param="guidance_scale"
+              label={defaultLabelFor("guidance_scale")}
+              kbd={kbdHintFor("guidance_scale")}
+            />
+            <SliderGroup
+              param="cfg_rescale"
+              label={defaultLabelFor("cfg_rescale")}
+              kbd={kbdHintFor("cfg_rescale")}
+            />
+          </>
         )}
       </div>
       <div className="dcw-panel dcw-panel--bottom">

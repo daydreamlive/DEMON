@@ -25,6 +25,7 @@ const DISPLAY_NAMES: Record<string, string> = {
   dcw_scaler: "DCW low",
   dcw_high_scaler: "DCW high",
   guidance_scale: "CFG",
+  cfg_rescale: "CFG rescale",
 };
 
 // Tooltip copy for each tweakable param, surfaced via the slider label's
@@ -52,6 +53,8 @@ const PARAM_TOOLTIPS: Record<string, string> = {
     "Adds a touch of randomness during generation. Bump it up if the model feels too deterministic — small values add subtle variation, higher values produce surprising bursts of creativity. Zero keeps generation fully predictable.",
   guidance_scale:
     "CFG strength. Only takes effect when the RCFG mode dropdown below is NOT 'off'. Higher values push the output further toward the prompt at the cost of more artifacts. Turbo is CFG-distilled, so the useful range is narrower than a base SD model — try 3–8.",
+  cfg_rescale:
+    "After CFG, mix the guided velocity's magnitude back toward what the positive forward produced. 0 keeps raw CFG; 1 fully snaps the magnitude. Pair with high guidance_scale to keep the prompt-push without the harshness that high CFG causes on its own.",
 
   // ── DCW ──
   dcw_scaler:

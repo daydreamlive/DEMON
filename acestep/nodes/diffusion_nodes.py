@@ -367,6 +367,7 @@ def _build_slot_request(
     context_latents: torch.Tensor,
     source_latent: Optional[Latent],
     rcfg_mode: Optional[str] = None,
+    cfg_rescale=None,
     seed,
     denoise: float,
     velocity_scale,
@@ -443,6 +444,7 @@ def _build_slot_request(
         neg_conditions=neg_conditions,
         guidance_curve=guidance_curve_t,
         rcfg_mode=rcfg_mode,
+        cfg_rescale_curve=_curve_to_tensor(cfg_rescale, device, dtype),
     )
 
 
@@ -610,6 +612,15 @@ class StreamDenoise(BaseNode):
                         "forward every step), 'initialize' (neg forward "
                         "once per slot then cached), 'self' (no neg "
                         "forward; virtual v_uncond = initial noise)."
+                    ),
+                    hidden=True,
+                ),
+                NodeParam(
+                    name="cfg_rescale", type="any", default=None,
+                    description=(
+                        "Per-frame mix toward vt_pos's magnitude after APG. "
+                        "0 / None disables; 1 fully snaps norm to vt_pos. "
+                        "Scalar or per-frame curve. Fixes high-CFG saturation."
                     ),
                     hidden=True,
                 ),
@@ -816,6 +827,7 @@ class StreamDenoise(BaseNode):
             x0_target_gate=x0_target_gate,
             guidance_curve=modulation.guidance_curve,
             rcfg_mode=kwargs.get("rcfg_mode"),
+            cfg_rescale=kwargs.get("cfg_rescale"),
             device=device,
             dtype=dtype,
         )

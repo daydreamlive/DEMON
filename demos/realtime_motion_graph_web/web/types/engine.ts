@@ -28,6 +28,10 @@ export const SLIDER_META: Record<string, SliderMeta> = {
   // conditioning baked in); driving guidance past ~10 on turbo tends
   // to artifact. 7.0 is the SD-style default, useful starting point.
   guidance_scale: { max: 15.0, step: 0.5, pro: true },
+  // Per-frame mix toward vt_pos's magnitude after APG. 0 = raw APG;
+  // 1 = fully snap norm to vt_pos. Useful at high guidance_scale to
+  // tame saturation.
+  cfg_rescale: { max: 1.0, step: 0.05, pro: true },
 
   ch_g0: { max: 3.0, step: 0.15, pro: true },
   ch_g1: { max: 3.0, step: 0.15, pro: true },
