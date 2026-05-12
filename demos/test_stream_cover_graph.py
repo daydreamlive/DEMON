@@ -90,7 +90,7 @@ checkpoint = _get_arg("--checkpoint", "acestep-v15-turbo")
 if "--decoder-engine" in _args:
     decoder_engine_name = _get_arg("--decoder-engine")
 elif checkpoint == "acestep-v15-xl-turbo":
-    decoder_engine_name = "decoder_xl-turbo_mixed_refit_b8_60s"
+    decoder_engine_name = "decoder_xl-turbo_mixed_refit_b4_60s"
 else:
     decoder_engine_name = "decoder_mixed_refit_b8_60s"
 
@@ -117,8 +117,8 @@ if no_trt_decoder:
     _backend_tag = "pt"
 else:
     # Use the engine name as the backend tag, stripping common prefixes
-    # so the filename stays readable (e.g. "decoder_xl-turbo_mixed_refit_b8_60s"
-    # -> "trt_mixed_refit_b8_60s").
+    # so the filename stays readable (e.g. "decoder_xl-turbo_mixed_refit_b4_60s"
+    # -> "trt_mixed_refit_b4_60s").
     _eng = decoder_engine_name
     for prefix in ("decoder_xl-turbo_", "decoder_"):
         if _eng.startswith(prefix):

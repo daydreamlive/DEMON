@@ -769,6 +769,8 @@ def _build_decoder_engine(
     checkpoint: str = "acestep-v15-turbo",
     decoder_precision: str = "fp16_mixed",
     strongly_typed: bool = True,
+    batch_opt: int | None = None,
+    builder_optimization_level: int | None = None,
 ) -> tuple[str, str, float, str]:
     """Build one decoder TRT engine.
 
@@ -778,7 +780,7 @@ def _build_decoder_engine(
     from .export import build_trt_engine, TRTBuildConfig
 
     variant = _checkpoint_to_variant(checkpoint)
-    config = TRTBuildConfig(
+    cfg_kwargs = dict(
         fp16=True,
         strongly_typed=strongly_typed,
         refit=refit,
@@ -789,6 +791,11 @@ def _build_decoder_engine(
         variant=variant,
         onnx_precision=decoder_precision,
     )
+    if batch_opt is not None:
+        cfg_kwargs["batch_opt"] = batch_opt
+    if builder_optimization_level is not None:
+        cfg_kwargs["builder_optimization_level"] = builder_optimization_level
+    config = TRTBuildConfig(**cfg_kwargs)
 
     name = config.engine_filename().replace(".engine", "")
     engine_dir = os.path.join(output_dir, name)
@@ -1014,6 +1021,14 @@ def main():
                              "(default: True, use --no-decoder-refit)")
     single.add_argument("--batch-max", type=int, default=8,
                         help="Max batch size for decoder (default: 8)")
+    single.add_argument("--batch-opt", type=int, default=None,
+                        help="Optimization batch size for TRT tactic selection. "
+                             "TRT picks GEMM tactics around this shape. Defaults to "
+                             "1 (legacy); set to the actual runtime batch (e.g. 4 "
+                             "for depth=4 streaming) for better steady-state perf.")
+    single.add_argument("--builder-optimization-level", type=int, default=None,
+                        help="TRT builder optimization level (0-5). Higher = "
+                             "slower build, faster engine. Default 3.")
     single.add_argument("--skip-vae", action="store_true",
                         help="Skip VAE engine build")
 
@@ -1124,6 +1139,8 @@ def _run_all(args, project_root, onnx_dir, env):
                 checkpoint=args.checkpoint,
                 decoder_precision=decoder_precision,
                 strongly_typed=decoder_strongly_typed,
+                batch_opt=args.batch_opt,
+                builder_optimization_level=args.builder_optimization_level,
             ))
 
     # Windowed VAE decode (single 3-30s profile, duration-independent).
@@ -1232,6 +1249,8 @@ def _run_single(args, project_root, onnx_dir, env):
             checkpoint=args.checkpoint,
             decoder_precision=decoder_precision,
             strongly_typed=decoder_strongly_typed,
+            batch_opt=args.batch_opt,
+            builder_optimization_level=args.builder_optimization_level,
         )
         label, path, elapsed, status = result
         if status == "OK":

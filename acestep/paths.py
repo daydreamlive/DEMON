@@ -100,12 +100,12 @@ _TRT_ENGINE_PROFILES: dict[float, dict[str, str]] = {
 
 _XL_TURBO_TRT_ENGINE_PROFILES: dict[float, dict[str, str]] = {
     60.0: {
-        "decoder": "decoder_xl-turbo_mixed_refit_b8_60s",
+        "decoder": "decoder_xl-turbo_mixed_refit_b4_60s",
         "vae_encode": "vae_encode_fp16_60s",
         "vae_decode": "vae_decode_fp16_60s",
     },
     120.0: {
-        "decoder": "decoder_xl-turbo_mixed_refit_b8_120s",
+        "decoder": "decoder_xl-turbo_mixed_refit_b4_120s",
         "vae_encode": "vae_encode_fp16_120s",
         "vae_decode": "vae_decode_fp16_120s",
     },
@@ -250,8 +250,14 @@ def _trt_build_command(
         parts.append("--decoder-only")
     parts.extend(["--duration", str(duration)])
     if checkpoint == "acestep-v15-xl-turbo" and "decoder" in needs:
+        # b4 + bopt=4 + opt_level=5 measured -5.7% tick vs b4 bopt=1 opt=3,
+        # and beats the prior b8 outright on a depth=4 stream (5090 / TRT
+        # 10.16.1.11). Streaming never exercises B>4, so b8 capacity is
+        # dead weight.
         parts.extend([
-            "--batch-max", "8",
+            "--batch-max", "4",
+            "--batch-opt", "4",
+            "--builder-optimization-level", "5",
             "--workspace-gb", "20",
             "--export-locally",
             "--decoder-precision", "bf16_mixed",
