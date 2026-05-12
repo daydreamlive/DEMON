@@ -774,6 +774,13 @@ def handle_client(
     # swap_source, and set/clear_timbre_source.
     timbre_strength_ref = [1.0]
     cond_pair_ref = [(cond_silence, cond_full)]
+    # Prompt A/B blend. B starts mirroring A so the slider is a no-op
+    # until the client sends a real promptB via the ``prompt`` message
+    # (Send Prompt). Then this pair is encoded against the same source
+    # + timbre as A, and set_prompt_blend lerps between them per tick.
+    cond_pair_b_ref = [(cond_silence, cond_full)]
+    prompt_text_b = [prompt]
+    prompt_blend_ref = [0.0]
     # Optional uploaded timbre-track latent. None == use the playback
     # source's own latent (self-timbre, current default).
     timbre_latent_ref: list = [None]
@@ -784,6 +791,25 @@ def handle_client(
     def _active_refer_latent():
         tl = timbre_latent_ref[0]
         return tl if tl is not None else source_ref[0].latent
+
+    def _refresh_conditioning():
+        """Recompose ``stream.conditioning`` from the cached A/B pairs,
+        current timbre strength, and current prompt blend. Two lerps
+        when blend is in the open interval; one when it's at an extreme
+        (``_blend_for_strength``'s own short-circuit handles that).
+        Called from every site that changes any of those inputs."""
+        cs_a, cf_a = cond_pair_ref[0]
+        ca = _blend_for_strength(cs_a, cf_a, timbre_strength_ref[0])
+        pb = prompt_blend_ref[0]
+        if pb <= 0.001:
+            stream.conditioning = ca
+            return
+        cs_b, cf_b = cond_pair_b_ref[0]
+        cb = _blend_for_strength(cs_b, cf_b, timbre_strength_ref[0])
+        if pb >= 0.999:
+            stream.conditioning = cb
+            return
+        stream.conditioning = _blend_for_strength(ca, cb, pb)
 
     # Structure (semantic-hint) override. Holds the raw user waveform so
     # we can re-derive the override's context_latent against the current
@@ -893,6 +919,7 @@ def handle_client(
         prev_timbre_latent = timbre_latent_ref[0]
         prev_timbre_name = timbre_name_ref[0]
         prev_cond_pair = cond_pair_ref[0]
+        prev_cond_pair_b = cond_pair_b_ref[0]
         prev_stream_cond = stream.conditioning
         try:
             cap = int(duration_ref[0] * SAMPLE_RATE)
@@ -929,20 +956,29 @@ def handle_client(
                 )
             timbre_latent_ref[0] = timbre_latent
             timbre_name_ref[0] = name
-            new_pair = _encode_cond_pair(
+            cond_pair_ref[0] = _encode_cond_pair(
                 prompt_text[0], timbre_latent,
                 bpm_ref[0], duration_ref[0], key_ref[0],
                 time_sig_ref[0],
             )
-            cond_pair_ref[0] = new_pair
-            stream.conditioning = _blend_for_strength(
-                new_pair[0], new_pair[1], timbre_strength_ref[0],
-            )
+            # Re-encode B against the new timbre too — otherwise a non-
+            # zero prompt blend would suddenly mix in B's *old-timbre*
+            # conditioning the instant the user uploads a new ref.
+            if prompt_text_b[0] != prompt_text[0]:
+                cond_pair_b_ref[0] = _encode_cond_pair(
+                    prompt_text_b[0], timbre_latent,
+                    bpm_ref[0], duration_ref[0], key_ref[0],
+                    time_sig_ref[0],
+                )
+            else:
+                cond_pair_b_ref[0] = cond_pair_ref[0]
+            _refresh_conditioning()
             return clip_s
         except Exception:
             timbre_latent_ref[0] = prev_timbre_latent
             timbre_name_ref[0] = prev_timbre_name
             cond_pair_ref[0] = prev_cond_pair
+            cond_pair_b_ref[0] = prev_cond_pair_b
             stream.conditioning = prev_stream_cond
             raise
 
@@ -1136,20 +1172,37 @@ def handle_client(
                             )
                             if ts_override is not None:
                                 time_sig_ref[0] = ts_override
-                            new_pair = _encode_cond_pair(
+                            refer = _active_refer_latent()
+                            key_used = data.get("key") or key_ref[0]
+                            cond_pair_ref[0] = _encode_cond_pair(
                                 data["tags"],
-                                _active_refer_latent(),
+                                refer,
                                 bpm_ref[0],
                                 duration_ref[0],
-                                data.get("key") or key_ref[0],
+                                key_used,
                                 time_sig_ref[0],
                             )
-                            cond_pair_ref[0] = new_pair
-                            stream.conditioning = _blend_for_strength(
-                                new_pair[0], new_pair[1],
-                                timbre_strength_ref[0],
-                            )
                             prompt_text[0] = data["tags"]
+                            # Optional second prompt for A/B blending.
+                            # When absent (legacy clients) or identical
+                            # to A, mirror A's pair so the blend slider
+                            # stays a no-op without paying a second
+                            # text-encode pass.
+                            tags_b = data.get("tags_b")
+                            if tags_b and tags_b != data["tags"]:
+                                cond_pair_b_ref[0] = _encode_cond_pair(
+                                    tags_b,
+                                    refer,
+                                    bpm_ref[0],
+                                    duration_ref[0],
+                                    key_used,
+                                    time_sig_ref[0],
+                                )
+                                prompt_text_b[0] = tags_b
+                            else:
+                                cond_pair_b_ref[0] = cond_pair_ref[0]
+                                prompt_text_b[0] = data["tags"]
+                            _refresh_conditioning()
                             try:
                                 with send_lock:
                                     ws.send(json.dumps({
@@ -1159,6 +1212,17 @@ def handle_client(
                             except ConnectionClosed:
                                 running[0] = False
                                 break
+                        elif mtype == "set_prompt_blend":
+                            # Cheap per-tick lerp between the cached A and
+                            # B cond pairs. Same shape as set_timbre_
+                            # strength — clamp, store, recompose. Text
+                            # encoder is not touched here.
+                            try:
+                                v = float(data.get("value", 0.0))
+                            except (TypeError, ValueError):
+                                v = 0.0
+                            prompt_blend_ref[0] = max(0.0, min(1.0, v))
+                            _refresh_conditioning()
                         elif mtype == "enable_lora":
                             lid = data.get("id")
                             # Optional strength carries the target value
@@ -1185,8 +1249,7 @@ def handle_client(
                                 v = 1.0
                             v = max(0.0, min(1.0, v))
                             timbre_strength_ref[0] = v
-                            cs, cf = cond_pair_ref[0]
-                            stream.conditioning = _blend_for_strength(cs, cf, v)
+                            _refresh_conditioning()
                         elif mtype == "set_timbre_source":
                             # Followed by a binary audio frame (same wire
                             # format as init / swap_source). _apply_timbre_
@@ -1271,19 +1334,27 @@ def handle_client(
                         elif mtype == "clear_timbre_source":
                             timbre_latent_ref[0] = None
                             timbre_name_ref[0] = None
-                            new_pair = _encode_cond_pair(
+                            refer = source_ref[0].latent
+                            cond_pair_ref[0] = _encode_cond_pair(
                                 prompt_text[0],
-                                source_ref[0].latent,
+                                refer,
                                 bpm_ref[0],
                                 duration_ref[0],
                                 key_ref[0],
                                 time_sig_ref[0],
                             )
-                            cond_pair_ref[0] = new_pair
-                            stream.conditioning = _blend_for_strength(
-                                new_pair[0], new_pair[1],
-                                timbre_strength_ref[0],
-                            )
+                            if prompt_text_b[0] != prompt_text[0]:
+                                cond_pair_b_ref[0] = _encode_cond_pair(
+                                    prompt_text_b[0],
+                                    refer,
+                                    bpm_ref[0],
+                                    duration_ref[0],
+                                    key_ref[0],
+                                    time_sig_ref[0],
+                                )
+                            else:
+                                cond_pair_b_ref[0] = cond_pair_ref[0]
+                            _refresh_conditioning()
                             try:
                                 with send_lock:
                                     ws.send(json.dumps({
@@ -1512,18 +1583,25 @@ def handle_client(
             source_ref[0] = new_source
             playback_samples_ref[0] = int(new_wf.shape[-1])
             tl = timbre_latent_ref[0]
-            new_pair = _encode_cond_pair(
+            refer = tl if tl is not None else new_source.latent
+            cond_pair_ref[0] = _encode_cond_pair(
                 tags,
-                tl if tl is not None else new_source.latent,
+                refer,
                 new_bpm, new_audio_duration_s, new_key, new_time_sig,
             )
-            new_cond = _blend_for_strength(
-                new_pair[0], new_pair[1], timbre_strength_ref[0],
-            )
-
-            stream.conditioning = new_cond
+            # Carry promptB across the swap so the blend slider keeps
+            # its meaning. If B was identical to A pre-swap, keep it
+            # mirrored to skip a second encode pass.
+            if prompt_text_b[0] != prompt_text[0]:
+                cond_pair_b_ref[0] = _encode_cond_pair(
+                    prompt_text_b[0],
+                    refer,
+                    new_bpm, new_audio_duration_s, new_key, new_time_sig,
+                )
+            else:
+                cond_pair_b_ref[0] = cond_pair_ref[0]
+                prompt_text_b[0] = tags
             stream.context_latent = new_source.context_latent
-            cond_pair_ref[0] = new_pair
             # Re-derive structure override against the new source length.
             # On failure (e.g. VAE engine couldn't fit the new clip), drop
             # the override rather than block the swap — the user can re-
@@ -1549,6 +1627,7 @@ def handle_client(
             time_sig_ref[0] = new_time_sig
             duration_ref[0] = new_audio_duration_s
             prompt_text[0] = tags
+            _refresh_conditioning()
             r = runner_holder[0]
             if r is not None:
                 # Source latent length may have changed; rebuild silence so
