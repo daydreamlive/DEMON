@@ -13,6 +13,7 @@ automatically.
 from __future__ import annotations
 
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Callable, Optional, List, Tuple, TYPE_CHECKING
 
@@ -106,6 +107,24 @@ class SlotRequest:
     # MomentumBuffer update sees a uniform tensor. Hot-mutable via
     # set_shared_curve("apg_momentum", value) on the pipeline.
     apg_momentum: "float | torch.Tensor" = -0.75
+    # --- RCFG (Residual CFG, after StreamDiffusion §3.2) ---
+    # Cuts the per-step uncond forward pass that standard CFG requires.
+    # Modes:
+    #   None / "full" : standard two-pass CFG. Runs a negative forward
+    #                   every step (existing behavior).
+    #   "initialize"  : run the uncond pass once at step 0 per slot, cache
+    #                   the resulting velocity, reuse it as the negative
+    #                   for all remaining steps of that slot. One extra
+    #                   forward per slot, not per step.
+    #   "self"        : skip the uncond forward entirely; approximate
+    #                   ``v_uncond`` with the slot's initial noise tensor.
+    #                   In flow matching ``v = noise - x0``, so with the
+    #                   prior x0_uncond ~ 0 we have v_uncond ~ noise.
+    #                   Zero extra forwards.
+    # ``guidance_curve`` is still required (sets the APG scale). For
+    # "self" mode ``neg_conditions`` is unused; for "initialize" the
+    # initial uncond pass uses them just like full CFG.
+    rcfg_mode: Optional[str] = None
 
     def all_conditions(self) -> List[SlotCondition]:
         """Return primary + extra conditions as a single ordered list."""
@@ -121,8 +140,37 @@ class SlotRequest:
 
     @property
     def has_cfg(self) -> bool:
-        """True when this request needs CFG (APG) at every step."""
-        return bool(self.neg_conditions) and self.guidance_curve is not None
+        """True when this request wants APG guidance applied each step.
+
+        Three families satisfy this:
+        - Standard CFG: ``neg_conditions`` + ``guidance_curve``.
+        - RCFG-initialize: ``neg_conditions`` + ``guidance_curve`` +
+          ``rcfg_mode == 'initialize'`` (same inputs as standard, but
+          the uncond pass only runs at step 0).
+        - RCFG-self: ``guidance_curve`` + ``rcfg_mode == 'self'`` (no
+          ``neg_conditions`` needed — uncond is the slot's initial noise).
+        """
+        if self.guidance_curve is None:
+            return False
+        if self.rcfg_mode == "self":
+            return True
+        return bool(self.neg_conditions)
+
+    def needs_neg_forward(self, step_idx: int) -> bool:
+        """True when this step requires running the uncond forward pass.
+
+        - "self": never (virtual negative).
+        - "initialize": only at step 0; subsequent steps reuse the
+          slot's cached velocity.
+        - None / "full": every step.
+        """
+        if not self.has_cfg:
+            return False
+        if self.rcfg_mode == "self":
+            return False
+        if self.rcfg_mode == "initialize":
+            return step_idx == 0
+        return True
 
 
 @dataclass
@@ -135,6 +183,12 @@ class _Slot:
     # APG momentum accumulator, one per slot with CFG. None for slots
     # without CFG (cheaper than allocating an unused buffer).
     momentum_buffer: Optional[ode_steps.MomentumBuffer] = None
+    # RCFG state. ``initial_noise`` is captured at slot init and used as
+    # the virtual ``v_uncond`` for ``rcfg_mode == 'self'``. ``vt_neg_cached``
+    # holds the cached uncond velocity for ``rcfg_mode == 'initialize'`` —
+    # populated on step 0, reused on every subsequent step of this slot.
+    initial_noise: Optional[torch.Tensor] = None
+    vt_neg_cached: Optional[torch.Tensor] = None
 
 
 class StreamPipeline:
@@ -194,8 +248,17 @@ class StreamPipeline:
         self._trt_stream = engine._trt_stream
         self._trt_engine = engine._trt_engine
         self._trt_io_dtype = getattr(engine, '_trt_io_dtype', torch.float32)
+        # Currently-bound TRT I/O buffers (set by _ensure_trt_bufs to one
+        # entry of _trt_bufs_cache). _trt_forward reads these directly.
         self._trt_bufs: Optional[dict] = None
         self._trt_out_buf: Optional[torch.Tensor] = None
+        # LRU cache of (B, eff_T, max_L) -> {bufs..., "_out_buf": tensor}.
+        # CFG/RCFG passes alternate between pos and neg encoder lengths
+        # (e.g. L=83 pos, L=66 empty-prompt neg), so a single-shape cache
+        # thrashes on every forward. 4 entries comfortably covers
+        # {pos, neg} × {two T values} during T transitions.
+        self._trt_bufs_cache: "OrderedDict[tuple, dict]" = OrderedDict()
+        self._trt_bufs_cache_max = 4
 
         # Re-pick up the snapshot after each profile swap. The new
         # engine has different I/O profile bounds and its execution
@@ -296,6 +359,7 @@ class StreamPipeline:
         self._trt_io_dtype = getattr(engine, "_trt_io_dtype", torch.float32)
         self._trt_bufs = None
         self._trt_out_buf = None
+        self._trt_bufs_cache.clear()
 
     def submit(self, request: SlotRequest) -> None:
         """Enqueue a generation request.
@@ -421,10 +485,19 @@ class StreamPipeline:
             ode_steps.MomentumBuffer() if request.has_cfg else None
         )
 
+        # RCFG-self uses the slot's initial noise tensor as the virtual
+        # ``v_uncond``. Captured once at slot init; lives on the slot for
+        # the rest of its schedule. Only allocated for ``rcfg_mode ==
+        # "self"`` — other modes never read this field.
+        initial_noise = (
+            noise.clone() if request.rcfg_mode == "self" else None
+        )
+
         return _Slot(
             request=request, xt=xt,
             t_schedule=t_schedule, step_idx=0,
             momentum_buffer=momentum_buffer,
+            initial_noise=initial_noise,
         )
 
     # ------------------------------------------------------------------
@@ -661,16 +734,31 @@ class StreamPipeline:
     # ------------------------------------------------------------------
 
     def _ensure_trt_bufs(self, B: int, T: int, max_L: int):
-        """Allocate/resize TRT I/O buffers and bind shapes once.
+        """Bind TRT I/O buffers for ``(B, T, max_L)`` via the LRU cache.
 
-        Reuses buffers when shapes haven't changed. Uses engine's native
-        I/O dtype (fp16 for mixed-precision, fp32 for legacy engines).
+        Reuses an existing cache entry when the shape has been seen
+        recently; allocates a new entry (evicting the oldest if the
+        cache is full) otherwise. The TRT execution context still has
+        to be re-bound to whichever entry we use, because addresses
+        change as we swap entries — but allocations only happen on a
+        true miss. Uses the engine's native I/O dtype.
         """
         eff_T = T + 1 if T % 2 == 1 else T
         key = (B, eff_T, max_L)
+        ctx = self._trt_ctx
 
-        if self._trt_bufs is not None and self._trt_bufs.get("_key") == key:
-            return  # already allocated for this shape
+        cached = self._trt_bufs_cache.get(key)
+        if cached is not None:
+            self._trt_bufs_cache.move_to_end(key)
+            for name, buf in cached.items():
+                if name.startswith("_"):
+                    continue
+                ctx.set_input_shape(name, tuple(buf.shape))
+                ctx.set_tensor_address(name, buf.data_ptr())
+            ctx.set_tensor_address("velocity", cached["_out_buf"].data_ptr())
+            self._trt_bufs = cached
+            self._trt_out_buf = cached["_out_buf"]
+            return
 
         device = self._device
         io_dtype = self._trt_io_dtype
@@ -681,7 +769,6 @@ class StreamPipeline:
             "context_latents": torch.empty(B, eff_T, 128, dtype=io_dtype, device=device),
         }
 
-        ctx = self._trt_ctx
         for name, buf in bufs.items():
             ctx.set_input_shape(name, tuple(buf.shape))
             ctx.set_tensor_address(name, buf.data_ptr())
@@ -698,10 +785,14 @@ class StreamPipeline:
         bufs["_key"] = key
         bufs["_eff_T"] = eff_T
         bufs["_T"] = T
+        bufs["_out_buf"] = out_buf
+        self._trt_bufs_cache[key] = bufs
+        while len(self._trt_bufs_cache) > self._trt_bufs_cache_max:
+            self._trt_bufs_cache.popitem(last=False)
         self._trt_bufs = bufs
         self._trt_out_buf = out_buf
 
-        logger.info(
+        logger.debug(
             "Stream TRT bufs allocated: B={} eff_T={} L={}", B, eff_T, max_L
         )
 
@@ -861,11 +952,22 @@ class StreamPipeline:
                 xt_decoder_list.append(xt)
 
         # --- Active pos/neg conditions per slot ---
+        # ``neg_conds_per_slot[si]`` is non-empty only when slot ``si``
+        # needs an actual uncond forward pass *this step*. RCFG modes
+        # gate that: "self" never does a forward (virtual negative),
+        # "initialize" only on step 0 (cached thereafter), full CFG
+        # every step. Slots that have CFG but skip the forward this
+        # step still get APG applied — they read ``vt_neg`` from the
+        # slot's ``vt_neg_cached`` (initialize) or ``initial_noise``
+        # (self) further down.
         pos_conds_per_slot: List[List[SlotCondition]] = []
         neg_conds_per_slot: List[List[SlotCondition]] = []
         for slot in slots:
             pos_conds_per_slot.append(self._active_conditions(slot))
-            neg_conds_per_slot.append(self._active_neg_conditions(slot))
+            if slot.request.needs_neg_forward(slot.step_idx):
+                neg_conds_per_slot.append(self._active_neg_conditions(slot))
+            else:
+                neg_conds_per_slot.append([])
 
         # --- Forward pass helper: batch N (slot_idx, cond) pairs in one call ---
         # Used independently for the positive pass and the negative pass so
@@ -927,17 +1029,34 @@ class StreamPipeline:
                     self._device, self._dtype,
                 )
 
-            if neg and vt_neg_all is not None:
-                vt_neg_block = vt_neg_all[neg_p:neg_p + len(neg)]
-                neg_p += len(neg)
-                if len(neg) == 1:
-                    vt_neg = vt_neg_block
-                else:
-                    vt_neg = ode_steps.blend_velocities(
-                        [(vt_neg_block[i:i + 1], neg[i]) for i in range(len(neg))],
-                        self._device, self._dtype,
-                    )
+            # Resolve ``vt_neg`` for this slot. Four cases:
+            #   1. No CFG: vt_neg=None, fall through to vt_pos.
+            #   2. RCFG-self: virtual negative is the slot's initial
+            #      noise tensor. No forward consumed.
+            #   3. Neg forward ran this step: consume the next ``len(neg)``
+            #      rows from ``vt_neg_all`` (and cache for "initialize").
+            #   4. RCFG-initialize after step 0: read from
+            #      ``slot.vt_neg_cached`` populated on step 0.
+            vt_neg = None
+            if slot.request.has_cfg:
+                if slot.request.rcfg_mode == "self":
+                    vt_neg = slot.initial_noise
+                elif neg and vt_neg_all is not None:
+                    vt_neg_block = vt_neg_all[neg_p:neg_p + len(neg)]
+                    neg_p += len(neg)
+                    if len(neg) == 1:
+                        vt_neg = vt_neg_block
+                    else:
+                        vt_neg = ode_steps.blend_velocities(
+                            [(vt_neg_block[i:i + 1], neg[i]) for i in range(len(neg))],
+                            self._device, self._dtype,
+                        )
+                    if slot.request.rcfg_mode == "initialize":
+                        slot.vt_neg_cached = vt_neg.detach()
+                elif slot.vt_neg_cached is not None:
+                    vt_neg = slot.vt_neg_cached
 
+            if vt_neg is not None:
                 gc = ode_steps.normalize_curve(slot.request.guidance_curve).to(
                     device=vt_pos.device, dtype=vt_pos.dtype,
                 )
@@ -1302,6 +1421,7 @@ class StreamPipeline:
         self._last_noise = None
         self._trt_bufs = None
         self._trt_out_buf = None
+        self._trt_bufs_cache.clear()
         self._trt_ctx = None
         self._trt_engine = None
         self._trt_stream = None

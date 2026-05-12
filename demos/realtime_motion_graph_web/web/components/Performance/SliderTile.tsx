@@ -24,6 +24,7 @@ const DISPLAY_NAMES: Record<string, string> = {
   hint_strength: "structure strength",
   dcw_scaler: "DCW low",
   dcw_high_scaler: "DCW high",
+  guidance_scale: "CFG",
 };
 
 // Tooltip copy for each tweakable param, surfaced via the slider label's
@@ -49,6 +50,8 @@ const PARAM_TOOLTIPS: Record<string, string> = {
     "Fine-grained sibling of FEEDBACK. Where FEEDBACK is one number for the whole generation, this lets the noise-sharing vary across the timeline. Leave at 0 unless you want detailed control over how successive generations evolve.",
   ode_noise:
     "Adds a touch of randomness during generation. Bump it up if the model feels too deterministic — small values add subtle variation, higher values produce surprising bursts of creativity. Zero keeps generation fully predictable.",
+  guidance_scale:
+    "CFG strength. Only takes effect when the RCFG mode dropdown below is NOT 'off'. Higher values push the output further toward the prompt at the cost of more artifacts. Turbo is CFG-distilled, so the useful range is narrower than a base SD model — try 3–8.",
 
   // ── DCW ──
   dcw_scaler:

@@ -12,6 +12,7 @@ import {
   type DcwMode,
   type DcwWavelet,
   type DisplayMode,
+  type RcfgMode,
   type TimeSignature,
 } from "@/types/engine";
 
@@ -249,6 +250,9 @@ const DEFAULT_SLIDER_VALUES: Record<string, number> = {
   dcw_mult_blend: 0.0,
   dcw_mag_phase: 0.0,
   dcw_soft_thresh: 0.0,
+  // Only consumed when rcfgMode != "off". The server reads raw.guidance_scale
+  // and lifts it to a uniform [1, T, 1] curve before passing to the engine.
+  guidance_scale: 7.0,
 };
 
 interface PerformanceState {
@@ -334,6 +338,12 @@ interface PerformanceState {
   dcwEnabled: boolean;
   dcwMode: DcwMode;
   dcwWavelet: DcwWavelet;
+  /** RCFG mode for the engine's APG/CFG path. "off" disables guidance
+   *  entirely. "full" runs the standard two-pass CFG (2x cost). "initialize"
+   *  runs the uncond pass only at step 0 per slot, caches, reuses (~1.07x).
+   *  "self" skips the uncond forward entirely; virtual ``v_uncond ≈ initial
+   *  noise`` (~1.06x). See acestep/engine/stream.py. */
+  rcfgMode: RcfgMode;
   /** Show keyboard-shortcut hints under each slider / next to buttons.
    * Default true. Persisted to localStorage. */
   showKbdHints: boolean;
@@ -416,6 +426,7 @@ interface PerformanceState {
   toggleDcw: () => void;
   setDcwMode: (m: DcwMode) => void;
   setDcwWavelet: (w: DcwWavelet) => void;
+  setRcfgMode: (m: RcfgMode) => void;
   toggleKbdHints: () => void;
   toggleSmooth: () => void;
   setSmoothMs: (ms: number) => void;
@@ -498,6 +509,7 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   dcwEnabled: true,
   dcwMode: "double",
   dcwWavelet: "haar",
+  rcfgMode: "off",
 
   // Hydrated from localStorage after mount via hydratePersistedPrefs() —
   // do NOT read localStorage here, that breaks SSR hydration.
@@ -635,6 +647,7 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   toggleDcw: () => set((s) => ({ dcwEnabled: !s.dcwEnabled })),
   setDcwMode: (m) => set({ dcwMode: m }),
   setDcwWavelet: (w) => set({ dcwWavelet: w }),
+  setRcfgMode: (m) => set({ rcfgMode: m }),
   toggleKbdHints: () =>
     set((s) => {
       const next = !s.showKbdHints;

@@ -366,6 +366,7 @@ def _build_slot_request(
     negative: Optional[Conditioning],
     context_latents: torch.Tensor,
     source_latent: Optional[Latent],
+    rcfg_mode: Optional[str] = None,
     seed,
     denoise: float,
     velocity_scale,
@@ -392,16 +393,22 @@ def _build_slot_request(
         for e in pos_entries[1:]
     ]
 
+    # Guidance is engaged when either standard CFG (negative provided)
+    # or RCFG-self (virtual uncond from initial noise) is requested.
+    # neg_conditions stays empty for the "self" branch.
     neg_conditions: list[SlotCondition] = []
     guidance_curve_t = None
-    if negative is not None and guidance_curve is not None:
-        for e in negative.to_entries():
-            neg_conditions.append(SlotCondition(
-                encoder_hidden_states=e.encoder_hidden_states,
-                encoder_attention_mask=e.encoder_attention_mask,
-                temporal_weight=e.temporal_weight,
-                step_range=e.step_range,
-            ))
+    if guidance_curve is not None and (
+        negative is not None or rcfg_mode == "self"
+    ):
+        if negative is not None:
+            for e in negative.to_entries():
+                neg_conditions.append(SlotCondition(
+                    encoder_hidden_states=e.encoder_hidden_states,
+                    encoder_attention_mask=e.encoder_attention_mask,
+                    temporal_weight=e.temporal_weight,
+                    step_range=e.step_range,
+                ))
         guidance_curve_t = _curve_to_tensor(guidance_curve, device, dtype)
 
     src_tensor = None
@@ -435,6 +442,7 @@ def _build_slot_request(
         primary_step_range=primary.step_range,
         neg_conditions=neg_conditions,
         guidance_curve=guidance_curve_t,
+        rcfg_mode=rcfg_mode,
     )
 
 
@@ -592,6 +600,16 @@ class StreamDenoise(BaseNode):
                     description=(
                         "DCW advanced research-surface config "
                         "(DCWAdvanced instance). None = upstream defaults."
+                    ),
+                    hidden=True,
+                ),
+                NodeParam(
+                    name="rcfg_mode", type="string", default=None,
+                    description=(
+                        "RCFG mode: None/'full' (standard CFG, neg "
+                        "forward every step), 'initialize' (neg forward "
+                        "once per slot then cached), 'self' (no neg "
+                        "forward; virtual v_uncond = initial noise)."
                     ),
                     hidden=True,
                 ),
@@ -797,6 +815,7 @@ class StreamDenoise(BaseNode):
             x0_target_strength=x0_target_strength,
             x0_target_gate=x0_target_gate,
             guidance_curve=modulation.guidance_curve,
+            rcfg_mode=kwargs.get("rcfg_mode"),
             device=device,
             dtype=dtype,
         )

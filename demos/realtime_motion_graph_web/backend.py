@@ -653,6 +653,19 @@ def handle_client(
     )
     conditioning = cond_full  # default strength=1.0 == cond_full
 
+    # Negative conditioning for the RCFG path (Residual CFG). Empty-prompt
+    # encode once; reused every tick by PipelineRunner when the operator
+    # selects rcfg_mode "full" or "initialize". "self" mode ignores this
+    # (virtual v_uncond = initial_noise). The expense is one extra text
+    # encoder pass at session start (~60 ms warm).
+    cond_negative = session.encode_text(
+        tags="",
+        instruction=TASK_INSTRUCTIONS["cover"],
+        refer_latent=None,
+        bpm=detected_bpm, duration=audio_duration_s, key=detected_key,
+        time_signature=detected_time_signature,
+    )
+
     print("[Server] Creating stream...")
     stream = session.stream(
         source=source,
@@ -1610,6 +1623,7 @@ def handle_client(
         before_tick=apply_pending,
         walk_window=walk_window,
         walk_window_s=walk_window_s,
+        neg_conditioning=cond_negative,
     )
     runner_holder[0] = runner
 

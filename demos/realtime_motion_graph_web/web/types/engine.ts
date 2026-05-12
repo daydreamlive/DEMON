@@ -23,6 +23,11 @@ export const SLIDER_META: Record<string, SliderMeta> = {
   shift: { max: 1.0, step: 0.1, pro: true },
   noise_share: { max: 1.0, step: 0.1, pro: true },
   ode_noise: { max: 0.5, step: 0.05, pro: true },
+  // RCFG guidance scale. Only takes effect when rcfg_mode != "off". The
+  // turbo model is CFG-distilled (trained to operate at scale=1 with
+  // conditioning baked in); driving guidance past ~10 on turbo tends
+  // to artifact. 7.0 is the SD-style default, useful starting point.
+  guidance_scale: { max: 15.0, step: 0.5, pro: true },
 
   ch_g0: { max: 3.0, step: 0.15, pro: true },
   ch_g1: { max: 3.0, step: 0.15, pro: true },
@@ -62,6 +67,23 @@ export const DCW_MODES = ["low", "high", "double", "pix"] as const;
 export const DCW_WAVELETS = ["haar", "db4", "sym8", "db8"] as const;
 export type DcwMode = (typeof DCW_MODES)[number];
 export type DcwWavelet = (typeof DCW_WAVELETS)[number];
+
+// RCFG (Residual Classifier-Free Guidance) modes. "off" disables APG
+// entirely on the wire (turbo default — no guidance, no extra forwards).
+// "initialize" runs the uncond pass only at step 0 per slot, caches the
+// velocity, reuses it for the slot's remaining steps. "self" skips the
+// uncond forward entirely; virtual ``v_uncond ≈ initial_noise``
+// (flow-matching identity with ``x0_uncond ≈ 0``). See
+// acestep/engine/stream.py. The engine also supports "full" (standard
+// two-pass CFG, 2x cost), but it's intentionally NOT in the demo
+// dropdown — turbo is CFG-distilled and an externally-driven full CFG
+// against an empty-prompt uncond doesn't produce the right perceptual
+// direction. Test scripts can still set ``rcfg_mode="full"`` directly.
+export const RCFG_MODES = ["off", "initialize", "self"] as const;
+export type RcfgMode = (typeof RCFG_MODES)[number];
+export function isRcfgMode(v: unknown): v is RcfgMode {
+  return typeof v === "string" && (RCFG_MODES as readonly string[]).includes(v);
+}
 
 // Capped at 1.8 (was 2.0). Operator finding: most LoRAs we ship turn
 // to noise above ~1.7 (e.g. v5/discofunk noise at 2.0, hardrock noise
