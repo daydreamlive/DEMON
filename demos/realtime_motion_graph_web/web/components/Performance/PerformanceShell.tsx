@@ -42,6 +42,7 @@ import { RecordButton } from "./RecordButton";
 import { RecordingPreview } from "./RecordingPreview";
 import { StartOverlay } from "./StartOverlay";
 import { StatusBar } from "./StatusBar";
+import { WaveformScrubBox } from "./WaveformScrubBox";
 
 // Demo shell — wires the package's hooks + components into a working app.
 //
@@ -140,6 +141,8 @@ export function PerformanceShell() {
       <StatusBar />
 
       <LiveIndicator />
+
+      {!isMobile && <WaveformScrubBox />}
 
       <NetworkIndicator />
 

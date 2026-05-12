@@ -9,6 +9,8 @@
 //   {type:'swap',     buffer:Float32Array, channels:int}
 //   {type:'setLoop',  enabled:bool}                            // loop at end-of-buffer
 //   {type:'seek',     positionFrames:int}                      // jump playhead
+//   {type:'setLoopBand', startFrames:int, endFrames:int}       // wrap at end→start
+//   {type:'clearLoopBand'}                                     // disable band loop
 //
 // Messages to main thread:
 //   {type:'position',    positionSec:float, swapCount:int, kick:float}
@@ -62,6 +64,12 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
     this.loop = true;
     this._endSignaled = false;
 
+    // Band loop: when both >= 0 and end > start, the wrap path below
+    // sends the playhead from loopBandEnd → loopBandStart on each pass
+    // instead of letting it run to frameCount. -1 = no band.
+    this.loopBandStart = -1;
+    this.loopBandEnd = -1;
+
     this._framesSinceReport = 0;
 
     // Kick state: ring of squared frame energies, running sum.
@@ -111,6 +119,35 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
         this.position = Math.max(0, Math.min(this.frameCount - 1, target));
       }
       this._endSignaled = false;
+      return;
+    }
+    if (type === "setLoopBand") {
+      // Band defined in frames. Refuse if degenerate (≤0 frames between
+      // the two markers) so the wrap path doesn't spin in place.
+      const s = Math.max(0, msg.startFrames | 0);
+      const e = Math.min(this.frameCount, msg.endFrames | 0);
+      if (e - s < 1) {
+        this.loopBandStart = -1;
+        this.loopBandEnd = -1;
+        return;
+      }
+      this.loopBandStart = s;
+      this.loopBandEnd = e;
+      // If the playhead is outside the new band, snap it to the band
+      // start so the next process() block plays from where the user
+      // pointed at. Without this, position can sit past loopBandEnd
+      // and the wrap below fires every block — fine, but the operator
+      // wouldn't hear the band start until naturally cycling past
+      // frameCount, which is confusing.
+      if (this.position < s || this.position >= e) {
+        this.position = s;
+      }
+      this._endSignaled = false;
+      return;
+    }
+    if (type === "clearLoopBand") {
+      this.loopBandStart = -1;
+      this.loopBandEnd = -1;
       return;
     }
     if (type === "patch" || type === "add") {
@@ -231,7 +268,18 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
       if (this._kickFilled < KICK_WINDOW) this._kickFilled++;
 
       this.position++;
-      if (this.position >= nCur) {
+      // Band loop takes precedence — wrap end → start, no seam fade
+      // for v1 (tiny click is acceptable; can polish with a per-band
+      // crossfade later). The band is only honoured when fully defined
+      // (start ≥ 0 AND end > start) so a partially-cleared state can't
+      // freeze the playhead at the band start.
+      if (
+        this.loopBandStart >= 0 &&
+        this.loopBandEnd > this.loopBandStart &&
+        this.position >= this.loopBandEnd
+      ) {
+        this.position = this.loopBandStart;
+      } else if (this.position >= nCur) {
         // Loop: wrap to `seam` so the head frames blended by the
         // crossfade above aren't replayed. No loop: clamp at end so
         // the freeze branch on the next iteration takes over.

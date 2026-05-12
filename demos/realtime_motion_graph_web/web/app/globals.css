@@ -4360,11 +4360,14 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
    open, hoist the pill above the tabs so it doesn't sit on top of the
    curve tabs or the preset menus that grow upward from them. */
 .network-indicator[data-curves-open="true"] {
+  /* +15px above the default curves-open row so the pill clears the
+     waveform-scrub strip below it (which was pushed 15px down in
+     curves mode to clear the curve dot area). */
   bottom: calc(
     var(--drawer-handle-h, 28px) +
     env(safe-area-inset-bottom, 0px) +
     var(--curves-tab-strip-h, 64px) +
-    12px
+    12px + 15px
   );
 }
 .network-indicator__bars rect {
@@ -4379,6 +4382,91 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
     animation:
       network-indicator-fade-in 200ms cubic-bezier(.2, .8, .2, 1) forwards;
   }
+}
+
+/* ── Waveform scrub box ────────────────────────────────────────────────
+   Bottom-center strip showing the source-track waveform with a playhead.
+   Click/drag scrubs via AudioPlayer.seek(). Sits just above the network
+   indicator pill; tracks the same `data-curves-open` bottom-offset bump
+   so it clears the curve scheduler tab strip when that overlay is open.
+   Hidden until session is `ready` and (in the component) on mobile. */
+.waveform-scrub-box {
+  position: fixed;
+  left: 50%;
+  /* Drawer-closed default: sit just above the network pill / drawer
+     handle. The body.drawer-open rule below lifts this to clear the
+     drawer panel when it slides up, so the strip is never covered. */
+  bottom: calc(
+    var(--drawer-handle-h, 28px) +
+    env(safe-area-inset-bottom, 0px) +
+    /* pill (~28px) + spacer */ 12px + 40px
+  );
+  transform: translateX(-50%);
+  width: min(640px, 90vw);
+  height: 56px;
+  /* Above AdvancedDrawer (z:50) so the strip stays visible while the
+     drawer is open (paired with the bottom-lift rule below so they
+     never overlap). Below modals (z:100). */
+  z-index: 60;
+  /* No chrome — the waveform is the entire visual. Just the canvases
+     painted directly on the page. */
+  border: 0;
+  background: none;
+  cursor: ew-resize;
+  pointer-events: auto;
+  /* Strip is mounted as soon as the player exists so the peak-compute
+     effect has canvases to draw onto, but visually hidden until the
+     first peak-pass lands (component sets data-ready="true" then). */
+  opacity: 0;
+  transition: bottom 240ms cubic-bezier(.2, .8, .2, 1),
+              opacity 180ms ease-out;
+  overflow: hidden;
+}
+.waveform-scrub-box[data-ready="true"] {
+  opacity: 1;
+}
+.waveform-scrub-box:not([data-ready="true"]) {
+  pointer-events: none;
+}
+/* Lift above the drawer's top edge when the drawer is open. The drawer
+   panel sits at fixed `height: var(--drawer-h)` so the strip sits at
+   `var(--drawer-h) + small gap`. */
+body.drawer-open .waveform-scrub-box {
+  bottom: calc(
+    var(--drawer-h, 50vh) +
+    env(safe-area-inset-bottom, 0px) +
+    8px
+  );
+}
+/* Schedule-curves overlay open: match the NetworkIndicator pill's
+   vertical position exactly (drawer-handle-h + safe-area + tab-strip-h
+   + 12px) AND collapse the strip to a thin band so it fits cleanly
+   between the curve tab strip and the bottom of the curve drawing
+   area. At the default 56px height the strip overlaps curve dots
+   that sit at the bottom of the curves canvas, stealing their click
+   target. Thin band keeps it as a visual reference + minimal-area
+   scrub target without occluding any curve dots. */
+.waveform-scrub-box[data-curves-open="true"],
+body.drawer-open .waveform-scrub-box[data-curves-open="true"] {
+  /* 15px lower than the network pill's row so the strip clears the
+     curve tab strip's hover halo and the operator's pinkie when
+     dragging dots near the bottom of the curves canvas. */
+  bottom: calc(
+    var(--drawer-handle-h, 28px) +
+    env(safe-area-inset-bottom, 0px) +
+    var(--curves-tab-strip-h, 64px) +
+    12px - 15px
+  );
+  height: 24px;
+}
+.waveform-scrub-box .waveform-scrub-bg,
+.waveform-scrub-box .waveform-scrub-fg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
 }
 
 /* ── Custom tooltip (replaces native `title=` for hover-visible UI) ──

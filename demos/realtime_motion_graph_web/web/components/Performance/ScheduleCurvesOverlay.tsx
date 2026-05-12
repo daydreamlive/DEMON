@@ -426,6 +426,19 @@ export function ScheduleCurvesOverlay() {
       const { x: px, y: py } = eventToLocal(e);
       const hit = hitTestPoint(px, py, w, h);
       if (hit !== null) {
+        // Alt + click on a point → delete it (matches Logic/Live/Pro
+        // Tools convention for removing an automation node). The two
+        // pinned endpoints (x=0, x=1) can't be deleted — the curve
+        // would lose its boundary conditions. Backspace/Delete keys
+        // still work as an alternative when the point is hovered.
+        if (e.altKey) {
+          const points = pointsRef.current;
+          if (hit === 0 || hit === points.length - 1) return;
+          const next = points.filter((_, i) => i !== hit);
+          pointsRef.current = next;
+          setCurvePoints(activeCurve, next);
+          return;
+        }
         dragIndex = hit;
         canvas.setPointerCapture(e.pointerId);
         return;
@@ -505,11 +518,41 @@ export function ScheduleCurvesOverlay() {
       setCurvePoints(activeCurve, next);
     };
 
+    // Double-click on a point → delete it. The most discoverable
+    // delete gesture, paired with the existing Alt+click and
+    // Backspace/Delete keys. Listened on the canvas so it fires for
+    // clicks on dots OR empty area; the hit-test inside discards
+    // empty-area dblclicks (they would otherwise insert two
+    // overlapping new dots from the pointerdown handler firing
+    // twice).
+    const onDblClick = (e: MouseEvent) => {
+      const { w, h } = sizeMeta();
+      const { x: px, y: py } = eventToLocal(e);
+      const hit = hitTestPoint(px, py, w, h);
+      if (hit === null) return;
+      const points = pointsRef.current;
+      // Pinned endpoints — same rule as Alt+click + Backspace path.
+      if (hit === 0 || hit === points.length - 1) return;
+      // Cancel any in-flight drag so the surviving pointer capture
+      // doesn't keep moving a now-deleted index on the next move.
+      if (dragIndex !== null) {
+        try {
+          canvas.releasePointerCapture(e.pointerId ?? 0);
+        } catch {}
+        dragIndex = null;
+      }
+      const next = points.filter((_, i) => i !== hit);
+      pointsRef.current = next;
+      hoverIndex = null;
+      setCurvePoints(activeCurve, next);
+    };
+
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerup", onPointerUp);
     canvas.addEventListener("pointercancel", onPointerUp);
     canvas.addEventListener("contextmenu", onContextMenu);
+    canvas.addEventListener("dblclick", onDblClick);
     document.addEventListener("keydown", onKeyDown);
 
     return () => {
@@ -520,6 +563,7 @@ export function ScheduleCurvesOverlay() {
       canvas.removeEventListener("pointerup", onPointerUp);
       canvas.removeEventListener("pointercancel", onPointerUp);
       canvas.removeEventListener("contextmenu", onContextMenu);
+      canvas.removeEventListener("dblclick", onDblClick);
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [open, activeCurve, setCurvePoints]);
