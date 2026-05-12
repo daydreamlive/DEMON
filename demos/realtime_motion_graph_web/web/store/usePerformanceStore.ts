@@ -7,6 +7,7 @@ import { getChannelRange } from "@/lib/config";
 
 import {
   DEFAULT_TIME_SIGNATURE,
+  LORA_SLIDER_MAX,
   SLIDER_META,
   type DcwMode,
   type DcwWavelet,
@@ -444,8 +445,14 @@ function clampToMeta(param: string, value: number): number {
     return Math.max(range.min, Math.min(range.max, value));
   }
   const meta = SLIDER_META[param];
-  // LoRA sliders (lora_str_<id>) aren't in SLIDER_META — clamp to [0, 2].
-  const max = meta?.max ?? 2.0;
+  // LoRA sliders (lora_str_<id>) aren't in SLIDER_META — their cap is
+  // LORA_SLIDER_MAX (currently 1.8). Same convention as the LibraryTile
+  // slider widget, the edge bars, and useScheduledCurves. Without this,
+  // MIDI knobs / hardware controllers (which go through bumpSlider /
+  // setSlider) would write past the operator-facing 1.8 ceiling up to
+  // the generic 2.0 fallback.
+  const max = meta?.max
+    ?? (param.startsWith("lora_str_") ? LORA_SLIDER_MAX : 2.0);
   return Math.max(0, Math.min(max, value));
 }
 

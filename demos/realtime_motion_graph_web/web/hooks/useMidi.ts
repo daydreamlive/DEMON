@@ -12,7 +12,7 @@ import { useLoraStore } from "@/store/useLoraStore";
 import { useMidiStore } from "@/store/useMidiStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
-import { SLIDER_META } from "@/types/engine";
+import { LORA_SLIDER_MAX, SLIDER_META } from "@/types/engine";
 
 // Web MIDI bootstrap. Asks for navigator.requestMIDIAccess on mount, wires
 // onmidimessage to either the learn handler (if learn is active) or the
@@ -82,7 +82,16 @@ function handleCC(cc: number, value: number): void {
   // tick UP → engine value DOWN), mirroring SliderGroup's behavior.
   const range = getChannelRange(param);
   const min = range?.min ?? 0;
-  const max = range?.max ?? meta?.max ?? 2.0;
+  // LoRA strength sliders (`lora_str_<id>`) aren't in SLIDER_META;
+  // their range is fixed by LORA_SLIDER_MAX (matches the LibraryTile
+  // widget, edge bars, and useScheduledCurves). Without this branch
+  // an absolute MIDI knob's full sweep would map 0..127 → 0..2.0 and
+  // the perf-store clamp would silently truncate the top ~10% — the
+  // operator-visible slider stops at 1.8 but the MIDI input still
+  // crosses it.
+  const max = range?.max
+    ?? meta?.max
+    ?? (param.startsWith("lora_str_") ? LORA_SLIDER_MAX : 2.0);
   const span = Math.max(0, max - min);
   const reverse = range?.reverse ?? false;
   const step = meta?.step ?? 0.05;
