@@ -127,12 +127,22 @@ def _process_request(connection, request):
     # resolution the WebSocket pipeline uses, so everyone agrees on
     # what's in the catalog.
     if path_only == "/api/loras":
-        from acestep.paths import discover_loras, loras_dir
+        from acestep.paths import discover_loras, lora_trigger, loras_dir
         try:
             d = loras_dir()
+            # Per-entry ``trigger`` is read from a sidecar
+            # ``<stem>.trigger.txt`` next to each .safetensors (managed
+            # by demon-public-demo's download_loras.sh + the lora-train
+            # convert step). Field is always present in the response —
+            # empty string when no sidecar — so the client can do
+            # ``entry.trigger || null`` without an existence check. The
+            # engine consults the same sidecar at encode time and
+            # prepends the trigger to the user's caption when the LoRA
+            # is enabled.
             entries = [
                 {
                     "id": p.stem, "name": p.stem, "path": str(p),
+                    "trigger": lora_trigger(p),
                     "state": "registered", "strength": 0.0,
                     "materialized_bytes": 0,
                 }

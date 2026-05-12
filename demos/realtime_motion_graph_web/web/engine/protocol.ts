@@ -432,21 +432,44 @@ export class RemoteBackend extends EventTarget {
     } catch {}
   }
 
-  sendPrompt(tags: string, key?: string, timeSignature?: string): void {
+  sendPrompt(
+    tags: string,
+    key?: string,
+    timeSignature?: string,
+    tagsB?: string,
+  ): void {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     try {
       const msg: {
         type: string;
         tags: string;
+        tags_b?: string;
         key?: string;
         time_signature?: string;
       } = {
         type: "prompt",
         tags,
       };
+      if (tagsB) msg.tags_b = tagsB;
       if (key) msg.key = key;
       if (timeSignature) msg.time_signature = timeSignature;
       this.ws.send(JSON.stringify(msg));
+    } catch {}
+  }
+
+  /**
+   * Live prompt A/B blend knob. Backend keeps cached cond pairs for both
+   * prompts (encoded by the most recent ``sendPrompt`` that carried a
+   * ``tags_b``) and lerps between them by `value` ∈ [0,1] — 0 == A, 1 == B.
+   * Same shape as ``sendSetTimbreStrength``; cheap per slider tick.
+   */
+  sendSetPromptBlend(value: number): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(JSON.stringify({
+        type: "set_prompt_blend",
+        value: Math.max(0, Math.min(1, value)),
+      }));
     } catch {}
   }
 

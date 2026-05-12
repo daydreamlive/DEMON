@@ -47,6 +47,10 @@ export function useParamSync() {
       // the cached cond_silence/cond_self pair on the spot. The params
       // path doesn't recognize it.
       delete raw.timbre_strength;
+      // prompt_blend rides its own dedicated WS message
+      // (usePromptBlendSync → sendSetPromptBlend); the server's params
+      // handler doesn't read it from here.
+      delete raw.prompt_blend;
       // Per-LoRA strength sliders ride along under lora_str_<id> keys.
       // We prefer perf.sliderValues (smoothed via the tween) and only
       // fall back to lora.strengths when the perf store hasn't seen
@@ -61,9 +65,18 @@ export function useParamSync() {
         if (typeof v === "number") raw[k] = v;
       }
       // DCW non-numeric controls — server reads raw.get("dcw_enabled") etc.
+      // The numeric fader values (dcw_scaler / dcw_high_scaler /
+      // dcw_mult_blend / dcw_mag_phase / dcw_soft_thresh) ride through
+      // the sliderValues spread above; pipeline.py's
+      // ``_build_dcw_advanced`` reads the same keys verbatim.
       raw.dcw_enabled = perf.dcwEnabled;
       raw.dcw_mode = perf.dcwMode;
       raw.dcw_wavelet = perf.dcwWavelet;
+      // RCFG mode (off/full/initialize/self). pipeline.py reads
+      // raw.rcfg_mode and pairs it with raw.guidance_scale / raw.cfg_rescale
+      // (already in the sliderValues spread above) to build the engine's
+      // guidance_curve / cfg_rescale_curve.
+      raw.rcfg_mode = perf.rcfgMode;
 
       // Playback position is *seconds* (raw audio.positionSec), not a 0..1
       // ratio. The server uses absolute time for curve sampling.

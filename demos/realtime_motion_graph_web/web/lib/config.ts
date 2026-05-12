@@ -2,11 +2,14 @@
 
 import { useEffect, useState } from "react";
 
+import { useCurveStore } from "@/store/useCurveStore";
+import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import {
   DCW_MODES,
   DCW_WAVELETS,
   DEFAULT_TIME_SIGNATURE,
+  isRcfgMode,
   isTimeSignature,
   type DcwMode,
   type DcwWavelet,
@@ -113,14 +116,87 @@ export interface RtmgConfigAudio {
  * non-numeric DCW state. Unknown keys are ignored. */
 export type RtmgConfigControls = Record<string, number | boolean | string>;
 
+/** Per-channel slider range + direction. When present, overrides the
+ *  SLIDER_META max for that param and adds a min floor (slider drag,
+ *  MIDI knobs, keyboard bumps, and curve writes all clamp to this
+ *  range via clampToMeta in usePerformanceStore). `reverse` is a UI
+ *  affordance — when true, dragging the slider UP (or turning the
+ *  MIDI knob clockwise, or hitting ArrowUp) sends a LOWER engine
+ *  value. The stored value still lives in [min, max]; only the
+ *  input→value mapping is flipped. Use for channels that "sound
+ *  better when turned down" — the operator's instinct to push up
+ *  produces the desired result. */
+export interface RtmgChannelRange {
+  min: number;
+  max: number;
+  reverse: boolean;
+}
+export type RtmgConfigChannelRanges = Record<string, RtmgChannelRange>;
+
+/** On session start, snap engine denoise to 0 and play a visual-only
+ * display glide from the slider's prior value down to 0 over `glide_ms`.
+ * The engine value never moves with the glide; purely a "hear the source
+ * first" onboarding cue. Set `enabled: false` to skip the snap entirely;
+ * seed `controls.denoise` to whatever starting value you want in that
+ * case. The glide is only visible when the slider's value at session-start
+ * is non-zero (first session uses controls.denoise; later sessions use
+ * wherever the user left it). */
+export interface RtmgConfigDenoiseSessionGate {
+  enabled: boolean;
+  glide_ms: number;
+}
+
+/** One control point on a schedule curve. Mirrors the runtime
+ *  CurvePoint in store/useCurveStore — duplicated on the wire shape
+ *  so the config can be authored and parsed without reaching across
+ *  module boundaries. */
+export interface RtmgConfigCurvePoint {
+  /** 0..1 along the track timeline. Endpoints pinned at 0 and 1. */
+  x: number;
+  /** 0..1 normalised. Mapped to the param's min/max at apply time. */
+  y: number;
+  mode: "smooth" | "linear" | "step";
+}
+
+export interface RtmgConfigCurve {
+  enabled: boolean;
+  /** Always ≥ 2 points; first.x === 0 and last.x === 1. */
+  points: RtmgConfigCurvePoint[];
+}
+
+/** Per-param schedule curves the user (or an operator-supplied config)
+ *  draws against the track timeline. Keyed by param name — the fixed
+ *  six (denoise, hint_strength, feedback, shift, noise_share, ode_noise)
+ *  plus dynamic LoRA strength curves (lora_str_<id>). */
+export interface RtmgConfigCurves {
+  /** Master enable. When false, no curve drives any param regardless
+   *  of per-curve enabled flags. */
+  scheduleEnabled: boolean;
+  curves: Record<string, RtmgConfigCurve>;
+}
+
 export interface RtmgConfig {
   engine: RtmgConfigEngine;
   prompts: RtmgConfigPrompts;
   controls: RtmgConfigControls;
+  channel_ranges: RtmgConfigChannelRanges;
   seed: number;
   effects: RtmgConfigEffects;
   audio: RtmgConfigAudio;
   reset_seconds: number;
+  denoise_session_gate: RtmgConfigDenoiseSessionGate;
+  /** Swapping to a new song restarts playback from frame 0. When false,
+   * the worklet keeps its current phase across the swap, so a swap at
+   * 1:30 into a 4:00 track starts the new track at 1:30. The
+   * ScriptProcessor fallback already restarts on swap; this aligns the
+   * worklet path with that behavior and makes it operator-tunable. */
+  restart_song_on_swap: boolean;
+  /** Per-param schedule curves. Same shape useCurveStore persists to
+   *  localStorage today, lifted into the operator-editable config so a
+   *  pod's deployed sound can ship its automation alongside its
+   *  sliders + prompts. Optional — absent = stock pods fall back to
+   *  the store's localStorage hydration / defaultCurveState. */
+  curves?: RtmgConfigCurves;
 }
 
 export const DEFAULT_CONFIG: RtmgConfig = {
@@ -148,7 +224,6 @@ export const DEFAULT_CONFIG: RtmgConfig = {
     hint_strength: 1.4,
     feedback: 0.0,
     shift: 0.5,
-    noise_share: 0.0,
     ode_noise: 0.0,
     ch_g0: 1.0,
     ch_g1: 1.0,
@@ -170,6 +245,25 @@ export const DEFAULT_CONFIG: RtmgConfig = {
     dcw_mode: "double",
     dcw_wavelet: "haar",
     lora_default_strength: 1.4,
+    guidance_scale: 7.0,
+    cfg_rescale: 0.0,
+    rcfg_mode: "off",
+  },
+  channel_ranges: {
+    ch_g0: { min: 0, max: 2.2, reverse: false },
+    ch_g1: { min: 0, max: 2.0, reverse: false },
+    ch_g2: { min: 0, max: 2.3, reverse: true },
+    ch_g3: { min: 0, max: 2.0, reverse: false },
+    ch_g4: { min: 0, max: 2.5, reverse: false },
+    ch_g5: { min: 0, max: 2.0, reverse: false },
+    ch_g6: { min: 0, max: 2.0, reverse: true },
+    ch_g7: { min: 0, max: 2.0, reverse: true },
+    ch13: { min: 0, max: 2.0, reverse: true },
+    ch14: { min: 0, max: 2.3, reverse: false },
+    ch19: { min: 0, max: 2.5, reverse: false },
+    ch23: { min: 0, max: 2.45, reverse: false },
+    ch29: { min: 0, max: 2.0, reverse: false },
+    ch56: { min: 0, max: 2.0, reverse: false },
   },
   seed: 0,
   effects: {
@@ -187,6 +281,11 @@ export const DEFAULT_CONFIG: RtmgConfig = {
     lufs_silence_floor_hysteresis_db: 6.0,
   },
   reset_seconds: 0,
+  denoise_session_gate: {
+    enabled: true,
+    glide_ms: 700,
+  },
+  restart_song_on_swap: true,
 };
 
 let _activeConfig: RtmgConfig = DEFAULT_CONFIG;
@@ -217,7 +316,7 @@ export function useConfig(): RtmgConfig {
   return c;
 }
 
-function mergeConfig(
+export function mergeConfig(
   base: RtmgConfig,
   override: Partial<RtmgConfig> | null | undefined,
 ): RtmgConfig {
@@ -226,6 +325,14 @@ function mergeConfig(
     engine: { ...base.engine, ...(override.engine ?? {}) },
     prompts: { ...base.prompts, ...(override.prompts ?? {}) },
     controls: { ...base.controls, ...(override.controls ?? {}) },
+    // Per-param shallow merge: an override entry replaces the matching
+    // base entry whole (operator-supplied {min,max,reverse} must travel
+    // together to be coherent). Unspecified params keep the bundled
+    // default range.
+    channel_ranges: {
+      ...base.channel_ranges,
+      ...(override.channel_ranges ?? {}),
+    },
     seed: typeof override.seed === "number" ? override.seed : base.seed,
     effects: { ...base.effects, ...(override.effects ?? {}) },
     audio: { ...base.audio, ...(override.audio ?? {}) },
@@ -233,7 +340,28 @@ function mergeConfig(
       typeof override.reset_seconds === "number"
         ? override.reset_seconds
         : base.reset_seconds,
+    denoise_session_gate: {
+      ...base.denoise_session_gate,
+      ...(override.denoise_session_gate ?? {}),
+    },
+    restart_song_on_swap:
+      typeof override.restart_song_on_swap === "boolean"
+        ? override.restart_song_on_swap
+        : base.restart_song_on_swap,
+    // Curves are operator-authored and only meaningful as a whole bag,
+    // so the override entry replaces the base entry whole when present.
+    // Absent override keeps whatever the base has (DEFAULT_CONFIG leaves
+    // this undefined; stock pods fall through to localStorage hydration).
+    ...(override.curves !== undefined ? { curves: override.curves } : (base.curves !== undefined ? { curves: base.curves } : {})),
   };
+}
+
+/** Lookup the active range for `param`, or null if no override is
+ *  configured. Reads from the latest applied config — safe to call
+ *  outside React. Consumers that need reactivity should read
+ *  `useConfig().channel_ranges` instead. */
+export function getChannelRange(param: string): RtmgChannelRange | null {
+  return _activeConfig.channel_ranges[param] ?? null;
 }
 
 /** Fetch /config.json (no cache). Missing file or parse error → defaults
@@ -266,18 +394,19 @@ export function applyConfig(c: RtmgConfig): void {
   _activeConfig = c;
 
   // Numeric controls land on sliderValues + sliderTargets so the slider
-  // UI and the param-sync tick agree.
+  // UI and the param-sync tick agree. prompt_blend rides in here too —
+  // it lives in the slider system alongside lora_blend.
   const sliderUpdates: Record<string, number> = {};
   for (const [k, v] of Object.entries(c.controls)) {
     if (typeof v === "number") sliderUpdates[k] = v;
   }
+  sliderUpdates.prompt_blend = c.prompts.blend;
 
   usePerformanceStore.setState((s) => ({
     sliderValues: { ...s.sliderValues, ...sliderUpdates },
     sliderTargets: { ...s.sliderTargets, ...sliderUpdates },
     promptA: c.prompts.a,
     promptB: c.prompts.b,
-    blend: c.prompts.blend,
     activeKey: c.engine.key,
     activeTimeSignature: isTimeSignature(c.engine.time_signature)
       ? c.engine.time_signature
@@ -291,8 +420,95 @@ export function applyConfig(c: RtmgConfig): void {
     dcwWavelet: isDcwWavelet(c.controls.dcw_wavelet)
       ? c.controls.dcw_wavelet
       : s.dcwWavelet,
+    rcfgMode: isRcfgMode(c.controls.rcfg_mode) ? c.controls.rcfg_mode : s.rcfgMode,
     lufsOn: c.audio.lufs_enabled,
   }));
 
+  // Curves: when the config carries them, push the whole bag into
+  // useCurveStore via setState (the store has no batch action). Skipped
+  // when the field is absent — stock pods fall through to the store's
+  // own hydratePersistedCurves localStorage path. Deep-clone the
+  // points so later edits in the store don't mutate the active
+  // config snapshot.
+  if (c.curves) {
+    useCurveStore.setState({
+      scheduleEnabled: c.curves.scheduleEnabled,
+      curves: Object.fromEntries(
+        Object.entries(c.curves.curves).map(([param, curve]) => [
+          param,
+          {
+            enabled: curve.enabled,
+            points: curve.points.map((p) => ({ x: p.x, y: p.y, mode: p.mode })),
+          },
+        ]),
+      ),
+    });
+  }
+
   for (const fn of listeners) fn(c);
+}
+
+/**
+ * Snapshot the live stores into an `RtmgConfig` — the inverse of
+ * `applyConfig`. Used by the OperatorStrip's Export button and by any
+ * caller (demon-public-demo's `captureSessionState`) that wants the
+ * DEMON-shaped base of a session without rebuilding the field-mapping
+ * logic.
+ *
+ * Fields the stores don't own (channel_ranges, effects, audio
+ * defaults, denoise_session_gate, restart_song_on_swap, the
+ * non-numeric engine.* config) are pulled from the active config so
+ * exports round-trip cleanly through Import.
+ */
+export function captureRtmgConfig(): RtmgConfig {
+  const perf = usePerformanceStore.getState();
+  const lora = useLoraStore.getState();
+  const curveStore = useCurveStore.getState();
+  const active = _activeConfig;
+
+  // Numeric controls land on sliderTargets in the perf store. The DCW
+  // non-numeric controls live on dedicated store fields.
+  const controls: RtmgConfigControls = { ...perf.sliderTargets };
+  controls.dcw_enabled = perf.dcwEnabled;
+  controls.dcw_mode = perf.dcwMode;
+  controls.dcw_wavelet = perf.dcwWavelet;
+  // lora_default_strength isn't tracked live in the perf store; pull
+  // from active config so the export reflects the seed value.
+  if (typeof active.controls.lora_default_strength !== "undefined") {
+    controls.lora_default_strength = active.controls.lora_default_strength;
+  }
+
+  return {
+    engine: {
+      ...active.engine,
+      key: perf.activeKey,
+      time_signature: perf.activeTimeSignature ?? active.engine.time_signature,
+      enabled_loras: Array.from(lora.enabled),
+    },
+    prompts: {
+      a: perf.promptA,
+      b: perf.promptB,
+      blend: perf.sliderTargets.prompt_blend ?? 0,
+    },
+    controls,
+    channel_ranges: active.channel_ranges,
+    seed: perf.seed,
+    effects: active.effects,
+    audio: { ...active.audio, lufs_enabled: perf.lufsOn },
+    reset_seconds: active.reset_seconds,
+    denoise_session_gate: active.denoise_session_gate,
+    restart_song_on_swap: active.restart_song_on_swap,
+    curves: {
+      scheduleEnabled: curveStore.scheduleEnabled,
+      curves: Object.fromEntries(
+        Object.entries(curveStore.curves).map(([param, curve]) => [
+          param,
+          {
+            enabled: curve.enabled,
+            points: curve.points.map((p) => ({ x: p.x, y: p.y, mode: p.mode })),
+          },
+        ]),
+      ),
+    },
+  };
 }

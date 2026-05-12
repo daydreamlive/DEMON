@@ -9,6 +9,13 @@ import {
   type DecodedFixture,
 } from "@/engine/audio/loadFixture";
 import { togglePauseAndAudio } from "@/engine/audio/togglePauseAndAudio";
+import {
+  applyConfig,
+  captureRtmgConfig,
+  getConfig,
+  mergeConfig,
+  type RtmgConfig,
+} from "@/lib/config";
 import { LOCAL_MODE } from "@/lib/runtime";
 import { confirm } from "@/store/useConfirmStore";
 import { useCurveStore } from "@/store/useCurveStore";
@@ -56,6 +63,7 @@ export function OperatorStrip() {
   const addCustomTrack = useCustomTracksStore((s) => s.add);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const configFileInputRef = useRef<HTMLInputElement | null>(null);
   const [uploading, setUploading] = useState(false);
   // Mirror of AudioSourceCrate's pending-upload state. The "Almost
   // Ready" dialog gates the actual fixture swap so the previously
@@ -116,6 +124,49 @@ export function OperatorStrip() {
       usePerformanceStore.getState().setPaused(true);
     });
   }, [player]);
+
+  // Import config — load an exported RtmgConfig JSON (or a demon-public-
+  // demo share file, which is RtmgConfig + a `tracks` extension that
+  // mergeConfig silently drops). Layers on top of the live config so
+  // operator-edited fields the user didn't touch in the imported file
+  // keep their current values.
+  async function onConfigFilePicked(file: File): Promise<void> {
+    const { setStatus } = useSessionStore.getState();
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as Partial<RtmgConfig>;
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        throw new Error("config root must be an object");
+      }
+      const merged = mergeConfig(getConfig(), parsed);
+      applyConfig(merged);
+      setStatus(useSessionStore.getState().status, `Imported ${file.name}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setStatus(useSessionStore.getState().status, `Import failed: ${msg}`);
+    }
+  }
+
+  // Export config — snapshot the live stores into an RtmgConfig and
+  // trigger a JSON download. Filename includes a timestamp so multiple
+  // exports in a session don't collide.
+  function onExportConfig(): void {
+    const snapshot = captureRtmgConfig();
+    const blob = new Blob([JSON.stringify(snapshot, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    a.download = `demon-config-${ts}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    const { setStatus } = useSessionStore.getState();
+    setStatus(useSessionStore.getState().status, `Exported config`);
+  }
 
   async function onFilePicked(file: File) {
     const { setStatus } = useSessionStore.getState();
@@ -438,6 +489,48 @@ export function OperatorStrip() {
       >
         ↻
       </button>
+
+      {/* Import + Export config — far right of the strip, local-mode
+          only. These are developer / power-user affordances for
+          dialing in a pod's config.json without SSH-editing; the live
+          deployed product hides them entirely (LOCAL_MODE === false).
+          mergeConfig drops unknown top-level keys so demon-public-demo
+          share files (with the `tracks` extension) import as a base
+          config without error. */}
+      {LOCAL_MODE && (
+        <>
+          <button
+            type="button"
+            className="pause-btn"
+            style={{ marginLeft: "auto" }}
+            data-dd-tooltip="Import config from JSON"
+            aria-label="Import config"
+            onClick={() => configFileInputRef.current?.click()}
+          >
+            Import
+          </button>
+          <button
+            type="button"
+            className="pause-btn"
+            data-dd-tooltip="Download current config as JSON"
+            aria-label="Export config"
+            onClick={onExportConfig}
+          >
+            Export
+          </button>
+          <input
+            ref={configFileInputRef}
+            type="file"
+            accept=".json,application/json"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (file) void onConfigFilePicked(file);
+            }}
+          />
+        </>
+      )}
 
       {pending && (
         <AlmostReadyDialog

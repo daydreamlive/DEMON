@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef } from "react";
 
+import { loraStrengthDispatcher } from "@/engine/lora/dispatcher";
 import { listLoras } from "@/engine/lora/listLoras";
 import { displayLoraName } from "@/lib/loraLabels";
 import { LOCAL_MODE } from "@/lib/runtime";
@@ -35,7 +36,6 @@ function LoraRow({ id, name }: RowProps) {
   );
   const fallbackStrength = useLoraStore((s) => s.strengths[id] ?? 0);
   const value = typeof strength === "number" ? strength : fallbackStrength;
-  const setStrength = useLoraStore((s) => s.setStrength);
   const enable = useLoraStore((s) => s.enable);
   const disable = useLoraStore((s) => s.disable);
 
@@ -60,13 +60,14 @@ function LoraRow({ id, name }: RowProps) {
       const rect = el.getBoundingClientRect();
       const t = (clientX - rect.left) / rect.width;
       const v = Math.max(0, Math.min(1, t)) * LORA_SLIDER_MAX;
-      // Mirror into both stores so the engine sees it (perf → param-sync)
-      // and any non-React subscriber (RemoteBackend.sendEnableLora) can
-      // read it via useLoraStore.
-      usePerformanceStore.getState().setSlider(`lora_str_${id}`, v);
-      setStrength(id, v);
+      // Route through the LoRA dispatcher so a continuous drag debounces
+      // into a single engine-side refit at gesture end instead of one
+      // per pointer move. UI state (sliderTargets, useLoraStore.strengths)
+      // still updates synchronously inside dispatcher.set so the slider
+      // fill tracks the cursor.
+      loraStrengthDispatcher.set(id, v);
     },
-    [id, setStrength],
+    [id],
   );
 
   useEffect(() => {
@@ -114,7 +115,7 @@ function LoraRow({ id, name }: RowProps) {
         role="switch"
         aria-checked={enabled}
         onClick={toggle}
-        title={enabled ? "Disable" : "Enable"}
+        data-dd-tooltip={enabled ? "Disable" : "Enable"}
       >
         <span className="lora-switch-thumb" aria-hidden="true" />
       </button>
@@ -151,7 +152,7 @@ export function LibraryTile() {
   if (catalog.length === 0) {
     return (
       <div className="mixer-tile" data-tile="library">
-        <div className="mixer-tile-label">Library</div>
+        <div className="mixer-tile-label">LoRA Library</div>
         <div className="lora-empty">no LoRAs found</div>
       </div>
     );

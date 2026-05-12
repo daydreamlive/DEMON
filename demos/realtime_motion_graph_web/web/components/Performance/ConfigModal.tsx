@@ -19,7 +19,6 @@ const CC_ROWS: RowDef[] = [
   { kind: "cc", target: "hint_strength", label: "Structure strength" },
   { kind: "cc", target: "feedback", label: "Feedback" },
   { kind: "cc", target: "shift", label: "Shift" },
-  { kind: "cc", target: "noise_share", label: "Noise share" },
   { kind: "cc", target: "ode_noise", label: "ODE noise" },
   { kind: "cc", target: LORA_SLOT_MARKER[0], label: "LoRA slot 1 strength" },
   { kind: "cc", target: LORA_SLOT_MARKER[1], label: "LoRA slot 2 strength" },

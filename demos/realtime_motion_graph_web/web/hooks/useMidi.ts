@@ -2,15 +2,17 @@
 
 import { useEffect } from "react";
 
+import { loraStrengthDispatcher } from "@/engine/lora/dispatcher";
 import { readKnob } from "@/engine/midi/absoluteDelta";
 import { decodeKnob } from "@/engine/midi/knob";
 import { LORA_SLOT_MARKER, type NoteAction } from "@/engine/midi/types";
+import { getChannelRange } from "@/lib/config";
 import { useCurveStore } from "@/store/useCurveStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { useMidiStore } from "@/store/useMidiStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
-import { SLIDER_META } from "@/types/engine";
+import { LORA_SLIDER_MAX, SLIDER_META } from "@/types/engine";
 
 // Web MIDI bootstrap. Asks for navigator.requestMIDIAccess on mount, wires
 // onmidimessage to either the learn handler (if learn is active) or the
@@ -74,14 +76,32 @@ function handleCC(cc: number, value: number): void {
   if (!param) return;
 
   const meta = SLIDER_META[param];
-  const max = meta?.max ?? 2.0;
+  // Per-channel range wins over SLIDER_META so MIDI obeys the same caps
+  // as the slider widget. Reverse flips the direction of both absolute
+  // mapping (knob CW → engine value DOWN) and relative deltas (knob
+  // tick UP → engine value DOWN), mirroring SliderGroup's behavior.
+  const range = getChannelRange(param);
+  const min = range?.min ?? 0;
+  // LoRA strength sliders (`lora_str_<id>`) aren't in SLIDER_META;
+  // their range is fixed by LORA_SLIDER_MAX (matches the LibraryTile
+  // widget, edge bars, and useScheduledCurves). Without this branch
+  // an absolute MIDI knob's full sweep would map 0..127 → 0..2.0 and
+  // the perf-store clamp would silently truncate the top ~10% — the
+  // operator-visible slider stops at 1.8 but the MIDI input still
+  // crosses it.
+  const max = range?.max
+    ?? meta?.max
+    ?? (param.startsWith("lora_str_") ? LORA_SLIDER_MAX : 2.0);
+  const span = Math.max(0, max - min);
+  const reverse = range?.reverse ?? false;
   const step = meta?.step ?? 0.05;
+  const dirSign = reverse ? -1 : 1;
 
   const decoded = decodeKnob(cc, value);
   const perf = usePerformanceStore.getState();
   if (decoded.mode === "relative") {
     if (!decoded.delta) return;
-    applyMidiBump(param, decoded.delta * step);
+    applyMidiBump(param, decoded.delta * step * dirSign);
     return;
   }
 
@@ -90,11 +110,13 @@ function handleCC(cc: number, value: number): void {
   // always reaches the bound.
   const reading = readKnob(cc, value);
   if (reading.absolute !== null) {
-    applyMidiSet(param, (reading.absolute / 127) * max);
+    const knobFrac = reading.absolute / 127;
+    const fwd = reverse ? 1 - knobFrac : knobFrac;
+    applyMidiSet(param, min + fwd * span);
     return;
   }
   if (reading.delta === null) return;
-  applyMidiBump(param, (reading.delta / 127) * max);
+  applyMidiBump(param, (reading.delta / 127) * span * dirSign);
 }
 
 /** Setter that propagates to both the perf store (drives engine via
@@ -102,24 +124,31 @@ function handleCC(cc: number, value: number): void {
  *  lora_str_<id> params (drives the LoRA UI's strength display, since
  *  LoraRow reads from useLoraStore). Without the LoRA mirror, MIDI
  *  knobs would change the engine's behaviour but the visual slider in
- *  the Library tile would stay frozen. */
+ *  the Library tile would stay frozen.
+ *
+ *  lora_str_<id> params route through loraStrengthDispatcher so MIDI
+ *  knob sweeps debounce into one engine-side refit per gesture,
+ *  matching the touch/edge-drag paths. */
 function applyMidiSet(param: string, value: number): void {
-  usePerformanceStore.getState().setSlider(param, value);
   if (param.startsWith("lora_str_")) {
     const id = param.slice("lora_str_".length);
-    useLoraStore.getState().setStrength(id, value);
+    loraStrengthDispatcher.set(id, value);
+    return;
   }
+  usePerformanceStore.getState().setSlider(param, value);
 }
 
 function applyMidiBump(param: string, delta: number): void {
-  usePerformanceStore.getState().bumpSlider(param, delta);
   if (param.startsWith("lora_str_")) {
     const id = param.slice("lora_str_".length);
-    // Mirror the bumped value (the perf store already clamped) so the
-    // LoRA UI shows the same number.
-    const v = usePerformanceStore.getState().sliderTargets[param] ?? 0;
-    useLoraStore.getState().setStrength(id, v);
+    // Compute the new absolute target from sliderTargets (kept current
+    // by dispatcher.set on every prior bump) and route the result
+    // through the dispatcher; clamping happens inside.
+    const current = usePerformanceStore.getState().sliderTargets[param] ?? 0;
+    loraStrengthDispatcher.set(id, current + delta);
+    return;
   }
+  usePerformanceStore.getState().bumpSlider(param, delta);
 }
 
 function handleNote(note: number): void {
@@ -134,12 +163,33 @@ function bindInput(input: MIDIInput): void {
     const data = e.data;
     if (!data || data.length < 2) return;
     const status = data[0] & 0xf0;
+    // Diagnostic for MIDI-learn debugging: when learn is active, dump
+    // every raw message so we can see whether the pad fires a status
+    // byte the dispatcher doesn't route (e.g. 0xa0 aftertouch, 0xc0
+    // program change, or note-on with velocity 0 used as the "press"
+    // signal). Drop this log once the pad-bind issue is fully diagnosed.
+    if (useMidiStore.getState().learn) {
+      const statusHex = (data[0] | 0).toString(16).padStart(2, "0");
+      console.log(
+        `[midi-learn] raw: status=0x${statusHex} data1=${data[1]} data2=${data[2] ?? "n/a"} len=${data.length}`,
+      );
+    }
     if (status === 0xb0) {
       // Control change.
       handleCC(data[1], data[2]);
     } else if (status === 0x90 && data[2] > 0) {
       // Note on (velocity > 0).
       handleNote(data[1]);
+    } else if (status === 0x80 || (status === 0x90 && data[2] === 0)) {
+      // Note off (or note-on vel=0, which some controllers send instead
+      // of a proper 0x80 note-off). When LEARN is active, treat this as
+      // a binding hint too — some "press" pads only emit on release, so
+      // refusing to bind on note-off leaves those pads unbindable. The
+      // normal dispatch (non-learn) still ignores note-off, matching the
+      // long-standing fire-on-rising-edge behavior for action buttons.
+      if (useMidiStore.getState().learn) {
+        handleNote(data[1]);
+      }
     }
   };
 }
@@ -178,6 +228,10 @@ export function useMidi() {
     // Right-click → MIDI learn. Targets:
     //   .slider-group[data-param=...] → CC
     //   .lora-row[data-param=...]     → CC (Phase 11 will populate)
+    //   #blend-control[data-param=...] → CC (Tags A↔B blend slider,
+    //                                       intentionally NOT a
+    //                                       slider-group — keeps the
+    //                                       horizontal rail styling)
     //   [data-midi-learn=...]         → note (transport buttons, send-prompt, etc.)
     const onContextMenu = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
@@ -192,6 +246,12 @@ export function useMidi() {
       if (loraRow?.dataset.param) {
         e.preventDefault();
         useMidiStore.getState().startLearn("cc", loraRow.dataset.param, loraRow);
+        return;
+      }
+      const blendEl = target.closest<HTMLElement>("#blend-control");
+      if (blendEl?.dataset.param) {
+        e.preventDefault();
+        useMidiStore.getState().startLearn("cc", blendEl.dataset.param, blendEl);
         return;
       }
       const learnEl = target.closest<HTMLElement>("[data-midi-learn]");

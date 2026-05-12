@@ -103,7 +103,6 @@ Loads the model once, then generates covers in ~310ms per iteration after warmup
 |---|---|
 | `demos/realtime_motion_graph_web/` | Real-time generation with browser front-end + GPU server (single port) |
 | `demos/test_stream_cover_graph.py` | StreamPipeline stress test with denoise sweep |
-| `demos/test_noise_sharing.py` | Noise sharing for temporal continuity between generations |
 | `workflows/session_demo.py` | Session API basics: load once, generate many |
 | `workflows/realtime_cover.py` | Interactive cover generation with live parameter control |
 | `workflows/session_test_all.py` | Exercises all node system features end-to-end |

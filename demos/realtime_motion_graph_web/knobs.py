@@ -68,7 +68,6 @@ def build_banks(sde: bool, loras=None) -> list:
         )
         cc += 1
     core["hint_strength"] = KnobDef(cc=cc, default=1.0, sensitivity=2.0); cc += 1
-    core["noise_share"] = KnobDef(cc=cc, default=0.0, sensitivity=2.0); cc += 1
     core["ode_noise"] = KnobDef(cc=cc, default=0.0, sensitivity=2.0, max_val=0.5); cc += 1
 
     channels = {}

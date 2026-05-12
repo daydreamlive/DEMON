@@ -59,6 +59,39 @@ def discover_loras(directory: Path | None = None) -> list[Path]:
     return sorted(p for p in d.glob("*.safetensors") if p.is_file())
 
 
+def lora_trigger(lora_path: Path | str) -> str:
+    """Read the optional trigger-word sidecar for a LoRA.
+
+    The sidecar is a plain-text ``<stem>.trigger.txt`` file living next to
+    the ``.safetensors``. It holds a single activation word (the token
+    the LoRA was trained against) — when present, the engine prepends it
+    to the user's caption before passing to the text encoder so the LoRA
+    style actually fires at inference. The sidecar is OPTIONAL; LoRAs
+    trained without a documented trigger (or pulled in via a manifest
+    line without the ``|<TRIGGER>`` field) just have no file and the
+    engine treats them as no-trigger styles.
+
+    Returns the trigger string with whitespace stripped, or ``""`` when:
+    - the sidecar doesn't exist
+    - the sidecar is empty after stripping
+    - the file can't be read (permissions, IO error)
+
+    Empty-string return is a deliberate signal — callers can do
+    ``if trigger: ...`` to decide whether to inject. No exceptions
+    escape; this is read every catalog broadcast and shouldn't crash
+    the WS loop on a malformed sidecar.
+    """
+    p = Path(lora_path)
+    # Strip the .safetensors suffix to land on the stem, then add .trigger.txt
+    # so we resolve siblings like:
+    #   /…/loras/bptkno.safetensors        → /…/loras/bptkno.trigger.txt
+    sidecar = p.with_suffix("").with_suffix(".trigger.txt")
+    try:
+        return sidecar.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
 def trt_engine_path(engine_name: str) -> Path:
     """Full path to a specific TRT engine file.
 

@@ -109,8 +109,8 @@ export function MobileFullSheet({ open, onClose }: Props) {
         </section>
         <section data-section="sound" className="mobile-sheet-section">
           <EngineTile />
-          <ChannelGainsTile />
           <ChannelsTile />
+          <ChannelGainsTile />
           <DcwTile />
           <LibraryTile />
           <SeedTile />

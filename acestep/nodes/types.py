@@ -24,6 +24,7 @@ from acestep.engine.diffusion import DiffusionConfig
 from acestep.engine.masking import LatentNoiseMask
 
 if TYPE_CHECKING:
+    from acestep.engine.dcw import DCWAdvanced
     from acestep.engine.model_context import ModelContext
 
 
@@ -267,6 +268,10 @@ class DCW:
     scaler: float = 0.05
     high_scaler: float = 0.02
     wavelet: str = "haar"
+    # Opt-in advanced surface. ``None`` keeps the upstream v0.1.7
+    # behaviour (fast path). See :class:`DCWAdvanced` in
+    # ``acestep.engine.dcw`` for the field list.
+    advanced: Optional["DCWAdvanced"] = None
 
 
 @_register

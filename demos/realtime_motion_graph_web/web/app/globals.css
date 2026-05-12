@@ -1654,13 +1654,17 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
 .mixer-rack-row {
   display: flex;
   /* Tiles keep their content-driven widths and stay on a single line
-     until the viewport drops below the compact floor (~1500px), at
-     which point they wrap onto a second line — wrapping is preferred
-     over horizontal scroll, always. The fluid clamp on
-     `--slider-strip-w` already keeps the row fitting between 1500px
-     and 2400px without wrapping. */
+     across the laptop range. At MacBook Pro 14" (1512px viewport) the
+     7 tiles + per-strip widths used to overflow because the compact
+     floor (--slider-strip-w 36px, 6/7/7 padding, fixed 8px row gap)
+     still summed to ~1500-1520px of intrinsic content, so the seed
+     tile dropped to a second line and pushed prompts down. The floor
+     below now compresses harder (32px strips, 4/5/5 padding, 4px row
+     gap) so the rack stays on one line at 14" MBP and tablet widths.
+     Wrapping remains the fallback if a future tile ever exceeds the
+     true min — preferred over horizontal scroll, always. */
   flex-wrap: wrap;
-  gap: 8px;
+  gap: clamp(4px, calc(4px + (100vw - 1300px) * 4 / 1100), 8px);
   align-items: stretch;
   flex: 0 0 auto;
 }
@@ -1668,29 +1672,32 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
    abrupt mode flip. The row's total content at standard density
    (50px slider strips, 8/10/10 padding) measures ~1800px; on
    anything narrower, the strips and padding interpolate down to
-   compact (36px / 6/7/7) so the rack always fits without horizontal
+   compact (32px / 4/5/5) so the rack always fits without horizontal
    scroll. Above ~2400px viewport, full standard density takes over;
-   below ~1500px, full compact. In between (every laptop screen
-   anywhere), the controls smoothly thicken as room appears. */
+   below ~1300px, full compact. In between (every laptop screen
+   anywhere — including 14" MBP at 1512px), the controls smoothly
+   thicken as room appears. */
 .mixer-rack {
   --slider-strip-w: clamp(
-    36px,
-    calc(36px + (100vw - 1500px) * 14 / 900),
+    32px,
+    calc(32px + (100vw - 1300px) * 18 / 1100),
     50px
   );
 }
 .mixer-rack .mixer-tile {
   padding:
-    clamp(6px, calc(6px + (100vw - 1500px) * 2 / 900), 8px)
-    clamp(7px, calc(7px + (100vw - 1500px) * 3 / 900), 10px)
-    clamp(7px, calc(7px + (100vw - 1500px) * 3 / 900), 10px);
-  gap: clamp(4px, calc(4px + (100vw - 1500px) * 2 / 900), 6px);
+    clamp(4px, calc(4px + (100vw - 1300px) * 4 / 1100), 8px)
+    clamp(5px, calc(5px + (100vw - 1300px) * 5 / 1100), 10px)
+    clamp(5px, calc(5px + (100vw - 1300px) * 5 / 1100), 10px);
+  gap: clamp(3px, calc(3px + (100vw - 1300px) * 3 / 1100), 6px);
 }
 .mixer-rack .mixer-channels {
-  gap: clamp(3px, calc(3px + (100vw - 1500px) * 1 / 900), 4px);
+  gap: clamp(2px, calc(2px + (100vw - 1300px) * 2 / 1100), 4px);
 }
-.mixer-rack .dcw-panel {
-  width: clamp(110px, calc(110px + (100vw - 1500px) * 20 / 900), 130px);
+.mixer-rack .dcw-panel.dcw-panel--bottom {
+  /* Bottom-strip variant lays out horizontally below the fader row, so
+     drop the fixed-width clamp that was sizing it as a right-side column. */
+  width: auto;
 }
 
 /* Keyboard-shortcut hints — toggled independently of density. The
@@ -1863,8 +1870,10 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
 /* Blend control already lays out left-to-right; spacing handled by gap. */
 #blend-control .blend-kbd { margin-left: 6px; }
 
-/* DCW (wavelet correction) toggle + mode/wavelet selectors. Lives inside
-   the DCW tile alongside the two DCW faders. */
+/* DCW (wavelet correction) toggle + mode/wavelet selectors. Originally
+   a right-side column; the ``--bottom`` modifier lays it out as a
+   horizontal strip beneath the fader row instead so the tile's height
+   collapses to the fader height. */
 .dcw-panel {
   display: flex;
   flex-direction: column;
@@ -1876,6 +1885,20 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   padding: 0;
   border: none;
   background: transparent;
+}
+.dcw-panel.dcw-panel--bottom {
+  flex-direction: row;
+  align-items: center;
+  align-self: stretch;
+  width: auto;
+  gap: 10px;
+  padding-top: 4px;
+  border-top: 1px solid var(--frame-line);
+  flex-wrap: wrap;
+}
+.dcw-panel.dcw-panel--bottom .dcw-row {
+  flex: 0 0 auto;
+  gap: 4px;
 }
 
 /* Seed tile content — dice button stacked over the value display. */
@@ -3594,7 +3617,11 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   left: 50%;
   bottom: 96px;
   transform: translateX(-50%);
-  z-index: 12;
+  /* Above .waveform-scrub-box (z:60) so the Save / Share / Discard
+     buttons aren't covered or click-intercepted by the scrub strip,
+     which sits at the same bottom edge. Still below full-screen modal
+     backdrops (z:100+). */
+  z-index: 70;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -4337,11 +4364,14 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
    open, hoist the pill above the tabs so it doesn't sit on top of the
    curve tabs or the preset menus that grow upward from them. */
 .network-indicator[data-curves-open="true"] {
+  /* +15px above the default curves-open row so the pill clears the
+     waveform-scrub strip below it (which was pushed 15px down in
+     curves mode to clear the curve dot area). */
   bottom: calc(
     var(--drawer-handle-h, 28px) +
     env(safe-area-inset-bottom, 0px) +
     var(--curves-tab-strip-h, 64px) +
-    12px
+    12px + 15px
   );
 }
 .network-indicator__bars rect {
@@ -4356,6 +4386,91 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
     animation:
       network-indicator-fade-in 200ms cubic-bezier(.2, .8, .2, 1) forwards;
   }
+}
+
+/* ── Waveform scrub box ────────────────────────────────────────────────
+   Bottom-center strip showing the source-track waveform with a playhead.
+   Click/drag scrubs via AudioPlayer.seek(). Sits just above the network
+   indicator pill; tracks the same `data-curves-open` bottom-offset bump
+   so it clears the curve scheduler tab strip when that overlay is open.
+   Hidden until session is `ready` and (in the component) on mobile. */
+.waveform-scrub-box {
+  position: fixed;
+  left: 50%;
+  /* Drawer-closed default: sit just above the network pill / drawer
+     handle. The body.drawer-open rule below lifts this to clear the
+     drawer panel when it slides up, so the strip is never covered. */
+  bottom: calc(
+    var(--drawer-handle-h, 28px) +
+    env(safe-area-inset-bottom, 0px) +
+    /* pill (~28px) + spacer */ 12px + 40px
+  );
+  transform: translateX(-50%);
+  width: min(640px, 90vw);
+  height: 56px;
+  /* Above AdvancedDrawer (z:50) so the strip stays visible while the
+     drawer is open (paired with the bottom-lift rule below so they
+     never overlap). Below modals (z:100). */
+  z-index: 60;
+  /* No chrome — the waveform is the entire visual. Just the canvases
+     painted directly on the page. */
+  border: 0;
+  background: none;
+  cursor: ew-resize;
+  pointer-events: auto;
+  /* Strip is mounted as soon as the player exists so the peak-compute
+     effect has canvases to draw onto, but visually hidden until the
+     first peak-pass lands (component sets data-ready="true" then). */
+  opacity: 0;
+  transition: bottom 240ms cubic-bezier(.2, .8, .2, 1),
+              opacity 180ms ease-out;
+  overflow: hidden;
+}
+.waveform-scrub-box[data-ready="true"] {
+  opacity: 1;
+}
+.waveform-scrub-box:not([data-ready="true"]) {
+  pointer-events: none;
+}
+/* Lift above the drawer's top edge when the drawer is open. The drawer
+   panel sits at fixed `height: var(--drawer-h)` so the strip sits at
+   `var(--drawer-h) + small gap`. */
+body.drawer-open .waveform-scrub-box {
+  bottom: calc(
+    var(--drawer-h, 50vh) +
+    env(safe-area-inset-bottom, 0px) +
+    8px
+  );
+}
+/* Schedule-curves overlay open: match the NetworkIndicator pill's
+   vertical position exactly (drawer-handle-h + safe-area + tab-strip-h
+   + 12px) AND collapse the strip to a thin band so it fits cleanly
+   between the curve tab strip and the bottom of the curve drawing
+   area. At the default 56px height the strip overlaps curve dots
+   that sit at the bottom of the curves canvas, stealing their click
+   target. Thin band keeps it as a visual reference + minimal-area
+   scrub target without occluding any curve dots. */
+.waveform-scrub-box[data-curves-open="true"],
+body.drawer-open .waveform-scrub-box[data-curves-open="true"] {
+  /* 15px lower than the network pill's row so the strip clears the
+     curve tab strip's hover halo and the operator's pinkie when
+     dragging dots near the bottom of the curves canvas. */
+  bottom: calc(
+    var(--drawer-handle-h, 28px) +
+    env(safe-area-inset-bottom, 0px) +
+    var(--curves-tab-strip-h, 64px) +
+    12px - 15px
+  );
+  height: 24px;
+}
+.waveform-scrub-box .waveform-scrub-bg,
+.waveform-scrub-box .waveform-scrub-fg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
 }
 
 /* ── Custom tooltip (replaces native `title=` for hover-visible UI) ──
@@ -4383,14 +4498,14 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   left: 50%;
   transform: translateX(-50%) translateY(4px);
   padding: 5px 10px 4px;
+  /* Solid sheet body + frame-line border. The earlier layered-gradient
+     trick painted a brand hairline along a transparent top border via
+     background-clip: padding-box, border-box; visually it read as a
+     soft halo that made the tooltip feel translucent against the dark
+     canvas. A plain border + deeper drop shadow keeps the chrome
+     vocabulary (matches .halo-menu body) and reads as fully opaque. */
   background: var(--sheet-bg);
   border: 1px solid var(--frame-line);
-  border-top: 2px solid transparent;
-  background-image:
-    linear-gradient(var(--sheet-bg), var(--sheet-bg)),
-    var(--dd-gradient);
-  background-origin: padding-box, border-box;
-  background-clip: padding-box, border-box;
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: 9px;
@@ -4403,7 +4518,7 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   opacity: 0;
   visibility: hidden;
   box-shadow:
-    0 6px 18px rgba(0, 0, 0, 0.45),
+    0 6px 18px rgba(0, 0, 0, 0.55),
     0 0 14px rgba(240, 138, 72, 0.15);
   transition:
     opacity 140ms cubic-bezier(.2, .8, .2, 1),
@@ -4432,11 +4547,9 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   opacity: 1;
   visibility: visible;
   transform: translateX(-50%) translateY(0);
-  /* 200ms delay so accidental passes don't flicker the tooltip. */
-  transition:
-    opacity 140ms cubic-bezier(.2, .8, .2, 1) 200ms,
-    visibility 0s linear 200ms,
-    transform 140ms cubic-bezier(.2, .8, .2, 1) 200ms;
+  /* Instant appear (Ableton-style). The base-state transition still
+     governs fade-out, so the tooltip pops in but eases out. */
+  transition: none;
 }
 /* Disable on touch — no real hover, and the active state ::after
    would briefly flash on tap. Accessibility-equivalent info is in

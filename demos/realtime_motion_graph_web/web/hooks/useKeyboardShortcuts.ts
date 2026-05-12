@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 
 import { togglePauseAndAudio } from "@/engine/audio/togglePauseAndAudio";
+import { getChannelRange } from "@/lib/config";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 import { DCW_MODES, DCW_WAVELETS, SLIDER_META } from "@/types/engine";
@@ -15,7 +16,7 @@ import { DCW_MODES, DCW_WAVELETS, SLIDER_META } from "@/types/engine";
 //   G + ▲▼      structure (hint_strength)
 //   C + ▲▼      timbre (timbre_strength)
 //   B + ▲▼      prompt blend
-//   E/H/N/D + ▲▼   feedback / shift / nshare / ode (engine)
+//   E/H/D + ▲▼  feedback / shift / ode (engine)
 //   W/Y + ▲▼    DCW low / DCW high
 //   T            toggle DCW on/off
 //   Shift+T      cycle DCW mode
@@ -37,7 +38,6 @@ const HELD_DIGITS = new Set<string>(); // KeyboardEvent.code, e.g. "Digit3"
 const ENGINE_DCW_CHORDS: Record<string, string> = {
   e: "feedback",
   h: "shift",
-  n: "noise_share",
   d: "ode_noise",
   w: "dcw_scaler",
   y: "dcw_high_scaler",
@@ -74,19 +74,28 @@ export function useKeyboardShortcuts() {
     function bumpParam(param: string, direction: 1 | -1): void {
       const meta = SLIDER_META[param];
       const step = meta?.step ?? 0.05;
-      usePerformanceStore.getState().bumpSlider(param, direction * step);
+      // Reverse channels flip the arrow-key direction so ArrowUp still
+      // means "drive the slider thumb UP" — which on a reverse channel
+      // corresponds to a DECREASE in the engine value. Mirrors the slider
+      // drag and MIDI knob behavior.
+      const dirSign = getChannelRange(param)?.reverse ? -1 : 1;
+      usePerformanceStore.getState().bumpSlider(param, direction * step * dirSign);
     }
 
     function bumpBlend(direction: 1 | -1): void {
-      const s = usePerformanceStore.getState();
-      s.setBlend(Math.max(0, Math.min(1, s.blend + direction * 0.05)));
+      // prompt_blend lives in the slider system — bumpSlider gives us
+      // smoothing (when enabled), clamping via SLIDER_META, and graph
+      // sampling for free.
+      usePerformanceStore.getState().bumpSlider("prompt_blend", direction * 0.05);
     }
 
     function sendPrompt(): void {
-      const { promptA, activeKey, activeTimeSignature } =
+      const { promptA, promptB, activeKey, activeTimeSignature } =
         usePerformanceStore.getState();
       const remote = useSessionStore.getState().remote;
-      if (remote) remote.sendPrompt(promptA, activeKey, activeTimeSignature);
+      if (remote) {
+        remote.sendPrompt(promptA, activeKey, activeTimeSignature, promptB);
+      }
     }
 
     function cycleDcwMode(): void {

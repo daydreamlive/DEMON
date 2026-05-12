@@ -36,7 +36,6 @@ export const SCHEDULEABLE_PARAMS = [
   "hint_strength",
   "feedback",
   "shift",
-  "noise_share",
   "ode_noise",
 ] as const;
 
@@ -63,7 +62,6 @@ export const SCHEDULEABLE_PARAM_LABEL: Record<ScheduleableParam, string> = {
   hint_strength: "Structure strength",
   feedback: "Feedback",
   shift: "Shift",
-  noise_share: "Noise share",
   ode_noise: "ODE noise",
 };
 

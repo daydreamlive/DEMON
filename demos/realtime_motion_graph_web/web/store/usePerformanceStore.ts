@@ -3,13 +3,16 @@
 import { create } from "zustand";
 
 import { frameScheduler } from "@/engine/scheduler/FrameScheduler";
+import { getChannelRange } from "@/lib/config";
 
 import {
   DEFAULT_TIME_SIGNATURE,
+  LORA_SLIDER_MAX,
   SLIDER_META,
   type DcwMode,
   type DcwWavelet,
   type DisplayMode,
+  type RcfgMode,
   type TimeSignature,
 } from "@/types/engine";
 
@@ -208,7 +211,7 @@ function ensureDropTweenRunning(): void {
 const MANUAL_OVERRIDE_WINDOW_MS = 500;
 const manualTouchedAt = new Map<string, number>();
 
-function stampManualTouch(param: string): void {
+export function stampManualTouch(param: string): void {
   manualTouchedAt.set(param, performance.now());
 }
 
@@ -224,9 +227,9 @@ const DEFAULT_SLIDER_VALUES: Record<string, number> = {
   hint_strength: 1.4,
   timbre_strength: 1.0,
   lora_blend: 0.5,
+  prompt_blend: 0.4,
   feedback: 0.0,
   shift: 0.5,
-  noise_share: 0.0,
   ode_noise: 0.0,
   ch_g0: 1.0,
   ch_g1: 1.0,
@@ -244,6 +247,14 @@ const DEFAULT_SLIDER_VALUES: Record<string, number> = {
   ch56: 1.0,
   dcw_scaler: 0.05,
   dcw_high_scaler: 0.02,
+  dcw_mult_blend: 0.0,
+  dcw_mag_phase: 0.0,
+  dcw_soft_thresh: 0.0,
+  // CFG-path sliders. Only consumed when rcfgMode != "off". The server
+  // reads raw.guidance_scale / raw.cfg_rescale and lifts them to
+  // uniform [1, T, 1] curves.
+  guidance_scale: 7.0,
+  cfg_rescale: 0.0,
 };
 
 interface PerformanceState {
@@ -267,9 +278,10 @@ interface PerformanceState {
   sliderDisplayOverride: Record<string, number>;
   /** Random seed in 0..1; "dice" button reroll. */
   seed: number;
-  /** Prompt A/B blend (0 = A, 1 = B). */
-  blend: number;
-  /** Two prompts. */
+  /** Two prompts. The A/B blend itself lives in
+   *  ``sliderValues["prompt_blend"]`` so it rides the Smooth tween
+   *  machinery, the graph, and the generic MIDI / keyboard / param
+   *  pipelines the same way every other knob does. */
   promptA: string;
   promptB: string;
   /** Currently active key (e.g. "G# minor"). May come from auto-detect. */
@@ -323,11 +335,18 @@ interface PerformanceState {
    *  the side-rail tutorial hints. */
   remixStarted: boolean;
 
-  /** DCW (wavelet-domain post-step correction) non-numeric state. The two
-   * numeric knobs (dcw_scaler, dcw_high_scaler) live in sliderValues. */
+  /** DCW (wavelet-domain post-step correction) non-numeric state. The
+   * numeric knobs (dcw_scaler, dcw_high_scaler, dcw_mult_blend,
+   * dcw_mag_phase, dcw_soft_thresh) all live in sliderValues. */
   dcwEnabled: boolean;
   dcwMode: DcwMode;
   dcwWavelet: DcwWavelet;
+  /** RCFG mode for the engine's APG/CFG path. "off" disables guidance
+   *  entirely. "full" runs the standard two-pass CFG (2x cost). "initialize"
+   *  runs the uncond pass only at step 0 per slot, caches, reuses (~1.07x).
+   *  "self" skips the uncond forward entirely; virtual ``v_uncond ≈ initial
+   *  noise`` (~1.06x). See acestep/engine/stream.py. */
+  rcfgMode: RcfgMode;
   /** Show keyboard-shortcut hints under each slider / next to buttons.
    * Default true. Persisted to localStorage. */
   showKbdHints: boolean;
@@ -360,7 +379,6 @@ interface PerformanceState {
   bumpSlider: (param: string, delta: number) => void;
   setSeed: (seed: number) => void;
   randomizeSeed: () => void;
-  setBlend: (b: number) => void;
   setPromptA: (s: string) => void;
   setPromptB: (s: string) => void;
   setKey: (k: string) => void;
@@ -410,6 +428,7 @@ interface PerformanceState {
   toggleDcw: () => void;
   setDcwMode: (m: DcwMode) => void;
   setDcwWavelet: (w: DcwWavelet) => void;
+  setRcfgMode: (m: RcfgMode) => void;
   toggleKbdHints: () => void;
   toggleSmooth: () => void;
   setSmoothMs: (ms: number) => void;
@@ -428,10 +447,25 @@ interface PerformanceState {
 }
 
 function clampToMeta(param: string, value: number): number {
-  const meta = SLIDER_META[param];
-  // LoRA sliders (lora_str_<id>) aren't in SLIDER_META — clamp to [0, 2].
-  const max = meta?.max ?? 2.0;
   if (Number.isNaN(value)) return 0;
+  // Operator-configured channel range wins: covers the channel-gain
+  // params (ch_g* / ch*) whose caps live in public/config.json so they
+  // can be tuned per-installation without a rebuild. The reverse flag
+  // doesn't affect clamping (the stored value still lives in [min, max])
+  // — input-side mapping is where reverse is applied.
+  const range = getChannelRange(param);
+  if (range) {
+    return Math.max(range.min, Math.min(range.max, value));
+  }
+  const meta = SLIDER_META[param];
+  // LoRA sliders (lora_str_<id>) aren't in SLIDER_META — their cap is
+  // LORA_SLIDER_MAX (currently 1.8). Same convention as the LibraryTile
+  // slider widget, the edge bars, and useScheduledCurves. Without this,
+  // MIDI knobs / hardware controllers (which go through bumpSlider /
+  // setSlider) would write past the operator-facing 1.8 ceiling up to
+  // the generic 2.0 fallback.
+  const max = meta?.max
+    ?? (param.startsWith("lora_str_") ? LORA_SLIDER_MAX : 2.0);
   return Math.max(0, Math.min(max, value));
 }
 
@@ -456,7 +490,6 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   sliderTargets: { ...DEFAULT_SLIDER_VALUES },
   sliderDisplayOverride: {},
   seed: 0,
-  blend: 0.4,
   promptA: "heavy dubstep, deathstep, afxdump, growl heavy bass distortion",
   promptB: "daft punk style, beautiful, four to the floor, angelic",
   activeKey: "G# minor",
@@ -477,6 +510,7 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   dcwEnabled: true,
   dcwMode: "double",
   dcwWavelet: "haar",
+  rcfgMode: "off",
 
   // Hydrated from localStorage after mount via hydratePersistedPrefs() —
   // do NOT read localStorage here, that breaks SSR hydration.
@@ -550,7 +584,6 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   },
   setSeed: (seed) => set({ seed: Math.max(0, Math.min(1, seed)) }),
   randomizeSeed: () => set({ seed: Math.random() }),
-  setBlend: (b) => set({ blend: Math.max(0, Math.min(1, b)) }),
   setPromptA: (s) => set({ promptA: s }),
   setPromptB: (s) => set({ promptB: s }),
   setKey: (k) => set({ activeKey: k }),
@@ -614,6 +647,7 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   toggleDcw: () => set((s) => ({ dcwEnabled: !s.dcwEnabled })),
   setDcwMode: (m) => set({ dcwMode: m }),
   setDcwWavelet: (w) => set({ dcwWavelet: w }),
+  setRcfgMode: (m) => set({ rcfgMode: m }),
   toggleKbdHints: () =>
     set((s) => {
       const next = !s.showKbdHints;
@@ -660,7 +694,6 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
       sliderTargets: { ...DEFAULT_SLIDER_VALUES },
       sliderDisplayOverride: {},
       seed: 0,
-      blend: 0.4,
       remixStarted: false,
     }));
   },

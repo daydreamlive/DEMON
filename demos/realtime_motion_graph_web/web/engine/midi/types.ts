@@ -35,7 +35,6 @@ export const DEFAULT_MIDI_MAP: MidiMap = {
     "73": "hint_strength",
     "74": "feedback",
     "75": "shift",
-    "76": "noise_share",
     "77": "ode_noise",
   },
   notes: {

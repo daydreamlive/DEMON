@@ -152,7 +152,10 @@ export class AudioPlayer {
 
     if (this._useWorklet) {
       // Stable URL — worklet ships from public/ so AudioContext can resolve it.
-      await this.ctx.audioWorklet.addModule("/audio-worklet.js");
+      // Cache-busting query bumped manually when the worklet message
+      // surface changes (e.g. v2 added setLoopBand). The browser caches
+      // worklet bytes per-URL and hard refresh doesn't always invalidate.
+      await this.ctx.audioWorklet.addModule("/audio-worklet.js?v=2");
 
       const node = new AudioWorkletNode(this.ctx, "realtime-buffer", {
         numberOfInputs: 0,
@@ -351,6 +354,45 @@ export class AudioPlayer {
       });
     } else {
       this._spPosition = target;
+    }
+  }
+
+  /** Lock playback to a sub-region of the buffer. The AudioWorklet wraps
+   *  end→start each time the playhead reaches `endSec`. Pure client-side
+   *  loop — the engine keeps generating linearly and writing slices into
+   *  the same buffer, so what plays inside the band is whatever lives
+   *  there now (regenerated audio on subsequent laps; original source
+   *  in regions generation hasn't touched yet).
+   *
+   *  Pass min 30 ms band — anything shorter spins the wrap path tight
+   *  enough to be perceived as silence. Out-of-range values are clamped.
+   */
+  setLoopBand(startSec: number, endSec: number): void {
+    if (this.frameCount === 0) return;
+    const startFrames = Math.max(
+      0,
+      Math.min(this.frameCount - 1, Math.round(startSec * SAMPLE_RATE)),
+    );
+    const endFrames = Math.max(
+      startFrames + Math.floor(SAMPLE_RATE * 0.03),
+      Math.min(this.frameCount, Math.round(endSec * SAMPLE_RATE)),
+    );
+    if (this._useWorklet && this.node) {
+      (this.node as AudioWorkletNode).port.postMessage({
+        type: "setLoopBand",
+        startFrames,
+        endFrames,
+      });
+    }
+  }
+
+  /** Remove any active band loop; playback resumes wrapping at
+   *  end-of-buffer (subject to `setLoop`). */
+  clearLoopBand(): void {
+    if (this._useWorklet && this.node) {
+      (this.node as AudioWorkletNode).port.postMessage({
+        type: "clearLoopBand",
+      });
     }
   }
 

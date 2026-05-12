@@ -563,7 +563,6 @@ class Session:
         steps: int = 8,
         shift: float = 3.0,
         method: str = "ode",
-        noise_sharing: float = 0.0,
         pipeline_depth: Optional[int] = None,
         solver: Optional[Solver] = None,
         # DCW (post-step wavelet-domain correction; default on, matching
@@ -573,6 +572,7 @@ class Session:
         dcw_scaler: float = 0.05,
         dcw_high_scaler: float = 0.02,
         dcw_wavelet: str = "haar",
+        dcw_advanced: Optional["DCWAdvanced"] = None,
     ) -> "StreamHandle":
         """Build a streaming graph handle for interactive generation.
 
@@ -586,7 +586,7 @@ class Session:
         (this tick) or ``None`` (mid-flight).
 
         Default widget params (``steps``, ``shift``, ``method``,
-        ``pipeline_depth``, ``noise_sharing``) are baked into the
+        ``pipeline_depth``) are baked into the
         returned handle as ``base_kwargs`` for convenience; per-tick
         callers override them as needed. Swapping ``conditioning`` or
         ``context_latent`` on the handle between ticks rewires the next
@@ -616,12 +616,12 @@ class Session:
                 "shift": shift,
                 "solver": solver,
                 "pipeline_depth": depth,
-                "noise_sharing": noise_sharing,
                 "dcw_enabled": dcw_enabled,
                 "dcw_mode": dcw_mode,
                 "dcw_scaler": dcw_scaler,
                 "dcw_high_scaler": dcw_high_scaler,
                 "dcw_wavelet": dcw_wavelet,
+                "dcw_advanced": dcw_advanced,
             },
         )
 
@@ -733,7 +733,7 @@ class StreamHandle:
 
     @property
     def pipeline(self):
-        """Raw pipeline (for noise_sharing mutation, stats, etc.)."""
+        """Raw pipeline (for stats, shared curves, etc.)."""
         return self.stream_node.pipeline
 
     def stats(self) -> dict:

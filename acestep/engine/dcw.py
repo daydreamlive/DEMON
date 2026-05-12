@@ -18,11 +18,24 @@ denoised estimate::
 
 ACE-Step latents are 1-D temporal tensors ``[B, T, C]`` at 25 Hz, so we
 transpose to ``[B, C, T]`` before the DWT and back after the IDWT.
+
+This file exposes a small ``DCWAdvanced`` surface with three continuous
+faders that compose with the upstream additive update:
+
+    mult_blend    : 0..1 linear mix toward ``xL * (1 + λ*sign(xL-yL))``
+    mag_phase     : 0..1 linear mix toward the analytic-signal
+                    (magnitude+phase) corrected band
+    soft_thresh   : 0..τ sparsity threshold applied to ``(xL-yL)``
+                    before the additive update
+
+All three default to zero — at zero, the corrector is byte-identical
+to the upstream-v0.1.7 reference behaviour.
 """
 
 from __future__ import annotations
 
-from typing import Tuple
+from dataclasses import dataclass
+from typing import Optional, Tuple
 
 import torch
 from loguru import logger
@@ -30,6 +43,7 @@ from loguru import logger
 
 __all__ = [
     "VALID_DCW_MODES",
+    "DCWAdvanced",
     "DCWCorrector",
     "dcw_low",
     "dcw_high",
@@ -38,6 +52,48 @@ __all__ = [
 ]
 
 VALID_DCW_MODES = ("low", "high", "double", "pix")
+
+
+# ---------------------------------------------------------------------------
+# Advanced surface (3 continuous faders)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DCWAdvanced:
+    """Three continuous faders that compose with the upstream additive
+    DCW update. Every field at zero reproduces upstream v0.1.7
+    byte-for-byte; ``any_active`` is the single source of truth for
+    "should the advanced path run".
+    """
+
+    mult_blend: float = 0.0
+    """0 = pure additive update (upstream).
+    1 = pure multiplicative update ``xL * (1 + λ·sign(xL - yL))``.
+    Linear blend in between. The multiplicative form scales bands
+    relatively rather than additively, so loud regions get
+    proportionally larger corrections."""
+
+    mag_phase: float = 0.0
+    """0 = real-valued correction (upstream).
+    1 = full analytic-signal correction on band magnitude AND phase.
+    Lifts each wavelet band to its analytic signal (FFT-based Hilbert),
+    corrects magnitude + phase against the denoised band's analytic
+    signal, projects back to real. Closest thing to a complex-wavelet
+    path without a DTCWT dep."""
+
+    soft_thresh: float = 0.0
+    """Sparsity threshold ``τ`` applied to ``(xL - yL)`` before the
+    additive update::
+
+        d ← sign(d) · relu(|d| - τ)
+
+    Coefficients with |divergence| below τ contribute zero correction;
+    larger divergences pass through scaled down by τ. τ = 0 is a no-op."""
+
+    @property
+    def any_active(self) -> bool:
+        return self.mult_blend > 0.0 or self.mag_phase > 0.0 or self.soft_thresh > 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +230,101 @@ def dcw_double(
 
 
 # ---------------------------------------------------------------------------
+# Helpers for the advanced surface
+# ---------------------------------------------------------------------------
+
+
+def _analytic_signal_1d(x_bct: torch.Tensor) -> torch.Tensor:
+    """Compute the analytic signal of ``x`` along the time axis.
+
+    ``x_bct`` is real-valued ``[B, C, T]``. Returns a complex tensor
+    of the same shape. Standard FFT recipe:
+
+        X = FFT(x); H = 2 on positive freqs, 1 on DC/Nyquist, 0 elsewhere
+        z = IFFT(X * H)
+    """
+    N = x_bct.shape[-1]
+    X = torch.fft.fft(x_bct, dim=-1)
+    h = torch.zeros(N, device=x_bct.device, dtype=X.dtype)
+    if N % 2 == 0:
+        h[0] = 1.0
+        h[1:N // 2] = 2.0
+        h[N // 2] = 1.0
+    else:
+        h[0] = 1.0
+        h[1:(N + 1) // 2] = 2.0
+    return torch.fft.ifft(X * h, dim=-1)
+
+
+def _mag_phase_correct_band(
+    xb: torch.Tensor, yb: torch.Tensor, scaler: torch.Tensor,
+) -> torch.Tensor:
+    """Analytic-signal-based correction of a single real band.
+
+    Lifts to complex, corrects magnitude + phase against the analytic
+    target, returns the real part. Wrap-safe phase difference via
+    complex division (``angle(zx/zy)`` lives in ``[-π, π]``).
+    """
+    zx = _analytic_signal_1d(xb)
+    zy = _analytic_signal_1d(yb)
+    eps = 1e-8
+    mag_x = zx.abs()
+    mag_y = zy.abs()
+    zy_safe = zy + eps
+    dphi = torch.angle(zx / zy_safe)
+    mag_new = mag_x + scaler * (mag_x - mag_y)
+    ang_new = torch.angle(zx) + scaler * dphi
+    new_z = torch.polar(mag_new.to(torch.float32), ang_new.to(torch.float32))
+    return new_z.real.to(xb.dtype)
+
+
+def _band_correction_blended(
+    xb: torch.Tensor,
+    yb: torch.Tensor,
+    scaler: torch.Tensor,
+    adv: DCWAdvanced,
+) -> torch.Tensor:
+    """Upstream additive update with the three faders folded in.
+
+    Layered so each fader's audible contribution is independent:
+
+    1. ``soft_thresh`` shrinks ``diff = xb - yb`` toward zero in the
+       small-coefficient region (sparsity).
+    2. ``mult_blend`` linearly mixes the additive output with the
+       multiplicative form ``xb * (1 + scaler · sign(xb - yb))``.
+    3. ``mag_phase`` linearly mixes the real-valued blended output with
+       the analytic-signal magnitude+phase correction.
+    """
+    diff = xb - yb
+    # ``raw_sign`` is sign(xb - yb), cached so a non-zero soft-threshold
+    # path doesn't make the mult-blend path compute it a second time.
+    raw_sign: Optional[torch.Tensor] = None
+
+    soft_thresh = float(adv.soft_thresh)
+    if soft_thresh > 0.0:
+        raw_sign = torch.sign(diff)
+        diff = raw_sign * torch.relu(diff.abs() - soft_thresh)
+
+    additive = xb + scaler * diff
+
+    mult_blend = float(adv.mult_blend)
+    if mult_blend > 0.0:
+        if raw_sign is None:
+            # diff still equals (xb - yb) on this branch.
+            raw_sign = torch.sign(diff)
+        multiplicative = xb * (1.0 + scaler * raw_sign)
+        real_part = (1.0 - mult_blend) * additive + mult_blend * multiplicative
+    else:
+        real_part = additive
+
+    mag_phase = float(adv.mag_phase)
+    if mag_phase > 0.0:
+        mp_band = _mag_phase_correct_band(xb, yb, scaler)
+        return (1.0 - mag_phase) * real_part + mag_phase * mp_band
+    return real_part
+
+
+# ---------------------------------------------------------------------------
 # Sampler-facing wrapper
 # ---------------------------------------------------------------------------
 
@@ -187,6 +338,11 @@ class DCWCorrector:
     * ``high``   : ``λ = (1 - t) * scaler``   (complementary, late steps)
     * ``double`` : low ``t * scaler``, high ``(1 - t) * high_scaler``
     * ``pix``    : raw ``scaler`` (no t modulation)
+
+    The ``advanced`` config holds three continuous faders
+    (:class:`DCWAdvanced`). With every fader at zero the corrector is
+    byte-identical to upstream v0.1.7 — the fast path dispatches
+    straight to :func:`dcw_low` / :func:`dcw_high` / :func:`dcw_double`.
     """
 
     def __init__(
@@ -196,6 +352,7 @@ class DCWCorrector:
         scaler: "float | torch.Tensor" = 0.05,
         high_scaler: "float | torch.Tensor" = 0.02,
         wavelet: str = "haar",
+        advanced: Optional[DCWAdvanced] = None,
     ) -> None:
         if mode not in VALID_DCW_MODES:
             raise ValueError(
@@ -213,6 +370,7 @@ class DCWCorrector:
         self.scaler = ode_steps.normalize_curve(scaler)
         self.high_scaler = ode_steps.normalize_curve(high_scaler)
         self.wavelet = wavelet
+        self.advanced: DCWAdvanced = advanced if advanced is not None else DCWAdvanced()
         # Active flag is computed once at construction (one ``.any()``
         # sync per mutation) and cached as a plain bool so the per-step
         # ``is_active`` read in the hot path stays sync-free.
@@ -272,23 +430,61 @@ class DCWCorrector:
     ) -> torch.Tensor:
         if not self._active:
             return x_next
+
         t = float(t_curr)
         T = x_next.shape[1]
         device = x_next.device
+
+        # pix mode is wavelet-agnostic; advanced faders only act on
+        # wavelet bands, so pix always takes the fast path.
         if self.mode == "pix":
-            # Latent layout: [1, T, 1] (or [1, 1, 1]) broadcasts against
-            # the [B, T, C] operands directly, no reshape needed.
-            return dcw_pix(x_next, denoised, self.scaler.to(device=device, dtype=x_next.dtype))
+            return dcw_pix(
+                x_next, denoised,
+                self.scaler.to(device=device, dtype=x_next.dtype),
+            )
+
+        # Resolve per-band scaler shapes once. A mode that skips a band
+        # leaves its shape as ``None``, and both fast and advanced
+        # branches dispatch off the same source of truth, so the
+        # mode → (low_scaler_source, high_scaler_source) mapping is
+        # never duplicated.
+        ls: Optional[torch.Tensor] = None
+        hs: Optional[torch.Tensor] = None
         if self.mode == "low":
-            s = self._shape_for_wavelet(t * self.scaler, T, device)
-            return dcw_low(x_next, denoised, s, self.wavelet)
-        if self.mode == "high":
-            s = self._shape_for_wavelet((1.0 - t) * self.scaler, T, device)
-            return dcw_high(x_next, denoised, s, self.wavelet)
-        if self.mode == "double":
+            ls = self._shape_for_wavelet(t * self.scaler, T, device)
+        elif self.mode == "high":
+            hs = self._shape_for_wavelet(
+                (1.0 - t) * self.scaler, T, device,
+            )
+        else:  # "double"
             ls = self._shape_for_wavelet(t * self.scaler, T, device)
             hs = self._shape_for_wavelet(
                 (1.0 - t) * self.high_scaler, T, device,
             )
+
+        # Fast path: pure additive update via the upstream kernels.
+        # Byte-identical to upstream v0.1.7.
+        if not self.advanced.any_active:
+            if self.mode == "low":
+                return dcw_low(x_next, denoised, ls, self.wavelet)
+            if self.mode == "high":
+                return dcw_high(x_next, denoised, hs, self.wavelet)
             return dcw_double(x_next, denoised, ls, hs, self.wavelet)
-        raise RuntimeError(f"unreachable dcw_mode={self.mode}")
+
+        # Advanced path: decompose once, apply blended update per band,
+        # recompose. Same wavelet basis and trim semantics as the fast
+        # path's kernels.
+        xl, xh, yl, yh, iwt, out_T = _dwt_pair(
+            x_next, denoised, self.wavelet,
+        )
+        adv = self.advanced
+        if ls is not None:
+            xl = _band_correction_blended(xl, yl, ls, adv)
+        if hs is not None:
+            xh = [
+                _band_correction_blended(xhi, yhi, hs, adv)
+                for xhi, yhi in zip(xh, yh)
+            ]
+
+        x_new = iwt((xl, xh))
+        return _bct_to_btc(x_new[:, :, :out_T]).to(dtype=x_next.dtype)

@@ -7,6 +7,7 @@ from loguru import logger
 import torch
 
 from .conditions import PreparedCondition
+from .dcw import DCWAdvanced
 
 
 @dataclass
@@ -53,6 +54,9 @@ class DiffusionConfig:
     dcw_scaler: float = 0.05
     dcw_high_scaler: float = 0.02
     dcw_wavelet: str = "haar"
+    # Opt-in advanced surface (mult_blend / mag_phase / soft_thresh).
+    # ``None`` keeps the byte-identical upstream-v0.1.7 fast path.
+    dcw_advanced: Optional[DCWAdvanced] = None
 
 
 class DiffusionEngine:

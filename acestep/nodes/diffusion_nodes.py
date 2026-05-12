@@ -366,6 +366,8 @@ def _build_slot_request(
     negative: Optional[Conditioning],
     context_latents: torch.Tensor,
     source_latent: Optional[Latent],
+    rcfg_mode: Optional[str] = None,
+    cfg_rescale=None,
     seed,
     denoise: float,
     velocity_scale,
@@ -392,16 +394,22 @@ def _build_slot_request(
         for e in pos_entries[1:]
     ]
 
+    # Guidance is engaged when either standard CFG (negative provided)
+    # or RCFG-self (virtual uncond from initial noise) is requested.
+    # neg_conditions stays empty for the "self" branch.
     neg_conditions: list[SlotCondition] = []
     guidance_curve_t = None
-    if negative is not None and guidance_curve is not None:
-        for e in negative.to_entries():
-            neg_conditions.append(SlotCondition(
-                encoder_hidden_states=e.encoder_hidden_states,
-                encoder_attention_mask=e.encoder_attention_mask,
-                temporal_weight=e.temporal_weight,
-                step_range=e.step_range,
-            ))
+    if guidance_curve is not None and (
+        negative is not None or rcfg_mode == "self"
+    ):
+        if negative is not None:
+            for e in negative.to_entries():
+                neg_conditions.append(SlotCondition(
+                    encoder_hidden_states=e.encoder_hidden_states,
+                    encoder_attention_mask=e.encoder_attention_mask,
+                    temporal_weight=e.temporal_weight,
+                    step_range=e.step_range,
+                ))
         guidance_curve_t = _curve_to_tensor(guidance_curve, device, dtype)
 
     src_tensor = None
@@ -435,6 +443,8 @@ def _build_slot_request(
         primary_step_range=primary.step_range,
         neg_conditions=neg_conditions,
         guidance_curve=guidance_curve_t,
+        rcfg_mode=rcfg_mode,
+        cfg_rescale_curve=_curve_to_tensor(cfg_rescale, device, dtype),
     )
 
 
@@ -453,9 +463,9 @@ class StreamDenoise(BaseNode):
         steps, method, pipeline_depth, noise_on_cpu, use_cache, or a
         new model handle.
     Hot-updatable (no rebuild):
-        shift (schedule cache cleared), noise_sharing, denoise, seed,
-        all curves, x0_target_strength, x0_target_gate. Channel
-        guidance reads live from the handler every tick.
+        shift (schedule cache cleared), denoise, seed, all curves,
+        x0_target_strength, x0_target_gate. Channel guidance reads
+        live from the handler every tick.
     """
 
     node_type_id: ClassVar[str] = "acestep.StreamDenoise"
@@ -539,11 +549,6 @@ class StreamDenoise(BaseNode):
                     min=1, max=16, step=1,
                 ),
                 NodeParam(
-                    name="noise_sharing", type="number", default=0.0,
-                    description="Cross-slot noise sharing",
-                    min=0.0, max=1.0, step=0.01,
-                ),
-                NodeParam(
                     name="drain", type="boolean", default=False,
                     description="Synchronous drain (one-shot)",
                 ),
@@ -587,6 +592,33 @@ class StreamDenoise(BaseNode):
                     description="DCW wavelet basis (haar / db4 / sym8 / ...)",
                     hidden=True,
                 ),
+                NodeParam(
+                    name="dcw_advanced", type="any", default=None,
+                    description=(
+                        "DCW advanced research-surface config "
+                        "(DCWAdvanced instance). None = upstream defaults."
+                    ),
+                    hidden=True,
+                ),
+                NodeParam(
+                    name="rcfg_mode", type="string", default=None,
+                    description=(
+                        "RCFG mode: None/'full' (standard CFG, neg "
+                        "forward every step), 'initialize' (neg forward "
+                        "once per slot then cached), 'self' (no neg "
+                        "forward; virtual v_uncond = initial noise)."
+                    ),
+                    hidden=True,
+                ),
+                NodeParam(
+                    name="cfg_rescale", type="any", default=None,
+                    description=(
+                        "Per-frame mix toward vt_pos's magnitude after APG. "
+                        "0 / None disables; 1 fully snaps norm to vt_pos. "
+                        "Scalar or per-frame curve. Fixes high-CFG saturation."
+                    ),
+                    hidden=True,
+                ),
             ),
         )
 
@@ -623,7 +655,6 @@ class StreamDenoise(BaseNode):
         )
         self._pipeline = StreamPipeline(
             self._engine, config,
-            noise_sharing=0.0,
             pipeline_depth=depth,
         )
         self._last_handle_id = handle_id
@@ -654,7 +685,6 @@ class StreamDenoise(BaseNode):
         seed = kwargs.get("seed")
         depth_arg = kwargs.get("pipeline_depth")
         depth = int(depth_arg) if depth_arg is not None else steps
-        noise_sharing = float(kwargs.get("noise_sharing", 0.0))
         noise_on_cpu = bool(kwargs.get("noise_on_cpu", True))
         use_cache = bool(kwargs.get("use_cache", False))
         # x0_target_strength / x0_target_gate live on the Modulation
@@ -681,12 +711,11 @@ class StreamDenoise(BaseNode):
             pipe._device = torch.device(device)
             pipe._dtype = dtype
 
-        # Hot-update shift (clear schedule cache), method, and noise_sharing.
+        # Hot-update shift (clear schedule cache) and method.
         if pipe.config.shift != shift:
             pipe.config.shift = shift
             pipe._schedule_cache.clear()
         pipe.config.infer_method = solver.method
-        pipe.noise_sharing = noise_sharing
 
         # Channel guidance reads live from the handler so ChannelGuidance /
         # RemoveChannelGuidance nodes take effect on the next tick without
@@ -712,6 +741,7 @@ class StreamDenoise(BaseNode):
                 scaler=dcw_bundle.scaler,
                 high_scaler=dcw_bundle.high_scaler,
                 wavelet=dcw_bundle.wavelet,
+                advanced=dcw_bundle.advanced,
             )
         else:
             pipe.set_dcw(
@@ -720,6 +750,7 @@ class StreamDenoise(BaseNode):
                 scaler=float(kwargs.get("dcw_scaler", 0.05)),
                 high_scaler=float(kwargs.get("dcw_high_scaler", 0.02)),
                 wavelet=str(kwargs.get("dcw_wavelet", "haar")),
+                advanced=kwargs.get("dcw_advanced"),
             )
 
         context_latents = _build_context_latents(
@@ -787,6 +818,8 @@ class StreamDenoise(BaseNode):
             x0_target_strength=x0_target_strength,
             x0_target_gate=x0_target_gate,
             guidance_curve=modulation.guidance_curve,
+            rcfg_mode=kwargs.get("rcfg_mode"),
+            cfg_rescale=kwargs.get("cfg_rescale"),
             device=device,
             dtype=dtype,
         )

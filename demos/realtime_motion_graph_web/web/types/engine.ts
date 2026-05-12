@@ -18,11 +18,25 @@ export const SLIDER_META: Record<string, SliderMeta> = {
   // 0 = LoRA A only, 1 = LoRA B only, 0.5 = both at half-max. UI-only knob —
   // useEdgeLoraBinding watches this and writes the paired lora_str_<id> values.
   lora_blend: { max: 1.0, step: 0.05 },
+  // 0 = Tags A only, 1 = Tags B only. Lives in the slider system so the
+  // Smooth toggle / tween machinery / graph / MIDI generic path all work
+  // uniformly. Stripped out of the engine `params` dict by useParamSync
+  // (engine doesn't read it from there); shipped via the dedicated
+  // ``set_prompt_blend`` WS message by usePromptBlendSync.
+  prompt_blend: { max: 1.0, step: 0.05 },
 
   feedback: { max: 1.0, step: 0.1, pro: true },
   shift: { max: 1.0, step: 0.1, pro: true },
-  noise_share: { max: 1.0, step: 0.1, pro: true },
   ode_noise: { max: 0.5, step: 0.05, pro: true },
+  // RCFG guidance scale. Only takes effect when rcfg_mode != "off". The
+  // turbo model is CFG-distilled (trained to operate at scale=1 with
+  // conditioning baked in); driving guidance past ~10 on turbo tends
+  // to artifact. 7.0 is the SD-style default, useful starting point.
+  guidance_scale: { max: 15.0, step: 0.5, pro: true },
+  // Per-frame mix toward vt_pos's magnitude after APG. 0 = raw APG;
+  // 1 = fully snap norm to vt_pos. Useful at high guidance_scale to
+  // tame saturation.
+  cfg_rescale: { max: 1.0, step: 0.05, pro: true },
 
   ch_g0: { max: 3.0, step: 0.15, pro: true },
   ch_g1: { max: 3.0, step: 0.15, pro: true },
@@ -42,14 +56,43 @@ export const SLIDER_META: Record<string, SliderMeta> = {
 
   // DCW (wavelet-domain post-step correction). Numeric knobs only; the
   // boolean ON/OFF + mode + wavelet choices live in their own panel state.
-  dcw_scaler: { max: 0.2, step: 0.02, pro: true },
-  dcw_high_scaler: { max: 0.1, step: 0.01, pro: true },
+  //
+  // Caps for dcw_scaler / dcw_high_scaler are bumped past the upstream
+  // "usable" range (~0.1) so the operator can drive DCW into audible
+  // artifact territory while A/B'ing the three advanced faders. The
+  // defaults (0.05 / 0.02) still match upstream-v0.1.7.
+  dcw_scaler: { max: 0.5, step: 0.02, pro: true },
+  dcw_high_scaler: { max: 0.5, step: 0.02, pro: true },
+  // Advanced surface — composes on top of the additive update. Field
+  // names mirror DCWAdvanced in acestep/engine/dcw.py one-to-one, so
+  // sliderValues spreads straight into the server params dict with
+  // no remap layer in useParamSync.
+  dcw_mult_blend: { max: 1.0, step: 0.05, pro: true },
+  dcw_mag_phase: { max: 1.0, step: 0.05, pro: true },
+  dcw_soft_thresh: { max: 0.3, step: 0.01, pro: true },
 };
 
 export const DCW_MODES = ["low", "high", "double", "pix"] as const;
 export const DCW_WAVELETS = ["haar", "db4", "sym8", "db8"] as const;
 export type DcwMode = (typeof DCW_MODES)[number];
 export type DcwWavelet = (typeof DCW_WAVELETS)[number];
+
+// RCFG (Residual Classifier-Free Guidance) modes. "off" disables APG
+// entirely on the wire (turbo default — no guidance, no extra forwards).
+// "initialize" runs the uncond pass only at step 0 per slot, caches the
+// velocity, reuses it for the slot's remaining steps. "self" skips the
+// uncond forward entirely; virtual ``v_uncond ≈ initial_noise``
+// (flow-matching identity with ``x0_uncond ≈ 0``). See
+// acestep/engine/stream.py. The engine also supports "full" (standard
+// two-pass CFG, 2x cost), but it's intentionally NOT in the demo
+// dropdown — turbo is CFG-distilled and an externally-driven full CFG
+// against an empty-prompt uncond doesn't produce the right perceptual
+// direction. Test scripts can still set ``rcfg_mode="full"`` directly.
+export const RCFG_MODES = ["off", "initialize", "self"] as const;
+export type RcfgMode = (typeof RCFG_MODES)[number];
+export function isRcfgMode(v: unknown): v is RcfgMode {
+  return typeof v === "string" && (RCFG_MODES as readonly string[]).includes(v);
+}
 
 // Capped at 1.8 (was 2.0). Operator finding: most LoRAs we ship turn
 // to noise above ~1.7 (e.g. v5/discofunk noise at 2.0, hardrock noise

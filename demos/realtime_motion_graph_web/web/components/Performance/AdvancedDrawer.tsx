@@ -177,8 +177,8 @@ export function AdvancedDrawer() {
                 <div className="mixer-rack-row" data-rack-row="all">
                   <MainTile />
                   <EngineTile />
-                  <ChannelGainsTile />
                   <ChannelsTile />
+                  <ChannelGainsTile />
                   <DcwTile />
                   <LibraryTile />
                   <SeedTile />

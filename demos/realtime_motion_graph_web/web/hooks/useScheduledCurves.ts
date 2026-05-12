@@ -8,6 +8,7 @@ import {
   isManualOverrideActive,
   usePerformanceStore,
 } from "@/store/usePerformanceStore";
+import { useLoraStore } from "@/store/useLoraStore";
 import { useSessionStore } from "@/store/useSessionStore";
 import { useCurveStore } from "@/store/useCurveStore";
 import { LORA_SLIDER_MAX, SLIDER_META } from "@/types/engine";
@@ -53,6 +54,7 @@ export function useScheduledCurves(): void {
         );
         const curves = curveState.curves;
         const setSliderDirect = usePerformanceStore.getState().setSliderDirect;
+        const setLoraStrength = useLoraStore.getState().setStrength;
         for (const param of Object.keys(curves)) {
           const c = curves[param];
           if (!c.enabled) continue;
@@ -64,7 +66,22 @@ export function useScheduledCurves(): void {
           const max = param.startsWith("lora_str_")
             ? LORA_SLIDER_MAX
             : (SLIDER_META[param]?.max ?? 1.0);
-          setSliderDirect(param, yNorm * max);
+          const value = yNorm * max;
+          setSliderDirect(param, value);
+          // LoRA strength sliders rendered on the desktop edge rails
+          // (DesktopEdgeDrag) read from useLoraStore.strengths — the
+          // canonical "current strength" store — not from
+          // sliderTargets. Mirror the curve write there so the
+          // rails track curves the same way LibraryTile does. We
+          // deliberately do NOT route through
+          // loraStrengthDispatcher.set() because that stamps a
+          // manualTouch on the param, which would suppress the curve
+          // on the next tick (isManualOverrideActive == true for
+          // 500 ms after every stamp).
+          if (param.startsWith("lora_str_")) {
+            const id = param.slice("lora_str_".length);
+            setLoraStrength(id, value);
+          }
         }
       },
       { phase: "compute", budgetMs: 1 },

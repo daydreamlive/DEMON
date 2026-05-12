@@ -12,6 +12,7 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useMidi } from "@/hooks/useMidi";
 import { useParamSync } from "@/hooks/useParamSync";
+import { usePromptBlendSync } from "@/hooks/usePromptBlendSync";
 import { useRecording } from "@/hooks/useRecording";
 import { useRenderLoop } from "@/hooks/useRenderLoop";
 import { useScheduledCurves } from "@/hooks/useScheduledCurves";
@@ -42,6 +43,7 @@ import { RecordButton } from "./RecordButton";
 import { RecordingPreview } from "./RecordingPreview";
 import { StartOverlay } from "./StartOverlay";
 import { StatusBar } from "./StatusBar";
+import { WaveformScrubBox } from "./WaveformScrubBox";
 
 // Demo shell — wires the package's hooks + components into a working app.
 //
@@ -68,6 +70,7 @@ export function PerformanceShell() {
   useFixtureSwap();
   useEdgeLoraBinding();
   useTimbreSync();
+  usePromptBlendSync();
   useRefSourceAcks("timbre");
   useRefSourceAcks("structure");
   const config = useConfig();
@@ -140,6 +143,8 @@ export function PerformanceShell() {
       <StatusBar />
 
       <LiveIndicator />
+
+      {!isMobile && <WaveformScrubBox />}
 
       <NetworkIndicator />
 

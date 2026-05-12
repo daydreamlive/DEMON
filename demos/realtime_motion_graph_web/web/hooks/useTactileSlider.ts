@@ -2,10 +2,12 @@
 
 import { useEffect, useRef } from "react";
 
+import { valueToT, type SliderMapping } from "@/lib/sliderMapping";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 
 // Lightweight per-slider tactile augmentation: feature-detected haptics on
-// landmark crossings (0, 0.5, 1.0) and a long-press reset gesture.
+// landmark crossings (0, 0.5, 1.0 of the THUMB position) and a long-press
+// reset gesture.
 //
 // Touch the rail/slider for >= LONG_PRESS_MS without moving more than
 // LONG_PRESS_MOVE_PX and we treat it as a "snap back" gesture: the param
@@ -35,24 +37,38 @@ function vibrate(ms: number): void {
 interface Options {
   /** sliderTargets key (e.g. "denoise", "lora_blend"). */
   param: string;
-  /** Slider max — used to normalize value into 0..1 for crossing detection. */
-  max: number;
+  /** Same mapping bundle SliderGroup uses (min/max/unity/reverse). We
+   *  fire haptics on the thumb's position crossings (0 / 0.5 / 1 of the
+   *  rail), not on engine-value crossings, so reverse + unity-anchored
+   *  channels still feel landmarks at the bottom, middle, and top of
+   *  the rail. Bypasses any asymmetry between value and thumb position
+   *  introduced by the unity-anchored piecewise mapping. */
+  mapping: SliderMapping;
   /** Element to attach long-press detection on. */
   ref: React.MutableRefObject<HTMLElement | null>;
 }
 
-export function useTactileSlider({ param, max, ref }: Options): void {
+export function useTactileSlider({ param, mapping, ref }: Options): void {
   // Track previous fraction so we only fire haptic at the moment a crossing
   // happens, not on every redraw at that position.
   const prevFrac = useRef<number | null>(null);
+
+  // Reactively re-bind to mapping changes via the primitive fields, not
+  // the object identity (which gets rebuilt every parent render).
+  const { min, max, unity, reverse } = mapping;
 
   // Subscribe directly to the store: cheaper than re-rendering the parent
   // for every value change, and lets us fire vibrate() outside React's
   // commit phase.
   useEffect(() => {
+    const m: SliderMapping = { min, max, unity, reverse };
     const fire = () => {
       const v = usePerformanceStore.getState().sliderTargets[param] ?? 0;
-      const frac = max > 0 ? v / max : 0;
+      // Thumb position fraction (0 at bottom, 1 at top). For unity-
+      // anchored bands, value=unity always lands at frac=0.5 — so the
+      // mid-rail haptic fires when the operator drags through unity
+      // regardless of where unity sits in the channel's [min, max].
+      const frac = valueToT(v, m);
       const prev = prevFrac.current;
       prevFrac.current = frac;
       if (prev === null) return;
@@ -66,7 +82,7 @@ export function useTactileSlider({ param, max, ref }: Options): void {
       }
     };
     return usePerformanceStore.subscribe(fire);
-  }, [param, max]);
+  }, [param, min, max, unity, reverse]);
 
   // Long-press to reset.
   useEffect(() => {

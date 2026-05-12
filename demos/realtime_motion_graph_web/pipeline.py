@@ -10,11 +10,31 @@ import time
 import numpy as np
 import torch
 
+from acestep.engine.dcw import DCWAdvanced
 from acestep.nodes.types import ChannelGuidanceEntry, Latent
 from acestep.nodes.vae_nodes import EmptyLatent, LatentBlend
 
 from .knobs import CHANNEL_GROUPS, KEYSTONE_CHANNELS
 from .protocol import SAMPLE_RATE, T
+
+
+def _build_dcw_advanced(raw: dict) -> "DCWAdvanced | None":
+    """Translate the client's three DCW fader values into a
+    :class:`DCWAdvanced`, or return ``None`` when all three are zero.
+
+    Returning ``None`` lets the corrector take its byte-identical fast
+    path, so "all faders at the bottom" costs nothing over upstream DCW.
+    """
+    mult_blend = float(raw.get("dcw_mult_blend", 0.0))
+    mag_phase = float(raw.get("dcw_mag_phase", 0.0))
+    soft_thresh = float(raw.get("dcw_soft_thresh", 0.0))
+    if mult_blend == 0.0 and mag_phase == 0.0 and soft_thresh == 0.0:
+        return None
+    return DCWAdvanced(
+        mult_blend=mult_blend,
+        mag_phase=mag_phase,
+        soft_thresh=soft_thresh,
+    )
 
 
 
@@ -61,6 +81,7 @@ class PipelineRunner:
         before_tick=None,
         walk_window=False,
         walk_window_s=60.0,
+        neg_conditioning=None,
     ):
         self.session = session
         self.stream = stream  # StreamHandle
@@ -115,6 +136,13 @@ class PipelineRunner:
         self.walk_window = bool(walk_window)
         self.walk_window_s = float(walk_window_s)
         self.walk_window_T = int(round(self.walk_window_s * 25.0))
+
+        # Negative conditioning for the RCFG path. Encoded once at session
+        # start (see backend.py / fixtures.py) and reused across all ticks.
+        # Required for ``rcfg_mode in {"full", "initialize"}``; ignored
+        # by ``rcfg_mode == "self"`` (virtual uncond) and ``"off"``.
+        # ``None`` is safe — modes that need it become quiet no-ops.
+        self.neg_conditioning = neg_conditioning
 
         # Predictive decode: rolling EMA of (tick + decode) wall time. Each
         # decode targets ``playhead + _predicted_advance_s`` so that by the
@@ -404,8 +432,6 @@ class PipelineRunner:
                     last_hint_str = hint_str
                     self._update_hint_strength(hint_str)
 
-            noise_sharing = self.midi_knobs.get_param("noise_share") if self.use_midi else 0.0
-
             source_lat = None
             if feedback > 0.0 and last_latent is not None:
                 src_tensor = live_src_lat.tensor
@@ -430,8 +456,6 @@ class PipelineRunner:
             else:
                 denoise = k1
                 self.sde_curve_display[0] = None
-
-            effective_seed = None if noise_sharing > 0.01 else seed
 
             ode_curve = _curve_from_spec(raw.get("ode_noise_curve"), src_T)
             if ode_curve is None:
@@ -487,9 +511,33 @@ class PipelineRunner:
                 # we computed above. Pass them as per-tick overrides so
                 # StreamHandle.tick() merges them into the slot request.
                 tick_kwargs["context_latent"] = live_ctx_lat
+
+            # RCFG (Residual Classifier-Free Guidance). Engaged whenever
+            # the operator picks a mode other than "off" from the EngineTile
+            # dropdown. The guidance_scale slider feeds a uniform [1, T, 1]
+            # curve; the engine lifts it through normalize_curve. "self"
+            # mode skips the negative forward (virtual v_uncond), so we
+            # only attach negative conditioning for "full" / "initialize".
+            rcfg_mode = str(raw.get("rcfg_mode", "off"))
+            if rcfg_mode != "off":
+                guidance_scale = float(raw.get("guidance_scale", 1.0))
+                guidance_curve = torch.full(
+                    (1, src_T, 1), guidance_scale, dtype=torch.float32,
+                )
+                tick_kwargs["rcfg_mode"] = rcfg_mode
+                tick_kwargs["guidance_curve"] = guidance_curve
+
+                cfg_rescale = float(raw.get("cfg_rescale", 0.0))
+                if cfg_rescale > 0.0:
+                    tick_kwargs["cfg_rescale"] = torch.full(
+                        (1, src_T, 1), cfg_rescale, dtype=torch.float32,
+                    )
+
+                if rcfg_mode in ("full", "initialize") and self.neg_conditioning is not None:
+                    tick_kwargs["negative"] = self.neg_conditioning
             result_latent = self.stream.tick(
                 denoise=denoise,
-                seed=effective_seed,
+                seed=seed,
                 source_latent=(
                     Latent(tensor=source_lat) if source_lat is not None
                     else live_src_lat
@@ -497,7 +545,6 @@ class PipelineRunner:
                 x0_target=x0_tgt,
                 x0_target_curve=x0_target_curve,
                 shift=current_shift,
-                noise_sharing=noise_sharing,
                 initial_noise_curve=initial_noise_curve,
                 **tick_kwargs,
                 # DCW (wavelet-domain post-step correction). Forwarded
@@ -509,6 +556,7 @@ class PipelineRunner:
                 dcw_scaler=float(raw.get("dcw_scaler", 0.05)),
                 dcw_high_scaler=float(raw.get("dcw_high_scaler", 0.02)),
                 dcw_wavelet=str(raw.get("dcw_wavelet", "haar")),
+                dcw_advanced=_build_dcw_advanced(raw),
             )
             torch.cuda.synchronize()
             tick_ms = (time.perf_counter() - t0) * 1000
@@ -662,7 +710,6 @@ class PipelineRunner:
                 if self.use_sde:
                     self.params["periodicity"] = round(raw.get("periodicity", 0.0), 2)
                 self.params["hint_strength"] = round(hint_str, 2)
-                self.params["noise_share"] = round(raw.get("noise_share", 0.0), 2)
                 self.params["ode_noise"] = round(ode_noise_val, 2)
                 for name, _, _ in CHANNEL_GROUPS:
                     self.params[name] = round(raw.get(name, 1.0), 2)

@@ -26,15 +26,19 @@
   },
 
   "controls": {
-    "denoise": 0,
+    "denoise": 0.7,
     "_lora_default_strength_help": "Initial value applied to any LoRA strength slider whose server-reported strength is 0 (current Python backend behavior). Auto-enabled LoRAs land here on first paint.",
     "lora_default_strength": 0.7,
     "hint_strength": 1.4,
 
     "feedback": 0.0,
     "shift": 0.5,
-    "noise_share": 0.0,
     "ode_noise": 0.0,
+
+    "_rcfg_help": "Residual CFG. 'off' = no guidance (turbo default, free). 'self' = virtual uncond from initial noise, ~1.06x cost. 'initialize' = uncond run once per slot then cached, ~1.07x. 'full' = standard two-pass CFG, ~2x.",
+    "rcfg_mode": "off",
+    "guidance_scale": 7.0,
+    "cfg_rescale": 0.0,
 
     "ch_g0": 1.0,
     "ch_g1": 1.0,
@@ -59,6 +63,24 @@
     "dcw_wavelet": "haar"
   },
 
+  "_channel_ranges_help": "Per-channel slider range + direction. {min,max} caps the value the slider/MIDI/keyboard can drive into the engine (also applied to scheduled-curve writes via clampToMeta). `reverse: true` flips the input mapping so dragging UP (or turning the MIDI knob clockwise) sends a LOWER engine value -- use for channels that sound better when turned down so the operator's instinct to push up produces the desired result. Stored values still live in [min, max]; reverse changes only the UI/input mapping, not the wire range. Omitted params fall back to SLIDER_META in types/engine.ts (max=3.0 by default, no min).",
+  "channel_ranges": {
+    "ch_g0": { "min": 0, "max": 2.2,  "reverse": false },
+    "ch_g1": { "min": 0, "max": 2.0,  "reverse": false },
+    "ch_g2": { "min": 0, "max": 2.3,  "reverse": true  },
+    "ch_g3": { "min": 0, "max": 2.0,  "reverse": false },
+    "ch_g4": { "min": 0, "max": 2.5,  "reverse": false },
+    "ch_g5": { "min": 0, "max": 2.0,  "reverse": false },
+    "ch_g6": { "min": 0, "max": 2.0,  "reverse": true  },
+    "ch_g7": { "min": 0, "max": 2.0,  "reverse": true  },
+    "ch13":  { "min": 0, "max": 2.0,  "reverse": true  },
+    "ch14":  { "min": 0, "max": 2.3,  "reverse": false },
+    "ch19":  { "min": 0, "max": 2.5,  "reverse": false },
+    "ch23":  { "min": 0, "max": 2.45, "reverse": false },
+    "ch29":  { "min": 0, "max": 2.0,  "reverse": false },
+    "ch56":  { "min": 0, "max": 2.0,  "reverse": false }
+  },
+
   "seed": 0,
 
   "_audio_help": "Output audio chain. lufs_enabled toggles the loudness matcher on at boot (operator can still flip it via the LUFS button in-session). lufs_window_sec controls the meter's sliding window. 3s is the standard. Lower = faster response but noisier and prone to high-water spikes on transients. Practical floor ~1.5s. lufs_metric picks the metric: 'lufs' (BS.1770 K-weighted, broadcast standard) or 'dba' (IEC 61672 A-weighted, closer to perceived loudness on bright/distorted content). lufs_silence_floor_db disengages the matcher when the chunk at the playhead reads more than this far below target (gain ramps to 1.0 instead of computing a boost), so silent regions of the model output don't get amplified into audible noise; 30 is well outside real musical content, lower to 20 to disengage on quiet passages too. lufs_silence_floor_hysteresis_db is the Schmitt-trigger band: once disengaged, the matcher re-engages only when the chunk reads within (floor - hysteresis) dB of target, preventing flapping at the threshold. Widen if you still hear volume swells at silence boundaries. The matcher always seeds the high-water mark with the source's loudest short-term window at session start, so the louder of {source, denoised} defines the target from t=0 -- no need to wait for the meter to discover it.",
@@ -80,5 +102,14 @@
   },
 
   "_reset_seconds_help": "Idle timeout. After this many seconds of no interaction (pointer, key, or MIDI), every control reverts to the defaults above. Set to 0 to disable.",
-  "reset_seconds": 0
+  "reset_seconds": 0,
+
+  "_denoise_session_gate_help": "On every session start (clicking Play) AND on song swaps, snap the engine's denoise value to 0 and play a visual-only display glide from the slider's prior value down to 0 over glide_ms. The engine value never moves with the glide; it's a 'hear the source first' onboarding cue, and the slide doubles as a hint that the top ribbon is a slider. The slide is only visible when denoise is non-zero at the moment of the gate (first session uses controls.denoise above; later sessions and swaps use wherever the operator left it). Set enabled to false to skip the snap and glide entirely. With the gate off, controls.denoise seeds first paint and the slider keeps the operator's last value across sessions and swaps.",
+  "denoise_session_gate": {
+    "enabled": true,
+    "glide_ms": 700
+  },
+
+  "_restart_song_on_swap_help": "When true, picking a different song mid-session restarts playback from frame 0 of the new song. When false, the worklet keeps the playhead's phase across the swap, so swapping at 1:30 into a 4:00 track starts the new track at 1:30. Default true matches the ScriptProcessor fallback's existing behavior.",
+  "restart_song_on_swap": true
 }

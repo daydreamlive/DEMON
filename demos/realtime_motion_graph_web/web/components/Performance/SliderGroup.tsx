@@ -4,6 +4,7 @@ import type { CSSProperties } from "react";
 import { useEffect, useRef } from "react";
 
 import { useTactileSlider } from "@/hooks/useTactileSlider";
+import { tToValue, valueToT } from "@/lib/sliderMapping";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { SLIDER_META } from "@/types/engine";
 
@@ -19,6 +20,22 @@ interface Props {
   label: string;
   /** Override max + step for ad-hoc sliders (LoRA strength). */
   max?: number;
+  /** Floor for the value range. Defaults to 0. Used by per-channel
+   *  ranges loaded from config (see lib/config.ts → channel_ranges). */
+  min?: number;
+  /** If true, dragging the thumb UP drives the engine value DOWN. The
+   *  thumb still moves in the natural direction (so the visual fill
+   *  grows with the drag); only the value-of-thumb mapping is flipped.
+   *  Use for channels that "sound better when turned down" so the
+   *  operator's instinct to push up produces the desired result. */
+  reverse?: boolean;
+  /** When set, pins this value to the midpoint of the rail and uses
+   *  piecewise-linear mapping above/below the anchor. Lets a bank of
+   *  sliders with different per-channel [min, max] caps display the
+   *  same default at the same visual rail height (see
+   *  lib/sliderMapping.ts). Typical value: 1.0 ("unity gain") for the
+   *  channel-gain bank. */
+  unity?: number;
   kbd?: string;
 }
 
@@ -52,9 +69,27 @@ function tintAt(t: number): string {
   return `rgb(${last[0]} ${last[1]} ${last[2]})`;
 }
 
-export function SliderGroup({ param, label, max, kbd }: Props) {
+export function SliderGroup({
+  param,
+  label,
+  max,
+  min,
+  reverse,
+  unity,
+  kbd,
+}: Props) {
   const meta = SLIDER_META[param];
   const effectiveMax = max ?? meta?.max ?? 1.0;
+  const effectiveMin = min ?? 0;
+  // Mapping bundle, passed to lib/sliderMapping helpers (and the
+  // tactile-slider hook). When `unity` is set, the rail uses piecewise
+  // mapping anchored at the midpoint; otherwise linear from min..max.
+  const mapping = {
+    min: effectiveMin,
+    max: effectiveMax,
+    unity,
+    reverse: !!reverse,
+  };
   // Read the user's target (instant), not the smoothed sent value, so
   // dragging tracks the cursor without smoothing lag.
   const value = usePerformanceStore(
@@ -63,11 +98,22 @@ export function SliderGroup({ param, label, max, kbd }: Props) {
   const setSlider = usePerformanceStore((s) => s.setSlider);
   const trackRef = useRef<HTMLDivElement | null>(null);
 
-  // Haptics on landmark crossings (0, 0.5, 1.0) + long-press reset to default.
-  useTactileSlider({ param, max: effectiveMax, ref: trackRef });
+  // Haptics on landmark crossings (0, 0.5, 1.0 of slider position) +
+  // long-press reset. Pass the full mapping so the haptic fires on the
+  // thumb's position, not the engine value — on reverse + unity-anchored
+  // channels those move opposite each other (and at different slopes).
+  useTactileSlider({
+    param,
+    mapping,
+    ref: trackRef,
+  });
 
-  const fraction = effectiveMax > 0 ? value / effectiveMax : 0;
-  const pct = Math.max(0, Math.min(1, fraction)) * 100;
+  // Slider thumb fraction t ∈ [0, 1] (0 = bottom, 1 = top). For
+  // unity-anchored bands, the unity value lands at t=0.5 regardless of
+  // the channel's actual [min, max] — which is the whole point of the
+  // visual rail [0, 2] convention.
+  const t = valueToT(value, mapping);
+  const pct = t * 100;
 
   useEffect(() => {
     const el = trackRef.current;
@@ -97,8 +143,8 @@ export function SliderGroup({ param, label, max, kbd }: Props) {
 
     const commit = () => {
       if (!cachedRect) return;
-      const t = 1 - (pendingClientY - cachedRect.top) / cachedRect.height;
-      setSlider(param, Math.max(0, Math.min(1, t)) * effectiveMax);
+      const tFrac = 1 - (pendingClientY - cachedRect.top) / cachedRect.height;
+      setSlider(param, tToValue(tFrac, mapping));
     };
 
     const flush = () => {
@@ -178,9 +224,17 @@ export function SliderGroup({ param, label, max, kbd }: Props) {
       el.removeEventListener("pointerup", onPointerUp);
       el.removeEventListener("pointercancel", onPointerUp);
     };
-  }, [param, effectiveMax, setSlider]);
+    // `mapping` is rebuilt every render; depending on its identity here
+    // would re-bind listeners every render. We pull out the primitive
+    // fields it's built from instead.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [param, effectiveMin, effectiveMax, unity, reverse, setSlider]);
 
-  const tintStyle = { "--slider-tint": tintAt(fraction) } as CSSProperties;
+  // Tint follows the thumb's position so the color sweep matches the
+  // drag, not the value — keeps the gradient coherent for reverse and
+  // unity-anchored channels (operator sees teal at the top regardless
+  // of direction or anchor).
+  const tintStyle = { "--slider-tint": tintAt(t) } as CSSProperties;
 
   // Descriptive tooltip on the LABEL only — hovering the track during
   // drag would otherwise trigger the tooltip mid-interaction. Label is

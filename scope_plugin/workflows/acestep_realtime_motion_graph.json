@@ -176,7 +176,6 @@
           "denoise": 0.56,
           "seed": 42,
           "shift": 3,
-          "noise_sharing": 0,
           "pipeline_depth": 4,
           "steps": 8,
           "drain": false,

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { loraStrengthDispatcher } from "@/engine/lora/dispatcher";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
@@ -186,11 +187,12 @@ export function DesktopEdgeDrag({ side }: Props) {
       const id = ids[slotIndex];
       if (!id) return;
       const v = Math.max(0, Math.min(1, t)) * LORA_SLIDER_MAX;
-      // Mirror into BOTH stores so the engine sees it (perf →
-      // param-sync) and the LibraryTile slider (which reads from
-      // sliderTargets) reflects the side-bar drag in real time.
-      usePerformanceStore.getState().setSlider(`lora_str_${id}`, v);
-      useLoraStore.getState().setStrength(id, v);
+      // Route through the LoRA dispatcher (debounces engine commits to
+      // one refit per gesture). UI mirrors (sliderTargets +
+      // useLoraStore.strengths) are still updated synchronously inside
+      // dispatcher.set so the LibraryTile slider tracks the side-bar
+      // drag in real time.
+      loraStrengthDispatcher.set(id, v);
     };
 
     const onPointerDown = (e: PointerEvent) => {
