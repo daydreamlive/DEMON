@@ -152,7 +152,7 @@ export function LibraryTile() {
   if (catalog.length === 0) {
     return (
       <div className="mixer-tile" data-tile="library">
-        <div className="mixer-tile-label">Library</div>
+        <div className="mixer-tile-label">LoRA Library</div>
         <div className="lora-empty">no LoRAs found</div>
       </div>
     );

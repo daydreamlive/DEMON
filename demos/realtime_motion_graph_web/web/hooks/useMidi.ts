@@ -88,10 +88,14 @@ function handleCC(cc: number, value: number): void {
   // an absolute MIDI knob's full sweep would map 0..127 → 0..2.0 and
   // the perf-store clamp would silently truncate the top ~10% — the
   // operator-visible slider stops at 1.8 but the MIDI input still
-  // crosses it.
+  // crosses it. `prompt_blend` lives in usePerformanceStore.blend
+  // directly (not in sliderValues) and its rail is [0, 1] — both
+  // ends are meaningful, so we cap there explicitly.
   const max = range?.max
     ?? meta?.max
-    ?? (param.startsWith("lora_str_") ? LORA_SLIDER_MAX : 2.0);
+    ?? (param.startsWith("lora_str_") ? LORA_SLIDER_MAX
+        : param === "prompt_blend" ? 1.0
+        : 2.0);
   const span = Math.max(0, max - min);
   const reverse = range?.reverse ?? false;
   const step = meta?.step ?? 0.05;
@@ -130,6 +134,15 @@ function handleCC(cc: number, value: number): void {
  *  knob sweeps debounce into one engine-side refit per gesture,
  *  matching the touch/edge-drag paths. */
 function applyMidiSet(param: string, value: number): void {
+  // `prompt_blend` is the Tags-A↔Tags-B slider in PromptsTile. It lives
+  // in usePerformanceStore.blend (a 0..1 scalar with its own setter),
+  // NOT in sliderValues, so the generic setSlider path won't move the
+  // visible slider or trigger the PromptsTile auto-submit useEffect.
+  // Route it to setBlend instead.
+  if (param === "prompt_blend") {
+    usePerformanceStore.getState().setBlend(value);
+    return;
+  }
   if (param.startsWith("lora_str_")) {
     const id = param.slice("lora_str_".length);
     loraStrengthDispatcher.set(id, value);
@@ -139,6 +152,11 @@ function applyMidiSet(param: string, value: number): void {
 }
 
 function applyMidiBump(param: string, delta: number): void {
+  if (param === "prompt_blend") {
+    const cur = usePerformanceStore.getState().blend;
+    usePerformanceStore.getState().setBlend(cur + delta);
+    return;
+  }
   if (param.startsWith("lora_str_")) {
     const id = param.slice("lora_str_".length);
     // Compute the new absolute target from sliderTargets (kept current
@@ -163,12 +181,33 @@ function bindInput(input: MIDIInput): void {
     const data = e.data;
     if (!data || data.length < 2) return;
     const status = data[0] & 0xf0;
+    // Diagnostic for MIDI-learn debugging: when learn is active, dump
+    // every raw message so we can see whether the pad fires a status
+    // byte the dispatcher doesn't route (e.g. 0xa0 aftertouch, 0xc0
+    // program change, or note-on with velocity 0 used as the "press"
+    // signal). Drop this log once the pad-bind issue is fully diagnosed.
+    if (useMidiStore.getState().learn) {
+      const statusHex = (data[0] | 0).toString(16).padStart(2, "0");
+      console.log(
+        `[midi-learn] raw: status=0x${statusHex} data1=${data[1]} data2=${data[2] ?? "n/a"} len=${data.length}`,
+      );
+    }
     if (status === 0xb0) {
       // Control change.
       handleCC(data[1], data[2]);
     } else if (status === 0x90 && data[2] > 0) {
       // Note on (velocity > 0).
       handleNote(data[1]);
+    } else if (status === 0x80 || (status === 0x90 && data[2] === 0)) {
+      // Note off (or note-on vel=0, which some controllers send instead
+      // of a proper 0x80 note-off). When LEARN is active, treat this as
+      // a binding hint too — some "press" pads only emit on release, so
+      // refusing to bind on note-off leaves those pads unbindable. The
+      // normal dispatch (non-learn) still ignores note-off, matching the
+      // long-standing fire-on-rising-edge behavior for action buttons.
+      if (useMidiStore.getState().learn) {
+        handleNote(data[1]);
+      }
     }
   };
 }
@@ -207,6 +246,10 @@ export function useMidi() {
     // Right-click → MIDI learn. Targets:
     //   .slider-group[data-param=...] → CC
     //   .lora-row[data-param=...]     → CC (Phase 11 will populate)
+    //   #blend-control[data-param=...] → CC (Tags A↔B blend slider,
+    //                                       intentionally NOT a
+    //                                       slider-group — keeps the
+    //                                       horizontal rail styling)
     //   [data-midi-learn=...]         → note (transport buttons, send-prompt, etc.)
     const onContextMenu = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
@@ -221,6 +264,12 @@ export function useMidi() {
       if (loraRow?.dataset.param) {
         e.preventDefault();
         useMidiStore.getState().startLearn("cc", loraRow.dataset.param, loraRow);
+        return;
+      }
+      const blendEl = target.closest<HTMLElement>("#blend-control");
+      if (blendEl?.dataset.param) {
+        e.preventDefault();
+        useMidiStore.getState().startLearn("cc", blendEl.dataset.param, blendEl);
         return;
       }
       const learnEl = target.closest<HTMLElement>("[data-midi-learn]");
