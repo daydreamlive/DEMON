@@ -533,14 +533,14 @@ export function ScheduleCurvesOverlay() {
       const points = pointsRef.current;
       // Pinned endpoints — same rule as Alt+click + Backspace path.
       if (hit === 0 || hit === points.length - 1) return;
-      // Cancel any in-flight drag so the surviving pointer capture
+      // Cancel any in-flight drag so a surviving pointer capture
       // doesn't keep moving a now-deleted index on the next move.
-      if (dragIndex !== null) {
-        try {
-          canvas.releasePointerCapture(e.pointerId ?? 0);
-        } catch {}
-        dragIndex = null;
-      }
+      // `e` here is a MouseEvent (dblclick fires that, not a
+      // PointerEvent) — no pointerId is available, but clearing
+      // dragIndex is enough: pointermove's drag branch only runs
+      // when dragIndex !== null, and the pointer capture will be
+      // released naturally on the next pointerup.
+      dragIndex = null;
       const next = points.filter((_, i) => i !== hit);
       pointsRef.current = next;
       hoverIndex = null;
