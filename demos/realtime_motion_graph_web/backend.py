@@ -568,6 +568,29 @@ def handle_client(
         )
     )
 
+    def _active_trigger_prefix() -> str:
+        """Comma-separated activation tokens for every currently-ENABLED
+        LoRA that ships with a `<stem>.trigger.txt` sidecar.
+
+        Defined ABOVE `_encode_cond_pair` so the latter's free-variable
+        binding to this name is populated before any early text-encode
+        site runs (initial session start fires the first encode below,
+        well before the recv loop). Python's free-variable cell only
+        gets populated when the enclosing function executes the `def`
+        statement that creates the local — define-after-use across the
+        same scope NameErrors at call time.
+        """
+        if not lora_available:
+            return ""
+        parts: list[str] = []
+        for d in engine_obj.list_loras():
+            if d.state != "enabled":
+                continue
+            trig = lora_trigger(d.path)
+            if trig:
+                parts.append(trig)
+        return ", ".join(parts)
+
     # Two-conditioning cache for the live timbre-strength slider.
     # cond_silence uses the model's silence latent (refer_latent=None);
     # cond_full uses whichever timbre reference is currently active —
@@ -681,42 +704,6 @@ def handle_client(
             }
             for d in engine_obj.list_loras()
         ]
-
-    def _active_trigger_prefix() -> str:
-        """Comma-separated activation tokens for every currently-ENABLED
-        LoRA that ships with a `<stem>.trigger.txt` sidecar.
-
-        Called from `_encode_cond_pair` so every text-encode site (session
-        start, prompt change, timbre refresh, LoRA enable/disable
-        re-encode) sees the fresh set without any duplicated lookup
-        logic. Trigger lookup costs one file-read per LoRA per encode,
-        bounded by `len(engine_obj.list_loras())` — single-digit count
-        in practice; cost is negligible vs the text encoder forward.
-
-        Order: matches `engine_obj.list_loras()` (insertion order on the
-        engine side). The prefix is then prepended verbatim to the
-        user's caption with a trailing ``", "`` separator, so the final
-        tokenizer input looks like
-            ``afxdump, bptkno, <user caption>``
-        which is the exact shape every LoRA was trained against
-        (trigger as the first comma-separated token in the captioning
-        prompt, per the v5 pruned-captions rule).
-        """
-        if not lora_available:
-            return ""
-        parts: list[str] = []
-        for d in engine_obj.list_loras():
-            # Only ENABLED descriptors fire. State strings are
-            # lower-case (`"enabled"` etc.) per LoRAState's value
-            # mapping. Materializing / Registered states have no audio
-            # impact, so injecting their trigger would just confuse the
-            # text encoder.
-            if d.state != "enabled":
-                continue
-            trig = lora_trigger(d.path)
-            if trig:
-                parts.append(trig)
-        return ", ".join(parts)
 
     # Send ready + initial buffer
     ws.send(json.dumps({
