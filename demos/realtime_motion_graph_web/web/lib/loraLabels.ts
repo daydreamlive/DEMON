@@ -6,6 +6,10 @@
 // curve scheduler tabs).
 const LORA_DISPLAY_OVERRIDES: Record<string, string> = {
   deathstep: "DUBSTEP",
+  bptkno: "TECHNO",
+  hardrock: "HARDROCK",
+  bach: "BAROQUE",
+  discofunk: "DISCOFUNK",
 };
 
 export function displayLoraName(id: string, fallback?: string): string {
