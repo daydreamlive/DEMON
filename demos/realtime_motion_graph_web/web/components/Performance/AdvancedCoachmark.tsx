@@ -37,7 +37,7 @@ import { useEffect } from "react";
 //     Trigger: Stage C completed at least once this session
 //              AND ~12s have passed since remixStarted first flipped
 //              AND the advanced drawer is still closed
-//     Shows:   <AdvancedCoachmark/> — "Drag up for more controls"
+//     Shows:   <AdvancedCoachmark/> — "Click for more controls"
 //     Dismiss: pointerdown anywhere, Esc, drawer open, or 8s auto-hide
 //     Persist: dd:advanced-coachmark-dismissed = "1" in localStorage
 //     Owned by: <AdvancedDrawer/> (this component is just the view)
@@ -94,7 +94,7 @@ export function AdvancedCoachmark({ visible, onDismiss }: Props) {
   return (
     <div className="advanced-coachmark" role="status" aria-live="polite">
       <span className="advanced-coachmark-text">
-        Drag up for more controls — Press <kbd>O</kbd> to toggle
+        Click for more controls — Press <kbd>O</kbd> to toggle
       </span>
       <span className="advanced-coachmark-arrow" aria-hidden="true">
         ▾
