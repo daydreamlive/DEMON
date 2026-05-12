@@ -5,6 +5,14 @@ export interface LoraCatalogEntry {
   id: string;
   name?: string;
   path?: string;
+  /** Activation word the LoRA was trained against, sourced from a
+   *  `<stem>.trigger.txt` sidecar next to the .safetensors. Always
+   *  present in the catalog payload — empty string when no sidecar
+   *  exists (no documented trigger for that LoRA, e.g. synthpop).
+   *  The engine handles the actual prompt prepending server-side at
+   *  encode time; this field is surfaced to the UI for transparency /
+   *  tooltips only — do NOT inject it into promptA/promptB. */
+  trigger?: string;
   state?: string;
   strength?: number;
   materialized_bytes?: number;
