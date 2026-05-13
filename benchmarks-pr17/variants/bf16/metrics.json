@@ -1,0 +1,14 @@
+{
+  "tag": "bf16",
+  "engine_size_mb": 7989.4,
+  "engine_size_bytes": 8376777476,
+  "cosine_sim_avg": 1.0,
+  "max_abs_diff_peak": 0.0,
+  "mean_abs_diff_avg": 0.0,
+  "tick_latency_ms": {
+    "bf16_baseline_mean": 135.46,
+    "fp8_mean": 135.46
+  },
+  "speedup_vs_bf16": 1.0,
+  "note": "Reference. Metrics are by definition; not derived from a real validation run."
+}

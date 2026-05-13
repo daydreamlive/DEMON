@@ -145,8 +145,24 @@ def main() -> None:
                 linear_modules[name] = mod
         print(f"[setup] found {len(linear_modules)} nn.Linear modules in model.decoder")
 
-        # Register forward pre-hooks.
+        # Register forward pre-hooks that record absmax and tail-percentile
+        # statistics. Activation outliers in DiT (one rogue token at one
+        # position) blow up the absmax for some layers — e.g. layer 16
+        # mlp.down_proj has absmax ~10000 while 99.9% of its activations
+        # fit under ~200. Percentile-clipped scales let FP8 use its
+        # precision budget on the bulk distribution, saturating only the
+        # rare outliers. We record p99/p99.9/p99.99 so the patch can
+        # choose.
         absmax_state: dict[str, float] = {n: 0.0 for n in linear_modules}
+        p99_state: dict[str, float] = {n: 0.0 for n in linear_modules}
+        p99_9_state: dict[str, float] = {n: 0.0 for n in linear_modules}
+        p99_99_state: dict[str, float] = {n: 0.0 for n in linear_modules}
+        # SmoothQuant needs per-input-channel activation absmax: max over
+        # batch+seq dims for each in_features channel. We keep this in
+        # fp32 on CPU as a torch tensor — total memory across all
+        # linears is small (~10 MB) and using CPU avoids GPU pressure
+        # since these accumulators live for the whole capture run.
+        per_chan_state: dict[str, torch.Tensor] = {}
         hooks = []
 
         def _make_hook(linear_name: str):
@@ -154,9 +170,52 @@ def main() -> None:
                 x = inputs[0]
                 if not isinstance(x, torch.Tensor):
                     return
-                cur = float(x.detach().abs().max().item())
-                if cur > absmax_state[linear_name]:
-                    absmax_state[linear_name] = cur
+                abs_x = x.detach().abs().float()
+                abs_flat = abs_x.flatten()
+                n = abs_flat.numel()
+                # absmax: literal max.
+                cur_max = float(abs_flat.max().item())
+                if cur_max > absmax_state[linear_name]:
+                    absmax_state[linear_name] = cur_max
+                # Per-batch tail quantiles via a single topk on the
+                # largest k we need (the 99 percentile = the top 1% =
+                # the largest k_99 = ceil(n * 0.01) elements; the
+                # k-th element of that descending list is the q-th
+                # quantile). max-across-batches gives a conservative
+                # upper bound the engine should target.
+                k99 = max(1, int(n * 0.01))
+                k999 = max(1, int(n * 0.001))
+                k9999 = max(1, int(n * 0.0001))
+                max_k = max(k99, k999, k9999)
+                if max_k >= n:
+                    # Tiny tensor: percentile == absmax.
+                    p99 = p999 = p9999 = cur_max
+                else:
+                    topk_vals = abs_flat.topk(max_k, largest=True, sorted=True).values
+                    # topk_vals is sorted descending: [0]=largest, [k-1]=k-th largest.
+                    p99 = float(topk_vals[k99 - 1].item())
+                    p999 = float(topk_vals[k999 - 1].item())
+                    p9999 = float(topk_vals[k9999 - 1].item())
+                if p99 > p99_state[linear_name]:
+                    p99_state[linear_name] = p99
+                if p999 > p99_9_state[linear_name]:
+                    p99_9_state[linear_name] = p999
+                if p9999 > p99_99_state[linear_name]:
+                    p99_99_state[linear_name] = p9999
+                # Per-input-channel absmax for SmoothQuant. Reduce over
+                # every axis except the last (which is in_features).
+                if abs_x.ndim < 2:
+                    # 1-D activation (rare); treat as single channel.
+                    per_chan = abs_x.flatten().max().reshape(1)
+                else:
+                    reduce_axes = tuple(range(abs_x.ndim - 1))
+                    per_chan = abs_x.amax(dim=reduce_axes)  # shape [in]
+                per_chan_cpu = per_chan.detach().cpu()
+                prev = per_chan_state.get(linear_name)
+                if prev is None or prev.shape != per_chan_cpu.shape:
+                    per_chan_state[linear_name] = per_chan_cpu.clone()
+                else:
+                    torch.maximum(prev, per_chan_cpu, out=prev)
             return _hook
 
         for name, mod in linear_modules.items():
@@ -197,8 +256,15 @@ def main() -> None:
         records: dict[str, dict] = {}
         for name, mod in linear_modules.items():
             w_sig = _hash_weight(mod.weight)
+            per_chan = per_chan_state.get(name)
+            per_chan_list = per_chan.tolist() if per_chan is not None else None
             records[name] = {
                 "absmax": absmax_state[name],
+                "p99": p99_state[name],
+                "p99_9": p99_9_state[name],
+                "p99_99": p99_99_state[name],
+                "per_channel_absmax": per_chan_list,  # [in_features] for SmoothQuant
+                "in_features": int(per_chan.numel()) if per_chan is not None else None,
                 "weight_shape": w_sig["shape"],
                 "weight_l2_bf16": w_sig["l2_bf16"],
                 "weight_head4_bf16": w_sig["head4_bf16"],
@@ -207,15 +273,29 @@ def main() -> None:
         nonzero = sum(1 for r in records.values() if r["absmax"] > 0)
         print(f"[capture] linear modules with nonzero absmax: {nonzero}/{len(records)}")
         amaxes_sorted = sorted(
-            [(r["absmax"], n) for n, r in records.items()], reverse=True,
+            [(r["absmax"], r["p99"], r["p99_9"], r["p99_99"], n)
+             for n, r in records.items()],
+            reverse=True,
         )
-        print("[capture] top 5 amaxes:")
-        for v, n in amaxes_sorted[:5]:
-            print(f"  {v:9.3f}  {n}")
-        print("[capture] bottom 5 amaxes (nonzero):")
-        nz = [(v, n) for v, n in amaxes_sorted if v > 0]
-        for v, n in nz[-5:]:
-            print(f"  {v:9.3e}  {n}")
+        print("[capture] top 5 by absmax (absmax, p99, p99.9, p99.99):")
+        for amax, p99, p999, p9999, n in amaxes_sorted[:5]:
+            print(f"  amax={amax:>9.2f}  p99={p99:>9.2f}  p99.9={p999:>9.2f}  "
+                  f"p99.99={p9999:>9.2f}  {n}")
+        print("[capture] bottom 5 by absmax (nonzero):")
+        nz = [t for t in amaxes_sorted if t[0] > 0]
+        for amax, p99, p999, p9999, n in nz[-5:]:
+            print(f"  amax={amax:>9.2e}  p99={p99:>9.2e}  p99.9={p999:>9.2e}  "
+                  f"p99.99={p9999:>9.2e}  {n}")
+        # Outlier diagnostic: how much does each quantile shrink vs absmax?
+        ratios = []
+        for name, r in records.items():
+            if r["absmax"] > 0:
+                ratios.append((r["absmax"] / max(r["p99_9"], 1e-12), name, r))
+        ratios.sort(key=lambda t: t[0], reverse=True)
+        print("[capture] top 10 outlier ratios (absmax / p99.9):")
+        for ratio, name, r in ratios[:10]:
+            print(f"  ratio={ratio:7.1f}x  amax={r['absmax']:>9.2f}  "
+                  f"p99.9={r['p99_9']:>9.2f}  {name}")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(

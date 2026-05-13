@@ -26,12 +26,27 @@ if __name__ == "__main__":
     ap.add_argument("--w8a8", action="store_true",
                     help="Use activation absmax JSON to insert activation "
                          "Q->DQ alongside the weight DQ (W8A8 mode).")
+    ap.add_argument("--percentile",
+                    choices=("absmax", "p99", "p99_9", "p99_99"),
+                    default="absmax",
+                    help="Activation amax field to drive the FP8 scale.")
+    ap.add_argument("--outlier-skip-ratio", type=float, default=0.0,
+                    help="If >0, Linears with absmax/p99.9 > ratio skip "
+                         "activation Q-DQ (fall back to W8A16). Use ~10 "
+                         "to route the worst transformer 'massive "
+                         "activation' layers around FP8.")
+    ap.add_argument("--smoothquant-alpha", type=float, default=0.0,
+                    help="SmoothQuant migration strength (0.0 = off, "
+                         "0.5 = standard).")
     args = ap.parse_args()
 
     amax = AMAX_JSON if args.w8a8 else None
     out = patch_bf16_onnx_to_fp8(
         SRC,
         activation_absmax_json_path=amax,
+        activation_percentile=args.percentile,
+        activation_outlier_skip_ratio=args.outlier_skip_ratio,
+        smoothquant_alpha=args.smoothquant_alpha,
         force=True,
     )
     print(f"Patched ONNX: {out}")

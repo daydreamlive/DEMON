@@ -1,0 +1,69 @@
+{
+  "built_at": "2026-05-13T02:08:02.826402+00:00",
+  "component": "decoder_refit",
+  "config": {
+    "batch_max": 4,
+    "batch_min": 1,
+    "batch_opt": 1,
+    "bf16": false,
+    "builder_optimization_level": 3,
+    "enc_max": 512,
+    "enc_min": 32,
+    "enc_opt": 200,
+    "fp16": true,
+    "onnx_precision": "fp8_mixed",
+    "refit": true,
+    "seq_max": 1500,
+    "seq_min": 126,
+    "seq_opt": 1500,
+    "strongly_typed": true,
+    "tf32": true,
+    "variant": "xl-turbo",
+    "workspace_gb": 16.0
+  },
+  "environment": {
+    "active_gpu": {
+      "available": true,
+      "compute_capability": "12.0",
+      "index": 0,
+      "name": "NVIDIA GeForce RTX 5090",
+      "total_memory_bytes": 34190458880
+    },
+    "nvidia_smi": {
+      "available": true,
+      "gpus": [
+        {
+          "compute_capability": "12.0",
+          "driver_version": "591.86",
+          "name": "NVIDIA GeForce RTX 5090"
+        }
+      ]
+    },
+    "onnx_parser_version": 100,
+    "packages": {
+      "cuda_python": "13.2.0",
+      "cuda_toolkit": null,
+      "onnx": "1.19.1",
+      "polygraphy": "0.49.26",
+      "tensorrt": "10.16.1.11",
+      "tensorrt_cu13": "10.16.1.11",
+      "tensorrt_cu13_bindings": "10.16.1.11",
+      "tensorrt_cu13_libs": "10.16.1.11",
+      "torch": "2.9.1+cu128"
+    },
+    "platform": {
+      "machine": "AMD64",
+      "python": "3.11.13",
+      "release": "10",
+      "system": "Windows"
+    },
+    "schema_version": 1,
+    "torch_cuda": "12.8"
+  },
+  "gpu_compute_capability": "12.0",
+  "gpu_name": "NVIDIA GeForce RTX 5090",
+  "onnx_path": "C:\\Users\\ryanf\\.daydream-scope\\models\\demon\\trt_engines\\_onnx_acestep-v15-xl-turbo\\decoder_refit\\decoder_refit_dynbatch_fp8.onnx",
+  "onnx_sha256": "efaa055bc26428d455163dda7164dd29aeec856b74ddf18c43c8d1a8f4cf4b25",
+  "schema_version": 1,
+  "tensorrt_version": "10.16.1.11"
+}

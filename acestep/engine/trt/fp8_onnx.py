@@ -209,6 +209,42 @@ def _make_q_node(
     )
 
 
+def _make_inv_s_initializer(name: str, inv_s_fp32) -> "onnx.TensorProto":
+    """bf16 initializer for ``1/s`` used in the SmoothQuant Mul.
+
+    Shape: ``[in_features]``. The Mul broadcasts this over the batch
+    and sequence dims of the activation feeding the consumer Linear.
+    """
+    import onnx
+    import torch
+
+    inv_s_bf16 = inv_s_fp32.to(torch.bfloat16).contiguous()
+    raw = inv_s_bf16.view(torch.uint16).numpy().tobytes()
+    init = onnx.TensorProto()
+    init.name = name
+    init.data_type = int(onnx.TensorProto.BFLOAT16)
+    init.dims.extend(list(inv_s_bf16.shape))
+    init.raw_data = raw
+    return init
+
+
+def _make_mul_node(
+    input_a: str,
+    input_b: str,
+    output: str,
+    *,
+    node_name: str,
+) -> "onnx.NodeProto":
+    from onnx import helper
+
+    return helper.make_node(
+        "Mul",
+        inputs=[input_a, input_b],
+        outputs=[output],
+        name=node_name,
+    )
+
+
 def _make_scale_initializer(name: str, scale_fp32) -> "onnx.TensorProto":
     """Build a bf16 scale initializer from a 1D fp32 scale tensor.
 
@@ -271,8 +307,41 @@ def _make_dq_node(
 # Main entry point
 # ------------------------------------------------------------------
 
+_VALID_PERCENTILE_FIELDS = ("absmax", "p99", "p99_9", "p99_99")
+
+
+def _smoothquant_factor(act_per_chan, weight_per_in_chan, *, alpha: float,
+                        clamp_min: float = 1.0, clamp_max: float = 1e3):
+    """Compute SmoothQuant per-channel factor ``s``.
+
+    ``s[c] = (max(|X[..., c]|))^alpha / (max(|W[c, :]|))^(1-alpha)``
+
+    where X is the activation feeding the Linear (in_features in the
+    last dim) and W is the weight in ONNX layout ``[in, out]`` (so
+    ``max(|W[c, :]|)`` is the absmax over the c-th input row of W).
+
+    ``clamp_min`` defaults to 1.0 so that smoothing only ever DIVIDES
+    the activation (s >= 1 ⇒ act/s <= act, weight*s >= weight). Without
+    this clamp, channels where the weight magnitude exceeds the
+    activation magnitude would produce ``s < 1``, which would
+    AMPLIFY the activation — defeating the entire point of SmoothQuant
+    and degrading numerics on those channels. ``clamp_max`` bounds the
+    weight inflation from extreme outlier activations.
+    """
+    import torch
+
+    a = torch.as_tensor(act_per_chan, dtype=torch.float32).clamp(min=1e-6)
+    w = torch.as_tensor(weight_per_in_chan, dtype=torch.float32).clamp(min=1e-6)
+    s = (a ** alpha) / (w ** (1.0 - alpha))
+    s = s.clamp(min=clamp_min, max=clamp_max)
+    return s
+
+
 def _load_activation_absmax(
     json_path: Path,
+    *,
+    percentile_field: str = "absmax",
+    outlier_skip_ratio: float = 0.0,
 ) -> tuple[dict[tuple, list[dict]], dict]:
     """Build a lookup from (transposed_shape, l2_bf16_rounded) -> [linear_record, ...].
 
@@ -282,7 +351,17 @@ def _load_activation_absmax(
     ``(transposed_shape, l2)`` as the lookup key. The L2 is rounded to a
     handful of significant figures because bf16 quantization noise can
     perturb the last few bits.
+
+    ``percentile_field`` chooses which stored statistic drives the
+    scale. "absmax" is the literal maximum (sensitive to outliers),
+    "p99"/"p99_9"/"p99_99" are tail quantiles — recommended for
+    DiT/transformer activations that have outlier-heavy distributions.
     """
+    if percentile_field not in _VALID_PERCENTILE_FIELDS:
+        raise ValueError(
+            f"percentile_field must be one of {_VALID_PERCENTILE_FIELDS}; "
+            f"got {percentile_field!r}"
+        )
     raw = json.loads(json_path.read_text(encoding="utf-8"))
     linears = raw["linears"]
     lookup: dict[tuple, list[dict]] = {}
@@ -291,14 +370,40 @@ def _load_activation_absmax(
         if len(torch_shape) != 2:
             continue
         onnx_shape = (torch_shape[1], torch_shape[0])  # ONNX [in, out]
-        # Round L2 to ~6 sig figs. bf16 cast on either side is bitwise
-        # identical, so L2 should match exactly in practice, but a small
-        # tolerance defends against accumulation-order differences.
-        l2_key = round(rec["weight_l2_bf16"], 4)
+        # Round L2 to 3 decimal places. We previously rounded to 4, but
+        # PyTorch's sum-of-squares and ONNX's bytes-loaded-and-summed
+        # produce results that diverge by ~1 ULP at the 4th decimal —
+        # e.g. PyTorch 285.4444 vs ONNX 285.4443 for the same weight.
+        # That mismatch silently routed 23 weights (including layer 16
+        # mlp.down_proj, the worst outlier in the whole model) to the
+        # W8A16 fallback path, completely bypassing both the W8A8 quant
+        # AND any SmoothQuant treatment. 3 decimals is well within the
+        # L2 separation between distinct Linears (~0.01) so collisions
+        # remain effectively impossible.
+        l2_key = round(rec["weight_l2_bf16"], 3)
         key = (onnx_shape, l2_key)
+        amax_for_scale = rec.get(percentile_field, rec["absmax"])
+        # Older JSONs may not have percentile fields; fall back if so.
+        if amax_for_scale is None or amax_for_scale <= 0:
+            amax_for_scale = rec["absmax"]
+        # Outlier ratio uses p99.9 as a stable denominator. Layers with
+        # large ratios have a "massive activation" pattern (a tiny number
+        # of huge values dominating absmax) and benefit from staying on
+        # the bf16 activation path — clipping their outliers destroys
+        # load-bearing signal.
+        p999 = rec.get("p99_9", rec["absmax"])
+        outlier_ratio = (rec["absmax"] / p999) if p999 > 0 else 1.0
+        skip_activation_quant = (
+            outlier_skip_ratio > 0.0 and outlier_ratio > outlier_skip_ratio
+        )
         lookup.setdefault(key, []).append({
             "linear_path": path,
             "absmax": rec["absmax"],
+            "p99_9": p999,
+            "outlier_ratio": outlier_ratio,
+            "skip_activation_quant": skip_activation_quant,
+            "scale_amax": amax_for_scale,  # what to use for the FP8 scale
+            "per_channel_absmax": rec.get("per_channel_absmax"),
             "weight_l2_bf16": rec["weight_l2_bf16"],
         })
     return lookup, raw
@@ -312,6 +417,9 @@ def patch_bf16_onnx_to_fp8(
     config: Optional[FP8OnnxConfig] = None,
     force: bool = False,
     activation_absmax_json_path: Optional[Union[str, Path]] = None,
+    activation_percentile: str = "absmax",
+    activation_outlier_skip_ratio: float = 0.0,
+    smoothquant_alpha: float = 0.0,
 ) -> Path:
     """Patch a bf16 decoder ONNX with FP8 (E4M3FN).
 
@@ -351,10 +459,20 @@ def patch_bf16_onnx_to_fp8(
         amax_path = Path(activation_absmax_json_path).resolve()
         if not amax_path.exists():
             raise FileNotFoundError(f"Activation absmax JSON not found: {amax_path}")
-        activation_lookup, activation_meta = _load_activation_absmax(amax_path)
+        activation_lookup, activation_meta = _load_activation_absmax(
+            amax_path,
+            percentile_field=activation_percentile,
+            outlier_skip_ratio=activation_outlier_skip_ratio,
+        )
+        n_skip = sum(
+            1 for recs in activation_lookup.values()
+            for r in recs if r["skip_activation_quant"]
+        )
         logger.info(
-            "Loaded activation absmax JSON ({} linears, {} unique shape+L2 keys): {}",
-            len(activation_meta.get("linears", {})), len(activation_lookup), amax_path,
+            "Loaded activation absmax JSON ({} linears, {} unique shape+L2 keys, "
+            "scale field={!r}, outlier_skip_ratio={}, fallback-to-W8A16={})",
+            len(activation_meta.get("linears", {})), len(activation_lookup),
+            activation_percentile, activation_outlier_skip_ratio, n_skip,
         )
         if (
             output_path.exists()
@@ -390,7 +508,12 @@ def patch_bf16_onnx_to_fp8(
     logger.info("  output: {}", output_path)
     logger.info("  weight scheme: per-output-channel symmetric E4M3FN, scale=bf16")
     if activation_lookup is not None:
-        logger.info("  activation scheme: per-tensor symmetric E4M3FN, scale=bf16")
+        logger.info(
+            "  activation scheme: per-tensor symmetric E4M3FN (scale=bf16, "
+            "amax field={!r}, outlier_skip_ratio={}, smoothquant_alpha={})",
+            activation_percentile, activation_outlier_skip_ratio,
+            smoothquant_alpha,
+        )
 
     logger.info("Loading bf16 ONNX (with external data) ...")
     model = onnx.load(str(src), load_external_data=True)
@@ -452,6 +575,8 @@ def patch_bf16_onnx_to_fp8(
     matmul_activation_amax: dict[str, float] = {}  # node name -> amax
     matmul_to_linear_path: dict[str, str] = {}     # node name -> source linear path
     unmatched_in_lookup: list[str] = []
+    smoothquant_log: list[dict] = []
+    smoothquant_skipped_no_perchan: list[str] = []
 
     for weight_name, consumer_nodes in to_quantize:
         init = inits[weight_name]
@@ -469,9 +594,11 @@ def patch_bf16_onnx_to_fp8(
         # The lookup key is (onnx_shape, L2_bf16). Collisions are
         # disambiguated by greedy first-match within the bucket and
         # remove (each Linear matches at most one ONNX init).
+        # ``scale_amax`` is already the chosen percentile (or absmax).
+        sq_applied = False  # was SmoothQuant applied to this Linear's weight?
         if activation_lookup is not None:
             onnx_shape = tuple(init.dims)
-            l2 = round(_weight_l2_bf16(init), 4)
+            l2 = round(_weight_l2_bf16(init), 3)
             bucket = activation_lookup.get((onnx_shape, l2))
             if not bucket:
                 unmatched_in_lookup.append(weight_name)
@@ -479,8 +606,89 @@ def patch_bf16_onnx_to_fp8(
                 linear_path = None
             else:
                 rec = bucket.pop(0)
-                amax = rec["absmax"]
                 linear_path = rec["linear_path"]
+                if rec["skip_activation_quant"]:
+                    # Outlier-heavy layer: skip activation Q-DQ. The
+                    # MatMul stays at bf16 activation × FP8 weight DQ
+                    # (W8A16). TRT won't pick FP8 GEMM for this one,
+                    # but bulk numerics on the outlier-dominated layer
+                    # are preserved.
+                    amax = None
+                else:
+                    amax = rec["scale_amax"]
+
+                # SmoothQuant: move outlier magnitude from per-tensor
+                # activation to per-output-channel weight by scaling
+                # weight rows by ``s[c]`` and inserting a Mul(act, 1/s)
+                # before the MatMul. The Q-DQ activation chain then
+                # operates on the SMOOTHED activation (well-behaved
+                # per-tensor distribution), unlocking real precision
+                # on the bulk while preserving outlier signal in the
+                # per-channel-quantized weight.
+                #
+                # Only applied when:
+                #   - alpha > 0
+                #   - activation Q-DQ is enabled for this Linear (i.e.
+                #     not on the outlier-skip W8A16 fallback path)
+                #   - per_channel_absmax exists and matches in_features
+                if (
+                    smoothquant_alpha > 0.0
+                    and amax is not None
+                    and rec.get("per_channel_absmax") is not None
+                    and len(rec["per_channel_absmax"]) == init.dims[0]
+                ):
+                    per_chan_act = rec["per_channel_absmax"]
+                    # Per-input-channel weight absmax (max over output dim).
+                    weight_per_in_chan = w_fp32.abs().amax(dim=1)  # [in]
+                    s = _smoothquant_factor(
+                        per_chan_act, weight_per_in_chan,
+                        alpha=smoothquant_alpha,
+                    )
+                    # Apply smoothing to the weight (broadcast [in,1] over [in,out]).
+                    w_fp32 = w_fp32 * s.unsqueeze(1)
+                    # Insert Mul(act, 1/s) before each consumer MatMul.
+                    inv_s = (1.0 / s).contiguous()
+                    inv_s_name = f"{weight_name}_sq_inv_s"
+                    new_inits.append(_make_inv_s_initializer(inv_s_name, inv_s))
+                    for mm_idx, mm in enumerate(consumer_nodes):
+                        act_tensor = mm.input[0]
+                        tag = act_tensor.replace("/", "_").replace(":", "_")
+                        mul_out = f"{weight_name}_sq_act_{mm_idx}"
+                        mul_name = f"{weight_name}_sq_Mul_{mm_idx}"
+                        new_nodes.append(_make_mul_node(
+                            act_tensor, inv_s_name, mul_out,
+                            node_name=mul_name,
+                        ))
+                        # Rewire the MatMul to read the SMOOTHED activation.
+                        mm.input[0] = mul_out
+                    # The smoothed activation's per-tensor amax is the
+                    # max across channels of (a_max[c] / s[c]).
+                    smoothed_per_chan = (
+                        torch.as_tensor(per_chan_act, dtype=torch.float32) / s
+                    )
+                    amax = float(smoothed_per_chan.max().item())
+                    sq_applied = True
+                    smoothquant_log.append({
+                        "weight": weight_name,
+                        "linear_path": linear_path,
+                        "shape": list(init.dims),
+                        "alpha": smoothquant_alpha,
+                        "s_min": float(s.min().item()),
+                        "s_max": float(s.max().item()),
+                        "s_mean": float(s.mean().item()),
+                        "original_act_amax": rec.get("absmax"),
+                        "smoothed_act_amax": amax,
+                        "act_amax_reduction": (
+                            rec["absmax"] / amax if amax > 0 else None
+                        ),
+                    })
+                elif (
+                    smoothquant_alpha > 0.0
+                    and amax is not None
+                    and rec.get("per_channel_absmax") is None
+                ):
+                    smoothquant_skipped_no_perchan.append(weight_name)
+
             for mm in consumer_nodes:
                 if amax is not None:
                     matmul_activation_amax[mm.name] = amax
@@ -689,6 +897,25 @@ def patch_bf16_onnx_to_fp8(
         logger.info("  activation Q->DQ pairs (unique inputs): {}", len(activation_log))
         logger.info("  weight-init lookup misses (no PyTorch match): {}",
                     len(unmatched_in_lookup))
+        if smoothquant_alpha > 0.0:
+            logger.info("  SmoothQuant alpha:                 {}", smoothquant_alpha)
+            logger.info("  SmoothQuant'd weights:             {}", len(smoothquant_log))
+            logger.info("  SmoothQuant skipped (no per-chan): {}",
+                        len(smoothquant_skipped_no_perchan))
+            if smoothquant_log:
+                reductions = sorted(
+                    (r["act_amax_reduction"] for r in smoothquant_log
+                     if r["act_amax_reduction"] is not None),
+                    reverse=True,
+                )
+                if reductions:
+                    logger.info(
+                        "  SmoothQuant act-amax reduction: max={:.1f}x  "
+                        "median={:.1f}x  min={:.1f}x",
+                        reductions[0],
+                        reductions[len(reductions) // 2],
+                        reductions[-1],
+                    )
     logger.info("  DequantizeLinear nodes in output:  {}", op_counts.get("DequantizeLinear", 0))
     logger.info("  QuantizeLinear nodes in output:    {}", op_counts.get("QuantizeLinear", 0))
     logger.info("  MatMul nodes in output:            {}", op_counts.get("MatMul", 0))
@@ -712,7 +939,13 @@ def patch_bf16_onnx_to_fp8(
             str(Path(activation_absmax_json_path).resolve())
             if activation_absmax_json_path is not None else None
         ),
+        activation_percentile=(
+            activation_percentile if activation_lookup is not None else None
+        ),
         unmatched_in_lookup=unmatched_in_lookup,
+        smoothquant_alpha=smoothquant_alpha,
+        smoothquant_log=smoothquant_log,
+        smoothquant_skipped=smoothquant_skipped_no_perchan,
     )
 
     return output_path
@@ -730,7 +963,11 @@ def _write_fp8_manifest(
     quantized_log: list[dict],
     activation_log: list[dict] | None = None,
     activation_absmax_json: str | None = None,
+    activation_percentile: str | None = None,
     unmatched_in_lookup: list[str] | None = None,
+    smoothquant_alpha: float = 0.0,
+    smoothquant_log: list[dict] | None = None,
+    smoothquant_skipped: list[str] | None = None,
 ) -> None:
     """Persist FP8-build metadata for downstream tools (engine builder,
     LoRA refit). The manifest sits next to the patched ONNX.
@@ -744,6 +981,7 @@ def _write_fp8_manifest(
         "patched_onnx": str(output_path),
         "calibration_npz": str(cal) if cal is not None else None,
         "activation_absmax_json": activation_absmax_json,
+        "activation_percentile": activation_percentile,
         "config": {
             "op_types_to_quantize": list(config.op_types_to_quantize),
             "high_precision_dtype": config.high_precision_dtype,
@@ -751,6 +989,7 @@ def _write_fp8_manifest(
             "weight_dtype": "float8_e4m3fn",
             "weight_scheme": "per_output_channel_symmetric",
             "activation_scheme": "per_tensor_symmetric" if activation_log else "bf16_passthrough",
+            "activation_amax_field": activation_percentile if activation_log else None,
             "fp8_max": FP8_E4M3_MAX,
             "absmax_floor": _ABSMAX_FLOOR,
             "opset": config.opset,
@@ -767,6 +1006,11 @@ def _write_fp8_manifest(
         "activation_log_count": len(activation_log) if activation_log else 0,
         "activation_log": activation_log or [],
         "unmatched_weight_inits": unmatched_in_lookup or [],
+        "smoothquant_alpha": smoothquant_alpha,
+        "smoothquant_applied_count": len(smoothquant_log) if smoothquant_log else 0,
+        "smoothquant_skipped_count": len(smoothquant_skipped) if smoothquant_skipped else 0,
+        "smoothquant_log": smoothquant_log or [],
+        "smoothquant_skipped": smoothquant_skipped or [],
     }
     manifest_path = output_path.with_name(output_path.stem + "_manifest.json")
     manifest_path.write_text(

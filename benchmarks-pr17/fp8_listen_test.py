@@ -224,6 +224,12 @@ def main() -> None:
         "--only", choices=("both", "bf16", "fp8"), default="both",
         help="Skip one variant for debugging (default: both).",
     )
+    ap.add_argument(
+        "--fp8-tag", type=str, default="fp8",
+        help="Subfolder name for the fp8 variant under --out-dir "
+        "(default: 'fp8'). Use to preserve multiple FP8 formulations "
+        "side by side: 'fp8_sq_a05', 'fp8_absmax', etc.",
+    )
     args = ap.parse_args()
 
     prompts = PROMPTS if args.prompts is None else [PROMPTS[i] for i in args.prompts]
@@ -236,9 +242,14 @@ def main() -> None:
     for variant in ("bf16", "fp8"):
         if args.only != "both" and args.only != variant:
             continue
+        # Allow the fp8 variant to write to a custom subfolder so we
+        # can preserve multiple formulations side by side without the
+        # rename dance. bf16 always lands in 'bf16/' since there's only
+        # one reference.
+        subdir = variant if variant == "bf16" else args.fp8_tag
         print()
         print("=" * 60)
-        print(f"VARIANT: {variant}")
+        print(f"VARIANT: {variant}  (out subdir: {subdir})")
         print("=" * 60)
         records = _run_variant(
             variant,
@@ -247,7 +258,7 @@ def main() -> None:
             duration=args.duration,
             steps=args.steps,
             shift=args.shift,
-            out_dir=out_root / variant,
+            out_dir=out_root / subdir,
         )
         all_records[variant] = records
 

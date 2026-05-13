@@ -1,0 +1,23 @@
+{
+  "tag": "sq_a05_full",
+  "engine_size_mb": 4360.11706,
+  "cosine_sim_avg": 0.9708387479186058,
+  "max_abs_diff_peak": 6.6875,
+  "mean_abs_diff_avg": 0.17610036209225655,
+  "tick_latency_ms": {
+    "bf16_mean": 135.0043019745499,
+    "fp8_mean": 88.57963398098946,
+    "fp8_p10": 88.19169970229268,
+    "fp8_p90": 89.21699970960617
+  },
+  "speedup_vs_bf16": 1.5241009237351768,
+  "matmul_counts": {
+    "total_matmul_in_graph": 482,
+    "weight_quantized": 353,
+    "activation_qdq_pairs": 350,
+    "smoothquant_applied": 350,
+    "unmatched_weight_inits": 3
+  },
+  "smoothquant_alpha": 0.5,
+  "activation_percentile": "absmax"
+}

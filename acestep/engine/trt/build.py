@@ -315,6 +315,8 @@ def _patch_decoder_onnx_for_fp8(
     decoder_precision: str,
     calibration_npz: str,
     activation_absmax_json: str | None,
+    activation_percentile: str,
+    smoothquant_alpha: float,
     force: bool,
 ) -> dict[str, str]:
     """Insert FP8 QDQ into decoder ONNX(es) when decoder_precision='fp8_mixed'.
@@ -356,6 +358,8 @@ def _patch_decoder_onnx_for_fp8(
                 bf16_onnx_path=patched[key],
                 calibration_npz_path=cal_path,
                 activation_absmax_json_path=amax_path,
+                activation_percentile=activation_percentile,
+                smoothquant_alpha=smoothquant_alpha,
                 force=force,
             )
         )
@@ -1095,6 +1099,25 @@ def main():
                              "weight DQ), which is what unlocks TRT's FP8 "
                              "GEMM tactics. When omitted, fp8_mixed stays "
                              "weight-only (W8A16).")
+    single.add_argument("--activation-percentile",
+                        choices=("absmax", "p99", "p99_9", "p99_99"),
+                        default="absmax",
+                        help="Which activation amax field drives the W8A8 "
+                             "scale. 'absmax' is the literal max (preserves "
+                             "outlier signal); percentile fields clip the "
+                             "top X%% of activation values — useful only if "
+                             "the model is robust to outlier clipping, which "
+                             "DiTs typically are not.")
+    single.add_argument("--smoothquant-alpha", type=float, default=0.0,
+                        help="SmoothQuant migration strength in [0, 1]. "
+                             "0.0 (default) disables SmoothQuant. ~0.5 is the "
+                             "standard recommendation: weight rows get "
+                             "multiplied by per-input-channel s, activation "
+                             "gets a Mul by 1/s upstream. Pre-conditions "
+                             "activations so per-tensor FP8 quant becomes "
+                             "accurate. Recommended when W8A8 quality is "
+                             "limited by outlier-prone Linears (mlp.down_proj "
+                             "in this DiT).")
     single.add_argument("--decoder-refit",
                         action=argparse.BooleanOptionalAction, default=True,
                         help="Build refit-enabled decoder for LoRA "
@@ -1197,6 +1220,8 @@ def _run_all(args, project_root, onnx_dir, env):
             decoder_precision=decoder_precision,
             calibration_npz=args.calibration_npz,
             activation_absmax_json=args.activation_absmax_json,
+            activation_percentile=args.activation_percentile,
+            smoothquant_alpha=args.smoothquant_alpha,
             force=args.force_onnx,
         )
     else:
@@ -1314,6 +1339,8 @@ def _run_single(args, project_root, onnx_dir, env):
         decoder_precision=decoder_precision,
         calibration_npz=args.calibration_npz,
         activation_absmax_json=args.activation_absmax_json,
+        activation_percentile=args.activation_percentile,
+        smoothquant_alpha=args.smoothquant_alpha,
         force=args.force_onnx,
     )
 

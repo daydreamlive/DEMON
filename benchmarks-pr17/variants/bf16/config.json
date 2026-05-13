@@ -1,0 +1,16 @@
+{
+  "tag": "bf16",
+  "description": "bf16 reference engine. No quantization. The cosine and speedup metrics below are 1.0/1.0 by definition — this is what every FP8 variant is compared against.",
+  "cli_args": {
+    "smoothquant_alpha": 0.0,
+    "outlier_skip_ratio": 0.0,
+    "percentile": "n/a",
+    "w8a8": false,
+    "decoder_precision": "bf16_mixed"
+  },
+  "reproduce": {
+    "build": "python -m acestep.engine.trt.build --checkpoint acestep-v15-xl-turbo --max-duration 60 --batch-max 4 --decoder --decoder-precision bf16_mixed --skip-vae",
+    "listen": "python benchmarks-pr17/fp8_listen_test.py --duration 30 --only bf16"
+  },
+  "source_engine": "C:/Users/ryanf/.daydream-scope/models/demon/trt_engines/decoder_xl-turbo_mixed_refit_b4_60s/decoder_xl-turbo_mixed_refit_b4_60s.engine"
+}
