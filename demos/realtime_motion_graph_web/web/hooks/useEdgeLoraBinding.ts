@@ -161,11 +161,16 @@ export function useEdgeLoraBinding(): void {
       const blendChanged = blend !== lastBlend;
       if (!pairChanged && !blendChanged) return;
 
-      applyMobileRightEdge(blend, a, b);
-      fanOutBlend(blend, a, b);
+      // Latch BEFORE the writes — fanOutBlend's setStrength calls fire
+      // useLoraStore subscribers synchronously, re-entering apply(). If
+      // the latch is still stale, the guard above won't short-circuit
+      // and we recurse until the stack blows.
       lastBlend = blend;
       lastA = a;
       lastB = b;
+
+      applyMobileRightEdge(blend, a, b);
+      fanOutBlend(blend, a, b);
     };
 
     apply();
