@@ -25,6 +25,10 @@ _log = logging.getLogger(__name__)
 # tick rate, first-latent latency) at INFO level. Off by default because
 # a continuous node ticks at ~100Hz and that would flood the logs.
 _TRACE = os.environ.get("ACESTEP_BRIDGE_TRACE", "").lower() in ("1", "true", "yes")
+if _TRACE:
+    # Self-promote our logger so the trace records reach handlers even
+    # when the host (e.g. Scope) configures the root level at WARNING.
+    _log.setLevel(logging.INFO)
 
 
 def _get_playhead_seconds() -> float | None:
