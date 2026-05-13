@@ -263,6 +263,38 @@ def _make_scope_node_class(acestep_cls):
         def get_definition(cls) -> ScopeNodeDefinition:
             return cls._scope_defn
 
+        def shutdown(self) -> None:
+            # Scope's PipelineManager caches the BridgedNode instance across
+            # Stop/Run cycles, so ``_latched_inputs`` survives session
+            # boundaries by default. For ACEStep that means the previous
+            # session's ModelHandle/VAE/CLIP — and the ~30 GB ModelContext
+            # they reference — stay pinned until something overwrites them.
+            # When the new session's LoadModel.execute() then allocates a
+            # fresh ModelContext, both copies coexist on the GPU until the
+            # downstream latches get rebound, which on a 32 GB card OOMs
+            # before that swap happens.
+            #
+            # Releasing the latch references here lets Python collect the
+            # old context before the new session starts; we also drop the
+            # internal pipeline reference on StreamDenoise (its
+            # ``_pipeline`` likewise holds the model) and force a
+            # ``torch.cuda.empty_cache`` so the freed memory is visible to
+            # the next allocation.
+            self._latched_inputs.clear()
+            pipeline = getattr(self._ace_instance, "_pipeline", None)
+            if pipeline is not None:
+                self._ace_instance._pipeline = None
+            try:
+                import gc
+
+                import torch
+
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+
         def execute(self, inputs: dict[str, Any], **kwargs) -> dict[str, Any]:
             if inputs:
                 self._latched_inputs.update(inputs)
