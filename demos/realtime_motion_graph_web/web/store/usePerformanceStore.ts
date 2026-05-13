@@ -334,6 +334,13 @@ interface PerformanceState {
    *  flips it true. Drives the "drag to start" affordance and gates
    *  the side-rail tutorial hints. */
   remixStarted: boolean;
+  /** One-shot flag: when true, the next firing of the denoise_session_gate
+   *  in useStartSession / useFixtureSwap is skipped and the flag is
+   *  cleared. Set by the import path (applySessionState) so that a
+   *  shared / saved / pasted session lands with the sharer's denoise
+   *  value preserved instead of being snapped to 0 by the onboarding
+   *  cue. Fresh sessions leave this false and get the normal gate. */
+  skipNextDenoiseGate: boolean;
 
   /** DCW (wavelet-domain post-step correction) non-numeric state. The
    * numeric knobs (dcw_scaler, dcw_high_scaler, dcw_mult_blend,
@@ -410,6 +417,7 @@ interface PerformanceState {
   setPaused: (p: boolean) => void;
   togglePause: () => void;
   setRemixStarted: (b: boolean) => void;
+  setSkipNextDenoiseGate: (b: boolean) => void;
   /** Run a visual-only "slide to zero" demo on `param`. Seeds
    *  `sliderDisplayOverride[param] = fromValue` and tweens it down to 0
    *  over `durationMs` using a cubic ease-out, then deletes the key so
@@ -506,6 +514,7 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   kiosk: false,
   paused: false,
   remixStarted: false,
+  skipNextDenoiseGate: false,
 
   dcwEnabled: true,
   dcwMode: "double",
@@ -620,6 +629,7 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   setPaused: (p) => set({ paused: p }),
   togglePause: () => set((s) => ({ paused: !s.paused })),
   setRemixStarted: (b) => set({ remixStarted: b }),
+  setSkipNextDenoiseGate: (b) => set({ skipNextDenoiseGate: b }),
   animateSliderDisplayFrom: (param, fromValue, durationMs) => {
     // Cancel any in-flight smoothing or prior demo tween for this param.
     cancelTween(param);

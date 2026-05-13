@@ -228,10 +228,21 @@ export function useStartSession() {
     // user to dial it back up. controls.denoise in config.json seeds the
     // initial fresh-load value (only applyConfig() at module load sees
     // it); later sessions need this explicit reset to restore the gate.
+    //
+    // skipNextDenoiseGate is a one-shot opt-out: the import path
+    // (applySessionState in demon-public-demo's lib/sessions/client.ts)
+    // sets it after writing the sharer's sliderTargets, so a session
+    // started from a shared / saved / pasted state plays from frame 1 at
+    // the imported denoise instead of being snapped to 0 by the
+    // onboarding cue. Consumed-and-cleared regardless of gate.enabled so
+    // the flag never survives past one session start.
+    //
     // remixStarted always resets so the affordance shows again.
     const perfState = usePerformanceStore.getState();
     const gate = getConfig().denoise_session_gate;
-    if (gate.enabled) {
+    const skipGate = perfState.skipNextDenoiseGate;
+    if (skipGate) perfState.setSkipNextDenoiseGate(false);
+    if (gate.enabled && !skipGate) {
       const prevDenoise = perfState.sliderTargets["denoise"] ?? 0;
       perfState.setSliderDirect("denoise", 0);
       perfState.animateSliderDisplayFrom("denoise", prevDenoise, gate.glide_ms);

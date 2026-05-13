@@ -171,9 +171,17 @@ export function useFixtureSwap() {
       // shows again; side-rail hints stay suppressed until the user
       // drags the top ribbon up. Shares config with useStartSession so
       // one knob controls both Play and swap.
+      //
+      // skipNextDenoiseGate is the same one-shot opt-out used by
+      // useStartSession: a mid-session Remix-onto-running-engine flow
+      // (LibraryPanel handleRemix → applySessionState → setFixture)
+      // sets the flag before setFixture so the imported denoise survives
+      // the swap. Consumed-and-cleared regardless of gate.enabled.
       const perfState = usePerformanceStore.getState();
       const gate = getConfig().denoise_session_gate;
-      if (gate.enabled) {
+      const skipGate = perfState.skipNextDenoiseGate;
+      if (skipGate) perfState.setSkipNextDenoiseGate(false);
+      if (gate.enabled && !skipGate) {
         const prevDenoise = perfState.sliderTargets["denoise"] ?? 0;
         perfState.setSliderDirect("denoise", 0);
         perfState.animateSliderDisplayFrom("denoise", prevDenoise, gate.glide_ms);
