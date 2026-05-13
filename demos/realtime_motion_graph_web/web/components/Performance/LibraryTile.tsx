@@ -38,10 +38,24 @@ function LoraRow({ id, name }: RowProps) {
   const value = typeof strength === "number" ? strength : fallbackStrength;
   const enable = useLoraStore((s) => s.enable);
   const disable = useLoraStore((s) => s.disable);
+  // Gate the enable/disable pill during the session-start race window.
+  // Between `useStartSession`'s buildConfig snapshot of `enabled_loras`
+  // and the WS reaching readyState=OPEN, sendEnableLora/sendDisableLora
+  // silently drop (protocol.ts gates on OPEN) and `useSessionStore.remote`
+  // is still null — so a click would update the local store but never
+  // reach the engine, and the user would need to disable+re-enable after
+  // ready to recover the intended state. status='idle' is fine: toggles
+  // are picked up by buildConfig on the next click-play. status='ready'
+  // is fine: send path works normally. Lock specifically during the
+  // in-flight start.
+  const togglesLocked = useSessionStore(
+    (s) => s.status === "loading-fixture" || s.status === "connecting",
+  );
 
   const trackRef = useRef<HTMLDivElement | null>(null);
 
   function toggle() {
+    if (togglesLocked) return;
     const remote = useSessionStore.getState().remote;
     if (enabled) {
       disable(id);
@@ -114,12 +128,21 @@ function LoraRow({ id, name }: RowProps) {
         className="lora-switch"
         role="switch"
         aria-checked={enabled}
+        aria-disabled={togglesLocked}
+        disabled={togglesLocked}
         onClick={toggle}
-        data-dd-tooltip={enabled ? "Disable" : "Enable"}
+        data-dd-tooltip={
+          togglesLocked ? "Connecting…" : enabled ? "Disable" : "Enable"
+        }
       >
         <span className="lora-switch-thumb" aria-hidden="true" />
       </button>
-      <span className="lora-row-name" title={id} onClick={toggle}>
+      <span
+        className="lora-row-name"
+        title={id}
+        onClick={toggle}
+        data-locked={togglesLocked || undefined}
+      >
         {name}
       </span>
       <div className="lora-strength">

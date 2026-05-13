@@ -1311,6 +1311,30 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   outline: 1px dashed currentColor;
   outline-offset: 2px;
 }
+/* During session-start (`status` in {loading-fixture, connecting}) the
+   pill silently drops sendEnableLora/sendDisableLora because the WS
+   isn't OPEN yet. LibraryTile sets disabled+aria-disabled on the
+   button and data-locked on the name span; visually dim them so the
+   operator gets immediate "wait" feedback instead of clicking a dead
+   control. The hover-color change cascade is overridden so it doesn't
+   look interactive while locked. */
+.lora-switch:disabled,
+.lora-switch[aria-disabled="true"] {
+  cursor: wait;
+  opacity: 0.45;
+}
+.lora-switch:disabled:hover,
+.lora-switch[aria-disabled="true"]:hover {
+  border-color: var(--frame-line);
+}
+.lora-switch:disabled:hover .lora-switch-thumb,
+.lora-switch[aria-disabled="true"]:hover .lora-switch-thumb {
+  background: var(--text-dim);
+}
+.lora-row-name[data-locked] {
+  cursor: wait;
+  opacity: 0.55;
+}
 
 /* Horizontal strength slider.  Spans the full row width below the
    switch+name line, giving the operator a wide drag surface without
