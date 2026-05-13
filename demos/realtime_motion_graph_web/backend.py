@@ -12,6 +12,7 @@ through :class:`.pipeline.PipelineRunner`, with:
 """
 
 import json
+import os
 import socket
 import struct
 import sys
@@ -338,6 +339,31 @@ def handle_client(
     # all the way up to that ceiling — picking the smallest-fitting
     # engine happens below in available_trt_engines().
     max_seconds = max_profile_duration_s()
+    # Operator-side cap on the largest profile this pod will load.
+    # On a 32 GB card, the 240 s decoder + vae_encode pair plus the
+    # resident allocators (text encoder, dreamvae, LUFS buffers, rcfg
+    # state) leave single-digit MiB of headroom and the next 20 MiB
+    # scratch trips the allocator. Setting RTMG_TRT_PROFILE_CAP_S=120
+    # caps both the initial profile pick and every later
+    # ensure_profile() swap (since the new waveform reuses this same
+    # ceiling on swap_source — see the ``new_wf[:, :int(max_seconds *
+    # SAMPLE_RATE)]`` clip in apply_swap_if_pending). Trades support for
+    # longer uploads against VRAM headroom.
+    cap_env = os.environ.get("RTMG_TRT_PROFILE_CAP_S")
+    if cap_env:
+        try:
+            cap_s = float(cap_env)
+            if cap_s > 0 and cap_s < max_seconds:
+                print(
+                    f"[Server] RTMG_TRT_PROFILE_CAP_S={cap_s:.0f}s active "
+                    f"(profile ceiling was {max_seconds:.0f}s)"
+                )
+                max_seconds = cap_s
+        except ValueError:
+            print(
+                f"[Server] WARNING: ignoring non-numeric "
+                f"RTMG_TRT_PROFILE_CAP_S={cap_env!r}"
+            )
     waveform = waveform[:, :int(max_seconds * SAMPLE_RATE)]
     pool = 1920 * 5
     rem = waveform.shape[-1] % pool
