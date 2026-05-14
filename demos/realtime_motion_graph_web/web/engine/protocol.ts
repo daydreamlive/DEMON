@@ -267,6 +267,22 @@ export class RemoteBackend extends EventTarget {
             this.dispatchEvent(
               new CustomEvent("params", { detail: msg.params }),
             );
+          } else if (msg.type === "params_echo") {
+            // Echo of raw knob values applied by the MCP control bus;
+            // useMcpMirror writes these into the perf/lora stores so the
+            // browser's UI moves the sliders to match.
+            this.dispatchEvent(
+              new CustomEvent("params_echo", { detail: msg.raw }),
+            );
+          } else if (msg.type === "prompt_blend_echo") {
+            // Same shape as params_echo but for the dedicated prompt-
+            // blend slider, which doesn't ride the generic params
+            // channel. useMcpMirror mirrors this through setSlider so
+            // the Smooth tween eases the value and usePromptBlendSync
+            // ships the tweened sequence back to the server.
+            this.dispatchEvent(
+              new CustomEvent("prompt_blend_echo", { detail: msg.value }),
+            );
           } else if (msg.type === "prompt_applied") {
             this.dispatchEvent(
               new CustomEvent("prompt_applied", { detail: msg.tags }),

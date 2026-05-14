@@ -311,6 +311,11 @@ def _stub_handle_client(ws):
 def main():
     host = "0.0.0.0"
     port = 1318  # single port: serves both HTTP and WebSocket
+    # Control bus: a tiny HTTP server the demo's onboard MCP server hits
+    # to drive an already-running session. Bound to localhost-only by
+    # default; override with --control-host / --control-port.
+    control_host = "127.0.0.1"
+    control_port = 1319
     accel = "tensorrt"  # decoder + vae backend; overridden by --accel
     checkpoint = "acestep-v15-turbo"  # DiT variant; overridden by --checkpoint
 
@@ -362,6 +367,13 @@ def main():
         idx = args.index("--checkpoint")
         checkpoint = args[idx + 1]
         checkpoint = _CHECKPOINT_ALIASES.get(checkpoint, checkpoint)
+    if "--control-host" in args:
+        idx = args.index("--control-host")
+        control_host = args[idx + 1]
+    if "--control-port" in args:
+        idx = args.index("--control-port")
+        control_port = int(args[idx + 1])
+    control_disabled = "--no-control" in args
 
     kiosk = "--kiosk" in args
     default_mode = "graph"
@@ -395,6 +407,22 @@ def main():
                 vae_backend=vae_accel,
                 checkpoint=checkpoint,
                 offload_text_encoder=offload_text_encoder,
+            )
+
+    # Start the MCP control bus FIRST so registry registrations from the
+    # WS handler land in an already-listening HTTP server. Skipped in
+    # --no-backend mode (no sessions to register) and on --no-control.
+    if not no_backend and not control_disabled:
+        from . import control_http
+        try:
+            control_http.start_control_server(control_host, control_port)
+            print(
+                f"[Server] MCP control bus on http://{control_host}:{control_port}",
+            )
+        except OSError as exc:
+            print(
+                f"[Server] WARNING: control bus failed to bind "
+                f"{control_host}:{control_port}: {exc}",
             )
 
     print(f"[Server] Starting HTTP+WS on :{port}")

@@ -10,6 +10,7 @@ import { useFixtureSwap } from "@/hooks/useFixtureSwap";
 import { useIdleReset } from "@/hooks/useIdleReset";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
+import { useMcpMirror } from "@/hooks/useMcpMirror";
 import { useMidi } from "@/hooks/useMidi";
 import { useParamSync } from "@/hooks/useParamSync";
 import { usePromptBlendSync } from "@/hooks/usePromptBlendSync";
@@ -73,6 +74,7 @@ export function PerformanceShell() {
   usePromptBlendSync();
   useRefSourceAcks("timbre");
   useRefSourceAcks("structure");
+  useMcpMirror();
   const config = useConfig();
   useIdleReset(config.reset_seconds);
 

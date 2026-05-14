@@ -238,6 +238,78 @@ uv run python -m scripts.precompute_fixture_sidecars --only \
 After editing, upload the regenerated `<name>.sidecar.json` and
 `<name>.sidecar.safetensors` pair back to the HF dataset.
 
+## Onboard MCP server (drive the demo from an LLM)
+
+`mcp_server.py` is a stdio MCP server that exposes every user-facing
+demo action — prompt, knobs, LoRA enable/disable, timbre/structure
+refs, source swap — as an MCP tool. Useful for letting Claude Code (or
+any MCP client) drive the demo for automated testing.
+
+How it works:
+
+1. The user opens the demo in their browser as usual. The backend
+   registers that session in a process-global registry and starts the
+   control bus, a small HTTP server on `127.0.0.1:1319`.
+2. The MCP server speaks HTTP to the control bus. It does **not** open
+   its own WebSocket and does **not** start a separate GPU session, so
+   running it alongside a browser tab is free.
+3. Every command the MCP sends is dispatched through the same handler
+   as the browser's own WebSocket frames. Acks (`prompt_applied`,
+   `lora_catalog`, `timbre_set`, `swap_ready`, etc.) flow back to the
+   browser's WS, so the front-end UI mirrors MCP-driven changes
+   automatically. The new `params_echo` message handles knob changes
+   (see `useMcpMirror`).
+
+Run the backend the usual way:
+
+```bash
+uv run python -u -m demos.realtime_motion_graph_web.run
+```
+
+then point Claude Code at the MCP server:
+
+```jsonc
+{
+  "mcpServers": {
+    "demon": {
+      "command": "uv",
+      "args": [
+        "run", "python", "-u",
+        "-m", "demos.realtime_motion_graph_web.mcp_server"
+      ],
+      "cwd": "C:/_dev/projects/DEMON"
+    }
+  }
+}
+```
+
+Env-var overrides:
+
+- `DEMON_HOST` / `DEMON_PORT` — backend's main HTTP+WS port
+  (default `127.0.0.1:1318`).
+- `DEMON_CONTROL_HOST` / `DEMON_CONTROL_PORT` — control bus
+  (default `127.0.0.1:1319`).
+
+Server-side flags:
+
+- `--control-host <host>` — bind the control bus to a non-localhost
+  interface (use sparingly: this lets remote clients write into a live
+  session).
+- `--control-port <port>` — override the control port (default 1319).
+- `--no-control` — disable the control bus entirely.
+
+Available tools: `list_sessions`, `session_state`, `list_fixtures`,
+`list_loras`, `list_knobs`, `set_prompt`, `set_prompt_blend`,
+`set_knob`, `set_knobs`, `get_knob`, `enable_lora`, `disable_lora`,
+`set_timbre_strength`, `set_timbre_fixture`, `set_timbre_audio`,
+`clear_timbre`, `set_structure_fixture`, `set_structure_audio`,
+`clear_structure`, `swap_to_fixture`, `swap_to_audio`. Most tools take
+an optional `session_id` parameter; they default to the
+most-recently-started session if you omit it.
+
+Open the browser tab first — the MCP will refuse to act when there's
+no live session to attach to.
+
 ## Browser notes
 
 - **Web Audio**: an `AudioWorkletNode` drives a shared PCM buffer that

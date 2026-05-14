@@ -63,6 +63,9 @@ dependencies = [
     "PyWavelets>=1.5",
     "setuptools<81",  # pytorch_wavelets uses pkg_resources, removed in setuptools 81
     "onnxscript>=0.7.0",
+    # MCP SDK for the realtime motion-graph demo's onboard MCP server,
+    # which exposes every user-facing demo action as an MCP tool.
+    "mcp>=1.0",
 ]
 
 [[tool.uv.index]]

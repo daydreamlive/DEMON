@@ -335,6 +335,15 @@ interface PerformanceState {
    *  the side-rail tutorial hints. */
   remixStarted: boolean;
 
+  /** One-shot opt-out for useFixtureSwap's perf.fixture subscription.
+   *  Set true before writing perf.fixture to suppress the next
+   *  user-initiated swap path (loadFixtureAudio → sendSwapSource).
+   *  useMcpMirror sets it when adopting an MCP-driven swap whose audio
+   *  was already swapped server-side, so the front-end only updates its
+   *  display state instead of re-running the swap. Consumed-and-cleared
+   *  by useFixtureSwap. */
+  skipNextFixtureSwap: boolean;
+
   /** DCW (wavelet-domain post-step correction) non-numeric state. The
    * numeric knobs (dcw_scaler, dcw_high_scaler, dcw_mult_blend,
    * dcw_mag_phase, dcw_soft_thresh) all live in sliderValues. */
@@ -410,6 +419,7 @@ interface PerformanceState {
   setPaused: (p: boolean) => void;
   togglePause: () => void;
   setRemixStarted: (b: boolean) => void;
+  setSkipNextFixtureSwap: (b: boolean) => void;
   /** Run a visual-only "slide to zero" demo on `param`. Seeds
    *  `sliderDisplayOverride[param] = fromValue` and tweens it down to 0
    *  over `durationMs` using a cubic ease-out, then deletes the key so
@@ -506,6 +516,7 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   kiosk: false,
   paused: false,
   remixStarted: false,
+  skipNextFixtureSwap: false,
 
   dcwEnabled: true,
   dcwMode: "double",
@@ -620,6 +631,7 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   setPaused: (p) => set({ paused: p }),
   togglePause: () => set((s) => ({ paused: !s.paused })),
   setRemixStarted: (b) => set({ remixStarted: b }),
+  setSkipNextFixtureSwap: (b) => set({ skipNextFixtureSwap: b }),
   animateSliderDisplayFrom: (param, fromValue, durationMs) => {
     // Cancel any in-flight smoothing or prior demo tween for this param.
     cancelTween(param);

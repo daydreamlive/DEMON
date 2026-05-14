@@ -184,6 +184,16 @@ export function useFixtureSwap() {
 
     const unsub = usePerformanceStore.subscribe((s, prev) => {
       if (s.fixture !== prev.fixture && s.fixture) {
+        // One-shot opt-out: useMcpMirror sets this when adopting an
+        // MCP-driven swap whose audio was already swapped server-side.
+        // Skip the load+sendSwapSource round-trip, just record the new
+        // fixture as already-swapped so a later real user pick still
+        // works. Consumed regardless of source.
+        if (s.skipNextFixtureSwap) {
+          usePerformanceStore.getState().setSkipNextFixtureSwap(false);
+          lastSwappedTo.current = s.fixture;
+          return;
+        }
         void run(s.fixture);
       }
     });

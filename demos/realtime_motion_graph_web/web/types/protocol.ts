@@ -66,6 +66,26 @@ export interface ParamsUpdateMessage {
   params: Record<string, number>;
 }
 
+// Emitted by the server when a `params` message came from the MCP control
+// bus rather than the browser's own WS — carries the raw knob values the
+// MCP set so the front-end can mirror them in the UI. The browser's own
+// param updates do NOT echo (the UI is already in sync with itself).
+export interface ParamsEchoMessage {
+  type: "params_echo";
+  raw: Record<string, number | string | boolean>;
+}
+
+// MCP-driven analogue of ParamsEchoMessage for the prompt_blend slider,
+// which travels over its own WS message (set_prompt_blend) rather than
+// the generic params payload. Same handshake: server skips the apply
+// when the message came from the control bus and mirrors the target
+// back to the browser so the smoothed slider tween can take it from
+// there.
+export interface PromptBlendEchoMessage {
+  type: "prompt_blend_echo";
+  value: number;
+}
+
 export interface PromptAppliedMessage {
   type: "prompt_applied";
   tags?: string;
@@ -82,6 +102,11 @@ export interface SwapReadyMessage {
   channels: number;
   key?: string;
   time_signature?: string;
+  /** Server echoes the requested source label (fixture name for known
+   *  fixtures, upload name for ad-hoc PCM). Populated for swaps driven
+   *  by the front-end as well as MCP — useMcpMirror reads this to keep
+   *  the fixture dropdown in sync with externally-triggered swaps. */
+  fixture_name?: string;
 }
 
 export interface SwapFailedMessage {
@@ -93,6 +118,8 @@ export type ServerJsonMessage =
   | ReadyMessage
   | ServerErrorMessage
   | ParamsUpdateMessage
+  | ParamsEchoMessage
+  | PromptBlendEchoMessage
   | PromptAppliedMessage
   | LoraCatalogMessage
   | SwapReadyMessage

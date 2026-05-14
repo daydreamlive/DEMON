@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "demon": {
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "-u",
+        "-m",
+        "demos.realtime_motion_graph_web.mcp_server"
+      ]
+    }
+  }
+}
