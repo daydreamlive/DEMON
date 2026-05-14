@@ -1,0 +1,90 @@
+[w8a8_absmax_cal2] engine: C:\_dev\projects\DEMON\benchmarks-pr17\variants\w8a8_absmax_cal2\engine.engine
+[w8a8_absmax_cal2] size: 4348.7 MB
+[w8a8_absmax_cal2] dtypes: { hidden_states: torch.bfloat16, timestep: torch.bfloat16, encoder_hidden_states: torch.bfloat16, context_latents: torch.bfloat16 }  out: torch.bfloat16
+[w8a8_absmax_cal2] warmup x5 ...
+[w8a8_absmax_cal2] profiling x30 ...
+
+========================================================================
+PROFILE: w8a8_absmax_cal2  (tick = 93.38 ms wall, 88.07 ms per-layer sum, 919 layers)
+========================================================================
+  Per-layer instrumentation sum: 88.07 ms (94% of tick)
+  Stream / launch overhead:      5.31 ms (6% of tick)
+
+  Category breakdown (of 88.07 ms layer time):
+    matmul           75.69 ms  ( 85.9% of layer time,  81.1% of tick)
+    elementwise      11.16 ms  ( 12.7% of layer time,  12.0% of tick)
+    other             1.21 ms  (  1.4% of layer time,   1.3% of tick)
+
+  Top 15 slowest layers:
+     0.687 ms  [matmul    ] node_linear_160_myl0_410
+     0.415 ms  [matmul    ] node_linear_358_myl0_914
+     0.414 ms  [matmul    ] node_linear_215_myl0_550
+     0.414 ms  [matmul    ] node_linear_105_myl0_270
+     0.413 ms  [matmul    ] node_linear_28_myl0_73
+     0.412 ms  [matmul    ] node_linear_61_myl0_157
+     0.403 ms  [matmul    ] node_linear_325_myl0_830
+     0.402 ms  [matmul    ] node_linear_270_myl0_690
+     0.402 ms  [matmul    ] node_linear_259_myl0_662
+     0.402 ms  [matmul    ] node_linear_248_myl0_634
+     0.402 ms  [matmul    ] node_linear_336_myl0_858
+     0.402 ms  [matmul    ] node_linear_347_myl0_886
+     0.402 ms  [matmul    ] node_linear_314_myl0_802
+     0.402 ms  [matmul    ] node_linear_281_myl0_718
+     0.402 ms  [matmul    ] node_linear_127_myl0_326
+
+  Bandwidth analysis (rough):
+    Engine size:            4348.7 MB
+    Weight size estimate:   4131.3 MB (4.03 GB)
+    Tick time:             93.38 ms
+    Effective wt bw:          43.2 GB/s
+    RTX 5090 HBM3X peak:    1792.0 GB/s
+    Utilization:             2.4% of HBM peak
+
+[bf16] engine: C:\_dev\projects\DEMON\benchmarks-pr17\variants\bf16\engine.engine
+[bf16] size: 8376.8 MB
+[bf16] dtypes: { hidden_states: torch.bfloat16, timestep: torch.bfloat16, encoder_hidden_states: torch.bfloat16, context_latents: torch.bfloat16 }  out: torch.bfloat16
+[bf16] warmup x5 ...
+[bf16] profiling x30 ...
+
+========================================================================
+PROFILE: bf16  (tick = 139.73 ms wall, 135.45 ms per-layer sum, 757 layers)
+========================================================================
+  Per-layer instrumentation sum: 135.45 ms (97% of tick)
+  Stream / launch overhead:      4.28 ms (3% of tick)
+
+  Category breakdown (of 135.45 ms layer time):
+    matmul          112.53 ms  ( 83.1% of layer time,  80.5% of tick)
+    elementwise      21.05 ms  ( 15.5% of layer time,  15.1% of tick)
+    other             1.87 ms  (  1.4% of layer time,   1.3% of tick)
+
+  Top 15 slowest layers:
+     1.387 ms  [matmul    ] node_linear_38+node_linear_37_myl0_83
+     1.378 ms  [matmul    ] node_linear_27+node_linear_26_myl0_60
+     1.375 ms  [matmul    ] node_linear_93+node_linear_92_myl0_198
+     1.374 ms  [matmul    ] node_linear_354+node_linear_353+node_linear_343+node_linear_342+nod...
+     1.374 ms  [matmul    ] node_linear_137+node_linear_136_myl0_290
+     1.373 ms  [matmul    ] node_linear_346+node_linear_345_myl0_727
+     1.373 ms  [matmul    ] node_linear_324+node_linear_323_myl0_681
+     1.373 ms  [matmul    ] node_linear_16+node_linear_15_myl0_37
+     1.372 ms  [matmul    ] node_linear_313+node_linear_312_myl0_658
+     1.372 ms  [matmul    ] node_linear_335+node_linear_334_myl0_704
+     1.372 ms  [matmul    ] node_linear_357+node_linear_356_myl0_750
+     1.372 ms  [matmul    ] node_linear_126+node_linear_125_myl0_267
+     1.364 ms  [matmul    ] node_linear_302+node_linear_301_myl0_635
+     1.362 ms  [matmul    ] node_linear_148+node_linear_147_myl0_313
+     1.362 ms  [matmul    ] node_linear_170+node_linear_169_myl0_359
+
+  Bandwidth analysis (rough):
+    Engine size:            8376.8 MB
+    Weight size estimate:   7957.9 MB (7.77 GB)
+    Tick time:             139.73 ms
+    Effective wt bw:          55.6 GB/s
+    RTX 5090 HBM3X peak:    1792.0 GB/s
+    Utilization:             3.1% of HBM peak
+
+========================================================================
+CROSS-ENGINE COMPARISON
+========================================================================
+  w8a8_absmax_cal2         :   93.38 ms  (4349 MB)
+  bf16                     :  139.73 ms  (8377 MB)
+  w8a8_absmax_cal2 speedup vs bf16: 1.50x

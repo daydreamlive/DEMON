@@ -1,0 +1,23 @@
+{
+  "tag": "w8a8_absmax_cal2_attn_g500",
+  "engine_size_mb": 4317.236812,
+  "cosine_sim_avg": 0.9303974062204361,
+  "max_abs_diff_peak": 6.78125,
+  "mean_abs_diff_avg": 0.28324320912361145,
+  "tick_latency_ms": {
+    "bf16_mean": 137.18333397991955,
+    "fp8_mean": 83.37579800747335,
+    "fp8_p10": 82.57880015298724,
+    "fp8_p90": 84.38199991360307
+  },
+  "speedup_vs_bf16": 1.645361570843654,
+  "matmul_counts": {
+    "total_matmul_in_graph": 482,
+    "weight_quantized": 353,
+    "activation_qdq_pairs": 193,
+    "smoothquant_applied": 0,
+    "unmatched_weight_inits": 3
+  },
+  "smoothquant_alpha": 0.0,
+  "activation_percentile": "absmax"
+}

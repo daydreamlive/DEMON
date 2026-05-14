@@ -38,6 +38,17 @@ if __name__ == "__main__":
     ap.add_argument("--smoothquant-alpha", type=float, default=0.0,
                     help="SmoothQuant migration strength (0.0 = off, "
                          "0.5 = standard).")
+    ap.add_argument("--quantize-attention", action="store_true",
+                    help="Also insert Q-DQ on the 128 dynamic-input "
+                         "attention MatMuls so TRT picks FP8 GEMM tactics "
+                         "for them too (currently bf16).")
+    ap.add_argument("--attention-softmax-max", type=float, default=1.05,
+                    help="Per-tensor activation amax for softmax-output "
+                         "operands (default 1.05; range is [0,1]).")
+    ap.add_argument("--attention-generic-max", type=float, default=10.0,
+                    help="Per-tensor activation amax for non-softmax "
+                         "attention operands (scaled Q, K, V views). "
+                         "Default 10.0.")
     args = ap.parse_args()
 
     amax = AMAX_JSON if args.w8a8 else None
@@ -47,6 +58,9 @@ if __name__ == "__main__":
         activation_percentile=args.percentile,
         activation_outlier_skip_ratio=args.outlier_skip_ratio,
         smoothquant_alpha=args.smoothquant_alpha,
+        quantize_attention=args.quantize_attention,
+        attention_softmax_max=args.attention_softmax_max,
+        attention_generic_max=args.attention_generic_max,
         force=True,
     )
     print(f"Patched ONNX: {out}")

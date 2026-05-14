@@ -1,0 +1,17 @@
+{
+  "tag": "sq_a05_skip5_cal2",
+  "description": "SmoothQuant \u03b1=0.5 + skip=5 + cal2. Tests whether cal2 rescues SQ spectral fidelity.",
+  "cli_args": {
+    "smoothquant_alpha": 0.5,
+    "outlier_skip_ratio": 5.0,
+    "percentile": "absmax",
+    "w8a8": true
+  },
+  "reproduce": {
+    "patch": "python benchmarks-pr17/run_fp8_patch.py --w8a8 --percentile absmax --outlier-skip-ratio 5.0 --smoothquant-alpha 0.5",
+    "build": "python -m acestep.engine.trt.build --checkpoint acestep-v15-xl-turbo --max-duration 60 --batch-max 4 --decoder --decoder-precision fp8_mixed --activation-absmax-json C:\\Users\\ryanf\\.daydream-scope\\models\\demon\\calibration\\decoder_xl_fp8\\activation_absmax.json --smoothquant-alpha 0.5 --activation-percentile absmax --skip-vae --skip-onnx --force-rebuild",
+    "listen": "python benchmarks-pr17/fp8_listen_test.py --duration 30 --only fp8 --fp8-tag sq_a05_skip5_cal2"
+  },
+  "calibration_npz": "C:\\Users\\ryanf\\.daydream-scope\\models\\demon\\calibration\\decoder_xl_fp8\\calibration.npz",
+  "activation_absmax_json": "C:\\Users\\ryanf\\.daydream-scope\\models\\demon\\calibration\\decoder_xl_fp8\\activation_absmax.json"
+}

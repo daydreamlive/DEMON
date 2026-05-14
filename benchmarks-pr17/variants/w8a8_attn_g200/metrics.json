@@ -1,0 +1,23 @@
+{
+  "tag": "w8a8_attn_g200",
+  "engine_size_mb": 4317.192236,
+  "cosine_sim_avg": 0.9377934113144875,
+  "max_abs_diff_peak": 7.359375,
+  "mean_abs_diff_avg": 0.2719182763248682,
+  "tick_latency_ms": {
+    "bf16_mean": 135.1427759975195,
+    "fp8_mean": 82.50443398021162,
+    "fp8_p10": 81.96259988471866,
+    "fp8_p90": 83.15999992191792
+  },
+  "speedup_vs_bf16": 1.6380062195194622,
+  "matmul_counts": {
+    "total_matmul_in_graph": 482,
+    "weight_quantized": 353,
+    "activation_qdq_pairs": 193,
+    "smoothquant_applied": 0,
+    "unmatched_weight_inits": 3
+  },
+  "smoothquant_alpha": 0.0,
+  "activation_percentile": "absmax"
+}

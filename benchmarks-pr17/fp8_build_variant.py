@@ -74,7 +74,10 @@ def _run(cmd: list[str], *, cwd: Path = REPO) -> None:
 
 
 def _patch(*, smoothquant_alpha: float, outlier_skip_ratio: float,
-           percentile: str, w8a8: bool) -> None:
+           percentile: str, w8a8: bool,
+           quantize_attention: bool = False,
+           attention_softmax_max: float = 1.05,
+           attention_generic_max: float = 10.0) -> None:
     cmd = [
         sys.executable, "benchmarks-pr17/run_fp8_patch.py",
     ]
@@ -85,6 +88,12 @@ def _patch(*, smoothquant_alpha: float, outlier_skip_ratio: float,
         "--outlier-skip-ratio", str(outlier_skip_ratio),
         "--smoothquant-alpha", str(smoothquant_alpha),
     ])
+    if quantize_attention:
+        cmd.extend([
+            "--quantize-attention",
+            "--attention-softmax-max", str(attention_softmax_max),
+            "--attention-generic-max", str(attention_generic_max),
+        ])
     _run(cmd)
 
 
@@ -292,6 +301,15 @@ def main() -> None:
                     help="Reuse the FP8 ONNX currently on disk (only do build+listen+archive).")
     ap.add_argument("--skip-build", action="store_true",
                     help="Reuse the engine currently on disk.")
+    ap.add_argument("--quantize-attention", action="store_true",
+                    help="Also Q-DQ the 128 dynamic-input attention MatMuls "
+                         "(Q*K^T and attn*V) so they run on FP8 GEMM tactics.")
+    ap.add_argument("--attention-softmax-max", type=float, default=1.05,
+                    help="Per-tensor activation amax for softmax-output "
+                         "operands (default 1.05).")
+    ap.add_argument("--attention-generic-max", type=float, default=10.0,
+                    help="Per-tensor activation amax for non-softmax "
+                         "attention operands (default 10.0).")
     args = ap.parse_args()
 
     cli_args = {
@@ -299,6 +317,9 @@ def main() -> None:
         "outlier_skip_ratio": args.outlier_skip_ratio,
         "percentile": args.percentile,
         "w8a8": not args.no_w8a8,
+        "quantize_attention": args.quantize_attention,
+        "attention_softmax_max": args.attention_softmax_max,
+        "attention_generic_max": args.attention_generic_max,
     }
 
     if not args.skip_patch:
@@ -307,6 +328,9 @@ def main() -> None:
             outlier_skip_ratio=args.outlier_skip_ratio,
             percentile=args.percentile,
             w8a8=cli_args["w8a8"],
+            quantize_attention=args.quantize_attention,
+            attention_softmax_max=args.attention_softmax_max,
+            attention_generic_max=args.attention_generic_max,
         )
 
     if not args.skip_build:

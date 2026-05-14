@@ -420,6 +420,9 @@ def patch_bf16_onnx_to_fp8(
     activation_percentile: str = "absmax",
     activation_outlier_skip_ratio: float = 0.0,
     smoothquant_alpha: float = 0.0,
+    quantize_attention: bool = False,
+    attention_softmax_max: float = 1.05,
+    attention_generic_max: float = 10.0,
 ) -> Path:
     """Patch a bf16 decoder ONNX with FP8 (E4M3FN).
 
@@ -453,6 +456,11 @@ def patch_bf16_onnx_to_fp8(
             "(external_data references are relative paths)."
         )
 
+    # Build a name->output_absmax map keyed by (transposed_shape, L2)
+    # for the attention quantization path. Populated from the same JSON
+    # as activation_lookup (each Linear record has output_absmax).
+    output_amax_lookup: dict[tuple, list[float]] = {}
+
     activation_lookup: dict[tuple, list[dict]] | None = None
     activation_meta: dict | None = None
     if activation_absmax_json_path is not None:
@@ -464,6 +472,16 @@ def patch_bf16_onnx_to_fp8(
             percentile_field=activation_percentile,
             outlier_skip_ratio=activation_outlier_skip_ratio,
         )
+        # Index Linear OUTPUT absmax by the same (onnx_shape, L2) key used
+        # for matching weights. Used by the attention quantization path.
+        for path, rec in activation_meta.get("linears", {}).items():
+            torch_shape = tuple(rec.get("weight_shape") or ())
+            if len(torch_shape) != 2:
+                continue
+            onnx_shape = (torch_shape[1], torch_shape[0])
+            l2_key = round(rec.get("weight_l2_bf16", 0.0), 3)
+            out_amax = rec.get("output_absmax", 0.0)
+            output_amax_lookup.setdefault((onnx_shape, l2_key), []).append(out_amax)
         n_skip = sum(
             1 for recs in activation_lookup.values()
             for r in recs if r["skip_activation_quant"]
@@ -836,6 +854,185 @@ def patch_bf16_onnx_to_fp8(
                 unmatched_in_lookup[:5],
             )
 
+    # ----------------------------------------------------------------
+    # Attention MatMul Q-DQ (dynamic-input matmuls: Q×K^T and attn×V).
+    # ----------------------------------------------------------------
+    attention_log: list[dict] = []
+    if quantize_attention:
+        # Build per-PyTorch-module output_absmax lookup from JSON.
+        linear_output_amax: dict[str, float] = {}
+        if activation_meta is not None:
+            for path, rec in activation_meta.get("linears", {}).items():
+                linear_output_amax[path] = rec.get("output_absmax", 0.0)
+
+        node_by_name = {n.name: n for n in g.node}
+        # Producer map: tensor name -> producer node (after our edits;
+        # DQ-rewritten inputs of Linear MatMuls show DequantizeLinear).
+        tensor_producer: dict[str, "onnx.NodeProto"] = {}
+        for nd in g.node:
+            for out in nd.output:
+                tensor_producer[out] = nd
+
+        # Collect dynamic-dynamic MatMul nodes (un-touched by the Linear
+        # weight DQ pass — both inputs come from the graph).
+        dyn_matmuls = []
+        for nd in g.node:
+            if nd.op_type != "MatMul" or len(nd.input) < 2:
+                continue
+            a, b = nd.input[0], nd.input[1]
+            ap = tensor_producer.get(a)
+            bp = tensor_producer.get(b)
+            if (ap is not None and ap.op_type == "DequantizeLinear") or \
+               (bp is not None and bp.op_type == "DequantizeLinear"):
+                continue
+            if a in inits or b in inits:
+                continue
+            dyn_matmuls.append(nd)
+
+        logger.info(
+            "Attention quantization: {} dynamic-input MatMuls to quantize",
+            len(dyn_matmuls),
+        )
+
+        # Trace producer chain backward to find a source Linear MatMul.
+        # Returns ``linear_path`` (PyTorch module path) and the chain
+        # ops we passed through (used to detect 1/sqrt(d_k) scaling and
+        # softmax-bounded outputs).
+        def _trace_to_source(tensor_name: str, max_hops: int = 6) -> dict:
+            """BFS up the producer graph from tensor_name."""
+            result = {"linear_path": None, "via_softmax": False, "scale_factor": 1.0,
+                      "chain_ops": []}
+            cur = tensor_name
+            for _hop in range(max_hops):
+                prod = tensor_producer.get(cur)
+                if prod is None:
+                    return result
+                result["chain_ops"].append(prod.op_type)
+                if prod.op_type == "Softmax":
+                    result["via_softmax"] = True
+                    return result
+                if prod.op_type == "MatMul":
+                    # Is this a Linear MatMul (input[1] was an init,
+                    # now a DQ output)?
+                    src_lin = matmul_to_linear_path.get(prod.name)
+                    if src_lin is not None:
+                        result["linear_path"] = src_lin
+                        return result
+                    # Otherwise it's another dynamic MatMul (rare in
+                    # this pattern); fall through.
+                if prod.op_type == "Mul":
+                    # Try to read the scalar multiplier (the OTHER input
+                    # that ISN'T the tensor we're tracing). Only apply
+                    # if it's a single-element constant. Otherwise just
+                    # walk through.
+                    for ip in prod.input:
+                        if ip == cur:
+                            continue
+                        if ip in inits:
+                            init = inits[ip]
+                            # Number of elements from the dims attribute.
+                            n_elem = 1
+                            for d in init.dims:
+                                n_elem *= d
+                            if n_elem != 1:
+                                # Per-channel or per-head scale — don't
+                                # apply globally; this case is rare for
+                                # the 1/sqrt(d_k) scaling pattern.
+                                continue
+                            import numpy as _np
+                            if init.data_type == int(onnx.TensorProto.BFLOAT16):
+                                v = torch.frombuffer(
+                                    bytearray(init.raw_data),
+                                    dtype=torch.bfloat16,
+                                ).to(torch.float32).item()
+                                result["scale_factor"] *= abs(v)
+                            elif init.data_type == int(onnx.TensorProto.FLOAT):
+                                v = float(_np.frombuffer(init.raw_data, dtype=_np.float32)[0])
+                                result["scale_factor"] *= abs(v)
+                # Walk to input[0] of the producer.
+                if not prod.input:
+                    return result
+                cur = prod.input[0]
+            return result
+
+        # Sanitize for new node/init names.
+        def _safe_attn(name: str) -> str:
+            return name.replace("/", "_").replace(":", "_").replace(".", "_")
+
+        # Group by tensor name and compute per-tensor amax via tracing.
+        attn_inputs_to_quantize: dict[str, dict] = {}
+        for nd in dyn_matmuls:
+            for slot, tensor_name in enumerate(nd.input[:2]):
+                trace = _trace_to_source(tensor_name)
+                if trace["via_softmax"]:
+                    amax = attention_softmax_max
+                    kind = "softmax"
+                elif trace["linear_path"] and trace["linear_path"] in linear_output_amax:
+                    out_amax = linear_output_amax[trace["linear_path"]]
+                    amax = out_amax * trace["scale_factor"]
+                    if amax <= 0.0:
+                        amax = attention_generic_max
+                        kind = "fallback_zero_amax"
+                    else:
+                        kind = f"traced({trace['linear_path']})"
+                else:
+                    amax = attention_generic_max
+                    kind = "fallback_no_trace"
+                entry = attn_inputs_to_quantize.setdefault(tensor_name, {
+                    "amax": 0.0,
+                    "kind": kind,
+                    "consumers": [],
+                    "chain": trace["chain_ops"],
+                })
+                if amax > entry["amax"]:
+                    entry["amax"] = amax
+                entry["consumers"].append((nd.name, slot))
+
+        for tensor_name, entry in attn_inputs_to_quantize.items():
+            amax = entry["amax"]
+            scale_val = amax / FP8_E4M3_MAX
+            tag = _safe_attn(tensor_name) + "_attn"
+
+            scale_name = f"{tag}_fp8_scale"
+            zp_name = f"{tag}_fp8_zp"
+            q_out = f"{tag}_fp8_q"
+            dq_out = f"{tag}_fp8_dq"
+            q_node_name = f"{tag}_QuantizeLinear"
+            dq_node_name = f"{tag}_DequantizeLinear"
+
+            new_inits.append(_make_scalar_scale_initializer(scale_name, scale_val))
+            new_inits.append(_make_scalar_fp8_zero_point_initializer(zp_name))
+            new_nodes.append(_make_q_node(
+                tensor_name, scale_name, zp_name, q_out,
+                node_name=q_node_name,
+            ))
+            new_nodes.append(_make_dq_node(
+                q_out, scale_name, zp_name, dq_out,
+                axis=-1,
+                node_name=dq_node_name,
+            ))
+
+            # Rewire each (matmul, slot) consumer.
+            for mm_name, slot in entry["consumers"]:
+                mm = node_by_name[mm_name]
+                if mm.input[slot] == tensor_name:
+                    mm.input[slot] = dq_out
+
+            attention_log.append({
+                "tensor": tensor_name,
+                "kind": entry["kind"],
+                "amax": amax,
+                "scale": scale_val,
+                "consumers": entry["consumers"],
+            })
+
+        logger.info(
+            "Attention Q-DQ pairs inserted: {} (softmax: {}, generic: {})",
+            len(attention_log),
+            sum(1 for r in attention_log if r["kind"] == "softmax"),
+            sum(1 for r in attention_log if r["kind"] == "generic"),
+        )
+
     # Extend the graph. Initializers can go in any order; node order
     # technically should be topo-sorted, but TRT 10.16's parser handles
     # any order so long as the DAG is well-formed. We prepend DQ nodes
@@ -946,6 +1143,9 @@ def patch_bf16_onnx_to_fp8(
         smoothquant_alpha=smoothquant_alpha,
         smoothquant_log=smoothquant_log,
         smoothquant_skipped=smoothquant_skipped_no_perchan,
+        attention_log=attention_log,
+        attention_softmax_max=attention_softmax_max if quantize_attention else None,
+        attention_generic_max=attention_generic_max if quantize_attention else None,
     )
 
     return output_path
@@ -968,6 +1168,9 @@ def _write_fp8_manifest(
     smoothquant_alpha: float = 0.0,
     smoothquant_log: list[dict] | None = None,
     smoothquant_skipped: list[str] | None = None,
+    attention_log: list[dict] | None = None,
+    attention_softmax_max: float | None = None,
+    attention_generic_max: float | None = None,
 ) -> None:
     """Persist FP8-build metadata for downstream tools (engine builder,
     LoRA refit). The manifest sits next to the patched ONNX.
@@ -1011,6 +1214,11 @@ def _write_fp8_manifest(
         "smoothquant_skipped_count": len(smoothquant_skipped) if smoothquant_skipped else 0,
         "smoothquant_log": smoothquant_log or [],
         "smoothquant_skipped": smoothquant_skipped or [],
+        "attention_quantized": bool(attention_log),
+        "attention_softmax_max": attention_softmax_max,
+        "attention_generic_max": attention_generic_max,
+        "attention_log_count": len(attention_log) if attention_log else 0,
+        "attention_log": attention_log or [],
     }
     manifest_path = output_path.with_name(output_path.stem + "_manifest.json")
     manifest_path.write_text(

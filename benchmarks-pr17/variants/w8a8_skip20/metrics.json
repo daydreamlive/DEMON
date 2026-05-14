@@ -1,0 +1,23 @@
+{
+  "tag": "w8a8_skip20",
+  "engine_size_mb": 4816.72622,
+  "cosine_sim_avg": 0.9687250554561615,
+  "max_abs_diff_peak": 7.578125,
+  "mean_abs_diff_avg": 0.1827434729784727,
+  "tick_latency_ms": {
+    "bf16_mean": 137.72158600389957,
+    "fp8_mean": 97.65442999079823,
+    "fp8_p10": 96.41699958592653,
+    "fp8_p90": 98.9519003778696
+  },
+  "speedup_vs_bf16": 1.4102953242047163,
+  "matmul_counts": {
+    "total_matmul_in_graph": 482,
+    "weight_quantized": 353,
+    "activation_qdq_pairs": 173,
+    "smoothquant_applied": 0,
+    "unmatched_weight_inits": 3
+  },
+  "smoothquant_alpha": 0.0,
+  "activation_percentile": "absmax"
+}

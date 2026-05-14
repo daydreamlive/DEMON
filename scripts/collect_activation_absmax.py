@@ -163,7 +163,20 @@ def main() -> None:
         # linears is small (~10 MB) and using CPU avoids GPU pressure
         # since these accumulators live for the whole capture run.
         per_chan_state: dict[str, torch.Tensor] = {}
+        # Output absmax for each Linear (used by the attention quantization
+        # path to derive scales for the post-Mul / post-View tensors
+        # feeding the attention bmm/baddbmm matmuls).
+        output_absmax_state: dict[str, float] = {n: 0.0 for n in linear_modules}
         hooks = []
+
+        def _make_output_hook(linear_name: str):
+            def _hook(module, inputs, output):
+                if not isinstance(output, torch.Tensor):
+                    return
+                m = float(output.detach().abs().float().max().item())
+                if m > output_absmax_state[linear_name]:
+                    output_absmax_state[linear_name] = m
+            return _hook
 
         def _make_hook(linear_name: str):
             def _hook(module, inputs):
@@ -220,6 +233,7 @@ def main() -> None:
 
         for name, mod in linear_modules.items():
             hooks.append(mod.register_forward_pre_hook(_make_hook(name)))
+            hooks.append(mod.register_forward_hook(_make_output_hook(name)))
 
         # Replay calibration data through the decoder.
         for k, arr in arrs.items():
@@ -268,6 +282,7 @@ def main() -> None:
                 "weight_shape": w_sig["shape"],
                 "weight_l2_bf16": w_sig["l2_bf16"],
                 "weight_head4_bf16": w_sig["head4_bf16"],
+                "output_absmax": output_absmax_state[name],
             }
 
         nonzero = sum(1 for r in records.values() if r["absmax"] > 0)

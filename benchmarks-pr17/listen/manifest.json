@@ -1,21 +1,22 @@
 {
   "seed": 42,
-  "duration": 30.0,
+  "duration": 60.0,
   "steps": 8,
   "shift": 3.0,
   "engines": {
-    "fp8": "decoder_xl-turbo_fp8_refit_b4_60s"
+    "bf16": "decoder_xl-turbo_mixed_refit_b4_60s",
+    "nvfp4": "decoder_xl-turbo_nvfp4_noskip_b4_60s"
   },
   "records": {
-    "fp8": [
+    "nvfp4": [
       {
         "tag": "dance",
         "seed": 42,
-        "text_s": 0.3972386000677943,
-        "diffuse_s": 0.46086049964651465,
-        "decode_s": 0.05693050008267164,
-        "total_s": 0.9579349998384714,
-        "wav_path": "C:\\_dev\\projects\\DEMON\\benchmarks-pr17\\listen\\sq_a07_skip10\\01_dance.wav",
+        "text_s": 0.38853130023926497,
+        "diffuse_s": 0.3686911999247968,
+        "decode_s": 0.05714390007779002,
+        "total_s": 0.8576227002777159,
+        "wav_path": "C:\\_dev\\projects\\DEMON\\benchmarks-pr17\\listen\\nvfp4_noskip\\01_dance.wav",
         "prompt": "dance music, four on the floor, kick drum, electronic, club, energetic synth bass, bright leads",
         "bpm": 128,
         "key": "F minor"
@@ -23,11 +24,11 @@
       {
         "tag": "jazz",
         "seed": 42,
-        "text_s": 0.06386449979618192,
-        "diffuse_s": 0.25102190021425486,
-        "decode_s": 0.04738399991765618,
-        "total_s": 0.40131179988384247,
-        "wav_path": "C:\\_dev\\projects\\DEMON\\benchmarks-pr17\\listen\\sq_a07_skip10\\02_jazz.wav",
+        "text_s": 0.05721160024404526,
+        "diffuse_s": 0.16583150019869208,
+        "decode_s": 0.046946399845182896,
+        "total_s": 0.30866000009700656,
+        "wav_path": "C:\\_dev\\projects\\DEMON\\benchmarks-pr17\\listen\\nvfp4_noskip\\02_jazz.wav",
         "prompt": "jazz piano trio, brushed drums, walking bass, late-night club",
         "bpm": 140,
         "key": "Bb major"
@@ -35,11 +36,11 @@
       {
         "tag": "ambient",
         "seed": 42,
-        "text_s": 0.0653546997345984,
-        "diffuse_s": 0.25383599987253547,
-        "decode_s": 0.04766419995576143,
-        "total_s": 0.4056655000895262,
-        "wav_path": "C:\\_dev\\projects\\DEMON\\benchmarks-pr17\\listen\\sq_a07_skip10\\03_ambient.wav",
+        "text_s": 0.0630065998993814,
+        "diffuse_s": 0.16485039982944727,
+        "decode_s": 0.04864860000088811,
+        "total_s": 0.3151584998704493,
+        "wav_path": "C:\\_dev\\projects\\DEMON\\benchmarks-pr17\\listen\\nvfp4_noskip\\03_ambient.wav",
         "prompt": "ambient electronic, slow evolving pads, glassy textures, no drums",
         "bpm": 80,
         "key": "C minor"
@@ -47,11 +48,11 @@
       {
         "tag": "metal",
         "seed": 42,
-        "text_s": 0.06277190009132028,
-        "diffuse_s": 0.25292429979890585,
-        "decode_s": 0.046554900240153074,
-        "total_s": 0.40269479993730783,
-        "wav_path": "C:\\_dev\\projects\\DEMON\\benchmarks-pr17\\listen\\sq_a07_skip10\\04_metal.wav",
+        "text_s": 0.06352229975163937,
+        "diffuse_s": 0.16072820033878088,
+        "decode_s": 0.047806800343096256,
+        "total_s": 0.30928249983116984,
+        "wav_path": "C:\\_dev\\projects\\DEMON\\benchmarks-pr17\\listen\\nvfp4_noskip\\04_metal.wav",
         "prompt": "metal, aggressive guitar riffs, fast double kick, growling vocals",
         "bpm": 180,
         "key": "E minor"
@@ -59,11 +60,11 @@
       {
         "tag": "orch",
         "seed": 42,
-        "text_s": 0.06455950019881129,
-        "diffuse_s": 0.25334150018170476,
-        "decode_s": 0.047365100122988224,
-        "total_s": 0.40463830018416047,
-        "wav_path": "C:\\_dev\\projects\\DEMON\\benchmarks-pr17\\listen\\sq_a07_skip10\\05_orch.wav",
+        "text_s": 0.06387259997427464,
+        "diffuse_s": 0.16168070025742054,
+        "decode_s": 0.04625759972259402,
+        "total_s": 0.3092268998734653,
+        "wav_path": "C:\\_dev\\projects\\DEMON\\benchmarks-pr17\\listen\\nvfp4_noskip\\05_orch.wav",
         "prompt": "classical orchestral, sweeping strings, brass, timpani",
         "bpm": 90,
         "key": "D major"
@@ -71,11 +72,11 @@
       {
         "tag": "folk",
         "seed": 42,
-        "text_s": 0.06570690032094717,
-        "diffuse_s": 0.25114249996840954,
-        "decode_s": 0.04637689981609583,
-        "total_s": 0.4030716000124812,
-        "wav_path": "C:\\_dev\\projects\\DEMON\\benchmarks-pr17\\listen\\sq_a07_skip10\\06_folk.wav",
+        "text_s": 0.06257970025762916,
+        "diffuse_s": 0.16687980014830828,
+        "decode_s": 0.04799899971112609,
+        "total_s": 0.3102541002444923,
+        "wav_path": "C:\\_dev\\projects\\DEMON\\benchmarks-pr17\\listen\\nvfp4_noskip\\06_folk.wav",
         "prompt": "acoustic folk, fingerpicked guitar, soft harmonica, brushes",
         "bpm": 100,
         "key": "G major"

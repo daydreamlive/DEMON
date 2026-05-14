@@ -1,0 +1,23 @@
+{
+  "tag": "w8a8_skip8_cal2",
+  "engine_size_mb": 5615.342628,
+  "cosine_sim_avg": 0.9702219218015671,
+  "max_abs_diff_peak": 5.84375,
+  "mean_abs_diff_avg": 0.17660093121230602,
+  "tick_latency_ms": {
+    "bf16_mean": 137.24709599278867,
+    "fp8_mean": 108.20732398889959,
+    "fp8_p10": 106.88309976831079,
+    "fp8_p90": 109.49609987437725
+  },
+  "speedup_vs_bf16": 1.2683715938383997,
+  "matmul_counts": {
+    "total_matmul_in_graph": 482,
+    "weight_quantized": 353,
+    "activation_qdq_pairs": 122,
+    "smoothquant_applied": 0,
+    "unmatched_weight_inits": 3
+  },
+  "smoothquant_alpha": 0.0,
+  "activation_percentile": "absmax"
+}

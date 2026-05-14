@@ -1,0 +1,5840 @@
+{
+  "schema_version": 3,
+  "patcher": "demon.fp8_onnx.patch_bf16_onnx_to_fp8 (hand-rolled, W8A8)",
+  "mode": "W8A8",
+  "source_onnx": "C:\\Users\\ryanf\\.daydream-scope\\models\\demon\\trt_engines\\_onnx_acestep-v15-xl-turbo\\decoder_refit\\decoder_refit_dynbatch.onnx",
+  "patched_onnx": "C:\\Users\\ryanf\\.daydream-scope\\models\\demon\\trt_engines\\_onnx_acestep-v15-xl-turbo\\decoder_refit\\decoder_refit_dynbatch_fp8.onnx",
+  "calibration_npz": null,
+  "activation_absmax_json": "C:\\Users\\ryanf\\.daydream-scope\\models\\demon\\calibration\\decoder_xl_fp8\\activation_absmax.json",
+  "activation_percentile": "absmax",
+  "config": {
+    "op_types_to_quantize": [
+      "MatMul"
+    ],
+    "high_precision_dtype": "bf16",
+    "scale_dtype": "bfloat16",
+    "weight_dtype": "float8_e4m3fn",
+    "weight_scheme": "per_output_channel_symmetric",
+    "activation_scheme": "per_tensor_symmetric",
+    "activation_amax_field": "absmax",
+    "fp8_max": 448.0,
+    "absmax_floor": 1e-12,
+    "opset": 20
+  },
+  "excluded_by_name": [],
+  "skipped_non_bf16": [],
+  "skipped_non_2d": [],
+  "quantized_count": 353,
+  "quantized": [
+    {
+      "weight": "val_30",
+      "shape": [
+        2048,
+        2560
+      ],
+      "scale_init": "val_30_fp8_scale",
+      "zp_init": "val_30_fp8_zp",
+      "dq_node": "val_30_DequantizeLinear",
+      "dq_output": "val_30_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_MatMul_31"
+      ]
+    },
+    {
+      "weight": "val_59",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_59_fp8_scale",
+      "zp_init": "val_59_fp8_zp",
+      "dq_node": "val_59_DequantizeLinear",
+      "dq_output": "val_59_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_7"
+      ]
+    },
+    {
+      "weight": "val_70",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_70_fp8_scale",
+      "zp_init": "val_70_fp8_zp",
+      "dq_node": "val_70_DequantizeLinear",
+      "dq_output": "val_70_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_8"
+      ]
+    },
+    {
+      "weight": "val_81",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_81_fp8_scale",
+      "zp_init": "val_81_fp8_zp",
+      "dq_node": "val_81_DequantizeLinear",
+      "dq_output": "val_81_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_9"
+      ]
+    },
+    {
+      "weight": "val_191",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_191_fp8_scale",
+      "zp_init": "val_191_fp8_zp",
+      "dq_node": "val_191_DequantizeLinear",
+      "dq_output": "val_191_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_10"
+      ]
+    },
+    {
+      "weight": "val_196",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_196_fp8_scale",
+      "zp_init": "val_196_fp8_zp",
+      "dq_node": "val_196_DequantizeLinear",
+      "dq_output": "val_196_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_11"
+      ]
+    },
+    {
+      "weight": "val_207",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_207_fp8_scale",
+      "zp_init": "val_207_fp8_zp",
+      "dq_node": "val_207_DequantizeLinear",
+      "dq_output": "val_207_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_12"
+      ]
+    },
+    {
+      "weight": "val_218",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_218_fp8_scale",
+      "zp_init": "val_218_fp8_zp",
+      "dq_node": "val_218_DequantizeLinear",
+      "dq_output": "val_218_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_13"
+      ]
+    },
+    {
+      "weight": "val_276",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_276_fp8_scale",
+      "zp_init": "val_276_fp8_zp",
+      "dq_node": "val_276_DequantizeLinear",
+      "dq_output": "val_276_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_14"
+      ]
+    },
+    {
+      "weight": "val_281",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_281_fp8_scale",
+      "zp_init": "val_281_fp8_zp",
+      "dq_node": "val_281_DequantizeLinear",
+      "dq_output": "val_281_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_15"
+      ]
+    },
+    {
+      "weight": "val_283",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_283_fp8_scale",
+      "zp_init": "val_283_fp8_zp",
+      "dq_node": "val_283_DequantizeLinear",
+      "dq_output": "val_283_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_16"
+      ]
+    },
+    {
+      "weight": "val_284",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_284_fp8_scale",
+      "zp_init": "val_284_fp8_zp",
+      "dq_node": "val_284_DequantizeLinear",
+      "dq_output": "val_284_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_17"
+      ]
+    },
+    {
+      "weight": "val_289",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_289_fp8_scale",
+      "zp_init": "val_289_fp8_zp",
+      "dq_node": "val_289_DequantizeLinear",
+      "dq_output": "val_289_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_18"
+      ]
+    },
+    {
+      "weight": "val_300",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_300_fp8_scale",
+      "zp_init": "val_300_fp8_zp",
+      "dq_node": "val_300_DequantizeLinear",
+      "dq_output": "val_300_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_19"
+      ]
+    },
+    {
+      "weight": "val_311",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_311_fp8_scale",
+      "zp_init": "val_311_fp8_zp",
+      "dq_node": "val_311_DequantizeLinear",
+      "dq_output": "val_311_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_20"
+      ]
+    },
+    {
+      "weight": "val_409",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_409_fp8_scale",
+      "zp_init": "val_409_fp8_zp",
+      "dq_node": "val_409_DequantizeLinear",
+      "dq_output": "val_409_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_21"
+      ]
+    },
+    {
+      "weight": "val_414",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_414_fp8_scale",
+      "zp_init": "val_414_fp8_zp",
+      "dq_node": "val_414_DequantizeLinear",
+      "dq_output": "val_414_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_22"
+      ]
+    },
+    {
+      "weight": "val_425",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_425_fp8_scale",
+      "zp_init": "val_425_fp8_zp",
+      "dq_node": "val_425_DequantizeLinear",
+      "dq_output": "val_425_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_23"
+      ]
+    },
+    {
+      "weight": "val_436",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_436_fp8_scale",
+      "zp_init": "val_436_fp8_zp",
+      "dq_node": "val_436_DequantizeLinear",
+      "dq_output": "val_436_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_24"
+      ]
+    },
+    {
+      "weight": "val_494",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_494_fp8_scale",
+      "zp_init": "val_494_fp8_zp",
+      "dq_node": "val_494_DequantizeLinear",
+      "dq_output": "val_494_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_25"
+      ]
+    },
+    {
+      "weight": "val_499",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_499_fp8_scale",
+      "zp_init": "val_499_fp8_zp",
+      "dq_node": "val_499_DequantizeLinear",
+      "dq_output": "val_499_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_26"
+      ]
+    },
+    {
+      "weight": "val_501",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_501_fp8_scale",
+      "zp_init": "val_501_fp8_zp",
+      "dq_node": "val_501_DequantizeLinear",
+      "dq_output": "val_501_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_27"
+      ]
+    },
+    {
+      "weight": "val_502",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_502_fp8_scale",
+      "zp_init": "val_502_fp8_zp",
+      "dq_node": "val_502_DequantizeLinear",
+      "dq_output": "val_502_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_28"
+      ]
+    },
+    {
+      "weight": "val_507",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_507_fp8_scale",
+      "zp_init": "val_507_fp8_zp",
+      "dq_node": "val_507_DequantizeLinear",
+      "dq_output": "val_507_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_29"
+      ]
+    },
+    {
+      "weight": "val_518",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_518_fp8_scale",
+      "zp_init": "val_518_fp8_zp",
+      "dq_node": "val_518_DequantizeLinear",
+      "dq_output": "val_518_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_30"
+      ]
+    },
+    {
+      "weight": "val_529",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_529_fp8_scale",
+      "zp_init": "val_529_fp8_zp",
+      "dq_node": "val_529_DequantizeLinear",
+      "dq_output": "val_529_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_31"
+      ]
+    },
+    {
+      "weight": "val_635",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_635_fp8_scale",
+      "zp_init": "val_635_fp8_zp",
+      "dq_node": "val_635_DequantizeLinear",
+      "dq_output": "val_635_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_32"
+      ]
+    },
+    {
+      "weight": "val_640",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_640_fp8_scale",
+      "zp_init": "val_640_fp8_zp",
+      "dq_node": "val_640_DequantizeLinear",
+      "dq_output": "val_640_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_33"
+      ]
+    },
+    {
+      "weight": "val_651",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_651_fp8_scale",
+      "zp_init": "val_651_fp8_zp",
+      "dq_node": "val_651_DequantizeLinear",
+      "dq_output": "val_651_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_34"
+      ]
+    },
+    {
+      "weight": "val_662",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_662_fp8_scale",
+      "zp_init": "val_662_fp8_zp",
+      "dq_node": "val_662_DequantizeLinear",
+      "dq_output": "val_662_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_35"
+      ]
+    },
+    {
+      "weight": "val_720",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_720_fp8_scale",
+      "zp_init": "val_720_fp8_zp",
+      "dq_node": "val_720_DequantizeLinear",
+      "dq_output": "val_720_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_36"
+      ]
+    },
+    {
+      "weight": "val_725",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_725_fp8_scale",
+      "zp_init": "val_725_fp8_zp",
+      "dq_node": "val_725_DequantizeLinear",
+      "dq_output": "val_725_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_37"
+      ]
+    },
+    {
+      "weight": "val_727",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_727_fp8_scale",
+      "zp_init": "val_727_fp8_zp",
+      "dq_node": "val_727_DequantizeLinear",
+      "dq_output": "val_727_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_38"
+      ]
+    },
+    {
+      "weight": "val_728",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_728_fp8_scale",
+      "zp_init": "val_728_fp8_zp",
+      "dq_node": "val_728_DequantizeLinear",
+      "dq_output": "val_728_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_39"
+      ]
+    },
+    {
+      "weight": "val_733",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_733_fp8_scale",
+      "zp_init": "val_733_fp8_zp",
+      "dq_node": "val_733_DequantizeLinear",
+      "dq_output": "val_733_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_40"
+      ]
+    },
+    {
+      "weight": "val_744",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_744_fp8_scale",
+      "zp_init": "val_744_fp8_zp",
+      "dq_node": "val_744_DequantizeLinear",
+      "dq_output": "val_744_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_41"
+      ]
+    },
+    {
+      "weight": "val_755",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_755_fp8_scale",
+      "zp_init": "val_755_fp8_zp",
+      "dq_node": "val_755_DequantizeLinear",
+      "dq_output": "val_755_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_42"
+      ]
+    },
+    {
+      "weight": "val_853",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_853_fp8_scale",
+      "zp_init": "val_853_fp8_zp",
+      "dq_node": "val_853_DequantizeLinear",
+      "dq_output": "val_853_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_43"
+      ]
+    },
+    {
+      "weight": "val_858",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_858_fp8_scale",
+      "zp_init": "val_858_fp8_zp",
+      "dq_node": "val_858_DequantizeLinear",
+      "dq_output": "val_858_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_44"
+      ]
+    },
+    {
+      "weight": "val_869",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_869_fp8_scale",
+      "zp_init": "val_869_fp8_zp",
+      "dq_node": "val_869_DequantizeLinear",
+      "dq_output": "val_869_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_45"
+      ]
+    },
+    {
+      "weight": "val_880",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_880_fp8_scale",
+      "zp_init": "val_880_fp8_zp",
+      "dq_node": "val_880_DequantizeLinear",
+      "dq_output": "val_880_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_46"
+      ]
+    },
+    {
+      "weight": "val_938",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_938_fp8_scale",
+      "zp_init": "val_938_fp8_zp",
+      "dq_node": "val_938_DequantizeLinear",
+      "dq_output": "val_938_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_47"
+      ]
+    },
+    {
+      "weight": "val_943",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_943_fp8_scale",
+      "zp_init": "val_943_fp8_zp",
+      "dq_node": "val_943_DequantizeLinear",
+      "dq_output": "val_943_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_48"
+      ]
+    },
+    {
+      "weight": "val_945",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_945_fp8_scale",
+      "zp_init": "val_945_fp8_zp",
+      "dq_node": "val_945_DequantizeLinear",
+      "dq_output": "val_945_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_49"
+      ]
+    },
+    {
+      "weight": "val_946",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_946_fp8_scale",
+      "zp_init": "val_946_fp8_zp",
+      "dq_node": "val_946_DequantizeLinear",
+      "dq_output": "val_946_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_50"
+      ]
+    },
+    {
+      "weight": "val_951",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_951_fp8_scale",
+      "zp_init": "val_951_fp8_zp",
+      "dq_node": "val_951_DequantizeLinear",
+      "dq_output": "val_951_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_51"
+      ]
+    },
+    {
+      "weight": "val_962",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_962_fp8_scale",
+      "zp_init": "val_962_fp8_zp",
+      "dq_node": "val_962_DequantizeLinear",
+      "dq_output": "val_962_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_52"
+      ]
+    },
+    {
+      "weight": "val_973",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_973_fp8_scale",
+      "zp_init": "val_973_fp8_zp",
+      "dq_node": "val_973_DequantizeLinear",
+      "dq_output": "val_973_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_53"
+      ]
+    },
+    {
+      "weight": "val_1079",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_1079_fp8_scale",
+      "zp_init": "val_1079_fp8_zp",
+      "dq_node": "val_1079_DequantizeLinear",
+      "dq_output": "val_1079_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_54"
+      ]
+    },
+    {
+      "weight": "val_1084",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_1084_fp8_scale",
+      "zp_init": "val_1084_fp8_zp",
+      "dq_node": "val_1084_DequantizeLinear",
+      "dq_output": "val_1084_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_55"
+      ]
+    },
+    {
+      "weight": "val_1095",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_1095_fp8_scale",
+      "zp_init": "val_1095_fp8_zp",
+      "dq_node": "val_1095_DequantizeLinear",
+      "dq_output": "val_1095_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_56"
+      ]
+    },
+    {
+      "weight": "val_1106",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_1106_fp8_scale",
+      "zp_init": "val_1106_fp8_zp",
+      "dq_node": "val_1106_DequantizeLinear",
+      "dq_output": "val_1106_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_57"
+      ]
+    },
+    {
+      "weight": "val_1164",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_1164_fp8_scale",
+      "zp_init": "val_1164_fp8_zp",
+      "dq_node": "val_1164_DequantizeLinear",
+      "dq_output": "val_1164_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_58"
+      ]
+    },
+    {
+      "weight": "val_1169",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_1169_fp8_scale",
+      "zp_init": "val_1169_fp8_zp",
+      "dq_node": "val_1169_DequantizeLinear",
+      "dq_output": "val_1169_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_59"
+      ]
+    },
+    {
+      "weight": "val_1171",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_1171_fp8_scale",
+      "zp_init": "val_1171_fp8_zp",
+      "dq_node": "val_1171_DequantizeLinear",
+      "dq_output": "val_1171_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_60"
+      ]
+    },
+    {
+      "weight": "val_1172",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_1172_fp8_scale",
+      "zp_init": "val_1172_fp8_zp",
+      "dq_node": "val_1172_DequantizeLinear",
+      "dq_output": "val_1172_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_61"
+      ]
+    },
+    {
+      "weight": "val_1177",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_1177_fp8_scale",
+      "zp_init": "val_1177_fp8_zp",
+      "dq_node": "val_1177_DequantizeLinear",
+      "dq_output": "val_1177_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_62"
+      ]
+    },
+    {
+      "weight": "val_1188",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_1188_fp8_scale",
+      "zp_init": "val_1188_fp8_zp",
+      "dq_node": "val_1188_DequantizeLinear",
+      "dq_output": "val_1188_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_63"
+      ]
+    },
+    {
+      "weight": "val_1199",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_1199_fp8_scale",
+      "zp_init": "val_1199_fp8_zp",
+      "dq_node": "val_1199_DequantizeLinear",
+      "dq_output": "val_1199_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_64"
+      ]
+    },
+    {
+      "weight": "val_1297",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_1297_fp8_scale",
+      "zp_init": "val_1297_fp8_zp",
+      "dq_node": "val_1297_DequantizeLinear",
+      "dq_output": "val_1297_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_65"
+      ]
+    },
+    {
+      "weight": "val_1302",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_1302_fp8_scale",
+      "zp_init": "val_1302_fp8_zp",
+      "dq_node": "val_1302_DequantizeLinear",
+      "dq_output": "val_1302_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_66"
+      ]
+    },
+    {
+      "weight": "val_1313",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_1313_fp8_scale",
+      "zp_init": "val_1313_fp8_zp",
+      "dq_node": "val_1313_DequantizeLinear",
+      "dq_output": "val_1313_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_67"
+      ]
+    },
+    {
+      "weight": "val_1324",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_1324_fp8_scale",
+      "zp_init": "val_1324_fp8_zp",
+      "dq_node": "val_1324_DequantizeLinear",
+      "dq_output": "val_1324_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_68"
+      ]
+    },
+    {
+      "weight": "val_1382",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_1382_fp8_scale",
+      "zp_init": "val_1382_fp8_zp",
+      "dq_node": "val_1382_DequantizeLinear",
+      "dq_output": "val_1382_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_69"
+      ]
+    },
+    {
+      "weight": "val_1387",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_1387_fp8_scale",
+      "zp_init": "val_1387_fp8_zp",
+      "dq_node": "val_1387_DequantizeLinear",
+      "dq_output": "val_1387_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_70"
+      ]
+    },
+    {
+      "weight": "val_1389",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_1389_fp8_scale",
+      "zp_init": "val_1389_fp8_zp",
+      "dq_node": "val_1389_DequantizeLinear",
+      "dq_output": "val_1389_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_71"
+      ]
+    },
+    {
+      "weight": "val_1390",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_1390_fp8_scale",
+      "zp_init": "val_1390_fp8_zp",
+      "dq_node": "val_1390_DequantizeLinear",
+      "dq_output": "val_1390_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_72"
+      ]
+    },
+    {
+      "weight": "val_1395",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_1395_fp8_scale",
+      "zp_init": "val_1395_fp8_zp",
+      "dq_node": "val_1395_DequantizeLinear",
+      "dq_output": "val_1395_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_73"
+      ]
+    },
+    {
+      "weight": "val_1406",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_1406_fp8_scale",
+      "zp_init": "val_1406_fp8_zp",
+      "dq_node": "val_1406_DequantizeLinear",
+      "dq_output": "val_1406_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_74"
+      ]
+    },
+    {
+      "weight": "val_1417",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_1417_fp8_scale",
+      "zp_init": "val_1417_fp8_zp",
+      "dq_node": "val_1417_DequantizeLinear",
+      "dq_output": "val_1417_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_75"
+      ]
+    },
+    {
+      "weight": "val_1523",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_1523_fp8_scale",
+      "zp_init": "val_1523_fp8_zp",
+      "dq_node": "val_1523_DequantizeLinear",
+      "dq_output": "val_1523_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_76"
+      ]
+    },
+    {
+      "weight": "val_1528",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_1528_fp8_scale",
+      "zp_init": "val_1528_fp8_zp",
+      "dq_node": "val_1528_DequantizeLinear",
+      "dq_output": "val_1528_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_77"
+      ]
+    },
+    {
+      "weight": "val_1539",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_1539_fp8_scale",
+      "zp_init": "val_1539_fp8_zp",
+      "dq_node": "val_1539_DequantizeLinear",
+      "dq_output": "val_1539_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_78"
+      ]
+    },
+    {
+      "weight": "val_1550",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_1550_fp8_scale",
+      "zp_init": "val_1550_fp8_zp",
+      "dq_node": "val_1550_DequantizeLinear",
+      "dq_output": "val_1550_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_79"
+      ]
+    },
+    {
+      "weight": "val_1608",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_1608_fp8_scale",
+      "zp_init": "val_1608_fp8_zp",
+      "dq_node": "val_1608_DequantizeLinear",
+      "dq_output": "val_1608_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_80"
+      ]
+    },
+    {
+      "weight": "val_1613",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_1613_fp8_scale",
+      "zp_init": "val_1613_fp8_zp",
+      "dq_node": "val_1613_DequantizeLinear",
+      "dq_output": "val_1613_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_81"
+      ]
+    },
+    {
+      "weight": "val_1615",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_1615_fp8_scale",
+      "zp_init": "val_1615_fp8_zp",
+      "dq_node": "val_1615_DequantizeLinear",
+      "dq_output": "val_1615_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_82"
+      ]
+    },
+    {
+      "weight": "val_1616",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_1616_fp8_scale",
+      "zp_init": "val_1616_fp8_zp",
+      "dq_node": "val_1616_DequantizeLinear",
+      "dq_output": "val_1616_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_83"
+      ]
+    },
+    {
+      "weight": "val_1621",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_1621_fp8_scale",
+      "zp_init": "val_1621_fp8_zp",
+      "dq_node": "val_1621_DequantizeLinear",
+      "dq_output": "val_1621_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_84"
+      ]
+    },
+    {
+      "weight": "val_1632",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_1632_fp8_scale",
+      "zp_init": "val_1632_fp8_zp",
+      "dq_node": "val_1632_DequantizeLinear",
+      "dq_output": "val_1632_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_85"
+      ]
+    },
+    {
+      "weight": "val_1643",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_1643_fp8_scale",
+      "zp_init": "val_1643_fp8_zp",
+      "dq_node": "val_1643_DequantizeLinear",
+      "dq_output": "val_1643_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_86"
+      ]
+    },
+    {
+      "weight": "val_1741",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_1741_fp8_scale",
+      "zp_init": "val_1741_fp8_zp",
+      "dq_node": "val_1741_DequantizeLinear",
+      "dq_output": "val_1741_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_87"
+      ]
+    },
+    {
+      "weight": "val_1746",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_1746_fp8_scale",
+      "zp_init": "val_1746_fp8_zp",
+      "dq_node": "val_1746_DequantizeLinear",
+      "dq_output": "val_1746_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_88"
+      ]
+    },
+    {
+      "weight": "val_1757",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_1757_fp8_scale",
+      "zp_init": "val_1757_fp8_zp",
+      "dq_node": "val_1757_DequantizeLinear",
+      "dq_output": "val_1757_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_89"
+      ]
+    },
+    {
+      "weight": "val_1768",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_1768_fp8_scale",
+      "zp_init": "val_1768_fp8_zp",
+      "dq_node": "val_1768_DequantizeLinear",
+      "dq_output": "val_1768_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_90"
+      ]
+    },
+    {
+      "weight": "val_1826",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_1826_fp8_scale",
+      "zp_init": "val_1826_fp8_zp",
+      "dq_node": "val_1826_DequantizeLinear",
+      "dq_output": "val_1826_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_91"
+      ]
+    },
+    {
+      "weight": "val_1831",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_1831_fp8_scale",
+      "zp_init": "val_1831_fp8_zp",
+      "dq_node": "val_1831_DequantizeLinear",
+      "dq_output": "val_1831_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_92"
+      ]
+    },
+    {
+      "weight": "val_1833",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_1833_fp8_scale",
+      "zp_init": "val_1833_fp8_zp",
+      "dq_node": "val_1833_DequantizeLinear",
+      "dq_output": "val_1833_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_93"
+      ]
+    },
+    {
+      "weight": "val_1834",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_1834_fp8_scale",
+      "zp_init": "val_1834_fp8_zp",
+      "dq_node": "val_1834_DequantizeLinear",
+      "dq_output": "val_1834_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_94"
+      ]
+    },
+    {
+      "weight": "val_1839",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_1839_fp8_scale",
+      "zp_init": "val_1839_fp8_zp",
+      "dq_node": "val_1839_DequantizeLinear",
+      "dq_output": "val_1839_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_95"
+      ]
+    },
+    {
+      "weight": "val_1850",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_1850_fp8_scale",
+      "zp_init": "val_1850_fp8_zp",
+      "dq_node": "val_1850_DequantizeLinear",
+      "dq_output": "val_1850_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_96"
+      ]
+    },
+    {
+      "weight": "val_1861",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_1861_fp8_scale",
+      "zp_init": "val_1861_fp8_zp",
+      "dq_node": "val_1861_DequantizeLinear",
+      "dq_output": "val_1861_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_97"
+      ]
+    },
+    {
+      "weight": "val_1967",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_1967_fp8_scale",
+      "zp_init": "val_1967_fp8_zp",
+      "dq_node": "val_1967_DequantizeLinear",
+      "dq_output": "val_1967_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_98"
+      ]
+    },
+    {
+      "weight": "val_1972",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_1972_fp8_scale",
+      "zp_init": "val_1972_fp8_zp",
+      "dq_node": "val_1972_DequantizeLinear",
+      "dq_output": "val_1972_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_99"
+      ]
+    },
+    {
+      "weight": "val_1983",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_1983_fp8_scale",
+      "zp_init": "val_1983_fp8_zp",
+      "dq_node": "val_1983_DequantizeLinear",
+      "dq_output": "val_1983_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_100"
+      ]
+    },
+    {
+      "weight": "val_1994",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_1994_fp8_scale",
+      "zp_init": "val_1994_fp8_zp",
+      "dq_node": "val_1994_DequantizeLinear",
+      "dq_output": "val_1994_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_101"
+      ]
+    },
+    {
+      "weight": "val_2052",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_2052_fp8_scale",
+      "zp_init": "val_2052_fp8_zp",
+      "dq_node": "val_2052_DequantizeLinear",
+      "dq_output": "val_2052_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_102"
+      ]
+    },
+    {
+      "weight": "val_2057",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_2057_fp8_scale",
+      "zp_init": "val_2057_fp8_zp",
+      "dq_node": "val_2057_DequantizeLinear",
+      "dq_output": "val_2057_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_103"
+      ]
+    },
+    {
+      "weight": "val_2059",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_2059_fp8_scale",
+      "zp_init": "val_2059_fp8_zp",
+      "dq_node": "val_2059_DequantizeLinear",
+      "dq_output": "val_2059_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_104"
+      ]
+    },
+    {
+      "weight": "val_2060",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_2060_fp8_scale",
+      "zp_init": "val_2060_fp8_zp",
+      "dq_node": "val_2060_DequantizeLinear",
+      "dq_output": "val_2060_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_105"
+      ]
+    },
+    {
+      "weight": "val_2065",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_2065_fp8_scale",
+      "zp_init": "val_2065_fp8_zp",
+      "dq_node": "val_2065_DequantizeLinear",
+      "dq_output": "val_2065_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_106"
+      ]
+    },
+    {
+      "weight": "val_2076",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_2076_fp8_scale",
+      "zp_init": "val_2076_fp8_zp",
+      "dq_node": "val_2076_DequantizeLinear",
+      "dq_output": "val_2076_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_107"
+      ]
+    },
+    {
+      "weight": "val_2087",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_2087_fp8_scale",
+      "zp_init": "val_2087_fp8_zp",
+      "dq_node": "val_2087_DequantizeLinear",
+      "dq_output": "val_2087_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_108"
+      ]
+    },
+    {
+      "weight": "val_2185",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_2185_fp8_scale",
+      "zp_init": "val_2185_fp8_zp",
+      "dq_node": "val_2185_DequantizeLinear",
+      "dq_output": "val_2185_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_109"
+      ]
+    },
+    {
+      "weight": "val_2190",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_2190_fp8_scale",
+      "zp_init": "val_2190_fp8_zp",
+      "dq_node": "val_2190_DequantizeLinear",
+      "dq_output": "val_2190_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_110"
+      ]
+    },
+    {
+      "weight": "val_2201",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_2201_fp8_scale",
+      "zp_init": "val_2201_fp8_zp",
+      "dq_node": "val_2201_DequantizeLinear",
+      "dq_output": "val_2201_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_111"
+      ]
+    },
+    {
+      "weight": "val_2212",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_2212_fp8_scale",
+      "zp_init": "val_2212_fp8_zp",
+      "dq_node": "val_2212_DequantizeLinear",
+      "dq_output": "val_2212_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_112"
+      ]
+    },
+    {
+      "weight": "val_2270",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_2270_fp8_scale",
+      "zp_init": "val_2270_fp8_zp",
+      "dq_node": "val_2270_DequantizeLinear",
+      "dq_output": "val_2270_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_113"
+      ]
+    },
+    {
+      "weight": "val_2275",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_2275_fp8_scale",
+      "zp_init": "val_2275_fp8_zp",
+      "dq_node": "val_2275_DequantizeLinear",
+      "dq_output": "val_2275_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_114"
+      ]
+    },
+    {
+      "weight": "val_2277",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_2277_fp8_scale",
+      "zp_init": "val_2277_fp8_zp",
+      "dq_node": "val_2277_DequantizeLinear",
+      "dq_output": "val_2277_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_115"
+      ]
+    },
+    {
+      "weight": "val_2278",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_2278_fp8_scale",
+      "zp_init": "val_2278_fp8_zp",
+      "dq_node": "val_2278_DequantizeLinear",
+      "dq_output": "val_2278_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_116"
+      ]
+    },
+    {
+      "weight": "val_2283",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_2283_fp8_scale",
+      "zp_init": "val_2283_fp8_zp",
+      "dq_node": "val_2283_DequantizeLinear",
+      "dq_output": "val_2283_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_117"
+      ]
+    },
+    {
+      "weight": "val_2294",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_2294_fp8_scale",
+      "zp_init": "val_2294_fp8_zp",
+      "dq_node": "val_2294_DequantizeLinear",
+      "dq_output": "val_2294_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_118"
+      ]
+    },
+    {
+      "weight": "val_2305",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_2305_fp8_scale",
+      "zp_init": "val_2305_fp8_zp",
+      "dq_node": "val_2305_DequantizeLinear",
+      "dq_output": "val_2305_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_119"
+      ]
+    },
+    {
+      "weight": "val_2411",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_2411_fp8_scale",
+      "zp_init": "val_2411_fp8_zp",
+      "dq_node": "val_2411_DequantizeLinear",
+      "dq_output": "val_2411_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_120"
+      ]
+    },
+    {
+      "weight": "val_2416",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_2416_fp8_scale",
+      "zp_init": "val_2416_fp8_zp",
+      "dq_node": "val_2416_DequantizeLinear",
+      "dq_output": "val_2416_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_121"
+      ]
+    },
+    {
+      "weight": "val_2427",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_2427_fp8_scale",
+      "zp_init": "val_2427_fp8_zp",
+      "dq_node": "val_2427_DequantizeLinear",
+      "dq_output": "val_2427_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_122"
+      ]
+    },
+    {
+      "weight": "val_2438",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_2438_fp8_scale",
+      "zp_init": "val_2438_fp8_zp",
+      "dq_node": "val_2438_DequantizeLinear",
+      "dq_output": "val_2438_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_123"
+      ]
+    },
+    {
+      "weight": "val_2496",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_2496_fp8_scale",
+      "zp_init": "val_2496_fp8_zp",
+      "dq_node": "val_2496_DequantizeLinear",
+      "dq_output": "val_2496_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_124"
+      ]
+    },
+    {
+      "weight": "val_2501",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_2501_fp8_scale",
+      "zp_init": "val_2501_fp8_zp",
+      "dq_node": "val_2501_DequantizeLinear",
+      "dq_output": "val_2501_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_125"
+      ]
+    },
+    {
+      "weight": "val_2503",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_2503_fp8_scale",
+      "zp_init": "val_2503_fp8_zp",
+      "dq_node": "val_2503_DequantizeLinear",
+      "dq_output": "val_2503_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_126"
+      ]
+    },
+    {
+      "weight": "val_2504",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_2504_fp8_scale",
+      "zp_init": "val_2504_fp8_zp",
+      "dq_node": "val_2504_DequantizeLinear",
+      "dq_output": "val_2504_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_127"
+      ]
+    },
+    {
+      "weight": "val_2509",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_2509_fp8_scale",
+      "zp_init": "val_2509_fp8_zp",
+      "dq_node": "val_2509_DequantizeLinear",
+      "dq_output": "val_2509_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_128"
+      ]
+    },
+    {
+      "weight": "val_2520",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_2520_fp8_scale",
+      "zp_init": "val_2520_fp8_zp",
+      "dq_node": "val_2520_DequantizeLinear",
+      "dq_output": "val_2520_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_129"
+      ]
+    },
+    {
+      "weight": "val_2531",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_2531_fp8_scale",
+      "zp_init": "val_2531_fp8_zp",
+      "dq_node": "val_2531_DequantizeLinear",
+      "dq_output": "val_2531_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_130"
+      ]
+    },
+    {
+      "weight": "val_2629",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_2629_fp8_scale",
+      "zp_init": "val_2629_fp8_zp",
+      "dq_node": "val_2629_DequantizeLinear",
+      "dq_output": "val_2629_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_131"
+      ]
+    },
+    {
+      "weight": "val_2634",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_2634_fp8_scale",
+      "zp_init": "val_2634_fp8_zp",
+      "dq_node": "val_2634_DequantizeLinear",
+      "dq_output": "val_2634_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_132"
+      ]
+    },
+    {
+      "weight": "val_2645",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_2645_fp8_scale",
+      "zp_init": "val_2645_fp8_zp",
+      "dq_node": "val_2645_DequantizeLinear",
+      "dq_output": "val_2645_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_133"
+      ]
+    },
+    {
+      "weight": "val_2656",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_2656_fp8_scale",
+      "zp_init": "val_2656_fp8_zp",
+      "dq_node": "val_2656_DequantizeLinear",
+      "dq_output": "val_2656_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_134"
+      ]
+    },
+    {
+      "weight": "val_2714",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_2714_fp8_scale",
+      "zp_init": "val_2714_fp8_zp",
+      "dq_node": "val_2714_DequantizeLinear",
+      "dq_output": "val_2714_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_135"
+      ]
+    },
+    {
+      "weight": "val_2719",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_2719_fp8_scale",
+      "zp_init": "val_2719_fp8_zp",
+      "dq_node": "val_2719_DequantizeLinear",
+      "dq_output": "val_2719_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_136"
+      ]
+    },
+    {
+      "weight": "val_2721",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_2721_fp8_scale",
+      "zp_init": "val_2721_fp8_zp",
+      "dq_node": "val_2721_DequantizeLinear",
+      "dq_output": "val_2721_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_137"
+      ]
+    },
+    {
+      "weight": "val_2722",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_2722_fp8_scale",
+      "zp_init": "val_2722_fp8_zp",
+      "dq_node": "val_2722_DequantizeLinear",
+      "dq_output": "val_2722_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_138"
+      ]
+    },
+    {
+      "weight": "val_2727",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_2727_fp8_scale",
+      "zp_init": "val_2727_fp8_zp",
+      "dq_node": "val_2727_DequantizeLinear",
+      "dq_output": "val_2727_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_139"
+      ]
+    },
+    {
+      "weight": "val_2738",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_2738_fp8_scale",
+      "zp_init": "val_2738_fp8_zp",
+      "dq_node": "val_2738_DequantizeLinear",
+      "dq_output": "val_2738_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_140"
+      ]
+    },
+    {
+      "weight": "val_2749",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_2749_fp8_scale",
+      "zp_init": "val_2749_fp8_zp",
+      "dq_node": "val_2749_DequantizeLinear",
+      "dq_output": "val_2749_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_141"
+      ]
+    },
+    {
+      "weight": "val_2855",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_2855_fp8_scale",
+      "zp_init": "val_2855_fp8_zp",
+      "dq_node": "val_2855_DequantizeLinear",
+      "dq_output": "val_2855_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_142"
+      ]
+    },
+    {
+      "weight": "val_2860",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_2860_fp8_scale",
+      "zp_init": "val_2860_fp8_zp",
+      "dq_node": "val_2860_DequantizeLinear",
+      "dq_output": "val_2860_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_143"
+      ]
+    },
+    {
+      "weight": "val_2871",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_2871_fp8_scale",
+      "zp_init": "val_2871_fp8_zp",
+      "dq_node": "val_2871_DequantizeLinear",
+      "dq_output": "val_2871_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_144"
+      ]
+    },
+    {
+      "weight": "val_2882",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_2882_fp8_scale",
+      "zp_init": "val_2882_fp8_zp",
+      "dq_node": "val_2882_DequantizeLinear",
+      "dq_output": "val_2882_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_145"
+      ]
+    },
+    {
+      "weight": "val_2940",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_2940_fp8_scale",
+      "zp_init": "val_2940_fp8_zp",
+      "dq_node": "val_2940_DequantizeLinear",
+      "dq_output": "val_2940_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_146"
+      ]
+    },
+    {
+      "weight": "val_2945",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_2945_fp8_scale",
+      "zp_init": "val_2945_fp8_zp",
+      "dq_node": "val_2945_DequantizeLinear",
+      "dq_output": "val_2945_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_147"
+      ]
+    },
+    {
+      "weight": "val_2947",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_2947_fp8_scale",
+      "zp_init": "val_2947_fp8_zp",
+      "dq_node": "val_2947_DequantizeLinear",
+      "dq_output": "val_2947_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_148"
+      ]
+    },
+    {
+      "weight": "val_2948",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_2948_fp8_scale",
+      "zp_init": "val_2948_fp8_zp",
+      "dq_node": "val_2948_DequantizeLinear",
+      "dq_output": "val_2948_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_149"
+      ]
+    },
+    {
+      "weight": "val_2953",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_2953_fp8_scale",
+      "zp_init": "val_2953_fp8_zp",
+      "dq_node": "val_2953_DequantizeLinear",
+      "dq_output": "val_2953_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_150"
+      ]
+    },
+    {
+      "weight": "val_2964",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_2964_fp8_scale",
+      "zp_init": "val_2964_fp8_zp",
+      "dq_node": "val_2964_DequantizeLinear",
+      "dq_output": "val_2964_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_151"
+      ]
+    },
+    {
+      "weight": "val_2975",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_2975_fp8_scale",
+      "zp_init": "val_2975_fp8_zp",
+      "dq_node": "val_2975_DequantizeLinear",
+      "dq_output": "val_2975_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_152"
+      ]
+    },
+    {
+      "weight": "val_3073",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_3073_fp8_scale",
+      "zp_init": "val_3073_fp8_zp",
+      "dq_node": "val_3073_DequantizeLinear",
+      "dq_output": "val_3073_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_153"
+      ]
+    },
+    {
+      "weight": "val_3078",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_3078_fp8_scale",
+      "zp_init": "val_3078_fp8_zp",
+      "dq_node": "val_3078_DequantizeLinear",
+      "dq_output": "val_3078_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_154"
+      ]
+    },
+    {
+      "weight": "val_3089",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_3089_fp8_scale",
+      "zp_init": "val_3089_fp8_zp",
+      "dq_node": "val_3089_DequantizeLinear",
+      "dq_output": "val_3089_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_155"
+      ]
+    },
+    {
+      "weight": "val_3100",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_3100_fp8_scale",
+      "zp_init": "val_3100_fp8_zp",
+      "dq_node": "val_3100_DequantizeLinear",
+      "dq_output": "val_3100_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_156"
+      ]
+    },
+    {
+      "weight": "val_3158",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_3158_fp8_scale",
+      "zp_init": "val_3158_fp8_zp",
+      "dq_node": "val_3158_DequantizeLinear",
+      "dq_output": "val_3158_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_157"
+      ]
+    },
+    {
+      "weight": "val_3163",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_3163_fp8_scale",
+      "zp_init": "val_3163_fp8_zp",
+      "dq_node": "val_3163_DequantizeLinear",
+      "dq_output": "val_3163_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_158"
+      ]
+    },
+    {
+      "weight": "val_3165",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_3165_fp8_scale",
+      "zp_init": "val_3165_fp8_zp",
+      "dq_node": "val_3165_DequantizeLinear",
+      "dq_output": "val_3165_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_159"
+      ]
+    },
+    {
+      "weight": "val_3166",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_3166_fp8_scale",
+      "zp_init": "val_3166_fp8_zp",
+      "dq_node": "val_3166_DequantizeLinear",
+      "dq_output": "val_3166_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_160"
+      ]
+    },
+    {
+      "weight": "val_3171",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_3171_fp8_scale",
+      "zp_init": "val_3171_fp8_zp",
+      "dq_node": "val_3171_DequantizeLinear",
+      "dq_output": "val_3171_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_161"
+      ]
+    },
+    {
+      "weight": "val_3182",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_3182_fp8_scale",
+      "zp_init": "val_3182_fp8_zp",
+      "dq_node": "val_3182_DequantizeLinear",
+      "dq_output": "val_3182_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_162"
+      ]
+    },
+    {
+      "weight": "val_3193",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_3193_fp8_scale",
+      "zp_init": "val_3193_fp8_zp",
+      "dq_node": "val_3193_DequantizeLinear",
+      "dq_output": "val_3193_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_163"
+      ]
+    },
+    {
+      "weight": "val_3299",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_3299_fp8_scale",
+      "zp_init": "val_3299_fp8_zp",
+      "dq_node": "val_3299_DequantizeLinear",
+      "dq_output": "val_3299_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_164"
+      ]
+    },
+    {
+      "weight": "val_3304",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_3304_fp8_scale",
+      "zp_init": "val_3304_fp8_zp",
+      "dq_node": "val_3304_DequantizeLinear",
+      "dq_output": "val_3304_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_165"
+      ]
+    },
+    {
+      "weight": "val_3315",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_3315_fp8_scale",
+      "zp_init": "val_3315_fp8_zp",
+      "dq_node": "val_3315_DequantizeLinear",
+      "dq_output": "val_3315_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_166"
+      ]
+    },
+    {
+      "weight": "val_3326",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_3326_fp8_scale",
+      "zp_init": "val_3326_fp8_zp",
+      "dq_node": "val_3326_DequantizeLinear",
+      "dq_output": "val_3326_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_167"
+      ]
+    },
+    {
+      "weight": "val_3384",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_3384_fp8_scale",
+      "zp_init": "val_3384_fp8_zp",
+      "dq_node": "val_3384_DequantizeLinear",
+      "dq_output": "val_3384_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_168"
+      ]
+    },
+    {
+      "weight": "val_3389",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_3389_fp8_scale",
+      "zp_init": "val_3389_fp8_zp",
+      "dq_node": "val_3389_DequantizeLinear",
+      "dq_output": "val_3389_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_169"
+      ]
+    },
+    {
+      "weight": "val_3391",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_3391_fp8_scale",
+      "zp_init": "val_3391_fp8_zp",
+      "dq_node": "val_3391_DequantizeLinear",
+      "dq_output": "val_3391_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_170"
+      ]
+    },
+    {
+      "weight": "val_3392",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_3392_fp8_scale",
+      "zp_init": "val_3392_fp8_zp",
+      "dq_node": "val_3392_DequantizeLinear",
+      "dq_output": "val_3392_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_171"
+      ]
+    },
+    {
+      "weight": "val_3397",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_3397_fp8_scale",
+      "zp_init": "val_3397_fp8_zp",
+      "dq_node": "val_3397_DequantizeLinear",
+      "dq_output": "val_3397_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_172"
+      ]
+    },
+    {
+      "weight": "val_3408",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_3408_fp8_scale",
+      "zp_init": "val_3408_fp8_zp",
+      "dq_node": "val_3408_DequantizeLinear",
+      "dq_output": "val_3408_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_173"
+      ]
+    },
+    {
+      "weight": "val_3419",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_3419_fp8_scale",
+      "zp_init": "val_3419_fp8_zp",
+      "dq_node": "val_3419_DequantizeLinear",
+      "dq_output": "val_3419_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_174"
+      ]
+    },
+    {
+      "weight": "val_3517",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_3517_fp8_scale",
+      "zp_init": "val_3517_fp8_zp",
+      "dq_node": "val_3517_DequantizeLinear",
+      "dq_output": "val_3517_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_175"
+      ]
+    },
+    {
+      "weight": "val_3522",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_3522_fp8_scale",
+      "zp_init": "val_3522_fp8_zp",
+      "dq_node": "val_3522_DequantizeLinear",
+      "dq_output": "val_3522_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_176"
+      ]
+    },
+    {
+      "weight": "val_3533",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_3533_fp8_scale",
+      "zp_init": "val_3533_fp8_zp",
+      "dq_node": "val_3533_DequantizeLinear",
+      "dq_output": "val_3533_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_177"
+      ]
+    },
+    {
+      "weight": "val_3544",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_3544_fp8_scale",
+      "zp_init": "val_3544_fp8_zp",
+      "dq_node": "val_3544_DequantizeLinear",
+      "dq_output": "val_3544_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_178"
+      ]
+    },
+    {
+      "weight": "val_3602",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_3602_fp8_scale",
+      "zp_init": "val_3602_fp8_zp",
+      "dq_node": "val_3602_DequantizeLinear",
+      "dq_output": "val_3602_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_179"
+      ]
+    },
+    {
+      "weight": "val_3607",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_3607_fp8_scale",
+      "zp_init": "val_3607_fp8_zp",
+      "dq_node": "val_3607_DequantizeLinear",
+      "dq_output": "val_3607_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_180"
+      ]
+    },
+    {
+      "weight": "val_3609",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_3609_fp8_scale",
+      "zp_init": "val_3609_fp8_zp",
+      "dq_node": "val_3609_DequantizeLinear",
+      "dq_output": "val_3609_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_181"
+      ]
+    },
+    {
+      "weight": "val_3610",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_3610_fp8_scale",
+      "zp_init": "val_3610_fp8_zp",
+      "dq_node": "val_3610_DequantizeLinear",
+      "dq_output": "val_3610_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_182"
+      ]
+    },
+    {
+      "weight": "val_3615",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_3615_fp8_scale",
+      "zp_init": "val_3615_fp8_zp",
+      "dq_node": "val_3615_DequantizeLinear",
+      "dq_output": "val_3615_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_183"
+      ]
+    },
+    {
+      "weight": "val_3626",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_3626_fp8_scale",
+      "zp_init": "val_3626_fp8_zp",
+      "dq_node": "val_3626_DequantizeLinear",
+      "dq_output": "val_3626_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_184"
+      ]
+    },
+    {
+      "weight": "val_3637",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_3637_fp8_scale",
+      "zp_init": "val_3637_fp8_zp",
+      "dq_node": "val_3637_DequantizeLinear",
+      "dq_output": "val_3637_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_185"
+      ]
+    },
+    {
+      "weight": "val_3743",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_3743_fp8_scale",
+      "zp_init": "val_3743_fp8_zp",
+      "dq_node": "val_3743_DequantizeLinear",
+      "dq_output": "val_3743_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_186"
+      ]
+    },
+    {
+      "weight": "val_3748",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_3748_fp8_scale",
+      "zp_init": "val_3748_fp8_zp",
+      "dq_node": "val_3748_DequantizeLinear",
+      "dq_output": "val_3748_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_187"
+      ]
+    },
+    {
+      "weight": "val_3759",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_3759_fp8_scale",
+      "zp_init": "val_3759_fp8_zp",
+      "dq_node": "val_3759_DequantizeLinear",
+      "dq_output": "val_3759_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_188"
+      ]
+    },
+    {
+      "weight": "val_3770",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_3770_fp8_scale",
+      "zp_init": "val_3770_fp8_zp",
+      "dq_node": "val_3770_DequantizeLinear",
+      "dq_output": "val_3770_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_189"
+      ]
+    },
+    {
+      "weight": "val_3828",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_3828_fp8_scale",
+      "zp_init": "val_3828_fp8_zp",
+      "dq_node": "val_3828_DequantizeLinear",
+      "dq_output": "val_3828_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_190"
+      ]
+    },
+    {
+      "weight": "val_3833",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_3833_fp8_scale",
+      "zp_init": "val_3833_fp8_zp",
+      "dq_node": "val_3833_DequantizeLinear",
+      "dq_output": "val_3833_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_191"
+      ]
+    },
+    {
+      "weight": "val_3835",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_3835_fp8_scale",
+      "zp_init": "val_3835_fp8_zp",
+      "dq_node": "val_3835_DequantizeLinear",
+      "dq_output": "val_3835_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_192"
+      ]
+    },
+    {
+      "weight": "val_3836",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_3836_fp8_scale",
+      "zp_init": "val_3836_fp8_zp",
+      "dq_node": "val_3836_DequantizeLinear",
+      "dq_output": "val_3836_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_193"
+      ]
+    },
+    {
+      "weight": "val_3841",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_3841_fp8_scale",
+      "zp_init": "val_3841_fp8_zp",
+      "dq_node": "val_3841_DequantizeLinear",
+      "dq_output": "val_3841_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_194"
+      ]
+    },
+    {
+      "weight": "val_3852",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_3852_fp8_scale",
+      "zp_init": "val_3852_fp8_zp",
+      "dq_node": "val_3852_DequantizeLinear",
+      "dq_output": "val_3852_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_195"
+      ]
+    },
+    {
+      "weight": "val_3863",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_3863_fp8_scale",
+      "zp_init": "val_3863_fp8_zp",
+      "dq_node": "val_3863_DequantizeLinear",
+      "dq_output": "val_3863_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_196"
+      ]
+    },
+    {
+      "weight": "val_3961",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_3961_fp8_scale",
+      "zp_init": "val_3961_fp8_zp",
+      "dq_node": "val_3961_DequantizeLinear",
+      "dq_output": "val_3961_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_197"
+      ]
+    },
+    {
+      "weight": "val_3966",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_3966_fp8_scale",
+      "zp_init": "val_3966_fp8_zp",
+      "dq_node": "val_3966_DequantizeLinear",
+      "dq_output": "val_3966_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_198"
+      ]
+    },
+    {
+      "weight": "val_3977",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_3977_fp8_scale",
+      "zp_init": "val_3977_fp8_zp",
+      "dq_node": "val_3977_DequantizeLinear",
+      "dq_output": "val_3977_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_199"
+      ]
+    },
+    {
+      "weight": "val_3988",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_3988_fp8_scale",
+      "zp_init": "val_3988_fp8_zp",
+      "dq_node": "val_3988_DequantizeLinear",
+      "dq_output": "val_3988_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_200"
+      ]
+    },
+    {
+      "weight": "val_4046",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_4046_fp8_scale",
+      "zp_init": "val_4046_fp8_zp",
+      "dq_node": "val_4046_DequantizeLinear",
+      "dq_output": "val_4046_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_201"
+      ]
+    },
+    {
+      "weight": "val_4051",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_4051_fp8_scale",
+      "zp_init": "val_4051_fp8_zp",
+      "dq_node": "val_4051_DequantizeLinear",
+      "dq_output": "val_4051_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_202"
+      ]
+    },
+    {
+      "weight": "val_4053",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_4053_fp8_scale",
+      "zp_init": "val_4053_fp8_zp",
+      "dq_node": "val_4053_DequantizeLinear",
+      "dq_output": "val_4053_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_203"
+      ]
+    },
+    {
+      "weight": "val_4054",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_4054_fp8_scale",
+      "zp_init": "val_4054_fp8_zp",
+      "dq_node": "val_4054_DequantizeLinear",
+      "dq_output": "val_4054_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_204"
+      ]
+    },
+    {
+      "weight": "val_4059",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_4059_fp8_scale",
+      "zp_init": "val_4059_fp8_zp",
+      "dq_node": "val_4059_DequantizeLinear",
+      "dq_output": "val_4059_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_205"
+      ]
+    },
+    {
+      "weight": "val_4070",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_4070_fp8_scale",
+      "zp_init": "val_4070_fp8_zp",
+      "dq_node": "val_4070_DequantizeLinear",
+      "dq_output": "val_4070_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_206"
+      ]
+    },
+    {
+      "weight": "val_4081",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_4081_fp8_scale",
+      "zp_init": "val_4081_fp8_zp",
+      "dq_node": "val_4081_DequantizeLinear",
+      "dq_output": "val_4081_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_207"
+      ]
+    },
+    {
+      "weight": "val_4187",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_4187_fp8_scale",
+      "zp_init": "val_4187_fp8_zp",
+      "dq_node": "val_4187_DequantizeLinear",
+      "dq_output": "val_4187_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_208"
+      ]
+    },
+    {
+      "weight": "val_4192",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_4192_fp8_scale",
+      "zp_init": "val_4192_fp8_zp",
+      "dq_node": "val_4192_DequantizeLinear",
+      "dq_output": "val_4192_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_209"
+      ]
+    },
+    {
+      "weight": "val_4203",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_4203_fp8_scale",
+      "zp_init": "val_4203_fp8_zp",
+      "dq_node": "val_4203_DequantizeLinear",
+      "dq_output": "val_4203_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_210"
+      ]
+    },
+    {
+      "weight": "val_4214",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_4214_fp8_scale",
+      "zp_init": "val_4214_fp8_zp",
+      "dq_node": "val_4214_DequantizeLinear",
+      "dq_output": "val_4214_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_211"
+      ]
+    },
+    {
+      "weight": "val_4272",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_4272_fp8_scale",
+      "zp_init": "val_4272_fp8_zp",
+      "dq_node": "val_4272_DequantizeLinear",
+      "dq_output": "val_4272_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_212"
+      ]
+    },
+    {
+      "weight": "val_4277",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_4277_fp8_scale",
+      "zp_init": "val_4277_fp8_zp",
+      "dq_node": "val_4277_DequantizeLinear",
+      "dq_output": "val_4277_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_213"
+      ]
+    },
+    {
+      "weight": "val_4279",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_4279_fp8_scale",
+      "zp_init": "val_4279_fp8_zp",
+      "dq_node": "val_4279_DequantizeLinear",
+      "dq_output": "val_4279_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_214"
+      ]
+    },
+    {
+      "weight": "val_4280",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_4280_fp8_scale",
+      "zp_init": "val_4280_fp8_zp",
+      "dq_node": "val_4280_DequantizeLinear",
+      "dq_output": "val_4280_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_215"
+      ]
+    },
+    {
+      "weight": "val_4285",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_4285_fp8_scale",
+      "zp_init": "val_4285_fp8_zp",
+      "dq_node": "val_4285_DequantizeLinear",
+      "dq_output": "val_4285_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_216"
+      ]
+    },
+    {
+      "weight": "val_4296",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_4296_fp8_scale",
+      "zp_init": "val_4296_fp8_zp",
+      "dq_node": "val_4296_DequantizeLinear",
+      "dq_output": "val_4296_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_217"
+      ]
+    },
+    {
+      "weight": "val_4307",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_4307_fp8_scale",
+      "zp_init": "val_4307_fp8_zp",
+      "dq_node": "val_4307_DequantizeLinear",
+      "dq_output": "val_4307_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_218"
+      ]
+    },
+    {
+      "weight": "val_4405",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_4405_fp8_scale",
+      "zp_init": "val_4405_fp8_zp",
+      "dq_node": "val_4405_DequantizeLinear",
+      "dq_output": "val_4405_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_219"
+      ]
+    },
+    {
+      "weight": "val_4410",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_4410_fp8_scale",
+      "zp_init": "val_4410_fp8_zp",
+      "dq_node": "val_4410_DequantizeLinear",
+      "dq_output": "val_4410_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_220"
+      ]
+    },
+    {
+      "weight": "val_4421",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_4421_fp8_scale",
+      "zp_init": "val_4421_fp8_zp",
+      "dq_node": "val_4421_DequantizeLinear",
+      "dq_output": "val_4421_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_221"
+      ]
+    },
+    {
+      "weight": "val_4432",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_4432_fp8_scale",
+      "zp_init": "val_4432_fp8_zp",
+      "dq_node": "val_4432_DequantizeLinear",
+      "dq_output": "val_4432_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_222"
+      ]
+    },
+    {
+      "weight": "val_4490",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_4490_fp8_scale",
+      "zp_init": "val_4490_fp8_zp",
+      "dq_node": "val_4490_DequantizeLinear",
+      "dq_output": "val_4490_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_223"
+      ]
+    },
+    {
+      "weight": "val_4495",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_4495_fp8_scale",
+      "zp_init": "val_4495_fp8_zp",
+      "dq_node": "val_4495_DequantizeLinear",
+      "dq_output": "val_4495_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_224"
+      ]
+    },
+    {
+      "weight": "val_4497",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_4497_fp8_scale",
+      "zp_init": "val_4497_fp8_zp",
+      "dq_node": "val_4497_DequantizeLinear",
+      "dq_output": "val_4497_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_225"
+      ]
+    },
+    {
+      "weight": "val_4498",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_4498_fp8_scale",
+      "zp_init": "val_4498_fp8_zp",
+      "dq_node": "val_4498_DequantizeLinear",
+      "dq_output": "val_4498_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_226"
+      ]
+    },
+    {
+      "weight": "val_4503",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_4503_fp8_scale",
+      "zp_init": "val_4503_fp8_zp",
+      "dq_node": "val_4503_DequantizeLinear",
+      "dq_output": "val_4503_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_227"
+      ]
+    },
+    {
+      "weight": "val_4514",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_4514_fp8_scale",
+      "zp_init": "val_4514_fp8_zp",
+      "dq_node": "val_4514_DequantizeLinear",
+      "dq_output": "val_4514_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_228"
+      ]
+    },
+    {
+      "weight": "val_4525",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_4525_fp8_scale",
+      "zp_init": "val_4525_fp8_zp",
+      "dq_node": "val_4525_DequantizeLinear",
+      "dq_output": "val_4525_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_229"
+      ]
+    },
+    {
+      "weight": "val_4631",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_4631_fp8_scale",
+      "zp_init": "val_4631_fp8_zp",
+      "dq_node": "val_4631_DequantizeLinear",
+      "dq_output": "val_4631_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_230"
+      ]
+    },
+    {
+      "weight": "val_4636",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_4636_fp8_scale",
+      "zp_init": "val_4636_fp8_zp",
+      "dq_node": "val_4636_DequantizeLinear",
+      "dq_output": "val_4636_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_231"
+      ]
+    },
+    {
+      "weight": "val_4647",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_4647_fp8_scale",
+      "zp_init": "val_4647_fp8_zp",
+      "dq_node": "val_4647_DequantizeLinear",
+      "dq_output": "val_4647_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_232"
+      ]
+    },
+    {
+      "weight": "val_4658",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_4658_fp8_scale",
+      "zp_init": "val_4658_fp8_zp",
+      "dq_node": "val_4658_DequantizeLinear",
+      "dq_output": "val_4658_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_233"
+      ]
+    },
+    {
+      "weight": "val_4716",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_4716_fp8_scale",
+      "zp_init": "val_4716_fp8_zp",
+      "dq_node": "val_4716_DequantizeLinear",
+      "dq_output": "val_4716_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_234"
+      ]
+    },
+    {
+      "weight": "val_4721",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_4721_fp8_scale",
+      "zp_init": "val_4721_fp8_zp",
+      "dq_node": "val_4721_DequantizeLinear",
+      "dq_output": "val_4721_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_235"
+      ]
+    },
+    {
+      "weight": "val_4723",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_4723_fp8_scale",
+      "zp_init": "val_4723_fp8_zp",
+      "dq_node": "val_4723_DequantizeLinear",
+      "dq_output": "val_4723_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_236"
+      ]
+    },
+    {
+      "weight": "val_4724",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_4724_fp8_scale",
+      "zp_init": "val_4724_fp8_zp",
+      "dq_node": "val_4724_DequantizeLinear",
+      "dq_output": "val_4724_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_237"
+      ]
+    },
+    {
+      "weight": "val_4729",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_4729_fp8_scale",
+      "zp_init": "val_4729_fp8_zp",
+      "dq_node": "val_4729_DequantizeLinear",
+      "dq_output": "val_4729_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_238"
+      ]
+    },
+    {
+      "weight": "val_4740",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_4740_fp8_scale",
+      "zp_init": "val_4740_fp8_zp",
+      "dq_node": "val_4740_DequantizeLinear",
+      "dq_output": "val_4740_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_239"
+      ]
+    },
+    {
+      "weight": "val_4751",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_4751_fp8_scale",
+      "zp_init": "val_4751_fp8_zp",
+      "dq_node": "val_4751_DequantizeLinear",
+      "dq_output": "val_4751_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_240"
+      ]
+    },
+    {
+      "weight": "val_4849",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_4849_fp8_scale",
+      "zp_init": "val_4849_fp8_zp",
+      "dq_node": "val_4849_DequantizeLinear",
+      "dq_output": "val_4849_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_241"
+      ]
+    },
+    {
+      "weight": "val_4854",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_4854_fp8_scale",
+      "zp_init": "val_4854_fp8_zp",
+      "dq_node": "val_4854_DequantizeLinear",
+      "dq_output": "val_4854_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_242"
+      ]
+    },
+    {
+      "weight": "val_4865",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_4865_fp8_scale",
+      "zp_init": "val_4865_fp8_zp",
+      "dq_node": "val_4865_DequantizeLinear",
+      "dq_output": "val_4865_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_243"
+      ]
+    },
+    {
+      "weight": "val_4876",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_4876_fp8_scale",
+      "zp_init": "val_4876_fp8_zp",
+      "dq_node": "val_4876_DequantizeLinear",
+      "dq_output": "val_4876_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_244"
+      ]
+    },
+    {
+      "weight": "val_4934",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_4934_fp8_scale",
+      "zp_init": "val_4934_fp8_zp",
+      "dq_node": "val_4934_DequantizeLinear",
+      "dq_output": "val_4934_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_245"
+      ]
+    },
+    {
+      "weight": "val_4939",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_4939_fp8_scale",
+      "zp_init": "val_4939_fp8_zp",
+      "dq_node": "val_4939_DequantizeLinear",
+      "dq_output": "val_4939_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_246"
+      ]
+    },
+    {
+      "weight": "val_4941",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_4941_fp8_scale",
+      "zp_init": "val_4941_fp8_zp",
+      "dq_node": "val_4941_DequantizeLinear",
+      "dq_output": "val_4941_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_247"
+      ]
+    },
+    {
+      "weight": "val_4942",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_4942_fp8_scale",
+      "zp_init": "val_4942_fp8_zp",
+      "dq_node": "val_4942_DequantizeLinear",
+      "dq_output": "val_4942_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_248"
+      ]
+    },
+    {
+      "weight": "val_4947",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_4947_fp8_scale",
+      "zp_init": "val_4947_fp8_zp",
+      "dq_node": "val_4947_DequantizeLinear",
+      "dq_output": "val_4947_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_249"
+      ]
+    },
+    {
+      "weight": "val_4958",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_4958_fp8_scale",
+      "zp_init": "val_4958_fp8_zp",
+      "dq_node": "val_4958_DequantizeLinear",
+      "dq_output": "val_4958_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_250"
+      ]
+    },
+    {
+      "weight": "val_4969",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_4969_fp8_scale",
+      "zp_init": "val_4969_fp8_zp",
+      "dq_node": "val_4969_DequantizeLinear",
+      "dq_output": "val_4969_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_251"
+      ]
+    },
+    {
+      "weight": "val_5075",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_5075_fp8_scale",
+      "zp_init": "val_5075_fp8_zp",
+      "dq_node": "val_5075_DequantizeLinear",
+      "dq_output": "val_5075_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_252"
+      ]
+    },
+    {
+      "weight": "val_5080",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_5080_fp8_scale",
+      "zp_init": "val_5080_fp8_zp",
+      "dq_node": "val_5080_DequantizeLinear",
+      "dq_output": "val_5080_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_253"
+      ]
+    },
+    {
+      "weight": "val_5091",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_5091_fp8_scale",
+      "zp_init": "val_5091_fp8_zp",
+      "dq_node": "val_5091_DequantizeLinear",
+      "dq_output": "val_5091_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_254"
+      ]
+    },
+    {
+      "weight": "val_5102",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_5102_fp8_scale",
+      "zp_init": "val_5102_fp8_zp",
+      "dq_node": "val_5102_DequantizeLinear",
+      "dq_output": "val_5102_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_255"
+      ]
+    },
+    {
+      "weight": "val_5160",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_5160_fp8_scale",
+      "zp_init": "val_5160_fp8_zp",
+      "dq_node": "val_5160_DequantizeLinear",
+      "dq_output": "val_5160_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_256"
+      ]
+    },
+    {
+      "weight": "val_5165",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_5165_fp8_scale",
+      "zp_init": "val_5165_fp8_zp",
+      "dq_node": "val_5165_DequantizeLinear",
+      "dq_output": "val_5165_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_257"
+      ]
+    },
+    {
+      "weight": "val_5167",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_5167_fp8_scale",
+      "zp_init": "val_5167_fp8_zp",
+      "dq_node": "val_5167_DequantizeLinear",
+      "dq_output": "val_5167_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_258"
+      ]
+    },
+    {
+      "weight": "val_5168",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_5168_fp8_scale",
+      "zp_init": "val_5168_fp8_zp",
+      "dq_node": "val_5168_DequantizeLinear",
+      "dq_output": "val_5168_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_259"
+      ]
+    },
+    {
+      "weight": "val_5173",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_5173_fp8_scale",
+      "zp_init": "val_5173_fp8_zp",
+      "dq_node": "val_5173_DequantizeLinear",
+      "dq_output": "val_5173_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_260"
+      ]
+    },
+    {
+      "weight": "val_5184",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_5184_fp8_scale",
+      "zp_init": "val_5184_fp8_zp",
+      "dq_node": "val_5184_DequantizeLinear",
+      "dq_output": "val_5184_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_261"
+      ]
+    },
+    {
+      "weight": "val_5195",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_5195_fp8_scale",
+      "zp_init": "val_5195_fp8_zp",
+      "dq_node": "val_5195_DequantizeLinear",
+      "dq_output": "val_5195_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_262"
+      ]
+    },
+    {
+      "weight": "val_5293",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_5293_fp8_scale",
+      "zp_init": "val_5293_fp8_zp",
+      "dq_node": "val_5293_DequantizeLinear",
+      "dq_output": "val_5293_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_263"
+      ]
+    },
+    {
+      "weight": "val_5298",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_5298_fp8_scale",
+      "zp_init": "val_5298_fp8_zp",
+      "dq_node": "val_5298_DequantizeLinear",
+      "dq_output": "val_5298_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_264"
+      ]
+    },
+    {
+      "weight": "val_5309",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_5309_fp8_scale",
+      "zp_init": "val_5309_fp8_zp",
+      "dq_node": "val_5309_DequantizeLinear",
+      "dq_output": "val_5309_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_265"
+      ]
+    },
+    {
+      "weight": "val_5320",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_5320_fp8_scale",
+      "zp_init": "val_5320_fp8_zp",
+      "dq_node": "val_5320_DequantizeLinear",
+      "dq_output": "val_5320_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_266"
+      ]
+    },
+    {
+      "weight": "val_5378",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_5378_fp8_scale",
+      "zp_init": "val_5378_fp8_zp",
+      "dq_node": "val_5378_DequantizeLinear",
+      "dq_output": "val_5378_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_267"
+      ]
+    },
+    {
+      "weight": "val_5383",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_5383_fp8_scale",
+      "zp_init": "val_5383_fp8_zp",
+      "dq_node": "val_5383_DequantizeLinear",
+      "dq_output": "val_5383_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_268"
+      ]
+    },
+    {
+      "weight": "val_5385",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_5385_fp8_scale",
+      "zp_init": "val_5385_fp8_zp",
+      "dq_node": "val_5385_DequantizeLinear",
+      "dq_output": "val_5385_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_269"
+      ]
+    },
+    {
+      "weight": "val_5386",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_5386_fp8_scale",
+      "zp_init": "val_5386_fp8_zp",
+      "dq_node": "val_5386_DequantizeLinear",
+      "dq_output": "val_5386_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_270"
+      ]
+    },
+    {
+      "weight": "val_5391",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_5391_fp8_scale",
+      "zp_init": "val_5391_fp8_zp",
+      "dq_node": "val_5391_DequantizeLinear",
+      "dq_output": "val_5391_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_271"
+      ]
+    },
+    {
+      "weight": "val_5402",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_5402_fp8_scale",
+      "zp_init": "val_5402_fp8_zp",
+      "dq_node": "val_5402_DequantizeLinear",
+      "dq_output": "val_5402_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_272"
+      ]
+    },
+    {
+      "weight": "val_5413",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_5413_fp8_scale",
+      "zp_init": "val_5413_fp8_zp",
+      "dq_node": "val_5413_DequantizeLinear",
+      "dq_output": "val_5413_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_273"
+      ]
+    },
+    {
+      "weight": "val_5519",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_5519_fp8_scale",
+      "zp_init": "val_5519_fp8_zp",
+      "dq_node": "val_5519_DequantizeLinear",
+      "dq_output": "val_5519_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_274"
+      ]
+    },
+    {
+      "weight": "val_5524",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_5524_fp8_scale",
+      "zp_init": "val_5524_fp8_zp",
+      "dq_node": "val_5524_DequantizeLinear",
+      "dq_output": "val_5524_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_275"
+      ]
+    },
+    {
+      "weight": "val_5535",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_5535_fp8_scale",
+      "zp_init": "val_5535_fp8_zp",
+      "dq_node": "val_5535_DequantizeLinear",
+      "dq_output": "val_5535_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_276"
+      ]
+    },
+    {
+      "weight": "val_5546",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_5546_fp8_scale",
+      "zp_init": "val_5546_fp8_zp",
+      "dq_node": "val_5546_DequantizeLinear",
+      "dq_output": "val_5546_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_277"
+      ]
+    },
+    {
+      "weight": "val_5604",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_5604_fp8_scale",
+      "zp_init": "val_5604_fp8_zp",
+      "dq_node": "val_5604_DequantizeLinear",
+      "dq_output": "val_5604_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_278"
+      ]
+    },
+    {
+      "weight": "val_5609",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_5609_fp8_scale",
+      "zp_init": "val_5609_fp8_zp",
+      "dq_node": "val_5609_DequantizeLinear",
+      "dq_output": "val_5609_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_279"
+      ]
+    },
+    {
+      "weight": "val_5611",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_5611_fp8_scale",
+      "zp_init": "val_5611_fp8_zp",
+      "dq_node": "val_5611_DequantizeLinear",
+      "dq_output": "val_5611_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_280"
+      ]
+    },
+    {
+      "weight": "val_5612",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_5612_fp8_scale",
+      "zp_init": "val_5612_fp8_zp",
+      "dq_node": "val_5612_DequantizeLinear",
+      "dq_output": "val_5612_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_281"
+      ]
+    },
+    {
+      "weight": "val_5617",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_5617_fp8_scale",
+      "zp_init": "val_5617_fp8_zp",
+      "dq_node": "val_5617_DequantizeLinear",
+      "dq_output": "val_5617_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_282"
+      ]
+    },
+    {
+      "weight": "val_5628",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_5628_fp8_scale",
+      "zp_init": "val_5628_fp8_zp",
+      "dq_node": "val_5628_DequantizeLinear",
+      "dq_output": "val_5628_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_283"
+      ]
+    },
+    {
+      "weight": "val_5639",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_5639_fp8_scale",
+      "zp_init": "val_5639_fp8_zp",
+      "dq_node": "val_5639_DequantizeLinear",
+      "dq_output": "val_5639_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_284"
+      ]
+    },
+    {
+      "weight": "val_5737",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_5737_fp8_scale",
+      "zp_init": "val_5737_fp8_zp",
+      "dq_node": "val_5737_DequantizeLinear",
+      "dq_output": "val_5737_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_285"
+      ]
+    },
+    {
+      "weight": "val_5742",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_5742_fp8_scale",
+      "zp_init": "val_5742_fp8_zp",
+      "dq_node": "val_5742_DequantizeLinear",
+      "dq_output": "val_5742_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_286"
+      ]
+    },
+    {
+      "weight": "val_5753",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_5753_fp8_scale",
+      "zp_init": "val_5753_fp8_zp",
+      "dq_node": "val_5753_DequantizeLinear",
+      "dq_output": "val_5753_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_287"
+      ]
+    },
+    {
+      "weight": "val_5764",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_5764_fp8_scale",
+      "zp_init": "val_5764_fp8_zp",
+      "dq_node": "val_5764_DequantizeLinear",
+      "dq_output": "val_5764_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_288"
+      ]
+    },
+    {
+      "weight": "val_5822",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_5822_fp8_scale",
+      "zp_init": "val_5822_fp8_zp",
+      "dq_node": "val_5822_DequantizeLinear",
+      "dq_output": "val_5822_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_289"
+      ]
+    },
+    {
+      "weight": "val_5827",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_5827_fp8_scale",
+      "zp_init": "val_5827_fp8_zp",
+      "dq_node": "val_5827_DequantizeLinear",
+      "dq_output": "val_5827_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_290"
+      ]
+    },
+    {
+      "weight": "val_5829",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_5829_fp8_scale",
+      "zp_init": "val_5829_fp8_zp",
+      "dq_node": "val_5829_DequantizeLinear",
+      "dq_output": "val_5829_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_291"
+      ]
+    },
+    {
+      "weight": "val_5830",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_5830_fp8_scale",
+      "zp_init": "val_5830_fp8_zp",
+      "dq_node": "val_5830_DequantizeLinear",
+      "dq_output": "val_5830_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_292"
+      ]
+    },
+    {
+      "weight": "val_5835",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_5835_fp8_scale",
+      "zp_init": "val_5835_fp8_zp",
+      "dq_node": "val_5835_DequantizeLinear",
+      "dq_output": "val_5835_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_293"
+      ]
+    },
+    {
+      "weight": "val_5846",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_5846_fp8_scale",
+      "zp_init": "val_5846_fp8_zp",
+      "dq_node": "val_5846_DequantizeLinear",
+      "dq_output": "val_5846_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_294"
+      ]
+    },
+    {
+      "weight": "val_5857",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_5857_fp8_scale",
+      "zp_init": "val_5857_fp8_zp",
+      "dq_node": "val_5857_DequantizeLinear",
+      "dq_output": "val_5857_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_295"
+      ]
+    },
+    {
+      "weight": "val_5963",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_5963_fp8_scale",
+      "zp_init": "val_5963_fp8_zp",
+      "dq_node": "val_5963_DequantizeLinear",
+      "dq_output": "val_5963_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_296"
+      ]
+    },
+    {
+      "weight": "val_5968",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_5968_fp8_scale",
+      "zp_init": "val_5968_fp8_zp",
+      "dq_node": "val_5968_DequantizeLinear",
+      "dq_output": "val_5968_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_297"
+      ]
+    },
+    {
+      "weight": "val_5979",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_5979_fp8_scale",
+      "zp_init": "val_5979_fp8_zp",
+      "dq_node": "val_5979_DequantizeLinear",
+      "dq_output": "val_5979_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_298"
+      ]
+    },
+    {
+      "weight": "val_5990",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_5990_fp8_scale",
+      "zp_init": "val_5990_fp8_zp",
+      "dq_node": "val_5990_DequantizeLinear",
+      "dq_output": "val_5990_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_299"
+      ]
+    },
+    {
+      "weight": "val_6048",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_6048_fp8_scale",
+      "zp_init": "val_6048_fp8_zp",
+      "dq_node": "val_6048_DequantizeLinear",
+      "dq_output": "val_6048_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_300"
+      ]
+    },
+    {
+      "weight": "val_6053",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_6053_fp8_scale",
+      "zp_init": "val_6053_fp8_zp",
+      "dq_node": "val_6053_DequantizeLinear",
+      "dq_output": "val_6053_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_301"
+      ]
+    },
+    {
+      "weight": "val_6055",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_6055_fp8_scale",
+      "zp_init": "val_6055_fp8_zp",
+      "dq_node": "val_6055_DequantizeLinear",
+      "dq_output": "val_6055_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_302"
+      ]
+    },
+    {
+      "weight": "val_6056",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_6056_fp8_scale",
+      "zp_init": "val_6056_fp8_zp",
+      "dq_node": "val_6056_DequantizeLinear",
+      "dq_output": "val_6056_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_303"
+      ]
+    },
+    {
+      "weight": "val_6061",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_6061_fp8_scale",
+      "zp_init": "val_6061_fp8_zp",
+      "dq_node": "val_6061_DequantizeLinear",
+      "dq_output": "val_6061_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_304"
+      ]
+    },
+    {
+      "weight": "val_6072",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_6072_fp8_scale",
+      "zp_init": "val_6072_fp8_zp",
+      "dq_node": "val_6072_DequantizeLinear",
+      "dq_output": "val_6072_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_305"
+      ]
+    },
+    {
+      "weight": "val_6083",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_6083_fp8_scale",
+      "zp_init": "val_6083_fp8_zp",
+      "dq_node": "val_6083_DequantizeLinear",
+      "dq_output": "val_6083_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_306"
+      ]
+    },
+    {
+      "weight": "val_6181",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_6181_fp8_scale",
+      "zp_init": "val_6181_fp8_zp",
+      "dq_node": "val_6181_DequantizeLinear",
+      "dq_output": "val_6181_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_307"
+      ]
+    },
+    {
+      "weight": "val_6186",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_6186_fp8_scale",
+      "zp_init": "val_6186_fp8_zp",
+      "dq_node": "val_6186_DequantizeLinear",
+      "dq_output": "val_6186_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_308"
+      ]
+    },
+    {
+      "weight": "val_6197",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_6197_fp8_scale",
+      "zp_init": "val_6197_fp8_zp",
+      "dq_node": "val_6197_DequantizeLinear",
+      "dq_output": "val_6197_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_309"
+      ]
+    },
+    {
+      "weight": "val_6208",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_6208_fp8_scale",
+      "zp_init": "val_6208_fp8_zp",
+      "dq_node": "val_6208_DequantizeLinear",
+      "dq_output": "val_6208_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_310"
+      ]
+    },
+    {
+      "weight": "val_6266",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_6266_fp8_scale",
+      "zp_init": "val_6266_fp8_zp",
+      "dq_node": "val_6266_DequantizeLinear",
+      "dq_output": "val_6266_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_311"
+      ]
+    },
+    {
+      "weight": "val_6271",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_6271_fp8_scale",
+      "zp_init": "val_6271_fp8_zp",
+      "dq_node": "val_6271_DequantizeLinear",
+      "dq_output": "val_6271_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_312"
+      ]
+    },
+    {
+      "weight": "val_6273",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_6273_fp8_scale",
+      "zp_init": "val_6273_fp8_zp",
+      "dq_node": "val_6273_DequantizeLinear",
+      "dq_output": "val_6273_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_313"
+      ]
+    },
+    {
+      "weight": "val_6274",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_6274_fp8_scale",
+      "zp_init": "val_6274_fp8_zp",
+      "dq_node": "val_6274_DequantizeLinear",
+      "dq_output": "val_6274_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_314"
+      ]
+    },
+    {
+      "weight": "val_6279",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_6279_fp8_scale",
+      "zp_init": "val_6279_fp8_zp",
+      "dq_node": "val_6279_DequantizeLinear",
+      "dq_output": "val_6279_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_315"
+      ]
+    },
+    {
+      "weight": "val_6290",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_6290_fp8_scale",
+      "zp_init": "val_6290_fp8_zp",
+      "dq_node": "val_6290_DequantizeLinear",
+      "dq_output": "val_6290_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_316"
+      ]
+    },
+    {
+      "weight": "val_6301",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_6301_fp8_scale",
+      "zp_init": "val_6301_fp8_zp",
+      "dq_node": "val_6301_DequantizeLinear",
+      "dq_output": "val_6301_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_317"
+      ]
+    },
+    {
+      "weight": "val_6407",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_6407_fp8_scale",
+      "zp_init": "val_6407_fp8_zp",
+      "dq_node": "val_6407_DequantizeLinear",
+      "dq_output": "val_6407_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_318"
+      ]
+    },
+    {
+      "weight": "val_6412",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_6412_fp8_scale",
+      "zp_init": "val_6412_fp8_zp",
+      "dq_node": "val_6412_DequantizeLinear",
+      "dq_output": "val_6412_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_319"
+      ]
+    },
+    {
+      "weight": "val_6423",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_6423_fp8_scale",
+      "zp_init": "val_6423_fp8_zp",
+      "dq_node": "val_6423_DequantizeLinear",
+      "dq_output": "val_6423_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_320"
+      ]
+    },
+    {
+      "weight": "val_6434",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_6434_fp8_scale",
+      "zp_init": "val_6434_fp8_zp",
+      "dq_node": "val_6434_DequantizeLinear",
+      "dq_output": "val_6434_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_321"
+      ]
+    },
+    {
+      "weight": "val_6492",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_6492_fp8_scale",
+      "zp_init": "val_6492_fp8_zp",
+      "dq_node": "val_6492_DequantizeLinear",
+      "dq_output": "val_6492_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_322"
+      ]
+    },
+    {
+      "weight": "val_6497",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_6497_fp8_scale",
+      "zp_init": "val_6497_fp8_zp",
+      "dq_node": "val_6497_DequantizeLinear",
+      "dq_output": "val_6497_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_323"
+      ]
+    },
+    {
+      "weight": "val_6499",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_6499_fp8_scale",
+      "zp_init": "val_6499_fp8_zp",
+      "dq_node": "val_6499_DequantizeLinear",
+      "dq_output": "val_6499_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_324"
+      ]
+    },
+    {
+      "weight": "val_6500",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_6500_fp8_scale",
+      "zp_init": "val_6500_fp8_zp",
+      "dq_node": "val_6500_DequantizeLinear",
+      "dq_output": "val_6500_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_325"
+      ]
+    },
+    {
+      "weight": "val_6505",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_6505_fp8_scale",
+      "zp_init": "val_6505_fp8_zp",
+      "dq_node": "val_6505_DequantizeLinear",
+      "dq_output": "val_6505_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_326"
+      ]
+    },
+    {
+      "weight": "val_6516",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_6516_fp8_scale",
+      "zp_init": "val_6516_fp8_zp",
+      "dq_node": "val_6516_DequantizeLinear",
+      "dq_output": "val_6516_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_327"
+      ]
+    },
+    {
+      "weight": "val_6527",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_6527_fp8_scale",
+      "zp_init": "val_6527_fp8_zp",
+      "dq_node": "val_6527_DequantizeLinear",
+      "dq_output": "val_6527_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_328"
+      ]
+    },
+    {
+      "weight": "val_6625",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_6625_fp8_scale",
+      "zp_init": "val_6625_fp8_zp",
+      "dq_node": "val_6625_DequantizeLinear",
+      "dq_output": "val_6625_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_329"
+      ]
+    },
+    {
+      "weight": "val_6630",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_6630_fp8_scale",
+      "zp_init": "val_6630_fp8_zp",
+      "dq_node": "val_6630_DequantizeLinear",
+      "dq_output": "val_6630_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_330"
+      ]
+    },
+    {
+      "weight": "val_6641",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_6641_fp8_scale",
+      "zp_init": "val_6641_fp8_zp",
+      "dq_node": "val_6641_DequantizeLinear",
+      "dq_output": "val_6641_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_331"
+      ]
+    },
+    {
+      "weight": "val_6652",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_6652_fp8_scale",
+      "zp_init": "val_6652_fp8_zp",
+      "dq_node": "val_6652_DequantizeLinear",
+      "dq_output": "val_6652_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_332"
+      ]
+    },
+    {
+      "weight": "val_6710",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_6710_fp8_scale",
+      "zp_init": "val_6710_fp8_zp",
+      "dq_node": "val_6710_DequantizeLinear",
+      "dq_output": "val_6710_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_333"
+      ]
+    },
+    {
+      "weight": "val_6715",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_6715_fp8_scale",
+      "zp_init": "val_6715_fp8_zp",
+      "dq_node": "val_6715_DequantizeLinear",
+      "dq_output": "val_6715_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_334"
+      ]
+    },
+    {
+      "weight": "val_6717",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_6717_fp8_scale",
+      "zp_init": "val_6717_fp8_zp",
+      "dq_node": "val_6717_DequantizeLinear",
+      "dq_output": "val_6717_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_335"
+      ]
+    },
+    {
+      "weight": "val_6718",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_6718_fp8_scale",
+      "zp_init": "val_6718_fp8_zp",
+      "dq_node": "val_6718_DequantizeLinear",
+      "dq_output": "val_6718_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_336"
+      ]
+    },
+    {
+      "weight": "val_6723",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_6723_fp8_scale",
+      "zp_init": "val_6723_fp8_zp",
+      "dq_node": "val_6723_DequantizeLinear",
+      "dq_output": "val_6723_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_337"
+      ]
+    },
+    {
+      "weight": "val_6734",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_6734_fp8_scale",
+      "zp_init": "val_6734_fp8_zp",
+      "dq_node": "val_6734_DequantizeLinear",
+      "dq_output": "val_6734_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_338"
+      ]
+    },
+    {
+      "weight": "val_6745",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_6745_fp8_scale",
+      "zp_init": "val_6745_fp8_zp",
+      "dq_node": "val_6745_DequantizeLinear",
+      "dq_output": "val_6745_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_339"
+      ]
+    },
+    {
+      "weight": "val_6851",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_6851_fp8_scale",
+      "zp_init": "val_6851_fp8_zp",
+      "dq_node": "val_6851_DequantizeLinear",
+      "dq_output": "val_6851_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_340"
+      ]
+    },
+    {
+      "weight": "val_6856",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_6856_fp8_scale",
+      "zp_init": "val_6856_fp8_zp",
+      "dq_node": "val_6856_DequantizeLinear",
+      "dq_output": "val_6856_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_341"
+      ]
+    },
+    {
+      "weight": "val_6867",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_6867_fp8_scale",
+      "zp_init": "val_6867_fp8_zp",
+      "dq_node": "val_6867_DequantizeLinear",
+      "dq_output": "val_6867_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_342"
+      ]
+    },
+    {
+      "weight": "val_6878",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_6878_fp8_scale",
+      "zp_init": "val_6878_fp8_zp",
+      "dq_node": "val_6878_DequantizeLinear",
+      "dq_output": "val_6878_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_343"
+      ]
+    },
+    {
+      "weight": "val_6936",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_6936_fp8_scale",
+      "zp_init": "val_6936_fp8_zp",
+      "dq_node": "val_6936_DequantizeLinear",
+      "dq_output": "val_6936_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_344"
+      ]
+    },
+    {
+      "weight": "val_6941",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_6941_fp8_scale",
+      "zp_init": "val_6941_fp8_zp",
+      "dq_node": "val_6941_DequantizeLinear",
+      "dq_output": "val_6941_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_345"
+      ]
+    },
+    {
+      "weight": "val_6943",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_6943_fp8_scale",
+      "zp_init": "val_6943_fp8_zp",
+      "dq_node": "val_6943_DequantizeLinear",
+      "dq_output": "val_6943_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_346"
+      ]
+    },
+    {
+      "weight": "val_6944",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_6944_fp8_scale",
+      "zp_init": "val_6944_fp8_zp",
+      "dq_node": "val_6944_DequantizeLinear",
+      "dq_output": "val_6944_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_347"
+      ]
+    },
+    {
+      "weight": "val_6949",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_6949_fp8_scale",
+      "zp_init": "val_6949_fp8_zp",
+      "dq_node": "val_6949_DequantizeLinear",
+      "dq_output": "val_6949_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_348"
+      ]
+    },
+    {
+      "weight": "val_6960",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_6960_fp8_scale",
+      "zp_init": "val_6960_fp8_zp",
+      "dq_node": "val_6960_DequantizeLinear",
+      "dq_output": "val_6960_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_349"
+      ]
+    },
+    {
+      "weight": "val_6971",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_6971_fp8_scale",
+      "zp_init": "val_6971_fp8_zp",
+      "dq_node": "val_6971_DequantizeLinear",
+      "dq_output": "val_6971_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_350"
+      ]
+    },
+    {
+      "weight": "val_7069",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_7069_fp8_scale",
+      "zp_init": "val_7069_fp8_zp",
+      "dq_node": "val_7069_DequantizeLinear",
+      "dq_output": "val_7069_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_351"
+      ]
+    },
+    {
+      "weight": "val_7074",
+      "shape": [
+        2560,
+        4096
+      ],
+      "scale_init": "val_7074_fp8_scale",
+      "zp_init": "val_7074_fp8_zp",
+      "dq_node": "val_7074_DequantizeLinear",
+      "dq_output": "val_7074_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_352"
+      ]
+    },
+    {
+      "weight": "val_7085",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_7085_fp8_scale",
+      "zp_init": "val_7085_fp8_zp",
+      "dq_node": "val_7085_DequantizeLinear",
+      "dq_output": "val_7085_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_353"
+      ]
+    },
+    {
+      "weight": "val_7096",
+      "shape": [
+        2560,
+        1024
+      ],
+      "scale_init": "val_7096_fp8_scale",
+      "zp_init": "val_7096_fp8_zp",
+      "dq_node": "val_7096_DequantizeLinear",
+      "dq_output": "val_7096_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_354"
+      ]
+    },
+    {
+      "weight": "val_7154",
+      "shape": [
+        4096,
+        2560
+      ],
+      "scale_init": "val_7154_fp8_scale",
+      "zp_init": "val_7154_fp8_zp",
+      "dq_node": "val_7154_DequantizeLinear",
+      "dq_output": "val_7154_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_355"
+      ]
+    },
+    {
+      "weight": "val_7159",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_7159_fp8_scale",
+      "zp_init": "val_7159_fp8_zp",
+      "dq_node": "val_7159_DequantizeLinear",
+      "dq_output": "val_7159_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_356"
+      ]
+    },
+    {
+      "weight": "val_7161",
+      "shape": [
+        2560,
+        9728
+      ],
+      "scale_init": "val_7161_fp8_scale",
+      "zp_init": "val_7161_fp8_zp",
+      "dq_node": "val_7161_DequantizeLinear",
+      "dq_output": "val_7161_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_357"
+      ]
+    },
+    {
+      "weight": "val_7162",
+      "shape": [
+        9728,
+        2560
+      ],
+      "scale_init": "val_7162_fp8_scale",
+      "zp_init": "val_7162_fp8_zp",
+      "dq_node": "val_7162_DequantizeLinear",
+      "dq_output": "val_7162_fp8_dq",
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_358"
+      ]
+    }
+  ],
+  "activation_log_count": 26,
+  "activation_log": [
+    {
+      "act_tensor": "encoder_hidden_states",
+      "scale_init": "encoder_hidden_states_act_fp8_scale",
+      "zp_init": "encoder_hidden_states_act_fp8_zp",
+      "q_node": "encoder_hidden_states_act_QuantizeLinear",
+      "dq_node": "encoder_hidden_states_act_DequantizeLinear",
+      "q_output": "encoder_hidden_states_act_fp8_q",
+      "dq_output": "encoder_hidden_states_act_fp8_dq",
+      "amax": 23.375,
+      "scale": 0.05217633928571429,
+      "consumer_count": 1,
+      "consumers": [
+        "node_MatMul_31"
+      ],
+      "linear_paths": [
+        "condition_embedder"
+      ]
+    },
+    {
+      "act_tensor": "type_as",
+      "scale_init": "type_as_act_fp8_scale",
+      "zp_init": "type_as_act_fp8_zp",
+      "q_node": "type_as_act_QuantizeLinear",
+      "dq_node": "type_as_act_DequantizeLinear",
+      "q_output": "type_as_act_fp8_q",
+      "dq_output": "type_as_act_fp8_dq",
+      "amax": 29.25,
+      "scale": 0.06529017857142858,
+      "consumer_count": 3,
+      "consumers": [
+        "node_linear_7",
+        "node_linear_8",
+        "node_linear_9"
+      ],
+      "linear_paths": [
+        "layers.0.self_attn.q_proj",
+        "layers.0.self_attn.k_proj",
+        "layers.0.self_attn.v_proj"
+      ]
+    },
+    {
+      "act_tensor": "view_5",
+      "scale_init": "view_5_act_fp8_scale",
+      "zp_init": "view_5_act_fp8_zp",
+      "q_node": "view_5_act_QuantizeLinear",
+      "dq_node": "view_5_act_DequantizeLinear",
+      "q_output": "view_5_act_fp8_q",
+      "dq_output": "view_5_act_fp8_dq",
+      "amax": 13.5625,
+      "scale": 0.0302734375,
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_10"
+      ],
+      "linear_paths": [
+        "layers.0.self_attn.o_proj"
+      ]
+    },
+    {
+      "act_tensor": "type_as_5",
+      "scale_init": "type_as_5_act_fp8_scale",
+      "zp_init": "type_as_5_act_fp8_zp",
+      "q_node": "type_as_5_act_QuantizeLinear",
+      "dq_node": "type_as_5_act_DequantizeLinear",
+      "q_output": "type_as_5_act_fp8_q",
+      "dq_output": "type_as_5_act_fp8_dq",
+      "amax": 6.53125,
+      "scale": 0.014578683035714286,
+      "consumer_count": 3,
+      "consumers": [
+        "node_linear_18",
+        "node_linear_19",
+        "node_linear_20"
+      ],
+      "linear_paths": [
+        "layers.1.self_attn.q_proj",
+        "layers.1.self_attn.k_proj",
+        "layers.1.self_attn.v_proj"
+      ]
+    },
+    {
+      "act_tensor": "view_13",
+      "scale_init": "view_13_act_fp8_scale",
+      "zp_init": "view_13_act_fp8_zp",
+      "q_node": "view_13_act_QuantizeLinear",
+      "dq_node": "view_13_act_DequantizeLinear",
+      "q_output": "view_13_act_fp8_q",
+      "dq_output": "view_13_act_fp8_dq",
+      "amax": 9.4375,
+      "scale": 0.021065848214285716,
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_21"
+      ],
+      "linear_paths": [
+        "layers.1.self_attn.o_proj"
+      ]
+    },
+    {
+      "act_tensor": "type_as_10",
+      "scale_init": "type_as_10_act_fp8_scale",
+      "zp_init": "type_as_10_act_fp8_zp",
+      "q_node": "type_as_10_act_QuantizeLinear",
+      "dq_node": "type_as_10_act_DequantizeLinear",
+      "q_output": "type_as_10_act_fp8_q",
+      "dq_output": "type_as_10_act_fp8_dq",
+      "amax": 5.5625,
+      "scale": 0.012416294642857142,
+      "consumer_count": 3,
+      "consumers": [
+        "node_linear_29",
+        "node_linear_30",
+        "node_linear_31"
+      ],
+      "linear_paths": [
+        "layers.2.self_attn.q_proj",
+        "layers.2.self_attn.k_proj",
+        "layers.2.self_attn.v_proj"
+      ]
+    },
+    {
+      "act_tensor": "view_21",
+      "scale_init": "view_21_act_fp8_scale",
+      "zp_init": "view_21_act_fp8_zp",
+      "q_node": "view_21_act_QuantizeLinear",
+      "dq_node": "view_21_act_DequantizeLinear",
+      "q_output": "view_21_act_fp8_q",
+      "dq_output": "view_21_act_fp8_dq",
+      "amax": 5.75,
+      "scale": 0.012834821428571428,
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_32"
+      ],
+      "linear_paths": [
+        "layers.2.self_attn.o_proj"
+      ]
+    },
+    {
+      "act_tensor": "type_as_15",
+      "scale_init": "type_as_15_act_fp8_scale",
+      "zp_init": "type_as_15_act_fp8_zp",
+      "q_node": "type_as_15_act_QuantizeLinear",
+      "dq_node": "type_as_15_act_DequantizeLinear",
+      "q_output": "type_as_15_act_fp8_q",
+      "dq_output": "type_as_15_act_fp8_dq",
+      "amax": 6.5,
+      "scale": 0.014508928571428572,
+      "consumer_count": 3,
+      "consumers": [
+        "node_linear_40",
+        "node_linear_41",
+        "node_linear_42"
+      ],
+      "linear_paths": [
+        "layers.3.self_attn.q_proj",
+        "layers.3.self_attn.k_proj",
+        "layers.3.self_attn.v_proj"
+      ]
+    },
+    {
+      "act_tensor": "view_29",
+      "scale_init": "view_29_act_fp8_scale",
+      "zp_init": "view_29_act_fp8_zp",
+      "q_node": "view_29_act_QuantizeLinear",
+      "dq_node": "view_29_act_DequantizeLinear",
+      "q_output": "view_29_act_fp8_q",
+      "dq_output": "view_29_act_fp8_dq",
+      "amax": 7.53125,
+      "scale": 0.016810825892857144,
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_43"
+      ],
+      "linear_paths": [
+        "layers.3.self_attn.o_proj"
+      ]
+    },
+    {
+      "act_tensor": "type_as_17",
+      "scale_init": "type_as_17_act_fp8_scale",
+      "zp_init": "type_as_17_act_fp8_zp",
+      "q_node": "type_as_17_act_QuantizeLinear",
+      "dq_node": "type_as_17_act_DequantizeLinear",
+      "q_output": "type_as_17_act_fp8_q",
+      "dq_output": "type_as_17_act_fp8_dq",
+      "amax": 0.1123046875,
+      "scale": 0.0002506801060267857,
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_44"
+      ],
+      "linear_paths": [
+        "layers.3.cross_attn.q_proj"
+      ]
+    },
+    {
+      "act_tensor": "type_as_20",
+      "scale_init": "type_as_20_act_fp8_scale",
+      "zp_init": "type_as_20_act_fp8_zp",
+      "q_node": "type_as_20_act_QuantizeLinear",
+      "dq_node": "type_as_20_act_DequantizeLinear",
+      "q_output": "type_as_20_act_fp8_q",
+      "dq_output": "type_as_20_act_fp8_dq",
+      "amax": 5.375,
+      "scale": 0.011997767857142858,
+      "consumer_count": 3,
+      "consumers": [
+        "node_linear_51",
+        "node_linear_52",
+        "node_linear_53"
+      ],
+      "linear_paths": [
+        "layers.4.self_attn.q_proj",
+        "layers.4.self_attn.k_proj",
+        "layers.4.self_attn.v_proj"
+      ]
+    },
+    {
+      "act_tensor": "type_as_22",
+      "scale_init": "type_as_22_act_fp8_scale",
+      "zp_init": "type_as_22_act_fp8_zp",
+      "q_node": "type_as_22_act_QuantizeLinear",
+      "dq_node": "type_as_22_act_DequantizeLinear",
+      "q_output": "type_as_22_act_fp8_q",
+      "dq_output": "type_as_22_act_fp8_dq",
+      "amax": 0.1630859375,
+      "scale": 0.00036403111049107144,
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_55"
+      ],
+      "linear_paths": [
+        "layers.4.cross_attn.q_proj"
+      ]
+    },
+    {
+      "act_tensor": "type_as_25",
+      "scale_init": "type_as_25_act_fp8_scale",
+      "zp_init": "type_as_25_act_fp8_zp",
+      "q_node": "type_as_25_act_QuantizeLinear",
+      "dq_node": "type_as_25_act_DequantizeLinear",
+      "q_output": "type_as_25_act_fp8_q",
+      "dq_output": "type_as_25_act_fp8_dq",
+      "amax": 6.25,
+      "scale": 0.013950892857142858,
+      "consumer_count": 3,
+      "consumers": [
+        "node_linear_62",
+        "node_linear_63",
+        "node_linear_64"
+      ],
+      "linear_paths": [
+        "layers.5.self_attn.q_proj",
+        "layers.5.self_attn.k_proj",
+        "layers.5.self_attn.v_proj"
+      ]
+    },
+    {
+      "act_tensor": "view_45",
+      "scale_init": "view_45_act_fp8_scale",
+      "zp_init": "view_45_act_fp8_zp",
+      "q_node": "view_45_act_QuantizeLinear",
+      "dq_node": "view_45_act_DequantizeLinear",
+      "q_output": "view_45_act_fp8_q",
+      "dq_output": "view_45_act_fp8_dq",
+      "amax": 9.3125,
+      "scale": 0.020786830357142856,
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_65"
+      ],
+      "linear_paths": [
+        "layers.5.self_attn.o_proj"
+      ]
+    },
+    {
+      "act_tensor": "type_as_40",
+      "scale_init": "type_as_40_act_fp8_scale",
+      "zp_init": "type_as_40_act_fp8_zp",
+      "q_node": "type_as_40_act_QuantizeLinear",
+      "dq_node": "type_as_40_act_DequantizeLinear",
+      "q_output": "type_as_40_act_fp8_q",
+      "dq_output": "type_as_40_act_fp8_dq",
+      "amax": 9.6875,
+      "scale": 0.021623883928571428,
+      "consumer_count": 3,
+      "consumers": [
+        "node_linear_95",
+        "node_linear_96",
+        "node_linear_97"
+      ],
+      "linear_paths": [
+        "layers.8.self_attn.q_proj",
+        "layers.8.self_attn.k_proj",
+        "layers.8.self_attn.v_proj"
+      ]
+    },
+    {
+      "act_tensor": "type_as_42",
+      "scale_init": "type_as_42_act_fp8_scale",
+      "zp_init": "type_as_42_act_fp8_zp",
+      "q_node": "type_as_42_act_QuantizeLinear",
+      "dq_node": "type_as_42_act_DequantizeLinear",
+      "q_output": "type_as_42_act_fp8_q",
+      "dq_output": "type_as_42_act_fp8_dq",
+      "amax": 0.322265625,
+      "scale": 0.0007193429129464286,
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_99"
+      ],
+      "linear_paths": [
+        "layers.8.cross_attn.q_proj"
+      ]
+    },
+    {
+      "act_tensor": "type_as_60",
+      "scale_init": "type_as_60_act_fp8_scale",
+      "zp_init": "type_as_60_act_fp8_zp",
+      "q_node": "type_as_60_act_QuantizeLinear",
+      "dq_node": "type_as_60_act_DequantizeLinear",
+      "q_output": "type_as_60_act_fp8_q",
+      "dq_output": "type_as_60_act_fp8_dq",
+      "amax": 11.625,
+      "scale": 0.025948660714285716,
+      "consumer_count": 3,
+      "consumers": [
+        "node_linear_139",
+        "node_linear_140",
+        "node_linear_141"
+      ],
+      "linear_paths": [
+        "layers.12.self_attn.q_proj",
+        "layers.12.self_attn.k_proj",
+        "layers.12.self_attn.v_proj"
+      ]
+    },
+    {
+      "act_tensor": "type_as_63",
+      "scale_init": "type_as_63_act_fp8_scale",
+      "zp_init": "type_as_63_act_fp8_zp",
+      "q_node": "type_as_63_act_QuantizeLinear",
+      "dq_node": "type_as_63_act_DequantizeLinear",
+      "q_output": "type_as_63_act_fp8_q",
+      "dq_output": "type_as_63_act_fp8_dq",
+      "amax": 6.3125,
+      "scale": 0.014090401785714286,
+      "consumer_count": 2,
+      "consumers": [
+        "node_linear_147",
+        "node_linear_148"
+      ],
+      "linear_paths": [
+        "layers.12.mlp.gate_proj",
+        "layers.12.mlp.up_proj"
+      ]
+    },
+    {
+      "act_tensor": "view_133",
+      "scale_init": "view_133_act_fp8_scale",
+      "zp_init": "view_133_act_fp8_zp",
+      "q_node": "view_133_act_QuantizeLinear",
+      "dq_node": "view_133_act_DequantizeLinear",
+      "q_output": "view_133_act_fp8_q",
+      "dq_output": "view_133_act_fp8_dq",
+      "amax": 137.0,
+      "scale": 0.30580357142857145,
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_186"
+      ],
+      "linear_paths": [
+        "layers.16.self_attn.o_proj"
+      ]
+    },
+    {
+      "act_tensor": "view_137",
+      "scale_init": "view_137_act_fp8_scale",
+      "zp_init": "view_137_act_fp8_zp",
+      "q_node": "view_137_act_QuantizeLinear",
+      "dq_node": "view_137_act_DequantizeLinear",
+      "q_output": "view_137_act_fp8_q",
+      "dq_output": "view_137_act_fp8_dq",
+      "amax": 68.5,
+      "scale": 0.15290178571428573,
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_190"
+      ],
+      "linear_paths": [
+        "layers.16.cross_attn.o_proj"
+      ]
+    },
+    {
+      "act_tensor": "type_as_112",
+      "scale_init": "type_as_112_act_fp8_scale",
+      "zp_init": "type_as_112_act_fp8_zp",
+      "q_node": "type_as_112_act_QuantizeLinear",
+      "dq_node": "type_as_112_act_DequantizeLinear",
+      "q_output": "type_as_112_act_fp8_q",
+      "dq_output": "type_as_112_act_fp8_dq",
+      "amax": 1.65625,
+      "scale": 0.003696986607142857,
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_253"
+      ],
+      "linear_paths": [
+        "layers.22.cross_attn.q_proj"
+      ]
+    },
+    {
+      "act_tensor": "type_as_122",
+      "scale_init": "type_as_122_act_fp8_scale",
+      "zp_init": "type_as_122_act_fp8_zp",
+      "q_node": "type_as_122_act_QuantizeLinear",
+      "dq_node": "type_as_122_act_DequantizeLinear",
+      "q_output": "type_as_122_act_fp8_q",
+      "dq_output": "type_as_122_act_fp8_dq",
+      "amax": 1.5546875,
+      "scale": 0.0034702845982142855,
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_275"
+      ],
+      "linear_paths": [
+        "layers.24.cross_attn.q_proj"
+      ]
+    },
+    {
+      "act_tensor": "type_as_142",
+      "scale_init": "type_as_142_act_fp8_scale",
+      "zp_init": "type_as_142_act_fp8_zp",
+      "q_node": "type_as_142_act_QuantizeLinear",
+      "dq_node": "type_as_142_act_DequantizeLinear",
+      "q_output": "type_as_142_act_fp8_q",
+      "dq_output": "type_as_142_act_fp8_dq",
+      "amax": 3.0625,
+      "scale": 0.0068359375,
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_319"
+      ],
+      "linear_paths": [
+        "layers.28.cross_attn.q_proj"
+      ]
+    },
+    {
+      "act_tensor": "view_237",
+      "scale_init": "view_237_act_fp8_scale",
+      "zp_init": "view_237_act_fp8_zp",
+      "q_node": "view_237_act_QuantizeLinear",
+      "dq_node": "view_237_act_DequantizeLinear",
+      "q_output": "view_237_act_fp8_q",
+      "dq_output": "view_237_act_fp8_dq",
+      "amax": 113.0,
+      "scale": 0.25223214285714285,
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_329"
+      ],
+      "linear_paths": [
+        "layers.29.self_attn.o_proj"
+      ]
+    },
+    {
+      "act_tensor": "view_245",
+      "scale_init": "view_245_act_fp8_scale",
+      "zp_init": "view_245_act_fp8_zp",
+      "q_node": "view_245_act_QuantizeLinear",
+      "dq_node": "view_245_act_DequantizeLinear",
+      "q_output": "view_245_act_fp8_q",
+      "dq_output": "view_245_act_fp8_dq",
+      "amax": 131.0,
+      "scale": 0.2924107142857143,
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_340"
+      ],
+      "linear_paths": [
+        "layers.30.self_attn.o_proj"
+      ]
+    },
+    {
+      "act_tensor": "view_253",
+      "scale_init": "view_253_act_fp8_scale",
+      "zp_init": "view_253_act_fp8_zp",
+      "q_node": "view_253_act_QuantizeLinear",
+      "dq_node": "view_253_act_DequantizeLinear",
+      "q_output": "view_253_act_fp8_q",
+      "dq_output": "view_253_act_fp8_dq",
+      "amax": 93.0,
+      "scale": 0.20758928571428573,
+      "consumer_count": 1,
+      "consumers": [
+        "node_linear_351"
+      ],
+      "linear_paths": [
+        "layers.31.self_attn.o_proj"
+      ]
+    }
+  ],
+  "unmatched_weight_inits": [
+    "val_1324",
+    "val_1768",
+    "val_3166"
+  ],
+  "smoothquant_alpha": 0.0,
+  "smoothquant_applied_count": 0,
+  "smoothquant_skipped_count": 0,
+  "smoothquant_log": [],
+  "smoothquant_skipped": []
+}

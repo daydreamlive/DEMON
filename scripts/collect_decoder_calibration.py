@@ -53,11 +53,24 @@ from acestep.engine.stream import StreamPipeline, SlotRequest
 from acestep.paths import models_dir, trt_engines_dir
 
 
-# Curated prompt mix. Reuses the spread from the INT8 VAE calibration
-# work (commit 0131b08) which deliberately covers transient-heavy +
-# low-signal extremes, plus a few extras for harmonic / vocal content
-# that the DiT activations care about more than the VAE did.
+# Curated prompt mix. The first 8 are the original calibration set (the
+# spread inherited from the INT8 VAE work in commit 0131b08, plus a few
+# extras for harmonic / vocal content). Prompts 9-24 expand coverage
+# along axes the original set was thin on:
+#   - prominent lead vocals (drives encoder_hidden_states distribution)
+#   - extreme transients (percussion-focused, glitch)
+#   - wide dynamic range (very quiet to very loud within one prompt)
+#   - very-low-frequency dominant content (drum&bass, dub)
+#   - very-high-frequency content (sparkly, glassy, shimmering)
+#   - dense polyphony (choir, orchestral tutti, layered electronic)
+#   - sparse content (solo piano, solo violin, ASMR-quiet)
+# These broaden the activation distribution seen by mlp.down_proj and
+# attention projections — the layers with structural massive-activation
+# patterns. More breadth lets per-tensor and per-channel scales settle
+# on the actual amax / p99.9 / per-channel ceiling rather than a
+# distribution-of-8 estimate.
 PROMPTS: List[tuple[str, int, str]] = [
+    # --- Original 8 (preserve so the baseline is reproducible) ---
     ("dance music, four on the floor, kick drum, electronic, club, energetic synth bass, bright leads", 128, "F minor"),
     ("jazz piano trio, brushed drums, walking bass", 140, "Bb major"),
     ("ambient electronic, slow pads, evolving textures", 80, "C minor"),
@@ -66,6 +79,30 @@ PROMPTS: List[tuple[str, int, str]] = [
     ("classical orchestral, sweeping strings, brass, timpani", 90, "D major"),
     ("acoustic folk, fingerpicked guitar, soft harmonica, brushes", 100, "G major"),
     ("synthwave, retro drum machine, analog synth, neon", 120, "A minor"),
+    # --- Vocal-forward (encoder side coverage) ---
+    ("pop ballad, emotive female lead vocal, soft piano, strings swell", 72, "Eb major"),
+    ("r&b soul, smooth male vocal, electric piano, finger snaps, warm bass", 95, "Db major"),
+    ("opera aria, dramatic soprano, lush orchestra, dynamic crescendo", 65, "A major"),
+    ("rap verse, fast-flow vocal, minimal beat, sub bass drops", 90, "G minor"),
+    # --- Transient-heavy and percussion-extreme ---
+    ("breakbeat, chopped amen break, fast snares, dense fills", 165, "B minor"),
+    ("idm glitch, granular percussion, micro edits, stutter rhythms", 150, "D minor"),
+    ("flamenco, palmas claps, fast strumming, foot stomps", 130, "E phrygian"),
+    # --- Very-low-frequency dominant ---
+    ("drum and bass, deep sub bass, fast amen drums, jungle atmosphere", 174, "F minor"),
+    ("dub reggae, deep bass, sparse skank, tape delay, smoky", 78, "A minor"),
+    # --- Very-high-frequency and shimmering ---
+    ("glassy ambient, shimmering bells, high-register pads, no bass", 60, "E major"),
+    ("post rock crescendo, layered guitars, bright cymbals, soaring leads", 110, "C major"),
+    # --- Dense polyphony ---
+    ("choral, full SATB choir, rich harmony, cathedral reverb", 60, "F major"),
+    ("big band swing, full brass, drums, bass, piano comping, ensemble hits", 160, "Eb major"),
+    # --- Sparse / quiet ---
+    ("solo piano nocturne, intimate, room tone, minimal ornament", 55, "Bb minor"),
+    ("solo violin sonata, expressive vibrato, sparse texture", 70, "G minor"),
+    # --- Genre extremes the original missed ---
+    ("country americana, slide guitar, fiddle, brushed snare, warm tones", 100, "C major"),
+    ("noise drone, harsh distortion, sustained dissonance, no rhythm", 60, "atonal"),
 ]
 
 # Target encoder length to pad all captures to. Matches the canonical

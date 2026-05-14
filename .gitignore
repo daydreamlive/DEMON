@@ -266,3 +266,17 @@ gradio_outputs/
 trt_engines/*
 notes/*
 test_output/
+
+# NVFP4 plugin build artifacts (regenerable from sources committed under
+# acestep/engine/trt/plugins/nvfp4_linear/)
+acestep/engine/trt/plugins/_build/
+acestep/engine/trt/plugins/_trt_headers/
+acestep/engine/trt/plugins/nvfp4_linear/*.dll
+acestep/engine/trt/plugins/nvfp4_linear/*.exp
+acestep/engine/trt/plugins/nvfp4_linear/*.lib
+acestep/engine/trt/plugins/nvfp4_linear/*.obj
+acestep/engine/trt/plugins/nvfp4_linear/*.pdb
+
+# Diagnostic byte dumps written to the repo root by plugin test scripts
+plugin_packed_act.bin
+plugin_swz_scales.bin

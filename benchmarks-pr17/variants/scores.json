@@ -1,0 +1,1028 @@
+{
+  "variants": {
+    "bf16": {
+      "tag": "bf16",
+      "cosine_sim": 1.0,
+      "speedup": 1.0,
+      "engine_mb": 7989.4,
+      "text_clap_mean": 0.4405688097079595,
+      "text_clap_std": 0.1159839276020323,
+      "audio_clap_vs_bf16_mean": 0.9502509832382202,
+      "audio_clap_vs_bf16_std": 0.030616557260497095,
+      "mel_l1_mean": 0.0,
+      "mel_l1_std": 0.0,
+      "mrstft_mean": 0.0,
+      "mrstft_std": 0.0,
+      "per_prompt": [
+        {
+          "prompt_tag": "dance",
+          "file": "01_dance.wav",
+          "text_clap": 0.5349724292755127,
+          "audio_clap_vs_bf16": 0.9868166446685791,
+          "mel_l1_vs_bf16": 0.0,
+          "mrstft_vs_bf16": 0.0
+        },
+        {
+          "prompt_tag": "jazz",
+          "file": "02_jazz.wav",
+          "text_clap": 0.544446587562561,
+          "audio_clap_vs_bf16": 0.9609599113464355,
+          "mel_l1_vs_bf16": 0.0,
+          "mrstft_vs_bf16": 0.0
+        },
+        {
+          "prompt_tag": "ambient",
+          "file": "03_ambient.wav",
+          "text_clap": 0.20549577474594116,
+          "audio_clap_vs_bf16": 0.9159495830535889,
+          "mel_l1_vs_bf16": 0.0,
+          "mrstft_vs_bf16": 0.0
+        },
+        {
+          "prompt_tag": "metal",
+          "file": "04_metal.wav",
+          "text_clap": 0.4192705452442169,
+          "audio_clap_vs_bf16": 0.9548549652099609,
+          "mel_l1_vs_bf16": 0.0,
+          "mrstft_vs_bf16": 0.0
+        },
+        {
+          "prompt_tag": "orch",
+          "file": "05_orch.wav",
+          "text_clap": 0.4271236062049866,
+          "audio_clap_vs_bf16": 0.903910756111145,
+          "mel_l1_vs_bf16": 0.0,
+          "mrstft_vs_bf16": 0.0
+        },
+        {
+          "prompt_tag": "folk",
+          "file": "06_folk.wav",
+          "text_clap": 0.5121039152145386,
+          "audio_clap_vs_bf16": 0.9790140390396118,
+          "mel_l1_vs_bf16": 0.0,
+          "mrstft_vs_bf16": 0.0
+        }
+      ]
+    },
+    "sq_a05_full": {
+      "tag": "sq_a05_full",
+      "cosine_sim": 0.9708387479186058,
+      "speedup": 1.5241009237351768,
+      "engine_mb": 4360.11706,
+      "text_clap_mean": 0.4310651198029518,
+      "text_clap_std": 0.128456938814975,
+      "audio_clap_vs_bf16_mean": 0.8879397908846537,
+      "audio_clap_vs_bf16_std": 0.07171028814491398,
+      "mel_l1_mean": 1.2388520340124767,
+      "mel_l1_std": 0.6429357466946507,
+      "mrstft_mean": 1.4399679783317776,
+      "mrstft_std": 0.5073617784759133,
+      "per_prompt": [
+        {
+          "prompt_tag": "dance",
+          "file": "01_dance.wav",
+          "text_clap": 0.5518224239349365,
+          "audio_clap_vs_bf16": 0.7669460773468018,
+          "mel_l1_vs_bf16": 2.3482723236083984,
+          "mrstft_vs_bf16": 2.302413523197174
+        },
+        {
+          "prompt_tag": "jazz",
+          "file": "02_jazz.wav",
+          "text_clap": 0.5720773935317993,
+          "audio_clap_vs_bf16": 0.9488475322723389,
+          "mel_l1_vs_bf16": 1.8578211069107056,
+          "mrstft_vs_bf16": 1.9652459820111592
+        },
+        {
+          "prompt_tag": "ambient",
+          "file": "03_ambient.wav",
+          "text_clap": 0.2135334461927414,
+          "audio_clap_vs_bf16": 0.9328039884567261,
+          "mel_l1_vs_bf16": 0.7138734459877014,
+          "mrstft_vs_bf16": 1.0776939392089844
+        },
+        {
+          "prompt_tag": "metal",
+          "file": "04_metal.wav",
+          "text_clap": 0.31163489818573,
+          "audio_clap_vs_bf16": 0.8136788010597229,
+          "mel_l1_vs_bf16": 0.6833711266517639,
+          "mrstft_vs_bf16": 1.0347790122032166
+        },
+        {
+          "prompt_tag": "orch",
+          "file": "05_orch.wav",
+          "text_clap": 0.46060603857040405,
+          "audio_clap_vs_bf16": 0.9106143712997437,
+          "mel_l1_vs_bf16": 0.7248949408531189,
+          "mrstft_vs_bf16": 0.9938516815503439
+        },
+        {
+          "prompt_tag": "folk",
+          "file": "06_folk.wav",
+          "text_clap": 0.4767165184020996,
+          "audio_clap_vs_bf16": 0.9547479748725891,
+          "mel_l1_vs_bf16": 1.1048792600631714,
+          "mrstft_vs_bf16": 1.2658237318197887
+        }
+      ]
+    },
+    "sq_a05_skip10": {
+      "tag": "sq_a05_skip10",
+      "cosine_sim": 0.9726211577653885,
+      "speedup": 1.3362060196072354,
+      "engine_mb": 5221.67362,
+      "text_clap_mean": 0.4734378258387248,
+      "text_clap_std": 0.12809445223206192,
+      "audio_clap_vs_bf16_mean": 0.8945870995521545,
+      "audio_clap_vs_bf16_std": 0.07683221255097701,
+      "mel_l1_mean": 1.2181857128938038,
+      "mel_l1_std": 0.6478816355824405,
+      "mrstft_mean": 1.4224758346875508,
+      "mrstft_std": 0.5161758542450771,
+      "per_prompt": [
+        {
+          "prompt_tag": "dance",
+          "file": "01_dance.wav",
+          "text_clap": 0.46117517352104187,
+          "audio_clap_vs_bf16": 0.728142499923706,
+          "mel_l1_vs_bf16": 2.328326940536499,
+          "mrstft_vs_bf16": 2.2997849186261496
+        },
+        {
+          "prompt_tag": "jazz",
+          "file": "02_jazz.wav",
+          "text_clap": 0.5807316303253174,
+          "audio_clap_vs_bf16": 0.9589127898216248,
+          "mel_l1_vs_bf16": 1.8745262622833252,
+          "mrstft_vs_bf16": 1.9732782046000164
+        },
+        {
+          "prompt_tag": "ambient",
+          "file": "03_ambient.wav",
+          "text_clap": 0.20060184597969055,
+          "audio_clap_vs_bf16": 0.9222955703735352,
+          "mel_l1_vs_bf16": 0.6773691773414612,
+          "mrstft_vs_bf16": 1.0432319541772206
+        },
+        {
+          "prompt_tag": "metal",
+          "file": "04_metal.wav",
+          "text_clap": 0.5672942996025085,
+          "audio_clap_vs_bf16": 0.9020815491676331,
+          "mel_l1_vs_bf16": 0.6883706450462341,
+          "mrstft_vs_bf16": 1.0340866446495056
+        },
+        {
+          "prompt_tag": "orch",
+          "file": "05_orch.wav",
+          "text_clap": 0.5127077102661133,
+          "audio_clap_vs_bf16": 0.912002444267273,
+          "mel_l1_vs_bf16": 0.7288092970848083,
+          "mrstft_vs_bf16": 1.0122908353805542
+        },
+        {
+          "prompt_tag": "folk",
+          "file": "06_folk.wav",
+          "text_clap": 0.518116295337677,
+          "audio_clap_vs_bf16": 0.9440877437591553,
+          "mel_l1_vs_bf16": 1.0117119550704956,
+          "mrstft_vs_bf16": 1.172182450691859
+        }
+      ]
+    },
+    "sq_a05_skip5_cal2": {
+      "tag": "sq_a05_skip5_cal2",
+      "cosine_sim": 0.9742226004600525,
+      "speedup": 1.1405604561895994,
+      "engine_mb": 6711.380812,
+      "text_clap_mean": 0.44334104657173157,
+      "text_clap_std": 0.10602495781941304,
+      "audio_clap_vs_bf16_mean": 0.9128819306691488,
+      "audio_clap_vs_bf16_std": 0.05953771572391132,
+      "mel_l1_mean": 1.1434172590573628,
+      "mel_l1_std": 0.6751666066947286,
+      "mrstft_mean": 1.347801943620046,
+      "mrstft_std": 0.5499576973807592,
+      "per_prompt": [
+        {
+          "prompt_tag": "dance",
+          "file": "01_dance.wav",
+          "text_clap": 0.4997425079345703,
+          "audio_clap_vs_bf16": 0.7926622033119202,
+          "mel_l1_vs_bf16": 2.3076391220092773,
+          "mrstft_vs_bf16": 2.297451297442118
+        },
+        {
+          "prompt_tag": "jazz",
+          "file": "02_jazz.wav",
+          "text_clap": 0.6052225828170776,
+          "audio_clap_vs_bf16": 0.9661189317703247,
+          "mel_l1_vs_bf16": 1.798635721206665,
+          "mrstft_vs_bf16": 1.895267089207967
+        },
+        {
+          "prompt_tag": "ambient",
+          "file": "03_ambient.wav",
+          "text_clap": 0.2641427516937256,
+          "audio_clap_vs_bf16": 0.9336951971054077,
+          "mel_l1_vs_bf16": 0.6263110041618347,
+          "mrstft_vs_bf16": 0.971937894821167
+        },
+        {
+          "prompt_tag": "metal",
+          "file": "04_metal.wav",
+          "text_clap": 0.3832854628562927,
+          "audio_clap_vs_bf16": 0.8849765658378601,
+          "mel_l1_vs_bf16": 0.6134461164474487,
+          "mrstft_vs_bf16": 0.9410551289717356
+        },
+        {
+          "prompt_tag": "orch",
+          "file": "05_orch.wav",
+          "text_clap": 0.4212504029273987,
+          "audio_clap_vs_bf16": 0.9535273313522339,
+          "mel_l1_vs_bf16": 0.529381275177002,
+          "mrstft_vs_bf16": 0.8305589457352957
+        },
+        {
+          "prompt_tag": "folk",
+          "file": "06_folk.wav",
+          "text_clap": 0.48640257120132446,
+          "audio_clap_vs_bf16": 0.946311354637146,
+          "mel_l1_vs_bf16": 0.9850903153419495,
+          "mrstft_vs_bf16": 1.1505413055419922
+        }
+      ]
+    },
+    "sq_a07_skip10": {
+      "tag": "sq_a07_skip10",
+      "cosine_sim": 0.9693762734532356,
+      "speedup": 1.3426959755392098,
+      "engine_mb": 5221.606996,
+      "text_clap_mean": 0.45432305335998535,
+      "text_clap_std": 0.1244461947816797,
+      "audio_clap_vs_bf16_mean": 0.8857788542906443,
+      "audio_clap_vs_bf16_std": 0.044253246057835934,
+      "mel_l1_mean": 1.456885665655136,
+      "mel_l1_std": 0.5710563411676088,
+      "mrstft_mean": 1.6261060883601506,
+      "mrstft_std": 0.44665275917712693,
+      "per_prompt": [
+        {
+          "prompt_tag": "dance",
+          "file": "01_dance.wav",
+          "text_clap": 0.5671525001525879,
+          "audio_clap_vs_bf16": 0.9068056344985962,
+          "mel_l1_vs_bf16": 2.467296600341797,
+          "mrstft_vs_bf16": 2.419971982638041
+        },
+        {
+          "prompt_tag": "jazz",
+          "file": "02_jazz.wav",
+          "text_clap": 0.5304322242736816,
+          "audio_clap_vs_bf16": 0.9146863222122192,
+          "mel_l1_vs_bf16": 1.9124010801315308,
+          "mrstft_vs_bf16": 1.9835481643676758
+        },
+        {
+          "prompt_tag": "ambient",
+          "file": "03_ambient.wav",
+          "text_clap": 0.2150171399116516,
+          "audio_clap_vs_bf16": 0.8914612531661987,
+          "mel_l1_vs_bf16": 1.2355660200119019,
+          "mrstft_vs_bf16": 1.5362911820411682
+        },
+        {
+          "prompt_tag": "metal",
+          "file": "04_metal.wav",
+          "text_clap": 0.37149715423583984,
+          "audio_clap_vs_bf16": 0.8017482757568359,
+          "mel_l1_vs_bf16": 0.782172441482544,
+          "mrstft_vs_bf16": 1.1341038544972737
+        },
+        {
+          "prompt_tag": "orch",
+          "file": "05_orch.wav",
+          "text_clap": 0.5473807454109192,
+          "audio_clap_vs_bf16": 0.861416220664978,
+          "mel_l1_vs_bf16": 0.9964426159858704,
+          "mrstft_vs_bf16": 1.2257937888304393
+        },
+        {
+          "prompt_tag": "folk",
+          "file": "06_folk.wav",
+          "text_clap": 0.49445855617523193,
+          "audio_clap_vs_bf16": 0.9385554194450378,
+          "mel_l1_vs_bf16": 1.3474352359771729,
+          "mrstft_vs_bf16": 1.4569275577863057
+        }
+      ]
+    },
+    "w8a8_absmax": {
+      "tag": "w8a8_absmax",
+      "cosine_sim": 0.9694892019033432,
+      "speedup": 1.5082866253876557,
+      "engine_mb": 4348.733548,
+      "text_clap_mean": 0.4431945011019707,
+      "text_clap_std": 0.10988602420991476,
+      "audio_clap_vs_bf16_mean": 0.9339692294597626,
+      "audio_clap_vs_bf16_std": 0.04237875505815759,
+      "mel_l1_mean": 0.6207511474688848,
+      "mel_l1_std": 0.2927561357684531,
+      "mrstft_mean": 0.8738140844636494,
+      "mrstft_std": 0.24088580332753073,
+      "per_prompt": [
+        {
+          "prompt_tag": "dance",
+          "file": "01_dance.wav",
+          "text_clap": 0.5322645902633667,
+          "audio_clap_vs_bf16": 0.9697818756103516,
+          "mel_l1_vs_bf16": 1.1657861471176147,
+          "mrstft_vs_bf16": 1.3291253447532654
+        },
+        {
+          "prompt_tag": "jazz",
+          "file": "02_jazz.wav",
+          "text_clap": 0.5552984476089478,
+          "audio_clap_vs_bf16": 0.9471843242645264,
+          "mel_l1_vs_bf16": 0.7050909996032715,
+          "mrstft_vs_bf16": 0.9620973765850067
+        },
+        {
+          "prompt_tag": "ambient",
+          "file": "03_ambient.wav",
+          "text_clap": 0.23005400598049164,
+          "audio_clap_vs_bf16": 0.9662550687789917,
+          "mel_l1_vs_bf16": 0.2792048156261444,
+          "mrstft_vs_bf16": 0.5978374630212784
+        },
+        {
+          "prompt_tag": "metal",
+          "file": "04_metal.wav",
+          "text_clap": 0.39880335330963135,
+          "audio_clap_vs_bf16": 0.897562563419342,
+          "mel_l1_vs_bf16": 0.4652350842952728,
+          "mrstft_vs_bf16": 0.7948880990346273
+        },
+        {
+          "prompt_tag": "orch",
+          "file": "05_orch.wav",
+          "text_clap": 0.4328939616680145,
+          "audio_clap_vs_bf16": 0.96602463722229,
+          "mel_l1_vs_bf16": 0.3807154595851898,
+          "mrstft_vs_bf16": 0.6512908786535263
+        },
+        {
+          "prompt_tag": "folk",
+          "file": "06_folk.wav",
+          "text_clap": 0.5098526477813721,
+          "audio_clap_vs_bf16": 0.8570069074630737,
+          "mel_l1_vs_bf16": 0.7284743785858154,
+          "mrstft_vs_bf16": 0.9076453447341919
+        }
+      ]
+    },
+    "w8a8_absmax_cal2": {
+      "tag": "w8a8_absmax_cal2",
+      "cosine_sim": 0.9717541188001633,
+      "speedup": 1.5164460939915068,
+      "engine_mb": 4348.704788,
+      "text_clap_mean": 0.4389498010277748,
+      "text_clap_std": 0.12035437414783201,
+      "audio_clap_vs_bf16_mean": 0.9401670396327972,
+      "audio_clap_vs_bf16_std": 0.031479361587511544,
+      "mel_l1_mean": 0.49852603673934937,
+      "mel_l1_std": 0.12370461237676109,
+      "mrstft_mean": 0.7690404239628049,
+      "mrstft_std": 0.07704187981953532,
+      "per_prompt": [
+        {
+          "prompt_tag": "dance",
+          "file": "01_dance.wav",
+          "text_clap": 0.5325369834899902,
+          "audio_clap_vs_bf16": 0.9679691791534424,
+          "mel_l1_vs_bf16": 0.7048607468605042,
+          "mrstft_vs_bf16": 0.8962959150473276
+        },
+        {
+          "prompt_tag": "jazz",
+          "file": "02_jazz.wav",
+          "text_clap": 0.5508447885513306,
+          "audio_clap_vs_bf16": 0.9426291584968567,
+          "mel_l1_vs_bf16": 0.4928185045719147,
+          "mrstft_vs_bf16": 0.7794438401858012
+        },
+        {
+          "prompt_tag": "ambient",
+          "file": "03_ambient.wav",
+          "text_clap": 0.19281040132045746,
+          "audio_clap_vs_bf16": 0.9554492235183716,
+          "mel_l1_vs_bf16": 0.4005058705806732,
+          "mrstft_vs_bf16": 0.7627840489149094
+        },
+        {
+          "prompt_tag": "metal",
+          "file": "04_metal.wav",
+          "text_clap": 0.43733716011047363,
+          "audio_clap_vs_bf16": 0.8964868783950806,
+          "mel_l1_vs_bf16": 0.3735271990299225,
+          "mrstft_vs_bf16": 0.6780715038379034
+        },
+        {
+          "prompt_tag": "orch",
+          "file": "05_orch.wav",
+          "text_clap": 0.41452473402023315,
+          "audio_clap_vs_bf16": 0.9003530740737915,
+          "mel_l1_vs_bf16": 0.4008021652698517,
+          "mrstft_vs_bf16": 0.677484318614006
+        },
+        {
+          "prompt_tag": "folk",
+          "file": "06_folk.wav",
+          "text_clap": 0.5056447386741638,
+          "audio_clap_vs_bf16": 0.9781147241592407,
+          "mel_l1_vs_bf16": 0.61864173412323,
+          "mrstft_vs_bf16": 0.8201629171768824
+        }
+      ]
+    },
+    "w8a8_skip20": {
+      "tag": "w8a8_skip20",
+      "cosine_sim": 0.9687250554561615,
+      "speedup": 1.4102953242047163,
+      "engine_mb": 4816.72622,
+      "text_clap_mean": 0.42048028359810513,
+      "text_clap_std": 0.14118102819204748,
+      "audio_clap_vs_bf16_mean": 0.9067541857560476,
+      "audio_clap_vs_bf16_std": 0.04668774510796874,
+      "mel_l1_mean": 0.7141638944546381,
+      "mel_l1_std": 0.539339262335546,
+      "mrstft_mean": 0.9529623554812537,
+      "mrstft_std": 0.46458123344237146,
+      "per_prompt": [
+        {
+          "prompt_tag": "dance",
+          "file": "01_dance.wav",
+          "text_clap": 0.539533257484436,
+          "audio_clap_vs_bf16": 0.9510343074798584,
+          "mel_l1_vs_bf16": 1.88831627368927,
+          "mrstft_vs_bf16": 1.9658820033073425
+        },
+        {
+          "prompt_tag": "jazz",
+          "file": "02_jazz.wav",
+          "text_clap": 0.5875882506370544,
+          "audio_clap_vs_bf16": 0.9582051038742065,
+          "mel_l1_vs_bf16": 0.6701937317848206,
+          "mrstft_vs_bf16": 0.9223657548427582
+        },
+        {
+          "prompt_tag": "ambient",
+          "file": "03_ambient.wav",
+          "text_clap": 0.1861647516489029,
+          "audio_clap_vs_bf16": 0.8864268064498901,
+          "mel_l1_vs_bf16": 0.29082557559013367,
+          "mrstft_vs_bf16": 0.5927266528209051
+        },
+        {
+          "prompt_tag": "metal",
+          "file": "04_metal.wav",
+          "text_clap": 0.28862136602401733,
+          "audio_clap_vs_bf16": 0.8192360401153564,
+          "mel_l1_vs_bf16": 0.44799134135246277,
+          "mrstft_vs_bf16": 0.7662627398967743
+        },
+        {
+          "prompt_tag": "orch",
+          "file": "05_orch.wav",
+          "text_clap": 0.42884695529937744,
+          "audio_clap_vs_bf16": 0.9000729322433472,
+          "mel_l1_vs_bf16": 0.40003302693367004,
+          "mrstft_vs_bf16": 0.6694497068723043
+        },
+        {
+          "prompt_tag": "folk",
+          "file": "06_folk.wav",
+          "text_clap": 0.49212712049484253,
+          "audio_clap_vs_bf16": 0.9255499243736267,
+          "mel_l1_vs_bf16": 0.5876234173774719,
+          "mrstft_vs_bf16": 0.801087275147438
+        }
+      ]
+    },
+    "w8a8_skip20_cal2": {
+      "tag": "w8a8_skip20_cal2",
+      "cosine_sim": 0.9703145772218704,
+      "speedup": 1.4040073472175987,
+      "engine_mb": 5085.866916,
+      "text_clap_mean": 0.4484789917866389,
+      "text_clap_std": 0.11839809913837807,
+      "audio_clap_vs_bf16_mean": 0.942988783121109,
+      "audio_clap_vs_bf16_std": 0.028540508433206924,
+      "mel_l1_mean": 0.4780464172363281,
+      "mel_l1_std": 0.11851870535421533,
+      "mrstft_mean": 0.7460948427518209,
+      "mrstft_std": 0.07199118333611015,
+      "per_prompt": [
+        {
+          "prompt_tag": "dance",
+          "file": "01_dance.wav",
+          "text_clap": 0.5390591025352478,
+          "audio_clap_vs_bf16": 0.9737289547920227,
+          "mel_l1_vs_bf16": 0.6435837745666504,
+          "mrstft_vs_bf16": 0.8274039526780447
+        },
+        {
+          "prompt_tag": "jazz",
+          "file": "02_jazz.wav",
+          "text_clap": 0.5156081914901733,
+          "audio_clap_vs_bf16": 0.9424404501914978,
+          "mel_l1_vs_bf16": 0.4711505174636841,
+          "mrstft_vs_bf16": 0.7433037757873535
+        },
+        {
+          "prompt_tag": "ambient",
+          "file": "03_ambient.wav",
+          "text_clap": 0.21444615721702576,
+          "audio_clap_vs_bf16": 0.9596179723739624,
+          "mel_l1_vs_bf16": 0.4123748540878296,
+          "mrstft_vs_bf16": 0.7707566569248835
+        },
+        {
+          "prompt_tag": "metal",
+          "file": "04_metal.wav",
+          "text_clap": 0.5333014726638794,
+          "audio_clap_vs_bf16": 0.9042102098464966,
+          "mel_l1_vs_bf16": 0.36074498295783997,
+          "mrstft_vs_bf16": 0.6836699992418289
+        },
+        {
+          "prompt_tag": "orch",
+          "file": "05_orch.wav",
+          "text_clap": 0.3756903409957886,
+          "audio_clap_vs_bf16": 0.9063373804092407,
+          "mel_l1_vs_bf16": 0.35153713822364807,
+          "mrstft_vs_bf16": 0.6278861810763677
+        },
+        {
+          "prompt_tag": "folk",
+          "file": "06_folk.wav",
+          "text_clap": 0.5127686858177185,
+          "audio_clap_vs_bf16": 0.9715977311134338,
+          "mel_l1_vs_bf16": 0.6288872361183167,
+          "mrstft_vs_bf16": 0.823548490802447
+        }
+      ]
+    },
+    "w8a8_skip3": {
+      "tag": "w8a8_skip3",
+      "cosine_sim": 0.974909745156765,
+      "speedup": 1.041081888769465,
+      "engine_mb": 7710.943028,
+      "text_clap_mean": 0.4174597313006719,
+      "text_clap_std": 0.1275358868039816,
+      "audio_clap_vs_bf16_mean": 0.9046767155329386,
+      "audio_clap_vs_bf16_std": 0.058923895210452264,
+      "mel_l1_mean": 0.5655684918165207,
+      "mel_l1_std": 0.2411963634216037,
+      "mrstft_mean": 0.8286834897266494,
+      "mrstft_std": 0.19603757332588642,
+      "per_prompt": [
+        {
+          "prompt_tag": "dance",
+          "file": "01_dance.wav",
+          "text_clap": 0.48523133993148804,
+          "audio_clap_vs_bf16": 0.9317312240600586,
+          "mel_l1_vs_bf16": 1.0339457988739014,
+          "mrstft_vs_bf16": 1.2157705624898274
+        },
+        {
+          "prompt_tag": "jazz",
+          "file": "02_jazz.wav",
+          "text_clap": 0.5784736275672913,
+          "audio_clap_vs_bf16": 0.9535092115402222,
+          "mel_l1_vs_bf16": 0.6414058208465576,
+          "mrstft_vs_bf16": 0.9068896571795145
+        },
+        {
+          "prompt_tag": "ambient",
+          "file": "03_ambient.wav",
+          "text_clap": 0.18718814849853516,
+          "audio_clap_vs_bf16": 0.8591445684432983,
+          "mel_l1_vs_bf16": 0.3359958231449127,
+          "mrstft_vs_bf16": 0.6649634887774786
+        },
+        {
+          "prompt_tag": "metal",
+          "file": "04_metal.wav",
+          "text_clap": 0.3267364799976349,
+          "audio_clap_vs_bf16": 0.7973144054412842,
+          "mel_l1_vs_bf16": 0.40037569403648376,
+          "mrstft_vs_bf16": 0.7362893422444662
+        },
+        {
+          "prompt_tag": "orch",
+          "file": "05_orch.wav",
+          "text_clap": 0.4355736970901489,
+          "audio_clap_vs_bf16": 0.9671666622161865,
+          "mel_l1_vs_bf16": 0.3628483712673187,
+          "mrstft_vs_bf16": 0.6307855546474457
+        },
+        {
+          "prompt_tag": "folk",
+          "file": "06_folk.wav",
+          "text_clap": 0.4915550947189331,
+          "audio_clap_vs_bf16": 0.919194221496582,
+          "mel_l1_vs_bf16": 0.61883944272995,
+          "mrstft_vs_bf16": 0.8174023330211639
+        }
+      ]
+    },
+    "w8a8_skip3_cal2": {
+      "tag": "w8a8_skip3_cal2",
+      "cosine_sim": 0.9785993546247482,
+      "speedup": 1.0165468922070509,
+      "engine_mb": 8027.562228,
+      "text_clap_mean": 0.42526065309842426,
+      "text_clap_std": 0.11346325220527391,
+      "audio_clap_vs_bf16_mean": 0.9116238057613373,
+      "audio_clap_vs_bf16_std": 0.10413480481971117,
+      "mel_l1_mean": 0.4413546870152156,
+      "mel_l1_std": 0.0828345706004411,
+      "mrstft_mean": 0.7227576490905548,
+      "mrstft_std": 0.06056529454010439,
+      "per_prompt": [
+        {
+          "prompt_tag": "dance",
+          "file": "01_dance.wav",
+          "text_clap": 0.3248225152492523,
+          "audio_clap_vs_bf16": 0.6855080723762512,
+          "mel_l1_vs_bf16": 0.5213893055915833,
+          "mrstft_vs_bf16": 0.7732455829779307
+        },
+        {
+          "prompt_tag": "jazz",
+          "file": "02_jazz.wav",
+          "text_clap": 0.5971992611885071,
+          "audio_clap_vs_bf16": 0.9781952500343323,
+          "mel_l1_vs_bf16": 0.49937760829925537,
+          "mrstft_vs_bf16": 0.7791496018568674
+        },
+        {
+          "prompt_tag": "ambient",
+          "file": "03_ambient.wav",
+          "text_clap": 0.25662532448768616,
+          "audio_clap_vs_bf16": 0.9739561080932617,
+          "mel_l1_vs_bf16": 0.37520524859428406,
+          "mrstft_vs_bf16": 0.7280742426713308
+        },
+        {
+          "prompt_tag": "metal",
+          "file": "04_metal.wav",
+          "text_clap": 0.4592106342315674,
+          "audio_clap_vs_bf16": 0.9272239208221436,
+          "mel_l1_vs_bf16": 0.36818018555641174,
+          "mrstft_vs_bf16": 0.6812722980976105
+        },
+        {
+          "prompt_tag": "orch",
+          "file": "05_orch.wav",
+          "text_clap": 0.40205293893814087,
+          "audio_clap_vs_bf16": 0.9204505681991577,
+          "mel_l1_vs_bf16": 0.3379058539867401,
+          "mrstft_vs_bf16": 0.6098439991474152
+        },
+        {
+          "prompt_tag": "folk",
+          "file": "06_folk.wav",
+          "text_clap": 0.5116532444953918,
+          "audio_clap_vs_bf16": 0.9844089150428772,
+          "mel_l1_vs_bf16": 0.5460699200630188,
+          "mrstft_vs_bf16": 0.7649601697921753
+        }
+      ]
+    },
+    "w8a8_skip5": {
+      "tag": "w8a8_skip5",
+      "cosine_sim": 0.9734642580151558,
+      "speedup": 1.2258291781684671,
+      "engine_mb": 6345.863196,
+      "text_clap_mean": 0.45461952189604443,
+      "text_clap_std": 0.10856987827406729,
+      "audio_clap_vs_bf16_mean": 0.9274964729944865,
+      "audio_clap_vs_bf16_std": 0.0387514143987004,
+      "mel_l1_mean": 0.7163840929667155,
+      "mel_l1_std": 0.5524131822782469,
+      "mrstft_mean": 0.962925365401639,
+      "mrstft_std": 0.4767738695856613,
+      "per_prompt": [
+        {
+          "prompt_tag": "dance",
+          "file": "01_dance.wav",
+          "text_clap": 0.5280365943908691,
+          "audio_clap_vs_bf16": 0.8846069574356079,
+          "mel_l1_vs_bf16": 1.9169782400131226,
+          "mrstft_vs_bf16": 2.0094587802886963
+        },
+        {
+          "prompt_tag": "jazz",
+          "file": "02_jazz.wav",
+          "text_clap": 0.5990334749221802,
+          "audio_clap_vs_bf16": 0.9731823801994324,
+          "mel_l1_vs_bf16": 0.5998224020004272,
+          "mrstft_vs_bf16": 0.8675742844740549
+        },
+        {
+          "prompt_tag": "ambient",
+          "file": "03_ambient.wav",
+          "text_clap": 0.27415603399276733,
+          "audio_clap_vs_bf16": 0.9337320923805237,
+          "mel_l1_vs_bf16": 0.312398225069046,
+          "mrstft_vs_bf16": 0.6336233367522558
+        },
+        {
+          "prompt_tag": "metal",
+          "file": "04_metal.wav",
+          "text_clap": 0.36953258514404297,
+          "audio_clap_vs_bf16": 0.8701789975166321,
+          "mel_l1_vs_bf16": 0.3825414478778839,
+          "mrstft_vs_bf16": 0.7287396887938181
+        },
+        {
+          "prompt_tag": "orch",
+          "file": "05_orch.wav",
+          "text_clap": 0.4364457428455353,
+          "audio_clap_vs_bf16": 0.9344142079353333,
+          "mel_l1_vs_bf16": 0.3994681239128113,
+          "mrstft_vs_bf16": 0.6663171648979187
+        },
+        {
+          "prompt_tag": "folk",
+          "file": "06_folk.wav",
+          "text_clap": 0.5205127000808716,
+          "audio_clap_vs_bf16": 0.9688642024993896,
+          "mel_l1_vs_bf16": 0.687096118927002,
+          "mrstft_vs_bf16": 0.8718389372030894
+        }
+      ]
+    },
+    "w8a8_skip5_cal2": {
+      "tag": "w8a8_skip5_cal2",
+      "cosine_sim": 0.9735379293560982,
+      "speedup": 1.1524994451791437,
+      "engine_mb": 6703.81074,
+      "text_clap_mean": 0.42908331751823425,
+      "text_clap_std": 0.11948604934754535,
+      "audio_clap_vs_bf16_mean": 0.9052187502384186,
+      "audio_clap_vs_bf16_std": 0.1024210357650873,
+      "mel_l1_mean": 0.48246198892593384,
+      "mel_l1_std": 0.12476641903954948,
+      "mrstft_mean": 0.7453020223312907,
+      "mrstft_std": 0.07653834537740742,
+      "per_prompt": [
+        {
+          "prompt_tag": "dance",
+          "file": "01_dance.wav",
+          "text_clap": 0.3200048804283142,
+          "audio_clap_vs_bf16": 0.6789042949676514,
+          "mel_l1_vs_bf16": 0.6687750220298767,
+          "mrstft_vs_bf16": 0.8186343461275101
+        },
+        {
+          "prompt_tag": "jazz",
+          "file": "02_jazz.wav",
+          "text_clap": 0.5645098686218262,
+          "audio_clap_vs_bf16": 0.9463690519332886,
+          "mel_l1_vs_bf16": 0.46363961696624756,
+          "mrstft_vs_bf16": 0.7469202230374018
+        },
+        {
+          "prompt_tag": "ambient",
+          "file": "03_ambient.wav",
+          "text_clap": 0.21981710195541382,
+          "audio_clap_vs_bf16": 0.9384502172470093,
+          "mel_l1_vs_bf16": 0.42708665132522583,
+          "mrstft_vs_bf16": 0.7824707627296448
+        },
+        {
+          "prompt_tag": "metal",
+          "file": "04_metal.wav",
+          "text_clap": 0.5054866075515747,
+          "audio_clap_vs_bf16": 0.9410586953163147,
+          "mel_l1_vs_bf16": 0.3515039086341858,
+          "mrstft_vs_bf16": 0.6705976029237112
+        },
+        {
+          "prompt_tag": "orch",
+          "file": "05_orch.wav",
+          "text_clap": 0.47457781434059143,
+          "audio_clap_vs_bf16": 0.9844928979873657,
+          "mel_l1_vs_bf16": 0.35415327548980713,
+          "mrstft_vs_bf16": 0.6214607308308283
+        },
+        {
+          "prompt_tag": "folk",
+          "file": "06_folk.wav",
+          "text_clap": 0.4901036322116852,
+          "audio_clap_vs_bf16": 0.9420373439788818,
+          "mel_l1_vs_bf16": 0.62961345911026,
+          "mrstft_vs_bf16": 0.8317284683386484
+        }
+      ]
+    },
+    "w8a8_skip5_p999_cal2": {
+      "tag": "w8a8_skip5_p999_cal2",
+      "cosine_sim": 0.7381865903735161,
+      "speedup": 1.1335373304107763,
+      "engine_mb": 6703.628116,
+      "text_clap_mean": 0.4643981506427129,
+      "text_clap_std": 0.07549216832077046,
+      "audio_clap_vs_bf16_mean": 0.879121998945872,
+      "audio_clap_vs_bf16_std": 0.04706007978429214,
+      "mel_l1_mean": 1.6689290006955464,
+      "mel_l1_std": 0.3503916163530134,
+      "mrstft_mean": 1.7411890692181056,
+      "mrstft_std": 0.2764435995623455,
+      "per_prompt": [
+        {
+          "prompt_tag": "dance",
+          "file": "01_dance.wav",
+          "text_clap": 0.5392965078353882,
+          "audio_clap_vs_bf16": 0.9257267713546753,
+          "mel_l1_vs_bf16": 2.3186697959899902,
+          "mrstft_vs_bf16": 2.2589757839838662
+        },
+        {
+          "prompt_tag": "jazz",
+          "file": "02_jazz.wav",
+          "text_clap": 0.5504329800605774,
+          "audio_clap_vs_bf16": 0.8838368058204651,
+          "mel_l1_vs_bf16": 1.7728347778320312,
+          "mrstft_vs_bf16": 1.8632989724477131
+        },
+        {
+          "prompt_tag": "ambient",
+          "file": "03_ambient.wav",
+          "text_clap": 0.34672272205352783,
+          "audio_clap_vs_bf16": 0.8564063310623169,
+          "mel_l1_vs_bf16": 1.754333257675171,
+          "mrstft_vs_bf16": 1.6191357572873433
+        },
+        {
+          "prompt_tag": "metal",
+          "file": "04_metal.wav",
+          "text_clap": 0.5167678594589233,
+          "audio_clap_vs_bf16": 0.9008041620254517,
+          "mel_l1_vs_bf16": 1.400749683380127,
+          "mrstft_vs_bf16": 1.6049870451291401
+        },
+        {
+          "prompt_tag": "orch",
+          "file": "05_orch.wav",
+          "text_clap": 0.4134024381637573,
+          "audio_clap_vs_bf16": 0.920474112033844,
+          "mel_l1_vs_bf16": 1.2081007957458496,
+          "mrstft_vs_bf16": 1.3643046816190083
+        },
+        {
+          "prompt_tag": "folk",
+          "file": "06_folk.wav",
+          "text_clap": 0.4197663962841034,
+          "audio_clap_vs_bf16": 0.787483811378479,
+          "mel_l1_vs_bf16": 1.5588856935501099,
+          "mrstft_vs_bf16": 1.736432174841563
+        }
+      ]
+    },
+    "w8a8_skip8": {
+      "tag": "w8a8_skip8",
+      "cosine_sim": 0.971292145550251,
+      "speedup": 1.3626704906072975,
+      "engine_mb": 5334.7931,
+      "text_clap_mean": 0.43396251897017163,
+      "text_clap_std": 0.11821642183889576,
+      "audio_clap_vs_bf16_mean": 0.9144419332345327,
+      "audio_clap_vs_bf16_std": 0.11097024967994411,
+      "mel_l1_mean": 0.5599190394083658,
+      "mel_l1_std": 0.2518056354187714,
+      "mrstft_mean": 0.8205701568060451,
+      "mrstft_std": 0.20374459929102867,
+      "per_prompt": [
+        {
+          "prompt_tag": "dance",
+          "file": "01_dance.wav",
+          "text_clap": 0.311139851808548,
+          "audio_clap_vs_bf16": 0.6664080619812012,
+          "mel_l1_vs_bf16": 1.0430065393447876,
+          "mrstft_vs_bf16": 1.2199123005072277
+        },
+        {
+          "prompt_tag": "jazz",
+          "file": "02_jazz.wav",
+          "text_clap": 0.5855594873428345,
+          "audio_clap_vs_bf16": 0.9646466970443726,
+          "mel_l1_vs_bf16": 0.6470493674278259,
+          "mrstft_vs_bf16": 0.9007711907227834
+        },
+        {
+          "prompt_tag": "ambient",
+          "file": "03_ambient.wav",
+          "text_clap": 0.2498466968536377,
+          "audio_clap_vs_bf16": 0.9633597135543823,
+          "mel_l1_vs_bf16": 0.2959342300891876,
+          "mrstft_vs_bf16": 0.617634062965711
+        },
+        {
+          "prompt_tag": "metal",
+          "file": "04_metal.wav",
+          "text_clap": 0.488366961479187,
+          "audio_clap_vs_bf16": 0.9690571427345276,
+          "mel_l1_vs_bf16": 0.38279974460601807,
+          "mrstft_vs_bf16": 0.7166887323061625
+        },
+        {
+          "prompt_tag": "orch",
+          "file": "05_orch.wav",
+          "text_clap": 0.44066429138183594,
+          "audio_clap_vs_bf16": 0.9581688046455383,
+          "mel_l1_vs_bf16": 0.37273094058036804,
+          "mrstft_vs_bf16": 0.6440038581689199
+        },
+        {
+          "prompt_tag": "folk",
+          "file": "06_folk.wav",
+          "text_clap": 0.5281978249549866,
+          "audio_clap_vs_bf16": 0.9650111794471741,
+          "mel_l1_vs_bf16": 0.6179934144020081,
+          "mrstft_vs_bf16": 0.8244107961654663
+        }
+      ]
+    },
+    "w8a8_skip8_cal2": {
+      "tag": "w8a8_skip8_cal2",
+      "cosine_sim": 0.9702219218015671,
+      "speedup": 1.2683715938383997,
+      "engine_mb": 5615.342628,
+      "text_clap_mean": 0.47714099039634067,
+      "text_clap_std": 0.12852925747352945,
+      "audio_clap_vs_bf16_mean": 0.9519461890061697,
+      "audio_clap_vs_bf16_std": 0.025300081688697334,
+      "mel_l1_mean": 0.47570400436719257,
+      "mel_l1_std": 0.10753545355844156,
+      "mrstft_mean": 0.7373823333117696,
+      "mrstft_std": 0.06732909781698887,
+      "per_prompt": [
+        {
+          "prompt_tag": "dance",
+          "file": "01_dance.wav",
+          "text_clap": 0.5314879417419434,
+          "audio_clap_vs_bf16": 0.9820876121520996,
+          "mel_l1_vs_bf16": 0.5660176873207092,
+          "mrstft_vs_bf16": 0.7312295536200205
+        },
+        {
+          "prompt_tag": "jazz",
+          "file": "02_jazz.wav",
+          "text_clap": 0.594934344291687,
+          "audio_clap_vs_bf16": 0.9791847467422485,
+          "mel_l1_vs_bf16": 0.5019453167915344,
+          "mrstft_vs_bf16": 0.7807675202687582
+        },
+        {
+          "prompt_tag": "ambient",
+          "file": "03_ambient.wav",
+          "text_clap": 0.20042620599269867,
+          "audio_clap_vs_bf16": 0.9613405466079712,
+          "mel_l1_vs_bf16": 0.3990010917186737,
+          "mrstft_vs_bf16": 0.7521015157302221
+        },
+        {
+          "prompt_tag": "metal",
+          "file": "04_metal.wav",
+          "text_clap": 0.5016356706619263,
+          "audio_clap_vs_bf16": 0.9109586477279663,
+          "mel_l1_vs_bf16": 0.36745452880859375,
+          "mrstft_vs_bf16": 0.6784286151329676
+        },
+        {
+          "prompt_tag": "orch",
+          "file": "05_orch.wav",
+          "text_clap": 0.4862591624259949,
+          "audio_clap_vs_bf16": 0.932366669178009,
+          "mel_l1_vs_bf16": 0.3674286901950836,
+          "mrstft_vs_bf16": 0.6370508323113123
+        },
+        {
+          "prompt_tag": "folk",
+          "file": "06_folk.wav",
+          "text_clap": 0.548102617263794,
+          "audio_clap_vs_bf16": 0.9457389116287231,
+          "mel_l1_vs_bf16": 0.6523767113685608,
+          "mrstft_vs_bf16": 0.8447159628073374
+        }
+      ]
+    }
+  }
+}

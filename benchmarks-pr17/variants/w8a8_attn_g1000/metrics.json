@@ -1,0 +1,23 @@
+{
+  "tag": "w8a8_attn_g1000",
+  "engine_size_mb": 4317.223884,
+  "cosine_sim_avg": 0.9124467819929123,
+  "max_abs_diff_peak": 7.6171875,
+  "mean_abs_diff_avg": 0.3244428187608719,
+  "tick_latency_ms": {
+    "bf16_mean": 134.8541439510882,
+    "fp8_mean": 83.16319398581982,
+    "fp8_p10": 82.59629970416427,
+    "fp8_p90": 83.7719002738595
+  },
+  "speedup_vs_bf16": 1.621560422199299,
+  "matmul_counts": {
+    "total_matmul_in_graph": 482,
+    "weight_quantized": 353,
+    "activation_qdq_pairs": 193,
+    "smoothquant_applied": 0,
+    "unmatched_weight_inits": 3
+  },
+  "smoothquant_alpha": 0.0,
+  "activation_percentile": "absmax"
+}
