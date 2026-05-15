@@ -133,14 +133,19 @@ _TRT_ENGINE_PROFILES: dict[float, dict[str, str]] = {
 
 _XL_TURBO_TRT_ENGINE_PROFILES: dict[float, dict[str, str]] = {
     60.0: {
-        "decoder": "decoder_xl-turbo_mixed_refit_b4_60s",
+        "decoder": "decoder_xl-turbo_fp8_refit_b4_60s",
         "vae_encode": "vae_encode_fp16_60s",
         "vae_decode": "vae_decode_fp16_60s",
     },
     120.0: {
-        "decoder": "decoder_xl-turbo_mixed_refit_b4_120s",
+        "decoder": "decoder_xl-turbo_fp8_refit_b4_120s",
         "vae_encode": "vae_encode_fp16_120s",
         "vae_decode": "vae_decode_fp16_120s",
+    },
+    240.0: {
+        "decoder": "decoder_xl-turbo_fp8_refit_b4_240s",
+        "vae_encode": "vae_encode_fp16_240s",
+        "vae_decode": "vae_decode_fp16_240s",
     },
 }
 
@@ -283,13 +288,22 @@ def _trt_build_command(
         parts.append("--decoder-only")
     parts.extend(["--duration", str(duration)])
     if checkpoint == "acestep-v15-xl-turbo" and "decoder" in needs:
+        # XL canonical engines are FP8 W8A8, which requires a per-profile
+        # activation absmax JSON captured against the matching bf16 engine.
+        # The path encodes the duration so the hint matches the storage
+        # layout used by scripts/collect_activation_absmax.py --output-dir.
+        absmax_json = (
+            f"<MODELS_DIR>/calibration/decoder_xl_fp8/{duration}s/"
+            "activation_absmax.json"
+        )
         parts.extend([
             "--batch-max", "4",
             "--batch-opt", "4",
             "--builder-optimization-level", "5",
             "--workspace-gb", "20",
             "--export-locally",
-            "--decoder-precision", "bf16_mixed",
+            "--decoder-precision", "fp8_mixed",
+            "--activation-absmax-json", absmax_json,
         ])
     return " ".join(parts)
 

@@ -90,7 +90,7 @@ checkpoint = _get_arg("--checkpoint", "acestep-v15-turbo")
 if "--decoder-engine" in _args:
     decoder_engine_name = _get_arg("--decoder-engine")
 elif checkpoint == "acestep-v15-xl-turbo":
-    decoder_engine_name = "decoder_xl-turbo_mixed_refit_b4_60s"
+    decoder_engine_name = "decoder_xl-turbo_fp8_refit_b4_60s"
 else:
     decoder_engine_name = "decoder_mixed_refit_b8_60s"
 

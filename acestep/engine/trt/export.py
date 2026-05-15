@@ -777,7 +777,14 @@ class TRTBuildConfig:
         Uses seconds so naming is stable across frame rates.
         """
         if self.strongly_typed:
-            prec = "mixed"
+            # fp8_mixed gets its own tag so FP8 engines never collide
+            # with the bf16/fp16-mixed engines built from the same
+            # checkpoint. Everything else uses the legacy "mixed" tag
+            # for backward compat with existing on-disk engines.
+            if self.onnx_precision == "fp8_mixed":
+                prec = "fp8"
+            else:
+                prec = "mixed"
         elif self.bf16:
             prec = "bf16"
         elif self.fp16:

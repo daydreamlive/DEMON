@@ -92,15 +92,19 @@ class TestSelectTrtEngines:
             duration_s=30.0,
             checkpoint="acestep-v15-xl-turbo",
         )
-        assert "decoder_xl-turbo_mixed_refit_b4_60s" in paths["decoder"]
+        assert "decoder_xl-turbo_fp8_refit_b4_60s" in paths["decoder"]
         assert "vae_encode_fp16_60s" in paths["vae_encode"]
 
-    def test_xl_checkpoint_has_120s_max_profile(self):
-        assert max_profile_duration_s(checkpoint="acestep-v15-xl-turbo") == 120.0
+    def test_xl_checkpoint_has_240s_max_profile(self):
+        assert max_profile_duration_s(checkpoint="acestep-v15-xl-turbo") == 240.0
         assert smallest_fitting_profile_duration_s(
             80.0,
             checkpoint="acestep-v15-xl-turbo",
         ) == 120.0
+        assert smallest_fitting_profile_duration_s(
+            150.0,
+            checkpoint="acestep-v15-xl-turbo",
+        ) == 240.0
 
     def test_unknown_checkpoint_is_rejected(self):
         with pytest.raises(ValueError, match="No canonical TRT engine profiles"):
@@ -141,7 +145,7 @@ class TestAvailableTrtEnginesHappyPath:
             checkpoint="acestep-v15-xl-turbo",
         )
         assert picked == 120.0
-        assert "decoder_xl-turbo_mixed_refit_b4_120s" in paths["decoder"]
+        assert "decoder_xl-turbo_fp8_refit_b4_120s" in paths["decoder"]
 
 
 class TestAvailableTrtEnginesFallback:
@@ -242,4 +246,6 @@ class TestEngineNotBuiltError:
         assert "--batch-opt 4" in command
         assert "--builder-optimization-level 5" in command
         assert "--workspace-gb 20" in command
-        assert "--decoder-precision bf16_mixed" in command
+        assert "--decoder-precision fp8_mixed" in command
+        assert "--activation-absmax-json" in command
+        assert "decoder_xl_fp8/60s/activation_absmax.json" in command

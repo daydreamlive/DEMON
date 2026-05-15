@@ -94,13 +94,23 @@ models/demon/
     _onnx_acestep-v15-turbo/
     _onnx_acestep-v15-xl-turbo/
     decoder_mixed_refit_b8_60s/
-    decoder_xl-turbo_mixed_refit_b4_60s/
+    decoder_xl-turbo_fp8_refit_b4_60s/
     vae_decode_fp16_3to30s/
     build_report.csv
+  calibration/
+    decoder_xl_fp8/
+      60s/   activation_absmax.json, calibration.npz, manifest.json
+      120s/  activation_absmax.json, calibration.npz, manifest.json
+      240s/  activation_absmax.json, calibration.npz, manifest.json
 ```
 
 ONNX exports are cached under `trt_engines/_onnx_*`. Decoder ONNX is
 checkpoint-specific. VAE ONNX is shared across DiT variants.
+
+XL FP8 calibration artifacts live under `calibration/decoder_xl_fp8/<dur>s/`,
+one subdirectory per profile (60s / 120s / 240s). Each subdir holds the
+`.npz` snapshot of decoder inputs and the per-Linear `activation_absmax.json`
+that drives the FP8 W8A8 scales for that profile's sequence length.
 
 ## Main Code Paths
 
@@ -215,6 +225,7 @@ The decoder build now accepts:
 --decoder-precision fp32
 --decoder-precision fp16_mixed
 --decoder-precision bf16_mixed
+--decoder-precision fp8_mixed
 ```
 
 `auto` behaves as follows:
@@ -232,6 +243,91 @@ Why XL uses `bf16_mixed`:
   `ConvTranspose1d` shape, so `bf16_mixed` keeps the model in bf16 while
   wrapping that deconvolution in fp32.
 
+### FP8 W8A8 (`--decoder-precision fp8_mixed`)
+
+`fp8_mixed` is the canonical XL recipe. It exports the same bf16-mixed
+ONNX as the base graph, then patches every `nn.Linear`-with-bf16-initializer
+`MatMul` with FP8 E4M3FN weights (per-output-channel symmetric scale) and
+inserts activation `QuantizeLinear`/`DequantizeLinear` chains on each
+unique input (per-tensor symmetric scale). On Blackwell, TensorRT 10.16's
+strongly-typed builder picks FP8 GEMM tactics for these MatMuls.
+
+W8A8 requires a per-Linear activation absmax JSON captured against the
+PyTorch model. Activation distributions shift with sequence length, so
+each engine profile (60s / 120s / 240s) gets its own calibration JSON,
+captured at the matching `T` (1500 / 3000 / 6000 latent frames) against
+the matching bf16 engine. The artifacts land in
+`<MODELS_DIR>/calibration/decoder_xl_fp8/<dur>s/`.
+
+Prerequisite: the bf16 XL engine for the target duration must already be
+built (used as the inference engine that drives calibration capture):
+
+```powershell
+uv run python -m acestep.engine.trt.build --all --checkpoint acestep-v15-xl-turbo `
+    --decoder-only --duration 60 --batch-max 4 --batch-opt 4 `
+    --builder-optimization-level 5 --workspace-gb 20 `
+    --export-locally --decoder-precision bf16_mixed
+```
+
+Then for each duration `<DUR>` in 60 / 120 / 180 / 240, with `<T>` =
+`<DUR> * 25` (the latent frame count):
+
+```powershell
+$DUR = 60
+$T   = 1500
+$CAL_DIR = "$env:USERPROFILE\.daydream-scope\models\demon\calibration\decoder_xl_fp8\${DUR}s"
+$BF16_ENGINE = "$env:USERPROFILE\.daydream-scope\models\demon\trt_engines\decoder_xl-turbo_mixed_refit_b4_${DUR}s\decoder_xl-turbo_mixed_refit_b4_${DUR}s.engine"
+
+# 1. Snapshot real decoder inputs (.npz) by streaming through the matching
+#    bf16 engine at T=$T. The per-duration sequence length is what makes
+#    each JSON specific to its profile.
+uv run python scripts/collect_decoder_calibration.py `
+    --checkpoint acestep-v15-xl-turbo `
+    --num-prompts 25 --max-calls 200 `
+    --seq-len $T `
+    --decoder-engine $BF16_ENGINE `
+    --output "$CAL_DIR\calibration.npz"
+
+# 2. Replay them through the PyTorch model and record per-Linear absmax.
+#    --output-dir lands the JSON next to the matching .npz.
+uv run python scripts/collect_activation_absmax.py `
+    --checkpoint acestep-v15-xl-turbo --batch 4 `
+    --calibration "$CAL_DIR\calibration.npz" `
+    --output-dir $CAL_DIR
+
+# 3. Build the FP8 engine. --skip-onnx reuses the cached bf16 ONNX; the
+#    FP8 patch rewrites it in place from the new absmax JSON before TRT
+#    parses the graph.
+uv run python -m acestep.engine.trt.build --all `
+    --checkpoint acestep-v15-xl-turbo --decoder-only --duration $DUR `
+    --batch-max 4 --batch-opt 4 --builder-optimization-level 5 `
+    --workspace-gb 20 --skip-onnx `
+    --decoder-precision fp8_mixed `
+    --activation-absmax-json "$CAL_DIR\activation_absmax.json"
+```
+
+Repeat for the other durations. The patched FP8 ONNX is a sibling of the
+bf16 ONNX and is rewritten on each build, so the engines must be built
+one duration at a time.
+
+The calibration scripts dispatch on `--checkpoint`: XL writes to
+`<MODELS_DIR>/calibration/decoder_xl_fp8/<dur>s/`, 2B writes to
+`<MODELS_DIR>/calibration/decoder_2b_fp8/`.
+
+Validated XL recipe at B=4 T=1500 L_enc=200, RTX 5090, TRT 10.16
+(original 60s cal2 numbers; 120s / 240s use their own per-profile JSONs
+with comparable scales):
+
+- bf16_mixed: 142.8 ms / 7.0 steps/s / 7.8 GB engine
+- fp8_mixed (W8A8 absmax): 91.4 ms / 10.9 steps/s / 4.0 GB engine
+- Speedup: **1.56x**, engine size **0.52x**
+- Quality: cosine sim 0.957-0.981 across calibration batches.
+
+The 2B turbo decoder's bf16-hybrid recipe already routes Linears
+through fp16 tensor cores, so FP8 on 2B only adds ~1.08x over the
+hybrid baseline (see `archive/ryanontheinside/fp8-2b-research-vram`).
+FP8 is most useful on 2B as a VRAM win, not a latency win.
+
 ## Engine Naming
 
 Decoder engines use:
@@ -245,9 +341,15 @@ Examples:
 ```text
 decoder_mixed_refit_b8_60s.engine
 decoder_mixed_refit_b8_120s.engine
-decoder_xl-turbo_mixed_refit_b4_60s.engine
-decoder_xl-turbo_mixed_refit_b4_120s.engine
+decoder_xl-turbo_fp8_refit_b4_60s.engine
+decoder_xl-turbo_fp8_refit_b4_120s.engine
+decoder_xl-turbo_fp8_refit_b4_240s.engine
 ```
+
+The XL profiles in `_XL_TURBO_TRT_ENGINE_PROFILES` resolve to the FP8
+engines for 60s / 120s / 240s. The bf16_mixed engines are still used as
+calibration drivers (see the FP8 section above) but are not the
+production runtime target.
 
 VAE engines use:
 
@@ -268,8 +370,12 @@ The following artifacts have been built and validated locally:
 
 - `decoder_mixed_refit_b8_60s`: 2B turbo decoder, about 3299.6 MB.
 - `decoder_mixed_refit_b8_120s`: 2B turbo decoder, about 3299.4 MB.
-- `decoder_xl-turbo_mixed_refit_b4_60s`: XL turbo decoder.
-- `decoder_xl-turbo_mixed_refit_b4_120s`: XL turbo decoder.
+- `decoder_xl-turbo_fp8_refit_b4_60s`: XL turbo decoder, FP8 W8A8 (canonical).
+- `decoder_xl-turbo_fp8_refit_b4_120s`: XL turbo decoder, FP8 W8A8 (canonical).
+- `decoder_xl-turbo_fp8_refit_b4_240s`: XL turbo decoder, FP8 W8A8 (canonical).
+- `decoder_xl-turbo_mixed_refit_b4_60s`: XL turbo decoder, bf16_mixed (calibration driver).
+- `decoder_xl-turbo_mixed_refit_b4_120s`: XL turbo decoder, bf16_mixed (calibration driver).
+- `decoder_xl-turbo_mixed_refit_b4_240s`: XL turbo decoder, bf16_mixed (calibration driver).
 - `vae_decode_fp16_60s`: VAE decode, about 179.4 MB.
 - `vae_decode_fp16_120s`: VAE decode, about 347.2 MB.
 - `vae_decode_fp16_3to30s`: windowed VAE decode, about 269.1 MB.
@@ -291,17 +397,34 @@ Download the XL checkpoint:
 uv run acestep-download --model acestep-v15-xl-turbo --skip-main
 ```
 
-Build 60s XL decoder:
+The canonical XL runtime engines are FP8 (`decoder_xl-turbo_fp8_refit_b4_*`).
+Building them is a two-stage pipeline: first build the bf16_mixed engine
+for the duration (it drives calibration capture), then run the FP8 pipeline
+documented in [FP8 W8A8](#fp8-w8a8---decoder-precision-fp8_mixed) above.
+
+Build 60s XL bf16 engine (calibration driver):
 
 ```powershell
 uv run python -m acestep.engine.trt.build --all --checkpoint acestep-v15-xl-turbo --decoder-only --duration 60 --batch-max 4 --batch-opt 4 --builder-optimization-level 5 --workspace-gb 20 --export-locally --decoder-precision bf16_mixed
 ```
 
-Build 120s XL decoder after the 60s path validates:
+Build 120s XL bf16 engine after the 60s path validates:
 
 ```powershell
 uv run python -m acestep.engine.trt.build --all --checkpoint acestep-v15-xl-turbo --decoder-only --duration 120 --batch-max 4 --batch-opt 4 --builder-optimization-level 5 --workspace-gb 20 --export-locally --decoder-precision bf16_mixed
 ```
+
+Build 240s XL bf16 engine for the longest profile:
+
+```powershell
+uv run python -m acestep.engine.trt.build --all --checkpoint acestep-v15-xl-turbo --decoder-only --duration 240 --batch-max 4 --batch-opt 4 --builder-optimization-level 5 --workspace-gb 20 --export-locally --decoder-precision bf16_mixed
+```
+
+Then follow the FP8 W8A8 section for each duration (per-profile calibration
++ FP8 engine build). The runtime resolves to the FP8 engine names via
+`_XL_TURBO_TRT_ENGINE_PROFILES` in `acestep/paths.py`, so a bf16-only
+build leaves the canonical slot empty and the runtime will raise
+`EngineNotBuiltError` with a build hint pointing at the FP8 recipe.
 
 If changing precision recipe or regenerating the ONNX:
 
@@ -342,7 +465,7 @@ session = Session(
     decoder_backend="tensorrt",
     vae_backend="tensorrt",
     trt_engines={
-        "decoder": str(trt_engine_path("decoder_xl-turbo_mixed_refit_b4_120s")),
+        "decoder": str(trt_engine_path("decoder_xl-turbo_fp8_refit_b4_120s")),
         "vae_encode": str(trt_engine_path("vae_encode_fp16_120s")),
         "vae_decode": str(trt_engine_path("vae_decode_fp16_3to30s")),
     },
@@ -446,16 +569,17 @@ vae_decode_fp16_*
 For `acestep-v15-xl-turbo`, the decoder profiles are:
 
 ```text
-decoder_xl-turbo_mixed_refit_b4_60s
-decoder_xl-turbo_mixed_refit_b4_120s
+decoder_xl-turbo_fp8_refit_b4_60s
+decoder_xl-turbo_fp8_refit_b4_120s
+decoder_xl-turbo_fp8_refit_b4_240s
 vae_encode_fp16_*
 vae_decode_fp16_*
 ```
 
 VAE engines are shared across the 2B and XL turbo checkpoints. The demo caps
 incoming audio at the largest registered profile for the selected checkpoint
-before engine selection, so XL TRT mode currently accepts audio up to the
-registered 120s XL profile.
+before engine selection. XL registers 60s, 120s, and 240s decoder profiles,
+all FP8 W8A8.
 
 ### Recommended 2B Turbo Demo Flow
 
@@ -518,18 +642,13 @@ Build the XL checkpoint:
 uv run acestep-download --model acestep-v15-xl-turbo --skip-main
 ```
 
-Build the 60s XL TRT profile. This builds the XL decoder and any missing shared
-VAE engines for the same duration:
-
-```powershell
-uv run python -m acestep.engine.trt.build --all --checkpoint acestep-v15-xl-turbo --duration 60 --batch-max 4 --batch-opt 4 --builder-optimization-level 5 --workspace-gb 20 --export-locally --decoder-precision bf16_mixed
-```
-
-Build the 120s XL TRT profile when the source audio needs it:
-
-```powershell
-uv run python -m acestep.engine.trt.build --all --checkpoint acestep-v15-xl-turbo --duration 120 --batch-max 4 --batch-opt 4 --builder-optimization-level 5 --workspace-gb 20 --export-locally --decoder-precision bf16_mixed
-```
+The XL canonical engines are FP8. Each duration needs (a) the bf16_mixed
+engine as a calibration driver, (b) a per-profile activation absmax JSON,
+(c) the FP8 engine. See the [FP8 W8A8](#fp8-w8a8---decoder-precision-fp8_mixed)
+section above for the full per-duration pipeline. The minimum build for
+the demo at 60s is the bf16 engine plus the FP8 engine + 60s calibration
+artifacts; the calibration capture also produces the VAE engines for the
+same duration as a side effect of the bf16 build.
 
 Start the demo in full TRT mode:
 
@@ -538,11 +657,11 @@ uv run python -u -m demos.realtime_motion_graph_web --port 8765 --accel tensorrt
 ```
 
 The backend passes `checkpoint` into `available_trt_engines()`, so this selects
-`decoder_xl-turbo_mixed_refit_b4_60s` or
-`decoder_xl-turbo_mixed_refit_b4_120s` instead of the 2B decoder profiles. The
-streaming decoder path submits the active ring-buffer rows as one batched TRT
-execution, so XL profiles must be built with enough batch capacity for the
-configured pipeline depth.
+`decoder_xl-turbo_fp8_refit_b4_60s`, `decoder_xl-turbo_fp8_refit_b4_120s`,
+or `decoder_xl-turbo_fp8_refit_b4_240s` instead of the 2B decoder profiles.
+The streaming decoder path submits the active ring-buffer rows as one
+batched TRT execution, so XL profiles must be built with enough batch
+capacity for the configured pipeline depth.
 
 ### Demo Troubleshooting
 
@@ -621,7 +740,7 @@ import torch
 from acestep.engine.trt.runtime import TRTDecoder
 from acestep.paths import trt_engine_path
 
-engine = TRTDecoder(trt_engine_path("decoder_xl-turbo_mixed_refit_b4_120s"))
+engine = TRTDecoder(trt_engine_path("decoder_xl-turbo_fp8_refit_b4_120s"))
 hs = torch.randn(2, 3000, 64, device="cuda", dtype=torch.bfloat16)
 ts = torch.full((2,), 0.5, device="cuda", dtype=torch.bfloat16)
 enc = torch.randn(2, 200, 2048, device="cuda", dtype=torch.bfloat16)
@@ -643,7 +762,7 @@ from acestep.paths import trt_engine_path
 from acestep.constants import TASK_INSTRUCTIONS
 
 trt_engines = {
-    "decoder": str(trt_engine_path("decoder_xl-turbo_mixed_refit_b4_60s")),
+    "decoder": str(trt_engine_path("decoder_xl-turbo_fp8_refit_b4_60s")),
     "vae_encode": str(trt_engine_path("vae_encode_fp16_60s")),
     "vae_decode": str(trt_engine_path("vae_decode_fp16_3to30s")),
 }

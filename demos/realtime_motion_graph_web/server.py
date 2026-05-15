@@ -52,6 +52,12 @@ _KIOSK = False
 _DEFAULT_MODE = "graph"
 _VALID_MODES = ("graph", "video")
 
+# Short aliases for --checkpoint. Map directly to the canonical
+# checkpoint directory name under <MODELS_DIR>/checkpoints/.
+_CHECKPOINT_ALIASES = {
+    "xl": "acestep-v15-xl-turbo",
+}
+
 _NO_CACHE_HEADERS = [
     ("Cache-Control", "no-store, must-revalidate"),
     ("Pragma", "no-cache"),
@@ -355,6 +361,7 @@ def main():
     if "--checkpoint" in args:
         idx = args.index("--checkpoint")
         checkpoint = args[idx + 1]
+        checkpoint = _CHECKPOINT_ALIASES.get(checkpoint, checkpoint)
 
     kiosk = "--kiosk" in args
     default_mode = "graph"
