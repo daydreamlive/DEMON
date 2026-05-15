@@ -133,6 +133,52 @@ class TRTProfileManager:
         self._loaded_dur = float(picked_dur)
         self._loaded_paths = dict(paths)
 
+    def ensure_walk_profile(
+        self,
+        *,
+        walk_window_s: float,
+        source_duration_s: float,
+    ) -> tuple[dict[str, str], float]:
+        """Swap to walk-mode mixed engines: decoder + vae_decode pinned
+        to ``walk_window_s``, vae_encode sized to ``source_duration_s``.
+
+        Mirrors the initial walk-mode wiring in
+        ``demos/realtime_motion_graph_web/backend.py`` (the runner only
+        sees walk_window_s of latent at a time, but VAE-encode still
+        needs to ingest the full song once at load). When a long-track
+        swap happens mid-session this is the right swap shape: keeping
+        the 60s decoder on the line, only resizing vae_encode.
+
+        Falls through to :meth:`ensure_profile` semantics if the request
+        doesn't actually need a mix (source fits the walk profile).
+
+        Returns ``(paths, picked_dur)`` where ``picked_dur`` reflects
+        the decoder/vae_decode profile (i.e. ``walk_window_s``).
+        """
+        walk_paths, walk_dur = self.resolve(walk_window_s)
+        if source_duration_s <= walk_dur + 0.1:
+            return self.ensure_profile(source_duration_s)
+
+        enc_paths, _enc_dur = self.resolve(source_duration_s)
+        target_paths = {
+            "decoder": walk_paths["decoder"],
+            "vae_encode": enc_paths["vae_encode"],
+            "vae_decode": walk_paths["vae_decode"],
+        }
+
+        if self._loaded_paths == target_paths:
+            return dict(self._loaded_paths), walk_dur
+
+        prior_paths = dict(self._loaded_paths)
+        logger.info(
+            "TRT walk-profile swap: decoder={}s, vae_encode for {:.0f}s source",
+            int(walk_dur), source_duration_s,
+        )
+        self._swap(prior_paths=prior_paths, target_paths=target_paths)
+        self._loaded_dur = float(walk_dur)
+        self._loaded_paths = dict(target_paths)
+        return dict(target_paths), walk_dur
+
     def ensure_profile(
         self, duration_s: float,
     ) -> tuple[dict[str, str], float]:
@@ -195,15 +241,23 @@ class TRTProfileManager:
         """
         engine = self._diffusion_engine
 
+        old_decoder = prior_paths.get("decoder")
+        new_decoder = target_paths.get("decoder")
+        decoder_changed = (
+            self._decoder_tensorrt
+            and engine is not None
+            and old_decoder != new_decoder
+        )
+
         snapshot: list[_LoRASnapshot] = []
-        if engine is not None and engine.lora_available:
+        if decoder_changed and engine.lora_available:
             for d in engine.list_loras():
                 if d.state == "enabled":
                     snapshot.append(
                         _LoRASnapshot(lora_id=d.id, strength=float(d.strength))
                     )
 
-        if self._decoder_tensorrt and engine is not None:
+        if decoder_changed:
             engine.unload_trt_engine()
 
         if self._vae_tensorrt:
@@ -214,8 +268,7 @@ class TRTProfileManager:
             if old_enc and old_enc != new_enc:
                 _evict_trt_vae(old_enc)
 
-        if self._decoder_tensorrt and engine is not None:
-            new_decoder = target_paths["decoder"]
+        if decoder_changed:
             engine.load_trt_engine(new_decoder)
 
         if self._vae_tensorrt:

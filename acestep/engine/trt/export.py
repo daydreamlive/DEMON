@@ -52,6 +52,30 @@ class _Fp32CastWrapper(nn.Module):
         return self.inner(x.float()).to(out_dtype)
 
 
+class _LinearFp16Wrapper(nn.Module):
+    """Wrap a single nn.Linear so it computes in fp16 with bf16 I/O.
+
+    Used by the bf16-hybrid decoder recipe: the residual stream stays in
+    bf16 (which holds the peak activations that overflow fp16), but each
+    matmul is cast tight to fp16 so TRT picks fp16 tensor-core kernels
+    for the layer body. The trace records:
+        Cast(bf16 -> fp16) -> matmul (fp16 weights, fp16 inputs) -> Cast(fp16 -> bf16)
+    Per-Linear granularity keeps TRT's fusion radius to a single matmul
+    plus its two casts, which empirically survives strongly_typed
+    compilation. The inner Linear's input is post-RMSNorm * AdaLN scale,
+    bounded inside fp16 range.
+    """
+
+    def __init__(self, inner: nn.Module):
+        super().__init__()
+        inner.half()
+        self.inner = inner
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out_dtype = x.dtype
+        return self.inner(x.to(torch.float16)).to(out_dtype)
+
+
 # ------------------------------------------------------------------
 # Export wrapper
 # ------------------------------------------------------------------
@@ -85,10 +109,12 @@ class DecoderForExport(nn.Module):
         """
         Args:
             decoder: AceStepDiTModel instance to wrap.
-            mixed_precision: Legacy fp16+fp32 islands recipe (2B turbo).
-                When True, ``precision`` is ignored. Convert decoder to fp16
-                bulk + fp32 for timestep / AdaLN / RMSNorm. Designed for the
-                2B turbo where activations stay inside fp16 dynamic range.
+            mixed_precision: Bf16-hybrid recipe for the 2B turbo decoder.
+                When True, ``precision`` is ignored. Bf16 trunk + fp32
+                islands (timestep, AdaLN tables, RMSNorms, norm_out) +
+                per-Linear fp16 cast wrappers + fp32 wrapper around
+                proj_out's ConvTranspose1d. Strongly-typed builds. See
+                :meth:`_setup_mixed_precision` for the rationale.
             precision: Used when ``mixed_precision`` is False. One of:
                 - "fp32": leave dtypes as-is for tracing in fp32 (default)
                 - "bf16_mixed": bf16 bulk with an fp32 proj_out deconv island
@@ -97,7 +123,7 @@ class DecoderForExport(nn.Module):
         super().__init__()
         self.decoder = decoder
         if mixed_precision:
-            self.precision = "fp16_mixed"
+            self.precision = "bf16_hybrid"
         else:
             self.precision = precision
 
@@ -115,6 +141,25 @@ class DecoderForExport(nn.Module):
         elif precision == "bf16_mixed":
             self._setup_bf16_mixed()
 
+    # List of (parent_module_attr, linear_attr_name) pairs that are safe
+    # to wrap in fp16 inside each AceStepDiTLayer. Inputs to these Linears
+    # are bounded by post-RMSNorm output * AdaLN scale, which fits inside
+    # fp16 dynamic range. Outputs feed into residual adds that stay in
+    # bf16 outside the wrapper.
+    LINEAR_WRAP_TARGETS = (
+        ("self_attn", "q_proj"),
+        ("self_attn", "k_proj"),
+        ("self_attn", "v_proj"),
+        ("self_attn", "o_proj"),
+        ("cross_attn", "q_proj"),
+        ("cross_attn", "k_proj"),
+        ("cross_attn", "v_proj"),
+        ("cross_attn", "o_proj"),
+        ("mlp", "gate_proj"),
+        ("mlp", "up_proj"),
+        ("mlp", "down_proj"),
+    )
+
     # ---- internal helpers ----
 
     def _replace_lambdas(self) -> None:
@@ -124,35 +169,43 @@ class DecoderForExport(nn.Module):
                     seq[i] = _Transpose12()
 
     def _setup_mixed_precision(self) -> None:
-        """Convert bulk of model to fp16, keep precision-critical ops in fp32.
+        """Bf16-hybrid recipe for the 2B turbo decoder.
 
-        The AdaLN pattern (scale_shift_table + temb -> scale/shift/gate)
-        and RMSNorm are numerically sensitive. In pure fp16, the gate
-        values get slightly wrong, and over 24 layers the error compounds
-        multiplicatively (0.92^24 ~ 7x dampening). Keeping these ops in
-        fp32 while running attention/MLP in fp16 gives near-full accuracy
-        with most of the fp16 speedup.
+        Bf16 trunk for the residual stream + fp32 islands for the
+        precision-critical ops (timestep embedding, AdaLN tables,
+        RMSNorms, norm_out) + per-Linear fp16 cast wrappers around
+        every matmul in each DiT layer + fp32 wrapper around proj_out's
+        ConvTranspose1d (TRT has no bf16 deconv kernel for the
+        [hidden, 64, 2, 1] shape).
+
+        The inner fp16 matmul casts are safe because each Linear's
+        input is bounded by RMSNorm * AdaLN scale, which fits inside
+        fp16 dynamic range. The bf16 residual stream handles peaks
+        that overflow fp16, fixing the high-t NaN that the old pure-fp16
+        trunk produced on the production decoder.
+
+        Note on the fp32 islands: a three-way profile against an
+        islands-free reference engine showed the same output cosine
+        similarity (~0.99988) as a same-ONNX rebuild against itself,
+        which suggested the islands were dead code. They are not:
+        removing them produces an ONNX that segfaults TRT's
+        strongly_typed builder when combined with the time_embed
+        reshape patch in _patch_decoder_for_trace. Keep the islands.
         """
         decoder = self.decoder
 
-        # Convert everything to fp16 first
-        decoder.half()
+        # Bf16 trunk
+        decoder.to(torch.bfloat16)
 
-        # Force fp32 for precision-critical paths:
-
-        # 1. Timestep embedding (sinusoidal encoding + projection)
+        # fp32 islands: timestep, output AdaLN, output norm
         decoder.time_embed.float()
         decoder.time_embed_r.float()
-
-        # 2. Output AdaLN: scale_shift_table, norm_out
         decoder.scale_shift_table = nn.Parameter(
             decoder.scale_shift_table.data.float()
         )
         decoder.norm_out.float()
 
-        # 3. Per-layer AdaLN: scale_shift_table + RMSNorm (all 3 norms)
-        # Note: condition_embedder stays fp16 so encoder_hidden_states
-        # match Q dtype in cross-attention (SDPA requires same dtype).
+        # Per-layer fp32 islands: AdaLN table + all RMSNorms
         for layer in decoder.layers:
             layer.scale_shift_table = nn.Parameter(
                 layer.scale_shift_table.data.float()
@@ -161,6 +214,37 @@ class DecoderForExport(nn.Module):
             layer.mlp_norm.float()
             if hasattr(layer, "cross_attn_norm"):
                 layer.cross_attn_norm.float()
+
+        # fp32 wrapper around proj_out's ConvTranspose1d. _replace_lambdas
+        # already swapped the surrounding Lambdas for _Transpose12, so we
+        # locate the deconv by type.
+        deconv_idx = None
+        for i, mod in enumerate(decoder.proj_out):
+            if isinstance(mod, nn.ConvTranspose1d):
+                deconv_idx = i
+                break
+        if deconv_idx is None:
+            raise RuntimeError(
+                "mixed_precision: could not find ConvTranspose1d inside proj_out"
+            )
+        decoder.proj_out[deconv_idx] = _Fp32CastWrapper(decoder.proj_out[deconv_idx])
+
+        # Per-Linear fp16 wrappers across every DiT layer.
+        wrapped = 0
+        for layer in decoder.layers:
+            for parent_attr, lin_attr in self.LINEAR_WRAP_TARGETS:
+                parent = getattr(layer, parent_attr, None)
+                if parent is None:
+                    continue
+                lin = getattr(parent, lin_attr, None)
+                if lin is None:
+                    continue
+                setattr(parent, lin_attr, _LinearFp16Wrapper(lin))
+                wrapped += 1
+        logger.info(
+            "mixed_precision (bf16 hybrid): wrapped {} Linears across {} layers",
+            wrapped, len(decoder.layers),
+        )
 
     def _setup_bf16_mixed(self) -> None:
         """bf16 bulk + fp32 island for XL turbo's unsupported deconv op."""
@@ -214,6 +298,27 @@ class DecoderForExport(nn.Module):
         decoder = self.decoder
         sliding_window = decoder.config.sliding_window  # 128
         layer_types = decoder.config.layer_types  # list of "full_attention"/"sliding_attention"
+
+        # Dynamo bakes the trace-time batch size into ``unflatten(1, (6, -1))``
+        # in TimestepEmbedding.forward, which corrupts dynamic-batch
+        # execution. Replace the unflatten with an explicit reshape so the
+        # batch dim stays symbolic. Harmless for the legacy torchscript path.
+        time_embed_dim = decoder.time_embed.time_proj.out_features // 6
+
+        def _patched_time_embed_forward(self_te, t):
+            t_freq = self_te.timestep_embedding(t, self_te.in_channels)
+            temb = self_te.linear_1(t_freq.to(t.dtype))
+            temb = self_te.act1(temb)
+            temb = self_te.linear_2(temb)
+            timestep_proj = self_te.time_proj(self_te.act2(temb)).reshape(-1, 6, time_embed_dim)
+            return temb, timestep_proj
+
+        decoder.time_embed.forward = types.MethodType(
+            _patched_time_embed_forward, decoder.time_embed,
+        )
+        decoder.time_embed_r.forward = types.MethodType(
+            _patched_time_embed_forward, decoder.time_embed_r,
+        )
 
         def _export_forward(
             self_dec,
@@ -337,9 +442,11 @@ class OnnxExportConfig:
     opset_version: int = 17
     do_constant_folding: bool = True
 
-    # Mixed precision: export with fp16 bulk + fp32 for AdaLN/timestep/norm.
-    # Use with TRTBuildConfig.strongly_typed=True for best FP16 accuracy.
-    # Recommended for 2B turbo. Ignored when ``precision`` is set.
+    # Mixed precision: export the bf16-hybrid recipe for the 2B turbo
+    # decoder (bf16 trunk + fp32 islands for timestep / AdaLN / norms +
+    # per-Linear fp16 wrappers + fp32 proj_out deconv island). Use with
+    # TRTBuildConfig.strongly_typed=True so the engine respects the dtype
+    # assignments. Ignored when ``precision`` is set.
     mixed_precision: bool = False
 
     # Trace dtype for the wrapper. Used when ``mixed_precision`` is False.
@@ -385,12 +492,14 @@ def export_decoder_onnx(
     ).eval()
 
     if config.mixed_precision:
-        # Mixed precision: model already has fp16/fp32 regions set up.
-        # Move to device without changing dtypes.
+        # Mixed precision: bf16 trunk + fp32 islands + per-Linear fp16
+        # wrappers + fp32 proj_out deconv island. Trace inputs are bf16
+        # to match the residual stream; timestep stays fp32 for the
+        # fp32 time_embed island.
         wrapper = wrapper.to(device)
-        trace_dtype = torch.float16
-        ts_dtype = torch.float32  # time_embed is fp32 in mixed mode
-        logger.info("Exporting with mixed precision (fp16 bulk + fp32 critical ops)")
+        trace_dtype = torch.bfloat16
+        ts_dtype = torch.float32
+        logger.info("Exporting with mixed precision (bf16 trunk + fp32 islands + per-Linear fp16)")
     elif config.precision == "bf16_mixed":
         wrapper = wrapper.to(device)
         trace_dtype = torch.bfloat16
@@ -429,17 +538,26 @@ def export_decoder_onnx(
         "velocity":               {0: "batch", 1: "seq_len"},
     }
 
-    # For refit-enabled builds, disable constant folding to preserve
-    # weight names as ONNX initializer names.  TRT does its own constant
-    # folding internally, so this has no effect on engine quality.
+    # For refit-enabled builds on the torchscript exporter, disable
+    # constant folding to preserve weight names as ONNX initializer names.
+    # TRT does its own constant folding internally, so this has no effect
+    # on engine quality. The dynamo exporter ignores this flag (it doesn't
+    # accept ``do_constant_folding``) and preserves weight names natively.
     do_constant_folding = config.do_constant_folding
     if config.for_refit:
         do_constant_folding = False
         logger.info("REFIT mode: constant folding disabled to preserve weight names")
 
+    # The legacy torchscript-based ONNX exporter (dynamo=False) has a bug
+    # in its shape-type inference pass when tracing bf16 graphs: it produces
+    # complex tensors during constant folding, then fails with
+    # "ScalarType ComplexDouble is an unexpected tensor scalar type". The
+    # new dynamo-based exporter (torch.export) doesn't have this bug.
+    # Use dynamo for any bf16-containing trace (mixed_precision is now
+    # bf16-trunk hybrid); keep legacy for fp32.
     use_dynamo = (
-        not config.mixed_precision
-        and config.precision == "bf16_mixed"
+        config.mixed_precision
+        or config.precision == "bf16_mixed"
     )
 
     logger.info(
@@ -459,7 +577,8 @@ def export_decoder_onnx(
             from torch.export import Dim
 
             batch = Dim("batch", min=1, max=8)
-            seq = Dim("seq", min=126, max=1500)
+            # 6000 = 240s at 25 Hz, covering the canonical engine matrix.
+            seq = Dim("seq", min=126, max=6000)
             enc = Dim("enc", min=32, max=512)
             dynamic_shapes = {
                 "hidden_states":         {0: batch, 1: seq},

@@ -1572,9 +1572,23 @@ def handle_client(
             # profile that's currently loaded). Must run BEFORE
             # prepare_source: VAE-encode is the first GPU consumer and
             # needs the new vae_encode engine bound to its cache.
+            #
+            # Walk mode pins decoder + vae_decode at walk_window_s while
+            # sizing vae_encode to the full new source (same mix that
+            # the initial walk-mode wiring at session start uses). The
+            # plain ensure_profile call would swap to the source's
+            # natural profile and reload the larger decoder, which loses
+            # the bf16 hybrid fix and stalls the producer during the
+            # mid-playback engine swap.
             if profile_mgr is not None:
                 try:
-                    profile_mgr.ensure_profile(new_audio_duration_s)
+                    if walk_window:
+                        profile_mgr.ensure_walk_profile(
+                            walk_window_s=walk_window_s,
+                            source_duration_s=new_audio_duration_s,
+                        )
+                    else:
+                        profile_mgr.ensure_profile(new_audio_duration_s)
                 except EngineNotBuiltError as exc:
                     print(f"[Server] Swap aborted: {exc}")
                     with send_lock:
