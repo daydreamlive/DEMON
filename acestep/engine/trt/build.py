@@ -1006,7 +1006,10 @@ def main():
     single.add_argument("--decoder", action="store_true",
                         help="Build decoder engine(s)")
     single.add_argument("--decoder-mixed", action="store_true",
-                        help="Use mixed precision for decoder")
+                        help="Build the bf16-hybrid decoder recipe "
+                             "(bf16 trunk + fp32 islands + per-Linear fp16 "
+                             "wrappers + fp32 proj_out deconv, "
+                             "strongly_typed=True)")
     single.add_argument("--decoder-precision",
                         choices=_DECODER_PRECISION_CHOICES,
                         default="auto",
