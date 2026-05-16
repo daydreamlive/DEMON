@@ -110,16 +110,6 @@ class DiffusionEngine:
         # the LoRA library is usable from tick 0 with no prerequisites.
         self._lora_manager = None
 
-        # Opt-in diagnostic: when DEMON_DUMP_DECODER_DIR is set, every TRT
-        # decoder step is dumped to disk so it can be replayed against the
-        # eager decoder for silence/divergence analysis. Off in the hot
-        # path (single attr read).
-        import os as _os
-        dump_dir = _os.environ.get("DEMON_DUMP_DECODER_DIR")
-        self._debug_dump_dir = dump_dir if dump_dir else None
-        self._debug_dump_counter = 0
-        self._debug_dump_manifest_written = False
-
         if trt_engine_path is not None:
             self.load_trt_engine(trt_engine_path)
         else:
@@ -526,72 +516,7 @@ class DiffusionEngine:
         self._trt_stream.synchronize()
 
         output = entry["output"]
-        velocity = output[:, :orig_T, :] if pad else output
-
-        if self._debug_dump_dir is not None:
-            self._dump_decoder_step(
-                hidden_states, timestep, encoder_hidden_states,
-                context_latents, velocity,
-            )
-
-        return velocity
-
-    def _dump_decoder_step(
-        self,
-        hidden_states: torch.Tensor,
-        timestep: torch.Tensor,
-        encoder_hidden_states: torch.Tensor,
-        context_latents: torch.Tensor,
-        velocity: torch.Tensor,
-    ) -> None:
-        """Persist one TRT step's I/O for offline replay against eager."""
-        import json
-        import os
-        from pathlib import Path
-
-        out_dir = Path(self._debug_dump_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        if not self._debug_dump_manifest_written:
-            self._debug_dump_manifest_written = True
-            loras: list = []
-            mgr = self._lora_manager
-            if mgr is not None:
-                try:
-                    for d in mgr.list_loras():
-                        if getattr(d, "state", "") == "enabled":
-                            loras.append({
-                                "id": getattr(d, "id", None),
-                                "strength": float(getattr(d, "strength", 0.0)),
-                                "path": getattr(d, "path", None),
-                            })
-                except Exception as exc:
-                    loras.append({"_error": str(exc)})
-            manifest = {
-                "active_loras": loras,
-                "trt_input_dtypes": {
-                    k: str(v) for k, v in self._trt_input_dtypes.items()
-                },
-                "trt_output_dtype": str(self._trt_output_dtype),
-            }
-            (out_dir / "manifest.json").write_text(
-                json.dumps(manifest, indent=2), encoding="utf-8",
-            )
-
-        idx = self._debug_dump_counter
-        self._debug_dump_counter += 1
-        path = out_dir / f"step_{idx:04d}.pt"
-        torch.save(
-            {
-                "step_idx": idx,
-                "hidden_states": hidden_states.detach().cpu(),
-                "timestep": timestep.detach().cpu(),
-                "encoder_hidden_states": encoder_hidden_states.detach().cpu(),
-                "context_latents": context_latents.detach().cpu(),
-                "trt_velocity": velocity.detach().cpu(),
-            },
-            path,
-        )
+        return output[:, :orig_T, :] if pad else output
 
     # ------------------------------------------------------------------
     # Noise generation

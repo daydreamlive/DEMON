@@ -352,6 +352,16 @@ def _patch_decoder_onnx_for_fp8(
     if activation_absmax_json:
         amax_path = Path(activation_absmax_json)
         if not amax_path.exists():
+            # Canonical XL FP8 calibrations live on HF; if the local
+            # file is missing but the path matches the standard layout
+            # (<root>/<component>/<profile>/activation_absmax.json),
+            # fetch and continue. Falls through to FileNotFoundError
+            # for non-canonical paths.
+            from .calibration_hub import resolve_or_fetch
+            fetched = resolve_or_fetch(amax_path)
+            if fetched is not None:
+                amax_path = fetched
+        if not amax_path.exists():
             raise FileNotFoundError(f"Activation absmax JSON not found: {amax_path}")
 
     from .fp8_onnx import patch_bf16_onnx_to_fp8
