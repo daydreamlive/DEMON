@@ -89,6 +89,8 @@ class PipelineRunner:
         walk_window=False,
         walk_window_s=60.0,
         neg_conditioning=None,
+        last_activity_ts=None,
+        idle_threshold_s=0.0,
     ):
         self.session = session
         self.stream = stream  # StreamHandle
@@ -150,6 +152,28 @@ class PipelineRunner:
         # by ``rcfg_mode == "self"`` (virtual uncond) and ``"off"``.
         # ``None`` is safe — modes that need it become quiet no-ops.
         self.neg_conditioning = neg_conditioning
+
+        # Idle GPU pause. Two-stage shutdown:
+        #   1) After ``idle_threshold_s`` with no inbound activity, skip
+        #      ``self.stream.tick()`` (the dominant per-tick GPU cost)
+        #      and reuse the most recent cached ``result_latent`` for
+        #      the rest of the loop body. The VAE keeps windowed-
+        #      decoding at the advancing playhead so audio continues
+        #      uninterrupted, sending deltas to refresh the client's
+        #      buffer from the stable cached latent.
+        #   2) Once the playhead has wrapped through one full cycle
+        #      since DiT paused, the client has the full denoised
+        #      buffer; further decodes would produce identical audio.
+        #      The VAE also stops (sleep+continue) until activity
+        #      resumes. Any incoming WS message clears both stages.
+        # Hot path is untouched when active or when disabled
+        # (``idle_threshold_s <= 0``).
+        self._last_activity_ts = last_activity_ts
+        self._idle_threshold_s = float(idle_threshold_s)
+        self._last_result_latent = None
+        self._dit_paused = False
+        self._vae_paused = False
+        self._dit_paused_at_wall_s = 0.0
 
         # Predictive decode: rolling EMA of (tick + decode) wall time. Each
         # decode targets ``playhead + _predicted_advance_s`` so that by the
@@ -286,6 +310,73 @@ class PipelineRunner:
                 # the tick body.
                 self.before_tick()
 
+            # Idle GPU pause — stage detection. Updates the flags read
+            # at the ``stream.tick()`` call site below, and at the end
+            # of the iteration (where ``result_latent`` is cached for
+            # the next DiT-paused iteration). Disabled when no shared
+            # activity ref was supplied or the threshold is non-
+            # positive (standalone callers fall through to the normal
+            # path with zero overhead).
+            idle_active = (
+                self._idle_threshold_s > 0.0
+                and self._last_activity_ts is not None
+                and (time.monotonic() - self._last_activity_ts[0]) >= self._idle_threshold_s
+            )
+            if not idle_active:
+                # Activity resumed — clear both stages.
+                if self._dit_paused or self._vae_paused:
+                    self._dit_paused = False
+                    self._vae_paused = False
+                    print("[Pipeline] Resumed: DiT ticking again")
+            else:
+                # Idle. Enter DiT-pause on first hit; the VAE-pause
+                # check fires once enough wall time has passed for the
+                # advancing playhead to refresh every chunk of the
+                # client's audio buffer with audio decoded from the
+                # cached latent.
+                if not self._dit_paused:
+                    self._dit_paused = True
+                    self._dit_paused_at_wall_s = time.monotonic()
+                    print(f"[Pipeline] Idle: DiT paused after "
+                          f"{self._idle_threshold_s:.0f}s; VAE keeps "
+                          f"refilling client buffer until one full cycle "
+                          f"completes.")
+
+                if self._vae_paused:
+                    # Both stages reached — full GPU idle. Nap and
+                    # re-evaluate. 50ms wake granularity is well below
+                    # human-perceptible resume latency.
+                    time.sleep(0.05)
+                    continue
+
+                # Audio plays at real-time rate, so wall-clock since
+                # DiT paused is equivalent to playhead advance. Once
+                # we've passed one full buffer-duration's worth of
+                # wall time, every chunk has been re-decoded from the
+                # cached latent and shipped to the client; further
+                # decodes would produce identical samples. Robust
+                # against modulo wrap-around edge cases that a
+                # playhead-position diff would miss when the runner
+                # stalls or the buffer length changes.
+                buf_dur_s = max(
+                    1e-6, len(self.audio_eng.current) / SAMPLE_RATE,
+                )
+                wall_since_pause_s = time.monotonic() - self._dit_paused_at_wall_s
+                if (
+                    self._last_result_latent is not None
+                    and wall_since_pause_s >= buf_dur_s
+                ):
+                    self._vae_paused = True
+                    print("[Pipeline] Idle: VAE paused (client buffer "
+                          "fully filled from cached latent)")
+                    time.sleep(0.05)
+                    continue
+
+                # If we don't have a cached latent yet (idle hit before
+                # any successful tick), fall through to the normal
+                # path — calling stream.tick() is the only way to
+                # produce one. Rare in practice.
+
             # Walk-window mode selection. Only active when the source
             # actually has more frames than the window — short sources
             # fall back to whole-source submission so walk_window=True is
@@ -349,6 +440,14 @@ class PipelineRunner:
                 prev_src_T = cur_src_T
                 cached_live_src_lat = None
                 cached_live_ctx_raw_t = None
+                # Invalidate the DiT-pause cache: in walk mode the latent
+                # is chunk-specific, and on a source swap it's source-
+                # specific. Without this, a chunk crossing (or swap) while
+                # paused would have the VAE decode the previous chunk's
+                # latent at the new chunk's playhead — audible glitch.
+                # Cleared cache forces the DiT-pause branch below to fall
+                # through to a normal tick on the next iteration.
+                self._last_result_latent = None
                 if walk_active:
                     prev_walk_w0 = walk_w0
 
@@ -576,29 +675,47 @@ class PipelineRunner:
 
                 if rcfg_mode in ("full", "initialize") and self.neg_conditioning is not None:
                     tick_kwargs["negative"] = self.neg_conditioning
-            result_latent = self.stream.tick(
-                denoise=denoise,
-                seed=seed,
-                source_latent=(
-                    Latent(tensor=source_lat) if source_lat is not None
-                    else live_src_lat
-                ),
-                x0_target=x0_tgt,
-                x0_target_curve=x0_target_curve,
-                shift=current_shift,
-                initial_noise_curve=initial_noise_curve,
-                **tick_kwargs,
-                # DCW (wavelet-domain post-step correction). Forwarded
-                # every tick so toggle / mode / wavelet changes from the
-                # client take effect on the next slot via pipe.set_dcw().
-                # Default on — matches upstream v0.1.7.
-                dcw_enabled=bool(raw.get("dcw_enabled", True)),
-                dcw_mode=str(raw.get("dcw_mode", "double")),
-                dcw_scaler=float(raw.get("dcw_scaler", 0.05)),
-                dcw_high_scaler=float(raw.get("dcw_high_scaler", 0.02)),
-                dcw_wavelet=str(raw.get("dcw_wavelet", "haar")),
-                dcw_advanced=_build_dcw_advanced(raw),
-            )
+            # DiT-pause: skip the expensive ``stream.tick()`` call and
+            # reuse the cached latent from the most recent active tick.
+            # The rest of the loop (skip-decode heuristic, windowed VAE
+            # decode, on_audio_ready) is unchanged — when the playhead
+            # has moved enough since ``last_decode_pos``, the existing
+            # ``skipped`` logic naturally re-decodes a fresh window of
+            # this same latent and ships the delta. We only get here
+            # when a cached latent exists (see the stage-detection
+            # block above; lack of cache falls through to the normal
+            # tick).
+            if self._dit_paused and self._last_result_latent is not None:
+                result_latent = self._last_result_latent
+            else:
+                result_latent = self.stream.tick(
+                    denoise=denoise,
+                    seed=seed,
+                    source_latent=(
+                        Latent(tensor=source_lat) if source_lat is not None
+                        else live_src_lat
+                    ),
+                    x0_target=x0_tgt,
+                    x0_target_curve=x0_target_curve,
+                    shift=current_shift,
+                    initial_noise_curve=initial_noise_curve,
+                    **tick_kwargs,
+                    # DCW (wavelet-domain post-step correction).
+                    # Forwarded every tick so toggle / mode / wavelet
+                    # changes from the client take effect on the next
+                    # slot via pipe.set_dcw(). Default on — matches
+                    # upstream v0.1.7.
+                    dcw_enabled=bool(raw.get("dcw_enabled", True)),
+                    dcw_mode=str(raw.get("dcw_mode", "double")),
+                    dcw_scaler=float(raw.get("dcw_scaler", 0.05)),
+                    dcw_high_scaler=float(raw.get("dcw_high_scaler", 0.02)),
+                    dcw_wavelet=str(raw.get("dcw_wavelet", "haar")),
+                    dcw_advanced=_build_dcw_advanced(raw),
+                )
+            # Cache the most recent successful latent so the DiT-pause
+            # branch above has something to feed the VAE windowing.
+            if result_latent is not None:
+                self._last_result_latent = result_latent
             torch.cuda.synchronize()
             tick_ms = (time.perf_counter() - t0) * 1000
 

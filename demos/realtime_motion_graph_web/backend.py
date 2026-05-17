@@ -12,6 +12,7 @@ through :class:`.pipeline.PipelineRunner`, with:
 """
 
 import json
+import os
 import queue
 import socket
 import struct
@@ -310,6 +311,15 @@ class VirtualMidiKnobs:
 # / compile cap is fixed.
 MIN_PIPELINE_DEPTH = 1
 EAGER_MAX_PIPELINE_DEPTH = 4
+
+# Idle GPU pause threshold. After this many seconds with no incoming WS
+# or control-bus message, the runner stops invoking the DiT each tick.
+# The audio engine keeps serving from its existing buffer (which the
+# walk_window LoRA designs to loop cleanly at walk_window_s), so audio
+# continues uninterrupted while the GPU idles. Any incoming message
+# resets the timer immediately; the next loop iteration resumes a normal
+# tick. Set to 0 to disable the pause entirely (always tick).
+IDLE_PAUSE_S = float(os.environ.get("DEMON_IDLE_PAUSE_S", "20"))
 
 
 def _compute_max_pipeline_depth(diffusion_engine) -> int:
@@ -1101,6 +1111,20 @@ def handle_client(
     pending_depth_lock = threading.Lock()
     current_depth_ref: list[int] = [int(depth)]
 
+    # Last meaningful-activity timestamp. Read by PipelineRunner to
+    # decide whether to skip the DiT tick this iteration. The web client
+    # resends a full ``params`` message every 8 ms via useParamSync
+    # (mirrors DEMON's _sendTick — the engine samples params at the
+    # start of each generation window, so the client floods them even
+    # when nothing changed). Treating that flood as "activity" defeats
+    # the pause entirely. Instead, ``params`` messages bump the timer
+    # only when their ``raw`` dict differs from the previous one;
+    # all other message types are discrete actions and always bump.
+    # Plain list-wrapped float / dict: atomic enough under the GIL for
+    # this single-slot rendezvous.
+    last_activity_ts: list[float] = [time.monotonic()]
+    _last_params_raw_ref: list = [None]
+
     def _send_catalog_update():
         try:
             with send_lock:
@@ -1293,6 +1317,23 @@ def handle_client(
         changes (it owns its own params already).
         """
         mtype = data.get("type")
+        # Activity gating for the idle-pause runner. ``params`` is a
+        # client heartbeat (re-sent every 8 ms by useParamSync even
+        # when nothing changed), so we only count it as activity when
+        # ``raw`` actually differs from the previous one we saw —
+        # otherwise the pause would never engage. Every other message
+        # type represents a discrete action (LoRA toggle, source swap,
+        # prompt change, etc.) and always counts as activity.
+        # ``playback_pos`` on params messages advances every tick but
+        # is intentionally excluded from the diff: it's a clock, not
+        # user input.
+        if mtype == "params":
+            _new_raw = data.get("raw") or {}
+            if _new_raw != _last_params_raw_ref[0]:
+                last_activity_ts[0] = time.monotonic()
+                _last_params_raw_ref[0] = dict(_new_raw)
+        else:
+            last_activity_ts[0] = time.monotonic()
         if mtype == "params":
             raw = data.get("raw") or {}
             if source == "control":
@@ -1826,6 +1867,8 @@ def handle_client(
     # --- PipelineRunner: the SAME code as local ---
     runner = PipelineRunner(
         session, stream, audio_eng,
+        last_activity_ts=last_activity_ts,
+        idle_threshold_s=IDLE_PAUSE_S,
         use_midi=True,  # always "MIDI" mode; VirtualMidiKnobs provides values
         use_sde=use_sde, use_lora=use_lora,
         midi_knobs=virtual_knobs,
