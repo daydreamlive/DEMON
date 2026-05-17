@@ -1,3 +1,4 @@
+import { fetchWithRetry } from "@/engine/fetchWithRetry";
 import { podHttp } from "@/engine/podUrl";
 import { useSessionStore } from "@/store/useSessionStore";
 import type { LoraCatalogEntry } from "@/types/protocol";
@@ -9,9 +10,13 @@ import type { LoraCatalogEntry } from "@/types/protocol";
  *  a different checkpoint even before the WS ready frame arrives.
  *  Older servers that don't ship the field leave it ``null``, which
  *  the UI treats as "don't filter".
+ *
+ *  Uses fetchWithRetry so a backend that's still booting (502 from the
+ *  Next dev proxy) is transparently waited on instead of leaving the
+ *  catalog empty until the operator refreshes.
  */
 export async function listLoras(): Promise<LoraCatalogEntry[]> {
-  const res = await fetch(podHttp("/api/loras"));
+  const res = await fetchWithRetry(podHttp("/api/loras"));
   if (!res.ok) throw new Error(`/api/loras failed: ${res.status}`);
   const json = (await res.json()) as {
     dir: string;

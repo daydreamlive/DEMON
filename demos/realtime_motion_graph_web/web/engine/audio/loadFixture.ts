@@ -8,6 +8,7 @@
 // existing Play / fixture-swap paths work unchanged when the active
 // fixture is an upload.
 
+import { fetchWithRetry } from "@/engine/fetchWithRetry";
 import { podHttp } from "@/engine/podUrl";
 import { SAMPLE_RATE } from "@/engine/protocol";
 
@@ -164,9 +165,13 @@ export async function decodeAudioFile(file: File): Promise<DecodeFileResult> {
   return trimToSwapLimit(decoded);
 }
 
-/** Fetch the pod's whitelist of fixture names. */
+/** Fetch the pod's whitelist of fixture names.
+ *
+ *  Uses fetchWithRetry so a backend still coming up (502 from the Next
+ *  dev proxy) is transparently waited on instead of leaving the fixture
+ *  list empty until the operator refreshes. */
 export async function listFixtures(): Promise<string[]> {
-  const res = await fetch(podHttp("/api/fixtures"));
+  const res = await fetchWithRetry(podHttp("/api/fixtures"));
   if (!res.ok) throw new Error(`Fixture list failed: ${res.status}`);
   const json = (await res.json()) as string[];
   return json;
