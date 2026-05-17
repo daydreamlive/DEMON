@@ -37,12 +37,13 @@ from acestep.fixtures import (
     FixtureSidecar, KNOWN_FIXTURES, audio_fixture, fixture_sidecar,
 )
 from acestep.nodes.types import Audio, Latent
+from acestep.lora_metadata import load_lora_metadata
 from acestep.paths import (
     EngineNotBuiltError,
     available_dreamvae_decode_engine,
+    checkpoint_scale,
     checkpoints_dir,
     dreamvae_decode_engine_name,
-    lora_trigger,
     loras_dir,
     max_profile_duration_s,
     smallest_fitting_profile_duration_s,
@@ -591,29 +592,6 @@ def handle_client(
         )
     )
 
-    def _active_trigger_prefix() -> str:
-        """Comma-separated activation tokens for every currently-ENABLED
-        LoRA that ships with a `<stem>.trigger.txt` sidecar.
-
-        Defined ABOVE `_encode_cond_pair` so the latter's free-variable
-        binding to this name is populated before any early text-encode
-        site runs (initial session start fires the first encode below,
-        well before the recv loop). Python's free-variable cell only
-        gets populated when the enclosing function executes the `def`
-        statement that creates the local — define-after-use across the
-        same scope NameErrors at call time.
-        """
-        if not lora_available:
-            return ""
-        parts: list[str] = []
-        for d in engine_obj.list_loras():
-            if d.state != "enabled":
-                continue
-            trig = lora_trigger(d.path)
-            if trig:
-                parts.append(trig)
-        return ", ".join(parts)
-
     # Two-conditioning cache for the live timbre-strength slider.
     # cond_silence uses the model's silence latent (refer_latent=None);
     # cond_full uses whichever timbre reference is currently active —
@@ -625,31 +603,21 @@ def handle_client(
     # prompt crossfades. Recomputed on prompt change, on swap_source,
     # and on set_timbre_source / clear_timbre_source.
     def _encode_cond_pair(tags, refer_latent, bpm, duration, key, time_signature):
-        # Server-side LoRA trigger injection: every currently-ENABLED
-        # LoRA whose `<stem>.trigger.txt` sidecar is present contributes
-        # its activation word to a hidden prefix prepended to the user's
-        # caption. The user-visible promptA / promptB strings stay
-        # untouched in the UI — this prepend only happens here, just
-        # before the text encoder forward, so all five encode sites
-        # (session start, prompt change, timbre refresh, swap_source,
-        # LoRA enable/disable re-encode) inherit the same prefix from
-        # one place. Idempotent against re-encodes with the same LoRA
-        # state (the prefix is deterministic) so a noop re-encode is a
-        # noop. See `_active_trigger_prefix` for the lookup logic.
-        prefix = _active_trigger_prefix()
-        if prefix:
-            full_tags = f"{prefix}, {tags}" if tags else prefix
-        else:
-            full_tags = tags
+        # WYSIWYG: the encoder sees exactly the text the UI sent. LoRA
+        # trigger words land in `tags` via the client's visible-prepend
+        # logic (see web/store/useLoraStore + the auto_prepend_lora_triggers
+        # config flag) so the user can edit or remove them like any other
+        # prompt token. The server intentionally does NOT inject anything
+        # behind the user's back.
         cs = session.encode_text(
-            tags=full_tags,
+            tags=tags,
             instruction=TASK_INSTRUCTIONS["cover"],
             refer_latent=None,
             bpm=bpm, duration=duration, key=key,
             time_signature=time_signature,
         )
         cf = session.encode_text(
-            tags=full_tags,
+            tags=tags,
             instruction=TASK_INSTRUCTIONS["cover"],
             refer_latent=refer_latent,
             bpm=bpm, duration=duration, key=key,
@@ -723,23 +691,26 @@ def handle_client(
     def _catalog_payload():
         if not lora_available:
             return []
-        return [
-            {
-                "id": d.id, "name": d.name, "path": d.path,
-                # `trigger` is the LoRA's activation word, read from a
-                # sibling `<stem>.trigger.txt` sidecar at the same path
-                # as the .safetensors. Empty string when the sidecar
-                # doesn't exist (LoRAs trained without a documented
-                # trigger). The engine reads the same sidecar at encode
-                # time and prepends to the user caption when this LoRA
-                # is in ENABLED state, so the UI doesn't need to act on
-                # this field — it's surfaced for transparency / tooltips.
-                "trigger": lora_trigger(d.path),
-                "state": d.state, "strength": d.strength,
+        out = []
+        for d in engine_obj.list_loras():
+            # `metadata` is the full normalized record from the LoRA's
+            # `<stem>.metadata.json` sidecar (falling back to a
+            # synthesized record from `.trigger.txt`, or a sparse one
+            # with id/name only when neither exists). The UI uses it for
+            # the library tooltip, search, right-click "copy trigger",
+            # and the visible-prepend logic. Cached by (path, mtime_ns)
+            # so a catalog refresh is cheap.
+            metadata = load_lora_metadata(d.path).to_wire()
+            out.append({
+                "id": d.id,
+                "name": metadata.get("name") or d.name,
+                "path": d.path,
+                "state": d.state,
+                "strength": d.strength,
                 "materialized_bytes": d.materialized_bytes,
-            }
-            for d in engine_obj.list_loras()
-        ]
+                "metadata": metadata,
+            })
+        return out
 
     # Send ready + initial buffer
     ws.send(json.dumps({
@@ -757,6 +728,14 @@ def handle_client(
         # ``"4"`` on the live path. Operator can change it post-init via
         # the prompt re-encode message (carries ``time_signature``).
         "time_signature": detected_time_signature,
+        # Active checkpoint identifier + its model-scale label ("2B" /
+        # "5B" / null). The UI compares ``checkpoint_scale`` against
+        # each LoRA's ``metadata.base_model_scale`` to hide LoRAs that
+        # weren't trained for this checkpoint. ``null`` (unknown
+        # checkpoint) disables filtering so undocumented checkpoints
+        # don't accidentally hide every LoRA.
+        "checkpoint": checkpoint,
+        "checkpoint_scale": checkpoint_scale(checkpoint),
     }))
     ws.send(src_np.astype(np.float16).tobytes())
     print(f"[Server] Sent initial buffer ({len(src_np) / SAMPLE_RATE:.1f}s)")
@@ -1101,33 +1080,13 @@ def handle_client(
             except Exception as e:
                 print(f"[Server] enable_lora({lid}) failed: {e}")
         _send_catalog_update()
-        # If the set of active triggers changed (enable adds, disable
-        # removes), re-encode the current prompt so the new prefix is
-        # baked into the conditioning. Without this the trigger only
-        # takes effect on the NEXT prompt change — toggling a LoRA in
-        # the library would visibly change the LoRA matrices but the
-        # audio wouldn't reflect the trigger's encoder-side bias until
-        # the user touched a prompt field. Cheap: one text-encode
-        # forward + a cond-blend. `_encode_cond_pair` queries the now-
-        # fresh state via `_active_trigger_prefix`.
-        try:
-            new_pair = _encode_cond_pair(
-                prompt_text[0],
-                _active_refer_latent(),
-                bpm_ref[0],
-                duration_ref[0],
-                key_ref[0],
-                time_sig_ref[0],
-            )
-            cond_pair_ref[0] = new_pair
-            stream.conditioning = _blend_for_strength(
-                new_pair[0], new_pair[1], timbre_strength_ref[0],
-            )
-        except Exception as e:
-            # Re-encode is best-effort — if it fails, the LoRA matrices
-            # still applied (engine_obj.enable/disable above succeeded);
-            # next prompt change will catch up. Log and move on.
-            print(f"[Server] re-encode after LoRA change failed: {e}")
+        # No automatic re-encode here. With WYSIWYG prompts, the trigger
+        # word lives in the visible promptA/promptB text. The client's
+        # visible-prepend logic (when `auto_prepend_lora_triggers` is on)
+        # mutates the prompt on toggle and sends a prompt-update message,
+        # which routes through the normal prompt-change path. If the flag
+        # is off, the user explicitly opted into not auto-injecting the
+        # trigger and we must not encode it behind their back.
 
     # --- on_audio_ready: delta-encode and send to client ---
     def on_audio_ready(wav_np, win_start=None, win_end=None):

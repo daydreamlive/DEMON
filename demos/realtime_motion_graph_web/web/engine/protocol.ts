@@ -11,6 +11,7 @@
 
 import * as fzstd from "fzstd";
 
+import { useSessionStore } from "@/store/useSessionStore";
 import {
   SAMPLE_RATE,
   SLICE_FLAG_DELTA,
@@ -91,6 +92,14 @@ export class RemoteBackend extends EventTarget {
   detectedBpm: number | null = null;
   detectedKey: string | null = null;
   detectedTimeSignature: string | null = null;
+  /** Active checkpoint identifier (e.g. "acestep-v15-turbo"). Null when
+   *  the server didn't ship one (older backend, --no-backend mode). */
+  checkpoint: string | null = null;
+  /** Model-scale label for the active checkpoint ("2B" | "5B" | null).
+   *  Used by the LoRA library UI to hide LoRAs whose trained
+   *  ``base_model_scale`` doesn't match. Null = unknown checkpoint;
+   *  the UI treats that as "don't filter". */
+  checkpointScale: string | null = null;
 
   private _pending: PendingPayload | null;
   private _pendingSwap: SwapReadyMessage | null = null;
@@ -213,6 +222,14 @@ export class RemoteBackend extends EventTarget {
             this.detectedBpm = msg.bpm ?? null;
             this.detectedKey = msg.key ?? null;
             this.detectedTimeSignature = msg.time_signature ?? null;
+            this.checkpoint = msg.checkpoint ?? null;
+            this.checkpointScale = msg.checkpoint_scale ?? null;
+            // Push the scale into the session store so the LoRA library
+            // can filter incompatibles immediately, without subscribing
+            // to RemoteBackend instance fields.
+            useSessionStore
+              .getState()
+              .setCheckpointScale(this.checkpointScale);
             phase = "initial-buffer";
           } catch (e) {
             reject(e);

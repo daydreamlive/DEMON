@@ -1,21 +1,54 @@
 // WS wire protocol shapes. Mirrors the Python side
 // (DEMON/demos/realtime_motion_graph_web/protocol.py + backend.py).
 
+/** Normalized LoRA metadata mirrored from the Python sidecar loader
+ *  (`acestep/lora_metadata.py`). Always shipped — fields are null when
+ *  the LoRA has no `<stem>.metadata.json` or `.trigger.txt` sidecar.
+ *  `has_metadata` is true iff a real `metadata.json` was loaded (vs a
+ *  synthesized fallback record). */
+export interface LoraMetadata {
+  id: string;
+  name: string;
+  description: string | null;
+  /** The canonical activation token — what we copy to the clipboard
+   *  and prepend to the prompt when auto_prepend_lora_triggers is on.
+   *  One of the entries in `trigger_words`, or null when the LoRA has
+   *  no documented trigger. */
+  primary_trigger_word: string | null;
+  /** All known activation tokens. May contain multiple aliases. The
+   *  runtime only acts on `primary_trigger_word`; the rest are for
+   *  documentation / advanced surfaces. */
+  trigger_words: string[];
+  recommended_strength: number | null;
+  recommended_steps: number | null;
+  recommended_shift: number | null;
+  recommended_guidance: number | null;
+  primary_genre: string | null;
+  secondary_genres: string[];
+  tags: string[];
+  moods: string[];
+  /** Free-form base-model identifier (e.g. "AceStep v1.5 Turbo"). For
+   *  display only; the runtime compares ``base_model_scale``. */
+  base_model: string | null;
+  /** "2B" or "5B". Compared against the active session's
+   *  ``checkpoint_scale`` to hide LoRAs trained for a different
+   *  checkpoint. Null when the sidecar doesn't declare it — the UI
+   *  treats null as "compatible with everything" so legacy LoRAs
+   *  without a scale declaration aren't silently hidden. */
+  base_model_scale: string | null;
+  has_metadata: boolean;
+}
+
 export interface LoraCatalogEntry {
   id: string;
   name?: string;
   path?: string;
-  /** Activation word the LoRA was trained against, sourced from a
-   *  `<stem>.trigger.txt` sidecar next to the .safetensors. Always
-   *  present in the catalog payload — empty string when no sidecar
-   *  exists (no documented trigger for that LoRA, e.g. synthpop).
-   *  The engine handles the actual prompt prepending server-side at
-   *  encode time; this field is surfaced to the UI for transparency /
-   *  tooltips only — do NOT inject it into promptA/promptB. */
-  trigger?: string;
   state?: string;
   strength?: number;
   materialized_bytes?: number;
+  /** Full normalized metadata record. Always present from servers that
+   *  speak the v2 catalog shape; older servers may omit it. */
+  metadata?: LoraMetadata;
 }
 
 /** Sent by the client at session start (config phase). */
@@ -51,6 +84,8 @@ export interface ReadyMessage {
   bpm?: number | null;
   key?: string | null;
   time_signature?: string | null;
+  checkpoint?: string | null;
+  checkpoint_scale?: string | null;
 }
 
 /** Structured init failure from the server. */

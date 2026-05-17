@@ -262,10 +262,31 @@ async def list_fixtures() -> list[str]:
 async def list_loras() -> dict:
     """List all LoRAs discoverable in the server's MODELS_DIR/loras.
 
-    Each entry has id, name, path, trigger, state, strength,
-    materialized_bytes. Use ``id`` with enable_lora/disable_lora.
+    Each entry has id, name, path, state, strength, materialized_bytes,
+    and a ``metadata`` blob with the normalized sidecar record:
+    primary_trigger_word, trigger_words, description, recommended_*,
+    classification, etc. Use ``id`` with enable_lora/disable_lora; the
+    metadata is most useful for picking which LoRA to enable and at
+    what strength.
     """
     return _http_json("GET", f"{BACKEND_HTTP}/api/loras", timeout=10.0)
+
+
+@mcp.tool()
+async def get_lora_metadata(lora_id: str) -> dict:
+    """Return the full metadata record for a single LoRA by id (stem).
+
+    Mirrors the ``metadata`` block on each ``list_loras`` entry but
+    saves the agent from parsing the whole catalog. Returns a sparse
+    record (mostly nulls) for LoRAs without a sidecar; ``has_metadata``
+    is True iff a real ``<stem>.metadata.json`` was loaded. Returns
+    ``{"error": "not_found"}`` if no LoRA with that id exists.
+    """
+    catalog = _http_json("GET", f"{BACKEND_HTTP}/api/loras", timeout=10.0)
+    for entry in catalog.get("loras", []):
+        if entry.get("id") == lora_id:
+            return entry.get("metadata") or {}
+    return {"error": "not_found", "lora_id": lora_id}
 
 
 @mcp.tool()

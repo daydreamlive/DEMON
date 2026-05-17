@@ -50,6 +50,12 @@ _ACCEL = "tensorrt"
 # idle settings reset) and the initial display mode can be CLI-driven.
 _KIOSK = False
 _DEFAULT_MODE = "graph"
+# Set by main() once CLI args are parsed; the HTTP /api/loras and
+# /api/* meta endpoints read it so the UI can label the active
+# checkpoint scale (2B / 5B) without waiting for the WS ready frame.
+# Initialized to the default acestep-v15-turbo (2B) to keep the
+# endpoint sane in --no-backend mode where main() may exit early.
+_CHECKPOINT: str = "acestep-v15-turbo"
 _VALID_MODES = ("graph", "video")
 
 # Short aliases for --checkpoint. Map directly to the canonical
@@ -133,32 +139,55 @@ def _process_request(connection, request):
     # resolution the WebSocket pipeline uses, so everyone agrees on
     # what's in the catalog.
     if path_only == "/api/loras":
-        from acestep.paths import discover_loras, lora_trigger, loras_dir
+        from acestep.lora_metadata import load_lora_metadata
+        from acestep.paths import (
+            checkpoint_scale,
+            discover_all_loras,
+            extra_lora_dirs,
+            loras_dir,
+        )
         try:
-            d = loras_dir()
-            # Per-entry ``trigger`` is read from a sidecar
-            # ``<stem>.trigger.txt`` next to each .safetensors (managed
-            # by demon-public-demo's download_loras.sh + the lora-train
-            # convert step). Field is always present in the response —
-            # empty string when no sidecar — so the client can do
-            # ``entry.trigger || null`` without an existence check. The
-            # engine consults the same sidecar at encode time and
-            # prepends the trigger to the user's caption when the LoRA
-            # is enabled.
-            entries = [
-                {
-                    "id": p.stem, "name": p.stem, "path": str(p),
-                    "trigger": lora_trigger(p),
-                    "state": "registered", "strength": 0.0,
+            # Recursive across the primary library AND every directory
+            # in ACESTEP_EXTRA_LORA_DIRS, matching the engine's own
+            # register_library() scan so the HTTP catalog and the
+            # engine-side catalog stay in lockstep.
+            entries = []
+            seen_ids: set[str] = set()
+            for p in discover_all_loras():
+                # Same-stem dedup mirrors LoRAManager.register_lora's
+                # first-wins behavior so the UI can't see a phantom id
+                # the engine refused to register.
+                if p.stem in seen_ids:
+                    continue
+                seen_ids.add(p.stem)
+                md = load_lora_metadata(p).to_wire()
+                entries.append({
+                    "id": p.stem,
+                    "name": md.get("name") or p.stem,
+                    "path": str(p),
+                    "state": "registered",
+                    "strength": 0.0,
                     "materialized_bytes": 0,
-                }
-                for p in discover_loras(d)
-            ]
+                    "metadata": md,
+                })
         except Exception as e:
             entries = []
             sys.stdout.write(f"[HTTP] /api/loras error: {e}\n")
             sys.stdout.flush()
-        body = json.dumps({"dir": str(loras_dir()), "loras": entries}).encode()
+        # ``dir`` stays as the primary library root for back-compat
+        # (existing clients display it as "LoRA directory").
+        # ``extra_dirs`` surfaces extra LoRA dirs from acestep.local.json
+        # so the operator can see which training dirs the scan picked up.
+        # ``checkpoint`` + ``checkpoint_scale`` let the UI hide LoRAs
+        # whose ``metadata.base_model_scale`` doesn't match the active
+        # checkpoint without waiting for the WS ready frame.
+        body = json.dumps({
+            "dir": str(loras_dir()),
+            "extra_dirs": [str(p) for p in extra_lora_dirs()],
+            "checkpoint": _CHECKPOINT,
+            "checkpoint_scale": checkpoint_scale(_CHECKPOINT),
+            "loras": entries,
+        }).encode()
         _log_http(remote, 200, "GET", url)
         return Response(
             200, "OK",
@@ -385,11 +414,12 @@ def main():
             f"[Server] --mode must be one of {_VALID_MODES}, got {default_mode!r}"
         )
 
-    global _NO_BACKEND, _ACCEL, _KIOSK, _DEFAULT_MODE
+    global _NO_BACKEND, _ACCEL, _KIOSK, _DEFAULT_MODE, _CHECKPOINT
     _NO_BACKEND = no_backend
     _ACCEL = accel
     _KIOSK = kiosk
     _DEFAULT_MODE = default_mode
+    _CHECKPOINT = checkpoint
 
     if no_backend:
         ws_handler = _stub_handle_client

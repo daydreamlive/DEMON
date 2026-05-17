@@ -1213,13 +1213,81 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   padding: 4px 8px;
   /* Internal scroll: the Library tile holds its own height and
      scrolls when there are too many rows to fit.  The Advanced drawer
-     stays at its natural size. */
-  max-height: 240px;
+     stays at its natural size. The cap was 240px when the tile had no
+     search bar above it; the search input occupies ~32px, so we trim
+     the list cap by that much to keep the tile's outer height roughly
+     unchanged. */
+  max-height: 206px;
   overflow-y: auto;
   overflow-x: hidden;
   /* Subtle scrollbar styling (Firefox + WebKit) so it doesn't shout. */
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
+
+/* Library search input. Lives between the tile label and the row list.
+   Same chrome vocabulary as .seed-btn / .send-prompt-btn (frame-line
+   border, mono caps text, accent on focus) so it reads as part of the
+   tile, not a glued-on form control. */
+.mixer-tile[data-tile="library"] .lora-search {
+  padding: 0 8px;
+  margin-bottom: 4px;
+}
+.mixer-tile[data-tile="library"] .lora-search-input {
+  width: 100%;
+  background: transparent;
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-sm);
+  color: var(--text-strong);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: var(--tracking-wide);
+  padding: 5px 8px 4px;
+  outline: none;
+  transition: border-color 0.14s ease, box-shadow 0.18s ease;
+}
+.mixer-tile[data-tile="library"] .lora-search-input::placeholder {
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+}
+.mixer-tile[data-tile="library"] .lora-search-input:focus {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 6px var(--accent-glow);
+}
+
+/* Footer for the LoRA library: "N hidden (incompatible with 2B) ·
+   show all". Sits below the list, doesn't grow the tile (the list
+   max-height already accommodates a one-line footer). */
+.mixer-tile[data-tile="library"] .lora-hidden-footer {
+  padding: 4px 10px 6px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.mixer-tile[data-tile="library"] .lora-hidden-toggle {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-family: var(--font-mono);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  padding: 2px 6px 1px;
+  cursor: pointer;
+  transition: border-color 0.14s ease, color 0.14s ease;
+}
+.mixer-tile[data-tile="library"] .lora-hidden-toggle:hover {
+  border-color: var(--accent-line);
+  color: var(--text-strong);
 }
 .mixer-tile[data-tile="library"] .lora-list::-webkit-scrollbar { width: 6px; }
 .mixer-tile[data-tile="library"] .lora-list::-webkit-scrollbar-thumb {
@@ -1243,6 +1311,13 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   row-gap: 4px;
   padding: 4px 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  /* NOT positioned on purpose. The data-dd-tooltip ::after pseudo is
+     position: absolute and walks up the ancestor chain to the nearest
+     positioned ancestor — which for everything inside the drawer body
+     is .install-sheet (position: fixed). That lands every tooltip in
+     the same screen spot: 8px above the drawer top, viewport-centered.
+     A `position: relative` here would re-anchor the tooltip to this
+     row, kicking it out of the shared display area. */
 }
 .lora-row:last-child { border-bottom: none; }
 
@@ -2510,6 +2585,73 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   height: 1px;
   margin: 4px 12px;
   background: var(--frame-line);
+}
+
+/* ── LoRA row context menu ──────────────────────────────────────────────
+   Right-click on a `.lora-row` opens this menu at click coordinates
+   (portaled to <body> by LibraryTile so it escapes the drawer's
+   overflow + z-index). Same chrome vocabulary as .halo-menu — sheet
+   bg, frame-line border, top brand-gradient hairline — but free-
+   floating instead of pinned to the badge corner.
+
+   z-index 60 sits above the drawer (z=50) and the install-stage HUD
+   so the menu paints on top of every drawer-side surface; below
+   modals (configmodal sits much higher) so the user can still get
+   out via Esc if they have a modal open. */
+.lora-context-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 200px;
+  background: var(--sheet-bg);
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-sm);
+  padding: 4px 0;
+  box-shadow:
+    0 12px 32px rgba(0, 0, 0, 0.55),
+    0 0 0 1px var(--accent-line),
+    0 0 18px rgba(240, 138, 72, 0.18);
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  overflow: hidden;
+  animation: lora-context-menu-in 140ms cubic-bezier(.2, .8, .2, 1);
+}
+.lora-context-menu::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--dd-gradient);
+  pointer-events: none;
+}
+@keyframes lora-context-menu-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)    scale(1); }
+}
+.lora-context-menu-item {
+  display: block;
+  width: 100%;
+  padding: 8px 14px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  color: var(--text);
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+  transition: background 100ms, color 100ms;
+}
+.lora-context-menu-item:hover,
+.lora-context-menu-item:focus-visible {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+  outline: none;
 }
 
 /* ============================================================================
@@ -4558,7 +4700,8 @@ body.drawer-open .waveform-scrub-box[data-curves-open="true"] {
   font-size: 10px;
 }
 [data-dd-tooltip]:hover::after,
-[data-dd-tooltip]:focus-visible::after {
+[data-dd-tooltip]:focus-visible::after,
+[data-dd-tooltip][data-dd-tooltip-show="true"]::after {
   opacity: 1;
   visibility: visible;
   transform: translateX(-50%) translateY(0);
@@ -4566,6 +4709,11 @@ body.drawer-open .waveform-scrub-box[data-curves-open="true"] {
      governs fade-out, so the tooltip pops in but eases out. */
   transition: none;
 }
+/* `data-dd-tooltip-show="true"` is the programmatic-show hook — set
+   by JS to flash a transient confirmation tooltip (e.g. "copied" after
+   the LoRA library's right-click copy gesture). Pairs with a JS timer
+   that clears the attribute (and restores the original tooltip text)
+   after a short delay so we never need parallel "toast" chrome. */
 /* Disable on touch — no real hover, and the active state ::after
    would briefly flash on tap. Accessibility-equivalent info is in
    the element's aria-label. */

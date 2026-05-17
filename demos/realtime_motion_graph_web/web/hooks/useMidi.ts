@@ -235,12 +235,17 @@ export function useMidi() {
 
     // Right-click → MIDI learn. Targets:
     //   .slider-group[data-param=...] → CC
-    //   .lora-row[data-param=...]     → CC (Phase 11 will populate)
     //   #blend-control[data-param=...] → CC (Tags A↔B blend slider,
     //                                       intentionally NOT a
     //                                       slider-group — keeps the
     //                                       horizontal rail styling)
     //   [data-midi-learn=...]         → note (transport buttons, send-prompt, etc.)
+    //
+    // LoRA rows used to have a `.lora-row[data-param=...]` branch here.
+    // It's gone — LibraryTile now owns its own right-click via a
+    // proper context menu (MIDI learn + Copy trigger), which calls
+    // `useMidiStore.startLearn` directly and stops the contextmenu's
+    // propagation so this document-level handler never sees it.
     const onContextMenu = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
       if (!target) return;
@@ -248,12 +253,6 @@ export function useMidi() {
       if (slider?.dataset.param) {
         e.preventDefault();
         useMidiStore.getState().startLearn("cc", slider.dataset.param, slider);
-        return;
-      }
-      const loraRow = target.closest<HTMLElement>(".lora-row");
-      if (loraRow?.dataset.param) {
-        e.preventDefault();
-        useMidiStore.getState().startLearn("cc", loraRow.dataset.param, loraRow);
         return;
       }
       const blendEl = target.closest<HTMLElement>("#blend-control");

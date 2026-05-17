@@ -183,15 +183,25 @@ class LoRAManagerBase(abc.ABC):
     def register_library(
         self, directory: Optional[Path] = None,
     ) -> List[str]:
-        """Discover and register every ``*.safetensors`` in ``directory``.
+        """Discover and register every ``*.safetensors`` reachable from
+        the configured LoRA roots.
 
-        Defaults to :func:`acestep.paths.loras_dir`.  Returns the list
-        of registered ids in directory order (sorted by filename).
-        Missing directory returns an empty list.
+        When ``directory`` is supplied, scans only that one root
+        (recursive). When omitted, scans :func:`acestep.paths.loras_dir`
+        plus everything listed in ``ACESTEP_EXTRA_LORA_DIRS`` via
+        :func:`acestep.paths.discover_all_loras`, so operators can
+        point at training output directories without moving files into
+        the primary library.
+
+        Returns the list of registered ids in scan order (primary root
+        first, then each extra dir; each root sorted by filename).
+        Missing directories are silently skipped.
         """
-        from acestep.paths import discover_loras, loras_dir
-        d = directory if directory is not None else loras_dir()
-        files = discover_loras(d)
+        from acestep.paths import discover_all_loras, discover_loras
+        if directory is None:
+            files = discover_all_loras()
+        else:
+            files = discover_loras(directory)
         ids: List[str] = []
         for p in files:
             try:
@@ -200,7 +210,9 @@ class LoRAManagerBase(abc.ABC):
                 logger.warning("Failed to register {}: {}", p, e)
         if files:
             logger.info(
-                "Registered library: {} LoRAs from {}", len(ids), d,
+                "Registered library: {} LoRAs across {} root(s)",
+                len(ids),
+                1 if directory is not None else "all configured",
             )
         return ids
 

@@ -53,6 +53,27 @@ export interface RtmgConfigEngine {
    * back to the count-rule in useLoraStore (first two from the sorted
    * catalog, with name-fallback per slot). */
   enabled_loras: string[];
+  /** When true, enabling a LoRA prepends its primary trigger word to
+   *  promptA and promptB so the user sees exactly what the encoder
+   *  sees. When false, the trigger never enters the prompt text unless
+   *  the user types it themselves — useful for prompt-driven workflows
+   *  that want to stay 100% manual. Disabling a LoRA best-effort
+   *  removes its trigger from the prompt when it's still at the head.
+   *  Defaults to true. */
+  auto_prepend_lora_triggers?: boolean;
+  /** Per-LoRA strength override (keyed by filename stem). When present
+   *  for a given LoRA, wins over the sidecar's recommended_strength on
+   *  first enable. Operator escape hatch for LoRAs whose
+   *  recommended_strength is wrong on this checkpoint / bake. Empty
+   *  object disables the feature. */
+  lora_strength_overrides?: Record<string, number>;
+  /** When true, the LoRA library shows every entry regardless of
+   *  whether its trained ``base_model_scale`` matches the active
+   *  checkpoint. Useful for inspecting your full collection while
+   *  on a specific checkpoint. Default false (auto-hide). LoRAs with
+   *  no declared scale are shown either way — we don't hide what we
+   *  can't classify. */
+  show_incompatible_loras?: boolean;
 }
 
 export interface RtmgConfigPrompts {
@@ -213,6 +234,9 @@ export const DEFAULT_CONFIG: RtmgConfig = {
     key: "G# minor",
     time_signature: DEFAULT_TIME_SIGNATURE,
     enabled_loras: [],
+    auto_prepend_lora_triggers: true,
+    lora_strength_overrides: {},
+    show_incompatible_loras: false,
   },
   prompts: {
     a: "heavy dubstep, deathstep, afxdump, growl heavy bass distortion",

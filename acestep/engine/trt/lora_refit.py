@@ -120,6 +120,13 @@ class TRTLoRAManager(LoRAManagerBase):
     ):
         import tensorrt as trt
 
+        if device.type != "cuda":
+            raise RuntimeError(
+                f"TRTLoRAManager requires a CUDA device; got {device}. "
+                "Refit composes base + deltas on a GPU scratch and "
+                "needs a real device to allocate against."
+            )
+
         self._engine = engine
         self._device = device
         self._trt_prefix = trt_weight_prefix
@@ -259,11 +266,11 @@ class TRTLoRAManager(LoRAManagerBase):
         #   _base_weights[param] = fp32 base in engine orientation (not fp8)
         #   _fp8_scale[param]    = 1D fp32 scale on the LAST axis of base
         #   _refit_bufs[param]   = uint8 buffer sized to fp8 storage
-        # Math runs in fp32 (base + Σ s_i * delta_i), then re-quantize
-        # per scale and write uint8 bytes via set_named_weights.
+        # Per-refit fp32 accumulation runs on a shared GPU scratch
+        # (self._scratch_acc); the final fp8 bytes get D2H'd into
+        # _refit_bufs and pushed via the HOST refit path.
         self._is_fp8: Dict[str, bool] = {}
         self._fp8_scale: Dict[str, torch.Tensor] = {}
-        self._fp8_acc: Dict[str, torch.Tensor] = {}  # fp32 accumulator buffer
 
         matched = 0
         matched_fp8 = 0
@@ -310,6 +317,18 @@ class TRTLoRAManager(LoRAManagerBase):
             # on the fly inside ``_apply_to_engine``.
             if self._transpose_for_engine.get(param_name, False) and base.dim() == 2:
                 base = base.transpose(0, 1).contiguous()
+            # Pin the base for fast async H2D into the GPU scratch on
+            # every refit. Try/except so a host with a tight lockable-
+            # RAM ulimit (or already-locked pages) doesn't hard-fail
+            # boot — we just lose H2D overlap.
+            try:
+                base = base.pin_memory()
+            except RuntimeError as exc:
+                logger.warning(
+                    "pin_memory() failed for {}: {}. Falling back to "
+                    "unpinned base; H2D will be synchronous.",
+                    param_name, exc,
+                )
 
             self._param_to_trt[param_name] = trt_name
             self._np_dtype[param_name] = np_dt
@@ -340,10 +359,13 @@ class TRTLoRAManager(LoRAManagerBase):
                 self._is_fp8[param_name] = True
                 self._fp8_scale[param_name] = scale
                 self._base_weights[param_name] = base
-                self._fp8_acc[param_name] = torch.empty_like(base)
                 # set_named_weights wants raw fp8 storage bytes. Stage
                 # them as a uint8 tensor view-compatible with what we'll
-                # produce from torch.float8_e4m3fn -> view(uint8).
+                # produce from torch.float8_e4m3fn -> view(uint8). The
+                # refit path D2Hs its GPU fp8 output into this buffer
+                # and then pushes via HOST location. Not pinned —
+                # pinning only matters for true async D2H and we sync
+                # before TRT reads the bytes.
                 self._refit_bufs[param_name] = torch.empty(
                     base.shape, dtype=torch.uint8,
                 )
@@ -363,6 +385,23 @@ class TRTLoRAManager(LoRAManagerBase):
             logger.warning(
                 "No engine weights matched! TRT names sample: {}",
                 all_trt_names[:5],
+            )
+
+        # Single GPU scratch used as the per-param fp32 accumulator
+        # (base + Σ s·delta) during refit. Sized to the largest
+        # refittable param's element count. The downstream fp8 / native-
+        # dtype output tensors are allocated per iteration from the
+        # caching allocator and only need to outlive each per-param
+        # D2H into the host refit buffer.
+        self._scratch_acc: Optional[torch.Tensor] = None
+        if self._base_weights:
+            max_numel = max(b.numel() for b in self._base_weights.values())
+            self._scratch_acc = torch.empty(
+                max_numel, dtype=torch.float32, device=self._device,
+            )
+            logger.info(
+                "TRT LoRA refit scratch: {:.1f} MB on {} (max param numel={})",
+                max_numel * 4 / 1e6, self._device, max_numel,
             )
 
         # ------------------------------------------------------------------
@@ -471,8 +510,13 @@ class TRTLoRAManager(LoRAManagerBase):
     def _delta_compute_device(self) -> torch.device:
         return self._device
 
+    def _delta_storage_device(self) -> torch.device:
+        # Refit composes on GPU; deltas need to live there so
+        # ``acc.add_(delta, alpha=...)`` is a single-device op.
+        return self._device
+
     # ------------------------------------------------------------------
-    # Engine writeback (IRefitter)
+    # Engine writeback (IRefitter): GPU compose -> D2H -> HOST batch refit
     # ------------------------------------------------------------------
 
     def _apply_to_engine(
@@ -481,117 +525,114 @@ class TRTLoRAManager(LoRAManagerBase):
         *,
         _refit_ok_required: bool = True,
     ) -> None:
-        """Refit engine weights using pre-allocated buffers + in-place ops.
+        """GPU compose + D2H into host refit buffers + batch HOST refit.
 
-        Non-FP8 path: math runs in the engine's native dtype (typically
-        fp16) so the numpy view fed to ``set_named_weights`` is zero-copy.
+        Per param: H2D pinned base → shared fp32 GPU scratch, accumulate
+        GPU-resident enabled deltas, FP8 quantize on GPU (or cast to
+        native dtype for non-FP8 slots), D2H the result bytes into the
+        CPU ``_refit_bufs`` slot. After the loop, one batch HOST refit
+        pushes every touched weight plus the full static and dynamic
+        co-refit sets and calls ``refit_cuda_engine()`` once.
 
-        FP8 path: accumulate fp32 (base + Σ s_i * delta_i) in
-        ``_fp8_acc``, then re-quantize to FP8 E4M3FN per-output-channel
-        using the cached scale and write the uint8 storage bytes via
-        ``set_named_weights``. The scale was derived from the original
-        base weight at construction time and matches what the FP8 ONNX
-        patcher baked into the engine's sibling ``_fp8_scale``
-        initializer, so the engine's existing DequantizeLinear stays
-        numerically consistent. We deliberately don't refit the scale:
-        LoRA deltas are small vs the base, saturation at ±448 is rare,
-        and a moving scale would also need to refit every consumer's
-        DequantizeLinear scale input.
+        FP8-fused engines have a missing-set that spans the entire
+        engine: every fp8 weight scale, plus several
+        ``cross_attn_norm.weight`` slots, is considered missing any
+        time we touch one fused weight. That forces the single-batch
+        refit topology — a per-param ``refit_cuda_engine()`` can never
+        satisfy the missing set on the first iteration.
 
         A strength-0 ENABLED entry is skipped explicitly: the add_ would
         be a math-no-op but still walks the full weight, wasting cycles
         for slider-driven UIs that leave placeholders at 0.
         """
         refitter = self._refitter
+        param_list = list(param_names)
         count = 0
 
-        for param_name in param_names:
+        for param_name in param_list:
             trt_name = self._param_to_trt.get(param_name)
             if trt_name is None:
                 continue
 
             transpose_delta = self._transpose_for_engine.get(param_name, False)
             is_fp8 = self._is_fp8.get(param_name, False)
+            base_cpu = self._base_weights[param_name]
+            shape = base_cpu.shape
+            numel = base_cpu.numel()
 
-            buf = self._refit_bufs[param_name]
+            # Slice the shared fp32 scratch to this param's size and
+            # view it back to the base's N-D shape. Reused every
+            # iteration — peak VRAM is one max-param fp32 buffer.
+            acc = self._scratch_acc[:numel].view(shape)
+            # H2D + dtype cast in one shot. non_blocking is real here
+            # because base_cpu is pinned (see __init__).
+            acc.copy_(base_cpu, non_blocking=True)
+
+            for entry in self._loras.values():
+                if entry.state != LoRAState.ENABLED:
+                    continue
+                if entry.strength == 0.0:
+                    continue
+                if entry.deltas and param_name in entry.deltas:
+                    delta = entry.deltas[param_name]
+                    if transpose_delta and delta.dim() == 2:
+                        delta = delta.transpose(0, 1).contiguous()
+                    if delta.dtype != torch.float32:
+                        delta = delta.to(torch.float32)
+                    acc.add_(delta, alpha=entry.strength)
+
+            cpu_buf = self._refit_bufs[param_name]
             if is_fp8:
-                acc = self._fp8_acc[param_name]   # fp32, engine orientation
-                acc.copy_(self._base_weights[param_name])
-                for entry in self._loras.values():
-                    if entry.state != LoRAState.ENABLED:
-                        continue
-                    if entry.strength == 0.0:
-                        continue
-                    if entry.deltas and param_name in entry.deltas:
-                        delta = entry.deltas[param_name]
-                        if transpose_delta and delta.dim() == 2:
-                            delta = delta.transpose(0, 1).contiguous()
-                        # Deltas may be in fp16/bf16 from _compute_deltas;
-                        # promote to fp32 to match the accumulator.
-                        if delta.dtype != torch.float32:
-                            delta = delta.to(torch.float32)
-                        acc.add_(delta, alpha=entry.strength)
-                # Per-output-channel quantize. Scale derived from ``acc``
-                # (post-LoRA), NOT base alone: torch's ``float8_e4m3fn``
-                # cast turns any value above 448 into the FN-NaN bit
-                # pattern (not saturated 448), so a stale base-derived
-                # scale + a LoRA that bumps any channel past its base
-                # range = engine produces 100% NaN.
+                # Per-channel scale is recomputed from ``acc``, not
+                # held fixed from base: torch's float8_e4m3fn cast
+                # produces the FN-NaN bit pattern above 448, so a
+                # stale base-derived scale + a LoRA bump past base
+                # range = engine outputs NaN.
                 reduce_axes = tuple(range(acc.dim() - 1))
                 absmax_acc = acc.abs().amax(dim=reduce_axes)
-                scale = absmax_acc.clamp(min=_FP8_ABSMAX_FLOOR) / _FP8_E4M3_MAX
+                scale = (
+                    absmax_acc.clamp(min=_FP8_ABSMAX_FLOOR)
+                    / _FP8_E4M3_MAX
+                )
                 bcast = (1,) * (acc.dim() - 1) + (scale.shape[0],)
-                # Clamp before cast as belt-and-suspenders: the new scale
-                # makes ``scaled`` per-channel max exactly 448 in exact
-                # arithmetic, but bf16 round-trip on the scale can leave
-                # a one-ULP overshoot that still trips the NaN bit pattern.
                 scaled = (acc / scale.view(bcast)).clamp_(
                     -_FP8_E4M3_MAX, _FP8_E4M3_MAX,
                 )
                 fp8 = scaled.to(torch.float8_e4m3fn).contiguous()
-                buf.copy_(fp8.view(torch.uint8))
-                # Refresh the engine's sibling ``weight_fp8_scale`` co-refit
-                # bytes so DequantizeLinear at inference time multiplies by
-                # the same scale we just divided by. Skip if there's no
-                # co-refit entry for this param (non-fp8 path, or weight
-                # not in the manifest).
+                # D2H into the pinned host refit buffer. Cross-device
+                # copy_ handles the transfer; non_blocking=True is fine
+                # because the destination is pinned and we synchronize
+                # implicitly before reading via numpy below.
+                cpu_buf.copy_(fp8.view(torch.uint8), non_blocking=True)
+
                 rec = self._weight_scale_co_refit.get(param_name)
                 if rec is not None:
                     _, scale_bf16_buf, scale_arr, _ = rec
-                    scale_bf16_buf.copy_(scale.to(torch.bfloat16))
+                    # D2H a 1D scale (tens of KB) — negligible.
+                    scale_bf16_buf.copy_(scale.to(torch.bfloat16).cpu())
                     scale_arr[:] = scale_bf16_buf.view(torch.uint16).numpy()
             else:
-                buf.copy_(self._base_weights[param_name])
-                for entry in self._loras.values():
-                    if entry.state != LoRAState.ENABLED:
-                        continue
-                    if entry.strength == 0.0:
-                        continue
-                    if entry.deltas and param_name in entry.deltas:
-                        delta = entry.deltas[param_name]
-                        # Deltas live in torch nn.Linear's [out, in] orientation.
-                        # If the engine slot stores [in, out] (dynamo MatMul),
-                        # transpose before accumulating into the engine-layout
-                        # buffer. add_ requires shape match with buf.
-                        if transpose_delta and delta.dim() == 2:
-                            delta = delta.transpose(0, 1).contiguous()
-                        buf.add_(delta, alpha=entry.strength)
+                native_dt = self._param_dtype[param_name]
+                cast = acc.to(native_dt).contiguous()
+                cpu_buf.copy_(cast, non_blocking=True)
+            count += 1
 
-            # Get a numpy view of the buffer bytes for the typed-Weights
-            # wrapper. bf16 has no numpy dtype, so reinterpret as uint16
-            # (same byte size, same byte layout) and pass the pointer.
-            # FP8 is already staged in uint8.
+        # All GPU work issued; force completion before TRT reads the
+        # host pointers below. One sync covers every param's D2H.
+        if count > 0:
+            torch.cuda.synchronize(self._device)
+
+        # ----- HOST refit batch: push every touched param + the full -----
+        # ----- static and dynamic co-refit sets, then commit once.   -----
+        for param_name in param_list:
+            trt_name = self._param_to_trt.get(param_name)
+            if trt_name is None:
+                continue
+            buf = self._refit_bufs[param_name]
             if buf.dtype == torch.bfloat16:
                 arr = buf.view(torch.uint16).numpy()
             else:
                 arr = buf.numpy()
-
-            # Always use the explicit-dtype Weights wrapper. The
-            # numpy-array overload of set_named_weights infers TRT
-            # dtype from numpy dtype, which is broken for bf16
-            # (uint16 -> UINT16 != BF16) and fp8 (uint8 -> UINT8 !=
-            # FP8). Wrapping with trt.Weights(<engine dtype>, ptr,
-            # count) sidesteps the inference.
             weights = self._trt.Weights(
                 self._trt_dtype[param_name],
                 int(arr.ctypes.data),
@@ -603,27 +644,23 @@ class TRTLoRAManager(LoRAManagerBase):
                 if hasattr(refitter, "get_weights_prototype"):
                     try:
                         proto = refitter.get_weights_prototype(trt_name)
-                        proto_desc = f"dtype={proto.dtype}, size={proto.size}"
+                        proto_desc = (
+                            f"dtype={proto.dtype}, size={proto.size}"
+                        )
                     except Exception:
                         pass
                 raise RuntimeError(
-                    "TRT rejected refit weights for "
-                    f"{trt_name}: buf dtype={buf.dtype}, "
-                    f"arr dtype={arr.dtype} size={arr.size}; "
-                    f"engine prototype {proto_desc}, fp8={is_fp8}"
+                    f"TRT rejected refit weights for {trt_name}: "
+                    f"buf dtype={buf.dtype}, arr dtype={arr.dtype} "
+                    f"size={arr.size}; engine prototype {proto_desc}, "
+                    f"fp8={self._is_fp8.get(param_name, False)}"
                 )
-            count += 1
 
-        # Re-submit the co-refit set: scales and other fused initializers
-        # TRT considers "missing" any time we touch one of our LoRA
-        # targets. Empty during the construction-time dry-run (before
-        # the co-refit attrs have been populated).
         for name, arr, dtype in getattr(self, "_co_refit_static", ()):
             weights = self._trt.Weights(
                 dtype, int(arr.ctypes.data), int(arr.size),
             )
-            ok = refitter.set_named_weights(name, weights)
-            if not ok:
+            if not refitter.set_named_weights(name, weights):
                 raise RuntimeError(
                     f"TRT rejected co-refit weight {name}: "
                     f"dtype={dtype}, size={arr.size}"
@@ -634,8 +671,7 @@ class TRTLoRAManager(LoRAManagerBase):
             weights = self._trt.Weights(
                 dtype, int(arr.ctypes.data), int(arr.size),
             )
-            ok = refitter.set_named_weights(name, weights)
-            if not ok:
+            if not refitter.set_named_weights(name, weights):
                 raise RuntimeError(
                     f"TRT rejected co-refit weight scale {name} "
                     f"(param={param_key}): dtype={dtype}, size={arr.size}"

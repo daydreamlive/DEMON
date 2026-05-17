@@ -1,0 +1,9 @@
+{
+  "_help": "Local-only overrides for ACEStep on this machine. Copy this file to `acestep.local.json` (sibling, gitignored) and edit. The runtime memoizes on first read — restart the demo / engine process to pick up changes.",
+
+  "_lora_extra_dirs_help": "Additional directories scanned recursively for LoRA *.safetensors files. Adds to the primary library at MODELS_DIR/loras. Each entry is either an absolute path, a `~`-prefixed home path, or a path relative to THIS file (the project root). Useful for pointing at training output dirs or experiment folders during iteration without moving files into the primary library.",
+  "lora_extra_dirs": [
+    "./training_runs",
+    "~/lora-experiments"
+  ]
+}

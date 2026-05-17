@@ -1,4 +1,10 @@
 /data/
+
+# Per-machine ACEStep local config (extra LoRA dirs, etc.). Each clone
+# carries its own copy; the committed `acestep.local.example.json` is
+# the template. See acestep/paths.py:local_config_path.
+/acestep.local.json
+
 *.mp3
 *.wav
 *.mp4

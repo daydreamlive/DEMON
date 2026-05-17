@@ -10,19 +10,25 @@
     "steps": 8,
     "fast_vae": true,
     "_walk_window_help": "When true, route long sources through the walk_window_s (60s) DiT engine by cutting longer songs into 60 second latents and swapping at boundaries — keeps the 60s engine's faster parameter-update latency on multi-minute sources. No effect when source ≤ window_s.",
-    "walk_window": false,
+    "walk_window": true,
     "walk_window_s": 60,
     "key": "G# minor",
     "_time_signature_help": "Default meter numerator for the operator dropdown. One of 2, 3, 4, 6 (string) for 2/4, 3/4, 4/4, 6/8 respectively. Sidecar values still win on fixture hits; this is the seed for live uploads and the AlmostReadyDialog manual override.",
     "time_signature": "4",
     "_enabled_loras_help": "Filename stems (no .safetensors) to auto-enable on first catalog load. Empty = count-rule (first two from the sorted catalog, with name-fallback per slot — see useLoraStore.ts).",
-    "enabled_loras": []
+    "enabled_loras": ["phonk_xl"],
+    "_auto_prepend_lora_triggers_help": "When true (default), enabling a LoRA prepends its primary trigger word to Tags A + Tags B so the operator sees exactly what the encoder sees. Disabling a LoRA best-effort removes the trigger when it is still at the head of the prompt. Set to false for fully manual workflows where the operator types triggers themselves.",
+    "auto_prepend_lora_triggers": true,
+    "_lora_strength_overrides_help": "Per-LoRA strength override (keyed by filename stem). Wins over the sidecar's recommended_strength on first enable. Empty object = no overrides; the sidecar (or controls.lora_default_strength) drives the initial slider value.",
+    "lora_strength_overrides": {},
+    "_show_incompatible_loras_help": "When true, the LoRA library shows every entry regardless of whether its sidecar base_model_scale matches the active checkpoint (2B / 5B). Default false auto-hides LoRAs trained for the other scale. LoRAs without a declared scale are shown either way.",
+    "show_incompatible_loras": false
   },
 
   "prompts": {
-    "a": "heavy dubstep, deathstep, afxdump, growl heavy bass distortion",
+    "a": "phonk, roti-ph0nk, Aggressive distorted Memphis phonk, cowbell lead melody, dark atmospheric pads, hard 808s, punchy trap drums, vinyl crackle, chopped rap vocal samples, eerie bell textures, underground street racing energy, night drive through neon-lit city, raw analog saturation, high momentum, hypnotic groove, 145 BPM",
     "b": "daft punk style, beautiful, four to the floor, angelic",
-    "blend": 0.4
+    "blend": 0.0
   },
 
   "controls": {
@@ -36,7 +42,7 @@
     "ode_noise": 0.0,
 
     "_rcfg_help": "Residual CFG. 'off' = no guidance (turbo default, free). 'self' = virtual uncond from initial noise, ~1.06x cost. 'initialize' = uncond run once per slot then cached, ~1.07x. 'full' = standard two-pass CFG, ~2x.",
-    "rcfg_mode": "off",
+    "rcfg_mode": "initialize",
     "guidance_scale": 7.0,
     "cfg_rescale": 0.0,
 
