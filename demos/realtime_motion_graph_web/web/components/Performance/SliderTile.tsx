@@ -18,8 +18,8 @@ interface Props {
 // CSS uppercases these on render via .slider-label / .mixer-tile-label.
 const DISPLAY_NAMES: Record<string, string> = {
   // Core (CORE tab) — the dial-it-and-go knobs.
-  denoise: "mix",            // dry/wet effect — universal since the Lexicon 224
-  hint_strength: "track",    // envelope follower / key-tracking lineage
+  denoise: "denoise",        // engine-honest; the most-touched knob keeps its native name
+  hint_strength: "structure",// "how much we follow the source's structure"
   timbre_strength: "timbre", // universal in synthesis
   feedback: "feedback",      // universal in delay/echo/mod — keep canonical
   dcw_scaler: "bass",        // universal EQ

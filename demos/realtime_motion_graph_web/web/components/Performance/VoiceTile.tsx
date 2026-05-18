@@ -30,30 +30,33 @@ export function VoiceTile() {
         exact perceptual mappings are still being charted; sweep to discover
         what each does for your source.
       </p>
-      <div className="voice-section">
-        <div className="voice-section-label">Internal voices</div>
-        <div className="mixer-channels">
-          {VOICES.map((p) => (
-            <SliderGroup
-              key={p}
-              param={p}
-              label={defaultLabelFor(p)}
-              kbd={kbdHintFor(p)}
-            />
-          ))}
+      <div className="voice-sections-row">
+        <div className="voice-section">
+          <div className="voice-section-label">Internal voices</div>
+          <div className="mixer-channels">
+            {VOICES.map((p) => (
+              <SliderGroup
+                key={p}
+                param={p}
+                label={defaultLabelFor(p)}
+                kbd={kbdHintFor(p)}
+              />
+            ))}
+          </div>
         </div>
-      </div>
-      <div className="voice-section">
-        <div className="voice-section-label">Tuned morph</div>
-        <div className="mixer-channels">
-          {MORPH.map((p) => (
-            <SliderGroup
-              key={p}
-              param={p}
-              label={defaultLabelFor(p)}
-              kbd={kbdHintFor(p)}
-            />
-          ))}
+        <div className="voice-section-divider" aria-hidden="true" />
+        <div className="voice-section">
+          <div className="voice-section-label">Tuned morph</div>
+          <div className="mixer-channels">
+            {MORPH.map((p) => (
+              <SliderGroup
+                key={p}
+                param={p}
+                label={defaultLabelFor(p)}
+                kbd={kbdHintFor(p)}
+              />
+            ))}
+          </div>
         </div>
       </div>
     </div>
