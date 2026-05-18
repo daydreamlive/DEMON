@@ -2450,19 +2450,22 @@ body.drawer-open {
   display: flex;
   flex-direction: row;
   align-items: flex-end;
-  gap: 12px;
+  gap: 10px;
 }
 .hero-style-fader {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 3px;
-  width: 28px;
+  /* 48px wide so 8-char labels (the labelFor slice ceiling) like
+     "DUBSTEP" / "BAROQUE" fit without ellipsis at the 7.5px font
+     size + tightened letter-spacing below. */
+  width: 48px;
 }
 .hero-style-fader-label {
   font-family: var(--font-mono);
-  font-size: 8px;
-  letter-spacing: var(--tracking-wide);
+  font-size: 7.5px;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--text-dim);
   white-space: nowrap;
@@ -2472,7 +2475,10 @@ body.drawer-open {
 }
 .hero-style-fader-track {
   position: relative;
-  width: 100%;
+  /* Slim 4px track centered in the wider 48px column so the cap +
+     fill keep their original visual weight despite the wider fader. */
+  width: 4px;
+  margin: 0 auto;
   height: 56px;
   cursor: ns-resize;
   touch-action: none;
@@ -3991,16 +3997,35 @@ body.curve-open #install-video-area #graph {
   }
 }
 .lite-controls {
+  /* Wave 13: LiteControls is mounted DIRECTLY on mobile (no longer
+     inside the slide-up drawer). Anchored bottom-fixed with safe-area
+     respected; same recessed-bay vocabulary as the desktop hero macros
+     bay so it reads as the persistent mini palette. */
+  position: fixed;
+  left: max(calc(var(--remix-rail-w, 0px) + 12px), env(safe-area-inset-left, 0px));
+  right: max(calc(var(--lora-rail-w, 56px) + 12px), env(safe-area-inset-right, 0px));
+  bottom: max(env(safe-area-inset-bottom, 0px) + 8px, 8px);
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 12px 16px 14px;
-  /* Right-side padding hugs the edge; left side leaves space for the
-     Remix rail (which lives at the screen edge, not inside the drawer)
-     so the seed button doesn't crowd against it visually. */
-  padding-left: calc(16px + var(--remix-rail-w, 0px));
-  height: 100%;
-  min-height: 0;
+  gap: 10px;
+  padding: 10px 12px 12px;
+  background: rgba(6, 6, 12, 0.62);
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-md);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 4px 14px rgba(0, 0, 0, 0.4);
+  -webkit-backdrop-filter: blur(8px);
+          backdrop-filter: blur(8px);
+  z-index: 8;
+  /* Only render on mobile — desktop has the inset Full Controls panel
+     and the HeroMacros bay instead. */
+  display: none;
+}
+@media (max-width: 768px) {
+  .lite-controls {
+    display: flex;
+  }
 }
 
 .lite-row {
@@ -4136,6 +4161,23 @@ body.curve-open #install-video-area #graph {
 }
 .lite-all-controls:hover .lite-all-controls-arrow {
   transform: translateX(4px);
+}
+/* Unsaved-changes dot — same pulsing red vocabulary as the desktop
+   SavePill dot. Surfaces dirty state at L0 (the always-visible mobile
+   strip) without taking up dedicated real estate; user goes
+   All controls → Saved tab → Save. */
+.lite-all-controls-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #e84f3d;
+  margin: 0 6px;
+  flex-shrink: 0;
+  animation: save-pill-pulse 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lite-all-controls-dot { animation: none; opacity: 1; }
 }
 
 /* iOS input — disable browser autofill yellow + match dark theme. */
@@ -4925,11 +4967,13 @@ body.curve-open #install-video-area #graph {
    placard + upload read as one unit, not two. :has() supported in
    all modern evergreen browsers we target. */
 .audio-source-dock:has(.audio-source-crate:hover),
-.audio-source-dock:has(.audio-source-upload-btn:hover) {
+.audio-source-dock:has(.audio-source-upload-btn:hover),
+.audio-source-dock:has(.audio-source-mic-btn:hover) {
   transform: translateY(-1px);
 }
 .audio-source-dock:has(.audio-source-crate:active),
-.audio-source-dock:has(.audio-source-upload-btn:active) {
+.audio-source-dock:has(.audio-source-upload-btn:active),
+.audio-source-dock:has(.audio-source-mic-btn:active) {
   transform: translateY(0);
 }
 .audio-source-crate {
@@ -4984,35 +5028,37 @@ body.curve-open #install-video-area #graph {
    drop-shadow, no separate gradient strip — so the pair reads as one
    frame with an internal seam. The placard owns the brand gradient and
    the left radii; the upload owns the right radii. */
-.audio-source-upload-btn {
+.audio-source-upload-btn,
+.audio-source-mic-btn {
   position: relative;
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  /* min-width matches the legacy icon-only size; padding grows the button
-     when the "Upload" label is visible so the icon stays on the leading
-     edge and the label reads as one row. */
   min-width: 38px;
   padding: 0 12px 0 10px;
   background: rgba(6, 6, 12, 0.72);
   -webkit-backdrop-filter: blur(6px);
           backdrop-filter: blur(6px);
   border: 1px solid var(--frame-line);
-  border-left: none; /* the placard's right border is the seam */
+  border-left: none; /* sibling's right border is the seam */
   border-top: none;  /* gradient strip ::before owns the top edge */
-  border-radius: 0 var(--radius-md) var(--radius-md) 0;
-  /* Clip the gradient ::before strip to the rounded top-right corner. */
   overflow: hidden;
   color: var(--text-dim);
   cursor: pointer;
-  /* Drop-shadow lives on the .audio-source-dock parent so it traces
-     the merged outline; gradient strip lives on this ::before. */
   transition:
     background 160ms,
     border-color 160ms,
     color 160ms;
+}
+/* Upload is the MIDDLE button now (placard | upload | mic). Square
+   corners — only the placard (left) and mic (right) get rounded. */
+.audio-source-upload-btn {
+  border-radius: 0;
+}
+.audio-source-mic-btn {
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
 }
 /* Mono-caps treatment that matches .audio-source-marquee-label on the
    adjacent placard, so the dock reads as one styled block. Hidden on
@@ -5027,10 +5073,12 @@ body.curve-open #install-video-area #graph {
   white-space: nowrap;
 }
 @media (max-width: 480px) {
-  .audio-source-upload-btn { padding: 0; width: 38px; gap: 0; }
+  .audio-source-upload-btn,
+  .audio-source-mic-btn { padding: 0; width: 38px; gap: 0; }
   .audio-source-upload-label { display: none; }
 }
-.audio-source-upload-btn::before {
+.audio-source-upload-btn::before,
+.audio-source-mic-btn::before {
   content: "";
   position: absolute;
   top: 0;
@@ -5039,15 +5087,20 @@ body.curve-open #install-video-area #graph {
   height: 1px;
   background: var(--dd-gradient);
   pointer-events: none;
-  /* Top-right radius only — the left edge meets the placard's strip. */
+}
+/* Only the right-most button (mic) gets the rounded top-right
+   corner; upload sits in the middle, no rounding. */
+.audio-source-mic-btn::before {
   border-radius: 0 var(--radius-md) 0 0;
 }
-.audio-source-upload-btn:hover {
+.audio-source-upload-btn:hover,
+.audio-source-mic-btn:hover {
   background: rgba(6, 6, 12, 0.85);
   border-color: var(--accent-line);
   color: var(--accent-hover);
 }
-.audio-source-upload-btn:disabled {
+.audio-source-upload-btn:disabled,
+.audio-source-mic-btn:disabled {
   opacity: 0.5;
   cursor: progress;
 }
@@ -6602,7 +6655,12 @@ body.curve-open #install-video-area #graph {
   color: var(--text-dim);
   padding: 24px 12px;
   line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
 }
+.sessions-empty p { margin: 0; }
 .sessions-list {
   flex: 1;
   display: flex;
@@ -6748,6 +6806,20 @@ body.curve-open #install-video-area #graph {
   border-color: var(--accent-line);
   color: var(--text-strong);
 }
+/* Sign-in CTA — pops over the muted "clean" tier without the
+   pulsing-red drama of the dirty tier. Accent border, accent text. */
+.save-pill--signin {
+  border-color: var(--accent-line);
+  color: var(--accent);
+  cursor: pointer;
+  -webkit-appearance: none;
+          appearance: none;
+}
+.save-pill--signin:hover {
+  color: var(--accent-hover);
+  border-color: var(--accent-hover);
+  background: rgba(255, 255, 255, 0.04);
+}
 .save-pill-dot {
   display: inline-block;
   width: 7px;
@@ -6786,7 +6858,17 @@ body.curve-open #install-video-area #graph {
 .save-pill-btn:hover { background: var(--accent-hover); }
 .save-pill-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 @media (max-width: 768px) {
+  /* SavePill is desktop-only; mobile uses the unsaved-dot on the
+     LiteControls "All controls" button instead. */
   .save-pill { display: none; }
+}
+@media (max-width: 768px) {
+  /* Graph lane labels (right-edge param ribbons) overflow the narrow
+     mobile canvas and duplicate info already reachable in the
+     drawer's CORE tab. Hide on mobile. */
+  #install-video-area #graph-wrap .graph-lane-labels {
+    display: none;
+  }
 }
 
 /* Static wordmark — when the LibraryButton retired in Wave 10, the
