@@ -142,6 +142,14 @@ def _process_request(connection, request):
             Headers([
                 ("Content-Type", "application/json; charset=utf-8"),
                 ("Content-Length", str(len(body))),
+                # Public, read-only capability probe. The webapp UI
+                # (served from a different origin than the pod tunnel)
+                # fetches this before the WS handshake to decide whether
+                # the pod supports server-side fixture load. Simple GET,
+                # no credentials/custom headers → no preflight; a single
+                # ACAO:* on the response is sufficient and safe (nothing
+                # sensitive here).
+                ("Access-Control-Allow-Origin", "*"),
                 *_NO_CACHE_HEADERS,
             ]),
             body,

@@ -3,7 +3,7 @@
 import { useCallback } from "react";
 
 import { AudioPlayer } from "@/engine/audio/AudioPlayer";
-import { listFixtures, pickDefaultFixture } from "@/engine/audio/loadFixture";
+import { listFixtures, loadFixtureAudio, pickDefaultFixture } from "@/engine/audio/loadFixture";
 import { resetKnobDelta } from "@/engine/midi/absoluteDelta";
 import { createNetworkMonitor } from "@/engine/networkMonitor";
 import { defaultWsUrl } from "@/engine/podUrl";
@@ -36,6 +36,41 @@ function resolveWsUrl(serverWsUrl: string | null): string {
   return url;
 }
 
+/**
+ * Capability probe: ask the target pod (via its HTTP origin, derived
+ * from the ws URL) whether it can load known fixtures server-side.
+ * Returns the advertised `server_side_fixtures` list, or `[]` on any
+ * failure / old backend. Never throws.
+ *
+ * This is what makes the server-side-fixture path safe across a mixed
+ * fleet and ANY deploy/merge order: an old backend doesn't advertise
+ * the capability, so the UI falls back to the (unchanged) upload path
+ * instead of omitting the audio frame and hanging the old pod's recv.
+ */
+async function probeServerSideFixtures(wsUrl: string): Promise<string[]> {
+  try {
+    const u = new URL(wsUrl);
+    u.protocol = u.protocol === "wss:" ? "https:" : "http:";
+    u.pathname = "/api/server-info";
+    u.search = "";
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 4000);
+    let res: Response;
+    try {
+      res = await fetch(u.toString(), { signal: ctrl.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) return [];
+    const info = (await res.json()) as { server_side_fixtures?: unknown };
+    return Array.isArray(info.server_side_fixtures)
+      ? (info.server_side_fixtures as string[])
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 // Drives the whole "click Play" flow:
 //   1. resolve fixture (use store, fall back to first listed)
 //   2. load + decode audio
@@ -44,7 +79,10 @@ function resolveWsUrl(serverWsUrl: string | null): string {
 //   5. wire slice → patch/addDelta, lora_catalog → useLoraStore, etc.
 //   6. resume audio context
 
-function buildConfig(fixtureName: string): SessionConfig {
+function buildConfig(
+  fixtureName: string,
+  useServerFixture: boolean,
+): SessionConfig {
   const perf = usePerformanceStore.getState();
   const lora = useLoraStore.getState();
   const cfg = getConfig().engine;
@@ -81,16 +119,14 @@ function buildConfig(fixtureName: string): SessionConfig {
     // dropdown's stale value here would only re-introduce the
     // override-wins-over-sidecar regression.
     fixture_name: fixtureName,
-    // This hook only ever starts a session on a built-in fixture (custom
-    // user uploads take the swap_source path, not session init), and the
-    // pod already serves that exact file at /fixtures/<name>. Tell the
-    // server to load the waveform from its own cache so the browser skips
-    // the download→decode→re-upload of ~20 MB of PCM (~11 s on the
-    // measured cold path). DEPLOY ORDERING: the backend honouring this
-    // must reach the whole fleet (bake) BEFORE this UI ships — a stale
-    // backend would block on its audio recv. Backward-compatible +
-    // baked fleet-wide first, so safe.
-    use_server_fixture: true,
+    // Only set when the target pod advertised it can load this fixture
+    // server-side (capability-gated by the caller via
+    // probeServerSideFixtures). When true the pod reads the waveform
+    // from its own /fixtures cache and the client sends no audio frame
+    // (saves the ~20 MB / ~11 s round-trip). When false we fall back to
+    // the unchanged upload path, so this is safe on a mixed fleet in
+    // any deploy/merge order.
+    use_server_fixture: useServerFixture,
   };
 }
 
@@ -134,18 +170,39 @@ export function useStartSession() {
       return;
     }
 
-    // Server-side fixture load (buildConfig sets use_server_fixture for
-    // these built-in fixtures): the pod reads the waveform from its own
-    // /fixtures cache, so we skip the client download+decode entirely
-    // and send no PCM. Playback comes from the server's echoed initial
-    // buffer (player.init uses remote.initialBuffer), so the local
-    // decode was only ever feeding the now-eliminated upload.
-    const interleaved = new Float32Array(0);
-    const channels = 2;
+    // Resolve the target pod first, then ask it (server-info) whether
+    // it can load this fixture server-side. Capability-gated so the UI
+    // is safe across a mixed fleet / any deploy order: an old backend
+    // doesn't advertise the fixture, so we keep the upload path.
+    const wsUrl = resolveWsUrl(useSessionStore.getState().wsUrl);
+    const serverSideFixtures = await probeServerSideFixtures(wsUrl);
+    const useServerFixture = serverSideFixtures.includes(fixtureName);
+
+    let interleaved: Float32Array;
+    let channels: number;
+    if (useServerFixture) {
+      // Pod loads the waveform from its own /fixtures cache; skip the
+      // client download/decode/upload entirely. Playback comes from the
+      // server's echoed initial buffer (player.init uses
+      // remote.initialBuffer), so the local decode was only ever
+      // feeding the now-eliminated upload.
+      interleaved = new Float32Array(0);
+      channels = 2;
+    } else {
+      // Old backend or unknown fixture: upload as before.
+      try {
+        const decoded = await loadFixtureAudio(fixtureName);
+        interleaved = decoded.interleaved;
+        channels = decoded.channels;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setStatus("error", `Track failed to load: ${msg}`);
+        return;
+      }
+    }
 
     setStatus("connecting", "Connecting…");
-    const config = buildConfig(fixtureName);
-    const wsUrl = resolveWsUrl(useSessionStore.getState().wsUrl);
+    const config = buildConfig(fixtureName, useServerFixture);
     const remote = new RemoteBackend(
       wsUrl,
       interleaved,
