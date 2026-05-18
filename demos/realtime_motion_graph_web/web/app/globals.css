@@ -2009,36 +2009,109 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   line-height: 1;
   transform: translateY(-0.5px);
 }
+/* Segmented hardware tab strip — one bordered shell containing
+   beveled cells. Each cell has a monoline icon above its label.
+   Inactive cells sit FLUSH with the shell (subtle inner highlight on
+   top to suggest a raised face). Active cell is RECESSED via inset
+   shadow + brighter foreground, like pressing a hardware button. */
 .drawer-tabs {
-  display: flex;
+  display: inline-flex;
   flex: 1 1 auto;
-  gap: 4px;
-  padding: 4px 0 6px;
-  margin-bottom: 0;
+  gap: 0;
+  padding: 3px;
+  margin: 4px 0 6px;
+  /* Inset bay — same vocabulary as the HeroMacros bay, MasterPanel,
+     and slider grooves. The whole strip reads as one piece of
+     hardware with cells inside, not six floating buttons. */
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-sm);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.5),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.03),
+    0 1px 0 rgba(255, 255, 255, 0.04);
 }
 .drawer-tab {
-  flex: 0 0 auto;
-  padding: 6px 14px 7px;
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
+  display: inline-flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 14px 9px;
+  background: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 255, 255, 0.01) 50%,
+    rgba(0, 0, 0, 0.15) 100%
+  );
+  border: 1px solid transparent;
+  border-radius: 3px;
   color: var(--text-dim);
-  font-family: var(--font-mono);
-  font-size: 0.7em;
-  letter-spacing: var(--tracking-wide);
-  text-transform: uppercase;
   cursor: pointer;
-  transition: color 160ms, border-color 160ms;
-  /* Match button reset around the rack — no implicit appearance. */
   -webkit-appearance: none;
           appearance: none;
+  font: inherit;
+  /* Hairline separator between cells — drawn as a left border on all
+     but the first cell. */
+  margin-left: 1px;
+  transition:
+    color 140ms ease-out,
+    background 140ms ease-out,
+    box-shadow 140ms ease-out;
+}
+.drawer-tab:first-child {
+  margin-left: 0;
 }
 .drawer-tab:hover {
-  color: var(--accent-hover);
+  color: var(--text);
+  background: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.06) 0%,
+    rgba(255, 255, 255, 0.02) 50%,
+    rgba(0, 0, 0, 0.1) 100%
+  );
 }
 .drawer-tab--active {
+  /* Recessed cell — pressed-in feel. Inset shadow at the top + a
+     subtle bottom highlight that sells the depth flip. Border picks
+     up the accent line color so the active cell carves out from the
+     strip without needing a chip color. */
   color: var(--text-strong);
-  border-bottom-color: var(--accent);
+  background:
+    linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0.35) 0%,
+      rgba(0, 0, 0, 0.15) 50%,
+      rgba(255, 255, 255, 0.04) 100%
+    );
+  border-color: rgba(240, 138, 72, 0.25);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.55),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.4);
+}
+.drawer-tab--active .drawer-tab-icon {
+  /* Icon picks up the accent so the recessed cell has a colored
+     "light" the way a hardware button's LED comes on. */
+  color: var(--accent);
+}
+.drawer-tab-icon {
+  display: block;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  color: currentColor;
+  transition: color 140ms ease-out, transform 140ms ease-out;
+}
+.drawer-tab:hover .drawer-tab-icon {
+  transform: translateY(-0.5px);
+}
+.drawer-tab-label {
+  font-family: var(--font-mono);
+  font-size: 0.62em;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  line-height: 1;
 }
 .mixer-rack--tabbed > .mixer-tile,
 .mixer-rack--tabbed > .knob-tile {
