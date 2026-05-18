@@ -57,8 +57,8 @@ export const MAX_LORA_CURVES = 2;
  *  users see the same names everywhere ("Remix strength", not the
  *  internal `denoise` key). */
 export const SCHEDULEABLE_PARAM_LABEL: Record<ScheduleableParam, string> = {
-  denoise: "Remix strength",
-  hint_strength: "Structure strength",
+  denoise: "Denoise",
+  hint_strength: "Structure",
   feedback: "Feedback",
   shift: "Shift",
 };
