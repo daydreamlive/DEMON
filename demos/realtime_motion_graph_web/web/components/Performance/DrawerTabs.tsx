@@ -16,7 +16,7 @@ import { useState, type ReactElement } from "react";
 //   LIB    — LoRAs
 //   CONFIG — session controls: track/key/sig, transport, MIDI, prefs
 
-export const DRAWER_TABS = ["core", "mod", "voice", "prompt", "lib", "config"] as const;
+export const DRAWER_TABS = ["core", "mod", "voice", "prompt", "lib", "saved", "config"] as const;
 export type DrawerTab = (typeof DRAWER_TABS)[number];
 
 const TAB_LABELS: Record<DrawerTab, string> = {
@@ -24,7 +24,8 @@ const TAB_LABELS: Record<DrawerTab, string> = {
   mod: "Mod",
   voice: "Voice",
   prompt: "Prompt",
-  lib: "Lib",
+  lib: "LoRAs",
+  saved: "Saved",
   config: "Config",
 };
 
@@ -60,6 +61,12 @@ const TAB_ICONS: Record<DrawerTab, ReactElement> = {
       <rect x="2" y="4" width="12" height="8" rx="1.2" />
       <circle cx="6" cy="9" r="1.4" />
       <circle cx="10" cy="9" r="1.4" />
+    </>
+  ),
+  saved: (
+    <>
+      <path d="M3.5 2.5h6.5l3 3v8a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1v-10a1 1 0 0 1 1-1z" />
+      <path d="M5.5 7.5h5 M5.5 10h5" />
     </>
   ),
   config: (

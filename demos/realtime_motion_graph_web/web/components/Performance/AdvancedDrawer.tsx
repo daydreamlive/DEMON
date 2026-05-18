@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useCurveStore } from "@/store/useCurveStore";
@@ -25,7 +25,15 @@ import { VoiceTile } from "./VoiceTile";
 // open/close affordance — it dispatches `dd:toggle-drawer`, which this
 // drawer listens for.
 
-export function AdvancedDrawer() {
+interface Props {
+  /** Slot for the "Saved" tab body. Mounted by demon-public-demo to
+   *  inject its <SessionsTile /> (which depends on auth + /api/sessions
+   *  and therefore can't live in DEMON's standalone bundle). When
+   *  omitted, the tab shows a small "unavailable" placeholder. */
+  savedTab?: ReactNode;
+}
+
+export function AdvancedDrawer({ savedTab }: Props = {}) {
   const [open, setOpen] = useState(false);
   const [allOpen, setAllOpen] = useState(false);
   const [activeTab, setActiveTab] = useDrawerTab("core");
@@ -84,6 +92,20 @@ export function AdvancedDrawer() {
         className={`install-sheet${open ? " open" : ""}${isMobile ? " install-sheet--mobile" : ""}`}
         aria-hidden={!open}
       >
+        {!isMobile && (
+          <button
+            type="button"
+            className="install-sheet-edge-handle"
+            onClick={() => started && setOpen((v) => !v)}
+            disabled={!started}
+            aria-label={open ? "Close Full Controls" : "Open Full Controls"}
+            aria-expanded={open}
+          >
+            <span className="install-sheet-edge-handle-caret" aria-hidden="true">
+              {open ? "◂" : "▸"}
+            </span>
+          </button>
+        )}
         <div className="install-sheet-body">
           {isMobile ? (
             <LiteControls onOpenAllControls={() => setAllOpen(true)} />
@@ -97,7 +119,7 @@ export function AdvancedDrawer() {
                 id="mixer-tiles"
                 data-active-tab={activeTab}
               >
-                {renderTabBody(activeTab)}
+                {renderTabBody(activeTab, savedTab)}
               </div>
             </>
           )}
@@ -118,7 +140,7 @@ export function AdvancedDrawer() {
 // every tile already runs its own hooks/subscriptions, and a wrapping
 // React component would just add another re-render layer with no
 // upside.
-function renderTabBody(tab: DrawerTab) {
+function renderTabBody(tab: DrawerTab, savedTab?: ReactNode) {
   switch (tab) {
     case "core":
       return <CoreTile />;
@@ -130,6 +152,12 @@ function renderTabBody(tab: DrawerTab) {
       return <PromptsTile />;
     case "lib":
       return <LibraryTile />;
+    case "saved":
+      return savedTab ?? (
+        <div className="install-sheet-saved-placeholder">
+          Saved sessions are only available in the hosted app.
+        </div>
+      );
     case "config":
       return <OperatorStrip />;
   }
