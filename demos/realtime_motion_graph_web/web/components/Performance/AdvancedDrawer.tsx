@@ -12,17 +12,16 @@ import {
   AdvancedCoachmark,
   advancedCoachmarkStorageKey,
 } from "./AdvancedCoachmark";
-import { ChannelGainsTile } from "./ChannelGainsTile";
-import { ChannelsTile } from "./ChannelsTile";
-import { DcwTile } from "./DcwTile";
-import { EngineTile } from "./EngineTile";
+import { CoreTile } from "./CoreTile";
+import { DrawerTabs, useDrawerTab, type DrawerTab } from "./DrawerTabs";
 import { LibraryTile } from "./LibraryTile";
 import { LiteControls } from "./LiteControls";
-import { MainTile } from "./MainTile";
 import { MobileFullSheet } from "./MobileFullSheet";
+import { ModTile } from "./ModTile";
 import { OperatorStrip } from "./OperatorStrip";
 import { PromptsTile } from "./PromptsTile";
 import { SeedTile } from "./SeedTile";
+import { VoiceTile } from "./VoiceTile";
 
 // Slide-up Advanced Controls drawer. Behavior splits at the mobile
 // breakpoint: desktop shows the dense mixer-board layout; mobile shows a
@@ -33,6 +32,7 @@ import { SeedTile } from "./SeedTile";
 export function AdvancedDrawer() {
   const [open, setOpen] = useState(false);
   const [allOpen, setAllOpen] = useState(false);
+  const [activeTab, setActiveTab] = useDrawerTab("core");
   const isMobile = useIsMobile();
   const status = useSessionStore((s) => s.status);
   const showKbdHints = usePerformanceStore((s) => s.showKbdHints);
@@ -166,24 +166,13 @@ export function AdvancedDrawer() {
           ) : (
             <>
               <OperatorStrip />
+              <DrawerTabs active={activeTab} onChange={setActiveTab} />
               <div
-                className={`mixer-rack${!showKbdHints ? " mixer-rack--no-kbd-hints" : ""}`}
+                className={`mixer-rack mixer-rack--tabbed${!showKbdHints ? " mixer-rack--no-kbd-hints" : ""}`}
                 id="mixer-tiles"
+                data-active-tab={activeTab}
               >
-                {/* Single row with every tile, sharing the full width
-                    equally, plus a full-width prompts row beneath. CSS
-                    on .mixer-rack-row > .mixer-tile stretches each tile
-                    to an equal share via `flex: 1 1 0` + `min-width: 0`. */}
-                <div className="mixer-rack-row" data-rack-row="all">
-                  <MainTile />
-                  <EngineTile />
-                  <ChannelsTile />
-                  <ChannelGainsTile />
-                  <DcwTile />
-                  <LibraryTile />
-                  <SeedTile />
-                </div>
-                <PromptsTile />
+                {renderTabBody(activeTab)}
               </div>
             </>
           )}
@@ -203,6 +192,30 @@ export function AdvancedDrawer() {
       />
     </>
   );
+}
+
+// Tab body switch — kept as a plain function (not a component) because
+// every tile already runs its own hooks/subscriptions, and a wrapping
+// React component would just add another re-render layer with no
+// upside.
+function renderTabBody(tab: DrawerTab) {
+  switch (tab) {
+    case "core":
+      return <CoreTile />;
+    case "mod":
+      return <ModTile />;
+    case "voice":
+      return <VoiceTile />;
+    case "prompt":
+      return (
+        <>
+          <SeedTile />
+          <PromptsTile />
+        </>
+      );
+    case "lib":
+      return <LibraryTile />;
+  }
 }
 
 // Extracted so useOneShotTooltip lives in its own component scope —
