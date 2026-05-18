@@ -1,21 +1,82 @@
 "use client";
 
-// Top-right CTA pair. Two visible tiers so the more important
-// conversion target reads first:
+// Top-right CTA pair. Both open Tally as an in-page modal (lazy-loaded
+// script on first click) instead of opening a new tab.
 //   • VST Waitlist — filled accent pill (`footer-link--cta`). Primary.
-//   • Feedback     — outlined accent pill. Secondary, paired weight.
-// Both share a brand-gradient hairline at the top (same vocabulary as
-// the halo menu + audio-source-fan) so they read as part of the brand
-// chrome family.
+//   • Feedback     — outlined accent pill. Secondary.
+
+declare global {
+  interface Window {
+    Tally?: {
+      openPopup: (
+        formId: string,
+        options?: { layout?: "default" | "modal"; width?: number },
+      ) => void;
+      closePopup: (formId: string) => void;
+    };
+  }
+}
+
+const TALLY_SCRIPT_SRC = "https://tally.so/widgets/embed.js";
+const VST_FORM_ID = "q4jxo9";
+const FEEDBACK_FORM_ID = "oblP5X";
+
+let tallyLoaderPromise: Promise<void> | null = null;
+
+function loadTally(): Promise<void> {
+  if (typeof window === "undefined") return Promise.resolve();
+  if (window.Tally) return Promise.resolve();
+  if (tallyLoaderPromise) return tallyLoaderPromise;
+  tallyLoaderPromise = new Promise((resolve, reject) => {
+    const existing = document.querySelector<HTMLScriptElement>(
+      `script[src="${TALLY_SCRIPT_SRC}"]`,
+    );
+    if (existing) {
+      if (window.Tally) {
+        resolve();
+        return;
+      }
+      existing.addEventListener("load", () => resolve(), { once: true });
+      existing.addEventListener("error", () => reject(new Error("tally load failed")), { once: true });
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = TALLY_SCRIPT_SRC;
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("tally load failed"));
+    document.head.appendChild(script);
+  });
+  return tallyLoaderPromise;
+}
+
+async function openTally(formId: string): Promise<void> {
+  try {
+    await loadTally();
+    if (window.Tally) {
+      window.Tally.openPopup(formId, { layout: "modal", width: 700 });
+      return;
+    }
+    throw new Error("Tally global missing after load");
+  } catch {
+    // Fallback if the script can't load (ad blocker, offline, etc.):
+    // open the Tally share URL in a new tab so the user can still
+    // reach the form.
+    window.open(
+      `https://tally.so/r/${formId}`,
+      "_blank",
+      "noopener,noreferrer",
+    );
+  }
+}
 
 export function FooterLinks() {
   return (
     <div className="footer-links" aria-label="Help and feedback">
-      <a
-        href="https://tally.so/r/q4jxo9"
+      <button
+        type="button"
         className="footer-link footer-link--cta"
-        target="_blank"
-        rel="noopener noreferrer"
+        onClick={() => void openTally(VST_FORM_ID)}
         title="Join the VST waitlist"
       >
         <span className="footer-link-icon" aria-hidden="true">
@@ -38,12 +99,11 @@ export function FooterLinks() {
           </svg>
         </span>
         <span className="footer-link-label">VST Waitlist</span>
-      </a>
-      <a
-        href="https://tally.so/r/oblP5X"
+      </button>
+      <button
+        type="button"
         className="footer-link"
-        target="_blank"
-        rel="noopener noreferrer"
+        onClick={() => void openTally(FEEDBACK_FORM_ID)}
         title="Report a bug or send feedback"
       >
         <span className="footer-link-icon" aria-hidden="true">
@@ -63,7 +123,7 @@ export function FooterLinks() {
           </svg>
         </span>
         <span className="footer-link-label">Feedback</span>
-      </a>
+      </button>
     </div>
   );
 }
