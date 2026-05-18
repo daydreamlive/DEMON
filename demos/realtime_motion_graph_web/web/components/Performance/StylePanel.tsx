@@ -7,11 +7,13 @@ import { useLoraStore } from "@/store/useLoraStore";
 import { useSessionStore } from "@/store/useSessionStore";
 import { LORA_SLIDER_MAX } from "@/types/engine";
 
-// Right-side master panel — replaces the prior writhing-ribbon LoRA
-// rails on both edges with a single consolidated panel containing
-// both LoRA faders side-by-side. Reads like the inShaper / GrainDust
-// "master strip" — a recessed bay glued to the right edge of the
-// canvas holding the channel-out controls.
+// Left-edge "Style" panel — two faders representing the current LoRA
+// strengths. Pulled to the LEFT edge so the right edge stays clear for
+// the Full Controls sidebar (which slides in from the right on
+// desktop). Label says "Style" — these aren't output volumes, they're
+// LoRA style strengths, and the prior "Master" wording set the wrong
+// expectation. Reads like the inShaper / GrainDust master strip just
+// mirrored to the opposite edge.
 //
 // Hidden while idle so the title screen stays clean. Drag interaction
 // is bound to each fader cap (pointer events on the track + cap).
@@ -24,7 +26,7 @@ interface FaderProps {
   slotIndex: number;
 }
 
-function MasterFader({ loraId, label, slotIndex }: FaderProps) {
+function StyleFader({ loraId, label, slotIndex }: FaderProps) {
   const strengths = useLoraStore((s) => s.strengths);
   const value = loraId ? strengths[loraId] ?? 0 : 0;
   const fraction = LORA_SLIDER_MAX > 0
@@ -35,7 +37,7 @@ function MasterFader({ loraId, label, slotIndex }: FaderProps) {
   useEffect(() => {
     if (isEmpty) return;
     const trackEl = document.querySelector<HTMLDivElement>(
-      `[data-master-fader-slot="${slotIndex}"]`,
+      `[data-style-fader-slot="${slotIndex}"]`,
     );
     if (!trackEl) return;
     let dragging = false;
@@ -79,13 +81,13 @@ function MasterFader({ loraId, label, slotIndex }: FaderProps) {
   }, [slotIndex, isEmpty]);
 
   return (
-    <div className={`master-fader${isEmpty ? " master-fader--empty" : ""}`}>
-      <div className="master-fader-label" title={label}>
+    <div className={`style-fader${isEmpty ? " style-fader--empty" : ""}`}>
+      <div className="style-fader-label" title={label}>
         {label}
       </div>
       <div
-        className="master-fader-track"
-        data-master-fader-slot={slotIndex}
+        className="style-fader-track"
+        data-style-fader-slot={slotIndex}
         role="slider"
         aria-label={label}
         aria-valuemin={0}
@@ -93,20 +95,20 @@ function MasterFader({ loraId, label, slotIndex }: FaderProps) {
         aria-valuenow={value}
       >
         <div
-          className="master-fader-fill"
+          className="style-fader-fill"
           style={{ height: `${fraction * 100}%` }}
         />
         <div
-          className="master-fader-cap"
+          className="style-fader-cap"
           style={{ bottom: `${fraction * 100}%` }}
         />
       </div>
-      <div className="master-fader-value">{value.toFixed(2)}</div>
+      <div className="style-fader-value">{value.toFixed(2)}</div>
     </div>
   );
 }
 
-export function MasterPanel() {
+export function StylePanel() {
   const status = useSessionStore((s) => s.status);
   const enabled = useLoraStore((s) => s.enabled);
   if (status === "idle") return null;
@@ -116,17 +118,17 @@ export function MasterPanel() {
   const lora2 = enabledIds[1] ?? null;
 
   return (
-    <div className="master-panel" aria-label="Master output">
-      <div className="master-panel-label">Master</div>
-      <div className="master-panel-faders">
-        <MasterFader
+    <div className="style-panel" aria-label="Style strengths">
+      <div className="style-panel-label">Style</div>
+      <div className="style-panel-faders">
+        <StyleFader
           loraId={lora1}
-          label={lora1 ? labelFor(lora1) : "LoRA 1"}
+          label={lora1 ? labelFor(lora1) : "Style 1"}
           slotIndex={0}
         />
-        <MasterFader
+        <StyleFader
           loraId={lora2}
-          label={lora2 ? labelFor(lora2) : "LoRA 2"}
+          label={lora2 ? labelFor(lora2) : "Style 2"}
           slotIndex={1}
         />
       </div>

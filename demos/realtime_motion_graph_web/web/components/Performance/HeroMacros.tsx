@@ -65,6 +65,11 @@ export function HeroMacros() {
           />
         ))}
       </div>
+      {/* Vertical divider between the three knobs and the toggle —
+          matches the .voice-section-divider language used inside
+          VoiceTile. Reads as "performance palette | navigation"
+          two-zone layout instead of one undifferentiated row. */}
+      <div className="hero-macros-divider" aria-hidden="true" />
       <button
         type="button"
         className="hero-macros-toggle"
@@ -74,7 +79,7 @@ export function HeroMacros() {
       >
         <span className="hero-macros-toggle-label">Full Controls</span>
         <span className="hero-macros-toggle-caret" aria-hidden="true">
-          {drawerOpen ? "▴" : "▾"}
+          {drawerOpen ? "◂" : "▸"}
         </span>
       </button>
     </div>
