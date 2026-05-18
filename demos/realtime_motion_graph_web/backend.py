@@ -652,6 +652,7 @@ def handle_client(
         # behind the user's back.
         cs = session.encode_text(
             tags=tags,
+            lyrics="[Instrumental]",
             instruction=TASK_INSTRUCTIONS["cover"],
             refer_latent=None,
             bpm=bpm, duration=duration, key=key,
@@ -659,6 +660,7 @@ def handle_client(
         )
         cf = session.encode_text(
             tags=tags,
+            lyrics="[Instrumental]",
             instruction=TASK_INSTRUCTIONS["cover"],
             refer_latent=refer_latent,
             bpm=bpm, duration=duration, key=key,
