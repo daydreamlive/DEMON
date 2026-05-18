@@ -426,10 +426,21 @@ body.cursor-idle .cursor-canvas { opacity: 0; }
 #install-stage {
   position: fixed;
   inset: 0;
-  transition: bottom 320ms cubic-bezier(.2, .7, .2, 1);
+  transition:
+    bottom 320ms cubic-bezier(.2, .7, .2, 1),
+    right 320ms cubic-bezier(.2, .7, .2, 1);
 }
+/* Desktop (> 768px): the Full Controls panel slides in from the RIGHT,
+   so the stage shrinks horizontally. Mobile keeps the bottom-sheet
+   behavior. */
 body[data-mode="graph"].drawer-open #install-stage {
-  bottom: var(--drawer-h);
+  right: var(--drawer-w);
+}
+@media (max-width: 768px) {
+  body[data-mode="graph"].drawer-open #install-stage {
+    right: 0;
+    bottom: var(--drawer-h);
+  }
 }
 
 /* Single inset shadow that darkens the viewport perimeter. Reach equals
@@ -1170,16 +1181,16 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
 .install-edge-left  .install-edge-bar { right: 0; transform-origin: right bottom; }
 .install-edge-right .install-edge-bar { left:  0; transform-origin: left  bottom; }
 
-/* ── MasterPanel ─────────────────────────────────────────────────────
-   Right-side consolidated bay holding the two LoRA channel faders.
-   Replaces the prior writhing-ribbon edge rails on both sides — both
-   LoRA strengths now live in this single panel, framed by the same
-   recessed-bay vocabulary as HeroMacros at the bottom-center. Reads
-   like the inShaper / GrainDust master output strip. */
-.master-panel {
+/* ── StylePanel ──────────────────────────────────────────────────────
+   Left-edge bay holding the two LoRA style faders. Pulled to the
+   LEFT (was right) so the right edge stays clear for the Full
+   Controls sidebar (W5-C). Label says "Style" — these are LoRA
+   strengths, not master volumes; the prior "Master" wording set the
+   wrong expectation. Same recessed-bay vocabulary as HeroMacros. */
+.style-panel {
   position: fixed;
   top: 50%;
-  right: 16px;
+  left: 16px;
   transform: translateY(-50%);
   display: flex;
   flex-direction: column;
@@ -1195,7 +1206,7 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
           backdrop-filter: blur(8px);
   z-index: 5;
 }
-.master-panel-label {
+.style-panel-label {
   font-family: var(--font-mono);
   font-size: 9px;
   letter-spacing: var(--tracking-wide);
@@ -1203,20 +1214,20 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   color: var(--text-dim);
   text-align: center;
 }
-.master-panel-faders {
+.style-panel-faders {
   display: flex;
   flex-direction: row;
   gap: 14px;
   align-items: stretch;
 }
-.master-fader {
+.style-fader {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 4px;
   width: 36px;
 }
-.master-fader-label {
+.style-fader-label {
   font-family: var(--font-mono);
   font-size: 8px;
   letter-spacing: 0.04em;
@@ -1229,14 +1240,14 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.master-fader-track {
+.style-fader-track {
   position: relative;
   width: 100%;
   height: 180px;
   cursor: ns-resize;
   touch-action: none;
 }
-.master-fader-track::before {
+.style-fader-track::before {
   content: "";
   position: absolute;
   left: 50%;
@@ -1254,7 +1265,7 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
     inset 1px 0 0 rgba(0, 0, 0, 0.7),
     inset -1px 0 1px rgba(255, 255, 255, 0.05);
 }
-.master-fader-fill {
+.style-fader-fill {
   position: absolute;
   bottom: 0;
   left: 50%;
@@ -1269,7 +1280,7 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   pointer-events: none;
   transition: height 70ms linear;
 }
-.master-fader-cap {
+.style-fader-cap {
   position: absolute;
   left: 50%;
   width: 26px;
@@ -1290,7 +1301,7 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
     inset 0 -1px 0 rgba(0, 0, 0, 0.5);
   transition: bottom 70ms linear;
 }
-.master-fader-cap::before {
+.style-fader-cap::before {
   content: "";
   position: absolute;
   left: 2px;
@@ -1302,21 +1313,21 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   border-radius: 1px;
   box-shadow: 0 0 3px var(--accent);
 }
-.master-fader-value {
+.style-fader-value {
   font-family: var(--font-mono);
   font-size: 9px;
   color: var(--text);
 }
-.master-fader--empty {
+.style-fader--empty {
   opacity: 0.35;
 }
-.master-fader--empty .master-fader-track {
+.style-fader--empty .style-fader-track {
   cursor: default;
 }
 /* Mobile: hide the master panel — the existing LiteControls + mobile
    rails cover LoRA strength there. */
 @media (max-width: 768px) {
-  .master-panel {
+  .style-panel {
     display: none;
   }
 }
@@ -1733,29 +1744,65 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
    above the bottom edge. Clicking the handle (or Esc / `o`) toggles open.
    ============================================================================ */
 :root {
-  /* Handle is hidden (HeroMacros caret toggles the drawer now), so the
-     closed drawer pushes fully off-screen. Variable kept at 0 so any
-     other CSS that does `calc(... + var(--drawer-handle-h, …))` for
-     positioning still works without breaking. */
+  /* Handle is hidden (HeroMacros caret toggles the drawer now). Vars
+     kept at 0 so other CSS that does `calc(... + var(--drawer-handle-h,
+     …))` for positioning still works. */
   --drawer-handle-h: 0px;
   --drawer-h: clamp(380px, 50vh, 540px);
+  /* Desktop sidebar width. Wide enough to host the 6-knob CORE row
+     comfortably while preserving usable canvas. */
+  --drawer-w: clamp(360px, 32vw, 440px);
+  /* Live "is the sidebar open" inset value — 0 when closed, mirrors
+     --drawer-w when open. Used by right-anchored elements (turntable,
+     footer chips, etc.) to slide inward when the sidebar slides in,
+     so nothing gets occluded. Toggled by body.drawer-open below. */
+  --drawer-w-open: 0px;
+}
+body.drawer-open {
+  --drawer-w-open: var(--drawer-w);
+}
+@media (max-width: 768px) {
+  /* Mobile keeps the bottom-sheet pattern — no horizontal inset. */
+  body.drawer-open {
+    --drawer-w-open: 0px;
+  }
 }
 
+/* Desktop (> 768px): the Full Controls panel is a RIGHT sidebar that
+   slides in from the right edge. Canvas shrinks horizontally via the
+   #install-stage rule above. Mobile keeps the bottom-sheet pattern. */
 .install-sheet {
   position: fixed;
-  left: 0; right: 0; bottom: 0;
-  height: var(--drawer-h);
+  top: 0; right: 0; bottom: 0;
+  width: var(--drawer-w);
+  height: auto;
   background: var(--sheet-bg);
-  border-top: 1px solid var(--frame-line);
-  /* Closed: fully off-screen. The HeroMacros caret is the only
-     drawer-open affordance on desktop. */
-  transform: translateY(100%);
+  border-left: 1px solid var(--frame-line);
+  /* Closed: off-screen to the right. */
+  transform: translateX(100%);
   transition: transform 320ms cubic-bezier(.2, .7, .2, 1);
   z-index: 50;
   display: flex;
   flex-direction: column;
 }
-.install-sheet.open { transform: translateY(0); }
+@media (max-width: 768px) {
+  .install-sheet {
+    /* Mobile fallback — bottom-anchored sheet, as it was. */
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    height: var(--drawer-h);
+    border-left: none;
+    border-top: 1px solid var(--frame-line);
+    transform: translateY(100%);
+  }
+}
+.install-sheet.open { transform: translateX(0); }
+@media (max-width: 768px) {
+  .install-sheet.open { transform: translateY(0); }
+}
 
 /* Drawer handle — full-width bar at the top of the drawer. The only
    on-screen close affordance, so it's deliberately bigger and more
@@ -1892,6 +1939,41 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   padding-bottom: 10px;
   border-bottom: 1px solid var(--frame-line);
 }
+
+/* ── Operator strip — grouped sections ───────────────────────────
+   The CONFIG tab body. Sections labeled with mono-caps headers,
+   thin frame-line divider between groups. Each section's controls
+   flow horizontally inside an `.operator-row`. */
+.operator-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 2px 6px;
+}
+.operator-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.operator-section + .operator-section {
+  border-top: 1px solid var(--frame-line);
+  padding-top: 12px;
+}
+.operator-section-label {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.6em;
+  letter-spacing: var(--tracking-bar);
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-weight: normal;
+}
+.operator-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
 .install-section-operator .ws-url-input { width: 220px; }
 /* Density toggle anchors the right cluster — its margin-left: auto pushes
    itself plus the trailing pause button to the far right of the row. */
@@ -2015,12 +2097,13 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
    top to suggest a raised face). Active cell is RECESSED via inset
    shadow + brighter foreground, like pressing a hardware button. */
 .drawer-tabs {
-  display: inline-flex;
+  display: flex;
+  flex-direction: column;
   flex: 1 1 auto;
-  gap: 0;
+  gap: 3px;
   padding: 3px;
   margin: 4px 0 6px;
-  /* Inset bay — same vocabulary as the HeroMacros bay, MasterPanel,
+  /* Inset bay — same vocabulary as the HeroMacros bay, StylePanel,
      and slider grooves. The whole strip reads as one piece of
      hardware with cells inside, not six floating buttons. */
   background: rgba(0, 0, 0, 0.35);
@@ -2031,14 +2114,26 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
     inset 0 -1px 0 rgba(255, 255, 255, 0.03),
     0 1px 0 rgba(255, 255, 255, 0.04);
 }
+.drawer-tabs-row {
+  display: flex;
+  gap: 0;
+}
+.drawer-tabs-row--tools {
+  /* Tool row is visually subordinate to the primary row — slightly
+     dimmer, shorter cells, no border separator above (the gap
+     between rows + parent inset reads as the divider). */
+  border-top: 1px solid rgba(255, 255, 255, 0.03);
+  padding-top: 3px;
+}
 .drawer-tab {
   display: inline-flex;
   flex: 1 1 0;
+  min-width: 0;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 4px;
-  padding: 8px 14px 9px;
+  padding: 8px 4px 9px;
   background: linear-gradient(
     to bottom,
     rgba(255, 255, 255, 0.04) 0%,
@@ -2112,6 +2207,41 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
   line-height: 1;
+}
+
+/* Tool tabs — bottom row. Shorter than the primary row, slightly
+   dimmer label, and an external-trigger glyph ("▸") indicates these
+   fire side effects (curve editor overlay, record event) rather than
+   swap the sidebar body. */
+.drawer-tab--tool {
+  padding: 6px 14px 7px;
+  flex-direction: row;
+  gap: 8px;
+  opacity: 0.92;
+}
+.drawer-tab--tool .drawer-tab-icon {
+  width: 14px;
+  height: 14px;
+}
+.drawer-tab--tool .drawer-tab-label::after {
+  content: "▸";
+  margin-left: 6px;
+  font-size: 0.9em;
+  opacity: 0.5;
+}
+.drawer-tab--tool.drawer-tab--active .drawer-tab-label::after {
+  content: "■";
+  opacity: 0.9;
+}
+/* REC active state pulses the record glyph in a warning red so the
+   user can never miss they're recording. */
+.drawer-tab--rec-active .drawer-tab-icon--rec {
+  color: var(--critical, #e25b4a);
+  animation: drawer-rec-pulse 1s ease-in-out infinite;
+}
+@keyframes drawer-rec-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
 }
 .mixer-rack--tabbed > .mixer-tile,
 .mixer-rack--tabbed > .knob-tile {
@@ -2346,10 +2476,10 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   left: 50%;
   transform: translateX(-50%);
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 4px;
-  padding: 10px 18px 6px;
+  flex-direction: row;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 18px 12px;
   /* In-metaphor panel chrome: a recessed bay holding the three macros.
      Uses the same dark surface vocabulary as the audio-source-crate
      and turntable bay so the bottom row reads as one hardware unit.
@@ -2397,19 +2527,29 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   align-items: flex-end;
   gap: 22px;
 }
+/* Vertical divider between the knob row and the Full Controls toggle.
+   Same inset-hairline vocabulary as VoiceTile's section divider; reads
+   as "performance palette | navigation" two-zone layout. */
+.hero-macros-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 6px 4px;
+  background: var(--frame-line);
+  flex: 0 0 auto;
+}
 /* Full Controls toggle — small caret row centered beneath the knobs.
    Sits inside the bay so the bottom row reads as ONE hardware unit
    (display + knobs + button), not two stacked elements. */
 .hero-macros-toggle {
   display: inline-flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  margin: 4px auto 0;
-  padding: 4px 14px 5px;
+  gap: 2px;
+  padding: 10px 14px 12px;
   background: transparent;
   border: 1px solid var(--frame-line);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   color: var(--text-dim);
   cursor: pointer;
   -webkit-appearance: none;
@@ -2426,11 +2566,16 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   font-size: 9.5px;
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
+  /* Match the knob-label vertical positioning so the toggle reads
+     as a "fourth knob" in the row, balancing visually. */
+  min-height: 1.4em;
+  display: flex;
+  align-items: flex-end;
 }
 .hero-macros-toggle-caret {
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1;
-  transform: translateY(-0.5px);
+  margin-top: 2px;
   transition: transform 140ms ease-out;
 }
 .hero-macros--drawer-open .hero-macros-toggle {
@@ -2471,40 +2616,74 @@ body.drawer-open .hero-macros-knobs,
 .footer-links {
   position: fixed;
   /* Vertically centered against the HaloBadge midline so the
-     wordmark + halo + chips all read as one horizontal band. The
-     HaloBadge anchors to `calc(var(--hud-thickness) / 2 - 8px)` and
-     measures 44 px tall; aligning to its midline means top =
-     halo-top + (halo-h - chip-h)/2. With chip-h ≈ 24 px and the
-     halo-top offset, ~10 px from that anchor lands the midline. */
+     wordmark + halo + chips all read as one horizontal band. */
   top: max(calc(var(--hud-thickness) / 2 + 2px + var(--top-bias, 5px)),
            env(safe-area-inset-top, 0px));
-  right: 140px;
-  display: flex;
+  /* Slides inward when sidebar opens. */
+  right: calc(140px + var(--drawer-w-open, 0px));
+  /* Recessed bay matching the .drawer-tabs vocabulary: same inset
+     shadow, same 1px frame-line border, same beveled cells inside.
+     Wrapping the two chips in this bay ties the top-right chrome
+     into the same visual family as the tab strip below. */
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 0;
+  padding: 2px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-sm);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.5),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.03),
+    0 1px 0 rgba(255, 255, 255, 0.04);
   z-index: 4;
   pointer-events: auto;
+  transition: right 320ms cubic-bezier(.2, .7, .2, 1);
 }
 .footer-link {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 4px 10px 5px;
-  background: transparent;
-  border: 1px solid var(--frame-line);
-  border-radius: 999px;
+  /* Beveled cell — same vertical-gradient body as a tab cell, with
+     a subtle inner highlight up top. Inactive by default. */
+  background: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 255, 255, 0.01) 50%,
+    rgba(0, 0, 0, 0.15) 100%
+  );
+  border: 1px solid transparent;
+  border-radius: 3px;
+  margin-left: 1px;
   color: var(--text-dim);
   text-decoration: none;
   font-family: var(--font-mono);
   font-size: 9.5px;
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
-  transition: color 140ms ease-out, border-color 140ms ease-out, background 140ms ease-out;
+  transition:
+    color 140ms ease-out,
+    background 140ms ease-out,
+    transform 140ms ease-out;
+}
+.footer-link:first-child {
+  margin-left: 0;
 }
 .footer-link:hover {
   color: var(--text-strong);
-  border-color: var(--accent-line);
-  background: rgba(255, 255, 255, 0.02);
+  background: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.06) 0%,
+    rgba(255, 255, 255, 0.02) 50%,
+    rgba(0, 0, 0, 0.1) 100%
+  );
+}
+.footer-link:hover .footer-link-icon {
+  transform: translateY(-0.5px);
+}
+.footer-link-icon {
+  transition: transform 140ms ease-out;
 }
 .footer-link-icon {
   display: inline-flex;
@@ -3193,7 +3372,10 @@ body.drawer-open .hero-macros-knobs,
      at the same Y as the label's cap-top. Right inset (24px from bar edge)
      mirrors the label's 24px left inset. Safe-area floors for notched devices. */
   top: max(calc(var(--hud-thickness) / 2 - 10px + var(--top-bias, 5px)), env(safe-area-inset-top, 0px));
-  right: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-right, 0px));
+  right: calc(
+    max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-right, 0px))
+    + var(--drawer-w-open, 0px)
+  );
   width: 44px;
   height: 44px;
   padding: 0;
@@ -3203,8 +3385,10 @@ body.drawer-open .hero-macros-knobs,
   cursor: pointer;
   /* Allow the writhing SVG ribbons to bleed slightly outside the circle. */
   overflow: visible;
-  transition: transform 140ms cubic-bezier(.2, .8, .2, 1),
-              filter 200ms;
+  transition:
+    transform 140ms cubic-bezier(.2, .8, .2, 1),
+    filter 200ms,
+    right 320ms cubic-bezier(.2, .7, .2, 1);
 }
 
 /* Plain dark inner backdrop — letting the writhing ribbon ring carry the
@@ -4172,8 +4356,15 @@ body.drawer-open .hero-macros-knobs,
      right = halo_center_from_right - 62 = (--hud-thickness + 46) - 62 =
      (--hud-thickness - 16). The tonearm pivot ends up ~3px inside the right
      HUD bar's x-range, but they never overlap in y (bar bottom sits 24px
-     above the turntable top). */
-  right: max(calc(var(--hud-thickness) - 16px), env(safe-area-inset-right, 0px));
+     above the turntable top).
+
+     When the Full Controls sidebar is open the turntable slides inward
+     by `--drawer-w-open` so it never gets hidden behind the panel; the
+     variable is 0 when closed, the sidebar width when open. */
+  right: calc(
+    max(calc(var(--hud-thickness) - 16px), env(safe-area-inset-right, 0px))
+    + var(--drawer-w-open, 0px)
+  );
   width: 92px;
   height: 70px;
   padding: 0;
@@ -4184,7 +4375,8 @@ body.drawer-open .hero-macros-knobs,
   overflow: visible;
   /* Subtle hover lift; same ease as HaloBadge for family resemblance. */
   transition: transform 160ms cubic-bezier(.2, .8, .2, 1),
-              filter 200ms;
+              filter 200ms,
+              right 320ms cubic-bezier(.2, .7, .2, 1);
 }
 .turntable:hover { transform: scale(1.04); filter: brightness(1.08); }
 .turntable:active { transform: scale(0.99); }
