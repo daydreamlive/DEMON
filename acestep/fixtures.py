@@ -23,7 +23,7 @@ Conditioning (encode_text) is intentionally *not* cached: the demo's
 blended-prompt UI typically drifts off any baked tags within seconds,
 and encode_text is cheap enough (~60ms warm) that caching it is not
 worth the complexity. See :func:`fixture_sidecar`. Sidecars are
-produced by ``scripts/precompute_fixture_sidecars.py`` and uploaded
+produced by ``scripts/calibration/precompute_fixture_sidecars.py`` and uploaded
 to the dataset alongside the WAVs.
 """
 
@@ -43,7 +43,7 @@ REPO_ID = "daydreamlive/demon-fixtures"
 REPO_TYPE = "dataset"
 
 # Local staging dir for sidecars that haven't been pushed to HF yet.
-# scripts/precompute_fixture_sidecars.py defaults its --out here, and
+# scripts/calibration/precompute_fixture_sidecars.py defaults its --out here, and
 # fixture_sidecar() checks this first before falling through to the HF
 # dataset. Override via DEMON_FIXTURE_SIDECARS_DIR.
 _DEFAULT_LOCAL_SIDECAR_DIR = Path(__file__).resolve().parents[1] / "out" / "fixture_sidecars"
@@ -265,7 +265,7 @@ def fixture_sidecar(name: str) -> Optional[FixtureSidecar]:
         print(
             f"[fixture_sidecar] {name}: format_version mismatch "
             f"(sidecar={fv} vs loader={SIDECAR_FORMAT_VERSION}) — "
-            f"re-run scripts/precompute_fixture_sidecars.py --force"
+            f"re-run scripts/calibration/precompute_fixture_sidecars.py --force"
         )
         return None
 

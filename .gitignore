@@ -272,3 +272,4 @@ gradio_outputs/
 trt_engines/*
 notes/*
 test_output/
+scripts/benchmarks/*.json

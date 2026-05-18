@@ -281,7 +281,7 @@ $BF16_ENGINE = "$env:USERPROFILE\.daydream-scope\models\demon\trt_engines\decode
 # 1. Snapshot real decoder inputs (.npz) by streaming through the matching
 #    bf16 engine at T=$T. The per-duration sequence length is what makes
 #    each JSON specific to its profile.
-uv run python scripts/collect_decoder_calibration.py `
+uv run python scripts/calibration/collect_decoder_calibration.py `
     --checkpoint acestep-v15-xl-turbo `
     --num-prompts 25 --max-calls 200 `
     --seq-len $T `
@@ -290,7 +290,7 @@ uv run python scripts/collect_decoder_calibration.py `
 
 # 2. Replay them through the PyTorch model and record per-Linear absmax.
 #    --output-dir lands the JSON next to the matching .npz.
-uv run python scripts/collect_activation_absmax.py `
+uv run python scripts/calibration/collect_activation_absmax.py `
     --checkpoint acestep-v15-xl-turbo --batch 4 `
     --calibration "$CAL_DIR\calibration.npz" `
     --output-dir $CAL_DIR

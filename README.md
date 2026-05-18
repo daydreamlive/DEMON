@@ -85,14 +85,14 @@ uv sync
 
 That's it. Audio fixtures used by demos, workflows, and tests are pulled on first use from the [`daydreamlive/demon-fixtures`](https://huggingface.co/datasets/daydreamlive/demon-fixtures) Hugging Face dataset and cached under `~/.cache/huggingface/`. See `acestep/fixtures.py` to add or list the canonical set.
 
-LoRAs are not auto-downloaded yet. If you want to use LoRA-conditioned generation (`workflows/covers/lora_generation.py` or the web demo's LoRA picker), drop a `.safetensors` file into `$ACESTEP_MODELS_DIR/loras/` (defaults to `~/.daydream-scope/models/demon/loras/`). See `acestep/paths.py::loras_dir`.
+LoRAs are not auto-downloaded yet. If you want to use LoRA-conditioned generation (`examples/covers/lora_generation.py` or the web demo's LoRA picker), drop a `.safetensors` file into `$ACESTEP_MODELS_DIR/loras/` (defaults to `~/.daydream-scope/models/demon/loras/`). See `acestep/paths.py::loras_dir`.
 
 ## Quick start
 
 The Session API is the simplest path to generating audio programmatically:
 
 ```bash
-uv run python workflows/session_demo.py
+uv run python examples/session_demo.py
 ```
 
 Loads the model once, then generates covers in ~310ms per iteration after warmup.
@@ -103,13 +103,13 @@ Loads the model once, then generates covers in ~310ms per iteration after warmup
 |---|---|
 | `demos/realtime_motion_graph_web/` | Real-time generation with browser front-end + GPU server (single port) |
 | `demos/test_stream_cover_graph.py` | StreamPipeline stress test with denoise sweep |
-| `workflows/session_demo.py` | Session API basics: load once, generate many |
-| `workflows/realtime_cover.py` | Interactive cover generation with live parameter control |
-| `workflows/session_test_all.py` | Exercises all node system features end-to-end |
+| `examples/session_demo.py` | Session API basics: load once, generate many |
+| `examples/realtime_cover.py` | Interactive cover generation with live parameter control |
+| `examples/session_test_all.py` | Exercises all node system features end-to-end |
 
 ## Workflow examples
 
-The `workflows/covers/` directory contains standalone scripts demonstrating individual features. Each loads the model, runs one workflow, and saves output audio.
+The `examples/covers/` directory contains standalone scripts demonstrating individual features. Each loads the model, runs one workflow, and saves output audio.
 
 | Workflow | Feature |
 |---|---|

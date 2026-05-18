@@ -242,7 +242,7 @@ def _resolve_decoder_precision(
     ``acestep.paths`` (``decoder_xl-turbo_fp8_refit_b4_*``) are FP8. To
     actually get W8A8 (vs the silent W8A16 fallback) the build must also
     receive ``--activation-absmax-json`` pointing at a calibration JSON
-    from ``scripts/collect_activation_absmax.py``; without it the FP8
+    from ``scripts/calibration/collect_activation_absmax.py``; without it the FP8
     patch runs weight-only, which leaves the GEMM in bf16 with a free
     dequant and gives back the latency the FP8 build was supposed to win.
     """
@@ -1145,7 +1145,7 @@ def main():
                           "--activation-absmax-json).")
     fp8.add_argument("--activation-absmax-json", type=str, default=None,
                      help="Per-Linear activation absmax JSON from "
-                          "scripts/collect_activation_absmax.py. When set, "
+                          "scripts/calibration/collect_activation_absmax.py. When set, "
                           "fp8_mixed runs in W8A8 mode (activation Q->DQ + "
                           "weight DQ); when omitted, fp8_mixed stays in "
                           "weight-only W8A16.")

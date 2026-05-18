@@ -231,7 +231,7 @@ def trt_engine_path(engine_name: str) -> Path:
 #
 # Larger profiles reserve more workspace at TRT context-creation time and
 # sit on more VRAM regardless of the actual input — see
-# tests/benchmarks/vram_60s_vs_240s_results.md. Pick the smallest profile
+# scripts/benchmarks/vram_60s_vs_240s_results.md. Pick the smallest profile
 # that fits the audio (see `select_trt_engines` and `available_trt_engines`).
 _TRT_ENGINE_PROFILES: dict[float, dict[str, str]] = {
     60.0: {
@@ -435,7 +435,7 @@ def _trt_build_command(
         # XL canonical engines are FP8 W8A8, which requires a per-profile
         # activation absmax JSON captured against the matching bf16 engine.
         # The path encodes the duration so the hint matches the storage
-        # layout used by scripts/collect_activation_absmax.py --output-dir.
+        # layout used by scripts/calibration/collect_activation_absmax.py --output-dir.
         absmax_json = (
             f"<MODELS_DIR>/calibration/decoder_xl_fp8/{duration}s/"
             "activation_absmax.json"
@@ -602,7 +602,7 @@ def available_dreamvae_decode_engine(duration_s: float) -> Path | None:
 # Windowed VAE decode (single shared profile across both decoder
 # variants). The profile is small enough that it costs ~1.5 GB of
 # workspace at TRT context-creation time vs ~9 GB for the canonical
-# 240 s engine — see tests/benchmarks/bench_vae_decode_profiles.py.
+# 240 s engine — see scripts/benchmarks/bench_vae_decode_profiles.py.
 #
 # Profile shape (in latent frames at 25 fps):
 #     min = 75   (3 s)

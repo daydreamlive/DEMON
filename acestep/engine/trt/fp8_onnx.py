@@ -431,7 +431,7 @@ def patch_bf16_onnx_to_fp8(
     weight initializer, activations stay bf16.
 
     When ``activation_absmax_json_path`` points at a JSON written by
-    ``scripts/collect_activation_absmax.py``, runs in W8A8 mode: every
+    ``scripts/calibration/collect_activation_absmax.py``, runs in W8A8 mode: every
     MatMul activation input gets a per-tensor symmetric Q->DQ chain
     scaled by ``activation_absmax / FP8_E4M3_MAX``. This is required
     for TRT 10.x to pick FP8 GEMM tactics; weight-only by itself

@@ -267,7 +267,7 @@ class Session:
         # Auto-select the windowed VAE decode engine when windowing is
         # active. Saves ~7.7 GB of TRT workspace at context-creation
         # time vs the canonical 240s engine (see
-        # tests/benchmarks/bench_vae_decode_profiles.py). Falls back
+        # scripts/benchmarks/bench_vae_decode_profiles.py). Falls back
         # silently to whatever the caller passed in when the windowed
         # engine isn't built yet.
         if vae_window > 0 and vae_backend == "tensorrt" and "vae_decode" in trt_engines:

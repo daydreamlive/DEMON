@@ -6,7 +6,7 @@ Estimation Using a Convolutional Neural Network", ICASSP 2018). madmom
 itself doesn't install on numpy>=2 / py>=3.11, so the conv layers were
 exported, the BatchNorm layers were folded into the preceding conv,
 and everything was re-saved as a torch state dict in
-``assets/key_cnn.pt``. See ``scripts/convert_madmom_key_cnn.py``.
+``assets/key_cnn.pt``. See ``scripts/madmom/convert_madmom_key_cnn.py``.
 
 License of the original model and architecture: BSD 3-Clause (madmom).
 
@@ -72,7 +72,7 @@ def _load() -> dict[str, Any]:
     if not _WEIGHTS_PATH.is_file():
         raise FileNotFoundError(
             f"key_cnn.pt missing at {_WEIGHTS_PATH}. "
-            f"Run scripts/convert_madmom_key_cnn.py."
+            f"Run scripts/madmom/convert_madmom_key_cnn.py."
         )
     blob = torch.load(_WEIGHTS_PATH, map_location="cpu", weights_only=False)
     state = blob["state_dict"]

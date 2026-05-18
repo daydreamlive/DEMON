@@ -2,7 +2,7 @@
 
 The XL FP8 decoder build is gated on a per-Linear activation absmax JSON
 (``--activation-absmax-json``). Capturing one is a separate offline step
-(``scripts/collect_activation_absmax.py``) that needs a calibrated bf16
+(``scripts/calibration/collect_activation_absmax.py``) that needs a calibrated bf16
 engine and ~10 minutes of GPU. We mirror the JSON on HF so a fresh box
 can build the canonical XL FP8 engine without first running calibration
 locally.
@@ -74,7 +74,7 @@ def fetch_calibration(
             ``"decoder_xl_fp8"``.
         profile: Per-profile subdir, e.g. ``"60s"`` / ``"120s"`` /
             ``"240s"``. Matches what
-            ``scripts/collect_activation_absmax.py`` writes.
+            ``scripts/calibration/collect_activation_absmax.py`` writes.
         local_root: Calibration root, typically
             ``~/.daydream-scope/models/demon/calibration``.
         force_download: Re-fetch even when local files exist.
