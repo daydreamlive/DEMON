@@ -999,7 +999,12 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
 body[data-mode="graph"]::before {
   content: "";
   position: fixed;
-  top: calc(var(--hud-thickness) - 2px);
+  /* Sit well below the topnav band. The wordmark + halo + pills cluster
+     around y ≈ hud-thickness (their bbox bottoms range hud-9 → hud+1
+     depending on element). Pushing the divider to hud + 18 leaves a
+     comfortable ~18px breathing gap before the line + a soft 18px
+     gradient halo dropping into the canvas. */
+  top: calc(var(--hud-thickness) + 18px);
   left: 4%;
   right: 4%;
   height: 18px;
