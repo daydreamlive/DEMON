@@ -18,7 +18,7 @@ export interface SliderMeta {
  * runtime when the catalog arrives — they aren't listed here. */
 export const SLIDER_META: Record<string, SliderMeta> = {
   denoise: { max: 1.0, step: 0.1 },
-  hint_strength: { max: 2.0, step: 0.2 },
+  hint_strength: { max: 1.0, step: 0.1 },
   timbre_strength: { max: 1.0, step: 0.05 },
   // 0 = LoRA A only, 1 = LoRA B only, 0.5 = both at half-max. UI-only knob —
   // useEdgeLoraBinding watches this and writes the paired lora_str_<id> values.
@@ -37,7 +37,10 @@ export const SLIDER_META: Record<string, SliderMeta> = {
   // the blend coefficient near 1.0 (which is the only way to reach
   // distant past via the implicit recursion).
   feedback_depth: { min: 1, max: 8, step: 1, pro: true },
-  shift: { max: 1.0, step: 0.1, pro: true },
+  // ACE-Step flow shift. Directly the value the diffusion solver receives;
+  // 3.0 is the upstream turbo default, 3.5 our packaged default. Useful
+  // operator range is roughly [1, 6].
+  shift: { min: 1.0, max: 6.0, step: 0.5, pro: true },
   // RCFG guidance scale. Only takes effect when rcfg_mode != "off". The
   // turbo model is CFG-distilled (trained to operate at scale=1 with
   // conditioning baked in); driving guidance past ~10 on turbo tends

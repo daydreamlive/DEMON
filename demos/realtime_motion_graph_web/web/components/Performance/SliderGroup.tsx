@@ -81,6 +81,13 @@ export function SliderGroup({
   const meta = SLIDER_META[param];
   const effectiveMax = max ?? meta?.max ?? 1.0;
   const effectiveMin = min ?? meta?.min ?? 0;
+  // Integer-stepped sliders (e.g. feedback_depth) display without
+  // decimals so the readout matches what the engine actually receives
+  // (pipeline.py rounds floats to int for these). Without this, a
+  // mid-tween value reads "3.47" while the engine is using 3.
+  const integerDisplay = (meta?.step ?? 0) >= 1;
+  const formatValue = (v: number) =>
+    integerDisplay ? String(Math.round(v)) : v.toFixed(2);
   // Mapping bundle, passed to lib/sliderMapping helpers (and the
   // tactile-slider hook). When `unity` is set, the rail uses piecewise
   // mapping anchored at the midpoint; otherwise linear from min..max.
@@ -110,7 +117,7 @@ export function SliderGroup({
   }, [editing]);
 
   const startEdit = () => {
-    setEditText(value.toFixed(2));
+    setEditText(formatValue(value));
     setEditing(true);
   };
   const commitEdit = () => {
@@ -323,7 +330,7 @@ export function SliderGroup({
         />
       ) : (
         <div className="slider-value" onDoubleClick={startEdit}>
-          {value.toFixed(2)}
+          {formatValue(value)}
         </div>
       )}
       {kbd && <kbd className="desktop-only">{kbd}</kbd>}

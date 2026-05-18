@@ -362,7 +362,7 @@ class PipelineRunner:
                     "seed": 0.0,
                     "feedback": 0.0,
                     "feedback_depth": 1.0,
-                    "shift": 0.5,
+                    "shift": 3.0,
                 }
                 if self.use_sde:
                     raw["periodicity"] = 0.0
@@ -408,9 +408,7 @@ class PipelineRunner:
                 int(raw["seed"]) if self.use_midi else self.SEED
             )
             feedback = raw["feedback"]
-            shift_raw = raw["shift"]
-
-            shift_val = 1.0 + shift_raw * 5.0
+            shift_val = float(raw["shift"])
             if abs(shift_val - current_shift) > 0.05:
                 current_shift = shift_val
 

@@ -68,7 +68,9 @@ def build_banks(sde: bool, loras=None) -> list:
     core["feedback_depth"] = KnobDef(
         cc=cc, default=1.0, sensitivity=4.0, max_val=8.0,
     ); cc += 1
-    core["shift"] = KnobDef(cc=cc, default=0.5, sensitivity=1.0); cc += 1
+    # Shift value flows verbatim into the diffusion solver. Useful operator
+    # range is roughly [1, 6]; max_val caps the MIDI sweep at 6.
+    core["shift"] = KnobDef(cc=cc, default=3.0, sensitivity=1.0, max_val=6.0); cc += 1
     if sde:
         core["periodicity"] = KnobDef(cc=cc, sensitivity=2.0, max_val=12.5); cc += 1
     for lid in lora_ids:

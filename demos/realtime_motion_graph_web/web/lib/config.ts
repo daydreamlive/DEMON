@@ -488,6 +488,7 @@ export function applyConfig(c: RtmgConfig): void {
   sliderUpdates.prompt_blend = resolved.prompts.blend;
 
   usePerformanceStore.setState((s) => ({
+    sliderDefaults: { ...s.sliderDefaults, ...sliderUpdates },
     sliderValues: { ...s.sliderValues, ...sliderUpdates },
     sliderTargets: { ...s.sliderTargets, ...sliderUpdates },
     promptA: resolved.prompts.a,

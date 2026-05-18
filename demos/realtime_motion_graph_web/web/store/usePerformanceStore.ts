@@ -237,13 +237,13 @@ export function isManualOverrideActive(param: string): boolean {
 
 const DEFAULT_SLIDER_VALUES: Record<string, number> = {
   denoise: 0.7,
-  hint_strength: 1.4,
+  hint_strength: 1.0,
   timbre_strength: 1.0,
   lora_blend: 0.5,
   prompt_blend: 0.4,
   feedback: 0.0,
   feedback_depth: 1,
-  shift: 0.5,
+  shift: 3.0,
   ch_g0: 1.0,
   ch_g1: 1.0,
   ch_g2: 1.0,
@@ -271,6 +271,11 @@ const DEFAULT_SLIDER_VALUES: Record<string, number> = {
 };
 
 interface PerformanceState {
+  /** Per-param defaults used by double-click reset, long-press snap-back,
+   *  and idle reset. Seeded from DEFAULT_SLIDER_VALUES and overwritten by
+   *  applyConfig() so the reset target matches the operator-configured
+   *  startup value, not the hardcoded fallback. */
+  sliderDefaults: Record<string, number>;
   /** What we're actually sending to the engine. When `smooth` is on, this
    *  trails `sliderTargets` along a tween; otherwise it equals it. Read by
    *  param-sync (hooks/useParamSync.ts) and the render loop (the audio-
@@ -514,6 +519,7 @@ function clearOverridePatch(
 }
 
 export const usePerformanceStore = create<PerformanceState>((set) => ({
+  sliderDefaults: { ...DEFAULT_SLIDER_VALUES },
   sliderValues: { ...DEFAULT_SLIDER_VALUES },
   sliderTargets: { ...DEFAULT_SLIDER_VALUES },
   sliderDisplayOverride: {},
@@ -721,16 +727,16 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   resetToDefaults: () => {
     tweens.clear();
     dropTweens.clear();
-    set(() => ({
-      sliderValues: { ...DEFAULT_SLIDER_VALUES },
-      sliderTargets: { ...DEFAULT_SLIDER_VALUES },
+    set((s) => ({
+      sliderValues: { ...s.sliderDefaults },
+      sliderTargets: { ...s.sliderDefaults },
       sliderDisplayOverride: {},
       seed: 0,
       remixStarted: false,
     }));
   },
   resetSlider: (param) => {
-    const def = DEFAULT_SLIDER_VALUES[param];
+    const def = usePerformanceStore.getState().sliderDefaults[param];
     if (typeof def !== "number") return;
     cancelTween(param);
     stampManualTouch(param);

@@ -43,11 +43,11 @@
     "denoise": 0.7,
     "_lora_default_strength_help": "Initial value applied to any LoRA strength slider whose server-reported strength is 0 (current Python backend behavior). Auto-enabled LoRAs land here on first paint.",
     "lora_default_strength": 0.7,
-    "hint_strength": 1.4,
+    "hint_strength": 1.0,
 
     "feedback": 0.0,
     "feedback_depth": 1,
-    "shift": 0.5,
+    "shift": 3.0,
 
     "_rcfg_help": "Residual CFG. 'off' = no guidance (turbo default, free). 'self' = virtual uncond from initial noise, ~1.06x cost. 'initialize' = uncond run once per slot then cached, ~1.07x. 'full' = standard two-pass CFG, ~2x.",
     "rcfg_mode": "initialize",

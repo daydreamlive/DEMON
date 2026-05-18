@@ -205,8 +205,8 @@ def _build_knob_catalog(sde: bool, enabled_lora_ids: list[str]) -> dict[str, dic
                    "description": "Stream seed (uint32 integer; passed to torch.manual_seed)"}
     out["feedback"] = {"default": 0.0, "max": 1.0, "group": "core",
                        "description": "Feedback amount"}
-    out["shift"] = {"default": 0.5, "max": 1.0, "group": "core",
-                    "description": "Flow shift (timing/curve shape)"}
+    out["shift"] = {"default": 3.0, "min": 1.0, "max": 6.0, "group": "core",
+                    "description": "Flow shift (timing/curve shape). Passed verbatim to the diffusion solver."}
     for lid in enabled_lora_ids:
         out[f"lora_str_{lid}"] = {
             "default": 0.0, "max": 2.0, "group": "core",

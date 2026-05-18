@@ -306,9 +306,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--denoise-amplitude", type=float, default=0.20)
     parser.add_argument(
-        "--shift-raw",
+        "--shift",
+        dest="shift",
         type=float,
-        help="UI-style shift knob value. Effective shift is 1 + shift_raw * 5.",
+        help="Diffusion flow shift, passed verbatim to the solver. Useful range ~[1, 6].",
     )
     parser.add_argument("--noise-share", type=float, default=0.0)
 
@@ -383,12 +384,11 @@ def main() -> None:
         else float(controls_cfg.get("denoise", 0.7))
     )
     args.denoise = denoise
-    shift_raw = (
-        args.shift_raw
-        if args.shift_raw is not None
-        else float(controls_cfg.get("shift", 0.5))
+    shift = (
+        args.shift
+        if args.shift is not None
+        else float(controls_cfg.get("shift", 3.0))
     )
-    shift = 1.0 + shift_raw * 5.0
     dcw_enabled = (
         bool(args.dcw_enabled)
         if args.dcw_enabled is not None
