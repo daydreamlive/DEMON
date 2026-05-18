@@ -2366,7 +2366,153 @@ body.drawer-open {
 /* Full Controls toggle — small caret row centered beneath the knobs.
    Sits inside the bay so the bottom row reads as ONE hardware unit
    (display + knobs + button), not two stacked elements. */
-/* Stacked tool column on the right side of the bay: Seed → Curve
+/* Inline LoRA strength faders inside the hero bay. Compact vertical
+   pair sitting between the knob row and the tool column — same drag
+   semantics as the (removed) left-edge StylePanel, just shrunk to fit
+   the bay's vertical footprint. */
+.hero-macros-styles {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 12px;
+}
+.hero-style-fader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 28px;
+}
+.hero-style-fader-label {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.hero-style-fader-track {
+  position: relative;
+  width: 100%;
+  height: 56px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.hero-style-fader-track::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0; bottom: 0;
+  width: 3px;
+  transform: translateX(-50%);
+  background: linear-gradient(
+    to right,
+    rgba(0, 0, 0, 0.6) 0%,
+    rgba(0, 0, 0, 0.45) 50%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  border-radius: 2px;
+  box-shadow:
+    inset 1px 0 0 rgba(0, 0, 0, 0.7),
+    inset -1px 0 1px rgba(255, 255, 255, 0.05);
+}
+.hero-style-fader-fill {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  width: 3px;
+  transform: translateX(-50%);
+  background: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--accent) 70%, #000) 0%,
+    var(--accent) 100%
+  );
+  border-radius: 2px;
+  pointer-events: none;
+  transition: height 70ms linear;
+}
+.hero-style-fader-cap {
+  position: absolute;
+  left: 50%;
+  width: 20px;
+  height: 8px;
+  background: linear-gradient(
+    to bottom,
+    rgb(78, 84, 96) 0%,
+    rgb(42, 46, 54) 48%,
+    rgb(18, 20, 24) 100%
+  );
+  border-radius: 2px;
+  transform: translate(-50%, 50%);
+  pointer-events: none;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.65),
+    0 0 0 1px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.5);
+  transition: bottom 70ms linear;
+}
+.hero-style-fader-cap::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  top: 50%;
+  height: 1px;
+  background: var(--accent);
+  transform: translateY(-50%);
+  border-radius: 1px;
+  box-shadow: 0 0 3px var(--accent);
+}
+.hero-style-fader-value {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text);
+  line-height: 1;
+}
+.hero-style-fader--empty { opacity: 0.35; }
+.hero-style-fader--empty .hero-style-fader-track { cursor: default; }
+
+/* Record pill — simplified two-state version of the turntable. Idle:
+   "Record" with a dim red dot. Active: "MM:SS" with the dot pulsing
+   to make recording state unmistakable. Click toggles the same
+   `dd:toggle-record` event the floating button used. */
+.hero-macros-rec-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #e84f3d;
+  flex-shrink: 0;
+  box-shadow: 0 0 4px rgba(232, 79, 61, 0.45);
+}
+.hero-macros-rec--active .hero-macros-rec-dot {
+  animation: hero-macros-rec-pulse 1s ease-in-out infinite;
+}
+.hero-macros-rec--active {
+  color: var(--text-strong);
+  border-color: rgba(232, 79, 61, 0.65);
+}
+@keyframes hero-macros-rec-pulse {
+  0%, 100% {
+    opacity: 0.6;
+    box-shadow: 0 0 4px rgba(232, 79, 61, 0.4);
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 10px rgba(232, 79, 61, 0.85);
+    transform: scale(1.18);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hero-macros-rec--active .hero-macros-rec-dot { animation: none; opacity: 1; }
+}
+
+/* Stacked tool column on the right side of the bay: Record → Curve
    Editor → Full Controls. All three cells share the same hairline-cell
    vocabulary; Simple/Full Controls keeps the caret affordance to read
    as the primary action. */
@@ -2454,7 +2600,11 @@ body.drawer-open {
    drawer's CORE tab now) but the toggle button stays — it's the
    only way to close the drawer with the bottom handle gone. */
 body.drawer-open .hero-macros-knobs,
-.hero-macros--curve-open .hero-macros-knobs {
+body.drawer-open .hero-macros-styles,
+body.drawer-open .hero-macros-divider,
+.hero-macros--curve-open .hero-macros-knobs,
+.hero-macros--curve-open .hero-macros-styles,
+.hero-macros--curve-open .hero-macros-divider {
   display: none;
 }
 .hero-macros--drawer-open,
