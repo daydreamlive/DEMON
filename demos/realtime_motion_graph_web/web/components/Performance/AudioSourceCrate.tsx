@@ -15,7 +15,6 @@ import { useSessionStore } from "@/store/useSessionStore";
 import type { TimeSignature } from "@/types/engine";
 
 import { AlmostReadyDialog } from "./AlmostReadyDialog";
-import { MicRecorder } from "./MicRecorder";
 
 // Bottom-left counterpart to the bottom-right turntable. Replaces the plain
 // fixture <select> as the primary track-picker — that dropdown hid the fact
@@ -31,27 +30,6 @@ import { MicRecorder } from "./MicRecorder";
 interface TrackOption {
   name: string;
   kind: "fixture" | "custom";
-}
-
-function MicIcon({ size = 14 }: { size?: number }) {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width={size}
-      height={size}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.4}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <rect x="6" y="1.5" width="4" height="8" rx="2" />
-      <path d="M3.5 7.5a4.5 4.5 0 0 0 9 0" />
-      <path d="M8 12v2.5" />
-      <path d="M5.5 14.5h5" />
-    </svg>
-  );
 }
 
 function UploadIcon({ size = 14 }: { size?: number }) {
@@ -85,7 +63,6 @@ export function AudioSourceCrate() {
   const addCustomTrack = useCustomTracksStore((s) => s.add);
 
   const [open, setOpen] = useState(false);
-  const [recording, setRecording] = useState(false);
   const [uploading, setUploading] = useState(false);
   // After decode, the dialog gates the actual fixture swap so the user
   // can confirm the trim (if any) and pick a key before playback
@@ -241,16 +218,9 @@ export function AudioSourceCrate() {
           data-dd-tooltip={uploading ? "Decoding…" : "Upload your own audio track"}
         >
           <UploadIcon size={16} />
-        </button>
-        <button
-          type="button"
-          className="audio-source-upload-btn"
-          disabled={uploading || recording}
-          onClick={() => setRecording(true)}
-          aria-label="Record audio from your microphone"
-          data-dd-tooltip="Record from microphone"
-        >
-          <MicIcon size={16} />
+          <span className="audio-source-upload-label">
+            {uploading ? "Decoding…" : "Upload"}
+          </span>
         </button>
       </div>
 
@@ -307,25 +277,6 @@ export function AudioSourceCrate() {
               {uploading ? "Decoding…" : "Upload your own"}
             </span>
           </button>
-          <button
-            type="button"
-            role="menuitem"
-            className="audio-source-sleeve audio-source-sleeve--upload"
-            disabled={uploading || recording}
-            onClick={() => {
-              setRecording(true);
-              setOpen(false);
-            }}
-            data-dd-tooltip="Record audio from your microphone"
-          >
-            <span
-              className="audio-source-sleeve-art audio-source-sleeve-art--upload"
-              aria-hidden="true"
-            >
-              <MicIcon />
-            </span>
-            <span className="audio-source-sleeve-label">Record audio</span>
-          </button>
         </div>
       )}
 
@@ -341,17 +292,6 @@ export function AudioSourceCrate() {
           if (file) void onFilePicked(file);
         }}
       />
-
-      {recording && (
-        <MicRecorder
-          onComplete={(file) => {
-            setRecording(false);
-            setOpen(false);
-            void onFilePicked(file);
-          }}
-          onClose={() => setRecording(false)}
-        />
-      )}
 
       {pending && (
         <AlmostReadyDialog

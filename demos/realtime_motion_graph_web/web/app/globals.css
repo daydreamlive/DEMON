@@ -155,9 +155,8 @@ body.cursor-hidden nextjs-portal * {
    pre-rasterised radial-gradient sprites + globalCompositeOperation =
    "lighter" — both engines hardware-composite that path.
 
-   body.kiosk.cursor-idle fades the canvas via opacity (HW-accelerated)
-   on the existing 2s idle timer — auto-hide is gated to kiosk mode so
-   the cursor stays visible during normal operation. */
+   body.cursor-idle fades the canvas via opacity (HW-accelerated) on the
+   existing 2s idle timer. */
 .cursor-canvas {
   position: fixed;
   inset: 0;
@@ -181,11 +180,7 @@ body.cursor-hidden nextjs-portal * {
   contain: paint;
 }
 
-/* Auto-hide only kicks in inside kiosk mode. Outside kiosk the cursor
-   should always stay visible — the .cursor-idle class can still be
-   present (operators may have a partial-idle UI in the future) but it
-   no longer fades the cursor unless the body is also in kiosk. */
-body.kiosk.cursor-idle .cursor-canvas { opacity: 0; }
+body.cursor-idle .cursor-canvas { opacity: 0; }
 
 /* ── Performance screen + Play overlay ───────────────────────────────────── */
 #performance {
@@ -648,6 +643,84 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   #install-video-area #graph-wrap .graph-pause-overlay {
     pointer-events: none;
   }
+}
+
+/* DAW-style lane labels — color-matched name pills anchored at each
+   line's playhead intersection. Positioned absolutely inside
+   #graph-wrap so they overlay the canvas; pointer-events: none keeps
+   them out of the pause-overlay click target. Pills update at 20 Hz
+   from GraphLaneLabels' setInterval — not in the canvas hot loop. */
+#install-video-area #graph-wrap .graph-lane-labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  /* Below the pause overlay (z=3) but above the canvas (z=auto). */
+}
+.graph-lane-label {
+  position: absolute;
+  /* Anchor pill's vertical center at top:Ny, x just past the playhead. */
+  transform: translate(8px, -50%);
+  padding: 1px 6px 2px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  line-height: 1.1;
+  border: 1px solid;
+  border-radius: 3px;
+  background: rgba(6, 6, 12, 0.78);
+  -webkit-backdrop-filter: blur(2px);
+          backdrop-filter: blur(2px);
+  white-space: nowrap;
+  /* Fade in when a new lane appears so a slider drag doesn't pop the
+     pill in jarringly. Position transitions are off — the pill needs
+     to track its lane sample-for-sample, not lerp behind it. */
+  animation: graph-lane-label-fade-in 200ms ease-out both;
+}
+@keyframes graph-lane-label-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Beat indicator — anchor chrome on the graph that attributes the
+   chorus-burst energy to the music. Dot scales + brightens with
+   --bloom-amount; wordmark stays static for legibility. All visual
+   reactivity is pure CSS off the existing #performance-scoped
+   --bloom-amount variable; no JS frame loop. */
+#install-video-area #graph-wrap .beat-indicator {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+  z-index: 2;
+  /* Keep the badge readable on any background. */
+  padding: 3px 8px 4px;
+  background: rgba(6, 6, 12, 0.65);
+  border: 1px solid var(--frame-line);
+  border-radius: 999px;
+  -webkit-backdrop-filter: blur(3px);
+          backdrop-filter: blur(3px);
+}
+.beat-indicator-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(150, 180, 220, calc(0.4 + 0.6 * var(--bloom-amount, 0)));
+  /* Compositor-friendly: transform scale + opacity. No box-shadow. */
+  transform: scale(calc(0.85 + 0.5 * var(--bloom-amount, 0)));
+  transition: transform 60ms linear, background 60ms linear;
+}
+.beat-indicator-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-dim);
 }
 .graph-pause-overlay__glyph {
   position: absolute;
@@ -1218,81 +1291,13 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   padding: 4px 8px;
   /* Internal scroll: the Library tile holds its own height and
      scrolls when there are too many rows to fit.  The Advanced drawer
-     stays at its natural size. The cap was 240px when the tile had no
-     search bar above it; the search input occupies ~32px, so we trim
-     the list cap by that much to keep the tile's outer height roughly
-     unchanged. */
-  max-height: 206px;
+     stays at its natural size. */
+  max-height: 240px;
   overflow-y: auto;
   overflow-x: hidden;
   /* Subtle scrollbar styling (Firefox + WebKit) so it doesn't shout. */
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
-}
-
-/* Library search input. Lives between the tile label and the row list.
-   Same chrome vocabulary as .seed-btn / .send-prompt-btn (frame-line
-   border, mono caps text, accent on focus) so it reads as part of the
-   tile, not a glued-on form control. */
-.mixer-tile[data-tile="library"] .lora-search {
-  padding: 0 8px;
-  margin-bottom: 4px;
-}
-.mixer-tile[data-tile="library"] .lora-search-input {
-  width: 100%;
-  background: transparent;
-  border: 1px solid var(--frame-line);
-  border-radius: var(--radius-sm);
-  color: var(--text-strong);
-  font: inherit;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: var(--tracking-wide);
-  padding: 5px 8px 4px;
-  outline: none;
-  transition: border-color 0.14s ease, box-shadow 0.18s ease;
-}
-.mixer-tile[data-tile="library"] .lora-search-input::placeholder {
-  color: var(--text-dim);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-wide);
-}
-.mixer-tile[data-tile="library"] .lora-search-input:focus {
-  border-color: var(--accent-line);
-  box-shadow: 0 0 6px var(--accent-glow);
-}
-
-/* Footer for the LoRA library: "N hidden (incompatible with 2B) ·
-   show all". Sits below the list, doesn't grow the tile (the list
-   max-height already accommodates a one-line footer). */
-.mixer-tile[data-tile="library"] .lora-hidden-footer {
-  padding: 4px 10px 6px;
-  font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: var(--tracking-wide);
-  text-transform: uppercase;
-  color: var(--text-dim);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-.mixer-tile[data-tile="library"] .lora-hidden-toggle {
-  background: transparent;
-  color: var(--text-dim);
-  border: 1px solid var(--frame-line);
-  border-radius: var(--radius-sm);
-  font: inherit;
-  font-family: var(--font-mono);
-  letter-spacing: var(--tracking-wide);
-  text-transform: uppercase;
-  padding: 2px 6px 1px;
-  cursor: pointer;
-  transition: border-color 0.14s ease, color 0.14s ease;
-}
-.mixer-tile[data-tile="library"] .lora-hidden-toggle:hover {
-  border-color: var(--accent-line);
-  color: var(--text-strong);
 }
 .mixer-tile[data-tile="library"] .lora-list::-webkit-scrollbar { width: 6px; }
 .mixer-tile[data-tile="library"] .lora-list::-webkit-scrollbar-thumb {
@@ -1316,13 +1321,6 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   row-gap: 4px;
   padding: 4px 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-  /* NOT positioned on purpose. The data-dd-tooltip ::after pseudo is
-     position: absolute and walks up the ancestor chain to the nearest
-     positioned ancestor — which for everything inside the drawer body
-     is .install-sheet (position: fixed). That lands every tooltip in
-     the same screen spot: 8px above the drawer top, viewport-centered.
-     A `position: relative` here would re-anchor the tooltip to this
-     row, kicking it out of the shared display area. */
 }
 .lora-row:last-child { border-bottom: none; }
 
@@ -1552,7 +1550,7 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
    above the bottom edge. Clicking the handle (or Esc / `o`) toggles open.
    ============================================================================ */
 :root {
-  --drawer-handle-h: 40px;
+  --drawer-handle-h: 28px;
   --drawer-h: clamp(380px, 50vh, 540px);
 }
 
@@ -1571,11 +1569,11 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
 }
 .install-sheet.open { transform: translateY(0); }
 
-/* Drawer handle — full-width bar at the top of the drawer. Painted
-   with an accent-tinted top edge + bright label so it reads as a
-   *button* (not a chrome divider) even on a busy canvas. The handle
-   used to be 28px of frame-dark text-dim that disappeared into the
-   HUD; bumped to 40px with persistent legibility. */
+/* Drawer handle — full-width bar at the top of the drawer. The only
+   on-screen close affordance, so it's deliberately bigger and more
+   discoverable than the old corner button. Two rounded "grip"
+   indicators flank a small label so the bar reads as a draggable
+   surface even on first sight. */
 .install-drawer-handle {
   flex-shrink: 0;
   height: var(--drawer-handle-h);
@@ -1584,44 +1582,31 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   justify-content: center;
   gap: 14px;
   padding: 0 18px;
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--accent) 14%, var(--frame)) 0%,
-    var(--frame) 100%
-  );
+  background: var(--frame);
   border: none;
-  border-top: 1px solid var(--accent-line);
   border-bottom: 1px solid var(--frame-line);
-  color: var(--text-strong);
+  color: var(--text-dim);
   font: inherit;
   font-family: var(--font-mono);
-  font-size: 0.78em;
-  font-weight: 600;
-  letter-spacing: 0.16em;
+  font-size: 0.7em;
+  letter-spacing: var(--tracking-bar);
   text-transform: uppercase;
   cursor: pointer;
-  transition: color 120ms, background 120ms, border-color 120ms;
+  transition: color 120ms, background 120ms;
 }
 .install-drawer-handle:hover {
-  color: var(--accent-hover);
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--accent) 22%, var(--frame)) 0%,
-    var(--frame) 100%
-  );
-  border-top-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 .install-drawer-handle-grip {
   width: 56px;
   height: 4px;
-  background: var(--accent);
+  background: var(--frame-line);
   border-radius: 2px;
   transition: background 120ms;
-  opacity: 0.85;
 }
 .install-drawer-handle:hover .install-drawer-handle-grip {
-  background: var(--accent-hover);
-  opacity: 1;
+  background: var(--accent);
 }
 .install-drawer-handle-label {
   white-space: nowrap;
@@ -1632,12 +1617,10 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   pointer-events: none;
   background: var(--frame);
   color: var(--text-dim);
-  border-top-color: var(--frame-line);
   cursor: not-allowed;
 }
 .install-drawer-handle--disabled .install-drawer-handle-grip {
   background: var(--frame-line);
-  opacity: 1;
 }
 
 /* First-run coachmark — floats above the drawer handle to teach new
@@ -1749,17 +1732,13 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
 .mixer-rack-row {
   display: flex;
   /* Tiles keep their content-driven widths and stay on a single line
-     across the laptop range. At MacBook Pro 14" (1512px viewport) the
-     7 tiles + per-strip widths used to overflow because the compact
-     floor (--slider-strip-w 36px, 6/7/7 padding, fixed 8px row gap)
-     still summed to ~1500-1520px of intrinsic content, so the seed
-     tile dropped to a second line and pushed prompts down. The floor
-     below now compresses harder (32px strips, 4/5/5 padding, 4px row
-     gap) so the rack stays on one line at 14" MBP and tablet widths.
-     Wrapping remains the fallback if a future tile ever exceeds the
-     true min — preferred over horizontal scroll, always. */
+     until the viewport drops below the compact floor (~1500px), at
+     which point they wrap onto a second line — wrapping is preferred
+     over horizontal scroll, always. The fluid clamp on
+     `--slider-strip-w` already keeps the row fitting between 1500px
+     and 2400px without wrapping. */
   flex-wrap: wrap;
-  gap: clamp(4px, calc(4px + (100vw - 1300px) * 4 / 1100), 8px);
+  gap: 8px;
   align-items: stretch;
   flex: 0 0 auto;
 }
@@ -1767,32 +1746,29 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
    abrupt mode flip. The row's total content at standard density
    (50px slider strips, 8/10/10 padding) measures ~1800px; on
    anything narrower, the strips and padding interpolate down to
-   compact (32px / 4/5/5) so the rack always fits without horizontal
+   compact (36px / 6/7/7) so the rack always fits without horizontal
    scroll. Above ~2400px viewport, full standard density takes over;
-   below ~1300px, full compact. In between (every laptop screen
-   anywhere — including 14" MBP at 1512px), the controls smoothly
-   thicken as room appears. */
+   below ~1500px, full compact. In between (every laptop screen
+   anywhere), the controls smoothly thicken as room appears. */
 .mixer-rack {
   --slider-strip-w: clamp(
-    32px,
-    calc(32px + (100vw - 1300px) * 18 / 1100),
+    36px,
+    calc(36px + (100vw - 1500px) * 14 / 900),
     50px
   );
 }
 .mixer-rack .mixer-tile {
   padding:
-    clamp(4px, calc(4px + (100vw - 1300px) * 4 / 1100), 8px)
-    clamp(5px, calc(5px + (100vw - 1300px) * 5 / 1100), 10px)
-    clamp(5px, calc(5px + (100vw - 1300px) * 5 / 1100), 10px);
-  gap: clamp(3px, calc(3px + (100vw - 1300px) * 3 / 1100), 6px);
+    clamp(6px, calc(6px + (100vw - 1500px) * 2 / 900), 8px)
+    clamp(7px, calc(7px + (100vw - 1500px) * 3 / 900), 10px)
+    clamp(7px, calc(7px + (100vw - 1500px) * 3 / 900), 10px);
+  gap: clamp(4px, calc(4px + (100vw - 1500px) * 2 / 900), 6px);
 }
 .mixer-rack .mixer-channels {
-  gap: clamp(2px, calc(2px + (100vw - 1300px) * 2 / 1100), 4px);
+  gap: clamp(3px, calc(3px + (100vw - 1500px) * 1 / 900), 4px);
 }
-.mixer-rack .dcw-panel.dcw-panel--bottom {
-  /* Bottom-strip variant lays out horizontally below the fader row, so
-     drop the fixed-width clamp that was sizing it as a right-side column. */
-  width: auto;
+.mixer-rack .dcw-panel {
+  width: clamp(110px, calc(110px + (100vw - 1500px) * 20 / 900), 130px);
 }
 
 /* Keyboard-shortcut hints — toggled independently of density. The
@@ -1805,6 +1781,84 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
 .mixer-rack.mixer-rack--no-kbd-hints .blend-kbd,
 .mixer-rack.mixer-rack--no-kbd-hints .send-kbd {
   display: none;
+}
+
+/* ── Tabbed drawer ──────────────────────────────────────────────────
+   Modeled on the MAIN / GRAINS / FILTER / ... header pattern from
+   Sound Particles GrainDust. The mixer-rack--tabbed body shows ONE
+   tile at a time (the active tab's contents) rather than a row of
+   every tile. The single tile fills the rack width so its sliders
+   spread out instead of cramming. */
+.drawer-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 4px 0 6px;
+  border-bottom: 1px solid var(--frame-line);
+  margin-bottom: 6px;
+}
+.drawer-tab {
+  flex: 0 0 auto;
+  padding: 6px 14px 7px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.7em;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 160ms, border-color 160ms;
+  /* Match button reset around the rack — no implicit appearance. */
+  -webkit-appearance: none;
+          appearance: none;
+}
+.drawer-tab:hover {
+  color: var(--accent-hover);
+}
+.drawer-tab--active {
+  color: var(--text-strong);
+  border-bottom-color: var(--accent);
+}
+.mixer-rack--tabbed > .mixer-tile {
+  /* Active tab's tile fills the rack instead of sitting in a row. The
+     internal .mixer-channels still flexes its sliders edge-to-edge. */
+  flex: 1 1 auto;
+  width: 100%;
+}
+.mixer-rack--tabbed[data-active-tab="prompt"] {
+  /* Prompt tab stacks SeedTile + PromptsTile vertically. Both are
+     content-sized so flex: 0 0 auto keeps them tight. */
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ── Voice tab ──────────────────────────────────────────────────────
+   The model's internal voice channels — V1–V8 (always-available) +
+   M1–M6 (hand-tuned morph). Two labeled sub-rows so the user reads
+   the structure: "internal voices vs tuned morph." */
+.mixer-tile--voice {
+  gap: 8px;
+}
+.voice-tile-blurb {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  margin: 0 0 4px;
+  max-width: 70ch;
+}
+.voice-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.voice-section-label {
+  font-family: var(--font-mono);
+  font-size: 0.55em;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-dim);
 }
 
 /* A tile is a labeled card that groups related controls. Tiles are sized
@@ -1942,23 +1996,6 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   color: var(--slider-tint, var(--accent));
   transition: color 70ms linear;
 }
-/* Inline-edit input shown when the value cell is double-clicked.
-   Matches the static .slider-value layout so the row doesn't shift
-   when toggling between modes; visible border + focus ring make it
-   obvious the field is now an editable input. */
-input.slider-value-edit {
-  width: 4ch;
-  padding: 1px 3px;
-  text-align: center;
-  background: var(--frame);
-  border: 1px solid var(--frame-line);
-  border-radius: var(--radius-sm);
-  outline: none;
-}
-input.slider-value-edit:focus {
-  border-color: var(--slider-tint, var(--accent));
-  box-shadow: 0 0 0 1px var(--slider-tint, var(--accent));
-}
 
 .slider-group kbd,
 .blend-kbd,
@@ -1982,10 +2019,8 @@ input.slider-value-edit:focus {
 /* Blend control already lays out left-to-right; spacing handled by gap. */
 #blend-control .blend-kbd { margin-left: 6px; }
 
-/* DCW (wavelet correction) toggle + mode/wavelet selectors. Originally
-   a right-side column; the ``--bottom`` modifier lays it out as a
-   horizontal strip beneath the fader row instead so the tile's height
-   collapses to the fader height. */
+/* DCW (wavelet correction) toggle + mode/wavelet selectors. Lives inside
+   the DCW tile alongside the two DCW faders. */
 .dcw-panel {
   display: flex;
   flex-direction: column;
@@ -1998,20 +2033,6 @@ input.slider-value-edit:focus {
   border: none;
   background: transparent;
 }
-.dcw-panel.dcw-panel--bottom {
-  flex-direction: row;
-  align-items: center;
-  align-self: stretch;
-  width: auto;
-  gap: 10px;
-  padding-top: 4px;
-  border-top: 1px solid var(--frame-line);
-  flex-wrap: wrap;
-}
-.dcw-panel.dcw-panel--bottom .dcw-row {
-  flex: 0 0 auto;
-  gap: 4px;
-}
 
 /* Seed tile content — dice button stacked over the value display. */
 .seed-content {
@@ -2023,9 +2044,6 @@ input.slider-value-edit:focus {
   flex: 1 1 auto;
   justify-content: center;
 }
-/* Seed value is an integer in [0, 0xFFFFFFFF] — up to 10 digits — so
-   override the .slider-value-edit 4ch width when used inside SeedTile. */
-input.seed-value-edit { width: 11ch; }
 
 /* Prompts tile spans the full drawer width on its own row beneath the
    fader tiles. flex-basis:100% combined with the parent's flex-wrap means
@@ -2610,73 +2628,6 @@ input.seed-value-edit { width: 11ch; }
   height: 1px;
   margin: 4px 12px;
   background: var(--frame-line);
-}
-
-/* ── LoRA row context menu ──────────────────────────────────────────────
-   Right-click on a `.lora-row` opens this menu at click coordinates
-   (portaled to <body> by LibraryTile so it escapes the drawer's
-   overflow + z-index). Same chrome vocabulary as .halo-menu — sheet
-   bg, frame-line border, top brand-gradient hairline — but free-
-   floating instead of pinned to the badge corner.
-
-   z-index 60 sits above the drawer (z=50) and the install-stage HUD
-   so the menu paints on top of every drawer-side surface; below
-   modals (configmodal sits much higher) so the user can still get
-   out via Esc if they have a modal open. */
-.lora-context-menu {
-  position: fixed;
-  z-index: 60;
-  min-width: 200px;
-  background: var(--sheet-bg);
-  border: 1px solid var(--frame-line);
-  border-radius: var(--radius-sm);
-  padding: 4px 0;
-  box-shadow:
-    0 12px 32px rgba(0, 0, 0, 0.55),
-    0 0 0 1px var(--accent-line),
-    0 0 18px rgba(240, 138, 72, 0.18);
-  display: flex;
-  flex-direction: column;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: var(--tracking-wide);
-  text-transform: uppercase;
-  overflow: hidden;
-  animation: lora-context-menu-in 140ms cubic-bezier(.2, .8, .2, 1);
-}
-.lora-context-menu::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: var(--dd-gradient);
-  pointer-events: none;
-}
-@keyframes lora-context-menu-in {
-  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
-  to   { opacity: 1; transform: translateY(0)    scale(1); }
-}
-.lora-context-menu-item {
-  display: block;
-  width: 100%;
-  padding: 8px 14px;
-  background: transparent;
-  border: none;
-  text-align: left;
-  color: var(--text);
-  font: inherit;
-  letter-spacing: inherit;
-  text-transform: inherit;
-  cursor: pointer;
-  transition: background 100ms, color 100ms;
-}
-.lora-context-menu-item:hover,
-.lora-context-menu-item:focus-visible {
-  background: var(--accent-soft);
-  color: var(--accent-hover);
-  outline: none;
 }
 
 /* ============================================================================
@@ -3799,11 +3750,7 @@ input.seed-value-edit { width: 11ch; }
   left: 50%;
   bottom: 96px;
   transform: translateX(-50%);
-  /* Above .waveform-scrub-box (z:60) so the Save / Share / Discard
-     buttons aren't covered or click-intercepted by the scrub strip,
-     which sits at the same bottom edge. Still below full-screen modal
-     backdrops (z:100+). */
-  z-index: 70;
+  z-index: 12;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -4008,7 +3955,12 @@ input.seed-value-edit { width: 11ch; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 38px;
+  gap: 8px;
+  /* min-width matches the legacy icon-only size; padding grows the button
+     when the "Upload" label is visible so the icon stays on the leading
+     edge and the label reads as one row. */
+  min-width: 38px;
+  padding: 0 12px 0 10px;
   background: rgba(6, 6, 12, 0.72);
   -webkit-backdrop-filter: blur(6px);
           backdrop-filter: blur(6px);
@@ -4026,6 +3978,22 @@ input.seed-value-edit { width: 11ch; }
     background 160ms,
     border-color 160ms,
     color 160ms;
+}
+/* Mono-caps treatment that matches .audio-source-marquee-label on the
+   adjacent placard, so the dock reads as one styled block. Hidden on
+   very narrow viewports so the bottom-left dock keeps its compact
+   geometry next to the turntable. */
+.audio-source-upload-label {
+  font-size: 9.5px;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: inherit;
+  line-height: 1;
+  white-space: nowrap;
+}
+@media (max-width: 480px) {
+  .audio-source-upload-btn { padding: 0; width: 38px; gap: 0; }
+  .audio-source-upload-label { display: none; }
 }
 .audio-source-upload-btn::before {
   content: "";
@@ -4546,14 +4514,11 @@ input.seed-value-edit { width: 11ch; }
    open, hoist the pill above the tabs so it doesn't sit on top of the
    curve tabs or the preset menus that grow upward from them. */
 .network-indicator[data-curves-open="true"] {
-  /* +15px above the default curves-open row so the pill clears the
-     waveform-scrub strip below it (which was pushed 15px down in
-     curves mode to clear the curve dot area). */
   bottom: calc(
     var(--drawer-handle-h, 28px) +
     env(safe-area-inset-bottom, 0px) +
     var(--curves-tab-strip-h, 64px) +
-    12px + 15px
+    12px
   );
 }
 .network-indicator__bars rect {
@@ -4568,91 +4533,6 @@ input.seed-value-edit { width: 11ch; }
     animation:
       network-indicator-fade-in 200ms cubic-bezier(.2, .8, .2, 1) forwards;
   }
-}
-
-/* ── Waveform scrub box ────────────────────────────────────────────────
-   Bottom-center strip showing the source-track waveform with a playhead.
-   Click/drag scrubs via AudioPlayer.seek(). Sits just above the network
-   indicator pill; tracks the same `data-curves-open` bottom-offset bump
-   so it clears the curve scheduler tab strip when that overlay is open.
-   Hidden until session is `ready` and (in the component) on mobile. */
-.waveform-scrub-box {
-  position: fixed;
-  left: 50%;
-  /* Drawer-closed default: sit just above the network pill / drawer
-     handle. The body.drawer-open rule below lifts this to clear the
-     drawer panel when it slides up, so the strip is never covered. */
-  bottom: calc(
-    var(--drawer-handle-h, 28px) +
-    env(safe-area-inset-bottom, 0px) +
-    /* pill (~28px) + spacer */ 12px + 40px
-  );
-  transform: translateX(-50%);
-  width: min(640px, 90vw);
-  height: 56px;
-  /* Above AdvancedDrawer (z:50) so the strip stays visible while the
-     drawer is open (paired with the bottom-lift rule below so they
-     never overlap). Below modals (z:100). */
-  z-index: 60;
-  /* No chrome — the waveform is the entire visual. Just the canvases
-     painted directly on the page. */
-  border: 0;
-  background: none;
-  cursor: ew-resize;
-  pointer-events: auto;
-  /* Strip is mounted as soon as the player exists so the peak-compute
-     effect has canvases to draw onto, but visually hidden until the
-     first peak-pass lands (component sets data-ready="true" then). */
-  opacity: 0;
-  transition: bottom 240ms cubic-bezier(.2, .8, .2, 1),
-              opacity 180ms ease-out;
-  overflow: hidden;
-}
-.waveform-scrub-box[data-ready="true"] {
-  opacity: 1;
-}
-.waveform-scrub-box:not([data-ready="true"]) {
-  pointer-events: none;
-}
-/* Lift above the drawer's top edge when the drawer is open. The drawer
-   panel sits at fixed `height: var(--drawer-h)` so the strip sits at
-   `var(--drawer-h) + small gap`. */
-body.drawer-open .waveform-scrub-box {
-  bottom: calc(
-    var(--drawer-h, 50vh) +
-    env(safe-area-inset-bottom, 0px) +
-    8px
-  );
-}
-/* Schedule-curves overlay open: match the NetworkIndicator pill's
-   vertical position exactly (drawer-handle-h + safe-area + tab-strip-h
-   + 12px) AND collapse the strip to a thin band so it fits cleanly
-   between the curve tab strip and the bottom of the curve drawing
-   area. At the default 56px height the strip overlaps curve dots
-   that sit at the bottom of the curves canvas, stealing their click
-   target. Thin band keeps it as a visual reference + minimal-area
-   scrub target without occluding any curve dots. */
-.waveform-scrub-box[data-curves-open="true"],
-body.drawer-open .waveform-scrub-box[data-curves-open="true"] {
-  /* 15px lower than the network pill's row so the strip clears the
-     curve tab strip's hover halo and the operator's pinkie when
-     dragging dots near the bottom of the curves canvas. */
-  bottom: calc(
-    var(--drawer-handle-h, 28px) +
-    env(safe-area-inset-bottom, 0px) +
-    var(--curves-tab-strip-h, 64px) +
-    12px - 15px
-  );
-  height: 24px;
-}
-.waveform-scrub-box .waveform-scrub-bg,
-.waveform-scrub-box .waveform-scrub-fg {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  display: block;
-  pointer-events: none;
 }
 
 /* ── Custom tooltip (replaces native `title=` for hover-visible UI) ──
@@ -4680,14 +4560,14 @@ body.drawer-open .waveform-scrub-box[data-curves-open="true"] {
   left: 50%;
   transform: translateX(-50%) translateY(4px);
   padding: 5px 10px 4px;
-  /* Solid sheet body + frame-line border. The earlier layered-gradient
-     trick painted a brand hairline along a transparent top border via
-     background-clip: padding-box, border-box; visually it read as a
-     soft halo that made the tooltip feel translucent against the dark
-     canvas. A plain border + deeper drop shadow keeps the chrome
-     vocabulary (matches .halo-menu body) and reads as fully opaque. */
   background: var(--sheet-bg);
   border: 1px solid var(--frame-line);
+  border-top: 2px solid transparent;
+  background-image:
+    linear-gradient(var(--sheet-bg), var(--sheet-bg)),
+    var(--dd-gradient);
+  background-origin: padding-box, border-box;
+  background-clip: padding-box, border-box;
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: 9px;
@@ -4700,7 +4580,7 @@ body.drawer-open .waveform-scrub-box[data-curves-open="true"] {
   opacity: 0;
   visibility: hidden;
   box-shadow:
-    0 6px 18px rgba(0, 0, 0, 0.55),
+    0 6px 18px rgba(0, 0, 0, 0.45),
     0 0 14px rgba(240, 138, 72, 0.15);
   transition:
     opacity 140ms cubic-bezier(.2, .8, .2, 1),
@@ -4725,20 +4605,16 @@ body.drawer-open .waveform-scrub-box[data-curves-open="true"] {
   font-size: 10px;
 }
 [data-dd-tooltip]:hover::after,
-[data-dd-tooltip]:focus-visible::after,
-[data-dd-tooltip][data-dd-tooltip-show="true"]::after {
+[data-dd-tooltip]:focus-visible::after {
   opacity: 1;
   visibility: visible;
   transform: translateX(-50%) translateY(0);
-  /* Instant appear (Ableton-style). The base-state transition still
-     governs fade-out, so the tooltip pops in but eases out. */
-  transition: none;
+  /* 200ms delay so accidental passes don't flicker the tooltip. */
+  transition:
+    opacity 140ms cubic-bezier(.2, .8, .2, 1) 200ms,
+    visibility 0s linear 200ms,
+    transform 140ms cubic-bezier(.2, .8, .2, 1) 200ms;
 }
-/* `data-dd-tooltip-show="true"` is the programmatic-show hook — set
-   by JS to flash a transient confirmation tooltip (e.g. "copied" after
-   the LoRA library's right-click copy gesture). Pairs with a JS timer
-   that clears the attribute (and restores the original tooltip text)
-   after a short delay so we never need parallel "toast" chrome. */
 /* Disable on touch — no real hover, and the active state ::after
    would briefly flash on tap. Accessibility-equivalent info is in
    the element's aria-label. */
@@ -5440,40 +5316,6 @@ body.drawer-open .waveform-scrub-box[data-curves-open="true"] {
   flex: 1 1 0;
   min-width: 0;
   display: flex;
-  gap: 4px;
-}
-/* Sibling upload button. Lives outside the dropdown so opening the
-   file picker (and the AlmostReadyDialog modal that follows) no
-   longer closes / occludes the ref list the user was browsing.
-   Square footprint matches the dropdown button height; --accent hover
-   matches the rest of the mixer-tile palette. */
-.ref-control-upload {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  padding: 0;
-  background: transparent;
-  border: 1px solid var(--frame-line);
-  border-radius: var(--radius-sm);
-  color: var(--text-dim);
-  cursor: pointer;
-  transition: color 80ms linear, border-color 80ms linear, background 80ms linear;
-}
-.ref-control-upload:hover:not(:disabled) {
-  color: var(--accent-hover);
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
-}
-.ref-control-upload:focus-visible {
-  outline: none;
-  border-color: var(--accent-line);
-  color: var(--accent-hover);
-}
-.ref-control-upload:disabled {
-  opacity: 0.5;
-  cursor: progress;
 }
 .ref-control-button {
   flex: 1 1 0;
@@ -5606,106 +5448,4 @@ body.drawer-open .waveform-scrub-box[data-curves-open="true"] {
 }
 .ref-control-option--current {
   color: var(--accent);
-}
-
-/* ── Mic recorder (AudioSourceCrate "Record audio") ──────────────────
-   Reuses the .almost-ready-* modal shell + .config-modal-accent ribbon.
-   Only the recorder-specific innards get their own classes. */
-.mic-rec-body {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 18px;
-  padding: 22px 20px 26px;
-}
-.mic-rec-hint {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--text-dim);
-  text-align: center;
-  max-width: 340px;
-}
-.mic-rec-error {
-  margin: 0;
-  font-size: 13px;
-  color: var(--critical);
-  text-align: center;
-}
-.mic-rec-timer {
-  font-family: var(--font-mono);
-  font-size: 34px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  color: var(--text);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.mic-rec-timer-max {
-  font-size: 14px;
-  color: var(--text-dim);
-  letter-spacing: 0.06em;
-}
-.mic-rec-dot {
-  width: 11px;
-  height: 11px;
-  border-radius: 999px;
-  background: var(--text-dim);
-}
-.mic-rec-timer--live .mic-rec-dot {
-  background: var(--critical);
-  animation: mic-rec-pulse 1s cubic-bezier(.2, .8, .2, 1) infinite;
-}
-@keyframes mic-rec-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50%      { opacity: 0.35; transform: scale(0.82); }
-}
-.mic-rec-progress {
-  width: 100%;
-  max-width: 320px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--input-bg);
-  overflow: hidden;
-}
-.mic-rec-progress-fill {
-  height: 100%;
-  background: var(--dd-gradient);
-  transition: width 120ms linear;
-}
-.mic-rec-btn {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  letter-spacing: var(--tracking-wide);
-  text-transform: uppercase;
-  padding: 11px 22px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--frame-line);
-  background: transparent;
-  color: var(--text);
-  cursor: pointer;
-  transition:
-    background-color 160ms cubic-bezier(.2, .8, .2, 1),
-    border-color 160ms cubic-bezier(.2, .8, .2, 1),
-    color 160ms cubic-bezier(.2, .8, .2, 1);
-}
-.mic-rec-btn:hover {
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
-}
-.mic-rec-btn--rec {
-  border-color: var(--accent-line);
-  color: var(--accent);
-}
-.mic-rec-btn--rec:hover {
-  background: var(--accent-medium);
-  color: var(--accent-hover);
-}
-.mic-rec-btn--stop {
-  border-color: var(--critical);
-  color: var(--critical);
-}
-.mic-rec-btn--stop:hover {
-  background: rgba(255, 80, 80, 0.12);
 }

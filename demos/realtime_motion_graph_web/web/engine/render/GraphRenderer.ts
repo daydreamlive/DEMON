@@ -79,7 +79,9 @@ const VISIBLE_SAMPLES = 120;
 // gives sparks somewhere to fly into and reads as "now is here, not at
 // the boundary." Lower it (toward 0) to use more of the canvas for
 // history; raise it for more breathing room on the right.
-const PLAYHEAD_INSET_PX_FRAC = 1 / 6;
+// Exported so the DOM lane-labels overlay (GraphLaneLabels) can place
+// its pills at the same x without duplicating the constant.
+export const PLAYHEAD_INSET_PX_FRAC = 1 / 6;
 // Vertical breathing room so polylines at v=0 / v=1 (e.g. side-LoRA
 // strengths pulled all the way) aren't clipped against the canvas edge.
 // Sized for the max stroke width (5 px) + shadow blur (~3 px) + a little
@@ -148,16 +150,25 @@ const SPARK_CONE_RAD = Math.PI / 5; // ~36° spread around the leftward axis
 const CHORUS_STAGGER_MAX_MS = 120;
 const LEFT_ANGLE = Math.PI; // 180° — pure leftward, toward the past
 
-// Baseline trigger — fires on the falling edge of small/medium kicks
-// (peak in [BEAT_THRESH, CHORUS_THRESH)). Picks one random line per
-// fire so the eye sees a wandering trail rather than constant rain.
-// Rate-limited to BASELINE_MIN_INTERVAL_MS between fires; if music is
-// silent for longer than BASELINE_MAX_INTERVAL_MS, fires anyway so
-// the graph never goes fully still.
+// Beat arming threshold — used solely to peak-detect the falling edge
+// of a kick (chorus dispatch below). The prior "baseline" layer that
+// picked one random line per small/medium kick was removed when sparks
+// became per-lane (automation-driven): the user now reads sparks as
+// "this knob is being moved right now," and random-line fires
+// contradicted that signal.
 const BEAT_THRESH = 0.3;
-const BASELINE_MIN_INTERVAL_MS = 250; // was 400; allows ~every-beat firing at 120 BPM
-const BASELINE_MAX_INTERVAL_MS = 1200; // was 1500; silence fallback fires a little sooner
-const BASELINE_BURST_SPARKS = 7; // was 4; denser single trail reads more clearly
+
+// Per-lane automation trigger. When sample() sees a value change at
+// least AUTOMATION_DELTA_THRESH on a given line, that line earns a
+// small spark burst at its playhead intersection — read as "this
+// lane is being automated right now." Rate-limited to
+// AUTOMATION_MIN_INTERVAL_MS per line so a fast drag doesn't drown
+// the pool. Sized small (3 sparks) because they fire frequently
+// during play; chorus moments still produce the big multi-line
+// blast via the kick-driven path.
+const AUTOMATION_DELTA_THRESH = 0.005;
+const AUTOMATION_MIN_INTERVAL_MS = 80;
+const AUTOMATION_BURST_SPARKS = 3;
 
 // Chorus — when a kick's peak strength exceeds CHORUS_THRESH, every
 // line fires a bigger burst simultaneously. Probabilistic so not
@@ -274,12 +285,20 @@ export class GraphRenderer {
   // string we already own, never allocating a new one per spark.
   private readonly _colorIdxByName: Map<string, number> = new Map();
   private readonly _colorTable: string[] = [];
-  // Wall-clock millis at which the most recent baseline burst fired,
-  // and the line picked to fire it. `_baselineLine` is consumed (set
-  // to null) inside the per-line loop once that line actually fires,
-  // so a single bucket only fires once even if a frame is missed.
-  private _lastBaselineFireAt = 0;
-  private _baselineLine: string | null = null;
+  // Per-lane "automation pending" queue. sample() pushes lane names
+  // here when their value changes more than AUTOMATION_DELTA_THRESH;
+  // draw() reads + consumes them on the next frame, firing a small
+  // burst at each one's playhead intersection. Cleared per draw() so
+  // a single sample tick produces exactly one burst even if multiple
+  // draws happen before the next sample.
+  private readonly _automationPending: Set<string> = new Set();
+  // Per-line wall-clock millis of last automation fire (rate-limit).
+  // Plain Map (not Float32Array) because line names appear/disappear
+  // dynamically as LoRAs come online + the map stays small (≤ ~20).
+  private readonly _lastAutomationFireAtByName: Map<string, number> = new Map();
+  // Per-line previous sample value for delta detection. Mirrors the
+  // ring buffer's most-recent entry from the prior sample() call.
+  private readonly _lastSampleValueByName: Map<string, number> = new Map();
   // Beat arming + peak tracking. Falling-edge dispatch decides whether
   // the just-ended kick was big enough for chorus or only triggers
   // baseline (or neither, if too soon since the last baseline).
@@ -297,6 +316,7 @@ export class GraphRenderer {
     this._resizeObs = new ResizeObserver(() => this._resize());
     this._resizeObs.observe(canvas);
     this._resize();
+    _activeGraph = this;
   }
 
   private _resize(): void {
@@ -312,11 +332,16 @@ export class GraphRenderer {
     this.h = r.height;
   }
 
-  /** Append a new sample point per signal. `defs` supplies max for normalization. */
+  /** Append a new sample point per signal. `defs` supplies max for
+   * normalization. Also detects automation (per-lane value change
+   * above AUTOMATION_DELTA_THRESH) and queues a spark burst for the
+   * next draw(). The burst is read as "this knob is being moved right
+   * now" — the per-lane semantic the user feedback called for. */
   sample(
     values: Record<string, number>,
     defs: Record<string, SliderMeta> = SLIDER_META,
   ): void {
+    const now = performance.now();
     for (const name of Object.keys(values)) {
       const v = values[name];
       const max = defs[name]?.max ?? 1;
@@ -325,9 +350,22 @@ export class GraphRenderer {
         hist = { buf: new Float32Array(HISTORY_LEN), head: 0, filled: 0 };
         this.histories.set(name, hist);
       }
-      hist.buf[hist.head] = Math.max(0, Math.min(1, v / max));
+      const normalized = Math.max(0, Math.min(1, v / max));
+      hist.buf[hist.head] = normalized;
       hist.head = (hist.head + 1) % HISTORY_LEN;
       if (hist.filled < HISTORY_LEN) hist.filled += 1;
+
+      // Automation detection. First sample of a new lane gets a free
+      // pass (no delta to compare against) but doesn't fire — wait
+      // until the user actually moves it.
+      const prev = this._lastSampleValueByName.get(name);
+      this._lastSampleValueByName.set(name, normalized);
+      if (prev === undefined) continue;
+      if (Math.abs(normalized - prev) < AUTOMATION_DELTA_THRESH) continue;
+      const lastFire = this._lastAutomationFireAtByName.get(name) ?? 0;
+      if (now - lastFire < AUTOMATION_MIN_INTERVAL_MS) continue;
+      this._lastAutomationFireAtByName.set(name, now);
+      this._automationPending.add(name);
     }
   }
 
@@ -439,66 +477,39 @@ export class GraphRenderer {
     // trails shed from the dot. Sparks live in the SoA pool above
     // (_spX/_spY/...), capped at MAX_SPARKS, allocated via _allocSpark.
     //
-    // Layer 1 (baseline): on the falling edge of small/medium kicks
-    // (peakPulse in [BEAT_THRESH, CHORUS_THRESH)), pick ONE random
-    // line and fire a small comet trail from it. Rate-limited so it
-    // can fire at most every BASELINE_MIN_INTERVAL_MS — at the higher
-    // end of the previous range, a deliberate wandering rather than
-    // frantic. Falls back to a time-only fire every
-    // BASELINE_MAX_INTERVAL_MS during silence so the graph never
-    // freezes. Disabled when the curve editor overlay is open so
-    // users editing curves aren't distracted.
+    // Layer 1 (automation): when a lane's value changed in the latest
+    // sample() call (> AUTOMATION_DELTA_THRESH, rate-limited per lane),
+    // that lane fires a small burst. Reads as "this knob is being
+    // moved right now" — the per-lane semantic that addresses the
+    // user feedback about not knowing what each line represents.
     //
     // Layer 2 (chorus): on the falling edge of strong kicks (peak ≥
     // CHORUS_THRESH), every line fires a bigger burst at once. This
-    // layer is NOT gated by the curve editor — big musical moments
-    // still register even while editing.
+    // is "the music did that" — distinct from a user automating one
+    // knob. Probabilistic so big moments stay rare.
     {
       const dt = this._lastNow ? Math.min(50, now - this._lastNow) : 16;
       this._lastNow = now;
       const dtScale = dt / 16;
 
       // Falling-edge peak detection over BEAT_THRESH. peakPulse on the
-      // disarm frame tells us which layer (if any) to fire.
+      // disarm frame tells us whether this kick rises to chorus.
       let chorusFire = false;
       let chorusPeakStrength = 0;
-      let baselineFire = false;
       if (pulse > BEAT_THRESH) {
         this._aboveBeat = true;
         if (pulse > this._peakPulse) this._peakPulse = pulse;
       } else if (this._aboveBeat) {
         const peak = this._peakPulse;
         // Chorus is probabilistic — even on strong kicks it only
-        // fires CHORUS_FIRE_PROB of the time. A denied chorus roll
-        // falls through to baseline so the kick still registers as
-        // a wandering trail rather than disappearing entirely.
+        // fires CHORUS_FIRE_PROB of the time, so big moments retain
+        // their surprise.
         if (peak >= CHORUS_THRESH && Math.random() < CHORUS_FIRE_PROB) {
           chorusFire = true;
           chorusPeakStrength = peak;
-        } else if (
-          now - this._lastBaselineFireAt >= BASELINE_MIN_INTERVAL_MS
-        ) {
-          baselineFire = true;
         }
         this._aboveBeat = false;
         this._peakPulse = 0;
-      }
-      // Silence fallback: if no beats have fired baseline for too
-      // long, fire one anyway so the graph never goes fully still.
-      if (
-        !chorusFire &&
-        !baselineFire &&
-        now - this._lastBaselineFireAt >= BASELINE_MAX_INTERVAL_MS
-      ) {
-        baselineFire = true;
-      }
-
-      // Pick the baseline line at fire-time so the user sees a fresh
-      // random pick on every burst.
-      if (baselineFire && this.histories.size > 0) {
-        const names = Array.from(this.histories.keys());
-        this._baselineLine = names[Math.floor(Math.random() * names.length)];
-        this._lastBaselineFireAt = now;
       }
 
       const chorusBurstCount = chorusFire
@@ -538,9 +549,10 @@ export class GraphRenderer {
         ctx.fill();
 
         // Decide this line's burst size for this frame. Chorus fires
-        // every line; baseline fires only the chosen line. Mutually
-        // exclusive — chorus already fires the chosen line, so baseline
-        // is suppressed during chorus.
+        // every line; automation fires only the lanes whose values
+        // changed in the latest sample() call. Chorus takes priority
+        // — its multi-line burst already covers every lane, so an
+        // automation queue entry would be redundant on the same frame.
         let burstCount = 0;
         let burstBirthAt = now;
         if (chorusFire) {
@@ -553,9 +565,12 @@ export class GraphRenderer {
           const staggerMs =
             (Math.abs(hash >> 17) % 1000) / 1000 * CHORUS_STAGGER_MAX_MS;
           burstBirthAt = now + staggerMs;
-        } else if (name === this._baselineLine) {
-          burstCount = BASELINE_BURST_SPARKS;
-          this._baselineLine = null; // consumed
+        } else if (this._automationPending.has(name)) {
+          burstCount = AUTOMATION_BURST_SPARKS;
+          // Single-frame consumption: the queue is the only signal
+          // that this lane just moved. Don't clear here — the outer
+          // loop is iterating histories, not the pending set; we
+          // clear the whole set after the per-line loop instead.
         }
 
         if (burstCount > 0) {
@@ -603,6 +618,12 @@ export class GraphRenderer {
             this._spOtherBouncedMask[slot] = 0;
           }
         }
+      }
+      // Consume the automation queue for this frame. Set.clear() reuses
+      // the existing bucket array (no realloc), so this is allocation-
+      // free at runtime.
+      if (this._automationPending.size > 0) {
+        this._automationPending.clear();
       }
 
       // Sparks — physics + render in a single pool walk. Alpha is
@@ -871,5 +892,62 @@ export class GraphRenderer {
 
   destroy(): void {
     this._resizeObs.disconnect();
+    if (_activeGraph === this) _activeGraph = null;
   }
+
+  /**
+   * Read-only snapshot of every line's current state at the playhead.
+   * Consumed by the DOM-side <GraphLaneLabels/> overlay so it can
+   * position name pills at each line's current value without
+   * round-tripping through canvas text (which renders fuzzy at small
+   * sizes and bloats the hot draw loop). Called from a 50-ms tick in
+   * the labels component — NOT in any per-frame path — so a small
+   * allocation per call (one array of LaneState records) is acceptable.
+   */
+  getLaneStates(): LaneState[] {
+    const out: LaneState[] = [];
+    for (const [name, hist] of this.histories) {
+      if (hist.filled === 0) continue;
+      const headIdx = (hist.head - 1 + HISTORY_LEN) % HISTORY_LEN;
+      const v = hist.buf[headIdx];
+      const y = this.h - Y_PAD - v * (this.h - 2 * Y_PAD);
+      const color = _colorFor(name);
+      out.push({ name, y, color, value: v });
+    }
+    return out;
+  }
+
+  /** Canvas width in CSS pixels — matches the DOM bounding box that
+   * the labels overlay positions against. */
+  get cssWidth(): number {
+    return this.w;
+  }
+  /** Canvas height in CSS pixels. */
+  get cssHeight(): number {
+    return this.h;
+  }
+}
+
+export interface LaneState {
+  /** Engine parameter name (e.g. `denoise`, `ch_g0`). The labels
+   * overlay maps this to a display name via DISPLAY_NAMES. */
+  name: string;
+  /** Current y position in CSS pixels (canvas coordinate system). */
+  y: number;
+  /** Line color, matching the polyline + playhead dot. */
+  color: RGB;
+  /** Normalized value [0, 1] used for any "is this lane active /
+   * non-default" filtering the overlay wants to do. */
+  value: number;
+}
+
+// Module-level handle to the currently mounted renderer. The labels
+// overlay reads this on its own 50-ms poll; no per-frame coupling.
+// Lifecycle is owned by GraphRenderer (constructor sets, destroy()
+// clears). Single-instance is true today and the only way it'd change
+// is mid-session canvas teardown + re-mount, where the constructor on
+// the new instance replaces the slot before any consumer races.
+let _activeGraph: GraphRenderer | null = null;
+export function getActiveGraphRenderer(): GraphRenderer | null {
+  return _activeGraph;
 }
