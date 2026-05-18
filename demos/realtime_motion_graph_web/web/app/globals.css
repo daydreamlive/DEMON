@@ -989,26 +989,36 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   z-index: 6;
   --fill: 0;
 }
-/* Faint hairline below the top HUD bar — a teeny visual break so the
-   topnav (wordmark, halo, pills) doesn't feel glued to the canvas
-   content below. Fades at the edges so it reads as ambient HUD chrome
-   rather than a hard rule. */
-.install-edge-top::after {
+/* Visible divider under the topnav band — the wordmark, halo, and
+   pills sit roughly at `hud-thickness / 2` from the top of the page;
+   this hairline sits just below the topnav band so the chrome reads
+   as a distinct strip from the canvas content. body::before is the
+   anchor because the top HUD edge bar was retired (HeroMacros DENOISE
+   covers that drag now), so there's no .install-edge-top element to
+   key off. */
+body[data-mode="graph"]::before {
   content: "";
-  position: absolute;
-  left: 6%;
-  right: 6%;
-  bottom: -1px;
-  height: 1px;
-  background: linear-gradient(
-    to right,
-    transparent 0%,
-    var(--frame-line) 20%,
-    var(--frame-line) 80%,
-    transparent 100%
-  );
-  opacity: 0.55;
+  position: fixed;
+  top: calc(var(--hud-thickness) - 2px);
+  left: 4%;
+  right: 4%;
+  height: 18px;
+  background:
+    linear-gradient(
+      to right,
+      transparent 0%,
+      var(--accent-line) 12%,
+      var(--accent-line) 88%,
+      transparent 100%
+    ) top / 100% 1px no-repeat,
+    linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0.4) 0%,
+      transparent 100%
+    );
+  opacity: 0.9;
   pointer-events: none;
+  z-index: 6;
 }
 .install-edge .install-edge-label {
   position: absolute;
@@ -1730,6 +1740,10 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   min-width: 44px;
   font-size: 0.72em;
   letter-spacing: 0.06em;
+}
+#prompt-section .send-prompt-btn {
+  width: 100%;
+  align-self: stretch;
 }
 
 /* ============================================================================
@@ -2668,11 +2682,24 @@ body.drawer-open .hero-macros-divider,
 /* When the panel is open, the bay collapses to its tool buttons.
    Stack them horizontally so the bay reads as one short row sitting
    below the (shrunken) graph instead of a tall column poking up into
-   the graph labels. */
-body.drawer-open .hero-macros-tools {
+   the graph labels. Same treatment when the curve editor is open —
+   knobs/faders are hidden in that mode too. */
+body.drawer-open .hero-macros-tools,
+body.curve-open .hero-macros-tools {
   flex-direction: row;
   min-width: 0;
   gap: 6px;
+}
+
+/* Curve editor takes focus. Hide the moving-lines graph + its lane
+   labels entirely when the curve editor is open — the curve canvas
+   IS the user's attention. The graph itself sits behind the curve
+   overlay (z=2 vs z=51) but its labels and lines were bleeding
+   visibly across the right edge of the curve canvas. */
+body.curve-open #install-video-area #graph-wrap .graph-lane-labels,
+body.curve-open #install-video-area #graph {
+  opacity: 0;
+  pointer-events: none;
 }
 .hero-macros--drawer-open,
 .hero-macros--curve-open {
@@ -3149,9 +3176,9 @@ body.drawer-open .hero-macros-tools {
   font-family: inherit;
   font-size: 0.75em;
   line-height: 1.4;
-  flex: 1 1 auto;
-  min-height: 0;
-  resize: none;
+  width: 100%;
+  min-height: 56px;
+  resize: vertical;
 }
 
 /* ============================================================================
@@ -3164,37 +3191,45 @@ body.drawer-open .hero-macros-tools {
    real estate. No scroll bar — everything fits in the prompts row. */
 #prompt-section {
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
   align-items: stretch;
   gap: 10px;
+  /* The Full Controls panel is ~360-440px wide; the prior horizontal
+     [A | blend | B | Send] split made the textareas ~80px wide each,
+     so multi-word prompts wrapped one character per line. Stack
+     vertically so each textarea gets the full panel width. */
 }
 
 .prompt-slot {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  flex: 1 1 0;
+  gap: 4px;
+  width: 100%;
   min-width: 0;
+}
+
+.prompt-slot .prompt-input {
+  width: 100%;
+  min-height: 56px;
+  resize: vertical;
 }
 
 .prompt-label,
 .blend-label,
 .blend-value {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-dim);
-  letter-spacing: 0.2em;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
 }
 
 #blend-control {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 2px 0;
-  flex: 0 0 auto;
-  min-width: 150px;
-  align-self: center;
+  gap: 8px;
+  padding: 4px 0;
+  width: 100%;
 }
 
 .blend-label { font-weight: 600; flex-shrink: 0; }
