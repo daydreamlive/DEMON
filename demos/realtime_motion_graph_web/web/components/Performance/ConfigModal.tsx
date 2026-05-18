@@ -149,7 +149,7 @@ function MidiTab() {
   return (
     <div className="config-midi">
       <p className="config-midi-tip">
-        Right-click any slider in Advanced Controls to learn directly.
+        Right-click any slider in Full Controls to learn directly.
       </p>
 
       <div

@@ -2,20 +2,23 @@
 
 import { useState } from "react";
 
-// Tab strip for the slide-up advanced drawer. Modeled on the
+// Tab strip for the slide-up Full Controls drawer. Modeled on the
 // MAIN / GRAINS / FILTER / PITCH / SPACE / ARP / EFFECTS / EXTRAS /
 // MATRIX header that Sound Particles GrainDust uses — sectioned by
 // function with a clear hierarchy from "things you touch every session"
 // to "things you configure once."
 //
-// Five tabs:
-//   CORE   — MIX / TRACK / TIMBRE / FEEDBACK / BASS / TREBLE
-//   MOD    — SHIFT / N.SHARE / JITTER + DCW config
-//   VOICE  — the 14 latent channels (V1–V8 + M1–M6)
+// Six tabs:
+//   CORE   — MIX / TRACK / TIMBRE / FEEDBACK / BASS / TREBLE (knobs)
+//   MOD    — SHIFT / N.SHARE / JITTER (knobs) + DCW config
+//   VOICE  — the 14 latent channels (V1–V8 + M1–M6, faders)
 //   PROMPT — prompts, key, time signature, seed
 //   LIB    — LoRAs
+//   CONFIG — session controls: track/key/sig, transport, MIDI, prefs
+//
+// Same IA on desktop + mobile so muscle memory carries between viewports.
 
-export const DRAWER_TABS = ["core", "mod", "voice", "prompt", "lib"] as const;
+export const DRAWER_TABS = ["core", "mod", "voice", "prompt", "lib", "config"] as const;
 export type DrawerTab = (typeof DRAWER_TABS)[number];
 
 const TAB_LABELS: Record<DrawerTab, string> = {
@@ -24,6 +27,7 @@ const TAB_LABELS: Record<DrawerTab, string> = {
   voice: "Voice",
   prompt: "Prompt",
   lib: "Lib",
+  config: "Config",
 };
 
 interface Props {
@@ -33,7 +37,7 @@ interface Props {
 
 export function DrawerTabs({ active, onChange }: Props) {
   return (
-    <div className="drawer-tabs" role="tablist" aria-label="Advanced controls">
+    <div className="drawer-tabs" role="tablist" aria-label="Full controls">
       {DRAWER_TABS.map((t) => (
         <button
           key={t}
