@@ -2010,6 +2010,161 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   border: none;
 }
 
+/* SeedKnob — same cap chrome, button instead of div, dice glyph on
+   the cap face. The cap cycles dice faces on click; the value cell
+   shows the (truncated) uint32 seed beneath. */
+.seed-knob-body {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.seed-knob-body:focus-visible {
+  outline: none;
+  filter: drop-shadow(0 0 4px var(--accent-glow));
+}
+/* Dice face cycles on each click (state-driven, see SeedKnob.tsx).
+   Brief opacity dip on press makes the click feel intentional without
+   relying on transform interactions between SVG attr + CSS. */
+.seed-knob-body:active .seed-dice-glyph {
+  opacity: 0.7;
+}
+.seed-knob-value {
+  /* Seed values can be ~7 chars wide ("12345678") — let the cell grow
+     a touch wider than a regular knob's "0.50". */
+  min-width: 56px;
+}
+
+/* ── Hero macros ────────────────────────────────────────────────────
+   Permanent 3-knob row at the bottom-center of the canvas, riding
+   above the closed drawer handle. Same <Knob/> primitive as CORE, just
+   sized down (~52 px caps) so it feels like a focused subset of the
+   drawer, not a duplicate. The cluster is content-sized + centered so
+   it never spans the full viewport width — the show stays the focal
+   point; the macros are the affordance.
+
+   Visibility:
+     - Hidden when the drawer is open (`body.drawer-open .hero-macros`
+       at the bottom). The drawer's CORE tab covers the same params.
+     - Hidden below 768 px (mobile gets <LiteControls/> instead).
+     - JS guards via useSessionStore so it's also hidden pre-`ready`. */
+.hero-macros {
+  position: fixed;
+  bottom: calc(var(--drawer-handle-h, 36px) + 16px + env(safe-area-inset-bottom, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 22px;
+  padding: 10px 18px;
+  /* In-metaphor panel chrome: a recessed bay holding the three macros.
+     Uses the same dark surface vocabulary as the audio-source-crate
+     and turntable bay so the bottom row reads as one hardware unit.
+     Border + inset hairline mirrors the cassette-deck inset look. */
+  background: rgba(6, 6, 12, 0.62);
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-md);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 4px 14px rgba(0, 0, 0, 0.4);
+  -webkit-backdrop-filter: blur(8px);
+          backdrop-filter: blur(8px);
+  z-index: 5;
+  /* Slight scale-down on knob size — the drawer's CORE row is the
+     "do everything" surface; hero is the "perform" surface. */
+  --knob-strip-w: 56px;
+  pointer-events: auto;
+}
+.hero-macros .knob-group {
+  width: var(--knob-strip-w);
+  gap: 3px;
+}
+.hero-macros .knob-body {
+  width: 44px;
+  height: 44px;
+}
+.hero-macros .knob-svg {
+  width: 44px;
+  height: 44px;
+}
+.hero-macros .knob-label {
+  font-size: 0.5em;
+  min-height: 1.4em;
+}
+.hero-macros .knob-value {
+  font-size: 10px;
+}
+.hero-macros .knob-kbd {
+  font-size: 8px;
+}
+/* Hide when the drawer is open — same params live in the drawer's
+   CORE tab; mutually-exclusive interaction modes prevent confusion. */
+body.drawer-open .hero-macros {
+  display: none;
+}
+/* Mobile: LiteControls already does this job inside the drawer.
+   Hero macros would crowd the bottom-corner controls on touch. */
+@media (max-width: 768px) {
+  .hero-macros {
+    display: none;
+  }
+}
+
+/* ── Footer links ───────────────────────────────────────────────────
+   Always-visible pill at the very bottom of the viewport with VST
+   waitlist + feedback links. Quiet visual weight (low opacity, mono
+   caps), but the items are always one click away from any canvas
+   state. Modeled on the inShaper "VST3 1.0.0 HELP" footer
+   convention. */
+.footer-links {
+  position: fixed;
+  /* Anchored to the top-right edge of the canvas, just below the
+     HaloBadge. Always-visible chrome that the user can act on
+     without having to dig through a menu. Top placement keeps it
+     out of the bottom row (audio source crate / hero macros /
+     turntable) which is already dense. */
+  top: 22px;
+  right: 140px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-dim);
+  z-index: 4;
+  pointer-events: auto;
+  opacity: 0.7;
+  transition: opacity 160ms ease-out;
+}
+.footer-links:hover {
+  opacity: 1;
+}
+.footer-link {
+  color: inherit;
+  text-decoration: none;
+  padding: 2px 4px;
+  border-radius: 2px;
+  transition: color 120ms ease-out, background 120ms ease-out;
+}
+.footer-link:hover {
+  color: var(--text-strong);
+  background: rgba(255, 255, 255, 0.04);
+}
+.footer-link-sep {
+  color: var(--frame-line);
+  user-select: none;
+}
+/* Mobile: hide — the lite drawer + halo menu cover this on mobile,
+   and the bottom-edge real estate is already tight. */
+@media (max-width: 768px) {
+  .footer-links {
+    display: none;
+  }
+}
+
 /* ── Voice tab ──────────────────────────────────────────────────────
    The model's internal voice channels — V1–V8 (always-available) +
    M1–M6 (hand-tuned morph). Two labeled sub-rows so the user reads
@@ -2024,10 +2179,29 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   margin: 0 0 4px;
   max-width: 70ch;
 }
+/* Side-by-side columns for the two voice banks. Internal voices on the
+   left (8 wide), tuned morph on the right (6 wide), thin vertical
+   divider between them — the inShaper "shaper-1 / shaper-2" two-pane
+   layout in miniature. */
+.voice-sections-row {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: stretch;
+}
 .voice-section {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
+}
+.voice-section-divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--frame-line);
+  margin: 4px 4px;
+  flex: 0 0 auto;
 }
 .voice-section-label {
   font-family: var(--font-mono);

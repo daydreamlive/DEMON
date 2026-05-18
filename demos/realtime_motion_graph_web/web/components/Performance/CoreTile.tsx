@@ -2,6 +2,7 @@
 
 import { Knob } from "./Knob";
 import { RefControl } from "./RefControl";
+import { SeedKnob } from "./SeedKnob";
 import { defaultLabelFor, kbdHintFor } from "./SliderTile";
 
 // CORE tab — six dial-it-and-go macros every musician knows, drawn as
@@ -46,6 +47,7 @@ export function CoreTile() {
           label={defaultLabelFor("dcw_high_scaler")}
           kbd={kbdHintFor("dcw_high_scaler")}
         />
+        <SeedKnob />
       </div>
       <div className="knob-ref-row">
         <RefControl kind="timbre" />

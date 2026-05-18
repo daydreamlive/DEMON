@@ -20,7 +20,6 @@ import { MobileFullSheet } from "./MobileFullSheet";
 import { ModTile } from "./ModTile";
 import { OperatorStrip } from "./OperatorStrip";
 import { PromptsTile } from "./PromptsTile";
-import { SeedTile } from "./SeedTile";
 import { VoiceTile } from "./VoiceTile";
 
 // Slide-up Full Controls drawer. Behavior splits at the mobile
@@ -206,12 +205,7 @@ function renderTabBody(tab: DrawerTab) {
     case "voice":
       return <VoiceTile />;
     case "prompt":
-      return (
-        <>
-          <SeedTile />
-          <PromptsTile />
-        </>
-      );
+      return <PromptsTile />;
     case "lib":
       return <LibraryTile />;
     case "config":

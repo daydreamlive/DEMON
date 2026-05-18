@@ -8,7 +8,6 @@ import { LibraryTile } from "./LibraryTile";
 import { ModTile } from "./ModTile";
 import { OperatorStrip } from "./OperatorStrip";
 import { PromptsTile } from "./PromptsTile";
-import { SeedTile } from "./SeedTile";
 import { VoiceTile } from "./VoiceTile";
 
 type Tab = "core" | "mod" | "voice" | "prompt" | "lib" | "config";
@@ -117,7 +116,6 @@ export function MobileFullSheet({ open, onClose }: Props) {
           <VoiceTile />
         </section>
         <section data-section="prompt" className="mobile-sheet-section">
-          <SeedTile />
           <PromptsTile />
         </section>
         <section data-section="lib" className="mobile-sheet-section">
