@@ -1,7 +1,7 @@
 "use client";
 
 import type { CSSProperties } from "react";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { useTactileSlider } from "@/hooks/useTactileSlider";
 import { tToValue, valueToT } from "@/lib/sliderMapping";
@@ -110,12 +110,20 @@ export function Knob({ param, label, max, min, reverse, unity, kbd }: Props) {
   const formatValue = (v: number) =>
     integerDisplay ? String(Math.round(v)) : v.toFixed(2);
 
-  const mapping = {
-    min: effectiveMin,
-    max: effectiveMax,
-    unity,
-    reverse: !!reverse,
-  };
+  // Stable reference — without useMemo this object identity changed on
+  // every render, which made the drag useEffect (deps: [..., mapping])
+  // tear down and rebuild mid-drag. The cleanup removed the
+  // document-level pointermove/pointerup listeners while the user was
+  // still holding the pointer, killing the drag silently.
+  const mapping = useMemo(
+    () => ({
+      min: effectiveMin,
+      max: effectiveMax,
+      unity,
+      reverse: !!reverse,
+    }),
+    [effectiveMin, effectiveMax, unity, reverse],
+  );
 
   const value = usePerformanceStore((s) => s.sliderTargets[param] ?? 0);
   const setSlider = usePerformanceStore((s) => s.setSlider);
