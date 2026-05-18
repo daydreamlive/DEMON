@@ -427,18 +427,20 @@ body.cursor-idle .cursor-canvas { opacity: 0; }
   position: fixed;
   inset: 0;
   transition:
+    left 320ms cubic-bezier(.2, .7, .2, 1),
     bottom 320ms cubic-bezier(.2, .7, .2, 1),
     right 320ms cubic-bezier(.2, .7, .2, 1);
 }
-/* Desktop (> 768px): the Full Controls panel slides in from the RIGHT,
-   so the stage shrinks horizontally. Mobile keeps the bottom-sheet
-   behavior. */
+/* Desktop (> 768px): the Full Controls panel slides in from the LEFT
+   (Wave 9). The stage shrinks horizontally — its left edge moves
+   inward by the panel's open width, plus a 24px breathing gap. Mobile
+   keeps the bottom-sheet behavior. */
 body[data-mode="graph"].drawer-open #install-stage {
-  right: var(--drawer-w);
+  left: calc(var(--drawer-l-open, 0px) + 24px);
 }
 @media (max-width: 768px) {
   body[data-mode="graph"].drawer-open #install-stage {
-    right: 0;
+    left: 0;
     bottom: var(--drawer-h);
   }
 }
@@ -1747,8 +1749,11 @@ body.drawer-open {
     0 4px 14px rgba(0, 0, 0, 0.4);
   -webkit-backdrop-filter: blur(8px);
           backdrop-filter: blur(8px);
-  /* Closed: slide off the left edge, including the inset gap. */
-  transform: translateX(calc(-100% - 32px));
+  /* Closed: slide left so only the 32px edge handle is visible, with
+     its right edge at screen x=32. Math: panel_left = hud+24, so
+     translate = 32 - (hud+24) - width = -hud - width + 8, which is
+     `-100% - hud + 8px`. */
+  transform: translateX(calc(-100% - var(--hud-thickness) + 8px));
   transition: transform 320ms cubic-bezier(.2, .7, .2, 1);
   z-index: 50;
   display: flex;
@@ -1777,6 +1782,50 @@ body.drawer-open {
 .install-sheet.open { transform: translateX(0); }
 @media (max-width: 768px) {
   .install-sheet.open { transform: translateY(0); }
+}
+
+/* Edge handle on the right of the panel — visible peek-strip when the
+   panel is closed so the user reads it as a drawer affordance, not a
+   cutoff bug. Sits inside the panel's bounding box so the panel's
+   chrome (frame-line + radius) frames it on close. Click toggles. */
+.install-sheet-edge-handle {
+  position: absolute;
+  top: 0; bottom: 0; right: 0;
+  width: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Opaque-enough bg so the panel's tabs/content behind don't bleed
+     through when only the handle is visible in the closed state. */
+  background: rgba(8, 8, 14, 0.96);
+  border: none;
+  border-left: 1px solid var(--frame-line);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 22px;
+  line-height: 1;
+  -webkit-appearance: none;
+          appearance: none;
+  transition: color 140ms ease-out, background 140ms ease-out;
+  z-index: 2;
+}
+.install-sheet-edge-handle:hover {
+  color: var(--text-strong);
+  background: rgba(20, 20, 30, 0.96);
+}
+.install-sheet-edge-handle-caret {
+  display: inline-block;
+}
+@media (max-width: 768px) {
+  .install-sheet-edge-handle { display: none; }
+}
+
+/* When the panel is open, the body content takes the full width so
+   the topbar/tabs fit. The edge handle still sits on the right inside
+   the panel; user can click it to close. */
+.install-sheet.open .install-sheet-body {
+  padding-right: 36px;
 }
 
 /* Drawer body — vertical stack: operator strip across the top, then a
@@ -1955,8 +2004,8 @@ body.drawer-open {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  padding: 8px 4px 9px;
+  gap: 3px;
+  padding: 6px 2px 7px;
   background: linear-gradient(
     to bottom,
     rgba(255, 255, 255, 0.04) 0%,
@@ -2026,10 +2075,14 @@ body.drawer-open {
 }
 .drawer-tab-label {
   font-family: var(--font-mono);
-  font-size: 0.62em;
-  letter-spacing: var(--tracking-wide);
+  font-size: 0.58em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   line-height: 1;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .mixer-rack--tabbed > .mixer-tile,
@@ -2582,6 +2635,16 @@ body.drawer-open .hero-macros-divider,
 .hero-macros--curve-open .hero-macros-styles,
 .hero-macros--curve-open .hero-macros-divider {
   display: none;
+}
+
+/* When the panel is open, the bay collapses to its tool buttons.
+   Stack them horizontally so the bay reads as one short row sitting
+   below the (shrunken) graph instead of a tall column poking up into
+   the graph labels. */
+body.drawer-open .hero-macros-tools {
+  flex-direction: row;
+  min-width: 0;
+  gap: 6px;
 }
 .hero-macros--drawer-open,
 .hero-macros--curve-open {
@@ -5454,13 +5517,18 @@ body.drawer-open .hero-macros-divider,
 .waveform-scrub-box {
   position: fixed;
   top: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-top, 0px));
-  left:  max(calc(var(--hud-thickness) + 144px), env(safe-area-inset-left, 0px));
+  left:  max(
+    calc(var(--hud-thickness) + 144px + var(--drawer-l-open, 0px)),
+    env(safe-area-inset-left, 0px)
+  );
   right: max(calc(var(--hud-thickness) + 80px),  env(safe-area-inset-right, 0px));
   height: 48px;
   z-index: 4;
   cursor: ew-resize;
   opacity: 0;
-  transition: opacity 240ms ease-out;
+  transition:
+    opacity 240ms ease-out,
+    left 320ms cubic-bezier(.2, .7, .2, 1);
   pointer-events: auto;
 }
 .waveform-scrub-box[data-ready="true"] {
@@ -6392,4 +6460,295 @@ body.drawer-open .hero-macros-divider,
 }
 .ref-control-option--current {
   color: var(--accent);
+}
+
+/* ── Saved Sessions tab body ─────────────────────────────────────────
+   Body of the "Saved" tab in the Full Controls panel. Header row with
+   title + Save action, then a vertical list of session rows. Each row
+   has an inline-editable name, age, and a small action cluster
+   (Open / Rename / Delete). Matches the panel chrome vocabulary —
+   transparent surfaces over the panel's recessed bay. */
+.sessions-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px 4px;
+  height: 100%;
+  overflow: hidden;
+}
+.sessions-tile-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--frame-line);
+}
+.sessions-tile-title {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-strong);
+}
+.sessions-tile-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.sessions-action-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px 6px;
+  background: var(--accent);
+  color: #fff;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  line-height: 1;
+  -webkit-appearance: none;
+          appearance: none;
+  transition: background 140ms ease-out;
+}
+.sessions-action-btn:hover { background: var(--accent-hover); }
+.sessions-action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.sessions-action-btn--secondary {
+  background: transparent;
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+.sessions-action-btn--secondary:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--accent-hover);
+}
+.sessions-error {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--warn, #ffcc00);
+  padding: 4px 6px;
+  border: 1px solid rgba(255, 204, 0, 0.4);
+  border-radius: 3px;
+}
+.sessions-empty {
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  padding: 24px 12px;
+  line-height: 1.5;
+}
+.sessions-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  padding-right: 4px;
+  min-height: 0;
+}
+.sessions-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 7px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  transition: background 140ms ease-out, border-color 140ms ease-out;
+}
+.sessions-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: var(--frame-line);
+}
+.sessions-row--current {
+  border-color: var(--accent-line);
+  background: rgba(255, 255, 255, 0.02);
+}
+.sessions-row-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.sessions-row-name {
+  background: none;
+  border: none;
+  color: var(--text-strong);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.sessions-row-name-input {
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--accent-line);
+  border-radius: 3px;
+  color: var(--text-strong);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 4px;
+  outline: none;
+  width: 100%;
+  max-width: 220px;
+}
+.sessions-row-age {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.sessions-row-actions {
+  display: inline-flex;
+  gap: 4px;
+}
+.sessions-row-btn {
+  background: transparent;
+  border: 1px solid var(--frame-line);
+  border-radius: 3px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  padding: 4px 8px;
+  -webkit-appearance: none;
+          appearance: none;
+  transition: color 140ms ease-out, border-color 140ms ease-out;
+}
+.sessions-row-btn:hover {
+  color: var(--text-strong);
+  border-color: var(--accent-line);
+}
+.sessions-row-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.sessions-row-btn--open {
+  color: var(--accent);
+  border-color: var(--accent-line);
+}
+.sessions-row-btn--open:hover {
+  color: #fff;
+  background: var(--accent);
+  border-color: transparent;
+}
+.sessions-row-btn--delete:hover {
+  color: var(--warn, #ffcc00);
+  border-color: var(--warn, #ffcc00);
+}
+.install-sheet-saved-placeholder {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  padding: 24px 12px;
+  text-align: center;
+}
+
+/* ── Save pill — lower-left save indicator ───────────────────────────
+   Two states. Clean: muted "Saved · 3m ago" chip. Dirty: accent-bordered
+   pill with a pulsing red dot + a Save button. Click the button (or the
+   whole pill in the dirty state) to fire useSavedSessions.save(). */
+.save-pill {
+  position: fixed;
+  bottom: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-bottom, 0px));
+  left: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-left, 0px));
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 5px;
+  background: rgba(6, 6, 12, 0.62);
+  border: 1px solid var(--frame-line);
+  border-radius: 999px;
+  -webkit-backdrop-filter: blur(6px);
+          backdrop-filter: blur(6px);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  line-height: 1;
+  z-index: 7;
+  pointer-events: auto;
+  /* Slide right when the Full Controls panel opens. */
+  transition:
+    left 320ms cubic-bezier(.2, .7, .2, 1),
+    border-color 140ms,
+    color 140ms;
+}
+body.drawer-open .save-pill {
+  left: calc(
+    max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-left, 0px))
+    + var(--drawer-l-open, 0px)
+  );
+}
+.save-pill--dirty {
+  border-color: var(--accent-line);
+  color: var(--text-strong);
+}
+.save-pill-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #e84f3d;
+  flex-shrink: 0;
+  animation: save-pill-pulse 1.4s ease-in-out infinite;
+}
+@keyframes save-pill-pulse {
+  0%, 100% { opacity: 0.55; transform: scale(1); }
+  50%      { opacity: 1;    transform: scale(1.18); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .save-pill-dot { animation: none; opacity: 1; }
+}
+.save-pill-label {
+  white-space: nowrap;
+}
+.save-pill-btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: 3px 10px 4px;
+  margin-left: 4px;
+  cursor: pointer;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  line-height: 1;
+  -webkit-appearance: none;
+          appearance: none;
+  transition: background 140ms ease-out;
+}
+.save-pill-btn:hover { background: var(--accent-hover); }
+.save-pill-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+@media (max-width: 768px) {
+  .save-pill { display: none; }
+}
+
+/* Static wordmark — when the LibraryButton retired in Wave 10, the
+   wordmark moved to a plain <img>. Same position as the old button so
+   the brand mark still anchors the top-left. */
+.library-wordmark--static {
+  position: fixed;
+  top: max(calc(var(--hud-thickness) / 2 - 2px + var(--top-bias, 5px)),
+           env(safe-area-inset-top, 0px));
+  left: max(calc(var(--hud-thickness) + 24px),
+            env(safe-area-inset-left, 0px));
+  z-index: 8;
+  height: 28px;
+  width: auto;
+  display: block;
+  opacity: 0.92;
+  pointer-events: none;
 }
