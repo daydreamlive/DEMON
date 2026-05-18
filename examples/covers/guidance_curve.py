@@ -100,6 +100,14 @@ def main():
         steps=8, shift=3.0, seed=1528, denoise=1.0,
     )["config"]
 
+    # rcfg_mode is required for the guidance_curve to be meaningful on
+    # the CFG-distilled turbo checkpoint. Without it, the codepath runs
+    # plain two-pass CFG, which on a distilled model is double-CFG and
+    # produces over-amplified artifacts rather than a graded prompt
+    # strength.
+    #   "initialize" — uncond forward at step 0 then cached (~1.07x cost)
+    #   "self"       — virtual v_uncond from slot's initial noise; no
+    #                  negative conditioning forward at all (~1.06x)
     t0 = time.time()
     output_latent = Generate().execute(
         model=model,
@@ -109,6 +117,7 @@ def main():
         context_latent=context_latent,
         source_latent=source_latent,
         guidance_curve=cfg_curve,
+        rcfg_mode="initialize",
     )["latent"]
     print(f"Generated in {time.time() - t0:.2f}s")
 

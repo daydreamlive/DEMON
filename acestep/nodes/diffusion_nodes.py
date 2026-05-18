@@ -914,6 +914,25 @@ class Generate(BaseNode):
                     description="Latent duration (s)",
                     min=1.0, max=600.0, step=1.0,
                 ),
+                NodeParam(
+                    name="rcfg_mode", type="string", default=None,
+                    description=(
+                        "RCFG mode: None/'full' (standard CFG, neg "
+                        "forward every step), 'initialize' (neg forward "
+                        "once per slot then cached), 'self' (no neg "
+                        "forward; virtual v_uncond = initial noise)."
+                    ),
+                    hidden=True,
+                ),
+                NodeParam(
+                    name="cfg_rescale", type="any", default=None,
+                    description=(
+                        "Per-frame mix toward vt_pos's magnitude after APG. "
+                        "0 / None disables; 1 fully snaps norm to vt_pos. "
+                        "Scalar or per-frame curve. Fixes high-CFG saturation."
+                    ),
+                    hidden=True,
+                ),
             ),
         )
 
@@ -931,6 +950,8 @@ class Generate(BaseNode):
             source_latent=kwargs.get("source_latent"),
             modulation=kwargs.get("modulation"),
             dcw=kwargs.get("dcw"),
+            rcfg_mode=kwargs.get("rcfg_mode"),
+            cfg_rescale=kwargs.get("cfg_rescale"),
             steps=cfg.infer_steps,
             shift=cfg.shift,
             seed=cfg.seed,
