@@ -1702,52 +1702,58 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
 }
 
 /* ============================================================================
-   Advanced drawer — pulls up from the bottom of the viewport, mixer-board
-   layout. The drawer is always present in the DOM; in the closed state a
-   transform pushes the body off the viewport so only the handle bar peeks
-   above the bottom edge. Clicking the handle (or Esc / `o`) toggles open.
+   Full Controls panel — LEFT inset floating panel (Wave 9). Same chrome
+   vocabulary as the HeroMacros bay (recessed bg + frame-line + blur),
+   sized to leave headroom above the hero bay and below the top HUD.
    ============================================================================ */
 :root {
-  /* Handle is hidden (HeroMacros caret toggles the drawer now). Vars
-     kept at 0 so other CSS that does `calc(... + var(--drawer-handle-h,
-     …))` for positioning still works. */
+  /* Drawer handle is hidden — HeroMacros caret toggles the panel. */
   --drawer-handle-h: 0px;
   --drawer-h: clamp(380px, 50vh, 540px);
-  /* Desktop sidebar width. Wide enough to host the 6-knob CORE row
-     comfortably while preserving usable canvas. */
   --drawer-w: clamp(360px, 32vw, 440px);
-  /* Live "is the sidebar open" inset value — 0 when closed, mirrors
-     --drawer-w when open. Used by right-anchored elements (turntable,
-     footer chips, etc.) to slide inward when the sidebar slides in,
-     so nothing gets occluded. Toggled by body.drawer-open below. */
+  /* Live "is the panel open" inset value. The panel is on the LEFT
+     now (was right pre-Wave-9), so LEFT-anchored elements that need
+     to shift right when it opens read this — currently just the
+     centered HeroMacros bay. Right-anchored chrome does NOT need to
+     slide; those references were dropped in Wave 9. */
+  --drawer-l-open: 0px;
+  /* Back-compat alias: any historical `--drawer-w-open` callers map
+     to the same 0 value when no opening is active. */
   --drawer-w-open: 0px;
 }
 body.drawer-open {
-  --drawer-w-open: var(--drawer-w);
+  --drawer-l-open: var(--drawer-w);
 }
 @media (max-width: 768px) {
-  /* Mobile keeps the bottom-sheet pattern — no horizontal inset. */
   body.drawer-open {
-    --drawer-w-open: 0px;
+    --drawer-l-open: 0px;
   }
 }
 
-/* Desktop (> 768px): the Full Controls panel is a RIGHT sidebar that
-   slides in from the right edge. Canvas shrinks horizontally via the
-   #install-stage rule above. Mobile keeps the bottom-sheet pattern. */
+/* Desktop (> 768px): the Full Controls panel is an INSET floating
+   panel on the LEFT — same chrome vocabulary as the HeroMacros bay.
+   Mobile keeps the bottom-sheet pattern. */
 .install-sheet {
   position: fixed;
-  top: 0; right: 0; bottom: 0;
+  top: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-top, 0px));
+  left: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-left, 0px));
+  bottom: max(calc(var(--hud-thickness) + 24px + 112px), env(safe-area-inset-bottom, 0px));
   width: var(--drawer-w);
-  height: auto;
-  background: var(--sheet-bg);
-  border-left: 1px solid var(--frame-line);
-  /* Closed: off-screen to the right. */
-  transform: translateX(100%);
+  background: rgba(6, 6, 12, 0.62);
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-md);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 4px 14px rgba(0, 0, 0, 0.4);
+  -webkit-backdrop-filter: blur(8px);
+          backdrop-filter: blur(8px);
+  /* Closed: slide off the left edge, including the inset gap. */
+  transform: translateX(calc(-100% - 32px));
   transition: transform 320ms cubic-bezier(.2, .7, .2, 1);
   z-index: 50;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 @media (max-width: 768px) {
   .install-sheet {
@@ -1758,8 +1764,13 @@ body.drawer-open {
     bottom: 0;
     width: auto;
     height: var(--drawer-h);
-    border-left: none;
+    background: var(--sheet-bg);
+    border: none;
     border-top: 1px solid var(--frame-line);
+    border-radius: 0;
+    box-shadow: none;
+    -webkit-backdrop-filter: none;
+            backdrop-filter: none;
     transform: translateY(100%);
   }
 }
@@ -1937,13 +1948,6 @@ body.drawer-open {
   display: flex;
   gap: 0;
 }
-.drawer-tabs-row--tools {
-  /* Tool row is visually subordinate to the primary row — slightly
-     dimmer, shorter cells, no border separator above (the gap
-     between rows + parent inset reads as the divider). */
-  border-top: 1px solid rgba(255, 255, 255, 0.03);
-  padding-top: 3px;
-}
 .drawer-tab {
   display: inline-flex;
   flex: 1 1 0;
@@ -2028,40 +2032,6 @@ body.drawer-open {
   line-height: 1;
 }
 
-/* Tool tabs — bottom row. Shorter than the primary row, slightly
-   dimmer label, and an external-trigger glyph ("▸") indicates these
-   fire side effects (curve editor overlay, record event) rather than
-   swap the sidebar body. */
-.drawer-tab--tool {
-  padding: 6px 14px 7px;
-  flex-direction: row;
-  gap: 8px;
-  opacity: 0.92;
-}
-.drawer-tab--tool .drawer-tab-icon {
-  width: 14px;
-  height: 14px;
-}
-.drawer-tab--tool .drawer-tab-label::after {
-  content: "▸";
-  margin-left: 6px;
-  font-size: 0.9em;
-  opacity: 0.5;
-}
-.drawer-tab--tool.drawer-tab--active .drawer-tab-label::after {
-  content: "■";
-  opacity: 0.9;
-}
-/* REC active state pulses the record glyph in a warning red so the
-   user can never miss they're recording. */
-.drawer-tab--rec-active .drawer-tab-icon--rec {
-  color: var(--critical, #e25b4a);
-  animation: drawer-rec-pulse 1s ease-in-out infinite;
-}
-@keyframes drawer-rec-pulse {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: 0.55; }
-}
 .mixer-rack--tabbed > .mixer-tile,
 .mixer-rack--tabbed > .knob-tile {
   /* Active tab's body fills the rack instead of sitting in a row. The
@@ -2158,6 +2128,9 @@ body.drawer-open {
   height: 48px;
   cursor: ns-resize;
   touch-action: none;
+  /* Defensive — if any ancestor sets pointer-events: none for layout
+     reasons, the knob body still receives pointerdown. */
+  pointer-events: auto;
   position: relative;
   border-radius: 50%;
   /* Soft seat — the cap appears to rest on the panel with a small
@@ -2291,12 +2264,15 @@ body.drawer-open {
      - JS guards via useSessionStore so it's also hidden pre-`ready`. */
 .hero-macros {
   position: fixed;
-  /* Bottom-row baseline shared with .audio-source-dock + the (former)
-     turntable position — same vertical centerline so the bottom row
-     reads as one horizontal band. */
+  /* Bottom-row baseline shared with .audio-source-dock — same vertical
+     centerline so the bottom row reads as one horizontal band. */
   bottom: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-bottom, 0px));
-  left: 50%;
+  /* When the Full Controls panel slides in from the left, shift right
+     by half its width so the bay stays visually centered in the
+     remaining canvas. */
+  left: calc(50% + var(--drawer-l-open, 0px) / 2);
   transform: translateX(-50%);
+  transition: left 320ms cubic-bezier(.2, .7, .2, 1);
   display: flex;
   flex-direction: row;
   /* Knob cap-bottoms, divider bottom, and toggle bottom share one
@@ -2630,40 +2606,75 @@ body.drawer-open .hero-macros-divider,
    convention. */
 .footer-links {
   position: fixed;
-  /* Vertically centered against the HaloBadge midline so the
-     wordmark + halo + pills all read as one horizontal band. The
-     `-11px` accounts for the ~22px-tall pill row centering against
-     the badge's 44px height anchored at `hud/2 - 10px + top-bias`. */
-  top: max(calc(var(--hud-thickness) / 2 - 11px + var(--top-bias, 5px)),
+  /* Vertically centered on the HaloBadge midline. Pills are ~26px
+     tall (5/14/6 padding + 12px icon + 9.5px label); badge is 44px
+     tall at `top: hud/2 - 10 + top-bias` so its midline is at
+     `hud/2 + 17 - top-bias`. Pill row top must be at
+     `hud/2 + 17 - 13 = hud/2 + 4` (with top-bias 5px). */
+  top: max(calc(var(--hud-thickness) / 2 + 4px + var(--top-bias, 5px)),
            env(safe-area-inset-top, 0px));
-  /* Slides inward when sidebar opens. */
-  right: calc(140px + var(--drawer-w-open, 0px));
+  right: 140px;
   display: inline-flex;
   align-items: center;
   gap: 10px;
   z-index: 4;
   pointer-events: auto;
-  transition: right 320ms cubic-bezier(.2, .7, .2, 1);
 }
 .footer-link {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  padding: 4px 12px 5px;
+  gap: 8px;
+  padding: 5px 14px 6px;
   background: transparent;
-  border: 1px solid var(--frame-line);
+  border: 1px solid var(--accent-line);
   border-radius: 999px;
-  color: var(--text-dim);
+  color: var(--accent);
   text-decoration: none;
   font-family: var(--font-mono);
   font-size: 9.5px;
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
   line-height: 1;
-  transition: color 140ms ease-out, border-color 140ms ease-out;
+  overflow: hidden;
+  transition:
+    color 140ms ease-out,
+    background 140ms ease-out,
+    border-color 140ms ease-out;
+}
+.footer-link::before {
+  /* Brand-gradient hairline at the top edge — same vocabulary as the
+     halo menu + audio-source-fan. Sits inside the pill's rounded
+     bounds via overflow: hidden on the parent. */
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 1px;
+  background: var(--dd-gradient);
+  pointer-events: none;
 }
 .footer-link:hover {
   color: var(--text-strong);
-  border-color: var(--accent-line);
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--accent-hover);
+}
+.footer-link--cta {
+  background: var(--accent);
+  color: #fff;
+  border-color: transparent;
+}
+.footer-link--cta:hover {
+  background: var(--accent-hover);
+  color: #fff;
+  border-color: transparent;
+}
+.footer-link-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.footer-link-label {
+  line-height: 1;
 }
 /* Mobile: hide — the lite drawer + halo menu cover this on mobile,
    and the bottom-edge real estate is already tight. */
@@ -4765,14 +4776,11 @@ body.drawer-open .hero-macros-divider,
    placard carries the brand gradient strip + radii). */
 .audio-source-dock {
   position: fixed;
-  /* "Now playing" placard + upload pair sits in the lower-right corner
-     where the turntable record button used to be. Slides inward when
-     the Full Controls sidebar opens. */
+  /* "Now playing" placard + upload pair sits in the lower-right corner.
+     Right-anchored; the Full Controls panel is on the LEFT now so this
+     dock does NOT need to slide inward when the panel opens. */
   bottom: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-bottom, 0px));
-  right: calc(
-    max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-right, 0px))
-    + var(--drawer-w-open, 0px)
-  );
+  right: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-right, 0px));
   z-index: 8;
   display: flex;
   flex-direction: row;
@@ -4972,7 +4980,7 @@ body.drawer-open .hero-macros-divider,
   /* Stack above the placard. Placard bottom anchor + ~38px tall + 8px gap. */
   bottom: max(calc(var(--hud-thickness) + 24px + 38px + 8px),
               calc(env(safe-area-inset-bottom, 0px) + 70px));
-  left: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-left, 0px));
+  right: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-right, 0px));
   z-index: 9;
   min-width: 220px;
   max-width: 280px;
@@ -4995,7 +5003,7 @@ body.drawer-open .hero-macros-divider,
     0 18px 50px rgba(0, 0, 0, 0.55),
     0 0 0 1px var(--accent-line),
     0 0 26px rgba(240, 138, 72, 0.18);
-  transform-origin: bottom left;
+  transform-origin: bottom right;
   animation: audio-source-fan-in 220ms cubic-bezier(.2, .8, .2, 1);
 }
 .audio-source-fan::before {
@@ -5436,6 +5444,39 @@ body.drawer-open .hero-macros-divider,
     animation:
       network-indicator-fade-in 200ms cubic-bezier(.2, .8, .2, 1) forwards;
   }
+}
+
+/* ── Waveform scrub strip (top-anchored) ─────────────────────────────
+   Pinned to the top of the canvas, below the top HUD edge bar. Spans
+   horizontally with the same insets the "Remix Strength" ribbon uses,
+   so the strip aligns with the same visual frame. Mounted as soon as
+   a player exists; visually hidden until the first peak-pass lands. */
+.waveform-scrub-box {
+  position: fixed;
+  top: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-top, 0px));
+  left:  max(calc(var(--hud-thickness) + 144px), env(safe-area-inset-left, 0px));
+  right: max(calc(var(--hud-thickness) + 80px),  env(safe-area-inset-right, 0px));
+  height: 48px;
+  z-index: 4;
+  cursor: ew-resize;
+  opacity: 0;
+  transition: opacity 240ms ease-out;
+  pointer-events: auto;
+}
+.waveform-scrub-box[data-ready="true"] {
+  opacity: 1;
+}
+.waveform-scrub-box:not([data-ready="true"]) {
+  pointer-events: none;
+}
+.waveform-scrub-box .waveform-scrub-bg,
+.waveform-scrub-box .waveform-scrub-fg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
 }
 
 /* ── Custom tooltip (replaces native `title=` for hover-visible UI) ──
