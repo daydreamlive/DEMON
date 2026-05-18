@@ -11,7 +11,7 @@ import { useState, type ReactElement } from "react";
 // REC live in the hero bay now):
 //   CORE   — MIX / TRACK / TIMBRE / FEEDBACK / BASS / TREBLE (knobs)
 //   MOD    — SHIFT / N.SHARE / JITTER (knobs) + DCW config
-//   VOICE  — the 14 latent channels (V1–V8 + M1–M6, faders)
+//   CHANNELS — the 14 latent channels (V1–V8 + M1–M6, faders)
 //   PROMPT — prompts, key, time signature, seed
 //   LIB    — LoRAs
 //   CONFIG — session controls: track/key/sig, transport, MIDI, prefs
@@ -22,7 +22,7 @@ export type DrawerTab = (typeof DRAWER_TABS)[number];
 const TAB_LABELS: Record<DrawerTab, string> = {
   core: "Core",
   mod: "Mod",
-  voice: "Voice",
+  voice: "Channels",
   prompt: "Prompt",
   lib: "LoRAs",
   saved: "Saved",

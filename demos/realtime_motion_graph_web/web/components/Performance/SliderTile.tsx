@@ -30,7 +30,7 @@ const DISPLAY_NAMES: Record<string, string> = {
   noise_share: "n.share",    // no clean analog; keep technical
   shift: "shift",            // no clean analog; expert
 
-  // Voice (VOICE tab) — the model's internal voice channels.
+  // Channels (CHANNELS tab) — the model's internal latent channels.
   ch_g0: "v1", ch_g1: "v2", ch_g2: "v3", ch_g3: "v4",
   ch_g4: "v5", ch_g5: "v6", ch_g6: "v7", ch_g7: "v8",
   ch13: "m1", ch14: "m2", ch19: "m3", ch23: "m4", ch29: "m5", ch56: "m6",
