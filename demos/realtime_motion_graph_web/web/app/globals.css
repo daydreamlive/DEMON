@@ -1919,39 +1919,67 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   touch-action: none;
   position: relative;
   border-radius: 50%;
-  /* Subtle outer halo on focus (keyboard nav). */
-  transition: filter 120ms ease-out;
+  /* Soft seat — the cap appears to rest on the panel with a small
+     gap shadow beneath it. Compositor-friendly (no filter, no
+     box-shadow on the body that would invalidate paint of the canvas
+     siblings — drop-shadow is applied to the inner SVG only). */
+  transition: transform 120ms ease-out, filter 120ms ease-out;
 }
 .knob-body:focus-visible {
   outline: none;
   filter: drop-shadow(0 0 4px var(--accent-glow));
+}
+/* Cap "grab" feedback — a very slight scale on hover/active so the
+   user feels the click without anything bouncing. */
+.knob-body:hover .knob-svg {
+  transform: translateY(-0.5px);
+}
+.knob-svg {
+  transition: transform 100ms ease-out;
 }
 .knob-svg {
   width: 100%;
   height: 100%;
   display: block;
 }
+/* Outer arc — the "scale" engraved around the cap. Background is a
+   dim track; fill is the per-value tint that lights up as the user
+   turns the knob. The track is slightly thicker than the fill so the
+   fill reads as catching a highlight on top of an inset channel. */
 .knob-arc-bg {
-  stroke: var(--frame-line);
-  stroke-width: 3;
+  stroke: rgba(0, 0, 0, 0.5);
+  stroke-width: 3.5;
   stroke-linecap: round;
 }
 .knob-arc-fill {
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  /* Subtle blur halo around the fill arc — reads as the indicator
+     light glowing through frosted plastic. Cheap because it's only
+     painted on the small ring arc, not the whole canvas. */
+  filter: drop-shadow(0 0 1.5px var(--knob-tint));
+  transition: stroke 120ms ease-out, filter 120ms ease-out;
+}
+/* Hairline shadow under the cap. r=15.5 (slightly larger than the
+   cap r=15) shifted down 1px so the bottom edge peeks out as a thin
+   shadow lip. */
+.knob-shadow {
+  fill: rgba(0, 0, 0, 0.55);
+  filter: blur(1px);
+}
+/* Indicator notch — etched recessed groove. The shadow layer is a
+   dark line drawn 1px wider; the tint layer on top is the active
+   pointing line. Together they read as a recessed channel with a
+   highlight inside. */
+.knob-indicator-shadow {
+  stroke: rgba(0, 0, 0, 0.7);
   stroke-width: 3;
   stroke-linecap: round;
-  /* Inherit stroke color from inline style="stroke: var(--knob-tint)"
-     so the arc matches the per-value gradient stop. */
-  transition: stroke 120ms ease-out;
-}
-.knob-disc {
-  fill: rgba(255, 255, 255, 0.04);
-  stroke: var(--frame-line);
-  stroke-width: 1;
 }
 .knob-indicator {
-  stroke: var(--text-strong);
-  stroke-width: 2;
+  stroke-width: 1.5;
   stroke-linecap: round;
+  transition: stroke 120ms ease-out;
 }
 .knob-value {
   font-family: var(--font-mono);
@@ -2073,63 +2101,104 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   justify-content: center;
 }
 
+/* Real-fader skeumorphic visual. The track column is wide enough for
+   the cap to sit centered with breathing room either side. The
+   "groove" (inset slot the cap rides in) is narrow + recessed, the
+   colored fill rises inside the slot, and the thumb is a wide
+   horizontal cap with a center indicator line — same anatomy as a
+   hardware mixer fader. */
 .slider-track {
   position: relative;
   width: 32px;
   flex: 1 1 auto;
-  /* Shorter than the original 110px so the slider tiles in the first row
-     leave room for the prompts row beneath them without overflowing the
-     drawer. The thumb + fill scale to whatever height the flex layout
-     allocates, so no other rule needs touching. */
   min-height: 78px;
   background: transparent;
-  border-radius: 3px;
   cursor: ns-resize;
   touch-action: none;
 }
+/* The groove — a vertical channel inset into the panel. Inner shadow
+   sells the recess; the channel itself is dark with a hairline
+   highlight on the inside-top edge from the gradient. */
 .slider-track::before {
   content: "";
   position: absolute;
   left: 50%;
   top: 0; bottom: 0;
-  width: 5px;
+  width: 4px;
   transform: translateX(-50%);
-  /* Rail picks up a subtle hint of the per-slider tint without losing
-     the neutral frame baseline; --slider-tint is set inline by
-     SliderGroup based on the current value. */
-  background: color-mix(in srgb, var(--slider-tint, var(--accent)) 25%, var(--frame-line));
-  border-radius: 3px;
-  transition: background 70ms linear;
+  background: linear-gradient(
+    to right,
+    rgba(0, 0, 0, 0.6) 0%,
+    rgba(0, 0, 0, 0.45) 50%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  border-radius: 2px;
+  box-shadow:
+    inset 1px 0 0 rgba(0, 0, 0, 0.7),
+    inset -1px 0 1px rgba(255, 255, 255, 0.05),
+    0 1px 0 rgba(255, 255, 255, 0.04);
+  transition: box-shadow 70ms linear;
 }
+/* Fill rises inside the groove. Still tinted from --slider-tint so
+   the per-value color shows through the slot. */
 .slider-fill {
   position: absolute;
   bottom: 0;
   left: 50%;
-  width: 5px;
+  width: 4px;
   transform: translateX(-50%);
-  /* Fill is a solid color sampled from the palette gradient at the
-     slider's current value (--slider-tint). The thumb / label / rail-mix
-     all use the same tint so the whole slider reads as one color. */
-  background: var(--slider-tint, var(--accent));
-  border-radius: 3px;
+  background: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--slider-tint, var(--accent)) 70%, #000) 0%,
+    var(--slider-tint, var(--accent)) 100%
+  );
+  border-radius: 2px;
   pointer-events: none;
-  /* Short transition so chunky MIDI updates (e.g., a hardware knob that
-     emits coarse CC values) read as smooth fader motion. Mouse / wheel
-     drag temporarily disables this via .slider-group.dragging below. */
+  filter: drop-shadow(0 0 2px color-mix(in srgb, var(--slider-tint, var(--accent)) 40%, transparent));
   transition: height 70ms linear, background 70ms linear;
 }
+/* The cap — wide horizontal handle straddling the groove. Top half is
+   lit (radial highlight), bottom half is shadowed. A 1px center
+   indicator line catches the per-value tint so the cap reads as
+   "pointing at" its current position on the groove. */
 .slider-thumb {
   position: absolute;
   left: 50%;
-  width: 20px;
-  height: 20px;
-  background: var(--text-strong);
-  border: 2px solid var(--slider-tint, var(--accent));
-  border-radius: 50%;
+  width: 22px;
+  height: 10px;
+  background:
+    linear-gradient(
+      to bottom,
+      rgb(78, 84, 96) 0%,
+      rgb(42, 46, 54) 48%,
+      rgb(18, 20, 24) 100%
+    );
+  border-radius: 2px;
   transform: translate(-50%, 50%);
   pointer-events: none;
-  box-shadow: 0 0 8px var(--accent-glow);
-  transition: bottom 70ms linear, border-color 70ms linear;
+  /* Outer drop shadow seats the cap on the panel; inner highlight on
+     the top edge sells the bevel. */
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.65),
+    0 0 0 1px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.5);
+  transition: bottom 70ms linear, box-shadow 70ms linear;
+}
+/* Center indicator line on the cap — colored by the per-value tint
+   so the cap actively shows what value it's pointing at. */
+.slider-thumb::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  top: 50%;
+  height: 1px;
+  background: var(--slider-tint, var(--accent));
+  transform: translateY(-50%);
+  border-radius: 1px;
+  box-shadow: 0 0 3px var(--slider-tint, var(--accent));
+  transition: background 70ms linear;
 }
 .slider-group.dragging .slider-fill,
 .slider-group.dragging .slider-thumb,
