@@ -23,7 +23,7 @@ import { PromptsTile } from "./PromptsTile";
 import { SeedTile } from "./SeedTile";
 import { VoiceTile } from "./VoiceTile";
 
-// Slide-up Advanced Controls drawer. Behavior splits at the mobile
+// Slide-up Full Controls drawer. Behavior splits at the mobile
 // breakpoint: desktop shows the dense mixer-board layout; mobile shows a
 // "Lite" layout (Structure + seed + prompt) with an "All controls" link
 // that opens a full-screen tabbed sheet. The handle is disabled while the
@@ -165,7 +165,6 @@ export function AdvancedDrawer() {
             <LiteControls onOpenAllControls={() => setAllOpen(true)} />
           ) : (
             <>
-              <OperatorStrip />
               <DrawerTabs active={activeTab} onChange={setActiveTab} />
               <div
                 className={`mixer-rack mixer-rack--tabbed${!showKbdHints ? " mixer-rack--no-kbd-hints" : ""}`}
@@ -215,6 +214,8 @@ function renderTabBody(tab: DrawerTab) {
       );
     case "lib":
       return <LibraryTile />;
+    case "config":
+      return <OperatorStrip />;
   }
 }
 
@@ -233,7 +234,7 @@ interface DrawerHandleProps {
 function DrawerHandle({ started, open, setOpen }: DrawerHandleProps) {
   const tipProps = useOneShotTooltip(
     "advanced-drawer",
-    started ? "Advanced Controls (o)" : "Press Play to enable",
+    started ? "Full Controls (o)" : "Press Play to enable",
   );
   void open; // accepted but no longer needed in this body — kept in signature for clarity
   return (
@@ -251,7 +252,7 @@ function DrawerHandle({ started, open, setOpen }: DrawerHandleProps) {
       type="button"
     >
       <span className="install-drawer-handle-grip" aria-hidden="true" />
-      <span className="install-drawer-handle-label">Advanced Controls</span>
+      <span className="install-drawer-handle-label">Full Controls</span>
       <span className="install-drawer-handle-grip" aria-hidden="true" />
     </button>
   );

@@ -1821,17 +1821,165 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   color: var(--text-strong);
   border-bottom-color: var(--accent);
 }
-.mixer-rack--tabbed > .mixer-tile {
-  /* Active tab's tile fills the rack instead of sitting in a row. The
+.mixer-rack--tabbed > .mixer-tile,
+.mixer-rack--tabbed > .knob-tile {
+  /* Active tab's body fills the rack instead of sitting in a row. The
      internal .mixer-channels still flexes its sliders edge-to-edge. */
   flex: 1 1 auto;
   width: 100%;
+}
+/* Drop the inner tile frame for tabbed content — the active tab is
+   already the section delimiter; an extra card border just adds noise.
+   Sound Particles' UIs do the same: panels live on the open canvas. */
+.mixer-rack--tabbed > .mixer-tile,
+.mixer-rack--tabbed > .knob-tile {
+  border: none;
+  background: transparent;
+  padding: 8px 4px 4px;
+}
+.mixer-rack--tabbed > .mixer-tile > .mixer-tile-label {
+  /* Section header (e.g. "Voice") still useful on the multi-row VOICE
+     panel; CORE/MOD/PROMPT/LIB rely on the tab itself for labeling. */
+}
+.mixer-rack--tabbed[data-active-tab="core"] > .knob-tile > .knob-tile-label,
+.mixer-rack--tabbed[data-active-tab="mod"] > .knob-tile > .knob-tile-label,
+.mixer-rack--tabbed[data-active-tab="lib"] > .mixer-tile > .mixer-tile-label,
+.mixer-rack--tabbed[data-active-tab="prompt"] > .mixer-tile > .mixer-tile-label {
+  display: none;
 }
 .mixer-rack--tabbed[data-active-tab="prompt"] {
   /* Prompt tab stacks SeedTile + PromptsTile vertically. Both are
      content-sized so flex: 0 0 auto keeps them tight. */
   flex-direction: column;
   gap: 10px;
+}
+.mixer-rack--tabbed[data-active-tab="config"] > * {
+  /* OperatorStrip lives inside the CONFIG tab now; let it fill. */
+  flex: 1 1 auto;
+  width: 100%;
+}
+
+/* ── Knob tile ──────────────────────────────────────────────────────
+   Horizontal rack of rotary knobs. Used by CORE + MOD — continuous
+   "tweak with one hand" params drawn as knobs (matches inShaper /
+   GrainDust visual vocabulary). Reference-track pickers sit in a
+   second row beneath the rack with breathing room. */
+.knob-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.knob-rack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 18px;
+  align-items: flex-start;
+}
+.knob-ref-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+.knob-dcw {
+  margin-top: 4px;
+}
+
+/* ── Knob component ────────────────────────────────────────────────
+   Rotary control. Body is 48px; with the label above + value below the
+   group lands at ~80x76 — same footprint as a compact fader strip
+   so racks can swap knobs <-> faders without layout churn. */
+.knob-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 64px;
+  flex: 0 0 auto;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.knob-label {
+  font-family: var(--font-mono);
+  font-size: 0.55em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  text-align: center;
+  line-height: 1.2;
+  min-height: 2.4em;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  cursor: help;
+}
+.knob-body {
+  width: 48px;
+  height: 48px;
+  cursor: ns-resize;
+  touch-action: none;
+  position: relative;
+  border-radius: 50%;
+  /* Subtle outer halo on focus (keyboard nav). */
+  transition: filter 120ms ease-out;
+}
+.knob-body:focus-visible {
+  outline: none;
+  filter: drop-shadow(0 0 4px var(--accent-glow));
+}
+.knob-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.knob-arc-bg {
+  stroke: var(--frame-line);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+.knob-arc-fill {
+  stroke-width: 3;
+  stroke-linecap: round;
+  /* Inherit stroke color from inline style="stroke: var(--knob-tint)"
+     so the arc matches the per-value gradient stop. */
+  transition: stroke 120ms ease-out;
+}
+.knob-disc {
+  fill: rgba(255, 255, 255, 0.04);
+  stroke: var(--frame-line);
+  stroke-width: 1;
+}
+.knob-indicator {
+  stroke: var(--text-strong);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.knob-value {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text);
+  text-align: center;
+  min-height: 14px;
+  cursor: text;
+}
+.knob-value-input {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  width: 100%;
+  background: var(--input-bg);
+  border: 1px solid var(--accent-line);
+  border-radius: 3px;
+  color: var(--text);
+  text-align: center;
+  padding: 1px 2px;
+}
+.knob-kbd {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  background: transparent;
+  padding: 0;
+  border: none;
 }
 
 /* ── Voice tab ──────────────────────────────────────────────────────
