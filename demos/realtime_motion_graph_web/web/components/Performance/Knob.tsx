@@ -1,7 +1,7 @@
 "use client";
 
 import type { CSSProperties } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { useTactileSlider } from "@/hooks/useTactileSlider";
 import { tToValue, valueToT } from "@/lib/sliderMapping";
@@ -244,6 +244,24 @@ export function Knob({ param, label, max, min, reverse, unity, kbd }: Props) {
 
   const tooltip = tooltipFor(param);
   const style = { "--knob-tint": fillTint } as CSSProperties;
+  // Stable per-knob ids for the SVG <defs> gradients. Without unique
+  // ids each knob would reference the same gradient and only one would
+  // render correctly when SSR + hydration happens out of order.
+  const uid = useId().replace(/:/g, "_");
+  const capId = `knob-cap-${uid}`;
+  const rimLightId = `knob-rim-${uid}`;
+  // Indicator endpoints (rim → inward). Pre-computed so the JSX stays
+  // tidy and the angle math doesn't repeat.
+  const indRad = ((indicatorDeg - 90) * Math.PI) / 180;
+  const indCos = Math.cos(indRad);
+  const indSin = Math.sin(indRad);
+  // Slight inset so the notch reads as an etched groove, not a stick
+  // poking off the rim — starts at r=14 (just inside the body edge)
+  // and goes to r=8 (about halfway to center).
+  const indX1 = 24 + 14 * indCos;
+  const indY1 = 24 + 14 * indSin;
+  const indX2 = 24 + 8 * indCos;
+  const indY2 = 24 + 8 * indSin;
 
   return (
     <div className="knob-group" style={style}>
@@ -271,29 +289,82 @@ export function Knob({ param, label, max, min, reverse, unity, kbd }: Props) {
           height="48"
           aria-hidden="true"
         >
-          {/* Background arc (full sweep, dim) */}
+          <defs>
+            {/* Cap body — radial gradient with a soft top-left
+                highlight. Models a 3D rounded knob cap without going
+                photorealistic. Modeled on inShaper's gain knobs. */}
+            <radialGradient
+              id={capId}
+              cx="0.35"
+              cy="0.28"
+              r="0.85"
+              fx="0.32"
+              fy="0.22"
+            >
+              <stop offset="0%" stopColor="rgb(78, 84, 96)" />
+              <stop offset="45%" stopColor="rgb(36, 40, 48)" />
+              <stop offset="100%" stopColor="rgb(8, 10, 14)" />
+            </radialGradient>
+            {/* Outer rim — thin metallic gradient ring that gives the
+                edge of the cap a beveled look. */}
+            <linearGradient id={rimLightId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="rgba(255, 255, 255, 0.22)" />
+              <stop offset="50%" stopColor="rgba(255, 255, 255, 0.04)" />
+              <stop offset="100%" stopColor="rgba(0, 0, 0, 0.35)" />
+            </linearGradient>
+          </defs>
+          {/* Background arc (full sweep, dim) — sits in the inset
+              channel around the cap, like the engraved scale on a
+              hardware knob. */}
           <path
             d={arcPath(24, 24, 21, ARC_START_DEG, ARC_END_DEG)}
             className="knob-arc-bg"
             fill="none"
           />
-          {/* Value arc — from 0 to current t */}
+          {/* Value arc — from 0 to current t. Color from the per-value
+              gradient stop, matching the corresponding fader fill. */}
           <path
             d={arcPath(24, 24, 21, ARC_START_DEG, indicatorDeg)}
             className="knob-arc-fill"
             fill="none"
             stroke="var(--knob-tint)"
           />
-          {/* Body disc */}
-          <circle cx="24" cy="24" r="15" className="knob-disc" />
-          {/* Indicator notch — short line from rim toward center at the
-              indicator angle, drawn LAST so it sits on top of the disc. */}
+          {/* Cap shadow — drawn first so the cap sits on top of it.
+              A thin dark ring just outside the cap; reads as the cap
+              casting a hairline shadow onto the panel. */}
+          <circle cx="24" cy="25" r="15.5" className="knob-shadow" />
+          {/* Cap body */}
+          <circle cx="24" cy="24" r="15" fill={`url(#${capId})`} />
+          {/* Beveled rim — a 1px stroke with a top-to-bottom gradient
+              giving the cap edge a metallic catch-light at the top
+              and a darker bottom edge. */}
+          <circle
+            cx="24"
+            cy="24"
+            r="15"
+            fill="none"
+            stroke={`url(#${rimLightId})`}
+            strokeWidth="1"
+          />
+          {/* Indicator notch — etched groove from rim toward center at
+              the indicator angle. Drawn LAST so it sits on top of the
+              cap. Two strokes: a dark recessed line, then a 1px tint
+              line on top so the indicator catches the per-value color
+              and reads as the active "pointing finger" of the knob. */}
           <line
-            x1={24 + 15 * Math.cos(((indicatorDeg - 90) * Math.PI) / 180)}
-            y1={24 + 15 * Math.sin(((indicatorDeg - 90) * Math.PI) / 180)}
-            x2={24 + 9 * Math.cos(((indicatorDeg - 90) * Math.PI) / 180)}
-            y2={24 + 9 * Math.sin(((indicatorDeg - 90) * Math.PI) / 180)}
+            x1={indX1}
+            y1={indY1}
+            x2={indX2}
+            y2={indY2}
+            className="knob-indicator-shadow"
+          />
+          <line
+            x1={indX1}
+            y1={indY1}
+            x2={indX2}
+            y2={indY2}
             className="knob-indicator"
+            stroke="var(--knob-tint)"
           />
         </svg>
       </div>
