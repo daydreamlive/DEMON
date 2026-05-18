@@ -114,7 +114,7 @@ def _decode_audio_msg(audio_msg: bytes) -> torch.Tensor:
     return torch.from_numpy(arr.T.copy())[:2]
 
 
-def _load_fixture_waveform(name: str) -> torch.Tensor:
+def _load_known_fixture_waveform(name: str) -> torch.Tensor:
     """Load a known fixture's audio from the pod's own fixture cache and
     return it in the exact shape ``_decode_audio_msg`` produces
     (``[≤2, N]`` float32 at ``SAMPLE_RATE``).
@@ -417,7 +417,7 @@ def handle_client(
     _fix_name = config.get("fixture_name")
     if config.get("use_server_fixture") and _fix_name in KNOWN_FIXTURES:
         try:
-            waveform = _load_fixture_waveform(_fix_name)
+            waveform = _load_known_fixture_waveform(_fix_name)
             _ms("audio_serverside_loaded")
         except Exception as exc:
             print(
