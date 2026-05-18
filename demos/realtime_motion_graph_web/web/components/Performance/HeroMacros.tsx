@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import { useCurveStore } from "@/store/useCurveStore";
 import { useSessionStore } from "@/store/useSessionStore";
 
 import { Knob } from "./Knob";
@@ -32,6 +33,7 @@ const HERO_PARAMS = ["denoise", "hint_strength", "feedback"] as const;
 export function HeroMacros() {
   const status = useSessionStore((s) => s.status);
   const started = status !== "idle";
+  const curveOpen = useCurveStore((s) => s.overlayOpen);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   // Mirror body.drawer-open via a custom event the drawer fires on
@@ -50,7 +52,7 @@ export function HeroMacros() {
   if (!started) return null;
   return (
     <div
-      className={`hero-macros${drawerOpen ? " hero-macros--drawer-open" : ""}`}
+      className={`hero-macros${drawerOpen ? " hero-macros--drawer-open" : ""}${curveOpen ? " hero-macros--curve-open" : ""}`}
       data-hero-macros
     >
       <div className="hero-macros-knobs">

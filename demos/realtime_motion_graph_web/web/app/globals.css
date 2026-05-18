@@ -786,10 +786,19 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   z-index: 51;
   display: flex;
   flex-direction: column;
-  /* Semi-transparent dark wash, NO backdrop blur — the user wants the
-     moving lines beneath visible at all times. No border / border-radius
-     either; this is a layer over the graph, not a card. */
-  background: rgba(6, 6, 12, 0.32);
+  /* Semi-transparent dark wash with a subtle inset frame so the
+     curve area reads as a recessed bay — closer to a hardware
+     automation lane than a flat overlay. Backdrop blur is intentionally
+     OFF; the moving lines under the curves stay legible. */
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025) 0%, rgba(0, 0, 0, 0) 60%),
+    rgba(6, 6, 12, 0.38);
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-sm);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.6),
+    0 6px 18px rgba(0, 0, 0, 0.5);
   overflow: hidden;
 }
 
@@ -1161,32 +1170,79 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
 .install-edge-left  .install-edge-bar { right: 0; transform-origin: right bottom; }
 .install-edge-right .install-edge-bar { left:  0; transform-origin: left  bottom; }
 
-/* ── Edge fader (LoRA L/R) ──────────────────────────────────────────
-   Vertical fader visual sitting on top of the writhing-ribbon edge.
-   Same anatomy as the VOICE channel faders: recessed groove + colored
-   fill + horizontal cap with a center indicator line. Hidden when the
-   LoRA slot is empty so the canvas still reads as decorative. */
-.edge-fader {
-  position: absolute;
-  top: 12px;
-  bottom: 12px;
-  width: 26px;
-  pointer-events: none;
-  z-index: 2;
+/* ── MasterPanel ─────────────────────────────────────────────────────
+   Right-side consolidated bay holding the two LoRA channel faders.
+   Replaces the prior writhing-ribbon edge rails on both sides — both
+   LoRA strengths now live in this single panel, framed by the same
+   recessed-bay vocabulary as HeroMacros at the bottom-center. Reads
+   like the inShaper / GrainDust master output strip. */
+.master-panel {
+  position: fixed;
+  top: 50%;
+  right: 16px;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  background: rgba(6, 6, 12, 0.62);
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-md);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 4px 14px rgba(0, 0, 0, 0.4);
+  -webkit-backdrop-filter: blur(8px);
+          backdrop-filter: blur(8px);
+  z-index: 5;
 }
-.edge-fader--left {
-  /* Tuck against the left chrome with a hairline gap from the canvas
-     edge so the rail feels seated in the bezel rather than glued to it. */
-  left: 6px;
+.master-panel-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-dim);
+  text-align: center;
 }
-.edge-fader--right {
-  right: 6px;
+.master-panel-faders {
+  display: flex;
+  flex-direction: row;
+  gap: 14px;
+  align-items: stretch;
 }
-.edge-fader-track {
+.master-fader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 36px;
+}
+.master-fader-label {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  text-align: center;
+  line-height: 1.2;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.master-fader-track {
   position: relative;
+  width: 100%;
+  height: 180px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.master-fader-track::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0; bottom: 0;
   width: 4px;
-  height: 100%;
-  margin: 0 auto;
+  transform: translateX(-50%);
   background: linear-gradient(
     to right,
     rgba(0, 0, 0, 0.6) 0%,
@@ -1196,27 +1252,27 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   border-radius: 2px;
   box-shadow:
     inset 1px 0 0 rgba(0, 0, 0, 0.7),
-    inset -1px 0 1px rgba(255, 255, 255, 0.05),
-    0 1px 0 rgba(255, 255, 255, 0.04);
+    inset -1px 0 1px rgba(255, 255, 255, 0.05);
 }
-.edge-fader-fill {
+.master-fader-fill {
   position: absolute;
   bottom: 0;
-  left: 0;
-  width: 100%;
+  left: 50%;
+  width: 4px;
+  transform: translateX(-50%);
   background: linear-gradient(
     to top,
     color-mix(in srgb, var(--accent) 70%, #000) 0%,
     var(--accent) 100%
   );
   border-radius: 2px;
-  filter: drop-shadow(0 0 2px color-mix(in srgb, var(--accent) 40%, transparent));
+  pointer-events: none;
   transition: height 70ms linear;
 }
-.edge-fader-cap {
+.master-fader-cap {
   position: absolute;
   left: 50%;
-  width: 22px;
+  width: 26px;
   height: 10px;
   background: linear-gradient(
     to bottom,
@@ -1226,6 +1282,7 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   );
   border-radius: 2px;
   transform: translate(-50%, 50%);
+  pointer-events: none;
   box-shadow:
     0 1px 2px rgba(0, 0, 0, 0.65),
     0 0 0 1px rgba(0, 0, 0, 0.55),
@@ -1233,7 +1290,7 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
     inset 0 -1px 0 rgba(0, 0, 0, 0.5);
   transition: bottom 70ms linear;
 }
-.edge-fader-cap::before {
+.master-fader-cap::before {
   content: "";
   position: absolute;
   left: 2px;
@@ -1245,16 +1302,46 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   border-radius: 1px;
   box-shadow: 0 0 3px var(--accent);
 }
-.edge-fader--empty {
-  opacity: 0.25;
+.master-fader-value {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text);
 }
-/* Hide the writhing ribbon canvas on left/right edges — the fader
-   replaces it as the visual indicator. The ribbon code still runs
-   (other side-effects + the canvas paint into the same DOM) but the
-   ribbons themselves are invisible. */
+.master-fader--empty {
+  opacity: 0.35;
+}
+.master-fader--empty .master-fader-track {
+  cursor: default;
+}
+/* Mobile: hide the master panel — the existing LiteControls + mobile
+   rails cover LoRA strength there. */
+@media (max-width: 768px) {
+  .master-panel {
+    display: none;
+  }
+}
+/* Desktop: the left/right edge containers stay in the DOM as mount
+   points (useEdgeLoraBinding + MobileStepperRail bind to them), but
+   their visual content is hidden — the right-side <MasterPanel/> is
+   the only LoRA surface now. */
 .install-edge-left .install-ribbons,
-.install-edge-right .install-ribbons {
+.install-edge-right .install-ribbons,
+.install-edge-left .install-edge-bar,
+.install-edge-right .install-edge-bar,
+.install-edge-left .install-edge-label,
+.install-edge-right .install-edge-label {
   opacity: 0;
+}
+/* Mobile keeps its rail visual via MobileStepperRail rendering on top
+   of the same containers; only the writhing-ribbon underlay stays
+   muted there. */
+@media (max-width: 768px) {
+  .install-edge-left .install-edge-bar,
+  .install-edge-right .install-edge-bar,
+  .install-edge-left .install-edge-label,
+  .install-edge-right .install-edge-label {
+    opacity: 1;
+  }
 }
 
 /* When no LoRA is enabled in the corresponding slot, the perimeter bar
@@ -2283,11 +2370,14 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
 /* When the drawer is open the knob row hides (params live in the
    drawer's CORE tab now) but the toggle button stays — it's the
    only way to close the drawer with the bottom handle gone. */
-body.drawer-open .hero-macros-knobs {
+body.drawer-open .hero-macros-knobs,
+.hero-macros--curve-open .hero-macros-knobs {
   display: none;
 }
-.hero-macros--drawer-open {
-  /* Compact bay — just the toggle row remains. */
+.hero-macros--drawer-open,
+.hero-macros--curve-open {
+  /* Compact bay — just the toggle row remains. From the curve editor,
+     the toggle is also the user's way back into Full Controls. */
   padding: 4px 14px;
   gap: 0;
 }
@@ -2307,11 +2397,14 @@ body.drawer-open .hero-macros-knobs {
    convention. */
 .footer-links {
   position: fixed;
-  /* Anchored to the top edge, sitting left of HaloBadge. The two
-     chips share the visual vocabulary of HeroMacros' Full Controls
-     toggle: transparent shell, 1px frame-line border, hover lifts
-     to accent line color. Same skeu-chip language used throughout. */
-  top: 22px;
+  /* Vertically centered against the HaloBadge midline so the
+     wordmark + halo + chips all read as one horizontal band. The
+     HaloBadge anchors to `calc(var(--hud-thickness) / 2 - 8px)` and
+     measures 44 px tall; aligning to its midline means top =
+     halo-top + (halo-h - chip-h)/2. With chip-h ≈ 24 px and the
+     halo-top offset, ~10 px from that anchor lands the midline. */
+  top: max(calc(var(--hud-thickness) / 2 + 2px + var(--top-bias, 5px)),
+           env(safe-area-inset-top, 0px));
   right: 140px;
   display: flex;
   align-items: center;

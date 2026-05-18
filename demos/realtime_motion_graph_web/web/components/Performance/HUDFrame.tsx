@@ -1,28 +1,31 @@
 "use client";
 
-import { EdgeFader } from "./EdgeFader";
-
-// Three of the four edges (top, left, right). The bottom edge is the
-// Advanced drawer handle. ribbons.js (Phase 8) mounts SVG paths inside
-// each .install-edge-bar to drive the writhe animation; on left/right
-// we layer a traditional vertical fader on top so the LoRA strength
-// reads as a proper channel-strip fader instead of a ribbon.
+// HUD edge containers — kept in the DOM as invisible mount points for
+// the things that still query them (useEdgeLoraBinding writes
+// --fill / data-bar / labels; MobileStepperRail mounts its rail
+// surface on top; the ribbons canvas binds its writhe animation here).
+//
+// The TOP edge is gone — the DENOISE knob in HeroMacros covers that
+// drag affordance. The LEFT/RIGHT edges stay in the DOM but their
+// visual content is hidden via CSS (`.install-edge-bar`, ribbon canvas
+// opacity:0) so the consolidated right-side <MasterPanel/> reads as
+// the only LoRA surface on desktop. On mobile, MobileStepperRail
+// continues to render against these hidden containers — no behavioral
+// regression for the touch flow.
 
 interface EdgeProps {
-  side: "top" | "left" | "right";
-  label?: string;
+  side: "left" | "right";
   bar?: string;
 }
 
-function Edge({ side, label, bar }: EdgeProps) {
+function Edge({ side, bar }: EdgeProps) {
   return (
     <div
       className={`install-edge install-edge-${side}`}
       data-bar={bar}
     >
-      <span className="install-edge-label">{label ?? ""}</span>
+      <span className="install-edge-label" />
       <div className="install-edge-bar" />
-      {(side === "left" || side === "right") && <EdgeFader side={side} />}
     </div>
   );
 }
@@ -30,13 +33,6 @@ function Edge({ side, label, bar }: EdgeProps) {
 export function HUDFrame() {
   return (
     <>
-      {/* The top "Remix Strength" ribbon is gone — the DENOISE knob in
-          the always-visible hero macros row at the bottom now serves
-          the same drag-affordance role. Top edge stays empty so the
-          show frames itself with negative space, not chrome. */}
-      {/* Left/right bars track the first/second currently enabled LoRA.
-          Their data-bar and label are populated at runtime from the
-          server's catalog. */}
       <Edge side="left" />
       <Edge side="right" />
     </>
