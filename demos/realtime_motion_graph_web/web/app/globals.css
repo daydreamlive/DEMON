@@ -2694,12 +2694,15 @@ body.drawer-open .hero-macros-tools {
   border-radius: 999px;
   color: var(--accent);
   text-decoration: none;
+  cursor: pointer;
   font-family: var(--font-mono);
   font-size: 9.5px;
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
   line-height: 1;
   overflow: hidden;
+  -webkit-appearance: none;
+          appearance: none;
   transition:
     color 140ms ease-out,
     background 140ms ease-out,
