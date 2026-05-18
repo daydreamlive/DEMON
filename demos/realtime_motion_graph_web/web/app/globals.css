@@ -5582,3 +5582,105 @@ body.drawer-open .waveform-scrub-box[data-curves-open="true"] {
 .ref-control-option--current {
   color: var(--accent);
 }
+
+/* ── Mic recorder (AudioSourceCrate "Record audio") ──────────────────
+   Reuses the .almost-ready-* modal shell + .config-modal-accent ribbon.
+   Only the recorder-specific innards get their own classes. */
+.mic-rec-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: 22px 20px 26px;
+}
+.mic-rec-hint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  text-align: center;
+  max-width: 340px;
+}
+.mic-rec-error {
+  margin: 0;
+  font-size: 13px;
+  color: var(--critical);
+  text-align: center;
+}
+.mic-rec-timer {
+  font-family: var(--font-mono);
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.mic-rec-timer-max {
+  font-size: 14px;
+  color: var(--text-dim);
+  letter-spacing: 0.06em;
+}
+.mic-rec-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  background: var(--text-dim);
+}
+.mic-rec-timer--live .mic-rec-dot {
+  background: var(--critical);
+  animation: mic-rec-pulse 1s cubic-bezier(.2, .8, .2, 1) infinite;
+}
+@keyframes mic-rec-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.35; transform: scale(0.82); }
+}
+.mic-rec-progress {
+  width: 100%;
+  max-width: 320px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--input-bg);
+  overflow: hidden;
+}
+.mic-rec-progress-fill {
+  height: 100%;
+  background: var(--dd-gradient);
+  transition: width 120ms linear;
+}
+.mic-rec-btn {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  padding: 11px 22px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--frame-line);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition:
+    background-color 160ms cubic-bezier(.2, .8, .2, 1),
+    border-color 160ms cubic-bezier(.2, .8, .2, 1),
+    color 160ms cubic-bezier(.2, .8, .2, 1);
+}
+.mic-rec-btn:hover {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.mic-rec-btn--rec {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+.mic-rec-btn--rec:hover {
+  background: var(--accent-medium);
+  color: var(--accent-hover);
+}
+.mic-rec-btn--stop {
+  border-color: var(--critical);
+  color: var(--critical);
+}
+.mic-rec-btn--stop:hover {
+  background: rgba(255, 80, 80, 0.12);
+}
