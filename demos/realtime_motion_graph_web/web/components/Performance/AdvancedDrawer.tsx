@@ -164,7 +164,22 @@ export function AdvancedDrawer() {
             <LiteControls onOpenAllControls={() => setAllOpen(true)} />
           ) : (
             <>
-              <DrawerTabs active={activeTab} onChange={setActiveTab} />
+              <div className="install-sheet-topbar">
+                <DrawerTabs active={activeTab} onChange={setActiveTab} />
+                {/* Close affordance only matters when the drawer is
+                    open; HeroMacros' toggle is the same target when
+                    closed. Dispatching dd:toggle-drawer keeps both
+                    surfaces driving the same single state. */}
+                <button
+                  type="button"
+                  className="install-sheet-close"
+                  onClick={() => setOpen(false)}
+                  aria-label="Close Full Controls"
+                >
+                  <span className="install-sheet-close-label">Close</span>
+                  <span className="install-sheet-close-caret" aria-hidden="true">▴</span>
+                </button>
+              </div>
               <div
                 className={`mixer-rack mixer-rack--tabbed${!showKbdHints ? " mixer-rack--no-kbd-hints" : ""}`}
                 id="mixer-tiles"

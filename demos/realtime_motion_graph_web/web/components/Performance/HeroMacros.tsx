@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useState } from "react";
+
 import { useSessionStore } from "@/store/useSessionStore";
 
 import { Knob } from "./Knob";
@@ -30,17 +32,49 @@ const HERO_PARAMS = ["denoise", "hint_strength", "feedback"] as const;
 export function HeroMacros() {
   const status = useSessionStore((s) => s.status);
   const started = status !== "idle";
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
+  // Mirror body.drawer-open via a custom event the drawer fires on
+  // toggle. The drawer is the source of truth; we just want the caret
+  // to flip between ▾ (open me) and ▴ (close me).
+  useEffect(() => {
+    const sync = () => {
+      setDrawerOpen(document.body.classList.contains("drawer-open"));
+    };
+    const obs = new MutationObserver(sync);
+    obs.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+    sync();
+    return () => obs.disconnect();
+  }, []);
+
   if (!started) return null;
   return (
-    <div className="hero-macros" data-hero-macros>
-      {HERO_PARAMS.map((p) => (
-        <Knob
-          key={p}
-          param={p}
-          label={defaultLabelFor(p)}
-          kbd={kbdHintFor(p)}
-        />
-      ))}
+    <div
+      className={`hero-macros${drawerOpen ? " hero-macros--drawer-open" : ""}`}
+      data-hero-macros
+    >
+      <div className="hero-macros-knobs">
+        {HERO_PARAMS.map((p) => (
+          <Knob
+            key={p}
+            param={p}
+            label={defaultLabelFor(p)}
+            kbd={kbdHintFor(p)}
+          />
+        ))}
+      </div>
+      <button
+        type="button"
+        className="hero-macros-toggle"
+        onClick={() => document.dispatchEvent(new Event("dd:toggle-drawer"))}
+        aria-label={drawerOpen ? "Close Full Controls" : "Open Full Controls"}
+        aria-expanded={drawerOpen}
+      >
+        <span className="hero-macros-toggle-label">Full Controls</span>
+        <span className="hero-macros-toggle-caret" aria-hidden="true">
+          {drawerOpen ? "▴" : "▾"}
+        </span>
+      </button>
     </div>
   );
 }

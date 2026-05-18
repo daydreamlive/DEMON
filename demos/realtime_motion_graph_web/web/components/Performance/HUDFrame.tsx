@@ -1,9 +1,12 @@
 "use client";
 
+import { EdgeFader } from "./EdgeFader";
+
 // Three of the four edges (top, left, right). The bottom edge is the
-// Advanced drawer handle. ribbons.js (Phase 8) will mount SVG paths inside
-// each .install-edge-bar to drive the writhe animation; until then the bars
-// stay as plain DIVs so the layout reserves the right space.
+// Advanced drawer handle. ribbons.js (Phase 8) mounts SVG paths inside
+// each .install-edge-bar to drive the writhe animation; on left/right
+// we layer a traditional vertical fader on top so the LoRA strength
+// reads as a proper channel-strip fader instead of a ribbon.
 
 interface EdgeProps {
   side: "top" | "left" | "right";
@@ -19,6 +22,7 @@ function Edge({ side, label, bar }: EdgeProps) {
     >
       <span className="install-edge-label">{label ?? ""}</span>
       <div className="install-edge-bar" />
+      {(side === "left" || side === "right") && <EdgeFader side={side} />}
     </div>
   );
 }
@@ -26,10 +30,13 @@ function Edge({ side, label, bar }: EdgeProps) {
 export function HUDFrame() {
   return (
     <>
-      <Edge side="top" label="Remix Strength" bar="denoise" />
+      {/* The top "Remix Strength" ribbon is gone — the DENOISE knob in
+          the always-visible hero macros row at the bottom now serves
+          the same drag-affordance role. Top edge stays empty so the
+          show frames itself with negative space, not chrome. */}
       {/* Left/right bars track the first/second currently enabled LoRA.
           Their data-bar and label are populated at runtime from the
-          server's catalog (Phase 11). */}
+          server's catalog. */}
       <Edge side="left" />
       <Edge side="right" />
     </>

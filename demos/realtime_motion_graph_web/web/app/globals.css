@@ -1161,6 +1161,102 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
 .install-edge-left  .install-edge-bar { right: 0; transform-origin: right bottom; }
 .install-edge-right .install-edge-bar { left:  0; transform-origin: left  bottom; }
 
+/* ── Edge fader (LoRA L/R) ──────────────────────────────────────────
+   Vertical fader visual sitting on top of the writhing-ribbon edge.
+   Same anatomy as the VOICE channel faders: recessed groove + colored
+   fill + horizontal cap with a center indicator line. Hidden when the
+   LoRA slot is empty so the canvas still reads as decorative. */
+.edge-fader {
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  width: 26px;
+  pointer-events: none;
+  z-index: 2;
+}
+.edge-fader--left {
+  /* Tuck against the left chrome with a hairline gap from the canvas
+     edge so the rail feels seated in the bezel rather than glued to it. */
+  left: 6px;
+}
+.edge-fader--right {
+  right: 6px;
+}
+.edge-fader-track {
+  position: relative;
+  width: 4px;
+  height: 100%;
+  margin: 0 auto;
+  background: linear-gradient(
+    to right,
+    rgba(0, 0, 0, 0.6) 0%,
+    rgba(0, 0, 0, 0.45) 50%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  border-radius: 2px;
+  box-shadow:
+    inset 1px 0 0 rgba(0, 0, 0, 0.7),
+    inset -1px 0 1px rgba(255, 255, 255, 0.05),
+    0 1px 0 rgba(255, 255, 255, 0.04);
+}
+.edge-fader-fill {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  background: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--accent) 70%, #000) 0%,
+    var(--accent) 100%
+  );
+  border-radius: 2px;
+  filter: drop-shadow(0 0 2px color-mix(in srgb, var(--accent) 40%, transparent));
+  transition: height 70ms linear;
+}
+.edge-fader-cap {
+  position: absolute;
+  left: 50%;
+  width: 22px;
+  height: 10px;
+  background: linear-gradient(
+    to bottom,
+    rgb(78, 84, 96) 0%,
+    rgb(42, 46, 54) 48%,
+    rgb(18, 20, 24) 100%
+  );
+  border-radius: 2px;
+  transform: translate(-50%, 50%);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.65),
+    0 0 0 1px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.5);
+  transition: bottom 70ms linear;
+}
+.edge-fader-cap::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  top: 50%;
+  height: 1px;
+  background: var(--accent);
+  transform: translateY(-50%);
+  border-radius: 1px;
+  box-shadow: 0 0 3px var(--accent);
+}
+.edge-fader--empty {
+  opacity: 0.25;
+}
+/* Hide the writhing ribbon canvas on left/right edges — the fader
+   replaces it as the visual indicator. The ribbon code still runs
+   (other side-effects + the canvas paint into the same DOM) but the
+   ribbons themselves are invisible. */
+.install-edge-left .install-ribbons,
+.install-edge-right .install-ribbons {
+  opacity: 0;
+}
+
 /* When no LoRA is enabled in the corresponding slot, the perimeter bar
    collapses to a thin static line so it doesn't shout for attention. */
 .install-edge-empty .install-edge-bar { transform: scaleY(0.05); opacity: 0.3; }
@@ -1550,7 +1646,11 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
    above the bottom edge. Clicking the handle (or Esc / `o`) toggles open.
    ============================================================================ */
 :root {
-  --drawer-handle-h: 28px;
+  /* Handle is hidden (HeroMacros caret toggles the drawer now), so the
+     closed drawer pushes fully off-screen. Variable kept at 0 so any
+     other CSS that does `calc(... + var(--drawer-handle-h, …))` for
+     positioning still works without breaking. */
+  --drawer-handle-h: 0px;
   --drawer-h: clamp(380px, 50vh, 540px);
 }
 
@@ -1560,8 +1660,9 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   height: var(--drawer-h);
   background: var(--sheet-bg);
   border-top: 1px solid var(--frame-line);
-  /* Closed: only the handle (top --drawer-handle-h px) is on-screen. */
-  transform: translateY(calc(100% - var(--drawer-handle-h)));
+  /* Closed: fully off-screen. The HeroMacros caret is the only
+     drawer-open affordance on desktop. */
+  transform: translateY(100%);
   transition: transform 320ms cubic-bezier(.2, .7, .2, 1);
   z-index: 50;
   display: flex;
@@ -1575,24 +1676,20 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
    indicators flank a small label so the bar reads as a draggable
    surface even on first sight. */
 .install-drawer-handle {
+  /* The visual handle is gone — the HeroMacros bay contains a "Full
+     Controls" caret button that dispatches `dd:toggle-drawer`, the
+     same event this button used to. We keep the button mounted (and
+     pointer-events: none) so the drawer's existing focus/hover/tooltip
+     plumbing doesn't break; but visually it occupies zero pixels. */
   flex-shrink: 0;
-  height: var(--drawer-handle-h);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  padding: 0 18px;
-  background: var(--frame);
+  height: 0;
+  width: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+  padding: 0;
   border: none;
-  border-bottom: 1px solid var(--frame-line);
-  color: var(--text-dim);
-  font: inherit;
-  font-family: var(--font-mono);
-  font-size: 0.7em;
-  letter-spacing: var(--tracking-bar);
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: color 120ms, background 120ms;
+  background: transparent;
 }
 .install-drawer-handle:hover {
   color: var(--accent);
@@ -1789,13 +1886,48 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
    tile at a time (the active tab's contents) rather than a row of
    every tile. The single tile fills the rack width so its sliders
    spread out instead of cramming. */
-.drawer-tabs {
+.install-sheet-topbar {
   display: flex;
-  flex: 0 0 auto;
-  gap: 4px;
-  padding: 4px 0 6px;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 12px;
   border-bottom: 1px solid var(--frame-line);
   margin-bottom: 6px;
+}
+.install-sheet-close {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px 5px;
+  margin: 4px 0 6px;
+  background: transparent;
+  border: 1px solid var(--frame-line);
+  border-radius: 999px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  -webkit-appearance: none;
+          appearance: none;
+  transition: color 140ms ease-out, border-color 140ms ease-out;
+}
+.install-sheet-close:hover {
+  color: var(--text-strong);
+  border-color: var(--accent-line);
+}
+.install-sheet-close-caret {
+  font-size: 9px;
+  line-height: 1;
+  transform: translateY(-0.5px);
+}
+.drawer-tabs {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 4px;
+  padding: 4px 0 6px;
+  margin-bottom: 0;
 }
 .drawer-tab {
   flex: 0 0 auto;
@@ -2050,14 +2182,14 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
      - JS guards via useSessionStore so it's also hidden pre-`ready`. */
 .hero-macros {
   position: fixed;
-  bottom: calc(var(--drawer-handle-h, 36px) + 16px + env(safe-area-inset-bottom, 0px));
+  bottom: calc(8px + env(safe-area-inset-bottom, 0px));
   left: 50%;
   transform: translateX(-50%);
   display: flex;
-  flex-direction: row;
-  align-items: flex-end;
-  gap: 22px;
-  padding: 10px 18px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 10px 18px 6px;
   /* In-metaphor panel chrome: a recessed bay holding the three macros.
      Uses the same dark surface vocabulary as the audio-source-crate
      and turntable bay so the bottom row reads as one hardware unit.
@@ -2098,10 +2230,66 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
 .hero-macros .knob-kbd {
   font-size: 8px;
 }
-/* Hide when the drawer is open — same params live in the drawer's
-   CORE tab; mutually-exclusive interaction modes prevent confusion. */
-body.drawer-open .hero-macros {
+/* Inner row of knobs — horizontal. */
+.hero-macros-knobs {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 22px;
+}
+/* Full Controls toggle — small caret row centered beneath the knobs.
+   Sits inside the bay so the bottom row reads as ONE hardware unit
+   (display + knobs + button), not two stacked elements. */
+.hero-macros-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 4px auto 0;
+  padding: 4px 14px 5px;
+  background: transparent;
+  border: 1px solid var(--frame-line);
+  border-radius: 999px;
+  color: var(--text-dim);
+  cursor: pointer;
+  -webkit-appearance: none;
+          appearance: none;
+  transition: color 140ms ease-out, border-color 140ms ease-out, background 140ms ease-out;
+}
+.hero-macros-toggle:hover {
+  color: var(--text-strong);
+  border-color: var(--accent-line);
+  background: rgba(255, 255, 255, 0.02);
+}
+.hero-macros-toggle-label {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+.hero-macros-toggle-caret {
+  font-size: 9px;
+  line-height: 1;
+  transform: translateY(-0.5px);
+  transition: transform 140ms ease-out;
+}
+.hero-macros--drawer-open .hero-macros-toggle {
+  /* When the drawer is open the toggle is the only thing visible
+     in the bay — give it a bit more presence so the user spots the
+     close affordance. */
+  color: var(--text-strong);
+  border-color: var(--accent-line);
+}
+/* When the drawer is open the knob row hides (params live in the
+   drawer's CORE tab now) but the toggle button stays — it's the
+   only way to close the drawer with the bottom handle gone. */
+body.drawer-open .hero-macros-knobs {
   display: none;
+}
+.hero-macros--drawer-open {
+  /* Compact bay — just the toggle row remains. */
+  padding: 4px 14px;
+  gap: 0;
 }
 /* Mobile: LiteControls already does this job inside the drawer.
    Hero macros would crowd the bottom-corner controls on touch. */
@@ -2119,43 +2307,47 @@ body.drawer-open .hero-macros {
    convention. */
 .footer-links {
   position: fixed;
-  /* Anchored to the top-right edge of the canvas, just below the
-     HaloBadge. Always-visible chrome that the user can act on
-     without having to dig through a menu. Top placement keeps it
-     out of the bottom row (audio source crate / hero macros /
-     turntable) which is already dense. */
+  /* Anchored to the top edge, sitting left of HaloBadge. The two
+     chips share the visual vocabulary of HeroMacros' Full Controls
+     toggle: transparent shell, 1px frame-line border, hover lifts
+     to accent line color. Same skeu-chip language used throughout. */
   top: 22px;
   right: 140px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: var(--tracking-wide);
-  text-transform: uppercase;
-  color: var(--text-dim);
+  gap: 6px;
   z-index: 4;
   pointer-events: auto;
-  opacity: 0.7;
-  transition: opacity 160ms ease-out;
-}
-.footer-links:hover {
-  opacity: 1;
 }
 .footer-link {
-  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 5px;
+  background: transparent;
+  border: 1px solid var(--frame-line);
+  border-radius: 999px;
+  color: var(--text-dim);
   text-decoration: none;
-  padding: 2px 4px;
-  border-radius: 2px;
-  transition: color 120ms ease-out, background 120ms ease-out;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  transition: color 140ms ease-out, border-color 140ms ease-out, background 140ms ease-out;
 }
 .footer-link:hover {
   color: var(--text-strong);
-  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--accent-line);
+  background: rgba(255, 255, 255, 0.02);
 }
-.footer-link-sep {
-  color: var(--frame-line);
-  user-select: none;
+.footer-link-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transform: translateY(-0.5px);
+}
+.footer-link-label {
+  line-height: 1;
 }
 /* Mobile: hide — the lite drawer + halo menu cover this on mobile,
    and the bottom-edge real estate is already tight. */
