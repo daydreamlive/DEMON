@@ -47,10 +47,9 @@ const ARC_START_DEG = -135;
 const ARC_END_DEG = 135;
 const ARC_RANGE_DEG = ARC_END_DEG - ARC_START_DEG;
 
-// Drag sensitivity. 200px of vertical motion = full sweep. Matches
-// SliderGroup's track-height convention so a 1:1 mental model survives
-// the swap.
-const PIXELS_PER_RANGE = 200;
+// Drag sensitivity. 280px of vertical motion = full sweep — matches
+// Ableton's default ratio for a ~44px knob cap. Shift = fine (×5).
+const PIXELS_PER_RANGE = 280;
 const FINE_DIVISOR = 5;
 const SCROLL_STEP = 0.03;
 const DBLCLICK_MS = 350;
@@ -268,6 +267,7 @@ export function Knob({ param, label, max, min, reverse, unity, kbd }: Props) {
       <div
         className="knob-label"
         title={tooltip}
+        data-dd-tooltip={tooltip}
         data-dd-tooltip-wide={tooltip}
       >
         {label}

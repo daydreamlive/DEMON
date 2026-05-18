@@ -1,36 +1,23 @@
 "use client";
 
-import { useEffect, useState, type ReactElement } from "react";
+import { useState, type ReactElement } from "react";
 
-import { useCurveStore } from "@/store/useCurveStore";
-import { useRecordingStore } from "@/store/useRecordingStore";
-
-// Tab strip for the Full Controls panel. Combo segmented-control +
-// icon-led tabs — a single bordered hardware shell containing six
-// primary cells (top row) + two tool-trigger cells (bottom row),
-// each with a small monoline icon above its label. Active body-tab
-// cells sit recessed (inset shadow); trigger cells fire side effects
-// (curve editor overlay, record start/stop) and badge themselves
-// active while their underlying surface is engaged.
+// Tab strip for the Full Controls panel. Segmented hardware shell with
+// six primary cells, monoline icon above each label. Active cell sits
+// recessed via inset shadow + brighter foreground (a pressed hardware
+// button).
 //
-// Body tabs (top row):
+// Body tabs (Wave 9 — tool-trigger tabs were removed; Curve Editor and
+// REC live in the hero bay now):
 //   CORE   — MIX / TRACK / TIMBRE / FEEDBACK / BASS / TREBLE (knobs)
 //   MOD    — SHIFT / N.SHARE / JITTER (knobs) + DCW config
 //   VOICE  — the 14 latent channels (V1–V8 + M1–M6, faders)
 //   PROMPT — prompts, key, time signature, seed
 //   LIB    — LoRAs
 //   CONFIG — session controls: track/key/sig, transport, MIDI, prefs
-//
-// Tool-trigger tabs (bottom row):
-//   CURVE EDITOR — toggles the existing ScheduleCurvesOverlay
-//   REC          — dispatches dd:toggle-record (same event the
-//                  floating turntable uses)
 
 export const DRAWER_TABS = ["core", "mod", "voice", "prompt", "lib", "config"] as const;
 export type DrawerTab = (typeof DRAWER_TABS)[number];
-
-const TOOL_TABS = ["curve-editor", "rec"] as const;
-type ToolTab = (typeof TOOL_TABS)[number];
 
 const TAB_LABELS: Record<DrawerTab, string> = {
   core: "Core",
@@ -39,11 +26,6 @@ const TAB_LABELS: Record<DrawerTab, string> = {
   prompt: "Prompt",
   lib: "Lib",
   config: "Config",
-};
-
-const TOOL_LABELS: Record<ToolTab, string> = {
-  "curve-editor": "Curve Editor",
-  rec: "Rec",
 };
 
 // Monoline 16x16 icons — same vocabulary as the halo menu (1.4px
@@ -88,41 +70,12 @@ const TAB_ICONS: Record<DrawerTab, ReactElement> = {
   ),
 };
 
-const TOOL_ICONS: Record<ToolTab, ReactElement> = {
-  // Curve editor — a sinuous bezier with two control points
-  "curve-editor": (
-    <>
-      <path d="M2 12 C 5 12, 5 4, 8 4 S 11 12, 14 12" />
-      <circle cx="2" cy="12" r="1.1" fill="currentColor" stroke="none" />
-      <circle cx="14" cy="12" r="1.1" fill="currentColor" stroke="none" />
-    </>
-  ),
-  // REC — filled circle (universal record glyph)
-  rec: <circle cx="8" cy="8" r="3.6" fill="currentColor" stroke="none" />,
-};
-
 interface Props {
   active: DrawerTab;
   onChange: (tab: DrawerTab) => void;
 }
 
 export function DrawerTabs({ active, onChange }: Props) {
-  // Subscribe to overlay + recording state so the tool tabs can
-  // active-style themselves while their underlying surface is engaged.
-  const curveOpen = useCurveStore((s) => s.overlayOpen);
-  const toggleCurve = useCurveStore((s) => s.toggleOverlay);
-  const [recState, setRecState] = useState<string>("idle");
-  useEffect(() => {
-    const update = () => {
-      const s = useRecordingStore.getState().state;
-      setRecState(s.kind);
-    };
-    update();
-    const unsub = useRecordingStore.subscribe(update);
-    return unsub;
-  }, []);
-  const isRecording = recState === "recording" || recState === "arming";
-
   return (
     <div className="drawer-tabs" role="tablist" aria-label="Full controls">
       <div className="drawer-tabs-row drawer-tabs-row--primary">
@@ -152,54 +105,6 @@ export function DrawerTabs({ active, onChange }: Props) {
             <span className="drawer-tab-label">{TAB_LABELS[t]}</span>
           </button>
         ))}
-      </div>
-      <div className="drawer-tabs-row drawer-tabs-row--tools">
-        <button
-          type="button"
-          className={`drawer-tab drawer-tab--tool${curveOpen ? " drawer-tab--active" : ""}`}
-          onClick={() => toggleCurve()}
-          aria-pressed={curveOpen}
-        >
-          <svg
-            className="drawer-tab-icon"
-            viewBox="0 0 16 16"
-            width={16}
-            height={16}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={1.4}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            {TOOL_ICONS["curve-editor"]}
-          </svg>
-          <span className="drawer-tab-label">{TOOL_LABELS["curve-editor"]}</span>
-        </button>
-        <button
-          type="button"
-          className={`drawer-tab drawer-tab--tool drawer-tab--rec${isRecording ? " drawer-tab--active drawer-tab--rec-active" : ""}`}
-          onClick={() => document.dispatchEvent(new Event("dd:toggle-record"))}
-          aria-pressed={isRecording}
-        >
-          <svg
-            className="drawer-tab-icon drawer-tab-icon--rec"
-            viewBox="0 0 16 16"
-            width={16}
-            height={16}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={1.4}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            {TOOL_ICONS.rec}
-          </svg>
-          <span className="drawer-tab-label">
-            {isRecording ? "Stop" : TOOL_LABELS.rec}
-          </span>
-        </button>
       </div>
     </div>
   );
