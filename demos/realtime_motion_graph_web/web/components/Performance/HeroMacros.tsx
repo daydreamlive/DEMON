@@ -77,7 +77,9 @@ export function HeroMacros() {
         aria-label={drawerOpen ? "Close Full Controls" : "Open Full Controls"}
         aria-expanded={drawerOpen}
       >
-        <span className="hero-macros-toggle-label">Full Controls</span>
+        <span className="hero-macros-toggle-label">
+          {drawerOpen ? "Simple Controls" : "Full Controls"}
+        </span>
         <span className="hero-macros-toggle-caret" aria-hidden="true">
           {drawerOpen ? "◂" : "▸"}
         </span>

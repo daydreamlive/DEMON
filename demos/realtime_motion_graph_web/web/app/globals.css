@@ -694,45 +694,6 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   to { opacity: 1; }
 }
 
-/* Beat indicator — anchor chrome on the graph that attributes the
-   chorus-burst energy to the music. Dot scales + brightens with
-   --bloom-amount; wordmark stays static for legibility. All visual
-   reactivity is pure CSS off the existing #performance-scoped
-   --bloom-amount variable; no JS frame loop. */
-#install-video-area #graph-wrap .beat-indicator {
-  position: absolute;
-  top: 8px;
-  right: 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  pointer-events: none;
-  z-index: 2;
-  /* Keep the badge readable on any background. */
-  padding: 3px 8px 4px;
-  background: rgba(6, 6, 12, 0.65);
-  border: 1px solid var(--frame-line);
-  border-radius: 999px;
-  -webkit-backdrop-filter: blur(3px);
-          backdrop-filter: blur(3px);
-}
-.beat-indicator-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: rgba(150, 180, 220, calc(0.4 + 0.6 * var(--bloom-amount, 0)));
-  /* Compositor-friendly: transform scale + opacity. No box-shadow. */
-  transform: scale(calc(0.85 + 0.5 * var(--bloom-amount, 0)));
-  transition: transform 60ms linear, background 60ms linear;
-}
-.beat-indicator-label {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: var(--tracking-wide);
-  text-transform: uppercase;
-  color: var(--text-dim);
-}
 .graph-pause-overlay__glyph {
   position: absolute;
   top: 50%;
@@ -1804,121 +1765,6 @@ body.drawer-open {
   .install-sheet.open { transform: translateY(0); }
 }
 
-/* Drawer handle — full-width bar at the top of the drawer. The only
-   on-screen close affordance, so it's deliberately bigger and more
-   discoverable than the old corner button. Two rounded "grip"
-   indicators flank a small label so the bar reads as a draggable
-   surface even on first sight. */
-.install-drawer-handle {
-  /* The visual handle is gone — the HeroMacros bay contains a "Full
-     Controls" caret button that dispatches `dd:toggle-drawer`, the
-     same event this button used to. We keep the button mounted (and
-     pointer-events: none) so the drawer's existing focus/hover/tooltip
-     plumbing doesn't break; but visually it occupies zero pixels. */
-  flex-shrink: 0;
-  height: 0;
-  width: 0;
-  overflow: hidden;
-  visibility: hidden;
-  pointer-events: none;
-  padding: 0;
-  border: none;
-  background: transparent;
-}
-.install-drawer-handle:hover {
-  color: var(--accent);
-  background: var(--accent-soft);
-}
-.install-drawer-handle-grip {
-  width: 56px;
-  height: 4px;
-  background: var(--frame-line);
-  border-radius: 2px;
-  transition: background 120ms;
-}
-.install-drawer-handle:hover .install-drawer-handle-grip {
-  background: var(--accent);
-}
-.install-drawer-handle-label {
-  white-space: nowrap;
-}
-.install-drawer-handle--disabled,
-.install-drawer-handle--disabled:hover {
-  opacity: 0.35;
-  pointer-events: none;
-  background: var(--frame);
-  color: var(--text-dim);
-  cursor: not-allowed;
-}
-.install-drawer-handle--disabled .install-drawer-handle-grip {
-  background: var(--frame-line);
-}
-
-/* First-run coachmark — floats above the drawer handle to teach new
-   users that more controls live behind it. pointer-events: none so a
-   click on the coachmark falls through to the handle underneath (the
-   document-level pointerdown handler in <AdvancedCoachmark> dismisses
-   the callout while the same click opens the drawer). Single keyframe
-   chain (fade-in forwards → bob loop) — no filter, no backdrop-filter,
-   per PERFORMANCE.md "no unnecessary effects on idle UI". */
-.advanced-coachmark {
-  position: fixed;
-  left: 50%;
-  /* Sit just above the closed-drawer handle peek. When the drawer opens,
-     the parent dismisses the coachmark — no need to track --drawer-h. */
-  bottom: calc(var(--drawer-handle-h, 28px) + 14px);
-  transform: translateX(-50%);
-  pointer-events: none;
-  z-index: 12;
-  display: inline-flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: 0.72em;
-  letter-spacing: var(--tracking-wide, 0.18em);
-  text-transform: uppercase;
-  color: var(--text-strong);
-  text-shadow:
-    0 0 6px rgba(0, 0, 0, 0.55),
-    0 0 14px rgba(0, 0, 0, 0.35);
-  opacity: 0;
-  animation:
-    advanced-coachmark-fade-in 320ms cubic-bezier(.2, .8, .2, 1) forwards,
-    advanced-coachmark-bob 2.4s ease-in-out infinite 320ms;
-}
-.advanced-coachmark-text { display: inline-block; }
-.advanced-coachmark kbd {
-  display: inline-block;
-  padding: 0 5px;
-  margin: 0 2px;
-  border: 1px solid var(--accent-line, rgba(255, 255, 255, 0.35));
-  border-radius: 3px;
-  font-family: inherit;
-  font-size: 0.95em;
-  color: var(--accent, currentColor);
-  background: rgba(255, 255, 255, 0.06);
-}
-.advanced-coachmark-arrow {
-  color: var(--accent, currentColor);
-  font-size: 14px;
-  line-height: 1;
-}
-@keyframes advanced-coachmark-fade-in {
-  from { opacity: 0; transform: translate(-50%, 8px); }
-  to   { opacity: 1; transform: translate(-50%, 0);   }
-}
-@keyframes advanced-coachmark-bob {
-  0%, 100% { transform: translate(-50%, 0); }
-  50%      { transform: translate(-50%, -4px); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .advanced-coachmark {
-    animation: advanced-coachmark-fade-in 320ms cubic-bezier(.2, .8, .2, 1) forwards;
-  }
-}
-
 /* Drawer body — vertical stack: operator strip across the top, then a
    wrap-flex grid of mixer tiles below. Tiles wrap to the next row before
    anything overflows horizontally — no sideways scrolling. */
@@ -2058,38 +1904,8 @@ body.drawer-open {
 .install-sheet-topbar {
   display: flex;
   align-items: stretch;
-  justify-content: space-between;
-  gap: 12px;
   border-bottom: 1px solid var(--frame-line);
   margin-bottom: 6px;
-}
-.install-sheet-close {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 12px 5px;
-  margin: 4px 0 6px;
-  background: transparent;
-  border: 1px solid var(--frame-line);
-  border-radius: 999px;
-  color: var(--text-dim);
-  cursor: pointer;
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: var(--tracking-wide);
-  text-transform: uppercase;
-  -webkit-appearance: none;
-          appearance: none;
-  transition: color 140ms ease-out, border-color 140ms ease-out;
-}
-.install-sheet-close:hover {
-  color: var(--text-strong);
-  border-color: var(--accent-line);
-}
-.install-sheet-close-caret {
-  font-size: 9px;
-  line-height: 1;
-  transform: translateY(-0.5px);
 }
 /* Segmented hardware tab strip — one bordered shell containing
    beveled cells. Each cell has a monoline icon above its label.
@@ -2477,8 +2293,12 @@ body.drawer-open {
   transform: translateX(-50%);
   display: flex;
   flex-direction: row;
-  align-items: center;
-  gap: 14px;
+  /* Knob cap-bottoms, divider bottom, and toggle bottom share one
+     baseline — the knob labels sitting below the caps form a second
+     row beneath. Previously `center` here floated the column-stacked
+     toggle higher than the knobs. */
+  align-items: flex-end;
+  gap: 12px;
   padding: 10px 18px 12px;
   /* In-metaphor panel chrome: a recessed bay holding the three macros.
      Uses the same dark surface vocabulary as the audio-source-crate
@@ -2533,7 +2353,7 @@ body.drawer-open {
 .hero-macros-divider {
   width: 1px;
   align-self: stretch;
-  margin: 6px 4px;
+  margin: 0 4px;
   background: var(--frame-line);
   flex: 0 0 auto;
 }
@@ -2542,11 +2362,11 @@ body.drawer-open {
    (display + knobs + button), not two stacked elements. */
 .hero-macros-toggle {
   display: inline-flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
   justify-content: center;
-  gap: 2px;
-  padding: 10px 14px 12px;
+  gap: 6px;
+  padding: 6px 10px;
   background: transparent;
   border: 1px solid var(--frame-line);
   border-radius: var(--radius-sm);
@@ -2563,19 +2383,14 @@ body.drawer-open {
 }
 .hero-macros-toggle-label {
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: 9px;
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
-  /* Match the knob-label vertical positioning so the toggle reads
-     as a "fourth knob" in the row, balancing visually. */
-  min-height: 1.4em;
-  display: flex;
-  align-items: flex-end;
+  line-height: 1;
 }
 .hero-macros-toggle-caret {
-  font-size: 12px;
+  font-size: 10px;
   line-height: 1;
-  margin-top: 2px;
   transition: transform 140ms ease-out;
 }
 .hero-macros--drawer-open .hero-macros-toggle {
@@ -2616,26 +2431,16 @@ body.drawer-open .hero-macros-knobs,
 .footer-links {
   position: fixed;
   /* Vertically centered against the HaloBadge midline so the
-     wordmark + halo + chips all read as one horizontal band. */
-  top: max(calc(var(--hud-thickness) / 2 + 2px + var(--top-bias, 5px)),
+     wordmark + halo + pills all read as one horizontal band. The
+     `-11px` accounts for the ~22px-tall pill row centering against
+     the badge's 44px height anchored at `hud/2 - 10px + top-bias`. */
+  top: max(calc(var(--hud-thickness) / 2 - 11px + var(--top-bias, 5px)),
            env(safe-area-inset-top, 0px));
   /* Slides inward when sidebar opens. */
   right: calc(140px + var(--drawer-w-open, 0px));
-  /* Recessed bay matching the .drawer-tabs vocabulary: same inset
-     shadow, same 1px frame-line border, same beveled cells inside.
-     Wrapping the two chips in this bay ties the top-right chrome
-     into the same visual family as the tab strip below. */
   display: inline-flex;
   align-items: center;
-  gap: 0;
-  padding: 2px;
-  background: rgba(0, 0, 0, 0.35);
-  border: 1px solid var(--frame-line);
-  border-radius: var(--radius-sm);
-  box-shadow:
-    inset 0 1px 2px rgba(0, 0, 0, 0.5),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.03),
-    0 1px 0 rgba(255, 255, 255, 0.04);
+  gap: 10px;
   z-index: 4;
   pointer-events: auto;
   transition: right 320ms cubic-bezier(.2, .7, .2, 1);
@@ -2643,56 +2448,22 @@ body.drawer-open .hero-macros-knobs,
 .footer-link {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px 5px;
-  /* Beveled cell — same vertical-gradient body as a tab cell, with
-     a subtle inner highlight up top. Inactive by default. */
-  background: linear-gradient(
-    to bottom,
-    rgba(255, 255, 255, 0.04) 0%,
-    rgba(255, 255, 255, 0.01) 50%,
-    rgba(0, 0, 0, 0.15) 100%
-  );
-  border: 1px solid transparent;
-  border-radius: 3px;
-  margin-left: 1px;
+  padding: 4px 12px 5px;
+  background: transparent;
+  border: 1px solid var(--frame-line);
+  border-radius: 999px;
   color: var(--text-dim);
   text-decoration: none;
   font-family: var(--font-mono);
   font-size: 9.5px;
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
-  transition:
-    color 140ms ease-out,
-    background 140ms ease-out,
-    transform 140ms ease-out;
-}
-.footer-link:first-child {
-  margin-left: 0;
+  line-height: 1;
+  transition: color 140ms ease-out, border-color 140ms ease-out;
 }
 .footer-link:hover {
   color: var(--text-strong);
-  background: linear-gradient(
-    to bottom,
-    rgba(255, 255, 255, 0.06) 0%,
-    rgba(255, 255, 255, 0.02) 50%,
-    rgba(0, 0, 0, 0.1) 100%
-  );
-}
-.footer-link:hover .footer-link-icon {
-  transform: translateY(-0.5px);
-}
-.footer-link-icon {
-  transition: transform 140ms ease-out;
-}
-.footer-link-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transform: translateY(-0.5px);
-}
-.footer-link-label {
-  line-height: 1;
+  border-color: var(--accent-line);
 }
 /* Mobile: hide — the lite drawer + halo menu cover this on mobile,
    and the bottom-edge real estate is already tight. */
@@ -3881,22 +3652,6 @@ body.drawer-open .hero-macros-knobs,
     right: max(14px, env(safe-area-inset-right, 0px));
   }
 }
-/* Bigger drawer handle on mobile — Apple HIG minimum 44pt; we use 52px so
-   the grip is easy to find with a thumb without bumping the home indicator.
-   Override the default --drawer-handle-h locally so the closed-state
-   transform also accounts for the new height. */
-.install-sheet--mobile {
-  --drawer-handle-h: 52px;
-}
-.install-sheet--mobile .install-drawer-handle {
-  font-size: 0.78em;
-  height: var(--drawer-handle-h);
-}
-.install-sheet--mobile .install-drawer-handle-grip {
-  width: 64px;
-  height: 5px;
-}
-
 .lite-controls {
   display: flex;
   flex-direction: column;
