@@ -54,7 +54,11 @@ export function SeedKnob() {
     setEditing(true);
   };
   const commitEdit = () => {
-    const parsed = parseInt(editText, 10);
+    // parseFloat handles plain ints, decimals, AND exponential notation
+    // (the compactSeed display uses "1.2e7" for big seeds, so users
+    // re-editing a compact value need the parser to accept it). setSeed
+    // floors internally — fractional inputs round to integer.
+    const parsed = parseFloat(editText);
     if (Number.isFinite(parsed)) setSeed(parsed);
     setEditing(false);
   };

@@ -156,9 +156,6 @@ export function Knob({ param, label, max, min, reverse, unity, kbd }: Props) {
     let rafId = 0;
     let lastDownAt = 0;
 
-    // tFromDelta computes the new t given the drag delta. Vertical
-    // motion: up = positive delta = larger t. Sensitivity halves when
-    // Shift is held (fine mode).
     const commit = (clientY: number) => {
       const dy = startClientY - clientY;
       const divisor = fine ? PIXELS_PER_RANGE * FINE_DIVISOR : PIXELS_PER_RANGE;
@@ -170,6 +167,25 @@ export function Knob({ param, label, max, min, reverse, unity, kbd }: Props) {
       rafId = 0;
       if (!dragging) return;
       commit(pendingClientY);
+    };
+
+    const onDocPointerMove = (e: PointerEvent) => {
+      if (!dragging) return;
+      pendingClientY = e.clientY;
+      fine = e.shiftKey;
+      if (!rafId) rafId = requestAnimationFrame(flush);
+    };
+
+    const onDocPointerUp = () => {
+      if (!dragging) return;
+      dragging = false;
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
+      document.removeEventListener("pointermove", onDocPointerMove);
+      document.removeEventListener("pointerup", onDocPointerUp);
+      document.removeEventListener("pointercancel", onDocPointerUp);
     };
 
     const onPointerDown = (e: PointerEvent) => {
@@ -184,32 +200,20 @@ export function Knob({ param, label, max, min, reverse, unity, kbd }: Props) {
       lastDownAt = now;
       dragging = true;
       startClientY = e.clientY;
-      // Capture the t we're starting from so deltas accumulate from a
-      // fixed reference instead of compounding per-frame.
       startT = valueToT(
         usePerformanceStore.getState().sliderTargets[param] ?? 0,
         mapping,
       );
       fine = e.shiftKey;
-      el.setPointerCapture(e.pointerId);
-      // Match SliderGroup: prevent the parent (drawer / page) from
-      // hijacking the touch as a swipe.
+      // Document-level listeners ride along until pointerup. Avoids
+      // setPointerCapture which silently fails on a few combinations
+      // (transformed ancestors + element pickup mid-drag), which was
+      // the root cause of the user's "knobs won't drag" reports across
+      // Wave 9 / Wave 10.
+      document.addEventListener("pointermove", onDocPointerMove);
+      document.addEventListener("pointerup", onDocPointerUp);
+      document.addEventListener("pointercancel", onDocPointerUp);
       e.preventDefault();
-    };
-    const onPointerMove = (e: PointerEvent) => {
-      if (!dragging) return;
-      pendingClientY = e.clientY;
-      fine = e.shiftKey;
-      if (!rafId) rafId = requestAnimationFrame(flush);
-    };
-    const onPointerUp = (e: PointerEvent) => {
-      if (!dragging) return;
-      dragging = false;
-      el.releasePointerCapture(e.pointerId);
-      if (rafId) {
-        cancelAnimationFrame(rafId);
-        rafId = 0;
-      }
     };
 
     // Scroll-wheel adjustment. Same pattern as SliderGroup's wheel
@@ -227,16 +231,13 @@ export function Knob({ param, label, max, min, reverse, unity, kbd }: Props) {
     };
 
     el.addEventListener("pointerdown", onPointerDown);
-    el.addEventListener("pointermove", onPointerMove);
-    el.addEventListener("pointerup", onPointerUp);
-    el.addEventListener("pointercancel", onPointerUp);
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => {
       el.removeEventListener("pointerdown", onPointerDown);
-      el.removeEventListener("pointermove", onPointerMove);
-      el.removeEventListener("pointerup", onPointerUp);
-      el.removeEventListener("pointercancel", onPointerUp);
       el.removeEventListener("wheel", onWheel);
+      document.removeEventListener("pointermove", onDocPointerMove);
+      document.removeEventListener("pointerup", onDocPointerUp);
+      document.removeEventListener("pointercancel", onDocPointerUp);
       if (rafId) cancelAnimationFrame(rafId);
     };
   }, [param, mapping, setSlider]);

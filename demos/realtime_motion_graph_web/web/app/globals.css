@@ -754,10 +754,18 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
      stay fully reachable without ever overlapping any other UI. */
   position: fixed;
   top: 70px;
-  left: calc(var(--hud-thickness) + var(--ribbon-bleed) + var(--remix-hint-extend) + 12px);
+  left: calc(
+    var(--hud-thickness) + var(--ribbon-bleed) + var(--remix-hint-extend) + 12px
+    + var(--drawer-l-open, 0px)
+  );
   right: calc(var(--hud-thickness) + var(--ribbon-bleed) + var(--remix-hint-extend) + 12px);
-  bottom: calc(var(--drawer-handle-h, 36px) + 12px);
+  /* Hold the overlay above the hero-bay's bottom anchor so the curve
+     canvas never sits under the bottom control row (hero macros, now
+     playing, save pill). hud + 24 = bay's bottom inset; + 100px clears
+     the bay's typical height; + 12px breathing gap. */
+  bottom: calc(var(--hud-thickness) + 24px + 100px + 12px);
   z-index: 51;
+  transition: left 320ms cubic-bezier(.2, .7, .2, 1);
   display: flex;
   flex-direction: column;
   /* Semi-transparent dark wash with a subtle inset frame so the
@@ -980,6 +988,27 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   user-select: none;
   z-index: 6;
   --fill: 0;
+}
+/* Faint hairline below the top HUD bar — a teeny visual break so the
+   topnav (wordmark, halo, pills) doesn't feel glued to the canvas
+   content below. Fades at the edges so it reads as ambient HUD chrome
+   rather than a hard rule. */
+.install-edge-top::after {
+  content: "";
+  position: absolute;
+  left: 6%;
+  right: 6%;
+  bottom: -1px;
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    transparent 0%,
+    var(--frame-line) 20%,
+    var(--frame-line) 80%,
+    transparent 100%
+  );
+  opacity: 0.55;
+  pointer-events: none;
 }
 .install-edge .install-edge-label {
   position: absolute;
@@ -2320,12 +2349,11 @@ body.drawer-open {
   /* Bottom-row baseline shared with .audio-source-dock — same vertical
      centerline so the bottom row reads as one horizontal band. */
   bottom: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-bottom, 0px));
-  /* When the Full Controls panel slides in from the left, shift right
-     by half its width so the bay stays visually centered in the
-     remaining canvas. */
-  left: calc(50% + var(--drawer-l-open, 0px) / 2);
+  /* Stays centered on the viewport regardless of panel state — the
+     bottom row (save pill, hero macros, now playing) is fixed visual
+     furniture; the panel slides in over the canvas area above it. */
+  left: 50%;
   transform: translateX(-50%);
-  transition: left 320ms cubic-bezier(.2, .7, .2, 1);
   display: flex;
   flex-direction: row;
   /* Knob cap-bottoms, divider bottom, and toggle bottom share one
@@ -2687,12 +2715,12 @@ body.drawer-open .hero-macros-tools {
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 5px 14px 6px;
-  background: transparent;
-  border: 1px solid var(--accent-line);
+  gap: 7px;
+  padding: 5px 12px 6px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--frame-line);
   border-radius: 999px;
-  color: var(--accent);
+  color: var(--text-dim);
   text-decoration: none;
   cursor: pointer;
   font-family: var(--font-mono);
@@ -2700,7 +2728,6 @@ body.drawer-open .hero-macros-tools {
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
   line-height: 1;
-  overflow: hidden;
   -webkit-appearance: none;
           appearance: none;
   transition:
@@ -2708,31 +2735,22 @@ body.drawer-open .hero-macros-tools {
     background 140ms ease-out,
     border-color 140ms ease-out;
 }
-.footer-link::before {
-  /* Brand-gradient hairline at the top edge — same vocabulary as the
-     halo menu + audio-source-fan. Sits inside the pill's rounded
-     bounds via overflow: hidden on the parent. */
-  content: "";
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  height: 1px;
-  background: var(--dd-gradient);
-  pointer-events: none;
-}
 .footer-link:hover {
   color: var(--text-strong);
-  background: rgba(255, 255, 255, 0.04);
-  border-color: var(--accent-hover);
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--accent-line);
 }
+/* Primary CTA still uses the accent border + accent text — but no
+   filled background. Reads as "the more important one" without
+   shouting. */
 .footer-link--cta {
-  background: var(--accent);
-  color: #fff;
-  border-color: transparent;
+  border-color: var(--accent-line);
+  color: var(--accent);
 }
 .footer-link--cta:hover {
-  background: var(--accent-hover);
-  color: #fff;
-  border-color: transparent;
+  color: var(--accent-hover);
+  border-color: var(--accent-hover);
+  background: rgba(255, 255, 255, 0.04);
 }
 .footer-link-icon {
   display: inline-flex;
@@ -6682,17 +6700,9 @@ body.drawer-open .hero-macros-tools {
   line-height: 1;
   z-index: 7;
   pointer-events: auto;
-  /* Slide right when the Full Controls panel opens. */
   transition:
-    left 320ms cubic-bezier(.2, .7, .2, 1),
     border-color 140ms,
     color 140ms;
-}
-body.drawer-open .save-pill {
-  left: calc(
-    max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-left, 0px))
-    + var(--drawer-l-open, 0px)
-  );
 }
 .save-pill--dirty {
   border-color: var(--accent-line);
