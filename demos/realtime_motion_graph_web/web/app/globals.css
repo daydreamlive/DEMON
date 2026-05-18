@@ -3998,17 +3998,18 @@ body.curve-open #install-video-area #graph {
 }
 .lite-controls {
   /* Wave 13: LiteControls is mounted DIRECTLY on mobile (no longer
-     inside the slide-up drawer). Anchored bottom-fixed with safe-area
-     respected; same recessed-bay vocabulary as the desktop hero macros
-     bay so it reads as the persistent mini palette. */
+     inside the slide-up drawer). Wave 13.1 trimmed it to track + REC
+     + "All controls" — no slider row — so it's a short ~64px bar
+     that gives the squished graph back vertical room. */
   position: fixed;
   left: max(calc(var(--remix-rail-w, 0px) + 12px), env(safe-area-inset-left, 0px));
   right: max(calc(var(--lora-rail-w, 56px) + 12px), env(safe-area-inset-right, 0px));
   bottom: max(env(safe-area-inset-bottom, 0px) + 8px, 8px);
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: center;
   gap: 10px;
-  padding: 10px 12px 12px;
+  padding: 6px 10px;
   background: rgba(6, 6, 12, 0.62);
   border: 1px solid var(--frame-line);
   border-radius: var(--radius-md);
@@ -4025,6 +4026,14 @@ body.curve-open #install-video-area #graph {
 @media (max-width: 768px) {
   .lite-controls {
     display: flex;
+  }
+  .lite-controls .lite-track-carousel {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .lite-controls .lite-row--actions {
+    flex: 0 0 auto;
+    gap: 10px;
   }
 }
 
@@ -6867,6 +6876,13 @@ body.curve-open #install-video-area #graph {
      mobile canvas and duplicate info already reachable in the
      drawer's CORE tab. Hide on mobile. */
   #install-video-area #graph-wrap .graph-lane-labels {
+    display: none;
+  }
+  /* Waveform scrub strip is hidden on mobile — it eats vertical space
+     that the squished graph needs, and the scrubbing precision is
+     poor at touch resolution anyway. Scrubbing remains available via
+     the full controls sheet. */
+  .waveform-scrub-box {
     display: none;
   }
 }
