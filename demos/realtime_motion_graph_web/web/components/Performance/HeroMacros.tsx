@@ -3,42 +3,77 @@
 import { useEffect, useState } from "react";
 
 import { useCurveStore } from "@/store/useCurveStore";
+import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 
 import { Knob } from "./Knob";
 import { defaultLabelFor, kbdHintFor } from "./SliderTile";
 
-// Permanent 3-knob row that sits at the bottom-center of the canvas,
-// above the closed drawer handle, between AudioSourceCrate (left) and
-// RecordButton (right). This is the "performance palette" — the three
-// macros every musician reaches for, always visible so the main canvas
-// reads as an instrument the moment the user lands.
-//
-// Knobs are smaller (~52 px caps) than the drawer's 64 px CORE knobs
-// so this row feels like a focused subset, not a duplicate of the
-// drawer. The set mirrors mobile's <LiteControls/> — proven minimal
-// palette: DENOISE / STRUCTURE / FEEDBACK.
+// Permanent 3-knob row at the bottom-center of the canvas, with a
+// stacked control column on the right (Seed → Curve Editor → Full
+// Controls). The "performance palette" — the three macros every
+// musician reaches for, always visible, plus quick access to the two
+// most-used tool surfaces and the drawer toggle.
 //
 // Visibility:
-//  - Hidden while the session is idle (no point dialing a remix in
-//    before there's a stream).
-//  - Hidden when the Full Controls drawer is open (mutually exclusive
-//    with the CORE knobs — same params, same actions, just one place
-//    at a time). CSS handles the drawer-open hide via body.drawer-open.
-//  - Hidden below 768 px viewport (mobile gets LiteControls instead).
-//    CSS handles the breakpoint.
+//  - Hidden while the session is idle.
+//  - Knobs hide when the drawer is open (CORE tab covers them);
+//    the tool column stays so Simple Controls / Curve Editor / Seed
+//    stay reachable. Curve overlay does the same.
+//  - Hidden below 768 px viewport (mobile gets LiteControls).
 
 const HERO_PARAMS = ["denoise", "hint_strength", "feedback"] as const;
+
+function DiceIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width={12}
+      height={12}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.4}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="2.5" y="2.5" width="11" height="11" rx="2" />
+      <circle cx="5.5" cy="5.5" r="0.9" fill="currentColor" stroke="none" />
+      <circle cx="10.5" cy="5.5" r="0.9" fill="currentColor" stroke="none" />
+      <circle cx="5.5" cy="10.5" r="0.9" fill="currentColor" stroke="none" />
+      <circle cx="10.5" cy="10.5" r="0.9" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function CurveIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width={12}
+      height={12}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.4}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M2 12 C 5 12, 5 4, 8 4 S 11 12, 14 12" />
+    </svg>
+  );
+}
 
 export function HeroMacros() {
   const status = useSessionStore((s) => s.status);
   const started = status !== "idle";
   const curveOpen = useCurveStore((s) => s.overlayOpen);
+  const toggleCurve = useCurveStore((s) => s.toggleOverlay);
+  const randomizeSeed = usePerformanceStore((s) => s.randomizeSeed);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  // Mirror body.drawer-open via a custom event the drawer fires on
-  // toggle. The drawer is the source of truth; we just want the caret
-  // to flip between ▾ (open me) and ▴ (close me).
+  // Mirror body.drawer-open so the toggle label/caret flip with the
+  // drawer state. The drawer is the source of truth.
   useEffect(() => {
     const sync = () => {
       setDrawerOpen(document.body.classList.contains("drawer-open"));
@@ -65,25 +100,42 @@ export function HeroMacros() {
           />
         ))}
       </div>
-      {/* Vertical divider between the three knobs and the toggle —
-          matches the .voice-section-divider language used inside
-          VoiceTile. Reads as "performance palette | navigation"
-          two-zone layout instead of one undifferentiated row. */}
       <div className="hero-macros-divider" aria-hidden="true" />
-      <button
-        type="button"
-        className="hero-macros-toggle"
-        onClick={() => document.dispatchEvent(new Event("dd:toggle-drawer"))}
-        aria-label={drawerOpen ? "Close Full Controls" : "Open Full Controls"}
-        aria-expanded={drawerOpen}
-      >
-        <span className="hero-macros-toggle-label">
-          {drawerOpen ? "Simple Controls" : "Full Controls"}
-        </span>
-        <span className="hero-macros-toggle-caret" aria-hidden="true">
-          {drawerOpen ? "◂" : "▸"}
-        </span>
-      </button>
+      <div className="hero-macros-tools">
+        <button
+          type="button"
+          className="hero-macros-tool"
+          onClick={() => randomizeSeed()}
+          aria-label="Randomize seed"
+        >
+          <DiceIcon />
+          <span className="hero-macros-tool-label">Seed</span>
+        </button>
+        <button
+          type="button"
+          className={`hero-macros-tool${curveOpen ? " hero-macros-tool--active" : ""}`}
+          onClick={() => toggleCurve()}
+          aria-pressed={curveOpen}
+          aria-label="Toggle curve editor"
+        >
+          <CurveIcon />
+          <span className="hero-macros-tool-label">Curve Editor</span>
+        </button>
+        <button
+          type="button"
+          className="hero-macros-toggle"
+          onClick={() => document.dispatchEvent(new Event("dd:toggle-drawer"))}
+          aria-label={drawerOpen ? "Close Full Controls" : "Open Full Controls"}
+          aria-expanded={drawerOpen}
+        >
+          <span className="hero-macros-toggle-label">
+            {drawerOpen ? "Simple Controls" : "Full Controls"}
+          </span>
+          <span className="hero-macros-toggle-caret" aria-hidden="true">
+            {drawerOpen ? "◂" : "▸"}
+          </span>
+        </button>
+      </div>
     </div>
   );
 }

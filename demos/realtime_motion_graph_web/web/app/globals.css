@@ -1151,7 +1151,10 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
 .style-panel {
   position: fixed;
   top: 50%;
-  left: 16px;
+  /* Left inset shares the same corner-inset math as the wordmark
+     (.library-button) so the left edges of wordmark, LoRA faders, and
+     anything else pinned to the left form a single vertical guide. */
+  left: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-left, 0px));
   transform: translateY(-50%);
   display: flex;
   flex-direction: column;
@@ -2288,7 +2291,10 @@ body.drawer-open {
      - JS guards via useSessionStore so it's also hidden pre-`ready`. */
 .hero-macros {
   position: fixed;
-  bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+  /* Bottom-row baseline shared with .audio-source-dock + the (former)
+     turntable position — same vertical centerline so the bottom row
+     reads as one horizontal band. */
+  bottom: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-bottom, 0px));
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -2360,13 +2366,57 @@ body.drawer-open {
 /* Full Controls toggle — small caret row centered beneath the knobs.
    Sits inside the bay so the bottom row reads as ONE hardware unit
    (display + knobs + button), not two stacked elements. */
+/* Stacked tool column on the right side of the bay: Seed → Curve
+   Editor → Full Controls. All three cells share the same hairline-cell
+   vocabulary; Simple/Full Controls keeps the caret affordance to read
+   as the primary action. */
+.hero-macros-tools {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  min-width: 116px;
+}
+.hero-macros-tool {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  padding: 5px 10px 6px;
+  background: transparent;
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  line-height: 1;
+  -webkit-appearance: none;
+          appearance: none;
+  transition: color 140ms ease-out, border-color 140ms ease-out, background 140ms ease-out;
+}
+.hero-macros-tool:hover {
+  color: var(--text-strong);
+  border-color: var(--accent-line);
+  background: rgba(255, 255, 255, 0.02);
+}
+.hero-macros-tool--active {
+  color: var(--text-strong);
+  border-color: var(--accent-line);
+}
+.hero-macros-tool-label {
+  line-height: 1;
+}
 .hero-macros-toggle {
   display: inline-flex;
   flex-direction: row;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
   gap: 6px;
-  padding: 6px 10px;
+  padding: 5px 10px 6px;
   background: transparent;
   border: 1px solid var(--frame-line);
   border-radius: var(--radius-sm);
@@ -3215,6 +3265,9 @@ body.drawer-open .hero-macros-knobs,
   /* Inset slightly so the icon doesn't crowd the ribbon ring. */
   transform: scale(0.58);
   opacity: 0.92;
+  /* Hamburger glyph reads currentColor from this element. White on the
+     dark badge bg, consistent against either ribbon-halo color. */
+  color: #fff;
 }
 .halo-badge:hover .halo-badge-img,
 .halo-badge--open .halo-badge-img { opacity: 1; }
@@ -4562,10 +4615,14 @@ body.drawer-open .hero-macros-knobs,
    placard carries the brand gradient strip + radii). */
 .audio-source-dock {
   position: fixed;
-  /* Float above the bottom HUD bar, mirroring the turntable's right-side
-     anchor on the left. 24px gap above the bar matches the turntable. */
+  /* "Now playing" placard + upload pair sits in the lower-right corner
+     where the turntable record button used to be. Slides inward when
+     the Full Controls sidebar opens. */
   bottom: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-bottom, 0px));
-  left: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-left, 0px));
+  right: calc(
+    max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-right, 0px))
+    + var(--drawer-w-open, 0px)
+  );
   z-index: 8;
   display: flex;
   flex-direction: row;
