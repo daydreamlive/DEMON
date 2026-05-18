@@ -114,6 +114,36 @@ def _decode_audio_msg(audio_msg: bytes) -> torch.Tensor:
     return torch.from_numpy(arr.T.copy())[:2]
 
 
+def _load_fixture_waveform(name: str) -> torch.Tensor:
+    """Load a known fixture's audio from the pod's own fixture cache and
+    return it in the exact shape ``_decode_audio_msg`` produces
+    (``[≤2, N]`` float32 at ``SAMPLE_RATE``).
+
+    The pod already serves this file at ``/fixtures/<name>``; for known
+    fixtures the browser shouldn't have to download → decode → re-upload
+    ~20 MB of PCM over the WebSocket (~11 s on the measured cold path).
+    Same uniform-path output as the upload route, so every downstream
+    consumer (sidecar resolve, echoed initial buffer, prepare_source
+    fallback) is unchanged.
+    """
+    path = str(audio_fixture(name))  # resolves to the on-disk cache
+    try:
+        import soundfile as sf
+        data, sr = sf.read(path, dtype="float32", always_2d=True)  # (n, ch)
+    except Exception:
+        import librosa
+        mono, sr = librosa.load(path, sr=None, mono=True)
+        data = np.stack([mono, mono], axis=1).astype(np.float32)
+    if sr != SAMPLE_RATE:
+        import librosa
+        data = librosa.resample(
+            data.T, orig_sr=sr, target_sr=SAMPLE_RATE
+        ).T.astype(np.float32)
+    if data.ndim == 1:
+        data = data[:, None]
+    return torch.from_numpy(np.ascontiguousarray(data.T, dtype=np.float32))[:2]
+
+
 _VALID_TIME_SIG_STRS = frozenset(str(s) for s in VALID_TIME_SIGNATURES)
 
 
@@ -367,8 +397,41 @@ def handle_client(
     config = json.loads(ws.recv())
     print(f"[Server] Config: {config}")
 
-    audio_bytes = ws.recv()
-    waveform = _decode_audio_msg(audio_bytes)
+    # Session-init timing instrumentation. t0 == config received; every
+    # milestone prints wall-seconds since t0 so the per-connect latency
+    # can be split into prepare / TRT-load / stream-build / first-gen
+    # without guessing from interleaved loguru lines.
+    _t0 = time.monotonic()
+    _first_slice = [False]
+
+    def _ms(stage: str) -> None:
+        print(f"[timing] {stage} +{time.monotonic() - _t0:.3f}s", flush=True)
+
+    # Server-side known-fixture load. When the client opts in via
+    # ``use_server_fixture`` AND names a known fixture, skip the
+    # download→decode→re-upload round-trip (~11 s of the measured cold
+    # path) and read the waveform straight from the pod's fixture cache.
+    # Old clients that don't send the flag take the unchanged upload
+    # path below, so this is safe across the Vercel(UI)/bake(backend)
+    # deploy skew.
+    _fix_name = config.get("fixture_name")
+    if config.get("use_server_fixture") and _fix_name in KNOWN_FIXTURES:
+        try:
+            waveform = _load_fixture_waveform(_fix_name)
+            _ms("audio_serverside_loaded")
+        except Exception as exc:
+            print(
+                f"[Server] server-side fixture load failed for "
+                f"{_fix_name!r} ({exc}); falling back to client upload",
+                flush=True,
+            )
+            audio_bytes = ws.recv()
+            waveform = _decode_audio_msg(audio_bytes)
+            _ms("audio_recv_decoded")
+    else:
+        audio_bytes = ws.recv()
+        waveform = _decode_audio_msg(audio_bytes)
+        _ms("audio_recv_decoded")
     use_trt = decoder_backend == "tensorrt" or vae_backend == "tensorrt"
     trt_profile_checkpoint = checkpoint if decoder_backend == "tensorrt" else "acestep-v15-turbo"
 
@@ -624,6 +687,7 @@ def handle_client(
 
     audio_in = Audio(waveform=waveform, sample_rate=SAMPLE_RATE)
 
+    _ms("resolve_source_start")
     source, detected_bpm, detected_key, detected_time_signature = (
         _resolve_bpm_key_source(
             session,
@@ -632,6 +696,7 @@ def handle_client(
             samples=int(waveform.shape[1]),
         )
     )
+    _ms("resolve_source_done")
 
     # Two-conditioning cache for the live timbre-strength slider.
     # cond_silence uses the model's silence latent (refer_latent=None);
@@ -707,6 +772,7 @@ def handle_client(
         pipeline_depth=depth,
     )
     print("[Server] Stream handle ready (pipeline built on first tick)")
+    _ms("stream_handle_ready")
 
     # Initial buffer
     src_np = waveform.numpy().T
@@ -786,6 +852,7 @@ def handle_client(
     }))
     ws.send(src_np.astype(np.float16).tobytes())
     print(f"[Server] Sent initial buffer ({len(src_np) / SAMPLE_RATE:.1f}s)")
+    _ms("initial_buffer_sent")
 
     # ---- Phase 2: Streaming ----
 
@@ -1159,6 +1226,10 @@ def handle_client(
         se = min(se, len(client_mirror), len(wav_np))
         if se <= ss:
             return
+
+        if not _first_slice[0]:
+            _first_slice[0] = True
+            _ms("first_generated_slice")
 
         # Delta = what server has now minus what client has
         region = wav_np[ss:se]
@@ -1854,3 +1925,140 @@ def handle_client(
             session.close()
         except Exception as exc:
             print(f"[Server] session.close() raised: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Startup self-warmup
+#
+# Measured 2026-05-18: a cold first session on a fresh engine takes ~40s to
+# `ready` (TRT decoder-engine load ~3s + LoRA-refit manager ~7s + Session /
+# ModelContext / conditioning ~10s + first-tick pipeline build), while the
+# *second* session on the same warm engine is ~5-6s. ~30s of the cold path is
+# one-time-after-engine-start state that persists in the process. Driving one
+# synthetic default-fixture session through `handle_client` at boot — before
+# the pod accepts real traffic — pays that once so every real "begin" gets the
+# warm path. Behaviour-neutral for real clients; the warmup session is fully
+# torn down (stream.close()+session.close()) by handle_client's own finally.
+# ---------------------------------------------------------------------------
+
+WARMUP_STATE: dict = {"done": False, "error": None, "seconds": None}
+
+_WARMUP_FIXTURE = "low_fi_Gm_loop_60s_gnm.wav"  # PREFERRED_DEFAULT_FIXTURE
+_WARMUP_PROMPT = "ambient electronic, warm pads"
+
+
+class _WarmupWS:
+    """In-process synthetic WebSocket that drives one default-fixture
+    session through handle_client to warm one-time engine state.
+
+    Scripts the Phase-1 handshake (config JSON, then the audio frame),
+    lets Phase-2 spin long enough to build the pipeline + run the first
+    generation tick, then raises ConnectionClosed so handle_client's
+    teardown path frees all per-session GPU state.
+    """
+
+    def __init__(self, config_json: str, audio_frame: bytes, budget_s: float = 35.0):
+        self._queue = [config_json, audio_frame]
+        self._t0 = time.monotonic()
+        self._budget_s = budget_s
+        self._initial_seen_at = None
+        self.closed = False
+
+    def recv(self, timeout=None):
+        if self._queue:
+            return self._queue.pop(0)
+        # Phase-2: spin until warm budget elapsed, then end the session.
+        # Mimic "no client message" via TimeoutError when the caller
+        # passed a timeout (the streaming loop polls that way); raise
+        # ConnectionClosed once warmed so every recv site unwinds into
+        # handle_client's finally (which closes the session).
+        now = time.monotonic()
+        warm_enough = (
+            now - self._t0 > self._budget_s
+            or (self._initial_seen_at is not None
+                and now - self._initial_seen_at > 10.0)
+        )
+        if warm_enough:
+            raise ConnectionClosed(None, None)
+        if timeout is not None:
+            time.sleep(min(timeout, 0.05))
+            raise TimeoutError
+        time.sleep(0.1)
+        raise TimeoutError
+
+    def send(self, msg):
+        # The initial buffer is a large binary frame (the echoed source);
+        # spotting it tells us Phase-1 finished so we can bound Phase-2.
+        if isinstance(msg, (bytes, bytearray)) and len(msg) > 1_000_000:
+            if self._initial_seen_at is None:
+                self._initial_seen_at = time.monotonic()
+
+    def close(self, *args, **kwargs):
+        self.closed = True
+
+
+def _load_warmup_audio_frame() -> bytes:
+    """Build the wire frame (<II channels,samples> + interleaved f32)
+    for the default fixture, matching the browser's upload format."""
+    from acestep.fixtures import audio_fixture
+
+    path = str(audio_fixture(_WARMUP_FIXTURE))
+    try:
+        import soundfile as sf
+        data, _sr = sf.read(path, dtype="float32", always_2d=True)  # (n, ch)
+    except Exception:
+        import librosa
+        mono, _sr = librosa.load(path, sr=None, mono=True)
+        data = np.stack([mono, mono], axis=1).astype(np.float32)
+    if data.ndim == 1:
+        data = np.stack([data, data], axis=1)
+    if data.shape[1] == 1:
+        data = np.repeat(data, 2, axis=1)
+    ch = int(data.shape[1])
+    samples = int(data.shape[0])
+    interleaved = np.ascontiguousarray(data, dtype=np.float32).reshape(-1)
+    return struct.pack("<II", ch, samples) + interleaved.tobytes()
+
+
+def run_startup_warmup(
+    *,
+    decoder_backend: str,
+    vae_backend: str,
+    checkpoint: str,
+    offload_text_encoder: bool,
+) -> None:
+    """Drive one synthetic default-fixture session at boot. Never raises
+    — a failed warmup must not stop the server from serving."""
+    t0 = time.monotonic()
+    print("[warmup] starting default-fixture session warmup...", flush=True)
+    try:
+        cfg = {
+            "fixture_name": _WARMUP_FIXTURE,
+            "prompt": _WARMUP_PROMPT,
+            "steps": 8,
+            "depth": 4,
+            "lora": False,
+            "enabled_loras": [],
+        }
+        frame = _load_warmup_audio_frame()
+        ws = _WarmupWS(json.dumps(cfg), frame)
+        handle_client(
+            ws,
+            decoder_backend=decoder_backend,
+            vae_backend=vae_backend,
+            checkpoint=checkpoint,
+            offload_text_encoder=offload_text_encoder,
+        )
+        WARMUP_STATE["done"] = True
+        WARMUP_STATE["seconds"] = round(time.monotonic() - t0, 1)
+        print(
+            f"[warmup] done in {WARMUP_STATE['seconds']}s — "
+            f"first real session will take the warm path",
+            flush=True,
+        )
+    except Exception as exc:
+        import traceback
+        WARMUP_STATE["error"] = repr(exc)
+        WARMUP_STATE["seconds"] = round(time.monotonic() - t0, 1)
+        print(f"[warmup] FAILED after {WARMUP_STATE['seconds']}s: {exc}", flush=True)
+        traceback.print_exc()

@@ -3,7 +3,7 @@
 import { useCallback } from "react";
 
 import { AudioPlayer } from "@/engine/audio/AudioPlayer";
-import { listFixtures, loadFixtureAudio, pickDefaultFixture } from "@/engine/audio/loadFixture";
+import { listFixtures, pickDefaultFixture } from "@/engine/audio/loadFixture";
 import { resetKnobDelta } from "@/engine/midi/absoluteDelta";
 import { createNetworkMonitor } from "@/engine/networkMonitor";
 import { defaultWsUrl } from "@/engine/podUrl";
@@ -81,6 +81,16 @@ function buildConfig(fixtureName: string): SessionConfig {
     // dropdown's stale value here would only re-introduce the
     // override-wins-over-sidecar regression.
     fixture_name: fixtureName,
+    // This hook only ever starts a session on a built-in fixture (custom
+    // user uploads take the swap_source path, not session init), and the
+    // pod already serves that exact file at /fixtures/<name>. Tell the
+    // server to load the waveform from its own cache so the browser skips
+    // the download→decode→re-upload of ~20 MB of PCM (~11 s on the
+    // measured cold path). DEPLOY ORDERING: the backend honouring this
+    // must reach the whole fleet (bake) BEFORE this UI ships — a stale
+    // backend would block on its audio recv. Backward-compatible +
+    // baked fleet-wide first, so safe.
+    use_server_fixture: true,
   };
 }
 
@@ -124,17 +134,14 @@ export function useStartSession() {
       return;
     }
 
-    let interleaved: Float32Array;
-    let channels: number;
-    try {
-      const decoded = await loadFixtureAudio(fixtureName);
-      interleaved = decoded.interleaved;
-      channels = decoded.channels;
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setStatus("error", `Track failed to load: ${msg}`);
-      return;
-    }
+    // Server-side fixture load (buildConfig sets use_server_fixture for
+    // these built-in fixtures): the pod reads the waveform from its own
+    // /fixtures cache, so we skip the client download+decode entirely
+    // and send no PCM. Playback comes from the server's echoed initial
+    // buffer (player.init uses remote.initialBuffer), so the local
+    // decode was only ever feeding the now-eliminated upload.
+    const interleaved = new Float32Array(0);
+    const channels = 2;
 
     setStatus("connecting", "Connecting…");
     const config = buildConfig(fixtureName);

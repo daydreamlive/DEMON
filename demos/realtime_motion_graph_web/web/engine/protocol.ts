@@ -190,19 +190,29 @@ export class RemoteBackend extends EventTarget {
 
       ws.onopen = () => {
         if (!this._pending) return;
-        // Phase 1: JSON config + binary audio upload.
+        // Phase 1: JSON config, then (unless server-side fixture) the
+        // binary audio upload. For known fixtures the pod loads the
+        // waveform from its own cache, so re-uploading ~20 MB of PCM
+        // here is pure waste (~11 s on the measured cold path). When
+        // `use_server_fixture` is set the server skips its audio recv,
+        // so we must skip the send to match.
         ws.send(JSON.stringify(this._pending.config));
-        const { interleaved, channels } = this._pending;
-        const samples = interleaved.length / channels;
-        const hdr = new ArrayBuffer(8);
-        const dv = new DataView(hdr);
-        dv.setUint32(0, channels, true);
-        dv.setUint32(4, samples, true);
-        const pcm = new Uint8Array(interleaved.buffer);
-        const combined = new Uint8Array(hdr.byteLength + pcm.byteLength);
-        combined.set(new Uint8Array(hdr), 0);
-        combined.set(pcm, hdr.byteLength);
-        ws.send(combined);
+        const useServerFixture =
+          (this._pending.config as { use_server_fixture?: boolean })
+            .use_server_fixture === true;
+        if (!useServerFixture) {
+          const { interleaved, channels } = this._pending;
+          const samples = interleaved.length / channels;
+          const hdr = new ArrayBuffer(8);
+          const dv = new DataView(hdr);
+          dv.setUint32(0, channels, true);
+          dv.setUint32(4, samples, true);
+          const pcm = new Uint8Array(interleaved.buffer);
+          const combined = new Uint8Array(hdr.byteLength + pcm.byteLength);
+          combined.set(new Uint8Array(hdr), 0);
+          combined.set(pcm, hdr.byteLength);
+          ws.send(combined);
+        }
         phase = "ready";
       };
 

@@ -117,10 +117,24 @@ def _process_request(connection, request):
 
     # API: server-info — lets the client know whether the backend is up.
     if path_only == "/api/server-info":
+        # Surface startup-warmup state so the pool can gate "free" on a
+        # warmed engine. Read only if backend is already imported — don't
+        # force the heavy import in --no-backend mode.
+        _warm = None
+        _be = sys.modules.get("demos.realtime_motion_graph_web.backend")
+        if _be is not None:
+            _warm = getattr(_be, "WARMUP_STATE", None)
         body = json.dumps({
             "no_backend": _NO_BACKEND,
             "kiosk": _KIOSK,
             "default_mode": _DEFAULT_MODE,
+            "warmup": _warm,
+            # Fixtures the pod can load server-side: the client may send
+            # {use_server_fixture:true, fixture_name:<one of these>} and
+            # skip the ~20 MB PCM upload entirely. Advertised here so the
+            # UI only opts in against a backend that supports it (the UI
+            # ships via Vercel instantly; the backend via bake, lagged).
+            "server_side_fixtures": sorted(KNOWN_FIXTURES),
         }).encode()
         _log_http(remote, 200, "GET", url)
         return Response(
@@ -433,6 +447,24 @@ def main():
         def ws_handler(ws):
             handle_client(
                 ws,
+                decoder_backend=decoder_accel,
+                vae_backend=vae_accel,
+                checkpoint=checkpoint,
+                offload_text_encoder=offload_text_encoder,
+            )
+
+        # Pay the one-time cold-start cost (TRT decoder-engine load,
+        # LoRA-refit manager, ModelContext / conditioning, first-tick
+        # pipeline build) once at boot, BEFORE accepting real traffic,
+        # so every real "begin" gets the ~5s warm path instead of ~40s.
+        # Synchronous on purpose: the heartbeat sidecar only advertises
+        # this pod to the pool after main() proceeds, so the pod isn't
+        # routed real users until it's warm. Disable with
+        # DEMON_STARTUP_WARMUP=0.
+        if os.environ.get("DEMON_STARTUP_WARMUP", "1") != "0":
+            from .backend import run_startup_warmup
+
+            run_startup_warmup(
                 decoder_backend=decoder_accel,
                 vae_backend=vae_accel,
                 checkpoint=checkpoint,
