@@ -288,7 +288,7 @@ export function MobileRemixStepper() {
       side="left"
       param="denoise"
       max={1.0}
-      label="Remix Strength"
+      label="Denoise"
       pulseUp={sessionReady && !remixStarted}
     />
   );
