@@ -2,6 +2,7 @@
 
 import { LiteTrackCarousel } from "./LiteTrackCarousel";
 import { RecordToggle } from "./RecordToggle";
+import { SliderGroup } from "./SliderGroup";
 
 interface Props {
   onOpenAllControls: () => void;
@@ -12,12 +13,11 @@ interface Props {
   unsavedDot?: boolean;
 }
 
-// Mobile-first compact action bar. Tracks + record + "All controls"
-// gateway. The 3-slider row (denoise/structure/feedback) lived here
-// pre-Wave-13 but was redundant: the left rail already handles denoise
-// at thumb-reach, and structure/feedback are one tap away inside
-// <MobileFullSheet/> → CORE tab. Trimming the bar gives the graph back
-// the vertical real estate.
+// Mobile bottom palette. Holds two mid-performance sliders
+// (STRUCTURE / FEEDBACK), the track carousel, record toggle, and the
+// "All controls" gateway. DENOISE lives on the left fader rail
+// (MobileRemixStepper) and is intentionally omitted here so the bar
+// doesn't duplicate the most prominent control.
 //
 // Renders as fixed bottom chrome on mobile (the AdvancedDrawer mobile
 // branch mounts this directly, not inside a slide-up drawer). Click
@@ -25,6 +25,10 @@ interface Props {
 export function LiteControls({ onOpenAllControls, unsavedDot }: Props) {
   return (
     <div className="lite-controls">
+      <div className="lite-row lite-row--main">
+        <SliderGroup param="hint_strength" label="structure" />
+        <SliderGroup param="feedback" label="feedback" />
+      </div>
       <LiteTrackCarousel />
       <div className="lite-row lite-row--actions">
         <RecordToggle />

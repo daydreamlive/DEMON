@@ -3997,19 +3997,18 @@ body.curve-open #install-video-area #graph {
   }
 }
 .lite-controls {
-  /* Wave 13: LiteControls is mounted DIRECTLY on mobile (no longer
-     inside the slide-up drawer). Wave 13.1 trimmed it to track + REC
-     + "All controls" — no slider row — so it's a short ~64px bar
-     that gives the squished graph back vertical room. */
+  /* Wave 13.2: LiteControls is mounted DIRECTLY on mobile (no longer
+     inside the slide-up drawer). Holds two sliders (STRUCTURE +
+     FEEDBACK — DENOISE is on the left fader rail), the track
+     carousel, and the action row (REC + All controls). */
   position: fixed;
   left: max(calc(var(--remix-rail-w, 0px) + 12px), env(safe-area-inset-left, 0px));
   right: max(calc(var(--lora-rail-w, 56px) + 12px), env(safe-area-inset-right, 0px));
   bottom: max(env(safe-area-inset-bottom, 0px) + 8px, 8px);
   display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 10px;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px 10px;
   background: rgba(6, 6, 12, 0.62);
   border: 1px solid var(--frame-line);
   border-radius: var(--radius-md);
@@ -4026,14 +4025,6 @@ body.curve-open #install-video-area #graph {
 @media (max-width: 768px) {
   .lite-controls {
     display: flex;
-  }
-  .lite-controls .lite-track-carousel {
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-  .lite-controls .lite-row--actions {
-    flex: 0 0 auto;
-    gap: 10px;
   }
 }
 
@@ -5923,6 +5914,144 @@ body.curve-open #install-video-area #graph {
 }
 .stepper-rail-zone--down .stepper-rail-zone-label {
   bottom: 22px;
+}
+
+/* ── Fader rails (Wave 13.2) ─────────────────────────────────────────
+   Mobile edge rails — one vertical drag track per side. Replaces the
+   prior up/down stepper buttons with proper drag-to-value behavior.
+   Top sublabel, label (vertical), track + fill + cap, bottom sublabel. */
+.fader-rail {
+  position: fixed;
+  top: max(96px, calc(env(safe-area-inset-top, 0px) + 60px));
+  bottom: calc(
+    var(--drawer-handle-h, 0px) +
+    env(safe-area-inset-bottom, 0px) + 90px
+  );
+  width: var(--stepper-rail-w);
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0 8px;
+  pointer-events: auto;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  color: var(--text-dim);
+}
+.fader-rail--left {
+  left: max(0px, env(safe-area-inset-left, 0px));
+}
+.fader-rail--right {
+  right: max(0px, env(safe-area-inset-right, 0px));
+}
+.fader-rail-sublabel {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  text-align: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 2px;
+  flex: 0 0 auto;
+}
+.fader-rail-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  /* Vertical text — runs top→bottom along the rail. */
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  transform: rotate(180deg);
+  flex: 0 0 auto;
+  padding: 4px 0;
+}
+.fader-rail-track {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 8px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.fader-rail-track::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to right,
+    rgba(0, 0, 0, 0.6) 0%,
+    rgba(0, 0, 0, 0.45) 50%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  border-radius: 4px;
+  box-shadow:
+    inset 1px 0 0 rgba(0, 0, 0, 0.7),
+    inset -1px 0 1px rgba(255, 255, 255, 0.05);
+}
+.fader-rail-fill {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--accent) 70%, #000) 0%,
+    var(--accent) 100%
+  );
+  border-radius: 4px;
+  pointer-events: none;
+  transition: height 70ms linear;
+}
+.fader-rail-cap {
+  position: absolute;
+  left: 50%;
+  width: 32px;
+  height: 12px;
+  background: linear-gradient(
+    to bottom,
+    rgb(78, 84, 96) 0%,
+    rgb(42, 46, 54) 48%,
+    rgb(18, 20, 24) 100%
+  );
+  border-radius: 3px;
+  transform: translate(-50%, 50%);
+  pointer-events: none;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.65),
+    0 0 0 1px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.5);
+  transition: bottom 70ms linear;
+}
+.fader-rail-cap::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  top: 50%;
+  height: 1px;
+  background: var(--accent);
+  transform: translateY(-50%);
+  border-radius: 1px;
+  box-shadow: 0 0 4px var(--accent);
+}
+/* pulseUp affordance — pulse the top portion of the track so the user
+   reads it as "drag the cap upward to start". Lives on the wrapper
+   when data-gate="up" is set. */
+@keyframes fader-rail-pulse-top {
+  0%, 100% { box-shadow: inset 0 0 0 0 transparent; }
+  50%      { box-shadow: inset 0 14px 12px -8px var(--accent); }
+}
+.fader-rail[data-gate="up"] .fader-rail-track::before {
+  animation: fader-rail-pulse-top 1.8s ease-in-out infinite;
 }
 
 /* Hide the perimeter writhe ribbons + edge labels on mobile. The new
