@@ -6119,18 +6119,13 @@ body.curve-open #install-video-area #graph {
   pointer-events: none;
   max-width: 320px;
   padding: 8px 12px 10px;
-  background: rgba(6, 6, 12, 0.82);
-  background-image:
-    linear-gradient(rgba(6, 6, 12, 0.82), rgba(6, 6, 12, 0.82)),
-    var(--dd-gradient);
-  background-origin: padding-box, border-box;
-  background-clip: padding-box, border-box;
+  /* Plain dark sheet, same vocabulary as the DrawerHelpBar — no
+     brand-gradient hairline, no orange glow. The accent color shows
+     up only on the title text inside. */
+  background: rgba(8, 8, 14, 0.92);
   border: 1px solid var(--frame-line);
-  border-top: 2px solid transparent;
   border-radius: var(--radius-md);
-  box-shadow:
-    0 6px 18px rgba(0, 0, 0, 0.45),
-    0 0 14px rgba(240, 138, 72, 0.15);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
 }
