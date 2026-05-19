@@ -5,6 +5,12 @@ description = "DEMON: Diffusion Engine for Musical Orchestrated Noise"
 readme = "README.md"
 requires-python = "==3.11.*"
 license = {text = "MIT"}
+authors = [
+    {name = "Ryan Fosdick"}
+]
+maintainers = [
+    {name = "Daydream Live"}
+]
 dependencies = [
     # PyTorch with CUDA 12.8 - pinned to match ComfyUI
     "torch==2.9.1+cu128",

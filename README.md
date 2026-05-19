@@ -206,3 +206,7 @@ uv run pytest tests/ -v
 DEMON is built on top of [ACE-Step](https://github.com/ace-step/ACE-Step). The base diffusion model, VAE, text encoder, and 5Hz LM are all ACE-Step's work — without them, none of this exists. Huge thanks to the ACE-Step team for releasing the v1.5 weights and code under MIT.
 
 If you use DEMON in your work, please also cite ACE-Step.
+
+## Authors
+
+DEMON originally created by Ryan Fosdick ([@RyanOnTheInside](https://ryanontheinside.com)). Maintained by [Daydream Live](https://daydream.live) and contributors.

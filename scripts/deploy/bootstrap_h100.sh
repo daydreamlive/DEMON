@@ -37,7 +37,7 @@ ssh-keyscan github.com >> /root/.ssh/known_hosts 2>/dev/null || true
 
 # ---------- clone repo ----------
 if [ ! -d "$REPO_DIR/.git" ]; then
-    git clone git@github.com:ryanontheinside/DEMON.git "$REPO_DIR"
+    git clone git@github.com:daydreamlive/DEMON.git "$REPO_DIR"
 else
     echo "Repo already present at $REPO_DIR"
     (cd "$REPO_DIR" && git fetch && git reset --hard origin/main)
