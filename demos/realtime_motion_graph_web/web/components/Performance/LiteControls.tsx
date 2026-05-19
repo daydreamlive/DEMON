@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useRef } from "react";
+
+import { useScrollSyncedTabs } from "@/hooks/useScrollSyncedTabs";
 
 import { LiteTrackCarousel } from "./LiteTrackCarousel";
 import { RecordToggle } from "./RecordToggle";
@@ -32,42 +34,12 @@ const TAB_LABELS: Record<LiteTab, string> = {
 //           "All controls" gateway to the full 7-tab sheet.
 //   TRACK — track carousel (upload + mic inside the picker) + REC.
 export function LiteControls({ onOpenAllControls, unsavedDot }: Props) {
-  const [tab, setTab] = useState<LiteTab>("mix");
   const trackRef = useRef<HTMLDivElement | null>(null);
-
-  // Mirror scroll position → active tab. IntersectionObserver fires
-  // when each section crosses the threshold; whichever has the
-  // highest intersection ratio wins.
-  useEffect(() => {
-    const root = trackRef.current;
-    if (!root) return;
-    const obs = new IntersectionObserver(
-      (entries) => {
-        let best: IntersectionObserverEntry | null = null;
-        for (const e of entries) {
-          if (!e.isIntersecting) continue;
-          if (!best || e.intersectionRatio > best.intersectionRatio) best = e;
-        }
-        if (!best) return;
-        const id = (best.target as HTMLElement).dataset.tab as LiteTab | undefined;
-        if (id) setTab(id);
-      },
-      { root, threshold: [0.5, 0.75, 1] },
-    );
-    for (const t of TABS) {
-      const el = root.querySelector<HTMLElement>(`[data-tab="${t}"]`);
-      if (el) obs.observe(el);
-    }
-    return () => obs.disconnect();
-  }, []);
-
-  function gotoTab(id: LiteTab) {
-    const root = trackRef.current;
-    if (!root) return;
-    const el = root.querySelector<HTMLElement>(`[data-tab="${id}"]`);
-    if (!el) return;
-    el.scrollIntoView({ behavior: "smooth", inline: "start", block: "nearest" });
-  }
+  const { activeTab: tab, gotoTab } = useScrollSyncedTabs<LiteTab>(
+    trackRef,
+    TABS,
+    { attribute: "tab", initial: "mix" },
+  );
 
   return (
     <div className="lite-controls">

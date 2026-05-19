@@ -1,13 +1,14 @@
 "use client";
 
 import type { CSSProperties } from "react";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useTactileSlider } from "@/hooks/useTactileSlider";
 import { tToValue, valueToT } from "@/lib/sliderMapping";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { SLIDER_META } from "@/types/engine";
 
+import { KnobCap } from "./KnobCap";
 import { tooltipFor } from "./SliderTile";
 
 // Rotary control matching the visual vocabulary of inShaper / GrainDust:
@@ -273,12 +274,6 @@ export function Knob({ param, label, max, min, reverse, unity, kbd }: Props) {
 
   const tooltip = tooltipFor(param);
   const style = { "--knob-tint": fillTint } as CSSProperties;
-  // Stable per-knob ids for the SVG <defs> gradients. Without unique
-  // ids each knob would reference the same gradient and only one would
-  // render correctly when SSR + hydration happens out of order.
-  const uid = useId().replace(/:/g, "_");
-  const capId = `knob-cap-${uid}`;
-  const rimLightId = `knob-rim-${uid}`;
   // Indicator endpoints (rim → inward). Pre-computed so the JSX stays
   // tidy and the angle math doesn't repeat.
   const indRad = ((indicatorDeg - 90) * Math.PI) / 180;
@@ -320,33 +315,10 @@ export function Knob({ param, label, max, min, reverse, unity, kbd }: Props) {
           height="48"
           aria-hidden="true"
         >
-          <defs>
-            {/* Cap body — radial gradient with a soft top-left
-                highlight. Models a 3D rounded knob cap without going
-                photorealistic. Modeled on inShaper's gain knobs. */}
-            <radialGradient
-              id={capId}
-              cx="0.35"
-              cy="0.28"
-              r="0.85"
-              fx="0.32"
-              fy="0.22"
-            >
-              <stop offset="0%" stopColor="rgb(78, 84, 96)" />
-              <stop offset="45%" stopColor="rgb(36, 40, 48)" />
-              <stop offset="100%" stopColor="rgb(8, 10, 14)" />
-            </radialGradient>
-            {/* Outer rim — thin metallic gradient ring that gives the
-                edge of the cap a beveled look. */}
-            <linearGradient id={rimLightId} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="rgba(255, 255, 255, 0.22)" />
-              <stop offset="50%" stopColor="rgba(255, 255, 255, 0.04)" />
-              <stop offset="100%" stopColor="rgba(0, 0, 0, 0.35)" />
-            </linearGradient>
-          </defs>
           {/* Background arc (full sweep, dim) — sits in the inset
               channel around the cap, like the engraved scale on a
-              hardware knob. */}
+              hardware knob. Drawn before the cap so it reads as
+              engraved INTO the panel underneath. */}
           <path
             d={arcPath(24, 24, 21, ARC_START_DEG, ARC_END_DEG)}
             className="knob-arc-bg"
@@ -360,23 +332,8 @@ export function Knob({ param, label, max, min, reverse, unity, kbd }: Props) {
             fill="none"
             stroke="var(--knob-tint)"
           />
-          {/* Cap shadow — drawn first so the cap sits on top of it.
-              A thin dark ring just outside the cap; reads as the cap
-              casting a hairline shadow onto the panel. */}
-          <circle cx="24" cy="25" r="15.5" className="knob-shadow" />
-          {/* Cap body */}
-          <circle cx="24" cy="24" r="15" fill={`url(#${capId})`} />
-          {/* Beveled rim — a 1px stroke with a top-to-bottom gradient
-              giving the cap edge a metallic catch-light at the top
-              and a darker bottom edge. */}
-          <circle
-            cx="24"
-            cy="24"
-            r="15"
-            fill="none"
-            stroke={`url(#${rimLightId})`}
-            strokeWidth="1"
-          />
+          {/* Shared 3D cap chrome: shadow + body + beveled rim. */}
+          <KnobCap />
           {/* Indicator notch — etched groove from rim toward center at
               the indicator angle. Drawn LAST so it sits on top of the
               cap. Two strokes: a dark recessed line, then a 1px tint

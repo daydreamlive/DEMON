@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+
+import { useScrollSyncedTabs } from "@/hooks/useScrollSyncedTabs";
 
 import { CoreTile } from "./CoreTile";
 import { LibraryTile } from "./LibraryTile";
@@ -40,9 +42,14 @@ const TABS: { id: Tab; label: string }[] = [
 // updates `tab` from whatever's most visible. That way swipe and tap stay
 // in sync without setState fighting the scroller.
 export function MobileFullSheet({ open, onClose, savedTab }: Props) {
-  const [tab, setTab] = useState<Tab>("core");
   const [mounted, setMounted] = useState(false);
   const trackRef = useRef<HTMLDivElement | null>(null);
+  const tabIds = useMemo(() => TABS.map((t) => t.id), []);
+  const { activeTab: tab, gotoTab } = useScrollSyncedTabs<Tab>(
+    trackRef,
+    tabIds,
+    { attribute: "section", initial: "core", enabled: open },
+  );
 
   useEffect(() => setMounted(true), []);
 
@@ -54,40 +61,6 @@ export function MobileFullSheet({ open, onClose, savedTab }: Props) {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [open, onClose]);
-
-  // Watch which section is currently in view and sync the active tab.
-  useEffect(() => {
-    if (!open) return;
-    const root = trackRef.current;
-    if (!root) return;
-
-    const obs = new IntersectionObserver(
-      (entries) => {
-        let best: IntersectionObserverEntry | null = null;
-        for (const e of entries) {
-          if (!e.isIntersecting) continue;
-          if (!best || e.intersectionRatio > best.intersectionRatio) best = e;
-        }
-        if (!best) return;
-        const id = (best.target as HTMLElement).dataset.section as Tab | undefined;
-        if (id) setTab(id);
-      },
-      { root, threshold: [0.5, 0.75, 1] },
-    );
-    for (const t of TABS) {
-      const el = root.querySelector<HTMLElement>(`[data-section="${t.id}"]`);
-      if (el) obs.observe(el);
-    }
-    return () => obs.disconnect();
-  }, [open]);
-
-  function gotoTab(id: Tab) {
-    const root = trackRef.current;
-    if (!root) return;
-    const el = root.querySelector<HTMLElement>(`[data-section="${id}"]`);
-    if (!el) return;
-    el.scrollIntoView({ behavior: "smooth", inline: "start", block: "nearest" });
-  }
 
   if (!mounted || !open) return null;
 

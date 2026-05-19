@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { loraStrengthDispatcher } from "@/engine/lora/dispatcher";
+import { useLoraFaderDrag } from "@/hooks/useLoraFaderDrag";
 import { useCurveStore } from "@/store/useCurveStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
@@ -107,50 +107,7 @@ function HeroStyleFader({ slotIndex }: HeroStyleFaderProps) {
     : 0;
   const isEmpty = loraId === null;
   const trackRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (isEmpty) return;
-    const trackEl = trackRef.current;
-    if (!trackEl) return;
-    let dragging = false;
-    let cachedRect: DOMRect | null = null;
-    const commit = (clientY: number) => {
-      if (!cachedRect) return;
-      const t = 1 - (clientY - cachedRect.top) / cachedRect.height;
-      const ids = Array.from(useLoraStore.getState().enabled);
-      const id = ids[slotIndex];
-      if (!id) return;
-      const v = Math.max(0, Math.min(1, t)) * LORA_SLIDER_MAX;
-      loraStrengthDispatcher.set(id, v);
-    };
-    const onDown = (e: PointerEvent) => {
-      if (e.button !== 0 && e.pointerType === "mouse") return;
-      dragging = true;
-      cachedRect = trackEl.getBoundingClientRect();
-      trackEl.setPointerCapture(e.pointerId);
-      commit(e.clientY);
-    };
-    const onMove = (e: PointerEvent) => {
-      if (!dragging) return;
-      commit(e.clientY);
-    };
-    const onUp = (e: PointerEvent) => {
-      if (!dragging) return;
-      dragging = false;
-      trackEl.releasePointerCapture(e.pointerId);
-      cachedRect = null;
-    };
-    trackEl.addEventListener("pointerdown", onDown);
-    trackEl.addEventListener("pointermove", onMove);
-    trackEl.addEventListener("pointerup", onUp);
-    trackEl.addEventListener("pointercancel", onUp);
-    return () => {
-      trackEl.removeEventListener("pointerdown", onDown);
-      trackEl.removeEventListener("pointermove", onMove);
-      trackEl.removeEventListener("pointerup", onUp);
-      trackEl.removeEventListener("pointercancel", onUp);
-    };
-  }, [slotIndex, isEmpty]);
+  useLoraFaderDrag(trackRef, slotIndex, !isEmpty);
 
   const displayLabel = loraId ? labelFor(loraId) : `Style ${slotIndex + 1}`;
   return (

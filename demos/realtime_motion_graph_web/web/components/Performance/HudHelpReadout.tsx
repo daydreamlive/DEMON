@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useTooltipHover } from "@/hooks/useTooltipHover";
 
 // Ambient help readout that surfaces `data-dd-tooltip` copy when the
 // Full Controls panel is closed. Mirrors the DrawerHelpBar inside the
@@ -14,47 +14,7 @@ import { useEffect, useState } from "react";
 // canvas and would otherwise be permanent visual chrome.
 
 export function HudHelpReadout() {
-  const [text, setText] = useState<string | null>(null);
-  const [title, setTitle] = useState<string | null>(null);
-
-  useEffect(() => {
-    const onMove = (e: PointerEvent) => {
-      const target = e.target as Element | null;
-      if (!target) return;
-      const el = target.closest<HTMLElement>("[data-dd-tooltip]");
-      if (!el) {
-        setText(null);
-        setTitle(null);
-        return;
-      }
-      const t = el.getAttribute("data-dd-tooltip");
-      if (!t) {
-        setText(null);
-        setTitle(null);
-        return;
-      }
-      setText(t);
-      // Same precedence as DrawerHelpBar — explicit `data-dd-tooltip-
-      // title` first, then aria-label, then textContent. Prevents the
-      // hero-bay knob titles from leaking value + kbd into the chip.
-      const explicit = el.getAttribute("data-dd-tooltip-title");
-      const aria = el.getAttribute("aria-label");
-      const visible = el.textContent?.trim().split(/\s+/).slice(0, 4).join(" ");
-      setTitle(explicit || aria || visible || null);
-    };
-    const onLeave = (e: PointerEvent) => {
-      if (e.relatedTarget) return;
-      setText(null);
-      setTitle(null);
-    };
-    window.addEventListener("pointermove", onMove);
-    document.addEventListener("pointerleave", onLeave);
-    return () => {
-      window.removeEventListener("pointermove", onMove);
-      document.removeEventListener("pointerleave", onLeave);
-    };
-  }, []);
-
+  const { title, text } = useTooltipHover();
   if (!text) return null;
 
   return (

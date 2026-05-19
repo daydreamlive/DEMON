@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect } from "react";
+import { useRef } from "react";
 
-import { loraStrengthDispatcher } from "@/engine/lora/dispatcher";
+import { useLoraFaderDrag } from "@/hooks/useLoraFaderDrag";
 import { useLoraStore } from "@/store/useLoraStore";
 import { useSessionStore } from "@/store/useSessionStore";
 import { LORA_SLIDER_MAX } from "@/types/engine";
@@ -33,52 +33,8 @@ function StyleFader({ loraId, label, slotIndex }: FaderProps) {
     ? Math.max(0, Math.min(1, value / LORA_SLIDER_MAX))
     : 0;
   const isEmpty = loraId === null;
-
-  useEffect(() => {
-    if (isEmpty) return;
-    const trackEl = document.querySelector<HTMLDivElement>(
-      `[data-style-fader-slot="${slotIndex}"]`,
-    );
-    if (!trackEl) return;
-    let dragging = false;
-    let cachedRect: DOMRect | null = null;
-    const commit = (clientY: number) => {
-      if (!cachedRect) return;
-      const t = 1 - (clientY - cachedRect.top) / cachedRect.height;
-      const ids = Array.from(useLoraStore.getState().enabled);
-      const id = ids[slotIndex];
-      if (!id) return;
-      const v = Math.max(0, Math.min(1, t)) * LORA_SLIDER_MAX;
-      loraStrengthDispatcher.set(id, v);
-    };
-    const onDown = (e: PointerEvent) => {
-      if (e.button !== 0 && e.pointerType === "mouse") return;
-      dragging = true;
-      cachedRect = trackEl.getBoundingClientRect();
-      trackEl.setPointerCapture(e.pointerId);
-      commit(e.clientY);
-    };
-    const onMove = (e: PointerEvent) => {
-      if (!dragging) return;
-      commit(e.clientY);
-    };
-    const onUp = (e: PointerEvent) => {
-      if (!dragging) return;
-      dragging = false;
-      trackEl.releasePointerCapture(e.pointerId);
-      cachedRect = null;
-    };
-    trackEl.addEventListener("pointerdown", onDown);
-    trackEl.addEventListener("pointermove", onMove);
-    trackEl.addEventListener("pointerup", onUp);
-    trackEl.addEventListener("pointercancel", onUp);
-    return () => {
-      trackEl.removeEventListener("pointerdown", onDown);
-      trackEl.removeEventListener("pointermove", onMove);
-      trackEl.removeEventListener("pointerup", onUp);
-      trackEl.removeEventListener("pointercancel", onUp);
-    };
-  }, [slotIndex, isEmpty]);
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  useLoraFaderDrag(trackRef, slotIndex, !isEmpty);
 
   return (
     <div className={`style-fader${isEmpty ? " style-fader--empty" : ""}`}>
@@ -86,6 +42,7 @@ function StyleFader({ loraId, label, slotIndex }: FaderProps) {
         {label}
       </div>
       <div
+        ref={trackRef}
         className="style-fader-track"
         data-style-fader-slot={slotIndex}
         role="slider"

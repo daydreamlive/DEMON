@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useRef } from "react";
+
+import { useTooltipHover } from "@/hooks/useTooltipHover";
 
 // Persistent help readout pinned to the bottom of the Full Controls
 // panel. Mirrors whatever control the user is hovering — reads its
@@ -11,58 +13,9 @@ import { useEffect, useRef, useState } from "react";
 // the readout band on the bottom of a Sound Particles plugin.
 
 export function DrawerHelpBar() {
-  const [text, setText] = useState<string | null>(null);
-  const [title, setTitle] = useState<string | null>(null);
   const barRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    const root = document.getElementById("install-sheet");
-    if (!root) return;
-
-    const onMove = (e: PointerEvent) => {
-      const target = e.target as Element | null;
-      if (!target) return;
-      // Ignore hover over the help bar itself — otherwise hovering the
-      // text would clear / overwrite the very text being read.
-      if (barRef.current && barRef.current.contains(target)) return;
-      const el = target.closest<HTMLElement>("[data-dd-tooltip]");
-      if (!el) {
-        setText(null);
-        setTitle(null);
-        return;
-      }
-      const t = el.getAttribute("data-dd-tooltip");
-      if (!t) {
-        setText(null);
-        setTitle(null);
-        return;
-      }
-      setText(t);
-      // Title source: explicit `data-dd-tooltip-title` wins (knobs +
-      // sliders + ref controls set this to their canonical label),
-      // then aria-label (buttons), then a 4-token slice of textContent
-      // as a last-resort fallback. The textContent fallback used to be
-      // the only source — for knob/slider wrappers it leaked the value
-      // + keyboard shortcut into the title ("Denoise 0.50 A + ▲▼").
-      const explicit = el.getAttribute("data-dd-tooltip-title");
-      const aria = el.getAttribute("aria-label");
-      const visible = el.textContent?.trim().split(/\s+/).slice(0, 4).join(" ");
-      setTitle(explicit || aria || visible || null);
-    };
-    const onLeave = (e: PointerEvent) => {
-      const next = (e.relatedTarget as Element | null) ?? null;
-      if (next && root.contains(next)) return;
-      setText(null);
-      setTitle(null);
-    };
-
-    root.addEventListener("pointermove", onMove);
-    root.addEventListener("pointerleave", onLeave);
-    return () => {
-      root.removeEventListener("pointermove", onMove);
-      root.removeEventListener("pointerleave", onLeave);
-    };
-  }, []);
+  const getRoot = useCallback(() => document.getElementById("install-sheet"), []);
+  const { title, text } = useTooltipHover({ getRoot, selfRef: barRef });
 
   return (
     <div

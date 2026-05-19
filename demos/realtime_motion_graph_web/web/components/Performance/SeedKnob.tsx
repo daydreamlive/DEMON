@@ -1,15 +1,16 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useState } from "react";
 
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 
+import { KnobCap } from "./KnobCap";
+
 // SeedKnob — knob-shaped randomize button, lives at the end of the CORE
-// row. Shares the skeumorphic cap chrome with <Knob/> (radial gradient
-// body, beveled rim, hairline shadow) so the row reads as one
-// continuous hardware unit. Difference: no arc, no value indicator —
-// the cap surface holds a dice glyph that snaps to a new face on every
-// click.
+// row. Shares the skeumorphic cap chrome with <Knob/> via <KnobCap/>
+// so the row reads as one continuous hardware unit. Difference: no
+// arc, no value indicator — the cap surface holds a dice glyph that
+// snaps to a new face on every click.
 //
 // Interactions:
 //   - Click            → randomize seed (calls store.randomizeSeed)
@@ -69,10 +70,6 @@ export function SeedKnob() {
     setFace((f) => (f + 1) % 6); // cycle to a different face
   };
 
-  // Per-knob unique gradient ids (same pattern as <Knob/>).
-  const uid = useId().replace(/:/g, "_");
-  const capId = `seed-cap-${uid}`;
-  const rimLightId = `seed-rim-${uid}`;
   const pips = PIPS_BY_FACE[face];
 
   return (
@@ -93,40 +90,8 @@ export function SeedKnob() {
           height="48"
           aria-hidden="true"
         >
-          <defs>
-            {/* Identical cap chrome to <Knob/> so the row reads as
-                one continuous hardware unit. */}
-            <radialGradient
-              id={capId}
-              cx="0.35"
-              cy="0.28"
-              r="0.85"
-              fx="0.32"
-              fy="0.22"
-            >
-              <stop offset="0%" stopColor="rgb(78, 84, 96)" />
-              <stop offset="45%" stopColor="rgb(36, 40, 48)" />
-              <stop offset="100%" stopColor="rgb(8, 10, 14)" />
-            </radialGradient>
-            <linearGradient id={rimLightId} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="rgba(255, 255, 255, 0.22)" />
-              <stop offset="50%" stopColor="rgba(255, 255, 255, 0.04)" />
-              <stop offset="100%" stopColor="rgba(0, 0, 0, 0.35)" />
-            </linearGradient>
-          </defs>
-          {/* Hairline shadow under the cap */}
-          <circle cx="24" cy="25" r="15.5" className="knob-shadow" />
-          {/* Cap body */}
-          <circle cx="24" cy="24" r="15" fill={`url(#${capId})`} />
-          {/* Beveled rim */}
-          <circle
-            cx="24"
-            cy="24"
-            r="15"
-            fill="none"
-            stroke={`url(#${rimLightId})`}
-            strokeWidth="1"
-          />
+          {/* Shared 3D cap chrome: shadow + body + beveled rim. */}
+          <KnobCap />
           {/* Dice glyph centered on the cap. Scaled + translated from
               the dice's local 24x24 viewBox into the cap's center. The
               dice face cycles on each click so the cap visibly reacts. */}

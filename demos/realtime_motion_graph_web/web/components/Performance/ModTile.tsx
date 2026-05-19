@@ -12,11 +12,13 @@ import { defaultLabelFor, kbdHintFor } from "./SliderTile";
 // the Styles tab's stacked-card layout. Each subsystem keeps its own
 // knobs and dropdowns together inside its own framed panel:
 //
-//   Engine    shift, feedback, feedback_depth.
+//   Engine    shift, feedback, feedback_depth, plus the pipeline
+//             depth dropdown to the right of the knob row.
 //   DCW       dcw_* knobs (dcw_high_scaler only when mode==="double"),
-//             followed by the DCW toggle + mode + wavelet dropdowns.
+//             followed by a single-row config strip with the DCW
+//             toggle, mode select, and wavelet select.
 //   CFG       guidance_scale + cfg_rescale knobs (only when RCFG is
-//             engaged), followed by RCFG mode + pipeline depth.
+//             engaged), followed by the RCFG mode dropdown.
 
 export function ModTile() {
   const dcwEnabled = usePerformanceStore((s) => s.dcwEnabled);
@@ -43,22 +45,57 @@ export function ModTile() {
     <div className="mod-tab" data-tile="mod">
       <div className="mixer-tile" data-tile="mod-engine">
         <div className="mixer-tile-label">Engine</div>
-        <div className="knob-rack">
-          <Knob
-            param="shift"
-            label={defaultLabelFor("shift")}
-            kbd={kbdHintFor("shift")}
-          />
-          <Knob
-            param="feedback"
-            label={defaultLabelFor("feedback")}
-            kbd={kbdHintFor("feedback")}
-          />
-          <Knob
-            param="feedback_depth"
-            label={defaultLabelFor("feedback_depth")}
-            kbd={kbdHintFor("feedback_depth")}
-          />
+        {/* Knobs on the left, depth select on the right of the same
+            row — saves vertical space vs. stacking the select underneath.
+            flex-wrap lets the select drop to a new line on narrow
+            drawers. */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "16px",
+            flexWrap: "wrap",
+          }}
+        >
+          <div className="knob-rack">
+            <Knob
+              param="shift"
+              label={defaultLabelFor("shift")}
+              kbd={kbdHintFor("shift")}
+            />
+            <Knob
+              param="feedback"
+              label={defaultLabelFor("feedback")}
+              kbd={kbdHintFor("feedback")}
+            />
+            <Knob
+              param="feedback_depth"
+              label={defaultLabelFor("feedback_depth")}
+              kbd={kbdHintFor("feedback_depth")}
+            />
+          </div>
+          <label
+            className="dcw-row"
+            title="Pipeline depth — concurrent denoising slots in the StreamDiffusion ring buffer. Low depth = faster param-update latency (best for discrete, snappy changes); high depth = higher throughput / updates per second (best for smooth glides) and better GPU utilization. Capped to the TRT engine's max batch size (or 4 in eager/compile)."
+          >
+            <span className="dcw-row-label">depth</span>
+            <select
+              className="dcw-select"
+              value={depthValue}
+              disabled={!depthEnabled}
+              onChange={(e) => {
+                const v = parseInt(e.target.value, 10);
+                if (!Number.isFinite(v)) return;
+                remote?.sendSetDepth(v);
+              }}
+            >
+              {depthOptions.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
       </div>
 
@@ -93,7 +130,18 @@ export function ModTile() {
             kbd={kbdHintFor("dcw_soft_thresh")}
           />
         </div>
-        <div className="dcw-panel knob-dcw">
+        {/* DCW config row — toggle, mode, wavelet on one horizontal
+            line. flex-wrap lets the row break onto two if the drawer
+            is narrow. */}
+        <div
+          className="knob-dcw"
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: "12px",
+          }}
+        >
           <button
             type="button"
             className={`dcw-toggle${dcwEnabled ? " active" : ""}`}
@@ -170,28 +218,6 @@ export function ModTile() {
               {RCFG_MODES.map((m) => (
                 <option key={m} value={m}>
                   {m}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label
-            className="dcw-row"
-            title="Pipeline depth — concurrent denoising slots in the StreamDiffusion ring buffer. Low depth = faster param-update latency (best for discrete, snappy changes); high depth = higher throughput / updates per second (best for smooth glides) and better GPU utilization. Capped to the TRT engine's max batch size (or 4 in eager/compile)."
-          >
-            <span className="dcw-row-label">depth</span>
-            <select
-              className="dcw-select"
-              value={depthValue}
-              disabled={!depthEnabled}
-              onChange={(e) => {
-                const v = parseInt(e.target.value, 10);
-                if (!Number.isFinite(v)) return;
-                remote?.sendSetDepth(v);
-              }}
-            >
-              {depthOptions.map((n) => (
-                <option key={n} value={n}>
-                  {n}
                 </option>
               ))}
             </select>
