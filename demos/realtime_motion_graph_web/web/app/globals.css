@@ -2134,20 +2134,30 @@ body.drawer-open {
 }
 
 .mixer-rack--tabbed > .mixer-tile,
-.mixer-rack--tabbed > .knob-tile,
-.mixer-rack--tabbed > .styles-tab {
+.mixer-rack--tabbed > .knob-tile {
   /* Active tab's body fills the rack instead of sitting in a row. The
      internal .mixer-channels still flexes its sliders edge-to-edge. */
   flex: 1 1 auto;
   width: 100%;
 }
-/* Styles tab — prompts on top, LoRA library underneath. The shared
-   parent stacks vertically and gives a thin frame-line between the two
-   so they read as related-but-distinct surfaces. */
-.styles-tab {
+/* Styles tab — prompts on top, LoRA library underneath. Both panels
+   are content-sized; if the combined height exceeds the panel, the
+   parent `.mixer-rack` scrolls (overflow-y: auto already set above).
+   `min-height: 0` on the column stack lets the scroll container do its
+   job — without it, the legacy row-wrap min-height: 110px on
+   .mixer-tile-prompts would force vertical slack below "Send Tags". */
+.mixer-rack--tabbed > .styles-tab {
+  flex: 0 0 auto;
+  width: 100%;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-height: 0;
+}
+.styles-tab > .mixer-tile {
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: 100%;
   min-height: 0;
 }
 .styles-tab > * + * {
