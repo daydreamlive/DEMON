@@ -2860,12 +2860,16 @@ body.curve-open #install-video-area #graph {
    convention. */
 .footer-links {
   position: fixed;
-  /* Vertically centered on the HaloBadge midline. Pills are ~26px
-     tall (5/14/6 padding + 12px icon + 9.5px label); badge is 44px
-     tall at `top: hud/2 - 10 + top-bias` so its midline is at
-     `hud/2 + 17 - top-bias`. Pill row top must be at
-     `hud/2 + 17 - 13 = hud/2 + 4` (with top-bias 5px). */
-  top: max(calc(var(--hud-thickness) / 2 + 4px + var(--top-bias, 5px)),
+  /* Vertically centered on the HaloBadge midline. Badge: 44px tall at
+     `top: hud/2 - 10 + top-bias`, hamburger middle-line is the SVG's
+     viewBox y=12 / 24 → 22px from box top, so middle-line lands at
+     `hud/2 - 10 + top-bias + 22 = hud/2 + 12 + top-bias`. With
+     top-bias 5, that's `hud/2 + 17`. Pill content-center sits at
+     `pill-top + 12` (1px border + 5px top padding + 6px to centre of
+     the 12px icon/cap row inside .footer-link). Match by setting
+     pill-top = hud/2 + 5, which factoring out top-bias means the
+     literal constant is 0. (Previous `+ 4px` here put the row 4px low.) */
+  top: max(calc(var(--hud-thickness) / 2 + var(--top-bias, 5px)),
            env(safe-area-inset-top, 0px));
   right: 140px;
   display: inline-flex;
