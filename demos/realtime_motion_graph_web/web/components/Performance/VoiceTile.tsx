@@ -47,7 +47,7 @@ export function VoiceTile() {
         </div>
         <div className="voice-section-divider" aria-hidden="true" />
         <div className="voice-section">
-          <div className="voice-section-label">Tuned morph</div>
+          <div className="voice-section-label">Channel gains</div>
           <div className="mixer-channels">
             {MORPH.map((p) => (
               <SliderGroup

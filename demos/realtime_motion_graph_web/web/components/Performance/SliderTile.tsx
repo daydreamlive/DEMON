@@ -17,24 +17,15 @@ interface Props {
 // no clean analog (shift, noise_share), the technical label stays.
 // CSS uppercases these on render via .slider-label / .mixer-tile-label.
 const DISPLAY_NAMES: Record<string, string> = {
-  // Core (CORE tab) — the dial-it-and-go knobs.
-  denoise: "denoise",        // engine-honest; the most-touched knob keeps its native name
-  hint_strength: "structure",// "how much we follow the source's structure"
-  timbre_strength: "timbre", // universal in synthesis
-  feedback: "feedback",      // universal in delay/echo/mod — keep canonical
-
-  // Mod (MOD tab) — time-variant / model-internal expert knobs, plus
-  // DCW (dynamically conditioned weighting) low/high scalers.
-  ode_noise: "jitter",       // clocking / granular — stochastic variation
-  noise_share: "n.share",    // no clean analog; keep technical
-  shift: "shift",            // no clean analog; expert
-  dcw_scaler: "DCW low",     // engine-honest — these are DCW-internal scalers
+  // Only the two macros where the friendly name reads more clearly than
+  // the engine-honest one: `structure` for `hint_strength`. Everything
+  // else falls back to defaultLabelFor (underscore → space) so the UI
+  // matches what the engine, MIDI map, and config files call them.
+  hint_strength: "structure",
+  // dcw_* keep their engine-honest "DCW low" / "DCW high" — these are
+  // DCW-internal scalers, not generic EQ.
+  dcw_scaler: "DCW low",
   dcw_high_scaler: "DCW high",
-
-  // Channels (CHANNELS tab) — the model's internal latent channels.
-  ch_g0: "v1", ch_g1: "v2", ch_g2: "v3", ch_g3: "v4",
-  ch_g4: "v5", ch_g5: "v6", ch_g6: "v7", ch_g7: "v8",
-  ch13: "m1", ch14: "m2", ch19: "m3", ch23: "m4", ch29: "m5", ch56: "m6",
 };
 
 // Tooltip copy for each tweakable param, surfaced via the slider label's
