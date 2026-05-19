@@ -240,6 +240,11 @@ export function RefControl({ kind }: { kind: RefKind }) {
         ariaLabel={bind.ariaLabel}
         onUpload={() => fileInputRef.current?.click()}
         uploadLabel={`Upload ${bind.label}`}
+        tooltip={
+          kind === "timbre"
+            ? "Optional reference audio for the timbre channel. Picking a track here biases the model's instrument character toward what's in that file, leaving structure (rhythm, sections) free to follow the playing input. Default 'Input Track' uses the playing source's own latent."
+            : "Optional reference audio for the structure channel. Picking a track here biases the model's section/rhythm/dynamics layout toward that file, leaving timbre (instrument character) free to follow the playing input. Default 'Input Track' uses the playing source's own latent."
+        }
       />
       <input
         ref={fileInputRef}

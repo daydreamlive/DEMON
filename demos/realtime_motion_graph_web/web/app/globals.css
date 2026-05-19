@@ -1888,6 +1888,56 @@ body.drawer-open {
   min-height: 0;
 }
 
+/* Persistent help readout pinned to the bottom of the panel. Reflects
+   the `data-dd-tooltip` text of whatever the user is hovering. Pulls
+   the same sheet vocabulary (frame-line border-top, dim text) as the
+   advisory boxes elsewhere in the HUD. Capped at roughly 1/4 of the
+   typical panel height — gives long descriptions enough room without
+   crowding the controls above. */
+.drawer-help-bar {
+  flex: 0 0 auto;
+  margin-top: auto;
+  min-height: 88px;
+  max-height: 28vh;
+  padding: 10px 12px 11px;
+  border-top: 1px solid var(--frame-line);
+  background: rgba(8, 8, 14, 0.55);
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+.drawer-help-bar--active {
+  background: rgba(12, 12, 20, 0.7);
+}
+.drawer-help-bar-title {
+  font-family: var(--font-mono);
+  font-size: 0.6em;
+  letter-spacing: var(--tracking-bar);
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0;
+}
+.drawer-help-bar-text {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-strong);
+  margin: 0;
+}
+.drawer-help-bar-hint {
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--text-dim);
+  font-style: italic;
+  margin: 0;
+}
+@media (max-width: 768px) {
+  /* No drawer on mobile — the help bar lives in the desktop install
+     sheet only. Hide just in case the desktop branch gets mounted. */
+  .drawer-help-bar { display: none; }
+}
+
 .install-section-operator {
   display: flex;
   flex-wrap: wrap;

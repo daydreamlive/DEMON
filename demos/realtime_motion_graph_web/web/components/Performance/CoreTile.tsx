@@ -40,8 +40,8 @@ export function CoreTile() {
         />
         <SeedKnob />
       </div>
-      <TrackPicker />
       <div className="knob-ref-row">
+        <TrackPicker />
         <RefControl kind="timbre" />
         <RefControl kind="structure" />
       </div>

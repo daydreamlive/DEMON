@@ -8,6 +8,7 @@ import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 
 import { CoreTile } from "./CoreTile";
+import { DrawerHelpBar } from "./DrawerHelpBar";
 import { DrawerTabs, useDrawerTab, type DrawerTab } from "./DrawerTabs";
 import { LibraryTile } from "./LibraryTile";
 import { LiteControls } from "./LiteControls";
@@ -141,6 +142,7 @@ export function AdvancedDrawer({ savedTab, unsavedDot }: Props = {}) {
         >
           {renderTabBody(activeTab, savedTab)}
         </div>
+        <DrawerHelpBar />
       </div>
     </aside>
   );

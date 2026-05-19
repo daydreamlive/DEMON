@@ -15,32 +15,17 @@ import { useSessionStore } from "@/store/useSessionStore";
 import type { TimeSignature } from "@/types/engine";
 
 import { AlmostReadyDialog } from "./AlmostReadyDialog";
+import { RefSelect } from "./RefSelect";
 
-// Inline track picker — a dropdown + upload button living at the top of
-// the CORE tab so power users don't have to leave the panel to swap
-// input audio. Mirrors AudioSourceCrate's upload flow (decode →
-// AlmostReadyDialog gate → addCustomTrack + setFixture), just packaged
-// as a compact form row instead of the floating placard.
-
-function UploadIcon({ size = 14 }: { size?: number }) {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width={size}
-      height={size}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.4}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M8 10V2" />
-      <path d="M4.5 5.5L8 2l3.5 3.5" />
-      <path d="M2.5 10v3a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-3" />
-    </svg>
-  );
-}
+// Inline track picker — a caption + dropdown + sibling upload icon
+// living at the top of the CORE tab so power users don't have to leave
+// the panel to swap input audio. Shares the RefSelect chrome with the
+// timbre + structure reference pickers immediately below it, so the
+// three controls (track / timbre ref / structure ref) read as a
+// coherent row of source-material selectors.
+//
+// Upload flow mirrors AudioSourceCrate: decode locally → gate with
+// AlmostReadyDialog → addCustomTrack + setFixture on Continue.
 
 export function TrackPicker() {
   const fixture = usePerformanceStore((s) => s.fixture);
@@ -117,64 +102,39 @@ export function TrackPicker() {
   }
 
   return (
-    <div className="track-picker">
-      <label className="track-picker-label" htmlFor="core-fixture-select">
-        Track
-      </label>
-      <div className="track-picker-row">
-        <select
-          id="core-fixture-select"
-          className="fixture-select"
-          title="Audio source — pick a track or one of your uploaded tracks"
-          value={fixture}
-          onChange={(e) => setFixture(e.target.value)}
-        >
-          {fixtures.length === 0 && customNames.length === 0 && <option>—</option>}
-          {customNames.length > 0 && (
-            <optgroup label="Your uploads">
-              {customNames.map((n) => (
-                <option key={`u:${n}`} value={n}>
-                  {n}
-                </option>
-              ))}
-            </optgroup>
-          )}
-          {fixtures.length > 0 && (
-            <optgroup label="Tracks">
-              {fixtures.map((f) => (
-                <option key={f} value={f}>
-                  {f}
-                </option>
-              ))}
-            </optgroup>
-          )}
-        </select>
-        <button
-          type="button"
-          className="track-picker-upload"
-          data-dd-tooltip={uploading ? "Decoding…" : "Upload audio track"}
-          aria-label="Upload audio track"
-          disabled={uploading}
-          onClick={() => fileInputRef.current?.click()}
-        >
-          <UploadIcon size={14} />
-          <span className="track-picker-upload-label">
-            {uploading ? "Decoding…" : "Upload"}
-          </span>
-        </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="audio/*,.mp3,.wav,.flac,.ogg,.m4a,.aac"
-          style={{ display: "none" }}
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            e.target.value = "";
-            if (file) void onFilePicked(file);
-          }}
-        />
-      </div>
-
+    <>
+      <RefSelect
+        label="track"
+        value={fixture || ""}
+        pinned={[]}
+        groups={[
+          {
+            label: "Library",
+            options: fixtures.map((n) => ({ value: n, label: n })),
+          },
+          {
+            label: "Your tracks",
+            options: customNames.map((n) => ({ value: n, label: n })),
+          },
+        ]}
+        onSelect={setFixture}
+        disabled={uploading}
+        ariaLabel="Input track"
+        onUpload={() => fileInputRef.current?.click()}
+        uploadLabel={uploading ? "Decoding…" : "Upload audio track"}
+        tooltip="The input song the model is processing. Pick a built-in fixture, one of your uploads, or click the upload icon to drop in a new file. New uploads decode locally, then the Almost-Ready dialog gates the swap so the previous track keeps playing if you cancel."
+      />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="audio/*,.mp3,.wav,.flac,.ogg,.m4a,.aac"
+        style={{ display: "none" }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          if (file) void onFilePicked(file);
+        }}
+      />
       {pending && (
         <AlmostReadyDialog
           fileName={pending.fileName}
@@ -193,6 +153,6 @@ export function TrackPicker() {
           onClose={() => setPending(null)}
         />
       )}
-    </div>
+    </>
   );
 }

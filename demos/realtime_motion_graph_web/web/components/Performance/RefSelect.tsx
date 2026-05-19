@@ -34,6 +34,10 @@ interface Props {
   /** Tooltip / aria-label for the upload button, kind-specific so screen
    *  readers and the one-shot tooltip both get useful copy. */
   uploadLabel?: string;
+  /** Long-form description rendered into the panel help bar on hover.
+   *  Should explain what this picker controls (audio source, timbre
+   *  reference, structure reference, etc.). */
+  tooltip?: string;
 }
 
 function UploadIcon({ size = 12 }: { size?: number }) {
@@ -66,6 +70,7 @@ export function RefSelect({
   ariaLabel,
   onUpload,
   uploadLabel,
+  tooltip,
 }: Props) {
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
@@ -105,7 +110,11 @@ export function RefSelect({
   }
 
   return (
-    <div className="ref-control">
+    <div
+      className="ref-control"
+      data-dd-tooltip={tooltip || undefined}
+      data-dd-tooltip-wide={tooltip ? "" : undefined}
+    >
       <span className="ref-control-label">{label}</span>
       <div className="ref-control-anchor">
         <button
