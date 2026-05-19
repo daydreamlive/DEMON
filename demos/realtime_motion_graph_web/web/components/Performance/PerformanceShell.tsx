@@ -30,7 +30,6 @@ import { AdvancedDrawer } from "./AdvancedDrawer";
 import { AudioSourceCrate } from "./AudioSourceCrate";
 import { ConfigModal } from "./ConfigModal";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { DesktopEdgeDrag } from "./DesktopEdgeDrag";
 import { FooterLinks } from "./FooterLinks";
 import { HeroMacros } from "./HeroMacros";
 import { HUDFrame } from "./HUDFrame";
@@ -139,14 +138,6 @@ export function PerformanceShell() {
           <MobileLoraBlendStepper />
         </>
       )}
-      {!isMobile && (
-        <>
-          <DesktopEdgeDrag side="top" />
-          <DesktopEdgeDrag side="left" />
-          <DesktopEdgeDrag side="right" />
-        </>
-      )}
-
       <AdvancedDrawer />
       <HudHelpReadout />
       <ConfigModal />
