@@ -469,7 +469,7 @@ class PipelineRunner:
                     "seed": 0.0,
                     "feedback": 0.0,
                     "feedback_depth": 1.0,
-                    "shift": 3.0,
+                    "shift": 3.5,
                 }
                 if self.use_sde:
                     raw["periodicity"] = 0.0
