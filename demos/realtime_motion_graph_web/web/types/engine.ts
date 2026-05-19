@@ -17,8 +17,8 @@ export interface SliderMeta {
 /** Standard non-LoRA sliders. LoRA sliders (`lora_str_<id>`) get added at
  * runtime when the catalog arrives — they aren't listed here. */
 export const SLIDER_META: Record<string, SliderMeta> = {
-  denoise: { max: 1.0, step: 0.01 },
-  hint_strength: { max: 1.0, step: 0.01 },
+  denoise: { max: 1.0, step: 0.05 },
+  hint_strength: { max: 1.0, step: 0.05 },
   timbre_strength: { max: 1.0, step: 0.05 },
   // 0 = LoRA A only, 1 = LoRA B only, 0.5 = both at half-max. UI-only knob —
   // useEdgeLoraBinding watches this and writes the paired lora_str_<id> values.
