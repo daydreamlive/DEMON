@@ -5151,21 +5151,61 @@ body.curve-open #install-video-area #graph {
   object-fit: cover;
   pointer-events: none;
 }
+/* 3-way segmented control: Video+Audio | Audio | Both. Three equal-width
+   buttons share a hairline frame; the active option recesses with an
+   inset shadow + brighter foreground (same vocabulary as the drawer
+   tab strip). */
 .recording-preview-format {
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 0;
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.recording-preview-format-btn {
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  gap: 2px;
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--frame-line);
+  padding: 8px 6px 9px;
+  cursor: pointer;
+  color: var(--text-dim);
+  transition: color 140ms, background 140ms, box-shadow 140ms;
+}
+.recording-preview-format-btn:first-child {
+  border-left: none;
+}
+.recording-preview-format-btn:hover {
+  color: var(--text-strong);
+  background: rgba(255, 255, 255, 0.03);
+}
+.recording-preview-format-btn--active {
+  color: var(--text-strong);
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+.recording-preview-format-btn-label {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 10.5px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--text-dim);
-  cursor: pointer;
-  align-self: flex-start;
+  line-height: 1.2;
 }
-.recording-preview-format input[type="checkbox"] {
-  accent-color: var(--accent);
-  cursor: pointer;
+.recording-preview-format-btn-sublabel {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  line-height: 1.2;
+}
+.recording-preview-format-btn--active .recording-preview-format-btn-sublabel {
+  color: var(--accent);
 }
 .recording-preview-actions {
   display: flex;

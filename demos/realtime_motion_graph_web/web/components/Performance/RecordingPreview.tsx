@@ -16,19 +16,21 @@ function fmtDuration(ms: number): string {
   return `${mm}:${ss.toString().padStart(2, "0")}`;
 }
 
+type SaveKind = "audio" | "video";
+
 type Prepared = {
   blob: Blob;
   filename: string;
   mime: string;
-  kind: "audio" | "video";
+  kind: SaveKind;
 };
 
 // Re-encode the captured Opus/AAC blob to WAV so users get a DAW-friendly file.
 // Falls back silently to the original blob if decoding fails (rare).
 async function prepareAudioDownload(
   source: { blob: Blob; ext: string; mime: string },
+  stamp: string,
 ): Promise<Prepared> {
-  const stamp = isoStamp();
   let ctx: AudioContext | null = null;
   try {
     ctx = new AudioContext();
@@ -54,12 +56,10 @@ async function prepareAudioDownload(
   }
 }
 
-function prepareVideoDownload(source: {
-  blob: Blob;
-  ext: string;
-  mime: string;
-}): Prepared {
-  const stamp = isoStamp();
+function prepareVideoDownload(
+  source: { blob: Blob; ext: string; mime: string },
+  stamp: string,
+): Prepared {
   return {
     blob: source.blob,
     filename: `daydream-${stamp}.${source.ext}`,
@@ -79,16 +79,23 @@ function triggerDownload(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+// Three download modes:
+//   "video" — muxed webm/mp4 (audio + graph video in one container)
+//   "audio" — WAV only (existing behavior; works on every browser)
+//   "both"  — fire both downloads in sequence (browser may surface a
+//             "this site is downloading multiple files" permission
+//             prompt on first use; that's a one-time accept)
+type Format = "video" | "audio" | "both";
+
 export function RecordingPreview() {
   const state = useRecordingStore((s) => s.state);
-  // Toggle defaults to ON when a video blob is present; the user can
-  // flip to audio-only before clicking Save. State lives in the
-  // component because it's UI-local — a fresh preview always starts
-  // with the video preferred.
   const hasVideo = state.kind === "preview" && !!state.videoBlob;
-  const [includeVideo, setIncludeVideo] = useState(true);
+  // Default to "video" when video was captured (so the user lands on
+  // the richer-by-default option), "audio" otherwise. Reset whenever a
+  // new preview lands.
+  const [format, setFormat] = useState<Format>(hasVideo ? "video" : "audio");
   useEffect(() => {
-    setIncludeVideo(hasVideo);
+    setFormat(hasVideo ? "video" : "audio");
   }, [hasVideo, state.kind === "preview" ? state.url : null]);
 
   if (state.kind !== "preview") return null;
@@ -99,9 +106,8 @@ export function RecordingPreview() {
 
   function notifySaved(prepared: Prepared, durationMs: number) {
     // Lets the host webapp persist the clip alongside its own session
-    // metadata (see demon-public-demo's saved-sessions feature). Fired
-    // after the user-visible Save/Share completes so the listener
-    // doesn't race with the download. No-op if nobody is listening.
+    // metadata. Fires once per saved file — for "both", two events
+    // fire back-to-back so the listener can persist each independently.
     document.dispatchEvent(
       new CustomEvent("dd:recording-saved", {
         detail: {
@@ -115,27 +121,42 @@ export function RecordingPreview() {
     );
   }
 
-  async function prepare(): Promise<Prepared> {
-    if (state.kind !== "preview") throw new Error("not in preview state");
-    if (includeVideo && state.videoBlob && state.videoMime && state.videoExt) {
-      return prepareVideoDownload({
-        blob: state.videoBlob,
-        ext: state.videoExt,
-        mime: state.videoMime,
-      });
+  async function preparedItems(): Promise<Prepared[]> {
+    if (state.kind !== "preview") return [];
+    const stamp = isoStamp();
+    const out: Prepared[] = [];
+    if (format === "video" || format === "both") {
+      if (state.videoBlob && state.videoMime && state.videoExt) {
+        out.push(
+          prepareVideoDownload(
+            {
+              blob: state.videoBlob,
+              ext: state.videoExt,
+              mime: state.videoMime,
+            },
+            stamp,
+          ),
+        );
+      }
     }
-    return prepareAudioDownload({
-      blob: state.blob,
-      ext: state.ext,
-      mime: state.mime,
-    });
+    if (format === "audio" || format === "both") {
+      out.push(
+        await prepareAudioDownload(
+          { blob: state.blob, ext: state.ext, mime: state.mime },
+          stamp,
+        ),
+      );
+    }
+    return out;
   }
 
   async function save() {
     if (state.kind !== "preview") return;
-    const prepared = await prepare();
-    triggerDownload(prepared.blob, prepared.filename);
-    notifySaved(prepared, state.durationMs);
+    const items = await preparedItems();
+    for (const p of items) {
+      triggerDownload(p.blob, p.filename);
+      notifySaved(p, state.durationMs);
+    }
     dismiss();
   }
 
@@ -144,27 +165,37 @@ export function RecordingPreview() {
     const nav = navigator as Navigator & {
       canShare?: (data: ShareData) => boolean;
     };
-    const prepared = await prepare();
-    try {
-      const file = new File([prepared.blob], prepared.filename, {
-        type: prepared.mime,
-      });
-      const data: ShareData = { files: [file], title: "Daydream clip" };
-      if (nav.canShare?.(data)) {
-        await nav.share(data);
-        notifySaved(prepared, state.durationMs);
-        dismiss();
-        return;
+    // Share only meaningfully handles a single file at a time on most
+    // platforms; for "both" we fall through to downloading both.
+    if (format !== "both") {
+      const items = await preparedItems();
+      const prepared = items[0];
+      if (!prepared) return;
+      try {
+        const file = new File([prepared.blob], prepared.filename, {
+          type: prepared.mime,
+        });
+        const data: ShareData = { files: [file], title: "Daydream clip" };
+        if (nav.canShare?.(data)) {
+          await nav.share(data);
+          notifySaved(prepared, state.durationMs);
+          dismiss();
+          return;
+        }
+      } catch (err) {
+        // User cancellation throws AbortError — leave the preview open
+        // so they can try a different action (Save / different share
+        // target).
+        if ((err as Error).name === "AbortError") return;
+        console.warn("[RecordingPreview] share failed", err);
       }
-    } catch (err) {
-      // User cancellation throws AbortError — leave the preview open so
-      // they can try a different action (Save / different share target).
-      if ((err as Error).name === "AbortError") return;
-      console.warn("[RecordingPreview] share failed", err);
+      triggerDownload(prepared.blob, prepared.filename);
+      notifySaved(prepared, state.durationMs);
+      dismiss();
+      return;
     }
-    triggerDownload(prepared.blob, prepared.filename);
-    notifySaved(prepared, state.durationMs);
-    dismiss();
+    // "both" path — defer to save (two downloads).
+    void save();
   }
 
   const canShare =
@@ -172,7 +203,12 @@ export function RecordingPreview() {
     "share" in navigator &&
     "canShare" in navigator;
 
-  const metaLabel = includeVideo && hasVideo ? "Video" : "WAV";
+  const metaLabel =
+    format === "video"
+      ? "Video"
+      : format === "both"
+        ? "Video + WAV"
+        : "WAV";
 
   return (
     <div className="recording-preview" role="dialog" aria-label="Saved clip">
@@ -202,14 +238,33 @@ export function RecordingPreview() {
         />
       </div>
       {hasVideo && (
-        <label className="recording-preview-format">
-          <input
-            type="checkbox"
-            checked={includeVideo}
-            onChange={(e) => setIncludeVideo(e.target.checked)}
+        <div
+          className="recording-preview-format"
+          role="radiogroup"
+          aria-label="Download format"
+        >
+          <FormatButton
+            value="video"
+            active={format}
+            onPick={setFormat}
+            label="Video + audio"
+            sublabel="One file"
           />
-          <span>Include video</span>
-        </label>
+          <FormatButton
+            value="audio"
+            active={format}
+            onPick={setFormat}
+            label="Audio only"
+            sublabel="WAV"
+          />
+          <FormatButton
+            value="both"
+            active={format}
+            onPick={setFormat}
+            label="Both"
+            sublabel="Two files"
+          />
+        </div>
       )}
       <div className="recording-preview-actions">
         <button
@@ -237,5 +292,35 @@ export function RecordingPreview() {
         </button>
       </div>
     </div>
+  );
+}
+
+function FormatButton({
+  value,
+  active,
+  onPick,
+  label,
+  sublabel,
+}: {
+  value: Format;
+  active: Format;
+  onPick: (v: Format) => void;
+  label: string;
+  sublabel: string;
+}) {
+  const isActive = active === value;
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={isActive}
+      className={`recording-preview-format-btn${
+        isActive ? " recording-preview-format-btn--active" : ""
+      }`}
+      onClick={() => onPick(value)}
+    >
+      <span className="recording-preview-format-btn-label">{label}</span>
+      <span className="recording-preview-format-btn-sublabel">{sublabel}</span>
+    </button>
   );
 }

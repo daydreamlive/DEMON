@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 
-import { getActiveGraphRenderer } from "@/engine/render/GraphRenderer";
+import { RecordingCompositor } from "@/engine/recording/RecordingCompositor";
 import { useRecordingStore } from "@/store/useRecordingStore";
 import { useSessionStore } from "@/store/useSessionStore";
 
@@ -90,6 +90,7 @@ export function useRecording() {
     let videoChunks: Blob[] = [];
     let pickedVideoMime: { mime: string; ext: string } | null = null;
     let videoStream: MediaStream | null = null;
+    let compositor: RecordingCompositor | null = null;
     let startedAt = 0;
     let pausedTotalMs = 0;
     let pausedSinceMs = 0;
@@ -127,12 +128,18 @@ export function useRecording() {
           videoRecorder.onerror = null;
         } catch {}
       }
-      // Release the captureStream tracks so the canvas doesn't keep
-      // feeding a recorder we've forgotten about. The video track ends
-      // on the next animation frame after the last reference drops.
+      // Release the captureStream tracks so the compositor canvas
+      // doesn't keep feeding a recorder we've forgotten about. The
+      // video track ends on the next animation frame after the last
+      // reference drops. Compositor's own rAF gets cancelled too.
       if (videoStream) {
         try {
           for (const t of videoStream.getTracks()) t.stop();
+        } catch {}
+      }
+      if (compositor) {
+        try {
+          compositor.stop();
         } catch {}
       }
       recorder = null;
@@ -142,6 +149,7 @@ export function useRecording() {
       videoChunks = [];
       pickedVideoMime = null;
       videoStream = null;
+      compositor = null;
       startedAt = 0;
       pausedTotalMs = 0;
       pausedSinceMs = 0;
@@ -322,23 +330,22 @@ export function useRecording() {
         teardown();
       };
 
-      // Optional parallel video recorder — best-effort. If anything in
-      // the captureStream / combined-stream / MIME chain fails, we
-      // silently fall through to audio-only (existing behavior).
+      // Optional parallel video recorder — best-effort. Composites the
+      // waveform strip + the motion graph into one offscreen canvas
+      // and captureStream's that, so the recording matches the
+      // performance the user is making. If anything in the chain fails
+      // (MIME, captureStream, MediaRecorder ctor) we silently fall
+      // through to audio-only (existing behavior).
       pickedVideoMime = null;
       videoRecorder = null;
       videoStream = null;
       videoChunks = [];
+      compositor = null;
       try {
-        const graphRenderer = getActiveGraphRenderer();
-        const graphCanvas = graphRenderer?.canvas;
         const videoMime = pickVideoMime();
-        if (
-          graphCanvas &&
-          videoMime &&
-          typeof graphCanvas.captureStream === "function"
-        ) {
-          videoStream = graphCanvas.captureStream(30);
+        if (videoMime) {
+          compositor = new RecordingCompositor();
+          videoStream = compositor.start();
           const combined = new MediaStream([
             ...videoStream.getVideoTracks(),
             ...stream.getAudioTracks(),
@@ -356,6 +363,9 @@ export function useRecording() {
             try {
               videoRecorder?.stop();
             } catch {}
+            try {
+              compositor?.stop();
+            } catch {}
             videoRecorder = null;
             pickedVideoMime = null;
             if (videoStream) {
@@ -364,12 +374,16 @@ export function useRecording() {
               } catch {}
               videoStream = null;
             }
+            compositor = null;
             videoChunks = [];
           };
           videoRecorder.start(1000);
         }
       } catch (err) {
         console.warn("[useRecording] video capture init failed", err);
+        try {
+          compositor?.stop();
+        } catch {}
         videoRecorder = null;
         pickedVideoMime = null;
         if (videoStream) {
@@ -378,6 +392,7 @@ export function useRecording() {
           } catch {}
           videoStream = null;
         }
+        compositor = null;
       }
 
       try {
