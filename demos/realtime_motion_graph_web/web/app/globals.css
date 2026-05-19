@@ -6129,13 +6129,13 @@ body.curve-open #install-video-area #graph {
     0 6px 18px rgba(0, 0, 0, 0.45),
     0 0 14px rgba(240, 138, 72, 0.15);
 }
-.hero-macros [data-dd-tooltip][data-dd-tooltip-wide][data-dd-tooltip-title]::after::first-line {
-  font-family: var(--font-mono);
-  font-size: 0.7em;
-  letter-spacing: var(--tracking-bar);
-  text-transform: uppercase;
-  color: var(--accent);
-}
+/* No `::after::first-line` chain here — Turbopack's CSS parser bails on
+   chained pseudo-elements (Parsing CSS source code failed). The title
+   line still reads as a header because it's short, sits on its own
+   line via the \A newline + pre-line, and the body wraps below. If we
+   want the accent-colored title back, the right path is replacing the
+   ::after pseudo with a real React tooltip component (anchored to the
+   hovered element via portal). Out of scope for this pass. */
 [data-dd-tooltip]:hover::after,
 [data-dd-tooltip]:focus-visible::after {
   opacity: 1;
