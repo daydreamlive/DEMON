@@ -34,9 +34,13 @@ export function HudHelpReadout() {
         return;
       }
       setText(t);
-      const visible = el.textContent?.trim().split(/\s+/).slice(0, 4).join(" ");
+      // Same precedence as DrawerHelpBar — explicit `data-dd-tooltip-
+      // title` first, then aria-label, then textContent. Prevents the
+      // hero-bay knob titles from leaking value + kbd into the chip.
+      const explicit = el.getAttribute("data-dd-tooltip-title");
       const aria = el.getAttribute("aria-label");
-      setTitle(visible || aria || null);
+      const visible = el.textContent?.trim().split(/\s+/).slice(0, 4).join(" ");
+      setTitle(explicit || aria || visible || null);
     };
     const onLeave = (e: PointerEvent) => {
       if (e.relatedTarget) return;

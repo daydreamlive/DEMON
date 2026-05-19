@@ -417,6 +417,7 @@ function LoraRow({ entry }: RowProps) {
         data-state={enabled ? "enabled" : "disabled"}
         data-dd-tooltip={tooltipText}
         data-dd-tooltip-wide={tooltipText ? "" : undefined}
+        data-dd-tooltip-title={displayName}
         data-dd-tooltip-show={confirmMsg !== null ? "true" : undefined}
         onContextMenu={onRowContextMenu}
       >

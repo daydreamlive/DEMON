@@ -114,6 +114,7 @@ export function RefSelect({
       className="ref-control"
       data-dd-tooltip={tooltip || undefined}
       data-dd-tooltip-wide={tooltip ? "" : undefined}
+      data-dd-tooltip-title={label}
     >
       <span className="ref-control-label">{label}</span>
       <div className="ref-control-anchor">

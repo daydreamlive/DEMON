@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useState } from "react";
+
 import { useRecordingStore } from "@/store/useRecordingStore";
 import { encodeWav } from "@/lib/audio/encodeWav";
 
@@ -14,11 +16,16 @@ function fmtDuration(ms: number): string {
   return `${mm}:${ss.toString().padStart(2, "0")}`;
 }
 
-type Prepared = { blob: Blob; filename: string; mime: string };
+type Prepared = {
+  blob: Blob;
+  filename: string;
+  mime: string;
+  kind: "audio" | "video";
+};
 
 // Re-encode the captured Opus/AAC blob to WAV so users get a DAW-friendly file.
 // Falls back silently to the original blob if decoding fails (rare).
-async function prepareDownload(
+async function prepareAudioDownload(
   source: { blob: Blob; ext: string; mime: string },
 ): Promise<Prepared> {
   const stamp = isoStamp();
@@ -30,6 +37,7 @@ async function prepareDownload(
       blob: encodeWav(buf),
       filename: `daydream-${stamp}.wav`,
       mime: "audio/wav",
+      kind: "audio",
     };
   } catch (err) {
     console.warn("[RecordingPreview] WAV encode failed; falling back", err);
@@ -37,12 +45,27 @@ async function prepareDownload(
       blob: source.blob,
       filename: `daydream-${stamp}.${source.ext}`,
       mime: source.mime,
+      kind: "audio",
     };
   } finally {
     try {
       ctx?.close();
     } catch {}
   }
+}
+
+function prepareVideoDownload(source: {
+  blob: Blob;
+  ext: string;
+  mime: string;
+}): Prepared {
+  const stamp = isoStamp();
+  return {
+    blob: source.blob,
+    filename: `daydream-${stamp}.${source.ext}`,
+    mime: source.mime,
+    kind: "video",
+  };
 }
 
 function triggerDownload(blob: Blob, filename: string) {
@@ -58,6 +81,15 @@ function triggerDownload(blob: Blob, filename: string) {
 
 export function RecordingPreview() {
   const state = useRecordingStore((s) => s.state);
+  // Toggle defaults to ON when a video blob is present; the user can
+  // flip to audio-only before clicking Save. State lives in the
+  // component because it's UI-local — a fresh preview always starts
+  // with the video preferred.
+  const hasVideo = state.kind === "preview" && !!state.videoBlob;
+  const [includeVideo, setIncludeVideo] = useState(true);
+  useEffect(() => {
+    setIncludeVideo(hasVideo);
+  }, [hasVideo, state.kind === "preview" ? state.url : null]);
 
   if (state.kind !== "preview") return null;
 
@@ -77,18 +109,31 @@ export function RecordingPreview() {
           mime: prepared.mime,
           filename: prepared.filename,
           durationMs,
+          kind: prepared.kind,
         },
       }),
     );
   }
 
-  async function save() {
-    if (state.kind !== "preview") return;
-    const prepared = await prepareDownload({
+  async function prepare(): Promise<Prepared> {
+    if (state.kind !== "preview") throw new Error("not in preview state");
+    if (includeVideo && state.videoBlob && state.videoMime && state.videoExt) {
+      return prepareVideoDownload({
+        blob: state.videoBlob,
+        ext: state.videoExt,
+        mime: state.videoMime,
+      });
+    }
+    return prepareAudioDownload({
       blob: state.blob,
       ext: state.ext,
       mime: state.mime,
     });
+  }
+
+  async function save() {
+    if (state.kind !== "preview") return;
+    const prepared = await prepare();
     triggerDownload(prepared.blob, prepared.filename);
     notifySaved(prepared, state.durationMs);
     dismiss();
@@ -99,11 +144,7 @@ export function RecordingPreview() {
     const nav = navigator as Navigator & {
       canShare?: (data: ShareData) => boolean;
     };
-    const prepared = await prepareDownload({
-      blob: state.blob,
-      ext: state.ext,
-      mime: state.mime,
-    });
+    const prepared = await prepare();
     try {
       const file = new File([prepared.blob], prepared.filename, {
         type: prepared.mime,
@@ -131,20 +172,45 @@ export function RecordingPreview() {
     "share" in navigator &&
     "canShare" in navigator;
 
+  const metaLabel = includeVideo && hasVideo ? "Video" : "WAV";
+
   return (
     <div className="recording-preview" role="dialog" aria-label="Saved clip">
       <div className="recording-preview-header">
         <span className="recording-preview-title">New clip</span>
         <span className="recording-preview-meta">
-          {fmtDuration(state.durationMs)} · WAV
+          {fmtDuration(state.durationMs)} · {metaLabel}
         </span>
       </div>
-      <audio
-        className="recording-preview-audio"
-        src={state.url}
-        controls
-        preload="metadata"
-      />
+      <div className="recording-preview-media">
+        <audio
+          className="recording-preview-audio"
+          src={state.url}
+          controls
+          preload="metadata"
+        />
+        {hasVideo && state.videoUrl && (
+          <video
+            className="recording-preview-video-chip"
+            src={state.videoUrl}
+            playsInline
+            muted
+            loop
+            autoPlay
+            aria-label="Graph capture preview"
+          />
+        )}
+      </div>
+      {hasVideo && (
+        <label className="recording-preview-format">
+          <input
+            type="checkbox"
+            checked={includeVideo}
+            onChange={(e) => setIncludeVideo(e.target.checked)}
+          />
+          <span>Include video</span>
+        </label>
+      )}
       <div className="recording-preview-actions">
         <button
           type="button"

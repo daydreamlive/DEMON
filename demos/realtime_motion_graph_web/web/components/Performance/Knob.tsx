@@ -298,6 +298,7 @@ export function Knob({ param, label, max, min, reverse, unity, kbd }: Props) {
       style={style}
       data-dd-tooltip={tooltip}
       data-dd-tooltip-wide={tooltip ? "" : undefined}
+      data-dd-tooltip-title={label}
     >
       <div className="knob-label" title={tooltip}>
         {label}

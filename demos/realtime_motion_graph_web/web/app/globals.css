@@ -5131,6 +5131,46 @@ body.curve-open #install-video-area #graph {
   border-radius: 8px;
   background: rgba(0, 0, 0, 0.3);
 }
+/* When a video chip is present, the audio player and the chip sit
+   side-by-side so the user sees the captured graph next to the waveform
+   they're about to download. Wraps to a column on narrow widths. */
+.recording-preview-media {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.recording-preview-media > .recording-preview-audio {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.recording-preview-video-chip {
+  flex: 0 0 auto;
+  width: 96px;
+  height: 54px;
+  border-radius: 6px;
+  border: 1px solid var(--frame-line);
+  background: #000;
+  object-fit: cover;
+  pointer-events: none;
+}
+.recording-preview-format {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  cursor: pointer;
+  align-self: flex-start;
+}
+.recording-preview-format input[type="checkbox"] {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
 .recording-preview-actions {
   display: flex;
   gap: 8px;

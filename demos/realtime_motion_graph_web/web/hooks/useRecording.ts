@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 
+import { getActiveGraphRenderer } from "@/engine/render/GraphRenderer";
 import { useRecordingStore } from "@/store/useRecordingStore";
 import { useSessionStore } from "@/store/useSessionStore";
 
@@ -10,11 +11,20 @@ import { useSessionStore } from "@/store/useSessionStore";
 // shortcut handler does the same. Mirrors the dd:toggle-drawer pattern.
 //
 // Strategy notes:
-//   • Audio-only. Stream comes from AudioPlayer.getRecordingStream() — a
+//   • Two parallel recorders run for every capture: an audio-only one
+//     (existing behavior — feeds the WAV download path) and an optional
+//     muxed video+audio one whose video track comes from the graph
+//     canvas via `canvas.captureStream(30)`. The save dialog lets the
+//     user pick which blob downloads; the audio-only path stays
+//     bit-identical to the previous behavior when video isn't wanted.
+//   • Audio stream comes from AudioPlayer.getRecordingStream() — a
 //     MediaStreamAudioDestinationNode tee'd off the same worklet output the
 //     user hears, at 48 kHz / 2 ch.
-//   • MIME ladder picks Opus-in-WebM first (transparent at 192 kbps), falls
-//     back to AAC-in-MP4 for Safari/iOS, gracefully disables otherwise.
+//   • Audio MIME ladder picks Opus-in-WebM first (transparent at 192 kbps),
+//     falls back to AAC-in-MP4 for Safari/iOS, gracefully disables otherwise.
+//   • Video MIME ladder prefers webm/vp9 then webm/vp8 then mp4. If none
+//     are supported (older Safari) the video path silently no-ops and
+//     the save dialog presents the audio-only path as the only choice.
 //   • start(1000) yields 1-second chunks so a tab crash loses at most ~1s.
 //   • Visibility / AudioContext statechange handlers auto-pause and surface
 //     status into the existing StatusBar via useSessionStore.setStatus.
@@ -35,6 +45,14 @@ const MIME_LADDER: MimeChoice[] = [
   { mime: "audio/mp4", ext: "m4a", bitrate: 256_000 },
 ];
 
+const VIDEO_MIME_LADDER: { mime: string; ext: string }[] = [
+  { mime: "video/webm;codecs=vp9,opus", ext: "webm" },
+  { mime: "video/webm;codecs=vp8,opus", ext: "webm" },
+  { mime: "video/webm", ext: "webm" },
+  { mime: "video/mp4;codecs=avc1,mp4a", ext: "mp4" },
+  { mime: "video/mp4", ext: "mp4" },
+];
+
 function pickMime(): MimeChoice | null {
   if (typeof window === "undefined") return null;
   if (typeof MediaRecorder === "undefined") return null;
@@ -48,6 +66,17 @@ function pickMime(): MimeChoice | null {
   return null;
 }
 
+function pickVideoMime(): { mime: string; ext: string } | null {
+  if (typeof window === "undefined") return null;
+  if (typeof MediaRecorder === "undefined") return null;
+  for (const choice of VIDEO_MIME_LADDER) {
+    try {
+      if (MediaRecorder.isTypeSupported(choice.mime)) return choice;
+    } catch {}
+  }
+  return null;
+}
+
 export function isRecordingSupported(): boolean {
   return pickMime() !== null;
 }
@@ -57,6 +86,10 @@ export function useRecording() {
     let recorder: MediaRecorder | null = null;
     let chunks: Blob[] = [];
     let pickedMime: MimeChoice | null = null;
+    let videoRecorder: MediaRecorder | null = null;
+    let videoChunks: Blob[] = [];
+    let pickedVideoMime: { mime: string; ext: string } | null = null;
+    let videoStream: MediaStream | null = null;
     let startedAt = 0;
     let pausedTotalMs = 0;
     let pausedSinceMs = 0;
@@ -87,9 +120,28 @@ export function useRecording() {
           recorder.onerror = null;
         } catch {}
       }
+      if (videoRecorder) {
+        try {
+          videoRecorder.ondataavailable = null;
+          videoRecorder.onstop = null;
+          videoRecorder.onerror = null;
+        } catch {}
+      }
+      // Release the captureStream tracks so the canvas doesn't keep
+      // feeding a recorder we've forgotten about. The video track ends
+      // on the next animation frame after the last reference drops.
+      if (videoStream) {
+        try {
+          for (const t of videoStream.getTracks()) t.stop();
+        } catch {}
+      }
       recorder = null;
       chunks = [];
       pickedMime = null;
+      videoRecorder = null;
+      videoChunks = [];
+      pickedVideoMime = null;
+      videoStream = null;
       startedAt = 0;
       pausedTotalMs = 0;
       pausedSinceMs = 0;
@@ -102,32 +154,71 @@ export function useRecording() {
 
       useRecordingStore.getState().set({ kind: "finalizing" });
 
-      const onstop = () => {
-        const blob = new Blob(chunks, { type: mime });
-        const url = URL.createObjectURL(blob);
+      // Two recorders may need to finalize: audio (always present) and
+      // video (only if the canvas + MIME were available at start). Both
+      // must hand back their onstop before we publish the preview —
+      // otherwise the video chip would render with a half-filled blob.
+      let audioStopped = false;
+      let videoStopped = videoRecorder === null;
+
+      const tryPublish = () => {
+        if (!audioStopped || !videoStopped) return;
+        const audioBlob = new Blob(chunks, { type: mime });
+        const url = URL.createObjectURL(audioBlob);
         const now = performance.now();
         const elapsed = now - startedAt - pausedTotalMs;
 
+        let videoBlob: Blob | undefined;
+        let videoUrl: string | undefined;
+        let videoMime: string | undefined;
+        let videoExt: string | undefined;
+        if (pickedVideoMime && videoChunks.length > 0) {
+          videoBlob = new Blob(videoChunks, { type: pickedVideoMime.mime });
+          videoUrl = URL.createObjectURL(videoBlob);
+          videoMime = pickedVideoMime.mime;
+          videoExt = pickedVideoMime.ext;
+        }
+
         useRecordingStore.getState().set({
           kind: "preview",
-          blob,
+          blob: audioBlob,
           url,
           mime,
           ext,
           durationMs: Math.max(0, elapsed),
+          videoBlob,
+          videoUrl,
+          videoMime,
+          videoExt,
         });
-        // Brief celebratory note in the StatusBar.
         const seconds = Math.max(1, Math.round(elapsed / 1000));
         setMessage(`Saved ${seconds}s clip`);
         teardown();
       };
 
+      const onAudioStop = () => {
+        audioStopped = true;
+        tryPublish();
+      };
+      const onVideoStop = () => {
+        videoStopped = true;
+        tryPublish();
+      };
+
       try {
         if (recorder.state !== "inactive") {
-          recorder.onstop = onstop;
+          recorder.onstop = onAudioStop;
           recorder.stop();
         } else {
-          onstop();
+          onAudioStop();
+        }
+        if (videoRecorder) {
+          if (videoRecorder.state !== "inactive") {
+            videoRecorder.onstop = onVideoStop;
+            videoRecorder.stop();
+          } else {
+            onVideoStop();
+          }
         }
       } catch (err) {
         console.warn("[useRecording] stop failed", err);
@@ -231,6 +322,64 @@ export function useRecording() {
         teardown();
       };
 
+      // Optional parallel video recorder — best-effort. If anything in
+      // the captureStream / combined-stream / MIME chain fails, we
+      // silently fall through to audio-only (existing behavior).
+      pickedVideoMime = null;
+      videoRecorder = null;
+      videoStream = null;
+      videoChunks = [];
+      try {
+        const graphRenderer = getActiveGraphRenderer();
+        const graphCanvas = graphRenderer?.canvas;
+        const videoMime = pickVideoMime();
+        if (
+          graphCanvas &&
+          videoMime &&
+          typeof graphCanvas.captureStream === "function"
+        ) {
+          videoStream = graphCanvas.captureStream(30);
+          const combined = new MediaStream([
+            ...videoStream.getVideoTracks(),
+            ...stream.getAudioTracks(),
+          ]);
+          videoRecorder = new MediaRecorder(combined, { mimeType: videoMime.mime });
+          pickedVideoMime = videoMime;
+          videoRecorder.ondataavailable = (e: BlobEvent) => {
+            if (!e.data || e.data.size === 0) return;
+            videoChunks.push(e.data);
+          };
+          videoRecorder.onerror = (e: Event) => {
+            // Video is best-effort — tear it down but keep the audio
+            // recorder running so the user still gets a clip.
+            console.warn("[useRecording] video recorder error", e);
+            try {
+              videoRecorder?.stop();
+            } catch {}
+            videoRecorder = null;
+            pickedVideoMime = null;
+            if (videoStream) {
+              try {
+                for (const t of videoStream.getTracks()) t.stop();
+              } catch {}
+              videoStream = null;
+            }
+            videoChunks = [];
+          };
+          videoRecorder.start(1000);
+        }
+      } catch (err) {
+        console.warn("[useRecording] video capture init failed", err);
+        videoRecorder = null;
+        pickedVideoMime = null;
+        if (videoStream) {
+          try {
+            for (const t of videoStream.getTracks()) t.stop();
+          } catch {}
+          videoStream = null;
+        }
+      }
+
       try {
         recorder.start(1000);
       } catch (err) {
@@ -281,6 +430,11 @@ export function useRecording() {
         } catch {
           return;
         }
+        // Mirror onto the video recorder if it exists — keeps both
+        // tracks aligned so the muxed file doesn't drift.
+        try {
+          videoRecorder?.pause();
+        } catch {}
         pausedSinceMs = performance.now();
         useRecordingStore.getState().set({
           kind: "paused",
@@ -295,6 +449,9 @@ export function useRecording() {
         } catch {
           return;
         }
+        try {
+          videoRecorder?.resume();
+        } catch {}
         const delta = performance.now() - cur.pausedAt;
         pausedTotalMs += delta;
         useRecordingStore.getState().set({
@@ -312,6 +469,11 @@ export function useRecording() {
         try {
           URL.revokeObjectURL(cur.url);
         } catch {}
+        if (cur.videoUrl) {
+          try {
+            URL.revokeObjectURL(cur.videoUrl);
+          } catch {}
+        }
       }
       useRecordingStore.getState().set({ kind: "idle" });
       if (useSessionStore.getState().message.startsWith("Saved ")) {
@@ -386,6 +548,11 @@ export function useRecording() {
       if (recorder && recorder.state !== "inactive") {
         try {
           recorder.stop();
+        } catch {}
+      }
+      if (videoRecorder && videoRecorder.state !== "inactive") {
+        try {
+          videoRecorder.stop();
         } catch {}
       }
       teardown();

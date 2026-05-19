@@ -299,6 +299,7 @@ export function SliderGroup({
       className="slider-group"
       data-param={param}
       style={tintStyle}
+      data-dd-tooltip-title={label}
       {...(tooltip
         ? { "data-dd-tooltip": tooltip, "data-dd-tooltip-wide": "" }
         : {})}

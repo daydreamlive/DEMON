@@ -38,11 +38,16 @@ export function DrawerHelpBar() {
         return;
       }
       setText(t);
-      // Title source: prefer the element's own visible text (e.g. a
-      // knob label "denoise"), fall back to aria-label.
-      const visible = el.textContent?.trim().split(/\s+/).slice(0, 4).join(" ");
+      // Title source: explicit `data-dd-tooltip-title` wins (knobs +
+      // sliders + ref controls set this to their canonical label),
+      // then aria-label (buttons), then a 4-token slice of textContent
+      // as a last-resort fallback. The textContent fallback used to be
+      // the only source — for knob/slider wrappers it leaked the value
+      // + keyboard shortcut into the title ("Denoise 0.50 A + ▲▼").
+      const explicit = el.getAttribute("data-dd-tooltip-title");
       const aria = el.getAttribute("aria-label");
-      setTitle(visible || aria || null);
+      const visible = el.textContent?.trim().split(/\s+/).slice(0, 4).join(" ");
+      setTitle(explicit || aria || visible || null);
     };
     const onLeave = (e: PointerEvent) => {
       const next = (e.relatedTarget as Element | null) ?? null;

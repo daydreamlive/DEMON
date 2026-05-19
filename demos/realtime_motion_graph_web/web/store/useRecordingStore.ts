@@ -26,6 +26,15 @@ export type RecState =
       durationMs: number;
       mime: string;
       ext: string;
+      /** Optional muxed video+audio blob captured alongside the audio
+       *  feed (graph canvas via captureStream). Present only when the
+       *  browser supports the right MIME and the graph canvas existed
+       *  at start time. When absent, the preview falls through to the
+       *  audio-only WAV download path. */
+      videoBlob?: Blob;
+      videoUrl?: string;
+      videoMime?: string;
+      videoExt?: string;
     }
   | { kind: "error"; reason: string };
 
