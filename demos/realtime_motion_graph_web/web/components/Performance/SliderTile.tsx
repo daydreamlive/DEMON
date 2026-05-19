@@ -17,11 +17,14 @@ interface Props {
 // no clean analog (shift, noise_share), the technical label stays.
 // CSS uppercases these on render via .slider-label / .mixer-tile-label.
 const DISPLAY_NAMES: Record<string, string> = {
-  // Only the two macros where the friendly name reads more clearly than
-  // the engine-honest one: `structure` for `hint_strength`. Everything
-  // else falls back to defaultLabelFor (underscore → space) so the UI
-  // matches what the engine, MIDI map, and config files call them.
+  // Macros where the friendly name reads more clearly than the
+  // engine-honest one: `structure` for `hint_strength`, `timbre` for
+  // `timbre_strength` (drop the "strength" suffix on knobs — the value
+  // readout already conveys magnitude). Everything else falls back to
+  // defaultLabelFor (underscore → space) so the UI matches what the
+  // engine, MIDI map, and config files call them.
   hint_strength: "structure",
+  timbre_strength: "timbre",
   // dcw_* keep their engine-honest "DCW low" / "DCW high" — these are
   // DCW-internal scalers, not generic EQ.
   dcw_scaler: "DCW low",
@@ -99,6 +102,7 @@ const KBD_FOR_PARAM: Record<string, string> = {
   hint_strength: "G + ▲▼",
   timbre_strength: "C + ▲▼",
   feedback: "E + ▲▼",
+  feedback_depth: "D + ▲▼",
   shift: "H + ▲▼",
   ch_g0: "0 + ▲▼",
   ch_g1: "1 + ▲▼",

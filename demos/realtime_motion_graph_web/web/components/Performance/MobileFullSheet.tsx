@@ -21,13 +21,13 @@ interface Props {
   savedTab?: ReactNode;
 }
 
-// Mirrors the desktop DrawerTabs IA: CORE / MOD / CHANNELS (key=voice) /
-// STYLES (prompts + LoRAs together) / SAVED / CONFIG.
+// Mirrors the desktop DrawerTabs IA: CORE / STYLES (prompts + LoRAs
+// together) / MOD / CHANNELS (key=voice) / SAVED / CONFIG.
 const TABS: { id: Tab; label: string }[] = [
   { id: "core", label: "Core" },
+  { id: "styles", label: "Styles" },
   { id: "mod", label: "Mod" },
   { id: "voice", label: "Channels" },
-  { id: "styles", label: "Styles" },
   { id: "saved", label: "Saved" },
   { id: "config", label: "Config" },
 ];

@@ -270,7 +270,7 @@ export function SliderGroup({
     const onWheel = (e: WheelEvent) => {
       if (editingRef.current) return;
       e.preventDefault();
-      const step = e.shiftKey ? 0.005 : 0.02;
+      const step = e.shiftKey ? 0.005 : 0.01;
       const dir = -Math.sign(e.deltaY);
       if (dir === 0) return;
       const current = usePerformanceStore.getState().sliderTargets[param] ?? 0;

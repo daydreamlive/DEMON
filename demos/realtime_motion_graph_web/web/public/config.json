@@ -11,7 +11,7 @@
     "vae_window": 3,
     "crop": 0,
     "steps": 8,
-    "fast_vae": true,
+    "fast_vae": false,
     "_walk_window_help": "When true, route long sources through the walk_window_s (60s) DiT engine by cutting longer songs into 60 second latents and swapping at boundaries — keeps the 60s engine's faster parameter-update latency on multi-minute sources. No effect when source ≤ window_s.",
     "walk_window": true,
     "walk_window_s": 60,

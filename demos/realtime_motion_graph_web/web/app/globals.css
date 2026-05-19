@@ -1692,6 +1692,7 @@ body[data-mode="graph"]::before {
 }
 .seed-btn:active,
 .send-prompt-btn:active,
+.send-prompt-btn.is-pressed,
 .pause-btn:active {
   background: var(--accent-medium);
   border-color: var(--accent);
@@ -2247,7 +2248,8 @@ body.drawer-open .hud-help-readout {
    `min-height: 0` on the column stack lets the scroll container do its
    job — without it, the legacy row-wrap min-height: 110px on
    .mixer-tile-prompts would force vertical slack below "Send Tags". */
-.mixer-rack--tabbed > .styles-tab {
+.mixer-rack--tabbed > .styles-tab,
+.mixer-rack--tabbed > .mod-tab {
   flex: 0 0 auto;
   width: 100%;
   display: flex;
@@ -2255,13 +2257,15 @@ body.drawer-open .hud-help-readout {
   gap: 12px;
   min-height: 0;
 }
-.styles-tab > .mixer-tile {
+.styles-tab > .mixer-tile,
+.mod-tab > .mixer-tile {
   flex: 0 0 auto;
   width: 100%;
   max-width: 100%;
   min-height: 0;
 }
-.styles-tab > * + * {
+.styles-tab > * + *,
+.mod-tab > * + * {
   border-top: 1px solid var(--frame-line);
   padding-top: 12px;
 }

@@ -104,7 +104,7 @@ export function TrackPicker() {
   return (
     <>
       <RefSelect
-        label="track"
+        label="input track"
         value={fixture || ""}
         pinned={[]}
         groups={[

@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { loraStrengthDispatcher } from "@/engine/lora/dispatcher";
 import { useCurveStore } from "@/store/useCurveStore";
 import { useLoraStore } from "@/store/useLoraStore";
+import { usePerformanceStore } from "@/store/usePerformanceStore";
 import {
   elapsedMs,
   isActive,
@@ -29,7 +30,7 @@ import { defaultLabelFor, kbdHintFor } from "./SliderTile";
 //     tabs cover the same params). Tools stay reachable.
 //   - Hidden below 768 px (mobile gets LiteControls).
 
-const HERO_PARAMS = ["denoise", "hint_strength", "feedback"] as const;
+const HERO_PARAMS = ["denoise", "hint_strength", "timbre_strength"] as const;
 
 function CurveIcon() {
   return (
@@ -192,6 +193,19 @@ export function HeroMacros() {
   const toggleCurve = useCurveStore((s) => s.toggleOverlay);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
+  // Clear the per-song remix gate when the user moves the bay's
+  // DENOISE knob above zero. Mirrors MobileRemixStepper's behavior so
+  // touching the bottom bay counts as "engaging the remix" — the
+  // top-edge RemixHint is no longer rendered, so the bay is the user-
+  // facing gate-clearing affordance on desktop.
+  const remixStarted = usePerformanceStore((s) => s.remixStarted);
+  const denoise = usePerformanceStore((s) => s.sliderTargets["denoise"] ?? 0);
+  useEffect(() => {
+    if (!remixStarted && denoise > 0) {
+      usePerformanceStore.getState().setRemixStarted(true);
+    }
+  }, [remixStarted, denoise]);
+
   // Mirror body.drawer-open so the toggle label/caret flip with the
   // drawer state. The drawer is the source of truth.
   useEffect(() => {
@@ -235,6 +249,8 @@ export function HeroMacros() {
           onClick={() => toggleCurve()}
           aria-pressed={curveOpen}
           aria-label="Toggle curve editor"
+          data-midi-learn="schedule_curves_toggle"
+          data-dd-tooltip="Open the curve scheduler — draw param automation against the track (right-click to MIDI-learn)"
         >
           <CurveIcon />
           <span className="hero-macros-tool-label">Curve Editor</span>

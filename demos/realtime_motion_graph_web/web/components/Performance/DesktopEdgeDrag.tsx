@@ -264,23 +264,19 @@ export function DesktopEdgeDrag({ side }: Props) {
     };
   }, [readCurrentValue, isTop, slotIndex]);
 
-  // Visibility:
-  //   - Top ribbon: shows whenever remix hasn't started this song —
-  //     this is a per-song functional gate, not a one-time tutorial,
-  //     so it overrides the localStorage `hintDismissed` flag.
-  //   - Side rails (LoRA-1/2): the existing one-time tutorial. Stay
-  //     hidden until the user has started the remix on this song,
-  //     and stay hidden forever after the first successful drag
-  //     anywhere (`hintDismissed`). Without the remixStarted gate,
-  //     a fresh user would see three competing hints stacked on
-  //     load; we want the top one alone first.
-  // Empty LoRA slots still render their hint (when eligible) so the
-  // user has a stable visual anchor through "connecting" / catalog
-  // updates. Drag on an empty slot is a no-op (data-empty guards
-  // pointerdown).
+  // Side-rail (LoRA-1/2) one-time tutorial: stays hidden until the user
+  // has started the remix on this song, then stays hidden forever after
+  // the first successful drag anywhere (`hintDismissed`). The top
+  // ribbon's "drag to start" hint was retired — HeroMacros' DENOISE
+  // knob is the user-facing gate-clearing affordance now, and that
+  // knob's useEffect flips remixStarted true when it goes above zero.
+  // The top ribbon itself still functions as a ribbon slider; just no
+  // hint floats above it. Empty LoRA slots still render their hint
+  // (when eligible) so the user has a stable visual anchor through
+  // "connecting" / catalog updates. Drag on an empty slot is a no-op
+  // (data-empty guards pointerdown).
   const showHint =
-    sessionReady &&
-    (isTop ? !remixStarted : remixStarted && !hintDismissed);
+    sessionReady && !isTop && remixStarted && !hintDismissed;
 
   return (
     <div

@@ -7,17 +7,21 @@ import { useState, type ReactElement } from "react";
 // recessed via inset shadow + brighter foreground (a pressed hardware
 // button).
 //
-// Body tabs:
-//   CORE     — denoise / structure / timbre / feedback / seed (knobs)
-//              + track picker + upload + the two reference-track pickers
-//   MOD      — shift + DCW low / DCW high knobs + DCW toggle/mode/wavelet
-//   CHANNELS — the 14 latent channels (faders)
+// Body tabs (left to right):
+//   CORE     — denoise / structure / timbre / seed (knobs) + track
+//              picker + upload + the two reference-track pickers
 //   STYLES   — prompts (top) + LoRA library (bottom). The two
 //              "what should this sound like" surfaces share one tab.
+//              Sits next to CORE because it carries the same
+//              "where is this song heading" mental model as the
+//              reference tracks above it.
+//   MOD      — engine internals (shift / feedback / feedback_depth) +
+//              DCW + CFG sub-tiles for the expert surfaces.
+//   CHANNELS — the 14 latent channels (faders)
 //   SAVED    — saved sessions
 //   CONFIG   — session controls: key/sig, transport, MIDI, prefs
 
-export const DRAWER_TABS = ["core", "mod", "voice", "styles", "saved", "config"] as const;
+export const DRAWER_TABS = ["core", "styles", "mod", "voice", "saved", "config"] as const;
 export type DrawerTab = (typeof DRAWER_TABS)[number];
 
 const TAB_LABELS: Record<DrawerTab, string> = {

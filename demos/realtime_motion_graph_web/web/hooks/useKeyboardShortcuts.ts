@@ -99,6 +99,16 @@ export function useKeyboardShortcuts() {
       if (remote) {
         remote.sendPrompt(promptA, activeKey, activeTimeSignature, promptB);
       }
+      // Visual feedback: flash the "Send Tags" button so the operator
+      // sees a press in response to the keyboard fire (Ctrl/Cmd+Enter
+      // inside the textarea, or Enter outside any editable). Class
+      // mirrors the :active state in globals.css. 150 ms is long
+      // enough to register without overstaying the actual key press.
+      const btn = document.getElementById("send-prompt");
+      if (btn) {
+        btn.classList.add("is-pressed");
+        window.setTimeout(() => btn.classList.remove("is-pressed"), 150);
+      }
     }
 
     function cycleDcwMode(): void {

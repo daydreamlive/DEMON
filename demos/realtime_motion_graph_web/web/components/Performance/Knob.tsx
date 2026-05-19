@@ -51,7 +51,7 @@ const ARC_RANGE_DEG = ARC_END_DEG - ARC_START_DEG;
 // Ableton's default ratio for a ~44px knob cap. Shift = fine (×5).
 const PIXELS_PER_RANGE = 280;
 const FINE_DIVISOR = 5;
-const SCROLL_STEP = 0.03;
+const SCROLL_STEP = 0.01;
 const DBLCLICK_MS = 350;
 
 // Palette stops mirror the .slider-fill gradient. Same array as
