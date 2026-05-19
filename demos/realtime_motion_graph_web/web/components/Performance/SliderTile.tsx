@@ -53,18 +53,24 @@ const PARAM_TOOLTIPS: Record<string, string> = {
   // ── Engine internals ──
   feedback:
     "How similar each new generation is to the previous one. Low values give you variety on every refresh; higher values give you a continuous evolution where each generation flows into the next. 0.3–0.5 is the sweet spot for smooth continuity without everything sounding the same.",
+  feedback_depth:
+    "How far back in time the Feedback knob reaches. 1 (default) blends with the most recent generation. Higher values reach back several ticks for an echo / ghost effect — a faint repeat of an earlier moment surfaces in the current output. Lets you get distant feedback without cranking Feedback all the way up.",
   shift:
     "Advanced: changes where the model concentrates its work across denoising. The default is tuned for the turbo engine and works well in most cases — leave it alone unless you're chasing a specific feel.",
   noise_share:
     "Fine-grained sibling of FEEDBACK. Where FEEDBACK is one number for the whole generation, this lets the noise-sharing vary across the timeline. Leave at 0 unless you want detailed control over how successive generations evolve.",
   ode_noise:
     "Adds a touch of randomness during generation. Bump it up if the model feels too deterministic — small values add subtle variation, higher values produce surprising bursts of creativity. Zero keeps generation fully predictable.",
+  guidance_scale:
+    "CFG strength. Only takes effect when the RCFG mode dropdown below is NOT 'off'. Higher values push the output further toward the prompt at the cost of more artifacts. Turbo is CFG-distilled, so the useful range is narrower than a base SD model — try 3–8.",
+  cfg_rescale:
+    "After CFG, mix the guided velocity's magnitude back toward what the positive forward produced. 0 keeps raw CFG; 1 fully snaps the magnitude. Pair with high guidance_scale to keep the prompt-push without the harshness that high CFG causes on its own.",
 
   // ── DCW ──
   dcw_scaler:
-    "Boost or attenuate the model's low end (bass, body). Push positive if the output feels thin; pull negative if the bass is overpowering. The range is small on purpose — these are fine adjustments.",
+    "Experimental — adjusts the low-band strength of an internal correction the model applies to itself during generation (DCW). This scaler is active in the early part of the run. The exact audio mapping is still being explored — sweep it to discover what it does for your source. Extreme values can be unpredictable but cool.",
   dcw_high_scaler:
-    "Boost or attenuate the model's high end (transients, brightness, air). Push up for crispness and snap; pull down to round off harsh tops.",
+    "Experimental — adjusts the high-band strength of an internal correction the model applies to itself during generation (DCW). This scaler is active in the later part of the run. The exact audio mapping is still being explored — sweep it to discover what it does for your source. Extreme values can be unpredictable but cool.",
 };
 
 // Per-channel tooltips. The 64-channel latent space hasn't been fully
@@ -76,12 +82,12 @@ const CHANNEL_GAINS = ["ch_g0", "ch_g1", "ch_g2", "ch_g3", "ch_g4", "ch_g5", "ch
 const NAMED_CHANNELS = ["ch13", "ch14", "ch19", "ch23", "ch29", "ch56"] as const;
 for (const [i, p] of CHANNEL_GAINS.entries()) {
   PARAM_TOOLTIPS[p] =
-    `Experimental — adjusts the strength of one of the model's internal audio channels (channel ${i}). Each channel encodes a different aspect of the sound (frequency band, dynamics, transients); the exact mapping is still being explored. Sweep it to discover what it does for your source.`;
+    `Experimental — adjusts the strength of one of the model's internal latent channels (channel ${i}). Each channel encodes a different aspect of the sound (frequency band, dynamics, transients); the exact mapping is still being explored. Sweep it to discover what it does for your source.`;
 }
 for (const p of NAMED_CHANNELS) {
   const idx = p.slice(2);
   PARAM_TOOLTIPS[p] =
-    `Experimental — a hand-picked internal audio channel (#${idx}) that produces a noticeable perceptual change. Sweep it to hear what this specific channel controls for your source.`;
+    `Experimental — a hand-picked internal latent channel (#${idx}) that produces a noticeable perceptual change. Sweep it to hear what this specific channel controls for your source.`;
 }
 
 export function tooltipFor(param: string): string | undefined {
