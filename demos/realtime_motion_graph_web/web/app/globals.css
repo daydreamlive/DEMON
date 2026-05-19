@@ -3997,14 +3997,15 @@ body.curve-open #install-video-area #graph {
   }
 }
 .lite-controls {
-  /* Wave 13.4: tabbed mobile mixer. One bay, two tabs (Mix / Track).
-     Anchored to the bottom-center, content-sized with a max-width
-     clamp, safe-area aware. */
+  /* Wave 13.5: tabbed + swipeable mobile mixer. Bay has a fixed
+     width clamp so each tab section can snap to it. Two sections
+     live side-by-side in a horizontal scroll-snap track inside the
+     body. */
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
   bottom: max(env(safe-area-inset-bottom, 0px) + 8px, 8px);
-  max-width: min(720px, calc(100vw - 24px));
+  width: clamp(320px, 92vw, 560px);
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -4079,10 +4080,28 @@ body.curve-open #install-video-area #graph {
   .lite-tab-dot { animation: none; opacity: 1; }
 }
 
-/* Tab body — both tabs share the same horizontal flex container so
-   the bay's content always reads as one row regardless of which
-   surface is active. */
+/* Tab body — horizontal scroll-snap track. Two sections live
+   side-by-side; whichever one is snap-aligned is the active tab.
+   IntersectionObserver mirrors scroll position back into React
+   state. Hide the native scrollbar so the track reads as content,
+   not a scroller. */
 .lite-tab-body {
+  display: flex;
+  flex-direction: row;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.lite-tab-body::-webkit-scrollbar { display: none; }
+.lite-tab-section {
+  flex: 0 0 100%;
+  width: 100%;
+  box-sizing: border-box;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
   display: flex;
   flex-direction: row;
   align-items: center;
@@ -4118,22 +4137,38 @@ body.curve-open #install-video-area #graph {
 }
 .lite-utility .lite-track-carousel { min-width: 0; }
 .lite-row--main .slider-group {
-  flex: 0 0 80px;
+  flex: 0 0 46px;
+  min-width: 0;
 }
 .lite-row--main .slider-group .slider-label {
-  font-size: 0.62em;
-  letter-spacing: 0.18em;
+  font-size: 0.55em;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 .lite-row--main .slider-track {
-  width: 56px;
-  min-height: 150px;
+  width: 36px;
+  min-height: 100px;
 }
-.lite-row--main .slider-track::before { width: 8px; }
-.lite-row--main .slider-fill { width: 8px; }
+.lite-row--main .slider-track::before { width: 5px; }
+.lite-row--main .slider-fill { width: 5px; }
 .lite-row--main .slider-thumb {
-  width: 32px;
-  height: 32px;
+  width: 22px;
+  height: 22px;
   border-width: 2px;
+}
+.lite-row--main {
+  gap: 6px;
+}
+/* Lite-controls "All controls" button — compact on portrait widths. */
+.lite-tab-section .lite-all-controls {
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  padding: 6px 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .lite-seed-btn {
@@ -6161,11 +6196,11 @@ body.curve-open #install-video-area #graph {
   text-align: center;
   color: var(--text);
 }
-@media (max-width: 768px) and (orientation: portrait) {
-  .portrait-lock {
-    display: flex;
-  }
-}
+/* Wave 13.5: portrait lock retired. The mobile mixer now fits a
+   portrait viewport (tabbed bay + swipe between MIX/TRACK), so we
+   no longer force the user to rotate. The .portrait-lock element
+   stays display:none always (could be remounted by re-adding this
+   block if a future flow needs it). */
 .portrait-lock-card {
   max-width: 320px;
   display: flex;
@@ -6254,70 +6289,9 @@ body.curve-open #install-video-area #graph {
     height: var(--drawer-h);
   }
 
-  /* Landscape phones have plenty of horizontal real estate but ~220px of
-     drawer height to work with. A vertical stack (sliders + carousel +
-     actions) would force slider-groups to spill into the handle area
-     because the row can't shrink below the slider-group's natural
-     height. Switch to a 2-column grid: 3 sliders on the left fill the
-     drawer's full height; the track carousel + actions row stack on the
-     right. */
-  .lite-controls {
-    display: grid;
-    grid-template-columns: minmax(260px, 1fr) minmax(220px, 1fr);
-    grid-template-rows: 1fr auto;
-    grid-template-areas:
-      "main carousel"
-      "main actions";
-    column-gap: 18px;
-    row-gap: 8px;
-    padding: 8px 14px 10px;
-    padding-left: calc(14px + var(--stepper-rail-w, 64px));
-    padding-right: calc(14px + var(--stepper-rail-w, 64px));
-  }
-  .lite-row--main {
-    grid-area: main;
-    /* min-height:0 lets the row honor the grid track height instead of
-       blowing it out from natural slider-group height. */
-    min-height: 0;
-    gap: 16px;
-    padding: 0;
-  }
-  .lite-track-carousel {
-    grid-area: carousel;
-    /* Cancel the wide negative margin from the default rule — we're
-       inside a grid cell now. */
-    margin: 0;
-    align-self: end;
-  }
-  .lite-track-carousel-scroll {
-    padding: 4px 4px 4px;
-  }
-  .lite-row--actions {
-    grid-area: actions;
-    align-self: end;
-    margin: 0;
-  }
-
-  /* Tighten the slider sub-pieces so a 3-slider row fits in ~200px of
-     drawer height without the labels or values being cropped. */
-  .lite-row--main .slider-track {
-    min-height: 90px;
-  }
-  .lite-row--main .slider-thumb {
-    width: 24px;
-    height: 24px;
-  }
-  .lite-row--main .slider-group {
-    flex: 0 0 64px;
-  }
-  .lite-row--main .slider-label {
-    min-height: 1.2em;
-    font-size: 0.58em;
-  }
-  .lite-row--main .slider-value {
-    margin-top: 14px;
-    font-size: 0.6em;
-  }
+  /* Wave 13.5: the landscape-phone grid override is retired. The new
+     tabbed bay (column flex with scroll-snap tab body) handles
+     landscape AND portrait via the same layout. */
 }
 
 /* Center mixer tiles + their slider rows inside the All Controls sheet so

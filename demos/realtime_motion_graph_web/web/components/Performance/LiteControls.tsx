@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { LiteTrackCarousel } from "./LiteTrackCarousel";
 import { RecordToggle } from "./RecordToggle";
@@ -17,17 +17,58 @@ interface Props {
 
 type LiteTab = "mix" | "track";
 
-// Wave 13.4: tabbed mobile mixer. Two contexts:
+const TABS: LiteTab[] = ["mix", "track"];
+const TAB_LABELS: Record<LiteTab, string> = {
+  mix: "Mix",
+  track: "Track",
+};
+
+// Wave 13.5: tabbed + swipeable. Two sections live side-by-side in a
+// scroll-snap track; tap a tab pill or swipe horizontally to switch.
+// IntersectionObserver mirrors the scroll-position back into `tab` so
+// the active pill stays in sync regardless of input method.
+//
 //   MIX   — 4 faders (denoise / structure / feedback / lora_blend) +
 //           "All controls" gateway to the full 7-tab sheet.
-//   TRACK — record toggle + track carousel (upload + mic chips
-//           handled by the carousel's track-picker).
-//
-// One bay, two contexts — keeps the bottom strip narrow enough that
-// the graph + waveform get max canvas headroom regardless of which
-// tab's active.
+//   TRACK — track carousel (upload + mic inside the picker) + REC.
 export function LiteControls({ onOpenAllControls, unsavedDot }: Props) {
   const [tab, setTab] = useState<LiteTab>("mix");
+  const trackRef = useRef<HTMLDivElement | null>(null);
+
+  // Mirror scroll position → active tab. IntersectionObserver fires
+  // when each section crosses the threshold; whichever has the
+  // highest intersection ratio wins.
+  useEffect(() => {
+    const root = trackRef.current;
+    if (!root) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        let best: IntersectionObserverEntry | null = null;
+        for (const e of entries) {
+          if (!e.isIntersecting) continue;
+          if (!best || e.intersectionRatio > best.intersectionRatio) best = e;
+        }
+        if (!best) return;
+        const id = (best.target as HTMLElement).dataset.tab as LiteTab | undefined;
+        if (id) setTab(id);
+      },
+      { root, threshold: [0.5, 0.75, 1] },
+    );
+    for (const t of TABS) {
+      const el = root.querySelector<HTMLElement>(`[data-tab="${t}"]`);
+      if (el) obs.observe(el);
+    }
+    return () => obs.disconnect();
+  }, []);
+
+  function gotoTab(id: LiteTab) {
+    const root = trackRef.current;
+    if (!root) return;
+    const el = root.querySelector<HTMLElement>(`[data-tab="${id}"]`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", inline: "start", block: "nearest" });
+  }
+
   return (
     <div className="lite-controls">
       <div
@@ -35,63 +76,56 @@ export function LiteControls({ onOpenAllControls, unsavedDot }: Props) {
         role="tablist"
         aria-label="Mobile mixer"
       >
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "mix"}
-          className={`lite-tab${tab === "mix" ? " lite-tab--active" : ""}`}
-          onClick={() => setTab("mix")}
-        >
-          Mix
-          {unsavedDot && tab !== "mix" && (
-            <span
-              className="lite-tab-dot"
-              aria-label="Unsaved changes"
-            />
-          )}
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "track"}
-          className={`lite-tab${tab === "track" ? " lite-tab--active" : ""}`}
-          onClick={() => setTab("track")}
-        >
-          Track
-        </button>
+        {TABS.map((t) => (
+          <button
+            key={t}
+            type="button"
+            role="tab"
+            aria-selected={tab === t}
+            className={`lite-tab${tab === t ? " lite-tab--active" : ""}`}
+            onClick={() => gotoTab(t)}
+          >
+            {TAB_LABELS[t]}
+            {/* Unsaved dot surfaces on whichever pill isn't currently
+                active — so the cue is visible regardless of context. */}
+            {unsavedDot && tab !== t && t === "mix" && (
+              <span
+                className="lite-tab-dot"
+                aria-label="Unsaved changes"
+              />
+            )}
+          </button>
+        ))}
       </div>
-      <div className="lite-tab-body">
-        {tab === "mix" ? (
-          <>
-            <div className="lite-row lite-row--main">
-              <SliderGroup param="denoise" label="denoise" />
-              <SliderGroup param="hint_strength" label="structure" />
-              <SliderGroup param="feedback" label="feedback" />
-              <SliderGroup param="lora_blend" label="lora blend" />
-            </div>
-            <button
-              type="button"
-              className="lite-all-controls"
-              onClick={onOpenAllControls}
-            >
-              All controls
-              {unsavedDot && (
-                <span
-                  className="lite-all-controls-dot"
-                  aria-label="Unsaved changes"
-                />
-              )}
-              <span className="lite-all-controls-arrow" aria-hidden="true">
-                →
-              </span>
-            </button>
-          </>
-        ) : (
-          <>
-            <LiteTrackCarousel />
-            <RecordToggle />
-          </>
-        )}
+      <div ref={trackRef} className="lite-tab-body">
+        <section data-tab="mix" className="lite-tab-section">
+          <div className="lite-row lite-row--main">
+            <SliderGroup param="denoise" label="denoise" />
+            <SliderGroup param="hint_strength" label="structure" />
+            <SliderGroup param="feedback" label="feedback" />
+            <SliderGroup param="lora_blend" label="lora blend" />
+          </div>
+          <button
+            type="button"
+            className="lite-all-controls"
+            onClick={onOpenAllControls}
+          >
+            All controls
+            {unsavedDot && (
+              <span
+                className="lite-all-controls-dot"
+                aria-label="Unsaved changes"
+              />
+            )}
+            <span className="lite-all-controls-arrow" aria-hidden="true">
+              →
+            </span>
+          </button>
+        </section>
+        <section data-tab="track" className="lite-tab-section">
+          <LiteTrackCarousel />
+          <RecordToggle />
+        </section>
       </div>
     </div>
   );
