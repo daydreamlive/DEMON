@@ -74,11 +74,12 @@ export function useKeyboardShortcuts() {
     function bumpParam(param: string, direction: 1 | -1): void {
       const meta = SLIDER_META[param];
       const baseStep = meta?.step ?? 0.05;
-      // Multiply by 5 for keyboard adjustments — SLIDER_META.step is now
-      // fine-grained (0.01 for hero macros after Wave 9), which gives
-      // good MIDI/display granularity but is too slow for arrow-key
-      // sweeps. Shift halves the step for fine arrow control.
-      const stepMul = HELD_KEYS.has("shift") ? 1 : 5;
+      // Arrow nudges use the param's own SLIDER_META.step as the
+      // increment, no 5× ramp. The previous 5× was tuned for the old
+      // 0.01 hero-macro step; once denoise/structure/timbre/feedback
+      // were bumped to 0.05 the multiplier produced 0.25-per-tap which
+      // felt like a slap. Shift halves the step for fine adjustments.
+      const stepMul = HELD_KEYS.has("shift") ? 0.5 : 1;
       const step = baseStep * stepMul;
       const dirSign = getChannelRange(param)?.reverse ? -1 : 1;
       usePerformanceStore.getState().bumpSlider(param, direction * step * dirSign);

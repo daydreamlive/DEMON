@@ -5131,24 +5131,20 @@ body.curve-open #install-video-area #graph {
   border-radius: 8px;
   background: rgba(0, 0, 0, 0.3);
 }
-/* When a video chip is present, the audio player and the chip sit
-   side-by-side so the user sees the captured graph next to the waveform
-   they're about to download. Wraps to a column on narrow widths. */
+/* Stack: video chip on top (when present), audio waveform underneath.
+   The video is the eye-catching artifact users want to verify before
+   committing to download; pinning it above the audio puts the more
+   informative element first. */
 .recording-preview-media {
   display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.recording-preview-media > .recording-preview-audio {
-  flex: 1 1 200px;
-  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
 }
 .recording-preview-video-chip {
-  flex: 0 0 auto;
-  width: 96px;
-  height: 54px;
+  width: 100%;
+  max-height: 180px;
+  aspect-ratio: 16 / 9;
   border-radius: 6px;
   border: 1px solid var(--frame-line);
   background: #000;

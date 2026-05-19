@@ -183,12 +183,6 @@ export function RecordingPreview() {
         </span>
       </div>
       <div className="recording-preview-media">
-        <audio
-          className="recording-preview-audio"
-          src={state.url}
-          controls
-          preload="metadata"
-        />
         {hasVideo && state.videoUrl && (
           <video
             className="recording-preview-video-chip"
@@ -200,6 +194,12 @@ export function RecordingPreview() {
             aria-label="Graph capture preview"
           />
         )}
+        <audio
+          className="recording-preview-audio"
+          src={state.url}
+          controls
+          preload="metadata"
+        />
       </div>
       {hasVideo && (
         <label className="recording-preview-format">
