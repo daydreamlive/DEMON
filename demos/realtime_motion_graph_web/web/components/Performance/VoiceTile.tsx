@@ -24,7 +24,6 @@ const MORPH = ["ch13", "ch14", "ch19", "ch23", "ch29", "ch56"];
 export function VoiceTile() {
   return (
     <div className="mixer-tile mixer-tile--voice" data-tile="voice">
-      <div className="mixer-tile-label">Channels</div>
       <div className="voice-tile-warning" role="note">
         <div className="voice-tile-warning-title">Experimental feature</div>
         <p className="voice-tile-warning-body">
