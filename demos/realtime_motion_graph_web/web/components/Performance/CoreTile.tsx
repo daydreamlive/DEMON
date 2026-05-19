@@ -37,16 +37,6 @@ export function CoreTile() {
           label={defaultLabelFor("feedback")}
           kbd={kbdHintFor("feedback")}
         />
-        <Knob
-          param="dcw_scaler"
-          label={defaultLabelFor("dcw_scaler")}
-          kbd={kbdHintFor("dcw_scaler")}
-        />
-        <Knob
-          param="dcw_high_scaler"
-          label={defaultLabelFor("dcw_high_scaler")}
-          kbd={kbdHintFor("dcw_high_scaler")}
-        />
         <SeedKnob />
       </div>
       <div className="knob-ref-row">

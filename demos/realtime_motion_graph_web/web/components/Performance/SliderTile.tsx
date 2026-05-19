@@ -22,13 +22,14 @@ const DISPLAY_NAMES: Record<string, string> = {
   hint_strength: "structure",// "how much we follow the source's structure"
   timbre_strength: "timbre", // universal in synthesis
   feedback: "feedback",      // universal in delay/echo/mod — keep canonical
-  dcw_scaler: "bass",        // universal EQ
-  dcw_high_scaler: "treble",
 
-  // Mod (MOD tab) — time-variant / model-internal expert knobs.
+  // Mod (MOD tab) — time-variant / model-internal expert knobs, plus
+  // DCW (dynamically conditioned weighting) low/high scalers.
   ode_noise: "jitter",       // clocking / granular — stochastic variation
   noise_share: "n.share",    // no clean analog; keep technical
   shift: "shift",            // no clean analog; expert
+  dcw_scaler: "DCW low",     // engine-honest — these are DCW-internal scalers
+  dcw_high_scaler: "DCW high",
 
   // Channels (CHANNELS tab) — the model's internal latent channels.
   ch_g0: "v1", ch_g1: "v2", ch_g2: "v3", ch_g3: "v4",

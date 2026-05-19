@@ -40,6 +40,16 @@ export function ModTile() {
           label={defaultLabelFor("ode_noise")}
           kbd={kbdHintFor("ode_noise")}
         />
+        <Knob
+          param="dcw_scaler"
+          label={defaultLabelFor("dcw_scaler")}
+          kbd={kbdHintFor("dcw_scaler")}
+        />
+        <Knob
+          param="dcw_high_scaler"
+          label={defaultLabelFor("dcw_high_scaler")}
+          kbd={kbdHintFor("dcw_high_scaler")}
+        />
       </div>
       <div className="dcw-panel knob-dcw">
         <button
