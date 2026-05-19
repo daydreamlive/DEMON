@@ -31,6 +31,8 @@ import { AudioSourceCrate } from "./AudioSourceCrate";
 import { ConfigModal } from "./ConfigModal";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DesktopEdgeDrag } from "./DesktopEdgeDrag";
+import { FooterLinks } from "./FooterLinks";
+import { HeroMacros } from "./HeroMacros";
 import { HUDFrame } from "./HUDFrame";
 import { HudHelpReadout } from "./HudHelpReadout";
 import { InstallStage } from "./InstallStage";
@@ -104,6 +106,14 @@ export function PerformanceShell() {
     <>
     <div id="performance" className="screen">
       {status === "ready" && <AudioSourceCrate />}
+      {/* Permanent 3-knob row above the drawer handle — performance
+          palette (DENOISE / STRUCTURE / FEEDBACK / SEED). The component
+          handles its own visibility internally; mount it unconditionally
+          and let it decide. */}
+      <HeroMacros />
+      {/* Top-right CTA pair (VST waitlist + Feedback), both Tally
+          in-page modals. Self-positioning chrome — no host wiring. */}
+      <FooterLinks />
 
       <StartOverlay
         onPlay={() => {
