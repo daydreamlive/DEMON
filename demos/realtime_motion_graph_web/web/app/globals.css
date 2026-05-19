@@ -6097,26 +6097,28 @@ body.curve-open #install-video-area #graph {
   letter-spacing: 0.04em;
   font-size: 10px;
 }
-/* Hero-macros wide tooltips swap their format for the chip-style
-   readout used by HudHelpReadout — title (uppercase mono accent
-   caps) on the first line, body underneath. ::first-line targets
-   the title segment; `content: attr(title) "\A" attr(body)` joins
-   them with a literal newline, and `white-space: pre-line` honors
-   it. This is scoped to `.hero-macros` so other panel tooltips keep
-   the compact wide format. The hero bay's floating ::after is now
-   the only tooltip surface for those controls (HudHelpReadout
-   skips them via excludeSelector). */
-.hero-macros [data-dd-tooltip][data-dd-tooltip-wide][data-dd-tooltip-title]::after {
-  content: attr(data-dd-tooltip-title) "\A" attr(data-dd-tooltip);
-  white-space: pre-line;
-  max-width: 280px;
+/* Hero-bay controls render their wide tooltip via the React
+   `<HeroMacrosTooltip/>` component (title-then-body chip, matching
+   DrawerHelpBar / HudHelpReadout). Suppress the CSS `::after` pseudo
+   inside `.hero-macros` so it doesn't double-show with the React
+   tooltip. The compact non-wide variant (e.g. SeedKnob's
+   "Randomize seed (right-click to MIDI-learn)") still uses the
+   pseudo since it doesn't need the two-line format. */
+.hero-macros [data-dd-tooltip][data-dd-tooltip-wide]::after {
+  display: none !important;
+}
+
+/* React-rendered hero-bay tooltip — mirrors the chip used by
+   DrawerHelpBar / HudHelpReadout so the visual vocabulary stays
+   consistent across the three surfaces. Position is set inline by the
+   component (fixed top/left, transformed so the bottom-center anchors
+   above the hovered control). */
+.hero-macros-tooltip {
+  position: fixed;
+  z-index: 100;
+  pointer-events: none;
+  max-width: 320px;
   padding: 8px 12px 10px;
-  font-size: 10.5px;
-  line-height: 1.45;
-  text-transform: none;
-  letter-spacing: 0.04em;
-  color: var(--text-strong);
-  border-radius: var(--radius-md);
   background: rgba(6, 6, 12, 0.82);
   background-image:
     linear-gradient(rgba(6, 6, 12, 0.82), rgba(6, 6, 12, 0.82)),
@@ -6125,17 +6127,32 @@ body.curve-open #install-video-area #graph {
   background-clip: padding-box, border-box;
   border: 1px solid var(--frame-line);
   border-top: 2px solid transparent;
+  border-radius: var(--radius-md);
   box-shadow:
     0 6px 18px rgba(0, 0, 0, 0.45),
     0 0 14px rgba(240, 138, 72, 0.15);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
 }
-/* No `::after::first-line` chain here — Turbopack's CSS parser bails on
-   chained pseudo-elements (Parsing CSS source code failed). The title
-   line still reads as a header because it's short, sits on its own
-   line via the \A newline + pre-line, and the body wraps below. If we
-   want the accent-colored title back, the right path is replacing the
-   ::after pseudo with a real React tooltip component (anchored to the
-   hovered element via portal). Out of scope for this pass. */
+.hero-macros-tooltip-title {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: var(--tracking-bar);
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 4px;
+}
+.hero-macros-tooltip-text {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-strong);
+  margin: 0;
+}
+@media (pointer: coarse) {
+  /* Hover doesn't exist on touch — the React component itself only
+     fires on pointer move, but defensively hide if it somehow renders. */
+  .hero-macros-tooltip { display: none !important; }
+}
 [data-dd-tooltip]:hover::after,
 [data-dd-tooltip]:focus-visible::after {
   opacity: 1;
