@@ -6097,6 +6097,45 @@ body.curve-open #install-video-area #graph {
   letter-spacing: 0.04em;
   font-size: 10px;
 }
+/* Hero-macros wide tooltips swap their format for the chip-style
+   readout used by HudHelpReadout — title (uppercase mono accent
+   caps) on the first line, body underneath. ::first-line targets
+   the title segment; `content: attr(title) "\A" attr(body)` joins
+   them with a literal newline, and `white-space: pre-line` honors
+   it. This is scoped to `.hero-macros` so other panel tooltips keep
+   the compact wide format. The hero bay's floating ::after is now
+   the only tooltip surface for those controls (HudHelpReadout
+   skips them via excludeSelector). */
+.hero-macros [data-dd-tooltip][data-dd-tooltip-wide][data-dd-tooltip-title]::after {
+  content: attr(data-dd-tooltip-title) "\A" attr(data-dd-tooltip);
+  white-space: pre-line;
+  max-width: 280px;
+  padding: 8px 12px 10px;
+  font-size: 10.5px;
+  line-height: 1.45;
+  text-transform: none;
+  letter-spacing: 0.04em;
+  color: var(--text-strong);
+  border-radius: var(--radius-md);
+  background: rgba(6, 6, 12, 0.82);
+  background-image:
+    linear-gradient(rgba(6, 6, 12, 0.82), rgba(6, 6, 12, 0.82)),
+    var(--dd-gradient);
+  background-origin: padding-box, border-box;
+  background-clip: padding-box, border-box;
+  border: 1px solid var(--frame-line);
+  border-top: 2px solid transparent;
+  box-shadow:
+    0 6px 18px rgba(0, 0, 0, 0.45),
+    0 0 14px rgba(240, 138, 72, 0.15);
+}
+.hero-macros [data-dd-tooltip][data-dd-tooltip-wide][data-dd-tooltip-title]::after::first-line {
+  font-family: var(--font-mono);
+  font-size: 0.7em;
+  letter-spacing: var(--tracking-bar);
+  text-transform: uppercase;
+  color: var(--accent);
+}
 [data-dd-tooltip]:hover::after,
 [data-dd-tooltip]:focus-visible::after {
   opacity: 1;
