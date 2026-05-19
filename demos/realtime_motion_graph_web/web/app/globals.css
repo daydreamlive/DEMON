@@ -2684,6 +2684,22 @@ body.drawer-open .hud-help-readout {
   color: var(--text);
   line-height: 1;
 }
+/* Keyboard-shortcut hint under the value, matching the .knob-kbd
+   vocabulary used by the bay's knob row. Honored by the same
+   `.mixer-rack--no-kbd-hints kbd` toggle as the in-drawer hints
+   (live globally — when the operator opts out of kbd hints, the
+   bay's faders hide theirs too). */
+.hero-style-fader-kbd {
+  font-family: var(--font-mono);
+  font-size: 7.5px;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  line-height: 1;
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+.mixer-rack--no-kbd-hints .hero-style-fader-kbd { display: none; }
 .hero-style-fader--empty { opacity: 0.35; }
 .hero-style-fader--empty .hero-style-fader-track { cursor: default; }
 

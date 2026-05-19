@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { useLoraFaderDrag } from "@/hooks/useLoraFaderDrag";
+import { displayLoraName } from "@/lib/loraLabels";
 import { useCurveStore } from "@/store/useCurveStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
@@ -99,6 +100,7 @@ interface HeroStyleFaderProps {
 function HeroStyleFader({ slotIndex }: HeroStyleFaderProps) {
   const strengths = useLoraStore((s) => s.strengths);
   const enabled = useLoraStore((s) => s.enabled);
+  const catalog = useLoraStore((s) => s.catalog);
   const enabledIds = Array.from(enabled);
   const loraId = enabledIds[slotIndex] ?? null;
   const value = loraId ? strengths[loraId] ?? 0 : 0;
@@ -109,7 +111,12 @@ function HeroStyleFader({ slotIndex }: HeroStyleFaderProps) {
   const trackRef = useRef<HTMLDivElement | null>(null);
   useLoraFaderDrag(trackRef, slotIndex, !isEmpty);
 
-  const displayLabel = loraId ? labelFor(loraId) : `Style ${slotIndex + 1}`;
+  const displayLabel = loraId
+    ? displayLoraName(loraId, catalog.find((c) => c.id === loraId)?.name)
+    : `Style ${slotIndex + 1}`;
+  const kbdHint = loraId
+    ? `${slotIndex === 0 ? "Z" : "X"} + ▲▼`
+    : null;
   return (
     <div className={`hero-style-fader${isEmpty ? " hero-style-fader--empty" : ""}`}>
       <div className="hero-style-fader-label" title={displayLabel}>
@@ -134,13 +141,9 @@ function HeroStyleFader({ slotIndex }: HeroStyleFaderProps) {
         />
       </div>
       <div className="hero-style-fader-value">{value.toFixed(2)}</div>
+      {kbdHint && <kbd className="hero-style-fader-kbd">{kbdHint}</kbd>}
     </div>
   );
-}
-
-// LoRA id → short human label; mirrors the helper in StylePanel.
-function labelFor(loraId: string): string {
-  return loraId.replace(/^lora_/, "").slice(0, 8).toUpperCase();
 }
 
 export function HeroMacros() {

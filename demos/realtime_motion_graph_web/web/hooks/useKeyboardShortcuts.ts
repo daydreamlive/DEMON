@@ -3,10 +3,18 @@
 import { useEffect } from "react";
 
 import { togglePauseAndAudio } from "@/engine/audio/togglePauseAndAudio";
+import { loraStrengthDispatcher } from "@/engine/lora/dispatcher";
 import { getChannelRange } from "@/lib/config";
+import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
-import { DCW_MODES, DCW_WAVELETS, SLIDER_META } from "@/types/engine";
+import {
+  DCW_MODES,
+  DCW_WAVELETS,
+  LORA_SLIDER_MAX,
+  LORA_SLIDER_STEP,
+  SLIDER_META,
+} from "@/types/engine";
 
 // Keyboard layout. Chord = letter held + ▲▼; single-tap keys do
 // toggles/cycles/sends. Display-side source of truth lives in
@@ -16,6 +24,8 @@ import { DCW_MODES, DCW_WAVELETS, SLIDER_META } from "@/types/engine";
 //   G + ▲▼      structure (hint_strength)
 //   C + ▲▼      timbre (timbre_strength)
 //   B + ▲▼      prompt blend
+//   Z + ▲▼      hero-bay LoRA strength — first enabled slot
+//   X + ▲▼      hero-bay LoRA strength — second enabled slot
 //   E/D/H + ▲▼  feedback / feedback depth / shift (engine)
 //   W/Y + ▲▼    DCW low / DCW high
 //   T            toggle DCW on/off
@@ -92,6 +102,24 @@ export function useKeyboardShortcuts() {
       usePerformanceStore.getState().bumpSlider("prompt_blend", direction * 0.05);
     }
 
+    function bumpHeroLora(slotIndex: 0 | 1, direction: 1 | -1): void {
+      // Hero-bay style faders correspond to the first two enabled
+      // LoRAs (HeroStyleFader uses the same slice). Strength lives in
+      // useLoraStore.strengths and must be written via
+      // loraStrengthDispatcher so the debounced refit + sliderTargets
+      // mirror stay coherent.
+      const lora = useLoraStore.getState();
+      const id = Array.from(lora.enabled)[slotIndex];
+      if (!id) return;
+      const current = lora.strengths[id] ?? 0;
+      const stepMul = HELD_KEYS.has("shift") ? 0.5 : 1;
+      const next = Math.max(
+        0,
+        Math.min(LORA_SLIDER_MAX, current + direction * LORA_SLIDER_STEP * stepMul),
+      );
+      loraStrengthDispatcher.set(id, next);
+    }
+
     function sendPrompt(): void {
       const { promptA, promptB, activeKey, activeTimeSignature } =
         usePerformanceStore.getState();
@@ -166,6 +194,16 @@ export function useKeyboardShortcuts() {
         if (HELD_KEYS.has("b")) {
           e.preventDefault();
           bumpBlend(dir);
+          return;
+        }
+        if (HELD_KEYS.has("z")) {
+          e.preventDefault();
+          bumpHeroLora(0, dir);
+          return;
+        }
+        if (HELD_KEYS.has("x")) {
+          e.preventDefault();
+          bumpHeroLora(1, dir);
           return;
         }
 
