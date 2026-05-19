@@ -3997,20 +3997,19 @@ body.curve-open #install-video-area #graph {
   }
 }
 .lite-controls {
-  /* Wave 13.3: consolidated mobile mixer — all 4 faders in one bay
-     plus a utility cluster (track + REC + All controls) next to them.
-     Anchored to the bottom-center, sized to its content, safe-area
-     aware. */
+  /* Wave 13.4: tabbed mobile mixer. One bay, two tabs (Mix / Track).
+     Anchored to the bottom-center, content-sized with a max-width
+     clamp, safe-area aware. */
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
   bottom: max(env(safe-area-inset-bottom, 0px) + 8px, 8px);
   max-width: min(720px, calc(100vw - 24px));
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
   align-items: stretch;
-  gap: 14px;
-  padding: 8px 12px 10px;
+  gap: 6px;
+  padding: 6px 10px 8px;
   background: rgba(6, 6, 12, 0.62);
   border: 1px solid var(--frame-line);
   border-radius: var(--radius-md);
@@ -4028,6 +4027,68 @@ body.curve-open #install-video-area #graph {
   .lite-controls {
     display: flex;
   }
+}
+
+/* Wave 13.4 lite tabs — Mix / Track pill row sitting at the top of
+   the bay. Small mono-caps cells with frame-line outline; active cell
+   recessed via inset shadow + accent text. */
+.lite-tabs {
+  display: flex;
+  gap: 4px;
+  align-self: center;
+}
+.lite-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 12px 4px;
+  background: transparent;
+  border: 1px solid var(--frame-line);
+  border-radius: 999px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  line-height: 1;
+  -webkit-appearance: none;
+          appearance: none;
+  transition: color 140ms, border-color 140ms, background 140ms;
+}
+.lite-tab:hover {
+  color: var(--text);
+  border-color: var(--accent-line);
+}
+.lite-tab--active {
+  color: var(--text-strong);
+  border-color: var(--accent-line);
+  background: rgba(255, 255, 255, 0.04);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+.lite-tab-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #e84f3d;
+  animation: save-pill-pulse 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lite-tab-dot { animation: none; opacity: 1; }
+}
+
+/* Tab body — both tabs share the same horizontal flex container so
+   the bay's content always reads as one row regardless of which
+   surface is active. */
+.lite-tab-body {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 4px 4px 2px;
 }
 
 .lite-row {
