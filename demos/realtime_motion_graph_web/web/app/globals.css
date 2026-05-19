@@ -2837,11 +2837,30 @@ body.curve-open #install-video-area #graph {
 .mixer-tile--voice {
   gap: 8px;
 }
-.voice-tile-blurb {
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--text-dim);
+/* Experimental-feature notice that sits under the "Channels" title.
+   Hairline accent-color frame + an uppercase mono title to signal "read
+   this before sweeping the faders". Recessed background so it reads as
+   advisory rather than a primary control surface. */
+.voice-tile-warning {
+  margin: 0 0 6px;
+  padding: 6px 8px 7px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 184, 60, 0.04);
+}
+.voice-tile-warning-title {
+  font-family: var(--font-mono);
+  font-size: 0.6em;
+  letter-spacing: var(--tracking-bar);
+  text-transform: uppercase;
+  color: var(--accent);
   margin: 0 0 4px;
+}
+.voice-tile-warning-body {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  margin: 0;
   max-width: 70ch;
 }
 /* Side-by-side columns for the two voice banks. Internal voices on the

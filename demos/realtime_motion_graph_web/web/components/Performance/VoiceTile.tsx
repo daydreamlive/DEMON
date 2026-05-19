@@ -25,12 +25,15 @@ export function VoiceTile() {
   return (
     <div className="mixer-tile mixer-tile--voice" data-tile="voice">
       <div className="mixer-tile-label">Channels</div>
-      <p className="voice-tile-blurb">
-        Internal latent channels of the model. Each one shapes a different
-        dimension of the output — frequency, dynamics, transients. Their
-        exact perceptual mappings are still being charted; sweep to discover
-        what each does for your source.
-      </p>
+      <div className="voice-tile-warning" role="note">
+        <div className="voice-tile-warning-title">Experimental feature</div>
+        <p className="voice-tile-warning-body">
+          These are not traditional audio channels and gains. They
+          manipulate different dimensions of the model&apos;s latent
+          space, and produce results ranging from nuanced and beautiful
+          to abrupt and discordant. Use at your own risk.
+        </p>
+      </div>
       <div className="voice-sections-row">
         <div className="voice-section">
           <div className="voice-section-label">Channels</div>
