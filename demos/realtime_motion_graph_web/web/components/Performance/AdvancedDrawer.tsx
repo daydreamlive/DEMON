@@ -158,10 +158,13 @@ function renderTabBody(tab: DrawerTab, savedTab?: ReactNode) {
       return <ModTile />;
     case "voice":
       return <VoiceTile />;
-    case "prompt":
-      return <PromptsTile />;
-    case "lib":
-      return <LibraryTile />;
+    case "styles":
+      return (
+        <div className="styles-tab">
+          <PromptsTile />
+          <LibraryTile />
+        </div>
+      );
     case "saved":
       return savedTab ?? (
         <div className="install-sheet-saved-placeholder">

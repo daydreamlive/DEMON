@@ -31,16 +31,6 @@ export function ModTile() {
           kbd={kbdHintFor("shift")}
         />
         <Knob
-          param="noise_share"
-          label={defaultLabelFor("noise_share")}
-          kbd={kbdHintFor("noise_share")}
-        />
-        <Knob
-          param="ode_noise"
-          label={defaultLabelFor("ode_noise")}
-          kbd={kbdHintFor("ode_noise")}
-        />
-        <Knob
           param="dcw_scaler"
           label={defaultLabelFor("dcw_scaler")}
           kbd={kbdHintFor("dcw_scaler")}

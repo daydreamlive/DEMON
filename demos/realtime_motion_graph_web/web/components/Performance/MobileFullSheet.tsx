@@ -10,7 +10,7 @@ import { OperatorStrip } from "./OperatorStrip";
 import { PromptsTile } from "./PromptsTile";
 import { VoiceTile } from "./VoiceTile";
 
-type Tab = "core" | "mod" | "voice" | "prompt" | "lib" | "saved" | "config";
+type Tab = "core" | "mod" | "voice" | "styles" | "saved" | "config";
 
 interface Props {
   open: boolean;
@@ -22,14 +22,12 @@ interface Props {
 }
 
 // Mirrors the desktop DrawerTabs IA: CORE / MOD / CHANNELS (key=voice) /
-// PROMPT / LoRAs (key=lib) / SAVED / CONFIG. Labels match the desktop
-// strip after the Wave 12 rename.
+// STYLES (prompts + LoRAs together) / SAVED / CONFIG.
 const TABS: { id: Tab; label: string }[] = [
   { id: "core", label: "Core" },
   { id: "mod", label: "Mod" },
   { id: "voice", label: "Channels" },
-  { id: "prompt", label: "Prompt" },
-  { id: "lib", label: "LoRAs" },
+  { id: "styles", label: "Styles" },
   { id: "saved", label: "Saved" },
   { id: "config", label: "Config" },
 ];
@@ -120,11 +118,11 @@ export function MobileFullSheet({ open, onClose, savedTab }: Props) {
         <section data-section="voice" className="mobile-sheet-section">
           <VoiceTile />
         </section>
-        <section data-section="prompt" className="mobile-sheet-section">
-          <PromptsTile />
-        </section>
-        <section data-section="lib" className="mobile-sheet-section">
-          <LibraryTile />
+        <section data-section="styles" className="mobile-sheet-section">
+          <div className="styles-tab">
+            <PromptsTile />
+            <LibraryTile />
+          </div>
         </section>
         <section data-section="saved" className="mobile-sheet-section">
           {savedTab ?? (

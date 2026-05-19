@@ -4,6 +4,7 @@ import { Knob } from "./Knob";
 import { RefControl } from "./RefControl";
 import { SeedKnob } from "./SeedKnob";
 import { defaultLabelFor, kbdHintFor } from "./SliderTile";
+import { TrackPicker } from "./TrackPicker";
 
 // CORE tab — six dial-it-and-go macros every musician knows, drawn as
 // rotary knobs (matches the inShaper / GrainDust visual vocabulary for
@@ -39,6 +40,7 @@ export function CoreTile() {
         />
         <SeedKnob />
       </div>
+      <TrackPicker />
       <div className="knob-ref-row">
         <RefControl kind="timbre" />
         <RefControl kind="structure" />

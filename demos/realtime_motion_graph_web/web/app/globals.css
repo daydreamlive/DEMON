@@ -2134,11 +2134,25 @@ body.drawer-open {
 }
 
 .mixer-rack--tabbed > .mixer-tile,
-.mixer-rack--tabbed > .knob-tile {
+.mixer-rack--tabbed > .knob-tile,
+.mixer-rack--tabbed > .styles-tab {
   /* Active tab's body fills the rack instead of sitting in a row. The
      internal .mixer-channels still flexes its sliders edge-to-edge. */
   flex: 1 1 auto;
   width: 100%;
+}
+/* Styles tab — prompts on top, LoRA library underneath. The shared
+   parent stacks vertically and gives a thin frame-line between the two
+   so they read as related-but-distinct surfaces. */
+.styles-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+.styles-tab > * + * {
+  border-top: 1px solid var(--frame-line);
+  padding-top: 12px;
 }
 /* Drop the inner tile frame for tabbed content — the active tab is
    already the section delimiter; an extra card border just adds noise.

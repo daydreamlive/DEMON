@@ -49,10 +49,6 @@ const PARAM_TOOLTIPS: Record<string, string> = {
     "How far back in time the Feedback knob reaches. 1 (default) blends with the most recent generation. Higher values reach back several ticks for an echo / ghost effect — a faint repeat of an earlier moment surfaces in the current output. Lets you get distant feedback without cranking Feedback all the way up.",
   shift:
     "Advanced: changes where the model concentrates its work across denoising. The default is tuned for the turbo engine and works well in most cases — leave it alone unless you're chasing a specific feel.",
-  noise_share:
-    "Fine-grained sibling of FEEDBACK. Where FEEDBACK is one number for the whole generation, this lets the noise-sharing vary across the timeline. Leave at 0 unless you want detailed control over how successive generations evolve.",
-  ode_noise:
-    "Adds a touch of randomness during generation. Bump it up if the model feels too deterministic — small values add subtle variation, higher values produce surprising bursts of creativity. Zero keeps generation fully predictable.",
   guidance_scale:
     "CFG strength. Only takes effect when the RCFG mode dropdown below is NOT 'off'. Higher values push the output further toward the prompt at the cost of more artifacts. Turbo is CFG-distilled, so the useful range is narrower than a base SD model — try 3–8.",
   cfg_rescale:
@@ -104,8 +100,6 @@ const KBD_FOR_PARAM: Record<string, string> = {
   timbre_strength: "C + ▲▼",
   feedback: "E + ▲▼",
   shift: "H + ▲▼",
-  noise_share: "N + ▲▼",
-  ode_noise: "D + ▲▼",
   ch_g0: "0 + ▲▼",
   ch_g1: "1 + ▲▼",
   ch_g2: "2 + ▲▼",

@@ -7,24 +7,24 @@ import { useState, type ReactElement } from "react";
 // recessed via inset shadow + brighter foreground (a pressed hardware
 // button).
 //
-// Body tabs (Wave 9 — tool-trigger tabs were removed; Curve Editor and
-// REC live in the hero bay now):
-//   CORE   — MIX / TRACK / TIMBRE / FEEDBACK / BASS / TREBLE (knobs)
-//   MOD    — SHIFT / N.SHARE / JITTER (knobs) + DCW config
-//   CHANNELS — the 14 latent channels (V1–V8 + M1–M6, faders)
-//   PROMPT — prompts, key, time signature, seed
-//   LIB    — LoRAs
-//   CONFIG — session controls: track/key/sig, transport, MIDI, prefs
+// Body tabs:
+//   CORE     — denoise / structure / timbre / feedback / seed (knobs)
+//              + track picker + upload + the two reference-track pickers
+//   MOD      — shift + DCW low / DCW high knobs + DCW toggle/mode/wavelet
+//   CHANNELS — the 14 latent channels (faders)
+//   STYLES   — prompts (top) + LoRA library (bottom). The two
+//              "what should this sound like" surfaces share one tab.
+//   SAVED    — saved sessions
+//   CONFIG   — session controls: key/sig, transport, MIDI, prefs
 
-export const DRAWER_TABS = ["core", "mod", "voice", "prompt", "lib", "saved", "config"] as const;
+export const DRAWER_TABS = ["core", "mod", "voice", "styles", "saved", "config"] as const;
 export type DrawerTab = (typeof DRAWER_TABS)[number];
 
 const TAB_LABELS: Record<DrawerTab, string> = {
   core: "Core",
   mod: "Mod",
   voice: "Channels",
-  prompt: "Prompt",
-  lib: "LoRAs",
+  styles: "Styles",
   saved: "Saved",
   config: "Config",
 };
@@ -49,18 +49,17 @@ const TAB_ICONS: Record<DrawerTab, ReactElement> = {
       <rect x="10.5" y="4.5" width="3" height="2" rx="0.4" />
     </>
   ),
-  prompt: (
+  // Styles tab — speech-bubble (prompts) over a cassette frame (LoRAs):
+  // the two surfaces this tab combines, stacked vertically inside one
+  // 16x16 monoline glyph.
+  styles: (
     <>
-      <path d="M2.5 3.5h11a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H9.5l-3 2.5v-2.5H2.5a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1z" />
-      <line x1="5" y1="7" x2="11" y2="7" />
-      <line x1="5" y1="9.5" x2="9" y2="9.5" />
-    </>
-  ),
-  lib: (
-    <>
-      <rect x="2" y="4" width="12" height="8" rx="1.2" />
-      <circle cx="6" cy="9" r="1.4" />
-      <circle cx="10" cy="9" r="1.4" />
+      <path d="M2.5 2.5h11a1 1 0 0 1 1 1v3.5a1 1 0 0 1-1 1H9l-2.5 2v-2H2.5a1 1 0 0 1-1-1v-3.5a1 1 0 0 1 1-1z" />
+      <line x1="4.5" y1="4.5" x2="11.5" y2="4.5" />
+      <line x1="4.5" y1="6" x2="9.5" y2="6" />
+      <rect x="2" y="10.5" width="12" height="3.5" rx="0.6" />
+      <circle cx="5" cy="12.25" r="0.6" />
+      <circle cx="11" cy="12.25" r="0.6" />
     </>
   ),
   saved: (

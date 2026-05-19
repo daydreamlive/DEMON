@@ -2,12 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import {
-  decodeAudioFile,
-  listFixtures,
-  pickDefaultFixture,
-  type DecodedFixture,
-} from "@/engine/audio/loadFixture";
 import { togglePauseAndAudio } from "@/engine/audio/togglePauseAndAudio";
 import {
   applyConfig,
@@ -18,7 +12,6 @@ import {
 } from "@/lib/config";
 import { LOCAL_MODE } from "@/lib/runtime";
 import { confirm } from "@/store/useConfirmStore";
-import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
@@ -27,15 +20,11 @@ import {
   VALID_KEYSCALES,
   VALID_TIME_SIGNATURES,
   isTimeSignature,
-  type TimeSignature,
 } from "@/types/engine";
 
-import { AlmostReadyDialog } from "./AlmostReadyDialog";
 import { MidiBadge } from "./MidiBadge";
 
 export function OperatorStrip() {
-  const [fixtures, setFixtures] = useState<string[]>([]);
-  const fixture = usePerformanceStore((s) => s.fixture);
   const activeKey = usePerformanceStore((s) => s.activeKey);
   const activeTimeSignature = usePerformanceStore((s) => s.activeTimeSignature);
   const kiosk = usePerformanceStore((s) => s.kiosk);
@@ -45,7 +34,6 @@ export function OperatorStrip() {
   const smoothMs = usePerformanceStore((s) => s.smoothMs);
   const lufsOn = usePerformanceStore((s) => s.lufsOn);
   const loopOn = usePerformanceStore((s) => s.loopOn);
-  const setFixture = usePerformanceStore((s) => s.setFixture);
   const setKey = usePerformanceStore((s) => s.setKey);
   const setTimeSignature = usePerformanceStore((s) => s.setTimeSignature);
   const toggleKiosk = usePerformanceStore((s) => s.toggleKiosk);
@@ -55,42 +43,7 @@ export function OperatorStrip() {
   const toggleLufs = usePerformanceStore((s) => s.toggleLufs);
   const toggleLoop = usePerformanceStore((s) => s.toggleLoop);
 
-  const customNames = useCustomTracksStore((s) => s.names);
-  const addCustomTrack = useCustomTracksStore((s) => s.add);
-
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const configFileInputRef = useRef<HTMLInputElement | null>(null);
-  const [uploading, setUploading] = useState(false);
-  // Mirror of AudioSourceCrate's pending-upload state. The "Almost
-  // Ready" dialog gates the actual fixture swap so the previously
-  // playing track keeps playing if the user cancels.
-  const [pending, setPending] = useState<{
-    decoded: DecodedFixture;
-    fileName: string;
-    wasTrimmed: boolean;
-    originalFile: File;
-  } | null>(null);
-
-  // The bottom-left <AudioSourceCrate /> is the primary track-picker; we
-  // keep this dropdown + upload icon here as the power-user fallback that
-  // power users will keep relying on while the advanced controls strip
-  // is open. Both surfaces drive the same setFixture() / addCustomTrack()
-  // path, so picking from either re-triggers useFixtureSwap identically.
-  // Daydream-webapp queue-admit gate: standalone DEMON has no queue
-  // (LOCAL_MODE), so we skip the wait there.
-  const sessionWsUrl = useSessionStore((s) => s.wsUrl);
-  useEffect(() => {
-    if (!sessionWsUrl && !LOCAL_MODE) return;
-    void listFixtures()
-      .then((names) => {
-        setFixtures(names);
-        const def = pickDefaultFixture(names);
-        if (!usePerformanceStore.getState().fixture && def) {
-          setFixture(def);
-        }
-      })
-      .catch(() => setFixtures([]));
-  }, [setFixture, sessionWsUrl]);
 
   // Push LUFS state to the live AudioPlayer. Re-runs whenever the user
   // toggles, and whenever a new player instance appears (session
@@ -164,124 +117,15 @@ export function OperatorStrip() {
     setStatus(useSessionStore.getState().status, `Exported config`);
   }
 
-  async function onFilePicked(file: File) {
-    const { setStatus } = useSessionStore.getState();
-    setUploading(true);
-    setStatus(useSessionStore.getState().status, `Loading ${file.name}…`);
-    try {
-      const { decoded, wasTrimmed } = await decodeAudioFile(file);
-      // De-collide names: appending an index when the same filename is
-      // uploaded twice keeps prior uploads selectable while letting the
-      // new one win the dropdown. The decoded buffer is what the pod
-      // actually consumes, so the displayed name is purely for the UI.
-      const baseName = file.name;
-      let chosen = baseName;
-      let i = 1;
-      while (useCustomTracksStore.getState().has(chosen)) {
-        chosen = `${baseName} (${i++})`;
-      }
-      // Defer addCustomTrack + setFixture to commitPending so cancelling
-      // leaves the previously playing track intact.
-      setPending({ decoded, fileName: chosen, wasTrimmed, originalFile: file });
-      setStatus(useSessionStore.getState().status, "");
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setStatus(useSessionStore.getState().status, `Upload failed: ${msg}`);
-    } finally {
-      setUploading(false);
-    }
-  }
-
-  function commitPending(
-    keyOverride: string | null,
-    timeSignatureOverride: TimeSignature | null,
-  ) {
-    if (!pending) return;
-    const { decoded, fileName, originalFile } = pending;
-    addCustomTrack(fileName, decoded, originalFile);
-    const perf = usePerformanceStore.getState();
-    if (keyOverride) {
-      perf.setPendingKeyOverride(keyOverride);
-      perf.setKey(keyOverride);
-    }
-    if (timeSignatureOverride) {
-      perf.setPendingTimeSignatureOverride(timeSignatureOverride);
-      perf.setTimeSignature(timeSignatureOverride);
-    }
-    setFixture(fileName);
-    setPending(null);
-  }
-
   // The pod's WS URL is allocated by the queue and not user-editable.
   return (
     <div className="operator-strip">
-      {/* ── Track & Key ─────────────────────────────────────────────
-          The "what's playing" group: source, upload, key, time sig. */}
+      {/* ── Key & Time ──────────────────────────────────────────────
+          The "what's playing" group: key + time signature. Track
+          dropdown + upload now live in the CORE tab via <TrackPicker/>. */}
       <section className="operator-section">
-        <h3 className="operator-section-label">Track &amp; Key</h3>
+        <h3 className="operator-section-label">Key &amp; Time</h3>
         <div className="operator-row">
-          <select
-            id="fixture-select"
-            className="fixture-select"
-            title="Audio source — pick a track or one of your uploaded tracks"
-            value={fixture}
-            onChange={(e) => setFixture(e.target.value)}
-          >
-            {fixtures.length === 0 && customNames.length === 0 && <option>—</option>}
-            {customNames.length > 0 && (
-              <optgroup label="Your uploads">
-                {customNames.map((n) => (
-                  <option key={`u:${n}`} value={n}>
-                    {n}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-            {fixtures.length > 0 && (
-              <optgroup label="Tracks">
-                {fixtures.map((f) => (
-                  <option key={f} value={f}>
-                    {f}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-          </select>
-          <button
-            type="button"
-            className="pause-btn"
-            data-dd-tooltip={uploading ? "Decoding…" : "Upload audio track"}
-            aria-label="Upload audio track"
-            disabled={uploading}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <svg
-              viewBox="0 0 16 16"
-              width={14}
-              height={14}
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={1.4}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M8 10V2" />
-              <path d="M4.5 5.5L8 2l3.5 3.5" />
-              <path d="M2.5 10v3a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-3" />
-            </svg>
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="audio/*,.mp3,.wav,.flac,.ogg,.m4a,.aac"
-            style={{ display: "none" }}
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              e.target.value = "";
-              if (file) void onFilePicked(file);
-            }}
-          />
           <select
             id="key-select"
             className="fixture-select"
@@ -528,22 +372,6 @@ export function OperatorStrip() {
         </section>
       )}
 
-      {pending && (
-        <AlmostReadyDialog
-          fileName={pending.fileName}
-          wasTrimmed={pending.wasTrimmed}
-          defaultKey={activeKey}
-          defaultTimeSignature={activeTimeSignature}
-          onContinue={({ keyOverride, timeSignatureOverride }) =>
-            commitPending(keyOverride, timeSignatureOverride)
-          }
-          onPickAnother={() => {
-            setPending(null);
-            setTimeout(() => fileInputRef.current?.click(), 0);
-          }}
-          onClose={() => setPending(null)}
-        />
-      )}
     </div>
   );
 }

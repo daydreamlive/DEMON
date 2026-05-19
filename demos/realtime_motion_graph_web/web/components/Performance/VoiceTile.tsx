@@ -33,7 +33,7 @@ export function VoiceTile() {
       </p>
       <div className="voice-sections-row">
         <div className="voice-section">
-          <div className="voice-section-label">Internal latents</div>
+          <div className="voice-section-label">Channels</div>
           <div className="mixer-channels">
             {VOICES.map((p) => (
               <SliderGroup
