@@ -6,7 +6,6 @@ import { createPortal } from "react-dom";
 import { loraStrengthDispatcher } from "@/engine/lora/dispatcher";
 import { listLoras } from "@/engine/lora/listLoras";
 import { getConfig, useConfig } from "@/lib/config";
-import { displayLoraName } from "@/lib/loraLabels";
 import { LOCAL_MODE } from "@/lib/runtime";
 import { isLoraCompatibleWithScale, useLoraStore } from "@/store/useLoraStore";
 import { useMidiStore } from "@/store/useMidiStore";
@@ -290,7 +289,7 @@ function LoraRow({ entry }: RowProps) {
   const closeMenu = useCallback(() => setMenuPos(null), []);
 
   const md = entry.metadata;
-  const displayName = displayLoraName(id, entry.name);
+  const displayName = entry.name || id;
   const baseTooltipText = useMemo(() => buildTooltipText(md), [md]);
   const tooltipText = confirmMsg ?? baseTooltipText;
   const trigger = md?.primary_trigger_word ?? null;

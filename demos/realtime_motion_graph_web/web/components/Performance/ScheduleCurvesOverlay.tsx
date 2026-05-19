@@ -12,7 +12,6 @@ import {
   computePeaks,
   drawPeaks,
 } from "@/engine/curves/waveformPeaks";
-import { displayLoraName } from "@/lib/loraLabels";
 import { useCurveStore } from "@/store/useCurveStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
@@ -148,10 +147,7 @@ export function ScheduleCurvesOverlay() {
     return ids.map((id) => ({
       id,
       param: loraCurveParam(id),
-      label: displayLoraName(
-        id,
-        loraCatalog.find((e) => e.id === id)?.name,
-      ).toUpperCase(),
+      label: (loraCatalog.find((e) => e.id === id)?.name ?? id).toUpperCase(),
     }));
   })();
 

@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 
 import { useLoraFaderDrag } from "@/hooks/useLoraFaderDrag";
-import { displayLoraName } from "@/lib/loraLabels";
 import { useCurveStore } from "@/store/useCurveStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
@@ -112,7 +111,7 @@ function HeroStyleFader({ slotIndex }: HeroStyleFaderProps) {
   useLoraFaderDrag(trackRef, slotIndex, !isEmpty);
 
   const displayLabel = loraId
-    ? displayLoraName(loraId, catalog.find((c) => c.id === loraId)?.name)
+    ? (catalog.find((c) => c.id === loraId)?.name ?? loraId)
     : `Style ${slotIndex + 1}`;
   const kbdHint = loraId
     ? `${slotIndex === 0 ? "Z" : "X"} + ▲▼`
