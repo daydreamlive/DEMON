@@ -272,13 +272,13 @@ export function Knob({ param, label, max, min, reverse, unity, kbd }: Props) {
   const indY2 = 24 + 8 * indSin;
 
   return (
-    <div className="knob-group" style={style}>
-      <div
-        className="knob-label"
-        title={tooltip}
-        data-dd-tooltip={tooltip}
-        data-dd-tooltip-wide={tooltip}
-      >
+    <div
+      className="knob-group"
+      style={style}
+      data-dd-tooltip={tooltip}
+      data-dd-tooltip-wide={tooltip ? "" : undefined}
+    >
+      <div className="knob-label" title={tooltip}>
         {label}
       </div>
       <div

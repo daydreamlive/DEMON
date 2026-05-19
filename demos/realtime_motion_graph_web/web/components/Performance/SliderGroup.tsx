@@ -295,13 +295,15 @@ export function SliderGroup({
   const tooltip = tooltipFor(param);
 
   return (
-    <div className="slider-group" data-param={param} style={tintStyle}>
-      <div
-        className="slider-label"
-        {...(tooltip
-          ? { "data-dd-tooltip": tooltip, "data-dd-tooltip-wide": "" }
-          : {})}
-      >
+    <div
+      className="slider-group"
+      data-param={param}
+      style={tintStyle}
+      {...(tooltip
+        ? { "data-dd-tooltip": tooltip, "data-dd-tooltip-wide": "" }
+        : {})}
+    >
+      <div className="slider-label">
         {label}
       </div>
       <div className="slider-track" ref={trackRef}>

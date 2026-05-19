@@ -32,6 +32,7 @@ import { ConfigModal } from "./ConfigModal";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DesktopEdgeDrag } from "./DesktopEdgeDrag";
 import { HUDFrame } from "./HUDFrame";
+import { HudHelpReadout } from "./HudHelpReadout";
 import { InstallStage } from "./InstallStage";
 import { LiveIndicator } from "./LiveIndicator";
 import {
@@ -137,6 +138,7 @@ export function PerformanceShell() {
       )}
 
       <AdvancedDrawer />
+      <HudHelpReadout />
       <ConfigModal />
       <ConfirmDialog />
 

@@ -1938,6 +1938,57 @@ body.drawer-open {
   .drawer-help-bar { display: none; }
 }
 
+/* Ambient hover readout used when the Full Controls panel is closed.
+   A slim floating chip pinned to the top-center of the viewport, just
+   below the top HUD edge bar — out of the way of the hero macros bay
+   and graph, but always in peripheral vision. Hidden whenever the
+   drawer is open since the drawer's own help bar takes over there. */
+.hud-help-readout {
+  position: fixed;
+  top: max(calc(var(--hud-thickness) + 18px), env(safe-area-inset-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 25;
+  pointer-events: none;
+  max-width: min(540px, 70vw);
+  padding: 7px 14px 8px;
+  background: rgba(6, 6, 12, 0.78);
+  border: 1px solid var(--frame-line);
+  border-top: 2px solid transparent;
+  background-image:
+    linear-gradient(rgba(6, 6, 12, 0.78), rgba(6, 6, 12, 0.78)),
+    var(--dd-gradient);
+  background-origin: padding-box, border-box;
+  background-clip: padding-box, border-box;
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+body.drawer-open .hud-help-readout {
+  display: none;
+}
+.hud-help-readout-title {
+  font-family: var(--font-mono);
+  font-size: 0.55em;
+  letter-spacing: var(--tracking-bar);
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0;
+}
+.hud-help-readout-text {
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--text-strong);
+  margin: 0;
+}
+@media (max-width: 768px) {
+  .hud-help-readout { display: none; }
+}
+
 .install-section-operator {
   display: flex;
   flex-wrap: wrap;
