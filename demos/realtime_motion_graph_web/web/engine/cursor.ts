@@ -1,10 +1,8 @@
-// Custom cursor: a TIGHT 4-particle constellation (one per ribbon palette
-// color) orbiting close to the pointer, plus a precise white center dot.
-// Layered with two ephemeral particle systems for party energy:
-//
-//   • Sparkler trail — every few px of motion the cursor emits a small
-//     palette-colored spark with gravity that fades over ~700ms.
-//   • Confetti burst — every mousedown spawns a radial cloud.
+// Custom cursor: a precise white center dot, plus a palette-colored
+// sparkler trail behind motion and a radial confetti burst on
+// mousedown. The 4-particle orbital constellation that used to ring
+// the pointer was retired — it added visual noise on every cursor
+// movement and competed with the trail for attention.
 //
 // Renders into a single 2D canvas so the whole effect is one composited
 // layer in every browser. The previous DOM-divs + box-shadow + CSS
@@ -12,49 +10,16 @@
 // composited only in Blink; Gecko fell back to software for the blend
 // group, which during slider drags (mousemove + pointermove competing
 // for the main thread) caused observable cursor lag. We draw plain
-// solid discs (no halo, no blend mode) — the orbital cluster's
-// character is in motion, not glow. Audio kicks bump the radii via
-// `bloom` so the cluster still breathes with the music.
+// solid discs (no halo, no blend mode). Audio kicks bump the radii via
+// `bloom` so the trail still breathes with the music.
 //
 // Tick is driven from the shared render loop (useRenderLoop) via
 // tickActiveCursor(now, bloom); a separate RAF would compete for vsync
 // and double the per-frame draw surface. Caller renders
 // <canvas class="cursor-canvas"> (see <CustomCursor />).
 
-const ORBIT_RADIUS = 6;
-// Spring physics for the orbital cluster. Tuned 2026-05 in response
-// to feedback that the cluster "lagged the cursor then bounced to it"
-// — classic underdamped spring. Bumped K (stiffer pull toward target)
-// and lowered DAMPING (more friction per frame — DAMPING is a velocity
-// multiplier, so smaller = more decay). Result: cluster tracks the
-// cursor tightly with minimal overshoot.
-const SPRING_K = 0.42;
-const DAMPING = 0.60;
-const ROTATION_SPEED = 0.0004;
-const ATTRACTOR_RANGE = 140;
-const ATTRACTOR_GAIN = 0.4;
-const BURST_DECAY = 0.9;
-const BURST_GAIN = 1.4;
-
 // Palette shared with the perimeter / halo / start-mark ribbons.
 const PALETTE = ["#3db6be", "#c7b566", "#f08a48", "#e84f3d"];
-
-// One entry per orbiting particle. `dir` flips orbit direction (some
-// clockwise, some counter-clockwise), `speedMul` shifts the rotation rate,
-// `radiusMul` shifts the resting orbital radius. Together: an asymmetric,
-// organic cluster instead of four points marching in lockstep.
-const PARTICLE_CONFIG: Array<{
-  color: string;
-  dir: 1 | -1;
-  speedMul: number;
-  radiusMul: number;
-  offset: number;
-}> = [
-  { color: PALETTE[0], dir: 1, speedMul: 0.7, radiusMul: 1.0, offset: 0.0 },
-  { color: PALETTE[1], dir: -1, speedMul: 1.05, radiusMul: 0.86, offset: Math.PI * 0.5 },
-  { color: PALETTE[2], dir: 1, speedMul: 1.45, radiusMul: 1.16, offset: Math.PI },
-  { color: PALETTE[3], dir: -1, speedMul: 0.9, radiusMul: 0.94, offset: Math.PI * 1.5 },
-];
 
 // Spark / confetti tuning. Gravity is per-frame at ~60fps; the loop scales
 // physics by dt / 16 so motion stays steady on uneven frame timing.
@@ -76,26 +41,11 @@ const CONFETTI_MAX_SPEED = 7.0;
 // so this exists only to bound canvas draw cost during frantic motion.
 const MAX_EPHEMERAL = 90;
 
-// Solid-disc sizes (no glow). The white centre dot is bigger than the
-// orbital cluster so the precise pointer position reads cleanly while
-// the four palette particles add character around it. Audio kicks
-// nudge the radii up a touch via `bloom`, so the cluster still
-// breathes with the music — just without a blur halo.
-const PARTICLE_RADIUS = 2; // 4 px diameter, matches old CSS
+// Solid-disc sizes (no glow). Audio kicks nudge the radii up a touch
+// via `bloom`, so the trail still breathes with the music — just
+// without a blur halo.
 const DOT_RADIUS = 3; // 6 px diameter, matches old CSS
 const SPARK_RADIUS = 2;
-
-interface Particle {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  slot: number;
-  dir: 1 | -1;
-  speedMul: number;
-  radiusMul: number;
-  color: string;
-}
 
 interface Ephemeral {
   x: number;
@@ -157,18 +107,6 @@ export function initCursor(): CursorHandle {
   resize();
   window.addEventListener("resize", resize, { passive: true });
 
-  const particles: Particle[] = PARTICLE_CONFIG.map((cfg) => ({
-    x: window.innerWidth / 2,
-    y: window.innerHeight / 2,
-    vx: 0,
-    vy: 0,
-    slot: cfg.offset,
-    dir: cfg.dir,
-    speedMul: cfg.speedMul,
-    radiusMul: cfg.radiusMul,
-    color: cfg.color,
-  }));
-
   const ephemerals: Ephemeral[] = [];
 
   function spawnSpark(
@@ -187,7 +125,6 @@ export function initCursor(): CursorHandle {
   let mouseY = window.innerHeight / 2;
   let lastMoveX = mouseX;
   let lastMoveY = mouseY;
-  let burst = 0;
 
   const onMove = (e: MouseEvent) => {
     mouseX = e.clientX;
@@ -212,7 +149,6 @@ export function initCursor(): CursorHandle {
   };
 
   const onDown = (e: MouseEvent) => {
-    burst = 1;
     // Confetti — a radial cloud at the click site. Each particle gets a
     // random angle and speed, plus a small upward bias so the cloud
     // arcs nicely under gravity instead of just splatting straight.
@@ -231,13 +167,6 @@ export function initCursor(): CursorHandle {
   document.addEventListener("mousemove", onMove, { passive: true });
   document.addEventListener("mousedown", onDown, { passive: true });
 
-  const proximity = (dist: number): number => {
-    if (dist <= 0) return 1;
-    if (dist >= ATTRACTOR_RANGE) return 0;
-    const f = 1 - dist / ATTRACTOR_RANGE;
-    return f * f;
-  };
-
   let cancelled = false;
   let lastT = 0;
   function tick(t: number, bloom: number) {
@@ -245,29 +174,6 @@ export function initCursor(): CursorHandle {
     const dt = lastT ? Math.min(50, t - lastT) : 16;
     lastT = t;
     const dtScale = dt / 16;
-
-    burst *= BURST_DECAY;
-    const burstScale = 1 + burst * BURST_GAIN;
-
-    const vw = window.innerWidth;
-    const stretchX = proximity(mouseY);
-    const stretchY = Math.max(proximity(mouseX), proximity(vw - mouseX));
-
-    const rX = ORBIT_RADIUS * burstScale * (1 + stretchX * ATTRACTOR_GAIN);
-    const rY = ORBIT_RADIUS * burstScale * (1 + stretchY * ATTRACTOR_GAIN);
-
-    // Spring-physics step for the orbital cluster — unchanged from the
-    // DOM implementation, only the side effect (DOM mutation → canvas
-    // draw) differs.
-    for (const p of particles) {
-      p.slot += ROTATION_SPEED * dt * p.dir * p.speedMul;
-      const targetX = mouseX + Math.cos(p.slot) * rX * p.radiusMul;
-      const targetY = mouseY + Math.sin(p.slot) * rY * p.radiusMul;
-      p.vx = (p.vx + (targetX - p.x) * SPRING_K) * DAMPING;
-      p.vy = (p.vy + (targetY - p.y) * SPRING_K) * DAMPING;
-      p.x += p.vx;
-      p.y += p.vy;
-    }
 
     // Ephemeral physics + lifetime cull. Walking backwards lets us
     // splice without index issues.
@@ -285,21 +191,13 @@ export function initCursor(): CursorHandle {
 
     // ── Render ────────────────────────────────────────────────────────
     // Solid discs only — no halos, no additive blend. Audio kicks
-    // nudge the radii (via `bloom`) so the cluster still breathes
-    // with the music without smearing out into a glow.
+    // nudge the radii (via `bloom`) so the trail still breathes with
+    // the music without smearing out into a glow.
     const w = window.innerWidth;
     const h = window.innerHeight;
     ctx.clearRect(0, 0, w, h);
 
     const sizeBoost = 1 + bloom * 0.4;
-
-    // Orbital cluster — 4 px palette dots.
-    for (const p of particles) {
-      ctx.fillStyle = p.color;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, PARTICLE_RADIUS * sizeBoost, 0, Math.PI * 2);
-      ctx.fill();
-    }
 
     // Sparks + confetti — fade and shrink by life fraction.
     for (const s of ephemerals) {
