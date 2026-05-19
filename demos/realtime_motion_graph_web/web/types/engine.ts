@@ -30,7 +30,7 @@ export const SLIDER_META: Record<string, SliderMeta> = {
   // ``set_prompt_blend`` WS message by usePromptBlendSync.
   prompt_blend: { max: 1.0, step: 0.05 },
 
-  feedback: { max: 1.0, step: 0.01, pro: true },
+  feedback: { max: 1.0, step: 0.05, pro: true },
   // Delay-tap depth for `feedback`. 1 == blend with the most recent
   // finished latent (current behavior). N>1 reaches N ticks back, so
   // feedback can produce echo / ghost effects without needing to crank
