@@ -3997,18 +3997,20 @@ body.curve-open #install-video-area #graph {
   }
 }
 .lite-controls {
-  /* Wave 13.2: LiteControls is mounted DIRECTLY on mobile (no longer
-     inside the slide-up drawer). Holds two sliders (STRUCTURE +
-     FEEDBACK — DENOISE is on the left fader rail), the track
-     carousel, and the action row (REC + All controls). */
+  /* Wave 13.3: consolidated mobile mixer — all 4 faders in one bay
+     plus a utility cluster (track + REC + All controls) next to them.
+     Anchored to the bottom-center, sized to its content, safe-area
+     aware. */
   position: fixed;
-  left: max(calc(var(--remix-rail-w, 0px) + 12px), env(safe-area-inset-left, 0px));
-  right: max(calc(var(--lora-rail-w, 56px) + 12px), env(safe-area-inset-right, 0px));
+  left: 50%;
+  transform: translateX(-50%);
   bottom: max(env(safe-area-inset-bottom, 0px) + 8px, 8px);
+  max-width: min(720px, calc(100vw - 24px));
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 8px 10px 10px;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 14px;
+  padding: 8px 12px 10px;
   background: rgba(6, 6, 12, 0.62);
   border: 1px solid var(--frame-line);
   border-radius: var(--radius-md);
@@ -4034,12 +4036,26 @@ body.curve-open #install-video-area #graph {
 }
 
 .lite-row--main {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   min-height: 0;
-  gap: 18px;
+  gap: 16px;
   justify-content: center;
-  padding: 4px 4px 6px;
+  padding: 4px 4px 4px;
+  /* Vertical alignment so the four faders share one baseline. */
+  align-items: flex-end;
 }
+
+/* Utility cluster sits to the right of the fader block. Track
+   carousel on top, REC + "All controls" on the bottom row. */
+.lite-utility {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.lite-utility .lite-track-carousel { min-width: 0; }
 .lite-row--main .slider-group {
   flex: 0 0 80px;
 }
