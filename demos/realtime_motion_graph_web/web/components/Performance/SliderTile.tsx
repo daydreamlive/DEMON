@@ -8,32 +8,23 @@ import { SliderGroup } from "./SliderGroup";
 
 interface Props {
   label: string;
-  params: { param: string; label: string; max?: number }[];
+  params: {
+    param: string;
+    label: string;
+    max?: number;
+    min?: number;
+    reverse?: boolean;
+    unity?: number;
+  }[];
 }
 
-// Display names — anchored in traditional audio vocabulary (synth /
-// multi-FX / EQ heritage) so the labels read instantly to anyone who's
-// touched a hardware unit or plugin. Where the underlying concept has
-// no clean analog (shift, noise_share), the technical label stays.
-// CSS uppercases these on render via .slider-label / .mixer-tile-label.
 const DISPLAY_NAMES: Record<string, string> = {
-  // Core (CORE tab) — the dial-it-and-go knobs.
-  denoise: "denoise",        // engine-honest; the most-touched knob keeps its native name
-  hint_strength: "structure",// "how much we follow the source's structure"
-  timbre_strength: "timbre", // universal in synthesis
-  feedback: "feedback",      // universal in delay/echo/mod — keep canonical
-  dcw_scaler: "bass",        // universal EQ
-  dcw_high_scaler: "treble",
-
-  // Mod (MOD tab) — time-variant / model-internal expert knobs.
-  ode_noise: "jitter",       // clocking / granular — stochastic variation
-  noise_share: "n.share",    // no clean analog; keep technical
-  shift: "shift",            // no clean analog; expert
-
-  // Channels (CHANNELS tab) — the model's internal latent channels.
-  ch_g0: "v1", ch_g1: "v2", ch_g2: "v3", ch_g3: "v4",
-  ch_g4: "v5", ch_g5: "v6", ch_g6: "v7", ch_g7: "v8",
-  ch13: "m1", ch14: "m2", ch19: "m3", ch23: "m4", ch29: "m5", ch56: "m6",
+  feedback_depth: "fb depth",
+  hint_strength: "structure strength",
+  dcw_scaler: "DCW low",
+  dcw_high_scaler: "DCW high",
+  guidance_scale: "CFG",
+  cfg_rescale: "CFG rescale",
 };
 
 // Tooltip copy for each tweakable param, surfaced via the slider label's
@@ -57,10 +48,6 @@ const PARAM_TOOLTIPS: Record<string, string> = {
     "How far back in time the Feedback knob reaches. 1 (default) blends with the most recent generation. Higher values reach back several ticks for an echo / ghost effect — a faint repeat of an earlier moment surfaces in the current output. Lets you get distant feedback without cranking Feedback all the way up.",
   shift:
     "Advanced: changes where the model concentrates its work across denoising. The default is tuned for the turbo engine and works well in most cases — leave it alone unless you're chasing a specific feel.",
-  noise_share:
-    "Fine-grained sibling of FEEDBACK. Where FEEDBACK is one number for the whole generation, this lets the noise-sharing vary across the timeline. Leave at 0 unless you want detailed control over how successive generations evolve.",
-  ode_noise:
-    "Adds a touch of randomness during generation. Bump it up if the model feels too deterministic — small values add subtle variation, higher values produce surprising bursts of creativity. Zero keeps generation fully predictable.",
   guidance_scale:
     "CFG strength. Only takes effect when the RCFG mode dropdown below is NOT 'off'. Higher values push the output further toward the prompt at the cost of more artifacts. Turbo is CFG-distilled, so the useful range is narrower than a base SD model — try 3–8.",
   cfg_rescale:
@@ -111,9 +98,8 @@ const KBD_FOR_PARAM: Record<string, string> = {
   hint_strength: "G + ▲▼",
   timbre_strength: "C + ▲▼",
   feedback: "E + ▲▼",
+  feedback_depth: "D + ▲▼",
   shift: "H + ▲▼",
-  noise_share: "N + ▲▼",
-  ode_noise: "D + ▲▼",
   ch_g0: "0 + ▲▼",
   ch_g1: "1 + ▲▼",
   ch_g2: "2 + ▲▼",
@@ -141,12 +127,15 @@ export function SliderTile({ label, params }: Props) {
     <div className="mixer-tile" data-tile={label.toLowerCase().replace(/ /g, "-")}>
       <div className="mixer-tile-label">{label}</div>
       <div className="mixer-channels">
-        {params.map(({ param, label: pLabel, max }) => (
+        {params.map(({ param, label: pLabel, max, min, reverse, unity }) => (
           <SliderGroup
             key={param}
             param={param}
             label={pLabel}
             max={max}
+            min={min}
+            reverse={reverse}
+            unity={unity}
             kbd={KBD_FOR_PARAM[param]}
           />
         ))}

@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from "react";
 
 import { computePeaks, drawPeaks } from "@/engine/curves/waveformPeaks";
 import { frameScheduler } from "@/engine/scheduler/FrameScheduler";
-import { useOneShotTooltip } from "@/hooks/useOneShotTooltip";
 import { useCurveStore } from "@/store/useCurveStore";
 import { useSessionStore } from "@/store/useSessionStore";
 
@@ -400,12 +399,6 @@ export function WaveformScrubBox() {
     };
   }, [hasPlayer]);
 
-  // One-shot tooltip on first hover — teach Shift+drag = loop band.
-  const tipProps = useOneShotTooltip(
-    "waveform-scrub",
-    "Click to scrub · Shift + drag to loop",
-  );
-
   // Render the DOM as soon as we have a player so the peak-compute
   // effect can find the canvases in the DOM. The strip stays visually
   // hidden (opacity 0) until the first peak-pass lands.
@@ -418,10 +411,8 @@ export function WaveformScrubBox() {
       data-curves-open={curvesOpen ? "true" : undefined}
       data-ready={hasPeaks ? "true" : undefined}
       data-has-band={bandState ? "true" : undefined}
-      data-dd-tooltip-pos="below"
       role="slider"
       aria-label="Scrub playhead"
-      {...tipProps}
     >
       <canvas ref={bgCanvasRef} className="waveform-scrub-bg" aria-hidden="true" />
       <canvas ref={fgCanvasRef} className="waveform-scrub-fg" aria-hidden="true" />

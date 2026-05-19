@@ -27,6 +27,6 @@ export const KEY_BINDINGS: KeyBinding[] = [
   { combo: "R", description: "Record / stop audio" },
   { combo: "Space", description: "Pause / resume" },
   { combo: "K", description: "Toggle kiosk mode" },
-  { combo: "O", description: "Toggle Full Controls drawer" },
-  { combo: "Esc", description: "Toggle Full Controls drawer" },
+  { combo: "O", description: "Toggle Advanced Controls drawer" },
+  { combo: "Esc", description: "Toggle Advanced Controls drawer" },
 ];

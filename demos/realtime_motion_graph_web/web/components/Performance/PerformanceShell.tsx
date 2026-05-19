@@ -40,6 +40,7 @@ import {
 } from "./MobileStepperRail";
 import { NetworkIndicator } from "./NetworkIndicator";
 import { PortraitLockOverlay } from "./PortraitLockOverlay";
+import { RecordButton } from "./RecordButton";
 import { RecordingPreview } from "./RecordingPreview";
 import { StartOverlay } from "./StartOverlay";
 import { StatusBar } from "./StatusBar";
@@ -103,6 +104,7 @@ export function PerformanceShell() {
     <>
     <div id="performance" className="screen">
       {status === "ready" && <AudioSourceCrate />}
+      <RecordButton />
 
       <StartOverlay
         onPlay={() => {

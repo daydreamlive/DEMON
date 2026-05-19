@@ -2,7 +2,6 @@
 
 import { forwardRef } from "react";
 
-import { GraphLaneLabels } from "./GraphLaneLabels";
 import { GraphPauseOverlay } from "./GraphPauseOverlay";
 import { ScheduleCurvesOverlay } from "./ScheduleCurvesOverlay";
 
@@ -59,7 +58,6 @@ export const InstallStage = forwardRef<HTMLDivElement, Props>(
           <canvas ref={refs.hudCanvas} id="hud" />
           <div id="graph-wrap">
             <canvas ref={refs.graphCanvas} id="graph" />
-            <GraphLaneLabels />
             <GraphPauseOverlay />
             <ScheduleCurvesOverlay />
           </div>

@@ -172,16 +172,6 @@ export function ScheduleCurvesOverlay() {
   const bgCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const fgCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Mirror open state to body.curve-open so chrome (graph height, hero
-  // bay layout) can react. Pairs with body.drawer-open from the Full
-  // Controls panel.
-  useEffect(() => {
-    document.body.classList.toggle("curve-open", open);
-    return () => {
-      document.body.classList.remove("curve-open");
-    };
-  }, [open]);
-
   const [presetMenu, setPresetMenu] = useState<PresetMenuState | null>(null);
 
   // Per-render snapshot of the active curve's points. We keep a ref

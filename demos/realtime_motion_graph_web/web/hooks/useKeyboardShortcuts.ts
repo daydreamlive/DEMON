@@ -73,13 +73,11 @@ export function useKeyboardShortcuts() {
 
     function bumpParam(param: string, direction: 1 | -1): void {
       const meta = SLIDER_META[param];
-      const baseStep = meta?.step ?? 0.05;
-      // Multiply by 5 for keyboard adjustments — SLIDER_META.step is now
-      // fine-grained (0.01 for hero macros after Wave 9), which gives
-      // good MIDI/display granularity but is too slow for arrow-key
-      // sweeps. Shift halves the step for fine arrow control.
-      const stepMul = HELD_KEYS.has("shift") ? 1 : 5;
-      const step = baseStep * stepMul;
+      const step = meta?.step ?? 0.05;
+      // Reverse channels flip the arrow-key direction so ArrowUp still
+      // means "drive the slider thumb UP" — which on a reverse channel
+      // corresponds to a DECREASE in the engine value. Mirrors the slider
+      // drag and MIDI knob behavior.
       const dirSign = getChannelRange(param)?.reverse ? -1 : 1;
       usePerformanceStore.getState().bumpSlider(param, direction * step * dirSign);
     }

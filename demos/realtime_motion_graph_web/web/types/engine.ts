@@ -17,8 +17,8 @@ export interface SliderMeta {
 /** Standard non-LoRA sliders. LoRA sliders (`lora_str_<id>`) get added at
  * runtime when the catalog arrives — they aren't listed here. */
 export const SLIDER_META: Record<string, SliderMeta> = {
-  denoise: { max: 1.0, step: 0.05 },
-  hint_strength: { max: 1.0, step: 0.05 },
+  denoise: { max: 1.0, step: 0.1 },
+  hint_strength: { max: 1.0, step: 0.1 },
   timbre_strength: { max: 1.0, step: 0.05 },
   // 0 = LoRA A only, 1 = LoRA B only, 0.5 = both at half-max. UI-only knob —
   // useEdgeLoraBinding watches this and writes the paired lora_str_<id> values.
@@ -30,7 +30,7 @@ export const SLIDER_META: Record<string, SliderMeta> = {
   // ``set_prompt_blend`` WS message by usePromptBlendSync.
   prompt_blend: { max: 1.0, step: 0.05 },
 
-  feedback: { max: 1.0, step: 0.01, pro: true },
+  feedback: { max: 1.0, step: 0.1, pro: true },
   // Delay-tap depth for `feedback`. 1 == blend with the most recent
   // finished latent (current behavior). N>1 reaches N ticks back, so
   // feedback can produce echo / ghost effects without needing to crank
