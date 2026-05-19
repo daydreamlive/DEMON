@@ -163,6 +163,7 @@ export function Knob({ param, label, max, min, reverse, unity, kbd }: Props) {
     let pendingClientY = 0;
     let rafId = 0;
     let lastDownAt = 0;
+    let prevBodyCursor = "";
 
     const commit = (clientY: number) => {
       const dy = startClientY - clientY;
@@ -186,11 +187,18 @@ export function Knob({ param, label, max, min, reverse, unity, kbd }: Props) {
 
     const onDocPointerUp = () => {
       if (!dragging) return;
-      dragging = false;
+      // Cancel any rAF in flight, then do a final synchronous commit so
+      // the last frame of motion before release isn't dropped. Without
+      // this the value could land ~1 frame stale relative to where the
+      // cursor actually was at release time — looks like the knob
+      // "jumps" when the user lets go.
       if (rafId) {
         cancelAnimationFrame(rafId);
         rafId = 0;
       }
+      commit(pendingClientY);
+      dragging = false;
+      document.body.style.cursor = prevBodyCursor;
       document.removeEventListener("pointermove", onDocPointerMove);
       document.removeEventListener("pointerup", onDocPointerUp);
       document.removeEventListener("pointercancel", onDocPointerUp);
@@ -208,11 +216,22 @@ export function Knob({ param, label, max, min, reverse, unity, kbd }: Props) {
       lastDownAt = now;
       dragging = true;
       startClientY = e.clientY;
+      // Seed pendingClientY so a release without any pointermove (a
+      // quick tap) commits the same value the drag started with —
+      // otherwise the final commit on pointerup would read the stale
+      // 0 initializer and snap the slider to its bottom.
+      pendingClientY = e.clientY;
       startT = valueToT(
         usePerformanceStore.getState().sliderTargets[param] ?? 0,
         mapping,
       );
       fine = e.shiftKey;
+      // Keep the cursor in ns-resize the whole drag so it doesn't
+      // visually wander off the knob — without this the cursor reverts
+      // to the underlying element's cursor (often default) whenever it
+      // crosses panel chrome, which felt like a jump on release.
+      prevBodyCursor = document.body.style.cursor;
+      document.body.style.cursor = "ns-resize";
       // Document-level listeners ride along until pointerup. Avoids
       // setPointerCapture which silently fails on a few combinations
       // (transformed ancestors + element pickup mid-drag), which was
@@ -247,6 +266,8 @@ export function Knob({ param, label, max, min, reverse, unity, kbd }: Props) {
       document.removeEventListener("pointerup", onDocPointerUp);
       document.removeEventListener("pointercancel", onDocPointerUp);
       if (rafId) cancelAnimationFrame(rafId);
+      // If we tore down mid-drag (HMR, unmount), restore the cursor.
+      if (dragging) document.body.style.cursor = prevBodyCursor;
     };
   }, [param, mapping, setSlider]);
 
