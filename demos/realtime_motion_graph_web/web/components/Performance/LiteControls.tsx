@@ -109,8 +109,10 @@ export function LiteControls({ onOpenAllControls, unsavedDot }: Props) {
             type="button"
             className="lite-all-controls"
             onClick={onOpenAllControls}
+            aria-label="All controls"
+            data-dd-tooltip="All controls"
+            data-dd-tooltip-pos="below"
           >
-            All controls
             {unsavedDot && (
               <span
                 className="lite-all-controls-dot"

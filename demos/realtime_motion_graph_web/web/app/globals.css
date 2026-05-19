@@ -4162,13 +4162,24 @@ body.curve-open #install-video-area #graph {
 .lite-row--main {
   gap: 6px;
 }
-/* Lite-controls "All controls" button — compact on portrait widths. */
+/* Lite-controls "All controls" — icon-only on mobile. The label was
+   eating significant horizontal real estate next to 4 faders; an
+   arrow-only chip with a tooltip stays discoverable. */
 .lite-tab-section .lite-all-controls {
-  font-size: 9.5px;
-  letter-spacing: 0.04em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   padding: 6px 10px;
-  white-space: nowrap;
+  min-width: 36px;
+  height: 36px;
   flex-shrink: 0;
+  font-size: 14px;
+  line-height: 1;
+}
+.lite-tab-section .lite-all-controls .lite-all-controls-arrow {
+  font-size: 16px;
+  line-height: 1;
 }
 
 .lite-seed-btn {
@@ -7050,6 +7061,11 @@ body.curve-open #install-video-area #graph {
   /* SavePill is desktop-only; mobile uses the unsaved-dot on the
      LiteControls "All controls" button instead. */
   .save-pill { display: none; }
+  /* FooterLinks (VST Waitlist + Feedback) live in the HaloBadge
+     hamburger menu on mobile — "Get VST" + "Bugs and feedback" entries
+     are already there. No need to also surface them as pills in the
+     top-right (they were crowding the topnav band on phones). */
+  .footer-links { display: none; }
 }
 @media (max-width: 768px) {
   /* Graph lane labels (right-edge param ribbons) overflow the narrow
