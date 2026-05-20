@@ -48,7 +48,6 @@ import { PortraitLockOverlay } from "./PortraitLockOverlay";
 import { RecordingPreview } from "./RecordingPreview";
 import { StartOverlay } from "./StartOverlay";
 import { StatusBar } from "./StatusBar";
-import { StemOverlayPanel } from "./StemOverlayPanel";
 import { WaveformScrubBox } from "./WaveformScrubBox";
 
 // Demo shell — wires the package's hooks + components into a working app.
@@ -111,11 +110,12 @@ export function PerformanceShell() {
     <>
     <div id="performance" className="screen">
       {status === "ready" && <AudioSourceCrate />}
-      {status === "ready" && <StemOverlayPanel />}
       {/* Permanent 3-knob row above the drawer handle — performance
           palette (DENOISE / STRUCTURE / FEEDBACK / SEED). The component
           handles its own visibility internally; mount it unconditionally
-          and let it decide. */}
+          and let it decide. Stem overlay faders are mounted inline
+          inside HeroMacros (next to the LoRA strength faders) when the
+          active track has stems. */}
       <HeroMacros />
       {/* Top-right CTA pair (VST waitlist + Feedback), both Tally
           in-page modals. Self-positioning chrome — no host wiring. */}

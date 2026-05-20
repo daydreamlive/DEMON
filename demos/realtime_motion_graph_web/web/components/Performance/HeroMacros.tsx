@@ -2,9 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import type { StemOverlayKind } from "@/engine/audio/loadFixture";
 import { LORA_SLOT_MARKER } from "@/engine/midi/types";
 import { useLoraFaderDrag } from "@/hooks/useLoraFaderDrag";
+import { useStemPannerDrag } from "@/hooks/useStemPannerDrag";
 import { useCurveStore } from "@/store/useCurveStore";
+import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import {
@@ -13,6 +16,7 @@ import {
   useRecordingStore,
 } from "@/store/useRecordingStore";
 import { useSessionStore } from "@/store/useSessionStore";
+import { useStemOverlayStore } from "@/store/useStemOverlayStore";
 import { LORA_SLIDER_MAX } from "@/types/engine";
 
 import { Knob } from "./Knob";
@@ -156,12 +160,120 @@ function HeroStyleFader({ slotIndex }: HeroStyleFaderProps) {
   );
 }
 
+const STEM_OVERLAY_MAX = 1.5;
+const STEM_LABELS: Record<StemOverlayKind, string> = {
+  vocals: "Vocals",
+  instruments: "Instr",
+};
+// Keyboard hold-chord shortcuts (V/I + ▲▼) still work via
+// useKeyboardShortcuts.ts — they're documented in the section-header
+// tooltip below rather than under each panner.
+const STEM_SECTION_TOOLTIP =
+  "Vocal and instrumental stems extracted from the source track. Drag a panner right to mix that layer into the model output. Click the layer name to mute or unmute without losing the level. Hold V (vocals) or I (instruments) + ▲▼ to nudge from the keyboard.";
+
+interface HeroStemPannerProps {
+  kind: StemOverlayKind;
+}
+function HeroStemPanner({ kind }: HeroStemPannerProps) {
+  const fixture = usePerformanceStore((s) => s.fixture);
+  const stems = useCustomTracksStore((s) =>
+    fixture ? s.tracks.get(fixture)?.stems : undefined,
+  );
+  const enabled = useStemOverlayStore((s) => s.enabled[kind]);
+  const volume = useStemOverlayStore((s) => s.volumes[kind]);
+  const toggle = useStemOverlayStore((s) => s.toggle);
+  const stemsReady = Boolean(stems);
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  useStemPannerDrag(trackRef, kind, stemsReady);
+  const displayValue = enabled ? volume : 0;
+  const fraction =
+    STEM_OVERLAY_MAX > 0
+      ? Math.max(0, Math.min(1, displayValue / STEM_OVERLAY_MAX))
+      : 0;
+  const label = STEM_LABELS[kind];
+  return (
+    <div
+      className={`hero-stem-panner${stemsReady ? "" : " hero-stem-panner--empty"}`}
+      data-param={stemsReady ? `stem_${kind}` : undefined}
+    >
+      {/* Click the label to mute / unmute without losing the level —
+          mirrors the original StemOverlayPanel toggle. The drag still
+          sets enabled = volume > 0, so the two interactions cooperate.
+          Tiny non-wide tooltip — uses the CSS pseudo since the rich
+          two-tone HeroMacrosTooltip is reserved for the section
+          header above. */}
+      <button
+        type="button"
+        className="hero-stem-panner-label"
+        onClick={() => {
+          if (stemsReady) toggle(kind);
+        }}
+        disabled={!stemsReady}
+        aria-pressed={enabled}
+        data-dd-tooltip={enabled ? "Click to mute layer" : "Click to unmute layer"}
+      >
+        {label}
+      </button>
+      <div
+        ref={trackRef}
+        className="hero-stem-panner-track"
+        role="slider"
+        aria-label={`${label} overlay volume`}
+        aria-orientation="horizontal"
+        aria-valuemin={0}
+        aria-valuemax={STEM_OVERLAY_MAX}
+        aria-valuenow={displayValue}
+      >
+        <div
+          className="hero-stem-panner-fill"
+          style={{ width: `${fraction * 100}%` }}
+        />
+        <div
+          className="hero-stem-panner-cap"
+          style={{ left: `${fraction * 100}%` }}
+        />
+      </div>
+      <span className="hero-stem-panner-value">{displayValue.toFixed(2)}</span>
+    </div>
+  );
+}
+
 export function HeroMacros() {
   const status = useSessionStore((s) => s.status);
   const started = status !== "idle";
   const curveOpen = useCurveStore((s) => s.overlayOpen);
   const toggleCurve = useCurveStore((s) => s.toggleOverlay);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  // Stem section is only visible when the active track was uploaded
+  // with a non-"full" sourceMode — i.e. the user opted into stem
+  // separation. For "full" mode the backend produces no stems, so
+  // the faders would never become live.
+  const fixture = usePerformanceStore((s) => s.fixture);
+  const sourceMode = useCustomTracksStore((s) =>
+    fixture ? s.tracks.get(fixture)?.sourceMode : undefined,
+  );
+  const stemStatus = useCustomTracksStore((s) =>
+    fixture ? s.tracks.get(fixture)?.stemStatus : undefined,
+  );
+  const stemError = useCustomTracksStore((s) =>
+    fixture ? s.tracks.get(fixture)?.stemError : undefined,
+  );
+  const stemsReady = useCustomTracksStore((s) =>
+    Boolean(fixture && s.tracks.get(fixture)?.stems),
+  );
+  const showStems = !!sourceMode && sourceMode !== "full";
+  // Mirrors the status copy from the original StemOverlayPanel — sits
+  // italicised just under the section header so the operator sees what
+  // the pipeline is doing while the panners are still inert.
+  const stemSummary = !showStems
+    ? null
+    : stemStatus === "processing"
+      ? "Ripping stems…"
+      : stemStatus === "failed"
+        ? stemError || "Stem rip failed"
+        : stemsReady
+          ? `Inference source: ${sourceMode}`
+          : "Stems will load on play";
 
   // Clear the per-song remix gate when the user moves the bay's
   // DENOISE knob above zero. Mirrors MobileRemixStepper's behavior so
@@ -207,9 +319,38 @@ export function HeroMacros() {
       </div>
       <div className="hero-macros-divider" aria-hidden="true" />
       <div className="hero-macros-styles">
-        <HeroStyleFader slotIndex={0} />
-        <HeroStyleFader slotIndex={1} />
+        <div className="hero-macros-group-row">
+          <HeroStyleFader slotIndex={0} />
+          <HeroStyleFader slotIndex={1} />
+        </div>
       </div>
+      {showStems && (
+        <>
+          <div className="hero-macros-divider" aria-hidden="true" />
+          <div className="hero-macros-stems">
+            <div
+              className="hero-macros-group-label"
+              data-dd-tooltip={STEM_SECTION_TOOLTIP}
+              data-dd-tooltip-wide=""
+              data-dd-tooltip-title="Stem Layers"
+            >
+              Stem Layers
+            </div>
+            {stemSummary && (
+              <div
+                className="hero-macros-group-status"
+                title={stemError || undefined}
+              >
+                {stemSummary}
+              </div>
+            )}
+            <div className="hero-stem-panners">
+              <HeroStemPanner kind="vocals" />
+              <HeroStemPanner kind="instruments" />
+            </div>
+          </div>
+        </>
+      )}
       <div className="hero-macros-divider" aria-hidden="true" />
       <div className="hero-macros-tools">
         <RecordPill />
@@ -220,7 +361,9 @@ export function HeroMacros() {
           aria-pressed={curveOpen}
           aria-label="Toggle curve editor"
           data-midi-learn="schedule_curves_toggle"
-          data-dd-tooltip="Open the curve scheduler — draw param automation against the track (right-click to MIDI-learn)"
+          data-dd-tooltip="Draw param automation curves against the track timeline. Curves drive denoise / structure / timbre / LoRA strengths / etc. over time so the model performs an arrangement instead of a static patch. Right-click to MIDI-learn."
+          data-dd-tooltip-wide=""
+          data-dd-tooltip-title="Curve Editor"
         >
           <CurveIcon />
           <span className="hero-macros-tool-label">Curve Editor</span>

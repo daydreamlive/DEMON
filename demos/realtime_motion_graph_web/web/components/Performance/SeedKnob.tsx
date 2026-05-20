@@ -73,14 +73,21 @@ export function SeedKnob() {
   const pips = PIPS_BY_FACE[face];
 
   return (
-    <div className="knob-group seed-knob-group">
+    <div
+      className="knob-group seed-knob-group"
+      // Tooltip trio on the wrapper — matches Knob.tsx so the
+      // HeroMacrosTooltip portal picks up the whole knob-group
+      // (label + body + value + kbd) instead of just the SVG button.
+      data-dd-tooltip="Randomize the generation seed for a fresh take on the same source. Same seed + same source → reproducible output. Double-click the value to type a specific seed. Right-click to MIDI-learn."
+      data-dd-tooltip-wide=""
+      data-dd-tooltip-title="Seed"
+    >
       <div className="knob-label">Seed</div>
       <button
         type="button"
         className="knob-body seed-knob-body"
         onClick={onClick}
         data-midi-learn="seed"
-        data-dd-tooltip="Randomize seed (right-click to MIDI-learn)"
         aria-label="Randomize seed"
       >
         <svg

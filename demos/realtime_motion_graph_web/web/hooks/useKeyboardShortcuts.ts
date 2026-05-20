@@ -2,12 +2,14 @@
 
 import { useEffect } from "react";
 
+import type { StemOverlayKind } from "@/engine/audio/loadFixture";
 import { togglePauseAndAudio } from "@/engine/audio/togglePauseAndAudio";
 import { loraStrengthDispatcher } from "@/engine/lora/dispatcher";
 import { getChannelRange } from "@/lib/config";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
+import { useStemOverlayStore } from "@/store/useStemOverlayStore";
 import {
   DCW_MODES,
   DCW_WAVELETS,
@@ -26,6 +28,8 @@ import {
 //   B + ▲▼      prompt blend
 //   Z + ▲▼      hero-bay LoRA strength — first enabled slot
 //   X + ▲▼      hero-bay LoRA strength — second enabled slot
+//   V + ▲▼      hero-bay stem overlay — vocals
+//   I + ▲▼      hero-bay stem overlay — instruments
 //   E/D/H + ▲▼  feedback / feedback depth / shift (engine)
 //   W/Y + ▲▼    DCW low / DCW high
 //   T            toggle DCW on/off
@@ -100,6 +104,25 @@ export function useKeyboardShortcuts() {
       // smoothing (when enabled), clamping via SLIDER_META, and graph
       // sampling for free.
       usePerformanceStore.getState().bumpSlider("prompt_blend", direction * 0.05);
+    }
+
+    function bumpStemOverlay(kind: StemOverlayKind, direction: 1 | -1): void {
+      // Hero-bay stem faders use the same chord cadence as the LoRA
+      // faders. Writes through useStemOverlayStore so useStemOverlaySync
+      // forwards the new volume into AudioPlayer on the next render.
+      // Sliding to zero also clears `enabled` — matches the pointer-drag
+      // behavior in useStemFaderDrag.
+      const STEM_MAX = 1.5;
+      const STEM_STEP = 0.05;
+      const store = useStemOverlayStore.getState();
+      const current = store.volumes[kind] ?? 0;
+      const stepMul = HELD_KEYS.has("shift") ? 0.5 : 1;
+      const next = Math.max(
+        0,
+        Math.min(STEM_MAX, current + direction * STEM_STEP * stepMul),
+      );
+      store.setVolume(kind, next);
+      store.setEnabled(kind, next > 0);
     }
 
     function bumpHeroLora(slotIndex: 0 | 1, direction: 1 | -1): void {
@@ -204,6 +227,16 @@ export function useKeyboardShortcuts() {
         if (HELD_KEYS.has("x")) {
           e.preventDefault();
           bumpHeroLora(1, dir);
+          return;
+        }
+        if (HELD_KEYS.has("v")) {
+          e.preventDefault();
+          bumpStemOverlay("vocals", dir);
+          return;
+        }
+        if (HELD_KEYS.has("i")) {
+          e.preventDefault();
+          bumpStemOverlay("instruments", dir);
           return;
         }
 

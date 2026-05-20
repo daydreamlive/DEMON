@@ -146,6 +146,11 @@ export function AlmostReadyDialog({
         </div>
 
         <div className="almost-ready-body">
+          <p className="almost-ready-disclaimer">
+            This is new tech and has some limitations. For the best
+            results, choose songs without key or tempo changes.
+          </p>
+
           <p className="almost-ready-filename" title={fileName}>
             {fileName}
           </p>
@@ -317,14 +322,6 @@ export function AlmostReadyDialog({
               </select>
             )}
           </fieldset>
-
-          <p className="almost-ready-disclaimer">
-            This is new tech and has some limitations. For the best
-            results, choose songs without key or tempo changes. Vocal
-            output is often distorted, though this is an area of
-            active research and we expect improvements in the near
-            future.
-          </p>
         </div>
 
         <div className="almost-ready-footer">
