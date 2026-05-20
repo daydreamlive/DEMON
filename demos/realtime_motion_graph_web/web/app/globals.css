@@ -1833,6 +1833,27 @@ body.drawer-open {
   .install-sheet.open { transform: translateY(0); }
 }
 
+/* Spread mode — widen the panel so all six tab bodies fit as a
+   responsive grid (see .mixer-rack--spread below). The closed-state
+   transform (`-100% - hud + 8`) automatically preserves the 32px peek
+   regardless of width, so opening still slides cleanly to translateX(0). */
+.install-sheet--spread {
+  width: min(1400px, calc(100vw - 2 * (var(--hud-thickness) + 24px)));
+  /* Reclaim vertical real estate: the default `bottom` reserves 112px
+     for HeroMacros visibility, but in spread mode we want every pixel
+     to land in the grid — the user closes the drawer when they want
+     HeroMacros back. */
+  bottom: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-bottom, 0px));
+}
+/* The persistent help readout adds 88–28vh at the bottom of every
+   drawer body. In spread mode the user is scanning the full control
+   surface, not reading hover-help; suppress it so the grid claims
+   that vertical space instead. */
+.install-sheet--spread .drawer-help-bar { display: none; }
+@media (max-width: 768px) {
+  .install-sheet--spread { width: auto; }
+}
+
 /* Edge handle on the right of the panel — visible peek-strip when the
    panel is closed so the user reads it as a drawer affordance, not a
    cutoff bug. Sits inside the panel's bounding box so the panel's
@@ -1868,6 +1889,43 @@ body.drawer-open {
 }
 @media (max-width: 768px) {
   .install-sheet-edge-handle { display: none; }
+}
+
+/* Tiny square toggle pinned to the bottom of the edge handle. Switches
+   the drawer between tabbed and spread (all-controls) layouts. Sits
+   inside the 32px handle column so it reads as part of the handle, not
+   a floating chip. Only shown when the drawer is open. */
+.install-sheet-spread-toggle {
+  position: absolute;
+  right: 5px;
+  bottom: 8px;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid var(--frame-line);
+  border-radius: 3px;
+  color: var(--text-dim);
+  cursor: pointer;
+  -webkit-appearance: none;
+          appearance: none;
+  transition: color 140ms ease-out, background 140ms ease-out, border-color 140ms ease-out;
+  z-index: 3;
+}
+.install-sheet-spread-toggle:hover {
+  color: var(--text-strong);
+  background: rgba(20, 20, 30, 0.9);
+  border-color: var(--accent-line);
+}
+.install-sheet-spread-toggle[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: var(--accent-line);
+}
+@media (max-width: 768px) {
+  .install-sheet-spread-toggle { display: none; }
 }
 
 /* When the panel is open, the body content takes the full width so
@@ -2298,6 +2356,79 @@ body.drawer-open .hud-help-readout {
   /* OperatorStrip lives inside the CONFIG tab now; let it fill. */
   flex: 1 1 auto;
   width: 100%;
+}
+
+/* ── Spread (all-controls) layout ─────────────────────────────────
+   All six tab bodies live on screen at once. Fixed 3×2 grid that
+   fills the panel's available height; each section scrolls
+   internally if its content is taller than its cell, so the outer
+   surface never scrolls. Same tile/knob internals as tabbed mode —
+   only the container changes. */
+.mixer-rack--spread {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  /* Voice gets the extra width because 14 channel faders don't fit in
+     a 1/3 column; everything else slots into a single cell. Saved is
+     dropped from spread mode (see AdvancedDrawer.tsx). */
+  grid-template-areas:
+    "core   styles  mod"
+    "voice  voice   config";
+  align-items: stretch;
+  gap: 8px;
+  /* Override the base .mixer-rack overflow-y: auto — outer scroll is
+     the thing we're trying to avoid here. */
+  overflow: hidden;
+  min-height: 0;
+}
+.spread-section[data-section="core"]   { grid-area: core; }
+.spread-section[data-section="styles"] { grid-area: styles; }
+.spread-section[data-section="mod"]    { grid-area: mod; }
+.spread-section[data-section="voice"]  { grid-area: voice; }
+.spread-section[data-section="config"] { grid-area: config; }
+.spread-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  min-height: 0;
+  padding: 6px 8px 8px;
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.18);
+  /* Internal scroll if the section's tile is taller than the cell. */
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* Subtle scrollbar so individual sections that DO need to scroll
+     don't shout. Matches the LoRA library tile's scrollbar treatment. */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
+.spread-section::-webkit-scrollbar { width: 6px; }
+.spread-section::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2); border-radius: 3px;
+}
+.spread-section-label {
+  margin: 0;
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--frame-line);
+}
+/* Compact tile/knob padding inside spread cells — the cells are
+   smaller than a full tabbed body, so the same defaults waste pixels
+   on chrome. */
+.spread-section .mixer-tile,
+.spread-section .knob-tile {
+  border: none;
+  background: transparent;
+  padding: 4px 2px 2px;
+  gap: 4px;
 }
 
 /* ── Knob tile ──────────────────────────────────────────────────────

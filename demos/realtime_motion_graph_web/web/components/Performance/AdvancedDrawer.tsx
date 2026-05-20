@@ -48,6 +48,9 @@ export function AdvancedDrawer({ savedTab, unsavedDot }: Props = {}) {
   const [open, setOpen] = useState(false);
   const [allOpen, setAllOpen] = useState(false);
   const [activeTab, setActiveTab] = useDrawerTab("core");
+  // Spread is an open-only mode: closing the drawer always resets it
+  // (see effect below). No persistence — the next open starts tabbed.
+  const [spread, setSpread] = useState(false);
   const isMobile = useIsMobile();
   const status = useSessionStore((s) => s.status);
   const showKbdHints = usePerformanceStore((s) => s.showKbdHints);
@@ -83,6 +86,15 @@ export function AdvancedDrawer({ savedTab, unsavedDot }: Props = {}) {
     }
   }, [overlayOpen]);
 
+  // Spread mode is an open-drawer-only mode — closing the drawer
+  // turns it off, so the next time the drawer opens it comes back in
+  // the default tabbed view. localStorage persistence on the toggle
+  // button itself is separate (controlled by setSpread); this effect
+  // only clears the live state when the drawer is dismissed.
+  useEffect(() => {
+    if (!open) setSpread(false);
+  }, [open]);
+
   // Mirror desktop open state to body.drawer-open so other chrome
   // (graph stage shrink, hero bay style adjustments) can react.
   useEffect(() => {
@@ -116,7 +128,7 @@ export function AdvancedDrawer({ savedTab, unsavedDot }: Props = {}) {
   return (
     <aside
       id="install-sheet"
-      className={`install-sheet${open ? " open" : ""}`}
+      className={`install-sheet${open ? " open" : ""}${spread ? " install-sheet--spread" : ""}`}
       aria-hidden={!open}
     >
       <button
@@ -131,21 +143,74 @@ export function AdvancedDrawer({ savedTab, unsavedDot }: Props = {}) {
           {open ? "◂" : "▸"}
         </span>
       </button>
-      <div className="install-sheet-body">
-        <div className="install-sheet-topbar">
-          <DrawerTabs active={activeTab} onChange={setActiveTab} />
-        </div>
-        <div
-          className={`mixer-rack mixer-rack--tabbed${!showKbdHints ? " mixer-rack--no-kbd-hints" : ""}`}
-          id="mixer-tiles"
-          data-active-tab={activeTab}
+      {open && (
+        <button
+          type="button"
+          className="install-sheet-spread-toggle"
+          onClick={() => setSpread((v) => !v)}
+          aria-label={spread ? "Tabbed view" : "Spread view (all controls)"}
+          aria-pressed={spread}
+          title={spread ? "Tabbed view" : "Spread view"}
         >
-          {renderTabBody(activeTab, savedTab)}
+          <svg
+            viewBox="0 0 16 16"
+            width={11}
+            height={11}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.4}
+            aria-hidden="true"
+          >
+            <rect x="2" y="2" width="5" height="5" rx="0.6" />
+            <rect x="9" y="2" width="5" height="5" rx="0.6" />
+            <rect x="2" y="9" width="5" height="5" rx="0.6" />
+            <rect x="9" y="9" width="5" height="5" rx="0.6" />
+          </svg>
+        </button>
+      )}
+      <div className="install-sheet-body">
+        {!spread && (
+          <div className="install-sheet-topbar">
+            <DrawerTabs active={activeTab} onChange={setActiveTab} />
+          </div>
+        )}
+        <div
+          className={`mixer-rack ${spread ? "mixer-rack--spread" : "mixer-rack--tabbed"}${!showKbdHints ? " mixer-rack--no-kbd-hints" : ""}`}
+          id="mixer-tiles"
+          data-active-tab={spread ? "all" : activeTab}
+        >
+          {spread ? renderAllSections(savedTab) : renderTabBody(activeTab, savedTab)}
         </div>
         <DrawerHelpBar />
       </div>
     </aside>
   );
+}
+
+// Spread view — render every tab body in sequence with a small section
+// header above each. Used when the user toggles spread mode from the
+// drawer handle. The rack becomes a CSS grid (see globals.css) so the
+// sections lay out as auto-fitting columns and most controls are
+// visible without paging.
+// Saved sessions are omitted from spread mode on purpose — it's a
+// history surface, not a control surface, and dropping it lets the
+// five real control sections fit in a 3×2 grid with Voice spanning
+// two columns (14 channel faders don't fit in a 1/3 column).
+const SPREAD_SECTIONS: Array<{ id: DrawerTab; label: string }> = [
+  { id: "core", label: "Core" },
+  { id: "styles", label: "Styles" },
+  { id: "mod", label: "Mod" },
+  { id: "voice", label: "Channels" },
+  { id: "config", label: "Config" },
+];
+
+function renderAllSections(savedTab?: ReactNode) {
+  return SPREAD_SECTIONS.map((s) => (
+    <section key={s.id} className="spread-section" data-section={s.id}>
+      <h3 className="spread-section-label">{s.label}</h3>
+      {renderTabBody(s.id, savedTab)}
+    </section>
+  ));
 }
 
 // Tab body switch — kept as a plain function (not a component) because
