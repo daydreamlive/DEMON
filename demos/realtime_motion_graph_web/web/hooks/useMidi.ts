@@ -234,12 +234,17 @@ export function useMidi() {
       });
 
     // Right-click → MIDI learn. Targets:
-    //   .slider-group[data-param=...] → CC
-    //   #blend-control[data-param=...] → CC (Tags A↔B blend slider,
+    //   .slider-group[data-param=...]      → CC (vertical faders)
+    //   .knob-group[data-param=...]        → CC (rotary knobs — Knob.tsx)
+    //   .hero-style-fader[data-param=...]  → CC (bottom-bay LoRA strength
+    //                                       faders in HeroMacros — set to
+    //                                       `lora_slot_<0|1>` so the
+    //                                       binding survives LoRA swaps)
+    //   #blend-control[data-param=...]     → CC (Tags A↔B blend slider,
     //                                       intentionally NOT a
     //                                       slider-group — keeps the
     //                                       horizontal rail styling)
-    //   [data-midi-learn=...]         → note (transport buttons, send-prompt, etc.)
+    //   [data-midi-learn=...]              → note (transport buttons, send-prompt, etc.)
     //
     // LoRA rows used to have a `.lora-row[data-param=...]` branch here.
     // It's gone — LibraryTile now owns its own right-click via a
@@ -253,6 +258,20 @@ export function useMidi() {
       if (slider?.dataset.param) {
         e.preventDefault();
         useMidiStore.getState().startLearn("cc", slider.dataset.param, slider);
+        return;
+      }
+      const knob = target.closest<HTMLElement>(".knob-group");
+      if (knob?.dataset.param) {
+        e.preventDefault();
+        useMidiStore.getState().startLearn("cc", knob.dataset.param, knob);
+        return;
+      }
+      const heroFader = target.closest<HTMLElement>(".hero-style-fader");
+      if (heroFader?.dataset.param) {
+        e.preventDefault();
+        useMidiStore
+          .getState()
+          .startLearn("cc", heroFader.dataset.param, heroFader);
         return;
       }
       const blendEl = target.closest<HTMLElement>("#blend-control");

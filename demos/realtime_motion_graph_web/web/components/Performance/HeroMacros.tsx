@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { LORA_SLOT_MARKER } from "@/engine/midi/types";
 import { useLoraFaderDrag } from "@/hooks/useLoraFaderDrag";
 import { useCurveStore } from "@/store/useCurveStore";
 import { useLoraStore } from "@/store/useLoraStore";
@@ -117,7 +118,17 @@ function HeroStyleFader({ slotIndex }: HeroStyleFaderProps) {
     ? `${slotIndex === 0 ? "Z" : "X"} + ▲▼`
     : null;
   return (
-    <div className={`hero-style-fader${isEmpty ? " hero-style-fader--empty" : ""}`}>
+    <div
+      className={`hero-style-fader${isEmpty ? " hero-style-fader--empty" : ""}`}
+      // Right-click → MIDI-learn. Use the slot marker (lora_slot_0 /
+      // lora_slot_1) rather than the concrete `lora_str_<id>` so a CC
+      // binding survives swapping the LoRA in this slot — matches the
+      // default keymap (CC71→lora_slot_0, CC72→lora_slot_1) and the
+      // resolveCcParam slot-marker branch in useMidi.ts. Empty slots
+      // omit the attribute so right-clicking an unloaded fader is a
+      // no-op rather than arming a binding that resolves to null.
+      data-param={isEmpty ? undefined : LORA_SLOT_MARKER[slotIndex]}
+    >
       <div className="hero-style-fader-label" title={displayLabel}>
         {displayLabel}
       </div>
