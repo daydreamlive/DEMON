@@ -419,6 +419,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    # Idempotent; safe if another entrypoint already configured loguru.
+    from acestep.engine.obs import configure as _configure_logging
+    _configure_logging()
+
     parser = argparse.ArgumentParser(description="ACE-Step Session Server")
     parser.add_argument("--port", type=int, default=8731)
     parser.add_argument("--host", default="127.0.0.1")

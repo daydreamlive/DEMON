@@ -29,6 +29,7 @@ from websockets.http11 import Response
 from websockets.datastructures import Headers
 from websockets.sync.server import serve as ws_serve
 
+from acestep.engine.obs import configure as configure_logging, logger
 from acestep.fixtures import KNOWN_FIXTURES, audio_fixture
 
 # The generative backend is imported lazily inside main(): in --no-backend
@@ -91,8 +92,10 @@ def _resolve_video(name: str) -> Path | None:
 
 
 def _log_http(remote: str, status: int, method: str, url: str):
-    sys.stdout.write(f"[HTTP] {remote} {method} {url} -> {status}\n")
-    sys.stdout.flush()
+    logger.bind(component="http").info(
+        "http_request remote={} method={} url={} status={}",
+        remote, method, url, status,
+    )
 
 
 def _process_request(connection, request):
@@ -194,8 +197,9 @@ def _process_request(connection, request):
                 })
         except Exception as e:
             entries = []
-            sys.stdout.write(f"[HTTP] /api/loras error: {e}\n")
-            sys.stdout.flush()
+            logger.bind(component="http").exception(
+                "loras_listing_failed error={}", e,
+            )
         # ``dir`` stays as the primary library root for back-compat
         # (existing clients display it as "LoRA directory").
         # ``extra_dirs`` surfaces extra LoRA dirs from acestep.local.json
@@ -360,6 +364,11 @@ def _stub_handle_client(ws):
 
 
 def main():
+    # Wire logging FIRST so even the CLI-arg validation prints flow through
+    # the configured sinks. configure() is idempotent so a duplicate call
+    # in any nested entry point is a no-op.
+    configure_logging()
+
     host = "0.0.0.0"
     port = 1318  # single port: serves both HTTP and WebSocket
     # Control bus: a tiny HTTP server the demo's onboard MCP server hits
@@ -445,7 +454,9 @@ def main():
 
     if no_backend:
         ws_handler = _stub_handle_client
-        print("[Server] --no-backend: GPU/model imports skipped, WS upgrades will close immediately")
+        logger.info(
+            "ui_only_mode skipped=gpu_and_model_imports",
+        )
     else:
         # Defer the heavy import until we know we need it. Pulling this in
         # loads torch + acestep + TRT machinery; in --no-backend we never
@@ -486,16 +497,17 @@ def main():
         from . import control_http
         try:
             control_http.start_control_server(control_host, control_port)
-            print(
-                f"[Server] MCP control bus on http://{control_host}:{control_port}",
+            logger.info(
+                "control_bus_listening host={} port={}",
+                control_host, control_port,
             )
         except OSError as exc:
-            print(
-                f"[Server] WARNING: control bus failed to bind "
-                f"{control_host}:{control_port}: {exc}",
+            logger.warning(
+                "control_bus_bind_failed host={} port={} error={}",
+                control_host, control_port, exc,
             )
 
-    print(f"[Server] Starting HTTP+WS on :{port}")
+    logger.info("server_starting port={}", port)
     srv = ws_serve(
         ws_handler,
         host,
@@ -522,6 +534,9 @@ def main():
     else:
         accel_str = f"accel=decoder:{decoder_accel}+vae:{vae_accel}"
     mode = "UI-ONLY (no backend)" if no_backend else f"WEB APP, {accel_str}{extra_str}"
+    # Banner stays as print so the local-dev terminal keeps its
+    # human-readable startup splash — structured event below is what
+    # pod log collectors and analytics will key on.
     print()
     print("=" * 60)
     print(f"  Real-Time Motion-to-Music  ({mode})")
@@ -532,12 +547,18 @@ def main():
     print("  Ctrl+C to stop")
     print("=" * 60)
     print()
+    logger.info(
+        "server_ready host={} port={} mode={} no_backend={} kiosk={} "
+        "default_mode={} checkpoint={} decoder_accel={} vae_accel={}",
+        browsable_host, port, mode, no_backend, kiosk,
+        default_mode, checkpoint, decoder_accel, vae_accel,
+    )
 
     try:
         while True:
             time.sleep(0.5)
     except KeyboardInterrupt:
-        print("\n[Server] Shutting down...")
+        logger.info("server_shutdown reason=keyboard_interrupt")
         os._exit(0)
 
 

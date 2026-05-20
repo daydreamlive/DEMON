@@ -5,17 +5,28 @@ Drives a :class:`~acestep.engine.session.StreamHandle` by calling
 knob state.
 """
 
+import os
 import time
 
 import numpy as np
 import torch
 
 from acestep.engine.dcw import DCWAdvanced
+from acestep.engine.obs import logger
 from acestep.nodes.types import ChannelGuidanceEntry, Latent
 from acestep.nodes.vae_nodes import EmptyLatent, LatentBlend
 
 from .knobs import CHANNEL_GROUPS, KEYSTONE_CHANNELS
 from .protocol import SAMPLE_RATE, T
+
+# Hot-loop trace sampling. Cached at import time so the per-tick branch
+# is a single int compare. Env-tunable since the loop runs at ~125 Hz —
+# emitting every tick at TRACE level would dominate the log volume.
+# 0 disables sampled tracing entirely regardless of log level.
+try:
+    _TRACE_SAMPLE_EVERY = max(0, int(os.environ.get("DEMON_TRACE_SAMPLE_EVERY", "50")))
+except ValueError:
+    _TRACE_SAMPLE_EVERY = 50
 
 # Largest tap index the feedback delay can address. Matches the
 # ``feedback_depth`` knob's ``max_val`` (knobs.py) and the SLIDER_META
@@ -335,7 +346,7 @@ class PipelineRunner:
                 if self._dit_paused or self._vae_paused:
                     self._dit_paused = False
                     self._vae_paused = False
-                    print("[Pipeline] Resumed: DiT ticking again")
+                    logger.info("pipeline_resumed stage=dit")
             else:
                 # Idle. Enter DiT-pause on first hit; the VAE-pause
                 # check fires once enough wall time has passed for the
@@ -345,10 +356,10 @@ class PipelineRunner:
                 if not self._dit_paused:
                     self._dit_paused = True
                     self._dit_paused_at_wall_s = time.monotonic()
-                    print(f"[Pipeline] Idle: DiT paused after "
-                          f"{self._idle_threshold_s:.0f}s; VAE keeps "
-                          f"refilling client buffer until one full cycle "
-                          f"completes.")
+                    logger.info(
+                        "pipeline_paused stage=dit idle_threshold_s={:.0f}",
+                        self._idle_threshold_s,
+                    )
 
                 if self._vae_paused:
                     # Both stages reached — full GPU idle. Nap and
@@ -375,8 +386,7 @@ class PipelineRunner:
                     and wall_since_pause_s >= buf_dur_s
                 ):
                     self._vae_paused = True
-                    print("[Pipeline] Idle: VAE paused (client buffer "
-                          "fully filled from cached latent)")
+                    logger.info("pipeline_paused stage=vae reason=buffer_full")
                     time.sleep(0.05)
                     continue
 
@@ -878,6 +888,21 @@ class PipelineRunner:
                 self.params["num_gens"] = self.params.get("num_gens", 0) + 1
                 self.params["tick_ms"] = tick_ms
                 self.params["dec_ms"] = dec_ms
+
+                # Sampled TRACE so DEMON_LOG_LEVEL=TRACE gives the operator
+                # a tick-by-tick snapshot for perf chases without paying the
+                # cost on every iteration. _TRACE_SAMPLE_EVERY=0 disables it
+                # outright; loguru's level gate elides the call cheaply when
+                # no sink is at TRACE.
+                if _TRACE_SAMPLE_EVERY and (
+                    self.params["num_gens"] % _TRACE_SAMPLE_EVERY == 0
+                ):
+                    logger.trace(
+                        "tick num_gens={} tick_ms={:.1f} dec_ms={:.1f} "
+                        "shift={:.2f} seed={} hint_str={:.2f}",
+                        self.params["num_gens"], tick_ms, dec_ms,
+                        shift_val, seed, hint_str,
+                    )
                 # Update predictive-decode EMA from this iteration's actual
                 # wall time. alpha=0.3 reacts in a handful of ticks while
                 # smoothing out one-off spikes (e.g. a CUDA sync stall).

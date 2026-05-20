@@ -31,6 +31,7 @@ from websockets.exceptions import ConnectionClosed
 
 from acestep.audio.key_detection import detect_key
 from acestep.constants import TASK_INSTRUCTIONS, VALID_TIME_SIGNATURES
+from acestep.engine.obs import logger, spawn_thread
 from acestep.engine.session import PreparedSource, Session
 from acestep.engine.trt.profile_manager import TRTProfileManager
 from acestep.fixtures import (
@@ -91,15 +92,17 @@ def _try_load_sidecar(
     try:
         sc = fixture_sidecar(fixture_name)
     except Exception as e:
-        print(f"[Server] sidecar lookup failed for {fixture_name!r}: {e}")
+        logger.warning(
+            "sidecar_lookup_failed fixture={} error={}", fixture_name, e,
+        )
         return None
     if sc is None:
         return None
     if sc.samples != samples:
-        print(
-            f"[Server] sidecar length mismatch for {fixture_name}: "
-            f"sidecar samples={sc.samples} vs runtime samples={samples}; "
-            f"ignoring sidecar"
+        logger.warning(
+            "sidecar_length_mismatch fixture={} sidecar_samples={} "
+            "runtime_samples={}",
+            fixture_name, sc.samples, samples,
         )
         return None
     return sc
@@ -206,12 +209,9 @@ def _extract_and_select_upload_stem(
     if source_mode is None:
         return None, None, source, waveform
 
-    log_prefix = f"{log_context}: " if log_context else ""
-    rip_verb = "ripping" if log_context else "Ripping"
-    prepare_verb = "preparing" if log_context else "Preparing"
-    print(
-        f"[Server] {log_prefix}{rip_verb} upload stems via Mel-Band RoFormer "
-        f"(source_mode={source_mode})..."
+    logger.info(
+        "stems_extract_start source_mode={} context={}",
+        source_mode, log_context or None,
     )
     try:
         upload_stems = extract_upload_stems(
@@ -224,11 +224,17 @@ def _extract_and_select_upload_stem(
 
         selected_wf = upload_stems[source_mode]
         selected_audio = Audio(waveform=selected_wf, sample_rate=SAMPLE_RATE)
-        print(f"[Server] {log_prefix}{prepare_verb} {source_mode} stem as source...")
+        logger.info(
+            "stem_prepare_source source_mode={} context={}",
+            source_mode, log_context or None,
+        )
         selected_source = session.prepare_source(selected_audio)
         return upload_stems, None, selected_source, selected_wf
     except Exception as exc:
-        print(f"[Server] {log_prefix}stem extraction failed: {exc}")
+        logger.exception(
+            "stem_extract_failed context={} error={}",
+            log_context or None, exc,
+        )
         return None, str(exc), source, waveform
 
 
@@ -288,9 +294,10 @@ def _resolve_bpm_key_source(
         # `sidecar hit (prog_rock_..._enm.wav) ... key='G minor'`.)
         key = sc.key
         if key_override and key_override != sc.key:
-            print(
-                f"[Server] sidecar hit ({fixture_name}): ignoring "
-                f"key_override={key_override!r}; sidecar wins (key={sc.key!r})"
+            logger.info(
+                "sidecar_override_ignored fixture={} field=key "
+                "override={} sidecar={}",
+                fixture_name, key_override, sc.key,
             )
         # Same precedence rule for time signature: sidecar.time_signature
         # beats any client-supplied override on a hit.
@@ -299,14 +306,14 @@ def _resolve_bpm_key_source(
             time_signature_override
             and time_signature_override != sc.time_signature
         ):
-            print(
-                f"[Server] sidecar hit ({fixture_name}): ignoring "
-                f"time_signature_override={time_signature_override!r}; "
-                f"sidecar wins (time_signature={sc.time_signature!r})"
+            logger.info(
+                "sidecar_override_ignored fixture={} field=time_signature "
+                "override={} sidecar={}",
+                fixture_name, time_signature_override, sc.time_signature,
             )
-        print(
-            f"[Server] sidecar hit ({fixture_name}): bpm={bpm} "
-            f"key={key!r} time_signature={time_signature!r}"
+        logger.info(
+            "sidecar_hit fixture={} bpm={} key={} time_signature={}",
+            fixture_name, bpm, key, time_signature,
         )
         return source, bpm, key, time_signature
 
@@ -315,15 +322,18 @@ def _resolve_bpm_key_source(
     # wins, otherwise we default to "4" (matches the model's most-
     # supported meter).
     import librosa
-    print("[Server] Detecting BPM + key...")
+    logger.info("bpm_key_detect_start")
     mono_np = audio_in.waveform.mean(dim=0).numpy()
     bpm_raw, _ = librosa.beat.beat_track(y=mono_np, sr=SAMPLE_RATE)
     bpm = int(round(float(np.asarray(bpm_raw).flat[0])))
     key = key_override or detect_key(mono_np, SAMPLE_RATE)
     time_signature = time_signature_override or "4"
-    print(f"  BPM: {bpm}  Key: {key}  TimeSig: {time_signature}")
+    logger.info(
+        "bpm_key_detected bpm={} key={} time_signature={}",
+        bpm, key, time_signature,
+    )
 
-    print("[Server] Preparing source...")
+    logger.info("prepare_source_start")
     source = session.prepare_source(audio_in)
     return source, bpm, key, time_signature
 
@@ -436,7 +446,10 @@ def _compute_max_pipeline_depth(diffusion_engine) -> int:
         )
         return max(MIN_PIPELINE_DEPTH, int(max_shape[0]))
     except Exception as exc:
-        print(f"[Server] couldn't read TRT batch cap: {exc!r}; using {EAGER_MAX_PIPELINE_DEPTH}")
+        logger.warning(
+            "trt_batch_cap_unreadable error={!r} fallback={}",
+            exc, EAGER_MAX_PIPELINE_DEPTH,
+        )
         return EAGER_MAX_PIPELINE_DEPTH
 
 
@@ -452,10 +465,10 @@ def handle_client(
     checkpoint: str = "acestep-v15-turbo",
     offload_text_encoder: bool = False,
 ):
-    print(
-        f"[Server] Client connected "
-        f"(decoder={decoder_backend}, vae={vae_backend}, ckpt={checkpoint}, "
-        f"text_encoder={'offload' if offload_text_encoder else 'resident'})"
+    logger.info(
+        "client_connected decoder={} vae={} checkpoint={} text_encoder={}",
+        decoder_backend, vae_backend, checkpoint,
+        "offload" if offload_text_encoder else "resident",
     )
 
     # Disable Nagle on the connection socket. Param frames are tiny (<1 KB
@@ -471,7 +484,29 @@ def handle_client(
 
     # ---- Phase 1: Init ----
     config = json.loads(ws.recv())
-    print(f"[Server] Config: {config}")
+
+    # Mint session_id immediately and bind it (plus the client's optional
+    # client_id / analytics_id) into loguru's contextvars so every log
+    # record emitted on this connection's lifetime carries the
+    # correlation IDs. Manual __enter__ instead of a ``with`` block so we
+    # don't have to re-indent the 1600-line connection body; matching
+    # __exit__ runs in the finally at the bottom of this function. Early
+    # returns above that finally land before any session-scoped logging
+    # would be useful, and the websockets sync server uses a fresh thread
+    # per connection so a leaked context dies with the thread anyway.
+    session_id = session_registry.new_session_id()
+    _client_id = config.get("client_id") or None
+    _analytics_id = config.get("analytics_id") or None
+    _session_ctx = logger.contextualize(
+        session_id=session_id,
+        client_id=_client_id,
+        analytics_id=_analytics_id,
+    )
+    _session_ctx.__enter__()
+    logger.info(
+        "session_init config_keys={} client_id={} analytics_id={}",
+        sorted(config.keys()), _client_id, _analytics_id,
+    )
 
     # Session-init timing instrumentation. t0 == config received; every
     # milestone prints wall-seconds since t0 so the per-connect latency
@@ -481,7 +516,13 @@ def handle_client(
     _first_slice = [False]
 
     def _ms(stage: str) -> None:
-        print(f"[timing] {stage} +{time.monotonic() - _t0:.3f}s", flush=True)
+        # Per-stage init timing. Stays at DEBUG so it's silent at INFO
+        # in prod but available with DEMON_LOG_LEVEL=DEBUG when chasing
+        # a slow per-connect latency complaint.
+        logger.debug(
+            "init_timing stage={} elapsed_s={:.3f}",
+            stage, time.monotonic() - _t0,
+        )
 
     # Server-side known-fixture load. When the client opts in via
     # ``use_server_fixture`` AND names a known fixture, skip the
@@ -496,10 +537,10 @@ def handle_client(
             waveform = _load_known_fixture_waveform(_fix_name)
             _ms("audio_serverside_loaded")
         except Exception as exc:
-            print(
-                f"[Server] server-side fixture load failed for "
-                f"{_fix_name!r} ({exc}); falling back to client upload",
-                flush=True,
+            logger.warning(
+                "server_side_fixture_load_failed fixture={} error={} "
+                "fallback=client_upload",
+                _fix_name, exc,
             )
             audio_bytes = ws.recv()
             waveform = _decode_audio_msg(audio_bytes)
@@ -520,7 +561,9 @@ def handle_client(
         try:
             max_seconds = max_profile_duration_s(checkpoint=trt_profile_checkpoint)
         except ValueError as exc:
-            print(f"[Server] {exc}")
+            logger.error(
+                "unsupported_trt_checkpoint error={}", exc,
+            )
             try:
                 ws.send(json.dumps({
                     "type": "error",
@@ -530,6 +573,7 @@ def handle_client(
             except Exception:
                 pass
             ws.close(1011, "unsupported TRT checkpoint")
+            _session_ctx.__exit__(None, None, None)
             return
     else:
         max_seconds = max_profile_duration_s()
@@ -538,7 +582,10 @@ def handle_client(
     rem = waveform.shape[-1] % pool
     if rem:
         waveform = waveform[:, :waveform.shape[-1] - rem]
-    print(f"[Server] Audio: {waveform.shape[1] / SAMPLE_RATE:.1f}s, {waveform.shape[0]}ch")
+    logger.info(
+        "audio_loaded duration_s={:.1f} channels={}",
+        waveform.shape[1] / SAMPLE_RATE, waveform.shape[0],
+    )
 
     use_sde = config.get("sde", False)
     use_lora = config.get("lora", False)
@@ -603,7 +650,10 @@ def handle_client(
             # WebSocket close reason is capped at 123 bytes by the
             # protocol, so the build command goes in a JSON message
             # first and the close reason carries a short summary.
-            print(f"[Server] {exc}")
+            logger.error(
+                "trt_engine_not_built duration_s={} error={}",
+                exc.duration_s, exc,
+            )
             try:
                 ws.send(json.dumps({
                     "type": "error",
@@ -615,6 +665,7 @@ def handle_client(
             except Exception:
                 pass
             ws.close(1011, "TRT engine not built")
+            _session_ctx.__exit__(None, None, None)
             return
         # Walk-window override: pin the decoder to the walk_window_s
         # profile (typically 60s) regardless of source duration, while
@@ -628,7 +679,10 @@ def handle_client(
             try:
                 walk_engines, walk_dur = profile_mgr.resolve(walk_window_s)
             except EngineNotBuiltError as exc:
-                print(f"[Server] walk_window: 60s engine not built: {exc}")
+                logger.error(
+                    "walk_window_engine_not_built window_s={} error={}",
+                    walk_window_s, exc,
+                )
                 try:
                     ws.send(json.dumps({
                         "type": "error",
@@ -640,11 +694,13 @@ def handle_client(
                 except Exception:
                     pass
                 ws.close(1011, "walk_window TRT engine not built")
+                _session_ctx.__exit__(None, None, None)
                 return
-            print(
-                f"[Server] walk_window={walk_window_s:.0f}s active: "
-                f"decoder={Path(walk_engines['decoder']).stem}, "
-                f"vae_encode={Path(trt_engines['vae_encode']).stem}"
+            logger.info(
+                "walk_window_active window_s={:.0f} decoder={} vae_encode={}",
+                walk_window_s,
+                Path(walk_engines["decoder"]).stem,
+                Path(trt_engines["vae_encode"]).stem,
             )
             trt_engines = {
                 "decoder": walk_engines["decoder"],
@@ -662,10 +718,10 @@ def handle_client(
             checkpoint=trt_profile_checkpoint,
         )
         if picked_dur > ideal_dur:
-            print(
-                f"[Server] WARNING: using {picked_dur:.0f}s engine for "
-                f"{audio_duration_s:.1f}s audio (fallback; {ideal_dur:.0f}s "
-                f"profile not built — extra VRAM cost)"
+            logger.warning(
+                "trt_profile_fallback picked_dur_s={:.0f} ideal_dur_s={:.0f} "
+                "audio_duration_s={:.1f} reason=ideal_profile_not_built",
+                picked_dur, ideal_dur, audio_duration_s,
             )
         # Prune unused keys for the same reason as before:
         # validate_backends() rejects engine entries whose backend isn't
@@ -689,13 +745,22 @@ def handle_client(
             trt_engines["vae_decode"] = str(dv_path)
         else:
             wanted = dreamvae_decode_engine_name(int(picked_dur))
-            print(f"[Server] WARNING: {wanted} engine missing, falling back to {Path(trt_engines['vae_decode']).stem}")
+            logger.warning(
+                "dreamvae_engine_missing wanted={} fallback={}",
+                wanted, Path(trt_engines["vae_decode"]).stem,
+            )
             fast_vae = False
     elif fast_vae:
-        print(f"[Server] WARNING: fast_vae requires vae_backend=tensorrt; ignoring with vae_backend={vae_backend}")
+        logger.warning(
+            "fast_vae_requires_tensorrt vae_backend={} ignoring=true",
+            vae_backend,
+        )
         fast_vae = False
 
-    print(f"[Server] Loading model... (decoder={decoder_backend}, vae={vae_backend}, ckpt={checkpoint})")
+    logger.info(
+        "model_load_start decoder={} vae={} checkpoint={}",
+        decoder_backend, vae_backend, checkpoint,
+    )
     t0 = time.time()
     session = Session(
         project_root=str(checkpoints_dir()),
@@ -706,7 +771,7 @@ def handle_client(
         trt_engines=trt_engines,
         vae_window=vae_window,
     )
-    print(f"  Model loaded in {time.time() - t0:.1f}s")
+    logger.info("model_loaded duration_s={:.1f}", time.time() - t0)
 
     # Bind the manager to the live engines so future swaps can compare
     # against the loaded profile and skip the swap when the picked
@@ -724,14 +789,15 @@ def handle_client(
     engine_obj = session.handler._diffusion_engine
     lora_available = bool(engine_obj and engine_obj.lora_available)
     if use_lora and not lora_available:
-        print("[Server] WARNING: LoRA engine unavailable on this decoder")
+        logger.warning("lora_engine_unavailable decoder_backend={}", decoder_backend)
         use_lora = False
 
     max_pipeline_depth = _compute_max_pipeline_depth(engine_obj)
     depth = max(MIN_PIPELINE_DEPTH, min(int(depth), max_pipeline_depth))
-    print(
-        f"[Server] pipeline_depth={depth} (max={max_pipeline_depth}, "
-        f"backend={'trt' if engine_obj._trt_engine is not None else 'eager'})"
+    logger.info(
+        "pipeline_depth_set depth={} max={} backend={}",
+        depth, max_pipeline_depth,
+        "trt" if engine_obj._trt_engine is not None else "eager",
     )
 
     initial_enable_ids: list[str] = []
@@ -743,19 +809,21 @@ def handle_client(
             if lid in catalog_ids:
                 initial_enable_ids.append(lid)
             else:
-                print(f"[Server] WARNING: enabled_loras id not in catalog: {lid}")
+                logger.warning("lora_id_not_in_catalog id={}", lid)
         # Resolve ad-hoc paths: register if needed, then enable.
         for p in extra_lora_paths:
             pp = Path(p)
             if not pp.exists():
-                print(f"[Server] WARNING: LoRA path missing: {p}")
+                logger.warning("lora_path_missing path={}", p)
                 continue
             try:
                 lid = engine_obj.register_lora(str(pp))
                 if lid not in initial_enable_ids:
                     initial_enable_ids.append(lid)
             except Exception as e:
-                print(f"[Server] WARNING: failed to register {p}: {e}")
+                logger.exception(
+                    "lora_register_failed path={} error={}", p, e,
+                )
         # Kick off background materialization for everything we plan to
         # enable. Non-blocking; the eventual enable will block on the
         # future if the worker hasn't finished yet.
@@ -763,9 +831,11 @@ def handle_client(
             try:
                 engine_obj.prewarm_lora(lid)
             except Exception as e:
-                print(f"[Server] Prewarm failed for {lid}: {e}")
+                logger.exception(
+                    "lora_prewarm_failed id={} error={}", lid, e,
+                )
         if not initial_enable_ids:
-            print("[Server] No LoRAs enabled at startup (catalog-only)")
+            logger.info("lora_startup_empty reason=catalog_only")
 
     audio_in = Audio(waveform=waveform, sample_rate=SAMPLE_RATE)
 
@@ -787,6 +857,10 @@ def handle_client(
         source_mode=stem_source_mode,
     )
     if stem_error is not None and stem_source_mode != "full":
+        logger.error(
+            "stem_extract_failed_fatal source_mode={} error={}",
+            stem_source_mode, stem_error,
+        )
         try:
             ws.send(json.dumps({
                 "type": "error",
@@ -796,6 +870,7 @@ def handle_client(
         except Exception:
             pass
         ws.close(1011, "stem extraction failed")
+        _session_ctx.__exit__(None, None, None)
         return
 
     _ms("resolve_source_done")
@@ -847,7 +922,7 @@ def handle_client(
             alpha=float(strength),
         )["conditioning"]
 
-    print("[Server] Text encode (silence + self)...")
+    logger.info("text_encode_start variant=silence_and_self")
     cond_silence, cond_full = _encode_cond_pair(
         prompt, source.latent, detected_bpm, audio_duration_s,
         detected_key, detected_time_signature,
@@ -877,7 +952,7 @@ def handle_client(
         time_signature=detected_time_signature,
     )
 
-    print("[Server] Creating stream...")
+    logger.info("stream_create_start steps={} pipeline_depth={}", steps, depth)
     stream = session.stream(
         source=source,
         conditioning=conditioning,
@@ -885,7 +960,7 @@ def handle_client(
         shift=3.0,
         pipeline_depth=depth,
     )
-    print("[Server] Stream handle ready (pipeline built on first tick)")
+    logger.info("stream_handle_ready")
     _ms("stream_handle_ready")
 
     # Initial buffer
@@ -963,6 +1038,12 @@ def handle_client(
         # and ships ``set_depth`` messages to retune live.
         "pipeline_depth": depth,
         "max_pipeline_depth": max_pipeline_depth,
+        # Server-minted correlation id. The client should log this with
+        # every local event (and pass it as a property on any analytics
+        # events) so a pod-side log line and a browser-side trace for the
+        # same complaint can be joined by session_id. Independent of any
+        # client_id / analytics_id the client sent in its handshake.
+        "session_id": session_id,
     }))
     ws.send(src_np.astype(np.float16).tobytes())
     if upload_stems is not None:
@@ -978,7 +1059,10 @@ def handle_client(
             "fixture_name": fixture_name or "",
             "error": stem_error,
         }))
-    print(f"[Server] Sent initial buffer ({len(src_np) / SAMPLE_RATE:.1f}s)")
+    logger.info(
+        "initial_buffer_sent duration_s={:.1f}",
+        len(src_np) / SAMPLE_RATE,
+    )
     _ms("initial_buffer_sent")
 
     # ---- Phase 2: Streaming ----
@@ -1097,9 +1181,9 @@ def handle_client(
             struct_context_ref[0] = Latent(
                 tensor=sc.context_latent.to(device, dtype).contiguous(),
             )
-            print(
-                f"[Server] _apply_struct_override: sidecar hit "
-                f"({struct_name_ref[0]})"
+            logger.debug(
+                "structure_override_sidecar_hit name={}",
+                struct_name_ref[0],
             )
         else:
             audio_in = Audio(waveform=wf, sample_rate=SAMPLE_RATE)
@@ -1182,19 +1266,19 @@ def handle_client(
                 timbre_latent = Latent(
                     tensor=sc.latent.to(device, dtype).contiguous(),
                 )
-                print(f"[Server] timbre: sidecar hit ({name})")
+                logger.debug("timbre_sidecar_hit name={}", name)
             else:
                 timbre_audio = Audio(
                     waveform=t_wf, sample_rate=SAMPLE_RATE,
                 )
-                print(
-                    f"[Server] timbre: VAE encoding {clip_s:.1f}s "
-                    f"({t_wf.shape[0]}ch)..."
+                logger.debug(
+                    "timbre_vae_encode_start clip_s={:.1f} channels={}",
+                    clip_s, t_wf.shape[0],
                 )
                 timbre_latent = session.encode_audio(timbre_audio)
-                print(
-                    f"[Server] timbre: VAE done "
-                    f"(latent {tuple(timbre_latent.tensor.shape)})"
+                logger.debug(
+                    "timbre_vae_encode_done latent_shape={}",
+                    tuple(timbre_latent.tensor.shape),
                 )
             timbre_latent_ref[0] = timbre_latent
             timbre_name_ref[0] = name
@@ -1320,11 +1404,16 @@ def handle_client(
             try:
                 engine_obj.disable_lora(lid)
                 virtual_knobs.remove_knob(f"lora_str_{lid}")
+                logger.info("lora_disabled id={}", lid)
             except Exception as e:
-                print(f"[Server] disable_lora({lid}) failed: {e}")
+                logger.exception("lora_disable_failed id={} error={}", lid, e)
         for lid, strength in local_enable:
             try:
                 engine_obj.enable_lora(lid, strength=strength)
+                logger.info(
+                    "lora_enabled id={} strength={}",
+                    lid, strength,
+                )
                 # Allocate a knob slot so set_lora_strength can be driven
                 # by the client's params dict.  Default the slot to the
                 # strength we just enabled at, so the runner's slider-
@@ -1341,7 +1430,7 @@ def handle_client(
                     ),
                 )
             except Exception as e:
-                print(f"[Server] enable_lora({lid}) failed: {e}")
+                logger.exception("lora_enable_failed id={} error={}", lid, e)
         _send_catalog_update()
         # No automatic re-encode here. With WYSIWYG prompts, the trigger
         # word lives in the visible promptA/promptB text. The client's
@@ -1410,7 +1499,8 @@ def handle_client(
     # mirror MCP-driven state via the same ack messages it already listens
     # to (plus a new ``params_echo`` for raw knob changes).
     control_queue: queue.Queue = queue.Queue()
-    session_id = session_registry.new_session_id()
+    # session_id was minted at the top of handle_client so it can be bound
+    # into loguru's contextvars before any session-scoped logging happens.
 
     def inject_control(data: dict, audio: bytes | None = None) -> None:
         control_queue.put((data, audio))
@@ -1468,11 +1558,15 @@ def handle_client(
                     "name": name,
                     "duration": clip_s,
                 }))
-            print(f"[Server] {kind} set: {name} {extra}")
+            logger.info(
+                "ref_applied kind={} origin={} name={} detail={}",
+                kind, origin, name, extra,
+            )
         except Exception as exc:
-            print(f"[Server] set_{kind}_{origin} failed: {exc}")
-            import traceback
-            traceback.print_exc()
+            logger.opt(exception=True).error(
+                "ref_apply_failed kind={} origin={} name={} error={}",
+                kind, origin, name, exc,
+            )
             try:
                 with send_lock:
                     ws.send(json.dumps({
@@ -1515,6 +1609,13 @@ def handle_client(
             if _new_raw != _last_params_raw_ref[0]:
                 last_activity_ts[0] = time.monotonic()
                 _last_params_raw_ref[0] = dict(_new_raw)
+                # DEBUG so 125 Hz heartbeats stay invisible at INFO; surfaces
+                # the actual knob diffs when DEMON_LOG_LEVEL=DEBUG. Logs
+                # post-diff so we don't fire on the no-op heartbeat.
+                logger.debug(
+                    "params_changed origin={} raw_keys={}",
+                    source, sorted(_new_raw.keys()),
+                )
         else:
             last_activity_ts[0] = time.monotonic()
         if mtype == "params":
@@ -1557,6 +1658,11 @@ def handle_client(
                 time_sig_ref[0] = ts_override
             refer = _active_refer_latent()
             key_used = data.get("key") or key_ref[0]
+            logger.info(
+                "prompt_set origin={} tags={!r} tags_b={!r} key={} time_signature={}",
+                source, data.get("tags"), data.get("tags_b"),
+                key_used, time_sig_ref[0],
+            )
             cond_pair_ref[0] = _encode_cond_pair(
                 data["tags"], refer, bpm_ref[0], duration_ref[0],
                 key_used, time_sig_ref[0],
@@ -1605,6 +1711,11 @@ def handle_client(
             else:
                 prompt_blend_ref[0] = v
                 _refresh_conditioning()
+                # DEBUG because the browser tween fires many updates per
+                # slider drag — INFO would flood any active session.
+                logger.debug(
+                    "prompt_blend_set origin={} value={:.3f}", source, v,
+                )
         elif mtype == "set_depth":
             try:
                 v = int(data.get("value"))
@@ -1613,6 +1724,9 @@ def handle_client(
             v = max(MIN_PIPELINE_DEPTH, min(v, max_pipeline_depth))
             with pending_depth_lock:
                 pending_depth_ref[0] = v
+            logger.info(
+                "set_depth_requested origin={} value={}", source, v,
+            )
         elif mtype == "enable_lora":
             lid = data.get("id")
             s = data.get("strength")
@@ -1623,11 +1737,18 @@ def handle_client(
             if lid:
                 with pending_lock:
                     pending_enable.append((str(lid), strength))
+                logger.info(
+                    "enable_lora_requested origin={} id={} strength={}",
+                    source, lid, strength,
+                )
         elif mtype == "disable_lora":
             lid = data.get("id")
             if lid:
                 with pending_lock:
                     pending_disable.append(str(lid))
+                logger.info(
+                    "disable_lora_requested origin={} id={}", source, lid,
+                )
         elif mtype == "set_timbre_strength":
             try:
                 v = float(data.get("value", 1.0))
@@ -1636,20 +1757,23 @@ def handle_client(
             v = max(0.0, min(1.0, v))
             timbre_strength_ref[0] = v
             _refresh_conditioning()
+            # DEBUG — slider drag fires many updates per gesture.
+            logger.debug(
+                "timbre_strength_set origin={} value={:.3f}", source, v,
+            )
         elif mtype == "set_timbre_source":
             name = data.get("name") or "timbre"
-            print(
-                f"[Server] set_timbre_source ({source}): receiving "
-                f"audio for {name!r}..."
+            logger.info(
+                "set_timbre_source_recv origin={} name={}", source, name,
             )
             try:
                 audio_msg = recv_audio()
             except ConnectionClosed:
                 running[0] = False
                 return
-            print(
-                f"[Server] set_timbre_source: got "
-                f"{len(audio_msg)} bytes"
+            logger.debug(
+                "set_timbre_source_bytes_received name={} bytes={}",
+                name, len(audio_msg),
             )
             _apply_ref(
                 "timbre", name,
@@ -1658,7 +1782,9 @@ def handle_client(
             )
         elif mtype == "set_timbre_fixture":
             name = data.get("name", "")
-            print(f"[Server] set_timbre_fixture: {name!r}")
+            logger.info(
+                "set_timbre_fixture origin={} name={}", source, name,
+            )
             _apply_ref(
                 "timbre", name,
                 lambda: _load_fixture_waveform(name),
@@ -1687,21 +1813,21 @@ def handle_client(
                     ws.send(json.dumps({"type": "timbre_cleared"}))
             except Exception:
                 pass
-            print("[Server] timbre cleared")
+            logger.info("timbre_cleared origin={}", source)
         elif mtype == "set_structure_source":
             name = data.get("name") or "structure"
-            print(
-                f"[Server] set_structure_source ({source}): receiving "
-                f"audio for {name!r}..."
+            logger.info(
+                "set_structure_source_recv origin={} name={}",
+                source, name,
             )
             try:
                 audio_msg = recv_audio()
             except ConnectionClosed:
                 running[0] = False
                 return
-            print(
-                f"[Server] set_structure_source: got "
-                f"{len(audio_msg)} bytes"
+            logger.debug(
+                "set_structure_source_bytes_received name={} bytes={}",
+                name, len(audio_msg),
             )
             _apply_ref(
                 "structure", name,
@@ -1710,7 +1836,9 @@ def handle_client(
             )
         elif mtype == "set_structure_fixture":
             name = data.get("name", "")
-            print(f"[Server] set_structure_fixture: {name!r}")
+            logger.info(
+                "set_structure_fixture origin={} name={}", source, name,
+            )
             _apply_ref(
                 "structure", name,
                 lambda: _load_fixture_waveform(name),
@@ -1723,7 +1851,7 @@ def handle_client(
                     ws.send(json.dumps({"type": "structure_cleared"}))
             except Exception:
                 pass
-            print("[Server] structure cleared")
+            logger.info("structure_cleared origin={}", source)
         elif mtype == "swap_source":
             tags = data.get("tags") or prompt_text[0]
             try:
@@ -1749,7 +1877,9 @@ def handle_client(
         else:
             # Unknown mtype — log but don't crash; lets future protocol
             # additions degrade gracefully on older servers.
-            print(f"[Server] unknown message type from {source}: {mtype!r}")
+            logger.warning(
+                "unknown_message_type origin={} mtype={}", source, mtype,
+            )
 
     # --- recv loop: drain WS + control bus into _dispatch_message ---
     def recv_loop():
@@ -1765,7 +1895,9 @@ def handle_client(
                         try:
                             _dispatch_message(data, ws.recv, "ws")
                         except Exception as exc:
-                            print(f"[Server] WS dispatch error: {exc}")
+                            logger.exception(
+                                "ws_dispatch_error error={}", exc,
+                            )
                     if not running[0]:
                         break
             except TimeoutError:
@@ -1774,7 +1906,7 @@ def handle_client(
                 running[0] = False
                 break
             except Exception as exc:
-                print(f"[Server] Recv error: {exc}")
+                logger.exception("recv_loop_error error={}", exc)
                 running[0] = False
                 break
 
@@ -1794,7 +1926,9 @@ def handle_client(
                         "control",
                     )
                 except Exception as exc:
-                    print(f"[Server] Control dispatch error: {exc}")
+                    logger.exception(
+                        "control_dispatch_error error={}", exc,
+                    )
 
     # Forward decl so closures defined above (e.g. _apply_struct_override
     # via the recv thread) can resolve the cell without NameError before
@@ -1803,8 +1937,10 @@ def handle_client(
     # check before invoking runner methods.
     runner_holder: list = [None]
 
-    recv_t = threading.Thread(target=recv_loop, daemon=True)
-    recv_t.start()
+    # spawn_thread copies the parent context (loguru contextvars), so
+    # logs emitted from inside recv_loop still carry session_id and
+    # friends — plain threading.Thread would drop the binding.
+    recv_t = spawn_thread(recv_loop, name="recv_loop")
 
     # Register with the process-global session registry so the demo's
     # onboard MCP server can drive this session via the HTTP control bus.
@@ -1814,7 +1950,7 @@ def handle_client(
         inject=inject_control,
         snapshot=snapshot_session,
     ))
-    print(f"[Server] Session registered: id={session_id}")
+    logger.info("session_registered")
 
     # Stage the initial enable set so they get applied on the runner
     # thread before the first tick.  Each entry carries its target
@@ -1862,9 +1998,11 @@ def handle_client(
             if rem:
                 new_wf = new_wf[:, :new_wf.shape[-1] - rem]
             new_audio_duration_s = new_wf.shape[1] / SAMPLE_RATE
-            print(
-                f"[Server] Swapping source ({new_audio_duration_s:.1f}s, "
-                f"{new_wf.shape[0]}ch)..."
+            logger.info(
+                "source_swap_start duration_s={:.1f} channels={} "
+                "fixture_name={} tags={!r}",
+                new_audio_duration_s, new_wf.shape[0],
+                new_fixture_name, tags,
             )
 
             # Profile swap (no-op when the new duration fits the same
@@ -1889,7 +2027,10 @@ def handle_client(
                     else:
                         profile_mgr.ensure_profile(new_audio_duration_s)
                 except EngineNotBuiltError as exc:
-                    print(f"[Server] Swap aborted: {exc}")
+                    logger.error(
+                        "source_swap_aborted reason=engine_not_built error={}",
+                        exc,
+                    )
                     with send_lock:
                         ws.send(json.dumps({
                             "type": "swap_failed",
@@ -1961,8 +2102,8 @@ def handle_client(
                 try:
                     _apply_struct_override()
                 except Exception as exc:
-                    print(
-                        f"[Server] swap: struct override re-apply failed: {exc}"
+                    logger.exception(
+                        "swap_struct_override_dropped error={}", exc,
                     )
                     _clear_struct_override()
                     try:
@@ -2032,13 +2173,16 @@ def handle_client(
                         "fixture_name": new_fixture_name or "",
                         "error": new_stem_error,
                     }))
-            print(f"[Server] Source swap complete ({len(new_src_np) / SAMPLE_RATE:.1f}s)")
+            logger.info(
+                "source_swap_complete duration_s={:.1f}",
+                len(new_src_np) / SAMPLE_RATE,
+            )
         except ConnectionClosed:
             running[0] = False
         except Exception as exc:
-            print(f"[Server] Swap error: {exc}")
-            import traceback
-            traceback.print_exc()
+            logger.opt(exception=True).error(
+                "source_swap_error error={}", exc,
+            )
             try:
                 with send_lock:
                     ws.send(json.dumps({
@@ -2066,8 +2210,11 @@ def handle_client(
         try:
             pipe.set_depth(target)
             current_depth_ref[0] = pipe.depth
+            logger.info("pipeline_depth_applied depth={}", pipe.depth)
         except Exception as exc:
-            print(f"[Server] set_depth({target}) failed: {exc}")
+            logger.exception(
+                "set_depth_failed target={} error={}", target, exc,
+            )
             return
         try:
             with send_lock:
@@ -2112,17 +2259,18 @@ def handle_client(
     runner_holder[0] = runner
 
     try:
-        print("[Server] Pipeline running...")
+        logger.info("pipeline_running")
         runner.run()
     except Exception as exc:
-        print(f"[Server] Pipeline error: {exc}")
-        import traceback
-        traceback.print_exc()
+        logger.opt(exception=True).error("pipeline_error error={}", exc)
     finally:
         running[0] = False
         session_registry.unregister(session_id)
         recv_t.join(timeout=2)
-        print(f"[Server] Client disconnected ({params.get('num_gens', 0)} generations)")
+        logger.info(
+            "client_disconnected num_gens={}",
+            params.get("num_gens", 0),
+        )
 
         # Tear down per-session GPU state. Order matters: stream.close()
         # drops the StreamPipeline's references into the engine before
@@ -2131,11 +2279,19 @@ def handle_client(
         try:
             stream.close()
         except Exception as exc:
-            print(f"[Server] stream.close() raised: {exc}")
+            logger.warning("stream_close_raised error={}", exc)
         try:
             session.close()
         except Exception as exc:
-            print(f"[Server] session.close() raised: {exc}")
+            logger.warning("session_close_raised error={}", exc)
+
+        # Release the session-scoped contextvars binding entered at the top
+        # of handle_client. Matching __exit__ here ensures the next thread
+        # reused from any websockets-sync pool starts with a clean context.
+        try:
+            _session_ctx.__exit__(None, None, None)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -2241,7 +2397,8 @@ def run_startup_warmup(
     """Drive one synthetic default-fixture session at boot. Never raises
     — a failed warmup must not stop the server from serving."""
     t0 = time.monotonic()
-    print("[warmup] starting default-fixture session warmup...", flush=True)
+    warm_log = logger.bind(component="warmup")
+    warm_log.info("warmup_start fixture={}", _WARMUP_FIXTURE)
     try:
         cfg = {
             "fixture_name": _WARMUP_FIXTURE,
@@ -2262,14 +2419,13 @@ def run_startup_warmup(
         )
         WARMUP_STATE["done"] = True
         WARMUP_STATE["seconds"] = round(time.monotonic() - t0, 1)
-        print(
-            f"[warmup] done in {WARMUP_STATE['seconds']}s — "
-            f"first real session will take the warm path",
-            flush=True,
+        warm_log.info(
+            "warmup_done elapsed_s={}", WARMUP_STATE["seconds"],
         )
     except Exception as exc:
-        import traceback
         WARMUP_STATE["error"] = repr(exc)
         WARMUP_STATE["seconds"] = round(time.monotonic() - t0, 1)
-        print(f"[warmup] FAILED after {WARMUP_STATE['seconds']}s: {exc}", flush=True)
-        traceback.print_exc()
+        warm_log.opt(exception=True).error(
+            "warmup_failed elapsed_s={} error={}",
+            WARMUP_STATE["seconds"], exc,
+        )

@@ -44,12 +44,31 @@ from typing import Any, Optional
 
 import numpy as np
 import soundfile as sf
+from loguru import logger
 from mcp.server.fastmcp import FastMCP
 
 
+# MCP wire protocol owns stdout — every log MUST go to stderr. Lazy
+# configure so this module stays importable without a hard dependency on
+# the rest of the engine package's logging config. The backend logs
+# every dispatched command on its end (origin="control"), so this side
+# stays intentionally light.
+_mcp_log = logger.bind(component="mcp")
+_logger_configured = False
+
+
+def _ensure_logger() -> None:
+    global _logger_configured
+    if _logger_configured:
+        return
+    logger.remove()
+    logger.add(sys.stderr, level="INFO")
+    _logger_configured = True
+
+
 def _log(*parts: Any) -> None:
-    """Stderr-only logging. stdout belongs to the MCP wire protocol."""
-    print("[demon-mcp]", *parts, file=sys.stderr, flush=True)
+    _ensure_logger()
+    _mcp_log.info(" ".join(str(p) for p in parts))
 
 
 BACKEND_HOST = os.environ.get("DEMON_HOST", "127.0.0.1")
