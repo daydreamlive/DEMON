@@ -69,6 +69,12 @@ export interface SessionConfig {
   enabled_loras?: string[];
   prompt?: string;
   prompt_b?: string;
+  /** Lyrics conditioning. Empty string keeps the cover instrumental
+   *  (server substitutes "[Instrumental]"); non-empty strings pass
+   *  through, including section tags like [Verse 1] / [Chorus]. Shared
+   *  across A and B — the prompt-blend slider crossfades tags + timbre,
+   *  not lyrics. */
+  lyrics?: string;
   lora_strengths?: Record<string, number>;
   // Allow extras — pyproject's config object is permissive.
   [k: string]: unknown;
@@ -143,6 +149,10 @@ export interface PromptBlendEchoMessage {
 export interface PromptAppliedMessage {
   type: "prompt_applied";
   tags?: string;
+  /** Echoes the lyrics the server just encoded against. Empty string
+   *  means the cover is currently instrumental (server substituted
+   *  "[Instrumental]" at encode time). */
+  lyrics?: string;
 }
 
 export interface LoraCatalogMessage {
@@ -174,6 +184,28 @@ export interface SwapFailedMessage {
   error?: string;
 }
 
+/** Server reply to ``transcribe_source``. ``lyrics`` is the parsed body
+ *  ready to drop into the Lyrics textarea (section tags preserved).
+ *  ``raw`` is the unmodified Qwen-Omni output kept for debugging. */
+export interface LyricsDetectedMessage {
+  type: "lyrics_detected";
+  lyrics: string;
+  raw?: string;
+}
+
+export interface TranscribeFailedMessage {
+  type: "transcribe_failed";
+  error?: string;
+}
+
+/** Intermediate progress hint emitted by the backend while transcribing.
+ *  Mapped to the session status bar so the operator sees the same
+ *  "Loading… / Transcribing…" cadence as the session-start handshake. */
+export interface TranscribeProgressMessage {
+  type: "transcribe_progress";
+  message: string;
+}
+
 export type ServerJsonMessage =
   | ReadyMessage
   | ServerErrorMessage
@@ -185,6 +217,9 @@ export type ServerJsonMessage =
   | SwapReadyMessage
   | SwapFailedMessage
   | DepthAppliedMessage
+  | LyricsDetectedMessage
+  | TranscribeFailedMessage
+  | TranscribeProgressMessage
   | { type: string; [k: string]: unknown };
 
 /** Parsed binary slice from the server. */

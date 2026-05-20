@@ -1,11 +1,15 @@
 "use client";
 
+import { useState } from "react";
+
+import { confirm } from "@/store/useConfirmStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 
 export function PromptsTile() {
   const promptA = usePerformanceStore((s) => s.promptA);
   const promptB = usePerformanceStore((s) => s.promptB);
+  const lyrics = usePerformanceStore((s) => s.lyrics);
   // Read sliderTargets (instant) so the thumb tracks the cursor without
   // the smoothing lag — the engine sees the smoothed sliderValues via
   // usePromptBlendSync.
@@ -16,19 +20,149 @@ export function PromptsTile() {
   const activeTimeSignature = usePerformanceStore((s) => s.activeTimeSignature);
   const setPromptA = usePerformanceStore((s) => s.setPromptA);
   const setPromptB = usePerformanceStore((s) => s.setPromptB);
+  const setLyrics = usePerformanceStore((s) => s.setLyrics);
   const setSlider = usePerformanceStore((s) => s.setSlider);
 
+  const [detecting, setDetecting] = useState(false);
+
   // Send Tags is the only path that pays the server-side text encoder:
-  // it ships both A and B so the backend caches a cond pair for each,
-  // and the blend slider then lerps between them per tick via the cheap
-  // set_prompt_blend channel (usePromptBlendSync). Editing the
-  // textareas does NOT auto-submit — the operator decides when to
-  // commit new tags.
+  // it ships A, B, and lyrics so the backend caches a cond pair for
+  // each prompt against the current lyrics, and the blend slider then
+  // lerps between them per tick via the cheap set_prompt_blend channel
+  // (usePromptBlendSync). Editing the textareas does NOT auto-submit —
+  // the operator decides when to commit new tags / lyrics.
   function sendPrompt() {
     const remote = useSessionStore.getState().remote;
     if (remote) {
-      remote.sendPrompt(promptA, activeKey, activeTimeSignature, promptB);
+      remote.sendPrompt(
+        promptA,
+        activeKey,
+        activeTimeSignature,
+        promptB,
+        lyrics,
+      );
     }
+  }
+
+  // Operator-triggered transcription. Server blocks DiT inference for
+  // the ~30 s – several-minute forward pass (cold load + VRAM
+  // contention vs. the resident DiT engines), so we suspend the
+  // AudioContext before sending and restore the pre-detect ctx state
+  // on the ack — that way a "Detect while paused" doesn't accidentally
+  // start playback when we resume. Progress is surfaced through the
+  // session status bar using the same channel as session-start ("Loading
+  // track…", "Connecting…", …) so the operator sees the same place for
+  // long-running async work.
+  async function detectLyrics() {
+    if (detecting) return;
+    const ok = await confirm({
+      title: "Detect lyrics",
+      message:
+        "Detecting will pause inference and audio while the transcriber " +
+        "runs on the current track. The engine is swapped off the GPU to " +
+        "make room and brought back when transcription finishes. The " +
+        "detected lyrics are applied automatically — no need to hit " +
+        "Send Tags. Progress updates show in the status bar. Continue?",
+      confirmLabel: "Detect",
+    });
+    if (!ok) return;
+
+    const session = useSessionStore.getState();
+    const remote = session.remote;
+    const setStatus = session.setStatus;
+    if (!remote) return;
+    const player = session.player;
+    const ctx = player?.ctx ?? null;
+    const wasRunning = ctx?.state === "running";
+
+    setDetecting(true);
+    setStatus("ready", "Detecting lyrics — pausing audio…");
+
+    if (wasRunning) {
+      try {
+        await ctx?.suspend();
+      } catch {}
+    }
+
+    // No client-side deadline. We don't know how long a press will take
+    // (cold load + CPU↔CUDA shuttle + Qwen-Omni inference varies with
+    // VRAM headroom and audio length), and an arbitrary cap would just
+    // strand the ack at a removed listener — the exact failure mode we
+    // hit earlier. The WS close handlers already drain in-flight UI
+    // state if the server itself drops, so a true wedge degrades
+    // gracefully without a wall-clock timer.
+
+    const cleanup = () => {
+      remote.removeEventListener("lyrics_detected", onDetected);
+      remote.removeEventListener("transcribe_failed", onFailed);
+      remote.removeEventListener("transcribe_progress", onProgress);
+    };
+
+    const restoreAudio = () => {
+      if (wasRunning) {
+        try {
+          void ctx?.resume();
+        } catch {}
+      }
+    };
+
+    // Final-state helper. Drops back to the canonical "Playing" message
+    // after a beat so the status bar doesn't carry stale copy. Mirrors
+    // useFixtureSwap's pattern.
+    const finish = (msg: string) => {
+      setStatus("ready", msg);
+      setTimeout(() => {
+        if (useSessionStore.getState().message === msg) {
+          setStatus("ready", "Playing");
+        }
+      }, 4000);
+    };
+
+    const onProgress = (e: Event) => {
+      const message = (e as CustomEvent<string>).detail;
+      if (message) setStatus("ready", message);
+    };
+
+    const onDetected = (e: Event) => {
+      const detail = (e as CustomEvent<{ lyrics: string }>).detail;
+      cleanup();
+      const newLyrics = detail.lyrics ?? "";
+      setLyrics(newLyrics);
+      // Auto-apply: the operator pressed Detect expecting the lyrics
+      // to actually take effect on the cover; making them click Send
+      // Tags afterwards defeats the purpose. Fire the same prompt
+      // re-encode the manual Send would, with the freshly-detected
+      // lyrics in place of whatever was in the textarea.
+      remote.sendPrompt(
+        promptA,
+        activeKey,
+        activeTimeSignature,
+        promptB,
+        newLyrics,
+      );
+      const trimmed = newLyrics.trim();
+      setDetecting(false);
+      restoreAudio();
+      finish(
+        trimmed
+          ? "Lyrics detected and applied"
+          : "No lyrics detected — track treated as instrumental",
+      );
+    };
+
+    const onFailed = (e: Event) => {
+      const err = (e as CustomEvent<string>).detail || "unknown";
+      cleanup();
+      setDetecting(false);
+      restoreAudio();
+      finish(`Detect failed: ${err}`);
+    };
+
+    remote.addEventListener("transcribe_progress", onProgress);
+    remote.addEventListener("lyrics_detected", onDetected);
+    remote.addEventListener("transcribe_failed", onFailed);
+
+    remote.sendTranscribeSource();
   }
 
   return (
@@ -94,6 +228,37 @@ export function PromptsTile() {
             rows={2}
             value={promptB}
             onChange={(e) => setPromptB(e.target.value)}
+          />
+        </div>
+        <div className="prompt-slot">
+          <div className="prompt-label-row">
+            <label
+              className="prompt-label"
+              htmlFor="prompt-lyrics"
+              data-dd-tooltip="Lyrics conditioning. Leave empty for an instrumental cover; section tags like [Verse 1] / [Chorus] are honored. Sent on Send Tags alongside A and B."
+              data-dd-tooltip-wide=""
+            >
+              Lyrics (empty = instrumental)
+            </label>
+            <button
+              id="detect-lyrics"
+              className="detect-lyrics-btn"
+              type="button"
+              data-dd-tooltip="Run the ACE-Step transcriber on the current track. Pauses inference and swaps the engine off the GPU while it runs; progress is shown in the status bar. Detected lyrics are applied automatically when transcription finishes."
+              data-dd-tooltip-wide=""
+              disabled={detecting}
+              onClick={detectLyrics}
+            >
+              {detecting ? "Detecting…" : "Detect"}
+            </button>
+          </div>
+          <textarea
+            id="prompt-lyrics"
+            className="prompt-input"
+            rows={4}
+            placeholder={"[Verse 1]\n..."}
+            value={lyrics}
+            onChange={(e) => setLyrics(e.target.value)}
           />
         </div>
         <button

@@ -1,0 +1,58 @@
+{
+  "audio": "D:\\huggingface_cache\\hub\\datasets--daydreamlive--demon-fixtures\\snapshots\\df659749a01c81698785c3df6bbd5e0a417aa3eb\\thrash_metal_loop_60s_enm.wav",
+  "audio_seconds": 56.17066666666667,
+  "load_seconds": 10.315951900091022,
+  "weights_vram_gib": 20.83840560913086,
+  "dtype": "bfloat16",
+  "attn": "sdpa",
+  "max_new_tokens": 4096,
+  "shuttle": true,
+  "snapshots": {
+    "pre_load": {
+      "label": "pre-load",
+      "free_gib": 30.2021484375,
+      "total_gib": 31.84234619140625,
+      "torch_alloc_gib": 0.0,
+      "torch_reserved_gib": 0.0
+    },
+    "post_load": {
+      "label": "post-load",
+      "free_gib": 9.3388671875,
+      "total_gib": 31.84234619140625,
+      "torch_alloc_gib": 16.643986225128174,
+      "torch_reserved_gib": 20.86328125
+    }
+  },
+  "passes": [
+    {
+      "pass": 1,
+      "inference_s": 5.412968100048602,
+      "rtf": 0.09636645639566205,
+      "peak_vram_gib": 17.40081262588501,
+      "output_chars": 437,
+      "cpu_to_gpu_s": null,
+      "gpu_to_cpu_s": 5.7103942995890975,
+      "output": "# Languages\nen\n\n# Lyrics\n[Intro - Guitar Riff]\n\n[Verse 1]\nTeeth on steel\nTongue drips rust\nEvery promise\nGround to dust\n\n[Pre-Chorus]\nSkull full of sirens, static in my lungs\nBite down on the fuse, feel the planet come undone!\n\n[Chorus]\nI am the shrapnel of the sun\nHey!\nBurning holes in everyone\nSpit that venom, choke that lie\nIf the world wants war, then let it die!\nShrapnel of the sun\n\n[Outro]\nTear the sky\n\n[Instrumental Breakdown]"
+    },
+    {
+      "pass": 2,
+      "inference_s": 4.065808900166303,
+      "rtf": 0.0723831341417757,
+      "peak_vram_gib": 17.451584339141846,
+      "output_chars": 437,
+      "cpu_to_gpu_s": 2.6607726998627186,
+      "gpu_to_cpu_s": 2.020871500018984,
+      "output": null
+    },
+    {
+      "pass": 3,
+      "inference_s": 3.5114242997951806,
+      "rtf": 0.06251348805655112,
+      "peak_vram_gib": 17.451584339141846,
+      "output_chars": 437,
+      "cpu_to_gpu_s": 1.713494600262493,
+      "gpu_to_cpu_s": 1.8168546999804676,
+      "output": null
+    }
+  ]
+}

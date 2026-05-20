@@ -306,6 +306,12 @@ interface PerformanceState {
    *  pipelines the same way every other knob does. */
   promptA: string;
   promptB: string;
+  /** Lyrics conditioning. Empty string keeps the cover instrumental
+   *  (the server substitutes "[Instrumental]" at encode time). Section
+   *  tags like [Verse 1] / [Chorus] pass through verbatim. Shared
+   *  across A and B — the blend slider crossfades tags + timbre, not
+   *  lyrics. Travels alongside Tags on the same Send Tags click. */
+  lyrics: string;
   /** Currently active key (e.g. "G# minor"). May come from auto-detect. */
   activeKey: string;
   /** Currently active time-signature numerator as a wire string
@@ -412,6 +418,7 @@ interface PerformanceState {
   randomizeSeed: () => void;
   setPromptA: (s: string) => void;
   setPromptB: (s: string) => void;
+  setLyrics: (s: string) => void;
   setKey: (k: string) => void;
   setTimeSignature: (s: TimeSignature) => void;
   setFixture: (name: string) => void;
@@ -526,6 +533,7 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   seed: 0,
   promptA: "heavy dubstep, deathstep, afxdump, growl heavy bass distortion",
   promptB: "daft punk style, beautiful, four to the floor, angelic",
+  lyrics: "",
   activeKey: "G# minor",
   activeTimeSignature: DEFAULT_TIME_SIGNATURE,
   fixture: "",
@@ -623,6 +631,7 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
     set({ seed: Math.floor(Math.random() * 0x100000000) }),
   setPromptA: (s) => set({ promptA: s }),
   setPromptB: (s) => set({ promptB: s }),
+  setLyrics: (s) => set({ lyrics: s }),
   setKey: (k) => set({ activeKey: k }),
   setTimeSignature: (s) => set({ activeTimeSignature: s }),
   setFixture: (name) => set({ fixture: name }),

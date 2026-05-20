@@ -3395,6 +3395,44 @@ body.curve-open #install-video-area #graph {
   width: 100%;
 }
 
+/* Lyrics row: label + Detect button + inline status share one line so
+   the button doesn't push the textarea down. .prompt-label keeps its
+   monospace small-caps; the button echoes .send-prompt-btn's chrome
+   but at a smaller scale (this is a secondary action). */
+.prompt-label-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 18px;
+}
+.prompt-label-row .prompt-label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.detect-lyrics-btn {
+  flex: 0 0 auto;
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: color 120ms, border-color 120ms, background 120ms;
+}
+.detect-lyrics-btn:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.detect-lyrics-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .blend-label { font-weight: 600; flex-shrink: 0; }
 .blend-value {
   color: var(--accent);

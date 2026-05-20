@@ -365,6 +365,27 @@ export class RemoteBackend extends EventTarget {
             this.dispatchEvent(
               new CustomEvent("structure_failed", { detail: msg.error }),
             );
+          } else if (msg.type === "transcribe_progress") {
+            this.dispatchEvent(
+              new CustomEvent("transcribe_progress", {
+                detail: typeof msg.message === "string" ? msg.message : "",
+              }),
+            );
+          } else if (msg.type === "lyrics_detected") {
+            this.dispatchEvent(
+              new CustomEvent("lyrics_detected", {
+                detail: {
+                  lyrics: typeof msg.lyrics === "string" ? msg.lyrics : "",
+                  raw: typeof msg.raw === "string" ? msg.raw : undefined,
+                },
+              }),
+            );
+          } else if (msg.type === "transcribe_failed") {
+            this.dispatchEvent(
+              new CustomEvent("transcribe_failed", {
+                detail: typeof msg.error === "string" ? msg.error : "unknown",
+              }),
+            );
           } else if (msg.type === "depth_applied") {
             const v = typeof msg.value === "number" ? msg.value : null;
             if (v !== null) {
@@ -508,6 +529,7 @@ export class RemoteBackend extends EventTarget {
     key?: string,
     timeSignature?: string,
     tagsB?: string,
+    lyrics?: string,
   ): void {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     try {
@@ -517,6 +539,7 @@ export class RemoteBackend extends EventTarget {
         tags_b?: string;
         key?: string;
         time_signature?: string;
+        lyrics?: string;
       } = {
         type: "prompt",
         tags,
@@ -524,6 +547,12 @@ export class RemoteBackend extends EventTarget {
       if (tagsB) msg.tags_b = tagsB;
       if (key) msg.key = key;
       if (timeSignature) msg.time_signature = timeSignature;
+      // Forward lyrics whenever the caller passed the parameter — empty
+      // string is meaningful (operator clearing lyrics back to
+      // instrumental), so we only suppress the field when the parameter
+      // was omitted entirely. The backend's contract is "missing field
+      // == keep current lyrics".
+      if (lyrics !== undefined) msg.lyrics = lyrics;
       this.ws.send(JSON.stringify(msg));
     } catch {}
   }
@@ -759,6 +788,21 @@ export class RemoteBackend extends EventTarget {
       console.error("[protocol] sendSwapSource failed:", e);
       return false;
     }
+  }
+
+  /**
+   * Operator-triggered lyric detection. Backend runs the
+   * acestep-transcriber (Qwen2.5-Omni fine-tune) on the current playback
+   * buffer between ticks, which blocks DiT inference for the duration of
+   * the forward pass (~10–30 s incl. first-press load). Caller should
+   * suspend the AudioContext before sending and resume on the
+   * lyrics_detected / transcribe_failed ack.
+   */
+  sendTranscribeSource(): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(JSON.stringify({ type: "transcribe_source" }));
+    } catch {}
   }
 
   close(): void {

@@ -34,9 +34,12 @@
     "a": "roti-4custic, roti-d33ph0us, acoustic deep house hybrid",
     "b": "daft punk style, beautiful, four to the floor, angelic",
     "blend": 0.0,
+    "_lyrics_help": "Lyrics conditioning for the cover. Empty string keeps it instrumental (server substitutes '[Instrumental]'). Section tags like [Verse 1] / [Chorus] are honored. Shared across Tags A and Tags B — the blend slider crossfades tags + timbre, not lyrics.",
+    "lyrics": "",
     "a_xl": "roti-4custic, roti-d33ph0us, acoustic deep house hybrid",
     "b_xl": "daft punk style, beautiful, four to the floor, angelic",
-    "blend_xl": 0.0
+    "blend_xl": 0.0,
+    "lyrics_xl": ""
   },
 
   "controls": {

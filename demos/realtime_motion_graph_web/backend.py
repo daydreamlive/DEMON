@@ -11,6 +11,7 @@ through :class:`.pipeline.PipelineRunner`, with:
     server hardcoding which LoRAs to load.
 """
 
+import gc
 import json
 import os
 import queue
@@ -27,6 +28,20 @@ import zstandard as zstd
 
 torch.set_grad_enabled(False)
 torch._dynamo.config.disable = True
+
+# Windows consoles default to cp1252, which crashes ``print`` on any
+# non-ASCII character that isn't lucky enough to be in that codepage
+# (arrows, em-dashes, the ⏎ glyph). The transcribe path logs free-VRAM
+# deltas and raw transcriber output, so we reconfigure once at module
+# load to fall back to "?" on unmappable chars rather than killing the
+# runtime mid-detect. No-op on platforms whose stdout is already utf-8.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except (AttributeError, ValueError):
+        # Some embeddings replace stdout with a non-TextIOWrapper that
+        # doesn't expose reconfigure(); skip silently.
+        pass
 
 from websockets.exceptions import ConnectionClosed
 
@@ -482,6 +497,11 @@ def handle_client(
     steps = config.get("steps", 8)
     prompt = config.get("prompt", "instrumental music")
     prompt_b = config.get("prompt_b", prompt)
+    # Lyrics conditioning. Empty string keeps the cover instrumental
+    # ([Instrumental] is substituted at encode time); section tags like
+    # [Verse 1] / [Chorus] are honored. Shared across A and B — the
+    # prompt-blend slider crossfades tags + timbre, not lyrics.
+    lyrics = config.get("lyrics", "")
     fast_vae = config.get("fast_vae", False)
     # Walk-window mode: route long sources through the 60s DiT engine by
     # sliding a fixed-T window across the song each tick (avoids the
@@ -719,16 +739,24 @@ def handle_client(
     # forward pass per slider tick. Same approximation already used for
     # prompt crossfades. Recomputed on prompt change, on swap_source,
     # and on set_timbre_source / clear_timbre_source.
-    def _encode_cond_pair(tags, refer_latent, bpm, duration, key, time_signature):
+    def _encode_cond_pair(
+        tags, refer_latent, bpm, duration, key, time_signature,
+        lyrics=None,
+    ):
         # WYSIWYG: the encoder sees exactly the text the UI sent. LoRA
         # trigger words land in `tags` via the client's visible-prepend
         # logic (see web/store/useLoraStore + the auto_prepend_lora_triggers
         # config flag) so the user can edit or remove them like any other
         # prompt token. The server intentionally does NOT inject anything
         # behind the user's back.
+        #
+        # Empty / missing lyrics fall back to "[Instrumental]" so the
+        # encoder always sees a valid token sequence. Non-empty user
+        # lyrics pass through unchanged (including [Verse]/[Chorus] tags).
+        effective_lyrics = lyrics if lyrics else "[Instrumental]"
         cs = session.encode_text(
             tags=tags,
-            lyrics="[Instrumental]",
+            lyrics=effective_lyrics,
             instruction=TASK_INSTRUCTIONS["cover"],
             refer_latent=None,
             bpm=bpm, duration=duration, key=key,
@@ -736,7 +764,7 @@ def handle_client(
         )
         cf = session.encode_text(
             tags=tags,
-            lyrics="[Instrumental]",
+            lyrics=effective_lyrics,
             instruction=TASK_INSTRUCTIONS["cover"],
             refer_latent=refer_latent,
             bpm=bpm, duration=duration, key=key,
@@ -760,6 +788,7 @@ def handle_client(
     cond_silence, cond_full = _encode_cond_pair(
         prompt, source.latent, detected_bpm, audio_duration_s,
         detected_key, detected_time_signature,
+        lyrics=lyrics,
     )
     # Encode prompt B at session start so the blend slider works
     # immediately without forcing the operator to click Send Tags.
@@ -768,6 +797,7 @@ def handle_client(
         cond_silence_b, cond_full_b = _encode_cond_pair(
             prompt_b, source.latent, detected_bpm, audio_duration_s,
             detected_key, detected_time_signature,
+            lyrics=lyrics,
         )
     else:
         cond_silence_b, cond_full_b = cond_silence, cond_full
@@ -887,6 +917,7 @@ def handle_client(
     virtual_knobs = VirtualMidiKnobs(banks)
     params = {"num_gens": 0, "tick_ms": 0.0, "dec_ms": 0.0}
     prompt_text = [prompt]
+    lyrics_text = [lyrics]
     sde_curve_display = [None]
     motion_val = [0.0]
     motion_lock = threading.Lock()
@@ -921,6 +952,10 @@ def handle_client(
     cond_pair_b_ref = [(cond_silence_b, cond_full_b)]
     prompt_text_b = [prompt_b]
     prompt_blend_ref = [0.0]
+    # Active lyrics string. Empty == instrumental (see _encode_cond_pair).
+    # Shared across A and B — the blend slider crossfades tags + timbre,
+    # but lyrics carry through unchanged on both sides of the blend.
+    lyrics_text = [lyrics]
     # Optional uploaded timbre-track latent. None == use the playback
     # source's own latent (self-timbre, current default).
     timbre_latent_ref: list = [None]
@@ -1098,6 +1133,7 @@ def handle_client(
                 prompt_text[0], timbre_latent,
                 bpm_ref[0], duration_ref[0], key_ref[0],
                 time_sig_ref[0],
+                lyrics=lyrics_text[0],
             )
             # Re-encode B against the new timbre too — otherwise a non-
             # zero prompt blend would suddenly mix in B's *old-timbre*
@@ -1107,6 +1143,7 @@ def handle_client(
                     prompt_text_b[0], timbre_latent,
                     bpm_ref[0], duration_ref[0], key_ref[0],
                     time_sig_ref[0],
+                    lyrics=lyrics_text[0],
                 )
             else:
                 cond_pair_b_ref[0] = cond_pair_ref[0]
@@ -1151,8 +1188,18 @@ def handle_client(
     # the runner thread (consumes pending in before_tick). The recv loop
     # only stages audio bytes here; all GPU work happens on the runner
     # thread so we don't race the streaming pipeline.
-    swap_pending: dict = {"bytes": None, "tags": None}
+    swap_pending: dict = {"bytes": None, "tags": None, "lyrics": None}
     swap_lock = threading.Lock()
+
+    # Lyrics-detect rendezvous. recv thread sets the flag; runner-thread
+    # before_tick consumes it. The Transcriber is loaded fresh on every
+    # press and fully destroyed afterwards — see
+    # ``apply_transcribe_if_pending``. Detect is a low-cadence,
+    # operator-triggered action (once per track during setup, occasionally
+    # after a swap_source), so caching 14 GiB of bf16 weights in CPU RAM
+    # between presses costs more than the ~5 s reload it saves.
+    transcribe_pending = [False]
+    transcribe_lock = threading.Lock()
 
     # Cross-thread LoRA mutation rendezvous.  The recv thread enqueues
     # ids; the runner thread drains the queues in before_tick so the
@@ -1309,6 +1356,7 @@ def handle_client(
             "prompt": prompt_text[0],
             "prompt_b": prompt_text_b[0],
             "prompt_blend": prompt_blend_ref[0],
+            "lyrics": lyrics_text[0],
             "duration": duration_ref[0],
             "bpm": bpm_ref[0],
             "key": key_ref[0],
@@ -1445,16 +1493,23 @@ def handle_client(
                 time_sig_ref[0] = ts_override
             refer = _active_refer_latent()
             key_used = data.get("key") or key_ref[0]
+            # Lyrics ride with the tags message: a missing field means
+            # "keep current lyrics" (so a tag-only edit doesn't wipe a
+            # multi-line lyric the operator typed earlier).
+            new_lyrics = data.get("lyrics", lyrics_text[0])
             cond_pair_ref[0] = _encode_cond_pair(
                 data["tags"], refer, bpm_ref[0], duration_ref[0],
                 key_used, time_sig_ref[0],
+                lyrics=new_lyrics,
             )
             prompt_text[0] = data["tags"]
+            lyrics_text[0] = new_lyrics
             tags_b = data.get("tags_b")
             if tags_b and tags_b != data["tags"]:
                 cond_pair_b_ref[0] = _encode_cond_pair(
                     tags_b, refer, bpm_ref[0], duration_ref[0],
                     key_used, time_sig_ref[0],
+                    lyrics=new_lyrics,
                 )
                 prompt_text_b[0] = tags_b
             else:
@@ -1466,6 +1521,7 @@ def handle_client(
                     ws.send(json.dumps({
                         "type": "prompt_applied",
                         "tags": data["tags"],
+                        "lyrics": new_lyrics,
                     }))
             except ConnectionClosed:
                 running[0] = False
@@ -1560,12 +1616,14 @@ def handle_client(
                 prompt_text[0], refer,
                 bpm_ref[0], duration_ref[0], key_ref[0],
                 time_sig_ref[0],
+                lyrics=lyrics_text[0],
             )
             if prompt_text_b[0] != prompt_text[0]:
                 cond_pair_b_ref[0] = _encode_cond_pair(
                     prompt_text_b[0], refer,
                     bpm_ref[0], duration_ref[0], key_ref[0],
                     time_sig_ref[0],
+                    lyrics=lyrics_text[0],
                 )
             else:
                 cond_pair_b_ref[0] = cond_pair_ref[0]
@@ -1612,8 +1670,21 @@ def handle_client(
             except Exception:
                 pass
             print("[Server] structure cleared")
+        elif mtype == "transcribe_source":
+            # Operator-triggered lyric detection. recv thread just stages
+            # the request; the runner thread runs the (10–30 s) Qwen-Omni
+            # forward pass on its own tick rendezvous so it serializes
+            # with inference automatically (no GPU race). Client is
+            # expected to suspend its AudioContext before sending and
+            # resume on the lyrics_detected / transcribe_failed ack.
+            with transcribe_lock:
+                transcribe_pending[0] = True
         elif mtype == "swap_source":
             tags = data.get("tags") or prompt_text[0]
+            # Lyrics on swap follow the same "missing == keep current"
+            # contract as the prompt message; explicit empty string
+            # ("[Instrumental]") clears.
+            new_lyrics = data.get("lyrics", lyrics_text[0])
             try:
                 audio_msg = recv_audio()
             except ConnectionClosed:
@@ -1622,6 +1693,7 @@ def handle_client(
             with swap_lock:
                 swap_pending["bytes"] = audio_msg
                 swap_pending["tags"] = tags
+                swap_pending["lyrics"] = new_lyrics
                 swap_pending["key"] = data.get("key")
                 swap_pending["time_signature"] = (
                     _normalize_time_signature(
@@ -1719,6 +1791,7 @@ def handle_client(
         with swap_lock:
             audio_msg = swap_pending.get("bytes")
             tags = swap_pending.get("tags")
+            swap_lyrics = swap_pending.get("lyrics")
             requested_key = swap_pending.get("key")
             requested_time_sig = swap_pending.get("time_signature")
             new_fixture_name = swap_pending.get("fixture_name")
@@ -1726,6 +1799,7 @@ def handle_client(
                 return
             swap_pending["bytes"] = None
             swap_pending["tags"] = None
+            swap_pending["lyrics"] = None
             swap_pending["key"] = None
             swap_pending["time_signature"] = None
             swap_pending["fixture_name"] = None
@@ -1786,6 +1860,13 @@ def handle_client(
                     time_signature_override=requested_time_sig,
                 )
             )
+            # swap_lyrics is the value staged by the recv-thread dispatch.
+            # The dispatch already defaulted missing fields to current
+            # lyrics_text[0], so this is just a defensive fallback for
+            # control-bus injections that skipped that path.
+            effective_lyrics = (
+                swap_lyrics if swap_lyrics is not None else lyrics_text[0]
+            )
             # Use the active timbre reference if one is uploaded; otherwise
             # the new playback source's own latent. Override persists
             # across source swaps.
@@ -1798,6 +1879,7 @@ def handle_client(
                 tags,
                 refer,
                 new_bpm, new_audio_duration_s, new_key, new_time_sig,
+                lyrics=effective_lyrics,
             )
             # Carry promptB across the swap so the blend slider keeps
             # its meaning. If B was identical to A pre-swap, keep it
@@ -1807,6 +1889,7 @@ def handle_client(
                     prompt_text_b[0],
                     refer,
                     new_bpm, new_audio_duration_s, new_key, new_time_sig,
+                    lyrics=effective_lyrics,
                 )
             else:
                 cond_pair_b_ref[0] = cond_pair_ref[0]
@@ -1837,6 +1920,7 @@ def handle_client(
             time_sig_ref[0] = new_time_sig
             duration_ref[0] = new_audio_duration_s
             prompt_text[0] = tags
+            lyrics_text[0] = effective_lyrics
             _refresh_conditioning()
             r = runner_holder[0]
             if r is not None:
@@ -1926,14 +2010,409 @@ def handle_client(
         except Exception:
             pass
 
-    # Combined before_tick callback.  Both kinds of cross-thread
-    # mutation (LoRA enable/disable refits and source swaps) are GPU-
+    def _parse_lyrics_body(raw: str) -> str:
+        """Pull the lyrics body out of Qwen-Omni's structured output.
+
+        The fine-tune emits sections like ``# Languages\\nen\\n\\n# Lyrics\\n[Verse 1]\\n...``.
+        ACE-Step's encoder wants the lyrics body verbatim (section tags
+        included), no language header. We anchor on the ``# Lyric`` prefix
+        so we match both ``# Lyrics`` and the singular ``# Lyric`` that
+        EncodeText also tolerates. Missing marker → raw output stripped
+        (still useful for debugging; operator can clean up by hand)."""
+        marker = "# Lyric"
+        idx = raw.find(marker)
+        if idx == -1:
+            return raw.strip()
+        body = raw[idx + len(marker):]
+        nl = body.find("\n")
+        if nl != -1:
+            body = body[nl + 1:]
+        return body.strip()
+
+    def _send_transcribe_progress(msg: str) -> None:
+        """Surface a progress hint to the client's status bar. Same shape
+        as the session-start "loading track" messages — the client maps
+        each into ``setStatus('ready', message)``. Best-effort; we don't
+        let a broken WS abort the transcription path."""
+        print(f"[Server] transcribe: {msg}")
+        try:
+            with send_lock:
+                ws.send(json.dumps({
+                    "type": "transcribe_progress",
+                    "message": msg,
+                }))
+        except Exception:
+            pass
+
+    def _vram_free_gib() -> float | None:
+        """Physical CUDA free memory in GiB. ``None`` when CUDA isn't
+        available (eager-on-CPU dev mode). Uses ``mem_get_info`` so we
+        see the OS view, not torch's caching allocator (the caching
+        allocator may still hold pre-freed slabs that ``empty_cache``
+        will return)."""
+        if not torch.cuda.is_available():
+            return None
+        try:
+            free, _total = torch.cuda.mem_get_info()
+            return free / 1024**3
+        except Exception:
+            return None
+
+    def _evict_for_transcribe() -> dict:
+        """Aggressively free GPU memory for the transcriber.
+
+        In TRT mode, ``handler.model`` is mostly a wrapper around a
+        stubbed-out decoder — the real ~17 GiB of weight/workspace VRAM
+        lives in the diffusion engine's TRT context, the TRTLoRAManager,
+        and the cached VAE TRT contexts. So this does a deeper teardown:
+
+        1. **DiffusionEngine partial close**: drop the TRT execution
+           context, the deserialized engine, the LoRA refit manager,
+           and the shape-keyed buffer cache. Keeps the wrapper *object*
+           alive so the StreamPipeline / closure references stay valid
+           — only the heavy children are destroyed.
+        2. **Stream TRT buffer cache** is cleared and the snapshotted
+           TRT refs are nulled so the next forward pass goes through
+           ``_on_engine_swapped`` instead of dereferencing freed
+           pointers.
+        3. **VAE TRT engines** (encode + decode) are evicted from the
+           module-level ``_trt_vae_cache`` via the existing
+           ``_evict_trt_vae`` helper — these hold ~1-2 GiB each
+           between engine + execution context + cached I/O buffers.
+        4. **PyTorch handler models** (DiT encoder, VAE, text encoder)
+           and the silence latent move to CPU so their slabs return to
+           the OS via ``empty_cache``.
+
+        Captures the enabled-LoRA set so the restore can reapply them
+        against the rebuilt manager. Returns a dict that the matching
+        restore consumes."""
+        from acestep.nodes.vae_nodes import _evict_trt_vae as _evict_vae
+
+        handler = session.handler
+        engine = handler._diffusion_engine
+        evicted: dict = {
+            "model_device": None,
+            "vae_device": None,
+            "text_encoder_device": None,
+            "silence_latent_device": None,
+            "enabled_loras": [],
+            "evicted_vae_paths": [],
+        }
+
+        # --- 1. Snapshot + tear down diffusion engine internals ---
+        if engine is not None:
+            try:
+                for d in engine.list_loras():
+                    state = getattr(d, "state", None)
+                    strength = getattr(d, "strength", 0.0)
+                    if state == "enabled" or (
+                        isinstance(strength, (int, float)) and strength != 0
+                    ):
+                        evicted["enabled_loras"].append((d.id, float(strength)))
+            except Exception as exc:
+                print(f"[Server] transcribe evict: list_loras failed: {exc}")
+
+            try:
+                engine._trt_buf_cache.clear()
+            except Exception:
+                pass
+            if getattr(engine, "_lora_manager", None) is not None:
+                try:
+                    engine._lora_manager.close()
+                except Exception as exc:
+                    print(f"[Server] transcribe evict: lora_manager.close failed: {exc}")
+                engine._lora_manager = None
+            # del then re-bind to None so polygraphy's destructor runs
+            # and the CUDA workspace is actually released.
+            for attr in ("_trt_ctx", "_trt_engine"):
+                if hasattr(engine, attr):
+                    try:
+                        delattr(engine, attr)
+                    except Exception:
+                        pass
+            engine._trt_ctx = None
+            engine._trt_engine = None
+            engine._trt_stream = None
+
+        # --- 2. Detach stream's TRT snapshot + buffer cache ---
+        try:
+            stream._trt_bufs = None
+            stream._trt_out_buf = None
+            stream._trt_bufs_cache.clear()
+            stream._trt_engine = None
+            stream._trt_ctx = None
+            stream._trt_stream = None
+        except Exception as exc:
+            print(f"[Server] transcribe evict: stream cleanup: {exc}")
+
+        # --- 3. Evict VAE TRT engines ---
+        if profile_mgr is not None:
+            for key in ("vae_encode", "vae_decode"):
+                p = profile_mgr.loaded_paths.get(key)
+                if p:
+                    try:
+                        if _evict_vae(p):
+                            evicted["evicted_vae_paths"].append((key, p))
+                    except Exception as exc:
+                        print(f"[Server] transcribe evict: VAE {key}: {exc}")
+
+        # --- 4. Move PyTorch components to CPU ---
+        if handler.model is not None:
+            evicted["model_device"] = handler.device
+            handler._recursive_to_device(handler.model, "cpu")
+        if handler.vae is not None:
+            evicted["vae_device"] = handler.device
+            handler._recursive_to_device(handler.vae, "cpu")
+        if handler.text_encoder is not None:
+            evicted["text_encoder_device"] = handler.device
+            handler._recursive_to_device(handler.text_encoder, "cpu")
+        if handler.silence_latent is not None:
+            evicted["silence_latent_device"] = handler.silence_latent.device
+            handler.silence_latent = handler.silence_latent.to("cpu")
+
+        gc.collect()
+        torch.cuda.empty_cache()
+        return evicted
+
+    def _restore_after_transcribe(evicted: dict) -> None:
+        """Inverse of ``_evict_for_transcribe`` — bring all the
+        ACE-Step components back onto the GPU and rebuild the diffusion
+        engine's TRT state on the existing wrapper instance so closure
+        / stream references stay valid.
+
+        Order matters: PT models first (cheap, predictable), then the
+        TRT decoder engine (heaviest single allocation), then VAE TRT
+        engines, then LoRA re-enable. Failures in any step are surfaced
+        loudly — a partial restore leaves the runner unable to tick,
+        which is the right place for the WS close to take over.
+        """
+        from acestep.nodes.vae_nodes import _get_trt_vae
+
+        handler = session.handler
+
+        # --- 1. PT models back to CUDA ---
+        if evicted.get("model_device") and handler.model is not None:
+            handler._recursive_to_device(handler.model, handler.device, handler.dtype)
+        if evicted.get("vae_device") and handler.vae is not None:
+            handler._recursive_to_device(
+                handler.vae, handler.device, handler._get_vae_dtype(),
+            )
+        if evicted.get("text_encoder_device") and handler.text_encoder is not None:
+            handler._recursive_to_device(
+                handler.text_encoder, handler.device, handler.dtype,
+            )
+        if (
+            evicted.get("silence_latent_device")
+            and handler.silence_latent is not None
+        ):
+            handler.silence_latent = (
+                handler.silence_latent.to(handler.device).to(handler.dtype)
+            )
+
+        # --- 2. Reload TRT decoder engine on the SAME wrapper ---
+        engine = handler._diffusion_engine
+        if engine is not None and profile_mgr is not None:
+            decoder_path = profile_mgr.loaded_paths.get("decoder")
+            if decoder_path:
+                engine.load_trt_engine(decoder_path)
+                # Stream needs to re-snapshot the new TRT refs and drop
+                # its shape-keyed buffer cache. _on_engine_swapped reads
+                # from stream.engine (== engine), so it picks up the
+                # freshly-loaded _trt_engine / _trt_ctx automatically.
+                try:
+                    stream._on_engine_swapped()
+                except Exception as exc:
+                    print(f"[Server] transcribe restore: stream swap hook: {exc}")
+                # The new engine instance has no swap listeners; the
+                # previous registration on the (now-closed) state is
+                # gone with it. Re-register so profile_mgr's future
+                # ensure_profile calls still notify the stream.
+                if hasattr(engine, "add_engine_swap_listener"):
+                    try:
+                        engine.add_engine_swap_listener(stream._on_engine_swapped)
+                    except Exception:
+                        pass
+
+        # --- 3. Re-prime VAE TRT engines (cached + auto-loaded on use,
+        #        but warm them now so the first post-restore VAE decode
+        #        doesn't pay the deserialize cost on the runner thread). ---
+        for _key, path in evicted.get("evicted_vae_paths", []):
+            try:
+                _get_trt_vae(path, torch.device(handler.device))
+            except Exception as exc:
+                print(f"[Server] transcribe restore: re-prime VAE {path}: {exc}")
+
+        # --- 4. Re-enable LoRAs that were on at evict time ---
+        if engine is not None:
+            for lora_id, strength in evicted.get("enabled_loras", []):
+                try:
+                    engine.enable_lora(lora_id, strength=strength)
+                except Exception as exc:
+                    print(
+                        f"[Server] transcribe restore: enable_lora({lora_id}) "
+                        f"failed: {exc}"
+                    )
+
+    def apply_transcribe_if_pending():
+        with transcribe_lock:
+            if not transcribe_pending[0]:
+                return
+            transcribe_pending[0] = False
+
+        # Snapshot the audio engine's *current* playback buffer — what
+        # the operator is actually hearing right now — so a post-swap
+        # detect transcribes the new source. AudioEngine stores
+        # float32 interleaved [N, C] at SAMPLE_RATE.
+        try:
+            wf = np.array(audio_eng.current, copy=True)
+        except Exception as exc:
+            print(f"[Server] transcribe: snapshot failed: {exc}")
+            _send_transcribe_failed(f"snapshot failed: {exc}")
+            return
+
+        audio_seconds = wf.shape[0] / SAMPLE_RATE
+        moved: dict | None = None
+        transcriber = None
+
+        try:
+            # --- Phase 1: evict ACE-Step from GPU ----------------------
+            free_before = _vram_free_gib()
+            _send_transcribe_progress("Freeing GPU memory for transcriber…")
+            t0 = time.perf_counter()
+            moved = _evict_for_transcribe()
+            evict_s = time.perf_counter() - t0
+            free_after_evict = _vram_free_gib()
+            print(
+                f"[Server] transcribe: evict {evict_s:.1f}s, "
+                f"VRAM free {free_before:.1f} -> {free_after_evict:.1f} GiB"
+                if free_before is not None and free_after_evict is not None
+                else f"[Server] transcribe: evict {evict_s:.1f}s"
+            )
+
+            # --- Phase 2: load the transcriber -------------------------
+            # Fresh load on every press; we destroy it before resuming
+            # inference so nothing lingers in CPU RAM between presses.
+            # ~10 s cold-load cost (5 checkpoint shards, observed on the
+            # 5090 bench) — same ballpark as the CPU↔CUDA shuttle a
+            # cached instance would pay, but with no resident footprint.
+            _send_transcribe_progress("Loading transcriber from disk…")
+            t0 = time.perf_counter()
+            from acestep.transcriber import Transcriber
+            transcriber = Transcriber()
+            load_s = time.perf_counter() - t0
+            free_after_load = _vram_free_gib()
+            print(
+                f"[Server] transcribe: load {load_s:.1f}s, "
+                f"VRAM free now {free_after_load:.1f} GiB"
+                if free_after_load is not None
+                else f"[Server] transcribe: load {load_s:.1f}s"
+            )
+
+            # --- Phase 3: inference ------------------------------------
+            _send_transcribe_progress(
+                f"Transcribing {audio_seconds:.1f}s of audio…"
+            )
+            t0 = time.perf_counter()
+            raw = transcriber.transcribe_waveform(wf, sr=SAMPLE_RATE)
+            infer_s = time.perf_counter() - t0
+            preview = raw[:200].replace("\n", "\\n")
+            print(
+                f"[Server] transcribe: inference {infer_s:.1f}s, "
+                f"raw {len(raw)} chars; preview={preview!r}"
+            )
+            lyrics_body = _parse_lyrics_body(raw)
+            print(
+                f"[Server] transcribe: parsed lyrics body "
+                f"{len(lyrics_body)} chars"
+            )
+
+        except Exception as exc:
+            print(f"[Server] transcribe failed: {exc}")
+            import traceback
+            traceback.print_exc()
+            # Drop the transcriber + restore ACE-Step so a mid-flight
+            # failure doesn't leave the demo wedged on the next tick.
+            transcriber = None
+            if moved is not None:
+                try:
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    _restore_after_transcribe(moved)
+                except Exception:
+                    pass
+            _send_transcribe_failed(str(exc))
+            return
+
+        # --- Phase 4: destroy transcriber + restore ACE-Step -----------
+        try:
+            _send_transcribe_progress("Releasing transcriber…")
+            t0 = time.perf_counter()
+            # Drop both Python-side refs (the local var and any
+            # attributes hanging off it). gc.collect() forces the
+            # destructor chain immediately so CUDA returns the ~17 GiB
+            # of activation + weight allocations before we move ACE-Step
+            # back onto the device.
+            transcriber = None
+            gc.collect()
+            torch.cuda.empty_cache()
+            release_s = time.perf_counter() - t0
+
+            _send_transcribe_progress("Restoring engine…")
+            t0 = time.perf_counter()
+            _restore_after_transcribe(moved)
+            torch.cuda.synchronize()
+            restore_s = time.perf_counter() - t0
+
+            free_final = _vram_free_gib()
+            print(
+                f"[Server] transcribe: release {release_s:.1f}s, "
+                f"restore {restore_s:.1f}s, VRAM free now "
+                f"{free_final:.1f} GiB"
+                if free_final is not None
+                else f"[Server] transcribe: release {release_s:.1f}s, "
+                     f"restore {restore_s:.1f}s"
+            )
+        except Exception as exc:
+            # If restore fails the rest of the session is wedged anyway.
+            # Surface it loudly; the runner thread will likely throw on
+            # the next tick and the WS will close cleanly.
+            print(f"[Server] transcribe: restore failed: {exc}")
+            import traceback
+            traceback.print_exc()
+            _send_transcribe_failed(f"restore failed: {exc}")
+            return
+
+        # --- Phase 5: ack -----------------------------------------------
+        try:
+            with send_lock:
+                ws.send(json.dumps({
+                    "type": "lyrics_detected",
+                    "lyrics": lyrics_body,
+                    "raw": raw,
+                }))
+            print("[Server] transcribe: lyrics_detected ack sent")
+        except ConnectionClosed:
+            running[0] = False
+
+    def _send_transcribe_failed(err: str) -> None:
+        try:
+            with send_lock:
+                ws.send(json.dumps({
+                    "type": "transcribe_failed",
+                    "error": err,
+                }))
+        except Exception:
+            pass
+
+    # Combined before_tick callback.  All cross-thread mutations (LoRA
+    # refits, source swaps, depth retunes, lyric detection) are GPU-
     # bound and must run on the runner thread between ticks.  Drain
-    # both queues each iteration so they share one rendezvous point.
+    # each queue once per iteration so they share one rendezvous point.
     def apply_pending():
         apply_lora_pending()
         apply_swap_if_pending()
         apply_depth_pending()
+        apply_transcribe_if_pending()
 
     # --- PipelineRunner: the SAME code as local ---
     runner = PipelineRunner(

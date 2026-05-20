@@ -90,10 +90,15 @@ export interface RtmgConfigPrompts {
   a: string;
   b: string;
   blend: number;
+  /** Initial lyrics. Empty string == instrumental cover (server
+   *  substitutes "[Instrumental]" at encode time). Section tags like
+   *  [Verse 1] / [Chorus] are honored. Shared across A and B. */
+  lyrics?: string;
   /** XL (5B) variant overrides — same selection rule as engine.*_xl. */
   a_xl?: string;
   b_xl?: string;
   blend_xl?: number;
+  lyrics_xl?: string;
 }
 
 export interface RtmgConfigEffects {
@@ -255,6 +260,7 @@ export const DEFAULT_CONFIG: RtmgConfig = {
     a: "heavy dubstep, deathstep, afxdump, growl heavy bass distortion",
     b: "daft punk style, beautiful, four to the floor, angelic",
     blend: 0.4,
+    lyrics: "",
   },
   controls: {
     denoise: 0.7,
@@ -460,6 +466,7 @@ export function selectVariant(cfg: RtmgConfig, scale: string | null): RtmgConfig
       a: p.a_xl ?? p.a,
       b: p.b_xl ?? p.b,
       blend: typeof p.blend_xl === "number" ? p.blend_xl : p.blend,
+      lyrics: p.lyrics_xl ?? p.lyrics,
     },
   };
 }
@@ -493,6 +500,7 @@ export function applyConfig(c: RtmgConfig): void {
     sliderTargets: { ...s.sliderTargets, ...sliderUpdates },
     promptA: resolved.prompts.a,
     promptB: resolved.prompts.b,
+    lyrics: resolved.prompts.lyrics ?? "",
     activeKey: resolved.engine.key,
     activeTimeSignature: isTimeSignature(resolved.engine.time_signature)
       ? resolved.engine.time_signature
@@ -591,6 +599,7 @@ export function captureRtmgConfig(): RtmgConfig {
       a: perf.promptA,
       b: perf.promptB,
       blend: perf.sliderTargets.prompt_blend ?? 0,
+      lyrics: perf.lyrics,
     },
     controls,
     channel_ranges: active.channel_ranges,

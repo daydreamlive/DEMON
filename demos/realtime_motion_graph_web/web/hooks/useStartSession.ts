@@ -110,6 +110,7 @@ function buildConfig(
     enabled_loras: enabledLoras,
     prompt: perf.promptA,
     prompt_b: perf.promptB,
+    lyrics: perf.lyrics,
     lora_strengths: loraStrengths,
     // Lets the server look up a precomputed sidecar (BPM, key, source
     // latent, context_latent). Absent / unknown name -> live path.
