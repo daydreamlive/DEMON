@@ -5504,7 +5504,7 @@ body.curve-open #install-video-area #graph {
 
 .stem-overlay-panel {
   position: fixed;
-  bottom: max(calc(var(--hud-thickness) + 78px), env(safe-area-inset-bottom, 0px));
+  bottom: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-bottom, 0px));
   left: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-left, 0px));
   z-index: 8;
   width: min(300px, calc(100vw - 32px));
