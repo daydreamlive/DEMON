@@ -27,6 +27,7 @@ import {
 //   Z + ▲▼      hero-bay LoRA strength — first enabled slot
 //   X + ▲▼      hero-bay LoRA strength — second enabled slot
 //   E/D/H + ▲▼  feedback / feedback depth / shift (engine)
+//   V + ▲▼      velocity EMA (engine)
 //   W/Y + ▲▼    DCW low / DCW high
 //   T            toggle DCW on/off
 //   Shift+T      cycle DCW mode
@@ -49,6 +50,7 @@ const ENGINE_DCW_CHORDS: Record<string, string> = {
   e: "feedback",
   d: "feedback_depth",
   h: "shift",
+  v: "velocity_ema",
   w: "dcw_scaler",
   y: "dcw_high_scaler",
 };

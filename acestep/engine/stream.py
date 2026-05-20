@@ -195,6 +195,10 @@ class _Slot:
     # populated on step 0, reused on every subsequent step of this slot.
     initial_noise: Optional[torch.Tensor] = None
     vt_neg_cached: Optional[torch.Tensor] = None
+    # Previous step's post-EMA velocity, used by the velocity_ema shared
+    # curve. Only populated when EMA is active (alpha set); stays None
+    # otherwise so slots without EMA pay no memory cost.
+    prev_vt: Optional[torch.Tensor] = None
 
 
 class StreamPipeline:
@@ -1121,6 +1125,25 @@ class StreamPipeline:
                 vt_per_slot[si] = v_guided
             else:
                 vt_per_slot[si] = vt_pos
+
+            # Velocity EMA across steps of this slot's trajectory. ``alpha``
+            # is the shared-curve value (scalar or per-frame); 0 disables,
+            # higher values blend more of the previous step's post-EMA
+            # velocity into the current one. Cascade matches the offline
+            # model.forward path (modeling_acestep_v15_*.py: vt = (1-α)*vt +
+            # α*prev_vt; prev = vt). Storage is lazy — slots that never see
+            # the curve set don't allocate prev_vt.
+            alpha = self._eff_shared(slot, "velocity_ema")
+            if alpha is not None:
+                if slot.prev_vt is not None:
+                    a = alpha.to(
+                        device=vt_per_slot[si].device,
+                        dtype=vt_per_slot[si].dtype,
+                    )
+                    vt_per_slot[si] = (
+                        (1.0 - a) * vt_per_slot[si] + a * slot.prev_vt
+                    )
+                slot.prev_vt = vt_per_slot[si].detach()
 
         # --- Per-slot integration ---
         step_ode = self._get_compiled(ode_steps.step_ode_euler)

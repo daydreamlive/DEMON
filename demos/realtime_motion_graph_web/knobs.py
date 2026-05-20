@@ -79,6 +79,11 @@ def build_banks(sde: bool, loras=None) -> list:
         )
         cc += 1
     core["hint_strength"] = KnobDef(cc=cc, default=1.0, sensitivity=2.0); cc += 1
+    # Velocity EMA across denoising steps. 0 = off (snappy, default).
+    # Higher values smooth the trajectory by mixing in the previous step's
+    # velocity — softens transients, gives the output a more "glued"
+    # character. Capped at 0.6: past that, output goes mushy.
+    core["velocity_ema"] = KnobDef(cc=cc, default=0.0, sensitivity=2.0, max_val=0.6); cc += 1
 
     channels = {}
     for i, (name, _start, _end) in enumerate(CHANNEL_GROUPS):

@@ -52,6 +52,8 @@ const PARAM_TOOLTIPS: Record<string, string> = {
     "How far back in time the Feedback knob reaches. 1 (default) blends with the most recent generation. Higher values reach back several ticks for an echo / ghost effect — a faint repeat of an earlier moment surfaces in the current output. Lets you get distant feedback without cranking Feedback all the way up.",
   shift:
     "Advanced: changes where the model concentrates its work across denoising. The default is tuned for the turbo engine and works well in most cases — leave it alone unless you're chasing a specific feel.",
+  velocity_ema:
+    "Smooths the denoising trajectory by blending each step with the previous one. 0 = snappy (default) — transients pop, drums hit hard. Push it up to glue the output together: softer transients, more cohesive feel, slower response to knob changes. Past ~0.5 it goes mushy.",
   guidance_scale:
     "CFG strength. Only takes effect when the RCFG mode dropdown below is NOT 'off'. Higher values push the output further toward the prompt at the cost of more artifacts. Turbo is CFG-distilled, so the useful range is narrower than a base SD model — try 3–8.",
   cfg_rescale:
@@ -104,6 +106,7 @@ const KBD_FOR_PARAM: Record<string, string> = {
   feedback: "E + ▲▼",
   feedback_depth: "D + ▲▼",
   shift: "H + ▲▼",
+  velocity_ema: "V + ▲▼",
   ch_g0: "0 + ▲▼",
   ch_g1: "1 + ▲▼",
   ch_g2: "2 + ▲▼",

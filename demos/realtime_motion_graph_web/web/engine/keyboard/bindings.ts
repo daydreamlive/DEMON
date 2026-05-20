@@ -16,6 +16,7 @@ export const KEY_BINDINGS: KeyBinding[] = [
   { combo: "⌘/Ctrl + Enter", description: "Send prompt (while in textarea)" },
   { combo: "E + ▲▼", description: "Engine: feedback" },
   { combo: "H + ▲▼", description: "Engine: shift" },
+  { combo: "V + ▲▼", description: "Engine: velocity EMA" },
   { combo: "N + ▲▼", description: "Engine: nshare" },
   { combo: "D + ▲▼", description: "Engine: ode" },
   { combo: "W + ▲▼", description: "DCW low" },

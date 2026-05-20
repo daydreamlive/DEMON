@@ -641,6 +641,12 @@ class PipelineRunner:
                 pipe.set_shared_curve("sde_denoise_curve", sde_curve)
                 pipe.set_shared_curve("velocity_scale", velocity_curve)
                 pipe.set_shared_curve("x0_target_strength", x0_str)
+                # Clear when ≤0 so the engine skips both the blend math and
+                # per-slot prev_vt storage entirely.
+                vema = float(raw.get("velocity_ema", 0.0))
+                pipe.set_shared_curve(
+                    "velocity_ema", vema if vema > 0.0 else None,
+                )
 
             torch.cuda.synchronize()
             t0 = time.perf_counter()

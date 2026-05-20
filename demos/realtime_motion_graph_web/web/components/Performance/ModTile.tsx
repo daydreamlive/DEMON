@@ -64,6 +64,11 @@ export function ModTile() {
               kbd={kbdHintFor("shift")}
             />
             <Knob
+              param="velocity_ema"
+              label="vel EMA"
+              kbd={kbdHintFor("velocity_ema")}
+            />
+            <Knob
               param="feedback"
               label={defaultLabelFor("feedback")}
               kbd={kbdHintFor("feedback")}

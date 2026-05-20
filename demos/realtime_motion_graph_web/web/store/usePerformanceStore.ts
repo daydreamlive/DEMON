@@ -244,6 +244,7 @@ const DEFAULT_SLIDER_VALUES: Record<string, number> = {
   feedback: 0.0,
   feedback_depth: 1,
   shift: 3.0,
+  velocity_ema: 0.0,
   ch_g0: 1.0,
   ch_g1: 1.0,
   ch_g2: 1.0,

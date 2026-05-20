@@ -41,6 +41,11 @@ export const SLIDER_META: Record<string, SliderMeta> = {
   // 3.0 is the upstream turbo default, 3.5 our packaged default. Useful
   // operator range is roughly [1, 6].
   shift: { min: 1.0, max: 6.0, step: 0.5, pro: true },
+  // Velocity EMA across denoising steps. 0 = off (snappy). Higher values
+  // blend in the previous step's velocity — softens transients, gives
+  // a more "glued" character. Past ~0.6 the output goes mushy, so the
+  // slider is capped there.
+  velocity_ema: { max: 0.6, step: 0.05, pro: true },
   // RCFG guidance scale. Only takes effect when rcfg_mode != "off". The
   // turbo model is CFG-distilled (trained to operate at scale=1 with
   // conditioning baked in); driving guidance past ~10 on turbo tends
