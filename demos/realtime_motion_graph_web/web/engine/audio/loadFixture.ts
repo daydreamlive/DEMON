@@ -112,7 +112,7 @@ export async function loadFixtureAudio(name: string): Promise<DecodedFixture> {
   // Custom uploads short-circuit the pod fetch — they live in memory only.
   // Imported lazily to avoid a Zustand cycle at module load.
   const { useCustomTracksStore } = await import("@/store/useCustomTracksStore");
-  const cached = useCustomTracksStore.getState().decoded.get(name);
+  const cached = useCustomTracksStore.getState().tracks.get(name)?.decoded;
   if (cached) return cached;
 
   const url = podHttp(`/fixtures/${encodeURIComponent(name)}`);

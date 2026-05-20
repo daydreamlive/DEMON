@@ -13,21 +13,13 @@ const LABELS: Record<StemOverlayKind, string> = {
 export function StemOverlayPanel() {
   const fixture = usePerformanceStore((s) => s.fixture);
   const kiosk = usePerformanceStore((s) => s.kiosk);
-  const sourceMode = useCustomTracksStore((s) =>
-    fixture
-      ? (s.sourceModes.get(fixture) ??
-        (s.decoded.has(fixture) ? "full" : undefined))
-      : undefined,
+  const track = useCustomTracksStore((s) =>
+    fixture ? s.tracks.get(fixture) : undefined,
   );
-  const status = useCustomTracksStore((s) =>
-    fixture ? s.stemStatuses.get(fixture) : undefined,
-  );
-  const error = useCustomTracksStore((s) =>
-    fixture ? s.stemErrors.get(fixture) : undefined,
-  );
-  const stemsReady = useCustomTracksStore((s) =>
-    fixture ? s.stems.has(fixture) : false,
-  );
+  const sourceMode = track?.sourceMode;
+  const status = track?.stemStatus;
+  const error = track?.stemError;
+  const stemsReady = Boolean(track?.stems);
   const enabled = useStemOverlayStore((s) => s.enabled);
   const volumes = useStemOverlayStore((s) => s.volumes);
   const toggle = useStemOverlayStore((s) => s.toggle);

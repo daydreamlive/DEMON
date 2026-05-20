@@ -11,7 +11,7 @@ export function useStemOverlaySync() {
   const fixture = usePerformanceStore((s) => s.fixture);
   const player = useSessionStore((s) => s.player);
   const stems = useCustomTracksStore((s) =>
-    fixture ? s.stems.get(fixture) : undefined,
+    fixture ? s.tracks.get(fixture)?.stems : undefined,
   );
   const vocalsEnabled = useStemOverlayStore((s) => s.enabled.vocals);
   const instrumentsEnabled = useStemOverlayStore((s) => s.enabled.instruments);
