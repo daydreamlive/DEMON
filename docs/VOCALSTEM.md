@@ -3,10 +3,11 @@
 This document describes how uploaded-track stem extraction works in the
 `realtime_motion_graph_web` backend.
 
-The implementation lives in `demos/realtime_motion_graph_web/backend.py`. The
-demo UI and backend now resolve every user-uploaded audio source to a stem mode
-(`full` by default), so uploads are stemmed automatically. Built-in fixtures
-still omit `stem_source_mode` and skip the stem path.
+The Mel-Band RoFormer integration lives in
+`demos/realtime_motion_graph_web/melband_reformer.py`. The demo UI and backend
+now resolve every user-uploaded audio source to a stem mode (`full` by default),
+so uploads are stemmed automatically. Built-in fixtures still omit
+`stem_source_mode` and skip the stem path.
 
 ## When Stem Extraction Runs
 
@@ -18,7 +19,7 @@ The frontend can send one of three source modes:
 - `instruments`: generate stems, then use the instrumental bed as the inference
   source.
 
-Backend validation is handled by `_normalize_stem_source_mode()`. The frontend
+Mode validation is handled by `normalize_stem_source_mode()`. The frontend
 uses `full` as the fallback for custom uploads, so the selector controls only
 which waveform feeds inference; it does not gate whether stems are generated.
 
@@ -30,7 +31,7 @@ after the new uploaded waveform has been decoded and prepared.
 ## Stem Extraction
 
 Stem extraction is performed with Mel-Band RoFormer through
-`_extract_upload_stems()`. The backend caches the RoFormer model separately from
+`extract_upload_stems()`. The helper caches the RoFormer model separately from
 the active ACE-Step `Session`; it no longer uses ACE-Step's native `extract`
 task for uploaded-track separation.
 
@@ -41,7 +42,7 @@ protocol run at 48 kHz. The extraction path therefore:
 2. Runs Mel-Band RoFormer separation, internally resampling to 44.1 kHz.
 3. Receives `vocals` and `instruments` from the separator.
 4. Resamples both stems back to 48 kHz.
-5. Normalizes each stem back to the upload shape with `_fit_stem_waveform()`,
+5. Normalizes each stem back to the upload shape in the helper,
    which fixes batch/channel/length differences and replaces non-finite values.
 
 The model checkpoint defaults to `Kijai/MelBandRoFormer_comfy` /
@@ -58,7 +59,7 @@ spectral suppression.
 
 ## Returned Stem Assets
 
-`_extract_upload_stems()` returns:
+`extract_upload_stems()` returns:
 
 ```python
 {

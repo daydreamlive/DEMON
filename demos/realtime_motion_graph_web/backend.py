@@ -12,17 +12,14 @@ through :class:`.pipeline.PipelineRunner`, with:
 """
 
 import json
-import os
 import socket
 import struct
-import sys
 import threading
 import time
 from pathlib import Path
 
 import numpy as np
 import torch
-import torchaudio.functional as TAF
 import zstandard as zstd
 
 torch.set_grad_enabled(False)
@@ -52,6 +49,11 @@ from acestep.paths import (
 
 from .audio_engine import AudioEngine
 from .knobs import build_banks, CHANNEL_GROUPS, KEYSTONE_CHANNELS
+from .melband_reformer import (
+    extract_upload_stems,
+    normalize_stem_source_mode,
+    resolve_upload_stem_source_mode,
+)
 from .protocol import (
     SAMPLE_RATE,
     SLICE_FLAG_DELTA,
@@ -60,15 +62,6 @@ from .protocol import (
     T,
 )
 from .pipeline import PipelineRunner
-
-from scripts.extract_stems_melbandreformer import (
-    DEFAULT_MODEL_FILE as MELBAND_DEFAULT_MODEL_FILE,
-    DEFAULT_MODEL_REPO as MELBAND_DEFAULT_MODEL_REPO,
-    SAMPLE_RATE as MELBAND_SAMPLE_RATE,
-    MelBandRoformer,
-    load_model as load_melband_model,
-    separate_stems as separate_melband_stems,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -119,10 +112,6 @@ def _decode_audio_msg(audio_msg: bytes) -> torch.Tensor:
 
 
 _VALID_TIME_SIG_STRS = frozenset(str(s) for s in VALID_TIME_SIGNATURES)
-_VALID_STEM_SOURCE_MODES = {"full", "vocals", "instruments"}
-_MELBAND_MODEL_LOCK = threading.Lock()
-_MELBAND_INFER_LOCK = threading.Lock()
-_MELBAND_MODEL_CACHE: dict[tuple[str, str], MelBandRoformer] = {}
 
 
 def _normalize_time_signature(value: object) -> str | None:
@@ -141,130 +130,6 @@ def _normalize_time_signature(value: object) -> str | None:
         s = value.strip()
         return s if s in _VALID_TIME_SIG_STRS else None
     return None
-
-
-def _normalize_stem_source_mode(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    mode = value.strip().lower()
-    return mode if mode in _VALID_STEM_SOURCE_MODES else None
-
-
-def _resolve_upload_stem_source_mode(
-    fixture_name: object,
-    requested_mode: str | None,
-) -> str | None:
-    """Auto-stem user uploads while keeping built-in fixtures cheap by default."""
-    if requested_mode is not None:
-        return requested_mode
-    if isinstance(fixture_name, str) and fixture_name in KNOWN_FIXTURES:
-        return None
-    return "full"
-
-
-def _fit_stem_waveform(wf: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    """Coerce decoded model output to the uploaded waveform's [C, N] shape."""
-    if wf.ndim == 3:
-        wf = wf[0]
-    if wf.ndim == 1:
-        wf = wf.unsqueeze(0)
-    wf = wf.detach().to(dtype=torch.float32, device=target.device)
-    if wf.shape[0] == 1 and target.shape[0] == 2:
-        wf = wf.repeat(2, 1)
-    elif wf.shape[0] > target.shape[0]:
-        wf = wf[:target.shape[0]]
-    elif wf.shape[0] < target.shape[0]:
-        wf = torch.cat(
-            [wf, wf[-1:].repeat(target.shape[0] - wf.shape[0], 1)],
-            dim=0,
-        )
-    if wf.shape[-1] > target.shape[-1]:
-        wf = wf[:, :target.shape[-1]]
-    elif wf.shape[-1] < target.shape[-1]:
-        wf = torch.nn.functional.pad(wf, (0, target.shape[-1] - wf.shape[-1]))
-    return torch.nan_to_num(wf)
-
-
-def _resolve_melband_model_path() -> Path:
-    explicit_path = os.environ.get("MELBAND_ROFORMER_MODEL_PATH")
-    if explicit_path:
-        return Path(explicit_path).expanduser()
-
-    try:
-        from huggingface_hub import hf_hub_download
-    except ImportError as exc:
-        raise RuntimeError(
-            "huggingface_hub is required to auto-download the Mel-Band "
-            "RoFormer checkpoint. Install it or set MELBAND_ROFORMER_MODEL_PATH."
-        ) from exc
-
-    repo = os.environ.get("MELBAND_ROFORMER_MODEL_REPO", MELBAND_DEFAULT_MODEL_REPO)
-    filename = os.environ.get("MELBAND_ROFORMER_MODEL_FILE", MELBAND_DEFAULT_MODEL_FILE)
-    return Path(hf_hub_download(repo_id=repo, filename=filename))
-
-
-def _get_melband_model(device: torch.device) -> MelBandRoformer:
-    model_path = _resolve_melband_model_path()
-    key = (str(model_path), str(device))
-    with _MELBAND_MODEL_LOCK:
-        cached = _MELBAND_MODEL_CACHE.get(key)
-        if cached is not None:
-            return cached
-
-        print(f"[Server] Loading Mel-Band RoFormer model on {device}...")
-        t0 = time.time()
-        model = load_melband_model(model_path, device)
-        _MELBAND_MODEL_CACHE[key] = model
-        print(f"[Server] Mel-Band RoFormer loaded in {time.time() - t0:.1f}s")
-        return model
-
-
-def _resample_melband_stem_to_backend_rate(stem: torch.Tensor) -> torch.Tensor:
-    stem = stem.detach().cpu().float()
-    if MELBAND_SAMPLE_RATE == SAMPLE_RATE:
-        return stem
-    return TAF.resample(stem, orig_freq=MELBAND_SAMPLE_RATE, new_freq=SAMPLE_RATE)
-
-
-def _extract_upload_stems(
-    session: Session,
-    *,
-    waveform: torch.Tensor,
-) -> dict[str, torch.Tensor]:
-    """Use Mel-Band RoFormer for vocal and instrumental separation.
-
-    The realtime backend runs sources at 48 kHz, while the RoFormer checkpoint
-    is trained for 44.1 kHz. The separator handles the downsample internally;
-    we resample its returned stems back to the backend sample rate before
-    sending overlays or preparing a selected stem as the inference source.
-    """
-    device = torch.device(session.handler.device)
-    model = _get_melband_model(device)
-
-    t0 = time.time()
-    with _MELBAND_INFER_LOCK:
-        vocals_44k, instruments_44k = separate_melband_stems(
-            model,
-            waveform.detach().cpu().float().unsqueeze(0),
-            SAMPLE_RATE,
-            device,
-        )
-    if device.type == "cuda":
-        torch.cuda.synchronize(device)
-    print(f"[Server] Mel-Band RoFormer stems complete in {time.time() - t0:.1f}s")
-
-    vocals = _fit_stem_waveform(
-        _resample_melband_stem_to_backend_rate(vocals_44k),
-        waveform,
-    )
-    instruments = _fit_stem_waveform(
-        _resample_melband_stem_to_backend_rate(instruments_44k),
-        waveform,
-    )
-    return {
-        "vocals": vocals.contiguous(),
-        "instruments": instruments.contiguous(),
-    }
 
 
 def _send_stem_payload(
@@ -546,9 +411,10 @@ def handle_client(
     # key, source latent, conditioning). Absent / unknown name -> fully
     # live path; same behavior as before sidecars existed.
     fixture_name = config.get("fixture_name")
-    stem_source_mode = _resolve_upload_stem_source_mode(
+    stem_source_mode = resolve_upload_stem_source_mode(
         fixture_name,
-        _normalize_stem_source_mode(config.get("stem_source_mode")),
+        normalize_stem_source_mode(config.get("stem_source_mode")),
+        known_fixtures=KNOWN_FIXTURES,
     )
 
     # LoRA selection.  ``enabled_loras`` is the new id-keyed protocol;
@@ -764,9 +630,10 @@ def handle_client(
             f"(source_mode={stem_source_mode})..."
         )
         try:
-            upload_stems = _extract_upload_stems(
-                session,
+            upload_stems = extract_upload_stems(
                 waveform=waveform,
+                device=session.handler.device,
+                backend_sample_rate=SAMPLE_RATE,
             )
             if stem_source_mode != "full":
                 selected_wf = upload_stems[stem_source_mode]
@@ -1715,7 +1582,7 @@ def handle_client(
                                 )
                                 swap_pending["fixture_name"] = data.get("fixture_name")
                                 swap_pending["stem_source_mode"] = (
-                                    _normalize_stem_source_mode(
+                                    normalize_stem_source_mode(
                                         data.get("stem_source_mode")
                                     )
                                 )
@@ -1767,9 +1634,10 @@ def handle_client(
             requested_key = swap_pending.get("key")
             requested_time_sig = swap_pending.get("time_signature")
             new_fixture_name = swap_pending.get("fixture_name")
-            new_stem_source_mode = _resolve_upload_stem_source_mode(
+            new_stem_source_mode = resolve_upload_stem_source_mode(
                 new_fixture_name,
                 swap_pending.get("stem_source_mode"),
+                known_fixtures=KNOWN_FIXTURES,
             )
             if audio_msg is None:
                 return
@@ -1831,9 +1699,10 @@ def handle_client(
                     f"(source_mode={new_stem_source_mode})..."
                 )
                 try:
-                    new_upload_stems = _extract_upload_stems(
-                        session,
+                    new_upload_stems = extract_upload_stems(
                         waveform=new_wf,
+                        device=session.handler.device,
+                        backend_sample_rate=SAMPLE_RATE,
                     )
                     if new_stem_source_mode != "full":
                         new_wf = new_upload_stems[new_stem_source_mode]
