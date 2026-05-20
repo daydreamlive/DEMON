@@ -11,9 +11,8 @@ from pathlib import Path
 import torch
 import torchaudio.functional as TAF
 
+from acestep.model_downloader import resolve_melband_roformer_model_path
 from scripts.extract_stems_melbandreformer import (
-    DEFAULT_MODEL_FILE,
-    DEFAULT_MODEL_REPO,
     SAMPLE_RATE as MELBAND_SAMPLE_RATE,
     MelBandRoformer,
     load_model,
@@ -122,17 +121,7 @@ def _resolve_model_path() -> Path:
     if explicit_path:
         return Path(explicit_path).expanduser()
 
-    try:
-        from huggingface_hub import hf_hub_download
-    except ImportError as exc:
-        raise RuntimeError(
-            "huggingface_hub is required to auto-download the Mel-Band "
-            "RoFormer checkpoint. Install it or set MELBAND_ROFORMER_MODEL_PATH."
-        ) from exc
-
-    repo = os.environ.get("MELBAND_ROFORMER_MODEL_REPO", DEFAULT_MODEL_REPO)
-    filename = os.environ.get("MELBAND_ROFORMER_MODEL_FILE", DEFAULT_MODEL_FILE)
-    return Path(hf_hub_download(repo_id=repo, filename=filename))
+    return resolve_melband_roformer_model_path()
 
 
 def _get_model(device: torch.device) -> MelBandRoformer:

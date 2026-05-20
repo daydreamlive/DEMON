@@ -193,6 +193,11 @@ MAIN_MODEL_COMPONENTS = [
 # Default LM model (included in main model)
 DEFAULT_LM_MODEL = "acestep-5Hz-lm-1.7B"
 
+# Auxiliary models stored directly under ACESTEP_MODELS_DIR.
+MELBAND_ROFORMER_MODEL_NAME = "melband-roformer"
+MELBAND_ROFORMER_REPO = "daydreamlive/MelBandRoFormer"
+MELBAND_ROFORMER_MODEL_FILE = "MelBandRoformer_fp16.safetensors"
+
 
 def get_project_root() -> Path:
     """Get the project root directory."""
@@ -206,6 +211,24 @@ def get_checkpoints_dir(custom_dir: Optional[str] = None) -> Path:
         return Path(custom_dir)
     from acestep.paths import checkpoints_dir
     return checkpoints_dir()
+
+
+def get_melband_roformer_dir(custom_dir: Optional[str] = None) -> Path:
+    """Get the Mel-Band RoFormer model directory path."""
+    if custom_dir:
+        return Path(custom_dir)
+    from acestep.paths import melband_roformer_dir
+    return melband_roformer_dir()
+
+
+def get_melband_roformer_model_path(
+    model_dir: Optional[Path] = None,
+    filename: str = MELBAND_ROFORMER_MODEL_FILE,
+) -> Path:
+    """Get the expected local Mel-Band RoFormer checkpoint path."""
+    if model_dir is None:
+        model_dir = get_melband_roformer_dir()
+    return Path(model_dir) / filename
 
 
 def check_main_model_exists(checkpoints_dir: Optional[Path] = None) -> bool:
@@ -243,6 +266,14 @@ def check_model_exists(model_name: str, checkpoints_dir: Optional[Path] = None) 
     return model_path.exists()
 
 
+def check_melband_roformer_model_exists(
+    model_dir: Optional[Path] = None,
+    filename: str = MELBAND_ROFORMER_MODEL_FILE,
+) -> bool:
+    """Check if the Mel-Band RoFormer checkpoint exists locally."""
+    return get_melband_roformer_model_path(model_dir, filename).exists()
+
+
 def list_available_models() -> Dict[str, str]:
     """
     List all available models for download.
@@ -252,7 +283,8 @@ def list_available_models() -> Dict[str, str]:
     """
     models = {
         "main": MAIN_MODEL_REPO,
-        **SUBMODEL_REGISTRY
+        **SUBMODEL_REGISTRY,
+        MELBAND_ROFORMER_MODEL_NAME: MELBAND_ROFORMER_REPO,
     }
     return models
 
@@ -342,6 +374,51 @@ def download_submodel(
     return _smart_download(repo_id, model_path, token, prefer_source)
 
 
+def download_melband_roformer_model(
+    model_dir: Optional[Path] = None,
+    force: bool = False,
+    token: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """
+    Download the Mel-Band RoFormer stem-separation checkpoint from HuggingFace.
+
+    This is a single-file public model, so it intentionally avoids the
+    HuggingFace/ModelScope fallback machinery used for ACE-Step checkpoints.
+    The file is materialized directly under ACESTEP_MODELS_DIR.
+    """
+    if model_dir is None:
+        model_dir = get_melband_roformer_dir()
+
+    model_dir.mkdir(parents=True, exist_ok=True)
+    model_path = get_melband_roformer_model_path(model_dir)
+
+    if not force and model_path.exists():
+        return True, f"Mel-Band RoFormer already exists at {model_path}"
+
+    print(f"Downloading Mel-Band RoFormer from {MELBAND_ROFORMER_REPO}...")
+    print(f"Destination: {model_path}")
+
+    try:
+        from huggingface_hub import hf_hub_download
+
+        hf_hub_download(
+            repo_id=MELBAND_ROFORMER_REPO,
+            filename=MELBAND_ROFORMER_MODEL_FILE,
+            local_dir=str(model_dir),
+            local_dir_use_symlinks=False,
+            token=token,
+            force_download=force,
+        )
+    except Exception as exc:
+        error_msg = f"Mel-Band RoFormer download failed: {exc}"
+        logger.error(error_msg)
+        return False, error_msg
+
+    if not model_path.exists():
+        return False, f"Mel-Band RoFormer download did not create {model_path}"
+    return True, f"Successfully downloaded Mel-Band RoFormer to {model_path}"
+
+
 def download_all_models(
     checkpoints_dir: Optional[Path] = None,
     force: bool = False,
@@ -376,6 +453,11 @@ def download_all_models(
         messages.append(msg)
         if not success:
             all_success = False
+
+    success, msg = download_melband_roformer_model(force=force, token=token)
+    messages.append(msg)
+    if not success:
+        all_success = False
     
     return all_success, messages
 
@@ -494,6 +576,40 @@ def ensure_dit_model(
     return False, f"Unknown DiT model: {model_name}"
 
 
+def ensure_melband_roformer_model(
+    model_dir: Optional[Path] = None,
+    token: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """
+    Ensure the Mel-Band RoFormer checkpoint is available, downloading if needed.
+    """
+    if model_dir is None:
+        model_dir = get_melband_roformer_dir()
+
+    if check_melband_roformer_model_exists(model_dir):
+        return True, "Mel-Band RoFormer model is available"
+
+    print("\n" + "=" * 60)
+    print("Mel-Band RoFormer model not found. Starting automatic download...")
+    print("=" * 60 + "\n")
+
+    return download_melband_roformer_model(model_dir, token=token)
+
+
+def resolve_melband_roformer_model_path(
+    model_dir: Optional[Path] = None,
+    token: Optional[str] = None,
+) -> Path:
+    """Return the local Mel-Band RoFormer checkpoint path, downloading if needed."""
+    if model_dir is None:
+        model_dir = get_melband_roformer_dir()
+
+    success, msg = ensure_melband_roformer_model(model_dir, token=token)
+    if not success:
+        raise RuntimeError(msg)
+    return get_melband_roformer_model_path(model_dir)
+
+
 def print_model_list():
     """Print formatted list of available models."""
     print("\nAvailable Models for Download:")
@@ -513,6 +629,9 @@ def print_model_list():
     for name, repo in SUBMODEL_REGISTRY.items():
         if "lm" not in name.lower():
             print(f"  {name} -> {repo}")
+
+    print("\n[Stem Separation Models]")
+    print(f"  {MELBAND_ROFORMER_MODEL_NAME} -> {MELBAND_ROFORMER_REPO}")
 
     print("\n" + "=" * 60)
 
@@ -600,6 +719,13 @@ Alternative using huggingface-cli:
     if args.model:
         if args.model == "main":
             success, msg = download_main_model(checkpoints_dir, args.force, args.token)
+        elif args.model == MELBAND_ROFORMER_MODEL_NAME:
+            model_dir = get_melband_roformer_dir(args.dir) if args.dir else get_melband_roformer_dir()
+            success, msg = download_melband_roformer_model(
+                model_dir,
+                args.force,
+                args.token,
+            )
         elif args.model in SUBMODEL_REGISTRY:
             # Download main model first if needed (unless --skip-main)
             if not args.skip_main and not check_main_model_exists(checkpoints_dir):

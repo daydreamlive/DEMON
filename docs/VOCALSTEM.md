@@ -45,13 +45,15 @@ protocol run at 48 kHz. The extraction path therefore:
 5. Normalizes each stem back to the upload shape in the helper,
    which fixes batch/channel/length differences and replaces non-finite values.
 
-The model checkpoint defaults to `Kijai/MelBandRoFormer_comfy` /
-`MelBandRoformer_fp16.safetensors`. Operators can override it with:
+The model checkpoint defaults to `daydreamlive/MelBandRoFormer` /
+`MelBandRoformer_fp16.safetensors`. The downloader materializes it at
+`ACESTEP_MODELS_DIR/MelBandRoFormer/MelBandRoformer_fp16.safetensors`
+(for example, `/workspace/.daydream-scope/models/MelBandRoFormer/...` when
+`ACESTEP_MODELS_DIR=/workspace/.daydream-scope/models`). Operators can override
+the checkpoint with:
 
 ```text
 MELBAND_ROFORMER_MODEL_PATH
-MELBAND_ROFORMER_MODEL_REPO
-MELBAND_ROFORMER_MODEL_FILE
 ```
 
 The instrumental bed is the RoFormer instrumental output, not ACE-guided
