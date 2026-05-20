@@ -366,6 +366,16 @@ interface PerformanceState {
    *  by useFixtureSwap. */
   skipNextFixtureSwap: boolean;
 
+  /** One-shot opt-out for the "hear source first" denoise gate inside
+   *  useFixtureSwap. Set true before writing perf.fixture during a
+   *  saved-session resume — the gate would otherwise snap the
+   *  restored denoise to 0 and play a glide-to-zero animation,
+   *  trampling the saved value. Consumed-and-cleared by
+   *  useFixtureSwap inside its swap completion handler. Fresh
+   *  starts and song-swaps don't set it, so their existing
+   *  snap-and-glide behaviour is unchanged. */
+  skipNextDenoiseGate: boolean;
+
   /** DCW (wavelet-domain post-step correction) non-numeric state. The
    * numeric knobs (dcw_scaler, dcw_high_scaler, dcw_mult_blend,
    * dcw_mag_phase, dcw_soft_thresh) all live in sliderValues. */
@@ -442,6 +452,7 @@ interface PerformanceState {
   togglePause: () => void;
   setRemixStarted: (b: boolean) => void;
   setSkipNextFixtureSwap: (b: boolean) => void;
+  setSkipNextDenoiseGate: (b: boolean) => void;
   /** Run a visual-only "slide to zero" demo on `param`. Seeds
    *  `sliderDisplayOverride[param] = fromValue` and tweens it down to 0
    *  over `durationMs` using a cubic ease-out, then deletes the key so
@@ -541,6 +552,7 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   paused: false,
   remixStarted: false,
   skipNextFixtureSwap: false,
+  skipNextDenoiseGate: false,
 
   dcwEnabled: true,
   dcwMode: "double",
@@ -658,6 +670,7 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   togglePause: () => set((s) => ({ paused: !s.paused })),
   setRemixStarted: (b) => set({ remixStarted: b }),
   setSkipNextFixtureSwap: (b) => set({ skipNextFixtureSwap: b }),
+  setSkipNextDenoiseGate: (b) => set({ skipNextDenoiseGate: b }),
   animateSliderDisplayFrom: (param, fromValue, durationMs) => {
     // Cancel any in-flight smoothing or prior demo tween for this param.
     cancelTween(param);

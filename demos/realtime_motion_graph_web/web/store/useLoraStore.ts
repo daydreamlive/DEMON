@@ -3,12 +3,29 @@
 import { create } from "zustand";
 
 import { getConfig, isConfigApplied } from "@/lib/config";
+import {
+  prependTriggerToPrompts,
+  removeTriggerFromPrompts,
+} from "@/lib/loraTriggers";
 import { useSessionStore } from "@/store/useSessionStore";
 import {
   LORA_DEFAULT_STRENGTH_FRACTION,
   LORA_SLIDER_MAX,
 } from "@/types/engine";
 import type { LoraCatalogEntry } from "@/types/protocol";
+
+/** Whether visible trigger-prepend is on for the active config. Used
+ *  to gate every trigger write below — same source of truth as the
+ *  manual-toggle path in LibraryTile. */
+function autoPrependEnabled(): boolean {
+  return getConfig().engine.auto_prepend_lora_triggers ?? true;
+}
+
+/** Read the trigger word for a given LoRA id from the live catalog. */
+function triggerFor(catalog: LoraCatalogEntry[], id: string): string | null {
+  const entry = catalog.find((e) => e.id === id);
+  return entry?.metadata?.primary_trigger_word ?? null;
+}
 
 /** True iff a LoRA's trained ``base_model_scale`` is compatible with
  *  the active session's checkpoint scale. Unknown values on EITHER
@@ -252,6 +269,20 @@ export const useLoraStore = create<LoraState>((set) => ({
       const enabled = shouldSeed
         ? new Set<string>([...s.enabled, ...fresh.enabled])
         : s.enabled;
+      // Prepend triggers for any newly-seeded LoRAs so the encoder
+      // sees the same prompt the operator does (same contract as the
+      // manual-toggle path in LibraryTile). Iterate `fresh.enabled` so
+      // we only act on LoRAs that became enabled THIS call — not
+      // anything the user had already turned on before re-broadcast.
+      // Sidecar entries without a primary_trigger_word are skipped by
+      // the helper's null check; the autoPrepend gate is config-driven
+      // and matches the LibraryTile guard.
+      if (shouldSeed && autoPrependEnabled()) {
+        for (const id of fresh.enabled) {
+          const trigger = triggerFor(catalog, id);
+          if (trigger) prependTriggerToPrompts(trigger);
+        }
+      }
       return {
         catalog,
         strengths,
@@ -266,6 +297,19 @@ export const useLoraStore = create<LoraState>((set) => ({
       if (s.enabled.has(id)) return {} as Partial<LoraState>;
       const next = new Set(s.enabled);
       next.add(id);
+      // Visible trigger-prepend lives in the store action so EVERY
+      // caller — manual click in LibraryTile, MIDI, future
+      // programmatic enablers — gets the prepend without each call
+      // site having to remember to fire it. The setCatalog seed path
+      // has its own prepend loop above (it bypasses enable() because
+      // it builds the Set atomically with merge semantics this action
+      // doesn't have). The helper itself is idempotent: if the
+      // trigger is already in the prompt as a substring of any token,
+      // it won't double-prepend.
+      const trigger = autoPrependEnabled()
+        ? triggerFor(s.catalog, id)
+        : null;
+      if (trigger) prependTriggerToPrompts(trigger);
       return { enabled: next };
     }),
   disable: (id) =>
@@ -273,6 +317,14 @@ export const useLoraStore = create<LoraState>((set) => ({
       if (!s.enabled.has(id)) return {} as Partial<LoraState>;
       const next = new Set(s.enabled);
       next.delete(id);
+      // Symmetric strip on disable. removeTriggerFromPrompts no-ops
+      // when the trigger isn't present as a standalone token, so
+      // user-typed phrases that happen to contain the trigger as a
+      // substring (e.g. "punk rock" when trigger is "rock") survive.
+      const trigger = autoPrependEnabled()
+        ? triggerFor(s.catalog, id)
+        : null;
+      if (trigger) removeTriggerFromPrompts(trigger);
       return { enabled: next };
     }),
   toggle: (id) =>

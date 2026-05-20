@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 
 import { loraStrengthDispatcher } from "@/engine/lora/dispatcher";
 import { listLoras } from "@/engine/lora/listLoras";
-import { getConfig, useConfig } from "@/lib/config";
+import { useConfig } from "@/lib/config";
 import { LOCAL_MODE } from "@/lib/runtime";
 import { isLoraCompatibleWithScale, useLoraStore } from "@/store/useLoraStore";
 import { useMidiStore } from "@/store/useMidiStore";
@@ -45,71 +45,19 @@ import type { LoraCatalogEntry, LoraMetadata } from "@/types/protocol";
 //  8px above the drawer top edge, viewport-centered. Do NOT add
 //  `position: relative` to `.lora-row` or any intermediate ancestor;
 //  it kicks the tooltip out of that shared surface.
-//  - Toggling a LoRA on, when `engine.auto_prepend_lora_triggers` is
-//    true (default), prepends the trigger word to promptA and promptB
-//    so the encoder sees what the operator sees. Toggling off removes
-//    the trigger wherever it appears as a standalone comma-delimited
-//    token — covers the case where multiple LoRAs were stacked and
-//    the trigger is no longer at the head of the prompt. Substrings
-//    inside larger user-typed phrases are left alone.
+//  - Enabling/disabling a LoRA, when `engine.auto_prepend_lora_triggers`
+//    is true (default), prepends/strips the trigger word to/from
+//    promptA and promptB so the encoder sees what the operator sees.
+//    The prepend/strip lives in useLoraStore's enable/disable actions
+//    (and the boot-time auto-enable seed inside setCatalog), so every
+//    code path that flips a LoRA — manual click here, boot seed, MIDI,
+//    future programmatic callers — picks it up without each call site
+//    having to fire it explicitly. Substrings inside larger user-typed
+//    phrases are left alone.
 //  - LoRAs whose `base_model_scale` doesn't match the active
 //    checkpoint scale (2B vs 5B) are hidden by default; an inline
 //    footer reports the count and offers a one-click override.
 //    `engine.show_incompatible_loras = true` flips the default.
-
-// ── Visible trigger-prepend helpers ─────────────────────────────────────
-
-function _containsTrigger(prompt: string, trigger: string): boolean {
-  return prompt.toLowerCase().includes(trigger.toLowerCase());
-}
-
-function _prependTrigger(prompt: string, trigger: string): string {
-  const trimmed = prompt.trim();
-  if (trimmed.length === 0) return trigger;
-  return `${trigger}, ${prompt}`;
-}
-
-/** Remove every occurrence of ``trigger`` from ``prompt`` where it
- *  appears as a standalone comma-delimited token (head, middle, tail,
- *  or sole token). Substrings of larger phrases are left alone — if
- *  the user typed "punk rock" and the trigger is "rock", we don't
- *  mangle their prompt. Returns the rewritten prompt, or null when
- *  the trigger isn't present as a token (so callers can skip the
- *  write). Case-insensitive on the trigger comparison; preserves the
- *  case of surrounding tokens. */
-function _stripTrigger(prompt: string, trigger: string): string | null {
-  const needle = trigger.trim().toLowerCase();
-  if (!needle) return null;
-  const tokens = prompt.split(", ");
-  const kept = tokens.filter((tok) => tok.trim().toLowerCase() !== needle);
-  if (kept.length === tokens.length) return null;
-  return kept.join(", ");
-}
-
-// Both prompts get the same treatment when a LoRA is toggled. Iterate
-// over [current, setter] pairs so the per-side logic lives once.
-function _promptSides(): ReadonlyArray<readonly [string, (v: string) => void]> {
-  const perf = usePerformanceStore.getState();
-  return [
-    [perf.promptA, perf.setPromptA],
-    [perf.promptB, perf.setPromptB],
-  ] as const;
-}
-
-function prependTriggerToPrompts(trigger: string): void {
-  for (const [cur, setter] of _promptSides()) {
-    if (!_containsTrigger(cur, trigger)) {
-      setter(_prependTrigger(cur, trigger));
-    }
-  }
-}
-
-function removeTriggerFromPrompts(trigger: string): void {
-  for (const [cur, setter] of _promptSides()) {
-    const next = _stripTrigger(cur, trigger);
-    if (next !== null) setter(next);
-  }
-}
 
 // ── Search ──────────────────────────────────────────────────────────────
 
@@ -316,17 +264,17 @@ function LoraRow({ entry }: RowProps) {
 
   function toggle() {
     const remote = useSessionStore.getState().remote;
-    const cfg = getConfig();
-    const autoPrepend = cfg.engine.auto_prepend_lora_triggers ?? true;
     if (enabled) {
+      // disable() in the lora store also strips the trigger from
+      // promptA/promptB when engine.auto_prepend_lora_triggers is on,
+      // so the encoder follows the operator's visible prompt without
+      // this call site needing to handle it.
       disable(id);
       remote?.sendDisableLora(id);
-      if (autoPrepend && trigger) removeTriggerFromPrompts(trigger);
     } else {
       enable(id);
       const s = useLoraStore.getState().strengths[id] ?? 0;
       remote?.sendEnableLora(id, s);
-      if (autoPrepend && trigger) prependTriggerToPrompts(trigger);
     }
   }
 
