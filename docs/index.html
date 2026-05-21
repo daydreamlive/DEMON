@@ -24,22 +24,6 @@
 <body>
 
 <!-- ============================================================
-     TOP UTILITY BAR
-     ============================================================ -->
-<header class="topbar" role="banner">
-  <div class="brand">
-    <span class="dot"></span>
-    <span>DEMON / v0.1</span>
-  </div>
-  <nav class="meta" aria-label="Primary">
-    <a href="#demo">DEMO</a>
-    <a href="#showcase">SAMPLES</a>
-    <a href="#how">METHOD</a>
-    <a href="https://github.com/ryanontheinside/DEMON">GITHUB ↗</a>
-  </nav>
-</header>
-
-<!-- ============================================================
      HERO
      ============================================================ -->
 <section class="hero" id="top">
@@ -47,96 +31,48 @@
     <canvas id="hero-canvas"></canvas>
   </div>
 
-  <div class="container hero__content">
-    <div class="hero__title-block">
-      <div class="hero__title-meta">
-        <span>OPEN · MIT</span>
-        <span class="pill">REAL-TIME</span>
-        <span class="pill">DIFFUSION</span>
-      </div>
+  <div class="container container--narrow hero__content">
 
-      <h1 class="hero__title" aria-label="DEMON: Diffusion Engine for Musical Orchestrated Noise">
-        <span class="word"><span class="acronym">D</span>iffusion</span>
-        <span class="word"><span class="acronym">e</span>ngine</span>
-        <span class="word">for</span>
-        <span class="word"><span class="acronym">m</span>usical</span>
-        <span class="word accent"><span class="acronym">o</span>rchestrated</span>
-        <span class="word accent"><span class="acronym">n</span>oise</span>
-      </h1>
+    <h1 class="hero__title" aria-label="DEMON: Diffusion Engine for Musical Orchestrated Noise">
+      <span class="word"><span class="acronym">D</span>iffusion</span>
+      <span class="word"><span class="acronym">e</span>ngine</span>
+      <span class="word">for</span>
+      <span class="word"><span class="acronym">m</span>usical</span>
+      <span class="word accent"><span class="acronym">o</span>rchestrated</span>
+      <span class="word accent"><span class="acronym">n</span>oise</span>
+    </h1>
 
-      <p class="hero__subtitle">
-        A real-time, controllable music diffusion engine. The model dreaming through your audio while you steer, at 25 Hz, on a single consumer GPU.
-      </p>
-
-      <div class="hero__cta">
-        <a class="btn btn--primary" href="#demo">
-          <span>See it run</span>
-          <span class="arrow">→</span>
-        </a>
-        <a class="btn" href="https://github.com/ryanontheinside/DEMON">
-          <span>GitHub</span>
-          <span class="arrow">↗</span>
-        </a>
-      </div>
-    </div>
-  </div>
-
-  <div class="container hero__footer">
-    <div class="hero__stats">
-      <div class="stat">
-        <span class="v">12.3</span>
-        <span class="l">gen / sec</span>
-      </div>
-      <div class="stat">
-        <span class="v">25 Hz</span>
-        <span class="l">control rate</span>
-      </div>
-      <div class="stat">
-        <span class="v">81 ms</span>
-        <span class="l">tick latency</span>
-      </div>
-      <div class="stat">
-        <span class="v">1×</span>
-        <span class="l">consumer gpu</span>
-      </div>
-    </div>
-    <div>
-      <span class="blink">●</span>&nbsp;&nbsp;NOW PLAYING&nbsp;&nbsp;<span class="mono">inside_confusion_loop_120s</span>
-    </div>
-  </div>
-</section>
-
-
-<!-- ============================================================
-     30-SECOND DEMO
-     ============================================================ -->
-<section id="demo">
-  <div class="container">
-    <div class="section-label">
-      <span class="num">01</span>
-      <span class="name">The 30-second demo</span>
-    </div>
-
-    <p class="lead">
-      One short clip. The clearest way to understand what DEMON is, is to watch a person move a knob and hear the music re-shape around their gesture in real time.
+    <p class="author-line">
+      Ryan Fosdick <span class="sep">·</span> Daydream
     </p>
 
-    <figure class="demo-frame" style="margin-top: 3rem;">
+    <nav class="resource-row" aria-label="Resources">
+      <span class="resource-btn resource-btn--disabled">Paper <em>(soon)</em></span>
+      <a class="resource-btn" href="https://github.com/ryanontheinside/DEMON">Code</a>
+      <a class="resource-btn" href="https://github.com/ryanontheinside/DEMON#demos">Demo</a>
+      <a class="resource-btn" href="https://huggingface.co/datasets/daydreamlive/demon-fixtures">Fixtures</a>
+      <a class="resource-btn" href="#cite">BibTeX</a>
+    </nav>
+
+    <figure class="teaser-frame">
       <!-- placeholder; replace with: <video src="assets/video/hero-demo.mp4" autoplay muted loop playsinline></video> -->
       <div class="placeholder">
         <svg width="42" height="42" viewBox="0 0 42 42" fill="none">
           <circle cx="21" cy="21" r="20" stroke="#3a3833"/>
           <polygon points="16,13 30,21 16,29" fill="#ff7a00"/>
         </svg>
-        DEMO VIDEO PLACEHOLDER<br>
+        TEASER VIDEO PLACEHOLDER<br>
         <span style="opacity:.5">assets/video/hero-demo.mp4</span>
       </div>
     </figure>
 
-    <div class="demo-caption">
-      <span>15s loop · MUTED BY DEFAULT · click to unmute</span>
-      <span>cap. RYAN ON THE INSIDE</span>
+    <div class="abstract-block">
+      <h2 class="abstract-label">Abstract</h2>
+      <p class="abstract">
+        DEMON is a real-time diffusion engine for music, built on ACE-Step v1.5. It adapts streaming diffusion to 60-second audio latents, producing 12.3 full-song generations per second on a single consumer GPU. The engine introduces per-frame parametric control of the denoising process at 25&nbsp;Hz resolution, including an SDE solver variant for per-frame source preservation and shared mutable curves that propagate parameter changes within one streaming tick. The result is a music diffusion model that responds to gesture at instrument-grade latency.
+      </p>
     </div>
+
   </div>
 </section>
 
@@ -147,16 +83,11 @@
 <section id="showcase">
   <div class="container">
     <div class="section-label">
-      <span class="num">02</span>
-      <span class="name">Same source. Four worlds.</span>
+      <span class="name">Samples</span>
     </div>
 
     <p class="lead">
       One bass loop, four different transformations. Two via LoRA + prompt swap. Two via the engine's per-frame curves and channel controls, no LoRA change. The source never changes. Everything else does.
-    </p>
-
-    <p class="mono" style="font-size:0.7rem; letter-spacing:0.28em; text-transform:uppercase; color:var(--ink-faint); margin-top:2rem; margin-bottom:2rem;">
-      → SOURCE&nbsp;&nbsp;<span class="mono" style="color:var(--ink-dim);">inside_confusion_loop_120s.wav</span>&nbsp;&nbsp;·&nbsp;&nbsp;OUTPUT × 4 BELOW
     </p>
 
     <div class="morph-grid">
@@ -214,8 +145,7 @@
 <section id="contributions">
   <div class="container">
     <div class="section-label">
-      <span class="num">03</span>
-      <span class="name">What's actually different</span>
+      <span class="name">Contributions</span>
     </div>
 
       <p class="lead">
@@ -257,7 +187,6 @@
 <section id="performance">
   <div class="container container--narrow">
     <div class="section-label">
-      <span class="num">04</span>
       <span class="name">Performance</span>
     </div>
 
@@ -330,8 +259,7 @@
 <section id="how">
   <div class="container container--narrow">
     <div class="section-label">
-      <span class="num">05</span>
-      <span class="name">How it works</span>
+      <span class="name">Method</span>
     </div>
 
     <div class="prose">
@@ -401,8 +329,7 @@
 <section id="start">
   <div class="container container--narrow">
     <div class="section-label">
-      <span class="num">06</span>
-      <span class="name">Run it</span>
+      <span class="name">Code</span>
     </div>
 
     <p>
@@ -437,7 +364,6 @@
 <section id="ack">
   <div class="container container--narrow">
     <div class="section-label">
-      <span class="num">07</span>
       <span class="name">Acknowledgments</span>
     </div>
 
@@ -468,8 +394,7 @@
 <section id="cite">
   <div class="container container--narrow">
     <div class="section-label">
-      <span class="num">08</span>
-      <span class="name">Cite</span>
+      <span class="name">BibTeX</span>
     </div>
 
     <p>
@@ -504,9 +429,7 @@
     <div>
       <a href="https://github.com/ryanontheinside/DEMON">GITHUB</a>
       &nbsp;&nbsp;·&nbsp;&nbsp;
-      <a href="https://huggingface.co/datasets/daydreamlive/demon-fixtures">FIXTURES</a>
-      &nbsp;&nbsp;·&nbsp;&nbsp;
-      <a href="#cite">CITE</a>
+      <a href="#cite">BIBTEX</a>
     </div>
     <div>Last updated: 2026</div>
   </div>
