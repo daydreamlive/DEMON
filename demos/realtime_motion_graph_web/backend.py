@@ -417,6 +417,13 @@ EAGER_MAX_PIPELINE_DEPTH = 4
 # tick. Set to 0 to disable the pause entirely (always tick).
 IDLE_PAUSE_S = float(os.environ.get("DEMON_IDLE_PAUSE_S", "20"))
 
+# Carryover kept on the wire when trimming the overlapping head of a
+# windowed slice (on_audio_ready, windowed path). Sized to match the
+# runner's leading seam xfade in pipeline.py so the xfade landing zone
+# is rewritten on the next tick and any param-driven micro-deltas at
+# the immediate seam still propagate.
+OVERLAP_PAD_FRAMES = 1200  # 25 ms at 48 kHz
+
 
 def _compute_max_pipeline_depth(diffusion_engine) -> int:
     """Largest ``pipeline_depth`` the loaded backend can serve.
@@ -1391,20 +1398,27 @@ def handle_client(
         # Trim the leading edge of the slice when it overlaps with the
         # previous one. The runner re-decodes the entire vae_window every
         # tick (default 3 s) but only advances ~0.5 s, so ~80% of every
-        # window is audio the client already has. We keep an OVERLAP_PAD
-        # carryover so any param-driven micro-deltas in the immediate
-        # seam zone still propagate, and the runner's own xfade landing
-        # zone (1200 frames at win_start) gets one more rewrite from
-        # this same trimmed-overlap on the NEXT tick — so client/server
-        # divergence in that zone is bounded to one tick.
+        # window is audio the client already has. We keep an
+        # OVERLAP_PAD_FRAMES carryover so any param-driven micro-deltas
+        # in the immediate seam zone still propagate, and the runner's
+        # own xfade landing zone (at win_start) gets one more rewrite
+        # from this same trimmed-overlap on the NEXT tick — so client/
+        # server divergence in that zone is bounded to one tick.
         #
-        # Non-contiguous windows (loop wrap, source swap reset) skip the
-        # trim entirely and re-send the full slice from win_start.
+        # Trim only fires on the windowed path and only for a contiguous
+        # forward step (ss inside the previous range AND se past it).
+        # The full-buffer path, source swap (resets the cursor), and
+        # loop wrap (se lands at or before last_sent_end) all skip the
+        # trim and re-send the slice in full.
         last_sent_end = last_sent_end_ref[0]
-        if last_sent_end > 0 and ss < last_sent_end:
-            OVERLAP_PAD = 1200  # 25 ms at 48 kHz — matches runner xfade
-            new_ss = max(ss, last_sent_end - OVERLAP_PAD)
-            if new_ss < se:
+        if (win_start is not None
+                and last_sent_end > 0
+                and ss < last_sent_end < se):
+            new_ss = max(ss, last_sent_end - OVERLAP_PAD_FRAMES)
+            if new_ss > ss:
+                trim = new_ss - ss
+                region = region[trim:]
+                mirror_region = mirror_region[trim:]
                 ss = new_ss
         last_sent_end_ref[0] = se
 
