@@ -111,8 +111,16 @@ class PipelineRunner:
         self.running = running
         self.motion_val = motion_val
         self.motion_lock = motion_lock
+        # Default callback: in full-buffer mode, hand off to
+        # ``audio_eng.swap`` (legacy crossfade-on-swap path). In windowed
+        # mode the runner has already written into the audio engine via
+        # ``patch_window`` before invoking the callback, so the default
+        # is a no-op there — callers that only want a side-effect (delta
+        # send, monitoring) override this and skip the swap themselves.
         if on_audio_ready is None:
-            on_audio_ready = lambda wav, *_args: audio_eng.swap(wav)
+            def on_audio_ready(wav, win_start=None, win_end=None):
+                if win_start is None:
+                    audio_eng.swap(wav)
         self.on_audio_ready = on_audio_ready
         # before_tick: optional callable invoked at the top of every loop
         # iteration on the runner thread.  Used by the web server to
@@ -810,7 +818,16 @@ class PipelineRunner:
                         win_np = win_wav.numpy().T
                         win_start = audio_out.start_sample + win_offset_samples
                         win_end = win_start + win_np.shape[0]
-                        buf = self.audio_eng.current.copy()
+                        # Read the boundary slices directly from the
+                        # audio engine's live buffer. The previous
+                        # ``buf = self.audio_eng.current.copy()`` cost
+                        # ~23 MB of host RAM per windowed decode for a
+                        # 60 s buffer; only ~4800 samples at each edge
+                        # are actually needed for the crossfade, and
+                        # ``self.current`` is single-writer (this
+                        # thread) so a bare slice read is safe without
+                        # the lock.
+                        current = self.audio_eng.current
                         # 25 ms at 48 kHz — matches CROSSFADE_SECONDS.
                         # Cuts perceived "smear" of param transitions in
                         # half from the previous 50 ms.
@@ -818,21 +835,34 @@ class PipelineRunner:
                         if win_start > 0 and xfade > 0:
                             t_in = np.linspace(0.0, 1.0, xfade).reshape(-1, 1)
                             win_np[:xfade] = (
-                                buf[win_start:win_start + xfade] * (1 - t_in)
+                                current[win_start:win_start + xfade] * (1 - t_in)
                                 + win_np[:xfade] * t_in
                             )
-                        if win_end < buf.shape[0] and xfade > 0:
+                        if win_end < current.shape[0] and xfade > 0:
                             t_out = np.linspace(1.0, 0.0, xfade).reshape(-1, 1)
-                            tail = min(xfade, buf.shape[0] - win_end + xfade)
+                            tail = min(xfade, current.shape[0] - win_end + xfade)
                             s = win_np.shape[0] - tail
                             win_np[s:] = (
                                 win_np[s:] * t_out[:tail]
-                                + buf[win_start + s:win_start + s + tail] * (1 - t_out[:tail])
+                                + current[win_start + s:win_start + s + tail] * (1 - t_out[:tail])
                             )
-                        clamp_end = min(win_end, buf.shape[0])
-                        buf[win_start:clamp_end] = win_np[:clamp_end - win_start]
-                        self.on_audio_ready(buf, win_start, win_end)
-                        last_wav = buf
+                        clamp_end = min(win_end, current.shape[0])
+                        patched = win_np[:clamp_end - win_start]
+                        # Single in-place write under the audio
+                        # engine's lock. Replaces the old "copy → write
+                        # → swap" sequence (two full-buffer numpy
+                        # memcpys) with one slice-assign.
+                        self.audio_eng.patch_window(patched, win_start)
+                        # Callback receives the patched window only.
+                        # Backend handler uses it to delta-encode against
+                        # its client mirror; standalone callers can
+                        # ignore the args.
+                        self.on_audio_ready(patched, win_start, win_end)
+                        # ``last_wav`` is only checked for non-None by
+                        # the skip-gate above. A view of the engine
+                        # buffer is enough; we don't need to retain a
+                        # snapshot.
+                        last_wav = current
                     else:
                         audio_out = self.session.decode(result_latent)
                         torch.cuda.synchronize()

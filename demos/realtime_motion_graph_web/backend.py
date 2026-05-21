@@ -1352,30 +1352,38 @@ def handle_client(
         # trigger and we must not encode it behind their back.
 
     # --- on_audio_ready: delta-encode and send to client ---
+    # Two call shapes:
+    #   * Windowed (``win_start is not None``): ``wav_np`` is the patched
+    #     window region — shape ``[win_end - win_start, channels]``. The
+    #     runner has already written it into ``audio_eng`` via
+    #     ``patch_window``, so we skip ``audio_eng.swap`` entirely
+    #     (eliminates the full-buffer ``self.current.copy()`` that used to
+    #     fire on every windowed decode — ~23 MB / call at 60 s buffer).
+    #   * Full-buffer (``win_start is None``): legacy path; ``wav_np`` is
+    #     the whole new buffer and we route it through
+    #     ``audio_eng.swap`` for the global crossfade.
     def on_audio_ready(wav_np, win_start=None, win_end=None):
-        audio_eng.swap(wav_np)
-        if win_start is not None:
-            ss, se = win_start, min(win_end, len(wav_np))
-        else:
-            ss, se = 0, len(wav_np)
-        if se <= ss:
-            return
-
         client_mirror = client_mirror_ref[0]
-        # If the runner emitted a slice that's longer than the freshly
-        # swapped mirror (different source length), clip to the smaller
-        # of the two; the client has no addressable space past mirror.
-        se = min(se, len(client_mirror), len(wav_np))
-        if se <= ss:
-            return
+        if win_start is not None:
+            ss = int(win_start)
+            se = min(int(win_end), ss + len(wav_np), len(client_mirror))
+            if se <= ss:
+                return
+            region = wav_np[: se - ss]
+        else:
+            audio_eng.swap(wav_np)
+            ss = 0
+            se = min(len(wav_np), len(client_mirror))
+            if se <= ss:
+                return
+            region = wav_np[ss:se]
+        mirror_region = client_mirror[ss:se]
 
         if not _first_slice[0]:
             _first_slice[0] = True
             _ms("first_generated_slice")
 
         # Delta = what server has now minus what client has
-        region = wav_np[ss:se]
-        mirror_region = client_mirror[ss:se]
         delta = (region - mirror_region).astype(np.float16)
         compressed = zctx.compress(delta.tobytes())
         client_mirror[ss:se] = region

@@ -53,6 +53,36 @@ class AudioEngine:
             self._fading = True
             self._fade_pos = 0
 
+    def patch_window(self, window, start_sample):
+        """Write a window of audio into ``self.current`` in place.
+
+        Hot-path replacement for the runner's old
+        ``buf = audio_eng.current.copy(); ...; audio_eng.swap(buf)``
+        idiom, which moved ~46 MB of host RAM per windowed decode for a
+        60 s buffer (one copy in the runner, one in ``swap``). Holds the
+        lock only for the slice-assign so the audio callback's reads stay
+        consistent; no global crossfade is triggered — the runner is
+        expected to have already crossfaded the window's leading and
+        trailing edges against ``self.current`` before calling.
+
+        Multi-channel coercion mirrors :meth:`swap` so callers that
+        produce mono or shape-mismatched windows behave identically.
+        """
+        if window.ndim == 1:
+            window = window.reshape(-1, 1)
+        if window.shape[1] != self.channels:
+            if self.channels == 2 and window.shape[1] == 1:
+                window = np.column_stack([window, window])
+            elif self.channels == 1 and window.shape[1] == 2:
+                window = window.mean(axis=1, keepdims=True)
+        buf_len = len(self.current)
+        end = min(start_sample + len(window), buf_len)
+        n = end - start_sample
+        if n <= 0:
+            return
+        with self._lock:
+            self.current[start_sample:end] = window[:n]
+
     def patch(self, data, start_sample):
         """Write audio into the buffer at *start_sample* in-place."""
         if data.ndim == 1:
