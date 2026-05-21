@@ -11,6 +11,7 @@ import { useIdleReset } from "@/hooks/useIdleReset";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useMcpMirror } from "@/hooks/useMcpMirror";
+import { useLoraTriggerSync } from "@/hooks/useLoraTriggerSync";
 import { useMidi } from "@/hooks/useMidi";
 import { useParamSync } from "@/hooks/useParamSync";
 import { usePromptBlendSync } from "@/hooks/usePromptBlendSync";
@@ -76,6 +77,7 @@ export function PerformanceShell() {
   useEdgeLoraBinding();
   useTimbreSync();
   usePromptBlendSync();
+  useLoraTriggerSync();
   useStemOverlaySync();
   useRefSourceAcks("timbre");
   useRefSourceAcks("structure");
