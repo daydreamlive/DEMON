@@ -10,6 +10,8 @@ export const KEY_BINDINGS: KeyBinding[] = [
   { combo: "A + ▲▼", description: "Remix strength (denoise)" },
   { combo: "G + ▲▼", description: "Structure strength (hint)" },
   { combo: "B + ▲▼", description: "Prompt blend (A↔B)" },
+  { combo: "Z + ▲▼", description: "Hero LoRA strength — slot 1" },
+  { combo: "X + ▲▼", description: "Hero LoRA strength — slot 2" },
   { combo: "Enter", description: "Send prompt" },
   { combo: "⌘/Ctrl + Enter", description: "Send prompt (while in textarea)" },
   { combo: "E + ▲▼", description: "Engine: feedback" },

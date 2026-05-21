@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef } from "react";
 
-import { displayLoraName } from "@/lib/loraLabels";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
@@ -203,7 +202,7 @@ export function MobileLoraBlendStepper() {
     ids.push(next.id);
   }
   const nameOf = (id: string | undefined) =>
-    id ? displayLoraName(id, catalog.find((c) => c.id === id)?.name) : null;
+    id ? (catalog.find((c) => c.id === id)?.name ?? id) : null;
   const a = nameOf(ids[0]);
   const b = nameOf(ids[1]);
 

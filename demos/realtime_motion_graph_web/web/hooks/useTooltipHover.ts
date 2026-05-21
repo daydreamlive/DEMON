@@ -20,6 +20,11 @@ interface UseTooltipHoverOptions {
   /** Optional element to exclude from hover detection — point hovering
    *  the readout itself shouldn't clear/overwrite the text being read. */
   selfRef?: RefObject<HTMLElement | null>;
+  /** CSS selector for ancestors that should suppress the readout —
+   *  e.g. ".hero-macros" so the ambient chip doesn't duplicate the
+   *  hero bay's own floating ::after tooltip + kbd hint. The hover
+   *  is otherwise valid; we just don't surface it. */
+  excludeSelector?: string;
 }
 
 interface TooltipHoverResult {
@@ -30,7 +35,7 @@ interface TooltipHoverResult {
 export function useTooltipHover(
   options: UseTooltipHoverOptions = {},
 ): TooltipHoverResult {
-  const { getRoot, selfRef } = options;
+  const { getRoot, selfRef, excludeSelector } = options;
   const [text, setText] = useState<string | null>(null);
   const [title, setTitle] = useState<string | null>(null);
 
@@ -46,6 +51,11 @@ export function useTooltipHover(
       if (selfRef?.current && selfRef.current.contains(target)) return;
       const el = target.closest<HTMLElement>("[data-dd-tooltip]");
       if (!el) {
+        setText(null);
+        setTitle(null);
+        return;
+      }
+      if (excludeSelector && el.closest(excludeSelector)) {
         setText(null);
         setTitle(null);
         return;
@@ -81,7 +91,7 @@ export function useTooltipHover(
       moveTarget.removeEventListener("pointermove", onMove as EventListener);
       leaveTarget.removeEventListener("pointerleave", onLeave as EventListener);
     };
-  }, [getRoot, selfRef]);
+  }, [getRoot, selfRef, excludeSelector]);
 
   return { title, text };
 }

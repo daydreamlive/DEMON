@@ -290,6 +290,9 @@ export function Knob({ param, label, max, min, reverse, unity, kbd }: Props) {
   return (
     <div
       className="knob-group"
+      // Picked up by useMidi.ts's contextmenu handler (`.knob-group
+      // [data-param]` → CC-learn), mirroring SliderGroup.
+      data-param={param}
       style={style}
       data-dd-tooltip={tooltip}
       data-dd-tooltip-wide={tooltip ? "" : undefined}
