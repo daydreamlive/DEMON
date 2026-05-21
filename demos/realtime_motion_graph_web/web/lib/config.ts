@@ -261,7 +261,7 @@ export const DEFAULT_CONFIG: RtmgConfig = {
     hint_strength: 1.4,
     feedback: 0.0,
     feedback_depth: 1,
-    shift: 0.5,
+    shift: 3.5,
     ch_g0: 1.0,
     ch_g1: 1.0,
     ch_g2: 1.0,
