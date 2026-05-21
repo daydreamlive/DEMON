@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { createPortal } from "react-dom";
 
 import { loraStrengthDispatcher } from "@/engine/lora/dispatcher";
-import { listLoras } from "@/engine/lora/listLoras";
+import { listHiddenLoras, listLoras } from "@/engine/lora/listLoras";
 import { useConfig } from "@/lib/config";
 import { LOCAL_MODE } from "@/lib/runtime";
 import { isLoraCompatibleWithScale, useLoraStore } from "@/store/useLoraStore";
@@ -14,48 +14,117 @@ import { useSessionStore } from "@/store/useSessionStore";
 import { LORA_SLIDER_MAX } from "@/types/engine";
 import type { LoraCatalogEntry, LoraMetadata } from "@/types/protocol";
 
-// LoRA library tile. Each row: pill-style enable switch, name, full-width
-// strength slider with a colored fill. The whole tile also exposes:
+// LoRA library tile — redesigned for a large catalog (40+ genre LoRAs).
 //
-//  - A search bar at the top filtering on name + description + tags +
-//    primary_genre. Empty query shows everything.
-//  - A right-click anywhere on the row opens a portaled context menu
-//    (LoraContextMenu) with two items:
-//       MIDI learn       → arms `useMidiStore.startLearn("cc", "lora_str_<id>", row)`
-//       Copy trigger     → clipboard write + transient tooltip flash
-//    The row stops the contextmenu's native propagation so the
-//    document-level fallback in `useMidi.ts` doesn't *also* arm learn
-//    (that fallback's `.lora-row` branch has been removed in tandem;
-//    this menu is now the sole entry point for both actions on a row).
-//    The copy confirmation rides the same `data-dd-tooltip` chrome as
-//    every other tooltip in the drawer: after a successful copy, the
-//    row's tooltip text is swapped to "Copied 'word'" and
-//    `data-dd-tooltip-show` is forced true for 1.5s.
-//  - Hover on a row surfaces the same `data-dd-tooltip-wide` chrome
-//    with the description, classification chips, and recommended
-//    inference params. Bare LoRAs fall back to id-as-name display.
+// The old layout was one long scroll of full-width rows, each carrying an
+// always-visible strength slider, with the description trapped in a hover
+// tooltip. With 40+ LoRAs that meant scrolling a wall of sliders and
+// fighting tooltips. This layout splits the tile in two:
 //
-//  Tooltip placement note: the `[data-dd-tooltip]::after` pseudo is
-//  `position: absolute`, and `.lora-row` (and every drawer-body
-//  ancestor between the row and `.install-sheet`) is unpositioned, so
-//  the tooltip walks up to the drawer (which is `position: fixed`).
-//  Combined with the default `bottom: calc(100% + 8px); left: 50%`,
-//  every tooltip in the drawer — slider labels, OperatorStrip
-//  buttons, prompts, library rows — lands in the same screen spot
-//  8px above the drawer top edge, viewport-centered. Do NOT add
-//  `position: relative` to `.lora-row` or any intermediate ancestor;
-//  it kicks the tooltip out of that shared surface.
-//  - Enabling/disabling a LoRA does NOT mutate the Tags A/B textareas.
-//    The trigger word is injected onto the WS `prompt` message at
-//    send-time by RemoteBackend.sendPrompt (via enabledLoraTriggerPrefix),
-//    gated on `engine.auto_prepend_lora_triggers` (default true).
-//    The click-toggle here calls sendPrompt right after enable/disable
-//    so the engine immediately re-encodes with the new trigger set;
-//    useLoraTriggerSync is the backstop for non-click enable paths.
-//  - LoRAs whose `base_model_scale` doesn't match the active
-//    checkpoint scale (2B vs 5B) are hidden by default; an inline
-//    footer reports the count and offers a one-click override.
-//    `engine.show_incompatible_loras = true` flips the default.
+//  ── ACTIVE rack ──  Only the *enabled* LoRAs, each with its strength
+//     slider. Usually 1–4 entries, so there is no slider wall — you only
+//     ever see sliders for things you are actually using.
+//
+//  ── BROWSE accordion ──  Every LoRA, grouped into collapsible genre
+//     categories (Electronic / Rock / Pop / …), all collapsed by default.
+//     Each browse row is a compact click-to-enable button showing the
+//     name + a short inline description (no hover tooltip). Enabling a
+//     LoRA pops it up into the ACTIVE rack with a slider.
+//
+// A search box at the top filters across name + description + tags +
+// genre; while a query is active the accordion flattens to a plain
+// results list. Right-click any row → portaled context menu (MIDI learn,
+// Copy trigger). Enabling/disabling a LoRA does not mutate the Tags A/B
+// textareas — the trigger word rides the WS `prompt` message, injected by
+// RemoteBackend.sendPrompt (enabledLoraTriggerPrefix), and the toggle
+// re-sends the prompt so the engine re-encodes with the new trigger set.
+
+// ── Genre → category map ────────────────────────────────────────────────
+//
+// Ryan's 40 acestep1.5 LoRAs each carry their own `primary_genre`, so
+// grouping by genre directly would yield 40 groups of one. This static
+// map folds the genres into a handful of browsable categories. Genres
+// not listed (and the older daydreamlive LoRAs) fall through to "Other".
+
+const GENRE_CATEGORY: Record<string, string> = {
+  // Electronic
+  edm: "Electronic",
+  electronic: "Electronic",
+  electropop: "Electronic",
+  house: "Electronic",
+  deep_house: "Electronic",
+  techno: "Electronic",
+  dubstep: "Electronic",
+  future_bass: "Electronic",
+  synthwave: "Electronic",
+  synth_pop: "Electronic",
+  trap: "Electronic",
+  phonk: "Electronic",
+  industrial: "Electronic",
+  // Rock
+  rock: "Rock",
+  hardrock: "Rock",
+  alternative: "Rock",
+  alternative_rock: "Rock",
+  indie_rock: "Rock",
+  progressive_rock: "Rock",
+  psychedelic_rock: "Rock",
+  post_punk: "Rock",
+  punk: "Rock",
+  grunge: "Rock",
+  metal: "Rock",
+  metalcore: "Rock",
+  emo: "Rock",
+  shoegaze: "Rock",
+  // Pop
+  pop: "Pop",
+  j_pop: "Pop",
+  dream_pop: "Pop",
+  indie: "Pop",
+  // Hip-Hop
+  hip_hop: "Hip-Hop",
+  rap: "Hip-Hop",
+  // Acoustic & Folk
+  acoustic: "Acoustic & Folk",
+  folk: "Acoustic & Folk",
+  jazz: "Acoustic & Folk",
+  // Chill & Other
+  ambient: "Chill & Other",
+  lo_fi: "Chill & Other",
+  funk: "Chill & Other",
+  experimental: "Chill & Other",
+  r_b: "Chill & Other",
+};
+
+const CATEGORY_ORDER = [
+  "Electronic",
+  "Rock",
+  "Pop",
+  "Hip-Hop",
+  "Acoustic & Folk",
+  "Chill & Other",
+  "Other",
+];
+
+function normGenre(g: string | null | undefined): string {
+  return (g ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function categoryOf(entry: LoraCatalogEntry): string {
+  return GENRE_CATEGORY[normGenre(entry.metadata?.primary_genre)] ?? "Other";
+}
+
+function displayNameOf(entry: LoraCatalogEntry): string {
+  return entry.name || entry.id;
+}
+
+function byDisplayName(a: LoraCatalogEntry, b: LoraCatalogEntry): number {
+  return displayNameOf(a).localeCompare(displayNameOf(b));
+}
 
 // ── Search ──────────────────────────────────────────────────────────────
 
@@ -81,35 +150,23 @@ function matchesQuery(entry: LoraCatalogEntry, q: string): boolean {
     .some((s) => s.toLowerCase().includes(needle));
 }
 
-// ── Tooltip text ────────────────────────────────────────────────────────
+// ── Inline description ──────────────────────────────────────────────────
+//
+// Replaces the old hover tooltip. Returns a short line shown directly
+// under the LoRA name in browse rows — the real description when present,
+// otherwise a moods/recommended-strength fallback.
 
-function buildTooltipText(md: LoraMetadata | undefined): string | undefined {
+function shortDescription(md: LoraMetadata | undefined): string | undefined {
   if (!md || !md.has_metadata) return undefined;
-  const parts: string[] = [];
-  if (md.description) {
-    parts.push(md.description);
+  if (md.description) return md.description;
+  const bits: string[] = [];
+  if (md.moods && md.moods.length > 0) {
+    bits.push(md.moods.slice(0, 3).join(", "));
   }
-  const classBits: string[] = [];
-  if (md.primary_genre) classBits.push(md.primary_genre);
-  if (md.tags.length > 0) classBits.push(md.tags.join(", "));
-  if (classBits.length > 0) parts.push(classBits.join(" • "));
-  const recBits: string[] = [];
   if (md.recommended_strength != null) {
-    recBits.push(`strength ${md.recommended_strength.toFixed(2)}`);
+    bits.push(`rec. strength ${md.recommended_strength.toFixed(2)}`);
   }
-  if (md.recommended_steps != null) recBits.push(`${md.recommended_steps} steps`);
-  if (md.recommended_shift != null) {
-    recBits.push(`shift ${md.recommended_shift.toFixed(2)}`);
-  }
-  if (md.recommended_guidance != null) {
-    recBits.push(`guidance ${md.recommended_guidance.toFixed(2)}`);
-  }
-  if (recBits.length > 0) parts.push(`Recommended: ${recBits.join(", ")}`);
-  if (md.primary_trigger_word) {
-    parts.push(`Trigger: "${md.primary_trigger_word}" (right-click for menu)`);
-  }
-  if (parts.length === 0) return undefined;
-  return parts.join(" — ");
+  return bits.length > 0 ? bits.join(" · ") : undefined;
 }
 
 // ── Context menu ────────────────────────────────────────────────────────
@@ -203,214 +260,7 @@ function LoraContextMenu({ x, y, items, onClose }: ContextMenuProps) {
   );
 }
 
-// ── Row ─────────────────────────────────────────────────────────────────
-
-interface RowProps {
-  entry: LoraCatalogEntry;
-}
-
-function LoraRow({ entry }: RowProps) {
-  const { id } = entry;
-  const enabled = useLoraStore((s) => s.enabled.has(id));
-  const strength = usePerformanceStore(
-    (s) => s.sliderTargets[`lora_str_${id}`],
-  );
-  const fallbackStrength = useLoraStore((s) => s.strengths[id] ?? 0);
-  const value = typeof strength === "number" ? strength : fallbackStrength;
-  const enable = useLoraStore((s) => s.enable);
-  const disable = useLoraStore((s) => s.disable);
-
-  const rowRef = useRef<HTMLDivElement | null>(null);
-  const trackRef = useRef<HTMLDivElement | null>(null);
-  // Transient tooltip override for click confirmations (e.g. "Copied
-  // 'roti-1ndstrl'"). When set, the row's data-dd-tooltip text is
-  // swapped to this value and data-dd-tooltip-show is forced on for
-  // CONFIRM_MS, surfacing the same shared display surface above the
-  // drawer that hover uses. No parallel toast chrome needed.
-  const [confirmMsg, setConfirmMsg] = useState<string | null>(null);
-  const confirmTimerRef = useRef<number | null>(null);
-  // Right-click context menu state — set on row contextmenu, cleared
-  // by item click / outside pointerdown / Escape / scroll.
-  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
-  const closeMenu = useCallback(() => setMenuPos(null), []);
-
-  const md = entry.metadata;
-  const displayName = entry.name || id;
-  const baseTooltipText = useMemo(() => buildTooltipText(md), [md]);
-  const tooltipText = confirmMsg ?? baseTooltipText;
-  const trigger = md?.primary_trigger_word ?? null;
-
-  const flashConfirm = useCallback((text: string) => {
-    setConfirmMsg(text);
-    if (confirmTimerRef.current !== null) {
-      window.clearTimeout(confirmTimerRef.current);
-    }
-    confirmTimerRef.current = window.setTimeout(() => {
-      setConfirmMsg(null);
-      confirmTimerRef.current = null;
-    }, 1500);
-  }, []);
-
-  useEffect(
-    () => () => {
-      if (confirmTimerRef.current !== null) {
-        window.clearTimeout(confirmTimerRef.current);
-      }
-    },
-    [],
-  );
-
-  function toggle() {
-    const remote = useSessionStore.getState().remote;
-    if (enabled) {
-      disable(id);
-      remote?.sendDisableLora(id);
-    } else {
-      enable(id);
-      const s = useLoraStore.getState().strengths[id] ?? 0;
-      remote?.sendEnableLora(id, s);
-    }
-    // Re-send the prompt so the engine's encoded conditioning picks up
-    // the new enabled-LoRA trigger set. The promptA/promptB read here
-    // are the operator's CLEAN textarea text; sendPrompt injects the
-    // trigger prefix on the wire (see enabledLoraTriggerPrefix). The
-    // enable()/disable() above already mutated useLoraStore.enabled,
-    // so the prefix sendPrompt computes reflects this toggle.
-    const perf = usePerformanceStore.getState();
-    remote?.sendPrompt(
-      perf.promptA,
-      perf.activeKey,
-      perf.activeTimeSignature,
-      perf.promptB,
-    );
-  }
-
-  // Right-click anywhere on the row → open the context menu at click
-  // coords. stopPropagation keeps the document-level fallback in
-  // useMidi.ts (if anything were to read .lora-row again) from also
-  // firing on the same gesture.
-  function onRowContextMenu(e: React.MouseEvent<HTMLDivElement>) {
-    e.preventDefault();
-    e.stopPropagation();
-    setMenuPos({ x: e.clientX, y: e.clientY });
-  }
-
-  const menuItems = useMemo<ContextMenuItem[]>(() => {
-    const items: ContextMenuItem[] = [
-      {
-        label: "MIDI learn",
-        onClick: () => {
-          useMidiStore
-            .getState()
-            .startLearn("cc", `lora_str_${id}`, rowRef.current);
-        },
-      },
-    ];
-    if (trigger) {
-      items.push({
-        label: `Copy trigger "${trigger}"`,
-        onClick: () => {
-          void copyTriggerToClipboard(trigger, flashConfirm);
-        },
-      });
-    }
-    return items;
-  }, [id, trigger, flashConfirm]);
-
-  const setFromClientX = useCallback(
-    (clientX: number) => {
-      const el = trackRef.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      const t = (clientX - rect.left) / rect.width;
-      const v = Math.max(0, Math.min(1, t)) * LORA_SLIDER_MAX;
-      loraStrengthDispatcher.set(id, v);
-    },
-    [id],
-  );
-
-  useEffect(() => {
-    const el = trackRef.current;
-    if (!el || !enabled) return;
-    let dragging = false;
-    const onPointerDown = (e: PointerEvent) => {
-      if (e.button !== 0) return; // right-click → MIDI learn (document handler)
-      dragging = true;
-      el.setPointerCapture(e.pointerId);
-      setFromClientX(e.clientX);
-    };
-    const onPointerMove = (e: PointerEvent) => {
-      if (!dragging) return;
-      setFromClientX(e.clientX);
-    };
-    const onPointerUp = (e: PointerEvent) => {
-      if (!dragging) return;
-      dragging = false;
-      el.releasePointerCapture(e.pointerId);
-    };
-    el.addEventListener("pointerdown", onPointerDown);
-    el.addEventListener("pointermove", onPointerMove);
-    el.addEventListener("pointerup", onPointerUp);
-    el.addEventListener("pointercancel", onPointerUp);
-    return () => {
-      el.removeEventListener("pointerdown", onPointerDown);
-      el.removeEventListener("pointermove", onPointerMove);
-      el.removeEventListener("pointerup", onPointerUp);
-      el.removeEventListener("pointercancel", onPointerUp);
-    };
-  }, [enabled, setFromClientX]);
-
-  const pct = Math.max(0, Math.min(1, value / LORA_SLIDER_MAX)) * 100;
-
-  return (
-    <>
-      <div
-        ref={rowRef}
-        className={`lora-row${enabled ? " enabled" : ""}`}
-        data-param={`lora_str_${id}`}
-        data-state={enabled ? "enabled" : "disabled"}
-        data-dd-tooltip={tooltipText}
-        data-dd-tooltip-wide={tooltipText ? "" : undefined}
-        data-dd-tooltip-title={displayName}
-        data-dd-tooltip-show={confirmMsg !== null ? "true" : undefined}
-        onContextMenu={onRowContextMenu}
-      >
-        <button
-          type="button"
-          className="lora-switch"
-          role="switch"
-          aria-checked={enabled}
-          onClick={toggle}
-          aria-label={enabled ? `Disable ${displayName}` : `Enable ${displayName}`}
-        >
-          <span className="lora-switch-thumb" aria-hidden="true" />
-        </button>
-        <span className="lora-row-name" onClick={toggle}>
-          {displayName}
-        </span>
-        <div className="lora-strength">
-          <div className="lora-strength-track" ref={trackRef}>
-            <div className="lora-strength-fill" style={{ width: `${pct}%` }} />
-            <div
-              className="lora-strength-thumb"
-              style={{ left: `${pct}%` }}
-              aria-hidden="true"
-            />
-          </div>
-          <span className="lora-strength-value">{value.toFixed(2)}</span>
-        </div>
-      </div>
-      {menuPos && (
-        <LoraContextMenu
-          x={menuPos.x}
-          y={menuPos.y}
-          items={menuItems}
-          onClose={closeMenu}
-        />
-      )}
-    </>
-  );
-}
+// ── Clipboard ───────────────────────────────────────────────────────────
 
 async function copyTriggerToClipboard(
   trigger: string,
@@ -447,11 +297,311 @@ function _legacyCopy(text: string): void {
   }
 }
 
+// ── Shared row hooks ────────────────────────────────────────────────────
+
+// Enable/disable a LoRA and immediately re-send the prompt so the engine
+// re-encodes with the new enabled-LoRA trigger set. The promptA/promptB
+// read here are the operator's CLEAN textarea text; sendPrompt injects
+// the trigger prefix on the wire (see enabledLoraTriggerPrefix).
+function useLoraToggle() {
+  const enable = useLoraStore((s) => s.enable);
+  const disable = useLoraStore((s) => s.disable);
+  return useCallback(
+    (id: string, currentlyEnabled: boolean) => {
+      const remote = useSessionStore.getState().remote;
+      if (currentlyEnabled) {
+        disable(id);
+        remote?.sendDisableLora(id);
+      } else {
+        enable(id);
+        const s = useLoraStore.getState().strengths[id] ?? 0;
+        remote?.sendEnableLora(id, s);
+      }
+      const perf = usePerformanceStore.getState();
+      remote?.sendPrompt(
+        perf.promptA,
+        perf.activeKey,
+        perf.activeTimeSignature,
+        perf.promptB,
+      );
+    },
+    [enable, disable],
+  );
+}
+
+// Transient confirmation text (e.g. "Copied 'word'") that briefly
+// replaces a row's name. Replaces the old data-dd-tooltip-show flash.
+function useConfirmFlash(): [string | null, (text: string) => void] {
+  const [msg, setMsg] = useState<string | null>(null);
+  const timerRef = useRef<number | null>(null);
+  const flash = useCallback((text: string) => {
+    setMsg(text);
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => {
+      setMsg(null);
+      timerRef.current = null;
+    }, 1500);
+  }, []);
+  useEffect(
+    () => () => {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    },
+    [],
+  );
+  return [msg, flash];
+}
+
+// Right-click context menu state for a row.
+function useRowMenu() {
+  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
+  const onContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setMenuPos({ x: e.clientX, y: e.clientY });
+  }, []);
+  const close = useCallback(() => setMenuPos(null), []);
+  return { menuPos, onContextMenu, close };
+}
+
+function buildMenuItems(
+  id: string,
+  trigger: string | null,
+  rowEl: HTMLElement | null,
+  flashConfirm: (text: string) => void,
+): ContextMenuItem[] {
+  const items: ContextMenuItem[] = [
+    {
+      label: "MIDI learn",
+      onClick: () => {
+        useMidiStore.getState().startLearn("cc", `lora_str_${id}`, rowEl);
+      },
+    },
+  ];
+  if (trigger) {
+    items.push({
+      label: `Copy trigger "${trigger}"`,
+      onClick: () => {
+        void copyTriggerToClipboard(trigger, flashConfirm);
+      },
+    });
+  }
+  return items;
+}
+
+// ── Active rack row ─────────────────────────────────────────────────────
+
+function ActiveLoraRow({ entry }: { entry: LoraCatalogEntry }) {
+  const { id } = entry;
+  const strength = usePerformanceStore(
+    (s) => s.sliderTargets[`lora_str_${id}`],
+  );
+  const fallbackStrength = useLoraStore((s) => s.strengths[id] ?? 0);
+  const value = typeof strength === "number" ? strength : fallbackStrength;
+  const toggle = useLoraToggle();
+
+  const md = entry.metadata;
+  const displayName = displayNameOf(entry);
+  const trigger = md?.primary_trigger_word ?? null;
+
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const [confirmMsg, flashConfirm] = useConfirmFlash();
+  const { menuPos, onContextMenu, close } = useRowMenu();
+
+  const setFromClientX = useCallback(
+    (clientX: number) => {
+      const el = trackRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const t = (clientX - rect.left) / rect.width;
+      loraStrengthDispatcher.set(id, Math.max(0, Math.min(1, t)) * LORA_SLIDER_MAX);
+    },
+    [id],
+  );
+
+  useEffect(() => {
+    const el = trackRef.current;
+    if (!el) return;
+    let dragging = false;
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.button !== 0) return; // right-click → MIDI learn (context menu)
+      dragging = true;
+      el.setPointerCapture(e.pointerId);
+      setFromClientX(e.clientX);
+    };
+    const onPointerMove = (e: PointerEvent) => {
+      if (dragging) setFromClientX(e.clientX);
+    };
+    const onPointerUp = (e: PointerEvent) => {
+      if (!dragging) return;
+      dragging = false;
+      el.releasePointerCapture(e.pointerId);
+    };
+    el.addEventListener("pointerdown", onPointerDown);
+    el.addEventListener("pointermove", onPointerMove);
+    el.addEventListener("pointerup", onPointerUp);
+    el.addEventListener("pointercancel", onPointerUp);
+    return () => {
+      el.removeEventListener("pointerdown", onPointerDown);
+      el.removeEventListener("pointermove", onPointerMove);
+      el.removeEventListener("pointerup", onPointerUp);
+      el.removeEventListener("pointercancel", onPointerUp);
+    };
+  }, [setFromClientX]);
+
+  const pct = Math.max(0, Math.min(1, value / LORA_SLIDER_MAX)) * 100;
+  const menuItems = useMemo(
+    () => buildMenuItems(id, trigger, rowRef.current, flashConfirm),
+    [id, trigger, flashConfirm],
+  );
+
+  return (
+    <>
+      <div
+        ref={rowRef}
+        className="lora-active-row"
+        data-param={`lora_str_${id}`}
+        onContextMenu={onContextMenu}
+      >
+        <span className="lora-active-name" title={displayName}>
+          {confirmMsg ?? displayName}
+        </span>
+        <button
+          type="button"
+          className="lora-active-remove"
+          onClick={() => toggle(id, true)}
+          aria-label={`Disable ${displayName}`}
+        >
+          ✕
+        </button>
+        <div className="lora-strength">
+          <div className="lora-strength-track" ref={trackRef}>
+            <div className="lora-strength-fill" style={{ width: `${pct}%` }} />
+            <div
+              className="lora-strength-thumb"
+              style={{ left: `${pct}%` }}
+              aria-hidden="true"
+            />
+          </div>
+          <span className="lora-strength-value">{value.toFixed(2)}</span>
+        </div>
+      </div>
+      {menuPos && (
+        <LoraContextMenu
+          x={menuPos.x}
+          y={menuPos.y}
+          items={menuItems}
+          onClose={close}
+        />
+      )}
+    </>
+  );
+}
+
+// ── Browse row ──────────────────────────────────────────────────────────
+
+function BrowseLoraRow({ entry }: { entry: LoraCatalogEntry }) {
+  const { id } = entry;
+  const enabled = useLoraStore((s) => s.enabled.has(id));
+  const toggle = useLoraToggle();
+
+  const md = entry.metadata;
+  const displayName = displayNameOf(entry);
+  const trigger = md?.primary_trigger_word ?? null;
+  const desc = useMemo(() => shortDescription(md), [md]);
+
+  const rowRef = useRef<HTMLButtonElement | null>(null);
+  const [confirmMsg, flashConfirm] = useConfirmFlash();
+  const { menuPos, onContextMenu, close } = useRowMenu();
+
+  const menuItems = useMemo(
+    () => buildMenuItems(id, trigger, rowRef.current, flashConfirm),
+    [id, trigger, flashConfirm],
+  );
+
+  return (
+    <>
+      <button
+        ref={rowRef}
+        type="button"
+        className={`lora-browse-row${enabled ? " enabled" : ""}`}
+        onClick={() => toggle(id, enabled)}
+        onContextMenu={onContextMenu}
+        aria-pressed={enabled}
+      >
+        <span className="lora-browse-main">
+          <span className="lora-browse-name" title={displayName}>
+            {confirmMsg ?? displayName}
+          </span>
+          <span className="lora-browse-add" aria-hidden="true">
+            {enabled ? "✓" : "+"}
+          </span>
+        </span>
+        {desc && <span className="lora-browse-desc">{desc}</span>}
+      </button>
+      {menuPos && (
+        <LoraContextMenu
+          x={menuPos.x}
+          y={menuPos.y}
+          items={menuItems}
+          onClose={close}
+        />
+      )}
+    </>
+  );
+}
+
+// ── Genre accordion section ─────────────────────────────────────────────
+
+interface GenreSectionProps {
+  label: string;
+  entries: LoraCatalogEntry[];
+  enabledCount: number;
+  open: boolean;
+  onToggle: () => void;
+}
+
+function GenreSection({
+  label,
+  entries,
+  enabledCount,
+  open,
+  onToggle,
+}: GenreSectionProps) {
+  return (
+    <div className="lora-genre">
+      <button
+        type="button"
+        className="lora-genre-head"
+        onClick={onToggle}
+        aria-expanded={open}
+      >
+        <span className="lora-genre-caret" aria-hidden="true">
+          {open ? "▾" : "▸"}
+        </span>
+        <span className="lora-genre-name">{label}</span>
+        {enabledCount > 0 && (
+          <span className="lora-genre-on">{enabledCount} on</span>
+        )}
+        <span className="lora-genre-count">{entries.length}</span>
+      </button>
+      {open && (
+        <div className="lora-genre-body">
+          {entries.map((e) => (
+            <BrowseLoraRow key={e.id} entry={e} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Tile ────────────────────────────────────────────────────────────────
 
 export function LibraryTile() {
   const catalog = useLoraStore((s) => s.catalog);
   const setCatalog = useLoraStore((s) => s.setCatalog);
+  const enabledSet = useLoraStore((s) => s.enabled);
   const sessionWsUrl = useSessionStore((s) => s.wsUrl);
   const sessionScale = useSessionStore((s) => s.checkpointScale);
   const cfg = useConfig();
@@ -464,29 +614,103 @@ export function LibraryTile() {
   // configured default.
   const [showAllOverride, setShowAllOverride] = useState(false);
   const showAll = cfgShowAll || showAllOverride;
+  // Which genre sections are expanded. All collapsed by default — the
+  // tile opens compact, the operator expands only what they want.
+  const [openCats, setOpenCats] = useState<Set<string>>(() => new Set());
+  // Admin-hidden LoRA ids (orchestrator state, fetched app-origin).
+  const [adminHidden, setAdminHidden] = useState<Set<string>>(
+    () => new Set(),
+  );
 
   useEffect(() => {
     if (!sessionWsUrl && !LOCAL_MODE) return;
     void listLoras().then(setCatalog).catch(() => {});
+    void listHiddenLoras().then(setAdminHidden).catch(() => {});
   }, [setCatalog, sessionWsUrl]);
 
-  // Compatibility filter runs first so the "N hidden" count tracks
-  // scale incompatibility specifically, not query misses.
+  // Force-disable any admin-hidden LoRA that's currently enabled — an
+  // operator must not keep applying a LoRA an admin has retired. Runs
+  // when the hidden set or the catalog changes (the latter covers the
+  // setCatalog auto-seed possibly enabling a hidden id). disable()
+  // mutates useLoraStore.enabled, which useLoraTriggerSync observes to
+  // re-send the prompt without the now-dropped trigger.
+  useEffect(() => {
+    if (adminHidden.size === 0) return;
+    const { enabled, disable } = useLoraStore.getState();
+    const remote = useSessionStore.getState().remote;
+    for (const id of enabled) {
+      if (adminHidden.has(id)) {
+        disable(id);
+        remote?.sendDisableLora(id);
+      }
+    }
+  }, [adminHidden, catalog]);
+
+  // Admin-hidden LoRAs drop out entirely — no row, no count. The
+  // scale-compat filter then runs on what's left so the "N hidden"
+  // footer count tracks scale incompatibility specifically.
+  const visible = useMemo(
+    () => catalog.filter((entry) => !adminHidden.has(entry.id)),
+    [catalog, adminHidden],
+  );
   const compatible = useMemo(
     () =>
       showAll
-        ? catalog
-        : catalog.filter((entry) =>
+        ? visible
+        : visible.filter((entry) =>
             isLoraCompatibleWithScale(entry, sessionScale),
           ),
-    [catalog, sessionScale, showAll],
+    [visible, sessionScale, showAll],
   );
-  const hiddenCount = catalog.length - compatible.length;
+  const hiddenCount = visible.length - compatible.length;
 
   const filtered = useMemo(
     () => compatible.filter((entry) => matchesQuery(entry, query)),
     [compatible, query],
   );
+  const searching = query.trim().length > 0;
+
+  const activeEntries = useMemo(
+    () => filtered.filter((entry) => enabledSet.has(entry.id)),
+    [filtered, enabledSet],
+  );
+
+  // Browse list grouped into genre categories, in CATEGORY_ORDER, each
+  // category alphabetised by display name.
+  const groups = useMemo(() => {
+    const byCat = new Map<string, LoraCatalogEntry[]>();
+    for (const entry of filtered) {
+      const cat = categoryOf(entry);
+      const arr = byCat.get(cat);
+      if (arr) arr.push(entry);
+      else byCat.set(cat, [entry]);
+    }
+    const ordered: { label: string; entries: LoraCatalogEntry[] }[] = [];
+    for (const cat of CATEGORY_ORDER) {
+      const arr = byCat.get(cat);
+      if (arr) {
+        arr.sort(byDisplayName);
+        ordered.push({ label: cat, entries: arr });
+        byCat.delete(cat);
+      }
+    }
+    // Any category not in CATEGORY_ORDER (defensive — shouldn't happen).
+    for (const cat of [...byCat.keys()].sort()) {
+      const arr = byCat.get(cat)!;
+      arr.sort(byDisplayName);
+      ordered.push({ label: cat, entries: arr });
+    }
+    return ordered;
+  }, [filtered]);
+
+  const toggleCat = useCallback((label: string) => {
+    setOpenCats((prev) => {
+      const next = new Set(prev);
+      if (next.has(label)) next.delete(label);
+      else next.add(label);
+      return next;
+    });
+  }, []);
 
   if (catalog.length === 0) {
     return (
@@ -504,29 +728,57 @@ export function LibraryTile() {
         <input
           type="text"
           className="lora-search-input"
-          placeholder="search"
+          placeholder="search LoRAs"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           aria-label="Search LoRA library"
         />
       </div>
-      <div className="lora-list">
-        {filtered.length === 0 ? (
-          <div className="lora-empty">no matches</div>
-        ) : (
-          filtered.map((entry) => <LoraRow key={entry.id} entry={entry} />)
-        )}
+
+      {activeEntries.length > 0 && (
+        <div className="lora-section lora-active">
+          <div className="lora-section-head">Active · {activeEntries.length}</div>
+          <div className="lora-active-list">
+            {activeEntries.map((entry) => (
+              <ActiveLoraRow key={entry.id} entry={entry} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="lora-section">
+        <div className="lora-section-head">
+          {searching
+            ? `Results · ${filtered.length}`
+            : `All LoRAs · ${compatible.length}`}
+        </div>
+        <div className="lora-browse">
+          {filtered.length === 0 ? (
+            <div className="lora-empty">no matches</div>
+          ) : searching ? (
+            filtered.map((entry) => (
+              <BrowseLoraRow key={entry.id} entry={entry} />
+            ))
+          ) : (
+            groups.map((g) => (
+              <GenreSection
+                key={g.label}
+                label={g.label}
+                entries={g.entries}
+                enabledCount={
+                  g.entries.filter((e) => enabledSet.has(e.id)).length
+                }
+                open={openCats.has(g.label)}
+                onToggle={() => toggleCat(g.label)}
+              />
+            ))
+          )}
+        </div>
       </div>
+
       {hiddenCount > 0 && (
         <div className="lora-hidden-footer">
-          <span
-            data-dd-tooltip={
-              sessionScale
-                ? `LoRAs trained for the other scale are hidden because the active checkpoint is ${sessionScale}. Click "show all" to inspect them.`
-                : undefined
-            }
-            data-dd-tooltip-wide={sessionScale ? "" : undefined}
-          >
+          <span>
             {hiddenCount} hidden
             {sessionScale ? ` (not ${sessionScale})` : ""}
           </span>

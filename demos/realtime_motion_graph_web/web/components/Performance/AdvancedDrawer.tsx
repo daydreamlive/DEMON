@@ -7,6 +7,7 @@ import { useCurveStore } from "@/store/useCurveStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 
+import { CollapsibleTile } from "./CollapsibleTile";
 import { CoreTile } from "./CoreTile";
 import { DrawerHelpBar } from "./DrawerHelpBar";
 import { DrawerTabs, useDrawerTab, type DrawerTab } from "./DrawerTabs";
@@ -208,7 +209,7 @@ function renderAllSections(savedTab?: ReactNode) {
   return SPREAD_SECTIONS.map((s) => (
     <section key={s.id} className="spread-section" data-section={s.id}>
       <h3 className="spread-section-label">{s.label}</h3>
-      {renderTabBody(s.id, savedTab)}
+      {renderTabBody(s.id, savedTab, true)}
     </section>
   ));
 }
@@ -217,7 +218,7 @@ function renderAllSections(savedTab?: ReactNode) {
 // every tile already runs its own hooks/subscriptions, and a wrapping
 // React component would just add another re-render layer with no
 // upside.
-function renderTabBody(tab: DrawerTab, savedTab?: ReactNode) {
+function renderTabBody(tab: DrawerTab, savedTab?: ReactNode, spread = false) {
   switch (tab) {
     case "core":
       return <CoreTile />;
@@ -226,10 +227,26 @@ function renderTabBody(tab: DrawerTab, savedTab?: ReactNode) {
     case "voice":
       return <VoiceTile />;
     case "styles":
+      // Tabbed view: each panel sits under its own collapsed accordion
+      // so the operator expands only what they're working on. Spread
+      // view is a show-everything surface, so the tiles render bare.
       return (
         <div className="styles-tab">
-          <PromptsTile />
-          <LibraryTile />
+          {spread ? (
+            <>
+              <PromptsTile />
+              <LibraryTile />
+            </>
+          ) : (
+            <>
+              <CollapsibleTile title="Tags">
+                <PromptsTile />
+              </CollapsibleTile>
+              <CollapsibleTile title="LoRA Library">
+                <LibraryTile />
+              </CollapsibleTile>
+            </>
+          )}
         </div>
       );
     case "saved":

@@ -28,3 +28,28 @@ export async function listLoras(): Promise<LoraCatalogEntry[]> {
     .setCheckpointScale(json.checkpoint_scale ?? null);
   return json.loras ?? [];
 }
+
+/** Fetch the set of admin-hidden LoRA ids.
+ *
+ *  Unlike listLoras() this hits the APP ORIGIN (`/api/loras/hidden`),
+ *  not the pod — admin visibility is webapp/orchestrator state, not
+ *  engine state. The route proxies the orchestrator and is fail-open.
+ *
+ *  Fail-open here too: any error (route missing in a standalone DEMON
+ *  dev server, orchestrator down, bad JSON) returns an empty set so a
+ *  broken visibility backend never blanks the Library — worst case is
+ *  "nothing hidden", never "nothing shown".
+ */
+export async function listHiddenLoras(): Promise<Set<string>> {
+  try {
+    const res = await fetch("/api/loras/hidden", { cache: "no-store" });
+    if (!res.ok) return new Set();
+    const json = (await res.json()) as { hidden?: unknown };
+    if (!Array.isArray(json.hidden)) return new Set();
+    return new Set(
+      json.hidden.filter((x): x is string => typeof x === "string"),
+    );
+  } catch {
+    return new Set();
+  }
+}
