@@ -124,6 +124,24 @@ html, body {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* Custom scrollbars everywhere — thin + dark, matching the panel
+   chrome, instead of the OS default white bar. Applies to every scroll
+   container on the page (Firefox via scrollbar-*, WebKit via the
+   ::-webkit-scrollbar pseudos). Component-level rules can still
+   override per-surface. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.32); }
+*::-webkit-scrollbar-corner { background: transparent; }
+
 .hidden { display: none !important; }
 
 /* Hide the OS cursor only inside the Performance surface — useCursor
@@ -1479,36 +1497,47 @@ body[data-mode="graph"]::before {
    the same visual role. No `.install-edge-bottom` rule needed. */
 
 /* ============================================================================
-   LoRA Library tile.  One row per catalog entry:
-       [switch]  name              [horizontal slider]  0.30
-   The body scrolls internally — adding LoRAs to the catalog grows the
-   list, not the Advanced drawer's height.  Width is bounded so the
-   tile sits comfortably alongside the other mixer tiles.
+   LoRA Library tile.  Two stacked sections:
+     ── Active rack ──  enabled LoRAs only, each with a strength slider.
+     ── Browse ──       every LoRA in a collapsible genre accordion;
+                        compact click-to-enable rows, inline description.
+   Each section scrolls internally so the Advanced drawer keeps its
+   natural height.  Width is bounded to sit alongside the other tiles.
    ============================================================================ */
 .mixer-tile[data-tile="library"] {
   min-width: 280px;
   max-width: 360px;
 }
-.mixer-tile[data-tile="library"] .lora-list {
-  display: flex; flex-direction: column;
-  gap: 6px;
-  padding: 4px 8px;
-  /* Internal scroll: the Library tile holds its own height and
-     scrolls when there are too many rows to fit.  The Advanced drawer
-     stays at its natural size. */
-  max-height: 240px;
-  overflow-y: auto;
-  overflow-x: hidden;
-  /* Subtle scrollbar styling (Firefox + WebKit) so it doesn't shout. */
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+
+.lora-search {
+  padding: 6px 8px 2px;
 }
-.mixer-tile[data-tile="library"] .lora-list::-webkit-scrollbar { width: 6px; }
-.mixer-tile[data-tile="library"] .lora-list::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2); border-radius: 3px;
+.lora-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--frame-line);
+  border-radius: 5px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  padding: 5px 8px;
 }
-.mixer-tile[data-tile="library"] .lora-list::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.35);
+.lora-search-input:focus {
+  outline: none;
+  border-color: var(--accent-line);
+}
+.lora-search-input::placeholder {
+  color: var(--text-dim);
+}
+
+.lora-section-head {
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding: 8px 10px 3px;
 }
 
 .mixer-tile[data-tile="library"] .lora-empty {
@@ -1516,86 +1545,239 @@ body[data-mode="graph"]::before {
   text-align: center; font-style: italic;
 }
 
-.lora-row {
-  display: grid;
-  grid-template-columns: 26px 1fr auto;
-  grid-template-rows: auto auto;
-  align-items: center;
-  column-gap: 10px;
-  row-gap: 4px;
-  padding: 4px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+/* Internal scroll surfaces (active rack + browse). Subtle scrollbar so
+   it doesn't shout. */
+.lora-active-list,
+.lora-browse {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
 }
-.lora-row:last-child { border-bottom: none; }
+.lora-active-list::-webkit-scrollbar,
+.lora-browse::-webkit-scrollbar { width: 6px; }
+.lora-active-list::-webkit-scrollbar-thumb,
+.lora-browse::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2); border-radius: 3px;
+}
+.lora-active-list::-webkit-scrollbar-thumb:hover,
+.lora-browse::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
 
-.lora-row-name {
+/* ── Active rack ── */
+.lora-active-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 2px 8px 4px;
+  max-height: 168px;
+}
+.lora-active-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 2px;
+  padding: 5px 8px 7px;
+  color: var(--accent);
+  background: rgba(240, 138, 72, 0.07);
+  border: 1px solid var(--accent-line);
+  border-radius: 6px;
+}
+.lora-active-name {
   font-size: 11px;
   letter-spacing: 0.04em;
-  opacity: 0.9;
-  cursor: pointer;
-  user-select: none;
+  color: var(--text-strong);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.lora-row[data-state="disabled"] .lora-row-name { opacity: 0.55; }
-
-/* Toggle: compact sliding pill. The state difference is carried by
-   thumb-position (visual scan), thumb-color (dim → bright), and
-   track-fill (transparent → accent). Earlier the colors all inherited
-   from currentColor which made the difference washed-out — switching
-   to explicit tokens (--text-dim / --accent / --accent-glow) gives the
-   ON state real visual weight without growing the control. */
-.lora-switch {
-  width: 22px; height: 12px;
+.lora-active-remove {
+  width: 16px; height: 16px;
   padding: 0;
+  display: flex; align-items: center; justify-content: center;
   background: transparent;
-  border: 1px solid var(--frame-line);
-  border-radius: 7px;
-  position: relative;
+  border: none;
+  border-radius: 50%;
+  color: var(--text-dim);
+  font-size: 10px;
   cursor: pointer;
-  transition:
-    background 0.18s ease,
-    border-color 0.14s ease,
-    box-shadow 0.18s ease;
+  transition: color 0.12s ease, background 0.12s ease;
 }
-.lora-switch:hover {
+.lora-active-remove:hover {
+  color: var(--text-strong);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ── Browse accordion ── */
+.lora-browse {
+  display: flex;
+  flex-direction: column;
+  padding: 0 8px 6px;
+  max-height: 256px;
+}
+.lora-genre-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 4px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--frame-line);
+  cursor: pointer;
+  color: var(--text);
+  transition: color 0.12s ease;
+}
+.lora-genre-head:hover { color: var(--text-strong); }
+.lora-genre-caret {
+  width: 9px;
+  flex: none;
+  color: var(--text-dim);
+  font-size: 9px;
+}
+.lora-genre-name {
+  flex: 1;
+  text-align: left;
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.lora-genre-count {
+  color: var(--text-dim);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  min-width: 2ch;
+  text-align: right;
+}
+.lora-genre-on {
+  color: var(--accent);
+  font-size: 9px;
+  letter-spacing: 0.03em;
+  border: 1px solid var(--accent-line);
+  border-radius: 8px;
+  padding: 1px 6px;
+}
+.lora-genre-body {
+  display: flex;
+  flex-direction: column;
+  padding: 3px 0 7px;
+}
+
+.lora-browse-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  padding: 5px 7px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.lora-browse-row:hover { background: rgba(255, 255, 255, 0.04); }
+.lora-browse-row.enabled { background: rgba(240, 138, 72, 0.09); }
+.lora-browse-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.lora-browse-name {
+  flex: 1;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lora-browse-row.enabled .lora-browse-name { color: var(--text-strong); }
+.lora-browse-add {
+  width: 16px; height: 16px;
+  flex: none;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--frame-line);
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.lora-browse-row:hover .lora-browse-add {
   border-color: var(--accent-line);
+  color: var(--text);
 }
-.lora-switch[aria-checked="true"] {
+.lora-browse-row.enabled .lora-browse-add {
   background: var(--accent);
   border-color: var(--accent);
-  box-shadow: 0 0 6px var(--accent-glow);
+  color: #ffffff;
 }
-.lora-switch[aria-checked="true"]:hover {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
-}
-.lora-switch-thumb {
-  position: absolute;
-  top: 1px; left: 1px;
-  width: 8px; height: 8px;
-  border-radius: 50%;
-  background: var(--text-dim);
-  transition:
-    transform 0.16s cubic-bezier(.3,1.3,.5,1),
-    background 0.14s ease;
-  pointer-events: none;
-}
-.lora-switch:hover .lora-switch-thumb {
-  background: var(--text);
-}
-.lora-switch[aria-checked="true"] .lora-switch-thumb {
-  transform: translateX(10px);
-  background: #ffffff;
-}
-.lora-switch.midi-learning {
-  outline: 1px dashed currentColor;
-  outline-offset: 2px;
+.lora-browse-desc {
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--text-dim);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
-/* Horizontal strength slider.  Spans the full row width below the
-   switch+name line, giving the operator a wide drag surface without
+/* ── Context menu (right-click a row) ── */
+.lora-context-menu {
+  position: fixed;
+  z-index: 200;
+  min-width: 150px;
+  padding: 4px;
+  background: var(--panel, #16161f);
+  border: 1px solid var(--frame-line);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+.lora-context-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+.lora-context-menu-item:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text-strong);
+}
+
+/* ── Hidden-LoRA footer ── */
+.lora-hidden-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--frame-line);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.lora-hidden-toggle {
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  padding: 0;
+}
+.lora-hidden-toggle:hover { color: var(--accent-hover, var(--accent)); }
+
+/* Horizontal strength slider.  Spans the full active-row width below
+   the name line, giving the operator a wide drag surface without
    making each row tall. */
 .lora-strength {
   grid-column: 1 / -1;
@@ -1653,16 +1835,6 @@ body[data-mode="graph"]::before {
   text-align: right;
   opacity: 0.7;
 }
-
-/* Disabled state: lock the slider, dim the name, dim the fill — but
-   leave the switch alone so the operator can re-enable. */
-.lora-row[data-state="disabled"] .lora-strength-track {
-  cursor: not-allowed;
-  background: rgba(255, 255, 255, 0.04);
-}
-.lora-row[data-state="disabled"] .lora-strength-fill { opacity: 0.25; }
-.lora-row[data-state="disabled"] .lora-strength-thumb { opacity: 0.35; }
-.lora-row[data-state="disabled"] .lora-strength-value { opacity: 0.35; }
 
 /* ============================================================================
    Buttons — single shared "outline + accent on hover" language. The Seed /
@@ -2352,6 +2524,56 @@ body.drawer-open .hud-help-readout {
   border-top: 1px solid var(--frame-line);
   padding-top: 12px;
 }
+
+/* Styles-tab accordions — Tags + LoRA Library each collapse under a
+   clickable header (CollapsibleTile). Closed by default. */
+.styles-accordion {
+  width: 100%;
+  min-height: 0;
+}
+.styles-accordion-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--text);
+  transition: color 0.12s ease;
+}
+.styles-accordion-head:hover { color: var(--text-strong); }
+.styles-accordion-caret {
+  width: 10px;
+  flex: none;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+.styles-accordion-title {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  transition: color 0.12s ease;
+}
+.styles-accordion.open .styles-accordion-title,
+.styles-accordion-head:hover .styles-accordion-title {
+  color: var(--text-strong);
+}
+.styles-accordion-body {
+  padding-top: 2px;
+}
+/* Inside the accordion the header is the section label, so drop the
+   wrapped tile's own label + card frame. */
+.styles-accordion-body .mixer-tile {
+  border: none;
+  background: transparent;
+  padding: 0;
+  width: 100%;
+  max-width: 100%;
+}
+.styles-accordion-body .mixer-tile-label { display: none; }
 /* Drop the inner tile frame for tabbed content — the active tab is
    already the section delimiter; an extra card border just adds noise.
    Sound Particles' UIs do the same: panels live on the open canvas. */
