@@ -11,6 +11,7 @@
 
 import * as fzstd from "fzstd";
 
+import { enabledLoraTriggerPrefix } from "@/lib/loraTriggers";
 import { useSessionStore } from "@/store/useSessionStore";
 import {
   SAMPLE_RATE,
@@ -554,6 +555,14 @@ export class RemoteBackend extends EventTarget {
   ): void {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     try {
+      // Inject the enabled-LoRA trigger words on the WIRE only.
+      // Callers pass the operator's CLEAN prompt text (promptA/promptB
+      // exactly as typed in the Tags A/B boxes); the trigger prefix is
+      // computed fresh here so every send path — Send Tags button,
+      // key change, LoRA toggle — carries the current trigger set
+      // without the textareas ever showing it. Recomputing per call
+      // means there is no double-prepend.
+      const prefix = enabledLoraTriggerPrefix();
       const msg: {
         type: string;
         tags: string;
@@ -562,9 +571,9 @@ export class RemoteBackend extends EventTarget {
         time_signature?: string;
       } = {
         type: "prompt",
-        tags,
+        tags: prefix + tags,
       };
-      if (tagsB) msg.tags_b = tagsB;
+      if (tagsB) msg.tags_b = prefix + tagsB;
       if (key) msg.key = key;
       if (timeSignature) msg.time_signature = timeSignature;
       this.ws.send(JSON.stringify(msg));

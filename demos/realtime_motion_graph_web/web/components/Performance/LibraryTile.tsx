@@ -45,15 +45,13 @@ import type { LoraCatalogEntry, LoraMetadata } from "@/types/protocol";
 //  8px above the drawer top edge, viewport-centered. Do NOT add
 //  `position: relative` to `.lora-row` or any intermediate ancestor;
 //  it kicks the tooltip out of that shared surface.
-//  - Enabling/disabling a LoRA, when `engine.auto_prepend_lora_triggers`
-//    is true (default), prepends/strips the trigger word to/from
-//    promptA and promptB so the encoder sees what the operator sees.
-//    The prepend/strip lives in useLoraStore's enable/disable actions
-//    (and the boot-time auto-enable seed inside setCatalog), so every
-//    code path that flips a LoRA — manual click here, boot seed, MIDI,
-//    future programmatic callers — picks it up without each call site
-//    having to fire it explicitly. Substrings inside larger user-typed
-//    phrases are left alone.
+//  - Enabling/disabling a LoRA does NOT mutate the Tags A/B textareas.
+//    The trigger word is injected onto the WS `prompt` message at
+//    send-time by RemoteBackend.sendPrompt (via enabledLoraTriggerPrefix),
+//    gated on `engine.auto_prepend_lora_triggers` (default true).
+//    The click-toggle here calls sendPrompt right after enable/disable
+//    so the engine immediately re-encodes with the new trigger set;
+//    useLoraTriggerSync is the backstop for non-click enable paths.
 //  - LoRAs whose `base_model_scale` doesn't match the active
 //    checkpoint scale (2B vs 5B) are hidden by default; an inline
 //    footer reports the count and offers a one-click override.
@@ -265,10 +263,6 @@ function LoraRow({ entry }: RowProps) {
   function toggle() {
     const remote = useSessionStore.getState().remote;
     if (enabled) {
-      // disable() in the lora store also strips the trigger from
-      // promptA/promptB when engine.auto_prepend_lora_triggers is on,
-      // so the encoder follows the operator's visible prompt without
-      // this call site needing to handle it.
       disable(id);
       remote?.sendDisableLora(id);
     } else {
@@ -276,6 +270,19 @@ function LoraRow({ entry }: RowProps) {
       const s = useLoraStore.getState().strengths[id] ?? 0;
       remote?.sendEnableLora(id, s);
     }
+    // Re-send the prompt so the engine's encoded conditioning picks up
+    // the new enabled-LoRA trigger set. The promptA/promptB read here
+    // are the operator's CLEAN textarea text; sendPrompt injects the
+    // trigger prefix on the wire (see enabledLoraTriggerPrefix). The
+    // enable()/disable() above already mutated useLoraStore.enabled,
+    // so the prefix sendPrompt computes reflects this toggle.
+    const perf = usePerformanceStore.getState();
+    remote?.sendPrompt(
+      perf.promptA,
+      perf.activeKey,
+      perf.activeTimeSignature,
+      perf.promptB,
+    );
   }
 
   // Right-click anywhere on the row → open the context menu at click

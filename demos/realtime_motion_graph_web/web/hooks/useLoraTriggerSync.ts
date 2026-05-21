@@ -9,22 +9,21 @@ import { useSessionStore } from "@/store/useSessionStore";
 
 // Re-send the prompt whenever the enabled-LoRA set changes.
 //
-// Enabling/disabling a LoRA prepends/strips its trigger word to/from
-// Tags A + B (useLoraStore.enable/disable → loraTriggers), but that
-// edit only reaches the engine on a `prompt` WS message — and toggling
-// a LoRA does NOT itself send one (Send Tags / Enter / key change are
-// the only senders). Without this hook the operator enables a LoRA,
-// sees its trigger appear in the Tags box, but the engine keeps
-// generating against the OLD prompt with no trigger: the LoRA's
-// matrices apply via refit, yet its activation word never lands — the
-// style barely fires. This is exactly the "LoRAs apply weird" report.
+// A LoRA's trigger word reaches the engine only on a `prompt` WS
+// message, and it's injected onto the wire by RemoteBackend.sendPrompt
+// (via enabledLoraTriggerPrefix) — the Tags A/B textareas stay the
+// operator's clean prompt text. But most LoRA-enable paths don't
+// themselves send a `prompt` (Send Tags / Enter / key change are the
+// usual senders). LibraryTile's click-toggle now sends one directly;
+// this hook is the BACKSTOP for the other enable paths — MIDI,
+// edge-binding, reset — so they too commit the new trigger set to the
+// encoder.
 //
-// This hook closes the gap: on any change to `useLoraStore.enabled` it
-// debounce-sends the current promptA/promptB so the just-prepended (or
-// just-stripped on disable) trigger commits to the encoder. Debounce —
-// not throttle — because auditioning LoRAs produces rapid enable/
-// disable bursts; we want a single send once the burst settles, not
-// one per toggle.
+// On any change to `useLoraStore.enabled` it debounce-sends the
+// current clean promptA/promptB; sendPrompt rebuilds the trigger
+// prefix fresh. Debounce — not throttle — because auditioning LoRAs
+// produces rapid enable/disable bursts; we want a single send once the
+// burst settles, not one per toggle.
 //
 // Gated on `engine.auto_prepend_lora_triggers`: when an operator turns
 // auto-prepend off (a fully manual trigger workflow) they also own
@@ -43,7 +42,11 @@ export function useLoraTriggerSync() {
     const flush = () => {
       timerId = 0;
       const session = useSessionStore.getState();
-      if (session.status !== "ready" || !session.remote) return;
+      // Match PromptsTile.sendPrompt — the proven send path — which
+      // only checks `remote`. The WS readyState guard inside
+      // RemoteBackend.sendPrompt is the real gate; an extra
+      // status !== "ready" check here only drops legitimate sends.
+      if (!session.remote) return;
       const perf = usePerformanceStore.getState();
       session.remote.sendPrompt(
         perf.promptA,
