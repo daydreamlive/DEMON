@@ -1,6 +1,6 @@
 # DEMON Project Page
 
-Source for **https://ryanontheinside.github.io/DEMON/**. Served directly from this `/docs/` folder via GitHub Pages once the Pages toggle is flipped on (Settings → Pages → Source: `main` branch, folder: `/docs`).
+Source for **https://daydreamlive.github.io/DEMON/**. Served directly from this `/docs/` folder via GitHub Pages once the Pages toggle is flipped on (Settings → Pages → Source: `main` branch, folder: `/docs`).
 
 ## Preview locally
 
