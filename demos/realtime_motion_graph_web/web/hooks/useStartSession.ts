@@ -346,9 +346,19 @@ export function useStartSession() {
     // initial fresh-load value (only applyConfig() at module load sees
     // it); later sessions need this explicit reset to restore the gate.
     // remixStarted always resets so the affordance shows again.
+    //
+    // skipNextDenoiseGate is a one-shot opt-out for saved-session
+    // resumes: applySessionState sets it before writing perf.fixture so
+    // the just-restored denoise survives this hook's snap-to-zero. The
+    // useFixtureSwap consumer normally clears it, but on a fresh resume
+    // its run() bails on session.status !== "ready" without firing, so
+    // we consume-and-clear here too. Fresh sessions don't set the flag,
+    // so their gate behaviour is unchanged.
     const perfState = usePerformanceStore.getState();
     const gate = getConfig().denoise_session_gate;
-    if (gate.enabled) {
+    if (perfState.skipNextDenoiseGate) {
+      perfState.setSkipNextDenoiseGate(false);
+    } else if (gate.enabled) {
       const prevDenoise = perfState.sliderTargets["denoise"] ?? 0;
       perfState.setSliderDirect("denoise", 0);
       perfState.animateSliderDisplayFrom("denoise", prevDenoise, gate.glide_ms);
