@@ -46,6 +46,55 @@ from acestep.paths import (
 from .protocol import SAMPLE_RATE
 
 
+class _BenchAudioBuffer:
+    """Headless stand-in for ``AudioEngine``'s buffer surface.
+
+    Exposes the operations the runner hits on the hot path so
+    ``audio_mix_ms`` is a like-for-like measurement of the demo's
+    windowed-decode mix sequence: ``self.current`` (read-only view for
+    boundary crossfade), ``patch_window`` (in-place slice-assign — the
+    new fast path replacing the previous copy+swap idiom that fired
+    items 1 & 2), and ``swap`` (legacy full-buffer-replace path kept
+    for the rare full-decode branch). Pure numpy; no sounddevice import
+    so it runs on headless GPU boxes.
+    """
+
+    def __init__(self, data: np.ndarray) -> None:
+        if data.ndim == 1:
+            data = data.reshape(-1, 1)
+        self.current = data.copy()
+        self.channels = data.shape[1]
+        self._old: np.ndarray | None = None
+        self.swap_count = 0
+
+    def patch_window(self, window: np.ndarray, start_sample: int) -> None:
+        if window.ndim == 1:
+            window = window.reshape(-1, 1)
+        if window.shape[1] != self.channels:
+            if self.channels == 2 and window.shape[1] == 1:
+                window = np.column_stack([window, window])
+            elif self.channels == 1 and window.shape[1] == 2:
+                window = window.mean(axis=1, keepdims=True)
+        buf_len = len(self.current)
+        end = min(start_sample + len(window), buf_len)
+        n = end - start_sample
+        if n <= 0:
+            return
+        self.current[start_sample:end] = window[:n]
+
+    def swap(self, new_data: np.ndarray) -> None:
+        if new_data.ndim == 1:
+            new_data = new_data.reshape(-1, 1)
+        if new_data.shape[1] != self.channels:
+            if self.channels == 2 and new_data.shape[1] == 1:
+                new_data = np.column_stack([new_data, new_data])
+            elif self.channels == 1 and new_data.shape[1] == 2:
+                new_data = new_data.mean(axis=1, keepdims=True)
+        self._old = self.current.copy()
+        self.current = new_data
+        self.swap_count += 1
+
+
 VALID_ACCEL = ("tensorrt", "compile", "eager")
 DEFAULT_CONFIG = Path(__file__).parent / "static" / "config.json"
 DEFAULT_FIXTURE = "inside_confusion_loop_60s_gsm.wav"
@@ -325,6 +374,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--no-decode", action="store_true")
     parser.add_argument(
+        "--audio-mix",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Mirror the runner's host-side audio-mix sequence after each "
+            "non-skip decode (D2H copy, AudioEngine.current.copy(), "
+            "window crossfade, AudioEngine.swap). Surfaces items 1 & 2 "
+            "(full-buffer numpy memcpy) as audio_mix_ms. Default on."
+        ),
+    )
+    parser.add_argument(
         "--progress-every",
         type=int,
         default=5,
@@ -519,9 +579,14 @@ def main() -> None:
     print("[Run] Stream handle ready; first tick builds the pipeline")
 
     target_completed = args.warmup + args.iters
-    max_ticks = target_completed + depth + steps + 20
+    # Worst case: pipeline yields one finish per ``steps/depth`` ticks
+    # (e.g. depth=4, steps=8 → one per 2 ticks). Add depth+steps for
+    # initial fill and a 20-tick slack for skip / decode-misses.
+    fill_ratio = max(1, math.ceil(steps / max(1, depth)))
+    max_ticks = target_completed * fill_ratio + depth + steps + 20
     measured_tick_ms: list[float] = []
     measured_decode_ms: list[float] = []
+    measured_audio_mix_ms: list[float] = []
     measured_total_ms: list[float] = []
     warmup_tick_ms: list[float] = []
     skipped_measured = 0
@@ -530,6 +595,21 @@ def main() -> None:
     measured = 0
     last_latent = None
     last_wav_seen = False
+
+    audio_buffer: _BenchAudioBuffer | None = None
+    if args.audio_mix:
+        # Initial buffer matches the demo's: ``waveform.numpy().T`` is the
+        # [samples, channels] layout AudioEngine.__init__ consumes (see
+        # backend.py's ``src_np = waveform.numpy().T`` before AudioEngine
+        # construction). Crop to mirror runner behaviour when crop_seconds
+        # would be set; this bench has no crop so the full source is the
+        # buffer.
+        audio_buffer = _BenchAudioBuffer(waveform.numpy().T)
+        print(
+            f"[Run] audio-mix on: buffer {audio_buffer.current.shape} "
+            f"({audio_buffer.current.nbytes / 1024 / 1024:.1f} MiB; "
+            f"copied twice per non-skip decode)"
+        )
 
     print(
         f"[Run] warmup={args.warmup} measured={args.iters} "
@@ -573,6 +653,7 @@ def main() -> None:
             last_latent = result.clone()
 
         dec_ms = 0.0
+        mix_ms = 0.0
         if args.no_decode:
             skipped = True
         elif skipped:
@@ -590,18 +671,60 @@ def main() -> None:
                 decoded_measured += 1
                 measured_decode_ms.append(dec_ms)
 
+            # Host-side audio-mix path. Mirrors pipeline.py's non-skip
+            # windowed-decode sequence verbatim so ``audio_mix_ms``
+            # captures the wall time the runner spends between
+            # decode-end and "audio is live in the playback buffer":
+            # D2H copy + fp32 upcast + boundary-edge crossfade against
+            # ``audio_eng.current`` (no full copy) + ``patch_window``
+            # in-place slice-assign. The old "copy + swap" sequence
+            # (items 1 & 2) is gone here for the same reason it's gone
+            # from the runner. Times zero when --no-audio-mix is set.
+            if audio_buffer is not None:
+                mix_t0 = time.perf_counter()
+                win_wav = audio_out.waveform.detach().cpu().float().squeeze(0)
+                win_np = win_wav.numpy().T
+                win_start = int(audio_out.start_sample)
+                win_end = win_start + win_np.shape[0]
+                current = audio_buffer.current
+                xfade = min(1200, win_np.shape[0] // 4)
+                if win_start > 0 and xfade > 0:
+                    t_in = np.linspace(0.0, 1.0, xfade).reshape(-1, 1)
+                    win_np[:xfade] = (
+                        current[win_start:win_start + xfade] * (1 - t_in)
+                        + win_np[:xfade] * t_in
+                    )
+                if win_end < current.shape[0] and xfade > 0:
+                    t_out = np.linspace(1.0, 0.0, xfade).reshape(-1, 1)
+                    tail = min(xfade, current.shape[0] - win_end + xfade)
+                    s = win_np.shape[0] - tail
+                    win_np[s:] = (
+                        win_np[s:] * t_out[:tail]
+                        + current[win_start + s:win_start + s + tail] * (1 - t_out[:tail])
+                    )
+                clamp_end = min(win_end, current.shape[0])
+                audio_buffer.patch_window(
+                    win_np[:clamp_end - win_start], win_start,
+                )
+                mix_ms = (time.perf_counter() - mix_t0) * 1000
+                if is_measured:
+                    measured_audio_mix_ms.append(mix_ms)
+
         if is_measured:
-            measured_total_ms.append(tick_ms + dec_ms)
+            measured_total_ms.append(tick_ms + dec_ms + mix_ms)
             if args.progress_every and (
                 measured == 1
                 or measured == args.iters
                 or measured % args.progress_every == 0
             ):
                 dec_label = "skip" if skipped else f"{dec_ms:.1f}ms"
+                mix_label = (
+                    "skip" if skipped or audio_buffer is None else f"{mix_ms:.1f}ms"
+                )
                 print(
                     f"  #{measured:3d}/{args.iters} "
                     f"tick={tick_ms:.1f}ms decode={dec_label} "
-                    f"denoise={denoise_value:.3f}"
+                    f"mix={mix_label} denoise={denoise_value:.3f}"
                 )
 
         if measured >= args.iters:
@@ -615,6 +738,7 @@ def main() -> None:
     run_wall_ms = (time.perf_counter() - run_t0) * 1000
     tick_stats = describe(measured_tick_ms)
     decode_stats = describe(measured_decode_ms)
+    audio_mix_stats = describe(measured_audio_mix_ms)
     total_stats = describe(measured_total_ms)
 
     mem_stats: dict[str, float | None] = {
@@ -636,11 +760,14 @@ def main() -> None:
     print()
     print(f"{'metric':<14s} {'mean':>9s} {'p50':>9s} {'p90':>9s} {'p95':>9s} {'min':>9s} {'max':>9s}")
     print("-" * 72)
-    for label, stats in (
+    summary_rows = [
         ("tick", tick_stats),
         ("decode", decode_stats),
-        ("tick+decode", total_stats),
-    ):
+    ]
+    if measured_audio_mix_ms:
+        summary_rows.append(("audio_mix", audio_mix_stats))
+    summary_rows.append(("loop_total", total_stats))
+    for label, stats in summary_rows:
         print(
             f"{label:<14s} "
             f"{fmt_stat(stats['mean_ms']):>9s} "
@@ -681,6 +808,7 @@ def main() -> None:
             "vary_seed": args.vary_seed,
             "skip_threshold": args.skip_threshold,
             "decode": not args.no_decode,
+            "audio_mix": bool(args.audio_mix),
             "dcw_enabled": dcw_enabled,
             "dcw_mode": dcw_mode,
             "dcw_scaler": dcw_scaler,
@@ -691,11 +819,13 @@ def main() -> None:
         "warmup_tick_ms": warmup_tick_ms,
         "tick_ms": measured_tick_ms,
         "decode_ms": measured_decode_ms,
-        "tick_decode_ms": measured_total_ms,
+        "audio_mix_ms": measured_audio_mix_ms,
+        "loop_total_ms": measured_total_ms,
         "stats": {
             "tick": tick_stats,
             "decode": decode_stats,
-            "tick_decode": total_stats,
+            "audio_mix": audio_mix_stats,
+            "loop_total": total_stats,
             "decoded_measured": decoded_measured,
             "skipped_measured": skipped_measured,
             "run_wall_ms": run_wall_ms,
