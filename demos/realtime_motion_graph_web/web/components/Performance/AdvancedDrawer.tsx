@@ -181,7 +181,7 @@ export function AdvancedDrawer({ savedTab, unsavedDot }: Props = {}) {
         >
           {spread ? renderAllSections(savedTab) : renderTabBody(activeTab, savedTab)}
         </div>
-        <DrawerHelpBar />
+        <DrawerHelpBar spread={spread} />
       </div>
     </aside>
   );

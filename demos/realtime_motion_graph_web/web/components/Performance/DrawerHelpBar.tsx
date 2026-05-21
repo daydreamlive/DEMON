@@ -11,16 +11,31 @@ import { useTooltipHover } from "@/hooks/useTooltipHover";
 // the user doesn't need to hold a hover long enough for the floating
 // tooltip to appear. Acts as the panel's "info strip" — same role as
 // the readout band on the bottom of a Sound Particles plugin.
+//
+// In spread (all-controls) mode the static info strip would eat the
+// grid height the layout exists to maximise. So in that mode the bar
+// renders only while actively hovering something, with overlay
+// positioning (see .drawer-help-bar--overlay) so it floats over the
+// bottom of the panel instead of pushing the grid up.
 
-export function DrawerHelpBar() {
+interface DrawerHelpBarProps {
+  /** When true, render as a floating overlay that only appears while
+   *  the user is actively hovering a tooltipped control. Used by the
+   *  drawer's spread/all-controls layout. */
+  spread?: boolean;
+}
+
+export function DrawerHelpBar({ spread = false }: DrawerHelpBarProps) {
   const barRef = useRef<HTMLDivElement | null>(null);
   const getRoot = useCallback(() => document.getElementById("install-sheet"), []);
   const { title, text } = useTooltipHover({ getRoot, selfRef: barRef });
 
+  if (spread && !text) return null;
+
   return (
     <div
       ref={barRef}
-      className={`drawer-help-bar${text ? " drawer-help-bar--active" : ""}`}
+      className={`drawer-help-bar${text ? " drawer-help-bar--active" : ""}${spread ? " drawer-help-bar--overlay" : ""}`}
       role="status"
       aria-live="polite"
     >
