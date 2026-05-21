@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { createPortal } from "react-dom";
 
 import { loraStrengthDispatcher } from "@/engine/lora/dispatcher";
-import { listLoras } from "@/engine/lora/listLoras";
+import { listHiddenLoras, listLoras } from "@/engine/lora/listLoras";
 import { useConfig } from "@/lib/config";
 import { LOCAL_MODE } from "@/lib/runtime";
 import { isLoraCompatibleWithScale, useLoraStore } from "@/store/useLoraStore";
@@ -458,23 +458,53 @@ export function LibraryTile() {
   const [showAllOverride, setShowAllOverride] = useState(false);
   const showAll = cfgShowAll || showAllOverride;
 
+  // Admin-hidden LoRA ids (global denylist, served by the app origin —
+  // see listHiddenLoras). Empty set = nothing hidden / service down.
+  const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set());
+  const enabledIds = useLoraStore((s) => s.enabled);
+
   useEffect(() => {
     if (!sessionWsUrl && !LOCAL_MODE) return;
     void listLoras().then(setCatalog).catch(() => {});
+    void listHiddenLoras().then(setHiddenIds).catch(() => {});
   }, [setCatalog, sessionWsUrl]);
 
-  // Compatibility filter runs first so the "N hidden" count tracks
+  // An admin hiding a LoRA must not leave it applied: force-disable any
+  // hidden LoRA the session currently has enabled. useLoraStore.disable
+  // also strips the trigger from the prompt, so this is the same path a
+  // manual toggle-off takes. Keyed on `enabledIds` too — not just
+  // `hiddenIds` — so a hidden LoRA that the setCatalog seed auto-enables
+  // (e.g. a hidden hardcoded-preferred LoRA) is caught on the next tick.
+  // Idempotent: disabling drops the id from `enabled`, so a re-run after
+  // the resulting state change is a no-op.
+  useEffect(() => {
+    if (hiddenIds.size === 0) return;
+    const disable = useLoraStore.getState().disable;
+    for (const id of enabledIds) {
+      if (hiddenIds.has(id)) disable(id);
+    }
+  }, [hiddenIds, enabledIds]);
+
+  // Admin-hidden LoRAs drop out of the catalog entirely — no row, no
+  // count, invisible to the regular user. Runs before the scale filter
+  // so the "N hidden" footer keeps tracking scale incompatibility only.
+  const visible = useMemo(
+    () => catalog.filter((entry) => !hiddenIds.has(entry.id)),
+    [catalog, hiddenIds],
+  );
+
+  // Compatibility filter runs next so the "N hidden" count tracks
   // scale incompatibility specifically, not query misses.
   const compatible = useMemo(
     () =>
       showAll
-        ? catalog
-        : catalog.filter((entry) =>
+        ? visible
+        : visible.filter((entry) =>
             isLoraCompatibleWithScale(entry, sessionScale),
           ),
-    [catalog, sessionScale, showAll],
+    [visible, sessionScale, showAll],
   );
-  const hiddenCount = catalog.length - compatible.length;
+  const hiddenCount = visible.length - compatible.length;
 
   const filtered = useMemo(
     () => compatible.filter((entry) => matchesQuery(entry, query)),

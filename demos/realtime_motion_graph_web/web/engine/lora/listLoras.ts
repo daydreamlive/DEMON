@@ -28,3 +28,29 @@ export async function listLoras(): Promise<LoraCatalogEntry[]> {
     .setCheckpointScale(json.checkpoint_scale ?? null);
   return json.loras ?? [];
 }
+
+/** Fetch the set of LoRA ids an admin has hidden from the Library.
+ *
+ *  Unlike listLoras() this hits the **app origin** (`/api/loras/hidden`,
+ *  a Vercel route backed by the orchestrator) — NOT the pod — because
+ *  the hidden list is global, not per-pod. The Library tile uses it to
+ *  drop hidden LoRAs from the catalog it renders.
+ *
+ *  Fail-open: any error (route missing, orchestrator down, malformed
+ *  body) yields an empty set, i.e. "nothing hidden" → the Library shows
+ *  everything. A broken visibility service must never blank the tile.
+ */
+export async function listHiddenLoras(): Promise<Set<string>> {
+  try {
+    const res = await fetch("/api/loras/hidden", { cache: "no-store" });
+    if (!res.ok) return new Set();
+    const json = (await res.json()) as { hidden?: unknown };
+    return new Set(
+      Array.isArray(json.hidden)
+        ? json.hidden.filter((x): x is string => typeof x === "string")
+        : [],
+    );
+  } catch {
+    return new Set();
+  }
+}
