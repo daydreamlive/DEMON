@@ -6,6 +6,7 @@ import { computePeaks, drawPeaks } from "@/engine/curves/waveformPeaks";
 import { frameScheduler } from "@/engine/scheduler/FrameScheduler";
 import { useOneShotTooltip } from "@/hooks/useOneShotTooltip";
 import { useCurveStore } from "@/store/useCurveStore";
+import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 
 // Bottom-center scrub strip. Shows the source-track waveform, overlays
@@ -20,11 +21,19 @@ import { useSessionStore } from "@/store/useSessionStore";
 // protocol message is involved — see audio-worklet.js:106 and
 // AudioPlayer.seek():339.
 //
-// Loop bands (v1):
-//   • Shift + drag      → draw a new band (start at down, end at up)
+// Loop bands (v2):
+//   • LOOP button       → arm "loop mode"; while armed a plain drag on
+//                          the waveform draws a band (no Shift needed).
+//                          Click again clears the loop entirely.
+//   • Shift + drag      → draw a band without arming (power-user shortcut)
 //   • Drag band body    → move the whole band
 //   • Drag band edge    → resize that edge
 //   • Right-click band  → clear
+// Band edges snap to the musical grid (bars + beats, from the detected
+// BPM + time signature); hold Alt while dragging for a free, un-snapped
+// adjustment. The grid itself is drawn faintly on the strip so bar
+// boundaries are visible at a glance.
+//
 // All client-side via AudioPlayer.setLoopBand/clearLoopBand, which the
 // AudioWorklet honours by wrapping end→start on each pass.
 
@@ -51,7 +60,14 @@ function ensureCanvasSize(canvas: HTMLCanvasElement): {
   return { w, h, dpr };
 }
 
+/** Snap a time to the nearest beat. `beatSec <= 0` (BPM unknown) → no-op. */
+function snapToBeat(t: number, beatSec: number): number {
+  if (beatSec <= 0) return t;
+  return Math.round(t / beatSec) * beatSec;
+}
+
 type Band = { start: number; end: number };
+type Grid = { beatSec: number; beatsPerBar: number };
 type DragMode =
   | "seek"
   | "draw-band"
@@ -73,6 +89,9 @@ interface DragState {
 export function WaveformScrubBox() {
   const player = useSessionStore((s) => s.player);
   const curvesOpen = useCurveStore((s) => s.overlayOpen);
+  // Musical grid inputs — drive both the drawn grid and edge snapping.
+  const detectedBpm = usePerformanceStore((s) => s.detectedBpm);
+  const timeSignature = usePerformanceStore((s) => s.activeTimeSignature);
   const boxRef = useRef<HTMLDivElement>(null);
   const bgCanvasRef = useRef<HTMLCanvasElement>(null);
   const fgCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -84,6 +103,19 @@ export function WaveformScrubBox() {
   const [bandState, setBandState] = useState<Band | null>(null);
   const bandRef = useRef<Band | null>(null);
   bandRef.current = bandState;
+
+  // Loop mode: when armed, a plain drag on the waveform draws/edits the
+  // band (Shift no longer required). The pointer handlers read the ref.
+  const [loopMode, setLoopMode] = useState(false);
+  const loopModeRef = useRef(false);
+  loopModeRef.current = loopMode;
+
+  // Beat grid, recomputed each render and shared with the rAF tick +
+  // pointer handlers via a ref.
+  const beatsPerBar = Math.max(1, parseInt(String(timeSignature), 10) || 4);
+  const beatSec = detectedBpm && detectedBpm > 0 ? 60 / detectedBpm : 0;
+  const gridRef = useRef<Grid>({ beatSec: 0, beatsPerBar: 4 });
+  gridRef.current = { beatSec, beatsPerBar };
 
   const [hasPeaks, setHasPeaks] = useState(false);
   const hasPlayer = player !== null;
@@ -142,7 +174,7 @@ export function WaveformScrubBox() {
     };
   }, [hasPlayer, player]);
 
-  // ── Foreground canvas: playhead + active band ─────────────────────
+  // ── Foreground canvas: grid + playhead + active band ──────────────
   useEffect(() => {
     if (!hasPlayer) return;
     const canvas = fgCanvasRef.current;
@@ -162,6 +194,26 @@ export function WaveformScrubBox() {
 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, w, h);
+
+      // Beat grid — faint beat lines, brighter bar lines. Lets the
+      // operator see where bars start (and where edges will snap).
+      const grid = gridRef.current;
+      if (grid.beatSec > 0) {
+        const beatPath = new Path2D();
+        const barPath = new Path2D();
+        let i = 0;
+        for (let tb = 0; tb <= duration + 1e-6; tb += grid.beatSec, i++) {
+          const gx = tToX(tb);
+          const path = i % grid.beatsPerBar === 0 ? barPath : beatPath;
+          path.moveTo(gx, 0);
+          path.lineTo(gx, h);
+        }
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
+        ctx.stroke(beatPath);
+        ctx.strokeStyle = "rgba(255, 222, 196, 0.20)";
+        ctx.stroke(barPath);
+      }
 
       // Active band — translucent orange rect.
       const band = bandRef.current;
@@ -256,42 +308,49 @@ export function WaveformScrubBox() {
       return p.duration / innerW;
     };
 
+    /** Snap a time to the beat grid unless Alt is held (free adjust). */
+    const snapT = (t: number, e: PointerEvent): number =>
+      e.altKey ? t : snapToBeat(t, gridRef.current.beatSec);
+
     const onDown = (e: PointerEvent) => {
-      // Right-click → clear band (if any). Don't preventDefault here —
-      // contextmenu handler below also fires and is the place to
-      // suppress the browser's native menu.
-      if (e.button === 2) return;
+      // Right-click → clear band (handled in contextmenu). Ignore here.
       if (e.button !== 0) return;
+      // A press on the LOOP toggle (a child of this box) must not also
+      // scrub: the native event still bubbles to this listener even
+      // though the button calls React's synthetic stopPropagation.
+      if (
+        (e.target as HTMLElement | null)?.closest?.(".waveform-loop-toggle")
+      ) {
+        return;
+      }
 
       const t = tFromEvent(e);
       const band = bandRef.current;
       const tol = secPerPx() * BAND_EDGE_HIT_PX;
+      // Loop editing is active when the user armed loop mode OR is
+      // holding Shift (the power-user shortcut).
+      const loopEditing = e.shiftKey || loopModeRef.current;
 
       let mode: DragMode = "seek";
       let anchorT = t;
       let startBand: Band | undefined;
 
-      if (e.shiftKey) {
-        // Draw a brand-new band from this point. Clears any existing one
-        // so the user always sees their freshest gesture.
+      if (band && Math.abs(t - band.start) <= tol) {
+        mode = "resize-band-start";
+      } else if (band && Math.abs(t - band.end) <= tol) {
+        mode = "resize-band-end";
+      } else if (band && t >= band.start && t <= band.end) {
+        mode = "move-band";
+        anchorT = t;
+        startBand = { ...band };
+      } else if (loopEditing) {
+        // Draw a brand-new band from this point (snapped to the grid).
         mode = "draw-band";
-        setBandState({ start: t, end: t });
-      } else if (band) {
-        // Existing band — check for edge / body hits.
-        if (Math.abs(t - band.start) <= tol) {
-          mode = "resize-band-start";
-        } else if (Math.abs(t - band.end) <= tol) {
-          mode = "resize-band-end";
-        } else if (t >= band.start && t <= band.end) {
-          mode = "move-band";
-          anchorT = t;
-          startBand = { ...band };
-        } else {
-          // Plain click outside the band — regular seek. Leave the band
-          // in place; the worklet keeps looping it. (Seeks outside the
-          // band fall back into it on the next wrap.)
-          mode = "seek";
-        }
+        anchorT = snapT(t, e);
+        setBandState({ start: anchorT, end: anchorT });
+      } else {
+        // Plain click outside any band → regular seek.
+        mode = "seek";
       }
 
       drag = { mode, anchorT, startBand };
@@ -315,8 +374,9 @@ export function WaveformScrubBox() {
           return;
         case "draw-band": {
           const a = drag.anchorT;
-          const start = Math.max(0, Math.min(a, t));
-          const end = Math.min(duration, Math.max(a, t));
+          const ts = snapT(t, e);
+          const start = Math.max(0, Math.min(a, ts));
+          const end = Math.min(duration, Math.max(a, ts));
           setBandState({ start, end });
           return;
         }
@@ -325,24 +385,27 @@ export function WaveformScrubBox() {
           if (!sb) return;
           const len = sb.end - sb.start;
           const delta = t - drag.anchorT;
-          let start = sb.start + delta;
-          let end = sb.end + delta;
+          let start = snapT(sb.start + delta, e);
+          let end = start + len;
           // Clamp to buffer ends without resizing.
           if (start < 0) {
-            end -= start;
             start = 0;
+            end = len;
           }
           if (end > duration) {
-            start -= end - duration;
             end = duration;
+            start = end - len;
           }
-          setBandState({ start, end: start + len });
+          setBandState({ start, end });
           return;
         }
         case "resize-band-start": {
           const b = bandRef.current;
           if (!b) return;
-          const newStart = Math.min(b.end - MIN_BAND_SEC, Math.max(0, t));
+          const newStart = Math.min(
+            b.end - MIN_BAND_SEC,
+            Math.max(0, snapT(t, e)),
+          );
           setBandState({ start: newStart, end: b.end });
           return;
         }
@@ -351,7 +414,7 @@ export function WaveformScrubBox() {
           if (!b) return;
           const newEnd = Math.max(
             b.start + MIN_BAND_SEC,
-            Math.min(duration, t),
+            Math.min(duration, snapT(t, e)),
           );
           setBandState({ start: b.start, end: newEnd });
           return;
@@ -362,8 +425,8 @@ export function WaveformScrubBox() {
     const onUp = (e: PointerEvent) => {
       if (!drag) return;
       // Draw mode finalises on release: if the user just tap-clicked
-      // with shift (no drag), kill the band so we don't lock playback
-      // to a zero-width sliver.
+      // (no real drag), kill the band so we don't lock playback to a
+      // zero-width sliver.
       if (drag.mode === "draw-band") {
         const b = bandRef.current;
         if (!b || b.end - b.start < MIN_BAND_SEC) {
@@ -400,11 +463,24 @@ export function WaveformScrubBox() {
     };
   }, [hasPlayer]);
 
-  // One-shot tooltip on first hover — teach Shift+drag = loop band.
+  // One-shot tooltip on first hover.
   const tipProps = useOneShotTooltip(
     "waveform-scrub",
-    "Click to scrub · Shift + drag to loop",
+    "Click to scrub · LOOP to set a loop region",
   );
+
+  // LOOP button: with no loop set, arms loop mode (a plain drag then
+  // draws the band). With a loop active, clears it. Mirrors the single
+  // on/off mental model operators expect from a loop toggle.
+  const loopActive = loopMode || bandState !== null;
+  const toggleLoop = () => {
+    if (loopActive) {
+      setLoopMode(false);
+      setBandState(null);
+    } else {
+      setLoopMode(true);
+    }
+  };
 
   // Render the DOM as soon as we have a player so the peak-compute
   // effect can find the canvases in the DOM. The strip stays visually
@@ -418,6 +494,7 @@ export function WaveformScrubBox() {
       data-curves-open={curvesOpen ? "true" : undefined}
       data-ready={hasPeaks ? "true" : undefined}
       data-has-band={bandState ? "true" : undefined}
+      data-loop-mode={loopMode ? "true" : undefined}
       data-dd-tooltip-pos="below"
       role="slider"
       aria-label="Scrub playhead"
@@ -425,6 +502,23 @@ export function WaveformScrubBox() {
     >
       <canvas ref={bgCanvasRef} className="waveform-scrub-bg" aria-hidden="true" />
       <canvas ref={fgCanvasRef} className="waveform-scrub-fg" aria-hidden="true" />
+      <button
+        type="button"
+        className="waveform-loop-toggle"
+        data-active={loopActive ? "true" : undefined}
+        aria-pressed={loopActive}
+        title={
+          loopActive
+            ? "Clear the loop"
+            : "Arm loop mode, then drag across the waveform to set a loop"
+        }
+        onClick={(e) => {
+          e.stopPropagation();
+          toggleLoop();
+        }}
+      >
+        LOOP
+      </button>
     </div>
   );
 }

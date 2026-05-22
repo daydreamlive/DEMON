@@ -4868,6 +4868,7 @@ body.curve-open #install-video-area #graph {
   scroll-behavior: smooth;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
+  overscroll-behavior-x: contain;
 }
 .lite-tab-body::-webkit-scrollbar { display: none; }
 .lite-tab-section {
@@ -6508,6 +6509,10 @@ body.curve-open #install-video-area #graph {
   scrollbar-width: none;
   padding: 6px 12px 8px;
   -webkit-overflow-scrolling: touch;
+  /* This carousel is nested inside the Mix/Track scroll-snap track.
+     Without containment, swiping the chips chains the scroll out to
+     the parent and snaps back to the Mix tab. */
+  overscroll-behavior-x: contain;
 }
 .lite-track-carousel-scroll::-webkit-scrollbar { display: none; }
 .lite-track-carousel-empty {
@@ -6685,11 +6690,21 @@ body.curve-open #install-video-area #graph {
 .waveform-scrub-box {
   position: fixed;
   top: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-top, 0px));
-  left:  max(
-    calc(var(--hud-thickness) + 144px + var(--drawer-l-open, 0px)),
+  /* Horizontal insets match .schedule-curves-overlay exactly so the
+     scrub strip and the curve overlay share the same left/right edges
+     (they previously used a hand-tuned 144px/80px that drifted ~50px
+     off the overlay). */
+  left: max(
+    calc(
+      var(--hud-thickness) + var(--ribbon-bleed) + var(--remix-hint-extend)
+      + 12px + var(--drawer-l-open, 0px)
+    ),
     env(safe-area-inset-left, 0px)
   );
-  right: max(calc(var(--hud-thickness) + 80px),  env(safe-area-inset-right, 0px));
+  right: max(
+    calc(var(--hud-thickness) + var(--ribbon-bleed) + var(--remix-hint-extend) + 12px),
+    env(safe-area-inset-right, 0px)
+  );
   height: 48px;
   z-index: 4;
   cursor: ew-resize;
@@ -6713,6 +6728,47 @@ body.curve-open #install-video-area #graph {
   height: 100%;
   display: block;
   pointer-events: none;
+}
+/* While loop mode is armed the strip drags out a loop band rather than
+   scrubbing — reflect that in the cursor. */
+.waveform-scrub-box[data-loop-mode="true"] {
+  cursor: crosshair;
+}
+/* LOOP toggle — the discoverable entry point for the loop band. Sits in
+   the top-left corner of the strip; flat per the design language. */
+.waveform-loop-toggle {
+  position: absolute;
+  top: 4px;
+  left: 6px;
+  z-index: 2;
+  padding: 2px 8px;
+  font: 600 9px/1.4 var(--font-ui, ui-sans-serif), sans-serif;
+  letter-spacing: 0.08em;
+  border-radius: 4px;
+  background: rgba(10, 8, 6, 0.55);
+  color: rgba(255, 222, 196, 0.62);
+  border: 1px solid rgba(255, 222, 196, 0.22);
+  cursor: pointer;
+  /* Hidden until the operator hovers the scrub strip (or a loop is
+     active) — so it never sits in the way of a scrub click. */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease-out, background 120ms ease-out,
+    color 120ms ease-out, border-color 120ms ease-out;
+}
+.waveform-scrub-box:hover .waveform-loop-toggle,
+.waveform-loop-toggle[data-active="true"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+.waveform-loop-toggle:hover {
+  color: rgba(255, 222, 196, 0.95);
+  border-color: rgba(255, 222, 196, 0.45);
+}
+.waveform-loop-toggle[data-active="true"] {
+  background: rgba(240, 138, 72, 0.9);
+  color: #1a0e05;
+  border-color: transparent;
 }
 
 /* ── Custom tooltip (replaces native `title=` for hover-visible UI) ──

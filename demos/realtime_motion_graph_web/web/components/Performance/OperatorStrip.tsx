@@ -10,7 +10,6 @@ import {
   mergeConfig,
   type RtmgConfig,
 } from "@/lib/config";
-import { LOCAL_MODE } from "@/lib/runtime";
 import { confirm } from "@/store/useConfirmStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
@@ -23,6 +22,18 @@ import {
 } from "@/types/engine";
 
 import { MidiBadge } from "./MidiBadge";
+
+// Show a transient status message that clears itself after 2s — unless a
+// newer message replaced it meanwhile. Used for the import/export toasts,
+// which otherwise stuck on screen indefinitely.
+function flashStatus(message: string): void {
+  const ss = useSessionStore.getState();
+  ss.setStatus(ss.status, message);
+  window.setTimeout(() => {
+    const cur = useSessionStore.getState();
+    if (cur.message === message) cur.setStatus(cur.status, "");
+  }, 2000);
+}
 
 export function OperatorStrip() {
   const activeKey = usePerformanceStore((s) => s.activeKey);
@@ -80,7 +91,6 @@ export function OperatorStrip() {
   // operator-edited fields the user didn't touch in the imported file
   // keep their current values.
   async function onConfigFilePicked(file: File): Promise<void> {
-    const { setStatus } = useSessionStore.getState();
     try {
       const text = await file.text();
       const parsed = JSON.parse(text) as Partial<RtmgConfig>;
@@ -89,10 +99,10 @@ export function OperatorStrip() {
       }
       const merged = mergeConfig(getConfig(), parsed);
       applyConfig(merged);
-      setStatus(useSessionStore.getState().status, `Imported ${file.name}`);
+      flashStatus(`Imported ${file.name}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setStatus(useSessionStore.getState().status, `Import failed: ${msg}`);
+      flashStatus(`Import failed: ${msg}`);
     }
   }
 
@@ -113,8 +123,7 @@ export function OperatorStrip() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    const { setStatus } = useSessionStore.getState();
-    setStatus(useSessionStore.getState().status, `Exported config`);
+    flashStatus("Exported config");
   }
 
   // The pod's WS URL is allocated by the queue and not user-editable.
@@ -335,42 +344,40 @@ export function OperatorStrip() {
         </div>
       </section>
 
-      {LOCAL_MODE && (
-        <section className="operator-section">
-          <h3 className="operator-section-label">Local dev</h3>
-          <div className="operator-row">
-            <button
-              type="button"
-              className="pause-btn"
-              data-dd-tooltip="Import config from JSON"
-              aria-label="Import config"
-              onClick={() => configFileInputRef.current?.click()}
-            >
-              Import
-            </button>
-            <button
-              type="button"
-              className="pause-btn"
-              data-dd-tooltip="Download current config as JSON"
-              aria-label="Export config"
-              onClick={onExportConfig}
-            >
-              Export
-            </button>
-            <input
-              ref={configFileInputRef}
-              type="file"
-              accept=".json,application/json"
-              style={{ display: "none" }}
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                e.target.value = "";
-                if (file) void onConfigFilePicked(file);
-              }}
-            />
-          </div>
-        </section>
-      )}
+      <section className="operator-section">
+        <h3 className="operator-section-label">Config</h3>
+        <div className="operator-row">
+          <button
+            type="button"
+            className="pause-btn"
+            data-dd-tooltip="Import config from JSON"
+            aria-label="Import config"
+            onClick={() => configFileInputRef.current?.click()}
+          >
+            Import
+          </button>
+          <button
+            type="button"
+            className="pause-btn"
+            data-dd-tooltip="Download current config as JSON"
+            aria-label="Export config"
+            onClick={onExportConfig}
+          >
+            Export
+          </button>
+          <input
+            ref={configFileInputRef}
+            type="file"
+            accept=".json,application/json"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (file) void onConfigFilePicked(file);
+            }}
+          />
+        </div>
+      </section>
 
     </div>
   );
