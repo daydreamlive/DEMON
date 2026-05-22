@@ -10,7 +10,6 @@ import {
   mergeConfig,
   type RtmgConfig,
 } from "@/lib/config";
-import { LOCAL_MODE } from "@/lib/runtime";
 import { confirm } from "@/store/useConfirmStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
@@ -335,42 +334,40 @@ export function OperatorStrip() {
         </div>
       </section>
 
-      {LOCAL_MODE && (
-        <section className="operator-section">
-          <h3 className="operator-section-label">Local dev</h3>
-          <div className="operator-row">
-            <button
-              type="button"
-              className="pause-btn"
-              data-dd-tooltip="Import config from JSON"
-              aria-label="Import config"
-              onClick={() => configFileInputRef.current?.click()}
-            >
-              Import
-            </button>
-            <button
-              type="button"
-              className="pause-btn"
-              data-dd-tooltip="Download current config as JSON"
-              aria-label="Export config"
-              onClick={onExportConfig}
-            >
-              Export
-            </button>
-            <input
-              ref={configFileInputRef}
-              type="file"
-              accept=".json,application/json"
-              style={{ display: "none" }}
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                e.target.value = "";
-                if (file) void onConfigFilePicked(file);
-              }}
-            />
-          </div>
-        </section>
-      )}
+      <section className="operator-section">
+        <h3 className="operator-section-label">Config</h3>
+        <div className="operator-row">
+          <button
+            type="button"
+            className="pause-btn"
+            data-dd-tooltip="Import config from JSON"
+            aria-label="Import config"
+            onClick={() => configFileInputRef.current?.click()}
+          >
+            Import
+          </button>
+          <button
+            type="button"
+            className="pause-btn"
+            data-dd-tooltip="Download current config as JSON"
+            aria-label="Export config"
+            onClick={onExportConfig}
+          >
+            Export
+          </button>
+          <input
+            ref={configFileInputRef}
+            type="file"
+            accept=".json,application/json"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (file) void onConfigFilePicked(file);
+            }}
+          />
+        </div>
+      </section>
 
     </div>
   );

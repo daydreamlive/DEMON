@@ -258,7 +258,7 @@ export const DEFAULT_CONFIG: RtmgConfig = {
   },
   controls: {
     denoise: 0.7,
-    hint_strength: 1.4,
+    hint_strength: 1.0,
     feedback: 0.0,
     feedback_depth: 1,
     shift: 3.5,
