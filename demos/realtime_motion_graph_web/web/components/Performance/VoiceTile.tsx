@@ -1,9 +1,14 @@
 "use client";
 
+import { useEffect, useState } from "react";
+
 import { useConfig } from "@/lib/config";
 
 import { SliderGroup } from "./SliderGroup";
 import { defaultLabelFor, kbdHintFor } from "./SliderTile";
+
+// localStorage key for the dismissable experimental-feature notice.
+const VOICE_WARNING_DISMISSED_KEY = "demon:voiceWarningDismissed";
 
 // The CHANNELS tab body — the model's internal latent channels. These
 // 14 latent-space sliders are the closest thing this app has to a
@@ -26,17 +31,44 @@ const MORPH = ["ch13", "ch14", "ch19", "ch23", "ch29", "ch56"];
 
 export function VoiceTile() {
   const ranges = useConfig().channel_ranges;
+  // Experimental-feature notice — dismissable, and the dismissal sticks
+  // across reloads. Read after mount (not in the useState initializer)
+  // so a localStorage read can't break SSR hydration.
+  const [warningDismissed, setWarningDismissed] = useState(false);
+  useEffect(() => {
+    try {
+      setWarningDismissed(
+        localStorage.getItem(VOICE_WARNING_DISMISSED_KEY) === "1",
+      );
+    } catch {}
+  }, []);
+  const dismissWarning = () => {
+    try {
+      localStorage.setItem(VOICE_WARNING_DISMISSED_KEY, "1");
+    } catch {}
+    setWarningDismissed(true);
+  };
   return (
     <div className="mixer-tile mixer-tile--voice" data-tile="voice">
-      <div className="voice-tile-warning" role="note">
-        <div className="voice-tile-warning-title">Experimental feature</div>
-        <p className="voice-tile-warning-body">
-          These are not traditional audio channels and gains. They
-          manipulate different dimensions of the model&apos;s latent
-          space, and produce results ranging from nuanced and beautiful
-          to abrupt and discordant. Use at your own risk.
-        </p>
-      </div>
+      {!warningDismissed && (
+        <div className="voice-tile-warning" role="note">
+          <button
+            type="button"
+            className="voice-tile-warning-close"
+            onClick={dismissWarning}
+            aria-label="Dismiss experimental-feature notice"
+          >
+            ×
+          </button>
+          <div className="voice-tile-warning-title">Experimental feature</div>
+          <p className="voice-tile-warning-body">
+            These are not traditional audio channels and gains. They
+            manipulate different dimensions of the model&apos;s latent
+            space, and produce results ranging from nuanced and beautiful
+            to abrupt and discordant. Use at your own risk.
+          </p>
+        </div>
+      )}
       <div className="voice-sections-row">
         <div className="voice-section">
           <div className="voice-section-label">Highlights</div>

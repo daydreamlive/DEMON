@@ -3547,11 +3547,37 @@ body.curve-open #install-video-area #graph {
    this before sweeping the faders". Recessed background so it reads as
    advisory rather than a primary control surface. */
 .voice-tile-warning {
+  position: relative;
   margin: 0 0 6px;
-  padding: 6px 8px 7px;
+  padding: 6px 22px 7px 8px;
   border: 1px solid var(--accent-line);
   border-radius: var(--radius-sm);
   background: rgba(255, 184, 60, 0.04);
+}
+/* Dismiss the experimental-feature notice — the dismissal is persisted
+   to localStorage by VoiceTile. */
+.voice-tile-warning-close {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 100ms ease, background 100ms ease;
+}
+.voice-tile-warning-close:hover {
+  color: var(--text-strong);
+  background: rgba(255, 255, 255, 0.06);
 }
 .voice-tile-warning-title {
   font-family: var(--font-mono);
@@ -6637,18 +6663,6 @@ body.curve-open #install-video-area #graph {
     start-whisper-breathe 2.6s ease-in-out infinite 200ms;
   transition: bottom 240ms cubic-bezier(.2, .8, .2, 1);
 }
-/* Curve scheduler overlay docks its tab strip + close button against
-   the bottom of the viewport (≈48–56px tall). When that overlay is
-   open, hoist the pill above the tabs so it doesn't sit on top of the
-   curve tabs or the preset menus that grow upward from them. */
-.network-indicator[data-curves-open="true"] {
-  bottom: calc(
-    var(--drawer-handle-h, 28px) +
-    env(safe-area-inset-bottom, 0px) +
-    var(--curves-tab-strip-h, 64px) +
-    12px
-  );
-}
 .network-indicator__bars rect {
   fill: currentColor;
 }
@@ -7680,6 +7694,7 @@ body.curve-open #install-video-area #graph {
   flex: 1 1 0;
   min-width: 0;
   display: flex;
+  gap: 5px;
 }
 .ref-control-button {
   flex: 1 1 0;
@@ -7733,6 +7748,35 @@ body.curve-open #install-video-area #graph {
   border-color: var(--text-dim);
 }
 .ref-control-button:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+/* Sibling upload button — same outlined vocabulary as the dropdown
+   button, sized to a compact icon square. (Was an unstyled default
+   <button>.) */
+.ref-control-upload {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  background: transparent;
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0;
+  transition: color 80ms linear, border-color 80ms linear;
+}
+.ref-control-upload:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+.ref-control-upload:focus-visible {
+  outline: none;
+  border-color: var(--text-dim);
+}
+.ref-control-upload:disabled {
   opacity: 0.5;
   cursor: progress;
 }

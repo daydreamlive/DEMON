@@ -1,6 +1,5 @@
 "use client";
 
-import { useCurveStore } from "@/store/useCurveStore";
 import { useNetworkStore } from "@/store/useNetworkStore";
 
 // Subtle bottom-center pill that fades in when the user is likely
@@ -10,19 +9,17 @@ import { useNetworkStore } from "@/store/useNetworkStore";
 // the canvas or the AdvancedDrawer handle behind it. aria-live polite
 // so screen readers announce the engagement once, not per eval tick.
 //
-// When the schedule-curves overlay is open, the pill shifts up so it
-// clears the curve tab strip at the overlay's bottom — handled via the
-// `data-curves-open` attribute and a CSS bottom-offset bump.
+// Fixed bottom-center, just above the drawer handle — the position
+// does NOT shift when the schedule-curves overlay opens; it stays put
+// rather than hopping up over the curve tab strip / editor controls.
 export function NetworkIndicator() {
   const quality = useNetworkStore((s) => s.quality);
-  const curvesOpen = useCurveStore((s) => s.overlayOpen);
   if (quality === "healthy") return null;
 
   return (
     <div
       className="network-indicator"
       data-quality={quality}
-      data-curves-open={curvesOpen ? "true" : undefined}
       role="status"
       aria-live="polite"
     >
