@@ -4868,6 +4868,7 @@ body.curve-open #install-video-area #graph {
   scroll-behavior: smooth;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
+  overscroll-behavior-x: contain;
 }
 .lite-tab-body::-webkit-scrollbar { display: none; }
 .lite-tab-section {
@@ -6508,6 +6509,10 @@ body.curve-open #install-video-area #graph {
   scrollbar-width: none;
   padding: 6px 12px 8px;
   -webkit-overflow-scrolling: touch;
+  /* This carousel is nested inside the Mix/Track scroll-snap track.
+     Without containment, swiping the chips chains the scroll out to
+     the parent and snaps back to the Mix tab. */
+  overscroll-behavior-x: contain;
 }
 .lite-track-carousel-scroll::-webkit-scrollbar { display: none; }
 .lite-track-carousel-empty {
