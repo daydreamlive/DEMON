@@ -406,7 +406,13 @@ export function ScheduleCurvesOverlay() {
       const remote = session.remote;
       if (player && remote && remote.duration > 0) {
         const t = Math.min(1, Math.max(0, player.positionSec / remote.duration));
-        const { cx: xp } = curveToPx(t, 0, w, h);
+        // The playhead x must line up with the scrub-strip playhead,
+        // which insets 4px (WaveformScrubBox EDGE_PADDING_PX) — not the
+        // 16px inset the curve geometry uses. Both canvases share the
+        // same width + screen-x (their containers' CSS insets match), so
+        // matching the inset makes the two playheads exactly coincident.
+        const SCRUB_EDGE_PX = 4;
+        const xp = SCRUB_EDGE_PX + t * Math.max(1, w - 2 * SCRUB_EDGE_PX);
         const { cy: yTop } = curveToPx(0, 1, w, h);
         const { cy: yBot } = curveToPx(0, 0, w, h);
         ctx.strokeStyle = "rgba(240, 138, 72, 0.85)";
