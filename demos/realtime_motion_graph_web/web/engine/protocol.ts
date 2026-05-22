@@ -586,6 +586,24 @@ export class RemoteBackend extends EventTarget {
       if (key) msg.key = key;
       if (timeSignature) msg.time_signature = timeSignature;
       this.ws.send(JSON.stringify(msg));
+      // Opt-in wire-prompt debug. Run `window.__demonPromptLog = true`
+      // in the browser console to log exactly what each `prompt`
+      // message carries: the injected LoRA-trigger prefix and the
+      // final Tags A / B as actually sent to the engine. `false` (or
+      // unset) silences it. Pure console output, no other effect.
+      if (
+        typeof window !== "undefined" &&
+        (window as unknown as { __demonPromptLog?: boolean }).__demonPromptLog
+      ) {
+        console.log(
+          "[demon prompt → engine]\n" +
+            `  trigger prefix : ${prefix ? JSON.stringify(prefix) : "(none)"}\n` +
+            `  tags A (wire)  : ${JSON.stringify(msg.tags)}\n` +
+            `  tags B (wire)  : ${
+              msg.tags_b != null ? JSON.stringify(msg.tags_b) : "(none)"
+            }`,
+        );
+      }
     } catch {}
   }
 
