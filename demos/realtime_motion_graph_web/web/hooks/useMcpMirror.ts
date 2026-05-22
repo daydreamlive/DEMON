@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 
+import { enabledLoraTriggerPrefix } from "@/lib/loraTriggers";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
@@ -33,9 +34,13 @@ import type { LoraCatalogEntry } from "@/types/protocol";
 // With Smooth off, setSlider snaps both sliderTargets and sliderValues
 // in one shot, equivalent to the prior setSliderDirect behavior.
 //
-// `prompt_applied` echoes are also consumed here: when the engine's
-// active prompt diverges from the typed promptA, we adopt the engine's
-// value so the prompt input matches what's actually being encoded.
+// `prompt_applied` echoes are also consumed here: the engine echoes the
+// WIRE prompt — the operator's clean text with the enabled-LoRA trigger
+// prefix that sendPrompt injects. We strip that prefix back off, then,
+// when the engine's clean prompt diverges from the typed promptA, adopt
+// it so the input matches what's actually being encoded. Adopting the
+// raw (prefixed) echo would bake the trigger prefix into promptA and
+// every later sendPrompt would re-prepend it — unbounded accumulation.
 
 export function useMcpMirror() {
   useEffect(() => {
@@ -90,12 +95,20 @@ export function useMcpMirror() {
       };
 
       const onPromptApplied = (e: Event) => {
-        const tags = (e as CustomEvent<string>).detail;
-        if (typeof tags !== "string") return;
+        const raw = (e as CustomEvent<string>).detail;
+        if (typeof raw !== "string") return;
         const perf = usePerformanceStore.getState();
-        // Only adopt when the engine's active prompt diverges from what's
+        // The echo is the wire prompt: clean text + the LoRA trigger
+        // prefix sendPrompt prepended. Strip the prefix so we only ever
+        // adopt the clean prompt — otherwise the prefix is baked into
+        // promptA and every later sendPrompt re-prepends it (and a
+        // disabled LoRA's trigger lingers as literal prompt text).
+        const prefix = enabledLoraTriggerPrefix();
+        const tags =
+          prefix && raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
+        // Only adopt when the engine's clean prompt diverges from what's
         // in the input box — protects the user's mid-typing state when
-        // the ack is just confirming their own send.
+        // the echo is just confirming their own send.
         if (perf.promptA !== tags) {
           perf.setPromptA(tags);
         }
