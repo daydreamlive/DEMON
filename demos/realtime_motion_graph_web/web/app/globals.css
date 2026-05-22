@@ -6714,6 +6714,39 @@ body.curve-open #install-video-area #graph {
   display: block;
   pointer-events: none;
 }
+/* While loop mode is armed the strip drags out a loop band rather than
+   scrubbing — reflect that in the cursor. */
+.waveform-scrub-box[data-loop-mode="true"] {
+  cursor: crosshair;
+}
+/* LOOP toggle — the discoverable entry point for the loop band. Sits in
+   the top-left corner of the strip; flat per the design language. */
+.waveform-loop-toggle {
+  position: absolute;
+  top: 4px;
+  left: 6px;
+  z-index: 2;
+  padding: 2px 8px;
+  font: 600 9px/1.4 var(--font-ui, ui-sans-serif), sans-serif;
+  letter-spacing: 0.08em;
+  border-radius: 4px;
+  background: rgba(10, 8, 6, 0.55);
+  color: rgba(255, 222, 196, 0.62);
+  border: 1px solid rgba(255, 222, 196, 0.22);
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background 120ms ease-out, color 120ms ease-out,
+    border-color 120ms ease-out;
+}
+.waveform-loop-toggle:hover {
+  color: rgba(255, 222, 196, 0.95);
+  border-color: rgba(255, 222, 196, 0.45);
+}
+.waveform-loop-toggle[data-active="true"] {
+  background: rgba(240, 138, 72, 0.9);
+  color: #1a0e05;
+  border-color: transparent;
+}
 
 /* ── Custom tooltip (replaces native `title=` for hover-visible UI) ──
    Opt-in via `data-dd-tooltip="..."`. The element must have
