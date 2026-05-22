@@ -5,6 +5,7 @@ import { create } from "zustand";
 import type { AudioPlayer } from "@/engine/audio/AudioPlayer";
 import type { NetworkMonitor } from "@/engine/networkMonitor";
 import type { RemoteBackend } from "@/engine/protocol";
+import type { WsReconnector } from "@/engine/wsReconnect";
 
 // Live-session lifecycle state. The non-serializable RemoteBackend +
 // AudioPlayer instances live here so React components and hooks can react
@@ -15,6 +16,7 @@ export type SessionStatus =
   | "loading-fixture"
   | "connecting"
   | "ready"
+  | "reconnecting"
   | "error"
   | "closed";
 
@@ -27,6 +29,11 @@ interface SessionState {
    *  interval. Lifecycle == session lifecycle so reset() always tears it
    *  down. Mirrors how `remote` and `player` are owned here. */
   monitor: NetworkMonitor | null;
+  /** Active reconnect orchestrator. Non-null while the recovery backoff
+   *  loop is running after an abnormal WS close. reset() cancels it so a
+   *  fresh-session start can't be raced by a stale recovery attempt
+   *  silently replacing the new session's remote. */
+  reconnector: WsReconnector | null;
   /** Server-issued WS URL (from /api/queue/join). Null when no queue is in
    *  use — useStartSession falls back to defaultWsUrl(). */
   wsUrl: string | null;
@@ -46,6 +53,7 @@ interface SessionState {
   setStatus: (status: SessionStatus, message?: string) => void;
   setSession: (remote: RemoteBackend | null, player: AudioPlayer | null) => void;
   setMonitor: (monitor: NetworkMonitor | null) => void;
+  setReconnector: (reconnector: WsReconnector | null) => void;
   setWsUrl: (wsUrl: string | null) => void;
   setCheckpointScale: (scale: string | null) => void;
   setPipelineDepth: (depth: number | null) => void;
@@ -59,6 +67,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   remote: null,
   player: null,
   monitor: null,
+  reconnector: null,
   wsUrl: null,
   checkpointScale: null,
   pipelineDepth: null,
@@ -67,6 +76,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setStatus: (status, message = "") => set({ status, message }),
   setSession: (remote, player) => set({ remote, player }),
   setMonitor: (monitor) => set({ monitor }),
+  setReconnector: (reconnector) => set({ reconnector }),
   setWsUrl: (wsUrl) => set({ wsUrl }),
   setCheckpointScale: (scale) => set({ checkpointScale: scale }),
   setPipelineDepth: (depth) => set({ pipelineDepth: depth }),
@@ -75,12 +85,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     try {
       get().monitor?.stop();
     } catch {}
+    try {
+      get().reconnector?.cancel();
+    } catch {}
     set({
       status: "idle",
       message: "",
       remote: null,
       player: null,
       monitor: null,
+      reconnector: null,
       pipelineDepth: null,
       maxPipelineDepth: null,
       // checkpointScale survives reset on purpose: the server's

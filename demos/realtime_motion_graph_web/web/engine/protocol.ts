@@ -88,6 +88,11 @@ export class RemoteBackend extends EventTarget {
   readonly url: string;
   ws: WebSocket | null = null;
   ready = false;
+  /** True iff `close()` was called from the app (user-initiated session
+   *  teardown). Distinguishes a deliberate disconnect from a network drop
+   *  / server crash so the close-event listener can decide whether to
+   *  trigger automatic reconnect. */
+  closedByUser = false;
   initialBuffer: Float32Array | null = null;
   duration = 0;
   channels = 0;
@@ -844,6 +849,7 @@ export class RemoteBackend extends EventTarget {
   }
 
   close(): void {
+    this.closedByUser = true;
     try {
       this.ws?.close();
     } catch {}
@@ -851,5 +857,67 @@ export class RemoteBackend extends EventTarget {
       this._decoderWorker?.terminate();
     } catch {}
     this._decoderWorker = null;
+  }
+
+  /** Align the slice-epoch counter to a target value. Used by the
+   *  reconnect path: after `player.swap()` bumps `player.swapCount`
+   *  to mark a fresh source buffer, the new remote's `_sliceEpoch`
+   *  (which starts at 0 for every new `RemoteBackend` instance) has
+   *  to match — otherwise the slice listener's `epoch !== swapCount`
+   *  guard drops every incoming slice for the rest of the session.
+   *  Safe to call before any WS slice has been posted to the
+   *  decoder worker (which is the case during reconnect, since
+   *  worker post happens inside `ws.onmessage` after `connect()`
+   *  resolves and the slice listener can run). */
+  setSliceEpoch(epoch: number): void {
+    this._sliceEpoch = epoch;
+  }
+
+  /** Test/dev hook: synthesize an abnormal close so the client-side
+   *  reconnect path can be exercised without needing real network
+   *  failure. The browser maps a TCP RST (the dominant production
+   *  cause of 1006 from RunPod / vast.ai tunnels) to a CloseEvent
+   *  with code 1006, wasClean:false. We construct the same event
+   *  shape and route it through the same `close` listeners the real
+   *  socket would, then tear down the underlying ws so no further
+   *  frames or events arrive — matching what the OS-level RST does.
+   */
+  simulateClose(code = 1006, reason = "simulated"): void {
+    const ws = this.ws;
+    // Detach the real ws callbacks before closing the underlying
+    // socket. Without this, `ws.close()` below would fire ws.onclose
+    // with a clean code (1005/1000) AND we'd synthesize the "close"
+    // CustomEvent below — the reconnect listener would run twice on
+    // a single simulated drop. Nulling onerror/onmessage too keeps
+    // any in-flight frames from racing the synthetic event.
+    if (ws) {
+      try {
+        ws.onclose = null;
+        ws.onerror = null;
+        ws.onmessage = null;
+      } catch {}
+      try {
+        ws.close();
+      } catch {}
+    }
+    this.ws = null;
+    // Build a CloseEvent shaped like the real thing. CloseEvent isn't
+    // always constructible in older environments, so fall back to a
+    // plain Event with the relevant fields glued on.
+    let ev: CloseEvent | (Event & { code: number; reason: string; wasClean: boolean });
+    try {
+      ev = new CloseEvent("close", { code, reason, wasClean: false });
+    } catch {
+      const e = new Event("close") as Event & {
+        code: number;
+        reason: string;
+        wasClean: boolean;
+      };
+      e.code = code;
+      e.reason = reason;
+      e.wasClean = false;
+      ev = e;
+    }
+    this.dispatchEvent(new CustomEvent("close", { detail: ev }));
   }
 }

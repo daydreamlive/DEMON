@@ -1,5 +1,6 @@
 "use client";
 
+import { installDemonDebug } from "@/engine/debugReconnect";
 import { listLoras } from "@/engine/lora/listLoras";
 import { setEngineUrlBuilder } from "@/engine/rtmgConfig";
 import { applyConfig, loadConfig } from "@/lib/config";
@@ -28,6 +29,11 @@ setEngineUrlBuilder((path) => (path.startsWith("/") ? path : `/${path}`));
 // regardless of order — this push just ensures the common case (boot
 // wins) does the work directly rather than via the retro path.
 if (typeof window !== "undefined") {
+  // Expose the WS reconnect test harness on window.__demonDebug. Cheap
+  // (no listeners or intervals), so no need to gate on NODE_ENV — having
+  // it available in prod also lets us hot-test the reconnect path
+  // against a live pod without needing a separate build.
+  installDemonDebug();
   void (async () => {
     const [cfg, catalog] = await Promise.all([
       loadConfig(),

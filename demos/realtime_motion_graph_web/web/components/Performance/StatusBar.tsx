@@ -9,8 +9,8 @@ import { useSessionStore } from "@/store/useSessionStore";
 //
 // State derivation:
 //   - `idle` (no session) and `ready` + "Playing" → hidden.
-//   - `loading-fixture` / `connecting` → "loading" (accent orange,
-//     calm breathing).
+//   - `loading-fixture` / `connecting` / `reconnecting` → "loading"
+//     (accent orange, calm breathing).
 //   - `error` / `closed` → "error" (warn yellow, soft inset glow).
 //   - everything else with a non-empty message → "info" (white, mid-
 //     session swap progress and friends).
@@ -27,7 +27,11 @@ function deriveState(
   if (status === "error" || status === "closed") {
     return { visible: true, state: "error" };
   }
-  if (status === "loading-fixture" || status === "connecting") {
+  if (
+    status === "loading-fixture" ||
+    status === "connecting" ||
+    status === "reconnecting"
+  ) {
     return { visible: true, state: "loading" };
   }
   return { visible: true, state: "info" };

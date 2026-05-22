@@ -9,6 +9,7 @@ import { createNetworkMonitor } from "@/engine/networkMonitor";
 import { defaultWsUrl } from "@/engine/podUrl";
 import { RemoteBackend, SLICE_FLAG_DELTA } from "@/engine/protocol";
 import { getApiKey } from "@/engine/rtmgConfig";
+import { WsReconnector } from "@/engine/wsReconnect";
 import { getConfig } from "@/lib/config";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { useLoraStore } from "@/store/useLoraStore";
@@ -79,6 +80,15 @@ async function probeServerSideFixtures(wsUrl: string): Promise<string[]> {
 //   4. on "ready": init AudioPlayer with initial buffer
 //   5. wire slice → patch/addDelta, lora_catalog → useLoraStore, etc.
 //   6. resume audio context
+//
+// After "ready", a close-event handler watches the live WebSocket. If
+// it sees a network-side close (not user-initiated — i.e. the pod
+// tunnel dropped, the network blipped, RunPod hard-reset the worker),
+// it kicks off WsReconnector to re-run essentially the same flow:
+// fresh WS handshake with the same store state, then swap the new
+// RemoteBackend into the session store. The AudioPlayer stays alive
+// across reconnects so playback keeps looping the source while slices
+// pause, then resumes streaming when the new backend reaches "ready".
 
 function buildConfig(
   fixtureName: string,
@@ -135,6 +145,153 @@ function buildConfig(
   };
 }
 
+/**
+ * Attach every per-session listener (slice → AudioPlayer, lora_catalog,
+ * stem assets, close) to a RemoteBackend. Extracted from the inline
+ * setup so the reconnect path can re-attach the same handlers to a
+ * freshly-built backend.
+ *
+ * The `onUnexpectedClose` callback fires when the WS closes for any
+ * reason other than `RemoteBackend.close()` being called from the app
+ * (e.g. starting a new session). 1006 (abnormal closure) and 1011
+ * (server internal error) both flow through here; the reconnect
+ * orchestrator decides whether to retry based on attempt count, not
+ * close code. The previous "set status to closed" behaviour was a
+ * dead-end — the user had to refresh to recover. Now it's a transient
+ * status while the backoff loop runs.
+ */
+function wireRemoteListeners(
+  remote: RemoteBackend,
+  onUnexpectedClose: (e: CloseEvent | { code?: number; reason?: string }) => void,
+): void {
+  remote.addEventListener("slice", (e) => {
+    const detail = (e as CustomEvent<AudioSlice>).detail;
+    const player = useSessionStore.getState().player;
+    if (!player) return;
+    // Drop slices that were generated for a previous source. Without
+    // this, slices already in the WS queue (or mid-decode in the
+    // worker) at the moment the user swaps tracks would write into
+    // the new buffer — audible as chunks of the previous song
+    // bleeding through after a swap.
+    if (detail.epoch !== player.swapCount) return;
+    const startFrame = Math.floor(detail.startSample);
+    if (detail.flags === SLICE_FLAG_DELTA) {
+      player.addDelta(startFrame, detail.audio);
+    } else {
+      player.patch(startFrame, detail.audio);
+    }
+  });
+
+  remote.addEventListener("lora_catalog", (e) => {
+    const detail = (e as CustomEvent).detail;
+    useLoraStore.getState().setCatalog(detail);
+  });
+
+  remote.addEventListener("stem_assets", (e) => {
+    const detail = (e as CustomEvent<{
+      fixture_name?: string;
+      sample_rate: number;
+      channels: number;
+      frames: number;
+      source_mode?: "full" | "vocals" | "instruments";
+      buffers: Record<"vocals" | "instruments", Float32Array>;
+    }>).detail;
+    const name = detail.fixture_name || usePerformanceStore.getState().fixture;
+    if (!name) return;
+    if (detail.source_mode) {
+      useCustomTracksStore.getState().setSourceMode(name, detail.source_mode);
+    }
+    useCustomTracksStore.getState().setStems(name, {
+      vocals: {
+        interleaved: detail.buffers.vocals,
+        channels: detail.channels,
+        frames: detail.frames,
+        sampleRate: detail.sample_rate,
+      },
+      instruments: {
+        interleaved: detail.buffers.instruments,
+        channels: detail.channels,
+        frames: detail.frames,
+        sampleRate: detail.sample_rate,
+      },
+    });
+  });
+
+  remote.addEventListener("stem_failed", (e) => {
+    const detail = (e as CustomEvent<{
+      fixture_name?: string;
+      error?: string;
+    }>).detail;
+    const name = detail.fixture_name || usePerformanceStore.getState().fixture;
+    if (!name) return;
+    useCustomTracksStore
+      .getState()
+      .setStemStatus(name, "failed", detail.error || "Stem extraction failed");
+  });
+
+  remote.addEventListener("close", (e) => {
+    const detail = (e as CustomEvent<CloseEvent>).detail;
+    // closedByUser is set by RemoteBackend.close() — i.e. another
+    // session start is tearing this one down. Don't reconnect; just
+    // get out of the way.
+    if (remote.closedByUser) return;
+    onUnexpectedClose(detail ?? { code: undefined, reason: undefined });
+  });
+
+  remote.addEventListener("error", () => {
+    // The connect() promise rejects on initial-handshake errors; the
+    // close listener handles post-ready drops. Nothing else to do here.
+  });
+}
+
+interface ResolvedFixture {
+  fixtureName: string;
+  useServerFixture: boolean;
+  /** Decoded interleaved PCM, OR an empty Float32Array when the pod can
+   *  load the fixture server-side (no audio frame on the wire). */
+  interleaved: Float32Array;
+  channels: number;
+}
+
+/**
+ * Resolve the active fixture + decoded audio for the *initial* connect.
+ * The result is cached and reused by the reconnect path: re-decoding a
+ * fixture (especially a custom upload, which can be a multi-MB blob) on
+ * every backoff attempt would burn ~hundreds of ms × N attempts for no
+ * benefit — the user can't have changed fixtures while a "Reconnecting…"
+ * placard is up.
+ *
+ * Returns null if there are no fixtures (only possible if the pod is
+ * misconfigured), which the caller surfaces as a fatal error.
+ */
+async function resolveFixtureForConnect(): Promise<ResolvedFixture | null> {
+  let fixtureName = usePerformanceStore.getState().fixture;
+  if (!fixtureName) {
+    const list = await listFixtures();
+    fixtureName = pickDefaultFixture(list);
+    if (fixtureName) {
+      usePerformanceStore.getState().setFixture(fixtureName);
+    }
+  }
+  if (!fixtureName) return null;
+
+  const wsUrl = resolveWsUrl(useSessionStore.getState().wsUrl);
+  const serverSideFixtures = await probeServerSideFixtures(wsUrl);
+  const useServerFixture = serverSideFixtures.includes(fixtureName);
+
+  let interleaved: Float32Array;
+  let channels: number;
+  if (useServerFixture) {
+    interleaved = new Float32Array(0);
+    channels = 2;
+  } else {
+    const decoded = await loadFixtureAudio(fixtureName);
+    interleaved = decoded.interleaved;
+    channels = decoded.channels;
+  }
+  return { fixtureName, useServerFixture, interleaved, channels };
+}
+
 export function useStartSession() {
   return useCallback(async () => {
     const { setStatus, setSession, reset } = useSessionStore.getState();
@@ -156,150 +313,199 @@ export function useStartSession() {
 
     setStatus("loading-fixture", "Loading track…");
 
-    let fixtureName = usePerformanceStore.getState().fixture;
-    if (!fixtureName) {
-      try {
-        const list = await listFixtures();
-        fixtureName = pickDefaultFixture(list);
-        if (fixtureName) {
-          usePerformanceStore.getState().setFixture(fixtureName);
-        }
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        setStatus("error", `Track list failed: ${msg}`);
-        return;
-      }
+    let resolved: ResolvedFixture | null;
+    try {
+      resolved = await resolveFixtureForConnect();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setStatus("error", `Track failed to load: ${msg}`);
+      return;
     }
-    if (!fixtureName) {
+    if (!resolved) {
       setStatus("error", "No tracks available. Please refresh.");
       return;
     }
-
-    // Resolve the target pod first, then ask it (server-info) whether
-    // it can load this fixture server-side. Capability-gated so the UI
-    // is safe across a mixed fleet / any deploy order: an old backend
-    // doesn't advertise the fixture, so we keep the upload path.
-    const wsUrl = resolveWsUrl(useSessionStore.getState().wsUrl);
-    const serverSideFixtures = await probeServerSideFixtures(wsUrl);
-    const useServerFixture = serverSideFixtures.includes(fixtureName);
-
-    let interleaved: Float32Array;
-    let channels: number;
-    if (useServerFixture) {
-      // Pod loads the waveform from its own /fixtures cache; skip the
-      // client download/decode/upload entirely. Playback comes from the
-      // server's echoed initial buffer (player.init uses
-      // remote.initialBuffer), so the local decode was only ever
-      // feeding the now-eliminated upload.
-      interleaved = new Float32Array(0);
-      channels = 2;
-    } else {
-      // Old backend or unknown fixture: upload as before.
-      try {
-        const decoded = await loadFixtureAudio(fixtureName);
-        interleaved = decoded.interleaved;
-        channels = decoded.channels;
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        setStatus("error", `Track failed to load: ${msg}`);
-        return;
-      }
-    }
+    // Snapshot the resolved fixture for the lifetime of this session.
+    // The reconnect factory reuses these values rather than re-running
+    // resolveFixtureForConnect on every backoff attempt — re-decoding
+    // a custom-upload Float32Array (potentially several MB) up to N
+    // times during a brief outage is wasted work, and the user can't
+    // have swapped fixtures while a "Reconnecting…" placard is up.
+    const sessionFixture: ResolvedFixture = resolved;
 
     setStatus("connecting", "Connecting…");
-    const sourceMode = useCustomTracksStore
-      .getState()
-      .resolveSourceMode(fixtureName);
-    if (sourceMode) {
-      useCustomTracksStore.getState().setStemStatus(fixtureName, "processing");
+    if (sessionFixture.fixtureName) {
+      const sourceMode = useCustomTracksStore
+        .getState()
+        .resolveSourceMode(sessionFixture.fixtureName);
+      if (sourceMode) {
+        useCustomTracksStore
+          .getState()
+          .setStemStatus(sessionFixture.fixtureName, "processing");
+      }
     }
-    const config = buildConfig(fixtureName, useServerFixture);
+
+    // Forward-declared so the close handler can reference the same
+    // function the initial connect uses.
+    let triggerReconnect: (closeInfo?: { code?: number; reason?: string }) => void;
+
+    /**
+     * Connect to the pod with current store state. Returns the connected
+     * RemoteBackend on success; throws on failure. Used by both the
+     * initial Play flow and the reconnect orchestrator — they only
+     * differ in what they do with the result (init player vs swap
+     * remote into session store).
+     *
+     * On rejection we close the orphan remote with `closedByUser=true`
+     * so its (potentially delayed) close-event dispatch can't sneak
+     * past the reconnector and start a fresh recovery loop after
+     * we've already given up. The user-facing `triggerReconnect` also
+     * guards against this on the read side, but closing the orphan
+     * here is the structural fix.
+     */
+    async function buildAndConnect(): Promise<RemoteBackend> {
+      const wsUrl = resolveWsUrl(useSessionStore.getState().wsUrl);
+      const config = buildConfig(
+        sessionFixture.fixtureName,
+        sessionFixture.useServerFixture,
+      );
+      const remote = new RemoteBackend(
+        wsUrl,
+        sessionFixture.interleaved,
+        sessionFixture.channels,
+        config,
+      );
+      wireRemoteListeners(remote, (detail) => triggerReconnect(detail));
+      try {
+        await remote.connect();
+      } catch (err) {
+        remote.close();
+        throw err;
+      }
+      return remote;
+    }
+
+    /**
+     * Kick off a reconnect attempt. Idempotent: if a reconnector is
+     * already running (e.g. the new connection dropped immediately
+     * during recovery), this no-ops so we don't stack backoff loops.
+     */
+    triggerReconnect = (closeInfo) => {
+      const state = useSessionStore.getState();
+      if (state.reconnector) return;
+      // Defense in depth against orphan-WS close events: if we already
+      // gave up (status === "error") or the user reset the session
+      // (status === "idle" / "closed"), don't resurrect the loop. The
+      // structural fix is `buildAndConnect`'s catch closing the failed
+      // remote with closedByUser=true, but a late close from somewhere
+      // we haven't accounted for still gets filtered here.
+      if (state.status === "error" || state.status === "idle" || state.status === "closed") {
+        return;
+      }
+      const reasonStr =
+        closeInfo?.reason || `code ${closeInfo?.code ?? "unknown"}`;
+      state.setStatus("reconnecting", `Connection lost (${reasonStr}). Reconnecting…`);
+
+      const reconnector = new WsReconnector(
+        async () => {
+          // Each attempt builds a completely fresh RemoteBackend; the
+          // dropped one is already orphaned (its socket is closed, its
+          // worker is terminated by its own close() flow when ws.close()
+          // landed, or by GC otherwise — the slice listener path
+          // gracefully handles the empty case via getState().player).
+          const remote = await buildAndConnect();
+          if (!remote.initialBuffer) {
+            throw new Error("Reconnected but server sent no initial buffer");
+          }
+          const player = useSessionStore.getState().player;
+          if (!player) {
+            // Player was torn down between the failure and recovery —
+            // a user-initiated session start cancelled the loop, but
+            // we got here anyway because the cancel raced the promise
+            // resolution. Close the new remote and bail.
+            remote.close();
+            throw new Error("Session was reset during reconnect");
+          }
+          // Reset the player's buffer to the fresh server-side source
+          // before swapping in the new remote. Slices are encoded as
+          // deltas against the server's `client_mirror`, which the new
+          // session re-initializes to the clean source. Without this
+          // swap the player's mirror still has accumulated generation
+          // from the previous session, so `addDelta(generated -
+          // source)` lands as `prev_generated + (new_gen - source)` —
+          // audible noise. The worklet's swap message preserves the
+          // playhead position and crossfades the buffer, so the
+          // listener hears a brief return to clean source then the
+          // new session's slices stream in normally.
+          player.swap(remote.initialBuffer, remote.channels);
+          // `player.swap()` bumped `swapCount`, but a fresh
+          // RemoteBackend's `_sliceEpoch` starts at 0. The slice
+          // listener drops anything where `detail.epoch !==
+          // player.swapCount`, so without this realignment every
+          // slice from the recovered session would be filtered out
+          // — symptom on the user side: source plays, controls
+          // appear dead, denoised audio never returns.
+          remote.setSliceEpoch(player.swapCount);
+
+          const rawTs = remote.detectedTimeSignature;
+          const detectedTs =
+            rawTs != null && isTimeSignature(rawTs) ? rawTs : null;
+          usePerformanceStore
+            .getState()
+            .setDetected(remote.detectedBpm, remote.detectedKey, detectedTs);
+          if (remote.loraCatalog.length > 0) {
+            useLoraStore.getState().setCatalog(remote.loraCatalog);
+          }
+          useSessionStore.getState().setSession(remote, player);
+          // Rebuild the network-quality monitor against the new
+          // remote — the old one was bound to the dropped backend's
+          // `slice` events and is dead now.
+          try {
+            useSessionStore.getState().monitor?.stop();
+          } catch {}
+          useSessionStore
+            .getState()
+            .setMonitor(createNetworkMonitor(remote));
+        },
+        {
+          onAttempt: ({ attempt, maxAttempts }) => {
+            useSessionStore
+              .getState()
+              .setStatus(
+                "reconnecting",
+                `Reconnecting (attempt ${attempt}/${maxAttempts})…`,
+              );
+          },
+          onSuccess: () => {
+            useSessionStore.getState().setReconnector(null);
+            useSessionStore.getState().setStatus("ready", "Playing");
+          },
+          onGiveUp: (err) => {
+            useSessionStore.getState().setReconnector(null);
+            useSessionStore
+              .getState()
+              .setStatus(
+                "error",
+                `Reconnect failed after multiple attempts: ${err.message}. Refresh to retry.`,
+              );
+          },
+        },
+      );
+      useSessionStore.getState().setReconnector(reconnector);
+      void reconnector.run();
+    };
+
+    const config = buildConfig(resolved.fixtureName, resolved.useServerFixture);
+    const wsUrl = resolveWsUrl(useSessionStore.getState().wsUrl);
     const remote = new RemoteBackend(
       wsUrl,
-      interleaved,
-      channels,
+      resolved.interleaved,
+      resolved.channels,
       config,
     );
-
     // Wire engine → store. Bind BEFORE connect() so we never miss the first
     // few slices (server can send within milliseconds of "ready").
-    remote.addEventListener("slice", (e) => {
-      const detail = (e as CustomEvent<AudioSlice>).detail;
-      const player = useSessionStore.getState().player;
-      if (!player) return;
-      // Drop slices that were generated for a previous source. Without
-      // this, slices already in the WS queue (or mid-decode in the
-      // worker) at the moment the user swaps tracks would write into
-      // the new buffer — audible as chunks of the previous song
-      // bleeding through after a swap.
-      if (detail.epoch !== player.swapCount) return;
-      const startFrame = Math.floor(detail.startSample);
-      if (detail.flags === SLICE_FLAG_DELTA) {
-        player.addDelta(startFrame, detail.audio);
-      } else {
-        player.patch(startFrame, detail.audio);
-      }
-    });
-
-    remote.addEventListener("lora_catalog", (e) => {
-      const detail = (e as CustomEvent).detail;
-      useLoraStore.getState().setCatalog(detail);
-    });
-
-    remote.addEventListener("stem_assets", (e) => {
-      const detail = (e as CustomEvent<{
-        fixture_name?: string;
-        sample_rate: number;
-        channels: number;
-        frames: number;
-        source_mode?: "full" | "vocals" | "instruments";
-        buffers: Record<"vocals" | "instruments", Float32Array>;
-      }>).detail;
-      const name = detail.fixture_name || usePerformanceStore.getState().fixture;
-      if (!name) return;
-      if (detail.source_mode) {
-        useCustomTracksStore.getState().setSourceMode(name, detail.source_mode);
-      }
-      useCustomTracksStore.getState().setStems(name, {
-        vocals: {
-          interleaved: detail.buffers.vocals,
-          channels: detail.channels,
-          frames: detail.frames,
-          sampleRate: detail.sample_rate,
-        },
-        instruments: {
-          interleaved: detail.buffers.instruments,
-          channels: detail.channels,
-          frames: detail.frames,
-          sampleRate: detail.sample_rate,
-        },
-      });
-    });
-
-    remote.addEventListener("stem_failed", (e) => {
-      const detail = (e as CustomEvent<{
-        fixture_name?: string;
-        error?: string;
-      }>).detail;
-      const name = detail.fixture_name || usePerformanceStore.getState().fixture;
-      if (!name) return;
-      useCustomTracksStore
-        .getState()
-        .setStemStatus(name, "failed", detail.error || "Stem extraction failed");
-    });
-
-    remote.addEventListener("close", (e) => {
-      const detail = (e as CustomEvent<CloseEvent>).detail;
-      const reason = detail?.reason || `code ${detail?.code}`;
-      useSessionStore.getState().setStatus(
-        "closed",
-        `Something went wrong and you’ve been disconnected. Disconnect code: (${reason})`,
-      );
-    });
-
-    remote.addEventListener("error", () => {
-      // The connect() promise will reject too; defer messaging to that path.
-    });
+    wireRemoteListeners(remote, (detail) => triggerReconnect(detail));
 
     try {
       await remote.connect();
