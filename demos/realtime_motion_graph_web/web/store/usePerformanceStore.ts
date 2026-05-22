@@ -271,6 +271,16 @@ const DEFAULT_SLIDER_VALUES: Record<string, number> = {
   steps_override: 8,
 };
 
+/** A re-applyable record of an active timbre / structure reference.
+ *  `timbreName` / `structName` are the server-acked DISPLAY name
+ *  (cleared whenever the session leaves "ready"); this is the client's
+ *  own record of WHAT it set, kept so a WS reconnect can re-send it to
+ *  the fresh server session. `clip` refs re-resolve their PCM from
+ *  useCustomTracksStore via loadFixtureAudio, so no buffer is stored. */
+export type RefSource =
+  | { mode: "fixture"; name: string }
+  | { mode: "clip"; name: string };
+
 interface PerformanceState {
   /** Per-param defaults used by double-click reset, long-press snap-back,
    *  and idle reset. Seeded from DEFAULT_SLIDER_VALUES and overwritten by
@@ -327,6 +337,12 @@ interface PerformanceState {
    *  semantic hints). Set/cleared by structure_set / structure_cleared
    *  acks. Per-session — not persisted. */
   structName: string | null;
+  /** Client-side record of the active timbre / structure references —
+   *  enough to re-send them after a WS reconnect (the fresh server
+   *  session boots with no overrides, and refs aren't part of the
+   *  session config). Null when no override is active. */
+  timbreRef: RefSource | null;
+  structRef: RefSource | null;
   /** Detected musical metadata from server's "ready" frame. */
   detectedBpm: number | null;
   detectedKey: string | null;
@@ -428,6 +444,8 @@ interface PerformanceState {
   setFixture: (name: string) => void;
   setTimbreName: (name: string | null) => void;
   setStructName: (name: string | null) => void;
+  setTimbreRef: (ref: RefSource | null) => void;
+  setStructRef: (ref: RefSource | null) => void;
   /** Update server-reported metadata. ``timeSignature`` is optional for
    *  call-site convenience (older callers only carry bpm + key); when
    *  omitted, ``detectedTimeSignature`` is left untouched. As with key,
@@ -543,6 +561,8 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   fixture: "",
   timbreName: null,
   structName: null,
+  timbreRef: null,
+  structRef: null,
   detectedBpm: null,
   detectedKey: null,
   detectedTimeSignature: null,
@@ -641,6 +661,8 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   setFixture: (name) => set({ fixture: name }),
   setTimbreName: (name) => set({ timbreName: name }),
   setStructName: (name) => set({ structName: name }),
+  setTimbreRef: (ref) => set({ timbreRef: ref }),
+  setStructRef: (ref) => set({ structRef: ref }),
   setDetected: (bpm, key, timeSignature) =>
     set((s) => ({
       detectedBpm: bpm,
