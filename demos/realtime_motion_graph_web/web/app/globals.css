@@ -6734,9 +6734,17 @@ body.curve-open #install-video-area #graph {
   color: rgba(255, 222, 196, 0.62);
   border: 1px solid rgba(255, 222, 196, 0.22);
   cursor: pointer;
+  /* Hidden until the operator hovers the scrub strip (or a loop is
+     active) — so it never sits in the way of a scrub click. */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease-out, background 120ms ease-out,
+    color 120ms ease-out, border-color 120ms ease-out;
+}
+.waveform-scrub-box:hover .waveform-loop-toggle,
+.waveform-loop-toggle[data-active="true"] {
+  opacity: 1;
   pointer-events: auto;
-  transition: background 120ms ease-out, color 120ms ease-out,
-    border-color 120ms ease-out;
 }
 .waveform-loop-toggle:hover {
   color: rgba(255, 222, 196, 0.95);

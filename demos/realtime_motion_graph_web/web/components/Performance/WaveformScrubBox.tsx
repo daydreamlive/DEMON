@@ -315,6 +315,14 @@ export function WaveformScrubBox() {
     const onDown = (e: PointerEvent) => {
       // Right-click → clear band (handled in contextmenu). Ignore here.
       if (e.button !== 0) return;
+      // A press on the LOOP toggle (a child of this box) must not also
+      // scrub: the native event still bubbles to this listener even
+      // though the button calls React's synthetic stopPropagation.
+      if (
+        (e.target as HTMLElement | null)?.closest?.(".waveform-loop-toggle")
+      ) {
+        return;
+      }
 
       const t = tFromEvent(e);
       const band = bandRef.current;
@@ -504,7 +512,6 @@ export function WaveformScrubBox() {
             ? "Clear the loop"
             : "Arm loop mode, then drag across the waveform to set a loop"
         }
-        onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => {
           e.stopPropagation();
           toggleLoop();
