@@ -65,6 +65,13 @@ export function useRenderLoop(refs: Refs) {
     const haloHost = document.querySelector(".halo-badge") as HTMLElement | null;
     const halo: HaloRibbon | null = haloHost ? initHaloRibbon(haloHost) : null;
 
+    // Now-playing dock collapse bubble — wears the same writhing ribbon
+    // ring as the halo badge. AudioSourceCrate mounts/unmounts with
+    // session state, so (like the turntable below) re-query each frame
+    // and cache once it appears.
+    let bubbleHalo: HaloRibbon | null = null;
+    let lastBubbleHost: Element | null = null;
+
     // Turntable grooves — concentric polar paths driven by the live audio
     // mirror buffer (the music is literally etched into the disc surface).
     // The button mounts/unmounts with session state so re-query each frame
@@ -230,6 +237,15 @@ export function useRenderLoop(refs: Refs) {
       const ribbonTime = (now - startedAt) / 1000;
       tickRibbons(ribbons, ribbonTime, kick, bloom);
       if (halo) tickHaloRibbon(halo, ribbonTime, kick, bloom);
+      const bubbleHost = document.querySelector(".audio-source-bubble");
+      if (bubbleHost !== lastBubbleHost) {
+        if (bubbleHalo) destroyHaloRibbon(bubbleHalo);
+        bubbleHalo = bubbleHost
+          ? initHaloRibbon(bubbleHost as HTMLElement)
+          : null;
+        lastBubbleHost = bubbleHost;
+      }
+      if (bubbleHalo) tickHaloRibbon(bubbleHalo, ribbonTime, kick, bloom);
       if (startMark) tickStartMarkRibbon(startMark, ribbonTime);
 
       // Turntable: the grooves trace the actual audio waveform from the
@@ -296,6 +312,7 @@ export function useRenderLoop(refs: Refs) {
       if (turntable) destroyTurntable(turntable);
       destroyRibbons(ribbons);
       if (halo) destroyHaloRibbon(halo);
+      if (bubbleHalo) destroyHaloRibbon(bubbleHalo);
     };
   }, [refs.hudCanvas, refs.graphCanvas, refs.effectsCanvas, refs.videoA, refs.videoB]);
 }

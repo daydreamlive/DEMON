@@ -75,6 +75,20 @@ function MicIcon({ size = 14 }: { size?: number }) {
   );
 }
 
+function NoteIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" />
+    </svg>
+  );
+}
+
 export function AudioSourceCrate() {
   const fixture = usePerformanceStore((s) => s.fixture);
   const setFixture = usePerformanceStore((s) => s.setFixture);
@@ -97,6 +111,12 @@ export function AudioSourceCrate() {
     wasTrimmed: boolean;
     originalFile: File;
   } | null>(null);
+
+  // Auto-collapse: the dock folds to a small play bubble 2s after it's
+  // left alone, and expands back on hover / focus. `collapsed` drives
+  // the CSS cross-fade; `hovered` is the pointer-over signal.
+  const [collapsed, setCollapsed] = useState(false);
+  const [hovered, setHovered] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const placardRef = useRef<HTMLButtonElement | null>(null);
@@ -139,6 +159,21 @@ export function AudioSourceCrate() {
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
+
+  // Expand whenever the dock is being used (hovered, or a picker /
+  // dialog / upload is in flight); otherwise collapse to the bubble
+  // 2s after the last interaction. The timeout is cleared on any
+  // re-activation so it only fires once the dock is truly idle.
+  const dockActive =
+    hovered || open || micOpen || uploading || pending !== null;
+  useEffect(() => {
+    if (dockActive) {
+      setCollapsed(false);
+      return;
+    }
+    const t = window.setTimeout(() => setCollapsed(true), 2000);
+    return () => window.clearTimeout(t);
+  }, [dockActive]);
 
   async function onFilePicked(file: File) {
     const { setStatus } = useSessionStore.getState();
@@ -205,7 +240,28 @@ export function AudioSourceCrate() {
 
   return (
     <>
-      <div className="audio-source-dock">
+      <div
+        className="audio-source-dock"
+        data-collapsed={collapsed ? "" : undefined}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+      >
+        {/* Collapsed face — a music-note bubble wreathed by the same
+            writhing ribbon ring as the HaloBadge (useRenderLoop finds
+            this `.halo-ribbons` canvas by selector and ticks it).
+            Hovering it fires the dock's onMouseEnter and expands;
+            onClick/onFocus cover touch + keyboard. */}
+        <button
+          type="button"
+          className="audio-source-bubble"
+          aria-label="Show now-playing controls"
+          onClick={() => setHovered(true)}
+          onFocus={() => setHovered(true)}
+        >
+          <canvas className="halo-ribbons" aria-hidden="true" />
+          <NoteIcon size={18} />
+        </button>
+        <div className="audio-source-dock-body">
         <button
           ref={placardRef}
           type="button"
@@ -258,6 +314,7 @@ export function AudioSourceCrate() {
           <MicIcon size={16} />
           <span className="audio-source-upload-label">Mic</span>
         </button>
+        </div>
       </div>
 
       {open && (
