@@ -76,6 +76,11 @@ export interface SessionConfig {
   /** When true, the backend loads a known fixture from its own cache and
    *  the client skips sending the audio frame. Capability-probed first. */
   use_server_fixture?: boolean;
+  /** Optional opaque client identifier (e.g. an analytics distinct id).
+   *  The pod binds it into loguru's contextvars so every log record on
+   *  this connection carries it — useful for joining a browser trace to
+   *  a pod-side log line when a user reports a failure. */
+  client_id?: string;
   // Allow extras — pyproject's config object is permissive.
   [k: string]: unknown;
 }

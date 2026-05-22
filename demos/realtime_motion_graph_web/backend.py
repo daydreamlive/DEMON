@@ -486,26 +486,24 @@ def handle_client(
     config = json.loads(ws.recv())
 
     # Mint session_id immediately and bind it (plus the client's optional
-    # client_id / analytics_id) into loguru's contextvars so every log
-    # record emitted on this connection's lifetime carries the
-    # correlation IDs. Manual __enter__ instead of a ``with`` block so we
-    # don't have to re-indent the 1600-line connection body; matching
-    # __exit__ runs in the finally at the bottom of this function. Early
-    # returns above that finally land before any session-scoped logging
-    # would be useful, and the websockets sync server uses a fresh thread
-    # per connection so a leaked context dies with the thread anyway.
+    # client_id) into loguru's contextvars so every log record emitted on
+    # this connection's lifetime carries the correlation IDs. Manual
+    # __enter__ instead of a ``with`` block so we don't have to re-indent
+    # the 1600-line connection body; matching __exit__ runs in the
+    # finally at the bottom of this function. Early returns above that
+    # finally land before any session-scoped logging would be useful, and
+    # the websockets sync server uses a fresh thread per connection so a
+    # leaked context dies with the thread anyway.
     session_id = session_registry.new_session_id()
     _client_id = config.get("client_id") or None
-    _analytics_id = config.get("analytics_id") or None
     _session_ctx = logger.contextualize(
         session_id=session_id,
         client_id=_client_id,
-        analytics_id=_analytics_id,
     )
     _session_ctx.__enter__()
     logger.info(
-        "session_init config_keys={} client_id={} analytics_id={}",
-        sorted(config.keys()), _client_id, _analytics_id,
+        "session_init config_keys={} client_id={}",
+        sorted(config.keys()), _client_id,
     )
 
     # Session-init timing instrumentation. t0 == config received; every
@@ -634,6 +632,24 @@ def handle_client(
 
     # --- Session setup ---
     audio_duration_s = waveform.shape[1] / SAMPLE_RATE
+
+    # Bind the initial source as contextvars so any error that surfaces
+    # downstream (VAE encode rejection, pipeline_error, etc.) carries the
+    # fixture name + duration without each call site having to plumb
+    # them through. Loguru's contextualize uses contextvars internally
+    # via a token-stack: nested enters/exits work, but out-of-order
+    # token resets corrupt the stack — so we don't try to *update* this
+    # binding when the swap path runs. Instead the swap body opens its
+    # own nested contextualize (see _swap_ctx in apply_swap_if_pending),
+    # which means a swap-time error sees the NEW track but a
+    # post-swap pipeline_error still sees the INITIAL one. The latter
+    # is a small cosmetic limitation accepted for v1 — the swap is
+    # where the high-signal failures live.
+    _track_ctx = logger.contextualize(
+        fixture_name=fixture_name or None,
+        audio_duration_s=round(audio_duration_s, 2),
+    )
+    _track_ctx.__enter__()
     # Profile manager owns the engine slots. When use_trt is False, it
     # stays None and the swap path keeps the legacy engine-less behavior.
     profile_mgr: TRTProfileManager | None = None
@@ -665,6 +681,7 @@ def handle_client(
             except Exception:
                 pass
             ws.close(1011, "TRT engine not built")
+            _track_ctx.__exit__(None, None, None)
             _session_ctx.__exit__(None, None, None)
             return
         # Walk-window override: pin the decoder to the walk_window_s
@@ -694,6 +711,7 @@ def handle_client(
                 except Exception:
                     pass
                 ws.close(1011, "walk_window TRT engine not built")
+                _track_ctx.__exit__(None, None, None)
                 _session_ctx.__exit__(None, None, None)
                 return
             logger.info(
@@ -870,6 +888,7 @@ def handle_client(
         except Exception:
             pass
         ws.close(1011, "stem extraction failed")
+        _track_ctx.__exit__(None, None, None)
         _session_ctx.__exit__(None, None, None)
         return
 
@@ -1042,7 +1061,7 @@ def handle_client(
         # every local event (and pass it as a property on any analytics
         # events) so a pod-side log line and a browser-side trace for the
         # same complaint can be joined by session_id. Independent of any
-        # client_id / analytics_id the client sent in its handshake.
+        # client_id the client sent in its handshake.
         "session_id": session_id,
     }))
     ws.send(src_np.astype(np.float16).tobytes())
@@ -1998,6 +2017,23 @@ def handle_client(
             if rem:
                 new_wf = new_wf[:, :new_wf.shape[-1] - rem]
             new_audio_duration_s = new_wf.shape[1] / SAMPLE_RATE
+            # Bind the *new* track on top of the session-scoped binding
+            # so any error during the swap body (VAE encode, profile
+            # mgmt, prepare_source) carries the track the user *tried*
+            # to swap to — not the previous one. Scoped to the swap body
+            # only: when this CM exits, loguru's contextvar stack
+            # restores the initial-track binding from session setup, so
+            # a post-swap pipeline_error still shows the *initial*
+            # fixture (known v1 limitation — updating mid-stack would
+            # require an out-of-order contextvar reset that corrupts
+            # the stack). Manual __enter__ to avoid re-indenting the
+            # ~190-line swap body; matching __exit__ runs in the
+            # finally below.
+            _swap_ctx = logger.contextualize(
+                fixture_name=new_fixture_name or None,
+                audio_duration_s=round(new_audio_duration_s, 2),
+            )
+            _swap_ctx.__enter__()
             logger.info(
                 "source_swap_start duration_s={:.1f} channels={} "
                 "fixture_name={} tags={!r}",
@@ -2191,6 +2227,17 @@ def handle_client(
                     }))
             except Exception:
                 pass
+        finally:
+            # Always pop the swap-scoped contextualize, whether the swap
+            # body completed, raised, or hit ConnectionClosed. None-guard
+            # for the early `swap_pending["bytes"] is None` branch and any
+            # exception thrown before _swap_ctx was entered.
+            _swap_ctx_local = locals().get("_swap_ctx")
+            if _swap_ctx_local is not None:
+                try:
+                    _swap_ctx_local.__exit__(None, None, None)
+                except Exception:
+                    pass
 
     def apply_depth_pending():
         with pending_depth_lock:
@@ -2285,9 +2332,15 @@ def handle_client(
         except Exception as exc:
             logger.warning("session_close_raised error={}", exc)
 
-        # Release the session-scoped contextvars binding entered at the top
-        # of handle_client. Matching __exit__ here ensures the next thread
-        # reused from any websockets-sync pool starts with a clean context.
+        # Release the session-scoped contextvars bindings entered at the
+        # top of handle_client. Exit in reverse-enter order
+        # (_track_ctx was entered AFTER _session_ctx) so loguru's
+        # token-stack unwinds cleanly. Ensures the next thread reused
+        # from any websockets-sync pool starts with a clean context.
+        try:
+            _track_ctx.__exit__(None, None, None)
+        except Exception:
+            pass
         try:
             _session_ctx.__exit__(None, None, None)
         except Exception:

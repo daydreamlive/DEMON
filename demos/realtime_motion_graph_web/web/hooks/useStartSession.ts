@@ -8,7 +8,7 @@ import { resetKnobDelta } from "@/engine/midi/absoluteDelta";
 import { createNetworkMonitor } from "@/engine/networkMonitor";
 import { defaultWsUrl } from "@/engine/podUrl";
 import { RemoteBackend, SLICE_FLAG_DELTA } from "@/engine/protocol";
-import { getApiKey } from "@/engine/rtmgConfig";
+import { getApiKey, getClientId } from "@/engine/rtmgConfig";
 import { WsReconnector } from "@/engine/wsReconnect";
 import { getConfig } from "@/lib/config";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
@@ -110,6 +110,10 @@ function buildConfig(
   // loadFixture.ts; depth=4 makes future bumps VRAM-safe).
   const custom = useCustomTracksStore.getState();
   const sourceMode = custom.resolveSourceMode(fixtureName);
+  // Optional opaque per-browser identifier from the host (the demo's
+  // standalone shell wires no getter, so this is null and the field is
+  // omitted; demon-public-demo wires PostHog's distinct_id).
+  const clientId = getClientId();
   return {
     sde: cfg.sde,
     lora: cfg.lora,
@@ -142,6 +146,7 @@ function buildConfig(
     // the unchanged upload path, so this is safe on a mixed fleet in
     // any deploy/merge order.
     use_server_fixture: useServerFixture,
+    ...(clientId ? { client_id: clientId } : {}),
   };
 }
 

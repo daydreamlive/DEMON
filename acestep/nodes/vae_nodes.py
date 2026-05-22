@@ -119,12 +119,23 @@ def _trt_vae_decode(
     lat = latents_bdt.to(device=device, dtype=dtypes.get("latents", torch.float32)).contiguous()
 
     if not ctx.set_input_shape("latents", tuple(lat.shape)):
+        logger.error(
+            "trt_vae_decode_rejected_input_shape input_shape={} engine={}",
+            tuple(lat.shape), engine_path,
+        )
         raise RuntimeError(f"TRT VAE decode rejected input shape: {tuple(lat.shape)}")
     if not ctx.set_tensor_address("latents", lat.data_ptr()):
+        logger.error(
+            "trt_vae_decode_rejected_input_address engine={}", engine_path,
+        )
         raise RuntimeError("TRT VAE decode rejected input address")
 
     missing = ctx.infer_shapes()
     if missing:
+        logger.error(
+            "trt_vae_decode_shapes_insufficient missing={} engine={}",
+            missing, engine_path,
+        )
         raise RuntimeError(f"TRT VAE decode shapes are insufficiently specified: {missing}")
 
     out_shape = tuple(ctx.get_tensor_shape("audio"))
@@ -138,9 +149,16 @@ def _trt_vae_decode(
         entry["_decode_buf"] = audio_buf
 
     if not ctx.set_tensor_address("audio", audio_buf.data_ptr()):
+        logger.error(
+            "trt_vae_decode_rejected_output_address engine={}", engine_path,
+        )
         raise RuntimeError("TRT VAE decode rejected output address")
 
     if not ctx.execute_async_v3(stream.ptr):
+        logger.error(
+            "trt_vae_decode_execute_failed engine={} input_shape={}",
+            engine_path, tuple(lat.shape),
+        )
         raise RuntimeError("TRT VAE decode failed")
     stream.synchronize()
 
@@ -166,22 +184,48 @@ def _trt_vae_encode(
     # Release PyTorch's unused reserved VRAM before TRT encode.
     torch.cuda.empty_cache()
 
+    # Log structured TRT-VAE-encode failures from the deepest call site so
+    # the JSON record carries input_shape + engine_path. The surrounding
+    # backend has session_id / client_id / fixture_name /
+    # audio_duration_s bound into loguru's contextvars, so the joined
+    # record answers "which track / session triggered this?" without any
+    # plumbing through the call stack. We log-then-raise (rather than
+    # logger.exception inside a try/except wrapper) because the existing
+    # callers want the RuntimeError unchanged.
     if not ctx.set_input_shape("audio", tuple(inp.shape)):
+        logger.error(
+            "trt_vae_encode_rejected_input_shape input_shape={} engine={}",
+            tuple(inp.shape), engine_path,
+        )
         raise RuntimeError(f"TRT VAE encode rejected input shape: {tuple(inp.shape)}")
     if not ctx.set_tensor_address("audio", inp.data_ptr()):
+        logger.error(
+            "trt_vae_encode_rejected_input_address engine={}", engine_path,
+        )
         raise RuntimeError("TRT VAE encode rejected input address")
 
     missing = ctx.infer_shapes()
     if missing:
+        logger.error(
+            "trt_vae_encode_shapes_insufficient missing={} engine={}",
+            missing, engine_path,
+        )
         raise RuntimeError(f"TRT VAE encode shapes are insufficiently specified: {missing}")
 
     out_shape = tuple(ctx.get_tensor_shape("moments"))
     moments_dtype = dtypes.get("moments", torch.float32)
     moments_buf = torch.empty(out_shape, dtype=moments_dtype, device=device)
     if not ctx.set_tensor_address("moments", moments_buf.data_ptr()):
+        logger.error(
+            "trt_vae_encode_rejected_output_address engine={}", engine_path,
+        )
         raise RuntimeError("TRT VAE encode rejected output address")
 
     if not ctx.execute_async_v3(stream.ptr):
+        logger.error(
+            "trt_vae_encode_execute_failed engine={} input_shape={}",
+            engine_path, tuple(inp.shape),
+        )
         raise RuntimeError("TRT VAE encode failed")
     stream.synchronize()
 

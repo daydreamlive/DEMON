@@ -125,15 +125,12 @@ def bind_session(
     session_id: str,
     *,
     client_id: str | None = None,
-    analytics_id: str | None = None,
     **extra: Any,
 ) -> Iterator[None]:
     """Bind correlation IDs into loguru's contextvars for the scope of the block."""
     fields: dict[str, Any] = {"session_id": session_id}
     if client_id:
         fields["client_id"] = client_id
-    if analytics_id:
-        fields["analytics_id"] = analytics_id
     fields.update(extra)
     with logger.contextualize(**fields):
         yield
