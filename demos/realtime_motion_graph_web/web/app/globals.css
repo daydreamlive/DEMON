@@ -6685,11 +6685,21 @@ body.curve-open #install-video-area #graph {
 .waveform-scrub-box {
   position: fixed;
   top: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-top, 0px));
-  left:  max(
-    calc(var(--hud-thickness) + 144px + var(--drawer-l-open, 0px)),
+  /* Horizontal insets match .schedule-curves-overlay exactly so the
+     scrub strip and the curve overlay share the same left/right edges
+     (they previously used a hand-tuned 144px/80px that drifted ~50px
+     off the overlay). */
+  left: max(
+    calc(
+      var(--hud-thickness) + var(--ribbon-bleed) + var(--remix-hint-extend)
+      + 12px + var(--drawer-l-open, 0px)
+    ),
     env(safe-area-inset-left, 0px)
   );
-  right: max(calc(var(--hud-thickness) + 80px),  env(safe-area-inset-right, 0px));
+  right: max(
+    calc(var(--hud-thickness) + var(--ribbon-bleed) + var(--remix-hint-extend) + 12px),
+    env(safe-area-inset-right, 0px)
+  );
   height: 48px;
   z-index: 4;
   cursor: ew-resize;

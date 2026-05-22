@@ -475,6 +475,7 @@ export function selectVariant(cfg: RtmgConfig, scale: string | null): RtmgConfig
 export function applyConfig(c: RtmgConfig): void {
   const scale = useSessionStore.getState().checkpointScale;
   const resolved = selectVariant(c, scale);
+  const firstApply = !_configApplied;
   _activeConfig = resolved;
   _configApplied = true;
 
@@ -531,15 +532,47 @@ export function applyConfig(c: RtmgConfig): void {
     });
   }
 
-  // If a setCatalog landed before applyConfig (LibraryTile's mount-time
-  // /api/loras winning the race against /config.json), the lora store
-  // stashed the catalog but skipped seeding because the config wasn't
-  // ready yet. Re-trigger setCatalog with the existing catalog so the
-  // store's own once-per-session gate (`seeded`) runs against the
-  // correct enabled_loras.
+  // LoRA enable/strength state.
+  //
+  // First applyConfig (boot): if a catalog landed before us (LibraryTile's
+  // mount-time /api/loras winning the race against /config.json), the
+  // store stashed the catalog but skipped seeding. Re-trigger setCatalog
+  // so its once-per-session gate runs against the real enabled_loras.
+  //
+  // Later applyConfig (an imported config): the store is already seeded,
+  // so setCatalog's gate would ignore the new enabled_loras. reset()
+  // re-seeds enabled+strengths from the fresh config. The LoRA UI
+  // normally sends enable/disable to the engine on click — an import
+  // bypasses that path, so push the diff to the engine here and
+  // re-encode the prompt so the trigger prefix matches.
   const lora = useLoraStore.getState();
-  if (!lora.seeded && lora.catalog.length > 0) {
-    lora.setCatalog(lora.catalog);
+  if (firstApply) {
+    if (!lora.seeded && lora.catalog.length > 0) {
+      lora.setCatalog(lora.catalog);
+    }
+  } else if (lora.catalog.length > 0) {
+    const before = new Set(lora.enabled);
+    lora.reset();
+    const after = useLoraStore.getState();
+    const remote = useSessionStore.getState().remote;
+    if (remote) {
+      for (const id of before) {
+        if (!after.enabled.has(id)) remote.sendDisableLora(id);
+      }
+      for (const id of after.enabled) {
+        if (!before.has(id)) {
+          remote.sendEnableLora(id, after.strengths[id] ?? 0);
+        }
+      }
+      remote.sendPrompt(
+        resolved.prompts.a,
+        resolved.engine.key,
+        isTimeSignature(resolved.engine.time_signature)
+          ? resolved.engine.time_signature
+          : DEFAULT_TIME_SIGNATURE,
+        resolved.prompts.b,
+      );
+    }
   }
 
   for (const fn of listeners) fn(resolved);

@@ -23,6 +23,18 @@ import {
 
 import { MidiBadge } from "./MidiBadge";
 
+// Show a transient status message that clears itself after 2s — unless a
+// newer message replaced it meanwhile. Used for the import/export toasts,
+// which otherwise stuck on screen indefinitely.
+function flashStatus(message: string): void {
+  const ss = useSessionStore.getState();
+  ss.setStatus(ss.status, message);
+  window.setTimeout(() => {
+    const cur = useSessionStore.getState();
+    if (cur.message === message) cur.setStatus(cur.status, "");
+  }, 2000);
+}
+
 export function OperatorStrip() {
   const activeKey = usePerformanceStore((s) => s.activeKey);
   const activeTimeSignature = usePerformanceStore((s) => s.activeTimeSignature);
@@ -79,7 +91,6 @@ export function OperatorStrip() {
   // operator-edited fields the user didn't touch in the imported file
   // keep their current values.
   async function onConfigFilePicked(file: File): Promise<void> {
-    const { setStatus } = useSessionStore.getState();
     try {
       const text = await file.text();
       const parsed = JSON.parse(text) as Partial<RtmgConfig>;
@@ -88,10 +99,10 @@ export function OperatorStrip() {
       }
       const merged = mergeConfig(getConfig(), parsed);
       applyConfig(merged);
-      setStatus(useSessionStore.getState().status, `Imported ${file.name}`);
+      flashStatus(`Imported ${file.name}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setStatus(useSessionStore.getState().status, `Import failed: ${msg}`);
+      flashStatus(`Import failed: ${msg}`);
     }
   }
 
@@ -112,8 +123,7 @@ export function OperatorStrip() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    const { setStatus } = useSessionStore.getState();
-    setStatus(useSessionStore.getState().status, `Exported config`);
+    flashStatus("Exported config");
   }
 
   // The pod's WS URL is allocated by the queue and not user-editable.
