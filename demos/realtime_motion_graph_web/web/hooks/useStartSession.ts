@@ -13,7 +13,7 @@ import { WsReconnector } from "@/engine/wsReconnect";
 import { getConfig } from "@/lib/config";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { useLoraStore } from "@/store/useLoraStore";
-import { usePerformanceStore } from "@/store/usePerformanceStore";
+import { usePerformanceStore, type RefSource } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 import { isTimeSignature } from "@/types/engine";
 import type { AudioSlice, SessionConfig } from "@/types/protocol";
@@ -292,6 +292,51 @@ async function resolveFixtureForConnect(): Promise<ResolvedFixture | null> {
   return { fixtureName, useServerFixture, interleaved, channels };
 }
 
+/**
+ * Re-apply the operator's timbre / structure references to a freshly
+ * (re)connected backend. The server session boots with no overrides
+ * and refs are NOT part of SessionConfig — so a reconnect would
+ * silently drop them without this. Fixture refs re-send by name; clip
+ * refs re-resolve their PCM from useCustomTracksStore via
+ * loadFixtureAudio. Best-effort: a ref whose source no longer resolves
+ * is skipped (the operator can re-pick it).
+ *
+ * Note: a ref-set that the server REJECTED still leaves its RefSource
+ * recorded, so a later reconnect re-attempts it — harmless (it just
+ * re-fails with the same status message). Perfect failure-rollback
+ * fidelity is a follow-up.
+ */
+async function restoreRefs(remote: RemoteBackend): Promise<void> {
+  const perf = usePerformanceStore.getState();
+  const apply = async (
+    ref: RefSource | null,
+    sendFixture: (name: string) => void,
+    sendSource: (i: Float32Array, c: number, n: string) => boolean,
+  ): Promise<void> => {
+    if (!ref) return;
+    if (ref.mode === "fixture") {
+      sendFixture(ref.name);
+      return;
+    }
+    try {
+      const decoded = await loadFixtureAudio(ref.name);
+      sendSource(decoded.interleaved, decoded.channels, ref.name);
+    } catch {
+      // Source no longer resolvable — skip.
+    }
+  };
+  await apply(
+    perf.timbreRef,
+    (n) => remote.sendSetTimbreFixture(n),
+    (i, c, n) => remote.sendSetTimbreSource(i, c, n),
+  );
+  await apply(
+    perf.structRef,
+    (n) => remote.sendSetStructureFixture(n),
+    (i, c, n) => remote.sendSetStructureSource(i, c, n),
+  );
+}
+
 export function useStartSession() {
   return useCallback(async () => {
     const { setStatus, setSession, reset } = useSessionStore.getState();
@@ -310,6 +355,13 @@ export function useStartSession() {
     // deltas on the first knob wiggle of the new one — a long-
     // reported "knobs go crazy on session start" complaint.
     resetKnobDelta();
+    // A fresh session boots with no timbre / structure override. Drop
+    // any RefSource recorded by a prior session so the reconnect path
+    // (restoreRefs) can't re-apply a ref the operator didn't set this
+    // session. Reconnects go through buildAndConnect, never this hook,
+    // so the in-session record is preserved across a recovery.
+    usePerformanceStore.getState().setTimbreRef(null);
+    usePerformanceStore.getState().setStructRef(null);
 
     setStatus("loading-fixture", "Loading track…");
 
@@ -466,6 +518,11 @@ export function useStartSession() {
           useSessionStore
             .getState()
             .setMonitor(createNetworkMonitor(remote));
+          // Re-apply the timbre / structure references the operator
+          // had active. The fresh server session boots with none and
+          // refs aren't carried in buildConfig, so without this a
+          // reconnect silently drops them.
+          await restoreRefs(remote);
         },
         {
           onAttempt: ({ attempt, maxAttempts }) => {

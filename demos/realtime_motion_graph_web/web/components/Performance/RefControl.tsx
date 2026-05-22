@@ -9,7 +9,7 @@ import {
 } from "@/engine/audio/loadFixture";
 import { LOCAL_MODE } from "@/lib/runtime";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
-import { usePerformanceStore } from "@/store/usePerformanceStore";
+import { usePerformanceStore, type RefSource } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 import type { RemoteBackend } from "@/engine/protocol";
 
@@ -55,6 +55,9 @@ interface KindBinding {
    *  from its local HF cache by name, no PCM round trip. */
   sendFixture: (remote: RemoteBackend, name: string) => void;
   clear: (remote: RemoteBackend) => void;
+  /** Record what was just set (or null on clear) so a WS reconnect can
+   *  re-apply it — consumed by restoreRefs() in useStartSession. */
+  setRef: (ref: RefSource | null) => void;
 }
 
 function bindingFor(kind: RefKind): KindBinding {
@@ -67,6 +70,7 @@ function bindingFor(kind: RefKind): KindBinding {
       send: (r, i, c, n) => r.sendSetTimbreSource(i, c, n),
       sendFixture: (r, n) => r.sendSetTimbreFixture(n),
       clear: (r) => r.sendClearTimbreSource(),
+      setRef: (ref) => usePerformanceStore.getState().setTimbreRef(ref),
     };
   }
   return {
@@ -77,6 +81,7 @@ function bindingFor(kind: RefKind): KindBinding {
     send: (r, i, c, n) => r.sendSetStructureSource(i, c, n),
     sendFixture: (r, n) => r.sendSetStructureFixture(n),
     clear: (r) => r.sendClearStructureSource(),
+    setRef: (ref) => usePerformanceStore.getState().setStructRef(ref),
   };
 }
 
@@ -108,7 +113,10 @@ export function RefControl({ kind }: { kind: RefKind }) {
   function clearActive() {
     const session = useSessionStore.getState();
     if (session.status !== "ready" || !session.remote) return;
-    if (currentName) bind.clear(session.remote);
+    if (currentName) {
+      bind.clear(session.remote);
+      bind.setRef(null);
+    }
   }
 
   async function pickExisting(name: string) {
@@ -123,6 +131,7 @@ export function RefControl({ kind }: { kind: RefKind }) {
     // path because they only exist in the browser.
     if (fixtures.includes(name)) {
       bind.sendFixture(session.remote, name);
+      bind.setRef({ mode: "fixture", name });
       useSessionStore
         .getState()
         .setStatus("ready", `Loading ${bind.statusPrefix} ${name}…`);
@@ -144,7 +153,9 @@ export function RefControl({ kind }: { kind: RefKind }) {
         decoded.channels,
         name,
       );
-      if (!ok) {
+      if (ok) {
+        bind.setRef({ mode: "clip", name });
+      } else {
         useSessionStore
           .getState()
           .setStatus(
@@ -194,7 +205,9 @@ export function RefControl({ kind }: { kind: RefKind }) {
         decoded.channels,
         chosen,
       );
-      if (!ok) {
+      if (ok) {
+        bind.setRef({ mode: "clip", name: chosen });
+      } else {
         setStatus(
           "ready",
           `${bind.statusPrefix[0].toUpperCase()}${bind.statusPrefix.slice(1)} upload failed (socket)`,
