@@ -58,11 +58,23 @@ _logger_configured = False
 
 
 def _ensure_logger() -> None:
+    # loguru's logger is a process-global singleton. If a co-located
+    # backend (or anything else) already configured sinks, calling
+    # remove() here would wipe them — so only attach our stderr sink
+    # when no handler is already attached. This module is normally a
+    # separate stdio subprocess, but the guard makes a same-process
+    # import safe. ``logger._core.handlers`` is private but stable
+    # across loguru versions; the try/except keeps the guard from
+    # crashing if loguru ever renames it.
     global _logger_configured
     if _logger_configured:
         return
-    logger.remove()
-    logger.add(sys.stderr, level="INFO")
+    try:
+        already_configured = bool(logger._core.handlers)
+    except AttributeError:
+        already_configured = False
+    if not already_configured:
+        logger.add(sys.stderr, level="INFO")
     _logger_configured = True
 
 

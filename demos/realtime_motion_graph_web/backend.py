@@ -11,6 +11,7 @@ through :class:`.pipeline.PipelineRunner`, with:
     server hardcoding which LoRAs to load.
 """
 
+import contextlib
 import json
 import os
 import queue
@@ -465,6 +466,31 @@ def handle_client(
     checkpoint: str = "acestep-v15-turbo",
     offload_text_encoder: bool = False,
 ):
+    """Connection entrypoint. The body lives in ``_handle_client_body``;
+    this wrapper exists only to own a single ``ExitStack`` so the
+    contextvar tokens bound for session / track / swap unwind in reverse
+    order on every exit path (normal return, early return, or
+    exception) — no early-return site has to remember an explicit
+    ``__exit__`` call."""
+    with contextlib.ExitStack() as ctx_stack:
+        _handle_client_body(
+            ws, ctx_stack,
+            decoder_backend=decoder_backend,
+            vae_backend=vae_backend,
+            checkpoint=checkpoint,
+            offload_text_encoder=offload_text_encoder,
+        )
+
+
+def _handle_client_body(
+    ws,
+    ctx_stack: contextlib.ExitStack,
+    *,
+    decoder_backend: str,
+    vae_backend: str,
+    checkpoint: str,
+    offload_text_encoder: bool,
+):
     logger.info(
         "client_connected decoder={} vae={} checkpoint={} text_encoder={}",
         decoder_backend, vae_backend, checkpoint,
@@ -487,20 +513,16 @@ def handle_client(
 
     # Mint session_id immediately and bind it (plus the client's optional
     # client_id) into loguru's contextvars so every log record emitted on
-    # this connection's lifetime carries the correlation IDs. Manual
-    # __enter__ instead of a ``with`` block so we don't have to re-indent
-    # the 1600-line connection body; matching __exit__ runs in the
-    # finally at the bottom of this function. Early returns above that
-    # finally land before any session-scoped logging would be useful, and
-    # the websockets sync server uses a fresh thread per connection so a
-    # leaked context dies with the thread anyway.
+    # this connection's lifetime carries the correlation IDs. The
+    # ExitStack owned by handle_client unwinds these in reverse order
+    # on any exit path — including the early returns below — so we
+    # don't have to plumb explicit __exit__ calls through them.
     session_id = session_registry.new_session_id()
     _client_id = config.get("client_id") or None
-    _session_ctx = logger.contextualize(
+    ctx_stack.enter_context(logger.contextualize(
         session_id=session_id,
         client_id=_client_id,
-    )
-    _session_ctx.__enter__()
+    ))
     logger.info(
         "session_init config_keys={} client_id={}",
         sorted(config.keys()), _client_id,
@@ -571,7 +593,6 @@ def handle_client(
             except Exception:
                 pass
             ws.close(1011, "unsupported TRT checkpoint")
-            _session_ctx.__exit__(None, None, None)
             return
     else:
         max_seconds = max_profile_duration_s()
@@ -645,11 +666,10 @@ def handle_client(
     # post-swap pipeline_error still sees the INITIAL one. The latter
     # is a small cosmetic limitation accepted for v1 — the swap is
     # where the high-signal failures live.
-    _track_ctx = logger.contextualize(
+    ctx_stack.enter_context(logger.contextualize(
         fixture_name=fixture_name or None,
         audio_duration_s=round(audio_duration_s, 2),
-    )
-    _track_ctx.__enter__()
+    ))
     # Profile manager owns the engine slots. When use_trt is False, it
     # stays None and the swap path keeps the legacy engine-less behavior.
     profile_mgr: TRTProfileManager | None = None
@@ -681,8 +701,6 @@ def handle_client(
             except Exception:
                 pass
             ws.close(1011, "TRT engine not built")
-            _track_ctx.__exit__(None, None, None)
-            _session_ctx.__exit__(None, None, None)
             return
         # Walk-window override: pin the decoder to the walk_window_s
         # profile (typically 60s) regardless of source duration, while
@@ -711,8 +729,6 @@ def handle_client(
                 except Exception:
                     pass
                 ws.close(1011, "walk_window TRT engine not built")
-                _track_ctx.__exit__(None, None, None)
-                _session_ctx.__exit__(None, None, None)
                 return
             logger.info(
                 "walk_window_active window_s={:.0f} decoder={} vae_encode={}",
@@ -888,8 +904,6 @@ def handle_client(
         except Exception:
             pass
         ws.close(1011, "stem extraction failed")
-        _track_ctx.__exit__(None, None, None)
-        _session_ctx.__exit__(None, None, None)
         return
 
     _ms("resolve_source_done")
@@ -2007,6 +2021,10 @@ def handle_client(
             swap_pending["time_signature"] = None
             swap_pending["fixture_name"] = None
             swap_pending["stem_source_mode"] = None
+        # Initialized to None so the finally below can None-guard cleanly
+        # in the (rare) case an exception fires between the start of the
+        # try and the contextualize bind.
+        _swap_ctx = None
         try:
             new_wf = _decode_audio_msg(audio_msg)
             # Cap at the same ceiling the initial upload used so swaps
@@ -2230,12 +2248,10 @@ def handle_client(
         finally:
             # Always pop the swap-scoped contextualize, whether the swap
             # body completed, raised, or hit ConnectionClosed. None-guard
-            # for the early `swap_pending["bytes"] is None` branch and any
-            # exception thrown before _swap_ctx was entered.
-            _swap_ctx_local = locals().get("_swap_ctx")
-            if _swap_ctx_local is not None:
+            # for the early-fail window before _swap_ctx was bound.
+            if _swap_ctx is not None:
                 try:
-                    _swap_ctx_local.__exit__(None, None, None)
+                    _swap_ctx.__exit__(None, None, None)
                 except Exception:
                     pass
 
@@ -2332,19 +2348,10 @@ def handle_client(
         except Exception as exc:
             logger.warning("session_close_raised error={}", exc)
 
-        # Release the session-scoped contextvars bindings entered at the
-        # top of handle_client. Exit in reverse-enter order
-        # (_track_ctx was entered AFTER _session_ctx) so loguru's
-        # token-stack unwinds cleanly. Ensures the next thread reused
-        # from any websockets-sync pool starts with a clean context.
-        try:
-            _track_ctx.__exit__(None, None, None)
-        except Exception:
-            pass
-        try:
-            _session_ctx.__exit__(None, None, None)
-        except Exception:
-            pass
+        # The session-scoped and track-scoped contextvar bindings live on
+        # the ExitStack owned by handle_client; it unwinds them in
+        # reverse order on return, so this body doesn't need any
+        # explicit __exit__ calls here.
 
 
 # ---------------------------------------------------------------------------

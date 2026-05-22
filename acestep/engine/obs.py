@@ -1,9 +1,10 @@
 """Structured leveled logging for the DEMON server.
 
-``configure()`` runs once at process start; ``bind_session()`` scopes
-correlation IDs into every record emitted on that asyncio task. Sinks
-are data-driven (list of names) so a future PostHog sink can be added
-without touching call sites.
+``configure()`` runs once at process start. Correlation IDs are bound
+into log records via ``logger.contextualize`` at the call site (see
+``handle_client``); ``spawn_thread`` propagates that binding into child
+threads. Sinks are data-driven (list of names) so a future PostHog sink
+can be added without touching call sites.
 """
 
 from __future__ import annotations
@@ -12,8 +13,7 @@ import contextvars
 import os
 import sys
 import threading
-from contextlib import contextmanager
-from typing import Any, Callable, Iterator
+from typing import Any, Callable
 
 from loguru import logger
 
@@ -102,8 +102,9 @@ def configure(*, force: bool = False) -> None:
             _reconfigure_stream_utf8(sys.stdout)
             logger.add(sys.stdout, level=level, serialize=True, enqueue=True)
         elif sink == "jsonl_file":
-            # Daily rotation rather than per-session: bind_session puts
-            # session_id in every record, so grepping one file by id is enough.
+            # Daily rotation rather than per-session: the call-site
+            # contextualize puts session_id in every record, so grepping
+            # one file by id is enough.
             path = os.path.join(cfg["file_dir"], "demon-{time:YYYY-MM-DD}.jsonl")
             logger.add(
                 path,
@@ -120,22 +121,6 @@ def configure(*, force: bool = False) -> None:
     _configured = True
 
 
-@contextmanager
-def bind_session(
-    session_id: str,
-    *,
-    client_id: str | None = None,
-    **extra: Any,
-) -> Iterator[None]:
-    """Bind correlation IDs into loguru's contextvars for the scope of the block."""
-    fields: dict[str, Any] = {"session_id": session_id}
-    if client_id:
-        fields["client_id"] = client_id
-    fields.update(extra)
-    with logger.contextualize(**fields):
-        yield
-
-
 def spawn_thread(
     target: Callable[..., Any],
     *args: Any,
@@ -146,9 +131,9 @@ def spawn_thread(
     """``threading.Thread`` wrapper that inherits loguru's contextvars.
 
     Plain ``threading.Thread`` runs the target in a fresh context, so any
-    ``bind_session`` set in the spawning thread is lost. Copying the
-    parent context here keeps session_id (and friends) on every record
-    the child thread emits.
+    ``logger.contextualize`` set in the spawning thread is lost. Copying
+    the parent context here keeps session_id (and friends) on every
+    record the child thread emits.
     """
     ctx = contextvars.copy_context()
     t = threading.Thread(
@@ -160,4 +145,4 @@ def spawn_thread(
     return t
 
 
-__all__ = ("configure", "bind_session", "spawn_thread", "logger")
+__all__ = ("configure", "spawn_thread", "logger")
