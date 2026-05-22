@@ -5889,12 +5889,16 @@ body.curve-open #install-video-area #graph {
    placard carries the brand gradient strip + radii). */
 .audio-source-dock {
   position: fixed;
-  /* "Now playing" placard + upload pair tucked right into the
-     lower-right corner — a small flat inset from the viewport edge
-     (not offset by the thick HUD frame band) so it reads as a true
-     corner widget. Mirrored by .save-pill in the lower-left. */
-  bottom: max(24px, env(safe-area-inset-bottom, 0px));
-  right: max(24px, env(safe-area-inset-right, 0px));
+  /* Mirrors the halo badge across the horizontal midline: the same
+     right inset as the badge, and a bottom margin equal to the badge's
+     TOP margin — so the now-playing dock and the hamburger read as a
+     symmetric pair with matching page margins. .save-pill mirrors this
+     in the lower-left. */
+  bottom: max(
+    calc(var(--hud-thickness) / 2 - 10px + var(--top-bias, 5px)),
+    env(safe-area-inset-bottom, 0px)
+  );
+  right: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-right, 0px));
   z-index: 8;
   /* Only the interactive children — the body when expanded, the bubble
      when collapsed — catch input; the dock's own footprint stays
@@ -7943,11 +7947,14 @@ body.curve-open #install-video-area #graph {
    whole pill in the dirty state) to fire useSavedSessions.save(). */
 .save-pill {
   position: fixed;
-  /* Tucked into the lower-left corner, mirroring .audio-source-dock in
-     the lower-right for visual balance. Flat inset from the viewport
-     edge, not offset by the HUD frame band. */
-  bottom: max(24px, env(safe-area-inset-bottom, 0px));
-  left: max(24px, env(safe-area-inset-left, 0px));
+  /* Lower-left mirror of .audio-source-dock — identical insets, so the
+     save pill and the now-playing dock balance the bottom corners the
+     way the wordmark and the hamburger balance the top. */
+  bottom: max(
+    calc(var(--hud-thickness) / 2 - 10px + var(--top-bias, 5px)),
+    env(safe-area-inset-bottom, 0px)
+  );
+  left: max(calc(var(--hud-thickness) + 24px), env(safe-area-inset-left, 0px));
   display: inline-flex;
   align-items: center;
   gap: 6px;
