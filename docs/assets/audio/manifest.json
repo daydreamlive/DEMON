@@ -1,0 +1,136 @@
+{
+  "schema_version": 3,
+  "fixtures": {
+    "low_fi_Gm_loop_60s_gnm.wav": {
+      "tags": "heavy dubstep, deathstep, afxdump, growl heavy bass distortion",
+      "lora": "deathsteap_1",
+      "lora_strength": 1.2,
+      "bpm": 152,
+      "key": "G minor",
+      "time_signature": "4",
+      "duration_s": 57.6
+    },
+    "inside_confusion_loop_60s_gsm.wav": {
+      "tags": "roti-acoustic, acoustic guitar deep house hybrid mellow folk",
+      "lora": "acoustic-v1",
+      "lora_strength": 1.4,
+      "bpm": 134,
+      "key": "G# minor",
+      "time_signature": "4",
+      "duration_s": 56.6
+    }
+  },
+  "seed": 1528,
+  "depth": 8,
+  "steps": 8,
+  "shift": 3.0,
+  "shared_curve": {
+    "shape": "asym_1_to_0",
+    "formula": "1 - t^3",
+    "description": "Holds near 1.0 for most of the timeline, drops fast at the end. Used per-frame for cat 02 (SDE) and per-tick scalar for cat 03 (streaming denoise sweep) so a single graph documents both demos."
+  },
+  "categories": [
+    {
+      "id": "02_sde_per_frame",
+      "title": "Per-frame SDE source preservation, asymptotic curve",
+      "claim_section": "5.6 SDE Source Blending",
+      "curve": "asym_1_to_0",
+      "description": "One generation per fixture under the shared asymptotic SDE denoise curve (1 - t^3). Holds the model's free response for most of the clip and lands back on the source-anchored side in the final seconds. Each fixture runs with its paired LoRA (deathstep for low_fi, acoustic-v1 for inside_confusion).",
+      "variants": [
+        {
+          "file": "low_fi_deathstep_sde_asym_1_to_0.wav",
+          "fixture": "low_fi",
+          "lora": "deathsteap_1",
+          "curve": "asym_1_to_0",
+          "label": "Low-fi (deathstep), SDE asym 1 to 0"
+        },
+        {
+          "file": "inside_confusion_acoustic_sde_asym_1_to_0.wav",
+          "fixture": "inside_confusion",
+          "lora": "acoustic-v1",
+          "curve": "asym_1_to_0",
+          "label": "Inside Confusion (acoustic, roti-acoustic), SDE asym 1 to 0"
+        }
+      ]
+    },
+    {
+      "id": "05_perslot_vs_globalreset",
+      "title": "Per-slot continuity vs. global-reset dead air",
+      "claim_section": "3.2.1 / 5.8.2",
+      "fixture": "inside_confusion_loop_60s_gsm.wav",
+      "lora": "acoustic-v1",
+      "description": "Illustrative pair built from the inside_confusion fixture with the acoustic LoRA active. A denoise switch (1.0 -> 0.5) under DEMON's per-slot scheduling produces continuous output across the drain (50 ms equal-power crossfade as stand-in for the real streaming pipeline's continuity); the StreamDiffusion-style global-reset baseline incurs ~648 ms of dead air while the ring buffer refills at depth=8. Matches the 60/60 vs 1/60 completion-rate result in Section 5.8.2.",
+      "synthesis_method": "2 s of denoise=1.0 audio + (silence: 648 ms for global-reset, 50 ms equal-power crossfade for per-slot) + 2 s of denoise=0.5 audio. Sampled from the middle of each generation.",
+      "variants": [
+        {
+          "file": "perslot_continuous_output.wav",
+          "label": "Per-slot heterogeneous scheduling",
+          "duration_s": 3.95
+        },
+        {
+          "file": "globalreset_dead_air.wav",
+          "label": "StreamDiffusion-style global reset",
+          "duration_s": 4.649
+        }
+      ]
+    },
+    {
+      "id": "01_stream_vs_batch",
+      "title": "Streaming pipeline does not degrade quality",
+      "claim_section": "5.7 Stream vs Batch Parity",
+      "fixture": "low_fi_Gm_loop_60s_gnm.wav",
+      "lora": "deathsteap_1",
+      "description": "Batch-mode generation and a real tick-by-tick stream simulation, both with the deathstep LoRA active. The stream output is built from windowed decodes (5.0s VAE window) of each completion at advancing playback positions (0.3s slices), mirroring the live streaming pipeline. Bit-identical latents (infinite SNR per the paper's quality evaluation) are decoded via different paths (windowed vs full) so listeners can verify the stream path produces audibly equivalent output.",
+      "variants": [
+        {
+          "file": "low_fi_deathstep_batch.wav",
+          "label": "Batch (8-step sequential, full 60s decode)"
+        },
+        {
+          "file": "low_fi_deathstep_stream.wav",
+          "label": "Stream (depth=8 ring buffer, 5.0s windowed decode)"
+        }
+      ],
+      "stats": {
+        "stream": {
+          "num_decoded": 20,
+          "num_skipped": 180,
+          "runtime_s": 15.45
+        }
+      }
+    },
+    {
+      "id": "03_denoise_sweep",
+      "title": "Scalar denoise as a live control surface (asymptotic sweep)",
+      "claim_section": "3.2.1 / 5.8.1",
+      "curve": "asym_1_to_0",
+      "description": "Two streaming-pipeline runs, one per fixture, with the per-tick scalar denoise driven along the shared asymptotic 1 - (k/N)^3 trajectory. The pipeline holds the model's free response (denoise ~ 1.0) for most of the run and collapses back to the source as the sweep ends, sampling one fresh 0.3 s playback chunk per tick. Same shape as cat 02 but applied per-tick at the scalar denoise input instead of per-frame at the SDE step.",
+      "variants": [
+        {
+          "file": "low_fi_deathstep_denoise_sweep_asym_1_to_0.wav",
+          "fixture": "low_fi",
+          "lora": "deathsteap_1",
+          "label": "Low-fi (deathstep), asymptotic denoise sweep"
+        },
+        {
+          "file": "inside_confusion_acoustic_denoise_sweep_asym_1_to_0.wav",
+          "fixture": "inside_confusion",
+          "lora": "acoustic-v1",
+          "label": "Inside Confusion (acoustic, roti-acoustic), asymptotic denoise sweep"
+        }
+      ],
+      "stats": {
+        "low_fi": {
+          "num_decoded": 45,
+          "num_skipped": 155,
+          "runtime_s": 15.83
+        },
+        "inside_confusion": {
+          "num_decoded": 37,
+          "num_skipped": 163,
+          "runtime_s": 15.6
+        }
+      }
+    }
+  ]
+}

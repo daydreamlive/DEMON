@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 
   <title>DEMON: Diffusion Engine for Musical Orchestrated Noise</title>
-  <meta name="description" content="A real-time diffusion engine for music. The model dreaming through your audio while you steer.">
+  <meta name="description" content="DEMON: a streaming diffusion engine for real-time music generation, built on ACE-Step v1.5.">
 
   <meta property="og:title" content="DEMON: Diffusion Engine for Musical Orchestrated Noise">
-  <meta property="og:description" content="A real-time diffusion engine for music. 12.3 generations per second, per-frame parametric control, on a single consumer GPU.">
+  <meta property="og:description" content="A streaming diffusion engine for real-time music generation, built on ACE-Step v1.5. Per-frame parametric control of the diffusion process on a single consumer GPU.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://daydreamlive.github.io/DEMON/">
   <meta property="og:image" content="assets/img/og-image.jpg">
@@ -17,6 +17,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@200;300;400;500&family=IBM+Plex+Serif:ital,wght@0,300;0,400;0,500;1,400&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/jpswalsh/academicons@1/css/academicons.min.css">
 
   <link rel="stylesheet" href="assets/css/main.css">
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23000'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%23ff7a00'/%3E%3C/svg%3E">
@@ -33,24 +34,21 @@
 
   <div class="container container--narrow hero__content">
 
-    <h1 class="hero__title" aria-label="DEMON: Diffusion Engine for Musical Orchestrated Noise">
-      <span class="word"><span class="acronym">D</span>iffusion</span>
-      <span class="word"><span class="acronym">e</span>ngine</span>
-      <span class="word">for</span>
-      <span class="word"><span class="acronym">m</span>usical</span>
-      <span class="word accent"><span class="acronym">o</span>rchestrated</span>
-      <span class="word accent"><span class="acronym">n</span>oise</span>
-    </h1>
+    <h1 class="hero__name">DEMON</h1>
+    <p class="hero__expansion"><span class="acronym">D</span>iffusion <span class="acronym">E</span>ngine for <span class="acronym">M</span>usical <span class="acronym">O</span>rchestrated <span class="acronym">N</span>oise</p>
+    <p class="hero__subtitle">Streaming Diffusion Engine for Real-Time Music Generation</p>
 
     <p class="author-line">
-      Ryan Fosdick <span class="sep">·</span> Daydream
+      <a href="https://ryanontheinside.com">Ryan Fosdick</a> <span class="sep">·</span> Daydream
     </p>
 
     <nav class="resource-row" aria-label="Resources">
-      <span class="resource-btn resource-btn--disabled">Paper <em>(soon)</em></span>
+      <span class="resource-btn resource-btn--disabled"><i class="ai ai-arxiv resource-btn__icon" aria-hidden="true"></i>DEMON <em>(soon)</em></span>
       <a class="resource-btn" href="https://github.com/daydreamlive/DEMON">Code</a>
-      <a class="resource-btn" href="https://github.com/daydreamlive/DEMON#demos">Demo</a>
-      <a class="resource-btn" href="https://huggingface.co/datasets/daydreamlive/demon-fixtures">Fixtures</a>
+      <a class="resource-btn" href="https://music.daydream.live">Demo</a>
+      <span class="resource-btn resource-btn--disabled"><i class="ai ai-arxiv resource-btn__icon" aria-hidden="true"></i>DreamVAE <em>(soon)</em></span>
+      <a class="resource-btn" href="https://huggingface.co/daydreamlive/DreamVAE"><span class="resource-btn__emoji" aria-hidden="true">🤗</span>DreamVAE</a>
+      <span class="resource-btn resource-btn--disabled"><i class="ai ai-arxiv resource-btn__icon" aria-hidden="true"></i>Latent Channel Semantics <em>(soon)</em></span>
       <a class="resource-btn" href="#cite">BibTeX</a>
     </nav>
 
@@ -69,7 +67,7 @@
     <div class="abstract-block">
       <h2 class="abstract-label">Abstract</h2>
       <p class="abstract">
-        DEMON is a real-time diffusion engine for music, built on ACE-Step v1.5. It adapts streaming diffusion to 60-second audio latents, producing 12.3 full-song generations per second on a single consumer GPU. The engine introduces per-frame parametric control of the denoising process at 25&nbsp;Hz resolution, including an SDE solver variant for per-frame source preservation and shared mutable curves that propagate parameter changes within one streaming tick. The result is a music diffusion model that responds to gesture at instrument-grade latency.
+        DEMON is a streaming diffusion engine for music, built on ACE-Step v1.5 (2&nbsp;B turbo and 5&nbsp;B XL turbo). A ring buffer of in-flight generations, each carrying its own per-slot timestep schedule, is advanced by one batched decoder forward pass per tick; after warmup, every tick produces a finished song latent. Every solver-side parameter (per-frame source preservation, velocity scaling, ODE noise injection, classifier-free guidance, x0-target morphing, channel gain) accepts a scalar or a per-frame curve at the latent's 25&nbsp;Hz frame resolution, and a shared-mutable-curve lane propagates parameter changes to every in-flight slot on the next tick, independent of pipeline depth. Native TensorRT engines cover 60, 120, and 240&nbsp;s song lengths; longer songs route through a sliding 60&nbsp;s window. The decoder runs under TensorRT with a refit-enabled engine that hot-swaps LoRAs without rebuild.
       </p>
     </div>
 
@@ -78,16 +76,16 @@
 
 
 <!-- ============================================================
-     LORA MORPH SHOWCASE
+     SAMPLES
      ============================================================ -->
 <section id="showcase">
-  <div class="container">
+  <div class="container container--narrow">
     <div class="section-label">
       <span class="name">Samples</span>
     </div>
 
     <p class="lead">
-      Four sample outputs from the same source audio under different engine configurations. The first two use LoRA and prompt swap. The last two use per-frame curves and channel-gain manipulation on the same model.
+      Four outputs from the same source audio under different engine configurations. The first two illustrate LoRA hot-swap and prompt change; the last two illustrate per-frame curves and channel-gain control on a fixed model and prompt.
     </p>
 
     <div class="morph-grid">
@@ -97,8 +95,8 @@
         </div>
         <div class="morph-card__body">
           <div class="morph-card__lora">DEATHSTEP</div>
-          <h4 class="morph-card__title">Heavy growl distortion</h4>
-          <p class="morph-card__caption">Bass loop transformed into deathstep, the Civitai LoRA Ryan tested. Watch the source rhythm survive while every timbre gets violently rewritten.</p>
+          <h4 class="morph-card__title">Genre transfer via LoRA</h4>
+          <p class="morph-card__caption">Source rhythm preserved; timbre rewritten by a community-trained deathstep LoRA, refit live into the running TensorRT engine.</p>
         </div>
       </div>
 
@@ -108,8 +106,8 @@
         </div>
         <div class="morph-card__body">
           <div class="morph-card__lora">SYNTHPOP</div>
-          <h4 class="morph-card__title">Daft punk style, four to the floor</h4>
-          <p class="morph-card__caption">Same source, same time, different LoRA. The kick stays anchored to the source's downbeats; everything around it becomes neon.</p>
+          <h4 class="morph-card__title">Same source, different LoRA</h4>
+          <p class="morph-card__caption">Identical source and time window as the previous sample; only the active LoRA differs.</p>
         </div>
       </div>
 
@@ -119,8 +117,8 @@
         </div>
         <div class="morph-card__body">
           <div class="morph-card__lora">PER-FRAME CURVE</div>
-          <h4 class="morph-card__title">Source ↔ generation, on the beat</h4>
-          <p class="morph-card__caption">No LoRA change. Same prompt. The source-preservation curve is drawn as a sine wave on the beat, so the song rhythmically pulses between the original audio and model generation, twice per bar.</p>
+          <h4 class="morph-card__title">Rhythmic source preservation</h4>
+          <p class="morph-card__caption">A sinusoidal curve drives the per-frame source-preservation parameter on the beat, alternating frame-wise between source and generation twice per bar.</p>
         </div>
       </div>
 
@@ -130,8 +128,8 @@
         </div>
         <div class="morph-card__body">
           <div class="morph-card__lora">CHANNEL GAINS</div>
-          <h4 class="morph-card__title">Latent channel surgery</h4>
-          <p class="morph-card__caption">No LoRA. No prompt change. Pushing individual latent channels of the 64-channel VAE reshapes timbre and rhythm in ways no prompt can. What we're still mapping, you can already play.</p>
+          <h4 class="morph-card__title">Latent channel scaling</h4>
+          <p class="morph-card__caption">No LoRA or prompt change. Per-channel gains applied to the 64-channel VAE latent reshape timbre and rhythm without changing conditioning.</p>
         </div>
       </div>
     </div>
@@ -140,43 +138,96 @@
 
 
 <!-- ============================================================
-     WHAT'S DIFFERENT
+     EXPERIMENTS
      ============================================================ -->
-<section id="contributions">
-  <div class="container">
+<section id="experiments">
+  <div class="container container--narrow">
     <div class="section-label">
-      <span class="name">Contributions</span>
+      <span class="name">Experiments</span>
     </div>
 
-      <p class="lead">
-      Three properties we haven't seen combined in another public music AI system: diffusion-native temporal control, high-throughput streaming, and live LoRA refit.
+    <p class="lead">
+      Four side-by-side pairs, each isolating one property of the engine: streaming parity, per-frame SDE source preservation on a shared asymptotic curve, per-tick scalar denoise on the same curve, and per-slot continuity vs. a StreamDiffusion-style global reset.
     </p>
 
-    <div class="contribs" style="margin-top:3rem;">
-      <article class="contrib">
-        <div class="contrib__num">i.</div>
-        <h2 class="contrib__name">Per-frame control of the diffusion process</h2>
-          <p class="contrib__body">
-          Several solver-side controls that are normally single numbers become curves drawn over the song's timeline, at the same 25 Hz resolution as the latent itself. Source preservation oscillates rhythmically. Transformation pressure rises through the chorus. The engine exposes six temporal curves; the per-step curves can update in-flight through shared state.
-        </p>
-      </article>
-
-      <article class="contrib">
-        <div class="contrib__num">ii.</div>
-        <h2 class="contrib__name"><span class="accent">12.3</span> generations per second</h2>
-        <p class="contrib__body">
-          A streaming ring-buffer pipeline keeps 8 in-flight 60-second song generations at staggered denoising stages, batched into a single forward pass per tick. After warmup, one finished 60-second song latent emerges every 81 ms. The user hears a moving window through a song that's continuously being re-drafted.
-        </p>
-      </article>
-
-      <article class="contrib">
-        <div class="contrib__num">iii.</div>
-        <h2 class="contrib__name">Hot-swap LoRAs into a live TensorRT engine</h2>
-        <p class="contrib__body">
-          TensorRT engines are normally static weights baked at build time. DEMON refits LoRAs into the running engine in ~1.2 seconds, with no rebuild. Drop a <code>.safetensors</code> file in the LoRA folder and play it through the model that's currently making sound.
-        </p>
-      </article>
+    <div class="experiment">
+      <div class="experiment__claim">5.7 · Stream vs. Batch parity</div>
+      <h3 class="experiment__title">Streaming pipeline does not degrade quality</h3>
+      <p class="experiment__desc">
+        Bit-identical 8-step latents decoded two ways. The batch path runs a single full 60&nbsp;s VAE decode; the stream path replays the same latents tick-by-tick through a 5&nbsp;s windowed decode, mirroring the live pipeline. Same fixture (low-fi loop), deathstep LoRA active in both.
+      </p>
+      <div class="audio-pair">
+        <div class="audio-pair__item">
+          <div class="audio-pair__label">Batch — 8-step sequential, full 60&nbsp;s decode</div>
+          <audio controls preload="metadata" src="assets/audio/01_stream_vs_batch/low_fi_deathstep_batch.wav"></audio>
+        </div>
+        <div class="audio-pair__item">
+          <div class="audio-pair__label">Stream — depth = 8 ring buffer, 5&nbsp;s windowed decode</div>
+          <audio controls preload="metadata" src="assets/audio/01_stream_vs_batch/low_fi_deathstep_stream.wav"></audio>
+        </div>
+      </div>
     </div>
+
+    <div class="experiment">
+      <div class="experiment__claim">5.6 · SDE source blending</div>
+      <h3 class="experiment__title">Per-frame source preservation on a 1 − t³ curve</h3>
+      <p class="experiment__desc">
+        The shared asymptotic curve below, driven into the SDE step's per-frame source-preservation parameter at the latent's 25&nbsp;Hz frame resolution. The model runs free for most of the clip, then lands back on the source-anchored side in the final seconds. One generation per fixture, each with its paired LoRA.
+      </p>
+
+      <figure class="figure curve-figure">
+        <img src="assets/img/curve_asym_1_to_0.png" alt="Asymmetric 1 minus t cubed curve, holding near 1.0 for most of the timeline then dropping to 0 at the end">
+        <figcaption>Shared 1 − t³ curve — applied per-frame in the SDE demo above and per-tick in the denoise sweep below.</figcaption>
+      </figure>
+
+      <div class="audio-pair">
+        <div class="audio-pair__item">
+          <div class="audio-pair__label">Low-fi · deathstep LoRA</div>
+          <audio controls preload="metadata" src="assets/audio/02_sde_per_frame/low_fi_deathstep_sde_asym_1_to_0.wav"></audio>
+        </div>
+        <div class="audio-pair__item">
+          <div class="audio-pair__label">Inside Confusion · acoustic LoRA</div>
+          <audio controls preload="metadata" src="assets/audio/02_sde_per_frame/inside_confusion_acoustic_sde_asym_1_to_0.wav"></audio>
+        </div>
+      </div>
+    </div>
+
+    <div class="experiment">
+      <div class="experiment__claim">5.8.1 · Live control surface</div>
+      <h3 class="experiment__title">Per-tick scalar denoise on the same 1 − t³ curve</h3>
+      <p class="experiment__desc">
+        Same trajectory, different lane: the streaming pipeline's per-tick scalar denoise input is driven along 1 − (k/N)³ instead of the per-frame SDE parameter. One fresh 0.3&nbsp;s playback chunk per tick. Holds the model's free response (denoise ≈ 1.0) for most of the run and collapses back to the source as the sweep ends.
+      </p>
+      <div class="audio-pair">
+        <div class="audio-pair__item">
+          <div class="audio-pair__label">Low-fi · deathstep LoRA</div>
+          <audio controls preload="metadata" src="assets/audio/03_denoise_sweep/low_fi_deathstep_denoise_sweep_asym_1_to_0.wav"></audio>
+        </div>
+        <div class="audio-pair__item">
+          <div class="audio-pair__label">Inside Confusion · acoustic LoRA</div>
+          <audio controls preload="metadata" src="assets/audio/03_denoise_sweep/inside_confusion_acoustic_denoise_sweep_asym_1_to_0.wav"></audio>
+        </div>
+      </div>
+    </div>
+
+    <div class="experiment">
+      <div class="experiment__claim">5.8.2 · Per-slot continuity</div>
+      <h3 class="experiment__title">Heterogeneous per-slot scheduling vs. global reset</h3>
+      <p class="experiment__desc">
+        Illustrative pair built around a denoise switch (1.0 → 0.5). Under DEMON's per-slot scheduling the output stays continuous across the drain; a StreamDiffusion-style global reset incurs ~648&nbsp;ms of dead air while the depth = 8 ring buffer refills. Matches the 60/60 vs. 1/60 completion-rate result in the report.
+      </p>
+      <div class="audio-pair">
+        <div class="audio-pair__item">
+          <div class="audio-pair__label">Per-slot heterogeneous scheduling</div>
+          <audio controls preload="metadata" src="assets/audio/05_perslot_vs_globalreset/perslot_continuous_output.wav"></audio>
+        </div>
+        <div class="audio-pair__item">
+          <div class="audio-pair__label">Global reset — ~648&nbsp;ms dead air</div>
+          <audio controls preload="metadata" src="assets/audio/05_perslot_vs_globalreset/globalreset_dead_air.wav"></audio>
+        </div>
+      </div>
+    </div>
+
   </div>
 </section>
 
@@ -191,70 +242,64 @@
     </div>
 
     <p>
-      Measured on RTX 5090 (32&nbsp;GB), running ACE-Step v1.5 turbo (8 denoising steps, shift = 3.0) over 60-second song latents.
+      Measured on RTX 5090 (32&nbsp;GB), ACE-Step v1.5 turbo (2&nbsp;B), 8 denoising steps, flow shift 3.0, windowed VAE decode at 3&nbsp;s, 60&nbsp;s source. Pipeline depth trades end-to-end throughput against control latency.
     </p>
 
-    <table class="perf-table" aria-label="Performance characteristics">
+    <table class="perf-table" aria-label="Performance characteristics by pipeline depth">
       <thead>
         <tr>
           <th scope="col">Metric</th>
-          <th scope="col">Value</th>
-          <th scope="col">For comparison</th>
+          <th scope="col">depth = 1</th>
+          <th scope="col">depth = 4</th>
+          <th scope="col">depth = 8</th>
         </tr>
       </thead>
       <tbody>
         <tr>
-          <td>Throughput</td>
-          <td class="num">12.3 gen/sec</td>
-          <td class="compare">Lyria RealTime: 0.5 chunks/sec (2&nbsp;s chunks)</td>
+          <td>Throughput (gen/s)</td>
+          <td class="num">TODO</td>
+          <td class="num">TODO</td>
+          <td class="num">TODO</td>
         </tr>
         <tr>
-          <td>Per-tick latency (depth&nbsp;=&nbsp;8)</td>
-          <td class="num">81 ms decoder + 21 ms VAE = 102 ms</td>
-          <td class="compare">Batch song tools: render first, listen after</td>
+          <td>Per-tick latency</td>
+          <td class="num">TODO ms</td>
+          <td class="num">TODO ms</td>
+          <td class="num">TODO ms</td>
+        </tr>
+        <tr>
+          <td>Submission-time parameter convergence</td>
+          <td class="num">TODO ms</td>
+          <td class="num">TODO ms</td>
+          <td class="num">TODO ms</td>
+        </tr>
+        <tr>
+          <td>Shared-curve latency</td>
+          <td class="num">1 tick</td>
+          <td class="num">1 tick</td>
+          <td class="num">1 tick</td>
         </tr>
         <tr>
           <td>Per-frame control resolution</td>
-          <td class="num">25 Hz (40 ms)</td>
-          <td class="compare">Lyria: 0.5 Hz (2000 ms chunk boundaries)</td>
+          <td class="num" colspan="3">25&nbsp;Hz (40&nbsp;ms)</td>
         </tr>
         <tr>
-          <td>Knob → latent (shared mutable curves)</td>
-          <td class="num">~81 ms (1 tick)</td>
-          <td class="compare">Knob → audio: ~102 ms with windowed VAE</td>
+          <td>VAE windowed decode (3&nbsp;s)</td>
+          <td class="num" colspan="3">TODO ms</td>
         </tr>
         <tr>
-          <td>Knob → ear (per-request params)</td>
-          <td class="num">~649 ms (8 ticks)</td>
-          <td class="compare"></td>
-        </tr>
-        <tr>
-          <td>VAE decode (windowed vs full)</td>
-          <td class="num">21 ms vs 63 ms (3× speedup)</td>
-          <td class="compare">Bit-identical interior output</td>
-        </tr>
-        <tr>
-          <td>LoRA hot-swap</td>
-          <td class="num">~1.2 s</td>
-          <td class="compare">No engine rebuild · ~8% inference overhead</td>
-        </tr>
-        <tr>
-          <td>Hardware</td>
-          <td class="num">RTX 5090 primary; 24&nbsp;GB tested</td>
-          <td class="compare">Lower VRAM may require reduced profiles/settings</td>
+          <td>LoRA refit</td>
+          <td class="num" colspan="3">TODO s, no engine rebuild</td>
         </tr>
       </tbody>
     </table>
 
-    <p style="margin-top:2rem; font-size:0.9rem; color:var(--ink-dim);">
-      Pipeline depth trades latency-to-first-effect for throughput. Depth = 4 hits 92% of max throughput at 2.6× faster control response, a good middle ground for live performance.
-    </p>
   </div>
 </section>
 
 
 <!-- ============================================================
-     HOW IT WORKS / long-form editorial
+     METHOD
      ============================================================ -->
 <section id="how">
   <div class="container container--narrow">
@@ -263,60 +308,12 @@
     </div>
 
     <div class="prose">
-      <p class="lead" style="margin-bottom:2rem;">
-        DEMON is not the music model. It's a streaming runtime, control surface, and acceleration layer built around <a href="https://github.com/ace-step/ACE-Step-1.5">ACE-Step</a> v1.5, an open, MIT-licensed music diffusion model from the ACE-Step team. Without their model, none of this exists.
+      <p>
+        DEMON is the runtime, control surface, and acceleration layer; the diffusion model is <a href="https://github.com/ace-step/ACE-Step">ACE-Step v1.5</a>, released by the ACE-Step team under MIT. The engine maintains a ring buffer of in-flight generations at staggered denoising stages. Crucially, <strong>each in-flight slot carries its own denoise scalar and its own timestep schedule</strong>: one batched decoder forward pass per tick advances slots that are simultaneously at different stages of different schedules. Native TensorRT engines cover 60, 120, and 240&nbsp;s song lengths; longer songs route through a sliding 60&nbsp;s window that advances at chunk boundaries.
       </p>
 
-      <h3>What the model sees: a 1500 × 64 latent</h3>
       <p>
-        ACE-Step's convolutional VAE compresses 60 seconds of 48&nbsp;kHz stereo audio into a single tensor of shape <code>[1500, 64]</code>: 1500 frames at 25&nbsp;Hz, 64 channels each. That tensor is the unit of generation. A Diffusion Transformer (DiT, 2&nbsp;B parameters) refines it from pure noise to clean music over 8 denoising steps using flow matching.
-      </p>
-      <p>
-        For an audience used to image diffusion, the mental anchor is precise: <em>a 60-second song behaves like a single latent image, 1500 pixels wide, 64 channels deep.</em> Many familiar image-diffusion ideas have audio-latent counterparts here: masking and inpainting, conditioning, LoRAs, classifier-free guidance, and temporal control curves, all on a one-dimensional time axis instead of a two-dimensional spatial one.
-      </p>
-
-      <h3>The streaming pipeline: ring buffer over depth N</h3>
-      <p>
-        A naïve real-time loop would run all 8 denoising steps for one song, output it, then start the next, capping at one song every (8 × tick_ms). DEMON adapts <a href="https://arxiv.org/abs/2312.12491">StreamDiffusion</a>'s ring-buffer pattern to audio: 8 in-flight 60-second song generations are kept at staggered denoising stages, batched into a single forward pass per tick. After a warmup period, one finished song emerges every tick. 12.3 per second on a 5090.
-      </p>
-      <p>
-        The user doesn't hear 12 separate songs per second. They hear a moving playhead window through one of these latents, decoded as audio, while newer latents continuously evolve in the buffer behind it. <strong>The future of the song is being continuously re-drafted until the moment the playhead reaches each frame.</strong> That property is what makes per-frame control land. There's still a "future" to influence, even mid-playback.
-      </p>
-
-      <div class="callout">
-        Compare autoregressive systems: once a chunk is committed audio, that chunk is locked. Compare batch generation: by the time you hear it, the parameter choices were frozen before render. DEMON's streaming-diffusion shape keeps the still-evolving latent generation and the active control surface in contact, at diffusion-frame resolution.
-      </div>
-
-      <h3>Per-frame curves: the centerpiece contribution</h3>
-      <p>
-        The most musically impactful diffusion parameter, <code>denoise</code> (the strength of the AI remix), is global in the standard ACE-Step scheduler. It works by truncating the slot's timestep schedule, and the model forward pass advances every frame in that slot at the same timestep. You cannot have one part of a song heavily transformed and another part lightly transformed using <code>denoise</code> alone. In this scheduler path, it is a global scalar by construction.
-      </p>
-      <p>
-        DEMON recovers denoise-like musical control with an SDE solver variant that works through a different mechanism. At every denoising step, the engine computes two re-noising candidates per frame, one anchored to the model's prediction (generation), one anchored to the source latents (preservation), and blends them according to a per-frame curve that can vary across all 1500 frames of the song. Because the blending happens <em>after</em> the model's forward pass and is <em>re-decided at every step</em>, different frames can take different effective source-preservation strengths without changing the scheduler's timestep contract.
-      </p>
-      <p>
-        Six temporal controls are exposed in total: source-preservation (the SDE curve above), velocity scale (transformation rate), guidance scale (per-frame CFG), ODE noise injection, initial-noise mixing, and x0-target morphing. They operate on the same temporal axis and compose through the streaming pipeline; the per-step controls are the ones that can bypass ring-buffer drain via shared mutable state.
-      </p>
-
-      <h3>Shared mutable curves: 1-tick latency</h3>
-      <p>
-        Per-request parameters (text prompts, source audio, the denoise scalar) are baked into a slot at submission time and only manifest after the ring buffer drains (~649&nbsp;ms at depth 8). Per-step parameters such as SDE source-preservation, velocity scale, ODE noise, and x0-target strength can be read fresh from shared state at every denoising step. When one of those shared curves is updated, <strong>all 8 in-flight slots use the new value on the very next tick.</strong> That's ~81&nbsp;ms knob-to-latent at depth 8, or ~102&nbsp;ms to decoded audio with the windowed VAE.
-      </p>
-      <p>
-        This is the property that makes the system feel less like a render queue and more like a responsive musical surface. Below the threshold of human-perceptible lag, gesture and sound feel coupled.
-      </p>
-
-      <h3>Acceleration: TensorRT mixed precision + LoRA refit</h3>
-      <p>
-        The DiT is exported to ONNX and compiled to TensorRT with a careful precision split: attention and MLP blocks in fp16 for speed, but the adaptive normalization (AdaLN) pathway, timestep embeddings, and RMSNorm layers remain in fp32. Without this, fp16 quantization compounds across 24 layers, measured at ~7× attenuation of velocity output and NaN failures at early timesteps. With it, the engine runs cleanly.
-      </p>
-      <p>
-        TensorRT engines are normally static. DEMON enables the <code>REFIT</code> builder flag and exports ONNX with constant folding disabled, preserving PyTorch parameter names as ONNX initializer names. At runtime, the IRefitter API computes LoRA deltas and applies them to the live engine. No rebuild, ~1.2 seconds, ~8% inference overhead.
-      </p>
-
-      <h3>Windowed VAE decode: 3× speedup, bit-identical</h3>
-      <p>
-        Full VAE decode of a 60-second latent costs ~63&nbsp;ms, nearly as much as the DiT forward pass itself. But during streaming, the user only hears a few seconds at a time. The Oobleck VAE uses dilated 1D convolutions whose receptive field, empirically, converges within 333&nbsp;ms of any boundary. Decoding the playback window plus 0.5&nbsp;s of overlap on each side produces output that is <strong>bit-identical to the full decode in the interior</strong>. 21&nbsp;ms instead of 63&nbsp;ms, no quality loss.
+        Two control lanes coexist. <em>Submission-time</em> parameters (text conditioning, source audio, denoise, x0 target, guidance curve) enter the pipeline when a new request is submitted and reach the next emptied slot within one tick; they then take effect over that slot's remaining schedule. <em>Step-time</em> parameters (per-frame source preservation, velocity scaling, ODE noise injection, channel gain, CFG rescale, APG momentum, DCW scalers) live in a <strong>shared mutable registry that every slot reads on every forward pass</strong>; writing to that registry takes effect on the next tick for every in-flight slot at once, regardless of pipeline depth. The decoder runs under TensorRT with refit enabled, so LoRA deltas are written into the live engine without a rebuild. The technical report covers the SDE derivation behind the per-frame source-preservation curve, the windowed-decode receptive-field analysis, and the TensorRT precision recipe.
       </p>
     </div>
   </div>
@@ -324,35 +321,20 @@
 
 
 <!-- ============================================================
-     GET STARTED
+     TEAM
      ============================================================ -->
-<section id="start">
+<section id="team">
   <div class="container container--narrow">
     <div class="section-label">
-      <span class="name">Code</span>
+      <span class="name">Team</span>
     </div>
 
     <p>
-      Python 3.11, a CUDA GPU, and uv. ACE-Step v1.5 checkpoints download automatically on first run.
-    </p>
-
-    <pre class="code-block"><span class="comment"># clone</span>
-<span class="cmd">git clone https://github.com/daydreamlive/DEMON.git</span>
-<span class="cmd">cd DEMON</span>
-
-<span class="comment"># install</span>
-<span class="cmd">uv sync</span>
-
-<span class="comment"># launch the realtime web demo</span>
-<span class="cmd">uv run python -u -m demos.realtime_motion_graph_web --port 8765</span>
-</pre>
-
-    <p style="margin-top:2rem;">
-      Then open <code>http://localhost:8765/</code>. Drop in any <code>.wav</code> as source, type a prompt, twist a knob (or wire a MIDI controller via Web MIDI), and listen.
-    </p>
-
-    <p>
-      For LoRA-conditioned generation, drop <code>.safetensors</code> files in <code>~/.daydream-scope/models/demon/loras/</code>. Two known-good ones to start with: <a href="https://huggingface.co/daydreamlive/synthpop">synthpop</a> and the <a href="https://civitai.com/models/2416425/acestep-loras">deathstep</a> Civitai community LoRA.
+      Demo and infrastructure:
+      <a href="https://github.com/gioelecerati">Gioele Cerati</a>,
+      <a href="https://github.com/hthillman">Hunter Hillman</a>,
+      <a href="https://github.com/leszko">Rafal Leszko</a>,
+      <a href="https://github.com/BuffMcBigHuge">Marco Tundo</a>.
     </p>
   </div>
 </section>
@@ -368,19 +350,15 @@
     </div>
 
     <div class="ack">
-      <h3 style="margin-top:0;">Built on</h3>
       <div>
         <p>
-          <strong>ACE-Step v1.5</strong>: the music diffusion foundation model. Architecture, training, weights, VAE, text encoder, semantic LM, turbo distillation. All credit to the <a href="https://github.com/ace-step/ACE-Step-1.5">ACE-Step team</a>. Released under MIT.
+          <strong>ACE-Step v1.5</strong> &mdash; the base diffusion model, VAE, text encoder, and semantic LM. Architecture, training, weights, and turbo distillation are the work of the <a href="https://github.com/ace-step/ACE-Step">ACE-Step team</a>, released under MIT.
         </p>
         <p>
-        <strong>StreamDiffusion</strong>: the ring-buffer streaming pipeline pattern, originally for image diffusion (<a href="https://arxiv.org/abs/2312.12491">Kodaira et al., 2023</a>). DEMON adapts the pattern for long audio latents.
+          <strong>StreamDiffusion</strong> &mdash; ring-buffer streaming pattern for image diffusion (<a href="https://arxiv.org/abs/2312.12491">Kodaira et al., 2023</a>), adapted here for long music latents.
         </p>
         <p>
-          <strong>DCW</strong>: wavelet-domain post-step correction for diffusion samplers, used here in the denoising loop as a sampler-side correction.
-        </p>
-        <p>
-          DEMON is the engine around these. If you use it, please also cite ACE-Step.
+          <strong>DCW</strong> &mdash; wavelet-domain post-step correction for flow-matching samplers (Yu et al., CVPR 2026, <a href="https://arxiv.org/abs/2604.16044">arXiv:2604.16044</a>), ported from ACE-Step v0.1.7.
         </p>
       </div>
     </div>
@@ -398,7 +376,7 @@
     </div>
 
     <p>
-      If you use DEMON in your work, please cite both DEMON and the underlying ACE-Step model.
+      If you use DEMON, please cite both DEMON and the underlying ACE-Step model.
     </p>
 
     <h3 style="margin-top:2.5rem;">DEMON</h3>
@@ -410,12 +388,9 @@
 }</pre>
 
     <h3 style="margin-top:2rem;">ACE-Step</h3>
-    <pre class="code-block">@article{gong2026acestep15,
-  author  = {Gong, Junmin and others},
-  title   = {ACE-Step 1.5: Pushing the Boundaries of Open-Source Music Generation},
-  journal = {arXiv preprint arXiv:2602.00744},
-  year    = {2026}
-}</pre>
+    <p>
+      Citation pending publication. Reference the upstream repository: <a href="https://github.com/ace-step/ACE-Step">github.com/ace-step/ACE-Step</a>.
+    </p>
   </div>
 </section>
 

@@ -38,7 +38,7 @@ a { color: inherit; }
   /* rhythm */
   --measure: 68ch;            /* readable line length */
   --gutter: clamp(1.25rem, 3vw, 2.5rem);
-  --section-pad: clamp(5rem, 12vw, 9rem);
+  --section-pad: clamp(3rem, 6vw, 5rem);
 }
 
 /* --- base --- */
@@ -138,12 +138,12 @@ a:hover { color: var(--neon-orange); border-bottom-color: var(--neon-orange); }
 /* --- layout primitives --- */
 .container {
   width: 100%;
-  max-width: 1280px;
+  max-width: 1600px;
   margin: 0 auto;
   padding: 0 var(--gutter);
 }
 .container--narrow {
-  max-width: 880px;
+  max-width: 1200px;
 }
 section {
   padding-top: var(--section-pad);
@@ -197,39 +197,62 @@ section + section {
   position: relative;
   z-index: 1;
 }
-.hero__title {
+.hero__name {
   font-family: var(--mono);
   font-weight: 200;
-  font-size: clamp(1.6rem, 4.2vw, 3.4rem);
-  line-height: 1.12;
-  letter-spacing: -0.005em;
+  font-size: clamp(3rem, 7vw, 5.4rem);
+  line-height: 0.95;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--ink);
-  margin: 0 auto 1.5rem;
+  margin: 0 auto 0.7rem;
   max-width: none;
 }
-.hero__title .word {
-  display: inline-block;
-  white-space: nowrap;
-  margin-right: 0.35em;
+.hero__expansion {
+  font-family: var(--mono);
+  font-weight: 300;
+  font-size: clamp(1.25rem, 2.4vw, 1.85rem);
+  line-height: 1.2;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink);
+  margin: 0 auto 1rem;
+  max-width: none;
 }
-.hero__title .word:last-child { margin-right: 0; }
-.hero__title .accent {
-  color: var(--neon-orange);
-}
-.hero__title .acronym {
+.hero__expansion .acronym {
   position: relative;
   display: inline-block;
+  color: var(--neon-orange);
 }
-.hero__title .acronym::after {
+.hero__expansion .acronym::after {
   content: "";
   position: absolute;
   left: 4%;
   right: 4%;
   bottom: -0.04em;
   height: 0.05em;
-  background: var(--ink);
+  background: var(--neon-orange);
   pointer-events: none;
+}
+.hero__subtitle {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: clamp(1rem, 1.5vw, 1.25rem);
+  line-height: 1.35;
+  color: var(--ink-dim);
+  margin: 0 auto 2.5rem;
+  max-width: 56ch;
+}
+
+.resource-btn__icon {
+  margin-right: 0.5em;
+  font-size: 1.1em;
+  line-height: 0;
+}
+.resource-btn__emoji {
+  margin-right: 0.4em;
+  font-size: 1em;
 }
 
 /* author line */
@@ -469,6 +492,79 @@ section + section {
   color: var(--ink-dim);
   line-height: 1.55;
   margin-bottom: 0;
+}
+
+/* ============================================================
+   EXPERIMENTS / audio sample pairs
+   ============================================================ */
+.experiment {
+  margin: 0 0 3.5rem;
+  padding-bottom: 3rem;
+  border-bottom: 1px solid var(--rule);
+}
+.experiment:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+.experiment__claim {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--neon-orange);
+  margin-bottom: 0.6rem;
+}
+.experiment__title {
+  font-family: var(--mono);
+  font-weight: 300;
+  font-size: clamp(1.15rem, 1.8vw, 1.5rem);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--ink);
+  line-height: 1.2;
+  margin-bottom: 0.9rem;
+}
+.experiment__desc {
+  max-width: var(--measure);
+  margin-bottom: 1.6rem;
+  color: var(--ink-dim);
+}
+
+.audio-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+@media (max-width: 800px) {
+  .audio-pair { grid-template-columns: 1fr; }
+}
+.audio-pair__item {
+  border: 1px solid var(--rule);
+  background: #050505;
+  padding: 1rem 1.1rem 1.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+.audio-pair__label {
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+.audio-pair audio {
+  width: 100%;
+  color-scheme: dark;
+}
+
+.curve-figure {
+  max-width: 720px;
+  margin: 0.5rem auto 2rem;
+}
+.curve-figure img {
+  margin: 0 auto;
 }
 
 /* ============================================================
