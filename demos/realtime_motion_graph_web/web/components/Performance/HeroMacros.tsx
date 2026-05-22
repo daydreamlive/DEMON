@@ -6,6 +6,7 @@ import type { StemOverlayKind } from "@/engine/audio/loadFixture";
 import { LORA_SLOT_MARKER } from "@/engine/midi/types";
 import { useLoraFaderDrag } from "@/hooks/useLoraFaderDrag";
 import { useStemPannerDrag } from "@/hooks/useStemPannerDrag";
+import { loraDisplayName } from "@/lib/loraLabels";
 import { useCurveStore } from "@/store/useCurveStore";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { useLoraStore } from "@/store/useLoraStore";
@@ -116,7 +117,7 @@ function HeroStyleFader({ slotIndex }: HeroStyleFaderProps) {
   useLoraFaderDrag(trackRef, slotIndex, !isEmpty);
 
   const displayLabel = loraId
-    ? (catalog.find((c) => c.id === loraId)?.name ?? loraId)
+    ? loraDisplayName(catalog.find((c) => c.id === loraId) ?? { id: loraId })
     : `Style ${slotIndex + 1}`;
   const kbdHint = loraId
     ? `${slotIndex === 0 ? "Z" : "X"} + ▲▼`

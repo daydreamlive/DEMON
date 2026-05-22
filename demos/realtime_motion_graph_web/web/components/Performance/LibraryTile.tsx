@@ -6,6 +6,7 @@ import { createPortal } from "react-dom";
 import { loraStrengthDispatcher } from "@/engine/lora/dispatcher";
 import { listHiddenLoras, listLoras } from "@/engine/lora/listLoras";
 import { useConfig } from "@/lib/config";
+import { LORA_LABELS, loraDisplayName } from "@/lib/loraLabels";
 import { LOCAL_MODE } from "@/lib/runtime";
 import { isLoraCompatibleWithScale, useLoraStore } from "@/store/useLoraStore";
 import { useMidiStore } from "@/store/useMidiStore";
@@ -119,7 +120,7 @@ function categoryOf(entry: LoraCatalogEntry): string {
 }
 
 function displayNameOf(entry: LoraCatalogEntry): string {
-  return entry.name || entry.id;
+  return loraDisplayName(entry);
 }
 
 function byDisplayName(a: LoraCatalogEntry, b: LoraCatalogEntry): number {
@@ -136,6 +137,7 @@ function matchesQuery(entry: LoraCatalogEntry, q: string): boolean {
   const parts: (string | null | undefined)[] = [
     entry.id,
     entry.name,
+    LORA_LABELS[entry.id],
     md?.name,
     md?.description,
     md?.primary_trigger_word,
