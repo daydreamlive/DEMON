@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 
-import { enabledLoraTriggerPrefix } from "@/lib/loraTriggers";
+import { stripLeadingTriggers } from "@/lib/loraTriggers";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
@@ -99,13 +99,12 @@ export function useMcpMirror() {
         if (typeof raw !== "string") return;
         const perf = usePerformanceStore.getState();
         // The echo is the wire prompt: clean text + the LoRA trigger
-        // prefix sendPrompt prepended. Strip the prefix so we only ever
-        // adopt the clean prompt — otherwise the prefix is baked into
-        // promptA and every later sendPrompt re-prepends it (and a
-        // disabled LoRA's trigger lingers as literal prompt text).
-        const prefix = enabledLoraTriggerPrefix();
-        const tags =
-          prefix && raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
+        // prefix sendPrompt prepended. stripLeadingTriggers removes any
+        // trigger prefix (current, stale, or stacked) so we only ever
+        // adopt the clean prompt into promptA — otherwise the prefix is
+        // baked into promptA and every later sendPrompt re-prepends it
+        // (and a disabled LoRA's trigger lingers as literal text).
+        const tags = stripLeadingTriggers(raw);
         // Only adopt when the engine's clean prompt diverges from what's
         // in the input box — protects the user's mid-typing state when
         // the echo is just confirming their own send.

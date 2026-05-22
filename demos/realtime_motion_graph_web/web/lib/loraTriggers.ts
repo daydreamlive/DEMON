@@ -54,3 +54,45 @@ export function enabledLoraTriggerPrefix(): string {
   if (triggers.length === 0) return "";
   return `${triggers.join(", ")}, `;
 }
+
+/** Every known LoRA trigger word in the catalog (lowercased), enabled
+ *  or not. The basis for stripping a trigger prefix off a prompt. */
+function catalogTriggerWords(): Set<string> {
+  const out = new Set<string>();
+  for (const entry of useLoraStore.getState().catalog) {
+    const trimmed = entry.metadata?.primary_trigger_word?.trim().toLowerCase();
+    if (trimmed) out.add(trimmed);
+  }
+  return out;
+}
+
+/** Strip a leading LoRA-trigger prefix off a prompt, returning the
+ *  operator's clean text.
+ *
+ *  Drops leading comma-separated tokens that match a known catalog
+ *  trigger word — ANY trigger, enabled or not, however many times it
+ *  repeats. It's the inverse of the prefix `enabledLoraTriggerPrefix`
+ *  builds, but resilient: it recovers the clean prompt from a stale
+ *  prefix, a prefix for a since-disabled LoRA, or a prefix accidentally
+ *  stacked N times. Matching is case-insensitive; the first non-trigger
+ *  token ends the strip.
+ *
+ *  This is the guarantee behind "a disabled LoRA's trigger is never on
+ *  the wire, an enabled LoRA's trigger is on it exactly once": sendPrompt
+ *  runs the incoming text through here before prepending the current
+ *  prefix, so whatever prefix drift happened upstream is erased and
+ *  rebuilt cleanly. Trigger words are deliberately distinctive
+ *  activation tokens, so a clean prompt legitimately leading with one
+ *  (then a comma) is vanishingly unlikely. */
+export function stripLeadingTriggers(text: string): string {
+  if (!text) return text;
+  const triggers = catalogTriggerWords();
+  if (triggers.size === 0) return text;
+  const parts = text.split(",");
+  let i = 0;
+  while (i < parts.length && triggers.has(parts[i].trim().toLowerCase())) {
+    i += 1;
+  }
+  if (i === 0) return text;
+  return parts.slice(i).join(",").replace(/^\s+/, "");
+}

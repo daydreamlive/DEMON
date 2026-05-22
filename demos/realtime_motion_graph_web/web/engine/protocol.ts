@@ -11,7 +11,10 @@
 
 import * as fzstd from "fzstd";
 
-import { enabledLoraTriggerPrefix } from "@/lib/loraTriggers";
+import {
+  enabledLoraTriggerPrefix,
+  stripLeadingTriggers,
+} from "@/lib/loraTriggers";
 import { useSessionStore } from "@/store/useSessionStore";
 import {
   SAMPLE_RATE,
@@ -556,12 +559,18 @@ export class RemoteBackend extends EventTarget {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     try {
       // Inject the enabled-LoRA trigger words on the WIRE only.
-      // Callers pass the operator's CLEAN prompt text (promptA/promptB
-      // exactly as typed in the Tags A/B boxes); the trigger prefix is
-      // computed fresh here so every send path — Send Tags button,
-      // key change, LoRA toggle — carries the current trigger set
-      // without the textareas ever showing it. Recomputing per call
-      // means there is no double-prepend.
+      // Callers pass the operator's prompt text (promptA/promptB from
+      // the Tags A/B boxes); the trigger prefix is computed fresh here
+      // so every send path — Send Tags button, key change, LoRA toggle
+      // — carries the current trigger set without the textareas ever
+      // showing it.
+      //
+      // Hard guarantee, independent of upstream state: stripLeadingTriggers
+      // removes ANY trigger prefix already on the text (stale, stacked,
+      // or belonging to a since-disabled LoRA), then we prepend exactly
+      // the de-duped enabled-set prefix. So the wire prompt always
+      // carries a disabled LoRA's trigger zero times and an enabled
+      // LoRA's trigger exactly once — per tag (A and B alike).
       const prefix = enabledLoraTriggerPrefix();
       const msg: {
         type: string;
@@ -571,9 +580,9 @@ export class RemoteBackend extends EventTarget {
         time_signature?: string;
       } = {
         type: "prompt",
-        tags: prefix + tags,
+        tags: prefix + stripLeadingTriggers(tags),
       };
-      if (tagsB) msg.tags_b = prefix + tagsB;
+      if (tagsB) msg.tags_b = prefix + stripLeadingTriggers(tagsB);
       if (key) msg.key = key;
       if (timeSignature) msg.time_signature = timeSignature;
       this.ws.send(JSON.stringify(msg));
