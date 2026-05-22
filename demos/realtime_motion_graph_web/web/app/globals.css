@@ -7309,7 +7309,7 @@ body.curve-open #install-video-area #graph {
 }
 .almost-ready-modal {
   position: relative;
-  width: min(440px, 100%);
+  width: min(540px, 100%);
   max-height: min(80vh, 640px);
   background: var(--sheet-bg);
   border: 1px solid var(--frame-line);
@@ -7365,52 +7365,128 @@ body.curve-open #install-video-area #graph {
   font-size: 0.92em;
   line-height: 1.45;
 }
-.almost-ready-key-section {
+/* Step indicator — two bars; the active step's bar is accent-filled. */
+.almost-ready-steps {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 4px 0 0;
-  padding: 0;
-  border: none;
+  gap: 6px;
+  margin: 10px 0 0;
 }
-.almost-ready-key-legend {
-  font-family: var(--font-mono);
-  font-size: 0.7em;
+.almost-ready-step-dot {
+  width: 24px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--frame-line);
+  transition: background 160ms ease;
+}
+.almost-ready-step-dot.is-active { background: var(--accent); }
+.almost-ready-step-head {
+  margin: 14px 0 10px;
+}
+.almost-ready-step-num {
+  display: block;
+  font-size: 0.82em;
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
   color: var(--text-dim);
-  padding: 0 0 4px;
 }
-.almost-ready-key-mode {
+.almost-ready-step-title {
+  margin: 3px 0 0;
+  font-size: 1.18em;
+  font-weight: 500;
+  color: var(--text-strong);
+  letter-spacing: 0.02em;
+}
+
+/* Step 1 — selectable source cards (one per inference source). */
+.almost-ready-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.almost-ready-card {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  padding: 8px 10px;
+  gap: 11px;
+  width: 100%;
+  text-align: left;
+  padding: 12px 13px;
+  background: rgba(255, 255, 255, 0.02);
   border: 1px solid var(--frame-line);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: border-color 120ms, background 120ms;
+  font-family: inherit;
+  transition: border-color 130ms ease, background 130ms ease;
 }
-.almost-ready-key-mode:hover { border-color: var(--accent); }
-.almost-ready-key-mode input[type="radio"] {
-  margin-top: 2px;
-  cursor: pointer;
+.almost-ready-card:hover { border-color: var(--accent-line); }
+.almost-ready-card.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
-.almost-ready-key-mode strong {
-  display: block;
+.almost-ready-card-radio {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin-top: 1px;
+  border-radius: 50%;
+  border: 1.5px solid var(--frame-line);
+  transition: border-color 130ms ease, background 130ms ease;
+}
+.almost-ready-card:hover .almost-ready-card-radio {
+  border-color: var(--accent-line);
+}
+.almost-ready-card.is-selected .almost-ready-card-radio {
+  border-color: var(--accent);
+  background: radial-gradient(circle, var(--accent) 0 4px, transparent 5px);
+}
+.almost-ready-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.almost-ready-card-title {
   color: var(--text-strong);
   font-weight: 500;
-  margin-bottom: 2px;
 }
-.almost-ready-key-mode-hint {
-  display: block;
+.almost-ready-card.is-selected .almost-ready-card-title {
+  color: var(--accent);
+}
+.almost-ready-card-hint {
   color: var(--text-dim);
   font-size: 0.92em;
-  line-height: 1.35;
+  line-height: 1.4;
 }
-.almost-ready-key-select {
-  margin-left: 28px;
-  width: calc(100% - 28px);
+
+/* Step 2 — key / time-signature fields. */
+.almost-ready-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0 0 14px;
+}
+.almost-ready-field:last-child { margin-bottom: 0; }
+.almost-ready-field-label {
+  font-size: 0.82em;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.almost-ready-select {
+  width: 100%;
+}
+.almost-ready-field-hint {
+  color: var(--text-dim);
+  font-size: 0.9em;
+  line-height: 1.4;
+}
+
+/* Condensed disclaimer footnote on step 1. */
+.almost-ready-note {
+  margin: 14px 0 0;
+  color: var(--text-dim);
+  font-size: 0.86em;
+  line-height: 1.4;
+  opacity: 0.85;
 }
 .almost-ready-footer {
   display: flex;
@@ -7445,6 +7521,15 @@ body.curve-open #install-video-area #graph {
   color: var(--text);
   border-color: var(--text-dim);
 }
+/* Ghost button ("Pick another") — borderless, pushed to the far left
+   of the footer via margin-right:auto. */
+.almost-ready-btn--ghost {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-dim);
+  margin-right: auto;
+}
+.almost-ready-btn--ghost:hover { color: var(--text); }
 
 /* ─────────────────────────────────────────────────────────────────────
    ConfirmDialog — generic yes/no replacement for window.confirm().
@@ -7548,21 +7633,6 @@ body.curve-open #install-video-area #graph {
 .confirm-dialog-btn--secondary:hover {
   color: var(--text);
   border-color: var(--text-dim);
-}
-
-/* AlmostReadyDialog disclaimer paragraph: subdued, smaller, italic so it
-   reads as advisory copy rather than primary content. Sits below the
-   key fieldset. */
-.almost-ready-disclaimer {
-  margin: 12px 0 0;
-  padding: 8px 10px;
-  border: 1px dashed var(--frame-line);
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-dim);
-  font-size: 0.85em;
-  line-height: 1.45;
-  font-style: italic;
 }
 
 /* Reference picker (timbre / structure) — sits under the strength
