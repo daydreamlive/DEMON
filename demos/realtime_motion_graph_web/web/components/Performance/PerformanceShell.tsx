@@ -32,6 +32,7 @@ import { AdvancedDrawer } from "./AdvancedDrawer";
 import { AudioSourceCrate } from "./AudioSourceCrate";
 import { ConfigModal } from "./ConfigModal";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { DemonBrandMark } from "./DemonBrandMark";
 import { FooterLinks } from "./FooterLinks";
 import { HeroMacros } from "./HeroMacros";
 import { HeroMacrosTooltip } from "./HeroMacrosTooltip";
@@ -139,6 +140,7 @@ export function PerformanceShell() {
         }}
       />
       <HUDFrame />
+      <DemonBrandMark />
       {isMobile && (
         <>
           <MobileRemixStepper />

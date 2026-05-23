@@ -5,7 +5,7 @@ import "./globals.css";
 import { RTMGBoot } from "./RTMGBoot";
 
 export const metadata: Metadata = {
-  title: "DEMON — Realtime Motion Graph",
+  title: "DEMON",
   description: "Reference UI for the realtime motion graph engine.",
 };
 

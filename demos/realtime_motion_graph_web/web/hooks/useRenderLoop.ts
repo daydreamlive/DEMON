@@ -3,6 +3,11 @@
 import { useEffect, type RefObject } from "react";
 
 import { tickActiveCursor } from "@/engine/cursor";
+import {
+  initDemonLetters,
+  tickDemonLetters,
+  type DemonLetters,
+} from "@/engine/render/demonLetters";
 import { EffectsRenderer } from "@/engine/render/EffectsRenderer";
 import { frameScheduler } from "@/engine/scheduler/FrameScheduler";
 import { GraphRenderer } from "@/engine/render/GraphRenderer";
@@ -87,6 +92,16 @@ export function useRenderLoop(refs: Refs) {
     const startMarkHost = document.querySelector(".start-cta") as HTMLElement | null;
     const startMark: StartMarkRibbon | null = startMarkHost
       ? initStartMarkRibbon(startMarkHost)
+      : null;
+
+    // DEMON brand wordmark — top-left of the performance scene. Always
+    // mounted via <DemonBrandMark /> in PerformanceShell, so a one-time
+    // querySelector at setup is sufficient.
+    const demonHost = document.querySelector(
+      ".demon-brand-mark",
+    ) as HTMLElement | null;
+    const demonLetters: DemonLetters | null = demonHost
+      ? initDemonLetters(demonHost)
       : null;
 
     let effects: EffectsRenderer | null = null;
@@ -247,6 +262,7 @@ export function useRenderLoop(refs: Refs) {
       }
       if (bubbleHalo) tickHaloRibbon(bubbleHalo, ribbonTime, kick, bloom);
       if (startMark) tickStartMarkRibbon(startMark, ribbonTime);
+      if (demonLetters) tickDemonLetters(demonLetters, ribbonTime, kick);
 
       // Turntable: the grooves trace the actual audio waveform from the
       // worklet's mirror buffer. Each frame we walk a slowly-advancing

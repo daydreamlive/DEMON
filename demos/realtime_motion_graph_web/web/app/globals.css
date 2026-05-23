@@ -276,6 +276,16 @@ body.cursor-idle .cursor-canvas { opacity: 0; }
   width: clamp(180px, 22vmin, 260px);
   height: clamp(180px, 22vmin, 260px);
   pointer-events: none;
+  /* Bloom lives on this un-transformed parent (not on the SVG inside)
+     so the launch-morph's scale(0.12) doesn't shrink the blur radius
+     down to a sub-pixel — the bloom stays at 6px screen-pixels the
+     whole way, which is what keeps the shrinking halo from reading
+     as a fade. */
+  filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.42));
+  transition: filter 220ms;
+}
+.start-cta:hover .start-cta-halo {
+  filter: drop-shadow(0 0 14px rgba(255, 255, 255, 0.65));
 }
 .start-mark {
   position: absolute;
@@ -297,14 +307,7 @@ body.cursor-idle .cursor-canvas { opacity: 0; }
   height: 100%;
   pointer-events: none;
   overflow: visible;
-  /* Soft white bloom to lift the ribbons off the dark overlay without
-     overpowering the calm title-screen mood. */
-  filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.42));
   z-index: 0;
-  transition: filter 220ms;
-}
-.start-cta:hover .start-mark-ribbons {
-  filter: drop-shadow(0 0 14px rgba(255, 255, 255, 0.65));
 }
 .start-mark-ribbons path {
   fill: none;
@@ -332,44 +335,71 @@ body.cursor-idle .cursor-canvas { opacity: 0; }
 }
 
 /* ── Launch transition ─────────────────────────────────────────────────────
-   Keep this aligned with LAUNCH_DURATION_MS in StartOverlay.tsx (700ms).
-   On click: a brief anticipation squash, then the ribbons spin + scale
-   outward dramatically while the icon zooms forward and everything fades
-   to black. Each layer uses just two segments (anticipation → release)
-   with a single smooth cubic-bezier so the easing curve doesn't have to
-   thread through a mid-flight keyframe stop — that's what was producing
-   the visible stutter at the 60% mark in the previous version. */
+   Keep this aligned with LAUNCH_DURATION_MS in StartOverlay.tsx (1300ms).
+
+   Choreography: on click, StartOverlay.handleClick measures the SVG
+   halo's current screen rect + the brand mark O's final rect and writes
+   the delta translate + scale onto --halo-tx / --halo-ty / --halo-scale
+   on the .start-mark-ribbons SVG. The morph keyframe consumes those
+   vars, so the writhing halo shrinks and slides to the exact O slot in
+   the top-left brand mark — zero opacity changes anywhere on this trip.
+   The bloom around the ribbons lives on the un-transformed parent
+   (.start-cta-halo), so its 6px screen-pixel blur is preserved through
+   the shrink — that's the fix for the "halo looks like it's fading"
+   complaint, which was actually the scaled-down drop-shadow + tapered
+   strokes collapsing the halo's visual mass at small sizes. The
+   daydream PNG hard-cuts (visibility:hidden) the moment launch starts.
+   The brand mark O is held at visibility:hidden through the morph,
+   then snaps to visibility:visible a hair before the overlay snaps to
+   display:none — an instant swap from writhing halo to fixed O, with
+   no opacity property touched anywhere. Concurrently the overlay
+   backdrop fades to transparent so the surrounding D/E/M/N letters
+   can reveal in their resting layout positions. */
 .start-cta.start-cta--launching {
-  animation: start-cta-launch 700ms cubic-bezier(.4, 0, .65, .25) forwards;
   pointer-events: none;
 }
 .start-cta.start-cta--launching .start-mark-ribbons {
-  animation: start-ribbons-explode 700ms cubic-bezier(.4, 0, .65, .25) forwards;
+  animation: start-ribbons-morph 1300ms cubic-bezier(.4, 0, .2, 1) forwards;
 }
+/* Strokes stay at 2.6px the whole journey. Tapering them down to match
+   the brand-mark stroke weight during the shrink would just make the
+   halo read as dimming. The brand-mark O sits above the halo's z layer
+   and snaps in at the end, so the visual hand-off is to a thinner
+   stroke instantly — there's no need to interpolate stroke widths. */
 .start-cta.start-cta--launching .start-mark {
-  animation: start-mark-zoom 700ms cubic-bezier(.4, 0, .65, .25) forwards;
+  /* Hard cut the daydream PNG the instant launch starts — no fade, no
+     scale-down trip to the corner. The PNG is decoration inside the
+     halo, not part of the writhing O that morphs into the brand mark,
+     so the cleanest thing is for it to just stop existing the moment
+     the ribbons start their trip. visibility (not opacity) so the
+     existing 200ms opacity transition on .start-mark can't catch it
+     and create a fade. */
+  visibility: hidden;
 }
 .start-cta.start-cta--launching .start-whisper {
   animation: start-whisper-vanish 240ms ease forwards;
 }
+#start-overlay.start-overlay--launching {
+  /* Reveal the brand mark behind the overlay while the halo morphs into
+     its O slot. The bg shorthand here matches #start-overlay's default
+     except the alpha eases to 0. */
+  animation: start-overlay-backdrop-fade 1300ms cubic-bezier(.4, 0, .2, 1) forwards;
+}
 
-@keyframes start-cta-launch {
-  0%   { transform: translate(-50%, -50%) scale(1)    rotate(0deg);  opacity: 1; }
-  20%  { transform: translate(-50%, -50%) scale(0.94) rotate(-8deg); opacity: 1; }
-  100% { transform: translate(-50%, -50%) scale(1.06) rotate(8deg);  opacity: 0; }
-}
-@keyframes start-ribbons-explode {
-  0%   { transform: scale(1)    rotate(0deg);   opacity: 0.88; }
-  20%  { transform: scale(0.92) rotate(-25deg); opacity: 1; }
-  100% { transform: scale(4)    rotate(680deg); opacity: 0; }
-}
-@keyframes start-mark-zoom {
-  0%   { transform: translate(-50%, -50%) scale(1);    opacity: 0.95; }
-  20%  { transform: translate(-50%, -50%) scale(0.88); opacity: 1; }
-  100% { transform: translate(-50%, -50%) scale(2.4);  opacity: 0; }
+@keyframes start-ribbons-morph {
+  0% {
+    transform: translate(0, 0) scale(1);
+  }
+  100% {
+    transform: translate(var(--halo-tx, 0px), var(--halo-ty, 0px))
+               scale(var(--halo-scale, 0.12));
+  }
 }
 @keyframes start-whisper-vanish {
   to { opacity: 0; transform: translateY(8px); }
+}
+@keyframes start-overlay-backdrop-fade {
+  to { background: transparent; }
 }
 
 
@@ -2106,6 +2136,95 @@ body.drawer-open {
    the panel; user can click it to close. */
 .install-sheet.open .install-sheet-body {
   padding-right: 36px;
+}
+
+/* DEMON brand wordmark — top-left corner of the performance scene.
+   Five SVG letters ticked by useRenderLoop → tickDemonLetters with the
+   live kick value, so the writhe amplitude breathes with the audio in
+   the same language as the halo / perimeter ribbons. Stroke width +
+   alpha consume --bloom-amount (set on #performance by useRenderLoop)
+   so transients widen and brighten the strokes without per-frame JS.
+   pointer-events: none so the brand mark never eats clicks.
+
+   The brand mark sits ABOVE the StartOverlay backdrop in z-stacking, so
+   when StartOverlay.handleClick fades that backdrop, the letters reveal
+   in their final layout positions. The entrance animation (D/E/M/N
+   sliding in from the left, O cross-fading in) is gated on the
+   --entered modifier, which DemonBrandMark adds when the session
+   leaves "idle" — i.e. the same click that triggers the halo morph. */
+.demon-brand-mark {
+  position: absolute;
+  top: 18px;
+  left: 20px;
+  /* Above #start-overlay (z:20) so the wordmark is visible the moment
+     the overlay backdrop fades to transparent during the launch morph.
+     Below modals (z:100+) and the cursor (z:111). */
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  pointer-events: none;
+}
+.demon-letter {
+  width: 32px;
+  height: 42px;
+  overflow: visible;
+  filter: drop-shadow(0 0 6px rgba(255, 255, 255, calc(0.28 + var(--bloom-amount, 0) * 0.35)));
+}
+.demon-letter path {
+  fill: none;
+  stroke-width: calc(1.6px + var(--bloom-amount, 0) * 2.2px);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: calc(0.78 + var(--bloom-amount, 0) * 0.22);
+  vector-effect: non-scaling-stroke;
+}
+
+/* Idle state: every letter is invisible. The letters keep their resting
+   layout positions (no transform) so StartOverlay.handleClick can
+   measure the O letter's true final rect when wiring up the FLIP
+   morph — the entrance animation supplies its offset transform via
+   @keyframes only, never as a baseline. */
+.demon-brand-mark .demon-letter { opacity: 0; }
+/* The O is the slot the halo morphs into, so hide it via visibility
+   (not opacity) — that way the halo→O hand-off has zero opacity
+   transitions anywhere in the chain, even an instant steps(1) one. */
+.demon-brand-mark .demon-letter[data-letter="O"] {
+  opacity: 1;
+  visibility: hidden;
+}
+
+/* Entrance — fires once when the session leaves idle. D/E/M/N slide in
+   from the left with staggered delays. O is the special case: it must
+   NOT cross-fade — the halo lands fully opaque at the O slot, then we
+   instantly swap to the fixed letter. We do that with a steps(1) jump
+   timed to land a frame before the overlay snaps to display:none, so
+   the brand mark (z:30, above the overlay z:20) covers the halo's
+   final resting position for one paint before the halo is removed.
+   D/E/M/N animations complete well inside the 1300ms LAUNCH_DURATION_MS
+   so the overlay's display:none snap doesn't catch any letter mid-anim. */
+.demon-brand-mark--entered .demon-letter {
+  animation: demon-letter-slide-in 460ms cubic-bezier(.2, .8, .2, 1) forwards;
+}
+.demon-brand-mark--entered .demon-letter[data-letter="D"] { animation-delay: 220ms; }
+.demon-brand-mark--entered .demon-letter[data-letter="E"] { animation-delay: 300ms; }
+.demon-brand-mark--entered .demon-letter[data-letter="M"] { animation-delay: 380ms; }
+.demon-brand-mark--entered .demon-letter[data-letter="N"] { animation-delay: 460ms; }
+.demon-brand-mark--entered .demon-letter[data-letter="O"] {
+  /* steps(1, end): holds visibility:hidden for the full duration, then
+     jumps to visibility:visible at the end. Lands at t≈1280ms — a hair
+     before the overlay vanishes at LAUNCH_DURATION_MS (1300ms), so the
+     swap is seamless. No opacity property touched anywhere. */
+  animation: demon-letter-o-snap 1280ms steps(1, end) forwards;
+}
+
+@keyframes demon-letter-slide-in {
+  0%   { opacity: 0; transform: translateX(-18px); }
+  100% { opacity: 1; transform: translateX(0); }
+}
+@keyframes demon-letter-o-snap {
+  from { visibility: hidden; }
+  to   { visibility: visible; }
 }
 
 /* Drawer body — vertical stack: operator strip across the top, then a
