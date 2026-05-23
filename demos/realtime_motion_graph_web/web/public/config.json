@@ -23,7 +23,10 @@
       { "name": "Ambient", "strength": 0.7 },
       { "name": "Deep House", "strength": 0.75 }
     ],
-    "enabled_loras_xl": ["Ambient", "Deep House"],
+    "enabled_loras_xl": [
+      {"name": "Funk", "strength":1.15},
+      {"name": "Trap", "strength":0.01}
+    ],
     "_auto_prepend_lora_triggers_help": "When true (default), enabling a LoRA prepends its primary trigger word to Tags A + Tags B so the operator sees exactly what the encoder sees. Disabling a LoRA best-effort removes the trigger when it is still at the head of the prompt. Set to false for fully manual workflows where the operator types triggers themselves.",
     "auto_prepend_lora_triggers": true,
     "_show_incompatible_loras_help": "When true, the LoRA library shows every entry regardless of whether its sidecar base_model_scale matches the active checkpoint (2B / 5B). Default false auto-hides LoRAs trained for the other scale. LoRAs without a declared scale are shown either way.",
@@ -34,8 +37,8 @@
     "a": "roti-4custic, roti-d33ph0us, acoustic deep house hybrid",
     "b": "daft punk style, beautiful, four to the floor, angelic",
     "blend": 0.0,
-    "a_xl": "roti-4custic, roti-d33ph0us, acoustic deep house hybrid",
-    "b_xl": "daft punk style, beautiful, four to the floor, angelic",
+    "a_xl": "roti-funkk, funky ass bassline",
+    "b_xl": "funky ass bassline of roti-tr4ph0p",
     "blend_xl": 0.0
   },
 
@@ -99,7 +102,7 @@
 
   "_audio_help": "Output audio chain. lufs_enabled toggles the loudness matcher on at boot (operator can still flip it via the LUFS button in-session). lufs_window_sec controls the meter's sliding window. 3s is the standard. Lower = faster response but noisier and prone to high-water spikes on transients. Practical floor ~1.5s. lufs_metric picks the metric: 'lufs' (BS.1770 K-weighted, broadcast standard) or 'dba' (IEC 61672 A-weighted, closer to perceived loudness on bright/distorted content). lufs_silence_floor_db disengages the matcher when the chunk at the playhead reads more than this far below target (gain ramps to 1.0 instead of computing a boost), so silent regions of the model output don't get amplified into audible noise; 30 is well outside real musical content, lower to 20 to disengage on quiet passages too. lufs_silence_floor_hysteresis_db is the Schmitt-trigger band: once disengaged, the matcher re-engages only when the chunk reads within (floor - hysteresis) dB of target, preventing flapping at the threshold. Widen if you still hear volume swells at silence boundaries. The matcher always seeds the high-water mark with the source's loudest short-term window at session start, so the louder of {source, denoised} defines the target from t=0 -- no need to wait for the meter to discover it.",
   "audio": {
-    "lufs_enabled": true,
+    "lufs_enabled": false,
     "lufs_window_sec": 1.5,
     "lufs_metric": "lufs",
     "lufs_peak_headroom": 4.0,
