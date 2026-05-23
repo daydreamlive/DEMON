@@ -4978,24 +4978,19 @@ body.curve-open #install-video-area #graph {
    IntersectionObserver mirrors scroll position back into React
    state. Hide the native scrollbar so the track reads as content,
    not a scroller. */
+/* The tab body simply hosts the active section — Mix or Track. The
+   previous scroll-snap carousel left both sections rendering on top
+   of each other on iOS Safari and let the inner track-carousel swipe
+   leak out to the outer scroller; LiteControls now mounts one
+   section at a time, so the container just needs to host it. */
 .lite-tab-body {
   display: flex;
-  flex-direction: row;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scroll-snap-type: x mandatory;
-  scroll-behavior: smooth;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
-  overscroll-behavior-x: contain;
+  flex-direction: column;
+  min-height: 0;
 }
-.lite-tab-body::-webkit-scrollbar { display: none; }
 .lite-tab-section {
-  flex: 0 0 100%;
   width: 100%;
   box-sizing: border-box;
-  scroll-snap-align: start;
-  scroll-snap-stop: always;
   display: flex;
   flex-direction: row;
   align-items: center;

@@ -1,8 +1,6 @@
 "use client";
 
-import { useRef } from "react";
-
-import { useScrollSyncedTabs } from "@/hooks/useScrollSyncedTabs";
+import { useState } from "react";
 
 import { LiteTrackCarousel } from "./LiteTrackCarousel";
 import { RecordToggle } from "./RecordToggle";
@@ -25,21 +23,19 @@ const TAB_LABELS: Record<LiteTab, string> = {
   track: "Track",
 };
 
-// Wave 13.5: tabbed + swipeable. Two sections live side-by-side in a
-// scroll-snap track; tap a tab pill or swipe horizontally to switch.
-// IntersectionObserver mirrors the scroll-position back into `tab` so
-// the active pill stays in sync regardless of input method.
+// Mobile mixer bay. A simple two-pill tab strip switches between two
+// content sections — Mix and Track — that render conditionally (only
+// the active one is mounted). The previous scroll-snap carousel
+// implementation overlapped both sections on iOS Safari and let the
+// inner track-carousel swipe leak out to the outer scroller; replacing
+// it with conditional render eliminates both classes of bug at the
+// cost of losing the swipe-to-switch gesture.
 //
 //   MIX   — 4 faders (denoise / structure / feedback / lora_blend) +
 //           "All controls" gateway to the full 7-tab sheet.
 //   TRACK — track carousel (upload + mic inside the picker) + REC.
 export function LiteControls({ onOpenAllControls, unsavedDot }: Props) {
-  const trackRef = useRef<HTMLDivElement | null>(null);
-  const { activeTab: tab, gotoTab } = useScrollSyncedTabs<LiteTab>(
-    trackRef,
-    TABS,
-    { attribute: "tab", initial: "mix" },
-  );
+  const [tab, setTab] = useState<LiteTab>("mix");
 
   return (
     <div className="lite-controls">
@@ -55,7 +51,7 @@ export function LiteControls({ onOpenAllControls, unsavedDot }: Props) {
             role="tab"
             aria-selected={tab === t}
             className={`lite-tab${tab === t ? " lite-tab--active" : ""}`}
-            onClick={() => gotoTab(t)}
+            onClick={() => setTab(t)}
           >
             {TAB_LABELS[t]}
             {/* Unsaved dot surfaces on whichever pill isn't currently
@@ -69,37 +65,40 @@ export function LiteControls({ onOpenAllControls, unsavedDot }: Props) {
           </button>
         ))}
       </div>
-      <div ref={trackRef} className="lite-tab-body">
-        <section data-tab="mix" className="lite-tab-section">
-          <div className="lite-row lite-row--main">
-            <SliderGroup param="denoise" label="denoise" />
-            <SliderGroup param="hint_strength" label="structure" />
-            <SliderGroup param="feedback" label="feedback" />
-            <SliderGroup param="lora_blend" label="lora blend" />
-          </div>
-          <button
-            type="button"
-            className="lite-all-controls"
-            onClick={onOpenAllControls}
-            aria-label="All controls"
-            data-dd-tooltip="All controls"
-            data-dd-tooltip-pos="below"
-          >
-            {unsavedDot && (
-              <span
-                className="lite-all-controls-dot"
-                aria-label="Unsaved changes"
-              />
-            )}
-            <span className="lite-all-controls-arrow" aria-hidden="true">
-              →
-            </span>
-          </button>
-        </section>
-        <section data-tab="track" className="lite-tab-section">
-          <LiteTrackCarousel />
-          <RecordToggle />
-        </section>
+      <div className="lite-tab-body" data-active-tab={tab}>
+        {tab === "mix" ? (
+          <section data-tab="mix" className="lite-tab-section">
+            <div className="lite-row lite-row--main">
+              <SliderGroup param="denoise" label="denoise" />
+              <SliderGroup param="hint_strength" label="structure" />
+              <SliderGroup param="feedback" label="feedback" />
+              <SliderGroup param="lora_blend" label="blend" />
+            </div>
+            <button
+              type="button"
+              className="lite-all-controls"
+              onClick={onOpenAllControls}
+              aria-label="All controls"
+              data-dd-tooltip="All controls"
+              data-dd-tooltip-pos="below"
+            >
+              {unsavedDot && (
+                <span
+                  className="lite-all-controls-dot"
+                  aria-label="Unsaved changes"
+                />
+              )}
+              <span className="lite-all-controls-arrow" aria-hidden="true">
+                →
+              </span>
+            </button>
+          </section>
+        ) : (
+          <section data-tab="track" className="lite-tab-section">
+            <LiteTrackCarousel />
+            <RecordToggle />
+          </section>
+        )}
       </div>
     </div>
   );
