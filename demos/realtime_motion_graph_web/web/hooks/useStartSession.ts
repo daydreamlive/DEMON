@@ -577,14 +577,12 @@ export function useStartSession() {
       return;
     }
 
-    setStatus("connecting", "Starting audio… [a/init]");
+    setStatus("connecting", "Starting audio…");
 
     const player = new AudioPlayer();
     try {
       await player.init(remote.initialBuffer, remote.channels);
-      setStatus("connecting", "Starting audio… [b/resume]");
       await player.resume();
-      setStatus("connecting", "Starting audio… [c/sync]");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setStatus("error", `Audio failed to start: ${msg}`);
@@ -598,11 +596,9 @@ export function useStartSession() {
     usePerformanceStore
       .getState()
       .setDetected(remote.detectedBpm, remote.detectedKey, detectedTs);
-    setStatus("connecting", "Starting audio… [c1/setDetected]");
     if (remote.loraCatalog.length > 0) {
       useLoraStore.getState().setCatalog(remote.loraCatalog);
     }
-    setStatus("connecting", "Starting audio… [c2/setCatalog]");
 
     // "Hear the source first" gate: when enabled in config.json, every
     // session start snaps engine denoise to 0 and plays a visual-only
@@ -628,12 +624,9 @@ export function useStartSession() {
     } else if (gate.enabled) {
       const prevDenoise = perfState.sliderTargets["denoise"] ?? 0;
       perfState.setSliderDirect("denoise", 0);
-      setStatus("connecting", "Starting audio… [c3/setSliderDirect]");
       perfState.animateSliderDisplayFrom("denoise", prevDenoise, gate.glide_ms);
-      setStatus("connecting", "Starting audio… [c4/animate]");
     }
     perfState.setRemixStarted(false);
-    setStatus("connecting", "Starting audio… [d/setSession]");
 
     setSession(remote, player);
     setStatus("ready", "Playing");

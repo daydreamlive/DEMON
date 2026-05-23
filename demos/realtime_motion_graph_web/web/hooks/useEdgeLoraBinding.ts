@@ -161,11 +161,18 @@ export function useEdgeLoraBinding(): void {
       const blendChanged = blend !== lastBlend;
       if (!pairChanged && !blendChanged) return;
 
-      applyMobileRightEdge(blend, a, b);
-      fanOutBlend(blend, a, b);
+      // Stash the new guard values BEFORE the side-effect calls. fanOutBlend
+      // calls useLoraStore.setStrength, which synchronously re-fires this
+      // very subscriber — if lastA/lastB/lastBlend are still the previous
+      // values, the recursive apply() sees `pairChanged === true` and
+      // recurses forever (Maximum call stack size exceeded). Updating the
+      // guards first makes the recursive call bail at the early return.
       lastBlend = blend;
       lastA = a;
       lastB = b;
+
+      applyMobileRightEdge(blend, a, b);
+      fanOutBlend(blend, a, b);
     };
 
     apply();
