@@ -577,12 +577,14 @@ export function useStartSession() {
       return;
     }
 
-    setStatus("connecting", "Starting audio…");
+    setStatus("connecting", "Starting audio… [a/init]");
 
     const player = new AudioPlayer();
     try {
       await player.init(remote.initialBuffer, remote.channels);
+      setStatus("connecting", "Starting audio… [b/resume]");
       await player.resume();
+      setStatus("connecting", "Starting audio… [c/sync]");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setStatus("error", `Audio failed to start: ${msg}`);
@@ -627,6 +629,7 @@ export function useStartSession() {
       perfState.animateSliderDisplayFrom("denoise", prevDenoise, gate.glide_ms);
     }
     perfState.setRemixStarted(false);
+    setStatus("connecting", "Starting audio… [d/setSession]");
 
     setSession(remote, player);
     setStatus("ready", "Playing");
