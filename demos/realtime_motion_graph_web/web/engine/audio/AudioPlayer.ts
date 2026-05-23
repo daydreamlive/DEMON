@@ -390,7 +390,33 @@ export class AudioPlayer {
   }
 
   async resume(): Promise<void> {
-    if (this.ctx?.state === "suspended") await this.ctx.resume();
+    const ctx = this.ctx;
+    if (!ctx || ctx.state !== "suspended") return;
+    // Android Chrome quirk: AudioContext.resume() can leave its promise
+    // pending forever even after the context has actually transitioned
+    // to "running". Awaiting that promise stalled useStartSession past
+    // the setStatus("ready", "Playing") line, so the StatusBar stayed
+    // stuck on "STARTING AUDIO…" and useParamSync (gated on "ready")
+    // never sent slider updates — even though audio was audibly playing.
+    //
+    // Race the resume() promise against a `statechange` listener and a
+    // hard 2s fallback so this method always resolves; callers can
+    // re-check ctx.state if they care.
+    await new Promise<void>((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        ctx.removeEventListener("statechange", onState);
+        resolve();
+      };
+      const onState = () => {
+        if (ctx.state !== "suspended") finish();
+      };
+      ctx.addEventListener("statechange", onState);
+      ctx.resume().then(finish, finish);
+      window.setTimeout(finish, 2000);
+    });
   }
 
   /**
