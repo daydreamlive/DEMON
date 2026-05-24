@@ -5,6 +5,7 @@ Drives a :class:`~acestep.engine.session.StreamHandle` by calling
 knob state.
 """
 
+import os
 import time
 
 import numpy as np
@@ -65,6 +66,38 @@ def _curve_from_spec(spec, T):
             ).view(T)
         return t.view(1, T, 1)
     return None
+
+
+# Migration policies accepted by StreamPipeline.set_migration_policy.
+_SCHEDULE_MIGRATION_POLICIES = ("reproject", "renoise", "hold", "remap")
+
+
+def _schedule_migration_policy_from_env() -> "str | None":
+    """Opt-in for in-flight timestep-schedule migration (off by default).
+
+    Reads ``DEMON_SCHEDULE_MIGRATION`` once at PipelineRunner init:
+
+    - unset / ``""`` / ``"0"`` / ``"off"`` / ``"false"`` → ``None``
+      (the normal heterogeneous per-request ``denoise`` path).
+    - a truthy switch (``"1"`` / ``"on"`` / ``"true"``) → ``"reproject"``,
+      the recommended production policy.
+    - an explicit policy name (``"reproject"`` / ``"renoise"`` / ``"hold"``
+      / ``"remap"``) → that policy.
+
+    See ``acestep/engine/schedule_migration.py`` for what each policy does.
+    """
+    raw = os.environ.get("DEMON_SCHEDULE_MIGRATION", "").strip().lower()
+    if raw in ("", "0", "off", "false", "no"):
+        return None
+    if raw in ("1", "on", "true", "yes"):
+        return "reproject"
+    if raw in _SCHEDULE_MIGRATION_POLICIES:
+        return raw
+    raise ValueError(
+        f"DEMON_SCHEDULE_MIGRATION={raw!r} is not a known policy "
+        f"(expected one of {_SCHEDULE_MIGRATION_POLICIES}, a truthy switch, "
+        f"or unset)"
+    )
 
 
 class PipelineRunner:
@@ -207,6 +240,18 @@ class PipelineRunner:
         # to re-blend even when the slider hasn't moved. ``mark_hint_dirty``
         # flips this flag and the run loop honors it on the next pass.
         self._hint_dirty = False
+
+        # Opt-in in-flight timestep-schedule migration (off by default).
+        # ``None`` keeps the normal per-request denoise path; a policy string
+        # routes the denoise knob through the shared-schedule override so a
+        # change reaches every in-flight slot on the next tick. Set once from
+        # DEMON_SCHEDULE_MIGRATION (see _schedule_migration_policy_from_env).
+        self._schedule_migration_policy = _schedule_migration_policy_from_env()
+        if self._schedule_migration_policy is not None:
+            print(
+                "[pipeline] schedule migration enabled: "
+                f"policy={self._schedule_migration_policy}"
+            )
 
     def mark_hint_dirty(self) -> None:
         """Force ``_update_hint_strength`` to fire on the next tick.
@@ -649,6 +694,17 @@ class PipelineRunner:
                 pipe.set_shared_curve("sde_denoise_curve", sde_curve)
                 pipe.set_shared_curve("velocity_scale", velocity_curve)
                 pipe.set_shared_curve("x0_target_strength", x0_str)
+                # Opt-in (off by default): route denoise through the
+                # shared-schedule override so a knob change migrates every
+                # in-flight slot onto the new timestep schedule on the next
+                # tick, instead of riding the ring-buffer drain via the
+                # per-SlotRequest ``denoise`` below. Enabled and policy-
+                # selected by DEMON_SCHEDULE_MIGRATION; when unset this whole
+                # block is skipped and denoise takes the normal per-request
+                # path. Idempotent, so safe to assert every tick.
+                if self._schedule_migration_policy is not None:
+                    pipe.set_migration_policy(self._schedule_migration_policy)
+                    pipe.set_shared_schedule(denoise)
 
             torch.cuda.synchronize()
             t0 = time.perf_counter()

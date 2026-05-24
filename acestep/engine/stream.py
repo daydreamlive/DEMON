@@ -23,6 +23,7 @@ import torch
 from .diffusion import DiffusionConfig, DiffusionEngine
 from . import ode_steps
 from .dcw import DCWAdvanced, DCWCorrector
+from .schedule_migration import ScheduleMigration
 
 if TYPE_CHECKING:
     from .masking import LatentNoiseMask
@@ -195,6 +196,10 @@ class _Slot:
     # populated on step 0, reused on every subsequent step of this slot.
     initial_noise: Optional[torch.Tensor] = None
     vt_neg_cached: Optional[torch.Tensor] = None
+    # Cached raw model x0 prediction from this slot's most recent forward.
+    # Populated each tick only while a re-anchoring schedule-migration policy
+    # is active (see acestep/engine/schedule_migration.py); ``None`` otherwise.
+    last_x0_pred: Optional[torch.Tensor] = None
 
 
 class StreamPipeline:
@@ -281,6 +286,15 @@ class StreamPipeline:
         # at the setter so callers can pass scalars without thinking
         # about shape.
         self._shared_curves: dict[str, torch.Tensor] = {}
+
+        # Optional in-flight timestep-schedule migration (off by default).
+        # ``None`` is the normal heterogeneous per-request denoise path and
+        # costs a single identity check per tick. When attached (via
+        # :meth:`set_shared_schedule` / :meth:`set_migration_policy`), a
+        # denoise change reaches every in-flight slot on the next tick instead
+        # of riding the depth-tick ring-buffer drain. The full mechanism and
+        # the per-policy behavior live in acestep/engine/schedule_migration.py.
+        self._schedule_migration: Optional[ScheduleMigration] = None
 
         # Channel guidance: a ``[1, T, 64]`` per-channel gain applied to
         # ``xt`` before each forward pass. Lives in its own field rather
@@ -457,7 +471,15 @@ class StreamPipeline:
             request.encoder_hidden_states.dtype,
         )
 
-        t_schedule = self._get_schedule(request.denoise)
+        # A slot born while a schedule-migration override is active starts ON
+        # that shared schedule (and derives its t_start / noise mix from it),
+        # rather than being born on its request's denoise and migrated a tick
+        # later. Keeps the whole ring buffer on one schedule.
+        t_schedule = None
+        if self._schedule_migration is not None:
+            t_schedule = self._schedule_migration.active_schedule()
+        if t_schedule is None:
+            t_schedule = self._get_schedule(request.denoise)
         noise = self._make_noise(request)
 
         t_start = t_schedule[0].item()
@@ -884,6 +906,13 @@ class StreamPipeline:
                 if slot is not None and slot.xt.shape[1] != target_T:
                     self._slots[i] = None
 
+        # Migrate in-flight slots onto the shared schedule override (if any)
+        # before anything reads len(t_schedule) this tick, so the
+        # finished-check and active-collection below see migrated lengths.
+        # No-op (single identity check) when migration is not attached.
+        if self._schedule_migration is not None:
+            self._schedule_migration.apply(self._slots, self.ticks)
+
         # Check for finished slot (slot at final step of its schedule)
         finished = None
         for i, slot in enumerate(self._slots):
@@ -1127,6 +1156,15 @@ class StreamPipeline:
         step_sde_curve = self._get_compiled(ode_steps.step_sde_curve)
         step_sde_renoise = self._get_compiled(ode_steps.step_sde_renoise)
 
+        # Re-anchoring migration policies need each slot's raw model x0
+        # prediction from its last forward to re-place xt on a schedule swap.
+        # Cache it only while such a policy is active so the normal path stays
+        # allocation-free and byte-identical.
+        cache_x0 = (
+            self._schedule_migration is not None
+            and self._schedule_migration.needs_x0_cache
+        )
+
         for si, slot in enumerate(slots):
             t_curr = slot.t_schedule[slot.step_idx].item()
             t_next = slot.t_schedule[slot.step_idx + 1].item()
@@ -1199,6 +1237,8 @@ class StreamPipeline:
                 # ``_step_simple_ode``. When ``onc`` is the zeros sentinel
                 # the post-step noise injection is a no-op.
                 xt_new = step_ode(xt, vt, t_curr, t_next, vs, onc)
+                if cache_x0:
+                    slot.last_x0_pred = ode_steps.x0_from_vel(xt, vt * vs, t_curr)
                 slot.xt = self._maybe_dcw(xt, vt, xt_new, t_curr)
                 slot.step_idx += 1
                 continue
@@ -1206,6 +1246,11 @@ class StreamPipeline:
             # x0-blend path: compute x0_pred, apply blends, then integrate.
             vt_scaled = vt * vs
             x0_pred = ode_steps.x0_from_vel(xt, vt_scaled, t_curr)
+            if cache_x0:
+                # Cache the RAW model prediction (pre mask/x0_target blend);
+                # the blends below reassign x0_pred to new tensors, so this
+                # reference keeps pointing at the unblended manifold estimate.
+                slot.last_x0_pred = x0_pred
 
             if req.latent_mask is not None:
                 x0_pred = ode_steps.mask_post_blend_x0(
@@ -1354,6 +1399,52 @@ class StreamPipeline:
                 return None
         return ode_steps.normalize_curve(v)
 
+    def _ensure_schedule_migration(self) -> ScheduleMigration:
+        """Lazily attach the :class:`ScheduleMigration` controller.
+
+        Created on first use so pipelines that never touch the feature keep
+        ``self._schedule_migration is None`` (the off-by-default fast path).
+        """
+        if self._schedule_migration is None:
+            self._schedule_migration = ScheduleMigration(self._get_schedule)
+        return self._schedule_migration
+
+    def set_shared_schedule(self, denoise: "float | None") -> None:
+        """Set (or clear) a shared timestep schedule for in-flight slots.
+
+        The schedule analogue of :meth:`set_shared_curve`: a per-request
+        ``denoise`` change normally takes ``depth`` ticks to drain through
+        the ring buffer, but with an override set EVERY in-flight slot (and
+        every slot born while it is active) is moved onto the schedule built
+        from ``denoise`` on the very next tick (1-tick latency).
+
+        Pass ``None`` to lift the override; new submits resume their
+        per-request denoise. See :mod:`acestep.engine.schedule_migration` for
+        the migration mechanics and policies.
+        """
+        if denoise is None:
+            if self._schedule_migration is not None:
+                self._schedule_migration.clear()
+            return
+        self._ensure_schedule_migration().set_schedule(float(denoise))
+        logger.info("Shared schedule override set (denoise={})", denoise)
+
+    def set_migration_policy(self, policy: str) -> None:
+        """Select the in-flight schedule-migration policy. Next :meth:`tick`.
+
+        One of ``"hold"`` / ``"remap"`` / ``"reproject"`` / ``"renoise"`` —
+        see :mod:`acestep.engine.schedule_migration` for the trade-offs.
+        """
+        self._ensure_schedule_migration().set_policy(policy)
+
+    def start_migration_trace(self) -> list:
+        """Attach a fresh migration trace and return it (diagnostics hook).
+
+        Every subsequent tick that migrates one or more in-flight slots
+        appends a record. Used by ``experiments/shared_schedule``.
+        """
+        return self._ensure_schedule_migration().start_trace()
+
     def set_dcw(
         self,
         *,
@@ -1481,6 +1572,9 @@ class StreamPipeline:
         self._schedule_cache.clear()
         self._compiled_cache.clear()
         self._shared_curves.clear()
+        # Drop the optional schedule-migration controller (it holds a
+        # reference to a cached schedule tensor and to _get_schedule).
+        self._schedule_migration = None
         # DCW corrector holds wavelet basis tensors on GPU; drop it.
         self._dcw_corrector = None
         # Detach references to the engine + decoder so DiffusionEngine.close
