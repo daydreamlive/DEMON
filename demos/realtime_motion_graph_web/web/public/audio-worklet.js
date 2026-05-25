@@ -203,7 +203,7 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
     if (type === "setOverlayVolume") {
       const kind = String(msg.kind || "");
       if (!kind) return;
-      const v = Math.max(0, Math.min(1.5, Number(msg.volume) || 0));
+      const v = Math.max(0, Math.min(6.0, Number(msg.volume) || 0));
       if (!this.overlays[kind]) {
         // Volume can land before the buffer (UI default volumes are set
         // up-front). Stash it so the buffer-arrival handler picks it up.

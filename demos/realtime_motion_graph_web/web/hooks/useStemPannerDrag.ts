@@ -14,7 +14,7 @@ import { useStemOverlayStore } from "@/store/useStemOverlayStore";
 // ready yet, the listeners stay detached so the dimmed track doesn't
 // swallow pointer events.
 
-const STEM_OVERLAY_MAX = 1.5;
+const STEM_OVERLAY_MAX = 6.0;
 
 export function useStemPannerDrag(
   trackRef: RefObject<HTMLElement | null>,

@@ -112,7 +112,7 @@ export function useKeyboardShortcuts() {
       // forwards the new volume into AudioPlayer on the next render.
       // Sliding to zero also clears `enabled` — matches the pointer-drag
       // behavior in useStemFaderDrag.
-      const STEM_MAX = 1.5;
+      const STEM_MAX = 6.0;
       const STEM_STEP = 0.05;
       const store = useStemOverlayStore.getState();
       const current = store.volumes[kind] ?? 0;

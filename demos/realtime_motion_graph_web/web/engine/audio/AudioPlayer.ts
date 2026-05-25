@@ -364,7 +364,7 @@ export class AudioPlayer {
 
   setStemOverlayVolume(kind: StemOverlayKind, volume: number): void {
     const state = this._stemOverlays[kind];
-    const v = Math.max(0, Math.min(1.5, volume));
+    const v = Math.max(0, Math.min(6.0, volume));
     state.targetVolume = v;
     if (this._useWorklet && this.node) {
       (this.node as AudioWorkletNode).port.postMessage({

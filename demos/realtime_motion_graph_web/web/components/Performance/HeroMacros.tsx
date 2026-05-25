@@ -161,7 +161,7 @@ function HeroStyleFader({ slotIndex }: HeroStyleFaderProps) {
   );
 }
 
-const STEM_OVERLAY_MAX = 1.5;
+const STEM_OVERLAY_MAX = 6.0;
 const STEM_LABELS: Record<StemOverlayKind, string> = {
   vocals: "Vocals",
   instruments: "Instr",

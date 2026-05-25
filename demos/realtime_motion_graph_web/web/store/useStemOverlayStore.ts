@@ -23,7 +23,7 @@ export const useStemOverlayStore = create<StemOverlayState>((set) => ({
     set((s) => ({
       volumes: {
         ...s.volumes,
-        [kind]: Math.max(0, Math.min(1.5, volume)),
+        [kind]: Math.max(0, Math.min(6.0, volume)),
       },
     })),
 
