@@ -5,10 +5,10 @@ Spawns two child processes and tees their output with a `[backend]` /
 `[web]` prefix so a single terminal shows both. Ctrl-C cleanly tears
 both down.
 
-Backend defaults to ``--host 127.0.0.1 --port 8765``. The Next.js dev
-server uses ``next dev`` on the default port (3000); the rewrites in
+Backend defaults to ``--host 127.0.0.1 --port 1318``. The Next.js dev
+server uses ``next dev`` on port 6660; the rewrites in
 ``web/next.config.ts`` proxy ``/api/*``, ``/fixtures/*``, ``/loras/*``,
-and ``/videos/*`` to the backend on 8765.
+and ``/videos/*`` to the backend.
 
 Run from the repo root::
 
@@ -29,9 +29,11 @@ import argparse
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import IO
 
@@ -84,6 +86,25 @@ def _ensure_node_modules(npm: str) -> None:
         sys.exit(f"npm install exited with {rc}")
 
 
+def _local_backend_host(host: str) -> str:
+    return "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
+
+
+def _wait_for_backend(
+    host: str,
+    port: int,
+    proc: subprocess.Popen[bytes],
+) -> int | None:
+    probe_host = _local_backend_host(host)
+    while proc.poll() is None:
+        try:
+            with socket.create_connection((probe_host, port), timeout=0.25):
+                return None
+        except OSError:
+            time.sleep(0.25)
+    return proc.returncode
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run the demo backend + Next.js frontend together.",
@@ -132,25 +153,42 @@ def main() -> int:
     web_cmd = [npm, "run", "dev", "--", "-p", str(args.web_port)]
 
     web_env = os.environ.copy()
-    web_env["NEXT_PUBLIC_POD_BASE_URL"] = f"http://{args.host}:{args.port}"
+    backend_url = f"http://{_local_backend_host(args.host)}:{args.port}"
+    web_env["NEXT_PUBLIC_POD_BASE_URL"] = backend_url
 
     print(f"{_PREFIXES['backend']} {' '.join(backend_cmd)}", flush=True)
     print(
         f"{_PREFIXES['web']} (cwd={WEB_DIR}) {' '.join(web_cmd)}",
         flush=True,
     )
-    banner = _color("\x1b[1;32m")
-    print(
-        f"\n{banner}>>> Open http://localhost:{args.web_port}/{_RESET}\n",
-        flush=True,
-    )
-
     backend = subprocess.Popen(
         backend_cmd,
         cwd=ROOT_DIR,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
+    backend_thread = threading.Thread(
+        target=_tee, args=(backend.stdout, "backend"), daemon=True
+    )
+    backend_thread.start()
+
+    print(
+        f"{_PREFIXES['backend']} waiting for {backend_url} before starting web",
+        flush=True,
+    )
+    try:
+        backend_rc = _wait_for_backend(args.host, args.port, backend)
+    except KeyboardInterrupt:
+        backend.terminate()
+        try:
+            backend.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            backend.kill()
+            backend.wait()
+        return 130
+    if backend_rc is not None:
+        return backend_rc or 1
+
     web = subprocess.Popen(
         web_cmd,
         cwd=WEB_DIR,
@@ -158,15 +196,17 @@ def main() -> int:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
+    banner = _color("\x1b[1;32m")
+    print(
+        f"\n{banner}>>> Open http://localhost:{args.web_port}/{_RESET}\n",
+        flush=True,
+    )
 
     threads = [
-        threading.Thread(
-            target=_tee, args=(backend.stdout, "backend"), daemon=True
-        ),
+        backend_thread,
         threading.Thread(target=_tee, args=(web.stdout, "web"), daemon=True),
     ]
-    for t in threads:
-        t.start()
+    threads[1].start()
 
     # Forward SIGINT/SIGTERM to children, then wait. The first child to
     # die brings the other down too — keeps the terminal honest about
