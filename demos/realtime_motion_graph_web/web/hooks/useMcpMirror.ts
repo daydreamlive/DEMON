@@ -115,12 +115,30 @@ export function useMcpMirror() {
 
       const onLoraCatalog = (e: Event) => {
         // Server-broadcast catalog after the runner thread applies a
-        // pending enable/disable. Reconcile the UI's enabled set +
-        // strengths against the catalog so MCP-driven LoRA toggles
-        // surface in the Library panel and useParamSync starts sending
-        // the right per-LoRA strengths next tick. Without this, the
-        // front-end's `enabled` set keeps its own user-click history
-        // regardless of what's actually loaded in the engine.
+        // pending enable/disable. We surface server-side ENABLES
+        // (e.g. MCP toggled a LoRA on) into the front-end's enabled
+        // set so the Library panel reflects them and useParamSync
+        // starts sending the right per-LoRA strengths next tick.
+        //
+        // We deliberately do NOT auto-disable from the catalog state.
+        // Reason: this same handler fires after EVERY enable/disable
+        // ack (any time the server's catalog changes for any cause),
+        // and on certain code paths the broadcasted entry can have a
+        // non-"enabled" state for a LoRA the user has just enabled in
+        // the store. Reconciling "everything non-enabled in catalog →
+        // disable in store" wipes the user's selection on the next
+        // catalog update — captured live as the
+        // "click bach to disable, deathstep also disappears" bug
+        // (one outbound disable_lora WS, two store.disable calls;
+        // second one came from this handler).
+        //
+        // The MCP-initiated DISABLE path the comment above this
+        // function originally worried about IS still handled: the
+        // server's response to an MCP-driven disable_lora is
+        // dispatched through the same channel as a browser-initiated
+        // disable_lora, so the regular client-side `disable()` path
+        // (LibraryTile toggle / hooks calling store.disable) covers
+        // it. We just don't re-derive it from the catalog snapshot.
         const catalog = (e as CustomEvent<LoraCatalogEntry[]>).detail;
         if (!Array.isArray(catalog)) return;
         const lora = useLoraStore.getState();
@@ -128,13 +146,12 @@ export function useMcpMirror() {
         for (const entry of catalog) {
           if (!entry || typeof entry.id !== "string") continue;
           if (entry.state === "enabled") {
-            lora.enable(entry.id);
+            if (!lora.enabled.has(entry.id)) lora.enable(entry.id);
             if (typeof entry.strength === "number" && entry.strength > 0) {
               lora.setStrength(entry.id, entry.strength);
             }
-          } else {
-            lora.disable(entry.id);
           }
+          // No `else { lora.disable(...) }` — see comment above.
         }
       };
 
