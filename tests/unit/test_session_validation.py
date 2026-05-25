@@ -98,3 +98,39 @@ class TestEngineWithoutBackendValidation:
                     "vae_decode": "/fake/path",
                 },
             )
+
+
+class TestTensorRTVAECleanup:
+    def test_close_evicts_session_vae_trt_engines(self):
+        engines = {
+            "vae_encode": "/fake/vae_encode.engine",
+            "vae_decode": "/fake/vae_decode.engine",
+        }
+        with (
+            _stub_model_context(),
+            patch("acestep.engine.runtime_init.apply_trt_backends"),
+            patch("acestep.nodes.vae_nodes._evict_trt_vae", return_value=True) as evict,
+        ):
+            session = Session(vae_backend="tensorrt", trt_engines=engines)
+            session.close()
+
+        assert [call.args[0] for call in evict.call_args_list] == [
+            "/fake/vae_encode.engine",
+            "/fake/vae_decode.engine",
+        ]
+
+    def test_close_only_evicts_vae_engines_once(self):
+        engines = {
+            "vae_encode": "/fake/vae_encode.engine",
+            "vae_decode": "/fake/vae_decode.engine",
+        }
+        with (
+            _stub_model_context(),
+            patch("acestep.engine.runtime_init.apply_trt_backends"),
+            patch("acestep.nodes.vae_nodes._evict_trt_vae", return_value=True) as evict,
+        ):
+            session = Session(vae_backend="tensorrt", trt_engines=engines)
+            session.close()
+            session.close()
+
+        assert evict.call_count == 2

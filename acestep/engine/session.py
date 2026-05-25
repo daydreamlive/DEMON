@@ -301,6 +301,12 @@ class Session:
                     " --with-dreamvae" if is_dreamvae else "",
                 )
 
+        self._trt_vae_engine_paths = tuple(
+            str(trt_engines[key])
+            for key in ("vae_encode", "vae_decode")
+            if vae_backend == "tensorrt" and key in trt_engines
+        )
+
         apply_trt_backends(
             ctx,
             decoder_backend=decoder_backend,
@@ -689,6 +695,20 @@ class Session:
         self.model = None  # type: ignore[assignment]
         self.clip = None  # type: ignore[assignment]
         self.vae = None  # type: ignore[assignment]
+
+        trt_vae_paths = getattr(self, "_trt_vae_engine_paths", ())
+        if trt_vae_paths:
+            from acestep.nodes.vae_nodes import _evict_trt_vae
+
+            for engine_path in trt_vae_paths:
+                try:
+                    _evict_trt_vae(engine_path)
+                except Exception as e:
+                    logger.warning(
+                        "TRT VAE cache eviction raised for {}: {}", engine_path, e
+                    )
+            self._trt_vae_engine_paths = ()
+
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
