@@ -3,9 +3,12 @@
 import { useEffect, useRef } from "react";
 
 import { loadFixtureAudio } from "@/engine/audio/loadFixture";
-import { getConfig, resolveLoraCapForSource } from "@/lib/config";
+import {
+  applyLoraCapWithServerSync,
+  getConfig,
+  resolveLoraCapForSource,
+} from "@/lib/config";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
-import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 import { isTimeSignature } from "@/types/engine";
@@ -70,11 +73,17 @@ export function useFixtureSwap() {
           // source. protocol.ts already set ``remote.duration`` from
           // the swap_ready message; reading it here gives the
           // authoritative value. Tiers swap to the right cap (e.g.
-          // 60s→3 LoRAs, 240s→2) before the user can interact with
-          // the new source, so no over-cap state is reachable.
-          useLoraStore
-            .getState()
-            .setMaxEnabled(resolveLoraCapForSource(remote.duration));
+          // 60s→3 LoRAs, 240s→1) before the user can interact with
+          // the new source.
+          //
+          // Critical: use the server-syncing helper, not setMaxEnabled
+          // alone. A tightening cap (60s→240s source swap) clips the
+          // client's enabled set, but if we don't WS-disable the
+          // dropped LoRAs the server keeps them materialized — the
+          // ghost-LoRA leak. The helper sends disable_lora for each
+          // dropped id and re-issues the prompt so the trigger
+          // prefix drops their triggers too.
+          applyLoraCapWithServerSync(resolveLoraCapForSource(remote.duration));
           session.player?.swap(detail.interleaved, detail.channels);
           // Worklet's swap message keeps `position` untouched, so a swap
           // at 1:30 into the old track would otherwise resume at 1:30 of

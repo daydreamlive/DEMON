@@ -10,7 +10,11 @@ import { defaultWsUrl } from "@/engine/podUrl";
 import { RemoteBackend, SLICE_FLAG_DELTA } from "@/engine/protocol";
 import { getApiKey } from "@/engine/rtmgConfig";
 import { WsReconnector } from "@/engine/wsReconnect";
-import { getConfig, resolveLoraCapForSource } from "@/lib/config";
+import {
+  applyLoraCapWithServerSync,
+  getConfig,
+  resolveLoraCapForSource,
+} from "@/lib/config";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore, type RefSource } from "@/store/usePerformanceStore";
@@ -511,9 +515,11 @@ export function useStartSession() {
           // Recompute the duration-aware LoRA cap against the (re)bound
           // source. The reconnect path may land on a different-duration
           // source than the prior session — tiers swap to match.
-          useLoraStore
-            .getState()
-            .setMaxEnabled(resolveLoraCapForSource(remote.duration));
+          // Uses the server-syncing helper so any over-cap LoRAs from
+          // the prior session also get a WS disable_lora (avoids
+          // ghost-LoRA leak when the reconnected source's tier is
+          // tighter than what was previously enabled).
+          applyLoraCapWithServerSync(resolveLoraCapForSource(remote.duration));
           useSessionStore.getState().setSession(remote, player);
           // Rebuild the network-quality monitor against the new
           // remote — the old one was bound to the dropped backend's
@@ -610,9 +616,13 @@ export function useStartSession() {
     // applyConfig's boot-time setMaxEnabled used the most-permissive
     // tier; this nails the cap to whatever engine workspace this
     // particular source actually loads.
-    useLoraStore
-      .getState()
-      .setMaxEnabled(resolveLoraCapForSource(remote.duration));
+    //
+    // Server-syncing helper: if the user-driven default seed enabled
+    // more LoRAs than the active source's tier allows, the helper
+    // sends disable_lora for each that gets clipped, preventing the
+    // ghost-LoRA leak where the server keeps them materialized
+    // server-side after they vanish from the UI.
+    applyLoraCapWithServerSync(resolveLoraCapForSource(remote.duration));
 
     // "Hear the source first" gate: when enabled in config.json, every
     // session start snaps engine denoise to 0 and plays a visual-only

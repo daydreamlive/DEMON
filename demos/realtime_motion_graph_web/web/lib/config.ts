@@ -423,6 +423,60 @@ export function resolveLoraCapForSource(
   return typeof fallback === "number" && fallback >= 0 ? fallback : null;
 }
 
+/** Apply a freshly-resolved cap to the LoRA store AND tell the server
+ *  about any LoRAs the cap kicks off the enabled list.
+ *
+ *  ``setMaxEnabled`` alone is purely a client-store mutation — it
+ *  clips ``enabled`` down to the new cap (oldest insertion order
+ *  wins, newest are dropped). But the SERVER is unaware of the
+ *  clip: those dropped LoRAs stay materialized in GPU memory (~1.2
+ *  GiB each), invisible to the user, eating the very budget the
+ *  smaller cap was trying to free. ``ghost LoRAs.``
+ *
+ *  This helper composes the two correctly:
+ *   1. Snapshot the current enabled set.
+ *   2. Diff against the post-clip view to identify the dropped ids.
+ *   3. For each dropped id: ``remote.sendDisableLora(id)`` so the
+ *      engine actually frees the refit-state buffer.
+ *   4. Re-send the prompt so the trigger prefix drops the now-
+ *      disabled LoRAs' triggers (useLoraTriggerSync debounce-sends
+ *      automatically when ``enabled`` mutates, but we issue an
+ *      immediate send here so the prompt and the disables hit the
+ *      server in the same logical step).
+ *   5. Finally call ``setMaxEnabled`` to clip the store.
+ *
+ *  When ``remote`` is null (boot path before any session), skips the
+ *  WS sends — no server to notify. The store-side clip still applies. */
+export function applyLoraCapWithServerSync(cap: number | null): void {
+  const lora = useLoraStore.getState();
+  const before = lora.enabled;
+  const remote = useSessionStore.getState().remote;
+
+  // Match useLoraStore.clipEnabledToCap semantics: drop the
+  // most-recently-added entries (everything past index ``cap``).
+  if (
+    remote &&
+    typeof cap === "number" &&
+    cap >= 0 &&
+    before.size > cap
+  ) {
+    const ids = Array.from(before);
+    const toDrop = ids.slice(cap);
+    for (const id of toDrop) {
+      remote.sendDisableLora(id);
+    }
+    const perf = usePerformanceStore.getState();
+    remote.sendPrompt(
+      perf.promptA,
+      perf.activeKey,
+      perf.activeTimeSignature,
+      perf.promptB,
+    );
+  }
+
+  lora.setMaxEnabled(cap);
+}
+
 /** Whether applyConfig() has been called at least once. Once-per-session
  *  seed paths (useLoraStore.setCatalog → computeSeed) gate on this so a
  *  catalog fetch that beats the config fetch doesn't seed against
