@@ -88,12 +88,44 @@ export interface RtmgConfigEngine {
    *  engines, so on a 32 GB card you can OOM cleanly after the third
    *  one when paired with a long-source vae_encode profile.
    *
+   *  Used as a constant cap when ``max_concurrent_loras_tiers`` is
+   *  absent. With tiers present, this field is the FALLBACK cap used
+   *  when no tier matches the current source duration (e.g. before a
+   *  source is loaded, or a source longer than every tier threshold).
+   *
    *  Enforcement is honoured by ``useLoraStore.enable`` and by the
    *  catalog auto-enable seed (config-driven defaults beyond the cap
    *  are silently clipped). Disabling is never blocked.
    *  ``canEnableMore()`` on the store exposes the predicate so the
    *  UI can render disabled "+" buttons with a "Max N active" hint. */
   max_concurrent_loras?: number | null;
+  /** Source-duration-aware cap tiers. The active cap is the ``cap``
+   *  field of the FIRST tier whose ``up_to_s`` is ≥ the current source
+   *  duration; when no tier matches, falls back to
+   *  ``max_concurrent_loras`` (else uncapped).
+   *
+   *  Why duration-aware: the 240s ``vae_encode`` engine reserves a
+   *  ~16 GiB workspace at runtime, which leaves less room for LoRA
+   *  materializations than the 60s or 120s engines. A hosted
+   *  deployment can keep the cap relaxed (e.g. 3) for short sources
+   *  that load the 60s engine and tighten it (e.g. 2) for sources
+   *  that trigger the 240s engine.
+   *
+   *  Example:
+   *  ```json
+   *  "max_concurrent_loras_tiers": [
+   *    { "up_to_s": 60,  "cap": 3 },
+   *    { "up_to_s": 120, "cap": 3 },
+   *    { "up_to_s": 240, "cap": 2 }
+   *  ]
+   *  ```
+   *  Order doesn't matter — the resolver sorts by ``up_to_s`` ascending.
+   *  Recomputed on session start AND on every source swap so the cap
+   *  tracks the live engine workspace. */
+  max_concurrent_loras_tiers?: Array<{
+    up_to_s: number;
+    cap: number;
+  }> | null;
   /** XL (5B) variant overrides. When the active checkpoint scale is
    *  "5B", these win over their base siblings at applyConfig time.
    *  Absent / undefined falls through to the base field. Selection
@@ -353,6 +385,44 @@ export function getConfig(): RtmgConfig {
   return _activeConfig;
 }
 
+/** Resolve the LoRA cap for a given source duration. Tiers (when
+ *  present) take precedence: pick the smallest ``up_to_s`` that's ≥
+ *  ``durationS``. When no tier matches (durationS larger than all
+ *  thresholds, or tiers absent), fall back to
+ *  ``engine.max_concurrent_loras``. ``null`` return = uncapped.
+ *
+ *  Passing ``durationS = 0`` (no source loaded yet) selects the most
+ *  permissive tier — short-source assumptions hold at boot before the
+ *  first session config arrives. Callers that want a conservative
+ *  boot-time cap can pass the static fallback value directly. */
+export function resolveLoraCapForSource(
+  durationS: number,
+  engine: Pick<
+    RtmgConfigEngine,
+    "max_concurrent_loras" | "max_concurrent_loras_tiers"
+  > = _activeConfig.engine,
+): number | null {
+  const tiers = engine.max_concurrent_loras_tiers;
+  if (tiers && tiers.length > 0) {
+    // Sort by threshold ascending; pick the first tier whose ceiling
+    // is ≥ durationS. Defensive sort so config-side order doesn't
+    // matter to the runtime.
+    const sorted = [...tiers]
+      .filter((t) => typeof t?.up_to_s === "number" && typeof t?.cap === "number")
+      .sort((a, b) => a.up_to_s - b.up_to_s);
+    for (const tier of sorted) {
+      if (durationS <= tier.up_to_s) return tier.cap;
+    }
+    // durationS exceeds every tier ceiling — fall through to the
+    // static fallback. The fallback is intentionally separate from
+    // the last-tier cap so an operator can express "anything past
+    // 240s is uncapped" or "anything past 240s is fully blocked"
+    // depending on which fallback they set.
+  }
+  const fallback = engine.max_concurrent_loras;
+  return typeof fallback === "number" && fallback >= 0 ? fallback : null;
+}
+
 /** Whether applyConfig() has been called at least once. Once-per-session
  *  seed paths (useLoraStore.setCatalog → computeSeed) gate on this so a
  *  catalog fetch that beats the config fetch doesn't seed against
@@ -563,11 +633,14 @@ export function applyConfig(c: RtmgConfig): void {
   // bypasses that path, so push the diff to the engine here and
   // re-encode the prompt so the trigger prefix matches.
   const lora = useLoraStore.getState();
-  // Push the cap on every applyConfig (boot and import alike) so the
-  // store can enforce it on every enable() and so setCatalog's seed
-  // gate clips an over-cap enabled_loras list. null = uncapped (the
-  // OSS default — preserves local-DEMON parity).
-  lora.setMaxEnabled(resolved.engine.max_concurrent_loras ?? null);
+  // Push the boot-time cap. We don't yet know the source duration so
+  // resolve against 0 — selects the most-permissive tier. Once a
+  // session starts (useStartSession) or a source swap completes
+  // (useFixtureSwap), the cap is recomputed against the actual
+  // duration via ``resolveLoraCapForSource``. Static
+  // ``max_concurrent_loras`` (no tiers) is duration-independent so
+  // the boot value persists.
+  lora.setMaxEnabled(resolveLoraCapForSource(0, resolved.engine));
   if (firstApply) {
     if (!lora.seeded && lora.catalog.length > 0) {
       lora.setCatalog(lora.catalog);

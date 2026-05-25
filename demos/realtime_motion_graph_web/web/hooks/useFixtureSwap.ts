@@ -3,8 +3,9 @@
 import { useEffect, useRef } from "react";
 
 import { loadFixtureAudio } from "@/engine/audio/loadFixture";
-import { getConfig } from "@/lib/config";
+import { getConfig, resolveLoraCapForSource } from "@/lib/config";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
+import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 import { isTimeSignature } from "@/types/engine";
@@ -65,6 +66,15 @@ export function useFixtureSwap() {
             key?: string;
             time_signature?: string;
           }>).detail;
+          // Recompute the duration-aware LoRA cap against the new
+          // source. protocol.ts already set ``remote.duration`` from
+          // the swap_ready message; reading it here gives the
+          // authoritative value. Tiers swap to the right cap (e.g.
+          // 60s→3 LoRAs, 240s→2) before the user can interact with
+          // the new source, so no over-cap state is reachable.
+          useLoraStore
+            .getState()
+            .setMaxEnabled(resolveLoraCapForSource(remote.duration));
           session.player?.swap(detail.interleaved, detail.channels);
           // Worklet's swap message keeps `position` untouched, so a swap
           // at 1:30 into the old track would otherwise resume at 1:30 of
