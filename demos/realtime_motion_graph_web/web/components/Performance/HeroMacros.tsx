@@ -245,10 +245,14 @@ export function HeroMacros() {
   const curveOpen = useCurveStore((s) => s.overlayOpen);
   const toggleCurve = useCurveStore((s) => s.toggleOverlay);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  // Stem section is only visible when the active track was uploaded
-  // with a non-"full" sourceMode — i.e. the user opted into stem
-  // separation. For "full" mode the backend produces no stems, so
-  // the faders would never become live.
+  // Stem section is visible for any uploaded track (sourceMode set),
+  // including "full". The backend extracts and ships vocal/instrument
+  // overlay stems for every sourceMode — "full" just keeps the whole
+  // upload as the inference source rather than swapping to a stem. The
+  // overlays default off (enabled = false -> displayValue 0), so in
+  // "full" mode they don't double the vocals already in the output;
+  // the operator can opt in to layer a clean stem back on top. Only
+  // built-in fixtures (sourceMode undefined) have no stems.
   const fixture = usePerformanceStore((s) => s.fixture);
   const sourceMode = useCustomTracksStore((s) =>
     fixture ? s.tracks.get(fixture)?.sourceMode : undefined,
@@ -262,7 +266,7 @@ export function HeroMacros() {
   const stemsReady = useCustomTracksStore((s) =>
     Boolean(fixture && s.tracks.get(fixture)?.stems),
   );
-  const showStems = !!sourceMode && sourceMode !== "full";
+  const showStems = !!sourceMode;
   // Mirrors the status copy from the original StemOverlayPanel — sits
   // italicised just under the section header so the operator sees what
   // the pipeline is doing while the panners are still inert.
