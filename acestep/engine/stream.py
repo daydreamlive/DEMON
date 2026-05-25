@@ -1103,7 +1103,7 @@ class StreamPipeline:
                     vt_neg = slot.vt_neg_cached
 
             if vt_neg is not None:
-                gc = ode_steps.normalize_curve(slot.request.guidance_curve).to(
+                gc = self._eff_shared(slot, "guidance_curve").to(
                     device=vt_pos.device, dtype=vt_pos.dtype,
                 )
                 mom = self._eff_shared(slot, "apg_momentum")
