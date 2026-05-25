@@ -208,6 +208,15 @@ interface LoraState {
   enabled: Set<string>;
   /** Whether default-on LoRAs have already been seeded for this session. */
   seeded: boolean;
+  /** Optional ceiling on the concurrent ``enabled.size``. ``null`` means
+   *  uncapped (the OSS-DEMON default). Pushed by ``applyConfig`` from
+   *  ``engine.max_concurrent_loras``. The store enforces it on
+   *  ``enable``, ``toggle`` (when toggling on), and the catalog auto-
+   *  enable seed; ``disable`` and ``toggle`` (toggling off) are never
+   *  blocked. ``canEnableMore()`` exposes the predicate so UI can grey
+   *  out "+" affordances. See ``RtmgConfigEngine.max_concurrent_loras``
+   *  for the rationale. */
+  maxEnabled: number | null;
 
   setCatalog: (catalog: LoraCatalogEntry[]) => void;
   setStrength: (id: string, value: number) => void;
@@ -215,13 +224,37 @@ interface LoraState {
   disable: (id: string) => void;
   toggle: (id: string) => void;
   reset: () => void;
+  /** Push the cap from config. Pass ``null`` for uncapped. Also clips
+   *  any currently-enabled set that's now over-cap (e.g. an import
+   *  lowered the ceiling). Drops the LATEST-added entries first
+   *  (Set insertion order), so user-curated picks early in the
+   *  session survive a tightening. */
+  setMaxEnabled: (n: number | null) => void;
+  /** True when another LoRA can be enabled — uncapped, or
+   *  ``enabled.size < maxEnabled``. UI/toggle callers should consult
+   *  this before firing ``sendEnableLora`` on the WS so a denied
+   *  enable can't leak a doomed server-side materialization. */
+  canEnableMore: () => boolean;
 }
 
-export const useLoraStore = create<LoraState>((set) => ({
+/** Pure helper: clip a Set down to the first N entries in insertion
+ *  order. ``cap === null`` returns the input untouched. Used by
+ *  ``setMaxEnabled`` and ``setCatalog`` so the cap is enforced once
+ *  consistently. */
+function clipEnabledToCap(
+  enabled: Set<string>,
+  cap: number | null,
+): Set<string> {
+  if (cap === null || cap < 0 || enabled.size <= cap) return enabled;
+  return new Set(Array.from(enabled).slice(0, cap));
+}
+
+export const useLoraStore = create<LoraState>((set, get) => ({
   catalog: [],
   strengths: {},
   enabled: new Set(),
   seeded: false,
+  maxEnabled: null,
 
   setCatalog: (incomingCatalog) =>
     set((s) => {
@@ -250,7 +283,10 @@ export const useLoraStore = create<LoraState>((set) => ({
       const shouldSeed =
         !s.seeded && catalog.length > 0 && isConfigApplied();
       const enabled = shouldSeed
-        ? new Set<string>([...s.enabled, ...fresh.enabled])
+        ? clipEnabledToCap(
+            new Set<string>([...s.enabled, ...fresh.enabled]),
+            s.maxEnabled,
+          )
         : s.enabled;
       // Note: seeding a LoRA does NOT mutate promptA/promptB. Trigger
       // words are injected onto the WS `prompt` message at send-time by
@@ -268,6 +304,18 @@ export const useLoraStore = create<LoraState>((set) => ({
   enable: (id) =>
     set((s) => {
       if (s.enabled.has(id)) return {} as Partial<LoraState>;
+      // Cap honoured here so every code path that ends in store.enable
+      // (LibraryTile click, useEdgeLoraBinding auto-pair, MCP mirror,
+      // import re-seed) gets the same ceiling. Callers should consult
+      // ``canEnableMore()`` BEFORE issuing the matching
+      // ``remote.sendEnableLora`` to avoid an orphaned WS materialize.
+      if (
+        s.maxEnabled !== null &&
+        s.maxEnabled >= 0 &&
+        s.enabled.size >= s.maxEnabled
+      ) {
+        return {} as Partial<LoraState>;
+      }
       const next = new Set(s.enabled);
       next.add(id);
       // The LoRA's trigger word is NOT written into promptA/promptB.
@@ -289,8 +337,19 @@ export const useLoraStore = create<LoraState>((set) => ({
   toggle: (id) =>
     set((s) => {
       const next = new Set(s.enabled);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        // Toggling ON respects the cap; toggling OFF is always allowed.
+        if (
+          s.maxEnabled !== null &&
+          s.maxEnabled >= 0 &&
+          s.enabled.size >= s.maxEnabled
+        ) {
+          return {} as Partial<LoraState>;
+        }
+        next.add(id);
+      }
       return { enabled: next };
     }),
   reset: () =>
@@ -303,6 +362,31 @@ export const useLoraStore = create<LoraState>((set) => ({
       // defaults", not "lose the catalog".
       const catalog = sortCatalogForDisplay(s.catalog);
       const { strengths, enabled } = computeSeed(catalog);
-      return { catalog, strengths, enabled };
+      return {
+        catalog,
+        strengths,
+        enabled: clipEnabledToCap(enabled, s.maxEnabled),
+      };
     }),
+  setMaxEnabled: (n) =>
+    set((s) => {
+      const cap = n === null || (typeof n === "number" && n >= 0) ? n : null;
+      // Same-value no-op so subscribers don't re-render on every
+      // applyConfig pass. Identity-compare the enabled set only if we
+      // also clip; otherwise reuse to keep zustand's shallow change
+      // detection happy.
+      if (cap === s.maxEnabled) return {} as Partial<LoraState>;
+      const enabled = clipEnabledToCap(s.enabled, cap);
+      return enabled === s.enabled
+        ? { maxEnabled: cap }
+        : { maxEnabled: cap, enabled };
+    }),
+  canEnableMore: () => {
+    const s = get();
+    return (
+      s.maxEnabled === null ||
+      s.maxEnabled < 0 ||
+      s.enabled.size < s.maxEnabled
+    );
+  },
 }));

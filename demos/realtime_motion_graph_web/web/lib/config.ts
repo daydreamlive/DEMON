@@ -77,6 +77,23 @@ export interface RtmgConfigEngine {
    *  no declared scale are shown either way — we don't hide what we
    *  can't classify. */
   show_incompatible_loras?: boolean;
+  /** Maximum number of LoRAs that can be enabled simultaneously.
+   *  Null / undefined / non-positive means "no cap" — every LoRA in
+   *  the catalog can be enabled at once (the OSS default; preserves
+   *  parity for local-DEMON users).
+   *
+   *  Set this on a hosted deployment that wants a hard ceiling — each
+   *  enabled LoRA materializes a refit-state buffer (~1.2 GB on the
+   *  current acestep-v15-turbo checkpoint) on top of decoder + VAE
+   *  engines, so on a 32 GB card you can OOM cleanly after the third
+   *  one when paired with a long-source vae_encode profile.
+   *
+   *  Enforcement is honoured by ``useLoraStore.enable`` and by the
+   *  catalog auto-enable seed (config-driven defaults beyond the cap
+   *  are silently clipped). Disabling is never blocked.
+   *  ``canEnableMore()`` on the store exposes the predicate so the
+   *  UI can render disabled "+" buttons with a "Max N active" hint. */
+  max_concurrent_loras?: number | null;
   /** XL (5B) variant overrides. When the active checkpoint scale is
    *  "5B", these win over their base siblings at applyConfig time.
    *  Absent / undefined falls through to the base field. Selection
@@ -546,12 +563,19 @@ export function applyConfig(c: RtmgConfig): void {
   // bypasses that path, so push the diff to the engine here and
   // re-encode the prompt so the trigger prefix matches.
   const lora = useLoraStore.getState();
+  // Push the cap on every applyConfig (boot and import alike) so the
+  // store can enforce it on every enable() and so setCatalog's seed
+  // gate clips an over-cap enabled_loras list. null = uncapped (the
+  // OSS default — preserves local-DEMON parity).
+  lora.setMaxEnabled(resolved.engine.max_concurrent_loras ?? null);
   if (firstApply) {
     if (!lora.seeded && lora.catalog.length > 0) {
       lora.setCatalog(lora.catalog);
     }
   } else if (lora.catalog.length > 0) {
     const before = new Set(lora.enabled);
+    // setMaxEnabled above already re-clipped any over-cap entries from
+    // the prior session; reset() now re-seeds against the new config.
     lora.reset();
     const after = useLoraStore.getState();
     const remote = useSessionStore.getState().remote;
