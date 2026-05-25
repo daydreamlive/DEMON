@@ -128,10 +128,42 @@ class TRTProfileManager:
         profile and skip the swap when the same profile would be
         picked. ``paths`` should be the dict returned from
         :meth:`resolve`; ``picked_dur`` the second tuple element.
+
+        Also evicts any stale ``vae_encode`` engines left in the
+        module-level cache by a previous session's profile manager.
+        Without this, the very first VAE-encode call of this session
+        could be served by a leaked prior-session engine (see the
+        long comment in :meth:`_swap` for the full failure mode);
+        the swap-time purge there only fires if the user actually
+        triggers a swap.
         """
         self._diffusion_engine = diffusion_engine
         self._loaded_dur = float(picked_dur)
         self._loaded_paths = dict(paths)
+        if self._vae_tensorrt:
+            self._purge_stale_vae_encode_cache(paths.get("vae_encode"))
+
+    @staticmethod
+    def _purge_stale_vae_encode_cache(active_enc: Optional[str]) -> None:
+        """Evict every cached ``vae_encode_*`` / ``dreamvae_encode_*``
+        engine that isn't ``active_enc``. See :meth:`_swap` for why.
+
+        Scoped to encode only — vae_decode engines have a different
+        lifecycle (session.__init__ owns the windowed swap) and
+        evicting one mid-session would break the live runner.
+        """
+        import os
+        from acestep.nodes.vae_nodes import _evict_trt_vae, _trt_vae_cache
+
+        encode_prefixes = ("vae_encode_", "dreamvae_encode_")
+        active_abs = os.path.abspath(active_enc) if active_enc else None
+        for cached_path in list(_trt_vae_cache.keys()):
+            basename = os.path.basename(cached_path).lower()
+            if not basename.startswith(encode_prefixes):
+                continue
+            if active_abs is not None and os.path.abspath(cached_path) == active_abs:
+                continue
+            _evict_trt_vae(cached_path)
 
     def ensure_walk_profile(
         self,
@@ -261,12 +293,28 @@ class TRTProfileManager:
             engine.unload_trt_engine()
 
         if self._vae_tensorrt:
-            from acestep.nodes.vae_nodes import _evict_trt_vae
-
-            old_enc = prior_paths.get("vae_encode")
             new_enc = target_paths.get("vae_encode")
-            if old_enc and old_enc != new_enc:
-                _evict_trt_vae(old_enc)
+            # Purge every stale vae_encode_* / dreamvae_encode_* in the
+            # module-level cache that isn't the engine we're about to
+            # install. The old code only evicted `prior_paths.get(
+            # "vae_encode")` — the entry THIS profile manager remembered
+            # from bind(). Engines left in the cache by a *previous*
+            # session's profile manager (or by runtime_init at session
+            # start, before bind()) stay invisible to it and never get
+            # evicted by name. That bites twice:
+            #   (1) _find_best_vae_engine walks the cache in insertion
+            #       order and returns the FIRST match — so a stale
+            #       prior-session entry silently shadows the engine
+            #       we actually want, surfacing as "TRT VAE encode
+            #       rejected input shape" when the source duration
+            #       doesn't fit the accidentally-picked engine;
+            #   (2) those stale entries pin several GB of execution-
+            #       context VRAM each, so long-uptime pods leak memory
+            #       across session lifecycles and eventually OOM on
+            #       swap.
+            # The cache invariant we want is "at most one vae_encode-
+            # class entry resident at a time" — restored on every swap.
+            self._purge_stale_vae_encode_cache(new_enc)
 
         if decoder_changed:
             engine.load_trt_engine(new_decoder)
