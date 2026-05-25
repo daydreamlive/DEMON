@@ -400,6 +400,13 @@ function ActiveLoraRow({ entry }: { entry: LoraCatalogEntry }) {
   const fallbackStrength = useLoraStore((s) => s.strengths[id] ?? 0);
   const value = typeof strength === "number" ? strength : fallbackStrength;
   const toggle = useLoraToggle();
+  // Refit-pending lock: after a user commit gesture the slider is
+  // locked until the LoRA store's REFIT_LOCK_MS timer expires. UI
+  // disables pointer input on the track during this window so users
+  // can't queue rapid commits the server's refit pipeline can't keep
+  // up with. MIDI/curves/MCP-driven changes bypass this — they don't
+  // go through pointer gestures and shouldn't be UX-rate-limited.
+  const isRefitPending = useLoraStore((s) => s.pendingRefit.has(id));
 
   const md = entry.metadata;
   const displayName = displayNameOf(entry);
@@ -427,6 +434,11 @@ function ActiveLoraRow({ entry }: { entry: LoraCatalogEntry }) {
     let dragging = false;
     const onPointerDown = (e: PointerEvent) => {
       if (e.button !== 0) return; // right-click → MIDI learn (context menu)
+      // Refuse new gestures while a prior commit's refit window is
+      // still open. CSS also sets pointer-events:none on the track,
+      // but we re-check here in case CSS hasn't applied yet (HMR /
+      // class race) — defense in depth.
+      if (useLoraStore.getState().pendingRefit.has(id)) return;
       dragging = true;
       el.setPointerCapture(e.pointerId);
       setFromClientX(e.clientX);
@@ -438,6 +450,11 @@ function ActiveLoraRow({ entry }: { entry: LoraCatalogEntry }) {
       if (!dragging) return;
       dragging = false;
       el.releasePointerCapture(e.pointerId);
+      // Commit moment: lock the slider for REFIT_LOCK_MS (~400ms) so
+      // the user can't immediately fire another drag whose refit
+      // would pile up behind this one in the server's queue. The
+      // store's timer auto-clears.
+      useLoraStore.getState().markPendingRefit(id);
     };
     el.addEventListener("pointerdown", onPointerDown);
     el.addEventListener("pointermove", onPointerMove);
@@ -449,7 +466,7 @@ function ActiveLoraRow({ entry }: { entry: LoraCatalogEntry }) {
       el.removeEventListener("pointerup", onPointerUp);
       el.removeEventListener("pointercancel", onPointerUp);
     };
-  }, [setFromClientX]);
+  }, [id, setFromClientX]);
 
   const pct = Math.max(0, Math.min(1, value / LORA_SLIDER_MAX)) * 100;
   const menuItems = useMemo(
@@ -461,7 +478,7 @@ function ActiveLoraRow({ entry }: { entry: LoraCatalogEntry }) {
     <>
       <div
         ref={rowRef}
-        className="lora-active-row"
+        className={`lora-active-row${isRefitPending ? " refit-pending" : ""}`}
         data-param={`lora_str_${id}`}
         onContextMenu={onContextMenu}
       >
@@ -477,7 +494,16 @@ function ActiveLoraRow({ entry }: { entry: LoraCatalogEntry }) {
           ✕
         </button>
         <div className="lora-strength">
-          <div className="lora-strength-track" ref={trackRef}>
+          <div
+            className="lora-strength-track"
+            ref={trackRef}
+            aria-busy={isRefitPending}
+            title={
+              isRefitPending
+                ? "Applying… (LoRA refit in progress)"
+                : undefined
+            }
+          >
             <div className="lora-strength-fill" style={{ width: `${pct}%` }} />
             <div
               className="lora-strength-thumb"

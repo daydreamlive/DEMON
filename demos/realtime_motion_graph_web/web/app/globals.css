@@ -1866,6 +1866,31 @@ body[data-mode="graph"]::before {
   opacity: 0.7;
 }
 
+/* Refit-pending lock state. After the user commits a strength change
+ * (pointer-up on the track), the LoRA's slider locks for REFIT_LOCK_MS
+ * while the server's TRT refit settles — rapid commits during that
+ * window would queue refits the pipeline can't service in real time,
+ * resulting in slider movements that feel disconnected from audible
+ * output. The track-fill keeps animating; only input is gated.
+ *
+ * pointer-events:none on the track stops the DOM-level pointerdown
+ * (ActiveLoraRow also re-checks the pending state defensively in JS).
+ * cursor:progress gives the standard "the system is working" visual
+ * cue. opacity dims the thumb so it reads as inactive without
+ * obscuring the current fill value the operator is waiting on. */
+.lora-active-row.refit-pending .lora-strength-track {
+  pointer-events: none;
+  cursor: progress;
+}
+.lora-active-row.refit-pending .lora-strength-thumb {
+  opacity: 0.55;
+  transform: none;
+  box-shadow: none;
+}
+.lora-active-row.refit-pending .lora-strength-value {
+  opacity: 0.45;
+}
+
 /* ============================================================================
    Buttons — single shared "outline + accent on hover" language. The Seed /
    Pause / Send buttons inside the drawer all share this look so the whole

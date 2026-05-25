@@ -200,6 +200,20 @@ function computeSeed(catalog: LoraCatalogEntry[]): {
   return { strengths, enabled };
 }
 
+/** Time (ms) the user-driven LoRA strength slider stays locked after a
+ *  commit gesture. Picked from the empirical refit cost on a fleet pod:
+ *  every observed ``Refitted 192 weights`` log entry sat at 265-295 ms;
+ *  400 ms gives ~33 % headroom over the worst observed case without
+ *  feeling unresponsive on a fast refit. A faster GPU / smaller LoRA
+ *  resolves quicker than this and the slider just sits locked for the
+ *  spare time — acceptable trade for never-misleading UX.
+ *
+ *  Ryan flagged in design discussion: "the refit time is variable, and
+ *  rapid updates will not behave as users expect — it is variable but
+ *  certain to be not real time. the current UX is misleading." This
+ *  lock is the user-facing honest-time contract. */
+const REFIT_LOCK_MS = 400;
+
 interface LoraState {
   catalog: LoraCatalogEntry[];
   /** Per-id strength (0..LORA_SLIDER_MAX). */
@@ -208,6 +222,14 @@ interface LoraState {
   enabled: Set<string>;
   /** Whether default-on LoRAs have already been seeded for this session. */
   seeded: boolean;
+  /** LoRA ids whose strength slider is currently locked while the
+   *  server-side refit settles after a user commit gesture. Populated
+   *  by ``markPendingRefit`` (typically from the slider's pointerup
+   *  handler) and auto-cleared after ``REFIT_LOCK_MS`` via an internal
+   *  timer. UI reads this to disable input on the locked rows so users
+   *  can't queue multiple rapid commits that the server's refit
+   *  pipeline can't service in real time. */
+  pendingRefit: Set<string>;
 
   setCatalog: (catalog: LoraCatalogEntry[]) => void;
   setStrength: (id: string, value: number) => void;
@@ -215,13 +237,30 @@ interface LoraState {
   disable: (id: string) => void;
   toggle: (id: string) => void;
   reset: () => void;
+  /** Lock a LoRA's slider for ``REFIT_LOCK_MS`` after a user-direct
+   *  commit gesture. Calling again while still pending resets the
+   *  timer (the new commit gets its own full lock window). Idempotent
+   *  for already-pending ids — only the timer is bumped. */
+  markPendingRefit: (id: string) => void;
+  /** Force-clear the lock for an id. The timer auto-clears too — this
+   *  is for callers that want to release early (e.g. the LoRA was
+   *  disabled while pending, or a session reset). */
+  clearPendingRefit: (id: string) => void;
 }
 
-export const useLoraStore = create<LoraState>((set) => ({
+// Module-scoped timer map. Keeping the timer IDs OUT of zustand state
+// avoids triggering subscribers on every mark/clear pair, and lets us
+// reset a pending timer without touching state for "still pending"
+// commits. The map is cleared by ``clearPendingRefit`` AND by the
+// timer's own expiry handler — whichever fires first.
+const _refitTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+export const useLoraStore = create<LoraState>((set, get) => ({
   catalog: [],
   strengths: {},
   enabled: new Set(),
   seeded: false,
+  pendingRefit: new Set(),
 
   setCatalog: (incomingCatalog) =>
     set((s) => {
@@ -303,6 +342,48 @@ export const useLoraStore = create<LoraState>((set) => ({
       // defaults", not "lose the catalog".
       const catalog = sortCatalogForDisplay(s.catalog);
       const { strengths, enabled } = computeSeed(catalog);
-      return { catalog, strengths, enabled };
+      // Cancel any in-flight refit locks — the value the user was
+      // committing is being replaced. Leaving them set would block
+      // the freshly-seeded sliders for no reason.
+      for (const t of _refitTimers.values()) clearTimeout(t);
+      _refitTimers.clear();
+      return { catalog, strengths, enabled, pendingRefit: new Set() };
     }),
+  markPendingRefit: (id) => {
+    // Reset any in-flight timer for this id BEFORE we issue the new
+    // one — a back-to-back commit gets its own full lock window
+    // rather than expiring on the prior commit's clock.
+    const existing = _refitTimers.get(id);
+    if (existing !== undefined) clearTimeout(existing);
+    const handle = setTimeout(() => {
+      _refitTimers.delete(id);
+      // Read get() at fire time so the timer survives store re-creates
+      // in HMR; idempotent if the id was already cleared.
+      get().clearPendingRefit(id);
+    }, REFIT_LOCK_MS);
+    _refitTimers.set(id, handle);
+    set((s) => {
+      if (s.pendingRefit.has(id)) {
+        // Already locked → only the timer needed bumping; don't churn
+        // subscribers with a no-op set.
+        return {} as Partial<LoraState>;
+      }
+      const next = new Set(s.pendingRefit);
+      next.add(id);
+      return { pendingRefit: next };
+    });
+  },
+  clearPendingRefit: (id) => {
+    const existing = _refitTimers.get(id);
+    if (existing !== undefined) {
+      clearTimeout(existing);
+      _refitTimers.delete(id);
+    }
+    set((s) => {
+      if (!s.pendingRefit.has(id)) return {} as Partial<LoraState>;
+      const next = new Set(s.pendingRefit);
+      next.delete(id);
+      return { pendingRefit: next };
+    });
+  },
 }));
