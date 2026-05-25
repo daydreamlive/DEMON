@@ -465,6 +465,36 @@ class LoRAManagerBase(abc.ABC):
 
         if was_contributing:
             self._refit_weights(affected_params)
+
+        # Return the just-freed GPU delta mirror to the CUDA driver.
+        # _on_disabled drops the only Python references to the mirror
+        # tensors, but PyTorch's caching allocator retains the
+        # underlying VRAM segments in its pool to amortize future
+        # alloc cost. For LoRA disables that's the wrong trade:
+        # nvidia-smi still reports the memory as "used" (e.g. a
+        # 1.2 GB delta footprint sits resident), and worse, the pool
+        # fragments across a session of mixed-size enable/disable
+        # cycles. The fragmentation surface manifests on a fleet pod
+        # as a mid-session OOM after a few LoRA rotations:
+        #
+        #   [Server] WS dispatch error: CUDA out of memory.
+        #     Tried to allocate 32 MiB. GPU 0 has 13.25 MiB free.
+        #     process using 31.31 GiB / 31.36 GiB.
+        #     PyTorch allocated 12.98 GiB, 435.36 MiB reserved but
+        #     unallocated.  ← the cached pool we want to reclaim
+        #
+        # The PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True env
+        # also avoids fragmentation but is global-process and
+        # opt-in. Calling empty_cache() here is precise (only fires
+        # on the actual free event), cheap (microseconds-to-low-ms
+        # since refs are already dropped), and doesn't require an
+        # operator action. Cap PR (#140 in demon-public-demo)
+        # bounds concurrent enables; this commit handles the
+        # cumulative-rotation pattern that the cap alone can't
+        # prevent.
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         logger.info(
             "Disabled LoRA {} (was_contributing={})",
             lora_id, was_contributing,
