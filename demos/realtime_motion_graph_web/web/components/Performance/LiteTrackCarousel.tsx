@@ -22,35 +22,24 @@ import { WaveformTrimDialog } from "./WaveformTrimDialog";
 
 const DEFAULT_TRIM_CAP_S = 120;
 
-// Mobile Lite-controls track picker. A horizontal scroll-snap row of fixture
-// chips followed by an "Upload your own" chip. Reuses the same fixture
-// catalog, custom-tracks store, and decodeAudioFile path as AudioSourceCrate
-// so a track switch from either surface looks identical to useFixtureSwap.
+// Mobile Lite-controls track picker. Renders as a native <select> so
+// the OS picker (iOS wheel / Android dialog) opens on tap — the user
+// gets a one-thumb friendly chooser with built-in scrolling, search,
+// and accessibility instead of the horizontal scroll-snap row of chips
+// the old carousel forced. The library + uploads + an "Upload your
+// own…" sentinel all live in the same select, with optgroups to keep
+// them visually grouped. Reuses the same fixture catalog,
+// custom-tracks store, and decodeAudioFile path as AudioSourceCrate so
+// a track switch from either surface looks identical to useFixtureSwap.
+//
+// (Component name kept as ``LiteTrackCarousel`` to preserve the import
+// site in ``LiteControls.tsx``; the carousel itself is gone.)
 
-interface TrackOption {
-  name: string;
-  kind: "fixture" | "custom";
-}
-
-function UploadIcon() {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width={18}
-      height={18}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.6}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M8 10V2" />
-      <path d="M4.5 5.5L8 2l3.5 3.5" />
-      <path d="M2.5 10v3a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-3" />
-    </svg>
-  );
-}
+// Sentinel value: selecting it triggers the file picker instead of
+// trying to swap to a fixture named "__upload__". The select stays
+// controlled on ``fixture``, so React re-renders and snaps the
+// visible selection back to the active track immediately.
+const UPLOAD_VALUE = "__upload__";
 
 export function LiteTrackCarousel() {
   const fixture = usePerformanceStore((s) => s.fixture);
@@ -78,7 +67,6 @@ export function LiteTrackCarousel() {
   const trimCapS =
     useConfig().engine.max_source_duration_s ?? DEFAULT_TRIM_CAP_S;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const scrollerRef = useRef<HTMLDivElement | null>(null);
 
   // Daydream-webapp queue-admit gate: standalone DEMON has no queue
   // (LOCAL_MODE), so we skip the wait there.
@@ -95,21 +83,8 @@ export function LiteTrackCarousel() {
       .catch(() => setFixtures([]));
   }, [setFixture, sessionWsUrl]);
 
-  // Auto-scroll the current chip into view when fixture changes from
-  // elsewhere (e.g. AudioSourceCrate, MobileFullSheet config tab).
-  useEffect(() => {
-    const root = scrollerRef.current;
-    if (!root || !fixture) return;
-    const target = root.querySelector<HTMLElement>(
-      `[data-track-name="${CSS.escape(fixture)}"]`,
-    );
-    if (target)
-      target.scrollIntoView({
-        behavior: "smooth",
-        block: "nearest",
-        inline: "center",
-      });
-  }, [fixture]);
+  // Native <select> handles its own current-option-in-view, so the
+  // scroll-into-view dance the carousel needed is gone.
 
   async function onFilePicked(file: File) {
     const { setStatus } = useSessionStore.getState();
@@ -168,55 +143,66 @@ export function LiteTrackCarousel() {
     setPending(null);
   }
 
-  const tracks: TrackOption[] = [
-    ...fixtures.map((name) => ({ name, kind: "fixture" as const })),
-    ...customNames.map((name) => ({ name, kind: "custom" as const })),
-  ];
+  const totalTracks = fixtures.length + customNames.length;
 
   return (
-    <div className="lite-track-carousel" role="tablist" aria-label="Audio track">
-      <div ref={scrollerRef} className="lite-track-carousel-scroll">
-        {tracks.length === 0 && (
-          <div className="lite-track-carousel-empty">Loading…</div>
-        )}
-        {tracks.map((t) => {
-          const isCurrent = t.name === fixture;
-          return (
-            <button
-              key={`${t.kind}:${t.name}`}
-              type="button"
-              role="tab"
-              aria-selected={isCurrent}
-              data-track-name={t.name}
-              className={[
-                "lite-track-chip",
-                isCurrent ? "lite-track-chip--current" : "",
-                t.kind === "custom" ? "lite-track-chip--custom" : "",
-              ]
-                .filter(Boolean)
-                .join(" ")}
-              onClick={() => setFixture(t.name)}
-              title={t.name}
-            >
-              <span className="lite-track-chip-label">{t.name}</span>
-            </button>
-          );
-        })}
-        <button
-          type="button"
-          className="lite-track-chip lite-track-chip--upload"
+    <div className="lite-track-picker">
+      <label
+        htmlFor="lite-track-select"
+        className="lite-track-picker-label"
+      >
+        Track
+      </label>
+      <div className="lite-track-picker-field">
+        <select
+          id="lite-track-select"
+          className="lite-track-picker-select"
+          value={fixture ?? ""}
           disabled={uploading}
-          onClick={() => fileInputRef.current?.click()}
-          data-dd-tooltip="Upload audio track"
-          aria-label="Upload audio track"
+          aria-label="Audio track"
+          onChange={(e) => {
+            const v = e.target.value;
+            if (v === UPLOAD_VALUE) {
+              // Don't actually setFixture("__upload__"); the controlled
+              // ``value=fixture`` re-render snaps the visible selection
+              // back to the active track while the file picker opens
+              // in front.
+              fileInputRef.current?.click();
+              return;
+            }
+            if (v) setFixture(v);
+          }}
         >
-          <span className="lite-track-chip-icon" aria-hidden="true">
-            <UploadIcon />
-          </span>
-          <span className="lite-track-chip-label">
-            {uploading ? "Decoding…" : "Upload"}
-          </span>
-        </button>
+          {totalTracks === 0 && (
+            <option value="" disabled>
+              Loading…
+            </option>
+          )}
+          {fixtures.length > 0 && (
+            <optgroup label="Library">
+              {fixtures.map((name) => (
+                <option key={`fixture:${name}`} value={name}>
+                  {name}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          {customNames.length > 0 && (
+            <optgroup label="Your tracks">
+              {customNames.map((name) => (
+                <option key={`custom:${name}`} value={name}>
+                  {name}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          <option value={UPLOAD_VALUE}>
+            {uploading ? "Decoding…" : "↑  Upload your own…"}
+          </option>
+        </select>
+        <span className="lite-track-picker-chevron" aria-hidden="true">
+          ▾
+        </span>
       </div>
 
       <input

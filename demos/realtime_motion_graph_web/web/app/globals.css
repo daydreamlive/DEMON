@@ -4943,13 +4943,20 @@ body.curve-open #install-video-area #graph {
   left: 0;
   right: 0;
   bottom: 0;
-  /* Clear the side fader rails so we don't overlap them. */
-  margin-inline: calc(var(--stepper-rail-w, 64px));
+  /* Full-width bay on every mobile size. The previous
+   * ``margin-inline: var(--stepper-rail-w)`` kept the bay clear of
+   * the edge fader rails, but it shrank the usable surface on
+   * tablets / wide phones and left ugly L/R margins. The rails are
+   * still mounted underneath at left/right: 0; they show through
+   * the gradient bg but don't block touches (the bay sits at
+   * z-index 8, above the rails). Safe-area only — env() so notched
+   * landscape phones don't push the bay under the chin. */
+  margin-inline: 0;
   padding:
     10px
-    14px
+    max(14px, env(safe-area-inset-left, 0px))
     calc(env(safe-area-inset-bottom, 0px) + 12px)
-    14px;
+    max(14px, env(safe-area-inset-right, 0px));
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -4979,15 +4986,8 @@ body.curve-open #install-video-area #graph {
     display: flex;
   }
 }
-@media (max-width: 380px) {
-  /* Narrowest phones — pull the side margins back to the safe-area
-     edge to win every pixel for the faders. The rails still anchor at
-     left/right: 0 so they overlap visually but the controls stay usable. */
-  .lite-controls {
-    margin-left: max(env(safe-area-inset-left, 0px), 4px);
-    margin-right: max(env(safe-area-inset-right, 0px), 4px);
-  }
-}
+/* (No narrow-phone-specific override needed — the main rule above
+ * already runs the bay full-width with safe-area padding only.) */
 
 /* Wave 13.4 lite tabs — Mix / Track pill row sitting at the top of
    the bay. Small mono-caps cells with frame-line outline; active cell
@@ -5070,15 +5070,15 @@ body.curve-open #install-video-area #graph {
   align-items: center;
 }
 
-/* Track row — horizontal scroll carousel of fixtures + upload chip.
-   Sits across the top of the bay; the carousel itself owns its own
-   gutters and scroll behaviour. */
+/* Track row — single native <select> spanning the full width of the
+ * bay. Sits across the top; the picker owns its own padding and
+ * chevron, so the wrapper just expands to full width. */
 .lite-row--track {
   flex: 0 0 auto;
   width: 100%;
   min-width: 0;
 }
-.lite-row--track > .lite-track-carousel {
+.lite-row--track > .lite-track-picker {
   flex: 1 1 auto;
   min-width: 0;
 }
@@ -5119,8 +5119,13 @@ body.curve-open #install-video-area #graph {
   flex: 1 1 auto;
   min-height: 140px;
 }
-.lite-row--main .slider-track::before { width: 6px; }
-.lite-row--main .slider-fill { width: 6px; }
+/* The visible track + fill are as wide as the thumb so the fader
+ * reads as a single chunky column instead of a thin line with a
+ * disc floating on it. The thumb still sits centered over the
+ * track and the contrast (muted track vs accent-bordered thumb)
+ * carries the "this is the handle" affordance. */
+.lite-row--main .slider-track::before { width: 28px; }
+.lite-row--main .slider-fill { width: 28px; }
 .lite-row--main .slider-thumb {
   width: 28px;
   height: 28px;
@@ -6701,99 +6706,76 @@ body.curve-open #install-video-area #graph {
   background: transparent;
 }
 
-/* ── Lite track carousel ──────────────────────────────────────────────── */
-.lite-track-carousel {
+/* ── Lite track picker (native <select>) ─────────────────────────────── */
+/* Replaces the previous scroll-snap carousel of chips. Letting the OS
+ * draw the picker on tap gives a one-thumb friendly chooser (iOS
+ * wheel / Android dialog) with built-in scrolling, search, and
+ * accessibility for free. The CSS below dresses the closed-state
+ * select to match the bay's mono-caps aesthetic; ``appearance: none``
+ * strips the OS chrome but the picker still pops on tap. */
+.lite-track-picker {
   flex: 0 0 auto;
-  position: relative;
-  margin: 0 -16px;
-  padding: 0 4px;
-  /* Fade the edges so chips bleed off without a hard cut. */
-  -webkit-mask-image: linear-gradient(90deg,
-    transparent, black 20px, black calc(100% - 20px), transparent);
-          mask-image: linear-gradient(90deg,
-    transparent, black 20px, black calc(100% - 20px), transparent);
-}
-.lite-track-carousel-scroll {
   display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  scroll-snap-type: x proximity;
-  scrollbar-width: none;
-  padding: 6px 12px 8px;
-  -webkit-overflow-scrolling: touch;
-  /* This carousel is nested inside the Mix/Track scroll-snap track.
-     Without containment, swiping the chips chains the scroll out to
-     the parent and snaps back to the Mix tab. */
-  overscroll-behavior-x: contain;
+  flex-direction: column;
+  gap: 4px;
+  padding: 2px 2px 0;
 }
-.lite-track-carousel-scroll::-webkit-scrollbar { display: none; }
-.lite-track-carousel-empty {
+.lite-track-picker-label {
   font-family: var(--font-mono);
-  font-size: 0.74em;
+  font-size: 0.66em;
   letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
   color: var(--text-dim);
-  padding: 12px 8px;
+  padding-left: 2px;
 }
-
-.lite-track-chip {
-  scroll-snap-align: center;
-  flex: 0 0 auto;
-  /* WCAG 2.5.5 floor (44x44) — chip is taller than tall, hugs label width. */
-  min-height: 48px;
-  min-width: 64px;
-  padding: 0 14px;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  background: transparent;
+.lite-track-picker-field {
+  /* Positioning anchor for the chevron — the native select doesn't
+   * give us a hook to draw one inside, so it lives as an absolutely
+   * positioned span layered on top with pointer-events: none. */
+  position: relative;
+  display: flex;
+}
+.lite-track-picker-select {
+  flex: 1 1 auto;
+  min-height: 48px; /* WCAG 2.5.5 touch-target floor */
+  padding: 0 36px 0 14px;
+  background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--frame-line);
-  border-radius: 999px;
-  color: var(--text-dim);
+  border-radius: var(--radius-md);
+  color: var(--text);
   font: inherit;
   font-family: var(--font-mono);
-  font-size: 0.74em;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: 0.78em;
+  letter-spacing: 0.04em;
+  /* Strip default browser chrome — the chevron span on the right
+   * carries the affordance. iOS/Android still open the native picker
+   * on tap regardless. */
+  -webkit-appearance: none;
+     -moz-appearance: none;
+          appearance: none;
   cursor: pointer;
+  width: 100%;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  transition: color 120ms, border-color 120ms, background 120ms,
-              transform 120ms, box-shadow 120ms;
+  overflow: hidden;
 }
-.lite-track-chip:hover {
-  color: var(--accent);
-  border-color: var(--accent-line);
-}
-.lite-track-chip:active {
-  transform: scale(0.96);
-}
-.lite-track-chip--current {
-  color: var(--text);
+.lite-track-picker-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
   border-color: var(--accent);
-  background: var(--accent-soft);
-  box-shadow: 0 0 12px var(--accent-glow);
 }
-.lite-track-chip--custom {
-  /* Subtle hint that this is user-uploaded. */
-  border-style: dashed;
-}
-.lite-track-chip--upload {
-  color: var(--accent);
-  border-color: var(--accent-line);
-  border-style: dashed;
-}
-.lite-track-chip--upload:disabled {
+.lite-track-picker-select:disabled {
   opacity: 0.6;
   cursor: progress;
 }
-.lite-track-chip-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.lite-track-chip-label {
-  max-width: 18ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.lite-track-picker-chevron {
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-dim);
+  pointer-events: none;
+  font-size: 0.85em;
 }
 
 /* ── Lite actions row (replaces .lite-row--prompt after reshuffle) ──── */
