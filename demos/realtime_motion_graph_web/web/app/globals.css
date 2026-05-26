@@ -1849,6 +1849,14 @@ body[data-mode="graph"]::before {
   /* Vertical room for the 14px thumb knob without growing the row.
      The track itself stays 6px tall; the thumb floats above and below. */
   margin: 4px 7px;
+  /* The slider lives inside the MobileFullSheet, whose .mobile-sheet-track
+   * uses ``scroll-snap-type: x mandatory`` to swipe between tabs. Without
+   * ``touch-action: none``, a horizontal drag on the slider is interpreted
+   * by the browser as a scroll gesture on the parent — the sheet snaps to
+   * the next tab instead of moving the strength value. ``none`` tells the
+   * browser "this element handles all touch gestures itself", so the
+   * dispatcher's pointer-capture wins and the sheet stays put. */
+  touch-action: none;
 }
 .lora-strength-track:hover { background: rgba(255, 255, 255, 0.14); }
 .lora-strength-fill {
@@ -7034,13 +7042,21 @@ body.curve-open #install-video-area #graph {
    itself sits at top:18 + height:42 = bottom 60, so 70 leaves a 10px
    gap. */
 @media (max-width: 768px) {
+  /* On mobile the scrub strip fills the screen between the brand
+   * header and the slider bay rather than sitting as a thin line at
+   * the top — gives the user a generous scrub target and turns the
+   * waveform itself into the primary visual instead of a hidden
+   * detail. Anchored top+bottom (no fixed height) so it stretches
+   * with viewport: top below the brand mark, bottom above the
+   * lite-controls bay which occupies the lower ~half of the
+   * viewport. Full width — no rail clearance — matching the bay's
+   * full-width treatment. */
   .waveform-scrub-box {
     top: max(env(safe-area-inset-top, 0px) + 70px, 70px);
-    left: calc(var(--stepper-rail-w, 64px)
-               + max(env(safe-area-inset-left, 0px), 8px));
-    right: calc(var(--stepper-rail-w, 64px)
-                + max(env(safe-area-inset-right, 0px), 8px));
-    height: 44px;
+    left: max(env(safe-area-inset-left, 0px), 8px);
+    right: max(env(safe-area-inset-right, 0px), 8px);
+    bottom: 50vh;
+    height: auto;
     /* Sit above the install-stage background but below modals and the
        LiteControls bay. */
     z-index: 5;
