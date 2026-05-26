@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 
@@ -13,14 +13,22 @@ import { usePerformanceStore } from "@/store/usePerformanceStore";
 // prominently on the left rail + lite bay; no need for a tutorial
 // overlay there.
 //
-// Dismissal — any of:
-//   1. User moves the Strength knob (denoise > 0). The interaction
-//      IS the dismissal — once the user has obviously understood,
-//      we don't want a dangling hint.
-//   2. The hint has been dismissed in a prior session (localStorage
-//      flag below). One-shot for the lifetime of the device.
+// Show/dismiss:
+//   - Mounts visible (unless previously dismissed via localStorage).
+//     We do NOT gate the initial show on ``denoise === 0`` because
+//     ``controls.denoise`` defaults to 0.7 in DEMON's DEFAULT_CONFIG,
+//     so the slider's target value is non-zero from session start —
+//     a value-based gate would never fire.
+//   - Initial denoise value is captured AFTER a brief grace period
+//     (the session-start gate plays a visual glide from prior value
+//     down to 0 over ~1 s and we don't want that animation to count
+//     as "user interacted").
+//   - Once the captured "stable" value drifts (== user moved the
+//     knob via drag / MIDI / keyboard), we persist dismiss and
+//     unmount.
 
 const STORAGE_KEY = "demon:hint:strength-onboarding-v1";
+const GRACE_MS = 1500;
 
 function hintDismissed(): boolean {
   if (typeof localStorage === "undefined") return false;
@@ -44,19 +52,30 @@ function persistDismissed(): void {
 export function StrengthOnboardingHint() {
   const denoise = usePerformanceStore((s) => s.sliderTargets["denoise"] ?? 0);
   // SSR-safe: localStorage isn't readable on the server, so we start
-  // closed and flip to "should render" on mount. Avoids hydration
-  // mismatch.
+  // hidden and flip on after a mount-time check.
   const [show, setShow] = useState(false);
+  /** Set after GRACE_MS so the session-start glide doesn't count as
+   *  user interaction. While null, denoise changes are ignored. */
+  const baseline = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!hintDismissed() && denoise === 0) setShow(true);
+    if (hintDismissed()) return;
+    setShow(true);
+    // After the session-start animation settles, freeze the current
+    // value as the "untouched" baseline. Subsequent drift = user
+    // interaction.
+    const t = window.setTimeout(() => {
+      baseline.current = usePerformanceStore.getState().sliderTargets["denoise"] ?? 0;
+    }, GRACE_MS);
+    return () => window.clearTimeout(t);
   }, []);
 
-  // First touch on the knob ⇒ persist + hide. Reading denoise from the
-  // store catches drag, MIDI, AND keyboard — any path that moves
-  // the value counts as "user understood the affordance".
   useEffect(() => {
-    if (denoise > 0 && show) {
+    if (!show) return;
+    if (baseline.current === null) return;
+    // Tiny epsilon so floating-point jitter (e.g. param-smoothing
+    // tween over-/undershoots) doesn't false-fire.
+    if (Math.abs(denoise - baseline.current) > 0.005) {
       persistDismissed();
       setShow(false);
     }
