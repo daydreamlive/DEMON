@@ -40,6 +40,13 @@ export function useLoraFaderDrag(
 
     const onDown = (e: PointerEvent) => {
       if (e.button !== 0 && e.pointerType === "mouse") return;
+      // Refit-lock gate (same chokepoint as the ActiveLoraRow and
+      // edge-bar handlers — see dispatcher.isLocked). Drop the
+      // gesture entirely instead of capturing-then-no-op so the
+      // pointer event bubbles to parent listeners if there are any.
+      const ids = Array.from(useLoraStore.getState().enabled);
+      const id = ids[slotIndex];
+      if (id && loraStrengthDispatcher.isLocked(id)) return;
       dragging = true;
       cachedRect = trackEl.getBoundingClientRect();
       trackEl.setPointerCapture(e.pointerId);

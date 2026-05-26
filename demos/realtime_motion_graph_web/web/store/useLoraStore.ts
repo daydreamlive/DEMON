@@ -2,6 +2,7 @@
 
 import { create } from "zustand";
 
+import { seedLoraSliderValue } from "@/engine/lora/dispatcher";
 import { getConfig, isConfigApplied } from "@/lib/config";
 import { useSessionStore } from "@/store/useSessionStore";
 import {
@@ -200,6 +201,18 @@ function computeSeed(catalog: LoraCatalogEntry[]): {
   return { strengths, enabled };
 }
 
+/** Time (ms) the slider stays locked after the dispatcher COMMITS a
+ *  LoRA strength change to the engine. The dispatcher's debounce
+ *  (``DEBOUNCE_MS = 300`` in dispatcher.ts) is the wait BEFORE this
+ *  window starts; the server refit (~270-295 ms observed on a fleet
+ *  pod) is the wait CONTAINED in this window. The lock fires from
+ *  the back half (commit point), not from pointerup — a v1 of this
+ *  PR started it at pointerup and cleared ~185 ms before the refit
+ *  settled (Marco's review). 400 ms gives ~33 % headroom over the
+ *  worst observed refit; a future ack-based clear via a server
+ *  ``lora_refit_done`` message removes the approximation entirely. */
+const REFIT_LOCK_MS = 400;
+
 interface LoraState {
   catalog: LoraCatalogEntry[];
   /** Per-id strength (0..LORA_SLIDER_MAX). */
@@ -217,6 +230,16 @@ interface LoraState {
    *  out "+" affordances. See ``RtmgConfigEngine.max_concurrent_loras``
    *  for the rationale. */
   maxEnabled: number | null;
+  /** LoRA ids whose strength slider is currently locked while the
+   *  server-side refit settles after a user commit gesture. Populated
+   *  by ``markPendingRefit`` — called from the dispatcher's debounce
+   *  timer at the commit moment, so the lock window opens when the
+   *  value is actually in flight to the engine (not at pointerup,
+   *  which v1 used and which cleared too early because it ignored the
+   *  DEBOUNCE_MS gap). Auto-cleared after ``REFIT_LOCK_MS`` via an
+   *  internal timer. Read through ``dispatcher.isLocked`` from every
+   *  pointer entry point so input gating is centralised. */
+  pendingRefit: Set<string>;
 
   setCatalog: (catalog: LoraCatalogEntry[]) => void;
   setStrength: (id: string, value: number) => void;
@@ -235,6 +258,15 @@ interface LoraState {
    *  this before firing ``sendEnableLora`` on the WS so a denied
    *  enable can't leak a doomed server-side materialization. */
   canEnableMore: () => boolean;
+  /** Lock a LoRA's slider for ``REFIT_LOCK_MS`` after a user-direct
+   *  commit gesture. Calling again while still pending resets the
+   *  timer (the new commit gets its own full lock window). Idempotent
+   *  for already-pending ids — only the timer is bumped. */
+  markPendingRefit: (id: string) => void;
+  /** Force-clear the lock for an id. The timer auto-clears too — this
+   *  is for callers that want to release early (e.g. the LoRA was
+   *  disabled while pending, or a session reset). */
+  clearPendingRefit: (id: string) => void;
 }
 
 /** Pure helper: clip a Set down to the first N entries in insertion
@@ -249,14 +281,24 @@ function clipEnabledToCap(
   return new Set(Array.from(enabled).slice(0, cap));
 }
 
+// Module-scoped timer map. Keeping the timer IDs OUT of zustand state
+// avoids triggering subscribers on every mark/clear pair, and lets us
+// reset a pending timer without touching state for "still pending"
+// commits. The map is cleared by ``clearPendingRefit`` AND by the
+// timer's own expiry handler — whichever fires first.
+const _refitTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
 export const useLoraStore = create<LoraState>((set, get) => ({
   catalog: [],
   strengths: {},
   enabled: new Set(),
   seeded: false,
   maxEnabled: null,
+  pendingRefit: new Set(),
 
-  setCatalog: (incomingCatalog) =>
+  setCatalog: (incomingCatalog) => {
+    let seededIds: string[] = [];
+    let seededStrengths: Record<string, number> = {};
     set((s) => {
       // Float metadata-backed LoRAs to the top so the operator's eye
       // lands on the documented ones; bare-stem LoRAs sink to the
@@ -288,6 +330,14 @@ export const useLoraStore = create<LoraState>((set, get) => ({
             s.maxEnabled,
           )
         : s.enabled;
+      if (shouldSeed) {
+        // Capture newly-enabled ids (post-cap-clip) so the post-set
+        // side-effect can seed their sliderValues entries (see below).
+        // Filter against the final clipped `enabled` so a cap-evicted
+        // candidate doesn't get a stale sliderValues entry.
+        seededIds = [...enabled].filter((id) => !s.enabled.has(id));
+        seededStrengths = strengths;
+      }
       // Note: seeding a LoRA does NOT mutate promptA/promptB. Trigger
       // words are injected onto the WS `prompt` message at send-time by
       // RemoteBackend.sendPrompt (via enabledLoraTriggerPrefix) — the
@@ -298,10 +348,22 @@ export const useLoraStore = create<LoraState>((set, get) => ({
         enabled,
         seeded: s.seeded || shouldSeed,
       };
-    }),
+    });
+    // Seed perf.sliderValues for each newly-enabled LoRA so the FIRST
+    // drag of a freshly-enabled slider doesn't take useParamSync's
+    // fallback path (which reads lora.strengths — updated synchronously
+    // on every pointermove — and ships intermediate values to the
+    // engine, bypassing the dispatcher's debounce). Done as a
+    // post-set() side effect because the seed reads from store-derived
+    // strengths.
+    for (const id of seededIds) {
+      seedLoraSliderValue(id, seededStrengths[id] ?? 0);
+    }
+  },
   setStrength: (id, value) =>
     set((s) => ({ strengths: { ...s.strengths, [id]: value } })),
-  enable: (id) =>
+  enable: (id) => {
+    let added = false;
     set((s) => {
       if (s.enabled.has(id)) return {} as Partial<LoraState>;
       // Cap honoured here so every code path that ends in store.enable
@@ -316,6 +378,7 @@ export const useLoraStore = create<LoraState>((set, get) => ({
       ) {
         return {} as Partial<LoraState>;
       }
+      added = true;
       const next = new Set(s.enabled);
       next.add(id);
       // The LoRA's trigger word is NOT written into promptA/promptB.
@@ -323,7 +386,14 @@ export const useLoraStore = create<LoraState>((set, get) => ({
       // RemoteBackend.sendPrompt (via enabledLoraTriggerPrefix), so
       // the Tags A/B textareas stay the operator's clean prompt text.
       return { enabled: next };
-    }),
+    });
+    if (added) {
+      // Seed sliderValues so the first drag commits via the dispatcher
+      // debounce rather than leaking intermediate values through
+      // useParamSync's lora.strengths fallback (see setCatalog).
+      seedLoraSliderValue(id, get().strengths[id] ?? 0);
+    }
+  },
   disable: (id) =>
     set((s) => {
       if (!s.enabled.has(id)) return {} as Partial<LoraState>;
@@ -334,7 +404,8 @@ export const useLoraStore = create<LoraState>((set, get) => ({
       // wire-side trigger prefix without it.
       return { enabled: next };
     }),
-  toggle: (id) =>
+  toggle: (id) => {
+    let turnedOn = false;
     set((s) => {
       const next = new Set(s.enabled);
       if (next.has(id)) {
@@ -349,10 +420,17 @@ export const useLoraStore = create<LoraState>((set, get) => ({
           return {} as Partial<LoraState>;
         }
         next.add(id);
+        turnedOn = true;
       }
       return { enabled: next };
-    }),
-  reset: () =>
+    });
+    if (turnedOn) {
+      seedLoraSliderValue(id, get().strengths[id] ?? 0);
+    }
+  },
+  reset: () => {
+    let seedIds: string[] = [];
+    let seedStrengths: Record<string, number> = {};
     set((s) => {
       // Keep the catalog — it's server-driven, not user state. Clearing
       // it would flip LibraryTile to its "no LoRAs found" empty state
@@ -362,12 +440,28 @@ export const useLoraStore = create<LoraState>((set, get) => ({
       // defaults", not "lose the catalog".
       const catalog = sortCatalogForDisplay(s.catalog);
       const { strengths, enabled } = computeSeed(catalog);
+      const clippedEnabled = clipEnabledToCap(enabled, s.maxEnabled);
+      seedIds = [...clippedEnabled];
+      seedStrengths = strengths;
+      // Cancel any in-flight refit locks — the value the user was
+      // committing is being replaced. Leaving them set would block
+      // the freshly-seeded sliders for no reason.
+      for (const t of _refitTimers.values()) clearTimeout(t);
+      _refitTimers.clear();
       return {
         catalog,
         strengths,
-        enabled: clipEnabledToCap(enabled, s.maxEnabled),
+        enabled: clippedEnabled,
+        pendingRefit: new Set(),
       };
-    }),
+    });
+    // Seed sliderValues for each freshly-enabled-by-reset LoRA so its
+    // first drag commits via the debounce path (closes useParamSync's
+    // lora.strengths fallback leak).
+    for (const id of seedIds) {
+      seedLoraSliderValue(id, seedStrengths[id] ?? 0);
+    }
+  },
   setMaxEnabled: (n) =>
     set((s) => {
       const cap = n === null || (typeof n === "number" && n >= 0) ? n : null;
@@ -388,5 +482,42 @@ export const useLoraStore = create<LoraState>((set, get) => ({
       s.maxEnabled < 0 ||
       s.enabled.size < s.maxEnabled
     );
+  },
+  markPendingRefit: (id) => {
+    // Reset any in-flight timer for this id BEFORE we issue the new
+    // one — a back-to-back commit gets its own full lock window
+    // rather than expiring on the prior commit's clock.
+    const existing = _refitTimers.get(id);
+    if (existing !== undefined) clearTimeout(existing);
+    const handle = setTimeout(() => {
+      _refitTimers.delete(id);
+      // Read get() at fire time so the timer survives store re-creates
+      // in HMR; idempotent if the id was already cleared.
+      get().clearPendingRefit(id);
+    }, REFIT_LOCK_MS);
+    _refitTimers.set(id, handle);
+    set((s) => {
+      if (s.pendingRefit.has(id)) {
+        // Already locked → only the timer needed bumping; don't churn
+        // subscribers with a no-op set.
+        return {} as Partial<LoraState>;
+      }
+      const next = new Set(s.pendingRefit);
+      next.add(id);
+      return { pendingRefit: next };
+    });
+  },
+  clearPendingRefit: (id) => {
+    const existing = _refitTimers.get(id);
+    if (existing !== undefined) {
+      clearTimeout(existing);
+      _refitTimers.delete(id);
+    }
+    set((s) => {
+      if (!s.pendingRefit.has(id)) return {} as Partial<LoraState>;
+      const next = new Set(s.pendingRefit);
+      next.delete(id);
+      return { pendingRefit: next };
+    });
   },
 }));

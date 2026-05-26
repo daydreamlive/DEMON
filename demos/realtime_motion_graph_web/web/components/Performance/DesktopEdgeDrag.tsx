@@ -200,6 +200,16 @@ export function DesktopEdgeDrag({ side }: Props) {
       // Defensive: if no LoRA is bound (or a fast LoRA disable race lands
       // `data-empty` mid-press), don't capture — drag is a no-op.
       if (el.dataset.empty === "true") return;
+      // Refit-lock gate. For the LoRA-side edge bars (not the top
+      // tempo bar), refuse a new drag while a prior commit's refit is
+      // still in flight on the bound LoRA. Same chokepoint as the
+      // ActiveLoraRow handler — see dispatcher.isLocked. The top bar
+      // does not route through this dispatcher so it's unaffected.
+      if (!isTop) {
+        const ids = Array.from(useLoraStore.getState().enabled);
+        const id = ids[slotIndex];
+        if (id && loraStrengthDispatcher.isLocked(id)) return;
+      }
       isDragging = true;
       setDragging(true);
       dragInitialValue = readCurrentValue();
