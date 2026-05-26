@@ -18,11 +18,15 @@ interface Props {
 // CSS uppercases these on render via .slider-label / .mixer-tile-label.
 const DISPLAY_NAMES: Record<string, string> = {
   // Macros where the friendly name reads more clearly than the
-  // engine-honest one: `structure` for `hint_strength`, `timbre` for
-  // `timbre_strength` (drop the "strength" suffix on knobs — the value
-  // readout already conveys magnitude). Everything else falls back to
-  // defaultLabelFor (underscore → space) so the UI matches what the
-  // engine, MIDI map, and config files call them.
+  // engine-honest one: `strength` for `denoise` (the "denoise"
+  // engine-internal naming refers to the diffusion step, but users
+  // perceive this knob as "how strong is the remix"), `structure` for
+  // `hint_strength`, `timbre` for `timbre_strength` (drop the
+  // "strength" suffix on knobs — the value readout already conveys
+  // magnitude). Everything else falls back to defaultLabelFor
+  // (underscore → space) so the UI matches what the engine, MIDI map,
+  // and config files call them.
+  denoise: "strength",
   hint_strength: "structure",
   timbre_strength: "timbre",
   // dcw_* keep their engine-honest "DCW low" / "DCW high" — these are

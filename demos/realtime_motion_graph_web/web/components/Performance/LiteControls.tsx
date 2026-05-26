@@ -57,7 +57,7 @@ export function LiteControls({ onOpenAllControls, unsavedDot }: Props) {
         <LiteTrackCarousel />
       </div>
       <div className="lite-row lite-row--main">
-        <SliderGroup param="denoise" label="denoise" />
+        <SliderGroup param="denoise" label="strength" />
         <SliderGroup param="hint_strength" label="structure" />
         <SliderGroup param="timbre_strength" label="timbre" />
         <SliderGroup param="shift" label="shift" />

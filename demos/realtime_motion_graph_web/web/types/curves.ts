@@ -54,10 +54,10 @@ export const MAX_LORA_CURVES = 2;
 /** Display label shown in the tab strip. CSS uppercases via
  *  text-transform; we store natural case so screen readers and tooltips
  *  read sensibly. Mirrors the labels in MainTile / EngineTile / HUD so
- *  users see the same names everywhere ("Remix strength", not the
- *  internal `denoise` key). */
+ *  users see the same names everywhere ("Strength", not the internal
+ *  `denoise` key — see SliderTile DISPLAY_NAMES for the same mapping). */
 export const SCHEDULEABLE_PARAM_LABEL: Record<ScheduleableParam, string> = {
-  denoise: "Denoise",
+  denoise: "Strength",
   hint_strength: "Structure",
   feedback: "Feedback",
   shift: "Shift",
