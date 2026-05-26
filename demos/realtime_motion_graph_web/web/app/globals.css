@@ -7761,15 +7761,21 @@ body.curve-open #install-video-area #graph {
 /* ─────────────────────────────────────────────────────────────────────
    WaveformTrimDialog — interactive trim that runs between
    decodeAudioFile and the AlmostReadyDialog. Reuses the
-   ``.almost-ready-overlay/card/header/footer`` chrome so the two
-   dialogs share their fade-in animation and the modal feels like a
-   single multi-step flow. Only the trim-specific bits below are new.
+   ``.almost-ready-backdrop / -modal / -header / -body / -footer / -btn``
+   chrome so the two dialogs share their fade-in animation and the
+   upload flow reads as one multi-step modal. Only the trim-specific
+   bits below are new.
    ───────────────────────────────────────────────────────────────────── */
-.waveform-trim-card {
-  /* Wider than the AlmostReadyDialog so the waveform has room to
-   * read without horizontal cramping. */
-  max-width: 720px;
-  width: min(720px, 92vw);
+.waveform-trim-modal {
+  /* Override .almost-ready-modal's 540 px width so the waveform has
+   * room to read without horizontal cramping. */
+  width: min(720px, 100%);
+}
+.waveform-trim-hint {
+  margin: 0 0 12px;
+  color: var(--text-dim);
+  font-size: 0.92em;
+  line-height: 1.45;
 }
 .waveform-trim-container {
   position: relative;

@@ -37,8 +37,6 @@ export interface WaveformTrimDialogProps {
   onCancel: () => void;
 }
 
-// Match AlmostReadyDialog's portal-mount tick so the overlay's
-// transition (opacity, transform) gets a chance to animate in.
 const MIN_S_DEFAULT = 3;
 
 function fmtMMSS(seconds: number): string {
@@ -60,16 +58,11 @@ export function WaveformTrimDialog({
   const initialEnd = Math.min(capS, durationS);
   const [startS, setStartS] = useState(0);
   const [endS, setEndS] = useState(initialEnd);
-  const [mounted, setMounted] = useState(false);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [containerWidth, setContainerWidth] = useState(0);
   const peaksRef = useRef<Float32Array | null>(null);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
 
   // Measure container width — drives both canvas pixel sizing and
   // the px↔seconds mapping. ResizeObserver covers viewport changes
@@ -218,9 +211,15 @@ export function WaveformTrimDialog({
   }, [onCancel, onConfirm, startS, endS]);
 
   if (typeof document === "undefined") return null;
+  // Reuses the AlmostReadyDialog's modal chrome
+  // (.almost-ready-backdrop / -modal / -header / -body / -footer /
+  // -btn--*) so the two dialogs share their fade/pop animations and
+  // sizing — the upload flow reads as one multi-step modal. Only the
+  // waveform area and the per-component sizing in
+  // .waveform-trim-modal are local to this dialog.
   return createPortal(
     <div
-      className={`almost-ready-overlay${mounted ? " mounted" : ""}`}
+      className="almost-ready-backdrop"
       onClick={(e) => {
         if (e.target === e.currentTarget) onCancel();
       }}
@@ -228,91 +227,98 @@ export function WaveformTrimDialog({
       aria-modal="true"
       aria-label="Trim upload"
     >
-      <div className="almost-ready-card waveform-trim-card">
-        <header className="almost-ready-header">
-          <h2 className="almost-ready-title">Trim upload</h2>
-          <p className="almost-ready-sub">
-            <strong>{fileName}</strong> — {fmtMMSS(durationS)} total.
-            {" "}
-            {fileShorterThanCap
-              ? "Pick any section."
-              : `Max ${fmtMMSS(capS)} of audio per session.`}
-          </p>
-        </header>
-
-        <div
-          ref={containerRef}
-          className="waveform-trim-container"
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          onPointerCancel={onPointerUp}
-        >
-          <canvas ref={canvasRef} className="waveform-trim-canvas" />
-          {containerWidth > 0 && (
-            <>
-              {/* Dimmed regions outside the selection. Pointer events
-                  pass through to the container so a stray pointerdown
-                  on a dimmed region doesn't break the drag. */}
-              <div
-                className="waveform-trim-dim"
-                style={{ left: 0, width: startPx }}
-              />
-              <div
-                className="waveform-trim-dim"
-                style={{ left: endPx, right: 0 }}
-              />
-              {/* Selection box — draggable body, with two grab handles
-                  poking out at the edges. */}
-              <div
-                className="waveform-trim-selection"
-                style={{ left: startPx, width: widthPx }}
-                onPointerDown={onPointerDown("body")}
-              />
-              <div
-                className="waveform-trim-handle waveform-trim-handle-start"
-                style={{ left: startPx }}
-                onPointerDown={onPointerDown("start")}
-                aria-label="Trim start"
-                role="slider"
-                aria-valuemin={0}
-                aria-valuemax={Math.floor(durationS)}
-                aria-valuenow={Math.floor(startS)}
-              />
-              <div
-                className="waveform-trim-handle waveform-trim-handle-end"
-                style={{ left: endPx }}
-                onPointerDown={onPointerDown("end")}
-                aria-label="Trim end"
-                role="slider"
-                aria-valuemin={0}
-                aria-valuemax={Math.floor(durationS)}
-                aria-valuenow={Math.floor(endS)}
-              />
-            </>
-          )}
-        </div>
-
-        <div className="waveform-trim-readout">
-          <span>
-            <span className="waveform-trim-readout-label">Start</span>{" "}
-            {fmtMMSS(startS)}
-          </span>
-          <span>
-            <span className="waveform-trim-readout-label">End</span>{" "}
-            {fmtMMSS(endS)}
-          </span>
-          <span
-            className={`waveform-trim-readout-selected${atCap ? " at-cap" : ""}`}
+      <div className="almost-ready-modal waveform-trim-modal">
+        <div className="almost-ready-header">
+          <h2 className="almost-ready-title">Trim upload — step 1 of 2</h2>
+          <button
+            type="button"
+            className="config-modal-close"
+            onClick={onCancel}
+            aria-label="Cancel upload"
           >
-            <span className="waveform-trim-readout-label">Selected</span>{" "}
-            {fmtMMSS(selectedS)}
-            {atCap && !fileShorterThanCap && (
-              <span className="waveform-trim-readout-cap"> (max)</span>
+            ×
+          </button>
+        </div>
+        <div className="almost-ready-body">
+          <div className="almost-ready-filename" title={fileName}>
+            {fileName} · {fmtMMSS(durationS)} total
+          </div>
+
+          <p className="waveform-trim-hint">
+            {fileShorterThanCap
+              ? "Drag the handles or the highlighted window to pick the section to send to the engine."
+              : `Max ${fmtMMSS(capS)} per session — drag to position the window over the section you want to send.`}
+          </p>
+
+          <div
+            ref={containerRef}
+            className="waveform-trim-container"
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={onPointerUp}
+          >
+            <canvas ref={canvasRef} className="waveform-trim-canvas" />
+            {containerWidth > 0 && (
+              <>
+                <div
+                  className="waveform-trim-dim"
+                  style={{ left: 0, width: startPx }}
+                />
+                <div
+                  className="waveform-trim-dim"
+                  style={{ left: endPx, right: 0 }}
+                />
+                <div
+                  className="waveform-trim-selection"
+                  style={{ left: startPx, width: widthPx }}
+                  onPointerDown={onPointerDown("body")}
+                />
+                <div
+                  className="waveform-trim-handle waveform-trim-handle-start"
+                  style={{ left: startPx }}
+                  onPointerDown={onPointerDown("start")}
+                  aria-label="Trim start"
+                  role="slider"
+                  aria-valuemin={0}
+                  aria-valuemax={Math.floor(durationS)}
+                  aria-valuenow={Math.floor(startS)}
+                />
+                <div
+                  className="waveform-trim-handle waveform-trim-handle-end"
+                  style={{ left: endPx }}
+                  onPointerDown={onPointerDown("end")}
+                  aria-label="Trim end"
+                  role="slider"
+                  aria-valuemin={0}
+                  aria-valuemax={Math.floor(durationS)}
+                  aria-valuenow={Math.floor(endS)}
+                />
+              </>
             )}
-          </span>
+          </div>
+
+          <div className="waveform-trim-readout">
+            <span>
+              <span className="waveform-trim-readout-label">Start</span>{" "}
+              {fmtMMSS(startS)}
+            </span>
+            <span>
+              <span className="waveform-trim-readout-label">End</span>{" "}
+              {fmtMMSS(endS)}
+            </span>
+            <span
+              className={`waveform-trim-readout-selected${atCap ? " at-cap" : ""}`}
+            >
+              <span className="waveform-trim-readout-label">Selected</span>{" "}
+              {fmtMMSS(selectedS)}
+              {atCap && !fileShorterThanCap && (
+                <span className="waveform-trim-readout-cap"> (max)</span>
+              )}
+            </span>
+          </div>
         </div>
 
-        <footer className="almost-ready-footer">
+        <div className="almost-ready-footer">
           <button
             type="button"
             className="almost-ready-btn almost-ready-btn--secondary"
@@ -327,7 +333,7 @@ export function WaveformTrimDialog({
           >
             Use this section
           </button>
-        </footer>
+        </div>
       </div>
     </div>,
     document.body,
