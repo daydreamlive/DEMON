@@ -6976,6 +6976,14 @@ body.curve-open #install-video-area #graph {
     opacity 240ms ease-out,
     left 320ms cubic-bezier(.2, .7, .2, 1);
   pointer-events: auto;
+  /* Critical on mobile: without this the browser interprets a
+   * horizontal touch drag as panning and yanks the pointer event
+   * stream away from JS mid-scrub (setPointerCapture is too late to
+   * keep ownership). Symptom was a touch-scrub that worked for ~10
+   * px then stopped, and loop-drawing was effectively impossible.
+   * ``none`` gives the component exclusive control of every gesture
+   * on the strip. */
+  touch-action: none;
 }
 .waveform-scrub-box[data-ready="true"] {
   opacity: 1;
@@ -7057,6 +7065,12 @@ body.curve-open #install-video-area #graph {
     right: max(env(safe-area-inset-right, 0px), 8px);
     bottom: 50vh;
     height: auto;
+    /* Inner breathing room — the canvases (position:absolute;
+     * inset:0) anchor to the padding box, so this pulls the
+     * waveform graphic away from the container edges. Equal
+     * top/bottom keeps the waveform vertically centered. */
+    padding: 18px 14px;
+    box-sizing: border-box;
     /* Sit above the install-stage background but below modals and the
        LiteControls bay. */
     z-index: 5;
