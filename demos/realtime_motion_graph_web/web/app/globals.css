@@ -200,6 +200,17 @@ body.cursor-hidden nextjs-portal * {
 
 body.cursor-idle .cursor-canvas { opacity: 0; }
 
+/* Hide the custom cursor entirely on touch-only devices. The cursor
+ * was designed as a desktop mouse trail — on mobile, every tap left
+ * a white dot under the user's finger which read as a stray artefact
+ * over their own touch input. Matched via the hover/pointer media
+ * features so it triggers on any touch-only device regardless of
+ * viewport width (covers tablets in landscape and unusual aspect
+ * ratios that the 768 px breakpoint would miss). */
+@media (hover: none) and (pointer: coarse) {
+  .cursor-canvas { display: none; }
+}
+
 /* ── Performance screen + Play overlay ───────────────────────────────────── */
 #performance {
   position: fixed;
@@ -5130,8 +5141,18 @@ body.curve-open #install-video-area #graph {
  * disc floating on it. The thumb still sits centered over the
  * track and the contrast (muted track vs accent-bordered thumb)
  * carries the "this is the handle" affordance. */
-.lite-row--main .slider-track::before { width: 28px; }
-.lite-row--main .slider-fill { width: 28px; }
+/* Pill-rounded top + bottom on the mobile track so the circular
+ * thumb sits flush inside the column at the min/max ends (the
+ * thumb radius == half the track width, so border-radius: 14px on
+ * both the recess and the fill closes the corners exactly). */
+.lite-row--main .slider-track::before {
+  width: 28px;
+  border-radius: 14px;
+}
+.lite-row--main .slider-fill {
+  width: 28px;
+  border-radius: 14px;
+}
 .lite-row--main .slider-thumb {
   width: 28px;
   height: 28px;
