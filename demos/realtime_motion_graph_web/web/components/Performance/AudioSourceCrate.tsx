@@ -9,6 +9,8 @@ import {
   type DecodedFixture,
   type StemSourceMode,
 } from "@/engine/audio/loadFixture";
+import { trimAudioBuffer } from "@/lib/audio/trimAudioBuffer";
+import { useConfig } from "@/lib/config";
 import { LOCAL_MODE } from "@/lib/runtime";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
@@ -17,6 +19,9 @@ import type { TimeSignature } from "@/types/engine";
 
 import { AlmostReadyDialog } from "./AlmostReadyDialog";
 import { MicRecorder } from "./MicRecorder";
+import { WaveformTrimDialog } from "./WaveformTrimDialog";
+
+const DEFAULT_TRIM_CAP_S = 120;
 
 // Bottom-left counterpart to the bottom-right turntable. Replaces the plain
 // fixture <select> as the primary track-picker — that dropdown hid the fact
@@ -102,15 +107,24 @@ export function AudioSourceCrate() {
   const [open, setOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [micOpen, setMicOpen] = useState(false);
-  // After decode, the dialog gates the actual fixture swap so the user
-  // can confirm the trim (if any) and pick a key before playback
-  // crossfades.
+  // Upload flow is two-stage: ``trimming`` opens the interactive
+  // WaveformTrimDialog right after decode, ``pending`` opens the
+  // AlmostReadyDialog (source-mode + key) once the user has chosen
+  // their trim window. Splitting them keeps the previously-playing
+  // song alive through both — neither addCustomTrack nor setFixture
+  // runs until the AlmostReadyDialog "Continue" lands.
+  const [trimming, setTrimming] = useState<{
+    decoded: DecodedFixture;
+    fileName: string;
+    originalFile: File;
+  } | null>(null);
   const [pending, setPending] = useState<{
     decoded: DecodedFixture;
     fileName: string;
-    wasTrimmed: boolean;
     originalFile: File;
   } | null>(null);
+  const trimCapS =
+    useConfig().engine.max_source_duration_s ?? DEFAULT_TRIM_CAP_S;
 
   // Auto-collapse: the dock folds to a small play bubble 2s after it's
   // left alone, and expands back on hover / focus. `collapsed` drives
@@ -165,7 +179,7 @@ export function AudioSourceCrate() {
   // 2s after the last interaction. The timeout is cleared on any
   // re-activation so it only fires once the dock is truly idle.
   const dockActive =
-    hovered || open || micOpen || uploading || pending !== null;
+    hovered || open || micOpen || uploading || pending !== null || trimming !== null;
   useEffect(() => {
     if (dockActive) {
       setCollapsed(false);
@@ -180,18 +194,18 @@ export function AudioSourceCrate() {
     setUploading(true);
     setStatus(useSessionStore.getState().status, `Loading ${file.name}…`);
     try {
-      const { decoded, wasTrimmed } = await decodeAudioFile(file);
+      const decoded = await decodeAudioFile(file);
       const baseName = file.name;
       let chosen = baseName;
       let i = 1;
       while (useCustomTracksStore.getState().has(chosen)) {
         chosen = `${baseName} (${i++})`;
       }
-      // Hand the decoded buffer + trim flag to the dialog. We DON'T add
-      // it to the custom-tracks store yet, and we DON'T setFixture()
-      // yet — that all happens on Continue so the previously playing
-      // song keeps playing if the user cancels.
-      setPending({ decoded, fileName: chosen, wasTrimmed, originalFile: file });
+      // Hand the full-length decoded buffer to the trim dialog. We
+      // don't touch the custom-tracks store or setFixture() until
+      // after BOTH the trim dialog and the AlmostReadyDialog confirm,
+      // so cancelling either step keeps the previous song playing.
+      setTrimming({ decoded, fileName: chosen, originalFile: file });
       setStatus(useSessionStore.getState().status, "");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -199,6 +213,17 @@ export function AudioSourceCrate() {
     } finally {
       setUploading(false);
     }
+  }
+
+  function onTrimConfirm(startS: number, endS: number) {
+    if (!trimming) return;
+    const trimmed = trimAudioBuffer(trimming.decoded, startS, endS);
+    setPending({
+      decoded: trimmed,
+      fileName: trimming.fileName,
+      originalFile: trimming.originalFile,
+    });
+    setTrimming(null);
   }
 
   function commitPending(
@@ -386,10 +411,19 @@ export function AudioSourceCrate() {
         }}
       />
 
+      {trimming && (
+        <WaveformTrimDialog
+          decoded={trimming.decoded}
+          fileName={trimming.fileName}
+          capS={trimCapS}
+          onConfirm={onTrimConfirm}
+          onCancel={() => setTrimming(null)}
+        />
+      )}
       {pending && (
         <AlmostReadyDialog
           fileName={pending.fileName}
-          wasTrimmed={pending.wasTrimmed}
+          wasTrimmed={false}
           defaultKey={usePerformanceStore.getState().activeKey}
           defaultTimeSignature={
             usePerformanceStore.getState().activeTimeSignature

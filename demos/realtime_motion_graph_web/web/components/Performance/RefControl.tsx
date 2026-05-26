@@ -183,13 +183,13 @@ export function RefControl({ kind }: { kind: RefKind }) {
     setBusy(true);
     setStatus("ready", `Loading ${bind.statusPrefix} ${file.name}…`);
     try {
-      // decodeAudioFile now returns { decoded, wasTrimmed } since the
-      // soft-trim-to-MAX_FIXTURE_DURATION_S feature landed. Unwrap before
-      // passing to add() / bind.send(), which still expect a bare
-      // DecodedFixture. wasTrimmed is informational only here — the
-      // ref-track upload UX doesn't surface a trim warning the way the
-      // main AudioSourceCrate flow does.
-      const { decoded } = await decodeAudioFile(file);
+      // decodeAudioFile returns a bare DecodedFixture — no auto-trim.
+      // Ref tracks (timbre / structure) intentionally skip the
+      // interactive trim dialog the main AudioSourceCrate / Lite flow
+      // shows: a reference is conceptually the whole clip the model
+      // should imitate, not a slice. The MAX_UPLOAD_DURATION_S
+      // browser-memory ceiling inside decodeAudioFile still applies.
+      const decoded = await decodeAudioFile(file);
       // Mirror AudioSourceCrate's de-dup naming so uploads land in the
       // shared "your tracks" pool without colliding.
       const baseName = file.name;

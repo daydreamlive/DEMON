@@ -9,6 +9,8 @@ import {
   type DecodedFixture,
   type StemSourceMode,
 } from "@/engine/audio/loadFixture";
+import { trimAudioBuffer } from "@/lib/audio/trimAudioBuffer";
+import { useConfig } from "@/lib/config";
 import { LOCAL_MODE } from "@/lib/runtime";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
@@ -16,6 +18,9 @@ import { useSessionStore } from "@/store/useSessionStore";
 import type { TimeSignature } from "@/types/engine";
 
 import { AlmostReadyDialog } from "./AlmostReadyDialog";
+import { WaveformTrimDialog } from "./WaveformTrimDialog";
+
+const DEFAULT_TRIM_CAP_S = 120;
 
 // Mobile Lite-controls track picker. A horizontal scroll-snap row of fixture
 // chips followed by an "Upload your own" chip. Reuses the same fixture
@@ -57,12 +62,21 @@ export function LiteTrackCarousel() {
   const addCustomTrack = useCustomTracksStore((s) => s.add);
 
   const [uploading, setUploading] = useState(false);
+  // Mirrors AudioSourceCrate's two-stage flow: trim first, then the
+  // AlmostReadyDialog. Keeps the previously playing track alive
+  // through both steps.
+  const [trimming, setTrimming] = useState<{
+    decoded: DecodedFixture;
+    fileName: string;
+    originalFile: File;
+  } | null>(null);
   const [pending, setPending] = useState<{
     decoded: DecodedFixture;
     fileName: string;
-    wasTrimmed: boolean;
     originalFile: File;
   } | null>(null);
+  const trimCapS =
+    useConfig().engine.max_source_duration_s ?? DEFAULT_TRIM_CAP_S;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
 
@@ -102,16 +116,17 @@ export function LiteTrackCarousel() {
     setUploading(true);
     setStatus(useSessionStore.getState().status, `Loading ${file.name}…`);
     try {
-      const { decoded, wasTrimmed } = await decodeAudioFile(file);
+      const decoded = await decodeAudioFile(file);
       const baseName = file.name;
       let chosen = baseName;
       let i = 1;
       while (useCustomTracksStore.getState().has(chosen)) {
         chosen = `${baseName} (${i++})`;
       }
-      // Defer commit to the AlmostReadyDialog so cancel leaves the
-      // previously playing track alone.
-      setPending({ decoded, fileName: chosen, wasTrimmed, originalFile: file });
+      // Interactive trim first; ``onTrimConfirm`` below slices the
+      // window and hands the trimmed buffer to the AlmostReadyDialog
+      // for the source-mode + key step.
+      setTrimming({ decoded, fileName: chosen, originalFile: file });
       setStatus(useSessionStore.getState().status, "");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -119,6 +134,17 @@ export function LiteTrackCarousel() {
     } finally {
       setUploading(false);
     }
+  }
+
+  function onTrimConfirm(startS: number, endS: number) {
+    if (!trimming) return;
+    const trimmed = trimAudioBuffer(trimming.decoded, startS, endS);
+    setPending({
+      decoded: trimmed,
+      fileName: trimming.fileName,
+      originalFile: trimming.originalFile,
+    });
+    setTrimming(null);
   }
 
   function commitPending(
@@ -205,10 +231,19 @@ export function LiteTrackCarousel() {
         }}
       />
 
+      {trimming && (
+        <WaveformTrimDialog
+          decoded={trimming.decoded}
+          fileName={trimming.fileName}
+          capS={trimCapS}
+          onConfirm={onTrimConfirm}
+          onCancel={() => setTrimming(null)}
+        />
+      )}
       {pending && (
         <AlmostReadyDialog
           fileName={pending.fileName}
-          wasTrimmed={pending.wasTrimmed}
+          wasTrimmed={false}
           defaultKey={usePerformanceStore.getState().activeKey}
           defaultTimeSignature={
             usePerformanceStore.getState().activeTimeSignature

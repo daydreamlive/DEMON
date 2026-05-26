@@ -126,6 +126,21 @@ export interface RtmgConfigEngine {
     up_to_s: number;
     cap: number;
   }> | null;
+  /** Hard ceiling on how long a slice of audio the engine will accept
+   *  as a source. The upload UI shows an interactive trim dialog
+   *  (WaveformTrimDialog) on every upload — the dialog clamps the
+   *  selectable window to this value, and only the trimmed slice is
+   *  ever sent to the engine.
+   *
+   *  Default is 120 s: the 60 s and 120 s TRT engines are the stable
+   *  pair on current GPUs. The 240 s vae_encode engine reserves
+   *  ~16 GiB workspace at runtime which has driven CUDA-OOM crashes
+   *  on 32 GiB cards; keeping the cap at 120 s avoids that profile
+   *  until the OOM and the related context-creation-returns-None
+   *  crash in acestep/nodes/vae_nodes.py are addressed. Operators
+   *  with bigger cards (≥48 GiB) who want the 240 s profile can set
+   *  this to 240 in their override config. */
+  max_source_duration_s?: number;
   /** XL (5B) variant overrides. When the active checkpoint scale is
    *  "5B", these win over their base siblings at applyConfig time.
    *  Absent / undefined falls through to the base field. Selection
@@ -294,6 +309,7 @@ export const DEFAULT_CONFIG: RtmgConfig = {
     fast_vae: false,
     walk_window: false,
     walk_window_s: 60,
+    max_source_duration_s: 120,
     key: "G# minor",
     time_signature: DEFAULT_TIME_SIGNATURE,
     enabled_loras: [],

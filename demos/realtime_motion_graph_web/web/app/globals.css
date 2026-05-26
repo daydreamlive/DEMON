@@ -7759,6 +7759,107 @@ body.curve-open #install-video-area #graph {
 .almost-ready-btn--ghost:hover { color: var(--text); }
 
 /* ─────────────────────────────────────────────────────────────────────
+   WaveformTrimDialog — interactive trim that runs between
+   decodeAudioFile and the AlmostReadyDialog. Reuses the
+   ``.almost-ready-overlay/card/header/footer`` chrome so the two
+   dialogs share their fade-in animation and the modal feels like a
+   single multi-step flow. Only the trim-specific bits below are new.
+   ───────────────────────────────────────────────────────────────────── */
+.waveform-trim-card {
+  /* Wider than the AlmostReadyDialog so the waveform has room to
+   * read without horizontal cramping. */
+  max-width: 720px;
+  width: min(720px, 92vw);
+}
+.waveform-trim-container {
+  position: relative;
+  width: 100%;
+  height: 120px;
+  margin: 18px 0 10px;
+  border: 1px solid var(--accent-line);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none; /* prevent the browser scrolling while dragging */
+  user-select: none;
+}
+.waveform-trim-container:active { cursor: grabbing; }
+.waveform-trim-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  pointer-events: none; /* drag binds to the container, not the canvas */
+}
+.waveform-trim-dim {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+}
+.waveform-trim-selection {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(255, 209, 102, 0.12); /* accent at 12% */
+  border-left: 1px solid var(--accent);
+  border-right: 1px solid var(--accent);
+  box-shadow: 0 0 0 1px rgba(255, 209, 102, 0.15) inset;
+  cursor: grab;
+}
+.waveform-trim-selection:active { cursor: grabbing; }
+.waveform-trim-handle {
+  /* The visible bar is 4px but the hit-box stretches to 14px so the
+   * handle is still grabbable on touch / coarse pointers without
+   * widening the visual chrome. */
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 14px;
+  margin-left: -7px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.waveform-trim-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 4px;
+  transform: translateX(-50%);
+  background: var(--accent);
+  border-radius: 2px;
+  box-shadow: 0 0 6px rgba(255, 209, 102, 0.55);
+}
+.waveform-trim-readout {
+  display: flex;
+  gap: 22px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 14px;
+}
+.waveform-trim-readout-label {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  opacity: 0.7;
+  margin-right: 4px;
+}
+.waveform-trim-readout-selected {
+  color: var(--text);
+  margin-left: auto;
+}
+.waveform-trim-readout-selected.at-cap { color: var(--accent); }
+.waveform-trim-readout-cap {
+  margin-left: 4px;
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+/* ─────────────────────────────────────────────────────────────────────
    ConfirmDialog — generic yes/no replacement for window.confirm().
    Mirrors .almost-ready-* sizing/animations but narrower (≈380px)
    since the body is just a message + two buttons. z-index 110 puts it

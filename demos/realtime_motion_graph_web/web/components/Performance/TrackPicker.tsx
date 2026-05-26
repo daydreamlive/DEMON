@@ -9,6 +9,8 @@ import {
   type DecodedFixture,
   type StemSourceMode,
 } from "@/engine/audio/loadFixture";
+import { trimAudioBuffer } from "@/lib/audio/trimAudioBuffer";
+import { useConfig } from "@/lib/config";
 import { LOCAL_MODE } from "@/lib/runtime";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
@@ -17,6 +19,9 @@ import type { TimeSignature } from "@/types/engine";
 
 import { AlmostReadyDialog } from "./AlmostReadyDialog";
 import { RefSelect } from "./RefSelect";
+import { WaveformTrimDialog } from "./WaveformTrimDialog";
+
+const DEFAULT_TRIM_CAP_S = 120;
 
 // Inline track picker — a caption + dropdown + sibling upload icon
 // living at the top of the CORE tab so power users don't have to leave
@@ -38,12 +43,22 @@ export function TrackPicker() {
   const addCustomTrack = useCustomTracksStore((s) => s.add);
 
   const [uploading, setUploading] = useState(false);
+  // Upload flow is two-stage: first the interactive trim dialog
+  // (``trimming``), then the AlmostReadyDialog (``pending``). The
+  // trim step is always on — short uploads still get the dialog so
+  // users can pick a section of their 30 s loop instead of the head.
+  const [trimming, setTrimming] = useState<{
+    decoded: DecodedFixture;
+    fileName: string;
+    originalFile: File;
+  } | null>(null);
   const [pending, setPending] = useState<{
     decoded: DecodedFixture;
     fileName: string;
-    wasTrimmed: boolean;
     originalFile: File;
   } | null>(null);
+  const trimCapS =
+    useConfig().engine.max_source_duration_s ?? DEFAULT_TRIM_CAP_S;
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -65,14 +80,18 @@ export function TrackPicker() {
     setUploading(true);
     setStatus(useSessionStore.getState().status, `Loading ${file.name}…`);
     try {
-      const { decoded, wasTrimmed } = await decodeAudioFile(file);
+      const decoded = await decodeAudioFile(file);
       const baseName = file.name;
       let chosen = baseName;
       let i = 1;
       while (useCustomTracksStore.getState().has(chosen)) {
         chosen = `${baseName} (${i++})`;
       }
-      setPending({ decoded, fileName: chosen, wasTrimmed, originalFile: file });
+      // First stop: the user picks the trim window. The pre-trim
+      // DecodedFixture stays in memory only as long as this dialog
+      // is open; ``onTrimConfirm`` below slices it down to the
+      // selected window and drops the original.
+      setTrimming({ decoded, fileName: chosen, originalFile: file });
       setStatus(useSessionStore.getState().status, "");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -80,6 +99,17 @@ export function TrackPicker() {
     } finally {
       setUploading(false);
     }
+  }
+
+  function onTrimConfirm(startS: number, endS: number) {
+    if (!trimming) return;
+    const trimmed = trimAudioBuffer(trimming.decoded, startS, endS);
+    setPending({
+      decoded: trimmed,
+      fileName: trimming.fileName,
+      originalFile: trimming.originalFile,
+    });
+    setTrimming(null);
   }
 
   function commitPending(
@@ -137,10 +167,19 @@ export function TrackPicker() {
           if (file) void onFilePicked(file);
         }}
       />
+      {trimming && (
+        <WaveformTrimDialog
+          decoded={trimming.decoded}
+          fileName={trimming.fileName}
+          capS={trimCapS}
+          onConfirm={onTrimConfirm}
+          onCancel={() => setTrimming(null)}
+        />
+      )}
       {pending && (
         <AlmostReadyDialog
           fileName={pending.fileName}
-          wasTrimmed={pending.wasTrimmed}
+          wasTrimmed={false}
           defaultKey={usePerformanceStore.getState().activeKey}
           defaultTimeSignature={
             usePerformanceStore.getState().activeTimeSignature

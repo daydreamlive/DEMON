@@ -124,53 +124,30 @@ export async function loadFixtureAudio(name: string): Promise<DecodedFixture> {
   return decodeArrayBuffer(bytes);
 }
 
-// Cap user-supplied audio at DEMON's largest TRT engine profile
-// (240 s; see acestep/paths.py:_TRT_ENGINE_PROFILES). Anything longer
-// would fail server-side at session init regardless of WS frame size.
-// The server's websockets.serve(max_size=...) is sized to fit this
-// duration with a comfortable margin.
-export const MAX_FIXTURE_DURATION_S = 240;
-
-export interface DecodeFileResult {
-  decoded: DecodedFixture;
-  /** True iff the input was longer than MAX_FIXTURE_DURATION_S and we
-   *  trimmed the head. The UI surfaces this so users know the upload
-   *  was clipped. */
-  wasTrimmed: boolean;
-}
-
-/** Soft-trim to fit DEMON's swap-source limit. Tracks ≤ 240 s pass
- *  through unchanged; longer tracks are clipped to the largest
- *  pool-aligned length ≤ 240 s. Pool alignment matches the rule in
- *  decodeArrayBuffer (multiple of SAMPLE_POOL = 9600), so the trimmed
- *  buffer still satisfies backend.py's VAE-encode constraint. */
-function trimToSwapLimit(decoded: DecodedFixture): DecodeFileResult {
-  const seconds = decoded.frames / decoded.sampleRate;
-  if (seconds <= MAX_FIXTURE_DURATION_S) return { decoded, wasTrimmed: false };
-
-  const maxFramesRaw = MAX_FIXTURE_DURATION_S * decoded.sampleRate;
-  const targetFrames = Math.floor(maxFramesRaw / SAMPLE_POOL) * SAMPLE_POOL;
-  const trimmed = new Float32Array(targetFrames * decoded.channels);
-  trimmed.set(decoded.interleaved.subarray(0, targetFrames * decoded.channels));
-  return {
-    decoded: {
-      interleaved: trimmed,
-      channels: decoded.channels,
-      frames: targetFrames,
-      sampleRate: decoded.sampleRate,
-    },
-    wasTrimmed: true,
-  };
-}
+// Hard upper bound on upload length. The interactive trim dialog
+// (WaveformTrimDialog) lets the user pick any window of up to
+// engine.max_source_duration_s, so tracks longer than this just give
+// the user more room to pick FROM — they aren't passed to the engine
+// at full length. The cap here exists purely to keep one giant decode
+// from exhausting the browser's memory; 10 min of 48 kHz stereo
+// Float32 is already ~115 MiB.
+export const MAX_UPLOAD_DURATION_S = 600;
 
 /** Decode a user-supplied audio File (mp3, wav, flac, ogg — anything the
- *  browser supports). Used by the upload affordances.
- *  Auto-trims to MAX_FIXTURE_DURATION_S when the source is longer; the UI
- *  shows a "we trimmed your upload" message when wasTrimmed is true. */
-export async function decodeAudioFile(file: File): Promise<DecodeFileResult> {
+ *  browser supports). Used by the upload affordances. Returns the
+ *  full-length decoded buffer; the caller (TrackPicker /
+ *  AudioSourceCrate) drives the interactive trim dialog and only the
+ *  trimmed slice ever reaches the engine. */
+export async function decodeAudioFile(file: File): Promise<DecodedFixture> {
   const bytes = await file.arrayBuffer();
   const decoded = await decodeArrayBuffer(bytes);
-  return trimToSwapLimit(decoded);
+  const seconds = decoded.frames / decoded.sampleRate;
+  if (seconds > MAX_UPLOAD_DURATION_S) {
+    throw new Error(
+      `Upload too long — max ${Math.round(MAX_UPLOAD_DURATION_S / 60)} min, got ${seconds.toFixed(0)} s.`,
+    );
+  }
+  return decoded;
 }
 
 /** Fetch the pod's whitelist of fixture names.
