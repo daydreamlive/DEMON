@@ -657,6 +657,27 @@ body[data-mode="graph"].drawer-open #install-stage {
    --bloom-amount). Using --hud-thickness as the gap scales the breathing
    room with the rest of the HUD. */
 #install-video-area #graph-wrap { position: absolute; inset: calc(var(--hud-thickness) * 2 + var(--ribbon-bleed)); z-index: 2; }
+@media (max-width: 768px) {
+  /* On mobile the bottom of the moving-lines canvas was getting
+   * tucked under the LiteControls bay. Anchor the bottom inset to
+   * the live bay height (see ``--lite-controls-h``, set by
+   * LiteControls' ResizeObserver). top stays at the default
+   * (hud-thickness * 2 + ribbon-bleed); only the bottom is
+   * overridden so the lines never disappear behind the bay. */
+  #install-video-area #graph-wrap {
+    inset: calc(var(--hud-thickness) * 2 + var(--ribbon-bleed))
+           calc(var(--hud-thickness) * 2 + var(--ribbon-bleed))
+           calc(var(--lite-controls-h, 50vh) + 8px)
+           calc(var(--hud-thickness) * 2 + var(--ribbon-bleed));
+  }
+  /* Heavier top/bottom feathering on phones so the line ends don't
+   * read as a hard horizontal cut against the visualizer below. The
+   * desktop default 36 px gets lost on the larger relative-feather
+   * area mobile uses; 80 px gives a calmer fade against the bay. */
+  #install-video-area #graph {
+    --graph-feather-y: 80px;
+  }
+}
 #install-video-area #graph {
   width: 100%; height: 100%; display: block;
   /* Stronger feathering: the centered playhead exposes both edges, and
@@ -7063,7 +7084,12 @@ body.curve-open #install-video-area #graph {
     top: max(env(safe-area-inset-top, 0px) + 70px, 70px);
     left: max(env(safe-area-inset-left, 0px), 8px);
     right: max(env(safe-area-inset-right, 0px), 8px);
-    bottom: 50vh;
+    /* Anchor the bottom to the actual top edge of the LiteControls
+     * bay (var written by LiteControls' ResizeObserver). Fallback to
+     * 50vh for the brief moment before the bay measures itself or
+     * if LiteControls isn't mounted for some reason. +8 px breathing
+     * gap so the strip never visually touches the bay. */
+    bottom: calc(var(--lite-controls-h, 50vh) + 8px);
     height: auto;
     /* Inner breathing room — the canvases (position:absolute;
      * inset:0) anchor to the padding box, so this pulls the

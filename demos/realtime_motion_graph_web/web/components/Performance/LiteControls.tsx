@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useRef } from "react";
+
 import { LiteTrackCarousel } from "./LiteTrackCarousel";
 import { RecordToggle } from "./RecordToggle";
 import { SliderGroup } from "./SliderGroup";
@@ -23,9 +25,34 @@ interface Props {
 // kept paging back and forth. Surfacing both rows is the cheap win;
 // progressive disclosure still hides Mod/Channels/Styles behind the
 // "All controls" sheet.
+//
+// Side effect: a ResizeObserver writes the live bay height to
+// ``--lite-controls-h`` on the documentElement so the waveform-scrub
+// strip and the graph wrap can anchor their bottoms to the actual top
+// of the bay instead of guessing 50vh. Without this the bay was
+// hiding the bottom of both on tall phones / unusual aspect ratios.
 export function LiteControls({ onOpenAllControls, unsavedDot }: Props) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const root = document.documentElement;
+    const apply = () => {
+      root.style.setProperty("--lite-controls-h", `${el.offsetHeight}px`);
+    };
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      // Clear the var so consumers fall back to their CSS default
+      // when the bay unmounts (e.g. operator rotates to landscape
+      // and the lite controls flip off).
+      root.style.removeProperty("--lite-controls-h");
+    };
+  }, []);
   return (
-    <div className="lite-controls">
+    <div ref={rootRef} className="lite-controls">
       <div className="lite-row lite-row--track">
         <LiteTrackCarousel />
       </div>
