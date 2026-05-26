@@ -3652,8 +3652,8 @@ body.drawer-open .hud-help-readout {
    * The outer ring (1 px lighter outline) carves the dome out of
    * the panel so its silhouette is always readable. */
   position: relative;
-  width: 12px;
-  height: 12px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background:
     linear-gradient(
