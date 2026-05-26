@@ -41,8 +41,8 @@ export function MidiInToggle() {
       aria-label={enabled ? "Disable MIDI in" : "Enable MIDI in"}
       title={title}
     >
-      <span className="midi-in-toggle-led" aria-hidden="true" />
       <span className="midi-in-toggle-label">MIDI in</span>
+      <span className="midi-in-toggle-led" aria-hidden="true" />
     </button>
   );
 }

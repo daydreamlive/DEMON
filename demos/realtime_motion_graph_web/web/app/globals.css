@@ -3618,6 +3618,10 @@ body.drawer-open .hud-help-readout {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  /* Center inside .hero-macros-tools' column so the jack reads as
+   * a standalone affordance rather than a left-aligned sibling of
+   * the Full Controls button. */
+  align-self: center;
   /* Transparent — no card chrome. Lives flush against the panel like
    * a labelled jack on a hardware rack, not a button to click. */
   background: transparent;
