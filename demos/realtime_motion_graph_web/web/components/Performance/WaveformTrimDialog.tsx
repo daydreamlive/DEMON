@@ -126,8 +126,13 @@ export function WaveformTrimDialog({
   const widthPx = Math.max(0, endPx - startPx);
 
   const clampStart = (next: number, currentEnd: number): number => {
+    // The cap-floor (currentEnd - capS) is the bug fix: without it, a
+    // user could body-drag the window so endS sits at durationS, then
+    // pull the start handle backward past endS - capS and create a
+    // > capS window.
+    const lower = Math.max(0, currentEnd - capS);
     const upper = Math.min(currentEnd - minS, durationS - minS);
-    return Math.max(0, Math.min(upper, next));
+    return Math.max(lower, Math.min(upper, next));
   };
   const clampEnd = (next: number, currentStart: number): number => {
     const lower = Math.max(currentStart + minS, minS);
