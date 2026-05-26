@@ -59,8 +59,8 @@ export function LiteControls({ onOpenAllControls, unsavedDot }: Props) {
       <div className="lite-row lite-row--main">
         <SliderGroup param="denoise" label="denoise" />
         <SliderGroup param="hint_strength" label="structure" />
-        <SliderGroup param="feedback" label="feedback" />
-        <SliderGroup param="lora_blend" label="blend" />
+        <SliderGroup param="timbre_strength" label="timbre" />
+        <SliderGroup param="shift" label="shift" />
       </div>
       <div className="lite-row lite-row--actions">
         <RecordToggle />
