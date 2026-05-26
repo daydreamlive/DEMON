@@ -3144,75 +3144,78 @@ body.drawer-open .hud-help-readout {
 }
 
 /* ─── StrengthOnboardingHint ─────────────────────────────────────────
- *  First-visit onboarding affordance — caption + hand-drawn SVG arrow
- *  swooping down at the Strength knob (the leftmost in
- *  .hero-macros-knobs). Desktop only; the mobile lite bay surfaces
- *  the same fader prominently on its own and doesn't need a
- *  tutorial overlay.
+ *  First-visit onboarding affordance — white "Turn this first"
+ *  caption + hand-drawn arrow gif pointing right at the Strength
+ *  knob (the leftmost in .hero-macros-knobs). Desktop only; mobile
+ *  surfaces the same fader prominently on its own.
  *
- *  Positioning: anchored to the bottom-center of the SVG box at
- *  ~top of the first knob's cap. The first knob is the first flex
- *  child of .hero-macros-knobs — we offset from the row's left edge
- *  by ~half-knob-width so the SVG sits centered over that column.
- *  60 px wide + half-knob-width sits centered over Knob's ~50 px
- *  bounding box; the arrow itself ends slightly inset from the
- *  bottom so it points just above the cap rather than through it. */
+ *  Layout: the hint sits to the LEFT of the first knob with the
+ *  arrow's head pointing right toward the knob. ``right: 100%``
+ *  anchors the right edge of the hint at the knob row's left edge;
+ *  ``transform: translateX(-12px)`` nudges it left for breathing
+ *  room so the arrow head lands just shy of the knob. */
 .strength-onboarding-hint {
   position: absolute;
-  /* z-index 6 — above the knob chrome (knobs render at no explicit
-   * z) but well below any modal stack (.almost-ready-* at 100+) so
-   * a stray hint can never block a dialog. */
+  /* z-index 6 — above knob chrome but well below the modal stack
+   * (.almost-ready-* at 100+) so a stray hint never blocks a dialog. */
   z-index: 6;
   pointer-events: none;
-  color: var(--accent);
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  gap: 2px;
-  /* Anchor over the first knob: the row's left edge + ~half of one
-   * knob's width. translateX(-50%) centers the hint on that column
-   * regardless of knob exact width drift. The vertical anchor sits
-   * just above the knob row so the arrow's tip lands on the cap. */
-  bottom: calc(100% - 4px);
-  left: 25px;
-  transform: translateX(-50%);
+  gap: 4px;
+  /* Anchor right edge at the first-knob's left edge with a small
+   * outward nudge. Vertical: centered on the knob's cap so the
+   * arrow's head (upper-right of the gif) reads as pointing at the
+   * cap. */
+  top: 50%;
+  right: 100%;
+  transform: translate(-12px, -50%);
   animation: strength-onboarding-hint-in 280ms ease-out;
 }
 @keyframes strength-onboarding-hint-in {
-  from { opacity: 0; transform: translate(-50%, 6px); }
-  to   { opacity: 1; transform: translate(-50%, 0); }
+  from { opacity: 0; transform: translate(-6px, -50%); }
+  to   { opacity: 1; transform: translate(-12px, -50%); }
 }
 @keyframes strength-onboarding-hint-bob {
   0%, 100% { transform: translate(0, 0); }
-  50%      { transform: translate(0, -3px); }
+  50%      { transform: translate(-3px, 0); }
 }
 .strength-onboarding-hint-text {
   font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.04em;
+  font-size: 12px;
+  letter-spacing: 0.05em;
   font-style: italic;
   white-space: nowrap;
-  color: var(--accent);
-  text-shadow: 0 0 8px rgba(255, 209, 102, 0.4);
-  /* Tail-end bob — text only, so the arrow itself stays anchored
-   * to the knob it's pointing at. */
+  /* White to match the gif's stroke color. Tiny shadow so the text
+   * stays readable over any background the bay might sit over. */
+  color: #fff;
+  text-shadow: 0 0 6px rgba(0, 0, 0, 0.55);
+  /* Bob only the text + arrow horizontally so the hint nudges back
+   * toward the knob it's pointing at. */
   animation: strength-onboarding-hint-bob 2200ms ease-in-out infinite;
 }
 .strength-onboarding-hint-arrow {
-  width: 36px;
-  height: 42px;
-  filter: drop-shadow(0 0 4px rgba(255, 209, 102, 0.45));
   flex: 0 0 auto;
+  width: 68px;
+  height: 68px;
+  /* Same gentle horizontal bob as the text — keeps the two reading
+   * as one piece. */
+  animation: strength-onboarding-hint-bob 2200ms ease-in-out infinite;
+  /* Defensive: even on browsers that ignore alt="" + role="img"
+   * stylings, this stays purely decorative. */
+  user-select: none;
+  pointer-events: none;
 }
-/* Hide on touch-only devices — mobile uses the lite-row faders + the
- * left rail as the primary "drive the Strength knob" affordance and
- * doesn't need an overlay tutorial. */
+/* Hide on touch-only devices — mobile already surfaces the Strength
+ * fader prominently and doesn't need a tutorial overlay. */
 @media (hover: none) and (pointer: coarse) {
   .strength-onboarding-hint { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   .strength-onboarding-hint,
-  .strength-onboarding-hint-text {
+  .strength-onboarding-hint-text,
+  .strength-onboarding-hint-arrow {
     animation: none;
   }
 }
