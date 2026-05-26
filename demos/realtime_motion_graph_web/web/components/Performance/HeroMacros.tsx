@@ -24,6 +24,7 @@ import { Knob } from "./Knob";
 import { MidiInToggle } from "./MidiInToggle";
 import { SeedKnob } from "./SeedKnob";
 import { defaultLabelFor, kbdHintFor } from "./SliderTile";
+import { StrengthOnboardingHint } from "./StrengthOnboardingHint";
 
 // Bottom-center bay. Three zones, left to right:
 //   1. Macros — denoise / structure / feedback knobs + seed randomizer.
@@ -309,6 +310,12 @@ export function HeroMacros() {
       data-hero-macros
     >
       <div className="hero-macros-knobs">
+        {/* First-time-visitor onboarding affordance pointing at the
+         *  Strength knob (the leftmost in HERO_PARAMS). Self-
+         *  dismisses on first interaction with denoise OR via
+         *  localStorage flag from a prior session. Absolutely
+         *  positioned over the first knob via CSS. */}
+        <StrengthOnboardingHint />
         {HERO_PARAMS.map((p) => (
           <Knob
             key={p}

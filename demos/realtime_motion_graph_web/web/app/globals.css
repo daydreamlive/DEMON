@@ -3138,6 +3138,83 @@ body.drawer-open .hud-help-readout {
   flex-direction: row;
   align-items: flex-end;
   gap: 22px;
+  /* Anchor for StrengthOnboardingHint's absolute positioning so it
+   * sits over the first knob without disturbing the flex row. */
+  position: relative;
+}
+
+/* ─── StrengthOnboardingHint ─────────────────────────────────────────
+ *  First-visit onboarding affordance — caption + hand-drawn SVG arrow
+ *  swooping down at the Strength knob (the leftmost in
+ *  .hero-macros-knobs). Desktop only; the mobile lite bay surfaces
+ *  the same fader prominently on its own and doesn't need a
+ *  tutorial overlay.
+ *
+ *  Positioning: anchored to the bottom-center of the SVG box at
+ *  ~top of the first knob's cap. The first knob is the first flex
+ *  child of .hero-macros-knobs — we offset from the row's left edge
+ *  by ~half-knob-width so the SVG sits centered over that column.
+ *  60 px wide + half-knob-width sits centered over Knob's ~50 px
+ *  bounding box; the arrow itself ends slightly inset from the
+ *  bottom so it points just above the cap rather than through it. */
+.strength-onboarding-hint {
+  position: absolute;
+  /* z-index 6 — above the knob chrome (knobs render at no explicit
+   * z) but well below any modal stack (.almost-ready-* at 100+) so
+   * a stray hint can never block a dialog. */
+  z-index: 6;
+  pointer-events: none;
+  color: var(--accent);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  /* Anchor over the first knob: the row's left edge + ~half of one
+   * knob's width. translateX(-50%) centers the hint on that column
+   * regardless of knob exact width drift. The vertical anchor sits
+   * just above the knob row so the arrow's tip lands on the cap. */
+  bottom: calc(100% - 4px);
+  left: 25px;
+  transform: translateX(-50%);
+  animation: strength-onboarding-hint-in 280ms ease-out;
+}
+@keyframes strength-onboarding-hint-in {
+  from { opacity: 0; transform: translate(-50%, 6px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+@keyframes strength-onboarding-hint-bob {
+  0%, 100% { transform: translate(0, 0); }
+  50%      { transform: translate(0, -3px); }
+}
+.strength-onboarding-hint-text {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  font-style: italic;
+  white-space: nowrap;
+  color: var(--accent);
+  text-shadow: 0 0 8px rgba(255, 209, 102, 0.4);
+  /* Tail-end bob — text only, so the arrow itself stays anchored
+   * to the knob it's pointing at. */
+  animation: strength-onboarding-hint-bob 2200ms ease-in-out infinite;
+}
+.strength-onboarding-hint-arrow {
+  width: 36px;
+  height: 42px;
+  filter: drop-shadow(0 0 4px rgba(255, 209, 102, 0.45));
+  flex: 0 0 auto;
+}
+/* Hide on touch-only devices — mobile uses the lite-row faders + the
+ * left rail as the primary "drive the Strength knob" affordance and
+ * doesn't need an overlay tutorial. */
+@media (hover: none) and (pointer: coarse) {
+  .strength-onboarding-hint { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .strength-onboarding-hint,
+  .strength-onboarding-hint-text {
+    animation: none;
+  }
 }
 /* Vertical divider between the knob row and the Full Controls toggle.
    Same inset-hairline vocabulary as VoiceTile's section divider; reads
