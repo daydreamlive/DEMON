@@ -3642,22 +3642,38 @@ body.drawer-open .hud-help-readout {
   border-radius: 4px;
 }
 .midi-in-toggle-led {
-  /* The LED itself — a 10 px round well sunk into the panel. The
-   * ::after layers the lit dot inside; off state hides ::after and
-   * shows only the dim recess. */
+  /* The LED itself — a round glass dome sunk into the panel. Even
+   * when OFF, we want the dome to read as a physical object hit by
+   * ambient room light from above, not a flat dot that disappears
+   * into the panel. Layered backgrounds achieve that:
+   *   1. A top-anchored specular highlight (linear, lighter at top
+   *      → darker at bottom) — sells the curved glass surface.
+   *   2. The dark recess (radial) — the unpowered lens body.
+   * The outer ring (1 px lighter outline) carves the dome out of
+   * the panel so its silhouette is always readable. */
   position: relative;
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
-  background: radial-gradient(
-    circle at 50% 55%,
-    rgba(0, 0, 0, 0.7) 0%,
-    rgba(8, 6, 6, 0.95) 100%
-  );
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.22) 0%,
+      rgba(255, 255, 255, 0.06) 35%,
+      rgba(0, 0, 0, 0) 60%
+    ),
+    radial-gradient(
+      circle at 50% 55%,
+      rgba(40, 30, 30, 0.85) 0%,
+      rgba(12, 10, 10, 0.98) 100%
+    );
   box-shadow:
-    inset 0 1px 1px rgba(0, 0, 0, 0.85),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.04),
-    0 0 0 1px rgba(0, 0, 0, 0.6);
+    inset 0 1px 1px rgba(0, 0, 0, 0.6),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.05),
+    /* Subtle outer ring acts as a polished bezel: catches "light"
+     * so the dome stays visible against a dark panel even unpowered. */
+    0 0 0 1px rgba(255, 255, 255, 0.1),
+    0 1px 1px rgba(0, 0, 0, 0.5);
 }
 .midi-in-toggle-led::after {
   content: "";
