@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 from typing import Any, ClassVar, Optional
 
@@ -18,6 +19,7 @@ from .types import Audio, Curve, Latent, ModelHandle, VAEHandle
 # -----------------------------------------------------------------------
 
 _trt_vae_cache: dict[str, Any] = {}
+_trt_vae_lock = threading.RLock()
 
 # Shared polygraphy CUDA stream for all TRT engines in this process.
 # Using torch.cuda.Stream causes a 14x performance degradation on
@@ -61,23 +63,35 @@ def _trt_tensor_dtype(engine, name: str) -> torch.dtype:
 def _get_trt_vae(engine_path: str, device: torch.device):
     """Load or return cached TRT VAE engine + context + stream."""
     engine_path = os.path.abspath(engine_path)
-    if engine_path in _trt_vae_cache:
-        return _trt_vae_cache[engine_path]
+    with _trt_vae_lock:
+        entry = _trt_vae_cache.get(engine_path)
+        if entry is not None:
+            if entry.get("context") is not None and entry.get("engine") is not None:
+                return entry
+            _trt_vae_cache.pop(engine_path, None)
 
-    from polygraphy.backend.common import bytes_from_path
-    from polygraphy.backend.trt import engine_from_bytes
+        from polygraphy.backend.common import bytes_from_path
+        from polygraphy.backend.trt import engine_from_bytes
 
-    engine = engine_from_bytes(bytes_from_path(engine_path))
-    ctx = engine.create_execution_context()
-    logger.info("Loaded TRT VAE engine: {}", engine_path)
+        engine = engine_from_bytes(bytes_from_path(engine_path))
+        ctx = engine.create_execution_context()
+        if ctx is None:
+            engine = None
+            torch.cuda.empty_cache()
+            raise RuntimeError(
+                f"Failed to create TRT VAE execution context for {engine_path}. "
+                "The engine was deserialized, but TensorRT could not allocate "
+                "its workspace."
+            )
+        logger.info("Loaded TRT VAE engine: {}", engine_path)
 
-    tensor_dtypes = {
-        engine.get_tensor_name(i): _trt_tensor_dtype(engine, engine.get_tensor_name(i))
-        for i in range(engine.num_io_tensors)
-    }
-    entry = {"engine": engine, "context": ctx, "tensor_dtypes": tensor_dtypes}
-    _trt_vae_cache[engine_path] = entry
-    return entry
+        tensor_dtypes = {
+            engine.get_tensor_name(i): _trt_tensor_dtype(engine, engine.get_tensor_name(i))
+            for i in range(engine.num_io_tensors)
+        }
+        entry = {"engine": engine, "context": ctx, "tensor_dtypes": tensor_dtypes}
+        _trt_vae_cache[engine_path] = entry
+        return entry
 
 
 def _evict_trt_vae(engine_path: str) -> bool:
@@ -91,60 +105,62 @@ def _evict_trt_vae(engine_path: str) -> bool:
     Returns True if an entry was evicted, False if the path wasn't cached.
     """
     engine_path = os.path.abspath(engine_path)
-    entry = _trt_vae_cache.pop(engine_path, None)
-    if entry is None:
-        return False
-    # Clear refs in deterministic order: cached I/O buffers first (so
-    # nothing still holds the device pointer), then the execution
-    # context, then the engine. Polygraphy releases workspace when the
-    # context's refcount hits zero.
-    entry.pop("_decode_buf", None)
-    entry.pop("_encode_buf", None)
-    entry["context"] = None
-    entry["engine"] = None
-    torch.cuda.empty_cache()
-    logger.info("Evicted TRT VAE engine: {}", engine_path)
-    return True
+    with _trt_vae_lock:
+        entry = _trt_vae_cache.pop(engine_path, None)
+        if entry is None:
+            return False
+        # Clear refs in deterministic order: cached I/O buffers first (so
+        # nothing still holds the device pointer), then the execution
+        # context, then the engine. Polygraphy releases workspace when the
+        # context's refcount hits zero.
+        entry.pop("_decode_buf", None)
+        entry.pop("_encode_buf", None)
+        entry["context"] = None
+        entry["engine"] = None
+        torch.cuda.empty_cache()
+        logger.info("Evicted TRT VAE engine: {}", engine_path)
+        return True
 
 
 def _trt_vae_decode(
     latents_bdt: torch.Tensor, engine_path: str, device: torch.device
 ) -> torch.Tensor:
     """Decode latents [B, D, T] -> audio [B, 2, samples] via TRT."""
-    entry = _get_trt_vae(engine_path, device)
-    ctx = entry["context"]
-    stream = _get_trt_stream()
+    with _trt_vae_lock:
+        entry = _get_trt_vae(engine_path, device)
+        ctx = entry["context"]
+        stream = _get_trt_stream()
 
-    dtypes = entry["tensor_dtypes"]
-    lat = latents_bdt.to(device=device, dtype=dtypes.get("latents", torch.float32)).contiguous()
+        dtypes = entry["tensor_dtypes"]
+        lat = latents_bdt.to(device=device, dtype=dtypes.get("latents", torch.float32)).contiguous()
 
-    if not ctx.set_input_shape("latents", tuple(lat.shape)):
-        raise RuntimeError(f"TRT VAE decode rejected input shape: {tuple(lat.shape)}")
-    if not ctx.set_tensor_address("latents", lat.data_ptr()):
-        raise RuntimeError("TRT VAE decode rejected input address")
+        if not ctx.set_input_shape("latents", tuple(lat.shape)):
+            raise RuntimeError(f"TRT VAE decode rejected input shape: {tuple(lat.shape)}")
+        if not ctx.set_tensor_address("latents", lat.data_ptr()):
+            raise RuntimeError("TRT VAE decode rejected input address")
 
-    missing = ctx.infer_shapes()
-    if missing:
-        raise RuntimeError(f"TRT VAE decode shapes are insufficiently specified: {missing}")
+        missing = ctx.infer_shapes()
+        if missing:
+            raise RuntimeError(f"TRT VAE decode shapes are insufficiently specified: {missing}")
 
-    out_shape = tuple(ctx.get_tensor_shape("audio"))
-    out_dtype = dtypes.get("audio", torch.float32)
+        out_shape = tuple(ctx.get_tensor_shape("audio"))
+        out_dtype = dtypes.get("audio", torch.float32)
 
-    cached = entry.get("_decode_buf")
-    if cached is not None and cached.shape == out_shape and cached.dtype == out_dtype:
-        audio_buf = cached
-    else:
-        audio_buf = torch.empty(out_shape, dtype=out_dtype, device=device)
-        entry["_decode_buf"] = audio_buf
+        cached = entry.get("_decode_buf")
+        if cached is not None and cached.shape == out_shape and cached.dtype == out_dtype:
+            audio_buf = cached
+        else:
+            audio_buf = torch.empty(out_shape, dtype=out_dtype, device=device)
+            entry["_decode_buf"] = audio_buf
 
-    if not ctx.set_tensor_address("audio", audio_buf.data_ptr()):
-        raise RuntimeError("TRT VAE decode rejected output address")
+        if not ctx.set_tensor_address("audio", audio_buf.data_ptr()):
+            raise RuntimeError("TRT VAE decode rejected output address")
 
-    if not ctx.execute_async_v3(stream.ptr):
-        raise RuntimeError("TRT VAE decode failed")
-    stream.synchronize()
+        if not ctx.execute_async_v3(stream.ptr):
+            raise RuntimeError("TRT VAE decode failed")
+        stream.synchronize()
 
-    return audio_buf.clone().to(torch.float32)
+        return audio_buf.clone().to(torch.float32)
 
 
 def _trt_vae_encode(
@@ -156,40 +172,41 @@ def _trt_vae_encode(
     We split and sample: latent = mean + exp(0.5 * logvar) * noise,
     matching the VAE's latent_dist.sample() behavior.
     """
-    entry = _get_trt_vae(engine_path, device)
-    ctx = entry["context"]
-    stream = _get_trt_stream()
+    with _trt_vae_lock:
+        entry = _get_trt_vae(engine_path, device)
+        ctx = entry["context"]
+        stream = _get_trt_stream()
 
-    dtypes = entry["tensor_dtypes"]
-    inp = audio_bct.to(device=device, dtype=dtypes.get("audio", torch.float32)).contiguous()
+        dtypes = entry["tensor_dtypes"]
+        inp = audio_bct.to(device=device, dtype=dtypes.get("audio", torch.float32)).contiguous()
 
-    # Release PyTorch's unused reserved VRAM before TRT encode.
-    torch.cuda.empty_cache()
+        # Release PyTorch's unused reserved VRAM before TRT encode.
+        torch.cuda.empty_cache()
 
-    if not ctx.set_input_shape("audio", tuple(inp.shape)):
-        raise RuntimeError(f"TRT VAE encode rejected input shape: {tuple(inp.shape)}")
-    if not ctx.set_tensor_address("audio", inp.data_ptr()):
-        raise RuntimeError("TRT VAE encode rejected input address")
+        if not ctx.set_input_shape("audio", tuple(inp.shape)):
+            raise RuntimeError(f"TRT VAE encode rejected input shape: {tuple(inp.shape)}")
+        if not ctx.set_tensor_address("audio", inp.data_ptr()):
+            raise RuntimeError("TRT VAE encode rejected input address")
 
-    missing = ctx.infer_shapes()
-    if missing:
-        raise RuntimeError(f"TRT VAE encode shapes are insufficiently specified: {missing}")
+        missing = ctx.infer_shapes()
+        if missing:
+            raise RuntimeError(f"TRT VAE encode shapes are insufficiently specified: {missing}")
 
-    out_shape = tuple(ctx.get_tensor_shape("moments"))
-    moments_dtype = dtypes.get("moments", torch.float32)
-    moments_buf = torch.empty(out_shape, dtype=moments_dtype, device=device)
-    if not ctx.set_tensor_address("moments", moments_buf.data_ptr()):
-        raise RuntimeError("TRT VAE encode rejected output address")
+        out_shape = tuple(ctx.get_tensor_shape("moments"))
+        moments_dtype = dtypes.get("moments", torch.float32)
+        moments_buf = torch.empty(out_shape, dtype=moments_dtype, device=device)
+        if not ctx.set_tensor_address("moments", moments_buf.data_ptr()):
+            raise RuntimeError("TRT VAE encode rejected output address")
 
-    if not ctx.execute_async_v3(stream.ptr):
-        raise RuntimeError("TRT VAE encode failed")
-    stream.synchronize()
+        if not ctx.execute_async_v3(stream.ptr):
+            raise RuntimeError("TRT VAE encode failed")
+        stream.synchronize()
 
-    # Split moments into mean and logvar, sample
-    mean, logvar = moments_buf.float().chunk(2, dim=1)  # [B, 64, T] each
-    std = torch.exp(0.5 * logvar)
-    latent = mean + std * torch.randn_like(mean)
-    return latent
+        # Split moments into mean and logvar, sample
+        mean, logvar = moments_buf.float().chunk(2, dim=1)  # [B, 64, T] each
+        std = torch.exp(0.5 * logvar)
+        latent = mean + std * torch.randn_like(mean)
+        return latent
 
 
 def _find_trt_engine(name: str) -> Optional[str]:
@@ -232,10 +249,13 @@ def _find_best_vae_engine(component: str) -> Optional[str]:
     # component is "vae_decode" or "vae_encode" -> action is "decode"/"encode".
     action = component.split("_", 1)[-1]
     accepted = (f"vae_{action}_", f"dreamvae_{action}_")
-    for cached_path in _trt_vae_cache:
-        basename = os.path.basename(cached_path).lower()
-        if basename.startswith(accepted):
-            return cached_path
+    with _trt_vae_lock:
+        for cached_path, entry in _trt_vae_cache.items():
+            if entry.get("context") is None or entry.get("engine") is None:
+                continue
+            basename = os.path.basename(cached_path).lower()
+            if basename.startswith(accepted):
+                return cached_path
     return None
 
 

@@ -11,17 +11,25 @@ import {
   isTimeSignature,
   type TimeSignature,
 } from "@/types/engine";
+import {
+  DEFAULT_LEGO_PROMPTS,
+  LEGO_TRACKS,
+  labelForLegoTrack,
+  type LegoLayerConfig,
+  type LegoTrack,
+} from "@/types/lego";
 
-// Two-step confirm dialog between file-pick and fixture-swap:
+// Three-step confirm dialog between file-pick and fixture-swap:
 //   Step 1 — inference source: full track / instruments / vocals.
-//   Step 2 — key + time signature. Each is "Auto-detect" or an explicit
+//   Step 2 — optional base-model LEGO layers generated before playback.
+//   Step 3 — key + time signature. Each is "Auto-detect" or an explicit
 //            override that wins over the server's resolver for this
 //            swap (see useFixtureSwap.ts).
 // If the source was longer than 240 s the parent has already
 // auto-trimmed it; step 1 surfaces that with a one-click "pick another"
 // escape.
 
-type Step = 1 | 2;
+type Step = 1 | 2 | 3;
 
 interface SourceOption {
   mode: StemSourceMode;
@@ -60,7 +68,8 @@ export interface AlmostReadyDialogProps {
     keyOverride: string | null;
     timeSignatureOverride: TimeSignature | null;
     sourceMode: StemSourceMode;
-  }) => void;
+    legoLayers: LegoLayerConfig[];
+  }) => void | Promise<void>;
   /** Only invoked when wasTrimmed is true; parent re-opens the file
    *  picker so the user can swap to a shorter source. */
   onPickAnother: () => void;
@@ -79,17 +88,33 @@ export function AlmostReadyDialog({
   const [sourceMode, setSourceMode] = useState<StemSourceMode>("full");
   const [keyChoice, setKeyChoice] = useState<string>(AUTO);
   const [tsChoice, setTsChoice] = useState<string>(AUTO);
+  const [legoSelected, setLegoSelected] = useState<Set<LegoTrack>>(
+    () => new Set(),
+  );
+  const [legoPrompts, setLegoPrompts] =
+    useState<Record<LegoTrack, string>>(DEFAULT_LEGO_PROMPTS);
+  const [continuing, setContinuing] = useState(false);
   const primaryRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => setMounted(true), []);
 
-  function finish() {
-    onContinue({
-      keyOverride: keyChoice === AUTO ? null : keyChoice,
-      timeSignatureOverride:
-        tsChoice !== AUTO && isTimeSignature(tsChoice) ? tsChoice : null,
-      sourceMode,
-    });
+  async function finish() {
+    if (continuing) return;
+    setContinuing(true);
+    try {
+      await onContinue({
+        keyOverride: keyChoice === AUTO ? null : keyChoice,
+        timeSignatureOverride:
+          tsChoice !== AUTO && isTimeSignature(tsChoice) ? tsChoice : null,
+        sourceMode,
+        legoLayers: Array.from(legoSelected).map((track) => ({
+          track,
+          prompt: legoPrompts[track],
+        })),
+      });
+    } finally {
+      setContinuing(false);
+    }
   }
 
   // Esc closes; Enter advances (step 1 → next, step 2 → start) unless
@@ -106,14 +131,16 @@ export function AlmostReadyDialog({
         const tag = (e.target as HTMLElement | null)?.tagName;
         if (tag === "SELECT") return;
         e.preventDefault();
+        if (continuing) return;
         if (step === 1) setStep(2);
+        else if (step === 2) setStep(3);
         else finish();
       }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, sourceMode, keyChoice, tsChoice, onClose, onContinue]);
+  }, [step, sourceMode, keyChoice, tsChoice, continuing, onClose, onContinue]);
 
   // Focus the primary button on mount and on every step change so
   // Enter / Space fire it.
@@ -160,12 +187,15 @@ export function AlmostReadyDialog({
             <span
               className={`almost-ready-step-dot${step === 2 ? " is-active" : ""}`}
             />
+            <span
+              className={`almost-ready-step-dot${step === 3 ? " is-active" : ""}`}
+            />
           </div>
 
           {step === 1 ? (
             <>
               <div className="almost-ready-step-head">
-                <span className="almost-ready-step-num">Step 1 of 2</span>
+                <span className="almost-ready-step-num">Step 1 of 3</span>
                 <h3 className="almost-ready-step-title">Inference source</h3>
               </div>
 
@@ -205,10 +235,61 @@ export function AlmostReadyDialog({
                 work best.
               </p>
             </>
+          ) : step === 2 ? (
+            <>
+              <div className="almost-ready-step-head">
+                <span className="almost-ready-step-num">Step 2 of 3</span>
+                <h3 className="almost-ready-step-title">LEGO layers</h3>
+              </div>
+              <p className="almost-ready-note">
+                Optional: generate base-model instrument layers now, before
+                the realtime model loads into VRAM.
+              </p>
+              <div className="almost-ready-lego-list">
+                {LEGO_TRACKS.map((track) => {
+                  const checked = legoSelected.has(track);
+                  return (
+                    <div
+                      key={track}
+                      className={`almost-ready-lego-row${checked ? " is-selected" : ""}`}
+                    >
+                      <label className="almost-ready-lego-check">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            setLegoSelected((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(track)) next.delete(track);
+                              else next.add(track);
+                              return next;
+                            });
+                          }}
+                        />
+                        <span>{labelForLegoTrack(track)}</span>
+                      </label>
+                      <input
+                        className="almost-ready-lego-prompt"
+                        type="text"
+                        value={legoPrompts[track]}
+                        onChange={(e) =>
+                          setLegoPrompts((prev) => ({
+                            ...prev,
+                            [track]: e.target.value,
+                          }))
+                        }
+                        disabled={!checked}
+                        aria-label={`${labelForLegoTrack(track)} LEGO prompt`}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </>
           ) : (
             <>
               <div className="almost-ready-step-head">
-                <span className="almost-ready-step-num">Step 2 of 2</span>
+                <span className="almost-ready-step-num">Step 3 of 3</span>
                 <h3 className="almost-ready-step-title">
                   Key &amp; time signature
                 </h3>
@@ -291,7 +372,7 @@ export function AlmostReadyDialog({
                 Next →
               </button>
             </>
-          ) : (
+          ) : step === 2 ? (
             <>
               <button
                 type="button"
@@ -304,9 +385,33 @@ export function AlmostReadyDialog({
                 ref={primaryRef}
                 type="button"
                 className="almost-ready-btn almost-ready-btn--primary"
-                onClick={finish}
+                onClick={() => setStep(3)}
               >
-                Start
+                Next →
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="almost-ready-btn almost-ready-btn--secondary"
+                onClick={() => setStep(2)}
+                disabled={continuing}
+              >
+                ← Back
+              </button>
+              <button
+                ref={primaryRef}
+                type="button"
+                className="almost-ready-btn almost-ready-btn--primary"
+                onClick={finish}
+                disabled={continuing}
+              >
+                {continuing
+                  ? legoSelected.size > 0
+                    ? "Generating..."
+                    : "Starting..."
+                  : "Start"}
               </button>
             </>
           )}

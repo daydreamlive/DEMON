@@ -9,11 +9,14 @@ import {
   type DecodedFixture,
   type StemSourceMode,
 } from "@/engine/audio/loadFixture";
+import { generateLegoStemsPreflight } from "@/engine/lego/generateLegoStems";
+import { useStartSession } from "@/hooks/useStartSession";
 import { LOCAL_MODE } from "@/lib/runtime";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 import type { TimeSignature } from "@/types/engine";
+import type { LegoLayerConfig } from "@/types/lego";
 
 import { AlmostReadyDialog } from "./AlmostReadyDialog";
 
@@ -51,6 +54,7 @@ export function LiteTrackCarousel() {
   const fixture = usePerformanceStore((s) => s.fixture);
   const setFixture = usePerformanceStore((s) => s.setFixture);
   const sessionWsUrl = useSessionStore((s) => s.wsUrl);
+  const startSession = useStartSession();
 
   const [fixtures, setFixtures] = useState<string[]>([]);
   const customNames = useCustomTracksStore((s) => s.names);
@@ -121,14 +125,17 @@ export function LiteTrackCarousel() {
     }
   }
 
-  function commitPending(
+  async function commitPending(
     keyOverride: string | null,
     timeSignatureOverride: TimeSignature | null,
     sourceMode: StemSourceMode,
+    legoLayers: LegoLayerConfig[],
   ) {
     if (!pending) return;
     const { decoded, fileName, originalFile } = pending;
     addCustomTrack(fileName, decoded, originalFile, sourceMode);
+    const restartAfterLego =
+      legoLayers.length > 0 && useSessionStore.getState().status !== "idle";
     const perf = usePerformanceStore.getState();
     if (keyOverride) {
       perf.setPendingKeyOverride(keyOverride);
@@ -138,8 +145,66 @@ export function LiteTrackCarousel() {
       perf.setPendingTimeSignatureOverride(timeSignatureOverride);
       perf.setTimeSignature(timeSignatureOverride);
     }
+    if (legoLayers.length > 0) {
+      if (restartAfterLego) {
+        const session = useSessionStore.getState();
+        session.setStatus(session.status, "Stopping playback for LEGO generation…");
+        try {
+          await session.player?.close();
+        } catch {}
+        try {
+          session.remote?.close();
+        } catch {}
+        session.reset();
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 2000));
+      }
+      const custom = useCustomTracksStore.getState();
+      const session = useSessionStore.getState();
+      for (const layer of legoLayers) {
+        custom.setLegoPrompt(fileName, layer.track, layer.prompt);
+        custom.setLegoStatus(fileName, layer.track, "queued");
+      }
+      session.setStatus(session.status, "Generating LEGO layers…");
+      try {
+        const stems = await generateLegoStemsPreflight({
+          wsUrl: sessionWsUrl,
+          fixtureName: fileName,
+          decoded,
+          layers: legoLayers,
+          onStatus: (track, status, error) => {
+            if (track && track !== "__job__") {
+              useCustomTracksStore
+                .getState()
+                .setLegoStatus(
+                  fileName,
+                  track,
+                  status as "queued" | "running" | "ready" | "failed",
+                  error,
+                );
+            }
+          },
+        });
+        custom.setLegoStems(
+          fileName,
+          stems,
+          Object.fromEntries(legoLayers.map((l) => [l.track, l.prompt])),
+        );
+        useSessionStore.getState().setStatus(useSessionStore.getState().status, "");
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        for (const layer of legoLayers) {
+          custom.setLegoStatus(fileName, layer.track, "failed", msg);
+        }
+        useSessionStore
+          .getState()
+          .setStatus(useSessionStore.getState().status, `LEGO failed: ${msg}`);
+      }
+    }
     setFixture(fileName);
     setPending(null);
+    if (restartAfterLego) {
+      await startSession();
+    }
   }
 
   const tracks: TrackOption[] = [
@@ -213,8 +278,8 @@ export function LiteTrackCarousel() {
           defaultTimeSignature={
             usePerformanceStore.getState().activeTimeSignature
           }
-          onContinue={({ keyOverride, timeSignatureOverride, sourceMode }) =>
-            commitPending(keyOverride, timeSignatureOverride, sourceMode)
+          onContinue={({ keyOverride, timeSignatureOverride, sourceMode, legoLayers }) =>
+            commitPending(keyOverride, timeSignatureOverride, sourceMode, legoLayers)
           }
           onPickAnother={() => {
             setPending(null);

@@ -181,7 +181,7 @@ export interface StemAssetsMessage {
   sample_rate: number;
   channels: number;
   frames: number;
-  stems: ("vocals" | "instruments")[];
+  stems: string[];
   source_mode?: "full" | "vocals" | "instruments";
 }
 
@@ -189,6 +189,23 @@ export interface StemFailedMessage {
   type: "stem_failed";
   fixture_name?: string;
   error?: string;
+}
+
+export interface LegoStatusMessage {
+  type: "lego_status";
+  fixture_name?: string;
+  track: string;
+  status: "queued" | "running" | "ready" | "failed";
+  error?: string;
+}
+
+export interface LegoAssetsMessage {
+  type: "lego_assets";
+  fixture_name: string;
+  sample_rate: number;
+  channels: number;
+  frames: number;
+  layers: string[];
 }
 
 export interface SwapFailedMessage {
@@ -208,6 +225,8 @@ export type ServerJsonMessage =
   | SwapFailedMessage
   | StemAssetsMessage
   | StemFailedMessage
+  | LegoStatusMessage
+  | LegoAssetsMessage
   | DepthAppliedMessage
   | { type: string; [k: string]: unknown };
 

@@ -3765,6 +3765,110 @@ body.curve-open #install-video-area #graph {
   color: var(--text-dim);
   text-transform: uppercase;
 }
+
+.lego-tile {
+  width: min(520px, 100%);
+  gap: 10px;
+}
+.lego-tile-note {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.35;
+}
+.lego-layer-list {
+  display: grid;
+  gap: 6px;
+  max-height: 420px;
+  overflow: auto;
+  padding-right: 2px;
+}
+.lego-layer-row {
+  display: grid;
+  grid-template-columns: 132px minmax(160px, 1fr) 64px;
+  gap: 8px;
+  align-items: center;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.018);
+}
+.lego-layer-row.is-selected {
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--frame-line));
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.lego-layer-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  text-transform: uppercase;
+}
+.lego-layer-check input {
+  accent-color: var(--accent);
+}
+.lego-layer-prompt {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.24);
+  color: var(--text);
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+}
+.lego-layer-prompt:disabled,
+.lego-layer-check input:disabled + span {
+  opacity: 0.45;
+}
+.lego-layer-status {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  text-align: right;
+}
+.lego-layer-status.is-running,
+.lego-layer-status.is-queued {
+  color: var(--accent);
+}
+.lego-layer-status.is-ready {
+  color: #3db6be;
+}
+.lego-layer-status.is-failed {
+  color: #e84f3d;
+}
+.lego-generate-btn {
+  align-self: flex-start;
+  border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--frame-line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--text);
+  padding: 7px 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.lego-generate-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+@media (max-width: 720px) {
+  .lego-layer-row {
+    grid-template-columns: 1fr;
+  }
+  .lego-layer-status {
+    text-align: left;
+  }
+}
 /* Channels row inside a tile: one horizontal row of fader strips. */
 .mixer-channels {
   display: flex;
@@ -7641,7 +7745,56 @@ body.curve-open #install-video-area #graph {
   line-height: 1.4;
 }
 
-/* Step 2 — key / time-signature fields. */
+/* Step 2 — optional LEGO layer pre-generation. */
+.almost-ready-lego-list {
+  display: grid;
+  gap: 6px;
+  max-height: 320px;
+  overflow: auto;
+  padding-right: 2px;
+}
+.almost-ready-lego-row {
+  display: grid;
+  grid-template-columns: 132px minmax(180px, 1fr);
+  gap: 8px;
+  align-items: center;
+  padding: 7px;
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.02);
+}
+.almost-ready-lego-row.is-selected {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.almost-ready-lego-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 0.88em;
+  text-transform: uppercase;
+}
+.almost-ready-lego-check input {
+  accent-color: var(--accent);
+}
+.almost-ready-lego-prompt {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.24);
+  color: var(--text);
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 0.92em;
+}
+.almost-ready-lego-prompt:disabled {
+  opacity: 0.45;
+}
+
+/* Step 3 — key / time-signature fields. */
 .almost-ready-field {
   display: flex;
   flex-direction: column;
@@ -7696,6 +7849,11 @@ body.curve-open #install-video-area #graph {
   font-weight: 500;
 }
 .almost-ready-btn--primary:hover { filter: brightness(1.1); }
+.almost-ready-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+  filter: none;
+}
 .almost-ready-btn--secondary {
   border: 1px solid var(--frame-line);
   background: transparent;
