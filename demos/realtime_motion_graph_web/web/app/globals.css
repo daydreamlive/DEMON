@@ -4933,28 +4933,42 @@ body.curve-open #install-video-area #graph {
   }
 }
 .lite-controls {
-  /* Wave 13.5: tabbed + swipeable mobile mixer. Bay has a fixed
-     width clamp so each tab section can snap to it. Two sections
-     live side-by-side in a horizontal scroll-snap track inside the
-     body. */
+  /* Mobile-only performance bay. Pinned to the bottom safe-area and sized
+     to fill the lower ~half of the viewport so the operator can see and
+     reach the full surface without paging through tabs: track carousel
+     up top, the four main faders mid-body, REC + "All controls" at the
+     bottom. The visualizer remains visible (dimmed) above through the
+     transparent gap. */
   position: fixed;
-  left: 50%;
-  transform: translateX(-50%);
-  bottom: max(env(safe-area-inset-bottom, 0px) + 8px, 8px);
-  width: clamp(320px, 92vw, 560px);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /* Clear the side fader rails so we don't overlap them. */
+  margin-inline: calc(var(--stepper-rail-w, 64px));
+  padding:
+    10px
+    14px
+    calc(env(safe-area-inset-bottom, 0px) + 12px)
+    14px;
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 6px;
-  padding: 6px 10px 8px;
-  background: rgba(6, 6, 12, 0.62);
-  border: 1px solid var(--frame-line);
-  border-radius: var(--radius-md);
+  gap: 8px;
+  background: linear-gradient(
+    to top,
+    rgba(6, 6, 12, 0.94) 0%,
+    rgba(6, 6, 12, 0.82) 65%,
+    rgba(6, 6, 12, 0.62) 100%
+  );
+  border-top: 1px solid var(--frame-line);
+  border-left: 1px solid var(--frame-line);
+  border-right: 1px solid var(--frame-line);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.04),
-    0 4px 14px rgba(0, 0, 0, 0.4);
-  -webkit-backdrop-filter: blur(8px);
-          backdrop-filter: blur(8px);
+    0 -4px 14px rgba(0, 0, 0, 0.4);
+  -webkit-backdrop-filter: blur(10px);
+          backdrop-filter: blur(10px);
   z-index: 8;
   /* Only render on mobile — desktop has the inset Full Controls panel
      and the HeroMacros bay instead. */
@@ -4963,6 +4977,15 @@ body.curve-open #install-video-area #graph {
 @media (max-width: 768px) {
   .lite-controls {
     display: flex;
+  }
+}
+@media (max-width: 380px) {
+  /* Narrowest phones — pull the side margins back to the safe-area
+     edge to win every pixel for the faders. The rails still anchor at
+     left/right: 0 so they overlap visually but the controls stay usable. */
+  .lite-controls {
+    margin-left: max(env(safe-area-inset-left, 0px), 4px);
+    margin-right: max(env(safe-area-inset-right, 0px), 4px);
   }
 }
 
@@ -5047,33 +5070,42 @@ body.curve-open #install-video-area #graph {
   align-items: center;
 }
 
-.lite-row--main {
+/* Track row — horizontal scroll carousel of fixtures + upload chip.
+   Sits across the top of the bay; the carousel itself owns its own
+   gutters and scroll behaviour. */
+.lite-row--track {
   flex: 0 0 auto;
-  min-height: 0;
-  gap: 16px;
-  justify-content: center;
-  padding: 4px 4px 4px;
-  /* Vertical alignment so the four faders share one baseline. */
-  align-items: flex-end;
+  width: 100%;
+  min-width: 0;
+}
+.lite-row--track > .lite-track-carousel {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
-/* Utility cluster sits to the right of the fader block. Track
-   carousel on top, REC + "All controls" on the bottom row. */
-.lite-utility {
+.lite-row--main {
+  /* Take whatever vertical space is left between the track row and the
+     action row — the four faders should breathe on tall phones. */
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 12px;
+  justify-content: space-around;
+  padding: 6px 0 4px;
+  /* Vertical alignment so the four faders share one baseline. */
+  align-items: stretch;
+}
+
+.lite-row--main .slider-group {
+  flex: 1 1 0;
+  min-width: 0;
+  /* Each fader column stretches to the full row height so the track
+     gets every available pixel — that's where the touch precision lives. */
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  gap: 6px;
-  min-width: 0;
-  flex: 1 1 auto;
-}
-.lite-utility .lite-track-carousel { min-width: 0; }
-.lite-row--main .slider-group {
-  flex: 0 0 46px;
-  min-width: 0;
+  align-items: center;
 }
 .lite-row--main .slider-group .slider-label {
-  font-size: 0.55em;
+  font-size: 10px;
   letter-spacing: 0.04em;
   white-space: nowrap;
   overflow: hidden;
@@ -5081,36 +5113,59 @@ body.curve-open #install-video-area #graph {
   max-width: 100%;
 }
 .lite-row--main .slider-track {
-  width: 36px;
-  min-height: 100px;
+  width: 44px;
+  /* min-height instead of fixed height so the fader stretches with
+     viewport. The flex parent gives us the room. */
+  flex: 1 1 auto;
+  min-height: 140px;
 }
-.lite-row--main .slider-track::before { width: 5px; }
-.lite-row--main .slider-fill { width: 5px; }
+.lite-row--main .slider-track::before { width: 6px; }
+.lite-row--main .slider-fill { width: 6px; }
 .lite-row--main .slider-thumb {
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
   border-width: 2px;
 }
-.lite-row--main {
-  gap: 6px;
+
+/* Action row — REC on the left, "More" on the right. Both 44px tall to
+   meet the iOS HIG touch-target minimum. */
+.lite-row--actions {
+  flex: 0 0 auto;
+  width: 100%;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 4px;
 }
-/* Lite-controls "All controls" — icon-only on mobile. The label was
-   eating significant horizontal real estate next to 4 faders; an
-   arrow-only chip with a tooltip stays discoverable. */
-.lite-tab-section .lite-all-controls {
+.lite-row--actions > * {
+  flex: 0 0 auto;
+}
+.lite-row--actions .lite-all-controls {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  padding: 6px 10px;
-  min-width: 36px;
-  height: 36px;
-  flex-shrink: 0;
-  font-size: 14px;
-  line-height: 1;
+  gap: 6px;
+  padding: 0 14px;
+  min-width: 80px;
+  height: 44px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: color 120ms, border-color 120ms, background 120ms;
 }
-.lite-tab-section .lite-all-controls .lite-all-controls-arrow {
-  font-size: 16px;
+.lite-row--actions .lite-all-controls:hover,
+.lite-row--actions .lite-all-controls:active {
+  color: var(--text-strong);
+  border-color: var(--accent-line);
+  background: rgba(255, 255, 255, 0.04);
+}
+.lite-row--actions .lite-all-controls .lite-all-controls-arrow {
+  font-size: 14px;
   line-height: 1;
 }
 
@@ -6928,6 +6983,33 @@ body.curve-open #install-video-area #graph {
   border-color: transparent;
 }
 
+/* Mobile waveform strip. Sits below the DEMON brand mark and inside the
+   side fader rails. Slim height keeps the scrub-line UX while leaving
+   the visualizer + control surface room to breathe. The desktop CSS
+   uses --hud-thickness offsets that are zero on mobile (no HUD frame
+   on phones) so we re-anchor from the top instead. The brand mark
+   itself sits at top:18 + height:42 = bottom 60, so 70 leaves a 10px
+   gap. */
+@media (max-width: 768px) {
+  .waveform-scrub-box {
+    top: max(env(safe-area-inset-top, 0px) + 70px, 70px);
+    left: calc(var(--stepper-rail-w, 64px)
+               + max(env(safe-area-inset-left, 0px), 8px));
+    right: calc(var(--stepper-rail-w, 64px)
+                + max(env(safe-area-inset-right, 0px), 8px));
+    height: 44px;
+    /* Sit above the install-stage background but below modals and the
+       LiteControls bay. */
+    z-index: 5;
+  }
+  /* Mobile sliders are touch-only — the LOOP toggle's hover-reveal would
+     never fire, so keep it permanently visible (faint until armed). */
+  .waveform-scrub-box .waveform-loop-toggle {
+    opacity: 0.85;
+    pointer-events: auto;
+  }
+}
+
 /* ── Custom tooltip (replaces native `title=` for hover-visible UI) ──
    Opt-in via `data-dd-tooltip="..."`. The element must have
    `position: relative` (most of our chrome already does because of
@@ -8482,13 +8564,10 @@ body.curve-open #install-video-area #graph {
   #install-video-area #graph-wrap .graph-lane-labels {
     display: none;
   }
-  /* Waveform scrub strip is hidden on mobile — it eats vertical space
-     that the squished graph needs, and the scrubbing precision is
-     poor at touch resolution anyway. Scrubbing remains available via
-     the full controls sheet. */
-  .waveform-scrub-box {
-    display: none;
-  }
+  /* Waveform strip now ships on mobile too — see the dedicated
+     positioning block earlier in this file. The previous hide-on-mobile
+     rule was the workaround from when there was no touch-friendly
+     scrub UI. */
 }
 
 /* Static wordmark — when the LibraryButton retired in Wave 10, the

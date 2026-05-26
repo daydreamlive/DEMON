@@ -157,7 +157,7 @@ export function PerformanceShell() {
 
       <LiveIndicator />
 
-      {!isMobile && <WaveformScrubBox />}
+      <WaveformScrubBox />
 
       <NetworkIndicator />
 
