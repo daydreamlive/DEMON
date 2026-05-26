@@ -21,6 +21,7 @@ import { useStemOverlayStore } from "@/store/useStemOverlayStore";
 import { LORA_SLIDER_MAX } from "@/types/engine";
 
 import { Knob } from "./Knob";
+import { MidiInToggle } from "./MidiInToggle";
 import { SeedKnob } from "./SeedKnob";
 import { defaultLabelFor, kbdHintFor } from "./SliderTile";
 
@@ -383,6 +384,7 @@ export function HeroMacros() {
             {drawerOpen ? "◂" : "▸"}
           </span>
         </button>
+        <MidiInToggle />
       </div>
     </div>
   );

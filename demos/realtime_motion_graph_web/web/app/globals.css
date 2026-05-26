@@ -3603,6 +3603,110 @@ body.drawer-open .hud-help-readout {
   color: var(--text-strong);
   border-color: var(--accent-line);
 }
+
+/* ─── MIDI in jack toggle ─────────────────────────────────────────────
+   Sits under Full Controls in the right-side tools cluster. NOT a
+   button-styled cell like Record / Curve Editor / Full Controls; just
+   a small red LED with a mono-caps "MIDI in" label next to it. Click
+   flips the store's ``enabled`` flag, which gates the browser's
+   ``requestMIDIAccess`` permission prompt — so a fresh visitor never
+   sees the prompt unless they explicitly turn MIDI on here.
+   Skeuomorphic LED: layered radial gradient (lit core + ambient halo)
+   over a dark inset bezel. Off state strips the gradients and shows
+   a dim recess so the jack reads as "unpowered". */
+.midi-in-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  /* Transparent — no card chrome. Lives flush against the panel like
+   * a labelled jack on a hardware rack, not a button to click. */
+  background: transparent;
+  border: 0;
+  padding: 6px 2px;
+  margin: 0;
+  cursor: pointer;
+  font: inherit;
+  color: var(--text-dim);
+  -webkit-appearance: none;
+          appearance: none;
+  transition: color 140ms ease-out;
+}
+.midi-in-toggle:hover { color: var(--text); }
+.midi-in-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+.midi-in-toggle-led {
+  /* The LED itself — a 10 px round well sunk into the panel. The
+   * ::after layers the lit dot inside; off state hides ::after and
+   * shows only the dim recess. */
+  position: relative;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 50% 55%,
+    rgba(0, 0, 0, 0.7) 0%,
+    rgba(8, 6, 6, 0.95) 100%
+  );
+  box-shadow:
+    inset 0 1px 1px rgba(0, 0, 0, 0.85),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.04),
+    0 0 0 1px rgba(0, 0, 0, 0.6);
+}
+.midi-in-toggle-led::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 40% 40%,
+    rgba(255, 240, 230, 0.95) 0%,
+    rgba(255, 80, 50, 1) 40%,
+    rgba(140, 18, 10, 1) 100%
+  );
+  box-shadow:
+    0 0 4px rgba(255, 80, 50, 0.85),
+    0 0 10px rgba(255, 60, 40, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  opacity: 0;
+  transition: opacity 140ms ease-out;
+}
+.midi-in-toggle--on .midi-in-toggle-led::after,
+.midi-in-toggle--warn .midi-in-toggle-led::after {
+  opacity: 1;
+}
+.midi-in-toggle--warn .midi-in-toggle-led::after {
+  /* Permission denied / no Web MIDI — amber LED so the user can tell
+   * the toggle is on but the platform isn't delivering. Distinct from
+   * the "off" dark state and the "on" healthy red. */
+  background: radial-gradient(
+    circle at 40% 40%,
+    rgba(255, 240, 200, 0.95) 0%,
+    rgba(230, 180, 60, 1) 40%,
+    rgba(120, 80, 10, 1) 100%
+  );
+  box-shadow:
+    0 0 4px rgba(230, 180, 60, 0.85),
+    0 0 10px rgba(220, 160, 40, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+.midi-in-toggle-label {
+  font-family: var(--font-mono);
+  font-size: 0.62em;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  line-height: 1;
+}
+/* Hide on touch-only devices — phones have nothing to gain from MIDI
+ * (no controllers, no hardware) and the toggle would just clutter the
+ * mobile chrome. The useMidi hook also guards against
+ * ``navigator.requestMIDIAccess`` being absent, but hiding the
+ * affordance keeps the surface honest. */
+@media (hover: none) and (pointer: coarse) {
+  .midi-in-toggle { display: none; }
+}
 /* When the drawer is open the knob row hides (params live in the
    drawer's CORE tab now) but the toggle button stays — it's the
    only way to close the drawer with the bottom handle gone. */

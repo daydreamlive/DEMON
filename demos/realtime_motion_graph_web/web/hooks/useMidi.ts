@@ -195,8 +195,27 @@ function bindInput(input: MIDIInput): void {
 }
 
 export function useMidi() {
+  // Subscribe to the user's toggle. Web MIDI's permission prompt
+  // fires the moment ``requestMIDIAccess`` is called — running it on
+  // mount used to interrupt every desktop visit with an OS-modal
+  // "Allow MIDI?" dialog, and on mobile the prompt is pure noise
+  // (no controllers, the user is on a phone). Now we wait for an
+  // explicit toggle via MidiInToggle, persisted to localStorage.
+  const enabled = useMidiStore((s) => s.enabled);
+
   useEffect(() => {
+    // ``available: false`` for the lifetime of the no-MIDI state —
+    // every consumer (MidiBadge etc.) reads this and renders an "off"
+    // affordance accordingly.
+    if (!enabled) {
+      useMidiStore.getState().setAvailable(false);
+      useMidiStore.getState().setStatus("MIDI off", "off");
+      return;
+    }
     if (typeof navigator === "undefined" || !navigator.requestMIDIAccess) {
+      // The browser has no Web MIDI at all (Safari < 18, mobile
+      // Safari, hostile environments). Keep the toggle visible but
+      // tell the user the platform can't deliver.
       useMidiStore.getState().setStatus("MIDI N/A", "off");
       return;
     }
@@ -309,5 +328,8 @@ export function useMidi() {
         access.onstatechange = null;
       }
     };
-  }, []);
+    // Re-run on enable flip so toggling MidiInToggle off releases the
+    // device bindings and toggling on re-prompts (or, if previously
+    // approved, silently reconnects).
+  }, [enabled]);
 }

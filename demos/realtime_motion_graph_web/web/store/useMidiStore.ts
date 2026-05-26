@@ -42,6 +42,28 @@ function saveMap(m: MidiMap): void {
   } catch {}
 }
 
+// Persist the user's MIDI-in toggle decision so a desktop operator who
+// flipped it on once doesn't have to re-enable + re-approve the browser
+// permission every page load. Stored separately from the MIDI map so
+// the import/export flows can stay map-only.
+const MIDI_ENABLED_KEY = "demon:midi:enabled";
+
+function loadEnabled(): boolean {
+  if (typeof localStorage === "undefined") return false;
+  try {
+    return localStorage.getItem(MIDI_ENABLED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function saveEnabled(b: boolean): void {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(MIDI_ENABLED_KEY, b ? "1" : "0");
+  } catch {}
+}
+
 interface LearnState {
   kind: "cc" | "note";
   target: string;
@@ -53,9 +75,16 @@ interface MidiState {
   status: { message: string; tone: "ok" | "warn" | "info" | "off" };
   learn: LearnState | null;
   available: boolean;
+  /** User-opt-in gate on the Web MIDI permission prompt. The MIDI-in
+   *  jack toggle (HeroMacros' MidiInToggle) flips this; useMidi only
+   *  calls navigator.requestMIDIAccess when this is true. Default
+   *  false so a fresh page-load never auto-prompts. Persisted in
+   *  localStorage so a user who turned it on stays on across loads. */
+  enabled: boolean;
 
   setStatus: (message: string, tone?: MidiState["status"]["tone"]) => void;
   setAvailable: (b: boolean) => void;
+  setEnabled: (b: boolean) => void;
 
   startLearn: (
     kind: LearnState["kind"],
@@ -74,9 +103,14 @@ export const useMidiStore = create<MidiState>((set, get) => ({
   status: { message: "MIDI", tone: "off" },
   learn: null,
   available: false,
+  enabled: loadEnabled(),
 
   setStatus: (message, tone = "info") => set({ status: { message, tone } }),
   setAvailable: (b) => set({ available: b }),
+  setEnabled: (b) => {
+    saveEnabled(b);
+    set({ enabled: b });
+  },
 
   startLearn: (kind, target, el) => {
     const prev = get().learn;
