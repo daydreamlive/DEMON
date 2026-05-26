@@ -18,6 +18,7 @@ import { useSessionStore } from "@/store/useSessionStore";
 import type { TimeSignature } from "@/types/engine";
 
 import { AlmostReadyDialog } from "./AlmostReadyDialog";
+import { MicRecorder } from "./MicRecorder";
 import { WaveformTrimDialog } from "./WaveformTrimDialog";
 
 const DEFAULT_TRIM_CAP_S = 120;
@@ -26,20 +27,22 @@ const DEFAULT_TRIM_CAP_S = 120;
 // the OS picker (iOS wheel / Android dialog) opens on tap — the user
 // gets a one-thumb friendly chooser with built-in scrolling, search,
 // and accessibility instead of the horizontal scroll-snap row of chips
-// the old carousel forced. The library + uploads + an "Upload your
-// own…" sentinel all live in the same select, with optgroups to keep
-// them visually grouped. Reuses the same fixture catalog,
-// custom-tracks store, and decodeAudioFile path as AudioSourceCrate so
-// a track switch from either surface looks identical to useFixtureSwap.
+// the old carousel forced. The library + uploads + record-from-mic +
+// the "Upload your own…" sentinel all live in the same select, with
+// optgroups to keep them visually grouped. Reuses the same fixture
+// catalog, custom-tracks store, decodeAudioFile path, and MicRecorder
+// modal as AudioSourceCrate so a track switch from either surface
+// looks identical to useFixtureSwap.
 //
 // (Component name kept as ``LiteTrackCarousel`` to preserve the import
 // site in ``LiteControls.tsx``; the carousel itself is gone.)
 
-// Sentinel value: selecting it triggers the file picker instead of
-// trying to swap to a fixture named "__upload__". The select stays
-// controlled on ``fixture``, so React re-renders and snaps the
-// visible selection back to the active track immediately.
+// Sentinel values: selecting them triggers a side-effect instead of a
+// fixture swap. The select stays controlled on ``fixture``, so React
+// re-renders and snaps the visible selection back to the active track
+// immediately while the modal opens in front.
 const UPLOAD_VALUE = "__upload__";
+const MIC_VALUE = "__mic__";
 
 export function LiteTrackCarousel() {
   const fixture = usePerformanceStore((s) => s.fixture);
@@ -51,6 +54,7 @@ export function LiteTrackCarousel() {
   const addCustomTrack = useCustomTracksStore((s) => s.add);
 
   const [uploading, setUploading] = useState(false);
+  const [micOpen, setMicOpen] = useState(false);
   // Mirrors AudioSourceCrate's two-stage flow: trim first, then the
   // AlmostReadyDialog. Keeps the previously playing track alive
   // through both steps.
@@ -170,6 +174,13 @@ export function LiteTrackCarousel() {
               fileInputRef.current?.click();
               return;
             }
+            if (v === MIC_VALUE) {
+              // Same sentinel pattern as UPLOAD_VALUE — open the
+              // MicRecorder modal; the controlled select snaps back
+              // to the active track on the next render.
+              setMicOpen(true);
+              return;
+            }
             if (v) setFixture(v);
           }}
         >
@@ -196,6 +207,9 @@ export function LiteTrackCarousel() {
               ))}
             </optgroup>
           )}
+          <option value={MIC_VALUE}>
+            ●  Record from microphone…
+          </option>
           <option value={UPLOAD_VALUE}>
             {uploading ? "Decoding…" : "↑  Upload your own…"}
           </option>
@@ -242,6 +256,20 @@ export function LiteTrackCarousel() {
             setTimeout(() => fileInputRef.current?.click(), 0);
           }}
           onClose={() => setPending(null)}
+        />
+      )}
+
+      {micOpen && (
+        <MicRecorder
+          onComplete={(file) => {
+            setMicOpen(false);
+            // Recorded clip flows through the same decode →
+            // AlmostReadyDialog → addCustomTrack pipeline as a file
+            // upload. MicRecorder emits a wav File so onFilePicked's
+            // decodeAudioFile handles it identically.
+            void onFilePicked(file);
+          }}
+          onClose={() => setMicOpen(false)}
         />
       )}
     </div>
