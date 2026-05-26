@@ -1745,6 +1745,20 @@ body[data-mode="graph"]::before {
   border-color: var(--accent);
   color: #ffffff;
 }
+/* Cap-blocked rows look reachable but inert. The native :disabled
+ * already filters pointer events; we just dim and tint the "—" badge
+ * so the operator's eye understands "you can interact, but only by
+ * freeing a slot first" — the tooltip carries the verbal explanation.
+ * Enabled rows are never cap-blocked (toggling them OFF is allowed),
+ * so the .enabled rule above takes precedence on visited slots. */
+.lora-browse-row.cap-blocked {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.lora-browse-row.cap-blocked .lora-browse-add {
+  color: var(--text-dim);
+  border-color: var(--border-dim);
+}
 .lora-browse-desc {
   font-size: 10px;
   line-height: 1.35;

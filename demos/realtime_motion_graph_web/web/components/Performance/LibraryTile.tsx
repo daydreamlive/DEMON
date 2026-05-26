@@ -315,6 +315,12 @@ function useLoraToggle() {
         disable(id);
         remote?.sendDisableLora(id);
       } else {
+        // Cap-aware: consult the store BEFORE the WS round-trip so we
+        // don't ship a sendEnableLora for a LoRA the store will refuse
+        // to add (server would materialize ~1.2 GB of refit state for
+        // a UI that won't reflect it). The store's enable() also
+        // enforces the cap defensively — this is the visible side.
+        if (!useLoraStore.getState().canEnableMore()) return;
         enable(id);
         const s = useLoraStore.getState().strengths[id] ?? 0;
         remote?.sendEnableLora(id, s);
@@ -505,6 +511,16 @@ function ActiveLoraRow({ entry }: { entry: LoraCatalogEntry }) {
 function BrowseLoraRow({ entry }: { entry: LoraCatalogEntry }) {
   const { id } = entry;
   const enabled = useLoraStore((s) => s.enabled.has(id));
+  // Subscribe to the cap state so the row re-renders when another LoRA
+  // is enabled/disabled elsewhere and our affordance needs to flip
+  // between "+" (clickable) and "max" (disabled).
+  const atCap = useLoraStore(
+    (s) =>
+      s.maxEnabled !== null &&
+      s.maxEnabled >= 0 &&
+      s.enabled.size >= s.maxEnabled,
+  );
+  const cap = useLoraStore((s) => s.maxEnabled);
   const toggle = useLoraToggle();
 
   const md = entry.metadata;
@@ -521,22 +537,33 @@ function BrowseLoraRow({ entry }: { entry: LoraCatalogEntry }) {
     [id, trigger, flashConfirm],
   );
 
+  // Cap blocks new enables, never disables. So a row that's already
+  // enabled stays clickable (so the user can free a slot); only the
+  // disabled-and-cap-reached rows become inert.
+  const capBlocked = atCap && !enabled;
+  const rowTitle = capBlocked
+    ? `Maximum ${cap} LoRAs active — disable one to enable this`
+    : displayName;
+
   return (
     <>
       <button
         ref={rowRef}
         type="button"
-        className={`lora-browse-row${enabled ? " enabled" : ""}`}
+        className={`lora-browse-row${enabled ? " enabled" : ""}${capBlocked ? " cap-blocked" : ""}`}
         onClick={() => toggle(id, enabled)}
         onContextMenu={onContextMenu}
         aria-pressed={enabled}
+        aria-disabled={capBlocked}
+        disabled={capBlocked}
+        title={rowTitle}
       >
         <span className="lora-browse-main">
           <span className="lora-browse-name" title={displayName}>
             {confirmMsg ?? displayName}
           </span>
           <span className="lora-browse-add" aria-hidden="true">
-            {enabled ? "✓" : "+"}
+            {enabled ? "✓" : capBlocked ? "—" : "+"}
           </span>
         </span>
         {desc && <span className="lora-browse-desc">{desc}</span>}
