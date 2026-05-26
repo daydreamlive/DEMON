@@ -21,6 +21,7 @@ import {
   SLICE_FLAG_DELTA,
   SLICE_HDR_SIZE,
   type AudioSlice,
+  type LegoAssetsMessage,
   type LoraCatalogEntry,
   type SessionConfig,
   type StemAssetsMessage,
@@ -122,7 +123,9 @@ export class RemoteBackend extends EventTarget {
   private _pending: PendingPayload | null;
   private _pendingSwap: SwapReadyMessage | null = null;
   private _pendingStemAssets: StemAssetsMessage | null = null;
-  private _pendingStemBuffers: Partial<Record<"vocals" | "instruments", Float32Array>> = {};
+  private _pendingStemBuffers: Partial<Record<string, Float32Array>> = {};
+  private _pendingLegoAssets: LegoAssetsMessage | null = null;
+  private _pendingLegoBuffers: Partial<Record<string, Float32Array>> = {};
   // Slice decoder runs in a worker so fzstd.decompress + float16→float32
   // never block the render loop or input handling. Worker is single-threaded
   // and postMessage is FIFO, so audio slices stay in order.
@@ -330,14 +333,38 @@ export class RemoteBackend extends EventTarget {
             (name) => this._pendingStemBuffers[name],
           );
           if (complete) {
-            const buffers = this._pendingStemBuffers as Record<
-              "vocals" | "instruments",
-              Float32Array
-            >;
+            const buffers = this._pendingStemBuffers as Record<string, Float32Array>;
             this._pendingStemAssets = null;
             this._pendingStemBuffers = {};
             this.dispatchEvent(
               new CustomEvent("stem_assets", {
+                detail: { ...meta, buffers },
+              }),
+            );
+          }
+          return;
+        }
+
+        // LEGO layers use the same JSON-header + float16 buffers framing as
+        // MelBand stems, but the layer names are arbitrary ACE-Step track ids.
+        if (this._pendingLegoAssets && ev.data instanceof ArrayBuffer) {
+          const meta = this._pendingLegoAssets;
+          const layer = meta.layers[
+            Object.keys(this._pendingLegoBuffers).length
+          ];
+          if (layer) {
+            const u16 = new Uint16Array(ev.data);
+            this._pendingLegoBuffers[layer] = float16ArrayToFloat32(u16);
+          }
+          const complete = meta.layers.every(
+            (name) => this._pendingLegoBuffers[name],
+          );
+          if (complete) {
+            const buffers = this._pendingLegoBuffers as Record<string, Float32Array>;
+            this._pendingLegoAssets = null;
+            this._pendingLegoBuffers = {};
+            this.dispatchEvent(
+              new CustomEvent("lego_assets", {
                 detail: { ...meta, buffers },
               }),
             );
@@ -397,6 +424,13 @@ export class RemoteBackend extends EventTarget {
             this.dispatchEvent(
               new CustomEvent("stem_failed", { detail: msg }),
             );
+          } else if (msg.type === "lego_status") {
+            this.dispatchEvent(
+              new CustomEvent("lego_status", { detail: msg }),
+            );
+          } else if (msg.type === "lego_assets") {
+            this._pendingLegoAssets = msg as unknown as LegoAssetsMessage;
+            this._pendingLegoBuffers = {};
           } else if (msg.type === "timbre_set") {
             this.dispatchEvent(
               new CustomEvent("timbre_set", { detail: msg }),
@@ -865,6 +899,34 @@ export class RemoteBackend extends EventTarget {
       return true;
     } catch (e) {
       console.error("[protocol] sendSwapSource failed:", e);
+      return false;
+    }
+  }
+
+  sendLegoGenerate(opts: {
+    fixtureName?: string;
+    layers: Array<{ track: string; prompt: string }>;
+    model?: string;
+    seed?: number;
+    steps?: number;
+    shift?: number;
+    cfgScale?: number;
+  }): boolean {
+    if (this.ws?.readyState !== WebSocket.OPEN) return false;
+    try {
+      this.ws.send(JSON.stringify({
+        type: "lego_generate",
+        fixture_name: opts.fixtureName,
+        layers: opts.layers,
+        model: opts.model,
+        seed: opts.seed,
+        steps: opts.steps,
+        shift: opts.shift,
+        cfg_scale: opts.cfgScale,
+      }));
+      return true;
+    } catch (e) {
+      console.error("[protocol] sendLegoGenerate failed:", e);
       return false;
     }
   }

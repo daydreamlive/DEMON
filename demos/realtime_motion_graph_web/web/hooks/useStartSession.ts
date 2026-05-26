@@ -194,7 +194,7 @@ function wireRemoteListeners(
       channels: number;
       frames: number;
       source_mode?: "full" | "vocals" | "instruments";
-      buffers: Record<"vocals" | "instruments", Float32Array>;
+      buffers: Record<string, Float32Array>;
     }>).detail;
     const name = detail.fixture_name || usePerformanceStore.getState().fixture;
     if (!name) return;
@@ -202,18 +202,17 @@ function wireRemoteListeners(
       useCustomTracksStore.getState().setSourceMode(name, detail.source_mode);
     }
     useCustomTracksStore.getState().setStems(name, {
-      vocals: {
-        interleaved: detail.buffers.vocals,
-        channels: detail.channels,
-        frames: detail.frames,
-        sampleRate: detail.sample_rate,
-      },
-      instruments: {
-        interleaved: detail.buffers.instruments,
-        channels: detail.channels,
-        frames: detail.frames,
-        sampleRate: detail.sample_rate,
-      },
+      ...Object.fromEntries(
+        Object.entries(detail.buffers).map(([kind, interleaved]) => [
+          kind,
+          {
+            interleaved,
+            channels: detail.channels,
+            frames: detail.frames,
+            sampleRate: detail.sample_rate,
+          },
+        ]),
+      ),
     });
   });
 
@@ -227,6 +226,46 @@ function wireRemoteListeners(
     useCustomTracksStore
       .getState()
       .setStemStatus(name, "failed", detail.error || "Stem extraction failed");
+  });
+
+  remote.addEventListener("lego_status", (e) => {
+    const detail = (e as CustomEvent<{
+      fixture_name?: string;
+      track: string;
+      status: "queued" | "running" | "ready" | "failed";
+      error?: string;
+    }>).detail;
+    const name = detail.fixture_name || usePerformanceStore.getState().fixture;
+    if (!name || !detail.track || detail.track === "__job__") return;
+    useCustomTracksStore
+      .getState()
+      .setLegoStatus(name, detail.track, detail.status, detail.error);
+  });
+
+  remote.addEventListener("lego_assets", (e) => {
+    const detail = (e as CustomEvent<{
+      fixture_name?: string;
+      sample_rate: number;
+      channels: number;
+      frames: number;
+      buffers: Record<string, Float32Array>;
+    }>).detail;
+    const name = detail.fixture_name || usePerformanceStore.getState().fixture;
+    if (!name) return;
+    useCustomTracksStore.getState().setLegoStems(
+      name,
+      Object.fromEntries(
+        Object.entries(detail.buffers).map(([kind, interleaved]) => [
+          kind,
+          {
+            interleaved,
+            channels: detail.channels,
+            frames: detail.frames,
+            sampleRate: detail.sample_rate,
+          },
+        ]),
+      ),
+    );
   });
 
   remote.addEventListener("close", (e) => {

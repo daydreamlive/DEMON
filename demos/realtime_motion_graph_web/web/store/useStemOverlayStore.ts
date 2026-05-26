@@ -28,5 +28,7 @@ export const useStemOverlayStore = create<StemOverlayState>((set) => ({
     })),
 
   toggle: (kind) =>
-    set((s) => ({ enabled: { ...s.enabled, [kind]: !s.enabled[kind] } })),
+    set((s) => ({
+      enabled: { ...s.enabled, [kind]: !(s.enabled[kind] ?? false) },
+    })),
 }));

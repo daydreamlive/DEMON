@@ -13,40 +13,37 @@ export function useStemOverlaySync() {
   const stems = useCustomTracksStore((s) =>
     fixture ? s.tracks.get(fixture)?.stems : undefined,
   );
-  const vocalsEnabled = useStemOverlayStore((s) => s.enabled.vocals);
-  const instrumentsEnabled = useStemOverlayStore((s) => s.enabled.instruments);
-  const vocalsVolume = useStemOverlayStore((s) => s.volumes.vocals);
-  const instrumentsVolume = useStemOverlayStore((s) => s.volumes.instruments);
+  const legoStems = useCustomTracksStore((s) =>
+    fixture ? s.tracks.get(fixture)?.legoStems : undefined,
+  );
+  const enabled = useStemOverlayStore((s) => s.enabled);
+  const volumes = useStemOverlayStore((s) => s.volumes);
 
   useEffect(() => {
     if (!player) return;
-    if (!stems) {
+    if (!stems && !legoStems) {
       player.clearStemOverlays();
       return;
     }
-    player.setStemOverlay("vocals", stems.vocals.interleaved, stems.vocals.channels);
-    player.setStemOverlay(
-      "instruments",
-      stems.instruments.interleaved,
-      stems.instruments.channels,
-    );
-  }, [fixture, player, stems]);
+    player.clearStemOverlays();
+    if (stems) {
+      for (const [kind, stem] of Object.entries(stems)) {
+        player.setStemOverlay(kind, stem.interleaved, stem.channels);
+      }
+    }
+    if (legoStems) {
+      for (const [kind, stem] of Object.entries(legoStems)) {
+        player.setStemOverlay(`lego:${kind}`, stem.interleaved, stem.channels);
+      }
+    }
+  }, [fixture, player, stems, legoStems]);
 
   useEffect(() => {
     if (!player) return;
-    player.setStemOverlayVolume(
-      "vocals",
-      vocalsEnabled ? vocalsVolume : 0,
-    );
-    player.setStemOverlayVolume(
-      "instruments",
-      instrumentsEnabled ? instrumentsVolume : 0,
-    );
-  }, [
-    player,
-    vocalsEnabled,
-    instrumentsEnabled,
-    vocalsVolume,
-    instrumentsVolume,
-  ]);
+    const keys = new Set([...Object.keys(enabled), ...Object.keys(volumes)]);
+    keys.forEach((kind) => {
+      const volume = volumes[kind] ?? 0.65;
+      player.setStemOverlayVolume(kind, enabled[kind] ? volume : 0);
+    });
+  }, [player, enabled, volumes]);
 }

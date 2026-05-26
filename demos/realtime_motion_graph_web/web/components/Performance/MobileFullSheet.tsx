@@ -7,12 +7,13 @@ import { useScrollSyncedTabs } from "@/hooks/useScrollSyncedTabs";
 
 import { CoreTile } from "./CoreTile";
 import { LibraryTile } from "./LibraryTile";
+import { LegoStemsTile } from "./LegoStemsTile";
 import { ModTile } from "./ModTile";
 import { OperatorStrip } from "./OperatorStrip";
 import { PromptsTile } from "./PromptsTile";
 import { VoiceTile } from "./VoiceTile";
 
-type Tab = "core" | "mod" | "voice" | "styles" | "saved" | "config";
+type Tab = "core" | "mod" | "voice" | "styles" | "lego" | "saved" | "config";
 
 interface Props {
   open: boolean;
@@ -28,6 +29,7 @@ interface Props {
 const TABS: { id: Tab; label: string }[] = [
   { id: "core", label: "Core" },
   { id: "styles", label: "Styles" },
+  { id: "lego", label: "LEGO" },
   { id: "mod", label: "Mod" },
   { id: "voice", label: "Channels" },
   { id: "saved", label: "Saved" },
@@ -96,6 +98,9 @@ export function MobileFullSheet({ open, onClose, savedTab }: Props) {
             <PromptsTile />
             <LibraryTile />
           </div>
+        </section>
+        <section data-section="lego" className="mobile-sheet-section">
+          <LegoStemsTile />
         </section>
         <section data-section="saved" className="mobile-sheet-section">
           {savedTab ?? (

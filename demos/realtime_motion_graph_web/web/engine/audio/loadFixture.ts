@@ -20,11 +20,10 @@ export interface DecodedFixture {
 }
 
 export type StemSourceMode = "full" | "vocals" | "instruments";
-export type StemOverlayKind = "vocals" | "instruments";
+export type StemOverlayKind = string;
 
 export interface DecodedStemAssets {
-  vocals: DecodedFixture;
-  instruments: DecodedFixture;
+  [layerId: string]: DecodedFixture;
 }
 
 // Server-side latent pool size (1920 * 5 = 9600 samples = 0.2 s at

@@ -174,28 +174,24 @@ const STEM_SECTION_TOOLTIP =
 
 interface HeroStemPannerProps {
   kind: StemOverlayKind;
+  label: string;
+  ready: boolean;
 }
-function HeroStemPanner({ kind }: HeroStemPannerProps) {
-  const fixture = usePerformanceStore((s) => s.fixture);
-  const stems = useCustomTracksStore((s) =>
-    fixture ? s.tracks.get(fixture)?.stems : undefined,
-  );
+function HeroStemPanner({ kind, label, ready }: HeroStemPannerProps) {
   const enabled = useStemOverlayStore((s) => s.enabled[kind]);
-  const volume = useStemOverlayStore((s) => s.volumes[kind]);
+  const volume = useStemOverlayStore((s) => s.volumes[kind] ?? 0.65);
   const toggle = useStemOverlayStore((s) => s.toggle);
-  const stemsReady = Boolean(stems);
   const trackRef = useRef<HTMLDivElement | null>(null);
-  useStemPannerDrag(trackRef, kind, stemsReady);
+  useStemPannerDrag(trackRef, kind, ready);
   const displayValue = enabled ? volume : 0;
   const fraction =
     STEM_OVERLAY_MAX > 0
       ? Math.max(0, Math.min(1, displayValue / STEM_OVERLAY_MAX))
       : 0;
-  const label = STEM_LABELS[kind];
   return (
     <div
-      className={`hero-stem-panner${stemsReady ? "" : " hero-stem-panner--empty"}`}
-      data-param={stemsReady ? `stem_${kind}` : undefined}
+      className={`hero-stem-panner${ready ? "" : " hero-stem-panner--empty"}`}
+      data-param={ready ? `stem_${kind}` : undefined}
     >
       {/* Click the label to mute / unmute without losing the level —
           mirrors the original StemOverlayPanel toggle. The drag still
@@ -207,9 +203,9 @@ function HeroStemPanner({ kind }: HeroStemPannerProps) {
         type="button"
         className="hero-stem-panner-label"
         onClick={() => {
-          if (stemsReady) toggle(kind);
+          if (ready) toggle(kind);
         }}
-        disabled={!stemsReady}
+        disabled={!ready}
         aria-pressed={enabled}
         data-dd-tooltip={enabled ? "Click to mute layer" : "Click to unmute layer"}
       >
@@ -262,11 +258,17 @@ export function HeroMacros() {
   const stemsReady = useCustomTracksStore((s) =>
     Boolean(fixture && s.tracks.get(fixture)?.stems),
   );
-  const showStems = !!sourceMode && sourceMode !== "full";
+  const legoStems = useCustomTracksStore((s) =>
+    fixture ? s.tracks.get(fixture)?.legoStems : undefined,
+  );
+  const legoStemNames = legoStems ? Object.keys(legoStems) : [];
+  const showSourceStems = !!sourceMode && sourceMode !== "full";
+  const showLegoStems = legoStemNames.length > 0;
+  const showStems = showSourceStems || showLegoStems;
   // Mirrors the status copy from the original StemOverlayPanel — sits
   // italicised just under the section header so the operator sees what
   // the pipeline is doing while the panners are still inert.
-  const stemSummary = !showStems
+  const stemSummary = !showSourceStems
     ? null
     : stemStatus === "processing"
       ? "Ripping stems…"
@@ -275,6 +277,9 @@ export function HeroMacros() {
         : stemsReady
           ? `Inference source: ${sourceMode}`
           : "Stems will load on play";
+  const layerSummary = showLegoStems
+    ? `${legoStemNames.length} LEGO layer${legoStemNames.length === 1 ? "" : "s"} ready`
+    : stemSummary;
 
   // Clear the per-song remix gate when the user moves the bay's
   // DENOISE knob above zero. Mirrors MobileRemixStepper's behavior so
@@ -337,17 +342,37 @@ export function HeroMacros() {
             >
               Stem Layers
             </div>
-            {stemSummary && (
+            {layerSummary && (
               <div
                 className="hero-macros-group-status"
                 title={stemError || undefined}
               >
-                {stemSummary}
+                {layerSummary}
               </div>
             )}
             <div className="hero-stem-panners">
-              <HeroStemPanner kind="vocals" />
-              <HeroStemPanner kind="instruments" />
+              {showSourceStems && (
+                <>
+                  <HeroStemPanner
+                    kind="vocals"
+                    label={STEM_LABELS.vocals}
+                    ready={stemsReady}
+                  />
+                  <HeroStemPanner
+                    kind="instruments"
+                    label={STEM_LABELS.instruments}
+                    ready={stemsReady}
+                  />
+                </>
+              )}
+              {legoStemNames.map((name) => (
+                <HeroStemPanner
+                  key={name}
+                  kind={`lego:${name}`}
+                  label={name.replace(/_/g, " ")}
+                  ready
+                />
+              ))}
             </div>
           </div>
         </>

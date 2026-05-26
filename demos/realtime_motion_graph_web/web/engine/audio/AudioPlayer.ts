@@ -13,7 +13,7 @@ import {
 } from "./lufs";
 
 type MirrorListener = () => void;
-type StemOverlayKind = "vocals" | "instruments";
+type StemOverlayKind = string;
 
 // Stem overlays (vocals / instruments) are mixed *inside* the audio worklet
 // (or _spProcess in the ScriptProcessor fallback) so they share the main
@@ -107,7 +107,7 @@ export class AudioPlayer {
   private _spPosition = 0;
   private _recordDest: MediaStreamAudioDestinationNode | null = null;
   private _masterOut: GainNode | null = null;
-  private _stemOverlays: Record<StemOverlayKind, StemOverlayState> = {
+  private _stemOverlays: Record<string, StemOverlayState> = {
     vocals: { interleaved: null, channels: 2, frameCount: 0, targetVolume: 0, volume: 0 },
     instruments: { interleaved: null, channels: 2, frameCount: 0, targetVolume: 0, volume: 0 },
   };
@@ -308,13 +308,26 @@ export class AudioPlayer {
     }
   }
 
+  private _ensureStemOverlay(kind: StemOverlayKind): StemOverlayState {
+    if (!this._stemOverlays[kind]) {
+      this._stemOverlays[kind] = {
+        interleaved: null,
+        channels: 2,
+        frameCount: 0,
+        targetVolume: 0,
+        volume: 0,
+      };
+    }
+    return this._stemOverlays[kind];
+  }
+
   setStemOverlay(
     kind: StemOverlayKind,
     interleaved: Float32Array,
     channels: number,
   ): void {
     if (!this.ctx) return;
-    const state = this._stemOverlays[kind];
+    const state = this._ensureStemOverlay(kind);
     // Keep an own copy: postMessage with a transfer would zero the
     // caller's buffer (useStemOverlaySync hands us a Float32Array it
     // doesn't own a duplicate of), and the SP fallback also needs the
@@ -345,7 +358,7 @@ export class AudioPlayer {
   }
 
   clearStemOverlays(): void {
-    (Object.keys(this._stemOverlays) as StemOverlayKind[]).forEach((kind) => {
+    Object.keys(this._stemOverlays).forEach((kind) => {
       const state = this._stemOverlays[kind];
       state.interleaved = null;
       state.frameCount = 0;
@@ -363,7 +376,7 @@ export class AudioPlayer {
   }
 
   setStemOverlayVolume(kind: StemOverlayKind, volume: number): void {
-    const state = this._stemOverlays[kind];
+    const state = this._ensureStemOverlay(kind);
     const v = Math.max(0, Math.min(1.5, volume));
     state.targetVolume = v;
     if (this._useWorklet && this.node) {
@@ -831,12 +844,7 @@ export class AudioPlayer {
     // the SP fallback behaves identically (same seam fade, same phase
     // lock to the main playhead).
     const overlays: StemOverlayState[] = [];
-    {
-      const ov = this._stemOverlays.vocals;
-      if (ov.interleaved && ov.frameCount > 0) overlays.push(ov);
-    }
-    {
-      const ov = this._stemOverlays.instruments;
+    for (const ov of Object.values(this._stemOverlays)) {
       if (ov.interleaved && ov.frameCount > 0) overlays.push(ov);
     }
     const volAlpha = this._spOverlayVolAlpha;

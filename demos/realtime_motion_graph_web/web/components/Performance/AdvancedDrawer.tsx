@@ -12,6 +12,7 @@ import { CoreTile } from "./CoreTile";
 import { DrawerHelpBar } from "./DrawerHelpBar";
 import { DrawerTabs, useDrawerTab, type DrawerTab } from "./DrawerTabs";
 import { LibraryTile } from "./LibraryTile";
+import { LegoStemsTile } from "./LegoStemsTile";
 import { LiteControls } from "./LiteControls";
 import { MobileFullSheet } from "./MobileFullSheet";
 import { ModTile } from "./ModTile";
@@ -200,6 +201,7 @@ export function AdvancedDrawer({ savedTab, unsavedDot }: Props = {}) {
 const SPREAD_SECTIONS: Array<{ id: DrawerTab; label: string }> = [
   { id: "core", label: "Core" },
   { id: "styles", label: "Styles" },
+  { id: "lego", label: "LEGO" },
   { id: "mod", label: "Mod" },
   { id: "voice", label: "Channels" },
   { id: "config", label: "Config" },
@@ -249,6 +251,8 @@ function renderTabBody(tab: DrawerTab, savedTab?: ReactNode, spread = false) {
           )}
         </div>
       );
+    case "lego":
+      return <LegoStemsTile />;
     case "saved":
       return savedTab ?? (
         <div className="install-sheet-saved-placeholder">

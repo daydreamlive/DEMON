@@ -14,7 +14,7 @@ import type {
 // fixture dropdown re-renders when an upload completes. Cleared on page reload
 // — uploads are session-scoped, matching how the pod treats fixtures.
 
-export type StemStatus = "idle" | "processing" | "ready" | "failed";
+export type StemStatus = "idle" | "queued" | "processing" | "running" | "ready" | "failed";
 
 export interface CustomTrack {
   decoded: DecodedFixture;
@@ -26,6 +26,11 @@ export interface CustomTrack {
   stems?: DecodedStemAssets;
   stemStatus: StemStatus;
   stemError?: string;
+  /** Base-model LEGO layers generated from this uploaded track. */
+  legoStems?: DecodedStemAssets;
+  legoStatus: Record<string, StemStatus>;
+  legoErrors: Record<string, string | undefined>;
+  legoPrompts: Record<string, string>;
 }
 
 interface CustomTracksState {
@@ -47,6 +52,18 @@ interface CustomTracksState {
   ) => void;
   setSourceMode: (name: string, sourceMode: StemSourceMode) => void;
   setStems: (name: string, stems: DecodedStemAssets) => void;
+  setLegoStatus: (
+    name: string,
+    track: string,
+    status: StemStatus,
+    error?: string,
+  ) => void;
+  setLegoStems: (
+    name: string,
+    stems: DecodedStemAssets,
+    prompts?: Record<string, string>,
+  ) => void;
+  setLegoPrompt: (name: string, track: string, prompt: string) => void;
   resolveSourceMode: (name: string) => StemSourceMode | undefined;
   has: (name: string) => boolean;
 }
@@ -63,6 +80,9 @@ export const useCustomTracksStore = create<CustomTracksState>((set, get) => ({
         ...(file ? { originalFile: file } : {}),
         sourceMode,
         stemStatus: "idle",
+        legoStatus: {},
+        legoErrors: {},
+        legoPrompts: {},
       });
       const nextNames = s.names.includes(name) ? s.names : [...s.names, name];
       return {
@@ -103,6 +123,56 @@ export const useCustomTracksStore = create<CustomTracksState>((set, get) => ({
         stems,
         stemStatus: "ready",
         stemError: undefined,
+      });
+      return { tracks: nextTracks };
+    }),
+
+  setLegoStatus: (name, legoTrack, status, error) =>
+    set((s) => {
+      const track = s.tracks.get(name);
+      if (!track) return {};
+      const nextTracks = new Map(s.tracks);
+      nextTracks.set(name, {
+        ...track,
+        legoStatus: { ...track.legoStatus, [legoTrack]: status },
+        legoErrors: {
+          ...track.legoErrors,
+          [legoTrack]: error,
+        },
+      });
+      return { tracks: nextTracks };
+    }),
+
+  setLegoStems: (name, stems, prompts) =>
+    set((s) => {
+      const track = s.tracks.get(name);
+      if (!track) return {};
+      const nextLegoStems = { ...(track.legoStems ?? {}), ...stems };
+      const nextStatus = { ...track.legoStatus };
+      const nextErrors = { ...track.legoErrors };
+      for (const stemName of Object.keys(stems)) {
+        nextStatus[stemName] = "ready";
+        nextErrors[stemName] = undefined;
+      }
+      const nextTracks = new Map(s.tracks);
+      nextTracks.set(name, {
+        ...track,
+        legoStems: nextLegoStems,
+        legoStatus: nextStatus,
+        legoErrors: nextErrors,
+        legoPrompts: { ...track.legoPrompts, ...(prompts ?? {}) },
+      });
+      return { tracks: nextTracks };
+    }),
+
+  setLegoPrompt: (name, legoTrack, prompt) =>
+    set((s) => {
+      const track = s.tracks.get(name);
+      if (!track) return {};
+      const nextTracks = new Map(s.tracks);
+      nextTracks.set(name, {
+        ...track,
+        legoPrompts: { ...track.legoPrompts, [legoTrack]: prompt },
       });
       return { tracks: nextTracks };
     }),

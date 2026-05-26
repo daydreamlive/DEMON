@@ -57,6 +57,7 @@ from .melband_reformer import (
     normalize_stem_source_mode,
     resolve_upload_stem_source_mode,
 )
+from .lego_stems import LegoStemOptions, generate_lego_stems_isolated
 from .protocol import (
     SAMPLE_RATE,
     SLICE_FLAG_DELTA,
@@ -66,6 +67,28 @@ from .protocol import (
 )
 from .pipeline import PipelineRunner
 from . import session_registry
+
+
+_LEGO_JOB_LOCK = threading.Lock()
+
+
+def _send_ws_lego_status(
+    ws,
+    *,
+    fixture_name: str | None,
+    track: str,
+    status: str,
+    error: str | None = None,
+) -> None:
+    payload = {
+        "type": "lego_status",
+        "fixture_name": fixture_name or "",
+        "track": track,
+        "status": status,
+    }
+    if error:
+        payload["error"] = error
+    ws.send(json.dumps(payload))
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +212,31 @@ def _send_stem_payload(
         "frames": frames,
         "stems": order,
         "source_mode": source_mode or "full",
+    }))
+    for name in order:
+        arr = stems[name].detach().cpu().numpy().T.astype(np.float16)
+        ws.send(arr.tobytes())
+
+
+def _send_lego_payload(
+    ws,
+    *,
+    fixture_name: str | None,
+    stems: dict[str, torch.Tensor],
+) -> None:
+    order = list(stems.keys())
+    if not order:
+        return
+    first = stems[order[0]]
+    frames = int(first.shape[-1])
+    channels = int(first.shape[0])
+    ws.send(json.dumps({
+        "type": "lego_assets",
+        "fixture_name": fixture_name or "",
+        "sample_rate": SAMPLE_RATE,
+        "channels": channels,
+        "frames": frames,
+        "layers": order,
     }))
     for name in order:
         arr = stems[name].detach().cpu().numpy().T.astype(np.float16)
@@ -472,6 +520,70 @@ def handle_client(
     # ---- Phase 1: Init ----
     config = json.loads(ws.recv())
     print(f"[Server] Config: {config}")
+    if config.get("type") == "lego_preflight":
+        fixture_name = config.get("fixture_name")
+        layers_raw = config.get("layers") or []
+        prompts: dict[str, str] = {}
+        if isinstance(layers_raw, list):
+            for item in layers_raw:
+                if not isinstance(item, dict):
+                    continue
+                track = str(item.get("track") or "").strip()
+                prompt = str(item.get("prompt") or "").strip()
+                if track and prompt:
+                    prompts[track] = prompt
+        try:
+            audio_msg = ws.recv()
+            waveform = _decode_audio_msg(audio_msg)
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            options = LegoStemOptions(
+                model=str(config.get("model") or "acestep-v15-base"),
+                seed=int(config.get("seed") or 1528),
+                steps=int(config.get("steps") or 50),
+                shift=float(config.get("shift") or 1.0),
+                cfg_scale=float(config.get("cfg_scale") or 7.0),
+            )
+            for track in prompts:
+                _send_ws_lego_status(
+                    ws,
+                    fixture_name=fixture_name,
+                    track=track,
+                    status="queued",
+                )
+            with _LEGO_JOB_LOCK:
+                stems = generate_lego_stems_isolated(
+                    waveform,
+                    prompts,
+                    options=options,
+                    progress=lambda track, status, error: _send_ws_lego_status(
+                        ws,
+                        fixture_name=fixture_name,
+                        track=track,
+                        status=status,
+                        error=error,
+                    ),
+                )
+                _send_lego_payload(ws, fixture_name=fixture_name, stems=stems)
+            ws.close(1000, "lego complete")
+        except Exception as exc:
+            msg = str(exc)
+            print(f"[Server] LEGO preflight failed: {msg}")
+            try:
+                ws.send(json.dumps({
+                    "type": "error",
+                    "code": "lego_preflight_failed",
+                    "message": msg,
+                }))
+            except Exception:
+                pass
+            try:
+                ws.close(1011, "lego preflight failed")
+            except Exception:
+                pass
+        return
 
     # Session-init timing instrumentation. t0 == config received; every
     # milestone prints wall-seconds since t0 so the per-connect latency
@@ -697,15 +809,16 @@ def handle_client(
 
     print(f"[Server] Loading model... (decoder={decoder_backend}, vae={vae_backend}, ckpt={checkpoint})")
     t0 = time.time()
-    session = Session(
-        project_root=str(checkpoints_dir()),
-        config_path=checkpoint,
-        decoder_backend=decoder_backend,
-        vae_backend=vae_backend,
-        offload_text_encoder=offload_text_encoder,
-        trt_engines=trt_engines,
-        vae_window=vae_window,
-    )
+    with _LEGO_JOB_LOCK:
+        session = Session(
+            project_root=str(checkpoints_dir()),
+            config_path=checkpoint,
+            decoder_backend=decoder_backend,
+            vae_backend=vae_backend,
+            offload_text_encoder=offload_text_encoder,
+            trt_engines=trt_engines,
+            vae_window=vae_window,
+        )
     print(f"  Model loaded in {time.time() - t0:.1f}s")
 
     # Bind the manager to the live engines so future swaps can compare
@@ -770,22 +883,43 @@ def handle_client(
     audio_in = Audio(waveform=waveform, sample_rate=SAMPLE_RATE)
 
     _ms("resolve_source_start")
-    source, detected_bpm, detected_key, detected_time_signature = (
-        _resolve_bpm_key_source(
-            session,
-            audio_in=audio_in,
-            fixture_name=fixture_name,
-            samples=int(waveform.shape[1]),
+    try:
+        source, detected_bpm, detected_key, detected_time_signature = (
+            _resolve_bpm_key_source(
+                session,
+                audio_in=audio_in,
+                fixture_name=fixture_name,
+                samples=int(waveform.shape[1]),
+            )
         )
-    )
-    upload_stems: dict[str, torch.Tensor] | None = None
-    stem_error: str | None = None
-    upload_stems, stem_error, source, waveform = _extract_and_select_upload_stem(
-        waveform,
-        session=session,
-        source=source,
-        source_mode=stem_source_mode,
-    )
+        upload_stems: dict[str, torch.Tensor] | None = None
+        stem_error: str | None = None
+        upload_stems, stem_error, source, waveform = _extract_and_select_upload_stem(
+            waveform,
+            session=session,
+            source=source,
+            source_mode=stem_source_mode,
+        )
+    except Exception as exc:
+        msg = str(exc)
+        print(f"[Server] Source preparation failed: {msg}")
+        try:
+            ws.send(json.dumps({
+                "type": "error",
+                "code": "source_prepare_failed",
+                "message": msg,
+            }))
+        except Exception:
+            pass
+        try:
+            ws.close(1011, "source preparation failed")
+        except Exception:
+            pass
+        try:
+            session.close()
+        except Exception as close_exc:
+            print(f"[Server] session.close() after source failure raised: {close_exc}")
+        return
     if stem_error is not None and stem_source_mode != "full":
         try:
             ws.send(json.dumps({
@@ -796,6 +930,10 @@ def handle_client(
         except Exception:
             pass
         ws.close(1011, "stem extraction failed")
+        try:
+            session.close()
+        except Exception as close_exc:
+            print(f"[Server] session.close() after stem failure raised: {close_exc}")
         return
 
     _ms("resolve_source_done")
@@ -1000,6 +1138,8 @@ def handle_client(
     # on_audio_ready. Values are read via the [0] indirection everywhere
     # that needs the *current* (post-swap) version.
     source_ref = [source]
+    source_waveform_ref = [waveform.detach().cpu().clone()]
+    fixture_name_ref = [fixture_name]
     bpm_ref = [detected_bpm]
     key_ref = [detected_key]
     # Tracks the time signature actively baked into the latest cond_pair.
@@ -1281,6 +1421,7 @@ def handle_client(
     pending_depth_ref: list[int | None] = [None]
     pending_depth_lock = threading.Lock()
     current_depth_ref: list[int] = [int(depth)]
+    lego_job_ref: list[threading.Thread | None] = [None]
 
     # Last meaningful-activity timestamp. Read by PipelineRunner to
     # decide whether to skip the DiT tick this iteration. The web client
@@ -1305,6 +1446,115 @@ def handle_client(
                 }))
         except ConnectionClosed:
             running[0] = False
+
+    def _send_lego_status(
+        track: str,
+        status: str,
+        error: str | None = None,
+        fixture_name_override: str | None = None,
+    ) -> None:
+        try:
+            with send_lock:
+                payload = {
+                    "type": "lego_status",
+                    "fixture_name": fixture_name_override or fixture_name_ref[0] or "",
+                    "track": track,
+                    "status": status,
+                }
+                if error:
+                    payload["error"] = error
+                ws.send(json.dumps(payload))
+        except ConnectionClosed:
+            running[0] = False
+        except Exception:
+            pass
+
+    def _start_lego_job(data: dict) -> None:
+        layers_raw = data.get("layers") or []
+        prompts: dict[str, str] = {}
+        if isinstance(layers_raw, list):
+            for item in layers_raw:
+                if not isinstance(item, dict):
+                    continue
+                track = str(item.get("track") or "").strip()
+                prompt_value = str(item.get("prompt") or "").strip()
+                if track and prompt_value:
+                    prompts[track] = prompt_value
+        if not prompts:
+            _send_lego_status("__job__", "failed", "No LEGO layers with prompts were selected")
+            return
+
+        requested_fixture = str(data.get("fixture_name") or "").strip()
+        active_fixture = fixture_name_ref[0] or ""
+        if requested_fixture and active_fixture and requested_fixture != active_fixture:
+            _send_lego_status(
+                "__job__",
+                "failed",
+                "Active track changed before LEGO generation could start",
+            )
+            return
+
+        existing = lego_job_ref[0]
+        if existing is not None and existing.is_alive():
+            _send_lego_status("__job__", "failed", "A LEGO job is already running")
+            return
+
+        try:
+            options = LegoStemOptions(
+                model=str(data.get("model") or "acestep-v15-base"),
+                seed=int(data.get("seed") or 1528),
+                steps=int(data.get("steps") or 50),
+                shift=float(data.get("shift") or 1.0),
+                cfg_scale=float(data.get("cfg_scale") or 7.0),
+                bpm=bpm_ref[0],
+                key_scale=key_ref[0] or "",
+                time_signature=time_sig_ref[0] or "",
+            )
+        except Exception as exc:
+            _send_lego_status("__job__", "failed", f"Invalid LEGO options: {exc}")
+            return
+
+        for track in prompts:
+            _send_lego_status(track, "queued")
+
+        source_waveform = source_waveform_ref[0].detach().cpu().clone()
+        job_fixture = active_fixture
+
+        def run_lego_job() -> None:
+            with _LEGO_JOB_LOCK:
+                if not running[0]:
+                    return
+                try:
+                    stems = generate_lego_stems_isolated(
+                        source_waveform,
+                        prompts,
+                        options=options,
+                        progress=lambda track, status, error: _send_lego_status(
+                            track,
+                            status,
+                            error,
+                            fixture_name_override=job_fixture,
+                        ),
+                    )
+                    if not running[0]:
+                        return
+                    with send_lock:
+                        _send_lego_payload(
+                            ws,
+                            fixture_name=job_fixture,
+                            stems=stems,
+                        )
+                except ConnectionClosed:
+                    running[0] = False
+                except Exception as exc:
+                    msg = str(exc)
+                    print(f"[Server] LEGO generation failed: {msg}")
+                    for track in prompts:
+                        _send_lego_status(track, "failed", msg)
+
+        job = threading.Thread(target=run_lego_job, daemon=True)
+        lego_job_ref[0] = job
+        job.start()
 
     def apply_lora_pending():
         if not lora_available:
@@ -1764,6 +2014,8 @@ def handle_client(
                         data.get("stem_source_mode")
                     )
                 )
+        elif mtype == "lego_generate":
+            _start_lego_job(data)
         else:
             # Unknown mtype — log but don't crash; lets future protocol
             # additions degrade gracefully on older servers.
@@ -1950,6 +2202,8 @@ def handle_client(
             # across source swaps.
             stream.source = new_source
             source_ref[0] = new_source
+            source_waveform_ref[0] = new_wf.detach().cpu().clone()
+            fixture_name_ref[0] = new_fixture_name
             playback_samples_ref[0] = int(new_wf.shape[-1])
             tl = timbre_latent_ref[0]
             refer = tl if tl is not None else new_source.latent
