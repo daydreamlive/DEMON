@@ -5103,6 +5103,12 @@ body.curve-open #install-video-area #graph {
   display: flex;
   flex-direction: column;
   align-items: center;
+  /* Bigger gap than the desktop 6px because the mobile thumb is
+   * 28 px tall and its anchor is its center — at max value the thumb
+   * pokes ~14 px above the track top, which previously slid right
+   * over the slider-label. 18 px clears the half-thumb with a small
+   * buffer. */
+  gap: 18px;
 }
 .lite-row--main .slider-group .slider-label {
   font-size: 10px;
@@ -5130,6 +5136,24 @@ body.curve-open #install-video-area #graph {
   width: 28px;
   height: 28px;
   border-width: 2px;
+  /* Circular cap — same skeuomorphic gradient + bevel shadows as the
+   * desktop rectangular thumb, just rounded. The center-line
+   * indicator (.slider-thumb::before) reshapes into a tiny dot below
+   * so the cap still surfaces its per-value tint. */
+  border-radius: 50%;
+}
+.lite-row--main .slider-thumb::before {
+  /* On the circular mobile thumb, the desktop horizontal indicator
+   * line would float untethered across the cap. Replace it with a
+   * small accent-tinted center dot — same job (shows the per-value
+   * colour), shape that fits a disc. */
+  left: 50%;
+  right: auto;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
 }
 
 /* Action row — REC on the left, "More" on the right. Both 44px tall to
@@ -5516,7 +5540,13 @@ body.curve-open #install-video-area #graph {
 }
 
 /* Pill-style tab bar — sliding active background on tap, snappy scale
-   feedback so the swipe-to-tap interaction feels lively. */
+   feedback so the swipe-to-tap interaction feels lively.
+   Horizontally scrollable: the six labels (Core / Styles / Mod /
+   Channels / Saved / Config) don't fit on a narrow phone with their
+   full text. ``flex: 1 1 0`` used to squeeze them in, which clipped
+   the last tab ("Config") off the right edge on small viewports.
+   Now each tab is content-sized and the strip scrolls horizontally;
+   swipe to reach tabs that don't fit. */
 .mobile-sheet-tabs {
   flex-shrink: 0;
   display: flex;
@@ -5524,13 +5554,22 @@ body.curve-open #install-video-area #graph {
   padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--frame-line);
   background: var(--frame);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none; /* Firefox */
+  /* Keep the swipe-to-scroll local — without this, swiping past the
+   * last tab chains into the parent and closes the sheet. */
+  overscroll-behavior-x: contain;
 }
+.mobile-sheet-tabs::-webkit-scrollbar { display: none; }
 .mobile-sheet-tab {
-  flex: 1 1 0;
+  /* Sized to fit its label (was ``flex: 1 1 0`` which clipped on
+   * narrow phones — see the .mobile-sheet-tabs comment above). */
+  flex: 0 0 auto;
   appearance: none;
   background: transparent;
   border: 0;
-  padding: 10px 8px;
+  padding: 10px 14px;
   border-radius: 999px;
   color: var(--text-dim);
   font-family: var(--font-mono);
@@ -5538,6 +5577,7 @@ body.curve-open #install-video-area #graph {
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
   cursor: pointer;
+  white-space: nowrap;
   transition: color 180ms ease, background 180ms ease, transform 80ms ease;
 }
 .mobile-sheet-tab:hover { color: var(--text); }
