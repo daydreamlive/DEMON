@@ -27,18 +27,29 @@ interface Props {
 // "All controls" sheet.
 //
 // Side effect: a ResizeObserver writes the live bay height to
-// ``--lite-controls-h`` on the documentElement so the waveform-scrub
-// strip and the graph wrap can anchor their bottoms to the actual top
-// of the bay instead of guessing 50vh. Without this the bay was
-// hiding the bottom of both on tall phones / unusual aspect ratios.
+// ``--lite-controls-h`` on ``#performance`` (the scene root) so the
+// waveform-scrub strip and the graph wrap can anchor their bottoms
+// to the actual top of the bay instead of guessing 50vh. Without
+// this the bay was hiding the bottom of both on tall phones /
+// unusual aspect ratios.
+//
+// We deliberately scope this var to ``#performance`` (not
+// ``documentElement``): per PERFORMANCE.md, writing a CSS var on
+// documentElement forces a whole-document style recalc + paint
+// cascade that on Android Chromium briefly blanks consumers with
+// backdrop-filter / mask-image (this bay has both, and so does
+// #graph). Scoping the write to #performance keeps the recalc inside
+// the scene subtree.
 export function LiteControls({ onOpenAllControls, unsavedDot }: Props) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const el = rootRef.current;
     if (!el) return;
-    const root = document.documentElement;
+    const host =
+      (document.getElementById("performance") as HTMLElement | null) ??
+      document.documentElement;
     const apply = () => {
-      root.style.setProperty("--lite-controls-h", `${el.offsetHeight}px`);
+      host.style.setProperty("--lite-controls-h", `${el.offsetHeight}px`);
     };
     apply();
     const ro = new ResizeObserver(apply);
@@ -48,7 +59,7 @@ export function LiteControls({ onOpenAllControls, unsavedDot }: Props) {
       // Clear the var so consumers fall back to their CSS default
       // when the bay unmounts (e.g. operator rotates to landscape
       // and the lite controls flip off).
-      root.style.removeProperty("--lite-controls-h");
+      host.style.removeProperty("--lite-controls-h");
     };
   }, []);
   return (
