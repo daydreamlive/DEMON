@@ -19,6 +19,11 @@ from typing import Iterable, Optional, Union
 
 from loguru import logger
 
+from ._engine_metadata import (
+    expected_metadata as _expected_metadata,
+    metadata_matches as _metadata_matches,
+    write_metadata as _write_metadata,
+)
 from .onnx_hub import fetch_onnx
 from .vae_export import VAETRTBuildConfig, build_vae_decode_engine
 
@@ -158,23 +163,25 @@ def build_dreamvae_engine(
     *,
     output_dir: Union[str, Path],
     duration_s: int,
+    env: dict,
     onnx_path: Optional[Union[str, Path]] = None,
     workspace_gb: float = 8.0,
     force_rebuild: bool = False,
 ) -> tuple[Path, str]:
     """Build a single dreamvae TRT engine for one duration.
 
+    The skip gate compares the sidecar ``.metadata.json`` against the
+    current env (TRT version, GPU compute capability, ONNX hash). A
+    TRT bump via ``uv sync`` correctly invalidates a stale engine
+    instead of silently riding it through.
+
     Returns ``(engine_path, status)`` where status is ``"OK"`` if the
-    engine was built this call, or ``"SKIPPED"`` if it already existed.
+    engine was built this call, or ``"SKIPPED"`` if a matching
+    engine + metadata already existed.
     """
     output_dir = Path(output_dir)
     name = dreamvae_engine_filename(duration_s)
     engine_path = output_dir / name / f"{name}.engine"
-
-    if engine_path.exists() and not force_rebuild:
-        size_mb = engine_path.stat().st_size / (1 << 20)
-        logger.info("SKIP {} ({:.0f} MB)", name, size_mb)
-        return engine_path, "SKIPPED"
 
     if onnx_path is None:
         onnx_path = fetch_dreamvae_onnx(output_dir)
@@ -185,18 +192,35 @@ def build_dreamvae_engine(
         decode_max_frames=int(duration_s) * 25,  # 25 latent frames/sec
     )
 
+    expected = _expected_metadata(
+        component=f"dreamvae_decode_{int(duration_s)}s",
+        onnx_path=onnx_path,
+        config=config,
+        env=env,
+    )
+
+    if engine_path.exists() and not force_rebuild:
+        matches, reason = _metadata_matches(engine_path, expected)
+        if matches:
+            size_mb = engine_path.stat().st_size / (1 << 20)
+            logger.info("SKIP {} ({:.0f} MB, {})", name, size_mb, reason)
+            return engine_path, "SKIPPED"
+        logger.info("REBUILD {} ({})", name, reason)
+
     logger.info("=" * 60)
     logger.info("DREAMVAE TRT BUILD: {} (max_duration={}s)", name, duration_s)
     logger.info("=" * 60)
 
     engine_path.parent.mkdir(parents=True, exist_ok=True)
     build_vae_decode_engine(onnx_path, engine_path, config=config)
+    _write_metadata(engine_path=engine_path, expected=expected, env=env)
     return engine_path, "OK"
 
 
 def build_windowed_dreamvae_engine(
     *,
     output_dir: Union[str, Path],
+    env: dict,
     onnx_path: Optional[Union[str, Path]] = None,
     workspace_gb: float = 8.0,
     force_rebuild: bool = False,
@@ -207,6 +231,10 @@ def build_windowed_dreamvae_engine(
     for the distilled student decoder. The two engines share the same
     profile shape (75/125/750 frames) so they're interchangeable from
     the runtime's POV; only the weights differ.
+
+    The skip gate compares the sidecar ``.metadata.json`` against the
+    current env, so TRT bumps invalidate stale engines instead of
+    silently shipping them.
 
     Returns ``(label, engine_path, elapsed_s, status)`` matching the
     shape used by the other dreamvae builders so the result can be
@@ -224,11 +252,6 @@ def build_windowed_dreamvae_engine(
     engine_path = output_dir / name / f"{name}.engine"
     label = "DreamVAE decode windowed (3-30s)"
 
-    if engine_path.exists() and not force_rebuild:
-        size_mb = engine_path.stat().st_size / (1 << 20)
-        logger.info("SKIP {} ({:.0f} MB)", name, size_mb)
-        return (label, str(engine_path), 0.0, "SKIPPED")
-
     if onnx_path is None:
         onnx_path = fetch_dreamvae_onnx(output_dir)
     onnx_path = Path(onnx_path)
@@ -241,6 +264,21 @@ def build_windowed_dreamvae_engine(
         decode_max_frames=max_f,
     )
 
+    expected = _expected_metadata(
+        component="dreamvae_decode_windowed",
+        onnx_path=onnx_path,
+        config=config,
+        env=env,
+    )
+
+    if engine_path.exists() and not force_rebuild:
+        matches, reason = _metadata_matches(engine_path, expected)
+        if matches:
+            size_mb = engine_path.stat().st_size / (1 << 20)
+            logger.info("SKIP {} ({:.0f} MB, {})", name, size_mb, reason)
+            return (label, str(engine_path), 0.0, "SKIPPED")
+        logger.info("REBUILD {} ({})", name, reason)
+
     logger.info("=" * 60)
     logger.info("DREAMVAE TRT BUILD (windowed): {} (min={} opt={} max={})",
                 name, min_f, opt_f, max_f)
@@ -250,6 +288,7 @@ def build_windowed_dreamvae_engine(
     t0 = _time.time()
     try:
         build_vae_decode_engine(onnx_path, engine_path, config=config)
+        _write_metadata(engine_path=engine_path, expected=expected, env=env)
         elapsed = _time.time() - t0
         logger.info("Built in {:.0f}s", elapsed)
         return (label, str(engine_path), elapsed, "OK")
@@ -261,11 +300,17 @@ def build_windowed_dreamvae_engine(
 def build_dreamvae_engines(
     *,
     output_dir: Union[str, Path],
+    env: dict,
     durations: Iterable[int] = (60, 120, 240),
     workspace_gb: float = 8.0,
     force_rebuild: bool = False,
 ) -> list[tuple[str, str, float, str]]:
     """Build the canonical dreamvae engine matrix.
+
+    ``env`` is the preflight environment snapshot (see
+    :func:`acestep.engine.trt.build._preflight`) — threaded down so
+    each per-duration build can write a matching ``.metadata.json``
+    sidecar for the skip-gate freshness check.
 
     Returns a list of ``(label, engine_path, elapsed_seconds, status)``
     matching the shape used by the standard VAE/decoder builders in
@@ -287,6 +332,7 @@ def build_dreamvae_engines(
             engine_path, status = build_dreamvae_engine(
                 output_dir=output_dir,
                 duration_s=dur,
+                env=env,
                 onnx_path=onnx_path,
                 workspace_gb=workspace_gb,
                 force_rebuild=force_rebuild,

@@ -63,9 +63,18 @@ importlib.util.find_spec = _patch
 from loguru import logger
 import torch
 
+from ._engine_metadata import (
+    _ENGINE_METADATA_SCHEMA,
+    _sha256_file,
+    _config_dict,
+    metadata_path as _metadata_path,
+    expected_metadata as _expected_metadata,
+    write_metadata as _write_metadata,
+    metadata_matches as _metadata_matches,
+)
+
 _SUPPORTED_TRT_MIN = (10, 16)
 _SUPPORTED_TRT_MAX = (10, 17)
-_ENGINE_METADATA_SCHEMA = 1
 _DECODER_PRECISION_CHOICES = (
     "auto",
     "fp32",
@@ -205,20 +214,6 @@ def _preflight(device: str) -> dict:
     else:
         logger.warning("No active CUDA GPU detected in torch")
     return env
-
-
-def _sha256_file(path: str | os.PathLike[str]) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _config_dict(config) -> dict:
-    if is_dataclass(config):
-        return asdict(config)
-    return dict(vars(config))
 
 
 def _looks_like_xl_checkpoint(checkpoint: str) -> bool:
@@ -385,66 +380,6 @@ def _patch_decoder_onnx_for_fp8(
             )
         )
     return patched
-
-
-def _metadata_path(engine_path: str | os.PathLike[str]) -> Path:
-    return Path(str(engine_path) + ".metadata.json")
-
-
-def _expected_metadata(
-    *,
-    component: str,
-    onnx_path: str,
-    config,
-    env: dict,
-) -> dict:
-    gpu = env.get("active_gpu", {})
-    return {
-        "schema_version": _ENGINE_METADATA_SCHEMA,
-        "component": component,
-        "tensorrt_version": env["packages"]["tensorrt"],
-        "gpu_compute_capability": gpu.get("compute_capability"),
-        "gpu_name": gpu.get("name"),
-        "config": _config_dict(config),
-        "onnx_path": str(Path(onnx_path).resolve()),
-        "onnx_sha256": _sha256_file(onnx_path),
-    }
-
-
-def _write_metadata(
-    *,
-    engine_path: str,
-    expected: dict,
-    env: dict,
-) -> None:
-    payload = dict(expected)
-    payload["built_at"] = datetime.now(timezone.utc).isoformat()
-    payload["environment"] = env
-    path = _metadata_path(engine_path)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    logger.info("Engine metadata saved to {}", path)
-
-
-def _metadata_matches(engine_path: str, expected: dict) -> tuple[bool, str]:
-    path = _metadata_path(engine_path)
-    if not path.exists():
-        return False, "missing metadata"
-    try:
-        actual = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        return False, f"metadata unreadable: {exc}"
-
-    for key in (
-        "schema_version",
-        "component",
-        "tensorrt_version",
-        "gpu_compute_capability",
-        "config",
-        "onnx_sha256",
-    ):
-        if actual.get(key) != expected.get(key):
-            return False, f"metadata mismatch: {key}"
-    return True, "metadata match"
 
 
 def _verify_engines(engine_paths: list[tuple[str, str]]):
@@ -785,6 +720,7 @@ def _build_windowed_vae_decode_engine(
     output_dir: str,
     onnx_paths: dict[str, str],
     workspace_gb: float,
+    env: dict,
     force_rebuild: bool = False,
 ) -> tuple[str, str, float, str]:
     """Build the single windowed (3-30 s) VAE decode engine.
@@ -795,6 +731,10 @@ def _build_windowed_vae_decode_engine(
     the user-facing window (5-30 s) plus overlap, never by the full
     song duration. Building it costs ~75 s and saves ~7.7 GB of TRT
     workspace at session-creation time vs the canonical 240 s engine.
+
+    The skip gate compares the sidecar ``.metadata.json`` against the
+    current env — so a TRT bump via ``uv sync`` correctly invalidates
+    a stale engine that previously rode through unchanged.
     """
     from .vae_export import build_vae_decode_engine, VAETRTBuildConfig
     from acestep.paths import (
@@ -807,11 +747,6 @@ def _build_windowed_vae_decode_engine(
     engine_path = os.path.join(engine_dir, f"{name}.engine")
     label = "VAE decode windowed (3-30s)"
 
-    if not force_rebuild and os.path.exists(engine_path):
-        size_mb = os.path.getsize(engine_path) / 1e6
-        logger.info("SKIP {} ({:.0f} MB)", name, size_mb)
-        return (label, engine_path, 0.0, "SKIPPED")
-
     min_f, opt_f, max_f = WINDOWED_VAE_PROFILE_FRAMES
     config = VAETRTBuildConfig(
         workspace_gb=workspace_gb,
@@ -820,6 +755,21 @@ def _build_windowed_vae_decode_engine(
         decode_max_frames=max_f,
     )
 
+    expected = _expected_metadata(
+        component="vae_decode_windowed",
+        onnx_path=onnx_paths["vae_decode"],
+        config=config,
+        env=env,
+    )
+
+    if not force_rebuild and os.path.exists(engine_path):
+        matches, reason = _metadata_matches(engine_path, expected)
+        if matches:
+            size_mb = os.path.getsize(engine_path) / 1e6
+            logger.info("SKIP {} ({:.0f} MB, {})", name, size_mb, reason)
+            return (label, engine_path, 0.0, "SKIPPED")
+        logger.info("REBUILD {} ({})", name, reason)
+
     logger.info("=" * 60)
     logger.info("VAE TRT BUILD (windowed): {} (min={} opt={} max={})",
                 name, min_f, opt_f, max_f)
@@ -827,6 +777,7 @@ def _build_windowed_vae_decode_engine(
 
     t0 = time.time()
     build_vae_decode_engine(onnx_paths["vae_decode"], engine_path, config=config)
+    _write_metadata(engine_path=engine_path, expected=expected, env=env)
     elapsed = time.time() - t0
     logger.info("Built in {:.0f}s", elapsed)
     return (label, engine_path, elapsed, "OK")
@@ -1302,6 +1253,7 @@ def _run_all(args, project_root, onnx_dir, env):
             output_dir=args.output_dir,
             onnx_paths=onnx_paths,
             workspace_gb=args.workspace_gb,
+            env=env,
             force_rebuild=args.force_rebuild,
         ))
 
@@ -1318,11 +1270,13 @@ def _run_all(args, project_root, onnx_dir, env):
             output_dir=args.output_dir,
             durations=durations,
             workspace_gb=args.workspace_gb,
+            env=env,
             force_rebuild=args.force_rebuild,
         ))
         results.append(build_windowed_dreamvae_engine(
             output_dir=args.output_dir,
             workspace_gb=args.workspace_gb,
+            env=env,
             force_rebuild=args.force_rebuild,
         ))
 
