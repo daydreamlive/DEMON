@@ -151,7 +151,7 @@ export function useFixtureSwap() {
           remote.removeEventListener("swap_failed", onFail);
           const error = (e as CustomEvent).detail;
           console.warn("[fixture-swap] server swap_failed:", error);
-          if (useCustomTracksStore.getState().resolveSourceMode(name)) {
+          if (useCustomTracksStore.getState().resolveBackendSourceMode(name)) {
             useCustomTracksStore
               .getState()
               .setStemStatus(name, "failed", String(error || "Swap failed"));
@@ -164,7 +164,10 @@ export function useFixtureSwap() {
         const perf = usePerformanceStore.getState();
         const sourceMode = useCustomTracksStore
           .getState()
-          .resolveSourceMode(name);
+          .resolveBackendSourceMode(name);
+        const skipStemExtraction = useCustomTracksStore
+          .getState()
+          .shouldSkipStemExtraction(name);
         if (sourceMode) {
           useCustomTracksStore.getState().setStemStatus(name, "processing");
         }
@@ -186,6 +189,7 @@ export function useFixtureSwap() {
           name,
           undefined,
           sourceMode,
+          skipStemExtraction,
         );
         if (!sent) {
           remote.removeEventListener("swap_ready", onReady);

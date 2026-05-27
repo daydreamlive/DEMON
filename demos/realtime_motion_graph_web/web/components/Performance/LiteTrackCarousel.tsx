@@ -67,6 +67,8 @@ export function LiteTrackCarousel() {
     decoded: DecodedFixture;
     fileName: string;
     originalFile: File;
+    trimStartS: number;
+    trimEndS: number;
   } | null>(null);
   const trimCapS =
     useConfig().engine.max_source_duration_s ?? DEFAULT_TRIM_CAP_S;
@@ -122,6 +124,8 @@ export function LiteTrackCarousel() {
       decoded: trimmed,
       fileName: trimming.fileName,
       originalFile: trimming.originalFile,
+      trimStartS: startS,
+      trimEndS: endS,
     });
     setTrimming(null);
   }
@@ -132,8 +136,12 @@ export function LiteTrackCarousel() {
     sourceMode: StemSourceMode,
   ) {
     if (!pending) return;
-    const { decoded, fileName, originalFile } = pending;
-    addCustomTrack(fileName, decoded, originalFile, sourceMode);
+    const { decoded, fileName, originalFile, trimStartS, trimEndS } = pending;
+    addCustomTrack(fileName, decoded, originalFile, sourceMode, {
+      originalFileName: originalFile.name,
+      trimStartS,
+      trimEndS,
+    });
     const perf = usePerformanceStore.getState();
     if (keyOverride) {
       perf.setPendingKeyOverride(keyOverride);

@@ -247,15 +247,14 @@ export function HeroMacros() {
   const curveOpen = useCurveStore((s) => s.overlayOpen);
   const toggleCurve = useCurveStore((s) => s.toggleOverlay);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  // Stem section is visible for any uploaded track (sourceMode set),
-  // including "full". The backend extracts and ships vocal/instrument
-  // overlay stems for every sourceMode — "full" just keeps the whole
-  // upload as the inference source rather than swapping to a stem. The
-  // overlays default off (enabled = false -> displayValue 0), so in
-  // "full" mode they don't double the vocals already in the output;
-  // the operator can opt in to layer a clean stem back on top. Only
-  // built-in fixtures (sourceMode undefined) have no stems.
+  // Stem section is visible for any uploaded track, including "full".
+  // The backend extracts and ships vocal/instrument overlay stems for
+  // every custom upload; "full" only keeps the whole mix as inference
+  // source. Built-in fixtures have no custom-track entry here.
   const fixture = usePerformanceStore((s) => s.fixture);
+  const hasCustomTrack = useCustomTracksStore((s) =>
+    fixture ? s.tracks.has(fixture) : false,
+  );
   const sourceMode = useCustomTracksStore((s) =>
     fixture ? s.tracks.get(fixture)?.sourceMode : undefined,
   );
@@ -268,7 +267,7 @@ export function HeroMacros() {
   const stemsReady = useCustomTracksStore((s) =>
     Boolean(fixture && s.tracks.get(fixture)?.stems),
   );
-  const showStems = !!sourceMode;
+  const showStems = hasCustomTrack;
   // Mirrors the status copy from the original StemOverlayPanel — sits
   // italicised just under the section header so the operator sees what
   // the pipeline is doing while the panners are still inert.
@@ -279,7 +278,7 @@ export function HeroMacros() {
       : stemStatus === "failed"
         ? stemError || "Stem rip failed"
         : stemsReady
-          ? `Inference source: ${sourceMode}`
+          ? `Inference source: ${sourceMode ?? "full"}`
           : "Stems will load on play";
 
   // Clear the per-song remix gate when the user moves the bay's

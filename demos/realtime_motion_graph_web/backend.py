@@ -626,10 +626,13 @@ def _handle_client_body(
     # key, source latent, conditioning). Absent / unknown name -> fully
     # live path; same behavior as before sidecars existed.
     fixture_name = config.get("fixture_name")
-    stem_source_mode = resolve_upload_stem_source_mode(
-        fixture_name,
-        normalize_stem_source_mode(config.get("stem_source_mode")),
-        known_fixtures=KNOWN_FIXTURES,
+    skip_stem_extraction = bool(config.get("skip_stem_extraction", False))
+    stem_source_mode = (
+        None if skip_stem_extraction else resolve_upload_stem_source_mode(
+            fixture_name,
+            normalize_stem_source_mode(config.get("stem_source_mode")),
+            known_fixtures=KNOWN_FIXTURES,
+        )
     )
 
     # LoRA selection.  ``enabled_loras`` is the new id-keyed protocol;
@@ -1925,6 +1928,9 @@ def _handle_client_body(
                         data.get("stem_source_mode")
                     )
                 )
+                swap_pending["skip_stem_extraction"] = bool(
+                    data.get("skip_stem_extraction", False)
+                )
         else:
             # Unknown mtype — log but don't crash; lets future protocol
             # additions degrade gracefully on older servers.
@@ -2026,10 +2032,15 @@ def _handle_client_body(
             requested_key = swap_pending.get("key")
             requested_time_sig = swap_pending.get("time_signature")
             new_fixture_name = swap_pending.get("fixture_name")
-            new_stem_source_mode = resolve_upload_stem_source_mode(
-                new_fixture_name,
-                swap_pending.get("stem_source_mode"),
-                known_fixtures=KNOWN_FIXTURES,
+            new_skip_stem_extraction = bool(
+                swap_pending.get("skip_stem_extraction")
+            )
+            new_stem_source_mode = (
+                None if new_skip_stem_extraction else resolve_upload_stem_source_mode(
+                    new_fixture_name,
+                    swap_pending.get("stem_source_mode"),
+                    known_fixtures=KNOWN_FIXTURES,
+                )
             )
             if audio_msg is None:
                 return
@@ -2039,6 +2050,7 @@ def _handle_client_body(
             swap_pending["time_signature"] = None
             swap_pending["fixture_name"] = None
             swap_pending["stem_source_mode"] = None
+            swap_pending["skip_stem_extraction"] = False
         # Initialized to None so the finally below can None-guard cleanly
         # in the (rare) case an exception fires between the start of the
         # try and the contextualize bind.

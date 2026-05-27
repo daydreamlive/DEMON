@@ -833,6 +833,7 @@ export class RemoteBackend extends EventTarget {
     fixtureName?: string,
     timeSignature?: string,
     stemSourceMode?: "full" | "vocals" | "instruments",
+    skipStemExtraction?: boolean,
   ): boolean {
     if (this.ws?.readyState !== WebSocket.OPEN) return false;
     try {
@@ -843,6 +844,7 @@ export class RemoteBackend extends EventTarget {
         fixture_name?: string;
         time_signature?: string;
         stem_source_mode?: "full" | "vocals" | "instruments";
+        skip_stem_extraction?: boolean;
       } = {
         type: "swap_source",
       };
@@ -851,6 +853,7 @@ export class RemoteBackend extends EventTarget {
       if (fixtureName) msg.fixture_name = fixtureName;
       if (timeSignature) msg.time_signature = timeSignature;
       if (stemSourceMode) msg.stem_source_mode = stemSourceMode;
+      if (skipStemExtraction) msg.skip_stem_extraction = true;
       this.ws.send(JSON.stringify(msg));
       const samples = interleaved.length / channels;
       const hdr = new ArrayBuffer(8);

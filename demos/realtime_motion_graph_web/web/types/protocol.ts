@@ -73,6 +73,9 @@ export interface SessionConfig {
   /** For uploaded tracks, asks the server to model-rip stems and choose
    *  which source should feed inference. Built-in fixtures omit this. */
   stem_source_mode?: "full" | "vocals" | "instruments";
+  /** Restored local sessions already have cached stems; prevents the
+   *  backend's unknown-fixture auto-stem path from running MelBand again. */
+  skip_stem_extraction?: boolean;
   /** When true, the backend loads a known fixture from its own cache and
    *  the client skips sending the audio frame. Capability-probed first. */
   use_server_fixture?: boolean;
