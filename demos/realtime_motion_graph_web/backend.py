@@ -622,6 +622,8 @@ def _handle_client_body(
     # time; only the decoder profile is pinned to walk_window_s.
     walk_window = bool(config.get("walk_window", False))
     walk_window_s = float(config.get("walk_window_s", 60.0))
+    walk_overlap_s = float(config.get("walk_overlap_s", 8.0))
+    walk_edge_mask_s = float(config.get("walk_edge_mask_s", 3.0))
     # Optional fixture-name hint enables sidecar lookup (precomputed BPM,
     # key, source latent, conditioning). Absent / unknown name -> fully
     # live path; same behavior as before sidecars existed.
@@ -2339,6 +2341,8 @@ def _handle_client_body(
         before_tick=apply_pending,
         walk_window=walk_window,
         walk_window_s=walk_window_s,
+        walk_overlap_s=walk_overlap_s,
+        walk_edge_mask_s=walk_edge_mask_s,
         neg_conditioning=cond_negative,
     )
     runner_holder[0] = runner

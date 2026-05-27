@@ -78,6 +78,43 @@ def _curve_from_spec(spec, T):
     return None
 
 
+def _walk_edge_mask(
+    *,
+    length: int,
+    window_start: int,
+    full_length: int,
+    fps: float = 25.0,
+    margin_s: float = 3.0,
+) -> torch.Tensor:
+    """Build the DiT chunk mask for a walk-mode window.
+
+    ACE-Step's context tensor carries a 64-channel mask half where lower
+    values tell the DiT that the corresponding source/context frames are
+    established material. For interior walk chunks, taper only the chunk
+    edges; true song start/end are left alone so real intros/outros remain
+    possible at the actual boundaries.
+    """
+    mask = torch.ones(length, dtype=torch.float32)
+    if length <= 0 or margin_s <= 0:
+        return mask
+
+    margin = min(length // 4, max(1, int(round(margin_s * fps))))
+    if margin <= 0:
+        return mask
+
+    # Smooth 0->1 / 1->0 shoulders. The audible overlap handoff happens
+    # outside this margin, so this gives the model edge context without
+    # forcing the served body of a transformed chunk back to the source.
+    ramp_up = torch.linspace(0.0, 1.0, margin, dtype=torch.float32)
+    ramp_down = torch.linspace(1.0, 0.0, margin, dtype=torch.float32)
+
+    if window_start > 0:
+        mask[:margin] = torch.minimum(mask[:margin], ramp_up)
+    if window_start + length < full_length:
+        mask[-margin:] = torch.minimum(mask[-margin:], ramp_down)
+    return mask
+
+
 class PipelineRunner:
     """Extracted pipeline loop.  Identical semantics to the pre-Phase-3
     closure, now wired through the node graph.
@@ -99,6 +136,8 @@ class PipelineRunner:
         before_tick=None,
         walk_window=False,
         walk_window_s=60.0,
+        walk_overlap_s=8.0,
+        walk_edge_mask_s=3.0,
         neg_conditioning=None,
         last_activity_ts=None,
         idle_threshold_s=0.0,
@@ -164,6 +203,22 @@ class PipelineRunner:
         self.walk_window = bool(walk_window)
         self.walk_window_s = float(walk_window_s)
         self.walk_window_T = int(round(self.walk_window_s * 25.0))
+        # Overlap-save walk scheduling. Adjacent 60s DiT windows overlap,
+        # and decode ownership switches at the overlap midpoint, so audio
+        # served to the client comes from the interior of at least one
+        # window rather than directly from a DiT edge.
+        self.walk_overlap_s = max(
+            0.0,
+            min(float(walk_overlap_s), self.walk_window_s * 0.45),
+        )
+        self.walk_edge_mask_s = max(0.0, float(walk_edge_mask_s))
+        if self.walk_window:
+            logger.info(
+                "walk_window_overlap_config window_s={:.1f} overlap_s={:.1f} edge_mask_s={:.1f}",
+                self.walk_window_s,
+                self.walk_overlap_s,
+                self.walk_edge_mask_s,
+            )
 
         # Negative conditioning for the RCFG path. Encoded once at session
         # start (see backend.py / fixtures.py) and reused across all ticks.
@@ -303,6 +358,7 @@ class PipelineRunner:
         # — the knob can't reach past that anyway.
         from collections import deque
         latent_history: deque = deque(maxlen=MAX_FEEDBACK_DEPTH)
+        last_result_win_start_s = 0.0
         last_wav = None
         last_decode_pos = None
         last_hint_str = 1.0
@@ -402,14 +458,10 @@ class PipelineRunner:
             full_src_T = self.stream.source.latent.tensor.shape[1]
             walk_active = self.walk_window and full_src_T > self.walk_window_T
 
-            # Pick the static chunk that covers the current playhead.
-            # The slice stays the same for the entire walk_window_s of
-            # playback that sits inside this chunk — only when the
-            # playhead crosses into the next chunk does ``w0`` advance.
-            # Use ``playhead + predicted_advance`` so the swap happens a
-            # tick or two before the boundary, giving the new chunk's
-            # ring-buffer warmup head room to land before the listener
-            # actually crosses.
+            # Pick the walk window that owns the current playhead.
+            # With overlap enabled, ownership flips at the overlap
+            # midpoint. That keeps decoded audio away from DiT window
+            # edges while still using the same fixed-size TRT profile.
             walk_w0 = -1
             walk_w1 = -1
             walk_chunk_start_s = 0.0
@@ -427,8 +479,20 @@ class PipelineRunner:
                 target_song_s = (
                     (playhead_now_s + advance_s_for_chunk) % buf_dur_s
                 )
-                chunk_idx = int(target_song_s // self.walk_window_s)
-                walk_chunk_start_s = chunk_idx * self.walk_window_s
+                if self.walk_overlap_s > 0.0:
+                    stride_s = max(
+                        1.0 / 25.0,
+                        self.walk_window_s - self.walk_overlap_s,
+                    )
+                    chunk_idx = int(
+                        (target_song_s - self.walk_overlap_s * 0.5)
+                        // stride_s
+                    )
+                    chunk_idx = max(0, chunk_idx)
+                    walk_chunk_start_s = chunk_idx * stride_s
+                else:
+                    chunk_idx = int(target_song_s // self.walk_window_s)
+                    walk_chunk_start_s = chunk_idx * self.walk_window_s
                 walk_w0 = int(round(walk_chunk_start_s * 25.0))
                 # Anchor the final chunk to the song end when the song
                 # length isn't an exact multiple of walk_window_s — keeps
@@ -445,9 +509,9 @@ class PipelineRunner:
             cur_src_id = id(self.stream.source.latent.tensor)
             cur_src_T = self.walk_window_T if walk_active else full_src_T
             chunk_changed = walk_active and walk_w0 != prev_walk_w0
+            source_changed = cur_src_id != prev_src_id or cur_src_T != prev_src_T
             if (
-                cur_src_id != prev_src_id
-                or cur_src_T != prev_src_T
+                source_changed
                 or chunk_changed
             ):
                 last_latent = None
@@ -458,6 +522,8 @@ class PipelineRunner:
                 prev_src_T = cur_src_T
                 cached_live_src_lat = None
                 cached_live_ctx_raw_t = None
+                if source_changed:
+                    last_result_win_start_s = 0.0
                 # Invalidate the DiT-pause cache: in walk mode the latent
                 # is chunk-specific, and on a source swap it's source-
                 # specific. Without this, a chunk crossing (or swap) while
@@ -468,6 +534,12 @@ class PipelineRunner:
                 self._last_result_latent = None
                 if walk_active:
                     prev_walk_w0 = walk_w0
+                    logger.info(
+                        "walk_window_selected start_s={:.2f} end_s={:.2f} overlap_s={:.1f}",
+                        walk_chunk_start_s,
+                        walk_chunk_start_s + self.walk_window_s,
+                        self.walk_overlap_s,
+                    )
 
             if self.use_midi:
                 raw = self.midi_knobs.get_all_values()
@@ -670,6 +742,13 @@ class PipelineRunner:
                 # we computed above. Pass them as per-tick overrides so
                 # StreamHandle.tick() merges them into the slot request.
                 tick_kwargs["context_latent"] = live_ctx_lat
+                tick_kwargs["chunk_mask"] = _walk_edge_mask(
+                    length=src_T,
+                    window_start=walk_w0,
+                    full_length=full_src_T,
+                    margin_s=self.walk_edge_mask_s,
+                )
+                tick_kwargs["metadata"] = {"walk_start_s": float(win_start_s)}
 
             # RCFG (Residual Classifier-Free Guidance). Engaged whenever
             # the operator picks a mode other than "off" from the EngineTile
@@ -706,6 +785,7 @@ class PipelineRunner:
             # tick).
             if self._dit_paused and self._last_result_latent is not None:
                 result_latent = self._last_result_latent
+                result_win_start_s = last_result_win_start_s
             else:
                 result_latent = self.stream.tick(
                     denoise=denoise,
@@ -731,10 +811,22 @@ class PipelineRunner:
                     dcw_wavelet=str(raw.get("dcw_wavelet", "haar")),
                     dcw_advanced=_build_dcw_advanced(raw),
                 )
+                if result_latent is not None:
+                    meta = getattr(result_latent, "_demon_metadata", {}) or {}
+                    if walk_active and "walk_start_s" in meta:
+                        result_win_start_s = float(meta["walk_start_s"])
+                    elif walk_active:
+                        logger.warning("walk_result_missing_metadata")
+                        result_win_start_s = float(win_start_s)
+                    else:
+                        result_win_start_s = 0.0
+                else:
+                    result_win_start_s = last_result_win_start_s
             # Cache the most recent successful latent so the DiT-pause
             # branch above has something to feed the VAE windowing.
             if result_latent is not None:
                 self._last_result_latent = result_latent
+                last_result_win_start_s = result_win_start_s
             torch.cuda.synchronize()
             tick_ms = (time.perf_counter() - t0) * 1000
 
@@ -852,15 +944,15 @@ class PipelineRunner:
                         # at decode-time.
                         last_decode_pos = decode_start
                         if walk_active:
-                            # The DiT output spans [win_start_s,
-                            # win_start_s + walk_window_s] of the song.
+                            # The DiT output spans [result_win_start_s,
+                            # result_win_start_s + walk_window_s] of the song.
                             # Decode at the offset *inside* the window
                             # corresponding to the song-time we want, then
                             # remap the decoder's start_sample (which is
                             # window-relative) to absolute song samples by
                             # adding the window's start sample. cyclic=
                             # False because the slice itself doesn't wrap.
-                            local_t_start = decode_start - win_start_s
+                            local_t_start = decode_start - result_win_start_s
                             # Clamp inside the window. The window is
                             # centered around target_song_s (which equals
                             # decode_start under steady state), so the
@@ -874,7 +966,7 @@ class PipelineRunner:
                             audio_out = self.session.decode(
                                 result_latent, t_start=local_t_start, cyclic=False,
                             )
-                            win_offset_samples = int(round(win_start_s * SAMPLE_RATE))
+                            win_offset_samples = int(round(result_win_start_s * SAMPLE_RATE))
                         else:
                             audio_out = self.session.decode(result_latent, t_start=decode_start, cyclic=True)
                             win_offset_samples = 0

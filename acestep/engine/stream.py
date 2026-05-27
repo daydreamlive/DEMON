@@ -131,6 +131,10 @@ class SlotRequest:
     # otherwise a scalar or ``[1, T, 1]`` curve in [0, 1] where 0 keeps
     # raw APG output and 1 fully snaps magnitude back to ``vt_pos``.
     cfg_rescale_curve: "Optional[float | torch.Tensor]" = None
+    # Caller-owned opaque metadata. The stream pipeline does not inspect
+    # this, but attaches it to the finished tensor so realtime callers can
+    # recover request coordinates after ring-buffer latency and queue drops.
+    metadata: dict = field(default_factory=dict)
 
     def all_conditions(self) -> List[SlotCondition]:
         """Return primary + extra conditions as a single ordered list."""
@@ -889,6 +893,8 @@ class StreamPipeline:
         for i, slot in enumerate(self._slots):
             if slot is not None and slot.step_idx >= len(slot.t_schedule) - 1:
                 finished = slot.xt
+                if slot.request.metadata:
+                    setattr(finished, "_demon_metadata", dict(slot.request.metadata))
                 self._slots[i] = None
                 break
 

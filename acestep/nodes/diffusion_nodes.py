@@ -381,6 +381,7 @@ def _build_slot_request(
     guidance_curve,
     device,
     dtype,
+    metadata: Optional[dict] = None,
 ) -> SlotRequest:
     pos_entries = positive.to_entries()
     primary = pos_entries[0]
@@ -445,6 +446,7 @@ def _build_slot_request(
         guidance_curve=guidance_curve_t,
         rcfg_mode=rcfg_mode,
         cfg_rescale_curve=_curve_to_tensor(cfg_rescale, device, dtype),
+        metadata=dict(metadata or {}),
     )
 
 
@@ -615,6 +617,14 @@ class StreamDenoise(BaseNode):
                         "Per-frame mix toward vt_pos's magnitude after APG. "
                         "0 / None disables; 1 fully snaps norm to vt_pos. "
                         "Scalar or per-frame curve. Fixes high-CFG saturation."
+                    ),
+                    hidden=True,
+                ),
+                NodeParam(
+                    name="metadata", type="any", default=None,
+                    description=(
+                        "Opaque host metadata carried through the stream "
+                        "request and attached to the finished latent."
                     ),
                     hidden=True,
                 ),
@@ -835,6 +845,7 @@ class StreamDenoise(BaseNode):
             guidance_curve=modulation.guidance_curve,
             rcfg_mode=kwargs.get("rcfg_mode"),
             cfg_rescale=kwargs.get("cfg_rescale"),
+            metadata=kwargs.get("metadata"),
             device=device,
             dtype=dtype,
         )
@@ -860,7 +871,7 @@ class StreamDenoise(BaseNode):
             out = pipe.tick()
 
         return {
-            "latent": Latent(tensor=out) if out is not None else None,
+            "latent": self._wrap_output_latent(out) if out is not None else None,
         }
 
     # ------------------------------------------------------------------
@@ -873,6 +884,14 @@ class StreamDenoise(BaseNode):
     @property
     def pipeline(self) -> Optional[StreamPipeline]:
         return self._pipeline
+
+    @staticmethod
+    def _wrap_output_latent(out: torch.Tensor) -> Latent:
+        latent = Latent(tensor=out)
+        meta = getattr(out, "_demon_metadata", None)
+        if meta is not None:
+            setattr(latent, "_demon_metadata", dict(meta))
+        return latent
 
     @property
     def active_slots(self) -> int:
