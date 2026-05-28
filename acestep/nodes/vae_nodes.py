@@ -69,6 +69,25 @@ def _get_trt_vae(engine_path: str, device: torch.device):
 
     engine = engine_from_bytes(bytes_from_path(engine_path))
     ctx = engine.create_execution_context()
+    # TensorRT's create_execution_context() returns None when the
+    # runtime can't allocate the engine's workspace — typically under
+    # CUDA-OOM pressure on the 240s vae_encode profile (~16 GiB of
+    # reserved workspace). Without this guard the None context is
+    # cached, and the next _trt_vae_decode/encode call raises a bare
+    # ``'NoneType' object has no attribute 'set_input_shape'`` that
+    # gives the operator nothing to act on. Fail loudly here AND
+    # refuse to cache the broken entry so a subsequent retry (after
+    # eviction frees workspace) gets a fresh attempt instead of
+    # short-circuiting to the same None.
+    if ctx is None:
+        logger.error(
+            "trt_vae_context_creation_returned_none engine={}",
+            engine_path,
+        )
+        raise RuntimeError(
+            f"TRT VAE engine.create_execution_context() returned None "
+            f"(likely CUDA OOM on workspace alloc): {engine_path}"
+        )
     logger.info("Loaded TRT VAE engine: {}", engine_path)
 
     tensor_dtypes = {
@@ -333,6 +352,31 @@ class VAEEncodeAudio(BaseNode):
             # [B, D, T] -> [B, T, D]
             latents = latents_bdt.transpose(1, 2).to(dtype)
         else:
+            # PyTorch fallback is only reachable when ModelContext was
+            # built with skip_vae=False (PT weights loaded into
+            # handler.vae). In TRT-only deployments (the production
+            # demos/realtime_motion_graph_web pod), skip_vae=True sets
+            # handler.vae=None at boot — so reaching this branch means
+            # the TRT cache was emptied at runtime (typically by a
+            # profile-manager eviction that didn't reload before the
+            # next encode). Falling through to handler._encode_audio_to_latents
+            # then crashes inside tiled_encode → ``self.vae.encode(...)``
+            # with ``'NoneType' object has no attribute 'encode'``,
+            # which is the symptom observed in the demon-public-demo
+            # admin "Recent pod errors" panel (just as decode's
+            # counterpart below). Refuse the fallback loudly so the
+            # operator sees the real cause.
+            if getattr(handler, "vae", None) is None:
+                logger.error(
+                    "trt_vae_cache_miss_with_no_pytorch_fallback "
+                    "component=vae_encode trt_cache_size={}",
+                    len(_trt_vae_cache),
+                )
+                raise RuntimeError(
+                    "VAE encode: TRT engine not in cache AND PyTorch VAE "
+                    "is None (skip_vae=True). Cache may have been evicted "
+                    "without a reload — check profile manager state."
+                )
             logger.info("VAE encode via PyTorch")
             with handler._load_model_context("vae"):
                 latents = handler._encode_audio_to_latents(waveform)
@@ -382,6 +426,23 @@ class VAEDecodeAudio(BaseNode):
             logger.info("VAE decode via TRT")
             waveform = _trt_vae_decode(lat_bdt, trt_path, device)
         else:
+            # See VAEEncodeAudio.execute above for the same guard. This
+            # is the call site that produced the
+            # ``'NoneType' object has no attribute 'decode'``
+            # pipeline_error observed in demon-public-demo admin
+            # "Recent pod errors": skip_vae=True → handler.vae=None →
+            # tiled_decode → ``self.vae.decode(...)``.
+            if getattr(handler, "vae", None) is None:
+                logger.error(
+                    "trt_vae_cache_miss_with_no_pytorch_fallback "
+                    "component=vae_decode trt_cache_size={}",
+                    len(_trt_vae_cache),
+                )
+                raise RuntimeError(
+                    "VAE decode: TRT engine not in cache AND PyTorch VAE "
+                    "is None (skip_vae=True). Cache may have been evicted "
+                    "without a reload — check profile manager state."
+                )
             logger.info("VAE decode via PyTorch (no TRT engine found)")
             with handler._load_model_context("vae"):
                 waveform = handler.tiled_decode(lat_bdt)
