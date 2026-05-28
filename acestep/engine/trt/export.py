@@ -334,6 +334,7 @@ class DecoderForExport(nn.Module):
             encoder_hidden_states,
             encoder_attention_mask,
             context_latents,
+            steering,
             use_cache=None,
             past_key_values=None,
             cache_position=None,
@@ -380,7 +381,10 @@ class DecoderForExport(nn.Module):
             )
             sw_mask = sw_mask.unsqueeze(0).unsqueeze(0)  # [1, 1, S, S]
 
-            # Layer loop: static branching on layer_types (config, not runtime)
+            # Layer loop: static branching on layer_types. The added
+            # ``steering[:, i, :]`` shift is the in-engine equivalent of
+            # StreamPipeline._install_steering_hooks; the host zeros rows
+            # that aren't at an active step so they get a no-op add.
             for i, layer_module in enumerate(self_dec.layers):
                 attn_mask = sw_mask if layer_types[i] == "sliding_attention" else None
                 layer_outputs = layer_module(
@@ -396,7 +400,7 @@ class DecoderForExport(nn.Module):
                     encoder_hidden_states,
                     None,   # encoder_attention_mask
                 )
-                hidden_states = layer_outputs[0]
+                hidden_states = layer_outputs[0] + steering[:, i, :].unsqueeze(1).type_as(layer_outputs[0])
 
             # Output AdaLN + proj_out (ConvTranspose1d stride=2 doubles seq_len)
             shift, scale = (self_dec.scale_shift_table + temb.unsqueeze(1)).chunk(2, dim=1)
@@ -415,6 +419,7 @@ class DecoderForExport(nn.Module):
         timestep: torch.Tensor,            # [B]
         encoder_hidden_states: torch.Tensor,  # [B, L_enc, 2048]
         context_latents: torch.Tensor,     # [B, T, 128]
+        steering: torch.Tensor,            # [B, num_layers, hidden_size]
     ) -> torch.Tensor:
         outputs = self.decoder(
             hidden_states=hidden_states,
@@ -424,6 +429,7 @@ class DecoderForExport(nn.Module):
             encoder_hidden_states=encoder_hidden_states,
             encoder_attention_mask=None,
             context_latents=context_latents,
+            steering=steering,
             use_cache=False,
             past_key_values=None,
             output_attentions=False,
@@ -519,12 +525,17 @@ def export_decoder_onnx(
     B = config.batch_size
     T = config.seq_len
     L = config.enc_len
+    # Steering: one additive vector per (batch row, DiT layer). Sized
+    # off the live decoder so XL reuses this path without a config knob.
+    num_layers = decoder.config.num_hidden_layers
+    hidden_size = decoder.config.hidden_size
 
     example_inputs = (
         torch.randn(B, T, 64, device=device, dtype=trace_dtype),
         torch.full((B,), 0.5, device=device, dtype=ts_dtype),
         torch.randn(B, L, 2048, device=device, dtype=trace_dtype),
         torch.randn(B, T, 128, device=device, dtype=trace_dtype),
+        torch.zeros(B, num_layers, hidden_size, device=device, dtype=trace_dtype),
     )
 
     input_names = [
@@ -532,6 +543,7 @@ def export_decoder_onnx(
         "timestep",
         "encoder_hidden_states",
         "context_latents",
+        "steering",
     ]
     output_names = ["velocity"]
 
@@ -540,6 +552,8 @@ def export_decoder_onnx(
         "timestep":               {0: "batch"},
         "encoder_hidden_states":  {0: "batch", 1: "enc_len"},
         "context_latents":        {0: "batch", 1: "seq_len"},
+        # num_layers / hidden_size are static within a checkpoint family.
+        "steering":               {0: "batch"},
         "velocity":               {0: "batch", 1: "seq_len"},
     }
 
@@ -590,6 +604,7 @@ def export_decoder_onnx(
                 "timestep":              {0: batch},
                 "encoder_hidden_states": {0: batch, 1: enc},
                 "context_latents":       {0: batch, 1: seq},
+                "steering":              {0: batch},
             }
             torch.onnx.export(
                 wrapper,
@@ -1064,11 +1079,12 @@ class TRTBuildConfig:
         return self.seq_max // 25
 
     def engine_filename(self) -> str:
-        """Generate a standardized engine filename from build config.
+        """Standardized engine filename.
 
-        Format: decoder_{variant}_{precision}[_refit]_b{batch_max}_{duration}s.engine
-        The variant tag is omitted for "turbo" (backward compat).
-        Uses seconds so naming is stable across frame rates.
+        Format: ``spectral_decoder_{variant}_{prec}[_refit]_b{batch_max}_{dur}s.engine``;
+        variant tag omitted for "turbo". The ``spectral_`` prefix marks
+        engines that carry the steering input; pre-steering engines used
+        ``decoder_*`` and the runtime rejects them.
         """
         if self.strongly_typed:
             # fp8_mixed gets its own tag so FP8 engines never collide
@@ -1089,7 +1105,7 @@ class TRTBuildConfig:
         dur = self.max_duration_s
         # Include variant in name for non-turbo models
         variant_tag = f"_{self.variant}" if self.variant != "turbo" else ""
-        return f"decoder{variant_tag}_{prec}{refit_tag}_b{self.batch_max}_{dur}s.engine"
+        return f"spectral_decoder{variant_tag}_{prec}{refit_tag}_b{self.batch_max}_{dur}s.engine"
 
 
 def build_trt_engine(
@@ -1190,6 +1206,28 @@ def build_trt_engine(
     profile.set_shape(
         "context_latents",
         min=(Bmin, Smin, 128), opt=(Bopt, Sopt, 128), max=(Bmax, Smax, 128),
+    )
+
+    # Read L, D off the parsed network so this stays variant-agnostic.
+    steering_idx = None
+    for ti in range(network.num_inputs):
+        if network.get_input(ti).name == "steering":
+            steering_idx = ti
+            break
+    if steering_idx is None:
+        raise RuntimeError(
+            "Decoder ONNX is missing the 'steering' input; re-export with "
+            "the current export.py."
+        )
+    steering_shape = tuple(network.get_input(steering_idx).shape)
+    if len(steering_shape) != 3:
+        raise RuntimeError(f"Unexpected steering input rank: {steering_shape}")
+    _, steer_L, steer_D = steering_shape
+    profile.set_shape(
+        "steering",
+        min=(Bmin, steer_L, steer_D),
+        opt=(Bopt, steer_L, steer_D),
+        max=(Bmax, steer_L, steer_D),
     )
 
     profile_idx = build_config.add_optimization_profile(profile)
