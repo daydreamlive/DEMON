@@ -53,7 +53,20 @@ from acestep.paths import (
 )
 
 from .audio_engine import AudioEngine
-from .knobs import build_banks, CHANNEL_GROUPS, KEYSTONE_CHANNELS
+from acestep.steering import (
+    CapacityError,
+    EmptyError,
+    MANUAL_SLOT_CAP,
+    SteeringController,
+    ensure_steering_vectors,
+)
+
+from .knobs import (
+    build_banks,
+    make_manual_slot_knobs,
+    CHANNEL_GROUPS,
+    KEYSTONE_CHANNELS,
+)
 from .melband_reformer import (
     extract_upload_stems,
     normalize_stem_source_mode,
@@ -1017,6 +1030,19 @@ def _handle_client_body(
 
     audio_eng = AudioEngine(src_np, SAMPLE_RATE)
 
+    # SteeringController is the source of truth for slot_count and the
+    # vector catalog; the Manual bank below mirrors its slot_count so
+    # XL / fetch-failed sessions don't expose dead MIDI knobs.
+    steering = SteeringController(ensure_steering_vectors(checkpoint))
+
+    initial_knob_ids = list(initial_enable_ids) if use_lora else []
+    banks = build_banks(
+        use_sde,
+        loras=initial_knob_ids,
+        manual_slot_count=steering.slot_count,
+    )
+    virtual_knobs = VirtualMidiKnobs(banks)
+
     def _catalog_payload():
         if not lora_available:
             return []
@@ -1077,6 +1103,13 @@ def _handle_client_body(
         # same complaint can be joined by session_id. Independent of any
         # client_id the client sent in its handshake.
         "session_id": session_id,
+        # Activation-steering state. ``manual_slot_count`` drives row
+        # rendering; ``manual_slot_cap`` gates the +/- enable; runtime
+        # add/pop sends a ``manual_slot_count`` message. ``steering_available``
+        # hides both tiles entirely when no probe bundle is reachable.
+        "manual_slot_count": steering.slot_count,
+        "manual_slot_cap": MANUAL_SLOT_CAP,
+        "steering_available": steering.is_loaded,
     }))
     ws.send(src_np.astype(np.float16).tobytes())
     if upload_stems is not None:
@@ -1103,9 +1136,6 @@ def _handle_client_body(
     running = [True]
     send_lock = threading.Lock()
     k1_name = "sde_amp" if use_sde else "denoise"
-    initial_knob_ids = list(initial_enable_ids) if use_lora else []
-    banks = build_banks(use_sde, loras=initial_knob_ids)
-    virtual_knobs = VirtualMidiKnobs(banks)
     params = {"num_gens": 0, "tick_ms": 0.0, "dec_ms": 0.0}
     prompt_text = [prompt]
     sde_curve_display = [None]
@@ -1423,6 +1453,16 @@ def _handle_client_body(
         except ConnectionClosed:
             running[0] = False
 
+    def _send_manual_slot_count():
+        try:
+            with send_lock:
+                ws.send(json.dumps({
+                    "type": "manual_slot_count",
+                    "count": steering.slot_count,
+                }))
+        except ConnectionClosed:
+            running[0] = False
+
     def apply_lora_pending():
         if not lora_available:
             return
@@ -1554,6 +1594,8 @@ def _handle_client_body(
             "structure_name": struct_name_ref[0],
             "lora_catalog": _catalog_payload(),
             "knob_values": virtual_knobs.get_all_values(),
+            "manual_slot_count": steering.slot_count,
+            "steering_available": steering.is_loaded,
             "channels": n_channels_ref[0],
             "sample_rate": SAMPLE_RATE,
         }
@@ -1800,6 +1842,41 @@ def _handle_client_body(
                 logger.info(
                     "disable_lora_requested origin={} id={}", source, lid,
                 )
+        elif mtype == "manual_slot_add":
+            # Controller is the primary write; VirtualMidiKnobs mirrors
+            # it for the MIDI surface. No GPU work, no need to defer
+            # onto the runner thread.
+            try:
+                new_slot = steering.add_slot()
+            except CapacityError:
+                logger.info(
+                    "manual_slot_add_refused origin={} cap={}",
+                    source, MANUAL_SLOT_CAP,
+                )
+            else:
+                for name, kd in make_manual_slot_knobs(new_slot).items():
+                    virtual_knobs.add_knob(name, kd)
+                logger.info(
+                    "manual_slot_added origin={} slot={}", source, new_slot,
+                )
+            _send_manual_slot_count()
+        elif mtype == "manual_slot_pop":
+            try:
+                popped = steering.pop_slot()
+            except EmptyError:
+                logger.info("manual_slot_pop_refused origin={}", source)
+            else:
+                for name in (
+                    f"man_src_{popped}",
+                    f"man_layer_{popped}",
+                    f"man_step_{popped}",
+                    f"man_alpha_{popped}",
+                ):
+                    virtual_knobs.remove_knob(name)
+                logger.info(
+                    "manual_slot_popped origin={} slot={}", source, popped,
+                )
+            _send_manual_slot_count()
         elif mtype == "set_timbre_strength":
             try:
                 v = float(data.get("value", 1.0))
@@ -2340,6 +2417,7 @@ def _handle_client_body(
         walk_window=walk_window,
         walk_window_s=walk_window_s,
         neg_conditioning=cond_negative,
+        steering=steering,
     )
     runner_holder[0] = runner
 

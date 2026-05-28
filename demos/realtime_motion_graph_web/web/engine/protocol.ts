@@ -118,6 +118,14 @@ export class RemoteBackend extends EventTarget {
    *  report their hidden_states batch_max; eager / compile pin to 4.
    *  Null until ready. */
   maxPipelineDepth: number | null = null;
+  /** Active manual steering slot count, mirrored from the server.
+   *  Null until ready. */
+  manualSlotCount: number | null = null;
+  /** Server-imposed cap on manual slots. Null until ready. */
+  manualSlotCap: number | null = null;
+  /** Whether the session's checkpoint has steering vectors. ModTile
+   *  hides both steering tiles when false. Null until ready. */
+  steeringAvailable: boolean | null = null;
 
   private _pending: PendingPayload | null;
   private _pendingSwap: SwapReadyMessage | null = null;
@@ -262,6 +270,18 @@ export class RemoteBackend extends EventTarget {
               typeof msg.max_pipeline_depth === "number"
                 ? msg.max_pipeline_depth
                 : null;
+            this.manualSlotCount =
+              typeof msg.manual_slot_count === "number"
+                ? msg.manual_slot_count
+                : null;
+            this.manualSlotCap =
+              typeof msg.manual_slot_cap === "number"
+                ? msg.manual_slot_cap
+                : null;
+            this.steeringAvailable =
+              typeof msg.steering_available === "boolean"
+                ? msg.steering_available
+                : null;
             // Push the scale + depth bounds into the session store so the
             // LoRA library / engine controls can render without subscribing
             // to RemoteBackend instance fields.
@@ -270,6 +290,9 @@ export class RemoteBackend extends EventTarget {
               s.setCheckpointScale(this.checkpointScale);
               s.setPipelineDepth(this.pipelineDepth);
               s.setMaxPipelineDepth(this.maxPipelineDepth);
+              s.setManualSlotCount(this.manualSlotCount);
+              s.setManualSlotCap(this.manualSlotCap);
+              s.setSteeringAvailable(this.steeringAvailable);
             }
             phase = "initial-buffer";
           } catch (e) {
@@ -382,6 +405,11 @@ export class RemoteBackend extends EventTarget {
             this.dispatchEvent(
               new CustomEvent("lora_catalog", { detail: this.loraCatalog }),
             );
+          } else if (msg.type === "manual_slot_count") {
+            const v =
+              typeof msg.count === "number" ? msg.count : null;
+            this.manualSlotCount = v;
+            useSessionStore.getState().setManualSlotCount(v);
           } else if (msg.type === "swap_ready") {
             this._pendingSwap = msg as unknown as SwapReadyMessage;
           } else if (msg.type === "swap_failed") {
@@ -683,6 +711,23 @@ export class RemoteBackend extends EventTarget {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     try {
       this.ws.send(JSON.stringify({ type: "disable_lora", id }));
+    } catch {}
+  }
+
+  /** Add the next manual steering slot (LIFO). Server echoes
+   *  ``manual_slot_count`` on success or refusal. */
+  sendManualSlotAdd(): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(JSON.stringify({ type: "manual_slot_add" }));
+    } catch {}
+  }
+
+  /** Pop the highest-numbered manual steering slot. */
+  sendManualSlotPop(): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(JSON.stringify({ type: "manual_slot_pop" }));
     } catch {}
   }
 

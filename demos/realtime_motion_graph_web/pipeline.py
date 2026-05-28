@@ -15,8 +15,12 @@ from acestep.engine.dcw import DCWAdvanced
 from acestep.engine.obs import logger
 from acestep.nodes.types import ChannelGuidanceEntry, Latent
 from acestep.nodes.vae_nodes import EmptyLatent, LatentBlend
+from acestep.steering import SteeringController
 
-from .knobs import CHANNEL_GROUPS, KEYSTONE_CHANNELS
+from .knobs import (
+    CHANNEL_GROUPS,
+    KEYSTONE_CHANNELS,
+)
 from .protocol import SAMPLE_RATE, T
 
 # Hot-loop trace sampling. Cached at import time so the per-tick branch
@@ -95,6 +99,7 @@ class PipelineRunner:
         k1_name, seed, skip_threshold,
         sde_curve_display, params, prompt_text, running,
         motion_val, motion_lock,
+        steering: SteeringController,
         on_audio_ready=None,
         before_tick=None,
         walk_window=False,
@@ -210,6 +215,10 @@ class PipelineRunner:
         # Cache silence once; used by the hint-strength blend node.
         self._rebuild_silence_latent()
 
+        # Held for _sync_steering. Constructed session-side so the
+        # ``ready`` payload can read slot_count before the runner exists.
+        self.steering = steering
+
         # Hint-strength gating: the run loop only re-runs the
         # silence/context blend when the slider value moves by > 0.02.
         # Outside callers that change ``stream.source.context_latent``
@@ -218,6 +227,28 @@ class PipelineRunner:
         # to re-blend even when the slider hasn't moved. ``mark_hint_dirty``
         # flips this flag and the run loop honors it on the next pass.
         self._hint_dirty = False
+
+    def _sync_steering(self, raw: dict, last):
+        """Push activation-steering configs when the snapshot changes.
+
+        ``last`` is ``(pipeline, snapshot_tuple)`` or ``None``. Pipeline
+        identity is part of the key because ``steps_override`` rebuilds
+        the StreamPipeline (fresh, empty steering state) without
+        changing ``raw`` — without the identity check the new pipeline
+        would never receive ``set_steering``.
+        """
+        if not self.steering.is_loaded:
+            return last
+        pipe = getattr(self.stream, "pipeline", None)
+        if pipe is None:
+            return last
+        n = max(1, int(raw.get("steps_override", 8)))
+        snapshot = self.steering.snapshot_key(raw, n)
+        last_pipe, last_snapshot = last if last is not None else (None, None)
+        if pipe is last_pipe and snapshot == last_snapshot:
+            return last
+        pipe.set_steering(self.steering.build_configs(raw, n))
+        return (pipe, snapshot)
 
     def mark_hint_dirty(self) -> None:
         """Force ``_update_hint_strength`` to fire on the next tick.
@@ -307,6 +338,9 @@ class PipelineRunner:
         last_decode_pos = None
         last_hint_str = 1.0
         last_channel_gains = [1.0] * (len(CHANNEL_GROUPS) + len(KEYSTONE_CHANNELS))
+        # (pipeline, snapshot) tuple; None forces a push on first tick
+        # and after a steps_override-driven pipeline rebuild.
+        last_steering: tuple | None = None
         current_shift = self.stream.base_kwargs["shift"]
         prev_src_T = self.stream.source.latent.tensor.shape[1]
         # Source-tensor identity tracking. Lets walk mode detect a source
@@ -641,6 +675,7 @@ class PipelineRunner:
 
             if self.use_midi:
                 last_channel_gains = self._sync_channel_guidance(raw, last_channel_gains)
+                last_steering = self._sync_steering(raw, last_steering)
 
             # Route every curve-capable parameter through the shared
             # mutable curve system so knob changes take effect on ALL

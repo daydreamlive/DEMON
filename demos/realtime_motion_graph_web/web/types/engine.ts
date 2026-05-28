@@ -74,6 +74,16 @@ export const SLIDER_META: Record<string, SliderMeta> = {
   ch29: { max: 3.0, step: 0.15, pro: true },
   ch56: { max: 3.0, step: 0.15, pro: true },
 
+  // Activation-steering. ±30 range so the operator can invert the axis
+  // without leaving the surface. Useful magnitude ~5..15 by ear.
+  steer_bright:   { min: -30.0, max: 30.0, step: 0.5, pro: true },
+  steer_warm:     { min: -30.0, max: 30.0, step: 0.5, pro: true },
+  steer_rough:    { min: -30.0, max: 30.0, step: 0.5, pro: true },
+  steer_density:  { min: -30.0, max: 30.0, step: 0.5, pro: true },
+
+  // Manual steering slots (man_*_<N>) are pre-registered in the loop
+  // below so a runtime slot add doesn't have to mutate SLIDER_META.
+
   // DCW (wavelet-domain post-step correction). Numeric knobs only; the
   // boolean ON/OFF + mode + wavelet choices live in their own panel state.
   //
@@ -91,6 +101,19 @@ export const SLIDER_META: Record<string, SliderMeta> = {
   dcw_mag_phase: { max: 1.0, step: 0.05, pro: true },
   dcw_soft_thresh: { max: 0.3, step: 0.01, pro: true },
 };
+
+// SLIDER_META pre-reg ceiling. Authoritative cap is the server's
+// ``manual_slot_cap``; raising the server cap above this means bumping
+// this number too.
+const MANUAL_SLOT_PREREG = 16;
+for (let slot = 1; slot <= MANUAL_SLOT_PREREG; slot++) {
+  SLIDER_META[`man_src_${slot}`]   = { min: 0, max: 143, step: 1, pro: true };
+  SLIDER_META[`man_layer_${slot}`] = { min: 0, max: 23,  step: 1, pro: true };
+  SLIDER_META[`man_step_${slot}`]  = { min: 0, max: 15,  step: 1, pro: true };
+  SLIDER_META[`man_alpha_${slot}`] = {
+    min: -30.0, max: 30.0, step: 0.5, pro: true,
+  };
+}
 
 export const DCW_MODES = ["low", "high", "double", "pix"] as const;
 export const DCW_WAVELETS = ["haar", "db4", "sym8", "db8"] as const;

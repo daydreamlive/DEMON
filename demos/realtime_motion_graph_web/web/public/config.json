@@ -20,12 +20,12 @@
     "time_signature": "4",
     "_enabled_loras_help": "LoRAs to auto-enable on first catalog load. Each entry is either a string (the LoRA's filename stem or sidecar display name, case-insensitive — e.g. \"deep_house-v1\" or \"Deep House\") or an object {name, strength} to set an inline strength override. Without `strength`, the sidecar's recommended_strength wins (or controls.lora_default_strength as fallback). Empty array = count-rule (first two from the sorted catalog). `enabled_loras_xl` overrides this when the active checkpoint is 5B.",
     "enabled_loras": [
-      { "name": "Ambient", "strength": 0.7 },
-      { "name": "Deep House", "strength": 0.75 }
+      { "name": "funkv1", "strength": 0.7 },
+      { "name": "Phonk", "strength": 1.0 }
     ],
     "enabled_loras_xl": [
-      {"name": "Funk", "strength":1.15},
-      {"name": "Trap", "strength":0.01}
+      { "name": "Funk", "strength": 1.15 },
+      { "name": "Trap", "strength": 0.01 }
     ],
     "_auto_prepend_lora_triggers_help": "When true (default), enabling a LoRA prepends its primary trigger word to Tags A + Tags B so the operator sees exactly what the encoder sees. Disabling a LoRA best-effort removes the trigger when it is still at the head of the prompt. Set to false for fully manual workflows where the operator types triggers themselves.",
     "auto_prepend_lora_triggers": true,
@@ -34,7 +34,7 @@
   },
 
   "prompts": {
-    "a": "roti-4custic, roti-d33ph0us, acoustic deep house hybrid",
+    "a": "funky bassline, breakbeat",
     "b": "daft punk style, beautiful, four to the floor, angelic",
     "blend": 0.0,
     "a_xl": "roti-funkk, funky ass bassline",
@@ -82,20 +82,20 @@
 
   "_channel_ranges_help": "Per-channel slider range + direction. {min,max} caps the value the slider/MIDI/keyboard can drive into the engine (also applied to scheduled-curve writes via clampToMeta). `reverse: true` flips the input mapping so dragging UP (or turning the MIDI knob clockwise) sends a LOWER engine value -- use for channels that sound better when turned down so the operator's instinct to push up produces the desired result. Stored values still live in [min, max]; reverse changes only the UI/input mapping, not the wire range. Omitted params fall back to SLIDER_META in types/engine.ts (max=3.0 by default, no min).",
   "channel_ranges": {
-    "ch_g0": { "min": 0, "max": 2.2,  "reverse": false },
-    "ch_g1": { "min": 0, "max": 2.0,  "reverse": false },
-    "ch_g2": { "min": 0, "max": 2.3,  "reverse": true  },
-    "ch_g3": { "min": 0, "max": 2.0,  "reverse": false },
-    "ch_g4": { "min": 0, "max": 2.5,  "reverse": false },
-    "ch_g5": { "min": 0, "max": 2.0,  "reverse": false },
-    "ch_g6": { "min": 0, "max": 2.0,  "reverse": true  },
-    "ch_g7": { "min": 0, "max": 2.0,  "reverse": true  },
-    "ch13":  { "min": 0, "max": 2.0,  "reverse": true  },
-    "ch14":  { "min": 0, "max": 2.3,  "reverse": false },
-    "ch19":  { "min": 0, "max": 2.5,  "reverse": false },
-    "ch23":  { "min": 0, "max": 2.45, "reverse": false },
-    "ch29":  { "min": 0, "max": 2.0,  "reverse": false },
-    "ch56":  { "min": 0, "max": 2.0,  "reverse": false }
+    "ch_g0": { "min": 0, "max": 2.2, "reverse": false },
+    "ch_g1": { "min": 0, "max": 2.0, "reverse": false },
+    "ch_g2": { "min": 0, "max": 2.3, "reverse": true },
+    "ch_g3": { "min": 0, "max": 2.0, "reverse": false },
+    "ch_g4": { "min": 0, "max": 2.5, "reverse": false },
+    "ch_g5": { "min": 0, "max": 2.0, "reverse": false },
+    "ch_g6": { "min": 0, "max": 2.0, "reverse": true },
+    "ch_g7": { "min": 0, "max": 2.0, "reverse": true },
+    "ch13": { "min": 0, "max": 2.0, "reverse": true },
+    "ch14": { "min": 0, "max": 2.3, "reverse": false },
+    "ch19": { "min": 0, "max": 2.5, "reverse": false },
+    "ch23": { "min": 0, "max": 2.45, "reverse": false },
+    "ch29": { "min": 0, "max": 2.0, "reverse": false },
+    "ch56": { "min": 0, "max": 2.0, "reverse": false }
   },
 
   "seed": 42,
