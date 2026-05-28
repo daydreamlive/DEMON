@@ -29,7 +29,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "core", label: "Core" },
   { id: "styles", label: "Styles" },
   { id: "mod", label: "Mod" },
-  { id: "voice", label: "Channels" },
+  { id: "voice", label: "Experimental" },
   { id: "saved", label: "Saved" },
   { id: "config", label: "Config" },
 ];

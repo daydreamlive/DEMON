@@ -47,6 +47,20 @@ import soundfile as sf
 from loguru import logger
 from mcp.server.fastmcp import FastMCP
 
+from acestep.steering import (
+    AUTO_AXES,
+    MANUAL_MAX_LAYER,
+    MANUAL_MAX_STEP,
+    MANUAL_SLOT_CAP,
+    ensure_steering_vectors,
+    enumerate_catalog,
+)
+
+# MCP runs as a single global process, so we pre-fetch the canonical
+# 2B turbo bundle at module init. Fetch failures leave the cache empty;
+# the next streaming session retries.
+_MANUAL_VECTOR_DIR = ensure_steering_vectors("acestep-v15-turbo")
+
 
 # MCP wire protocol owns stdout — every log MUST go to stderr. Lazy
 # configure so this module stays importable without a hard dependency on
@@ -222,7 +236,28 @@ _GROUP_NAMES = [
 _KEYSTONE_NAMES = ["ch13", "ch14", "ch19", "ch23", "ch29", "ch56"]
 
 
-def _build_knob_catalog(sde: bool, enabled_lora_ids: list[str]) -> dict[str, dict]:
+def _enumerate_manual_catalog() -> list[dict]:
+    """Manual steering catalog flattened to wire-stable dicts."""
+    if _MANUAL_VECTOR_DIR is None:
+        return []
+    return [
+        {
+            "index": entry.index,
+            "axis": entry.axis,
+            "build_layer": entry.build_layer,
+            "build_step": entry.build_step,
+            "filename": entry.filename,
+        }
+        for entry in enumerate_catalog(_MANUAL_VECTOR_DIR)
+    ]
+
+
+def _build_knob_catalog(
+    sde: bool,
+    enabled_lora_ids: list[str],
+    manual_slot_count: int = 0,
+    steering_available: bool = True,
+) -> dict[str, dict]:
     out: dict[str, dict] = {}
     if sde:
         out["sde_amp"] = {"default": 0.0, "max": 1.0, "group": "core",
@@ -255,6 +290,65 @@ def _build_knob_catalog(sde: bool, enabled_lora_ids: list[str]) -> dict[str, dic
     for name in _KEYSTONE_NAMES:
         out[name] = {"default": 1.0, "max": 3.0, "group": "keystones",
                      "description": f"Keystone channel amplifier {name}"}
+    # Drop the steering surface when no probe bundle is reachable;
+    # mirrors the UI's ModTile gate.
+    if not steering_available:
+        return out
+    for ax in AUTO_AXES:
+        inject_layer = ax.probe_layer + ax.layer_offset
+        step_blurb = (
+            f"step round({ax.probe_step}/8 * inject_n) of the current schedule"
+        )
+        layer_blurb = f"DiT layer {inject_layer}"
+        out[ax.name] = {
+            "default": 0.0, "min": -30.0, "max": 30.0, "group": "steering",
+            "description": (
+                f"Activation-steering ({ax.axis}) injected at {layer_blurb}, "
+                f"{step_blurb}. 0 = off, negative inverts the axis direction. "
+                f"{ax.blurb}."
+                " Useful magnitude roughly 2..15 by ear; breakage above that."
+            ),
+        }
+    # Manual slots bypass the fractional step mapping, density layer
+    # offset, and warmth sign correction — the vector lands at the
+    # operator's chosen cell with the operator's chosen sign.
+    manual_cat = _enumerate_manual_catalog()
+    src_max = max(0, len(manual_cat) - 1) if manual_cat else 0
+    for slot in range(1, max(0, int(manual_slot_count)) + 1):
+        out[f"man_src_{slot}"] = {
+            "default": 0, "min": 0, "max": src_max, "group": "manual",
+            "description": (
+                f"Manual slot {slot}: vector catalog index. "
+                f"Resolves to a (axis, build_layer, build_step) cell on "
+                f"disk; call list_manual_steering_vectors for the table. "
+                f"Index 0..{src_max} ({len(manual_cat)} cells)."
+            ),
+        }
+        out[f"man_layer_{slot}"] = {
+            "default": 9, "min": 0, "max": MANUAL_MAX_LAYER, "group": "manual",
+            "description": (
+                f"Manual slot {slot}: DiT inject layer (0..{MANUAL_MAX_LAYER}). "
+                "Passed verbatim to the engine; no automatic offset."
+            ),
+        }
+        out[f"man_step_{slot}"] = {
+            "default": 0, "min": 0, "max": MANUAL_MAX_STEP, "group": "manual",
+            "description": (
+                f"Manual slot {slot}: diffusion inject step (0..{MANUAL_MAX_STEP}). "
+                "No fractional mapping. Values past the current "
+                "steps_override - 1 silently no-op (engine only fires when "
+                "step equals the active diffusion step)."
+            ),
+        }
+        out[f"man_alpha_{slot}"] = {
+            "default": 0.0, "min": -30.0, "max": 30.0, "group": "manual",
+            "description": (
+                f"Manual slot {slot}: injection strength. 0 = slot off. "
+                "Bipolar: negative alpha inverts the chosen vector's "
+                "direction at injection (no sign correction is applied). "
+                "Useful magnitude roughly 2..15 by ear; breakage above that."
+            ),
+        }
     return out
 
 
@@ -336,10 +430,61 @@ async def list_knobs(session_id: Optional[str] = None) -> dict:
         d.get("id") for d in (snap.get("lora_catalog") or [])
         if d.get("state") == "enabled" and d.get("id")
     ]
+    manual_count = int(snap.get("manual_slot_count") or 0)
+    # ``steering_available`` defaults to True on snapshots that pre-date
+    # Pre-steering backends omit the field; default True keeps them
+    # compatible. Explicit False hides the steering surface.
+    steering_avail = bool(snap.get("steering_available", True))
     return {
-        "knobs": _build_knob_catalog(sde=sde, enabled_lora_ids=enabled),
+        "knobs": _build_knob_catalog(
+            sde=sde,
+            enabled_lora_ids=enabled,
+            manual_slot_count=manual_count,
+            steering_available=steering_avail,
+        ),
         "current": snap.get("knob_values") or {},
     }
+
+
+@mcp.tool()
+async def add_manual_slot(session_id: Optional[str] = None) -> dict:
+    """Spawn the next manual steering slot (LIFO; alpha defaults to 0).
+
+    Refused (no-op echo) at MANUAL_SLOT_CAP.
+    """
+    _send_cmd(session_id, {"type": "manual_slot_add"})
+    snap = await session_state(session_id)
+    return {
+        "count": int(snap.get("manual_slot_count") or 0),
+        "cap": MANUAL_SLOT_CAP,
+    }
+
+
+@mcp.tool()
+async def pop_manual_slot(session_id: Optional[str] = None) -> dict:
+    """Remove the highest-numbered manual steering slot.
+
+    LIFO; interior deletion is not supported. Refused (no-op echo) on
+    an empty registry.
+    """
+    _send_cmd(session_id, {"type": "manual_slot_pop"})
+    snap = await session_state(session_id)
+    return {
+        "count": int(snap.get("manual_slot_count") or 0),
+        "cap": MANUAL_SLOT_CAP,
+    }
+
+
+@mcp.tool()
+async def list_manual_steering_vectors() -> dict:
+    """Catalog of pre-built steering vectors for the manual slots.
+
+    Returns ``{"count": N, "vectors": [...]}``. Each entry's ``index``
+    is the value to set on ``man_src_<slot>``. Order is stable across
+    sessions (axis-major, then build_layer asc, then build_step asc).
+    """
+    cat = _enumerate_manual_catalog()
+    return {"count": len(cat), "vectors": cat}
 
 
 # ---------------------------------------------------------------------------

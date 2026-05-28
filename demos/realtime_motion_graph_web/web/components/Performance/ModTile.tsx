@@ -2,7 +2,12 @@
 
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
-import { DCW_MODES, DCW_WAVELETS, RCFG_MODES, type RcfgMode } from "@/types/engine";
+import {
+  DCW_MODES,
+  DCW_WAVELETS,
+  RCFG_MODES,
+  type RcfgMode,
+} from "@/types/engine";
 
 import { Knob } from "./Knob";
 import { defaultLabelFor, kbdHintFor } from "./SliderTile";

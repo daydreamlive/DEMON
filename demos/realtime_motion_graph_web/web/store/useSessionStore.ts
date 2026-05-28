@@ -49,6 +49,15 @@ interface SessionState {
   /** Server-imposed ceiling on ``pipelineDepth`` — TRT engine batch_max
    *  for TRT decoders, 4 for eager / compile. Null until ready. */
   maxPipelineDepth: number | null;
+  /** Active manual steering slot count, mirrored from the server.
+   *  Null until ready. */
+  manualSlotCount: number | null;
+  /** Server-imposed cap on manual steering slots. Drives the +/- enable
+   *  state in ModTile. Null until ready. */
+  manualSlotCap: number | null;
+  /** Whether the session's checkpoint has steering vectors. When false,
+   *  ModTile hides both steering tiles. Null until ready. */
+  steeringAvailable: boolean | null;
 
   setStatus: (status: SessionStatus, message?: string) => void;
   setSession: (remote: RemoteBackend | null, player: AudioPlayer | null) => void;
@@ -58,6 +67,9 @@ interface SessionState {
   setCheckpointScale: (scale: string | null) => void;
   setPipelineDepth: (depth: number | null) => void;
   setMaxPipelineDepth: (max: number | null) => void;
+  setManualSlotCount: (count: number | null) => void;
+  setManualSlotCap: (cap: number | null) => void;
+  setSteeringAvailable: (available: boolean | null) => void;
   reset: () => void;
 }
 
@@ -72,6 +84,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   checkpointScale: null,
   pipelineDepth: null,
   maxPipelineDepth: null,
+  manualSlotCount: null,
+  manualSlotCap: null,
+  steeringAvailable: null,
 
   setStatus: (status, message = "") => set({ status, message }),
   setSession: (remote, player) => set({ remote, player }),
@@ -81,6 +96,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setCheckpointScale: (scale) => set({ checkpointScale: scale }),
   setPipelineDepth: (depth) => set({ pipelineDepth: depth }),
   setMaxPipelineDepth: (max) => set({ maxPipelineDepth: max }),
+  setManualSlotCount: (count) => set({ manualSlotCount: count }),
+  setManualSlotCap: (cap) => set({ manualSlotCap: cap }),
+  setSteeringAvailable: (available) => set({ steeringAvailable: available }),
   reset: () => {
     try {
       get().monitor?.stop();
@@ -97,6 +115,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       reconnector: null,
       pipelineDepth: null,
       maxPipelineDepth: null,
+      manualSlotCount: null,
+      manualSlotCap: null,
+      steeringAvailable: null,
       // checkpointScale survives reset on purpose: the server's
       // checkpoint doesn't change across sessions, and pre-fetching
       // it from /api/loras lets the library filter render correctly

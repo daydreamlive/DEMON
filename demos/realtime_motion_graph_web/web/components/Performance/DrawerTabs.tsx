@@ -27,7 +27,7 @@ export type DrawerTab = (typeof DRAWER_TABS)[number];
 const TAB_LABELS: Record<DrawerTab, string> = {
   core: "Core",
   mod: "Mod",
-  voice: "Channels",
+  voice: "Experimental",
   styles: "Styles",
   saved: "Saved",
   config: "Config",
