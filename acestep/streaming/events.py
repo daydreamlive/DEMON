@@ -167,6 +167,15 @@ class DepthApplied:
 
 
 @dataclass(frozen=True)
+class ManualSlotCount:
+    """Manual steering slot count after a manual_slot_add / manual_slot_pop
+    (published on success AND refusal so the client's +/- UI resyncs
+    either way). ``count`` is the controller's live slot count."""
+
+    count: int
+
+
+@dataclass(frozen=True)
 class SwapReady:
     """Source swap completed. Carries enough state for the transport to
     crossfade into the new buffer and update its detected-metadata UI.

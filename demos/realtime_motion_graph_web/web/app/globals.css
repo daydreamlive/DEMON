@@ -4193,15 +4193,15 @@ body.curve-open #install-video-area #graph {
   margin: 0;
   max-width: 70ch;
 }
-/* Side-by-side columns for the two voice banks. Internal voices on the
-   left (8 wide), tuned morph on the right (6 wide), thin vertical
-   divider between them — the inShaper "shaper-1 / shaper-2" two-pane
-   layout in miniature. */
+/* Two-column grid shared by every row inside the voice tile (channels
+   on row 1, steering on row 2 when present). Grid (not flex) so the
+   columns auto-size to the widest content across rows — that's what
+   makes "manual steering" line up with "channel groups" above. */
 .voice-sections-row {
-  display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
-  gap: 14px;
+  display: grid;
+  grid-template-columns: auto 1px auto;
+  row-gap: 14px;
+  column-gap: 14px;
   align-items: stretch;
 }
 .voice-section {
@@ -4214,8 +4214,7 @@ body.curve-open #install-video-area #graph {
   width: 1px;
   align-self: stretch;
   background: var(--frame-line);
-  margin: 4px 4px;
-  flex: 0 0 auto;
+  margin: 4px 0;
 }
 .voice-section-label {
   font-family: var(--font-mono);
@@ -4224,6 +4223,7 @@ body.curve-open #install-video-area #graph {
   text-transform: uppercase;
   color: var(--text-dim);
 }
+
 
 /* A tile is a labeled card that groups related controls. Tiles are sized
    to their content (no fixed widths beyond what their inner channels and

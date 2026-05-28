@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 
 import { useConfig } from "@/lib/config";
+import { useSessionStore } from "@/store/useSessionStore";
 
+import { Knob } from "./Knob";
 import { SliderGroup } from "./SliderGroup";
 import { defaultLabelFor, kbdHintFor } from "./SliderTile";
 
@@ -31,6 +33,15 @@ const MORPH = ["ch13", "ch14", "ch19", "ch23", "ch29", "ch56"];
 
 export function VoiceTile() {
   const ranges = useConfig().channel_ranges;
+  const manualSlotCount = useSessionStore((s) => s.manualSlotCount);
+  const manualSlotCap = useSessionStore((s) => s.manualSlotCap);
+  const steeringAvailable = useSessionStore((s) => s.steeringAvailable);
+  const remote = useSessionStore((s) => s.remote);
+  const slotCount = manualSlotCount ?? 0;
+  const slotCap = manualSlotCap ?? 0;
+  const canAddSlot = remote !== null && slotCap > 0 && slotCount < slotCap;
+  const canPopSlot = remote !== null && slotCount > 0;
+  const showSteering = steeringAvailable === true;
   // Experimental-feature notice — dismissable, and the dismissal sticks
   // across reloads. Read after mount (not in the useState initializer)
   // so a localStorage read can't break SSR hydration.
@@ -69,6 +80,9 @@ export function VoiceTile() {
           </p>
         </div>
       )}
+      {/* Two-column grid shared by the channel rows and the steering
+          rows so column 1 (highlights / steering) and column 2 (groups
+          / manual steering) line up across rows. */}
       <div className="voice-sections-row">
         <div className="voice-section">
           <div className="voice-section-label">channel highlights</div>
@@ -111,6 +125,115 @@ export function VoiceTile() {
             })}
           </div>
         </div>
+
+        {showSteering && (
+          <>
+            <div className="voice-section">
+              <div className="voice-section-label">steering</div>
+              <div className="knob-rack">
+                <Knob
+                  param="steer_bright"
+                  label="bright"
+                  kbd={kbdHintFor("steer_bright")}
+                />
+                <Knob
+                  param="steer_warm"
+                  label="warm"
+                  kbd={kbdHintFor("steer_warm")}
+                />
+                <Knob
+                  param="steer_rough"
+                  label="rough"
+                  kbd={kbdHintFor("steer_rough")}
+                />
+                <Knob
+                  param="steer_density"
+                  label="density"
+                  kbd={kbdHintFor("steer_density")}
+                />
+              </div>
+            </div>
+            <div className="voice-section-divider" aria-hidden="true" />
+            <div className="voice-section">
+              <div className="voice-section-label">manual steering</div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "12px",
+                  flexWrap: "wrap",
+                }}
+              >
+                <div
+                  className="knob-rack"
+                  style={{ display: "flex", flexDirection: "column", gap: "8px" }}
+                >
+                  {Array.from({ length: slotCount }, (_, i) => i + 1).map((slot) => (
+                    <div key={slot} className="knob-rack" style={{ gap: "8px" }}>
+                      <Knob
+                        param={`man_src_${slot}`}
+                        label="src"
+                        kbd={kbdHintFor(`man_src_${slot}`)}
+                      />
+                      <Knob
+                        param={`man_layer_${slot}`}
+                        label="layer"
+                        kbd={kbdHintFor(`man_layer_${slot}`)}
+                      />
+                      <Knob
+                        param={`man_step_${slot}`}
+                        label="step"
+                        kbd={kbdHintFor(`man_step_${slot}`)}
+                      />
+                      <Knob
+                        param={`man_alpha_${slot}`}
+                        label="Strength"
+                        kbd={kbdHintFor(`man_alpha_${slot}`)}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div
+                  data-role="manual-slot-controls"
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "4px",
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="dcw-toggle"
+                    disabled={!canAddSlot}
+                    data-dd-tooltip={
+                      canAddSlot
+                        ? "Add manual steering slot"
+                        : `Manual slot cap (${slotCap}) reached`
+                    }
+                    onClick={() => remote?.sendManualSlotAdd()}
+                    style={{ minWidth: "28px", padding: "2px 6px" }}
+                  >
+                    +
+                  </button>
+                  <button
+                    type="button"
+                    className="dcw-toggle"
+                    disabled={!canPopSlot}
+                    data-dd-tooltip={
+                      canPopSlot
+                        ? "Remove last manual steering slot"
+                        : "No manual slots to remove"
+                    }
+                    onClick={() => remote?.sendManualSlotPop()}
+                    style={{ minWidth: "28px", padding: "2px 6px" }}
+                  >
+                    −
+                  </button>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

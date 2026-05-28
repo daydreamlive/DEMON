@@ -152,6 +152,11 @@ class Capabilities:
     depth: bool = False
     curves: bool = False
     notes_conditioning: bool = False
+    # Activation steering (per-layer residual shifts driven by the
+    # steer_* / man_*_<N> knobs and the manual_slot_add/pop commands).
+    # True only when the backend has a steering controller with a
+    # reachable vector bundle for its checkpoint.
+    steering: bool = False
 
 
 @dataclass(frozen=True)

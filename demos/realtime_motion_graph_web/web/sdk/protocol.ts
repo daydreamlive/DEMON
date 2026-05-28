@@ -38,6 +38,8 @@ import type {
   DisableLoraCommand,
   EnableLoraCommand,
   LoopBandCommand,
+  ManualSlotAddCommand,
+  ManualSlotPopCommand,
   ParamsCommand,
   PromptCommand,
   SetDepthCommand,
@@ -221,6 +223,15 @@ export class RemoteBackend extends EventTarget {
    *  on older servers / replays; `/api/knobs` remains the static
    *  pre-session probe. */
   knobManifest: KnobManifestResponse | null = null;
+  /** Active manual steering slot count, mirrored from the server
+   *  (`ready` + `manual_slot_count` echoes). Null until ready / on
+   *  servers without the steering surface. */
+  manualSlotCount: number | null = null;
+  /** Server-imposed cap on manual steering slots. Null until ready. */
+  manualSlotCap: number | null = null;
+  /** Whether the session's checkpoint has steering vectors. The host
+   *  hides the steering tiles when false. Null until ready. */
+  steeringAvailable: boolean | null = null;
   /** Browser-observed WS lifecycle for this concrete connection attempt. */
   wsTrace: WsTrace;
   /** Pod-side session id from the optional init_ack telemetry message. */
@@ -448,6 +459,20 @@ export class RemoteBackend extends EventTarget {
               (msg.capabilities as CapabilityMask | undefined) ?? null;
             this.knobManifest =
               (msg.knob_manifest as KnobManifestResponse | undefined) ?? null;
+            // Activation-steering surface. Wire-optional like the
+            // Phase-2 fields: null hides the steering tiles host-side.
+            this.manualSlotCount =
+              typeof msg.manual_slot_count === "number"
+                ? msg.manual_slot_count
+                : null;
+            this.manualSlotCap =
+              typeof msg.manual_slot_cap === "number"
+                ? msg.manual_slot_cap
+                : null;
+            this.steeringAvailable =
+              typeof msg.steering_available === "boolean"
+                ? msg.steering_available
+                : null;
             // Scale + depth bounds are exposed as instance fields; the host
             // app mirrors them into its own state from the "ready" event
             // listener (the SDK never writes app stores).
@@ -632,6 +657,16 @@ export class RemoteBackend extends EventTarget {
                   new CustomEvent("depth_applied", { detail: v }),
                 );
               }
+              break;
+            }
+            case "manual_slot_count": {
+              // Echoed after manual_slot_add / manual_slot_pop (success
+              // or refusal). The host mirrors it into its own state.
+              const v = typeof msg.count === "number" ? msg.count : null;
+              this.manualSlotCount = v;
+              this.dispatchEvent(
+                new CustomEvent("manual_slot_count", { detail: v }),
+              );
               break;
             }
             default:
@@ -909,6 +944,25 @@ export class RemoteBackend extends EventTarget {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     try {
       const msg: DisableLoraCommand = { type: "disable_lora", id };
+      this.ws.send(JSON.stringify(msg));
+    } catch {}
+  }
+
+  /** Add the next manual steering slot (LIFO). Server echoes
+   *  ``manual_slot_count`` on success or refusal. */
+  sendManualSlotAdd(): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    try {
+      const msg: ManualSlotAddCommand = { type: "manual_slot_add" };
+      this.ws.send(JSON.stringify(msg));
+    } catch {}
+  }
+
+  /** Pop the highest-numbered manual steering slot. */
+  sendManualSlotPop(): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    try {
+      const msg: ManualSlotPopCommand = { type: "manual_slot_pop" };
       this.ws.send(JSON.stringify(msg));
     } catch {}
   }

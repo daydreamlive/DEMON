@@ -60,6 +60,7 @@ from acestep.streaming.events import (
     CommandFailed,
     DepthApplied,
     LoraCatalogUpdate,
+    ManualSlotCount,
     ParamsEcho,
     PromptApplied,
     PromptBlendEcho,
@@ -554,6 +555,8 @@ def _handle_client_body(
             _send_json({"type": "lora_catalog", "catalog": event.catalog})
         elif isinstance(event, DepthApplied):
             _send_json({"type": "depth_applied", "value": event.value})
+        elif isinstance(event, ManualSlotCount):
+            _send_json({"type": "manual_slot_count", "count": event.count})
         elif isinstance(event, CommandFailed):
             _send_json({
                 "type": "command_failed",
@@ -618,6 +621,9 @@ def _handle_client_body(
         "geometry": streaming.geometry_payload(),
         "capabilities": streaming.capabilities_payload(),
         "knob_manifest": streaming.knob_manifest_payload(),
+        # Activation-steering surface (manual_slot_count /
+        # manual_slot_cap / steering_available).
+        **streaming.steering_payload(),
     }))
     ws.send(src_np.astype(np.float16).tobytes())
     if streaming.initial_upload_stems is not None:
@@ -768,6 +774,10 @@ def _handle_client_body(
                 lid = data.get("id")
                 if lid:
                     streaming.disable_lora(str(lid), origin=origin)
+            elif mtype == "manual_slot_add":
+                streaming.manual_slot_add(origin=origin)
+            elif mtype == "manual_slot_pop":
+                streaming.manual_slot_pop(origin=origin)
             elif mtype == "set_timbre_strength":
                 try:
                     v = float(data.get("value", 1.0))

@@ -29,6 +29,8 @@ export type CommandName =
   | "set_depth"
   | "enable_lora"
   | "disable_lora"
+  | "manual_slot_add"
+  | "manual_slot_pop"
   | "set_timbre_strength"
   | "set_timbre_source"
   | "set_timbre_fixture"
@@ -47,6 +49,8 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "set_depth",
   "enable_lora",
   "disable_lora",
+  "manual_slot_add",
+  "manual_slot_pop",
   "set_timbre_strength",
   "set_timbre_source",
   "set_timbre_fixture",
@@ -71,6 +75,7 @@ export type EventName =
   | "stem_assets"
   | "stem_failed"
   | "depth_applied"
+  | "manual_slot_count"
   | "timbre_set"
   | "timbre_cleared"
   | "timbre_failed"
@@ -93,6 +98,7 @@ export const EVENT_NAMES: readonly EventName[] = [
   "stem_assets",
   "stem_failed",
   "depth_applied",
+  "manual_slot_count",
   "timbre_set",
   "timbre_cleared",
   "timbre_failed",
@@ -170,6 +176,14 @@ export interface EnableLoraCommand {
 export interface DisableLoraCommand {
   type: "disable_lora";
   id: string;
+}
+
+export interface ManualSlotAddCommand {
+  type: "manual_slot_add";
+}
+
+export interface ManualSlotPopCommand {
+  type: "manual_slot_pop";
 }
 
 export interface SetTimbreStrengthCommand {
@@ -258,6 +272,12 @@ export interface ReadyEvent {
   capabilities?: Record<string, unknown>;
   /** Per-session knob manifest: the same {version, knobs} envelope GET /api/knobs serves, but backend-owned and session-resolved (SDE mode, enabled lora_str_<id> knobs). /api/knobs remains the static pre-session probe. */
   knob_manifest?: Record<string, unknown>;
+  /** Active manual steering slot count; drives the client's man_*_<N> row rendering. Updated live via the manual_slot_count event. */
+  manual_slot_count?: number;
+  /** Server-imposed ceiling on manual steering slots; gates the client's + button. */
+  manual_slot_cap?: number;
+  /** True when the session's checkpoint has a reachable steering-vector bundle; false hides the steering surface (the steer_*\/man_* knobs are absent from the manifest too). */
+  steering_available?: boolean;
 }
 
 export interface ErrorEvent {
@@ -334,6 +354,12 @@ export interface DepthAppliedEvent {
   type: "depth_applied";
   /** The clamped applied depth. */
   value: number;
+}
+
+export interface ManualSlotCountEvent {
+  type: "manual_slot_count";
+  /** The live manual steering slot count after the command. */
+  count: number;
 }
 
 export interface TimbreSetEvent {
@@ -444,6 +470,8 @@ export type WireCommand =
   | SetDepthCommand
   | EnableLoraCommand
   | DisableLoraCommand
+  | ManualSlotAddCommand
+  | ManualSlotPopCommand
   | SetTimbreStrengthCommand
   | SetTimbreSourceCommand
   | SetTimbreFixtureCommand
@@ -467,6 +495,7 @@ export type WireEvent =
   | StemAssetsEvent
   | StemFailedEvent
   | DepthAppliedEvent
+  | ManualSlotCountEvent
   | TimbreSetEvent
   | TimbreClearedEvent
   | TimbreFailedEvent

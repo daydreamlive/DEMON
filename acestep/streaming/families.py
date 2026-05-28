@@ -20,7 +20,15 @@ from acestep.engine.obs import logger
 
 
 def _make_acestep(ss):
+    from acestep.steering import SteeringController, ensure_steering_vectors
     from acestep.streaming.ace_backend import ACEStepBackend
+
+    # SteeringController is the source of truth for slot_count and the
+    # vector catalog; ensure_steering_vectors fetches/caches the
+    # checkpoint's probe bundle (None for checkpoints without one — XL,
+    # fetch failures — which degrades the controller to is_loaded=False
+    # and drops the steering capability/knobs for the session).
+    steering = SteeringController(ensure_steering_vectors(ss.checkpoint))
 
     return ACEStepBackend(
         ss.session, ss.stream,
@@ -34,6 +42,7 @@ def _make_acestep(ss):
         walk_window=ss.walk_window,
         walk_window_s=ss.walk_window_s,
         neg_conditioning=ss.cond_negative,
+        steering=steering,
     )
 
 
@@ -43,14 +52,48 @@ FAMILIES = {
 
 
 def _acestep_knob_universe():
-    from acestep.streaming.knobs import knob_specs
+    from acestep.steering.policy import (
+        AUTO_AXES,
+        MANUAL_MAX_LAYER,
+        MANUAL_MAX_STEP,
+        PROBE_N,
+    )
+    from acestep.streaming.knobs import (
+        knob_specs,
+        manual_slot_specs,
+        steering_axis_spec,
+    )
 
     # Every spec the family can ever expose: both SDE-mode variants plus
     # a representative LoRA-strength knob (the per-id specs all come from
-    # lora_strength_spec, so one placeholder id covers the pattern).
+    # lora_strength_spec, so one placeholder id covers the pattern), plus
+    # the steering surface — the four auto axes and one representative
+    # manual slot (per-slot specs all come from manual_slot_specs).
+    # Catalog geometry uses the canonical v15-turbo bundle's 144 cells;
+    # no network fetch happens here (policy tables only).
+    steering = [
+        steering_axis_spec(
+            ax.name,
+            axis=ax.axis,
+            inject_layer=max(
+                0, min(MANUAL_MAX_LAYER, ax.probe_layer + ax.layer_offset),
+            ),
+            probe_step=ax.probe_step,
+            probe_n=PROBE_N,
+            blurb=ax.blurb,
+        )
+        for ax in AUTO_AXES
+    ] + manual_slot_specs(
+        1,
+        src_max=143,
+        catalog_len=144,
+        layer_max=MANUAL_MAX_LAYER,
+        step_max=MANUAL_MAX_STEP,
+    )
     return (
         knob_specs(False, loras=["<lora_id>"])
         + knob_specs(True, loras=["<lora_id>"])
+        + steering
     )
 
 

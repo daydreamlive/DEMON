@@ -193,11 +193,21 @@ function wireRemoteListeners(
     // ungated). The hand-coded swap/timbre/structure/LoRA panels read
     // it via useCapability.
     s.setCapabilities(remote.capabilities);
+    // Activation-steering surface (null on servers without it = tiles
+    // hidden). VoiceTile reads these to render the steering racks.
+    s.setManualSlotCount(remote.manualSlotCount);
+    s.setManualSlotCap(remote.manualSlotCap);
+    s.setSteeringAvailable(remote.steeringAvailable);
   });
   remote.addEventListener("depth_applied", (e) => {
     useSessionStore
       .getState()
       .setPipelineDepth((e as CustomEvent<number>).detail);
+  });
+  remote.addEventListener("manual_slot_count", (e) => {
+    useSessionStore
+      .getState()
+      .setManualSlotCount((e as CustomEvent<number | null>).detail);
   });
   // WS startup telemetry. The SDK only observes its own connection
   // (wsTrace + the optional init_ack echo); persisting the latest trace

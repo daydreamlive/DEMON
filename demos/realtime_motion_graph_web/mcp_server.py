@@ -47,13 +47,24 @@ import soundfile as sf
 from loguru import logger
 from mcp.server.fastmcp import FastMCP
 
+from acestep.steering import (
+    MANUAL_SLOT_CAP,
+    ensure_steering_vectors,
+    enumerate_catalog,
+)
 from acestep.streaming.knobs import (
     KNOB_SCHEMA_VERSION,
+    KnobSpec,
     coerce_knob_values,
     knob_catalog,
     knob_specs,
 )
 from .protocol import coerce_command_payload, wire_contract
+
+# MCP runs as a single global process, so we pre-fetch the canonical
+# 2B turbo bundle at module init. Fetch failures leave the cache empty;
+# the next streaming session retries.
+_MANUAL_VECTOR_DIR = ensure_steering_vectors("acestep-v15-turbo")
 
 
 # MCP wire protocol owns stdout — every log MUST go to stderr. Lazy
@@ -240,6 +251,27 @@ def _waveform_to_audio_bytes(waveform: np.ndarray) -> bytes:
 
 
 # ---------------------------------------------------------------------------
+# Manual steering vector catalog (local view of the prefetched bundle)
+# ---------------------------------------------------------------------------
+
+
+def _enumerate_manual_catalog() -> list[dict]:
+    """Manual steering catalog flattened to wire-stable dicts."""
+    if _MANUAL_VECTOR_DIR is None:
+        return []
+    return [
+        {
+            "index": entry.index,
+            "axis": entry.axis,
+            "build_layer": entry.build_layer,
+            "build_step": entry.build_step,
+            "filename": entry.filename,
+        }
+        for entry in enumerate_catalog(_MANUAL_VECTOR_DIR)
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Tools — discovery
 # ---------------------------------------------------------------------------
 
@@ -339,6 +371,19 @@ async def list_knobs(session_id: Optional[str] = None) -> dict:
     which LoRAs are currently enabled — pulled from the live snapshot.
     """
     snap = await session_state(session_id)
+    # Prefer the snapshot's backend-owned manifest (Phase 2): it is the
+    # session's LIVE knob universe, including the backend-specific knobs
+    # the static registry projection can't reproduce (the steering
+    # steer_* axes and the per-slot man_*_<N> quadruples).
+    manifest = snap.get("knob_manifest") or {}
+    if isinstance(manifest, dict) and manifest.get("knobs"):
+        return {
+            "version": manifest.get("version", KNOB_SCHEMA_VERSION),
+            "knobs": manifest["knobs"],
+            "current": snap.get("knob_values") or {},
+        }
+    # Older server snapshot without a manifest: re-derive from the
+    # shared registry (no steering surface on those servers anyway).
     sde, enabled = _session_knob_shape(snap)
     return {
         "version": KNOB_SCHEMA_VERSION,
@@ -362,6 +407,33 @@ def _session_knob_shape(snap: dict) -> tuple[bool, list]:
     return sde, enabled
 
 
+def _specs_from_snapshot(snap: dict) -> dict:
+    """``{name: KnobSpec}`` for a session snapshot.
+
+    Reconstructed from the snapshot's backend-owned ``knob_manifest``
+    when present (so validation covers backend-specific knobs like the
+    steering surface); falls back to the shared registry for older
+    servers. The manifest is itself a registry projection
+    (``catalog_from_specs``), so this stays single-source."""
+    manifest = (snap.get("knob_manifest") or {}).get("knobs")
+    if isinstance(manifest, dict) and manifest:
+        return {
+            name: KnobSpec(
+                name=name,
+                default=e.get("default", 0.0),
+                min_val=e.get("min"),
+                max_val=e.get("max", 1.0),
+                type=e.get("type", "float"),
+                options=tuple(e.get("options") or ()),
+                group=e.get("group", "core"),
+                bank=bool(e.get("bank", True)),
+            )
+            for name, e in manifest.items()
+        }
+    sde, enabled = _session_knob_shape(snap)
+    return {s.name: s for s in knob_specs(sde=sde, loras=enabled)}
+
+
 async def _validate_against_session(
     raw: dict, session_id: Optional[str]
 ) -> dict:
@@ -370,12 +442,51 @@ async def _validate_against_session(
     any value is out of range or not an allowed enum/bool option. Reuses
     the same coerce_knob_values the server enforces, so MCP can't drift."""
     snap = await session_state(session_id)
-    sde, enabled = _session_knob_shape(snap)
-    specs = {s.name: s for s in knob_specs(sde=sde, loras=enabled)}
-    clean, errors = coerce_knob_values(raw, specs)
+    clean, errors = coerce_knob_values(raw, _specs_from_snapshot(snap))
     if errors:
         raise ValueError("; ".join(errors))
     return clean
+
+
+@mcp.tool()
+async def add_manual_slot(session_id: Optional[str] = None) -> dict:
+    """Spawn the next manual steering slot (LIFO; alpha defaults to 0).
+
+    Refused (no-op echo) at MANUAL_SLOT_CAP.
+    """
+    _send_cmd(session_id, {"type": "manual_slot_add"})
+    snap = await session_state(session_id)
+    return {
+        "count": int(snap.get("manual_slot_count") or 0),
+        "cap": MANUAL_SLOT_CAP,
+    }
+
+
+@mcp.tool()
+async def pop_manual_slot(session_id: Optional[str] = None) -> dict:
+    """Remove the highest-numbered manual steering slot.
+
+    LIFO; interior deletion is not supported. Refused (no-op echo) on
+    an empty registry.
+    """
+    _send_cmd(session_id, {"type": "manual_slot_pop"})
+    snap = await session_state(session_id)
+    return {
+        "count": int(snap.get("manual_slot_count") or 0),
+        "cap": MANUAL_SLOT_CAP,
+    }
+
+
+@mcp.tool()
+async def list_manual_steering_vectors() -> dict:
+    """Catalog of pre-built steering vectors for the manual slots.
+
+    Returns ``{"count": N, "vectors": [...]}``. Each entry's ``index``
+    is the value to set on ``man_src_<slot>``. Order is stable across
+    sessions (axis-major, then build_layer asc, then build_step asc).
+    """
+    cat = _enumerate_manual_catalog()
+    return {"count": len(cat), "vectors": cat}
 
 
 # ---------------------------------------------------------------------------

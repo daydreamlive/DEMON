@@ -17,6 +17,11 @@ import {
   type TimeSignature,
 } from "@/types/engine";
 
+// Pre-seed defaults for every potential manual steering slot so reset /
+// snapback / curve hooks never miss a key when the server allocates a
+// new slot at runtime. Must match the prereg ceiling in engine.ts.
+const MANUAL_SLOT_PREREG = 16;
+
 // Top-level performance state. Mirrors app.js's module-level vars
 // (sliderValues, seedValue, blendValue, activeKey, prompts, fixture, mode,
 // kiosk). LoRA strength sliders live in useLoraStore.
@@ -259,6 +264,11 @@ const DEFAULT_SLIDER_VALUES: Record<string, number> = {
   ch23: 1.0,
   ch29: 1.0,
   ch56: 1.0,
+  steer_bright: 0.0,
+  steer_warm: 0.0,
+  steer_rough: 0.0,
+  steer_density: 0.0,
+  // Manual steering slot defaults are filled in below the object literal.
   dcw_scaler: 0.05,
   dcw_high_scaler: 0.02,
   dcw_mult_blend: 0.0,
@@ -271,6 +281,13 @@ const DEFAULT_SLIDER_VALUES: Record<string, number> = {
   cfg_rescale: 0.0,
   steps_override: 8,
 };
+
+for (let slot = 1; slot <= MANUAL_SLOT_PREREG; slot++) {
+  DEFAULT_SLIDER_VALUES[`man_src_${slot}`] = 0;
+  DEFAULT_SLIDER_VALUES[`man_layer_${slot}`] = 9;
+  DEFAULT_SLIDER_VALUES[`man_step_${slot}`] = 0;
+  DEFAULT_SLIDER_VALUES[`man_alpha_${slot}`] = 0.0;
+}
 
 /** A re-applyable record of an active timbre / structure reference.
  *  `timbreName` / `structName` are the server-acked DISPLAY name

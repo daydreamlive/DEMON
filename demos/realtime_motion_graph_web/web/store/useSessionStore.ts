@@ -63,6 +63,15 @@ interface SessionState {
   lastBackendSessionId: string | null;
   /** Client id echoed by init_ack. */
   lastBackendClientId: string | null;
+  /** Active manual steering slot count, mirrored from the server.
+   *  Null until ready. */
+  manualSlotCount: number | null;
+  /** Server-imposed cap on manual steering slots. Drives the +/- enable
+   *  state in ModTile. Null until ready. */
+  manualSlotCap: number | null;
+  /** Whether the session's checkpoint has steering vectors. When false,
+   *  ModTile hides both steering tiles. Null until ready. */
+  steeringAvailable: boolean | null;
 
   setStatus: (status: SessionStatus, message?: string) => void;
   setSession: (remote: RemoteBackend | null, player: AudioPlayer | null) => void;
@@ -76,6 +85,9 @@ interface SessionState {
   setLastWsTrace: (trace: WsTrace | null) => void;
   setLastBackendSessionId: (id: string | null) => void;
   setLastBackendClientId: (id: string | null) => void;
+  setManualSlotCount: (count: number | null) => void;
+  setManualSlotCap: (cap: number | null) => void;
+  setSteeringAvailable: (available: boolean | null) => void;
   reset: () => void;
 }
 
@@ -94,6 +106,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   lastWsTrace: null,
   lastBackendSessionId: null,
   lastBackendClientId: null,
+  manualSlotCount: null,
+  manualSlotCap: null,
+  steeringAvailable: null,
 
   setStatus: (status, message = "") => set({ status, message }),
   setSession: (remote, player) => set({ remote, player }),
@@ -107,6 +122,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setLastWsTrace: (trace) => set({ lastWsTrace: trace }),
   setLastBackendSessionId: (id) => set({ lastBackendSessionId: id }),
   setLastBackendClientId: (id) => set({ lastBackendClientId: id }),
+  setManualSlotCount: (count) => set({ manualSlotCount: count }),
+  setManualSlotCap: (cap) => set({ manualSlotCap: cap }),
+  setSteeringAvailable: (available) => set({ steeringAvailable: available }),
   reset: () => {
     try {
       get().monitor?.stop();
@@ -129,6 +147,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       lastWsTrace: null,
       lastBackendSessionId: null,
       lastBackendClientId: null,
+      manualSlotCount: null,
+      manualSlotCap: null,
+      steeringAvailable: null,
       // checkpointScale survives reset on purpose: the server's
       // checkpoint doesn't change across sessions, and pre-fetching
       // it from /api/loras lets the library filter render correctly

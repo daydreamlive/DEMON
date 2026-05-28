@@ -38,10 +38,13 @@ from acestep.streaming.generator_backend import (
     Capabilities,
     TickContext,
 )
+from acestep.steering import SteeringController
 from acestep.streaming.knobs import (
     CHANNEL_GROUPS,
     KEYSTONE_CHANNELS,
     knob_specs as registry_knob_specs,
+    manual_slot_specs,
+    steering_axis_spec,
 )
 
 # Audio sample rate the ACE-Step v1.5 family is trained on, and the
@@ -121,6 +124,41 @@ def _curve_from_spec(spec, T):
     return None
 
 
+def steering_knob_specs(steering: "SteeringController") -> list:
+    """Project a SteeringController's live surface into registry specs.
+
+    Empty when no vector bundle is reachable (the knobs would be dead).
+    The spec SHAPES come from the registry factories in
+    ``acestep.streaming.knobs``; only the axis/catalog metadata is
+    filled in here, where the steering policy lives.
+    """
+    if not steering.is_loaded:
+        return []
+    specs: list = []
+    for ax in steering.auto_axes:
+        inject_layer = max(
+            0, min(steering.MANUAL_MAX_LAYER, ax.probe_layer + ax.layer_offset),
+        )
+        specs.append(steering_axis_spec(
+            ax.name,
+            axis=ax.axis,
+            inject_layer=inject_layer,
+            probe_step=ax.probe_step,
+            probe_n=steering._probe_n,
+            blurb=ax.blurb,
+        ))
+    src_max = max(0, len(steering.catalog) - 1)
+    for slot in steering.active_slots():
+        specs.extend(manual_slot_specs(
+            slot,
+            src_max=src_max,
+            catalog_len=len(steering.catalog),
+            layer_max=steering.MANUAL_MAX_LAYER,
+            step_max=steering.MANUAL_MAX_STEP,
+        ))
+    return specs
+
+
 class ACEStepBackend(DiffusionBackend):
     """ACE-Step v1.5 diffusion generation behind the GeneratorBackend seam.
 
@@ -141,6 +179,7 @@ class ACEStepBackend(DiffusionBackend):
         walk_window=False,
         walk_window_s=60.0,
         neg_conditioning=None,
+        steering: SteeringController | None = None,
     ):
         # The family codec is the engine Session: its windowed VAE
         # decode is what render_window()/render_full() drive. The
@@ -204,6 +243,19 @@ class ACEStepBackend(DiffusionBackend):
         # Rebuild-signature change detection (steps / LoRA enablement).
         # ``None`` on the first tick just seeds the baseline.
         self._last_rebuild_keys = None
+
+        # Activation steering. The controller is the source of truth for
+        # the slot count and vector catalog; the session mirrors its
+        # slot ops into KnobState / the knob manifest. ``None`` (e.g. a
+        # bare-construction test fixture) degrades to an unloaded
+        # controller so every consumer can read it unconditionally.
+        self.steering = (
+            steering if steering is not None else SteeringController(None)
+        )
+        # (pipeline, snapshot) change-detection key for _sync_steering;
+        # None forces a push on the first tick and after a
+        # steps_override-driven pipeline rebuild.
+        self._last_steering = None
 
         # ----- per-tick translation state (the old run() locals) -----
         self._last_latent = None
@@ -275,6 +327,7 @@ class ACEStepBackend(DiffusionBackend):
             depth=True,
             curves=True,
             notes_conditioning=False,
+            steering=self.steering.is_loaded,
         )
 
     def geometry(self) -> AudioGeometry:
@@ -291,11 +344,13 @@ class ACEStepBackend(DiffusionBackend):
     def knob_specs(self, lora_ids=()) -> list:
         """The ACE-family manifest: the shared registry's spec list,
         parameterized by this session's SDE mode and the enabled-LoRA
-        set the session passes in (see the protocol docstring)."""
+        set the session passes in (see the protocol docstring), plus
+        the activation-steering surface (auto axes + the live manual
+        slots) when this session's checkpoint has a vector bundle."""
         return registry_knob_specs(
             self.use_sde,
             loras=list(lora_ids) if self.use_lora else [],
-        )
+        ) + steering_knob_specs(self.steering)
 
     # ---- public hooks reachable from session ops ---------------------------
 
@@ -376,6 +431,28 @@ class ACEStepBackend(DiffusionBackend):
                 ))
         self.stream.model.handler._channel_guidance = configs
         return ch_gains[:]
+
+    def _sync_steering(self, raw: dict, last):
+        """Push activation-steering configs when the snapshot changes.
+
+        ``last`` is ``(pipeline, snapshot_tuple)`` or ``None``. Pipeline
+        identity is part of the key because ``steps_override`` rebuilds
+        the StreamPipeline (fresh, empty steering state) without
+        changing ``raw`` — without the identity check the new pipeline
+        would never receive ``set_steering``.
+        """
+        if not self.steering.is_loaded:
+            return last
+        pipe = self.stream.pipeline
+        if pipe is None:
+            return last
+        n = max(1, int(raw.get("steps_override", 8)))
+        snapshot = self.steering.snapshot_key(raw, n)
+        last_pipe, last_snapshot = last if last is not None else (None, None)
+        if pipe is last_pipe and snapshot == last_snapshot:
+            return last
+        pipe.set_steering(self.steering.build_configs(raw, n))
+        return (pipe, snapshot)
 
     # ---- GeneratorBackend hot loop -----------------------------------------
 
@@ -711,6 +788,9 @@ class ACEStepBackend(DiffusionBackend):
         if self.use_midi:
             self._last_channel_gains = self._sync_channel_guidance(
                 raw, self._last_channel_gains,
+            )
+            self._last_steering = self._sync_steering(
+                raw, self._last_steering,
             )
 
         # Route every curve-capable parameter through the shared

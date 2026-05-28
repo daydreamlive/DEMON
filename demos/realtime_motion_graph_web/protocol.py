@@ -293,6 +293,22 @@ COMMANDS: tuple = (
         description="Disable a LoRA and drop its lora_str_<id> knob.",
     ),
     CommandSpec(
+        "manual_slot_add",
+        requires="steering",
+        description="Allocate the next manual steering slot (LIFO); "
+                    "allocates its four man_*_<N> knobs. Echoed back as "
+                    "manual_slot_count on success AND refusal (at "
+                    "manual_slot_cap).",
+    ),
+    CommandSpec(
+        "manual_slot_pop",
+        requires="steering",
+        description="Remove the highest-numbered manual steering slot and "
+                    "drop its man_*_<N> knobs (LIFO; interior deletion is "
+                    "not supported). Echoed back as manual_slot_count on "
+                    "success AND refusal (empty registry).",
+    ),
+    CommandSpec(
         "set_timbre_strength",
         fields=(FieldSpec("value", "float", required=True, default=1.0,
                           description="1.0 = full reference, 0.0 = silence "
@@ -439,6 +455,25 @@ EVENTS: tuple = (
                                   "resolved (SDE mode, enabled lora_str_<id> "
                                   "knobs). /api/knobs remains the static "
                                   "pre-session probe."),
+            # Activation-steering surface. Wire-optional like the
+            # Phase-2 fields above: absent on backends without the
+            # steering capability, and the client hides the steering
+            # tiles when steering_available isn't explicitly true.
+            FieldSpec("manual_slot_count", "int",
+                      description="Active manual steering slot count; "
+                                  "drives the client's man_*_<N> row "
+                                  "rendering. Updated live via the "
+                                  "manual_slot_count event."),
+            FieldSpec("manual_slot_cap", "int",
+                      description="Server-imposed ceiling on manual "
+                                  "steering slots; gates the client's "
+                                  "+ button."),
+            FieldSpec("steering_available", "bool",
+                      description="True when the session's checkpoint has "
+                                  "a reachable steering-vector bundle; "
+                                  "false hides the steering surface (the "
+                                  "steer_*/man_* knobs are absent from "
+                                  "the manifest too)."),
         ),
         binary_follow=True,
         description="First JSON after the upload handshake, followed by the "
@@ -538,6 +573,15 @@ EVENTS: tuple = (
         fields=(FieldSpec("value", "int", required=True,
                           description="The clamped applied depth."),),
         description="Ack for set_depth.",
+    ),
+    EventSpec(
+        "manual_slot_count",
+        fields=(FieldSpec("count", "int", required=True,
+                          description="The live manual steering slot "
+                                      "count after the command."),),
+        description="Ack for manual_slot_add / manual_slot_pop — emitted on "
+                    "success and refusal alike so the client's +/- UI "
+                    "resyncs either way.",
     ),
     EventSpec(
         "timbre_set",

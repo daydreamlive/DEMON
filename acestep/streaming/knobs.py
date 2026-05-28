@@ -218,6 +218,101 @@ def lora_strength_spec(lora_id: str) -> KnobSpec:
     )
 
 
+# Activation-steering alpha range. Bipolar so the operator can invert an
+# axis without leaving the surface; useful magnitude is roughly 2..15 by
+# ear, breakage above that.
+STEERING_ALPHA_MAX = 30.0
+
+
+def steering_axis_spec(
+    name: str,
+    *,
+    axis: str = "",
+    inject_layer: int = 0,
+    probe_step: int = 0,
+    probe_n: int = 8,
+    blurb: str = "",
+) -> KnobSpec:
+    """The registry spec for one auto-path activation-steering knob.
+
+    Shaped here (range, group, bank) so every transport projects the
+    same contract; the axis metadata (where the vector injects, what it
+    does) arrives as plain values from the backend that owns the
+    steering policy — this module stays torch-free / acestep-free.
+    """
+    return KnobSpec(
+        name, default=0.0,
+        min_val=-STEERING_ALPHA_MAX, max_val=STEERING_ALPHA_MAX,
+        group="steering",
+        description=(
+            f"Activation-steering ({axis}) injected at DiT layer "
+            f"{inject_layer}, step round({probe_step}/{probe_n} * inject_n) "
+            f"of the current schedule. 0 = off, negative inverts the axis "
+            f"direction. {blurb}."
+            " Useful magnitude roughly 2..15 by ear; breakage above that."
+        ),
+    )
+
+
+def manual_slot_specs(
+    slot_id: int,
+    *,
+    src_max: int,
+    catalog_len: int,
+    layer_max: int,
+    step_max: int,
+) -> list:
+    """The four registry specs for one manual steering slot.
+
+    Like :func:`lora_strength_spec`, factored so the runtime slot
+    add path and the session-start manifest both shape the knobs from
+    the registry. Manual slots bypass the auto path's fractional step
+    mapping, layer offset, and sign correction — the vector lands at
+    the operator's chosen cell with the operator's chosen sign.
+    """
+    return [
+        KnobSpec(
+            f"man_src_{slot_id}", default=0.0, min_val=0.0,
+            max_val=float(src_max), type="int", group="manual",
+            description=(
+                f"Manual slot {slot_id}: vector catalog index. Resolves to "
+                f"a (axis, build_layer, build_step) cell on disk; call "
+                f"list_manual_steering_vectors for the table. Index "
+                f"0..{src_max} ({catalog_len} cells)."
+            ),
+        ),
+        KnobSpec(
+            f"man_layer_{slot_id}", default=9.0, min_val=0.0,
+            max_val=float(layer_max), type="int", group="manual",
+            description=(
+                f"Manual slot {slot_id}: DiT inject layer (0..{layer_max}). "
+                "Passed verbatim to the engine; no automatic offset."
+            ),
+        ),
+        KnobSpec(
+            f"man_step_{slot_id}", default=0.0, min_val=0.0,
+            max_val=float(step_max), type="int", group="manual",
+            description=(
+                f"Manual slot {slot_id}: diffusion inject step "
+                f"(0..{step_max}). No fractional mapping. Values past the "
+                "current steps_override - 1 silently no-op (the engine only "
+                "fires when step equals the active diffusion step)."
+            ),
+        ),
+        KnobSpec(
+            f"man_alpha_{slot_id}", default=0.0,
+            min_val=-STEERING_ALPHA_MAX, max_val=STEERING_ALPHA_MAX,
+            group="manual",
+            description=(
+                f"Manual slot {slot_id}: injection strength. 0 = slot off. "
+                "Bipolar: negative alpha inverts the chosen vector's "
+                "direction at injection (no sign correction is applied). "
+                "Useful magnitude roughly 2..15 by ear; breakage above that."
+            ),
+        ),
+    ]
+
+
 def knob_catalog(sde: bool, loras=None) -> dict:
     """Project the full registry into a transport-agnostic catalog:
     ``name -> {type, default, min?, max, group, options?, description?,

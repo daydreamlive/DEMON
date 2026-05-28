@@ -63,6 +63,18 @@ const PARAM_TOOLTIPS: Record<string, string> = {
   cfg_rescale:
     "After CFG, mix the guided velocity's magnitude back toward what the positive forward produced. 0 keeps raw CFG; 1 fully snaps the magnitude. Pair with high guidance_scale to keep the prompt-push without the harshness that high CFG causes on its own.",
 
+  // ── Activation steering (auto path) ──
+  // Each tooltip names the underlying probe cell so the operator can
+  // recreate the effect on a manual slot.
+  steer_bright:
+    "Activation-steering: positive alpha shifts spectral centroid up (brighter, more highs). 0 = off; useful range 5-15 by ear. Recreate as a manual slot: vector brightness_l09_t3 at layer = 9, step = round(3/8 x steps_count).",
+  steer_warm:
+    "Activation-steering: positive alpha tilts the spectrum toward bass (warmer). The raw vector points the wrong way for this axis, so this knob folds in a -1 sign. 0 = off; useful range 5-15 by ear. Recreate as a manual slot: vector warmth_l15_t0 at layer = 15, step = 0, then INVERT alpha sign (manual mode is sign-agnostic).",
+  steer_rough:
+    "Activation-steering: positive alpha increases spectral flatness (grittier, noisier). Vector magnitude at this probe cell is small, so effect builds slowly. 0 = off; useful range 5-15 by ear. Recreate as a manual slot: vector roughness_l09_t3 at layer = 9, step = round(3/8 x steps_count).",
+  steer_density:
+    "Activation-steering: positive alpha thins the texture toward sparse/minimal. Inject layer is shifted 3 shallower than the probe layer (Phase-3 transfer finding). 0 = off; useful range 5-15 by ear. Recreate as a manual slot: vector density_l18_t3 at layer = 15 (probe 18 minus 3), step = round(3/8 x steps_count).",
+
   // ── DCW ──
   dcw_scaler:
     "Experimental — adjusts the low-band strength of an internal correction the model applies to itself during generation (DCW). This scaler is active in the early part of the run. The exact audio mapping is still being explored — sweep it to discover what it does for your source. Extreme values can be unpredictable but cool.",
@@ -96,6 +108,19 @@ export function tooltipFor(param: string): string | undefined {
   }
   if (param === "lora_blend") {
     return "Crossfade between LoRA A and LoRA B. 0 = A only, 1 = B only, 0.5 = both at half strength. Use this to morph between two styles smoothly.";
+  }
+  // Manual steering tooltips share copy across all slots.
+  if (param.startsWith("man_src_")) {
+    return "Catalog index of the steering vector this slot fires. The catalog enumerates every pre-built (axis, build_layer, build_step) cell on disk in stable axis-major order. Double-click the readout to type an exact index; query the MCP list_manual_steering_vectors tool for the full table. Has no effect until α is non-zero.";
+  }
+  if (param.startsWith("man_layer_")) {
+    return "DiT inject layer (0-23). The vector is added to this layer's post-block residual. Bypasses the auto path's density layer offset — the value lands exactly where you point it.";
+  }
+  if (param.startsWith("man_step_")) {
+    return "Diffusion inject step (0-15). Bypasses the auto path's fractional step mapping; the engine fires the injection only on the step that matches this value. If you pick a step past the current steps count - 1, the slot stays silent until you raise the step count.";
+  }
+  if (param.startsWith("man_alpha_")) {
+    return "Strength of this manual slot's injection. 0 disables the slot. Negative α inverts the vector's direction at injection time (no sign correction is applied; what you set is what the engine receives). Sweep range and breakage point mirror the perceptual steering knobs.";
   }
   return PARAM_TOOLTIPS[param];
 }

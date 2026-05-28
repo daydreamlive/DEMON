@@ -73,12 +73,14 @@ from acestep.streaming.audio_engine import AudioEngine
 from acestep.streaming.commands import CommandOrigin
 from acestep.streaming.config import SessionConfig
 from acestep.streaming.encode import blend_for_strength, encode_cond_pair
+from acestep.steering import CapacityError, EmptyError
 from acestep.streaming.events import (
     AudioReady,
     CommandFailed,
     DepthApplied,
     EventBus,
     LoraCatalogUpdate,
+    ManualSlotCount,
     ParamsEcho,
     PromptApplied,
     PromptBlendEcho,
@@ -462,10 +464,19 @@ class StreamingSession:
 
         # Cached {name: KnobSpec} map for hot-path validation in set_knobs.
         # knob_specs() rebuilds 34 dataclasses, so we never call it per tick;
-        # rebuilt only when the LoRA set changes (see _apply_lora_pending).
+        # rebuilt only when the LoRA set changes (see _apply_lora_pending)
+        # or a manual steering slot is added/popped.
         # Reassigned wholesale (atomic ref swap), so set_knobs can read it
         # without a lock from the dispatch thread.
         self._rebuild_knob_specs(self.initial_enable_ids)
+
+        # The backend's manifest can extend the shared registry set the
+        # KnobState was seeded from (today: the activation-steering
+        # knobs, present only when the checkpoint has a vector bundle).
+        # Seed any such knob so snapshot ``knob_values`` stays complete
+        # from t=0 — add_knob is a no-op for already-seeded names.
+        for spec in self._knob_specs_by_name.values():
+            self.virtual_knobs.add_knob(spec)
 
     def _rebuild_knob_specs(self, lora_ids: list) -> None:
         # Backend-owned manifest: which specs the LoRA set expands to is
@@ -522,6 +533,24 @@ class StreamingSession:
         return {
             "version": KNOB_SCHEMA_VERSION,
             "knobs": catalog_from_specs(self._knob_specs_by_name.values()),
+        }
+
+    def steering_payload(self) -> dict:
+        """Wire-shaped activation-steering block, shared by the ``ready``
+        frame and the snapshot. ``steering_available`` mirrors the
+        backend's ``steering`` capability bit; the count/cap fields drive
+        the client's manual-slot row rendering and +/- enablement."""
+        ctl = getattr(self.backend, "steering", None)
+        if ctl is None:
+            return {
+                "manual_slot_count": 0,
+                "manual_slot_cap": 0,
+                "steering_available": False,
+            }
+        return {
+            "manual_slot_count": ctl.slot_count,
+            "manual_slot_cap": ctl.slot_cap,
+            "steering_available": bool(ctl.is_loaded),
         }
 
     def lora_catalog_payload(self) -> list:
@@ -589,6 +618,9 @@ class StreamingSession:
             "geometry": self.geometry_payload(),
             "capabilities": self.capabilities_payload(),
             "knob_manifest": self.knob_manifest_payload(),
+            # Activation-steering surface (count drives manual-slot row
+            # rendering; available=False hides the steering tiles).
+            **self.steering_payload(),
         }
 
     # ---- Runner lifecycle ----------------------------------------------
@@ -1497,6 +1529,67 @@ class StreamingSession:
             "disable_lora_requested origin={} id={}",
             origin.value, lora_id,
         )
+
+    @requires_capability("steering", "manual_slot_add")
+    def manual_slot_add(
+        self,
+        *,
+        origin: CommandOrigin = CommandOrigin.PRIMARY,
+    ) -> None:
+        """Allocate the next manual steering slot (LIFO).
+
+        The controller is the primary write; KnobState and the cached
+        spec map mirror it so the four ``man_*_<N>`` knobs validate and
+        snapshot from the moment the slot exists. No GPU work, so it
+        applies inline (no pending queue). Publishes
+        :class:`ManualSlotCount` on success AND refusal — the client's
+        +/- UI resyncs from the echo either way.
+        """
+        self.state.last_activity_ts = time.monotonic()
+        ctl = self.backend.steering
+        try:
+            new_slot = ctl.add_slot()
+        except CapacityError:
+            logger.info(
+                "manual_slot_add_refused origin={} cap={}",
+                origin.value, ctl.slot_cap,
+            )
+        else:
+            self._rebuild_knob_specs(self._enabled_lora_ids())
+            names = ctl.knob_names(new_slot)
+            for name in (names.src, names.layer, names.step, names.alpha):
+                spec = self._knob_specs_by_name.get(name)
+                if spec is not None:
+                    self.virtual_knobs.add_knob(spec)
+            logger.info(
+                "manual_slot_added origin={} slot={}", origin.value, new_slot,
+            )
+        self.bus.publish(ManualSlotCount(count=ctl.slot_count))
+
+    @requires_capability("steering", "manual_slot_pop")
+    def manual_slot_pop(
+        self,
+        *,
+        origin: CommandOrigin = CommandOrigin.PRIMARY,
+    ) -> None:
+        """Remove the highest-numbered manual steering slot (LIFO;
+        interior deletion is not supported). Refusal on an empty
+        registry still publishes :class:`ManualSlotCount`."""
+        self.state.last_activity_ts = time.monotonic()
+        ctl = self.backend.steering
+        try:
+            popped = ctl.pop_slot()
+        except EmptyError:
+            logger.info("manual_slot_pop_refused origin={}", origin.value)
+        else:
+            names = ctl.knob_names(popped)
+            for name in (names.src, names.layer, names.step, names.alpha):
+                self.virtual_knobs.remove_knob(name)
+            self._rebuild_knob_specs(self._enabled_lora_ids())
+            logger.info(
+                "manual_slot_popped origin={} slot={}", origin.value, popped,
+            )
+        self.bus.publish(ManualSlotCount(count=ctl.slot_count))
 
     @requires_capability("timbre", "set_timbre_strength")
     def set_timbre_strength(
