@@ -695,6 +695,20 @@ body[data-mode="graph"].drawer-open #install-stage {
   -webkit-mask-composite: source-in;
           mask-composite: intersect;
 }
+/* Lanes mode (Concept A) — kill the horizontal mask feather. The mask
+   above was tuned for polyline mode (old samples drift left and fade
+   out aggressively). In lanes mode the LEFT feather zone overlaps the
+   "track header" gutter (occluding labels + color tags) and the RIGHT
+   feather zone overlaps the playhead area (vanishing anchor dots + the
+   freshest portion of every contour). Setting `--graph-feather-x: 0`
+   collapses the transparent stops of the horizontal gradient onto
+   x = 0 / x = 100% — the mask becomes a no-op horizontally while the
+   vertical feather (`--graph-feather-y`) still softens the top/bottom
+   canvas edges. The `data-graph-layout` attribute is set by
+   <GraphLaneLabels/>'s 20 Hz poll from the renderer's layoutMode. */
+#install-video-area #graph-wrap[data-graph-layout="lanes"] #graph {
+  --graph-feather-x: 0px;
+}
 body:not([data-mode="graph"]) #install-video-area #graph-wrap { display: none; }
 /* Title-screen guard: before the user clicks Play, session is idle and
    the graph + playhead would draw through the start overlay. Hide the
@@ -752,7 +766,12 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
 }
 .graph-lane-label {
   position: absolute;
-  /* Anchor pill's vertical center at top:Ny, x just past the playhead. */
+  /* Anchor pill's vertical center at top:Ny.
+     Polylines mode: pill placed 8px to the right of the playhead at the
+       polyline's y intersection.
+     Lanes mode (Concept A): pill placed 8px from the canvas left edge
+       at the lane band's vertical center. Same transform works for
+       both — only the renderer-supplied left coordinate differs. */
   transform: translate(8px, -50%);
   padding: 1px 6px 2px;
   font-family: var(--font-mono);
@@ -770,6 +789,14 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
      pill in jarringly. Position transitions are off — the pill needs
      to track its lane sample-for-sample, not lerp behind it. */
   animation: graph-lane-label-fade-in 200ms ease-out both;
+}
+/* Idle lane (no movement in the last LANE_IDLE_MS) — pill dims to
+   match the renderer's envelope dim factor (LANE_IDLE_ALPHA = 0.4).
+   Opacity transition is gentle enough that touching the slider fades
+   the pill back in without flicker. */
+.graph-lane-label--idle {
+  opacity: 0.4;
+  transition: opacity 200ms cubic-bezier(.2, .8, .2, 1);
 }
 @keyframes graph-lane-label-fade-in {
   from { opacity: 0; }

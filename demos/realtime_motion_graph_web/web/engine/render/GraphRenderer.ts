@@ -16,6 +16,27 @@
 
 import { SLIDER_META, type SliderMeta } from "@/types/engine";
 
+// ---------------------------------------------------------------
+// Layout mode + fireworks flags (Concept A prototype — May 2026).
+//
+// The center viz is being rethought to read like a DAW (Ableton's
+// clip-view automation lanes). Two flags below switch between the
+// historical polyline graph and the new lanes layout, and gate the
+// spark/burst "fireworks" system independent of which layout is
+// active. Flip them here to A/B without removing code.
+//
+// LAYOUT_MODE = "lanes"     → one horizontal lane per active param,
+//                             filled envelope from baseline → value,
+//                             brand-gradient fill, polyline contour.
+// LAYOUT_MODE = "polylines" → original overlapping polylines + dots.
+//
+// FIREWORKS_ENABLED = false → no spark allocations at all (automation
+//                             queue is still populated but never
+//                             consumed for spawn; chorus path skipped).
+// ---------------------------------------------------------------
+const LAYOUT_MODE: "lanes" | "polylines" = "lanes";
+const FIREWORKS_ENABLED = false;
+
 type RGB = [number, number, number];
 
 const GRAPH_COLORS: Record<string, RGB> = {
@@ -239,6 +260,79 @@ const MAX_SPARKS = 384;
 const DOT_DODGE_PX = 2;
 const SPARK_DODGE_PX = 5;
 
+// ---------------------------------------------------------------
+// Lanes mode constants (Concept A prototype).
+//
+// Lane layout maths: usable height = canvas height minus top/bottom
+// padding (top reserves room for the "NOW" pill above the playhead).
+// Each lane is sized to fit the active lane count, clamped between
+// LANE_MIN_H and LANE_MAX_H. Inter-lane padding gives lanes their
+// "channel" feel without becoming a tight rack of bars.
+// ---------------------------------------------------------------
+const MAX_LANES = 10;
+const LANE_TOP_PAD = 18;
+const LANE_BOTTOM_PAD = 10;
+const LANE_INTER_PAD = 3;
+const LANE_MIN_H = 18;
+const LANE_MAX_H = 38;
+// A lane is "idle" if its value hasn't changed in this many ms. Idle
+// lanes draw at LANE_IDLE_ALPHA (their channel still reads, but doesn't
+// compete with the lane the user is touching).
+const LANE_IDLE_MS = 2500;
+const LANE_IDLE_ALPHA = 0.4;
+// Left "track header" gutter — Ableton-style strip on the canvas left
+// that holds the lane labels. Dark glass backing makes each row read as
+// a discrete TRACK with a header, not just a polyline floating across
+// the screen. Width sized so the longest current label ("FEEDBACK
+// DEPTH" at 14 mono-caps chars + tracking + pill padding) fits inside
+// the gutter without overflowing into the envelope body. Pills inside
+// the gutter come from <GraphLaneLabels/>.
+const LANE_GUTTER_W = 168;
+// Pre-built fillStyle constants for lane backgrounds. Single unified
+// tint per lane (no alternating rows) — the gutter on the left and
+// the labels above it already carry the "row" affordance; tinting
+// every other lane just added rainbow stripes to compete with the
+// gradient fill. Idle still dims so the lane the user is touching
+// "lights up" relative to the rest.
+const LANE_BG_ACTIVE = "rgba(255, 255, 255, 0.042)";
+const LANE_BG_IDLE = "rgba(255, 255, 255, 0.018)";
+// Inter-lane hairline. Soft enough to not duel with the envelope
+// contour but visible enough to mark each row's edge. Used both at
+// each lane's top and as the closing rule below the stack — same
+// rhythm top-to-bottom so the stack reads as a single ruled rack.
+const LANE_RULE = "rgba(255, 255, 255, 0.075)";
+// Gutter fill + base divider. Dark enough to occlude the underlying
+// lane envelope (so labels sit on a clean opaque backing), warm-tinted
+// to match the HUD chrome (--frame / --frame-line in globals.css).
+// LANE_GUTTER_RULE is the BASE divider — drawn full-height behind the
+// per-lane colored "track tags" so the divider still exists for any
+// rows whose tag color isn't cached yet on the first draw.
+const LANE_GUTTER_FILL = "rgba(10, 10, 18, 0.92)";
+const LANE_GUTTER_RULE = "rgba(255, 255, 255, 0.10)";
+// Per-lane "track tag" — a colored stripe straddling the gutter
+// divider in each param's family color, the DAW convention for
+// identifying a track at a glance. Width chosen so the tag reads as
+// an intentional marker (not a hairline) without crowding the lane
+// label inside the gutter.
+const LANE_TAG_W = 3;
+
+export interface LaneBand {
+  /** Engine parameter name (matches LaneState.name). */
+  name: string;
+  /** Line color, same as LaneState.color — used for the lane label
+   * pill border + text. */
+  color: RGB;
+  /** Current normalized [0, 1] value at the playhead. */
+  value: number;
+  /** Top edge of the lane band in CSS pixels (canvas coordinate space). */
+  bandTop: number;
+  /** Height of the lane band in CSS pixels. */
+  bandHeight: number;
+  /** True when the lane hasn't moved in > LANE_IDLE_MS — the labels
+   * overlay dims its pill to match the renderer's idle dimming. */
+  idle: boolean;
+}
+
 export class GraphRenderer {
   readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
@@ -307,6 +401,30 @@ export class GraphRenderer {
   private _lastNow = 0;
   private w = 1;
   private h = 1;
+
+  // ---------- Lanes-mode state -----------------------------------
+  // Cached brand-gradient fill for a lane's envelope. Created lazily on
+  // first lanes-mode draw and re-created whenever the lane height
+  // changes. createLinearGradient is anchored to canvas coordinates,
+  // not the current transform, so the gradient is built at y = [0,
+  // laneHeight] and we ctx.translate() before each lane fill so the
+  // gradient lines up with the lane band. One CanvasGradient ⇒ ~zero
+  // per-frame cost.
+  private _laneGradient: CanvasGradient | null = null;
+  private _laneGradientHeight = 0;
+  // Reusable lane band buffer. Filled in place each frame so the labels
+  // overlay can read a stable snapshot. The labels overlay polls at
+  // 20 Hz — well under draw cadence — so a quick race that reads a
+  // mid-fill buffer is harmless (it self-corrects on the next tick).
+  private _laneBands: LaneBand[] = [];
+  private _laneBandCount = 0;
+  // Per-lane scratch arrays for _drawLanes. Pre-allocated so the
+  // hot draw path never .push()es above MAX_LANES.
+  private readonly _laneNameBuf: (string | null)[] = new Array(MAX_LANES).fill(
+    null,
+  );
+  private readonly _laneLastFireBuf = new Float32Array(MAX_LANES);
+  // ---------------------------------------------------------------
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -387,9 +505,19 @@ export class GraphRenderer {
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, w, h);
 
-    // Playhead is inset from the right edge by PLAYHEAD_INSET_PX_FRAC. New
-    // samples spawn at this x; line history extends leftward.
-    const playheadX = w * (1 - PLAYHEAD_INSET_PX_FRAC);
+    // Playhead inset. Polylines mode keeps the historical 1/6-of-width
+    // inset (the overshoot trail fills that future space). Lanes mode
+    // hugs the right edge — the gutter on the left is CHROME (track
+    // headers), the envelope IS the graph, so the graph should reach
+    // edge-to-edge. ~20 px is enough breathing room for the playhead
+    // glow stroke (up to ~12 px wide at full pulse) and the per-lane
+    // anchor dots without clipping. Symmetric "mirror the gutter on
+    // the right" looked balanced mathematically but read as misaligned
+    // because the dark gutter has more visual weight than empty space.
+    const playheadX =
+      LAYOUT_MODE === "lanes"
+        ? Math.max(w * 0.5, w - 20)
+        : w * (1 - PLAYHEAD_INSET_PX_FRAC);
     // Trail length scales with the right-side gap so the visual ratio
     // holds across viewport widths. See OVERSHOOT_FUTURE_FRAC above.
     const overshootPx = Math.max(
@@ -397,7 +525,14 @@ export class GraphRenderer {
       w * PLAYHEAD_INSET_PX_FRAC * OVERSHOOT_FUTURE_FRAC,
     );
 
-    if (pulse > 0.02) {
+    // Pulse-driven radial wash centered at the playhead. Polylines mode
+    // only — in lanes mode the playhead now hugs the right edge, so this
+    // glow concentrates as a bluish fade extending left from the edge
+    // (the asymmetric "fade on that side" the user noticed). DAW
+    // automation views don't have a playhead glow either; the kick
+    // already reads through the contour line-width modulation and the
+    // playhead's own alpha pulse.
+    if (LAYOUT_MODE === "polylines" && pulse > 0.02) {
       const grad = ctx.createRadialGradient(
         playheadX,
         h / 2,
@@ -419,58 +554,64 @@ export class GraphRenderer {
     // a fresh blur kernel) and was firing for every line on every frame
     // of music. Beat energy still reads through the playhead glow below
     // and the spark bursts; the per-line halo wasn't pulling its weight.
-    for (const [name, hist] of this.histories) {
-      const n = Math.min(hist.filled, VISIBLE_SAMPLES);
-      if (n < 2) continue;
-      const [r, g, b] = _colorFor(name);
+    if (LAYOUT_MODE === "polylines") {
+      for (const [name, hist] of this.histories) {
+        const n = Math.min(hist.filled, VISIBLE_SAMPLES);
+        if (n < 2) continue;
+        const [r, g, b] = _colorFor(name);
 
-      const pxPerSample = w / (VISIBLE_SAMPLES - 1);
-      // Anchor newest sample at the playhead, not at the right edge. With
-      // playheadX inset by ~w/6, the oldest few samples can land at x<0
-      // and clip naturally against the canvas — same horizontal density,
-      // just shifted left.
-      const xStart = playheadX - (n - 1) * pxPerSample;
-      ctx.beginPath();
-      let lastY = 0;
-      for (let i = 0; i < n; i++) {
-        // Walk the ring backward from the newest sample (head - 1) so we
-        // always plot the freshest n entries in chronological order.
-        const bufIdx = (hist.head - n + i + HISTORY_LEN) % HISTORY_LEN;
-        const v = hist.buf[bufIdx];
-        const x = xStart + i * pxPerSample;
-        const y = (h - Y_PAD) - v * (h - 2 * Y_PAD);
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-        lastY = y;
+        const pxPerSample = w / (VISIBLE_SAMPLES - 1);
+        // Anchor newest sample at the playhead, not at the right edge. With
+        // playheadX inset by ~w/6, the oldest few samples can land at x<0
+        // and clip naturally against the canvas — same horizontal density,
+        // just shifted left.
+        const xStart = playheadX - (n - 1) * pxPerSample;
+        ctx.beginPath();
+        let lastY = 0;
+        for (let i = 0; i < n; i++) {
+          // Walk the ring backward from the newest sample (head - 1) so we
+          // always plot the freshest n entries in chronological order.
+          const bufIdx = (hist.head - n + i + HISTORY_LEN) % HISTORY_LEN;
+          const v = hist.buf[bufIdx];
+          const x = xStart + i * pxPerSample;
+          const y = (h - Y_PAD) - v * (h - 2 * Y_PAD);
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+          lastY = y;
+        }
+
+        // Line widens slightly with pulse so beats still register on the
+        // line itself, but no shadowBlur — pure crisp stroke.
+        const baseAlpha = 0.85 + 0.15 * pulse;
+        const lineWidth = 1 + 0.5 * pulse;
+        ctx.strokeStyle = `rgba(${r},${g},${b},${baseAlpha})`;
+        ctx.lineWidth = lineWidth;
+        ctx.stroke();
+
+        // Overshoot fade past the playhead. The polyline's newest point
+        // sits at (playheadX, lastY); we extend overshootPx further right
+        // at the same y, with a horizontal alpha gradient that ends at 0.
+        // Same per-frame gradient pattern as the kick wash above. Drawn
+        // before the per-line dots and the playhead marker so they stay
+        // crisp on top.
+        const grad = ctx.createLinearGradient(
+          playheadX,
+          0,
+          playheadX + overshootPx,
+          0,
+        );
+        grad.addColorStop(0, `rgba(${r},${g},${b},${baseAlpha})`);
+        grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
+        ctx.strokeStyle = grad;
+        ctx.beginPath();
+        ctx.moveTo(playheadX, lastY);
+        ctx.lineTo(playheadX + overshootPx, lastY);
+        ctx.stroke();
       }
-
-      // Line widens slightly with pulse so beats still register on the
-      // line itself, but no shadowBlur — pure crisp stroke.
-      const baseAlpha = 0.85 + 0.15 * pulse;
-      const lineWidth = 1 + 0.5 * pulse;
-      ctx.strokeStyle = `rgba(${r},${g},${b},${baseAlpha})`;
-      ctx.lineWidth = lineWidth;
-      ctx.stroke();
-
-      // Overshoot fade past the playhead. The polyline's newest point
-      // sits at (playheadX, lastY); we extend overshootPx further right
-      // at the same y, with a horizontal alpha gradient that ends at 0.
-      // Same per-frame gradient pattern as the kick wash above. Drawn
-      // before the per-line dots and the playhead marker so they stay
-      // crisp on top.
-      const grad = ctx.createLinearGradient(
-        playheadX,
-        0,
-        playheadX + overshootPx,
-        0,
-      );
-      grad.addColorStop(0, `rgba(${r},${g},${b},${baseAlpha})`);
-      grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
-      ctx.strokeStyle = grad;
-      ctx.beginPath();
-      ctx.moveTo(playheadX, lastY);
-      ctx.lineTo(playheadX + overshootPx, lastY);
-      ctx.stroke();
+    } else {
+      // Lanes mode — one Ableton-style automation lane per active param,
+      // filled envelope (brand gradient) under the polyline contour.
+      this._drawLanes(ctx, w, h, playheadX, pulse, now);
     }
 
     // Per-line dot at the playhead + two-layer leftward confetti
@@ -504,7 +645,11 @@ export class GraphRenderer {
         // Chorus is probabilistic — even on strong kicks it only
         // fires CHORUS_FIRE_PROB of the time, so big moments retain
         // their surprise.
-        if (peak >= CHORUS_THRESH && Math.random() < CHORUS_FIRE_PROB) {
+        if (
+          FIREWORKS_ENABLED &&
+          peak >= CHORUS_THRESH &&
+          Math.random() < CHORUS_FIRE_PROB
+        ) {
           chorusFire = true;
           chorusPeakStrength = peak;
         }
@@ -542,11 +687,15 @@ export class GraphRenderer {
         const dotY = yAtHead + dodgeT * 2 * DOT_DODGE_PX;
         const sparkY = yAtHead + dodgeT * 2 * SPARK_DODGE_PX;
 
-        // Disc anchored on the line at the playhead.
-        ctx.fillStyle = `rgb(${r},${g},${b})`;
-        ctx.beginPath();
-        ctx.arc(playheadX, dotY, 3, 0, Math.PI * 2);
-        ctx.fill();
+        // Disc anchored on the line at the playhead. Polylines mode only
+        // — lanes mode shows the value via the envelope contour at the
+        // playhead, so an extra disc would be redundant.
+        if (LAYOUT_MODE === "polylines") {
+          ctx.fillStyle = `rgb(${r},${g},${b})`;
+          ctx.beginPath();
+          ctx.arc(playheadX, dotY, 3, 0, Math.PI * 2);
+          ctx.fill();
+        }
 
         // Decide this line's burst size for this frame. Chorus fires
         // every line; automation fires only the lanes whose values
@@ -565,7 +714,7 @@ export class GraphRenderer {
           const staggerMs =
             (Math.abs(hash >> 17) % 1000) / 1000 * CHORUS_STAGGER_MAX_MS;
           burstBirthAt = now + staggerMs;
-        } else if (this._automationPending.has(name)) {
+        } else if (FIREWORKS_ENABLED && this._automationPending.has(name)) {
           burstCount = AUTOMATION_BURST_SPARKS;
           // Single-frame consumption: the queue is the only signal
           // that this lane just moved. Don't clear here — the outer
@@ -819,7 +968,8 @@ export class GraphRenderer {
     // cache). Replaced with a wider semi-transparent stroke under
     // "lighter" composite — visually similar at speed, no shadowBlur.
     // Gated at pulse > 0.2 so it only fires on meaningful kicks.
-    if (pulse > 0.2) {
+    // Polylines mode only — same reasoning as the radial wash above.
+    if (LAYOUT_MODE === "polylines" && pulse > 0.2) {
       ctx.save();
       ctx.globalCompositeOperation = "lighter";
       ctx.strokeStyle = `rgba(150, 180, 220, ${0.45 * pulse})`;
@@ -838,6 +988,265 @@ export class GraphRenderer {
     ctx.moveTo(playheadX + 0.5, 0);
     ctx.lineTo(playheadX + 0.5, h);
     ctx.stroke();
+  }
+
+  /**
+   * Lanes-mode draw path (Concept A — May 2026). One Ableton-style
+   * automation lane per actively-used parameter:
+   *
+   * 1. Filter histories to lanes worth showing: any history with at
+   *    least one non-zero sample OR that has fired automation
+   *    (last fire timestamp > 0).
+   * 2. Cap to MAX_LANES, prioritizing the most-recently changed.
+   * 3. Sort the surviving lanes alphabetically for stable on-screen
+   *    order — lanes shouldn't shuffle as the user plays.
+   * 4. For each lane: faint band background, filled brand-gradient
+   *    envelope under the polyline, polyline contour in the param's
+   *    family color, anchor dot at the playhead. Idle lanes (no
+   *    movement for LANE_IDLE_MS) dim to LANE_IDLE_ALPHA.
+   * 5. Publish lane band geometry on this._laneBands so the labels
+   *    overlay can pin its name pills at each lane's center.
+   *
+   * Perf: no per-frame allocations in the hot loop — strings come from
+   * _colorTable (cached), the lane gradient is reused across lanes via
+   * ctx.translate, lane scratch buffers are pre-allocated. Per
+   * PERFORMANCE.md.
+   */
+  private _drawLanes(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    playheadX: number,
+    pulse: number,
+    now: number,
+  ): void {
+    // Step 1+2: collect active lanes into the pre-allocated scratch
+    // buffer. When the pool is full, evict the lane with the oldest
+    // lastFire if this candidate is more recent (linear scan, n ≤ 10).
+    let activeCount = 0;
+    for (const [name, hist] of this.histories) {
+      if (hist.filled === 0) continue;
+      const headIdx = (hist.head - 1 + HISTORY_LEN) % HISTORY_LEN;
+      const headV = hist.buf[headIdx];
+      const lastFire = this._lastAutomationFireAtByName.get(name) ?? 0;
+      // Skip lanes that have never moved AND are currently at zero —
+      // dormant LoRAs / unused params, would only add noise.
+      if (headV < 0.005 && lastFire === 0) continue;
+      if (activeCount < MAX_LANES) {
+        this._laneNameBuf[activeCount] = name;
+        this._laneLastFireBuf[activeCount] = lastFire;
+        activeCount++;
+      } else {
+        let oldestIdx = 0;
+        let oldestVal = this._laneLastFireBuf[0];
+        for (let i = 1; i < MAX_LANES; i++) {
+          if (this._laneLastFireBuf[i] < oldestVal) {
+            oldestVal = this._laneLastFireBuf[i];
+            oldestIdx = i;
+          }
+        }
+        if (lastFire > oldestVal) {
+          this._laneNameBuf[oldestIdx] = name;
+          this._laneLastFireBuf[oldestIdx] = lastFire;
+        }
+      }
+    }
+    if (activeCount === 0) {
+      this._laneBandCount = 0;
+      return;
+    }
+
+    // Step 3: stable alphabetical order via insertion sort (n ≤ 10;
+    // no allocations).
+    for (let i = 1; i < activeCount; i++) {
+      const ni = this._laneNameBuf[i]!;
+      const fi = this._laneLastFireBuf[i];
+      let j = i - 1;
+      while (j >= 0 && this._laneNameBuf[j]! > ni) {
+        this._laneNameBuf[j + 1] = this._laneNameBuf[j];
+        this._laneLastFireBuf[j + 1] = this._laneLastFireBuf[j];
+        j--;
+      }
+      this._laneNameBuf[j + 1] = ni;
+      this._laneLastFireBuf[j + 1] = fi;
+    }
+
+    // Step 4: lane geometry + gradient cache.
+    const usableH = Math.max(0, h - LANE_TOP_PAD - LANE_BOTTOM_PAD);
+    const idealLaneH =
+      (usableH - (activeCount - 1) * LANE_INTER_PAD) / activeCount;
+    const laneH = Math.max(LANE_MIN_H, Math.min(LANE_MAX_H, idealLaneH));
+    // Vertical centering. Lane heights are clamped at LANE_MAX_H so a
+    // tall canvas with few active lanes leaves dead space at the bottom
+    // if we anchor the stack at LANE_TOP_PAD. Compute the stack's total
+    // height and offset the top so the unused vertical space splits
+    // evenly above and below — feels balanced regardless of canvas
+    // height. Falls back to LANE_TOP_PAD when the stack would already
+    // overflow.
+    const stackH = activeCount * laneH + (activeCount - 1) * LANE_INTER_PAD;
+    const stackTop = Math.max(LANE_TOP_PAD, (h - stackH) / 2);
+    if (this._laneGradient === null || this._laneGradientHeight !== laneH) {
+      const g = ctx.createLinearGradient(0, 0, 0, laneH);
+      // Subtle warm wash — accent at the top (where high values live),
+      // fading to near-transparent at the baseline. Replaces the v1
+      // four-stop rainbow which read as "every lane is a colorful slab"
+      // and competed with the envelope contours + labels for attention.
+      // The polyline contour still carries each param's family color
+      // (orange for feedback, teal for denoise, etc.) so identity
+      // doesn't get lost.
+      g.addColorStop(0.0, "rgba(240, 138, 72, 0.16)"); // --accent at top
+      g.addColorStop(1.0, "rgba(240, 138, 72, 0.02)"); // ~zero at baseline
+      this._laneGradient = g;
+      this._laneGradientHeight = laneH;
+    }
+
+    const pxPerSample = w / (VISIBLE_SAMPLES - 1);
+
+    // Grow the published-bands array lazily. Only on first runs / when
+    // a new high-water-mark of active lanes appears; reused thereafter.
+    while (this._laneBands.length < activeCount) {
+      this._laneBands.push({
+        name: "",
+        color: [255, 255, 255] as RGB,
+        value: 0,
+        bandTop: 0,
+        bandHeight: 0,
+        idle: false,
+      });
+    }
+
+    for (let li = 0; li < activeCount; li++) {
+      const name = this._laneNameBuf[li]!;
+      const hist = this.histories.get(name);
+      if (!hist) continue;
+      const n = Math.min(hist.filled, VISIBLE_SAMPLES);
+      const headIdx = (hist.head - 1 + HISTORY_LEN) % HISTORY_LEN;
+      const headV = hist.buf[headIdx];
+      const lastFire = this._laneLastFireBuf[li];
+      const sinceChange = now - lastFire;
+      const idle = lastFire === 0 || sinceChange > LANE_IDLE_MS;
+      const dimFactor = idle ? LANE_IDLE_ALPHA : 1;
+      const laneTop = stackTop + li * (laneH + LANE_INTER_PAD);
+      const color = _colorFor(name);
+
+      // Lane background — single unified tint. The gutter on the left
+      // + labels carry the "row" affordance; alternating row tints
+      // from v1 added rainbow stripes that competed with the gradient.
+      // Idle lanes dim so the active row "lights up" relative to the
+      // rest of the stack.
+      ctx.fillStyle = idle ? LANE_BG_IDLE : LANE_BG_ACTIVE;
+      ctx.fillRect(0, laneTop, w, laneH);
+      // Subtle top hairline. Marks each row's edge clearly without
+      // dueling the envelope contour. Same color is reused below the
+      // stack (LANE_RULE) so top + bottom share rhythm.
+      ctx.fillStyle = LANE_RULE;
+      ctx.fillRect(0, laneTop, w, 1);
+
+      if (n >= 2) {
+        const xStart = playheadX - (n - 1) * pxPerSample;
+        ctx.save();
+        ctx.translate(0, laneTop);
+
+        // Envelope polygon. y inside the lane: 0 value = lane bottom,
+        // 1.0 = lane top. Closed at the baseline so a fill renders
+        // the area under the polyline.
+        ctx.beginPath();
+        ctx.moveTo(xStart, laneH);
+        let lastY = laneH;
+        for (let i = 0; i < n; i++) {
+          const bufIdx = (hist.head - n + i + HISTORY_LEN) % HISTORY_LEN;
+          const v = hist.buf[bufIdx];
+          const x = xStart + i * pxPerSample;
+          const y = laneH - v * laneH;
+          ctx.lineTo(x, y);
+          lastY = y;
+        }
+        ctx.lineTo(playheadX, laneH);
+        ctx.closePath();
+        ctx.globalAlpha = dimFactor;
+        ctx.fillStyle = this._laneGradient!;
+        ctx.fill();
+
+        // Polyline contour — pre-built rgb string via _colorTable so
+        // no per-frame string allocation. The param's family color is
+        // preserved (orange for feedback, teal for denoise, etc.) so
+        // existing color identity holds.
+        let colorIdx = this._colorIdxByName.get(name);
+        if (colorIdx === undefined) {
+          colorIdx = this._colorTable.length;
+          this._colorTable.push(`rgb(${color[0]},${color[1]},${color[2]})`);
+          this._colorIdxByName.set(name, colorIdx);
+        }
+        ctx.strokeStyle = this._colorTable[colorIdx];
+        ctx.globalAlpha = dimFactor * (0.85 + 0.15 * pulse);
+        ctx.lineWidth = 1 + 0.3 * pulse;
+        ctx.beginPath();
+        for (let i = 0; i < n; i++) {
+          const bufIdx = (hist.head - n + i + HISTORY_LEN) % HISTORY_LEN;
+          const v = hist.buf[bufIdx];
+          const x = xStart + i * pxPerSample;
+          const y = laneH - v * laneH;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+
+        // Anchor dot at the playhead. Always full-alpha — even an idle
+        // lane's current value should be locatable at a glance.
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = this._colorTable[colorIdx];
+        ctx.beginPath();
+        ctx.arc(playheadX, lastY, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.restore();
+      }
+
+      // Publish band geometry for the labels overlay. Mutate the
+      // existing slot rather than allocating a fresh object per frame.
+      const band = this._laneBands[li];
+      band.name = name;
+      band.color[0] = color[0];
+      band.color[1] = color[1];
+      band.color[2] = color[2];
+      band.value = headV;
+      band.bandTop = laneTop;
+      band.bandHeight = laneH;
+      band.idle = idle;
+    }
+    // Closing rule below the final lane — same hairline color as the
+    // per-lane top rules so the stack reads as a single ruled rack
+    // bracketed top-and-bottom.
+    const stackBottom = stackTop + stackH;
+    ctx.fillStyle = LANE_RULE;
+    ctx.fillRect(0, stackBottom, w, 1);
+    // Left "track header" gutter — drawn LAST so it occludes the
+    // leftmost slice of the envelope fill, giving the lane labels a
+    // clean opaque backing instead of floating over the gradient.
+    ctx.fillStyle = LANE_GUTTER_FILL;
+    ctx.fillRect(0, stackTop, LANE_GUTTER_W, stackBottom - stackTop);
+    // Base gutter divider — drawn full-height. The per-lane colored
+    // track tags below overpaint this with each param's family color,
+    // but the base rule is present so any not-yet-cached lane still
+    // has a divider on the first frame after it becomes active.
+    ctx.fillStyle = LANE_GUTTER_RULE;
+    ctx.fillRect(LANE_GUTTER_W, stackTop, 1, stackBottom - stackTop);
+    // Per-lane "track tag" — a 3px colored stripe straddling the
+    // gutter divider, in each param's family color. Ableton's classic
+    // track-color marker: gives every lane a per-row identity cue at
+    // the gutter without saturating the lane body. Drawn AFTER the
+    // gutter fill so it sits on top, AFTER the gutter divider so it
+    // replaces the white rule for active rows. globalAlpha = 1 even
+    // on idle lanes — the tag is the lane's identity, never dimmed.
+    for (let li = 0; li < activeCount; li++) {
+      const name = this._laneNameBuf[li]!;
+      const colorIdx = this._colorIdxByName.get(name);
+      if (colorIdx === undefined) continue;
+      const laneTop = stackTop + li * (laneH + LANE_INTER_PAD);
+      ctx.fillStyle = this._colorTable[colorIdx];
+      ctx.fillRect(LANE_GUTTER_W - 1, laneTop, LANE_TAG_W, laneH);
+    }
+    this._laneBandCount = activeCount;
   }
 
   /**
@@ -925,6 +1334,28 @@ export class GraphRenderer {
   /** Canvas height in CSS pixels. */
   get cssHeight(): number {
     return this.h;
+  }
+
+  /**
+   * Snapshot of currently-rendered lane bands. Returns a reference to
+   * the internal buffer (NOT a copy); callers must not mutate. Pair
+   * with getLaneBandCount() — the underlying array can be longer than
+   * the populated active count across frames.
+   */
+  getLaneBands(): LaneBand[] {
+    return this._laneBands;
+  }
+
+  /** Populated entries in getLaneBands(). */
+  getLaneBandCount(): number {
+    return this._laneBandCount;
+  }
+
+  /** Current layout mode — read by the labels overlay to decide
+   * whether to position pills per-line (at the polyline y at the
+   * playhead) or per-lane (at each lane's vertical center). */
+  get layoutMode(): "lanes" | "polylines" {
+    return LAYOUT_MODE;
   }
 }
 
