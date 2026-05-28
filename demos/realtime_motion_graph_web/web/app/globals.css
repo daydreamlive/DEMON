@@ -7088,6 +7088,84 @@ body.curve-open #install-video-area #graph {
   }
 }
 
+/* ─── UploadOnboardingHint ────────────────────────────────────────────
+ *  Sequel to StrengthOnboardingHint — surfaces once the user has moved
+ *  Strength, pointing at the bottom-right Upload button (Issue #156).
+ *  Same vocabulary as the Strength hint: white italic caption + hand-
+ *  drawn arrow gif. Anchored inside .audio-source-dock so the arrow
+ *  head lands just left of the dock body, irrespective of viewport
+ *  width. Vertical centering picks up the dock's mid-line, which is
+ *  where the Upload button sits.
+ *
+ *  Layout: hint sits to the LEFT of the dock with the arrow at its
+ *  right end. ``right: 100%`` puts the right edge of the hint flush
+ *  with the dock's left edge; ``transform: translate(-10px, -50%)``
+ *  nudges left so the arrow's head reads as pointing AT the dock,
+ *  not into it.
+ *
+ *  Desktop only — the mobile Lite drawer already surfaces Upload
+ *  inline via LiteTrackCarousel; no need for a tutorial overlay.
+ *  Also hidden when the dock is collapsed-to-bubble: pointing at an
+ *  empty patch of screen reads as broken. (AudioSourceCrate folds
+ *  uploadHint.visible into dockActive so this case only fires if the
+ *  visibility flag races the collapse animation.) */
+.upload-onboarding-hint {
+  position: absolute;
+  /* Same z-index as the Strength hint — above knob/dock chrome but
+   * below the modal stack (.almost-ready-* at 100+). */
+  z-index: 6;
+  pointer-events: none;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  top: 50%;
+  right: 100%;
+  transform: translate(-10px, -50%);
+  white-space: nowrap;
+  animation: upload-onboarding-hint-in 280ms ease-out;
+}
+@keyframes upload-onboarding-hint-in {
+  from { opacity: 0; transform: translate(-4px, -50%); }
+  to   { opacity: 1; transform: translate(-10px, -50%); }
+}
+@keyframes upload-onboarding-hint-bob {
+  0%, 100% { transform: translate(0, 0); }
+  50%      { transform: translate(-3px, 0); }
+}
+.upload-onboarding-hint-text {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  font-style: italic;
+  white-space: nowrap;
+  color: #fff;
+  text-shadow: 0 0 6px rgba(0, 0, 0, 0.55);
+  animation: upload-onboarding-hint-bob 2200ms ease-in-out infinite;
+}
+.upload-onboarding-hint-arrow {
+  flex: 0 0 auto;
+  width: 68px;
+  height: 68px;
+  animation: upload-onboarding-hint-bob 2200ms ease-in-out infinite;
+  user-select: none;
+  pointer-events: none;
+}
+/* Hide on touch-only devices — mobile already surfaces Upload via the
+ * Lite drawer's track carousel and doesn't need a tutorial overlay. */
+@media (hover: none) and (pointer: coarse) {
+  .upload-onboarding-hint { display: none; }
+}
+/* Hide while the dock has collapsed to a bubble — see comment above. */
+.audio-source-dock[data-collapsed] .upload-onboarding-hint { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .upload-onboarding-hint,
+  .upload-onboarding-hint-text,
+  .upload-onboarding-hint-arrow {
+    animation: none;
+  }
+}
+
 /* ── Persistent "live" dot ──────────────────────────────────────────── */
 .live-indicator {
   position: fixed;

@@ -9,6 +9,7 @@ import {
   type DecodedFixture,
   type StemSourceMode,
 } from "@/engine/audio/loadFixture";
+import { useUploadOnboardingHint } from "@/hooks/useUploadOnboardingHint";
 import { trimAudioBuffer } from "@/lib/audio/trimAudioBuffer";
 import { useConfig } from "@/lib/config";
 import { LOCAL_MODE } from "@/lib/runtime";
@@ -19,6 +20,7 @@ import type { TimeSignature } from "@/types/engine";
 
 import { AlmostReadyDialog } from "./AlmostReadyDialog";
 import { MicRecorder } from "./MicRecorder";
+import { UploadOnboardingHint } from "./UploadOnboardingHint";
 import { WaveformTrimDialog } from "./WaveformTrimDialog";
 
 const DEFAULT_TRIM_CAP_S = 120;
@@ -132,6 +134,13 @@ export function AudioSourceCrate() {
   const [collapsed, setCollapsed] = useState(false);
   const [hovered, setHovered] = useState(false);
 
+  // First-visit nudge pointing at the Upload button — sequel to the
+  // StrengthOnboardingHint. See useUploadOnboardingHint for the
+  // reveal/dismiss state machine. We fold its `visible` into
+  // `dockActive` below so the dock can't auto-collapse out from
+  // under the hint mid-display.
+  const uploadHint = useUploadOnboardingHint();
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const placardRef = useRef<HTMLButtonElement | null>(null);
   const uploadBtnRef = useRef<HTMLButtonElement | null>(null);
@@ -179,7 +188,13 @@ export function AudioSourceCrate() {
   // 2s after the last interaction. The timeout is cleared on any
   // re-activation so it only fires once the dock is truly idle.
   const dockActive =
-    hovered || open || micOpen || uploading || pending !== null || trimming !== null;
+    hovered ||
+    open ||
+    micOpen ||
+    uploading ||
+    pending !== null ||
+    trimming !== null ||
+    uploadHint.visible;
   useEffect(() => {
     if (dockActive) {
       setCollapsed(false);
@@ -319,7 +334,13 @@ export function AudioSourceCrate() {
           type="button"
           className="audio-source-upload-btn"
           disabled={uploading}
-          onClick={() => fileInputRef.current?.click()}
+          onClick={() => {
+            // Clicking dismisses the onboarding hint — the user has
+            // clearly found the button, even if they cancel the
+            // picker.
+            uploadHint.dismiss();
+            fileInputRef.current?.click();
+          }}
           aria-label="Upload your own audio track"
           data-dd-tooltip={uploading ? "Decoding…" : "Upload your own audio track"}
         >
@@ -340,6 +361,10 @@ export function AudioSourceCrate() {
           <span className="audio-source-upload-label">Mic</span>
         </button>
         </div>
+        {/* Anchored to the dock so the arrow lands just left of the
+            Upload button. dockActive includes uploadHint.visible so
+            the dock stays expanded as long as the hint is up. */}
+        <UploadOnboardingHint visible={uploadHint.visible} />
       </div>
 
       {open && (
