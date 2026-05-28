@@ -608,7 +608,7 @@ def _handle_client_body(
 
     use_sde = config.get("sde", False)
     use_lora = config.get("lora", False)
-    vae_window = config.get("vae_window", 3.0)
+    vae_window = config.get("vae_window", 1.0)
     crop_seconds = config.get("crop", 0.0)
     depth = config.get("depth", 4)
     steps = config.get("steps", 8)

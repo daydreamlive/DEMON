@@ -473,7 +473,7 @@ class StreamVAEDecode(BaseNode):
                     min=0.0, max=30.0, step=0.1,
                 ),
                 NodeParam(
-                    name="vae_overlap", type="number", default=0.5,
+                    name="vae_overlap", type="number", default=0.333,
                     description="Extra context seconds on each window edge",
                     min=0.0, max=5.0, step=0.05,
                 ),
@@ -520,7 +520,7 @@ class StreamVAEDecode(BaseNode):
         vae: VAEHandle = kwargs["vae"]
         latent: Latent = kwargs["latent"]
         window_s = float(kwargs.get("vae_window", 0.0))
-        overlap_s = float(kwargs.get("vae_overlap", 0.5))
+        overlap_s = float(kwargs.get("vae_overlap", 0.333))
 
         # Hard-clamp positive windows to the engine-supported range.
         # ``<= 0`` is the disable sentinel and falls through to a full

@@ -832,6 +832,63 @@ def _build_windowed_vae_decode_engine(
     return (label, engine_path, elapsed, "OK")
 
 
+def _build_windowed_vae_decode_engine_short(
+    *,
+    output_dir: str,
+    onnx_paths: dict[str, str],
+    workspace_gb: float,
+    force_rebuild: bool = False,
+) -> tuple[str, str, float, str]:
+    """Build the short (1-5 s) VAE decode engine.
+
+    Profile shape (42 min, 75 opt, 125 max) is tuned for the realtime
+    ``vae_window=1.0`` + ``vae_overlap=0.333`` path. ``opt=75`` is the
+    proven-working kernel selection point; a ``min=opt=max=42`` build
+    triggers a Myelin fusion that segfaults on RTX 5090 during
+    ``execute_async_v3`` (same family of bug
+    ``builder_optimization_level=1`` already works around for the
+    larger engine, but the small-shape variant needs ``opt=75`` to
+    dodge as well).
+
+    Coexists with the 3-30 s engine; the runtime picks per
+    ``vae_window`` (see ``available_windowed_vae_decode_engine``).
+    """
+    from .vae_export import build_vae_decode_engine, VAETRTBuildConfig
+    from acestep.paths import (
+        WINDOWED_VAE_DECODE_NAME_SHORT,
+        WINDOWED_VAE_PROFILE_FRAMES_SHORT,
+    )
+
+    name = WINDOWED_VAE_DECODE_NAME_SHORT
+    engine_dir = os.path.join(output_dir, name)
+    engine_path = os.path.join(engine_dir, f"{name}.engine")
+    label = "VAE decode windowed (1-5s)"
+
+    if not force_rebuild and os.path.exists(engine_path):
+        size_mb = os.path.getsize(engine_path) / 1e6
+        logger.info("SKIP {} ({:.0f} MB)", name, size_mb)
+        return (label, engine_path, 0.0, "SKIPPED")
+
+    min_f, opt_f, max_f = WINDOWED_VAE_PROFILE_FRAMES_SHORT
+    config = VAETRTBuildConfig(
+        workspace_gb=workspace_gb,
+        decode_min_frames=min_f,
+        decode_opt_frames=opt_f,
+        decode_max_frames=max_f,
+    )
+
+    logger.info("=" * 60)
+    logger.info("VAE TRT BUILD (windowed-short): {} (min={} opt={} max={})",
+                name, min_f, opt_f, max_f)
+    logger.info("=" * 60)
+
+    t0 = time.time()
+    build_vae_decode_engine(onnx_paths["vae_decode"], engine_path, config=config)
+    elapsed = time.time() - t0
+    logger.info("Built in {:.0f}s", elapsed)
+    return (label, engine_path, elapsed, "OK")
+
+
 def _checkpoint_to_variant(checkpoint: str) -> str:
     """Extract short variant name from checkpoint path.
 
@@ -1295,10 +1352,18 @@ def _run_all(args, project_root, onnx_dir, env):
                 strongly_typed=decoder_strongly_typed,
             ))
 
-    # Windowed VAE decode (single 3-30s profile, duration-independent).
-    # Auto-selected by Session when vae_window > 0.
+    # Windowed VAE decode (two profiles, both duration-independent):
+    #   * 3-30 s dynamic profile (legacy default)
+    #   * 1-5 s short profile (small-window streaming path)
+    # Session picks per ``vae_window`` at runtime.
     if build_vae:
         results.append(_build_windowed_vae_decode_engine(
+            output_dir=args.output_dir,
+            onnx_paths=onnx_paths,
+            workspace_gb=args.workspace_gb,
+            force_rebuild=args.force_rebuild,
+        ))
+        results.append(_build_windowed_vae_decode_engine_short(
             output_dir=args.output_dir,
             onnx_paths=onnx_paths,
             workspace_gb=args.workspace_gb,
@@ -1313,6 +1378,7 @@ def _run_all(args, project_root, onnx_dir, env):
         from .dreamvae_export import (
             build_dreamvae_engines,
             build_windowed_dreamvae_engine,
+            build_windowed_dreamvae_engine_short,
         )
         results.extend(build_dreamvae_engines(
             output_dir=args.output_dir,
@@ -1321,6 +1387,11 @@ def _run_all(args, project_root, onnx_dir, env):
             force_rebuild=args.force_rebuild,
         ))
         results.append(build_windowed_dreamvae_engine(
+            output_dir=args.output_dir,
+            workspace_gb=args.workspace_gb,
+            force_rebuild=args.force_rebuild,
+        ))
+        results.append(build_windowed_dreamvae_engine_short(
             output_dir=args.output_dir,
             workspace_gb=args.workspace_gb,
             force_rebuild=args.force_rebuild,

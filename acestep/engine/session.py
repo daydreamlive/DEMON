@@ -164,7 +164,7 @@ class Session:
         quantization: Optional[str] = None,
         trt_engines: Optional[dict[str, str]] = None,
         vae_window: float = 0.0,
-        vae_overlap: float = 0.5,
+        vae_overlap: float = 0.333,
     ):
         """Persistent ACE-Step session.
 
@@ -257,9 +257,43 @@ class Session:
         # the auto-selected windowed engine is never asked to decode a
         # chunk longer than its profile max. <= 0 is the disable
         # sentinel and stays as-is.
+        #
+        # The lower bound is conditional: ``WINDOWED_VAE_WINDOW_RANGE_S``
+        # allows down to 1 s, but only when the dedicated short-window
+        # engine (``vae_decode_fp16_1to5s``, min_frames=25) is built.
+        # The legacy 3-30 s engine has min_frames=75, so it rejects any
+        # input below 3 s. If the short engine is missing we raise the
+        # floor to the legacy engine's min so the swap-in fallback path
+        # can still serve the request rather than crashing on the first
+        # decode.
         if vae_window > 0:
-            from acestep.paths import WINDOWED_VAE_WINDOW_RANGE_S
+            from acestep.paths import (
+                WINDOWED_VAE_WINDOW_RANGE_S,
+                WINDOWED_VAE_SHORT_MAX_WINDOW_S,
+                WINDOWED_VAE_PROFILE_FRAMES,
+                looks_like_dreamvae_engine,
+                windowed_vae_decode_engine_path_short,
+            )
             lo, hi = WINDOWED_VAE_WINDOW_RANGE_S
+            short_engine_dreamvae = (
+                vae_backend == "tensorrt"
+                and "vae_decode" in trt_engines
+                and looks_like_dreamvae_engine(trt_engines["vae_decode"])
+            )
+            short_built = windowed_vae_decode_engine_path_short(
+                dreamvae=short_engine_dreamvae,
+            ).exists()
+            if not short_built and vae_window < (WINDOWED_VAE_PROFILE_FRAMES[0] / 25.0):
+                from loguru import logger as _log
+                legacy_min_s = WINDOWED_VAE_PROFILE_FRAMES[0] / 25.0
+                _log.warning(
+                    "vae_window={:.2f}s requested but short engine not built; "
+                    "raising to legacy engine's minimum {:.1f}s. "
+                    "Build with: python -m acestep.engine.trt.build --all{}",
+                    vae_window, legacy_min_s,
+                    " --with-dreamvae" if short_engine_dreamvae else "",
+                )
+                vae_window = max(legacy_min_s, vae_window)
             vae_window = max(lo, min(hi, vae_window))
         self._vae_window = vae_window
         self._vae_overlap = vae_overlap
@@ -279,7 +313,9 @@ class Session:
 
             current = trt_engines["vae_decode"]
             is_dreamvae = looks_like_dreamvae_engine(current)
-            windowed = available_windowed_vae_decode_engine(dreamvae=is_dreamvae)
+            windowed = available_windowed_vae_decode_engine(
+                dreamvae=is_dreamvae, vae_window_s=vae_window,
+            )
             if windowed is not None and str(windowed) != current:
                 _log.info(
                     "vae_window={:.1f}s active: swapping vae_decode engine "

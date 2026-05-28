@@ -8,7 +8,7 @@
     "lora": true,
     "depth": 4,
     "depth_xl": 2,
-    "vae_window": 3,
+    "vae_window": 1,
     "crop": 0,
     "steps": 8,
     "fast_vae": false,

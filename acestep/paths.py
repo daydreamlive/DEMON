@@ -612,32 +612,61 @@ def available_dreamvae_decode_engine(duration_s: float) -> Path | None:
 
 
 # ------------------------------------------------------------------
-# Windowed VAE decode (single shared profile across both decoder
-# variants). The profile is small enough that it costs ~1.5 GB of
-# workspace at TRT context-creation time vs ~9 GB for the canonical
-# 240 s engine — see scripts/benchmarks/bench_vae_decode_profiles.py.
+# Windowed VAE decode. Two profiles cover the realtime use case:
 #
-# Profile shape (in latent frames at 25 fps):
-#     min = 75   (3 s)
-#     opt = 125  (5 s)
-#     max = 750  (30 s)
+#   3to30s (dynamic, legacy default):
+#     min = 75   (3 s)   opt = 125  (5 s)   max = 750  (30 s)
+#     ~1.5 GB workspace vs ~9 GB for the canonical 240 s engine.
 #
-# The ``StreamVAEDecode`` window+overlap chunks fit comfortably inside
-# this range for any user-facing window in [3, 30] seconds, which is
-# the range Session enforces when ``vae_window > 0``. The lower bound
-# matches the engine profile's ``min_frames=75`` (3 s at 25 fps); the
-# previous defensive clamp at 5.0 silently rounded smaller user-set
-# windows up to 5 s and inflated every wire slice by ~67 % for nothing.
+#   1to5s (dynamic, tuned for sub-2s realtime windows):
+#     min = 25   (1 s)   opt = 75 (3 s)   max = 125 (5 s)
+#     ~264 MB workspace vs ~1.5 GB for the 3to30s engine — ~6× less
+#     VRAM, and 2.2 ms/call @ T=42 vs 3.6 ms/call for the 3to30s
+#     engine at any small shape (~40% lower per-call latency on a
+#     RTX 5090). Built at ``builder_optimization_level=1`` like every
+#     other Oobleck VAE engine; ``opt_frames=75`` is the critical
+#     parameter — at ``min=opt=max=42`` TRT picks a Myelin fusion
+#     path that segfaults on 5090 ``execute_async_v3`` (same family
+#     of bug ``builder_optimization_level=1`` already works around
+#     for the larger engine; the small-shape variant of it needs
+#     ``opt=75`` to dodge as well).
+#
+# Selection rule (see acestep/engine/session.py): when ``vae_window``
+# is positive and the requested window+overlap fits the 1to5s
+# engine's max (5 s), prefer it; otherwise use the 3to30s engine.
+# Both engines share the same ONNX so the bake pipeline rebuilds them
+# from the same vae_decode.onnx artifact.
+#
+# The user-facing range (``WINDOWED_VAE_WINDOW_RANGE_S``) covers the
+# union of both profiles' supported window sizes: 1 s up to 30 s.
 # ------------------------------------------------------------------
 
 WINDOWED_VAE_DECODE_NAME = "vae_decode_fp16_3to30s"
 WINDOWED_DREAMVAE_DECODE_NAME = "dreamvae_decode_fp16_3to30s"
 WINDOWED_VAE_PROFILE_FRAMES: tuple[int, int, int] = (75, 125, 750)
-WINDOWED_VAE_WINDOW_RANGE_S: tuple[float, float] = (3.0, 30.0)
+
+WINDOWED_VAE_DECODE_NAME_SHORT = "vae_decode_fp16_1to5s"
+WINDOWED_DREAMVAE_DECODE_NAME_SHORT = "dreamvae_decode_fp16_1to5s"
+# min=25 = 1 s window with zero overlap, the smallest input the
+# realtime path can produce (vae_window=1.0, vae_overlap=0 → 25
+# frames). The default vae_window=1.0 + vae_overlap=0.333 produces
+# input shape 25 + 2*8 = 41 frames, which has to be ≥ min for TRT to
+# accept the shape. opt=75 selects the proven-working kernel set
+# (avoids the Myelin segfault that hits min=opt=max=42 on RTX 5090).
+# max=125 caps workspace; above ~4 s window+overlap the runtime falls
+# back to the 3to30s engine.
+WINDOWED_VAE_PROFILE_FRAMES_SHORT: tuple[int, int, int] = (25, 75, 125)
+# Largest user-facing ``vae_window`` (seconds) for which the short
+# engine is preferred. Computed from max_frames=125 minus 2*overlap;
+# we keep a small safety margin so a slightly larger ``vae_overlap``
+# than the default 0.333 still fits.
+WINDOWED_VAE_SHORT_MAX_WINDOW_S: float = 4.0
+
+WINDOWED_VAE_WINDOW_RANGE_S: tuple[float, float] = (1.0, 30.0)
 
 
 def windowed_vae_decode_engine_name(*, dreamvae: bool = False) -> str:
-    """Engine directory/file stem for the windowed VAE decode engine.
+    """Engine directory/file stem for the dynamic 3-30 s windowed VAE engine.
 
     Args:
         dreamvae: Pick the distilled student engine instead of the
@@ -648,19 +677,51 @@ def windowed_vae_decode_engine_name(*, dreamvae: bool = False) -> str:
 
 
 def windowed_vae_decode_engine_path(*, dreamvae: bool = False) -> Path:
-    """Path to the windowed VAE decode engine. Pure: does not check
-    existence. Use :func:`available_windowed_vae_decode_engine` for
-    existence-aware lookup."""
+    """Path to the dynamic 3-30 s windowed VAE engine. Pure: does not
+    check existence. Use :func:`available_windowed_vae_decode_engine`
+    for existence-aware lookup."""
     return trt_engine_path(windowed_vae_decode_engine_name(dreamvae=dreamvae))
 
 
-def available_windowed_vae_decode_engine(*, dreamvae: bool = False) -> Path | None:
+def windowed_vae_decode_engine_name_short(*, dreamvae: bool = False) -> str:
+    """Engine directory/file stem for the short 1-5 s windowed VAE engine."""
+    return (
+        WINDOWED_DREAMVAE_DECODE_NAME_SHORT
+        if dreamvae else WINDOWED_VAE_DECODE_NAME_SHORT
+    )
+
+
+def windowed_vae_decode_engine_path_short(*, dreamvae: bool = False) -> Path:
+    """Path to the short 1-5 s windowed VAE engine. Pure: does not check
+    existence."""
+    return trt_engine_path(windowed_vae_decode_engine_name_short(dreamvae=dreamvae))
+
+
+def available_windowed_vae_decode_engine(
+    *, dreamvae: bool = False, vae_window_s: float | None = None,
+) -> Path | None:
     """Return the windowed VAE decode engine path if it is built, else None.
 
+    Prefers the short 1-5 s engine when
+    ``vae_window_s <= WINDOWED_VAE_SHORT_MAX_WINDOW_S`` and it is built,
+    falling back to the dynamic 3-30 s engine when:
+      * the short engine isn't built, or
+      * the requested window exceeds the short engine's range.
+
+    Returns ``None`` only when neither engine is built.
+
     Callers (Session, demo backends) use this to opportunistically swap
-    in the small-profile engine when ``vae_window > 0``, falling back
-    silently to whatever the caller originally configured.
+    in the smallest-profile engine that fits ``vae_window``, falling
+    back silently to whatever the caller originally configured if no
+    windowed engine is built.
     """
+    if (
+        vae_window_s is not None
+        and vae_window_s <= WINDOWED_VAE_SHORT_MAX_WINDOW_S
+    ):
+        p_short = windowed_vae_decode_engine_path_short(dreamvae=dreamvae)
+        if p_short.exists():
+            return p_short
     p = windowed_vae_decode_engine_path(dreamvae=dreamvae)
     return p if p.exists() else None
 

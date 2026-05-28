@@ -258,6 +258,66 @@ def build_windowed_dreamvae_engine(
         return (label, "", _time.time() - t0, "FAILED")
 
 
+def build_windowed_dreamvae_engine_short(
+    *,
+    output_dir: Union[str, Path],
+    onnx_path: Optional[Union[str, Path]] = None,
+    workspace_gb: float = 8.0,
+    force_rebuild: bool = False,
+) -> tuple[str, str, float, str]:
+    """Build the short (1-5 s) dreamvae decode engine.
+
+    Mirrors :func:`acestep.engine.trt.build._build_windowed_vae_decode_engine_short`
+    for the distilled student decoder. Profile shape (42, 75, 125) is
+    tuned for the realtime ``vae_window=1.0`` + ``vae_overlap=0.333``
+    chunk; see ``acestep/paths.py`` for the kernel-selection rationale.
+    """
+    import time as _time
+
+    from acestep.paths import (
+        WINDOWED_DREAMVAE_DECODE_NAME_SHORT,
+        WINDOWED_VAE_PROFILE_FRAMES_SHORT,
+    )
+
+    output_dir = Path(output_dir)
+    name = WINDOWED_DREAMVAE_DECODE_NAME_SHORT
+    engine_path = output_dir / name / f"{name}.engine"
+    label = "DreamVAE decode windowed (1-5s)"
+
+    if engine_path.exists() and not force_rebuild:
+        size_mb = engine_path.stat().st_size / (1 << 20)
+        logger.info("SKIP {} ({:.0f} MB)", name, size_mb)
+        return (label, str(engine_path), 0.0, "SKIPPED")
+
+    if onnx_path is None:
+        onnx_path = fetch_dreamvae_onnx(output_dir)
+    onnx_path = Path(onnx_path)
+
+    min_f, opt_f, max_f = WINDOWED_VAE_PROFILE_FRAMES_SHORT
+    config = VAETRTBuildConfig(
+        workspace_gb=workspace_gb,
+        decode_min_frames=min_f,
+        decode_opt_frames=opt_f,
+        decode_max_frames=max_f,
+    )
+
+    logger.info("=" * 60)
+    logger.info("DREAMVAE TRT BUILD (windowed-short): {} (min={} opt={} max={})",
+                name, min_f, opt_f, max_f)
+    logger.info("=" * 60)
+
+    engine_path.parent.mkdir(parents=True, exist_ok=True)
+    t0 = _time.time()
+    try:
+        build_vae_decode_engine(onnx_path, engine_path, config=config)
+        elapsed = _time.time() - t0
+        logger.info("Built in {:.0f}s", elapsed)
+        return (label, str(engine_path), elapsed, "OK")
+    except Exception as e:
+        logger.error("DreamVAE windowed-short build failed: {}", e)
+        return (label, "", _time.time() - t0, "FAILED")
+
+
 def build_dreamvae_engines(
     *,
     output_dir: Union[str, Path],
