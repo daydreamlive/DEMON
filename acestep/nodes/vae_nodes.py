@@ -69,6 +69,25 @@ def _get_trt_vae(engine_path: str, device: torch.device):
 
     engine = engine_from_bytes(bytes_from_path(engine_path))
     ctx = engine.create_execution_context()
+    # TensorRT's create_execution_context() returns None when the
+    # runtime can't allocate the engine's workspace (typically under
+    # CUDA-OOM pressure on the 240 s vae_encode profile's ~16 GiB
+    # reservation). Caching a None context here would poison the cache
+    # entry: a retry would short-circuit on the dict lookup and return
+    # the same None, and the next _trt_vae_decode/encode call would
+    # raise a bare ``'NoneType' object has no attribute 'set_input_shape'``
+    # with no diagnostic context. Raise INSTEAD of caching so the
+    # caller can attempt recovery (e.g. torch.cuda.empty_cache() +
+    # retry) and so a successful retry actually re-runs the load.
+    if ctx is None:
+        logger.error(
+            "trt_vae_context_creation_returned_none engine={}",
+            engine_path,
+        )
+        raise RuntimeError(
+            f"TRT VAE engine.create_execution_context() returned None "
+            f"(likely CUDA OOM on workspace alloc): {engine_path}"
+        )
     logger.info("Loaded TRT VAE engine: {}", engine_path)
 
     tensor_dtypes = {

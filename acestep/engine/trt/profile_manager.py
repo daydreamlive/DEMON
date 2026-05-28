@@ -52,6 +52,43 @@ class _LoRASnapshot:
     strength: float
 
 
+class TRTProfileLoadError(RuntimeError):
+    """Raised by :class:`TRTProfileManager` when a profile swap fails at
+    engine-load time — typically because ``create_execution_context()``
+    returns None under CUDA-OOM workspace pressure (the 240 s
+    ``vae_encode`` profile reserves ~16 GiB), or because
+    ``DiffusionEngine.load_trt_engine`` raises for the same reason.
+
+    Distinct from :class:`acestep.paths.EngineNotBuiltError` (the engine
+    file is missing) and from runtime decode/encode failures (which fire
+    *after* a successful load).
+
+    By the time this is raised the prior engines have already been
+    evicted and the new ones failed to load — the profile manager's
+    ``_loaded_paths`` / ``_loaded_dur`` are cleared to reflect "nothing
+    loaded." Callers should treat the session as unrecoverable and close
+    cleanly (sending a ``swap_failed`` to the client is the established
+    pattern, mirroring how ``EngineNotBuiltError`` is handled in
+    ``demos/realtime_motion_graph_web/backend.py``).
+    """
+
+    def __init__(
+        self,
+        *,
+        component: str,
+        engine_path: str,
+        cause: BaseException,
+    ) -> None:
+        self.component = component
+        self.engine_path = engine_path
+        self.cause = cause
+        super().__init__(
+            f"TRT {component} engine load failed after profile swap eviction: "
+            f"{engine_path} ({type(cause).__name__}: {cause}). "
+            f"GPU may be under memory pressure; session is unrecoverable."
+        )
+
+
 class TRTProfileManager:
     """Owns the live decoder + vae_encode slots and swaps between profiles.
 
@@ -317,14 +354,72 @@ class TRTProfileManager:
             self._purge_stale_vae_encode_cache(new_enc)
 
         if decoder_changed:
-            engine.load_trt_engine(new_decoder)
+            # Load failures here happen AFTER unload + vae_encode evict,
+            # so any exception leaves the profile manager with nothing
+            # loaded. Re-raise as a typed TRTProfileLoadError so the
+            # caller (apply_swap_if_pending in backend.py) can surface
+            # a clean swap_failed to the client instead of letting the
+            # session crash on the next decode tick with a bare
+            # NoneType / "engine not bound" attribute error.
+            try:
+                engine.load_trt_engine(new_decoder)
+            except BaseException as e:
+                self._loaded_dur = None
+                self._loaded_paths = {}
+                logger.error(
+                    "trt_profile_swap_decoder_load_failed engine={} error={}",
+                    new_decoder, e,
+                )
+                raise TRTProfileLoadError(
+                    component="decoder",
+                    engine_path=new_decoder,
+                    cause=e,
+                ) from e
 
         if self._vae_tensorrt:
             from acestep.nodes.vae_nodes import _get_trt_vae
 
             new_enc = target_paths.get("vae_encode")
             if new_enc:
-                _get_trt_vae(new_enc, self._device)
+                # Same atomicity concern as the decoder above, with one
+                # additional move: a workspace-alloc OOM is often just
+                # fragmentation from the eviction we just did, so a
+                # single retry after ``torch.cuda.empty_cache()`` reliably
+                # recovers (the cache hand-back of reserved-but-unused
+                # blocks lets TRT's allocator find a contiguous span).
+                # Only one retry — if that doesn't take, the profile
+                # genuinely doesn't fit on the current card and no
+                # amount of fiddling helps.
+                try:
+                    _get_trt_vae(new_enc, self._device)
+                except BaseException as e_first:
+                    logger.warning(
+                        "trt_profile_swap_vae_encode_load_retry "
+                        "engine={} first_error={}",
+                        new_enc, e_first,
+                    )
+                    try:
+                        torch.cuda.empty_cache()
+                    except Exception:
+                        # empty_cache() can raise under extreme GPU
+                        # state corruption; ignore so we don't mask the
+                        # original load error with an unrelated one.
+                        pass
+                    try:
+                        _get_trt_vae(new_enc, self._device)
+                    except BaseException as e_second:
+                        self._loaded_dur = None
+                        self._loaded_paths = {}
+                        logger.error(
+                            "trt_profile_swap_vae_encode_load_failed "
+                            "engine={} error={}",
+                            new_enc, e_second,
+                        )
+                        raise TRTProfileLoadError(
+                            component="vae_encode",
+                            engine_path=new_enc,
+                            cause=e_second,
+                        ) from e_second
 
         if snapshot and engine is not None and engine.lora_available:
             for snap in snapshot:

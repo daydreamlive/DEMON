@@ -46,7 +46,10 @@ import torch
 from acestep.constants import TASK_INSTRUCTIONS
 from acestep.engine.obs import logger
 from acestep.engine.session import PreparedSource, Session
-from acestep.engine.trt.profile_manager import TRTProfileManager
+from acestep.engine.trt.profile_manager import (
+    TRTProfileLoadError,
+    TRTProfileManager,
+)
 from acestep.fixtures import KNOWN_FIXTURES, audio_fixture
 from acestep.lora_metadata import load_lora_metadata
 from acestep.nodes.types import Audio, Latent
@@ -646,6 +649,28 @@ class StreamingSession:
                     )
                     self.bus.publish(SwapFailed(
                         error=str(exc), build_command=exc.build_command,
+                    ))
+                    return
+                except TRTProfileLoadError as exc:
+                    # Workspace-alloc OOM (or other load failure) during
+                    # the profile swap. Profile manager has already
+                    # cleared its loaded state; the prior engines were
+                    # evicted before the load failed, so this session
+                    # cannot continue on this pod. Publish SwapFailed so
+                    # the client sees an actionable message instead of
+                    # the pipeline crashing on the next tick with a
+                    # bare ``'NoneType' object has no attribute 'decode'``.
+                    logger.error(
+                        "source_swap_aborted reason=trt_load_failed "
+                        "component={} engine={} error={}",
+                        exc.component, exc.engine_path, exc.cause,
+                    )
+                    self.bus.publish(SwapFailed(
+                        error=(
+                            f"GPU memory pressure prevented loading the "
+                            f"{exc.component} engine for this source "
+                            f"duration. Try a shorter source clip."
+                        ),
                     ))
                     return
 
