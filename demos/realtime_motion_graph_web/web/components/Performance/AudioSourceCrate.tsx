@@ -302,53 +302,70 @@ export function AudioSourceCrate() {
           <NoteIcon size={18} />
         </button>
         <div className="audio-source-dock-body">
-        <button
-          ref={placardRef}
-          type="button"
-          className={`audio-source-crate${open ? " audio-source-crate--open" : ""}`}
-          onClick={() => setOpen((v) => !v)}
-          aria-haspopup="menu"
-          aria-expanded={open}
-          aria-label={`Pick audio track. Current: ${displayedName}`}
-          data-dd-tooltip={`Audio source: ${displayedName}`}
-        >
-          <span className="audio-source-marquee-rows">
-            <span className="audio-source-marquee-label">
-              {open ? "Pick a track" : "▶ Now playing"}
+        {/* Placard + Upload form the "track controls" pair (the two
+            ways to swap input audio — pick from library, or upload).
+            Wrapping them in a relative-positioned span lets
+            UploadOnboardingHint anchor above their combined width,
+            since the hint's copy ("Select another track or upload
+            your own") covers BOTH affordances. Mic stays outside the
+            wrapper — it's a separate input mode, not a track-swap. */}
+        <span className="audio-source-track-controls">
+          <UploadOnboardingHint visible={uploadHint.visible} />
+          <button
+            ref={placardRef}
+            type="button"
+            className={`audio-source-crate${open ? " audio-source-crate--open" : ""}`}
+            onClick={() => {
+              // Placard click opens the fan picker — that's the
+              // "select another track" half of the hint's copy, so
+              // clicking it counts as discovery (matches the upload
+              // button's behaviour).
+              uploadHint.dismiss();
+              setOpen((v) => !v);
+            }}
+            aria-haspopup="menu"
+            aria-expanded={open}
+            aria-label={`Pick audio track. Current: ${displayedName}`}
+            data-dd-tooltip={`Audio source: ${displayedName}`}
+          >
+            <span className="audio-source-marquee-rows">
+              <span className="audio-source-marquee-label">
+                {open ? "Pick a track" : "▶ Now playing"}
+              </span>
+              <span className="audio-source-marquee-name" title={displayedName}>
+                {open ? "or upload your own" : displayedName}
+              </span>
             </span>
-            <span className="audio-source-marquee-name" title={displayedName}>
-              {open ? "or upload your own" : displayedName}
+            <span className="audio-source-crate-caret" aria-hidden="true">
+              <svg viewBox="0 0 10 10" width={10} height={10} fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+                <path d="M2 6.5L5 3.5L8 6.5" />
+              </svg>
             </span>
-          </span>
-          <span className="audio-source-crate-caret" aria-hidden="true">
-            <svg viewBox="0 0 10 10" width={10} height={10} fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
-              <path d="M2 6.5L5 3.5L8 6.5" />
-            </svg>
-          </span>
-        </button>
-        {/* Always-visible upload affordance. Discoverability beats the
-            "Upload your own" sleeve hidden inside the fan — same handler,
-            same dialog gate, just one click closer. */}
-        <button
-          ref={uploadBtnRef}
-          type="button"
-          className="audio-source-upload-btn"
-          disabled={uploading}
-          onClick={() => {
-            // Clicking dismisses the onboarding hint — the user has
-            // clearly found the button, even if they cancel the
-            // picker.
-            uploadHint.dismiss();
-            fileInputRef.current?.click();
-          }}
-          aria-label="Upload your own audio track"
-          data-dd-tooltip={uploading ? "Decoding…" : "Upload your own audio track"}
-        >
-          <UploadIcon size={16} />
-          <span className="audio-source-upload-label">
-            {uploading ? "Decoding…" : "Upload"}
-          </span>
-        </button>
+          </button>
+          {/* Always-visible upload affordance. Discoverability beats
+              the "Upload your own" sleeve hidden inside the fan —
+              same handler, same dialog gate, just one click closer. */}
+          <button
+            ref={uploadBtnRef}
+            type="button"
+            className="audio-source-upload-btn"
+            disabled={uploading}
+            onClick={() => {
+              // Clicking dismisses the onboarding hint — the user has
+              // clearly found the button, even if they cancel the
+              // picker.
+              uploadHint.dismiss();
+              fileInputRef.current?.click();
+            }}
+            aria-label="Upload your own audio track"
+            data-dd-tooltip={uploading ? "Decoding…" : "Upload your own audio track"}
+          >
+            <UploadIcon size={16} />
+            <span className="audio-source-upload-label">
+              {uploading ? "Decoding…" : "Upload"}
+            </span>
+          </button>
+        </span>
         <button
           type="button"
           className="audio-source-mic-btn"
@@ -361,10 +378,6 @@ export function AudioSourceCrate() {
           <span className="audio-source-upload-label">Mic</span>
         </button>
         </div>
-        {/* Anchored to the dock so the arrow lands just left of the
-            Upload button. dockActive includes uploadHint.visible so
-            the dock stays expanded as long as the hint is up. */}
-        <UploadOnboardingHint visible={uploadHint.visible} />
       </div>
 
       {open && (

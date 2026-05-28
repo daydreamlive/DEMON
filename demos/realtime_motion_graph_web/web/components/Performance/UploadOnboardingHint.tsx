@@ -16,7 +16,9 @@ export function UploadOnboardingHint({ visible }: { visible: boolean }) {
   if (!visible) return null;
   return (
     <div className="upload-onboarding-hint" aria-hidden="true">
-      <span className="upload-onboarding-hint-text">Upload your own track</span>
+      <span className="upload-onboarding-hint-text">
+        Select another track or upload your own
+      </span>
       <img
         className="upload-onboarding-hint-arrow"
         src="/strength-onboarding-arrow.gif"
