@@ -265,7 +265,7 @@ const SPREAD_SECTIONS: Array<{ id: DrawerTab; label: string }> = [
   { id: "core", label: "Core" },
   { id: "styles", label: "Styles" },
   { id: "mod", label: "Mod" },
-  { id: "voice", label: "Channels" },
+  { id: "voice", label: "Experimental" },
   { id: "config", label: "Config" },
 ];
 

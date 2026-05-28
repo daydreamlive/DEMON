@@ -27,7 +27,7 @@ export type DrawerTab = (typeof DRAWER_TABS)[number];
 const TAB_LABELS: Record<DrawerTab, string> = {
   core: "Core",
   mod: "Mod",
-  voice: "Channels",
+  voice: "Experimental",
   styles: "Styles",
   // Auto-generated control surface, rendered straight from the backend
   // /api/knobs manifest. Reference template for a re-skinned UI.
