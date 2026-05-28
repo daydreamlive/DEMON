@@ -164,6 +164,43 @@ def user_uploads_dir() -> Path:
     return models_dir() / "user_uploads"
 
 
+# Per-checkpoint probe-bundle subpath; shared between HF fetch
+# (``steering_vectors/<subpath>``) and the local cache. XL is absent
+# because the 2B vectors don't transfer to a different hidden_size /
+# layer count.
+_STEERING_VECTORS_BY_CHECKPOINT: dict[str, str] = {
+    "acestep-v15-turbo": "v15-turbo/shift3.5_n8_seed1528",
+}
+
+
+def steering_bundle_subpath(
+    checkpoint: str | Path | None = None,
+) -> str | None:
+    """Bundle subpath registered for ``checkpoint`` (pure lookup)."""
+    name = _checkpoint_name(checkpoint)
+    return _STEERING_VECTORS_BY_CHECKPOINT.get(name)
+
+
+def steering_vectors_dir() -> Path:
+    """Root directory for cached steering-vector bundles."""
+    return models_dir() / "steering_vectors"
+
+
+def steering_vector_dir(
+    checkpoint: str | Path | None = None,
+) -> Path | None:
+    """Local cache directory for a checkpoint's steering bundle.
+
+    Pure: returns where vectors WOULD live; ``None`` when no bundle
+    is registered. Callers needing the dir populated should go through
+    ``acestep.steering.hub.ensure_steering_vectors`` first.
+    """
+    subpath = steering_bundle_subpath(checkpoint)
+    if subpath is None:
+        return None
+    return steering_vectors_dir() / subpath
+
+
 def discover_loras(directory: Path | None = None) -> list[Path]:
     """List ``*.safetensors`` files recursively under ``directory``
     (default: ``loras_dir()``).
@@ -260,17 +297,17 @@ def trt_engine_path(engine_name: str) -> Path:
 # that fits the audio (see `select_trt_engines` and `available_trt_engines`).
 _TRT_ENGINE_PROFILES: dict[float, dict[str, str]] = {
     60.0: {
-        "decoder": "decoder_mixed_refit_b8_60s",
+        "decoder": "spectral_decoder_mixed_refit_b8_60s",
         "vae_encode": "vae_encode_fp16_60s",
         "vae_decode": "vae_decode_fp16_60s",
     },
     120.0: {
-        "decoder": "decoder_mixed_refit_b8_120s",
+        "decoder": "spectral_decoder_mixed_refit_b8_120s",
         "vae_encode": "vae_encode_fp16_120s",
         "vae_decode": "vae_decode_fp16_120s",
     },
     240.0: {
-        "decoder": "decoder_mixed_refit_b8_240s",
+        "decoder": "spectral_decoder_mixed_refit_b8_240s",
         "vae_encode": "vae_encode_fp16_240s",
         "vae_decode": "vae_decode_fp16_240s",
     },
@@ -356,7 +393,7 @@ def trt_engine_profiles(
 
 
 def default_trt_engines(
-    decoder: str = "decoder_mixed_refit_b8_60s",
+    decoder: str = "spectral_decoder_mixed_refit_b8_60s",
     vae_encode: str = "vae_encode_fp16_60s",
     vae_decode: str = "vae_decode_fp16_60s",
 ) -> dict[str, str]:

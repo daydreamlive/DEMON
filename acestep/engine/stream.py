@@ -15,7 +15,7 @@ from __future__ import annotations
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Callable, Optional, List, Tuple, TYPE_CHECKING
+from typing import Callable, Dict, NamedTuple, Optional, List, Tuple, TYPE_CHECKING
 
 from loguru import logger
 import torch
@@ -27,6 +27,13 @@ from .dcw import DCWAdvanced, DCWCorrector
 
 if TYPE_CHECKING:
     from .masking import LatentNoiseMask
+
+
+class _SteeringApply(NamedTuple):
+    """One pre-resolved activation-steering shift bound to a layer."""
+    vector: torch.Tensor   # 1-D [hidden_dim]
+    scale: float           # alpha * magnitude
+    step: int              # gate: only rows at this denoise step receive it
 
 
 @dataclass
@@ -285,6 +292,10 @@ class StreamPipeline:
         self._trt_io_dtype = getattr(engine, '_trt_io_dtype', torch.float32)
         self._trt_input_dtypes = getattr(engine, "_trt_input_dtypes", {}) or {}
         self._trt_output_dtype = getattr(engine, "_trt_output_dtype", self._trt_io_dtype)
+        # Steering shape (constants per engine); snapshotted so the
+        # per-tick buffer fill doesn't re-query TRT.
+        self._steering_num_layers = getattr(engine, "_steering_num_layers", 0)
+        self._steering_hidden_size = getattr(engine, "_steering_hidden_size", 0)
 
         # Currently-bound TRT I/O buffers (set by _ensure_trt_bufs to one
         # entry of _trt_bufs_cache). _trt_forward reads these directly.
@@ -324,6 +335,15 @@ class StreamPipeline:
         # pre-cast to the pipeline's device/dtype so the hot-path
         # ``.to(...)`` is a no-op.
         self._channel_gain: Optional[torch.Tensor] = None
+
+        # Activation steering. Per-DiT-layer additive shift on the
+        # post-block residual, gated per-row by denoise step.
+        # ``_current_step_per_row`` is populated by _tick_complex_pt
+        # around each forward; empty means "skip injection" so a
+        # forward issued outside the rendezvous can't fire steering.
+        self._steering_by_layer: Dict[int, List[_SteeringApply]] = {}
+        self._steering_hooks_installed: bool = False
+        self._current_step_per_row: List[int] = []
 
         # Sentinel tensors for the "always-on multiply" idiom in the step
         # helpers. Built lazily once the first slot's device/dtype is known.
@@ -402,9 +422,14 @@ class StreamPipeline:
         self._trt_output_dtype = getattr(
             engine, "_trt_output_dtype", self._trt_io_dtype
         )
+        self._steering_num_layers = getattr(engine, "_steering_num_layers", 0)
+        self._steering_hidden_size = getattr(engine, "_steering_hidden_size", 0)
         self._trt_bufs = None
         self._trt_out_buf = None
         self._trt_bufs_cache.clear()
+        # Hooks live on the old decoder.layers; the new decoder needs a
+        # fresh install on the next non-empty set_steering call.
+        self._steering_hooks_installed = False
 
     def submit(self, request: SlotRequest) -> None:
         """Enqueue a generation request.
@@ -712,6 +737,10 @@ class StreamPipeline:
         else:
             bufs["context_latents"].copy_(ctx_io)
 
+        # Steering: absent on non-spectral engines.
+        if "steering" in bufs:
+            self._fill_trt_steering_buffer(bufs["steering"], B)
+
         # Rebind and execute.
         ctx = self._trt_ctx
         for name, buf in bufs.items():
@@ -730,6 +759,39 @@ class StreamPipeline:
         if pad:
             return out[:, :T, :].to(self._dtype)
         return out.to(self._dtype)
+
+    def _steering_row_mask(self, target_step: int, B: int) -> Optional[List[int]]:
+        """Rows whose slot is at ``target_step``, or None to skip.
+
+        Returns None when no per-row step mapping exists or it
+        disagrees with ``B`` — the eager hook and TRT buffer fill both
+        skip injection in that case rather than firing blindly.
+        """
+        row_steps = self._current_step_per_row
+        if not row_steps or len(row_steps) != B:
+            return None
+        mask = [i for i, s in enumerate(row_steps) if s == target_step]
+        return mask or None
+
+    def _fill_trt_steering_buffer(self, buf: torch.Tensor, B: int) -> None:
+        """Populate the TRT steering buffer for one forward.
+
+        ``buf`` is ``[B, num_layers, hidden_size]``; zeroed first so
+        previous-tick content doesn't leak. Rows with no matching shift
+        stay zero, which the engine adds as a no-op per layer.
+        """
+        buf.zero_()
+        if not self._steering_by_layer:
+            return
+        for layer_idx, applies in self._steering_by_layer.items():
+            if layer_idx < 0 or layer_idx >= self._steering_num_layers:
+                continue
+            for apply in applies:
+                mask_rows = self._steering_row_mask(apply.step, B)
+                if mask_rows is None:
+                    continue
+                v = apply.vector.to(device=buf.device, dtype=buf.dtype)
+                buf[mask_rows, layer_idx, :] += apply.scale * v
 
     # ------------------------------------------------------------------
     # TRT buffer management
@@ -787,6 +849,15 @@ class StreamPipeline:
                 device=device,
             ),
         }
+        if self._steering_num_layers > 0:
+            # Zeroed so a tick with no active configs is a true no-op
+            # (engine still adds zeros per layer); repopulated each
+            # forward by _trt_forward.
+            bufs["steering"] = torch.zeros(
+                B, self._steering_num_layers, self._steering_hidden_size,
+                dtype=in_dtypes.get("steering", io_dtype),
+                device=device,
+            )
 
         for name, buf in bufs.items():
             if not ctx.set_input_shape(name, tuple(buf.shape)):
@@ -1033,7 +1104,13 @@ class StreamPipeline:
             for c in pos_conds_per_slot[si]:
                 pos_pair_si.append(si)
                 pos_pair_cond.append(c)
-        vt_pos_all = _forward_pairs(pos_pair_si, pos_pair_cond)
+        # Per-row step mapping for the steering hook; try/finally so a
+        # stale list never leaks into a forward outside this rendezvous.
+        self._current_step_per_row = [slots[si].step_idx for si in pos_pair_si]
+        try:
+            vt_pos_all = _forward_pairs(pos_pair_si, pos_pair_cond)
+        finally:
+            self._current_step_per_row = []
 
         # --- Negative pass (CFG only): skipped when no slot has CFG. ---
         neg_pair_si: List[int] = []
@@ -1042,9 +1119,14 @@ class StreamPipeline:
             for c in neg_conds_per_slot[si]:
                 neg_pair_si.append(si)
                 neg_pair_cond.append(c)
-        vt_neg_all = (
-            _forward_pairs(neg_pair_si, neg_pair_cond) if neg_pair_si else None
-        )
+        if neg_pair_si:
+            self._current_step_per_row = [slots[si].step_idx for si in neg_pair_si]
+            try:
+                vt_neg_all = _forward_pairs(neg_pair_si, neg_pair_cond)
+            finally:
+                self._current_step_per_row = []
+        else:
+            vt_neg_all = None
 
         # --- Per-slot: blend pos, blend neg (if CFG), APG-combine ---
         vt_per_slot: List[torch.Tensor] = [None] * len(slots)  # type: ignore[list-item]
@@ -1424,6 +1506,79 @@ class StreamPipeline:
         dev = self._device or torch.device("cuda")
         dt = self._dtype or torch.float16
         self._channel_gain = gain.to(device=dev, dtype=dt)
+
+    def set_steering(self, configs: List[Dict[str, object]]) -> None:
+        """Set activation-steering configs.
+
+        Each config dict has:
+          - ``layer``: int, index into ``decoder.layers``
+          - ``step``: int, the denoise step at which to fire
+          - ``vector``: 1-D unit-norm tensor [hidden_dim]
+          - ``magnitude``: float, paired mean-diff scale
+          - ``alpha``: float, knob value; effective shift is
+            ``alpha * magnitude * vector``
+
+        Multiple configs may share a layer (additions sum, modulo the
+        per-row step gate). Zero-alpha entries drop. Pass ``[]`` to
+        clear. Eager: forward hooks on ``decoder.layers`` (installed
+        lazily). TRT: per-tick buffer fill in ``_trt_forward``.
+        """
+        by_layer: Dict[int, List[_SteeringApply]] = {}
+        for c in configs:
+            alpha = float(c.get("alpha", 0.0))
+            if alpha == 0.0:
+                continue
+            mag = float(c.get("magnitude", 1.0))
+            li = int(c["layer"])
+            by_layer.setdefault(li, []).append(_SteeringApply(
+                vector=c["vector"],  # type: ignore[arg-type]
+                scale=alpha * mag,
+                step=int(c["step"]),
+            ))
+        self._steering_by_layer = by_layer
+        # Eager-path hooks only matter when the PyTorch decoder runs.
+        # With TRT active the decoder may be a stub.
+        if (
+            by_layer
+            and not self._steering_hooks_installed
+            and self._trt_engine is None
+        ):
+            self._install_steering_hooks()
+            self._steering_hooks_installed = True
+
+    def _install_steering_hooks(self) -> None:
+        """Attach one forward hook per DiT layer.
+
+        Reads ``_steering_by_layer`` + ``_current_step_per_row`` at call
+        time. Idempotent via ``_steering_hooks_installed`` (cleared on
+        engine swap so a new eager decoder gets fresh hooks).
+        """
+        layers = self.decoder.layers
+
+        def make_hook(layer_idx: int):
+            def _hook(_module, _inputs, output):
+                applies = self._steering_by_layer.get(layer_idx)
+                if not applies:
+                    return output
+                hs = output[0] if isinstance(output, tuple) else output
+                B = hs.shape[0]
+                changed = False
+                for apply in applies:
+                    mask_rows = self._steering_row_mask(apply.step, B)
+                    if mask_rows is None:
+                        continue
+                    v = apply.vector.to(device=hs.device, dtype=hs.dtype)
+                    hs[mask_rows] = hs[mask_rows] + apply.scale * v.view(1, 1, -1)
+                    changed = True
+                if not changed:
+                    return output
+                if isinstance(output, tuple):
+                    return (hs,) + output[1:]
+                return hs
+            return _hook
+
+        for li in range(len(layers)):
+            layers[li].register_forward_hook(make_hook(li))
 
     def stats(self) -> dict:
         return {
