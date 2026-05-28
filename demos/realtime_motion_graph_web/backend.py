@@ -52,9 +52,9 @@ from acestep.paths import (
     trt_engine_path,
 )
 
-from .audio_engine import AudioEngine
-from .knobs import build_banks, CHANNEL_GROUPS, KEYSTONE_CHANNELS
-from .melband_reformer import (
+from acestep.streaming.audio_engine import AudioEngine
+from acestep.streaming.knobs import build_banks, CHANNEL_GROUPS, KEYSTONE_CHANNELS
+from acestep.streaming.stems import (
     extract_upload_stems,
     normalize_stem_source_mode,
     resolve_upload_stem_source_mode,
@@ -66,8 +66,8 @@ from .protocol import (
     SLICE_HDR_SIZE,
     T,
 )
-from .pipeline import PipelineRunner
-from . import session_registry
+from acestep.streaming.pipeline_runner import PipelineRunner
+from acestep.streaming import registry as session_registry
 
 
 # ---------------------------------------------------------------------------
@@ -1453,7 +1453,7 @@ def _handle_client_body(
                 # delta check (set_lora_strength only when the new value
                 # differs by > 0.02) doesn't immediately fire a redundant
                 # refit on tick 1.
-                from .knobs import KnobDef
+                from acestep.streaming.knobs import KnobDef
                 virtual_knobs.add_knob(
                     f"lora_str_{lid}",
                     KnobDef(

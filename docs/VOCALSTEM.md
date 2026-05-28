@@ -4,7 +4,7 @@ This document describes how uploaded-track stem extraction works in the
 `realtime_motion_graph_web` backend.
 
 The Mel-Band RoFormer integration lives in
-`demos/realtime_motion_graph_web/melband_reformer.py`. The demo UI and backend
+`acestep/streaming/stems.py`. The demo UI and backend
 now resolve every user-uploaded audio source to a stem mode (`full` by default),
 so uploads are stemmed automatically. Built-in fixtures still omit
 `stem_source_mode` and skip the stem path.
