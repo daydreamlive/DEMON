@@ -6,14 +6,48 @@ import {
   decodeAudioFile,
   listFixtures,
   loadFixtureAudio,
+  type DecodedFixture,
 } from "@/engine/audio/loadFixture";
+import { useConfig } from "@/lib/config";
 import { LOCAL_MODE } from "@/lib/runtime";
+import { trimAudioBuffer } from "@/lib/audio/trimAudioBuffer";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { usePerformanceStore, type RefSource } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 import type { RemoteBackend } from "@/engine/protocol";
 
 import { RefSelect } from "./RefSelect";
+
+// Fallback when engine.max_source_duration_s is unset. Mirrors
+// AudioSourceCrate / TrackPicker / LiteTrackCarousel.
+const DEFAULT_TRIM_CAP_S = 120;
+
+// Server-side `websockets` library is configured with max_size=100 MiB
+// (see demos/realtime_motion_graph_web/server.py). A 48 kHz stereo
+// float32 clip longer than ~273 s crosses that cap and the server
+// rejects the frame with close code 1009 — the upload silently fails
+// for the user. The server also re-trims timbre / structure refs to
+// the playback source's duration internally, so anything past
+// max_source_duration_s is wire-wasted regardless. Head-trim here
+// keeps the WS frame under the cap and saves the round-trip.
+function clampRefDuration(
+  decoded: DecodedFixture,
+  capS: number,
+): { decoded: DecodedFixture; trimmedFromS: number | null } {
+  const durS = decoded.frames / decoded.sampleRate;
+  if (durS <= capS) return { decoded, trimmedFromS: null };
+  return {
+    decoded: trimAudioBuffer(decoded, 0, capS),
+    trimmedFromS: durS,
+  };
+}
+
+function fmtMMSS(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds));
+  const m = Math.floor(total / 60);
+  const s = total - m * 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
 
 // Unified picker for the timbre and structure references. Both
 // reference axes share the exact same UI shape (caption + dropdown
@@ -100,6 +134,8 @@ export function RefControl({ kind }: { kind: RefKind }) {
 
   const bind = bindingFor(kind);
   const value = currentName ?? VAL_INPUT;
+  const trimCapS =
+    useConfig().engine.max_source_duration_s ?? DEFAULT_TRIM_CAP_S;
 
   // Same queue-admit gate as AudioSourceCrate: /api/pod/* returns 401
   // pre-admit, so prod waits for wsUrl. Local mode has no queue.
@@ -146,7 +182,11 @@ export function RefControl({ kind }: { kind: RefKind }) {
       // loadFixtureAudio short-circuits to useCustomTracksStore for
       // user uploads — so this branch only handles the custom-track
       // case. (Library picks took the wire shortcut above.)
-      const decoded = await loadFixtureAudio(name);
+      const fullDecoded = await loadFixtureAudio(name);
+      // Defensive: a custom track that landed in the store via this
+      // component's pre-fix uploadAndPick path may exceed the cap.
+      // Clamp at the send site so re-picking it doesn't 1009.
+      const { decoded } = clampRefDuration(fullDecoded, trimCapS);
       const ok = bind.send(
         session.remote,
         decoded.interleaved,
@@ -189,7 +229,15 @@ export function RefControl({ kind }: { kind: RefKind }) {
       // shows: a reference is conceptually the whole clip the model
       // should imitate, not a slice. The MAX_UPLOAD_DURATION_S
       // browser-memory ceiling inside decodeAudioFile still applies.
-      const decoded = await decodeAudioFile(file);
+      const fullDecoded = await decodeAudioFile(file);
+      // ...but the WS server's max_size=100 MiB cap (server.py) hard-
+      // rejects frames past ~273 s of 48 kHz stereo float32 with
+      // close code 1009. And the server re-trims refs to the playback
+      // source's duration anyway, so anything past
+      // max_source_duration_s is wire-wasted. Head-trim to the cap.
+      const { decoded, trimmedFromS } = clampRefDuration(
+        fullDecoded, trimCapS,
+      );
       // Mirror AudioSourceCrate's de-dup naming so uploads land in the
       // shared "your tracks" pool without colliding.
       const baseName = file.name;
@@ -199,6 +247,12 @@ export function RefControl({ kind }: { kind: RefKind }) {
         chosen = `${baseName} (${i++})`;
       }
       useCustomTracksStore.getState().add(chosen, decoded, file);
+      if (trimmedFromS !== null) {
+        setStatus(
+          "ready",
+          `${bind.statusPrefix[0].toUpperCase()}${bind.statusPrefix.slice(1)} ${chosen}: trimmed ${fmtMMSS(trimmedFromS)} → first ${fmtMMSS(trimCapS)}`,
+        );
+      }
       const ok = bind.send(
         session.remote,
         decoded.interleaved,
