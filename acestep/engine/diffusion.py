@@ -198,19 +198,49 @@ class DiffusionEngine:
         if hasattr(trt, "bfloat16"):
             _trt_dtype_map[trt.bfloat16] = torch.bfloat16
 
-        input_names = ("hidden_states", "timestep", "encoder_hidden_states", "context_latents")
+        engine_input_names = {
+            self._trt_engine.get_tensor_name(i)
+            for i in range(self._trt_engine.num_io_tensors)
+        }
+        # ``steering`` is present on spectral-prefixed engines only;
+        # older builds get _steering_num_layers == 0 and the streaming
+        # pipeline skips the buffer entirely.
+        has_steering = "steering" in engine_input_names
+        base_inputs = (
+            "hidden_states", "timestep", "encoder_hidden_states",
+            "context_latents",
+        )
+        input_names = base_inputs + (("steering",) if has_steering else ())
         self._trt_input_dtypes = {
             name: _trt_dtype_map.get(self._trt_engine.get_tensor_dtype(name), torch.float32)
             for name in input_names
         }
+        if has_steering:
+            steer_shape = tuple(self._trt_engine.get_tensor_shape("steering"))
+            if len(steer_shape) != 3:
+                raise RuntimeError(f"Unexpected steering input rank: {steer_shape}")
+            self._steering_num_layers = int(steer_shape[1])
+            self._steering_hidden_size = int(steer_shape[2])
+        else:
+            self._steering_num_layers = 0
+            self._steering_hidden_size = 0
+            logger.warning(
+                "TRT decoder engine has no 'steering' input — activation-"
+                "steering knobs will no-op on this session. Rebuild with "
+                "`python -m acestep.engine.trt.build --all --force-rebuild` "
+                "to enable."
+            )
         self._trt_output_dtype = _trt_dtype_map.get(
             self._trt_engine.get_tensor_dtype("velocity"), torch.float32
         )
         self._trt_io_dtype = self._trt_input_dtypes["hidden_states"]
         logger.info(
-            "TRT decoder engine ready (input_dtypes={}, output_dtype={})",
+            "TRT decoder engine ready (input_dtypes={}, output_dtype={}, "
+            "steering L={}, D={})",
             self._trt_input_dtypes,
             self._trt_output_dtype,
+            self._steering_num_layers,
+            self._steering_hidden_size,
         )
 
         # Try to initialize LoRA refit manager (requires REFIT-enabled engine)
@@ -526,11 +556,15 @@ class DiffusionEngine:
         timestep: torch.Tensor,
         encoder_hidden_states: torch.Tensor,
         context_latents: torch.Tensor,
+        steering: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run one decoder step through TRT with pre-allocated buffers.
 
         Handles odd-T padding. Caches buffers by shape for reuse across
         steps. Calls execute_async_v3 on the shared polygraphy stream.
+
+        ``steering`` is optional ``[B, num_layers, hidden_size]``;
+        when omitted the cached zero buffer makes the per-layer adds a no-op.
         """
         orig_T = hidden_states.shape[1]
         pad = orig_T % 2 == 1
@@ -548,6 +582,7 @@ class DiffusionEngine:
             dev = hidden_states.device
             hs_shape, ts_shape, enc_shape, cl_shape = key
             in_dtypes = self._trt_input_dtypes
+            B = hs_shape[0]
 
             bufs = {
                 "hidden_states": torch.empty(hs_shape, dtype=in_dtypes["hidden_states"], device=dev),
@@ -555,6 +590,11 @@ class DiffusionEngine:
                 "encoder_hidden_states": torch.empty(enc_shape, dtype=in_dtypes["encoder_hidden_states"], device=dev),
                 "context_latents": torch.empty(cl_shape, dtype=in_dtypes["context_latents"], device=dev),
             }
+            if self._steering_num_layers > 0:
+                bufs["steering"] = torch.zeros(
+                    B, self._steering_num_layers, self._steering_hidden_size,
+                    dtype=in_dtypes["steering"], device=dev,
+                )
             for name, buf in bufs.items():
                 if not ctx.set_input_shape(name, tuple(buf.shape)):
                     raise RuntimeError(f"TRT decoder rejected input shape for {name}: {tuple(buf.shape)}")
@@ -589,6 +629,11 @@ class DiffusionEngine:
             bufs["context_latents"].copy_(context_latents)
         bufs["timestep"].copy_(timestep)
         bufs["encoder_hidden_states"].copy_(encoder_hidden_states)
+        if "steering" in bufs:
+            if steering is not None:
+                bufs["steering"].copy_(steering)
+            else:
+                bufs["steering"].zero_()
 
         ctx = self._trt_ctx
         for name, buf in bufs.items():
