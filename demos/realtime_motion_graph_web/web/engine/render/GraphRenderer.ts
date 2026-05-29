@@ -270,17 +270,28 @@ const SPARK_DODGE_PX = 5;
 // "channel" feel without becoming a tight rack of bars.
 // ---------------------------------------------------------------
 // MAX_LANES is the HARD CEILING used to pre-allocate the scratch
-// buffers. Per-frame, _drawLanes picks a smaller `effectiveMaxLanes`
-// based on canvas height (see LANE_TARGET_H below) so tall canvases
-// show more lanes than short ones. 20 is enough headroom for the
-// ~30 params an active session typically touches.
-const MAX_LANES = 20;
+// buffers (_laneNameBuf, _laneLastFireBuf). It is INTENTIONALLY
+// generous (32) so the per-frame `effectiveMaxLanes` calculation —
+// not this buffer — is what governs how many lanes show on screen.
+// On a 1440p+ monitor with the drawer closed, the canvas can fit
+// well over 20 lanes; capping the buffer at 20 would silently stop
+// the resize-reactive lane count from scaling up. 32 slots × (one
+// string + one float) ≈ 280 bytes; negligible. Bumping this further
+// only matters if a single session ever surfaces > 32 simultaneously-
+// touched parameters, which the engine doesn't approach today.
+const MAX_LANES = 32;
 // Target height per lane when computing how many fit on this canvas.
-// Lanes grow up to LANE_MAX_H or shrink to LANE_MIN_H based on
-// activeCount, but the EFFECTIVE max-lanes count is derived from the
-// canvas height so we use the available vertical space. Clamped at
-// LANE_HARD_MIN_COUNT below so very short canvases still show a
-// usable rack.
+// `effectiveMaxLanes` is recomputed EVERY frame from the live canvas
+// height (`this.h`, which the ResizeObserver in `_resize` keeps in
+// sync with the canvas's CSS box). That means lane count adapts on:
+//   - window resize / drawer open-close (canvas box changes)
+//   - moving the window between monitors (CSS box re-flows)
+//   - browser zoom changes
+//   - mobile portrait↔landscape rotation
+// No additional listeners needed — the per-frame `_drawLanes` already
+// reads the freshest `this.h`. Lanes individually clamp to
+// [LANE_MIN_H, LANE_MAX_H], so on tall canvases with few active params
+// the stack is vertically centered rather than stretched.
 const LANE_TARGET_H = 30;
 const LANE_HARD_MIN_COUNT = 8;
 const LANE_TOP_PAD = 18;
@@ -1057,7 +1068,7 @@ export class GraphRenderer {
 
     // Step 1+2: collect active lanes into the pre-allocated scratch
     // buffer. When the pool is full, evict the lane with the oldest
-    // lastFire if this candidate is more recent (linear scan, n ≤ 20).
+    // lastFire if this candidate is more recent (linear scan, n ≤ effectiveMaxLanes).
     // Also count totalEligible so we know how many qualifying lanes
     // didn't fit — surfaces as a "+N more" pill via the labels overlay.
     let activeCount = 0;
