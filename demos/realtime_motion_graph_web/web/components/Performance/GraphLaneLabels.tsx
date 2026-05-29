@@ -54,6 +54,22 @@ interface DisplayPill {
 // across ticks (the count changes but the chip is the same DOM node).
 const MORE_PILL_PARAM = "__hidden_more__";
 
+// Display label for a param when rendering a lane pill in the gutter.
+// The gutter is ~168px wide; long lora_str_<id> names overflow even
+// after the v2 widening. The colored track tag inside the gutter
+// already conveys "this is a LoRA, here's its family color", so the
+// "LORA STR" prefix on the label is redundant noise. Strip it and let
+// the LoRA's own name carry the pill.
+//
+// Sliders elsewhere in the mixer keep the full defaultLabelFor name
+// (they have more horizontal room) — this override is graph-only.
+function laneDisplayFor(param: string): string {
+  if (param.startsWith("lora_str_")) {
+    return param.slice("lora_str_".length).replace(/[_-]/g, " ");
+  }
+  return defaultLabelFor(param);
+}
+
 export function GraphLaneLabels() {
   const [pills, setPills] = useState<DisplayPill[]>([]);
   const [mode, setMode] = useState<DisplayMode>("polylines");
@@ -99,7 +115,7 @@ export function GraphLaneLabels() {
           if (!b || !b.name) continue;
           next.push({
             param: b.name,
-            display: defaultLabelFor(b.name),
+            display: laneDisplayFor(b.name),
             x: 0,
             y: b.bandTop + b.bandHeight / 2,
             color: `rgb(${b.color[0]},${b.color[1]},${b.color[2]})`,
