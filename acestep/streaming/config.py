@@ -21,7 +21,13 @@ class SessionConfig:
 
     sde: bool = False
     lora: bool = False
-    vae_window: float = 3.0
+    # Keep ("wire slice") = 0.36 s (9 latent frames). The fixed 1 s VAE
+    # engine decodes 25 frames every call and StreamVAEDecode trims the
+    # 8-frame (0.32 s) margin off each side. Net: audio is delivered in
+    # ~0.36 s slices instead of 3 s — far more responsive to live control,
+    # at no audible fidelity cost (the kept center is below the fp16 decode
+    # noise). See acestep.paths WINDOWED_VAE_PROFILE_FRAMES.
+    vae_window: float = 0.36
     crop: float = 0.0
     depth: int = 4
     steps: int = 8

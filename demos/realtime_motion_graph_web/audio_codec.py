@@ -84,7 +84,18 @@ class SliceCodec:
         # Delta = what server has now minus what client has
         delta = (region - mirror_region).astype(np.float16)
         compressed = self._zctx.compress(delta.tobytes())
-        self._mirror[ss:se] = region
+        # Mirror our copy to the *reconstruction the client will hold*, not
+        # the exact ``region``. The client applies ``mirror += float32(delta)``
+        # with ``delta`` quantized to float16, so storing the exact region
+        # here would leave our baseline off by the float16 rounding error.
+        # Every subsequent delta is encoded against that baseline, so the
+        # error never gets corrected — it accumulates. With the per-tick,
+        # heavily-overlapping windowed slices (a 0.36 s region re-patched
+        # dozens of times per second) that drift compounds into visible
+        # ghosting — multiple decoded versions stacked on top of each other.
+        # Encoding against the quantized reconstruction keeps server and
+        # client byte-identical, so each delta corrects toward the truth.
+        self._mirror[ss:se] = mirror_region + delta.astype(np.float32)
         hdr = struct.pack(
             SLICE_HDR_FMT,
             SLICE_FLAG_DELTA,
