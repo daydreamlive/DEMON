@@ -16,8 +16,16 @@ from acestep.engine.obs import logger
 from acestep.nodes.types import ChannelGuidanceEntry, Latent
 from acestep.nodes.vae_nodes import EmptyLatent, LatentBlend
 
-from .knobs import CHANNEL_GROUPS, KEYSTONE_CHANNELS
-from .protocol import SAMPLE_RATE, T
+from acestep.streaming.knobs import CHANNEL_GROUPS, KEYSTONE_CHANNELS
+
+# Audio sample rate the ACE-Step v1.5 family is trained on. Duplicated
+# from ``demos/realtime_motion_graph_web/protocol.py`` (and many other
+# call sites — see tests/, scripts/) so this module stays free of demo
+# imports. ``T`` is the latent frame count for a 60 s window at the
+# tokenizer's 25 fps; both constants are model invariants the runner
+# uses as plain magic numbers.
+SAMPLE_RATE = 48000
+T = 1500
 
 # Hot-loop trace sampling. Cached at import time so the per-tick branch
 # is a single int compare. Env-tunable since the loop runs at ~125 Hz —

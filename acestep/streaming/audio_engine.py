@@ -8,13 +8,18 @@ import threading
 
 import numpy as np
 
-from .protocol import CROSSFADE_SECONDS
+
+# Server-side crossfade length used when ``swap`` is called between
+# buffers (e.g. on source swap). Mirrors the TS/audio-worklet constant
+# of the same name; kept here as a private duplicate so this module
+# stays free of demo / wire-protocol imports.
+CROSSFADE_SECONDS = 0.025
 
 
 class AudioEngine:
     """Lock-protected audio buffer with sounddevice playback."""
 
-    def __init__(self, data, sr):
+    def __init__(self, data, sr, *, crossfade_seconds: float = CROSSFADE_SECONDS):
         import sounddevice as sd
         self._sd = sd
         if data.ndim == 1:
@@ -30,7 +35,7 @@ class AudioEngine:
         # inside the band. A single immutable-tuple attribute so the read is
         # one atomic reference load under the GIL — no torn start/end.
         self.loop_band = None
-        self.crossfade_len = max(1, int(sr * CROSSFADE_SECONDS))
+        self.crossfade_len = max(1, int(sr * crossfade_seconds))
         self._old = None
         self._fading = False
         self._fade_pos = 0

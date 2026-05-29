@@ -34,7 +34,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 
-from . import session_registry
+from acestep.streaming import registry as session_registry
 
 
 _CMD_PATH = re.compile(r"^/sessions/([A-Za-z0-9_-]{1,64})/cmd$")
