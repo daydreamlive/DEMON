@@ -26,15 +26,27 @@ import { SeedKnob } from "./SeedKnob";
 import { defaultLabelFor, kbdHintFor } from "./SliderTile";
 import { StrengthOnboardingHint } from "./StrengthOnboardingHint";
 
-// Bottom-center bay. Three zones, left to right:
-//   1. Macros — denoise / structure / feedback knobs + seed randomizer.
-//   2. Style faders — the two LoRA strengths inline (was the left-edge
-//      StylePanel; consolidated here so the canvas reads as one unit).
-//   3. Tools — Record / Curve Editor / Full Controls stack.
+// Bottom-center bay. Two layouts, toggled by the operator:
+//
+//   STANDARD (default) — three zones left to right:
+//     1. Macros — denoise / structure / timbre knobs + seed randomizer.
+//     2. Style faders — the two LoRA strengths inline (was the left-edge
+//        StylePanel; consolidated here so the canvas reads as one unit).
+//     3. Tools — Record / Curve / Full Controls / MIDI In + a "Prompt
+//        Mode" button that swaps the bay to the PROMPT layout.
+//
+//   PROMPT — focused surface for tuning the active prompt:
+//     - Strength + Structure knobs (the two macros that gate how much
+//       the prompt actually steers the model).
+//     - One textarea bound to the active deck slot's text + Send button.
+//     - "Emphasize prompt" checkbox — pins Structure low so the prompt
+//       has more impact. Caches the prior value; toggling off restores.
+//     - Full Controls button (same handler as standard) + a back button
+//       to return to the standard layout.
 //
 // Visibility:
 //   - Hidden when the session is idle.
-//   - Knobs + style faders hide when the drawer is open (CORE + LIB
+//   - Knobs + style faders hide when the drawer is open (CORE / STYLES
 //     tabs cover the same params). Tools stay reachable.
 //   - Hidden below 768 px (mobile gets LiteControls).
 
@@ -241,12 +253,161 @@ function HeroStemPanner({ kind }: HeroStemPannerProps) {
   );
 }
 
+// Structure value used while "Emphasize prompt" is active. Pinned low
+// so the model spends most of its capacity following the prompt rather
+// than anchoring to source structure. Not zero — at zero the engine
+// drifts hard from the song's rhythm. 0.15 is the empirical sweet spot.
+const EMPHASIZE_HINT_VALUE = 0.15;
+
+function HeroPromptMode() {
+  const slots = usePerformanceStore((s) => s.promptSlots);
+  const currentSlotId = usePerformanceStore((s) => s.currentSlotId);
+  const activeKey = usePerformanceStore((s) => s.activeKey);
+  const activeTimeSignature = usePerformanceStore((s) => s.activeTimeSignature);
+  const promptA = usePerformanceStore((s) => s.promptA);
+  const promptB = usePerformanceStore((s) => s.promptB);
+  const setPromptSlotText = usePerformanceStore((s) => s.setPromptSlotText);
+  const setSlider = usePerformanceStore((s) => s.setSlider);
+  const disableLoraAutoTrigger = usePerformanceStore((s) => s.disableLoraAutoTrigger);
+  const toggleDisableLoraAutoTrigger = usePerformanceStore(
+    (s) => s.toggleDisableLoraAutoTrigger,
+  );
+
+  const currentSlot = slots.find((s) => s.id === currentSlotId);
+
+  // Emphasize: ON caches the operator's current hint_strength target
+  // and snaps the slider to EMPHASIZE_HINT_VALUE. OFF restores the
+  // cached value. If the operator manually moves Structure while
+  // emphasize is on, the restore-on-OFF still goes back to the
+  // PRE-EMPHASIZE value (not the manually-tweaked one) — keeps the
+  // toggle as a single, predictable undo. Resets on view exit so a
+  // re-entry doesn't restore stale state.
+  const [emphasize, setEmphasize] = useState(false);
+  const cachedHintRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      // Component unmount (view exit). If emphasize was on, restore
+      // Structure so the standard view doesn't show a value the
+      // operator never picked. Defensive: cachedHintRef could be null
+      // if emphasize was never toggled.
+      if (cachedHintRef.current != null) {
+        usePerformanceStore.getState().setSlider("hint_strength", cachedHintRef.current);
+      }
+    };
+  }, []);
+
+  function toggleEmphasize() {
+    if (!emphasize) {
+      const current = usePerformanceStore.getState().sliderTargets.hint_strength ?? 1.0;
+      cachedHintRef.current = current;
+      setSlider("hint_strength", EMPHASIZE_HINT_VALUE);
+      setEmphasize(true);
+    } else {
+      if (cachedHintRef.current != null) {
+        setSlider("hint_strength", cachedHintRef.current);
+        cachedHintRef.current = null;
+      }
+      setEmphasize(false);
+    }
+  }
+
+  function sendPrompt() {
+    const remote = useSessionStore.getState().remote;
+    if (remote) {
+      remote.sendPrompt(promptA, activeKey, activeTimeSignature, promptB);
+    }
+  }
+
+  return (
+    <div className="hero-prompt-mode-body">
+      <div className="hero-prompt-mode-knobs">
+        <Knob param="denoise" label={defaultLabelFor("denoise")} kbd={kbdHintFor("denoise")} />
+        <Knob param="hint_strength" label={defaultLabelFor("hint_strength")} kbd={kbdHintFor("hint_strength")} />
+      </div>
+      <div className="hero-macros-divider" aria-hidden="true" />
+      <div className="hero-prompt-mode-input">
+        <label className="hero-prompt-mode-input-label" htmlFor="hero-prompt-textarea">
+          Prompt
+        </label>
+        <textarea
+          id="hero-prompt-textarea"
+          className="prompt-input hero-prompt-mode-textarea"
+          rows={2}
+          value={currentSlot?.text ?? ""}
+          onChange={(e) =>
+            currentSlot && setPromptSlotText(currentSlot.id, e.target.value)
+          }
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              sendPrompt();
+            }
+          }}
+        />
+        <button
+          type="button"
+          className="hero-prompt-mode-send"
+          onClick={sendPrompt}
+          data-dd-tooltip="Send the prompt to the engine. ⌘/Ctrl + Enter also works from the textarea."
+        >
+          Send
+          <kbd className="desktop-only">⌘⏎</kbd>
+        </button>
+      </div>
+      <div className="hero-macros-divider" aria-hidden="true" />
+      <div className="hero-prompt-mode-actions">
+        <label
+          className="hero-prompt-mode-checkbox"
+          data-dd-tooltip="Turns down Structure so the prompt has more impact on the output. Toggling off restores your prior Structure value."
+          data-dd-tooltip-wide=""
+          data-dd-tooltip-title="Emphasize prompt"
+        >
+          <input
+            type="checkbox"
+            checked={emphasize}
+            onChange={toggleEmphasize}
+          />
+          <span>Emphasize prompt</span>
+        </label>
+        <label
+          className="hero-prompt-mode-checkbox"
+          data-dd-tooltip="We prepend trigger words for enabled loras."
+          data-dd-tooltip-wide=""
+          data-dd-tooltip-title="Disable lora auto-trigger"
+        >
+          <input
+            type="checkbox"
+            checked={disableLoraAutoTrigger}
+            onChange={toggleDisableLoraAutoTrigger}
+          />
+          <span>Disable lora auto-trigger</span>
+        </label>
+        <button
+          type="button"
+          className="hero-macros-toggle"
+          onClick={() => document.dispatchEvent(new Event("dd:toggle-drawer"))}
+          aria-label="Open Full Controls"
+        >
+          <span className="hero-macros-toggle-label">Full Controls</span>
+          <span className="hero-macros-toggle-caret" aria-hidden="true">▸</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function HeroMacros() {
   const status = useSessionStore((s) => s.status);
   const started = status !== "idle";
   const curveOpen = useCurveStore((s) => s.overlayOpen);
   const toggleCurve = useCurveStore((s) => s.toggleOverlay);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  // Standard vs prompt-focused layout. Local state — resets on reload.
+  // Auto-snaps back to standard whenever the drawer or curve overlay
+  // opens, since both of those also collapse the bay; landing on
+  // prompt-mode after they close would be jarring.
+  const [bayMode, setBayMode] = useState<"standard" | "prompt">("standard");
   // Stem section is visible for any uploaded track (sourceMode set),
   // including "full". The backend extracts and ships vocal/instrument
   // overlay stems for every sourceMode — "full" just keeps the whole
@@ -295,6 +456,14 @@ export function HeroMacros() {
     }
   }, [remixStarted, denoise]);
 
+  // Force-exit prompt mode whenever the drawer or curve overlay opens.
+  // Both of those repurpose the bay (knobs hide, tools flatten), and
+  // landing back on a prompt-mode bay after closing would be visually
+  // jarring vs. the muscle memory of "bay = standard layout".
+  useEffect(() => {
+    if (drawerOpen || curveOpen) setBayMode("standard");
+  }, [drawerOpen, curveOpen]);
+
   // Mirror body.drawer-open so the toggle label/caret flip with the
   // drawer state. The drawer is the source of truth.
   useEffect(() => {
@@ -308,11 +477,60 @@ export function HeroMacros() {
   }, []);
 
   if (!started) return null;
+
+  // Shared mode switcher — floats just above the bay's top edge in
+  // both BAY and PROMPT views so the affordance is in the same place
+  // regardless of which mode you're in. Hidden when the drawer or
+  // curve overlay collapses the bay (no point flipping modes in a
+  // bay you can't see).
+  const modeSwitcher = !drawerOpen && !curveOpen && (
+    <div
+      className="hero-macros-mode-switch"
+      role="tablist"
+      aria-label="Bay view"
+    >
+      <button
+        type="button"
+        role="tab"
+        aria-selected={bayMode === "standard"}
+        className={`hero-macros-mode-switch-pill${bayMode === "standard" ? " hero-macros-mode-switch-pill--active" : ""}`}
+        onClick={() => setBayMode("standard")}
+      >
+        Dock
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={bayMode === "prompt"}
+        className={`hero-macros-mode-switch-pill${bayMode === "prompt" ? " hero-macros-mode-switch-pill--active" : ""}`}
+        onClick={() => setBayMode("prompt")}
+        data-dd-tooltip="Focused prompt-tuning view: just Strength + Structure knobs, a prompt textarea, an Emphasize toggle, and Full Controls."
+        data-dd-tooltip-wide=""
+        data-dd-tooltip-title="Prompt Mode"
+      >
+        Prompt
+      </button>
+    </div>
+  );
+
+  if (bayMode === "prompt") {
+    return (
+      <div
+        className="hero-macros hero-macros--prompt-mode"
+        data-hero-macros
+      >
+        {modeSwitcher}
+        <HeroPromptMode />
+      </div>
+    );
+  }
+
   return (
     <div
       className={`hero-macros${drawerOpen ? " hero-macros--drawer-open" : ""}${curveOpen ? " hero-macros--curve-open" : ""}`}
       data-hero-macros
     >
+      {modeSwitcher}
       <div className="hero-macros-knobs">
         {/* First-time-visitor onboarding affordance pointing at the
          *  Strength knob (the leftmost in HERO_PARAMS). Self-

@@ -23,6 +23,7 @@
 
 import { getConfig } from "@/lib/config";
 import { useLoraStore } from "@/store/useLoraStore";
+import { usePerformanceStore } from "@/store/usePerformanceStore";
 
 /** Comma-joined trigger prefix for the currently-enabled LoRAs, with a
  *  trailing ", " so it can be cheaply concatenated ahead of a prompt.
@@ -30,10 +31,17 @@ import { useLoraStore } from "@/store/useLoraStore";
  *  Reads the live `useLoraStore` state (the `enabled` Set + `catalog`),
  *  collects each enabled LoRA's `metadata.primary_trigger_word`,
  *  skipping null/empty values, de-duping while preserving insertion
- *  order. Returns "" when no enabled LoRA has a trigger, or when
- *  `engine.auto_prepend_lora_triggers` is false (manual workflow). */
+ *  order. Returns "" when no enabled LoRA has a trigger, when the
+ *  config gate `engine.auto_prepend_lora_triggers` is false, or when
+ *  the operator has flipped the per-session "Disable lora auto-trigger"
+ *  toggle in Prompt Mode (perf store `disableLoraAutoTrigger`). The
+ *  store flag is checked at call time so the toggle takes effect on
+ *  the very next send. */
 export function enabledLoraTriggerPrefix(): string {
   if ((getConfig().engine.auto_prepend_lora_triggers ?? true) === false) {
+    return "";
+  }
+  if (usePerformanceStore.getState().disableLoraAutoTrigger) {
     return "";
   }
   const { enabled, catalog } = useLoraStore.getState();
@@ -86,6 +94,12 @@ function catalogTriggerWords(): Set<string> {
  *  (then a comma) is vanishingly unlikely. */
 export function stripLeadingTriggers(text: string): string {
   if (!text) return text;
+  // Operator opt-out: when "Disable lora auto-trigger" is on, the
+  // operator owns the trigger workflow fully — leave the text exactly
+  // as typed so they can manually include (or omit) trigger tokens.
+  // Same store flag that gates enabledLoraTriggerPrefix above; checked
+  // at call time so the toggle takes effect on the next send.
+  if (usePerformanceStore.getState().disableLoraAutoTrigger) return text;
   const triggers = catalogTriggerWords();
   if (triggers.size === 0) return text;
   const parts = text.split(",");
