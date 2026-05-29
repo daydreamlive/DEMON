@@ -269,7 +269,20 @@ const SPARK_DODGE_PX = 5;
 // LANE_MIN_H and LANE_MAX_H. Inter-lane padding gives lanes their
 // "channel" feel without becoming a tight rack of bars.
 // ---------------------------------------------------------------
-const MAX_LANES = 10;
+// MAX_LANES is the HARD CEILING used to pre-allocate the scratch
+// buffers. Per-frame, _drawLanes picks a smaller `effectiveMaxLanes`
+// based on canvas height (see LANE_TARGET_H below) so tall canvases
+// show more lanes than short ones. 20 is enough headroom for the
+// ~30 params an active session typically touches.
+const MAX_LANES = 20;
+// Target height per lane when computing how many fit on this canvas.
+// Lanes grow up to LANE_MAX_H or shrink to LANE_MIN_H based on
+// activeCount, but the EFFECTIVE max-lanes count is derived from the
+// canvas height so we use the available vertical space. Clamped at
+// LANE_HARD_MIN_COUNT below so very short canvases still show a
+// usable rack.
+const LANE_TARGET_H = 30;
+const LANE_HARD_MIN_COUNT = 8;
 const LANE_TOP_PAD = 18;
 const LANE_BOTTOM_PAD = 10;
 const LANE_INTER_PAD = 3;
@@ -1024,9 +1037,27 @@ export class GraphRenderer {
     pulse: number,
     now: number,
   ): void {
+    // Per-frame effective cap: derive how many lanes fit comfortably on
+    // THIS canvas height. Targets LANE_TARGET_H per lane, clamps in
+    // [LANE_HARD_MIN_COUNT, MAX_LANES]. Tall canvases show more
+    // lanes (up to the buffer ceiling); short canvases still keep a
+    // usable rack.
+    const availableHForCount = Math.max(
+      0,
+      h - LANE_TOP_PAD - LANE_BOTTOM_PAD,
+    );
+    const computedMax = Math.floor(
+      (availableHForCount + LANE_INTER_PAD) /
+        (LANE_TARGET_H + LANE_INTER_PAD),
+    );
+    const effectiveMaxLanes = Math.max(
+      LANE_HARD_MIN_COUNT,
+      Math.min(MAX_LANES, computedMax),
+    );
+
     // Step 1+2: collect active lanes into the pre-allocated scratch
     // buffer. When the pool is full, evict the lane with the oldest
-    // lastFire if this candidate is more recent (linear scan, n ≤ 10).
+    // lastFire if this candidate is more recent (linear scan, n ≤ 20).
     // Also count totalEligible so we know how many qualifying lanes
     // didn't fit — surfaces as a "+N more" pill via the labels overlay.
     let activeCount = 0;
@@ -1040,14 +1071,14 @@ export class GraphRenderer {
       // dormant LoRAs / unused params, would only add noise.
       if (headV < 0.005 && lastFire === 0) continue;
       totalEligible++;
-      if (activeCount < MAX_LANES) {
+      if (activeCount < effectiveMaxLanes) {
         this._laneNameBuf[activeCount] = name;
         this._laneLastFireBuf[activeCount] = lastFire;
         activeCount++;
       } else {
         let oldestIdx = 0;
         let oldestVal = this._laneLastFireBuf[0];
-        for (let i = 1; i < MAX_LANES; i++) {
+        for (let i = 1; i < effectiveMaxLanes; i++) {
           if (this._laneLastFireBuf[i] < oldestVal) {
             oldestVal = this._laneLastFireBuf[i];
             oldestIdx = i;

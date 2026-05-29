@@ -798,6 +798,17 @@ body[data-mode="graph"] #install-video-area .focal-side-blur { display: none; }
   opacity: 0.4;
   transition: opacity 200ms cubic-bezier(.2, .8, .2, 1);
 }
+/* Lanes-mode safety net for label overflow. The gutter is 168 px;
+   pills are inset 8 px from the canvas left and have ~12 px of
+   horizontal padding + border, so ~148 px of text room. Cap max-width
+   slightly tighter so very long labels (long LoRA names that the
+   lora_str_ prefix strip didn't fully fix) clip with an ellipsis
+   instead of bleeding past the gutter divider into the envelope. */
+.graph-lane-labels--lanes .graph-lane-label {
+  max-width: 144px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 /* "+N more" overflow chip — rendered below the stack when more lanes
    qualify than MAX_LANES (10). Neutral palette: no param-color border
    or text, because this isn't a lane, it's a continuation marker. The
