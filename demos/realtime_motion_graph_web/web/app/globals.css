@@ -3735,86 +3735,151 @@ body.drawer-open .hud-help-readout {
   border-color: var(--accent-line);
 }
 
-/* Tools 2x2 grid (default for the bay). Was a vertical 4-stack; the
-   grid keeps the same width but halves the height and frees the
-   adjacent Prompts zone horizontal room. The drawer-open / curve-open
-   overrides further down still flatten it to a single row when the bay
-   collapses. */
-.hero-macros-tools.hero-macros-tools--grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  grid-auto-rows: auto;
-  gap: 4px;
-  min-width: 0;
+/* Floating mode switcher — segmented control that hovers just above
+   the bay's top edge, shared between BAY and PROMPT views so the
+   affordance is in the same place regardless of mode. Pulled out of
+   the tools cluster on purpose: it's a view-mode switcher, not an
+   action tool, and grouping it with Record/Curve/MIDI miscategorized
+   it visually. Positioned absolutely so it doesn't push the bay's
+   internal flex flow around. */
+.hero-macros-mode-switch {
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg);
+  border: 1px solid var(--frame-line);
+  border-radius: 999px;
+  z-index: 1;
+}
+.hero-macros-mode-switch-pill {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 4px 12px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 999px;
+  -webkit-appearance: none;
+          appearance: none;
+  transition: color 140ms ease-out, background 140ms ease-out;
+}
+.hero-macros-mode-switch-pill:hover {
+  color: var(--text);
+}
+.hero-macros-mode-switch-pill--active {
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
-/* Hero prompt-deck zone — sibling of .hero-macros-styles. Compact
-   horizontal strip of slot chips + a ⋯ to dive into the full editor in
-   the drawer's Styles tab. Editing slot text and adding new slots
-   stay in PromptsTile; the chip is switch-only on this surface. */
-.hero-macros-prompts {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  align-self: center;
-  min-width: 0;
-}
-.hero-prompt-deck {
+/* Prompt Mode — focused-bay layout, toggled by the "Prompt Mode" tool
+   in the standard tools cluster. Layout: [Strength + Structure knobs]
+   | [Prompt textarea + Emphasize checkbox + Send] | [Full Controls /
+   Standard back buttons]. Same .hero-macros silhouette so the bay
+   reads as one unit across modes — only the contents reflow. */
+.hero-prompt-mode-body {
   display: flex;
   flex-direction: row;
-  flex-wrap: wrap;
-  justify-content: center;
-  align-items: center;
-  gap: 4px;
-  max-width: 220px;
+  align-items: stretch;
+  gap: 18px;
+  width: 100%;
 }
-.hero-prompt-deck-slot {
+.hero-prompt-mode-knobs {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 10px;
+}
+.hero-prompt-mode-input {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 280px;
+  max-width: 420px;
+  justify-content: center;
+}
+.hero-prompt-mode-input-label {
+  font-family: var(--font-mono);
+  font-size: 0.5em;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.hero-prompt-mode-textarea {
+  /* .prompt-input already styles padding / border / focus; we just
+     tighten the height to fit the bay and lock width. */
+  min-height: 44px;
+  resize: none;
+  font-size: 0.7em;
+}
+.hero-prompt-mode-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.6em;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  cursor: pointer;
+  -webkit-user-select: none;
+          user-select: none;
+  padding: 2px 0;
+}
+.hero-prompt-mode-checkbox input[type="checkbox"] {
+  width: 12px;
+  height: 12px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.hero-prompt-mode-checkbox:hover { color: var(--text); }
+.hero-prompt-mode-send {
   background: transparent;
   border: 1px solid var(--frame-line);
   border-radius: var(--radius-sm);
   color: var(--text-dim);
   font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: 0.08em;
+  font-size: 0.6em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
-  padding: 4px 7px;
+  padding: 5px 12px;
   line-height: 1;
   cursor: pointer;
   -webkit-appearance: none;
           appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   transition: color 140ms ease-out, border-color 140ms ease-out, background 140ms ease-out;
-  max-width: 9em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
-.hero-prompt-deck-slot:hover {
-  color: var(--text);
-  border-color: var(--accent-line);
-}
-.hero-prompt-deck-slot--active {
-  color: var(--accent);
+.hero-prompt-mode-send:hover {
+  color: var(--text-strong);
   border-color: var(--accent);
   background: var(--accent-soft);
 }
-.hero-prompt-deck-more {
-  background: transparent;
-  border: 1px dashed var(--frame-line);
-  border-radius: var(--radius-sm);
+.hero-prompt-mode-send kbd {
+  font-size: 0.85em;
   color: var(--text-dim);
-  font-size: 11px;
-  line-height: 1;
-  padding: 4px 7px;
-  cursor: pointer;
-  -webkit-appearance: none;
-          appearance: none;
-  transition: color 140ms ease-out, border-color 140ms ease-out;
 }
-.hero-prompt-deck-more:hover {
-  color: var(--text);
-  border-color: var(--accent-line);
-  border-style: solid;
+.hero-prompt-mode-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  align-self: center;
+  min-width: 180px;
+}
+.hero-prompt-mode-send {
+  align-self: flex-start;
 }
 
 /* ─── MIDI in jack toggle ─────────────────────────────────────────────
@@ -3946,12 +4011,10 @@ body.drawer-open .hud-help-readout {
 body.drawer-open .hero-macros-knobs,
 body.drawer-open .hero-macros-styles,
 body.drawer-open .hero-macros-stems,
-body.drawer-open .hero-macros-prompts,
 body.drawer-open .hero-macros-divider,
 .hero-macros--curve-open .hero-macros-knobs,
 .hero-macros--curve-open .hero-macros-styles,
 .hero-macros--curve-open .hero-macros-stems,
-.hero-macros--curve-open .hero-macros-prompts,
 .hero-macros--curve-open .hero-macros-divider {
   display: none;
 }
@@ -3963,11 +4026,9 @@ body.drawer-open .hero-macros-divider,
    knobs/faders are hidden in that mode too. */
 body.drawer-open .hero-macros-tools,
 body.curve-open .hero-macros-tools {
-  display: flex;
   flex-direction: row;
   min-width: 0;
   gap: 6px;
-  grid-template-columns: none;
 }
 
 /* Curve editor takes focus. Hide the moving-lines graph + its lane

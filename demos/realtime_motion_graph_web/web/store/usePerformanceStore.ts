@@ -461,6 +461,15 @@ interface PerformanceState {
    *  the playhead via the seam crossfade. When false, the playhead
    *  freezes at end-of-buffer and the transport auto-pauses. */
   loopOn: boolean;
+  /** Operator opt-out for the automatic LoRA-trigger prefix. When true,
+   *  `enabledLoraTriggerPrefix()` returns "" regardless of which LoRAs
+   *  are enabled, so the wire prompt is exactly the operator's text.
+   *  Per-session (not persisted) — defaults off, matching the prior
+   *  "auto-prepend always on" behavior. Toggled from the Prompt Mode
+   *  view; affects every send path (Prompt Mode Send, in-tile Send
+   *  Tags, key/LoRA change triggers, etc) because the helper reads
+   *  this flag at call time. */
+  disableLoraAutoTrigger: boolean;
 
   // ── actions ───────────────────────────────────────────────────────────
   setSlider: (param: string, value: number) => void;
@@ -554,6 +563,7 @@ interface PerformanceState {
   setSmoothMs: (ms: number) => void;
   toggleLufs: () => void;
   toggleLoop: () => void;
+  toggleDisableLoraAutoTrigger: () => void;
   /** Read localStorage-backed prefs (showKbdHints) and
    *  apply them to the store. Called from a client-only useEffect so SSR
    *  always renders with the defaults — without this, hydration mismatches
@@ -648,6 +658,7 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   smoothMs: DEFAULT_SMOOTH_MS,
   lufsOn: false,
   loopOn: true,
+  disableLoraAutoTrigger: false,
 
   setSlider: (param, value) => {
     stampManualTouch(param);
@@ -858,6 +869,8 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
     set((s) => ({ lufsOn: !s.lufsOn })),
   toggleLoop: () =>
     set((s) => ({ loopOn: !s.loopOn })),
+  toggleDisableLoraAutoTrigger: () =>
+    set((s) => ({ disableLoraAutoTrigger: !s.disableLoraAutoTrigger })),
   hydratePersistedPrefs: () =>
     set({
       showKbdHints: loadBool(SHOW_KBD_HINTS_STORAGE_KEY, true),

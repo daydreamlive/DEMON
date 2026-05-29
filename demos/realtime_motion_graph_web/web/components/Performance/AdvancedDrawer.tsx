@@ -69,21 +69,6 @@ export function AdvancedDrawer({ savedTab, unsavedDot }: Props = {}) {
     return () => document.removeEventListener("dd:toggle-drawer", handler);
   }, [started, isMobile]);
 
-  // Directed-open: PromptDeckChip's "edit prompts" handle dispatches
-  // dd:open-drawer-tab with { tab } so the drawer opens AND routes to
-  // the right tab in one move. No-op on mobile (no slide-up drawer).
-  useEffect(() => {
-    const handler = (ev: Event) => {
-      if (!started || isMobile) return;
-      const target = (ev as CustomEvent<{ tab?: DrawerTab }>).detail?.tab;
-      if (target) setActiveTab(target);
-      setOpen(true);
-    };
-    document.addEventListener("dd:open-drawer-tab", handler as EventListener);
-    return () =>
-      document.removeEventListener("dd:open-drawer-tab", handler as EventListener);
-  }, [started, isMobile, setActiveTab]);
-
   // Force-close on any transition back to idle (session reset).
   useEffect(() => {
     if (!started) {
