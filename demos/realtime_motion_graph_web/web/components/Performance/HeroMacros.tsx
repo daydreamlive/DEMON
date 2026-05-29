@@ -22,20 +22,26 @@ import { LORA_SLIDER_MAX } from "@/types/engine";
 
 import { Knob } from "./Knob";
 import { MidiInToggle } from "./MidiInToggle";
+import { PromptDeckChip } from "./PromptDeckChip";
 import { SeedKnob } from "./SeedKnob";
 import { defaultLabelFor, kbdHintFor } from "./SliderTile";
 import { StrengthOnboardingHint } from "./StrengthOnboardingHint";
 
-// Bottom-center bay. Three zones, left to right:
+// Bottom-center bay. Four zones, left to right:
 //   1. Macros — denoise / structure / feedback knobs + seed randomizer.
 //   2. Style faders — the two LoRA strengths inline (was the left-edge
 //      StylePanel; consolidated here so the canvas reads as one unit).
-//   3. Tools — Record / Curve Editor / Full Controls stack.
+//   3. Prompts — compact deck switcher (PromptDeckChip). Tap a slot to
+//      switch active prompt; the engine blends smoothly. Full editor
+//      stays in the drawer's Styles tab.
+//   4. Tools — Record / Curve / Full Controls / MIDI In as a 2x2 grid
+//      (was a vertical stack — 2x2 keeps the bay short while leaving
+//      horizontal room for the Prompts zone).
 //
 // Visibility:
 //   - Hidden when the session is idle.
-//   - Knobs + style faders hide when the drawer is open (CORE + LIB
-//     tabs cover the same params). Tools stay reachable.
+//   - Knobs + style faders + prompts hide when the drawer is open
+//     (CORE + STYLES tabs cover the same params). Tools stay reachable.
 //   - Hidden below 768 px (mobile gets LiteControls).
 
 const HERO_PARAMS = ["denoise", "hint_strength", "timbre_strength"] as const;
@@ -365,7 +371,9 @@ export function HeroMacros() {
         </>
       )}
       <div className="hero-macros-divider" aria-hidden="true" />
-      <div className="hero-macros-tools">
+      <PromptDeckChip />
+      <div className="hero-macros-divider" aria-hidden="true" />
+      <div className="hero-macros-tools hero-macros-tools--grid">
         <RecordPill />
         <button
           type="button"
@@ -379,7 +387,7 @@ export function HeroMacros() {
           data-dd-tooltip-title="Curve Editor"
         >
           <CurveIcon />
-          <span className="hero-macros-tool-label">Curve Editor</span>
+          <span className="hero-macros-tool-label">Curve</span>
         </button>
         <button
           type="button"
@@ -389,7 +397,7 @@ export function HeroMacros() {
           aria-expanded={drawerOpen}
         >
           <span className="hero-macros-toggle-label">
-            {drawerOpen ? "Simple Controls" : "Full Controls"}
+            {drawerOpen ? "Simple" : "Full"}
           </span>
           <span className="hero-macros-toggle-caret" aria-hidden="true">
             {drawerOpen ? "◂" : "▸"}

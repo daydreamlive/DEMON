@@ -271,6 +271,26 @@ const DEFAULT_SLIDER_VALUES: Record<string, number> = {
   steps_override: 8,
 };
 
+/** A named slot in the prompt deck. The deck is a client-only abstraction
+ *  over the engine's two-slot A/B model — the user manages many named
+ *  slots, only one is "active" at a time, and switching slots tweens the
+ *  engine through the existing prompt_blend lerp. See lib/promptDeck.ts
+ *  for the ping-pong orchestration. */
+export interface PromptSlot {
+  id: string;
+  label: string;
+  text: string;
+}
+
+/** Seed deck used on first session. The two entries are the same defaults
+ *  the legacy promptA/promptB carried — operators who never touched Tags
+ *  still get a useful starting palette, and the deck UX is non-empty from
+ *  the first second. */
+export const DEFAULT_PROMPT_SLOTS: PromptSlot[] = [
+  { id: "slot-1", label: "Dubstep", text: "heavy dubstep, deathstep, afxdump, growl heavy bass distortion" },
+  { id: "slot-2", label: "Daft Punk", text: "daft punk style, beautiful, four to the floor, angelic" },
+];
+
 /** A re-applyable record of an active timbre / structure reference.
  *  `timbreName` / `structName` are the server-acked DISPLAY name
  *  (cleared whenever the session leaves "ready"); this is the client's
@@ -311,12 +331,28 @@ interface PerformanceState {
    *  pipeline.py multiplied by 1000 — that hidden multiplier capped
    *  entropy at 1001 values; we send the int as-is now. */
   seed: number;
-  /** Two prompts. The A/B blend itself lives in
-   *  ``sliderValues["prompt_blend"]`` so it rides the Smooth tween
+  /** Engine-bound A/B prompts. The wire only knows two prompt slots; the
+   *  ``promptSlots`` deck is a client-only construct that maps the active
+   *  logical slot onto one of these (A or B) and ping-pongs on switch.
+   *  Direct edits to promptA/promptB still work (saved-session restore,
+   *  curve replays, etc.), but the UI now writes to the slot deck first
+   *  and lets the deck propagate to promptA/promptB. The A/B blend lives
+   *  in ``sliderValues["prompt_blend"]`` so it rides the Smooth tween
    *  machinery, the graph, and the generic MIDI / keyboard / param
    *  pipelines the same way every other knob does. */
   promptA: string;
   promptB: string;
+  /** Client-only prompt deck. The user sees a strip of named slots; only
+   *  two of them at any moment are loaded into the engine as A/B. The
+   *  active slot is identified by ``currentSlotId``; ``physicalSlot``
+   *  records which engine slot it's mounted in (0 = A, 1 = B). Switching
+   *  to another deck slot loads the target into the *other* engine slot
+   *  and tweens prompt_blend toward it (see ``lib/promptDeck.ts``). Not
+   *  persisted across reloads — saved sessions restore promptA/promptB
+   *  directly via the legacy path. */
+  promptSlots: PromptSlot[];
+  currentSlotId: string;
+  physicalSlot: 0 | 1;
   /** Currently active key (e.g. "G# minor"). May come from auto-detect. */
   activeKey: string;
   /** Currently active time-signature numerator as a wire string
@@ -439,6 +475,28 @@ interface PerformanceState {
   randomizeSeed: () => void;
   setPromptA: (s: string) => void;
   setPromptB: (s: string) => void;
+  /** Append a new deck slot. Returns the new slot's id. The label defaults
+   *  to "Slot N" where N is the next available number; text defaults to
+   *  empty. Does not change which slot is active. */
+  addPromptSlot: (label?: string, text?: string) => string;
+  /** Remove a deck slot by id. No-op if it's the only remaining slot
+   *  (deck floor is 1) or the id doesn't exist. If the removed slot was
+   *  the active one, the first remaining slot becomes active — engine
+   *  state (promptA/promptB) is untouched here; the caller should issue
+   *  a switch to re-sync the wire. */
+  removePromptSlot: (id: string) => void;
+  /** Rename a deck slot (label only — text is unaffected). */
+  renamePromptSlot: (id: string, label: string) => void;
+  /** Update a slot's prompt text. If the slot is currently loaded in an
+   *  engine slot (A or B), the corresponding promptA/promptB is also
+   *  updated so the engine-bound mirror stays consistent. Does NOT
+   *  re-encode — the operator commits via Send Tags. */
+  setPromptSlotText: (id: string, text: string) => void;
+  /** Raw state write — record which deck slot is "current" and which
+   *  engine slot it occupies. Used by lib/promptDeck.ts after it has
+   *  loaded the new prompt into the inactive engine slot and animated
+   *  the blend; the slot-switch UI shouldn't call this directly. */
+  setCurrentSlot: (id: string, physicalSlot: 0 | 1) => void;
   setKey: (k: string) => void;
   setTimeSignature: (s: TimeSignature) => void;
   setFixture: (name: string) => void;
@@ -554,8 +612,11 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   sliderTargets: { ...DEFAULT_SLIDER_VALUES },
   sliderDisplayOverride: {},
   seed: 0,
-  promptA: "heavy dubstep, deathstep, afxdump, growl heavy bass distortion",
-  promptB: "daft punk style, beautiful, four to the floor, angelic",
+  promptA: DEFAULT_PROMPT_SLOTS[0].text,
+  promptB: DEFAULT_PROMPT_SLOTS[1].text,
+  promptSlots: DEFAULT_PROMPT_SLOTS.map((s) => ({ ...s })),
+  currentSlotId: DEFAULT_PROMPT_SLOTS[0].id,
+  physicalSlot: 0,
   activeKey: "G# minor",
   activeTimeSignature: DEFAULT_TIME_SIGNATURE,
   fixture: "",
@@ -656,6 +717,55 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
     set({ seed: Math.floor(Math.random() * 0x100000000) }),
   setPromptA: (s) => set({ promptA: s }),
   setPromptB: (s) => set({ promptB: s }),
+  addPromptSlot: (label, text) => {
+    // Generate the new id from current state read inside set() so we
+    // avoid usePerformanceStore.getState() inside the create() body —
+    // that recursive self-reference breaks TS's type inference for the
+    // whole store. Side-channel `newId` out of the set callback.
+    let newId = "";
+    set((s) => {
+      let n = s.promptSlots.length + 1;
+      while (s.promptSlots.some((slot) => slot.id === `slot-${n}`)) n += 1;
+      newId = `slot-${n}`;
+      return {
+        promptSlots: [
+          ...s.promptSlots,
+          { id: newId, label: label ?? `Slot ${n}`, text: text ?? "" },
+        ],
+      };
+    });
+    return newId;
+  },
+  removePromptSlot: (id) =>
+    set((s) => {
+      if (s.promptSlots.length <= 1) return {};
+      const idx = s.promptSlots.findIndex((slot) => slot.id === id);
+      if (idx < 0) return {};
+      const nextSlots = s.promptSlots.filter((slot) => slot.id !== id);
+      if (s.currentSlotId !== id) return { promptSlots: nextSlots };
+      const nextCurrent = nextSlots[Math.max(0, idx - 1)] ?? nextSlots[0];
+      return { promptSlots: nextSlots, currentSlotId: nextCurrent.id };
+    }),
+  renamePromptSlot: (id, label) =>
+    set((s) => ({
+      promptSlots: s.promptSlots.map((slot) =>
+        slot.id === id ? { ...slot, label } : slot,
+      ),
+    })),
+  setPromptSlotText: (id, text) =>
+    set((s) => {
+      const patch: Partial<PerformanceState> = {
+        promptSlots: s.promptSlots.map((slot) =>
+          slot.id === id ? { ...slot, text } : slot,
+        ),
+      };
+      if (id === s.currentSlotId) {
+        if (s.physicalSlot === 0) patch.promptA = text;
+        else patch.promptB = text;
+      }
+      return patch;
+    }),
+  setCurrentSlot: (id, physicalSlot) => set({ currentSlotId: id, physicalSlot }),
   setKey: (k) => set({ activeKey: k }),
   setTimeSignature: (s) => set({ activeTimeSignature: s }),
   setFixture: (name) => set({ fixture: name }),

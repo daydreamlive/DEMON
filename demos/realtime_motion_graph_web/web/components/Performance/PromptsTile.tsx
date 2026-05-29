@@ -1,34 +1,67 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
+
+import {
+  addAndSwitchToPromptSlot,
+  removePromptSlot,
+  switchToPromptSlot,
+} from "@/lib/promptDeck";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 
+// Deck UX: many named slots, only one active at a time. The engine only
+// has A/B; lib/promptDeck.ts ping-pongs the active slot through the two
+// engine slots on switch and tweens the prompt_blend slider to make the
+// transition smooth. The crossfade slider that used to live here is
+// gone — operators reported it was hard to read; the deck switch is the
+// only visible interaction.
+//
+// Editing the active slot's text mirrors to promptA or promptB via the
+// store (setPromptSlotText), but does NOT re-encode automatically — the
+// "Send Tags" button is the explicit commit, matching the pre-deck flow.
+
 export function PromptsTile() {
-  const promptA = usePerformanceStore((s) => s.promptA);
-  const promptB = usePerformanceStore((s) => s.promptB);
-  // Read sliderTargets (instant) so the thumb tracks the cursor without
-  // the smoothing lag — the engine sees the smoothed sliderValues via
-  // usePromptBlendSync.
-  const blend = usePerformanceStore(
-    (s) => s.sliderTargets.prompt_blend ?? 0,
-  );
+  const slots = usePerformanceStore((s) => s.promptSlots);
+  const currentSlotId = usePerformanceStore((s) => s.currentSlotId);
   const activeKey = usePerformanceStore((s) => s.activeKey);
   const activeTimeSignature = usePerformanceStore((s) => s.activeTimeSignature);
-  const setPromptA = usePerformanceStore((s) => s.setPromptA);
-  const setPromptB = usePerformanceStore((s) => s.setPromptB);
-  const setSlider = usePerformanceStore((s) => s.setSlider);
+  const promptA = usePerformanceStore((s) => s.promptA);
+  const promptB = usePerformanceStore((s) => s.promptB);
+  const setPromptSlotText = usePerformanceStore((s) => s.setPromptSlotText);
+  const renamePromptSlot = usePerformanceStore((s) => s.renamePromptSlot);
 
-  // Send Tags is the only path that pays the server-side text encoder:
-  // it ships both A and B so the backend caches a cond pair for each,
-  // and the blend slider then lerps between them per tick via the cheap
-  // set_prompt_blend channel (usePromptBlendSync). Editing the
-  // textareas does NOT auto-submit — the operator decides when to
-  // commit new tags.
+  const currentSlot = slots.find((s) => s.id === currentSlotId) ?? slots[0];
+
+  // Local rename state: which slot id is in rename mode, and its draft
+  // label. Committing flushes to the store and exits; Escape cancels.
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (renamingId && renameInputRef.current) {
+      renameInputRef.current.focus();
+      renameInputRef.current.select();
+    }
+  }, [renamingId]);
+
   function sendPrompt() {
     const remote = useSessionStore.getState().remote;
     if (remote) {
       remote.sendPrompt(promptA, activeKey, activeTimeSignature, promptB);
     }
+  }
+
+  function startRename(id: string, currentLabel: string) {
+    setRenamingId(id);
+    setRenameDraft(currentLabel);
+  }
+  function commitRename() {
+    if (renamingId) {
+      const trimmed = renameDraft.trim();
+      if (trimmed) renamePromptSlot(renamingId, trimmed);
+    }
+    setRenamingId(null);
   }
 
   return (
@@ -38,63 +71,105 @@ export function PromptsTile() {
         <div className="prompt-slot">
           <label
             className="prompt-label"
-            htmlFor="prompt-a"
-            data-dd-tooltip="Primary tags — text the model conditions on. With the blend at 0, these are the only tags driving the output."
+            htmlFor="prompt-active"
+            data-dd-tooltip="Active slot's text. The model conditions on this. Edit, then click Send Tags to commit. Switch slots with the strip below — the engine blends smoothly."
             data-dd-tooltip-wide=""
           >
-            Tags A
+            Active prompt
           </label>
           <textarea
-            id="prompt-a"
+            id="prompt-active"
             className="prompt-input"
-            rows={2}
-            value={promptA}
-            onChange={(e) => setPromptA(e.target.value)}
+            rows={3}
+            value={currentSlot?.text ?? ""}
+            onChange={(e) =>
+              currentSlot && setPromptSlotText(currentSlot.id, e.target.value)
+            }
           />
         </div>
-        {/* data-param wrapper makes the right-click → MIDI learn
-            handler in useMidi.ts pick this up (kind="cc",
-            target="prompt_blend") without adopting slider-group
-            styling. MIDI writes flow through the generic setSlider
-            path now that prompt_blend lives in sliderValues. */}
         <div
-          id="blend-control"
-          data-param="prompt_blend"
-          data-dd-tooltip="Crossfade between Tags A and Tags B. 0 = pure A, 1 = pure B. Hold B and use ▲▼ on desktop to nudge. Right-click to MIDI-learn."
+          className="prompt-coupling-hint"
+          data-dd-tooltip="Prompts steer the model strongly only when Strength is high (model has freedom) and Structure is low (less anchored to the source). Outside that window you'll hear minor variations, not the prompt's character."
           data-dd-tooltip-wide=""
         >
-          <span className="blend-label">A</span>
-          <input
-            type="range"
-            id="prompt-blend"
-            min="0"
-            max="1"
-            step="0.01"
-            value={blend}
-            onChange={(e) => setSlider("prompt_blend", parseFloat(e.target.value))}
-          />
-          <span className="blend-value" id="blend-value">
-            {blend.toFixed(2)}
-          </span>
-          <span className="blend-label">B</span>
-          <kbd className="desktop-only blend-kbd">B + ▲▼</kbd>
+          Hits hardest at high Strength + low Structure.
         </div>
-        <div className="prompt-slot">
-          <label
-            className="prompt-label"
-            htmlFor="prompt-b"
-            data-dd-tooltip="Secondary tags — interpolates with A based on the blend slider. With the blend at 1, only B drives the output."
-            data-dd-tooltip-wide=""
+        <div className="prompt-deck" role="tablist" aria-label="Prompt slots">
+          {slots.map((slot) => {
+            const isActive = slot.id === currentSlotId;
+            const isRenaming = slot.id === renamingId;
+            return (
+              <div
+                key={slot.id}
+                className={`prompt-deck-slot${isActive ? " prompt-deck-slot--active" : ""}${isRenaming ? " prompt-deck-slot--renaming" : ""}`}
+                role="tab"
+                aria-selected={isActive}
+              >
+                {isRenaming ? (
+                  <input
+                    ref={renameInputRef}
+                    className="prompt-deck-slot-rename"
+                    type="text"
+                    value={renameDraft}
+                    onChange={(e) => setRenameDraft(e.target.value)}
+                    onBlur={commitRename}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        commitRename();
+                      } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        setRenamingId(null);
+                      }
+                    }}
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    className="prompt-deck-slot-label"
+                    onClick={() => {
+                      if (!isActive) switchToPromptSlot(slot.id);
+                    }}
+                    onDoubleClick={() => startRename(slot.id, slot.label)}
+                    title={`Double-click to rename. ${slot.text || "(empty)"}`}
+                  >
+                    {slot.label}
+                  </button>
+                )}
+                {slots.length > 1 && !isRenaming && (
+                  <button
+                    type="button"
+                    className="prompt-deck-slot-remove"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removePromptSlot(slot.id);
+                    }}
+                    aria-label={`Delete ${slot.label}`}
+                    title="Delete slot"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+            );
+          })}
+          <button
+            type="button"
+            className="prompt-deck-add"
+            onClick={() => {
+              const newId = addAndSwitchToPromptSlot();
+              // Drop straight into rename mode on add so the user names
+              // it before forgetting why they made it.
+              const newSlot = usePerformanceStore
+                .getState()
+                .promptSlots.find((s) => s.id === newId);
+              if (newSlot) startRename(newSlot.id, newSlot.label);
+            }}
+            aria-label="Add prompt slot"
+            title="Add prompt slot"
           >
-            Tags B
-          </label>
-          <textarea
-            id="prompt-b"
-            className="prompt-input"
-            rows={2}
-            value={promptB}
-            onChange={(e) => setPromptB(e.target.value)}
-          />
+            +
+          </button>
         </div>
         <button
           id="send-prompt"
