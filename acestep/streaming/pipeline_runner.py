@@ -44,6 +44,50 @@ except ValueError:
 MAX_FEEDBACK_DEPTH = 8
 
 
+def _fixed_windowed_vae_span_s() -> float:
+    """Return the fixed VAE decode span in seconds, or 0 for dynamic engines."""
+    try:
+        from acestep.paths import WINDOWED_VAE_PROFILE_FRAMES
+    except Exception:
+        return 0.0
+    pmin, popt, pmax = WINDOWED_VAE_PROFILE_FRAMES
+    if pmin == popt == pmax and pmin > 0:
+        return pmin / 25.0
+    return 0.0
+
+
+class _RemotePlayheadClock:
+    """Monotonic estimate of the client's audible playhead.
+
+    The browser sends periodic absolute playback positions over the params
+    channel. Those messages are the authority, but they can arrive slower
+    than the runner loop or be coalesced under load. This clock anchors on
+    the most recent observed sample and advances by wall time between
+    anchors, so VAE scheduling remains continuous even when controls and
+    WebSocket heartbeats are quiet.
+    """
+
+    def __init__(self, audio_eng):
+        self.audio_eng = audio_eng
+        self._observed = int(audio_eng.position)
+        self._anchor_sample = int(audio_eng.position)
+        self._anchor_wall_s = time.monotonic()
+
+    def sample(self) -> int:
+        n = max(1, len(self.audio_eng.current))
+        now = time.monotonic()
+        observed = int(self.audio_eng.position) % n
+        if observed != self._observed:
+            self._observed = observed
+            self._anchor_sample = observed
+            self._anchor_wall_s = now
+        elapsed = max(0.0, now - self._anchor_wall_s)
+        return int(self._anchor_sample + elapsed * SAMPLE_RATE) % n
+
+    def seconds(self) -> float:
+        return self.sample() / SAMPLE_RATE
+
+
 def _build_dcw_advanced(raw: dict) -> "DCWAdvanced | None":
     """Translate the client's three DCW fader values into a
     :class:`DCWAdvanced`, or return ``None`` when all three are zero.
@@ -123,7 +167,10 @@ class PipelineRunner:
         self.use_lora = use_lora
         self.midi_knobs = midi_knobs
         self.engine_obj = engine_obj
-        self.vae_window = vae_window
+        # Use the effective Session value after engine-profile clamps.
+        # The web config may still carry an old multi-second value, but
+        # scheduling must match the slice length session.decode() emits.
+        self.vae_window = float(getattr(session, "_vae_window", vae_window))
         self.crop_seconds = crop_seconds
         self.k1_name = k1_name
         self.SEED = seed
@@ -199,18 +246,24 @@ class PipelineRunner:
         self._vae_paused = False
         self._dit_paused_at_wall_s = 0.0
 
-        # Predictive decode: rolling EMA of (tick + decode) wall time. Each
-        # decode targets ``playhead + _predicted_advance_s`` so that by the
-        # time the freshly-decoded window is written into the buffer, its
-        # leading edge (and the per-window crossfade ramp) lines up with
-        # where the listener actually is. Without this, ``win_start`` is
-        # set to the playhead at decode-START, which by write-time is
-        # already ``dec_ms`` in the past — the listener has marched past
-        # the crossfade region and hears the new params start abruptly
-        # mid-window. Capped to half the VAE window so a transient stall
-        # can't lock the prediction onto a value that puts new audio
-        # arbitrarily far ahead of the actual playhead.
+        # Predictive decode: rolling EMA of (tick + decode) wall time.
+        # Dynamic-window decoders use this as the target lead. Fixed 1 s
+        # decoders also apply a floor from the decode span below so the
+        # tiny kept wire slice does not collapse DiT lookahead.
         self._predicted_advance_s = 0.1
+        # ``vae_window`` is now the kept wire slice for fixed-profile
+        # windowed VAE decoders, not the full decode span. Keep the
+        # patch cadence on ``vae_window`` for coverage, but lead the
+        # decode target by the fixed engine's span so the DiT has time
+        # to settle the region before the listener reaches it.
+        fixed_vae_span_s = _fixed_windowed_vae_span_s()
+        self._vae_advance_floor_s = (
+            fixed_vae_span_s * 0.5
+            if fixed_vae_span_s > self.vae_window > 0
+            else 0.0
+        )
+        self._vae_advance_cap_s = max(self.vae_window, fixed_vae_span_s) * 0.5
+        self._playhead_clock = _RemotePlayheadClock(self.audio_eng)
 
         # Cache silence once; used by the hint-strength blend node.
         self._rebuild_silence_latent()
@@ -253,6 +306,18 @@ class PipelineRunner:
         self._silence_latent = EmptyLatent().execute(
             model=self.stream.model, duration=T_frames / 25.0,
         )["latent"]
+
+    def _decode_advance_s(self) -> float:
+        """Lead windowed VAE decode targets ahead of the live playhead."""
+        if self.vae_window <= 0:
+            return 0.0
+        advance_s = max(self._predicted_advance_s, self._vae_advance_floor_s)
+        if self._vae_advance_cap_s > 0:
+            advance_s = min(advance_s, self._vae_advance_cap_s)
+        return advance_s
+
+    def _playhead_seconds_now(self) -> float:
+        return self._playhead_clock.seconds()
 
     def _update_hint_strength(self, hint_str: float) -> None:
         """Blend source context with silence by ``hint_str`` into the handle.
@@ -309,7 +374,6 @@ class PipelineRunner:
         from collections import deque
         latent_history: deque = deque(maxlen=MAX_FEEDBACK_DEPTH)
         last_wav = None
-        last_decode_pos = None
         last_hint_str = 1.0
         last_channel_gains = [1.0] * (len(CHANNEL_GROUPS) + len(KEYSTONE_CHANNELS))
         current_shift = self.stream.base_kwargs["shift"]
@@ -325,6 +389,15 @@ class PipelineRunner:
         # ``prev_walk_w0`` is reset (source swap or chunk transition).
         cached_live_src_lat = None
         cached_live_ctx_raw_t = None
+        logger.info(
+            "stream decode: vae_window={:.3f}s decode_span={:.3f}s "
+            "advance=[{:.3f},{:.3f}]s walk_window_s={:.3f}",
+            self.vae_window,
+            _fixed_windowed_vae_span_s(),
+            self._vae_advance_floor_s,
+            self._vae_advance_cap_s,
+            self.walk_window_s,
+        )
 
         while self.state.running:
             if self.before_tick is not None:
@@ -410,7 +483,7 @@ class PipelineRunner:
             # The slice stays the same for the entire walk_window_s of
             # playback that sits inside this chunk — only when the
             # playhead crosses into the next chunk does ``w0`` advance.
-            # Use ``playhead + predicted_advance`` so the swap happens a
+            # Use ``playhead + decode_advance`` so the swap happens a
             # tick or two before the boundary, giving the new chunk's
             # ring-buffer warmup head room to land before the listener
             # actually crosses.
@@ -418,9 +491,9 @@ class PipelineRunner:
             walk_w1 = -1
             walk_chunk_start_s = 0.0
             if walk_active:
-                playhead_now_s = self.audio_eng.position / SAMPLE_RATE
+                playhead_now_s = self._playhead_seconds_now()
                 advance_s_for_chunk = min(
-                    self._predicted_advance_s, self.walk_window_s * 0.5,
+                    self._decode_advance_s(), self.walk_window_s * 0.5,
                 )
                 # Wrap target through the playable buffer length so the
                 # song-end → song-start loop transitions cleanly back to
@@ -457,7 +530,6 @@ class PipelineRunner:
                 last_latent = None
                 latent_history.clear()
                 last_wav = None
-                last_decode_pos = None
                 prev_src_id = cur_src_id
                 prev_src_T = cur_src_T
                 cached_live_src_lat = None
@@ -700,16 +772,17 @@ class PipelineRunner:
                     tick_kwargs["negative"] = self.neg_conditioning
             # DiT-pause: skip the expensive ``stream.tick()`` call and
             # reuse the cached latent from the most recent active tick.
-            # The rest of the loop (skip-decode heuristic, windowed VAE
-            # decode, on_audio_ready) is unchanged — when the playhead
-            # has moved enough since ``last_decode_pos``, the existing
-            # ``skipped`` logic naturally re-decodes a fresh window of
-            # this same latent and ships the delta. We only get here
-            # when a cached latent exists (see the stage-detection
-            # block above; lack of cache falls through to the normal
-            # tick).
+            # Windowed VAE decode/on_audio_ready still runs below, using
+            # the cached latent and the monotonic playhead estimate. We
+            # only get here when a cached latent exists (see the stage-
+            # detection block above; lack of cache falls through to the
+            # normal tick).
             if self._dit_paused and self._last_result_latent is not None:
                 result_latent = self._last_result_latent
+                # In DiT-pause mode there is no expensive diffusion tick
+                # to pace the loop. Keep VAE refresh comfortably faster
+                # than the 0.36 s wire slice without spinning at CPU speed.
+                time.sleep(0.02)
             else:
                 result_latent = self.stream.tick(
                     denoise=denoise,
@@ -745,43 +818,30 @@ class PipelineRunner:
             dec_ms = 0.0
             if result_latent is not None:
                 result = result_latent.tensor
-                skipped = False
-                if last_latent is not None:
-                    mse = (result - last_latent).pow(2).mean().item()
-                    if mse < self.skip_threshold and last_wav is not None:
-                        if self.vae_window > 0:
-                            t_pos = self.audio_eng.position / SAMPLE_RATE
-                            # Larger prefetch fraction → re-decode sooner
-                            # before the playhead reaches the trailing
-                            # edge of the previous window. Bumped from 0.2
-                            # to 0.3 so fresh params land sooner at the
-                            # cost of slightly more GPU work.
-                            prefetch = min(1.0, self.vae_window * 0.3)
-                            if last_decode_pos is not None:
-                                drift = abs(t_pos - last_decode_pos)
-                                # Band-relative drift: last_decode_pos is
-                                # wrapped into the band, t_pos isn't, so near
-                                # the seam the raw distance reads as a near-
-                                # full-band jump and would force a decode
-                                # every tick. Fold it into the band so a
-                                # steady loop still skips redundant decodes.
-                                band = getattr(self.audio_eng, "loop_band", None)
-                                if band is not None:
-                                    span = float(band[1]) - float(band[0])
-                                    if span > 1e-3:
-                                        drift = drift % span
-                                        drift = min(drift, span - drift)
-                                if drift < self.vae_window - prefetch:
-                                    skipped = True
-                        else:
-                            skipped = True
+                # Decode scheduling policy:
+                #   * Windowed decode (vae_window > 0) is coverage-driven:
+                #     it refreshes a fresh slice every tick so live control
+                #     changes always reach the wire, and is NEVER skipped on
+                #     a low latent-MSE — that throttling is what made the
+                #     audio go stale between param moves.
+                #   * Full-buffer decode (vae_window <= 0) keeps the legacy
+                #     MSE skip: re-decoding the whole song each tick when the
+                #     latent barely changed is pure waste.
+                skip_full_decode = False
+                if (
+                    self.vae_window <= 0
+                    and last_latent is not None
+                    and last_wav is not None
+                    and (result - last_latent).pow(2).mean().item() < self.skip_threshold
+                ):
+                    skip_full_decode = True
 
                 last_latent = result.clone()
                 # appendleft so latent_history[0] is the most recent;
                 # tap_idx = depth-1 reads "N ticks back."
                 latent_history.appendleft(last_latent)
 
-                if not skipped:
+                if not skip_full_decode:
                     t1 = time.perf_counter()
                     # eff_dur clamps the windowed-decode playhead so the
                     # window stays inside the latent. In walk mode the
@@ -797,14 +857,14 @@ class PipelineRunner:
                             else self.stream.source.latent.tensor.shape[1] / 25.0
                         )
                     if self.vae_window > 0:
-                        playhead_now = self.audio_eng.position / SAMPLE_RATE
+                        playhead_now = self._playhead_seconds_now()
                         # Predictive decode start: target where the playhead
-                        # WILL be by the time this window lands in the buffer
-                        # (≈ tick + dec wall time from now). Cap at half the
-                        # VAE window so a noisy spike can't push new audio
-                        # arbitrarily far into the future. Wrap modulo
-                        # ``eff_dur`` since the decoder supports cyclic.
-                        advance_s = min(self._predicted_advance_s, self.vae_window * 0.5)
+                        # WILL be by the time this window lands in the buffer,
+                        # with fixed-profile decoders held ahead by their
+                        # decode span rather than the tiny kept wire slice.
+                        # Wrap modulo ``eff_dur`` since the decoder supports
+                        # cyclic.
+                        advance_s = self._decode_advance_s()
                         decode_start = playhead_now + advance_s
                         if eff_dur > 0:
                             decode_start = decode_start % eff_dur
@@ -831,7 +891,17 @@ class PipelineRunner:
                             a_s = max(0.0, min(float(band[0]), eff_dur))
                             b_s = max(0.0, min(float(band[1]), eff_dur))
                             span = b_s - a_s
-                            if span > 1e-3:
+                            # Only pin the decode into the band while the
+                            # playhead is actually INSIDE it. The operator can
+                            # scrub the playhead out of an armed loop; when
+                            # they do, pinning would keep regenerating audio
+                            # inside the loop while the listener is somewhere
+                            # else — exactly the "waveform changes in the loop
+                            # instead of in front of the playhead" bug. Outside
+                            # the band we fall through to the plain playhead
+                            # chase (``decode_start`` set above).
+                            playhead_in_band = a_s <= playhead_now <= b_s
+                            if span > 1e-3 and playhead_in_band:
                                 if span < self.vae_window:
                                     # Band shorter than one decode window:
                                     # pin the target at A so every decode
@@ -849,12 +919,6 @@ class PipelineRunner:
                                 band_end_sample = int(round(b_s * SAMPLE_RATE))
                                 band_wrap_start_s = a_s
 
-                        # The skip-decode bookkeeping anchors on the
-                        # *predicted* start so the next iteration's drift
-                        # check measures distance from the start of the
-                        # window we actually decoded, not from the playhead
-                        # at decode-time.
-                        last_decode_pos = decode_start
                         if walk_active:
                             # The DiT output spans [win_start_s,
                             # win_start_s + walk_window_s] of the song.
@@ -989,9 +1053,9 @@ class PipelineRunner:
                                 torch.cuda.synchronize()
                                 dec_ms = (time.perf_counter() - t1) * 1000
                         # ``last_wav`` is only checked for non-None by
-                        # the skip-gate above. A view of the engine
-                        # buffer is enough; we don't need to retain a
-                        # snapshot.
+                        # the legacy full-buffer skip path. A view of
+                        # the engine buffer is enough; we don't need to
+                        # retain a snapshot.
                         last_wav = current
                     else:
                         audio_out = self.session.decode(result_latent)

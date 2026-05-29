@@ -192,8 +192,8 @@
         "type": "node",
         "node_type_id": "acestep.StreamVAEDecode",
         "params": {
-          "vae_window": 5,
-          "vae_overlap": 0.5,
+          "vae_window": 0.36,
+          "vae_overlap": 0.4,
           "t_start": 0,
           "follow_playhead": true,
           "mse_skip_threshold": 0.001,

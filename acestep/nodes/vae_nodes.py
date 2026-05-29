@@ -439,10 +439,12 @@ class StreamVAEDecode(BaseNode):
     provided.
 
     Node parameters:
-        vae_window: Window length in seconds. ``<= 0`` decodes the full
-            latent in one shot (parity with ``VAEDecodeAudio``).
-        vae_overlap: Extra seconds of context on each side of the window.
-            Trimmed from the returned Audio.
+        vae_window: Kept "wire slice" length in seconds. ``<= 0`` decodes
+            the full latent in one shot (parity with ``VAEDecodeAudio``).
+            Otherwise the fixed 1 s engine decodes a 25-frame span and the
+            middle ``vae_window`` seconds are returned.
+        vae_overlap: Legacy no-op. The per-side margin is derived from the
+            fixed decode span, so this value is ignored.
         t_start: Window start in seconds. Used only when
             ``follow_playhead`` is false or no playhead is provided.
         follow_playhead: If true and ``playhead_seconds`` is supplied in
@@ -483,17 +485,23 @@ class StreamVAEDecode(BaseNode):
             ),
             params=(
                 NodeParam(
-                    name="vae_window", type="number", default=5.0,
+                    name="vae_window", type="number", default=0.36,
                     description=(
-                        "Decode window (s); <=0 decodes full latent. "
-                        "Positive values are clamped to [3, 30] to fit "
-                        "the windowed VAE engine profile."
+                        "Kept 'wire slice' (s); <=0 decodes full latent. "
+                        "The windowed engine always decodes a fixed 1.0 s "
+                        "span and this is the middle portion emitted; "
+                        "clamped to [0.04, 0.36] so >=8 frames of margin "
+                        "remain on each side."
                     ),
-                    min=0.0, max=30.0, step=0.1,
+                    min=0.0, max=0.36, step=0.02,
                 ),
                 NodeParam(
-                    name="vae_overlap", type="number", default=0.5,
-                    description="Extra context seconds on each window edge",
+                    name="vae_overlap", type="number", default=0.4,
+                    description=(
+                        "Legacy no-op. The fixed 1 s windowed engine derives "
+                        "its per-side margin as (1 s - vae_window)/2, so this "
+                        "value is ignored."
+                    ),
                     min=0.0, max=5.0, step=0.05,
                 ),
                 NodeParam(
@@ -539,7 +547,6 @@ class StreamVAEDecode(BaseNode):
         vae: VAEHandle = kwargs["vae"]
         latent: Latent = kwargs["latent"]
         window_s = float(kwargs.get("vae_window", 0.0))
-        overlap_s = float(kwargs.get("vae_overlap", 0.5))
 
         # Hard-clamp positive windows to the engine-supported range.
         # ``<= 0`` is the disable sentinel and falls through to a full
@@ -599,8 +606,18 @@ class StreamVAEDecode(BaseNode):
 
         tensor = latent.tensor
         T = tensor.shape[1]
-        win_frames = int(window_s * self.FRAMES_PER_SEC)
-        ovl_frames = int(overlap_s * self.FRAMES_PER_SEC)
+
+        # The windowed VAE engine is a FIXED-shape engine: it decodes
+        # exactly ``decode_frames`` (1 s / 25 frames) on every call. The
+        # kept "wire slice" is the middle ``win_frames`` of that span; the
+        # leftover frames each side are the receptive-field margin we trim
+        # off. The margin is derived from ``decode_frames - keep`` so live
+        # controls can never feed an out-of-profile shape — ``vae_overlap``
+        # is not used here. See acestep.paths WINDOWED_VAE_PROFILE_FRAMES.
+        from acestep.paths import WINDOWED_VAE_PROFILE_FRAMES
+        decode_frames = WINDOWED_VAE_PROFILE_FRAMES[0]
+        # Keep can't exceed the fixed decode span; clamp defensively.
+        win_frames = max(1, min(int(window_s * self.FRAMES_PER_SEC), decode_frames))
 
         if T <= win_frames:
             out = VAEDecodeAudio().execute(vae=vae, latent=latent)
@@ -622,27 +639,22 @@ class StreamVAEDecode(BaseNode):
         keep_end = min(T, keep_start + win_frames)
         keep_start = max(0, keep_end - win_frames)
 
+        # Decode a fixed ``decode_frames``-frame span centered on the keep
+        # window; the kept slice is the middle ``win_frames`` and its trim
+        # offset is ``keep_start - decode_start``.
+        left = (decode_frames - win_frames) // 2
         if cyclic:
-            # Pull missing context from the opposite end so boundary
-            # frames see a full receptive field, instead of clamping to
-            # zero context (which makes frame 0 / frame T-1 sound less
-            # denoised than every interior frame).
-            decode_start = keep_start - ovl_frames
-            decode_end = keep_end + ovl_frames
-            pieces = []
-            if decode_start < 0:
-                pieces.append(tensor[:, T + decode_start:, :])
-                pieces.append(tensor[:, :decode_end, :])
-            elif decode_end > T:
-                pieces.append(tensor[:, decode_start:, :])
-                pieces.append(tensor[:, :decode_end - T, :])
-            else:
-                pieces.append(tensor[:, decode_start:decode_end, :])
-            chunk_lat = Latent(tensor=torch.cat(pieces, dim=1).contiguous())
-            pre_margin_frames = ovl_frames
+            # Take the fixed span wrapping around the latent so a looping
+            # song's tail feeds the head's left context.
+            start = keep_start - left
+            idx = torch.arange(
+                start, start + decode_frames, device=tensor.device
+            ) % T
+            chunk_lat = Latent(tensor=tensor.index_select(1, idx).contiguous())
+            pre_margin_frames = left
         else:
-            decode_start = max(0, keep_start - ovl_frames)
-            decode_end = min(T, keep_end + ovl_frames)
+            decode_start = max(0, min(keep_start - left, T - decode_frames))
+            decode_end = decode_start + decode_frames
             chunk_lat = Latent(
                 tensor=tensor[:, decode_start:decode_end, :].contiguous()
             )

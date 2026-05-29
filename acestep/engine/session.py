@@ -164,7 +164,7 @@ class Session:
         quantization: Optional[str] = None,
         trt_engines: Optional[dict[str, str]] = None,
         vae_window: float = 0.0,
-        vae_overlap: float = 0.5,
+        vae_overlap: float = 0.4,
     ):
         """Persistent ACE-Step session.
 
@@ -274,6 +274,7 @@ class Session:
             from acestep.paths import (
                 available_windowed_vae_decode_engine,
                 looks_like_dreamvae_engine,
+                windowed_vae_decode_engine_name,
             )
             from loguru import logger as _log
 
@@ -296,7 +297,7 @@ class Session:
                     "necessary). Build with: python -m "
                     "acestep.engine.trt.build --all{}",
                     vae_window,
-                    "dreamvae_decode_fp16_3to30s" if is_dreamvae else "vae_decode_fp16_3to30s",
+                    windowed_vae_decode_engine_name(dreamvae=is_dreamvae),
                     Path(current).stem,
                     " --with-dreamvae" if is_dreamvae else "",
                 )

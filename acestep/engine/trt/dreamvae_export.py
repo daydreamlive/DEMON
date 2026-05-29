@@ -250,7 +250,7 @@ def build_windowed_dreamvae_engine(
     output_dir = Path(output_dir)
     name = WINDOWED_DREAMVAE_DECODE_NAME
     engine_path = output_dir / name / f"{name}.engine"
-    label = "DreamVAE decode windowed (3-30s)"
+    label = "DreamVAE decode fixed 1s (25 fr)"
 
     if onnx_path is None:
         onnx_path = fetch_dreamvae_onnx(output_dir)

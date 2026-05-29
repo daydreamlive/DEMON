@@ -9,7 +9,7 @@ engine before loading the next is mandatory.
 
 Out of scope: ``vae_decode``. The realtime path runs with
 ``vae_window > 0``, which pins ``vae_decode`` to the windowed engine
-(``vae_decode_fp16_3to30s``); that engine's 3-30 s shape range is
+(``vae_decode_fp16_1s_fixed``); that engine's fixed 1 s shape is
 profile-independent. Optional dreamvae / fast_vae substitutions are
 also applied at session build and survive every profile swap. The
 manager intentionally leaves the vae_decode slot alone so it can't

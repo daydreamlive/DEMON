@@ -303,7 +303,7 @@ export const DEFAULT_CONFIG: RtmgConfig = {
     sde: false,
     lora: true,
     depth: 4,
-    vae_window: 6,
+    vae_window: 0.36,
     crop: 0,
     steps: 8,
     fast_vae: false,

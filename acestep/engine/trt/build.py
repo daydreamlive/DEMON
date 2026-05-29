@@ -723,14 +723,14 @@ def _build_windowed_vae_decode_engine(
     env: dict,
     force_rebuild: bool = False,
 ) -> tuple[str, str, float, str]:
-    """Build the single windowed (3-30 s) VAE decode engine.
+    """Build the fixed 1-second windowed VAE decode engine (25 frames).
 
-    This profile is shared across all duration tiers — it's selected
-    by the runtime when ``vae_window > 0`` regardless of the song
-    length, because the chunk size fed to the engine is bounded by
-    the user-facing window (5-30 s) plus overlap, never by the full
-    song duration. Building it costs ~75 s and saves ~7.7 GB of TRT
-    workspace at session-creation time vs the canonical 240 s engine.
+    Selected by the runtime when ``vae_window > 0`` regardless of the
+    song length: every streaming decode feeds it exactly 25 latent
+    frames (1.0 s) and the kept slice is the middle ``vae_window``
+    seconds (see acestep.paths.WINDOWED_VAE_PROFILE_FRAMES). The fixed
+    profile reserves ~81 MB of TRT activation workspace vs ~1.58 GB for
+    a 30 s-max range and ~9 GB for the canonical 240 s engine.
 
     The skip gate compares the sidecar ``.metadata.json`` against the
     current env — so a TRT bump via ``uv sync`` correctly invalidates
@@ -745,7 +745,7 @@ def _build_windowed_vae_decode_engine(
     name = WINDOWED_VAE_DECODE_NAME
     engine_dir = os.path.join(output_dir, name)
     engine_path = os.path.join(engine_dir, f"{name}.engine")
-    label = "VAE decode windowed (3-30s)"
+    label = "VAE decode fixed 1s (25 fr)"
 
     min_f, opt_f, max_f = WINDOWED_VAE_PROFILE_FRAMES
     config = VAETRTBuildConfig(
@@ -917,12 +917,12 @@ def _print_matrix(durations, build_vae, build_decoder, output_dir, batch_max,
         if build_dreamvae:
             jobs.append((f"DreamVAE decode {dur}s", f"dreamvae_decode_fp16_{dur}s"))
 
-    # Windowed engines are duration-independent (single shared 3-30s
+    # Windowed engines are duration-independent (a single fixed 1 s
     # profile) so they're appended once, outside the duration loop.
     if build_vae:
-        jobs.append(("VAE decode windowed (3-30s)", WINDOWED_VAE_DECODE_NAME))
+        jobs.append(("VAE decode fixed 1s (25 fr)", WINDOWED_VAE_DECODE_NAME))
     if build_dreamvae:
-        jobs.append(("DreamVAE decode windowed (3-30s)", WINDOWED_DREAMVAE_DECODE_NAME))
+        jobs.append(("DreamVAE decode fixed 1s (25 fr)", WINDOWED_DREAMVAE_DECODE_NAME))
 
     to_build = 0
     to_skip = 0
@@ -1246,7 +1246,7 @@ def _run_all(args, project_root, onnx_dir, env):
                 strongly_typed=decoder_strongly_typed,
             ))
 
-    # Windowed VAE decode (single 3-30s profile, duration-independent).
+    # Windowed VAE decode (single fixed 1 s profile, duration-independent).
     # Auto-selected by Session when vae_window > 0.
     if build_vae:
         results.append(_build_windowed_vae_decode_engine(

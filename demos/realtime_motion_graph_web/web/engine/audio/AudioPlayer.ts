@@ -802,7 +802,18 @@ export class AudioPlayer {
     } else {
       for (let i = 0; i < n; i++) this._mirror[base + i] = audioInterleaved[i];
     }
-    this.swapCount++;
+    // NOTE: do NOT bump swapCount here. swapCount is the *source-buffer
+    // epoch* — the slice listener drops any slice whose stamped epoch
+    // differs from it, and the encoder bumps it only on a real buffer
+    // swap. Incrementing it on every mirror write inflated it between the
+    // worklet's ~5 ms position messages (which reset it to the true swap
+    // generation), so a slice arriving in that gap — most reliably the
+    // seam wrap-decode that fires back-to-back with the primary decode at
+    // every loop boundary — was dropped. The server had already advanced
+    // its delta baseline, so the dropped slice's region desynced and the
+    // error accumulated over loops: "multiple decoded versions stacked."
+    // The mirror-changed notification (for waveform recompute) is the
+    // listener fire below; it doesn't need a counter.
     for (const fn of this._listeners) fn();
   }
 
