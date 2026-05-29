@@ -6635,6 +6635,19 @@ body.curve-open #install-video-area #graph {
 .audio-source-upload-btn {
   border-radius: 0;
 }
+/* Wrapper around the placard + upload-btn pair — the two ways to
+ * swap input audio. Serves as the positioning context for the
+ * UploadOnboardingHint so its arrow centers above the combined
+ * affordance area (not just one button). Mic stays outside this
+ * wrapper because it's a separate input mode, not a track-swap.
+ * Transparent to layout: inline-flex + align-items: stretch so the
+ * inner buttons still fill the dock body vertically. */
+.audio-source-track-controls {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0;
+}
 .audio-source-mic-btn {
   border-radius: 0 var(--radius-md) var(--radius-md) 0;
 }
@@ -7085,6 +7098,101 @@ body.curve-open #install-video-area #graph {
   body.drawer-open .audio-source-dock,
   body.drawer-open .audio-source-fan {
     display: none !important;
+  }
+}
+
+/* ─── UploadOnboardingHint ────────────────────────────────────────────
+ *  Sequel to StrengthOnboardingHint — surfaces once the user has moved
+ *  Strength, pointing at the bottom-right Upload button (Issue #156).
+ *  Same vocabulary as the Strength hint: white italic caption + hand-
+ *  drawn arrow gif.
+ *
+ *  Positioning context: .audio-source-track-controls (a relative-
+ *  positioned span wrapping placard + upload). Anchoring above the
+ *  pair (not just upload-btn) matches the copy — "Select another
+ *  track or upload your own" covers both buttons, so the arrow head
+ *  lands at their seam rather than picking one and ignoring the
+ *  other.
+ *
+ *  Layout: hint sits ABOVE the placard/upload pair, horizontally
+ *  centered, with text on top and a downward-pointing arrow below
+ *  tapping at the seam. ``bottom: 100%`` rests the hint on the
+ *  pair's top edge; ``left: 50%`` + ``translate(-50%, -8px)``
+ *  centers + lifts. The arrow gif points right by default;
+ *  ``rotate: 90deg`` (CSS individual transform — doesn't conflict
+ *  with the animated ``transform: translate``) flips it to point
+ *  down.
+ *
+ *  Desktop only — the mobile Lite drawer already surfaces Upload
+ *  inline via LiteTrackCarousel; no need for a tutorial overlay.
+ *  Also hidden when the dock is collapsed-to-bubble: pointing at an
+ *  empty patch of screen reads as broken. (AudioSourceCrate folds
+ *  uploadHint.visible into dockActive so this case only fires if the
+ *  visibility flag races the collapse animation.) */
+.upload-onboarding-hint {
+  position: absolute;
+  /* Same z-index as the Strength hint — above knob/dock chrome but
+   * below the modal stack (.almost-ready-* at 100+). */
+  z-index: 6;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* Real gap so the arrow's resting position (top of its downward
+   * bob arc) never collides with the text. The bob translates the
+   * arrow DOWN only, so the closest text/arrow approach is at rest. */
+  gap: 4px;
+  bottom: 100%;
+  left: 50%;
+  transform: translate(-50%, -8px);
+  white-space: nowrap;
+  animation: upload-onboarding-hint-in 280ms ease-out;
+}
+@keyframes upload-onboarding-hint-in {
+  from { opacity: 0; transform: translate(-50%, -2px); }
+  to   { opacity: 1; transform: translate(-50%, -8px); }
+}
+@keyframes upload-onboarding-hint-bob {
+  0%, 100% { transform: translate(0, 0); }
+  /* Bob DOWN toward the button instead of sideways — the arrow is
+   * now vertical, so the tap-tap motion follows its axis. */
+  50%      { transform: translate(0, 3px); }
+}
+.upload-onboarding-hint-text {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  font-style: italic;
+  white-space: nowrap;
+  color: #fff;
+  text-shadow: 0 0 6px rgba(0, 0, 0, 0.55);
+  animation: upload-onboarding-hint-bob 2200ms ease-in-out infinite;
+}
+.upload-onboarding-hint-arrow {
+  flex: 0 0 auto;
+  width: 48px;
+  height: 48px;
+  /* Rotate the right-pointing arrow gif so the head points down at
+   * the Upload button below. ``rotate`` is the individual transform
+   * property, kept separate from the animated ``transform: translate``
+   * so the two compose without overriding each other. */
+  rotate: 90deg;
+  animation: upload-onboarding-hint-bob 2200ms ease-in-out infinite;
+  user-select: none;
+  pointer-events: none;
+}
+/* Hide on touch-only devices — mobile already surfaces Upload via the
+ * Lite drawer's track carousel and doesn't need a tutorial overlay. */
+@media (hover: none) and (pointer: coarse) {
+  .upload-onboarding-hint { display: none; }
+}
+/* Hide while the dock has collapsed to a bubble — see comment above. */
+.audio-source-dock[data-collapsed] .upload-onboarding-hint { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .upload-onboarding-hint,
+  .upload-onboarding-hint-text,
+  .upload-onboarding-hint-arrow {
+    animation: none;
   }
 }
 
