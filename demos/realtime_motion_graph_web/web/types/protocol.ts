@@ -1,5 +1,5 @@
 // WS wire protocol shapes. Mirrors the Python side
-// (DEMON/demos/realtime_motion_graph_web/protocol.py + backend.py).
+// (DEMON/demos/realtime_motion_graph_web/protocol.py + ws_adapter.py).
 
 /** Normalized LoRA metadata mirrored from the Python sidecar loader
  *  (`acestep/lora_metadata.py`). Always shipped — fields are null when
@@ -201,6 +201,49 @@ export interface SwapFailedMessage {
   error?: string;
 }
 
+/** Ack for `set_timbre_source` / `set_timbre_fixture`. `duration` is the
+ *  applied clip length in seconds, after server-side cap to the playback
+ *  source duration. */
+export interface TimbreSetMessage {
+  type: "timbre_set";
+  name: string;
+  duration: number;
+}
+
+/** Ack for `clear_timbre_source`. */
+export interface TimbreClearedMessage {
+  type: "timbre_cleared";
+}
+
+/** Failure ack for any `set_timbre_*` path. */
+export interface TimbreFailedMessage {
+  type: "timbre_failed";
+  error?: string;
+}
+
+/** Ack for `set_structure_source` / `set_structure_fixture`. `duration`
+ *  is the applied clip length in seconds before pad/trim to the playback
+ *  source's sample count. The server log line also reports the
+ *  post-pad/trim target length, but the wire payload does not. */
+export interface StructureSetMessage {
+  type: "structure_set";
+  name: string;
+  duration: number;
+}
+
+/** Ack for `clear_structure_source`. */
+export interface StructureClearedMessage {
+  type: "structure_cleared";
+}
+
+/** Failure ack for any `set_structure_*` path, AND the server-emitted
+ *  notice when a swap drops a previously-set structure override
+ *  (`error` will be of the form `"dropped after swap: ..."`). */
+export interface StructureFailedMessage {
+  type: "structure_failed";
+  error?: string;
+}
+
 export type ServerJsonMessage =
   | ReadyMessage
   | ServerErrorMessage
@@ -214,6 +257,12 @@ export type ServerJsonMessage =
   | StemAssetsMessage
   | StemFailedMessage
   | DepthAppliedMessage
+  | TimbreSetMessage
+  | TimbreClearedMessage
+  | TimbreFailedMessage
+  | StructureSetMessage
+  | StructureClearedMessage
+  | StructureFailedMessage
   | { type: string; [k: string]: unknown };
 
 /** Parsed binary slice from the server. */

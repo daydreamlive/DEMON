@@ -505,8 +505,8 @@ uv run python -u -m demos.realtime_motion_graph_web --port 8765 --accel eager --
 
 ### How The Demo Picks TRT Engines
 
-`demos/realtime_motion_graph_web/backend.py` chooses engines at client
-connection time. It measures the uploaded or fixture audio duration, then calls:
+`acestep/streaming/session.py` chooses engines at session-create time.
+It measures the uploaded or fixture audio duration, then calls:
 
 ```python
 available_trt_engines(

@@ -1,31 +1,35 @@
 """Startup self-warmup that drives one synthetic session through the
-WebSocket handler at boot to pay one-time engine costs before real
-traffic arrives.
+streaming API at boot to pay one-time engine costs before real traffic
+arrives.
 
-Measured 2026-05-18: a cold first session on a fresh engine takes ~40s to
-``ready`` (TRT decoder-engine load ~3s + LoRA-refit manager ~7s + Session /
-ModelContext / conditioning ~10s + first-tick pipeline build), while the
-*second* session on the same warm engine is ~5-6s. ~30s of the cold path is
-one-time-after-engine-start state that persists in the process. Driving one
-synthetic default-fixture session through the WS handler at boot, before
-the pod accepts real traffic, pays that once so every real "begin" gets the
-warm path. Behaviour-neutral for real clients; the warmup session is fully
-torn down by the WS handler's own finally.
+Measured 2026-05-18: a cold first session on a fresh engine takes ~40s
+to ``ready`` (TRT decoder-engine load ~3s + LoRA-refit manager ~7s +
+Session / ModelContext / conditioning ~10s + first-tick pipeline build),
+while the *second* session on the same warm engine is ~5-6s. ~30s of
+the cold path is one-time-after-engine-start state that persists in the
+process. Driving one synthetic default-fixture session at boot, before
+the pod accepts real traffic, pays that once so every real "begin"
+gets the warm path. Behaviour-neutral for real clients; the synthetic
+session tears itself down via the session's own ``run`` finally.
 
-``handle_client`` is injected as a positional parameter so this module
-doesn't import the demo.
+Failure-must-not-stop-boot: any exception is caught, stamped into
+``WARMUP_STATE["error"]``, and the server continues to start.
 """
 
-import json
-import struct
+from __future__ import annotations
+
+import secrets
 import time
-from typing import Callable
 
 import numpy as np
-from websockets.exceptions import ConnectionClosed
+import torch
 
 from acestep.engine.obs import logger
 from acestep.fixtures import audio_fixture
+from acestep.nodes.types import Audio
+
+from acestep.streaming.config import SessionConfig
+from acestep.streaming.session import StreamingSession
 
 
 WARMUP_STATE: dict = {"done": False, "error": None, "seconds": None}
@@ -33,61 +37,25 @@ WARMUP_STATE: dict = {"done": False, "error": None, "seconds": None}
 _WARMUP_FIXTURE = "low_fi_Gm_loop_60s_gnm.wav"  # PREFERRED_DEFAULT_FIXTURE
 _WARMUP_PROMPT = "ambient electronic, warm pads"
 
+# Maximum wall-clock budget for the warmup session. Picked at the
+# upper end of measured cold-start times so the warmup completes
+# under normal conditions but doesn't hang the boot if something
+# wedges.
+_WARMUP_BUDGET_S = 35.0
 
-class _WarmupWS:
-    """In-process synthetic WebSocket that drives one default-fixture
-    session through the handler to warm one-time engine state.
+# Backend sample rate for the ACE-Step v1.5 family. Duplicated from
+# ``acestep.streaming.source`` to avoid the heavier import here.
+_SAMPLE_RATE = 48000
 
-    Scripts the init handshake (config JSON, then the audio frame),
-    lets the streaming loop spin long enough to build the pipeline +
-    run the first generation tick, then raises ConnectionClosed so the
-    handler's teardown path frees all per-session GPU state.
+
+def _load_warmup_audio() -> Audio:
+    """Load the warmup fixture WAV from the pod's cache and wrap it
+    in an :class:`Audio` value object.
+
+    Mirrors the upload path: stereo float32 at the backend sample
+    rate, ``[channels, samples]`` layout. Falls back to a mono→stereo
+    librosa load if soundfile can't read the file.
     """
-
-    def __init__(self, config_json: str, audio_frame: bytes, budget_s: float = 35.0):
-        self._queue = [config_json, audio_frame]
-        self._t0 = time.monotonic()
-        self._budget_s = budget_s
-        self._initial_seen_at = None
-        self.closed = False
-
-    def recv(self, timeout=None):
-        if self._queue:
-            return self._queue.pop(0)
-        # Spin until warm budget elapsed, then end the session.
-        # Mimic "no client message" via TimeoutError when the caller
-        # passed a timeout (the streaming loop polls that way); raise
-        # ConnectionClosed once warmed so every recv site unwinds into
-        # the handler's finally (which closes the session).
-        now = time.monotonic()
-        warm_enough = (
-            now - self._t0 > self._budget_s
-            or (self._initial_seen_at is not None
-                and now - self._initial_seen_at > 10.0)
-        )
-        if warm_enough:
-            raise ConnectionClosed(None, None)
-        if timeout is not None:
-            time.sleep(min(timeout, 0.05))
-            raise TimeoutError
-        time.sleep(0.1)
-        raise TimeoutError
-
-    def send(self, msg):
-        # The initial buffer is a large binary frame (the echoed source);
-        # spotting it tells us the init handshake finished so we can
-        # bound how long the streaming loop spins after.
-        if isinstance(msg, (bytes, bytearray)) and len(msg) > 1_000_000:
-            if self._initial_seen_at is None:
-                self._initial_seen_at = time.monotonic()
-
-    def close(self, *args, **kwargs):
-        self.closed = True
-
-
-def _load_warmup_audio_frame() -> bytes:
-    """Build the wire frame (<II channels,samples> + interleaved f32)
-    for the default fixture, matching the browser's upload format."""
     path = str(audio_fixture(_WARMUP_FIXTURE))
     try:
         import soundfile as sf
@@ -100,48 +68,53 @@ def _load_warmup_audio_frame() -> bytes:
         data = np.stack([data, data], axis=1)
     if data.shape[1] == 1:
         data = np.repeat(data, 2, axis=1)
-    ch = int(data.shape[1])
-    samples = int(data.shape[0])
-    interleaved = np.ascontiguousarray(data, dtype=np.float32).reshape(-1)
-    return struct.pack("<II", ch, samples) + interleaved.tobytes()
+    waveform = torch.from_numpy(
+        np.ascontiguousarray(data.T, dtype=np.float32),
+    )[:2]
+    return Audio(waveform=waveform, sample_rate=_SAMPLE_RATE)
 
 
 def run_startup_warmup(
-    handle_client: Callable,
     *,
     decoder_backend: str,
     vae_backend: str,
     checkpoint: str,
     offload_text_encoder: bool,
 ) -> None:
-    """Drive one synthetic default-fixture session at boot. Never raises:
-    a failed warmup must not stop the server from serving.
+    """Drive one synthetic default-fixture session at boot. Never
+    raises — a failed warmup must not stop the server from serving.
 
-    ``handle_client`` is injected (rather than imported from
-    ``demos/realtime_motion_graph_web/backend.py``) so this module stays
-    free of demo imports.
+    The session is created via the public :meth:`StreamingSession.create`
+    surface (same path real clients take) and driven for at most
+    :data:`_WARMUP_BUDGET_S` seconds via :meth:`StreamingSession.run_until`.
     """
     t0 = time.monotonic()
     warm_log = logger.bind(component="warmup")
     warm_log.info("warmup_start fixture={}", _WARMUP_FIXTURE)
     try:
-        cfg = {
+        audio = _load_warmup_audio()
+        cfg = SessionConfig.from_dict({
             "fixture_name": _WARMUP_FIXTURE,
             "prompt": _WARMUP_PROMPT,
             "steps": 8,
             "depth": 4,
             "lora": False,
             "enabled_loras": [],
-        }
-        frame = _load_warmup_audio_frame()
-        ws = _WarmupWS(json.dumps(cfg), frame)
-        handle_client(
-            ws,
+        })
+        # Mint a throwaway session_id so the warmup's log lines carry
+        # a distinguishable correlation token in case the operator is
+        # tailing logs during boot.
+        session_id = "warmup-" + secrets.token_urlsafe(4)
+        streaming = StreamingSession.create(
+            audio=audio,
+            config=cfg,
+            checkpoint=checkpoint,
             decoder_backend=decoder_backend,
             vae_backend=vae_backend,
-            checkpoint=checkpoint,
             offload_text_encoder=offload_text_encoder,
+            session_id=session_id,
         )
+        streaming.run_until(_WARMUP_BUDGET_S)
         WARMUP_STATE["done"] = True
         WARMUP_STATE["seconds"] = round(time.monotonic() - t0, 1)
         warm_log.info(

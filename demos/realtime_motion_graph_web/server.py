@@ -3,7 +3,7 @@
 Multiplexes the JSON HTTP API (``/api/server-info``, ``/api/loras``,
 ``/api/videos``, ``/api/fixtures``), static fixture/video file serving
 (``/fixtures/<name>``, ``/videos/<name>``), and the
-:func:`.backend.handle_client` WebSocket pipeline onto a single TCP port,
+:func:`.ws_adapter.handle_client` WebSocket pipeline onto a single TCP port,
 using the websockets library's ``process_request`` hook to short-circuit
 non-upgrade requests into HTTP responses.
 
@@ -464,7 +464,7 @@ def main():
         # Defer the heavy import until we know we need it. Pulling this in
         # loads torch + acestep + TRT machinery; in --no-backend we never
         # touch any of it.
-        from .backend import handle_client
+        from .ws_adapter import handle_client
 
         def ws_handler(ws):
             handle_client(
@@ -486,10 +486,7 @@ def main():
         if os.environ.get("DEMON_STARTUP_WARMUP", "1") != "0":
             from acestep.streaming.warmup import run_startup_warmup
 
-            # handle_client is injected so warmup stays free of demo
-            # imports; see acestep.streaming.warmup.run_startup_warmup.
             run_startup_warmup(
-                handle_client,
                 decoder_backend=decoder_accel,
                 vae_backend=vae_accel,
                 checkpoint=checkpoint,

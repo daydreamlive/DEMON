@@ -97,23 +97,27 @@ class PipelineRunner:
 
     def __init__(
         self, session, stream, audio_eng, *,
+        state,
         use_midi, use_sde, use_lora,
         midi_knobs, engine_obj,
         vae_window, crop_seconds,
         k1_name, seed, skip_threshold,
-        sde_curve_display, params, prompt_text, running,
-        motion_val, motion_lock,
         on_audio_ready=None,
         before_tick=None,
         walk_window=False,
         walk_window_s=60.0,
         neg_conditioning=None,
-        last_activity_ts=None,
         idle_threshold_s=0.0,
     ):
         self.session = session
         self.stream = stream  # StreamHandle
         self.audio_eng = audio_eng
+        # Single mutable session state object. The runner
+        # reads ``state.running``, ``state.params``, ``state.prompt_text``,
+        # ``state.last_activity_ts``, ``state.motion_val``, and
+        # ``state.sde_curve_display``; it takes ``state._lock`` to read
+        # motion atomically (per the pre-refactor motion_lock contract).
+        self.state = state
         self.use_midi = use_midi
         self.use_sde = use_sde
         self.use_lora = use_lora
@@ -124,12 +128,6 @@ class PipelineRunner:
         self.k1_name = k1_name
         self.SEED = seed
         self.skip_threshold = skip_threshold
-        self.sde_curve_display = sde_curve_display
-        self.params = params
-        self.prompt_text = prompt_text
-        self.running = running
-        self.motion_val = motion_val
-        self.motion_lock = motion_lock
         # Default callback: in full-buffer mode, hand off to
         # ``audio_eng.swap`` (legacy crossfade-on-swap path). In windowed
         # mode the runner has already written into the audio engine via
@@ -174,7 +172,7 @@ class PipelineRunner:
         self.walk_window_T = int(round(self.walk_window_s * 25.0))
 
         # Negative conditioning for the RCFG path. Encoded once at session
-        # start (see backend.py / fixtures.py) and reused across all ticks.
+        # start (see StreamingSession.create) and reused across all ticks.
         # Required for ``rcfg_mode in {"full", "initialize"}``; ignored
         # by ``rcfg_mode == "self"`` (virtual uncond) and ``"off"``.
         # ``None`` is safe — modes that need it become quiet no-ops.
@@ -195,7 +193,6 @@ class PipelineRunner:
         #      resumes. Any incoming WS message clears both stages.
         # Hot path is untouched when active or when disabled
         # (``idle_threshold_s <= 0``).
-        self._last_activity_ts = last_activity_ts
         self._idle_threshold_s = float(idle_threshold_s)
         self._last_result_latent = None
         self._dit_paused = False
@@ -329,7 +326,7 @@ class PipelineRunner:
         cached_live_src_lat = None
         cached_live_ctx_raw_t = None
 
-        while self.running[0]:
+        while self.state.running:
             if self.before_tick is not None:
                 # Hook for cross-thread mutations (LoRA enable/disable
                 # AND source swap).  Runs on the runner thread so any
@@ -346,8 +343,7 @@ class PipelineRunner:
             # path with zero overhead).
             idle_active = (
                 self._idle_threshold_s > 0.0
-                and self._last_activity_ts is not None
-                and (time.monotonic() - self._last_activity_ts[0]) >= self._idle_threshold_s
+                and (time.monotonic() - self.state.last_activity_ts) >= self._idle_threshold_s
             )
             if not idle_active:
                 # Activity resumed — clear both stages.
@@ -480,8 +476,8 @@ class PipelineRunner:
             if self.use_midi:
                 raw = self.midi_knobs.get_all_values()
             else:
-                with self.motion_lock:
-                    m = self.motion_val[0]
+                with self.state._lock:
+                    m = self.state.motion_val
                 raw = {
                     self.k1_name: m,
                     "seed": 0.0,
@@ -549,7 +545,7 @@ class PipelineRunner:
                         continue
                     key = f"lora_str_{desc.id}"
                     lora_str = raw.get(key, desc.strength)
-                    if abs(lora_str - self.params.get(key, -1)) > 0.02:
+                    if abs(lora_str - self.state.params.get(key, -1)) > 0.02:
                         self.engine_obj.set_lora_strength(desc.id, lora_str)
 
             hint_str = self.midi_knobs.get_param("hint_strength") if self.use_midi else 1.0
@@ -624,10 +620,10 @@ class PipelineRunner:
                         sde_curve = amplitude * (0.5 + 0.5 * torch.sin(2 * 3.14159 * cycles * t))
                     else:
                         sde_curve = torch.full((1, src_T, 1), amplitude, dtype=torch.float32)
-                self.sde_curve_display[0] = sde_curve.squeeze().numpy()
+                self.state.sde_curve_display = sde_curve.squeeze().numpy()
             else:
                 denoise = k1
-                self.sde_curve_display[0] = None
+                self.state.sde_curve_display = None
 
             # Source lock: x0_target_curve from client overrides the
             # scalar x0_target_strength knob. The latent is attached
@@ -1008,9 +1004,9 @@ class PipelineRunner:
                         last_wav = wav_np
                         self.on_audio_ready(wav_np)
 
-                self.params["num_gens"] = self.params.get("num_gens", 0) + 1
-                self.params["tick_ms"] = tick_ms
-                self.params["dec_ms"] = dec_ms
+                self.state.params["num_gens"] = self.state.params.get("num_gens", 0) + 1
+                self.state.params["tick_ms"] = tick_ms
+                self.state.params["dec_ms"] = dec_ms
 
                 # Sampled TRACE so DEMON_LOG_LEVEL=TRACE gives the operator
                 # a tick-by-tick snapshot for perf chases without paying the
@@ -1018,12 +1014,12 @@ class PipelineRunner:
                 # outright; loguru's level gate elides the call cheaply when
                 # no sink is at TRACE.
                 if _TRACE_SAMPLE_EVERY and (
-                    self.params["num_gens"] % _TRACE_SAMPLE_EVERY == 0
+                    self.state.params["num_gens"] % _TRACE_SAMPLE_EVERY == 0
                 ):
                     logger.trace(
                         "tick num_gens={} tick_ms={:.1f} dec_ms={:.1f} "
                         "shift={:.2f} seed={} hint_str={:.2f}",
-                        self.params["num_gens"], tick_ms, dec_ms,
+                        self.state.params["num_gens"], tick_ms, dec_ms,
                         shift_val, seed, hint_str,
                     )
                 # Update predictive-decode EMA from this iteration's actual
@@ -1037,22 +1033,22 @@ class PipelineRunner:
                     self._predicted_advance_s = (
                         0.3 * new_advance + 0.7 * self._predicted_advance_s
                     )
-                self.params[self.k1_name] = round(k1, 2)
-                self.params["seed"] = seed
-                self.params["feedback"] = round(feedback, 2)
-                self.params["feedback_depth"] = fb_depth
-                self.params["shift"] = round(shift_val, 2)
+                self.state.params[self.k1_name] = round(k1, 2)
+                self.state.params["seed"] = seed
+                self.state.params["feedback"] = round(feedback, 2)
+                self.state.params["feedback_depth"] = fb_depth
+                self.state.params["shift"] = round(shift_val, 2)
                 if self.use_lora and self.engine_obj is not None:
                     for desc in self.engine_obj.list_loras():
                         if desc.state != "enabled":
                             continue
                         key = f"lora_str_{desc.id}"
-                        self.params[key] = round(raw.get(key, desc.strength), 2)
+                        self.state.params[key] = round(raw.get(key, desc.strength), 2)
                 if self.use_sde:
-                    self.params["periodicity"] = round(raw.get("periodicity", 0.0), 2)
-                self.params["hint_strength"] = round(hint_str, 2)
+                    self.state.params["periodicity"] = round(raw.get("periodicity", 0.0), 2)
+                self.state.params["hint_strength"] = round(hint_str, 2)
                 for name, _, _ in CHANNEL_GROUPS:
-                    self.params[name] = round(raw.get(name, 1.0), 2)
+                    self.state.params[name] = round(raw.get(name, 1.0), 2)
                 for name, _ in KEYSTONE_CHANNELS:
-                    self.params[name] = round(raw.get(name, 1.0), 2)
-                self.params["_prompt"] = self.prompt_text[0]
+                    self.state.params[name] = round(raw.get(name, 1.0), 2)
+                self.state.params["_prompt"] = self.state.prompt_text

@@ -17,8 +17,9 @@ are preserved (so an operator override survives a re-run). Pass
 
 Pipeline per fixture:
   1. Download the WAV (cache hit if already present).
-  2. Apply the same audio-level truncation backend.py applies before
-     prepare_source: stereo cap + drop the trailing samples below a
+  2. Apply the same audio-level truncation the streaming session
+     applies before prepare_source: stereo cap + drop trailing samples
+     below a
      1920*5-sample boundary. The TRT max-profile cap is intentionally
      NOT applied here so the precompute is profile-agnostic; the
      runtime only uses the cache when the live truncated length
@@ -70,11 +71,11 @@ from acestep.nodes.types import Audio
 from acestep.paths import checkpoints_dir
 
 SAMPLE_RATE = 48000  # matches demos.realtime_motion_graph_web.protocol.SAMPLE_RATE
-POOL = 1920 * 5  # 9600 samples = 5 latent frames at 25 fps; matches backend.py
+POOL = 1920 * 5  # 9600 samples = 5 latent frames at 25 fps; matches acestep.streaming.session
 
 
 def truncate_audio(waveform: torch.Tensor) -> torch.Tensor:
-    """Stereo cap + mod-9600-sample drop, mirroring backend.py.
+    """Stereo cap + mod-9600-sample drop, mirroring acestep.streaming.session.
 
     Does not apply the runtime's TRT-profile-based duration cap: the
     precompute is profile-agnostic and relies on a length check at

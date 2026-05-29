@@ -3,9 +3,6 @@
 Pure, transport-agnostic helpers for building the (silence, full) cond
 pair against a given timbre reference and lerping between them on the
 live timbre-strength slider.
-
-``session`` is taken as an explicit parameter; ``backend.py`` keeps a
-1-line closure wrapper so the existing call sites don't change.
 """
 
 from acestep.constants import TASK_INSTRUCTIONS
