@@ -175,11 +175,11 @@ class TRTProfileManager:
         to ``walk_window_s``, vae_encode sized to ``source_duration_s``.
 
         Mirrors the initial walk-mode wiring in
-        ``demos/realtime_motion_graph_web/backend.py`` (the runner only
-        sees walk_window_s of latent at a time, but VAE-encode still
-        needs to ingest the full song once at load). When a long-track
-        swap happens mid-session this is the right swap shape: keeping
-        the 60s decoder on the line, only resizing vae_encode.
+        ``acestep/streaming/session.py`` (the runner only sees
+        walk_window_s of latent at a time, but VAE-encode still needs
+        to ingest the full song once at load). When a long-track swap
+        happens mid-session this is the right swap shape: keeping the
+        60s decoder on the line, only resizing vae_encode.
 
         Falls through to :meth:`ensure_profile` semantics if the request
         doesn't actually need a mix (source fits the walk profile).

@@ -28,7 +28,7 @@ export interface DecodedStemAssets {
 }
 
 // Server-side latent pool size (1920 * 5 = 9600 samples = 0.2 s at
-// 48 kHz). backend.py and the sidecar precompute both align to this;
+// 48 kHz). The streaming session and the sidecar precompute both align to this;
 // trimming the decoded fixture to the same boundary keeps the runtime
 // `samples` count matching the sidecar's recorded `samples` field, so
 // `_try_load_sidecar` accepts the cached BPM / key / latents instead
@@ -64,8 +64,8 @@ async function decodeArrayBuffer(bytes: ArrayBuffer): Promise<DecodedFixture> {
   const channels = 2;
 
   // Length normalize: trim to a multiple of the server's latent pool
-  // (1920 * 5 = 9600 samples = 0.2 s at 48 kHz, mirroring backend.py's
-  // `pool` and scripts/precompute_fixture_sidecars.py's POOL). Browsers'
+  // (1920 * 5 = 9600 samples = 0.2 s at 48 kHz, mirroring the
+  // streaming session's `pool` and scripts/precompute_fixture_sidecars.py's POOL). Browsers'
   // decodeAudioData honours the mp3 encoder-padding header and returns
   // a non-pool-aligned sample count for many real-world files (e.g. a
   // 142.96 s mp3 with 23 ms of priming silence at the head). The

@@ -172,7 +172,7 @@ class PipelineRunner:
         self.walk_window_T = int(round(self.walk_window_s * 25.0))
 
         # Negative conditioning for the RCFG path. Encoded once at session
-        # start (see backend.py / fixtures.py) and reused across all ticks.
+        # start (see StreamingSession.create) and reused across all ticks.
         # Required for ``rcfg_mode in {"full", "initialize"}``; ignored
         # by ``rcfg_mode == "self"`` (virtual uncond) and ``"off"``.
         # ``None`` is safe — modes that need it become quiet no-ops.
