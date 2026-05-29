@@ -1,6 +1,6 @@
 import type { DecodedFixture } from "@/engine/audio/loadFixture";
 
-// Server-side latent pool size, mirroring loadFixture.ts and backend.py.
+// Server-side latent pool size, mirroring loadFixture.ts and acestep.streaming.session.
 // Trim boundaries MUST be multiples of this so the sliced buffer still
 // satisfies the VAE-encode constraint.
 const SAMPLE_POOL = 9600;

@@ -4,7 +4,8 @@ This mirrors the server-side inference path used by
 ``demos.realtime_motion_graph_web`` without HTTP, WebSocket, browser, or
 audio-device overhead:
 
-1. Resolve the same accel/checkpoint/TRT engine combination as backend.py.
+1. Resolve the same accel/checkpoint/TRT engine combination as the
+   streaming session.
 2. Load the same fixture/config defaults as the web demo.
 3. Build Session -> prepare_source -> encode_text -> stream.
 4. Time stream.tick() and optional VAE decode per completed generation.
@@ -598,12 +599,10 @@ def main() -> None:
 
     audio_buffer: _BenchAudioBuffer | None = None
     if args.audio_mix:
-        # Initial buffer matches the demo's: ``waveform.numpy().T`` is the
-        # [samples, channels] layout AudioEngine.__init__ consumes (see
-        # backend.py's ``src_np = waveform.numpy().T`` before AudioEngine
-        # construction). Crop to mirror runner behaviour when crop_seconds
-        # would be set; this bench has no crop so the full source is the
-        # buffer.
+        # Initial buffer matches the streaming session's: ``waveform.numpy().T``
+        # is the [samples, channels] layout AudioEngine.__init__ consumes.
+        # Crop to mirror runner behaviour when crop_seconds would be set;
+        # this bench has no crop so the full source is the buffer.
         audio_buffer = _BenchAudioBuffer(waveform.numpy().T)
         print(
             f"[Run] audio-mix on: buffer {audio_buffer.current.shape} "

@@ -153,10 +153,8 @@ demos/realtime_motion_graph_web/
 ├── __main__.py               # `python -m demos.realtime_motion_graph_web`
 ├── run.py                    # launcher: backend + Next.js dev server
 ├── server.py                 # HTTP API + WebSocket multiplex on one port
-├── backend.py                # GPU handle_client coroutine
-├── pipeline.py               # PipelineRunner (graph-driven streaming loop)
-├── audio_engine.py           # server-side audio buffer
-├── knobs.py                  # MIDI knob bank definitions
+├── ws_adapter.py             # per-WebSocket coroutine; wraps StreamingSession
+├── audio_codec.py            # per-subscriber slice codec + stem payload
 ├── protocol.py               # wire format (Python source of truth)
 ├── videos/                   # user-supplied .mp4/.webm/.mov drop-in (optional)
 └── web/                      # Next.js front-end (React + zustand)
@@ -176,7 +174,8 @@ of truth that `web/engine/protocol.ts` mirrors):
 
 `server.py` multiplexes the JSON HTTP API, fixture/video file serving,
 and the WebSocket upgrade onto one TCP port; the WS handshake hands
-off to `backend.handle_client`.
+off to `ws_adapter.handle_client`, which wraps a
+`acestep.streaming.session.StreamingSession`.
 
 ## Audio-reactive video
 

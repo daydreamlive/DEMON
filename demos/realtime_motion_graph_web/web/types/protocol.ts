@@ -1,5 +1,5 @@
 // WS wire protocol shapes. Mirrors the Python side
-// (DEMON/demos/realtime_motion_graph_web/protocol.py + backend.py).
+// (DEMON/demos/realtime_motion_graph_web/protocol.py + ws_adapter.py).
 
 /** Normalized LoRA metadata mirrored from the Python sidecar loader
  *  (`acestep/lora_metadata.py`). Always shipped — fields are null when
