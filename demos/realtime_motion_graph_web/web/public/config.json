@@ -128,5 +128,8 @@
   },
 
   "_restart_song_on_swap_help": "When true, picking a different song mid-session restarts playback from frame 0 of the new song. When false, the worklet keeps the playhead's phase across the swap, so swapping at 1:30 into a 4:00 track starts the new track at 1:30. Default true matches the ScriptProcessor fallback's existing behavior.",
-  "restart_song_on_swap": true
+  "restart_song_on_swap": true,
+
+  "_swap_source_mode_help": "Default inference source for uploaded-track swaps. One of full, instruments, vocals. Built-in fixtures keep using their full source unless the track is present in the upload library.",
+  "swap_source_mode": "instruments"
 }

@@ -9,6 +9,8 @@ import {
   type DecodedFixture,
   type StemSourceMode,
 } from "@/engine/audio/loadFixture";
+import { useSeedUserUploads } from "@/hooks/useSeedUserUploads";
+import { commitUploadedTrack } from "@/lib/audio/commitUploadedTrack";
 import { useUploadOnboardingHint } from "@/hooks/useUploadOnboardingHint";
 import { trimAudioBuffer } from "@/lib/audio/trimAudioBuffer";
 import { useConfig } from "@/lib/config";
@@ -145,6 +147,7 @@ export function AudioSourceCrate() {
   const placardRef = useRef<HTMLButtonElement | null>(null);
   const uploadBtnRef = useRef<HTMLButtonElement | null>(null);
   const fanRef = useRef<HTMLDivElement | null>(null);
+  useSeedUserUploads();
 
   // Daydream-webapp queue-admit gate: /api/pod/* returns 401 pre-admit,
   // so prod waits for wsUrl before fetching. Standalone DEMON has no
@@ -241,33 +244,22 @@ export function AudioSourceCrate() {
     setTrimming(null);
   }
 
-  function commitPending(
+  async function commitPending(
     keyOverride: string | null,
     timeSignatureOverride: TimeSignature | null,
     sourceMode: StemSourceMode,
   ) {
     if (!pending) return;
-    const { decoded, fileName, originalFile } = pending;
-    addCustomTrack(fileName, decoded, originalFile, sourceMode);
-    const perf = usePerformanceStore.getState();
-    if (keyOverride) {
-      perf.setPendingKeyOverride(keyOverride);
-      // Pre-set activeKey so the swap_source send carries the override
-      // as the model hint — useFixtureSwap reads activeKey when calling
-      // remote.sendSwapSource().
-      perf.setKey(keyOverride);
-    }
-    if (timeSignatureOverride) {
-      // Mirror the keyscale override: stash a one-shot value so the
-      // swap_ready handler in useFixtureSwap can re-apply it (and tell
-      // the server) even though the server's own resolver won't have
-      // it during the in-flight swap. Pre-set activeTimeSignature so
-      // the same UI control reflects the choice immediately.
-      perf.setPendingTimeSignatureOverride(timeSignatureOverride);
-      perf.setTimeSignature(timeSignatureOverride);
-    }
-    setFixture(fileName);
-    setPending(null);
+    await commitUploadedTrack({
+      pending,
+      keyOverride,
+      timeSignatureOverride,
+      sourceMode,
+      addCustomTrack,
+      setFixture,
+      setPending,
+      setUploading,
+    });
   }
 
   if (kiosk) return null;

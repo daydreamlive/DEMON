@@ -1,6 +1,6 @@
 """Lazy auto-downloading audio test fixtures.
 
-Backed by the ``daydreamlive/demon-fixtures`` dataset repo on Hugging
+Backed by the ``daydreamlive/demon-fixtures-v2`` dataset repo on Hugging
 Face. The first call to :func:`audio_fixture` for a given name
 downloads the file into :func:`acestep.paths.fixtures_dir` (under
 ``MODELS_DIR``); subsequent calls hit that managed directory and are
@@ -8,7 +8,7 @@ effectively free. HF's own cache stays as the under-the-hood
 incremental store; the managed dir is what callers see.
 
 Adding a new fixture is a two-step process:
-  1. ``huggingface-cli upload daydreamlive/demon-fixtures <file> --repo-type dataset``
+  1. ``huggingface-cli upload daydreamlive/demon-fixtures-v2 <file> --repo-type dataset``
   2. Add the filename to :data:`KNOWN_FIXTURES`.
 
 Each fixture optionally has a sidecar pair in the same dataset
@@ -30,13 +30,23 @@ from pathlib import Path
 from typing import Optional
 
 from huggingface_hub import hf_hub_download
-from huggingface_hub.utils import EntryNotFoundError
+from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
 
 from acestep.paths import fixtures_dir
 from acestep.sidecars import (
     AudioSidecar,
     SIDECAR_FORMAT_VERSION,
     load_sidecar,
+)
+from acestep.track_assets import (
+    load_json_metadata,
+    read_stem_wavs,
+    sidecar_asset_name,
+    source_audio_name,
+    source_audio_path,
+    source_sidecar_name,
+    stem_audio_name,
+    track_metadata_name,
 )
 
 # Re-export for backward compat with callers that imported these from
@@ -45,31 +55,31 @@ from acestep.sidecars import (
 __all__ = [
     "AudioSidecar",
     "KNOWN_FIXTURES",
+    "LEGACY_REPO_ID",
     "REPO_ID",
     "REPO_TYPE",
     "SIDECAR_FORMAT_VERSION",
     "audio_fixture",
     "ensure_all",
     "fixture_sidecar",
+    "fixture_stems",
+    "fixture_track_metadata",
     "parse_key_from_filename",
 ]
 
-REPO_ID = "daydreamlive/demon-fixtures"
+REPO_ID = "daydreamlive/demon-fixtures-v2"
+LEGACY_REPO_ID = "daydreamlive/demon-fixtures"
 REPO_TYPE = "dataset"
 
 KNOWN_FIXTURES: frozenset[str] = frozenset({
     "inside_confusion_loop_60s_gsm.wav",
-    "inside_confusion_loop_120s_gsm.wav",
     "low_fi_Gm_loop_60s_gnm.wav",
-    "low_fi_loop_120s_gnm.wav",
     "prog_rock_loop_60s_enm.wav",
-    "prog_rock_loop_120s_enm.wav",
     "thrash_metal_loop_60s_enm.wav",
-    "thrash_metal_loop_120s_enm.wav",
 })
 
 
-def _hf_download_to_fixtures_dir(filename: str) -> Path:
+def _hf_download_to_fixtures_dir(filename: str, *, allow_legacy: bool = True) -> Path:
     """``hf_hub_download`` into ``fixtures_dir()``.
 
     Matches the pattern used by :mod:`acestep.model_downloader`
@@ -80,12 +90,20 @@ def _hf_download_to_fixtures_dir(filename: str) -> Path:
     copy is what callers see.
     """
     fixtures_dir().mkdir(parents=True, exist_ok=True)
-    return Path(hf_hub_download(
-        repo_id=REPO_ID,
-        filename=filename,
-        repo_type=REPO_TYPE,
-        local_dir=str(fixtures_dir()),
-    ))
+    for repo_id in (REPO_ID, LEGACY_REPO_ID):
+        if repo_id == LEGACY_REPO_ID and not allow_legacy:
+            break
+        try:
+            return Path(hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                repo_type=REPO_TYPE,
+                local_dir=str(fixtures_dir()),
+            ))
+        except (EntryNotFoundError, RepositoryNotFoundError):
+            if repo_id == LEGACY_REPO_ID or not allow_legacy:
+                raise
+    raise EntryNotFoundError("not found")
 
 
 def audio_fixture(name: str) -> Path:
@@ -100,7 +118,13 @@ def audio_fixture(name: str) -> Path:
             f"unknown fixture {name!r}; add it to KNOWN_FIXTURES "
             f"in acestep/fixtures.py after uploading to {REPO_ID}"
         )
-    return _hf_download_to_fixtures_dir(name)
+    local = source_audio_path(fixtures_dir(), name)
+    if local.is_file():
+        return local
+    try:
+        return _hf_download_to_fixtures_dir(source_audio_name(name), allow_legacy=False)
+    except (EntryNotFoundError, RepositoryNotFoundError):
+        return _hf_download_to_fixtures_dir(name, allow_legacy=True)
 
 
 def ensure_all() -> list[Path]:
@@ -176,7 +200,7 @@ def parse_key_from_filename(name: str) -> Optional[str]:
 # Fixture-sidecar lookup
 # ---------------------------------------------------------------------------
 
-def _resolve_sidecar_file(name: str) -> Optional[Path]:
+def _resolve_fixture_asset(name: str, *, allow_legacy: bool = True) -> Optional[Path]:
     """Locate a fixture sidecar file by name.
 
     ``fixtures_dir()`` wins over HF. Returns None on miss (caller falls
@@ -189,8 +213,12 @@ def _resolve_sidecar_file(name: str) -> Optional[Path]:
     if local.is_file():
         return local
     try:
-        return _hf_download_to_fixtures_dir(name)
-    except EntryNotFoundError:
+        return _hf_download_to_fixtures_dir(name, allow_legacy=allow_legacy)
+    except (EntryNotFoundError, RepositoryNotFoundError):
+        # A missing file OR a not-yet-created v2 repo is an expected miss,
+        # not an error: callers fall back to legacy assets / live compute.
+        # Stay quiet so probing v2 on every fixture lookup (before the
+        # dataset is populated) doesn't spam the logs.
         return None
     except Exception as exc:
         # Treat any other download error (network, permissions) the same
@@ -201,7 +229,25 @@ def _resolve_sidecar_file(name: str) -> Optional[Path]:
         return None
 
 
-def fixture_sidecar(name: str) -> Optional[AudioSidecar]:
+def _resolve_sidecar_file(name: str) -> Optional[Path]:
+    return _resolve_fixture_asset(name, allow_legacy=True)
+
+
+def fixture_track_metadata(name: str) -> dict:
+    """Load editable fixture metadata, falling back to legacy sidecar JSON."""
+    if name not in KNOWN_FIXTURES:
+        return {}
+    track_path = _resolve_fixture_asset(track_metadata_name(name), allow_legacy=False)
+    if track_path is not None:
+        return load_json_metadata(track_path)
+    legacy_sidecar = _resolve_fixture_asset(f"{name}.sidecar.json", allow_legacy=True)
+    return load_json_metadata(legacy_sidecar) if legacy_sidecar is not None else {}
+
+
+def fixture_sidecar(
+    name: str,
+    source_mode: str | None = "full",
+) -> Optional[AudioSidecar]:
     """Load the test-fixture sidecar bundle for ``name`` if available and fresh.
 
     Returns ``None`` (not an exception) on any of:
@@ -223,16 +269,40 @@ def fixture_sidecar(name: str) -> Optional[AudioSidecar]:
     if name not in KNOWN_FIXTURES:
         return None
 
-    json_path = _resolve_sidecar_file(f"{name}.sidecar.json")
+    json_path = _resolve_fixture_asset(sidecar_asset_name(name, source_mode, "json"), allow_legacy=False)
+    if json_path is None:
+        sidecar_name = source_sidecar_name(name, source_mode)
+        json_path = _resolve_sidecar_file(f"{sidecar_name}.sidecar.json")
     if json_path is None:
         print(f"[fixture_sidecar] {name}: sidecar JSON not found (local dir + HF dataset)")
         return None
-    sf_path = _resolve_sidecar_file(f"{name}.sidecar.safetensors")
+    sf_path = _resolve_fixture_asset(sidecar_asset_name(name, source_mode, "safetensors"), allow_legacy=False)
+    if sf_path is None:
+        sidecar_name = source_sidecar_name(name, source_mode)
+        sf_path = _resolve_sidecar_file(f"{sidecar_name}.sidecar.safetensors")
     if sf_path is None:
         print(f"[fixture_sidecar] {name}: sidecar safetensors not found (local dir + HF dataset)")
         return None
 
-    return load_sidecar(json_path, sf_path, name=name)
+    sidecar_name = source_sidecar_name(name, source_mode)
+    return load_sidecar(json_path, sf_path, name=sidecar_name)
+
+
+def fixture_stems(name: str, *, waveform, sample_rate: int) -> Optional[dict]:
+    """Load fixture vocal/instrumental WAV stems from local/HF assets."""
+    if name not in KNOWN_FIXTURES:
+        return None
+    for mode in ("vocals", "instruments"):
+        if _resolve_sidecar_file(stem_audio_name(name, mode)) is None:
+            return None
+    metadata = fixture_track_metadata(name)
+    return read_stem_wavs(
+        fixtures_dir(),
+        name,
+        waveform=waveform,
+        sample_rate=sample_rate,
+        metadata=metadata,
+    )
 
 
 # Backward-compat alias. Old callers imported ``FixtureSidecar`` from

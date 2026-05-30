@@ -248,7 +248,7 @@ def _process_request(connection, request):
             body,
         )
 
-    # API: list audio fixtures (from the daydreamlive/demon-fixtures HF dataset).
+    # API: list audio fixtures (from the daydreamlive/demon-fixtures-v2 HF dataset).
     # Files are downloaded on-demand by /fixtures/<name>; this endpoint just
     # returns the canonical manifest from acestep.fixtures so the UI can render
     # the picker before any download happens.
@@ -607,7 +607,7 @@ def main():
     print("=" * 60)
     print(f"  WebSocket: ws://{browsable_host}:{port}/")
     print(f"  HTTP API:  http://{browsable_host}:{port}/api/...")
-    print(f"  Fixtures:  daydreamlive/demon-fixtures (HF, {len(KNOWN_FIXTURES)} files, on-demand)")
+    print(f"  Fixtures:  daydreamlive/demon-fixtures-v2 (HF, {len(KNOWN_FIXTURES)} files, on-demand)")
     print("  Ctrl+C to stop")
     print("=" * 60)
     print()

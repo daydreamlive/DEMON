@@ -312,7 +312,7 @@ def parse_args() -> argparse.Namespace:
     source.add_argument(
         "--fixture",
         default=DEFAULT_FIXTURE,
-        help="Fixture name from daydreamlive/demon-fixtures.",
+        help="Fixture name from daydreamlive/demon-fixtures-v2.",
     )
     parser.add_argument(
         "--duration",
