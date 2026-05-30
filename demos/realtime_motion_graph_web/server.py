@@ -31,6 +31,7 @@ from websockets.sync.server import serve as ws_serve
 
 from acestep.engine.obs import configure as configure_logging, logger
 from acestep.fixtures import KNOWN_FIXTURES, audio_fixture
+from acestep.user_uploads import enumerate_user_uploads, user_upload_audio
 
 # The generative backend is imported lazily inside main(): in --no-backend
 # mode we skip the import entirely so torch and acestep don't load and the
@@ -38,7 +39,6 @@ from acestep.fixtures import KNOWN_FIXTURES, audio_fixture
 
 
 VIDEOS_DIR = Path(__file__).parent / "videos"
-_AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
 _VIDEO_EXTS = {".mp4", ".webm", ".mov"}
 
 # Set in main() based on --no-backend; read by _process_request when the
@@ -265,6 +265,28 @@ def _process_request(connection, request):
             body,
         )
 
+    # API: list user uploads sitting in MODELS_DIR/user_uploads/.  Same
+    # shape as /api/fixtures so the client can merge both lists into a
+    # single picker.
+    if path_only == "/api/user_uploads":
+        try:
+            names = enumerate_user_uploads()
+        except Exception as e:
+            sys.stdout.write(f"[HTTP] /api/user_uploads error: {e}\n")
+            sys.stdout.flush()
+            names = []
+        body = json.dumps(names).encode()
+        _log_http(remote, 200, "GET", url)
+        return Response(
+            200, "OK",
+            Headers([
+                ("Content-Type", "application/json; charset=utf-8"),
+                ("Content-Length", str(len(body))),
+                *_NO_CACHE_HEADERS,
+            ]),
+            body,
+        )
+
     # Serve files from the HF fixture dataset under /fixtures/<name>.
     # audio_fixture() validates `name` against KNOWN_FIXTURES (so this is
     # also our path-escape guard) and downloads on first access.
@@ -286,7 +308,7 @@ def _process_request(connection, request):
                 ]),
                 msg,
             )
-        if candidate and candidate.is_file() and candidate.suffix.lower() in _AUDIO_EXTS:
+        if candidate and candidate.is_file():
             try:
                 body = candidate.read_bytes()
             except OSError as e:
@@ -312,6 +334,45 @@ def _process_request(connection, request):
                 ]),
                 body,
             )
+
+    # Serve user-uploaded audio under /user_uploads/<name>. Whitelisted
+    # by enumerate_user_uploads (which gates by extension and excludes
+    # sidecar files) so a path-escape attempt or a request for a
+    # sidecar JSON can't slip through. Same shape as /fixtures/<name>.
+    if path_only.startswith("/user_uploads/"):
+        rel = urllib.parse.unquote(path_only[len("/user_uploads/"):])
+        allowed = set(enumerate_user_uploads())
+        if rel in allowed:
+            try:
+                candidate = user_upload_audio(rel)
+            except FileNotFoundError:
+                candidate = None
+            if candidate is not None:
+                try:
+                    body = candidate.read_bytes()
+                except OSError as e:
+                    msg = f"500 {e}\n".encode()
+                    _log_http(remote, 500, "GET", url)
+                    return Response(
+                        500, "Internal Server Error",
+                        Headers([
+                            ("Content-Type", "text/plain; charset=utf-8"),
+                            ("Content-Length", str(len(msg))),
+                            *_NO_CACHE_HEADERS,
+                        ]),
+                        msg,
+                    )
+                ctype, _ = mimetypes.guess_type(candidate.name)
+                _log_http(remote, 200, "GET", url)
+                return Response(
+                    200, "OK",
+                    Headers([
+                        ("Content-Type", ctype or "application/octet-stream"),
+                        ("Content-Length", str(len(body))),
+                        *_NO_CACHE_HEADERS,
+                    ]),
+                    body,
+                )
 
     # Serve user-supplied videos under /videos/<name> from VIDEOS_DIR.
     if path_only.startswith("/videos/"):

@@ -8,6 +8,8 @@ Directory layout under MODELS_DIR:
     trt_engines/          TensorRT engines and ONNX exports
     loras/                LoRA .safetensors files (flat — id is filename stem)
     MelBandRoFormer/      Mel-Band RoFormer stem-separation checkpoint
+    fixtures/             Test fixtures and their precomputed sidecars
+    user_uploads/         User-uploaded audio and their precomputed sidecars
 
 Resolution order for MODELS_DIR:
     1. ACESTEP_MODELS_DIR environment variable
@@ -150,6 +152,16 @@ def melband_roformer_model_path(
 ) -> Path:
     """Full path to the Mel-Band RoFormer checkpoint file."""
     return melband_roformer_dir() / filename
+
+
+def fixtures_dir() -> Path:
+    """Directory containing test fixture audio and precomputed sidecars."""
+    return models_dir() / "fixtures"
+
+
+def user_uploads_dir() -> Path:
+    """Directory containing user-uploaded audio and precomputed sidecars."""
+    return models_dir() / "user_uploads"
 
 
 def discover_loras(directory: Path | None = None) -> list[Path]:
