@@ -10,6 +10,13 @@ import {
   mergeConfig,
   type RtmgConfig,
 } from "@/lib/config";
+import {
+  applyInputs,
+  captureInputs,
+  hasInputs,
+  anyInputPresent,
+  type SerializedInputs,
+} from "@/lib/inputBundle";
 import { confirm } from "@/store/useConfirmStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
@@ -21,7 +28,14 @@ import {
   isTimeSignature,
 } from "@/types/engine";
 
+import { ExportDialog } from "./ExportDialog";
 import { MidiBadge } from "./MidiBadge";
+
+// Exported file shape: an RtmgConfig plus the optional embedded inputs.
+// Old DEMON builds importing this just ignore `inputs` (mergeConfig
+// drops unknown keys); a config exported WITHOUT inputs is byte-identical
+// to the legacy format.
+type DemonExport = RtmgConfig & { inputs?: SerializedInputs };
 
 // Show a transient status message that clears itself after 2s — unless a
 // newer message replaced it meanwhile. Used for the import/export toasts,
@@ -55,6 +69,11 @@ export function OperatorStrip() {
   const toggleLoop = usePerformanceStore((s) => s.toggleLoop);
 
   const configFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Export dialog: opening it snapshots whether any input is active so
+  // the dialog knows whether to show the "Serialize inputs" checkbox.
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportHasInputs, setExportHasInputs] = useState(false);
 
   // Push LUFS state to the live AudioPlayer. Re-runs whenever the user
   // toggles, and whenever a new player instance appears (session
@@ -93,24 +112,52 @@ export function OperatorStrip() {
   async function onConfigFilePicked(file: File): Promise<void> {
     try {
       const text = await file.text();
-      const parsed = JSON.parse(text) as Partial<RtmgConfig>;
+      const parsed = JSON.parse(text) as Partial<DemonExport>;
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
         throw new Error("config root must be an object");
       }
+      // mergeConfig only reads the known RtmgConfig keys, so the `inputs`
+      // attachment rides through untouched and is applied separately.
       const merged = mergeConfig(getConfig(), parsed);
       applyConfig(merged);
-      flashStatus(`Imported ${file.name}`);
+
+      const inputs = parsed.inputs;
+      if (hasInputs(inputs)) {
+        const { applied, needSession } = await applyInputs(
+          inputs as SerializedInputs,
+        );
+        let msg = `Imported ${file.name}`;
+        if (applied.length) msg += ` + inputs (${applied.join(", ")})`;
+        if (needSession.length) {
+          msg += ` — press Play to apply ${needSession.join(", ")}`;
+        }
+        flashStatus(msg);
+      } else {
+        flashStatus(`Imported ${file.name}`);
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       flashStatus(`Import failed: ${msg}`);
     }
   }
 
-  // Export config — snapshot the live stores into an RtmgConfig and
-  // trigger a JSON download. Filename includes a timestamp so multiple
-  // exports in a session don't collide.
-  function onExportConfig(): void {
-    const snapshot = captureRtmgConfig();
+  // Open the export dialog — snapshot whether any input is live so the
+  // dialog knows whether to show the "Serialize inputs" checkbox.
+  function openExportDialog(): void {
+    setExportHasInputs(anyInputPresent());
+    setExportOpen(true);
+  }
+
+  // Export config — snapshot the live stores into an RtmgConfig, embed
+  // the active inputs when the operator opted in, and trigger a JSON
+  // download. Filename includes a timestamp so multiple exports in a
+  // session don't collide.
+  async function runExport(serializeInputs: boolean): Promise<void> {
+    setExportOpen(false);
+    const snapshot: DemonExport = captureRtmgConfig();
+    const inputs = serializeInputs ? await captureInputs() : {};
+    const includeInputs = hasInputs(inputs);
+    if (includeInputs) snapshot.inputs = inputs;
     const blob = new Blob([JSON.stringify(snapshot, null, 2)], {
       type: "application/json",
     });
@@ -123,7 +170,7 @@ export function OperatorStrip() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    flashStatus("Exported config");
+    flashStatus(includeInputs ? "Exported config + inputs" : "Exported config");
   }
 
   // The pod's WS URL is allocated by the queue and not user-editable.
@@ -359,9 +406,9 @@ export function OperatorStrip() {
           <button
             type="button"
             className="pause-btn"
-            data-dd-tooltip="Download current config as JSON"
+            data-dd-tooltip="Download current config as JSON (optionally with input audio)"
             aria-label="Export config"
-            onClick={onExportConfig}
+            onClick={openExportDialog}
           >
             Export
           </button>
@@ -379,6 +426,13 @@ export function OperatorStrip() {
         </div>
       </section>
 
+      {exportOpen && (
+        <ExportDialog
+          hasInputs={exportHasInputs}
+          onCancel={() => setExportOpen(false)}
+          onConfirm={runExport}
+        />
+      )}
     </div>
   );
 }

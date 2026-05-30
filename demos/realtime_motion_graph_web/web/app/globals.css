@@ -8645,17 +8645,22 @@ body.curve-open #install-video-area #graph {
   cursor: progress;
 }
 .ref-control-menu {
-  /* Absolute so option content never feeds .mixer-tile's intrinsic
-     width. Opens upward — these controls live at the bottom of MainTile
-     so up keeps the menu from being clipped by anything below the
-     mixer rack. Min-width 100% so it's at least as wide as the closed
-     button; max-width caps growth so an extreme filename still fits
-     on screen, with internal scroll for very long lists. */
-  position: absolute;
-  bottom: calc(100% + 4px);
-  left: 0;
-  z-index: 9;
-  min-width: 100%;
+  /* Portaled to document.body and positioned `fixed` by RefSelect.tsx
+     (left / top|bottom / min-width / max-height come in as inline
+     styles computed from the button's getBoundingClientRect at open
+     time). The pickers live inside several nested scroll containers —
+     `.mixer-rack` (overflow-y:auto) in the tabbed drawer, the small
+     `.spread-section` grid cells, and the mobile sheet track — every
+     one of which would clip an in-flow `position:absolute` menu. A
+     body-level `fixed` element escapes all of them (no overflow or
+     transform ancestor between it and the viewport), so the list is
+     never cut off whichever way it opens. max-width caps growth so an
+     extreme filename still fits on screen, with internal scroll for
+     very long lists; max-height here is a fallback ceiling that the
+     inline computed value tightens to the available side. */
+  position: fixed;
+  z-index: 120;
+  min-width: 0;
   max-width: min(360px, 90vw);
   max-height: min(50vh, 320px);
   overflow-y: auto;
