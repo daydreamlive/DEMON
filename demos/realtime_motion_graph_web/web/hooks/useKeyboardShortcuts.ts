@@ -43,6 +43,7 @@ import {
 //   Space        pause / resume
 //   K            toggle kiosk mode
 //   Esc / O      toggle Advanced Controls drawer
+//   Esc Esc      open expanded (all-controls) drawer / close if open
 //   R            record / stop audio (no modifiers — ⌘R still reloads)
 
 const HELD_KEYS = new Set<string>();
@@ -175,6 +176,13 @@ export function useKeyboardShortcuts() {
       s.setDcwWavelet(next);
     }
 
+    // Esc is a double-tap dispatcher: a single tap toggles the drawer,
+    // two taps within the window jump to the expanded layout. The single
+    // action is deferred by ESC_DOUBLE_MS so we can disambiguate without
+    // a close→reopen flicker. `o` stays an instant toggle (no double).
+    let escTimer: number | null = null;
+    const ESC_DOUBLE_MS = 220;
+
     function onKeyDown(e: KeyboardEvent) {
       // ⌘/Ctrl+Enter while in a prompt textarea sends — runs BEFORE the
       // inEditable early-return so users can fire while typing.
@@ -304,8 +312,24 @@ export function useKeyboardShortcuts() {
         usePerformanceStore.getState().toggleDcw();
         return;
       }
-      if (k === "o" || k === "escape") {
+      if (k === "o") {
         document.dispatchEvent(new CustomEvent("dd:toggle-drawer"));
+        return;
+      }
+      if (k === "escape") {
+        e.preventDefault();
+        if (escTimer !== null) {
+          // Second tap inside the window → expand toggle (open straight
+          // to the expanded layout, or close if already open).
+          window.clearTimeout(escTimer);
+          escTimer = null;
+          document.dispatchEvent(new CustomEvent("dd:expand-toggle-drawer"));
+        } else {
+          escTimer = window.setTimeout(() => {
+            escTimer = null;
+            document.dispatchEvent(new CustomEvent("dd:toggle-drawer"));
+          }, ESC_DOUBLE_MS);
+        }
         return;
       }
       // Plain `r` toggles recording. Skip when any modifier is held so
@@ -332,6 +356,7 @@ export function useKeyboardShortcuts() {
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
+      if (escTimer !== null) window.clearTimeout(escTimer);
       HELD_KEYS.clear();
       HELD_DIGITS.clear();
     };

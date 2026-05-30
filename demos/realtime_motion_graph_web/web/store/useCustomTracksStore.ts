@@ -27,6 +27,15 @@ export interface CustomTrack {
   stems?: DecodedStemAssets;
   stemStatus: StemStatus;
   stemError?: string;
+  /**
+   * True once the track's audio + sidecars + stems exist on the pod's
+   * disk (seeded from the server, or persisted by a successful
+   * uploadTrackToServer). Lets a swap to this track load by name on the
+   * server instead of re-uploading PCM and re-ripping stems. Tracks that
+   * only ever lived in browser memory (no-pod fallback, MCP mirror) stay
+   * false and keep the client-supplied-PCM swap path.
+   */
+  persisted: boolean;
 }
 
 interface CustomTracksState {
@@ -40,6 +49,7 @@ interface CustomTracksState {
     decoded: DecodedFixture,
     file?: File,
     sourceMode?: StemSourceMode,
+    persisted?: boolean,
   ) => void;
   addPersisted: (name: string, sourceMode?: StemSourceMode) => void;
   setStemStatus: (
@@ -51,13 +61,20 @@ interface CustomTracksState {
   setStems: (name: string, stems: DecodedStemAssets) => void;
   resolveSourceMode: (name: string) => StemSourceMode | undefined;
   has: (name: string) => boolean;
+  /**
+   * Is this track loadable by name on the server? True for built-in
+   * fixtures (everything the dropdown shows that isn't a custom track is
+   * a pod-resident fixture) and for persisted uploads. Drives the
+   * server-side swap fast path.
+   */
+  isServerResident: (name: string) => boolean;
 }
 
 export const useCustomTracksStore = create<CustomTracksState>((set, get) => ({
   names: [],
   tracks: new Map(),
 
-  add: (name, decoded, file, sourceMode = defaultSwapSourceMode()) =>
+  add: (name, decoded, file, sourceMode = defaultSwapSourceMode(), persisted = false) =>
     set((s) => {
       const nextTracks = new Map(s.tracks);
       nextTracks.set(name, {
@@ -65,6 +82,7 @@ export const useCustomTracksStore = create<CustomTracksState>((set, get) => ({
         ...(file ? { originalFile: file } : {}),
         sourceMode,
         stemStatus: "idle",
+        persisted,
       });
       const nextNames = s.names.includes(name) ? s.names : [...s.names, name];
       return {
@@ -80,6 +98,7 @@ export const useCustomTracksStore = create<CustomTracksState>((set, get) => ({
       nextTracks.set(name, {
         sourceMode,
         stemStatus: "idle",
+        persisted: true,
       });
       const nextNames = s.names.includes(name) ? s.names : [...s.names, name];
       return {
@@ -129,4 +148,12 @@ export const useCustomTracksStore = create<CustomTracksState>((set, get) => ({
   },
 
   has: (name) => get().tracks.has(name),
+
+  isServerResident: (name) => {
+    const track = get().tracks.get(name);
+    // Not a custom track → it's a built-in fixture, which always lives on
+    // the pod. A custom track is server-loadable only once persisted.
+    if (!track) return true;
+    return track.persisted;
+  },
 }));

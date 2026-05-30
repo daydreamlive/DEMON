@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 
+import type { StemOverlayKind } from "@/engine/audio/loadFixture";
 import { loraStrengthDispatcher } from "@/engine/lora/dispatcher";
 import { readKnob, resetKnobDelta } from "@/engine/midi/absoluteDelta";
 import { decodeKnob } from "@/engine/midi/knob";
@@ -12,7 +13,19 @@ import { useLoraStore } from "@/store/useLoraStore";
 import { useMidiStore } from "@/store/useMidiStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
+import {
+  STEM_OVERLAY_MAX,
+  useStemOverlayStore,
+} from "@/store/useStemOverlayStore";
 import { LORA_SLIDER_MAX, SLIDER_META } from "@/types/engine";
+
+// Stem overlay params (`stem_vocals` / `stem_instruments`) aren't perf-
+// store sliders — their level lives in useStemOverlayStore, range 0..MAX.
+function stemKindFromParam(param: string): StemOverlayKind | null {
+  if (param === "stem_vocals") return "vocals";
+  if (param === "stem_instruments") return "instruments";
+  return null;
+}
 
 // Web MIDI bootstrap. Asks for navigator.requestMIDIAccess on mount, wires
 // onmidimessage to either the learn handler (if learn is active) or the
@@ -91,7 +104,11 @@ function handleCC(cc: number, value: number): void {
   // crosses it.
   const max = range?.max
     ?? meta?.max
-    ?? (param.startsWith("lora_str_") ? LORA_SLIDER_MAX : 2.0);
+    ?? (param.startsWith("lora_str_")
+      ? LORA_SLIDER_MAX
+      : stemKindFromParam(param)
+        ? STEM_OVERLAY_MAX
+        : 2.0);
   const span = Math.max(0, max - min);
   const reverse = range?.reverse ?? false;
   const step = meta?.step ?? 0.05;
@@ -135,6 +152,15 @@ function applyMidiSet(param: string, value: number): void {
     loraStrengthDispatcher.set(id, value);
     return;
   }
+  const stemKind = stemKindFromParam(param);
+  if (stemKind) {
+    // setVolume clamps to [0, STEM_OVERLAY_MAX]; mirror the drag path's
+    // enabled = volume > 0 so sliding to zero mutes the overlay.
+    const store = useStemOverlayStore.getState();
+    store.setVolume(stemKind, value);
+    store.setEnabled(stemKind, value > 0);
+    return;
+  }
   usePerformanceStore.getState().setSlider(param, value);
 }
 
@@ -146,6 +172,14 @@ function applyMidiBump(param: string, delta: number): void {
     // through the dispatcher; clamping happens inside.
     const current = usePerformanceStore.getState().sliderTargets[param] ?? 0;
     loraStrengthDispatcher.set(id, current + delta);
+    return;
+  }
+  const stemKind = stemKindFromParam(param);
+  if (stemKind) {
+    const store = useStemOverlayStore.getState();
+    const next = (store.volumes[stemKind] ?? 0) + delta;
+    store.setVolume(stemKind, next); // clamps to [0, STEM_OVERLAY_MAX]
+    store.setEnabled(stemKind, next > 0);
     return;
   }
   usePerformanceStore.getState().bumpSlider(param, delta);
@@ -259,6 +293,9 @@ export function useMidi() {
     //                                       faders in HeroMacros — set to
     //                                       `lora_slot_<0|1>` so the
     //                                       binding survives LoRA swaps)
+    //   .hero-stem-panner[data-param=...]  → CC (stem overlay panners in
+    //                                       the bay + CORE tab — `stem_<kind>`,
+    //                                       routed to useStemOverlayStore)
     //   #blend-control[data-param=...]     → CC (Tags A↔B blend slider,
     //                                       intentionally NOT a
     //                                       slider-group — keeps the
@@ -291,6 +328,17 @@ export function useMidi() {
         useMidiStore
           .getState()
           .startLearn("cc", heroFader.dataset.param, heroFader);
+        return;
+      }
+      // Stem overlay panners (bay + CORE tab). data-param is
+      // `stem_<kind>`, only present once the stems are ready, so
+      // right-clicking an unloaded panner falls through to a no-op.
+      const stemPanner = target.closest<HTMLElement>(".hero-stem-panner");
+      if (stemPanner?.dataset.param) {
+        e.preventDefault();
+        useMidiStore
+          .getState()
+          .startLearn("cc", stemPanner.dataset.param, stemPanner);
         return;
       }
       const blendEl = target.closest<HTMLElement>("#blend-control");

@@ -262,7 +262,8 @@ async function registerClip(input: {
   setStatus(status, `Encoding ${input.name}...`);
   try {
     const uploaded = await uploadTrackToServer(input.name, decoded);
-    custom.add(uploaded.name, decoded, file, sourceMode);
+    // Persisted on the pod (audio + sidecars + stems) → swap by name.
+    custom.add(uploaded.name, decoded, file, sourceMode, true);
     return uploaded.name;
   } catch {
     // No pod reachable (or encode error) — register in-memory; the

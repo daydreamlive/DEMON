@@ -1,9 +1,14 @@
 "use client";
 
+import { useCustomTracksStore } from "@/store/useCustomTracksStore";
+import { usePerformanceStore } from "@/store/usePerformanceStore";
+
 import { Knob } from "./Knob";
 import { RefControl } from "./RefControl";
 import { SeedKnob } from "./SeedKnob";
 import { defaultLabelFor, kbdHintFor } from "./SliderTile";
+import { SourceModeSwitch } from "./SourceModeSwitch";
+import { StemPanner } from "./StemPanner";
 import { TrackPicker } from "./TrackPicker";
 
 // CORE tab — dial-it-and-go macros every musician knows, drawn as
@@ -45,6 +50,52 @@ export function CoreTile() {
         <TrackPicker />
         <RefControl kind="timbre" />
         <RefControl kind="structure" />
+      </div>
+      <CoreStems />
+    </div>
+  );
+}
+
+// Stem layers under the file pickers — the same panners the HeroMacros
+// bay carries, surfaced in the drawer so they stay reachable while the
+// drawer is open (the bay's copy hides on drawer-open). Only shown for
+// uploaded tracks (sourceMode set); built-in fixtures have no stems.
+function CoreStems() {
+  const fixture = usePerformanceStore((s) => s.fixture);
+  const sourceMode = useCustomTracksStore((s) =>
+    fixture ? s.tracks.get(fixture)?.sourceMode : undefined,
+  );
+  const stemStatus = useCustomTracksStore((s) =>
+    fixture ? s.tracks.get(fixture)?.stemStatus : undefined,
+  );
+  const stemError = useCustomTracksStore((s) =>
+    fixture ? s.tracks.get(fixture)?.stemError : undefined,
+  );
+  const stemsReady = useCustomTracksStore((s) =>
+    Boolean(fixture && s.tracks.get(fixture)?.stems),
+  );
+  if (!fixture || !sourceMode) return null;
+  // The source switch carries its own readout, so the status line only
+  // narrates the in-flight / failed / pre-play states.
+  const processing = stemStatus === "processing";
+  const summary =
+    processing
+      ? "Swapping inference source…"
+      : stemStatus === "failed"
+        ? stemError || "Stem rip failed"
+        : stemsReady
+          ? "Inference source"
+          : "Stems will load on play";
+  return (
+    <div className="core-stems">
+      <div className="core-stems-label">Stem Layers</div>
+      <div className="core-stems-status" title={stemError || undefined}>
+        {summary}
+      </div>
+      <SourceModeSwitch fixture={fixture} current={sourceMode} busy={processing} />
+      <div className="hero-stem-panners">
+        <StemPanner kind="vocals" />
+        <StemPanner kind="instruments" />
       </div>
     </div>
   );

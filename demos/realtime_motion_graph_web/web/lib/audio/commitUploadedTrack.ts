@@ -25,6 +25,7 @@ interface CommitUploadedTrackArgs {
     decoded: DecodedFixture,
     file?: File,
     sourceMode?: StemSourceMode,
+    persisted?: boolean,
   ) => void;
   setFixture: (name: string) => void;
   setPending: (pending: PendingTrackUpload | null) => void;
@@ -53,7 +54,9 @@ export async function commitUploadedTrack({
       key: keyOverride,
       timeSignature: timeSignatureOverride,
     });
-    addCustomTrack(uploaded.name, decoded, originalFile, sourceMode);
+    // The server persisted audio + sidecars + stems to disk before
+    // replying upload_ok, so swaps to this track can load by name.
+    addCustomTrack(uploaded.name, decoded, originalFile, sourceMode, true);
     const perf = usePerformanceStore.getState();
     if (keyOverride) {
       perf.setPendingKeyOverride(keyOverride);

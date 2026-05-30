@@ -31,4 +31,5 @@ export const KEY_BINDINGS: KeyBinding[] = [
   { combo: "K", description: "Toggle kiosk mode" },
   { combo: "O", description: "Toggle Full Controls drawer" },
   { combo: "Esc", description: "Toggle Full Controls drawer" },
+  { combo: "Esc Esc", description: "Open expanded drawer / close if open" },
 ];

@@ -80,6 +80,7 @@ from acestep.streaming.session import (
 from acestep.streaming import registry as session_registry
 from acestep.streaming.source import (
     _decode_audio_msg,
+    _load_clip_waveform,
     _load_known_fixture_waveform,
     _normalize_time_signature,
 )
@@ -737,20 +738,44 @@ def _handle_client_body(
             elif mtype == "clear_structure_source":
                 streaming.clear_structure_source(origin=origin)
             elif mtype == "swap_source":
-                try:
-                    audio_msg = recv_audio()
-                except ConnectionClosed:
-                    state.running = False
-                    return
-                try:
-                    wf = _decode_audio_msg(audio_msg)
-                except Exception as exc:
-                    logger.opt(exception=True).error(
-                        "swap_source_decode_failed origin={} error={}",
-                        origin, exc,
-                    )
-                    _send_json({"type": "swap_failed", "error": str(exc)})
-                    return
+                # Server-side source load: when the user picks a track that
+                # already lives on the pod (a built-in fixture or a
+                # persisted upload), the client sends the name alone with
+                # ``use_server_source`` set and NO binary PCM frame. We read
+                # the waveform straight off disk by name, so the sidecar +
+                # stem caches hit (no prepare_source, no Mel-Band RoFormer
+                # re-rip) instead of treating a re-decoded, re-uploaded PCM
+                # buffer as a brand-new source.
+                if data.get("use_server_source"):
+                    name = data.get("fixture_name")
+                    try:
+                        wf = _load_clip_waveform(str(name))
+                    except Exception as exc:
+                        logger.opt(exception=True).error(
+                            "swap_source_server_load_failed origin={} "
+                            "name={} error={}",
+                            origin, name, exc,
+                        )
+                        _send_json({
+                            "type": "swap_failed",
+                            "error": f"server source load failed: {exc}",
+                        })
+                        return
+                else:
+                    try:
+                        audio_msg = recv_audio()
+                    except ConnectionClosed:
+                        state.running = False
+                        return
+                    try:
+                        wf = _decode_audio_msg(audio_msg)
+                    except Exception as exc:
+                        logger.opt(exception=True).error(
+                            "swap_source_decode_failed origin={} error={}",
+                            origin, exc,
+                        )
+                        _send_json({"type": "swap_failed", "error": str(exc)})
+                        return
                 streaming.swap_source(
                     Audio(waveform=wf, sample_rate=SAMPLE_RATE),
                     tags=data.get("tags"),

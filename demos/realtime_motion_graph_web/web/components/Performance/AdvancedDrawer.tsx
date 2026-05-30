@@ -69,6 +69,27 @@ export function AdvancedDrawer({ savedTab, unsavedDot }: Props = {}) {
     return () => document.removeEventListener("dd:toggle-drawer", handler);
   }, [started, isMobile]);
 
+  // Double-tap Esc (useKeyboardShortcuts) is an expand toggle: closed →
+  // open straight into the expanded layout; already open (any mode) →
+  // close. Setting open+spread in one batch keeps the
+  // !open→setSpread(false) reset effect below from firing, since `open`
+  // is already true by the time it runs; closing lets that effect reset
+  // spread for the next open.
+  useEffect(() => {
+    const handler = () => {
+      if (!started || isMobile) return;
+      if (open) {
+        setOpen(false);
+      } else {
+        setOpen(true);
+        setSpread(true);
+      }
+    };
+    document.addEventListener("dd:expand-toggle-drawer", handler);
+    return () =>
+      document.removeEventListener("dd:expand-toggle-drawer", handler);
+  }, [started, isMobile, open]);
+
   // Force-close on any transition back to idle (session reset).
   useEffect(() => {
     if (!started) {
@@ -144,31 +165,47 @@ export function AdvancedDrawer({ savedTab, unsavedDot }: Props = {}) {
           {open ? "◂" : "▸"}
         </span>
       </button>
-      {open && (
-        <button
-          type="button"
-          className="install-sheet-spread-toggle"
-          onClick={() => setSpread((v) => !v)}
-          aria-label={spread ? "Tabbed view" : "Spread view (all controls)"}
-          aria-pressed={spread}
-          title={spread ? "Tabbed view" : "Spread view"}
+      <button
+        type="button"
+        className="install-sheet-spread-toggle"
+        onClick={() => {
+          if (!started) return;
+          // Closed: jump straight into the expanded (spread) layout so
+          // the operator can open directly to all-controls. Open: just
+          // flip between tabbed and spread.
+          if (!open) {
+            setOpen(true);
+            setSpread(true);
+          } else {
+            setSpread((v) => !v);
+          }
+        }}
+        disabled={!started}
+        aria-label={
+          !open
+            ? "Open expanded controls"
+            : spread
+              ? "Tabbed view"
+              : "Spread view (all controls)"
+        }
+        aria-pressed={open && spread}
+        title={!open ? "Expanded controls" : spread ? "Tabbed view" : "Spread view"}
+      >
+        <svg
+          viewBox="0 0 16 16"
+          width={11}
+          height={11}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.4}
+          aria-hidden="true"
         >
-          <svg
-            viewBox="0 0 16 16"
-            width={11}
-            height={11}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={1.4}
-            aria-hidden="true"
-          >
-            <rect x="2" y="2" width="5" height="5" rx="0.6" />
-            <rect x="9" y="2" width="5" height="5" rx="0.6" />
-            <rect x="2" y="9" width="5" height="5" rx="0.6" />
-            <rect x="9" y="9" width="5" height="5" rx="0.6" />
-          </svg>
-        </button>
-      )}
+          <rect x="2" y="2" width="5" height="5" rx="0.6" />
+          <rect x="9" y="2" width="5" height="5" rx="0.6" />
+          <rect x="2" y="9" width="5" height="5" rx="0.6" />
+          <rect x="9" y="9" width="5" height="5" rx="0.6" />
+        </svg>
+      </button>
       <div className="install-sheet-body">
         {!spread && (
           <div className="install-sheet-topbar">

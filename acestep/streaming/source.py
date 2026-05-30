@@ -14,7 +14,11 @@ from acestep.audio.key_detection import detect_key
 from acestep.constants import VALID_TIME_SIGNATURES
 from acestep.engine.obs import logger
 from acestep.engine.session import PreparedSource, Session
-from acestep.audio_clips import audio_clip_sidecar, audio_clip_track_metadata
+from acestep.audio_clips import (
+    audio_clip_sidecar,
+    audio_clip_track_metadata,
+    resolve_audio_clip,
+)
 from acestep.fixtures import FixtureSidecar, audio_fixture
 from acestep.nodes.types import Audio, Latent
 
@@ -75,19 +79,11 @@ def _decode_audio_msg(audio_msg: bytes) -> torch.Tensor:
     return torch.from_numpy(arr.T.copy())[:2]
 
 
-def _load_known_fixture_waveform(name: str) -> torch.Tensor:
-    """Load a known fixture's audio from the pod's own fixture cache and
-    return it in the exact shape ``_decode_audio_msg`` produces
-    (``[≤2, N]`` float32 at ``SAMPLE_RATE``).
-
-    The pod already serves this file at ``/fixtures/<name>``; for known
-    fixtures the browser shouldn't have to download → decode → re-upload
-    ~20 MB of PCM over the WebSocket (~11 s on the measured cold path).
-    Same uniform-path output as the upload route, so every downstream
-    consumer (sidecar resolve, echoed initial buffer, prepare_source
-    fallback) is unchanged.
-    """
-    path = str(audio_fixture(name))  # resolves to the on-disk cache
+def _load_waveform_from_path(path: str) -> torch.Tensor:
+    """Read an on-disk audio file into the exact shape
+    ``_decode_audio_msg`` produces (``[≤2, N]`` float32 at
+    ``SAMPLE_RATE``), resampling if the file isn't already at the backend
+    rate."""
     try:
         import soundfile as sf
         data, sr = sf.read(path, dtype="float32", always_2d=True)  # (n, ch)
@@ -103,6 +99,38 @@ def _load_known_fixture_waveform(name: str) -> torch.Tensor:
     if data.ndim == 1:
         data = data[:, None]
     return torch.from_numpy(np.ascontiguousarray(data.T, dtype=np.float32))[:2]
+
+
+def _load_known_fixture_waveform(name: str) -> torch.Tensor:
+    """Load a known fixture's audio from the pod's own fixture cache and
+    return it in the exact shape ``_decode_audio_msg`` produces
+    (``[≤2, N]`` float32 at ``SAMPLE_RATE``).
+
+    The pod already serves this file at ``/fixtures/<name>``; for known
+    fixtures the browser shouldn't have to download → decode → re-upload
+    ~20 MB of PCM over the WebSocket (~11 s on the measured cold path).
+    Same uniform-path output as the upload route, so every downstream
+    consumer (sidecar resolve, echoed initial buffer, prepare_source
+    fallback) is unchanged.
+    """
+    return _load_waveform_from_path(str(audio_fixture(name)))
+
+
+def _load_clip_waveform(name: str) -> torch.Tensor:
+    """Load an upload-or-fixture clip from the pod's disk by name.
+
+    The swap analog of :func:`_load_known_fixture_waveform`: when the user
+    picks a track that already lives on the server (a built-in fixture or
+    a persisted user upload), there's no reason for the browser to decode
+    it and re-upload the PCM only for the server to re-encode and re-rip
+    stems. ``resolve_audio_clip`` checks the user-upload library first,
+    then the fixture library, so the same name the dropdown shows lands
+    on the right file. Output shape matches ``_decode_audio_msg`` so the
+    swap path is identical to the client-supplied-PCM case from here on,
+    and the sidecar / stem caches key off ``fixture_name`` exactly as
+    before.
+    """
+    return _load_waveform_from_path(str(resolve_audio_clip(name)))
 
 
 _VALID_TIME_SIG_STRS = frozenset(str(s) for s in VALID_TIME_SIGNATURES)

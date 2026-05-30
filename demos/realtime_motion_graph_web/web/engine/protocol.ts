@@ -869,6 +869,49 @@ export class RemoteBackend extends EventTarget {
     }
   }
 
+  /**
+   * Swap to a source that already lives on the pod (a built-in fixture or
+   * a persisted upload), identified by name only — NO PCM is sent. The
+   * server loads the waveform off its own disk, which lets the sidecar +
+   * stem caches hit instead of re-encoding and re-ripping a re-uploaded
+   * buffer. The reply is the same swap_ready + binary buffer as
+   * sendSwapSource, so the player gets its crossfade buffer from the
+   * server echo.
+   */
+  sendSwapSourceByName(
+    fixtureName: string,
+    tags?: string,
+    key?: string,
+    timeSignature?: string,
+    stemSourceMode?: "full" | "vocals" | "instruments",
+  ): boolean {
+    if (this.ws?.readyState !== WebSocket.OPEN) return false;
+    try {
+      const msg: {
+        type: string;
+        use_server_source: true;
+        fixture_name: string;
+        tags?: string;
+        key?: string;
+        time_signature?: string;
+        stem_source_mode?: "full" | "vocals" | "instruments";
+      } = {
+        type: "swap_source",
+        use_server_source: true,
+        fixture_name: fixtureName,
+      };
+      if (tags) msg.tags = tags;
+      if (key) msg.key = key;
+      if (timeSignature) msg.time_signature = timeSignature;
+      if (stemSourceMode) msg.stem_source_mode = stemSourceMode;
+      this.ws.send(JSON.stringify(msg));
+      return true;
+    } catch (e) {
+      console.error("[protocol] sendSwapSourceByName failed:", e);
+      return false;
+    }
+  }
+
   close(): void {
     this.closedByUser = true;
     try {
