@@ -44,6 +44,7 @@ import numpy as np
 import torch
 
 from acestep.constants import TASK_INSTRUCTIONS
+from acestep.audio_clips import audio_clip_stems
 from acestep.engine.obs import logger
 from acestep.engine.session import PreparedSource, Session
 from acestep.engine.trt.profile_manager import (
@@ -176,6 +177,7 @@ def extract_and_select_upload_stem(
     session: Session,
     source: PreparedSource,
     source_mode: str | None,
+    fixture_name: str | None = None,
     log_context: str = "",
 ) -> tuple[dict[str, torch.Tensor] | None, str | None, PreparedSource, torch.Tensor]:
     """Run Mel-Band RoFormer and (when requested) substitute the chosen
@@ -193,21 +195,54 @@ def extract_and_select_upload_stem(
         source_mode, log_context or None,
     )
     try:
-        upload_stems = extract_upload_stems(
-            waveform=waveform,
-            device=session.handler.device,
-            backend_sample_rate=SAMPLE_RATE,
+        upload_stems = (
+            audio_clip_stems(
+                fixture_name,
+                waveform=waveform,
+                sample_rate=SAMPLE_RATE,
+            )
+            if fixture_name else None
         )
+        if upload_stems is not None:
+            logger.info(
+                "stems_cache_hit fixture_name={} source_mode={} context={}",
+                fixture_name, source_mode, log_context or None,
+            )
+        else:
+            upload_stems = extract_upload_stems(
+                waveform=waveform,
+                device=session.handler.device,
+                backend_sample_rate=SAMPLE_RATE,
+            )
         if source_mode == "full":
             return upload_stems, None, source, waveform
 
         selected_wf = upload_stems[source_mode]
-        selected_audio = Audio(waveform=selected_wf, sample_rate=SAMPLE_RATE)
-        logger.info(
-            "stem_prepare_source source_mode={} context={}",
-            source_mode, log_context or None,
+        sc = _try_load_sidecar(
+            fixture_name,
+            samples=int(selected_wf.shape[-1]),
+            source_mode=source_mode,
         )
-        selected_source = session.prepare_source(selected_audio)
+        if sc is not None:
+            device = session.handler.device
+            dtype = session.handler.dtype
+            selected_source = PreparedSource(
+                latent=Latent(tensor=sc.latent.to(device, dtype).contiguous()),
+                context_latent=Latent(
+                    tensor=sc.context_latent.to(device, dtype).contiguous(),
+                ),
+            )
+            logger.info(
+                "stem_source_sidecar_hit fixture_name={} source_mode={} context={}",
+                fixture_name, source_mode, log_context or None,
+            )
+        else:
+            selected_audio = Audio(waveform=selected_wf, sample_rate=SAMPLE_RATE)
+            logger.info(
+                "stem_prepare_source source_mode={} context={}",
+                source_mode, log_context or None,
+            )
+            selected_source = session.prepare_source(selected_audio)
         return upload_stems, None, selected_source, selected_wf
     except Exception as exc:
         logger.exception(
@@ -691,6 +726,7 @@ class StreamingSession:
                     session=self.session,
                     source=new_source,
                     source_mode=new_stem_source_mode,
+                    fixture_name=new_fixture_name,
                     log_context="swap",
                 )
             )
@@ -1593,6 +1629,7 @@ class StreamingSession:
                 session=engine_session,
                 source=source,
                 source_mode=stem_source_mode,
+                fixture_name=fixture_name,
             )
         )
         if stem_error is not None and stem_source_mode != "full":

@@ -1,72 +1,109 @@
-"""Lazy auto-downloading audio fixtures.
+"""Lazy auto-downloading audio test fixtures.
 
-Backed by the ``daydreamlive/demon-fixtures`` dataset repo on Hugging
+Backed by the ``daydreamlive/demon-fixtures-v2`` dataset repo on Hugging
 Face. The first call to :func:`audio_fixture` for a given name
-downloads the file into the shared HF cache
-(``~/.cache/huggingface/hub/`` by default); subsequent calls hit the
-cache and are effectively free.
+downloads the file into :func:`acestep.paths.fixtures_dir` (under
+``MODELS_DIR``); subsequent calls hit that managed directory and are
+effectively free. HF's own cache stays as the under-the-hood
+incremental store; the managed dir is what callers see.
 
 Adding a new fixture is a two-step process:
-  1. ``huggingface-cli upload daydreamlive/demon-fixtures <file> --repo-type dataset``
+  1. ``huggingface-cli upload daydreamlive/demon-fixtures-v2 <file> --repo-type dataset``
   2. Add the filename to :data:`KNOWN_FIXTURES`.
 
-Each fixture optionally has a sidecar pair in the same dataset, used
-by the realtime demo to skip the prompt-independent half of per-connect
-preprocessing:
+Each fixture optionally has a sidecar pair in the same dataset
+(``<name>.sidecar.json`` + ``<name>.sidecar.safetensors``), used by the
+realtime demo to skip the prompt-independent half of per-connect
+preprocessing. The sidecar *format* lives in :mod:`acestep.sidecars`
+and is shared with the user-upload library
+(:mod:`acestep.user_uploads`); this module only owns the HF-specific
+lookup half (``KNOWN_FIXTURES`` gate + HF download fallback for missing
+local files).
 
-  ``<name>.sidecar.json``
-      bpm, key, time_signature, duration metadata.
-  ``<name>.sidecar.safetensors``
-      pre-encoded source latent + semantic context_latent.
-
-Conditioning (encode_text) is intentionally *not* cached: the demo's
-blended-prompt UI typically drifts off any baked tags within seconds,
-and encode_text is cheap enough (~60ms warm) that caching it is not
-worth the complexity. See :func:`fixture_sidecar`. Sidecars are
-produced by ``scripts/calibration/precompute_fixture_sidecars.py`` and uploaded
-to the dataset alongside the WAVs.
+Sidecars are produced by ``scripts/calibration/precompute_fixture_sidecars.py``
+and uploaded to the dataset alongside the WAVs.
 """
 
 from __future__ import annotations
 
-import json
-import os
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import torch
 from huggingface_hub import hf_hub_download
-from huggingface_hub.utils import EntryNotFoundError
+from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
 
-REPO_ID = "daydreamlive/demon-fixtures"
+from acestep.paths import fixtures_dir
+from acestep.sidecars import (
+    AudioSidecar,
+    SIDECAR_FORMAT_VERSION,
+    load_sidecar,
+)
+from acestep.track_assets import (
+    load_json_metadata,
+    read_stem_wavs,
+    sidecar_asset_name,
+    source_audio_name,
+    source_audio_path,
+    source_sidecar_name,
+    stem_audio_name,
+    track_metadata_name,
+)
+
+# Re-export for backward compat with callers that imported these from
+# acestep.fixtures back when this module owned the sidecar format.
+# The canonical location is now acestep.sidecars.
+__all__ = [
+    "AudioSidecar",
+    "KNOWN_FIXTURES",
+    "LEGACY_REPO_ID",
+    "REPO_ID",
+    "REPO_TYPE",
+    "SIDECAR_FORMAT_VERSION",
+    "audio_fixture",
+    "ensure_all",
+    "fixture_sidecar",
+    "fixture_stems",
+    "fixture_track_metadata",
+    "parse_key_from_filename",
+]
+
+REPO_ID = "daydreamlive/demon-fixtures-v2"
+LEGACY_REPO_ID = "daydreamlive/demon-fixtures"
 REPO_TYPE = "dataset"
-
-# Local staging dir for sidecars that haven't been pushed to HF yet.
-# scripts/calibration/precompute_fixture_sidecars.py defaults its --out here, and
-# fixture_sidecar() checks this first before falling through to the HF
-# dataset. Override via DEMON_FIXTURE_SIDECARS_DIR.
-_DEFAULT_LOCAL_SIDECAR_DIR = Path(__file__).resolve().parents[1] / "out" / "fixture_sidecars"
-
-
-def _local_sidecar_dir() -> Path:
-    override = os.environ.get("DEMON_FIXTURE_SIDECARS_DIR")
-    return Path(override) if override else _DEFAULT_LOCAL_SIDECAR_DIR
 
 KNOWN_FIXTURES: frozenset[str] = frozenset({
     "inside_confusion_loop_60s_gsm.wav",
-    "inside_confusion_loop_120s_gsm.wav",
     "low_fi_Gm_loop_60s_gnm.wav",
-    "low_fi_loop_120s_gnm.wav",
     "prog_rock_loop_60s_enm.wav",
-    "prog_rock_loop_120s_enm.wav",
     "thrash_metal_loop_60s_enm.wav",
-    "thrash_metal_loop_120s_enm.wav",
 })
 
-# Sidecar schema version. Bump when the on-disk format changes in a way
-# that prior sidecars can't satisfy. Loader refuses mismatches.
-SIDECAR_FORMAT_VERSION = 2
+
+def _hf_download_to_fixtures_dir(filename: str, *, allow_legacy: bool = True) -> Path:
+    """``hf_hub_download`` into ``fixtures_dir()``.
+
+    Matches the pattern used by :mod:`acestep.model_downloader`
+    (``snapshot_download(local_dir=...)``): files materialize in the
+    managed dir under ``MODELS_DIR`` instead of the user's HF cache. HF
+    still uses its own cache as the under-the-hood incremental store —
+    we just point ``local_dir`` at our managed root so the materialized
+    copy is what callers see.
+    """
+    fixtures_dir().mkdir(parents=True, exist_ok=True)
+    for repo_id in (REPO_ID, LEGACY_REPO_ID):
+        if repo_id == LEGACY_REPO_ID and not allow_legacy:
+            break
+        try:
+            return Path(hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                repo_type=REPO_TYPE,
+                local_dir=str(fixtures_dir()),
+            ))
+        except (EntryNotFoundError, RepositoryNotFoundError):
+            if repo_id == LEGACY_REPO_ID or not allow_legacy:
+                raise
+    raise EntryNotFoundError("not found")
 
 
 def audio_fixture(name: str) -> Path:
@@ -74,13 +111,20 @@ def audio_fixture(name: str) -> Path:
 
     Raises :class:`KeyError` if ``name`` is not in :data:`KNOWN_FIXTURES`.
     Network errors propagate from :func:`huggingface_hub.hf_hub_download`.
+    Downloads materialize into ``fixtures_dir()``.
     """
     if name not in KNOWN_FIXTURES:
         raise KeyError(
             f"unknown fixture {name!r}; add it to KNOWN_FIXTURES "
             f"in acestep/fixtures.py after uploading to {REPO_ID}"
         )
-    return Path(hf_hub_download(repo_id=REPO_ID, filename=name, repo_type=REPO_TYPE))
+    local = source_audio_path(fixtures_dir(), name)
+    if local.is_file():
+        return local
+    try:
+        return _hf_download_to_fixtures_dir(source_audio_name(name), allow_legacy=False)
+    except (EntryNotFoundError, RepositoryNotFoundError):
+        return _hf_download_to_fixtures_dir(name, allow_legacy=True)
 
 
 def ensure_all() -> list[Path]:
@@ -153,67 +197,28 @@ def parse_key_from_filename(name: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Sidecar loader
+# Fixture-sidecar lookup
 # ---------------------------------------------------------------------------
 
-@dataclass
-class FixtureSidecar:
-    """Loaded sidecar bundle for a known fixture.
+def _resolve_fixture_asset(name: str, *, allow_legacy: bool = True) -> Optional[Path]:
+    """Locate a fixture sidecar file by name.
 
-    Caches the deterministic, prompt-independent preprocessing the
-    realtime demo would otherwise do on every connect: BPM (librosa),
-    key (parsed from the filename suffix, since the CNN classifier
-    misclassifies enough of the test set to be unreliable), and the
-    source latent + semantic context_latent from
-    ``Session.prepare_source``. Conditioning (encode_text) is *not*
-    cached; the demo's blended-prompt UI means the client typically
-    diverges from any baked tags within seconds of connecting, and
-    encode_text is cheap enough (~60ms warm) that the cache savings
-    don't justify the server-authoritative complication.
-
-    Sidecars are NOT checkpoint-specific. The VAE that produces
-    ``latent`` and the semantic tokenizer/detokenizer that produce
-    ``context_latent`` are shared across the ACE-Step v1.5 family
-    (turbo, xl-turbo, ...); only the DiT differs. ``produced_with``
-    records which checkpoint happened to generate the file for
-    provenance, but the loader does not gate on it.
+    ``fixtures_dir()`` wins over HF. Returns None on miss (caller falls
+    back to live computation). The local-first ordering means
+    precompute output can be tested without pushing to the HF dataset;
+    once uploaded, fresh clones get the sidecars from HF on first use
+    (materialized into ``fixtures_dir()`` alongside the WAVs).
     """
-
-    name: str
-    bpm: int
-    key: str
-    # Stringified meter numerator (matches the encoder boundary in
-    # ``Session.encode_text``, which prepends ``- timesignature: <s>``
-    # to the prompt). One of ``VALID_TIME_SIGNATURES`` (``"2"``, ``"3"``,
-    # ``"4"``, ``"6"``); defaults to ``"4"`` when older sidecars don't
-    # carry the field (loader uses ``meta.get(..., "4")``).
-    time_signature: str
-    duration_s: float
-    samples: int
-    sample_rate: int
-    channels: int
-    # Checkpoint the precompute script ran on. Informational only;
-    # legacy ``checkpoint`` field is honored when ``produced_with`` is
-    # missing. Empty string when neither is present.
-    produced_with: str
-    latent: torch.Tensor
-    context_latent: torch.Tensor
-
-
-def _resolve_sidecar_file(name: str) -> Optional[Path]:
-    """Locate a sidecar file by name. Local staging dir wins over HF.
-
-    Returns None on miss (caller falls back to live computation). The
-    local-first ordering means precompute output can be tested without
-    pushing to the HF dataset; once uploaded, fresh clones get the
-    sidecars from HF on first use.
-    """
-    local = _local_sidecar_dir() / name
+    local = fixtures_dir() / name
     if local.is_file():
         return local
     try:
-        return Path(hf_hub_download(repo_id=REPO_ID, filename=name, repo_type=REPO_TYPE))
-    except EntryNotFoundError:
+        return _hf_download_to_fixtures_dir(name, allow_legacy=allow_legacy)
+    except (EntryNotFoundError, RepositoryNotFoundError):
+        # A missing file OR a not-yet-created v2 repo is an expected miss,
+        # not an error: callers fall back to legacy assets / live compute.
+        # Stay quiet so probing v2 on every fixture lookup (before the
+        # dataset is populated) doesn't spam the logs.
         return None
     except Exception as exc:
         # Treat any other download error (network, permissions) the same
@@ -224,8 +229,26 @@ def _resolve_sidecar_file(name: str) -> Optional[Path]:
         return None
 
 
-def fixture_sidecar(name: str) -> Optional[FixtureSidecar]:
-    """Load the sidecar bundle for ``name`` if available and fresh.
+def _resolve_sidecar_file(name: str) -> Optional[Path]:
+    return _resolve_fixture_asset(name, allow_legacy=True)
+
+
+def fixture_track_metadata(name: str) -> dict:
+    """Load editable fixture metadata, falling back to legacy sidecar JSON."""
+    if name not in KNOWN_FIXTURES:
+        return {}
+    track_path = _resolve_fixture_asset(track_metadata_name(name), allow_legacy=False)
+    if track_path is not None:
+        return load_json_metadata(track_path)
+    legacy_sidecar = _resolve_fixture_asset(f"{name}.sidecar.json", allow_legacy=True)
+    return load_json_metadata(legacy_sidecar) if legacy_sidecar is not None else {}
+
+
+def fixture_sidecar(
+    name: str,
+    source_mode: str | None = "full",
+) -> Optional[AudioSidecar]:
+    """Load the test-fixture sidecar bundle for ``name`` if available and fresh.
 
     Returns ``None`` (not an exception) on any of:
       - ``name`` not in :data:`KNOWN_FIXTURES`
@@ -234,8 +257,8 @@ def fixture_sidecar(name: str) -> Optional[FixtureSidecar]:
 
     Sidecars are NOT gated on the runtime checkpoint: the VAE and the
     semantic tokenizer/detokenizer that produce the cached tensors are
-    shared across the ACE-Step v1.5 family. The JSON's ``produced_with``
-    (legacy: ``checkpoint``) field is informational only.
+    shared across the ACE-Step v1.5 family. The JSON's ``checkpoint``
+    field is informational only.
 
     On every miss past ``name in KNOWN_FIXTURES`` we print the reason
     so the demo's logs make it obvious why the sidecar fast path didn't
@@ -246,54 +269,43 @@ def fixture_sidecar(name: str) -> Optional[FixtureSidecar]:
     if name not in KNOWN_FIXTURES:
         return None
 
-    json_path = _resolve_sidecar_file(f"{name}.sidecar.json")
+    json_path = _resolve_fixture_asset(sidecar_asset_name(name, source_mode, "json"), allow_legacy=False)
+    if json_path is None:
+        sidecar_name = source_sidecar_name(name, source_mode)
+        json_path = _resolve_sidecar_file(f"{sidecar_name}.sidecar.json")
     if json_path is None:
         print(f"[fixture_sidecar] {name}: sidecar JSON not found (local dir + HF dataset)")
         return None
-    sf_path = _resolve_sidecar_file(f"{name}.sidecar.safetensors")
+    sf_path = _resolve_fixture_asset(sidecar_asset_name(name, source_mode, "safetensors"), allow_legacy=False)
+    if sf_path is None:
+        sidecar_name = source_sidecar_name(name, source_mode)
+        sf_path = _resolve_sidecar_file(f"{sidecar_name}.sidecar.safetensors")
     if sf_path is None:
         print(f"[fixture_sidecar] {name}: sidecar safetensors not found (local dir + HF dataset)")
         return None
 
-    try:
-        meta = json.loads(json_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        print(f"[fixture_sidecar] {name}: sidecar JSON unreadable ({exc})")
-        return None
-    fv = int(meta.get("format_version", 0))
-    if fv != SIDECAR_FORMAT_VERSION:
-        print(
-            f"[fixture_sidecar] {name}: format_version mismatch "
-            f"(sidecar={fv} vs loader={SIDECAR_FORMAT_VERSION}) — "
-            f"re-run scripts/calibration/precompute_fixture_sidecars.py --force"
-        )
-        return None
+    sidecar_name = source_sidecar_name(name, source_mode)
+    return load_sidecar(json_path, sf_path, name=sidecar_name)
 
-    # Lazy import so the basic fixture path doesn't pull torch on import.
-    from safetensors import safe_open
 
-    try:
-        with safe_open(str(sf_path), framework="pt", device="cpu") as f:
-            latent = f.get_tensor("latent")
-            context_latent = f.get_tensor("context_latent")
-    except Exception as exc:
-        print(f"[fixture_sidecar] {name}: safetensors load failed ({exc})")
+def fixture_stems(name: str, *, waveform, sample_rate: int) -> Optional[dict]:
+    """Load fixture vocal/instrumental WAV stems from local/HF assets."""
+    if name not in KNOWN_FIXTURES:
         return None
-
-    # ``time_signature`` was added after the original sidecar format;
-    # default to the model's standard ``"4"`` when older JSONs don't
-    # carry it so existing dataset entries keep loading without a
-    # format_version bump or a forced re-precompute.
-    return FixtureSidecar(
-        name=name,
-        bpm=int(meta["bpm"]),
-        key=str(meta["key"]),
-        time_signature=str(meta.get("time_signature", "4")),
-        duration_s=float(meta["duration_s"]),
-        samples=int(meta["samples"]),
-        sample_rate=int(meta["sample_rate"]),
-        channels=int(meta["channels"]),
-        produced_with=str(meta.get("produced_with") or meta.get("checkpoint") or ""),
-        latent=latent,
-        context_latent=context_latent,
+    for mode in ("vocals", "instruments"):
+        if _resolve_sidecar_file(stem_audio_name(name, mode)) is None:
+            return None
+    metadata = fixture_track_metadata(name)
+    return read_stem_wavs(
+        fixtures_dir(),
+        name,
+        waveform=waveform,
+        sample_rate=sample_rate,
+        metadata=metadata,
     )
+
+
+# Backward-compat alias. Old callers imported ``FixtureSidecar`` from
+# this module before the type was generalised. The dataclass itself
+# lives in :mod:`acestep.sidecars` as :class:`AudioSidecar` now.
+FixtureSidecar = AudioSidecar
