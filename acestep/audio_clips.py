@@ -15,9 +15,20 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from acestep.fixtures import audio_fixture, fixture_sidecar
+from acestep.fixtures import (
+    audio_fixture,
+    fixture_sidecar,
+    fixture_stems,
+    fixture_track_metadata,
+)
 from acestep.sidecars import AudioSidecar
-from acestep.user_uploads import user_upload_audio, user_upload_sidecar
+from acestep.track_assets import load_track_metadata
+from acestep.user_uploads import (
+    load_user_upload_stems,
+    user_upload_audio,
+    user_upload_sidecar,
+)
+from acestep.paths import user_uploads_dir
 
 
 def resolve_audio_clip(name: str) -> Path:
@@ -35,14 +46,37 @@ def resolve_audio_clip(name: str) -> Path:
     return audio_fixture(name)
 
 
-def audio_clip_sidecar(name: str) -> Optional[AudioSidecar]:
+def audio_clip_sidecar(
+    name: str,
+    source_mode: str | None = "full",
+) -> Optional[AudioSidecar]:
     """Look up a sidecar by name, user uploads first then test fixtures.
 
     Sidecars are not checkpoint-gated; the VAE and semantic
     tokenizer/detokenizer that produce the cached tensors are shared
     across the ACE-Step v1.5 family.
     """
-    sc = user_upload_sidecar(name)
+    sc = user_upload_sidecar(name, source_mode)
     if sc is not None:
         return sc
-    return fixture_sidecar(name)
+    return fixture_sidecar(name, source_mode)
+
+
+def audio_clip_track_metadata(name: str) -> dict:
+    """Load editable track metadata for uploads or fixtures."""
+    meta = load_track_metadata(user_uploads_dir(), name)
+    if meta:
+        return meta
+    return fixture_track_metadata(name)
+
+
+def audio_clip_stems(name: str, *, waveform, sample_rate: int) -> Optional[dict]:
+    """Load cached vocal/instrumental WAV stems for either audio library."""
+    stems = load_user_upload_stems(
+        name,
+        waveform=waveform,
+        sample_rate=sample_rate,
+    )
+    if stems is not None:
+        return stems
+    return fixture_stems(name, waveform=waveform, sample_rate=sample_rate)

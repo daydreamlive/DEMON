@@ -124,7 +124,7 @@ Once it's running:
 1. Open `http://localhost:6660/`
 2. Click **Play** — the demo loads the default fixture
    (`inside_confusion_loop_60s_gsm.wav`). Fixtures stream from the
-   `daydreamlive/demon-fixtures` Hugging Face dataset on first request
+   `daydreamlive/demon-fixtures-v2` Hugging Face dataset on first request
    and are cached locally.
 3. Switch fixtures any time using the selector at the top of the
    Advanced drawer; switching tears down the session and restarts with
@@ -136,7 +136,7 @@ Once it's running:
 ### Audio source vs. video
 
 Audio is the **primary** source: the demo always loads from the
-canonical fixture set (`daydreamlive/demon-fixtures` on Hugging Face,
+canonical fixture set (`daydreamlive/demon-fixtures-v2` on Hugging Face,
 listed in `acestep.fixtures.KNOWN_FIXTURES`), served by the backend
 at `/fixtures/<name>` via lazy HF download.
 Video is **optional and secondary** — drop any `.mp4`/`.webm`/`.mov`
@@ -200,11 +200,22 @@ and the plain video plays as fallback.
 ## Test fixtures
 
 The eight files in `acestep.fixtures.KNOWN_FIXTURES` ship with sidecar
-files in the `daydreamlive/demon-fixtures` HF dataset:
+files in the `daydreamlive/demon-fixtures-v2` HF dataset:
 
 ```
-<name>.sidecar.json         # bpm, key, duration metadata
-<name>.sidecar.safetensors  # source latent + context_latent
+<track-id>/
+  source.wav
+  track.json                      # editable BPM/key/time-signature + asset manifest
+  stems/
+    vocals.wav                    # optional user-facing vocal stem
+    instruments.wav               # optional user-facing instrumental stem
+  sidecars/
+    full.json
+    full.safetensors              # full-track source latent + context_latent
+    vocals.json
+    vocals.safetensors            # optional pre-encoded vocal source
+    instruments.json
+    instruments.safetensors       # optional pre-encoded instrumental source
 ```
 
 When the client sends `fixture_name` for a known fixture, the server
@@ -217,25 +228,40 @@ seconds of connecting; the ~60ms warm cost isn't worth the cache
 complication). For ad-hoc uploads (no `fixture_name`), the full live
 path runs as before.
 
-The runtime checks `out/fixture_sidecars/` first (so local edits are
-tested without an upload round-trip) and falls through to the
-dataset.
+The runtime checks `MODELS_DIR/fixtures/` first (so local edits are
+tested without an upload round-trip) and falls through to the dataset.
+User uploads use the same layout under `MODELS_DIR/user_uploads/`;
+fixtures are effectively system-provided tracks.
 
 If you want to override the BPM or key for a fixture, edit the
-`<name>.sidecar.json` and re-run the precompute script. Editing the
-JSON's `bpm` / `key` fields and re-running preserves them (the
-script only re-derives values that aren't already pinned). To
+`<track-id>/track.json` and re-run the precompute script. Editing the
+JSON's `bpm` / `key` / `time_signature` fields and re-running
+preserves them (the script only re-derives values that aren't already
+pinned). To
 forcibly re-derive everything from scratch, pass `--force`:
 
 ```bash
-uv run python -m scripts.precompute_fixture_sidecars
-uv run python -m scripts.precompute_fixture_sidecars --force
-uv run python -m scripts.precompute_fixture_sidecars --only \
+uv run python -m scripts.calibration.precompute_fixture_sidecars
+uv run python -m scripts.calibration.precompute_fixture_sidecars --with-stems
+uv run python -m scripts.calibration.precompute_fixture_sidecars --force
+uv run python -m scripts.calibration.precompute_fixture_sidecars --only \
     inside_confusion_loop_60s_gsm.wav
 ```
 
-After editing, upload the regenerated `<name>.sidecar.json` and
-`<name>.sidecar.safetensors` pair back to the HF dataset.
+After editing, upload the regenerated track JSON, WAV stem assets, and
+all sidecar JSON/safetensors pairs back to `daydreamlive/demon-fixtures-v2`.
+The runtime still falls back to the legacy `daydreamlive/demon-fixtures`
+dataset for old audio and full-track sidecar files when a v2 asset is
+not present.
+
+Fixture dataset v2 plan:
+
+1. Create `daydreamlive/demon-fixtures-v2` as a Hugging Face dataset repo.
+2. Run `uv run python -m scripts.calibration.precompute_fixture_sidecars --with-stems`.
+3. Upload each fixture directory with `source.wav`, `track.json`, `stems/`,
+   and `sidecars/`.
+4. Keep `daydreamlive/demon-fixtures` available until deployed pods have
+   warmed or downloaded the v2 layout.
 
 ## Onboard MCP server (drive the demo from an LLM)
 

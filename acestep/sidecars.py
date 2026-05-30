@@ -12,7 +12,7 @@ warm, more cold).
 Two libraries use this format with identical semantics:
 
   ``fixtures_dir()``       Test fixtures from the
-                           ``daydreamlive/demon-fixtures`` HF dataset.
+                           ``daydreamlive/demon-fixtures-v2`` HF dataset.
                            Sidecars produced by
                            ``scripts/calibration/precompute_fixture_sidecars.py``.
   ``user_uploads_dir()``   User-uploaded audio. Sidecars produced by
@@ -166,9 +166,9 @@ def load_sidecar(
         return None
 
 
-def save_sidecar(
-    out_dir: Path,
-    name: str,
+def save_sidecar_pair(
+    json_path: Path,
+    sf_path: Path,
     *,
     latent: torch.Tensor,
     context_latent: torch.Tensor,
@@ -181,7 +181,7 @@ def save_sidecar(
     sample_rate: int,
     channels: int,
 ) -> None:
-    """Write the JSON + safetensors pair for an audio clip.
+    """Write a sidecar JSON + safetensors pair for an audio clip.
 
     Atomic: each file is written to a sibling ``.tmp`` and then
     ``os.replace``-d into place. A partial write therefore reads as a
@@ -197,8 +197,8 @@ def save_sidecar(
     # at module import time.
     from safetensors.torch import save_file as safetensors_save
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    json_path, sf_path = _sidecar_paths(out_dir, name)
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    sf_path.parent.mkdir(parents=True, exist_ok=True)
 
     meta = {
         "format_version": SIDECAR_FORMAT_VERSION,
@@ -226,11 +226,46 @@ def save_sidecar(
     os.replace(json_tmp, json_path)
 
 
+def save_sidecar(
+    out_dir: Path,
+    name: str,
+    *,
+    latent: torch.Tensor,
+    context_latent: torch.Tensor,
+    checkpoint: str,
+    bpm: int,
+    key: str,
+    time_signature: str,
+    duration_s: float,
+    samples: int,
+    sample_rate: int,
+    channels: int,
+) -> None:
+    """Write the legacy ``<name>.sidecar.*`` pair for an audio clip."""
+    json_path, sf_path = _sidecar_paths(out_dir, name)
+    save_sidecar_pair(
+        json_path,
+        sf_path,
+        latent=latent,
+        context_latent=context_latent,
+        checkpoint=checkpoint,
+        bpm=bpm,
+        key=key,
+        time_signature=time_signature,
+        duration_s=duration_s,
+        samples=samples,
+        sample_rate=sample_rate,
+        channels=channels,
+    )
+
+
 def encode_and_save_sidecar(
     session,
     *,
     out_dir: Path,
     name: str,
+    json_path: Path | None = None,
+    sf_path: Path | None = None,
     waveform: torch.Tensor,
     sample_rate: int,
     checkpoint: str,
@@ -266,9 +301,11 @@ def encode_and_save_sidecar(
     source = session.prepare_source(audio_in)
     elapsed = time.time() - t0
 
-    save_sidecar(
-        out_dir,
-        name,
+    if json_path is None or sf_path is None:
+        json_path, sf_path = _sidecar_paths(out_dir, name)
+    save_sidecar_pair(
+        json_path,
+        sf_path,
         latent=source.latent.tensor,
         context_latent=source.context_latent.tensor,
         checkpoint=checkpoint,

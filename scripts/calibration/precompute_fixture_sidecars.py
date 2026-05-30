@@ -1,14 +1,14 @@
 """Precompute fixture sidecars for the realtime motion-graph demo.
 
 For each fixture in :data:`acestep.fixtures.KNOWN_FIXTURES` this writes
-a ``<name>.sidecar.json`` and ``<name>.sidecar.safetensors`` pair into
-``--out`` (default :func:`acestep.paths.fixtures_dir`, i.e.
-``MODELS_DIR/fixtures/``):
+the clean v2 track directory under ``--out`` (default
+:func:`acestep.paths.fixtures_dir`, i.e. ``MODELS_DIR/fixtures/``):
 
-  JSON   bpm, key, time_signature, post-truncation duration / sample
-         counts, sample rate, channels, checkpoint, format_version.
+  track.json
+         Editable bpm, key, time_signature, source/stem/sidecar manifest,
+         post-truncation sample counts, sample rate, channels.
 
-  Safetensors
+  sidecars/*.safetensors
          Tensors: latent, context_latent. Conditioning is *not* cached
          (see :mod:`acestep.sidecars` for rationale).
 
@@ -30,21 +30,23 @@ Pipeline per fixture:
      today; operators can edit the JSON to override).
   4. Hand off to :func:`acestep.sidecars.encode_and_save_sidecar`,
      which runs ``Session.prepare_source`` and writes both files
-     atomically. The user-upload path in the rtmg backend calls the
-     same function, so both libraries produce byte-identical sidecar
-     formats from byte-identical encode logic.
+     atomically into ``sidecars/``. The user-upload path in the rtmg
+     backend calls the same sidecar write logic, so both libraries
+     produce byte-identical sidecar formats from byte-identical encode
+     logic.
 
 Run on a machine with the model checkpoint and a working CUDA build.
 Eager backends are forced so this works without prebuilt TRT engines:
 
-    uv run python -m scripts.precompute_fixture_sidecars
-    uv run python -m scripts.precompute_fixture_sidecars --force
-    uv run python -m scripts.precompute_fixture_sidecars --only \\
+    uv run python -m scripts.calibration.precompute_fixture_sidecars
+    uv run python -m scripts.calibration.precompute_fixture_sidecars --with-stems
+    uv run python -m scripts.calibration.precompute_fixture_sidecars --force
+    uv run python -m scripts.calibration.precompute_fixture_sidecars --only \\
         inside_confusion_loop_60s_gsm.wav
 
-Sidecars are uploaded to the daydreamlive/demon-fixtures HF dataset
-in a separate step so the runtime can fetch them via hf_hub_download
-alongside the WAVs.
+Sidecars and track assets are uploaded to the daydreamlive/demon-fixtures-v2
+HF dataset in a separate step so the runtime can fetch them via
+hf_hub_download alongside the WAVs.
 """
 from __future__ import annotations
 
@@ -64,11 +66,21 @@ from acestep.engine.session import Session
 from acestep.constants import VALID_TIME_SIGNATURES
 from acestep.fixtures import (
     KNOWN_FIXTURES,
+    REPO_ID,
     audio_fixture,
     parse_key_from_filename,
 )
 from acestep.paths import checkpoints_dir, fixtures_dir
 from acestep.sidecars import encode_and_save_sidecar, truncate_to_pool
+from acestep.streaming.stems import extract_upload_stems
+from acestep.track_assets import (
+    save_track_metadata,
+    sidecar_paths,
+    source_sidecar_name,
+    track_metadata_path,
+    write_track_wav,
+    write_stem_wavs,
+)
 
 SAMPLE_RATE = 48000  # matches demos.realtime_motion_graph_web.protocol.SAMPLE_RATE
 
@@ -147,6 +159,7 @@ def precompute_one(
     out_dir: Path,
     checkpoint: str,
     force: bool,
+    with_stems: bool,
 ) -> None:
     fixture_path = audio_fixture(name)
 
@@ -155,7 +168,9 @@ def precompute_one(
         raise RuntimeError(f"{name}: unexpected sample rate {sr} (expected {SAMPLE_RATE})")
     waveform = truncate_to_pool(torch.from_numpy(audio_data.T.copy()).float())
 
-    json_path = out_dir / f"{name}.sidecar.json"
+    json_path = track_metadata_path(out_dir, name)
+    if not json_path.is_file():
+        json_path = out_dir / f"{name}.sidecar.json"
     existing = {} if force else _load_existing(json_path)
     bpm, key, time_signature, sources = _resolve_bpm_key_ts(name, waveform, existing)
     bpm_source, key_source, ts_source = sources
@@ -170,9 +185,48 @@ def precompute_one(
         session,
         out_dir=out_dir,
         name=name,
+        json_path=sidecar_paths(out_dir, name, "full")[0],
+        sf_path=sidecar_paths(out_dir, name, "full")[1],
         waveform=waveform,
         sample_rate=SAMPLE_RATE,
         checkpoint=checkpoint,
+        bpm=bpm,
+        key=key,
+        time_signature=time_signature,
+    )
+    write_track_wav(out_dir, name, waveform=waveform, sample_rate=SAMPLE_RATE)
+
+    if with_stems:
+        stems = extract_upload_stems(
+            waveform=waveform,
+            device=session.handler.device,
+            backend_sample_rate=SAMPLE_RATE,
+        )
+        write_stem_wavs(out_dir, name, stems=stems, sample_rate=SAMPLE_RATE)
+        for mode in ("vocals", "instruments"):
+            print(f"  precomputing {mode} source sidecar")
+            encode_and_save_sidecar(
+                session,
+                out_dir=out_dir,
+                name=source_sidecar_name(name, mode),
+                json_path=sidecar_paths(out_dir, name, mode)[0],
+                sf_path=sidecar_paths(out_dir, name, mode)[1],
+                waveform=stems[mode],
+                sample_rate=SAMPLE_RATE,
+                checkpoint=checkpoint,
+                bpm=bpm,
+                key=key,
+                time_signature=time_signature,
+            )
+
+    # Metadata last: its stems/sidecars manifest is derived from the files
+    # written above, so a default (no --with-stems) run produces a track.json
+    # that advertises only the full sidecar it actually wrote.
+    save_track_metadata(
+        out_dir,
+        name,
+        waveform=waveform,
+        sample_rate=SAMPLE_RATE,
         bpm=bpm,
         key=key,
         time_signature=time_signature,
@@ -199,6 +253,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--only", action="append", default=[], metavar="NAME",
         help="Only process this fixture (repeatable). Default: all KNOWN_FIXTURES.",
     )
+    parser.add_argument(
+        "--with-stems", action="store_true",
+        help="Also extract vocals/instruments WAVs and precompute sidecars for each stem source.",
+    )
     args = parser.parse_args(argv)
 
     targets = sorted(args.only) if args.only else sorted(KNOWN_FIXTURES)
@@ -224,7 +282,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             precompute_one(
                 session, name,
                 out_dir=args.out, checkpoint=args.checkpoint,
-                force=args.force,
+                force=args.force, with_stems=args.with_stems,
             )
         except Exception as e:
             print(f"  FAILED: {e}")
@@ -234,6 +292,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     print(f"\nDone. {len(targets) - len(failures)}/{len(targets)} succeeded.")
     print(f"Sidecars in: {args.out.resolve()}")
+    print(f"HF upload target: {REPO_ID} (repo-type dataset)")
     if failures:
         print(f"Failures:")
         for n, msg in failures:

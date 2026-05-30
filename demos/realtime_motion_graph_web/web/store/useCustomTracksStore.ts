@@ -7,6 +7,7 @@ import type {
   DecodedStemAssets,
   StemSourceMode,
 } from "@/engine/audio/loadFixture";
+import { defaultSwapSourceMode } from "@/lib/config";
 
 // In-memory cache for user-uploaded tracks. The decoded PCM and related upload
 // metadata live in one non-persistent Map (Float32Array and File don't survive
@@ -17,7 +18,7 @@ import type {
 export type StemStatus = "idle" | "processing" | "ready" | "failed";
 
 export interface CustomTrack {
-  decoded: DecodedFixture;
+  decoded?: DecodedFixture;
   /** Original encoded upload, when available from the file-picker path. */
   originalFile?: File;
   /** Which version of the uploaded track should feed model inference. */
@@ -40,6 +41,7 @@ interface CustomTracksState {
     file?: File,
     sourceMode?: StemSourceMode,
   ) => void;
+  addPersisted: (name: string, sourceMode?: StemSourceMode) => void;
   setStemStatus: (
     name: string,
     status: StemStatus,
@@ -55,12 +57,27 @@ export const useCustomTracksStore = create<CustomTracksState>((set, get) => ({
   names: [],
   tracks: new Map(),
 
-  add: (name, decoded, file, sourceMode = "full") =>
+  add: (name, decoded, file, sourceMode = defaultSwapSourceMode()) =>
     set((s) => {
       const nextTracks = new Map(s.tracks);
       nextTracks.set(name, {
         decoded,
         ...(file ? { originalFile: file } : {}),
+        sourceMode,
+        stemStatus: "idle",
+      });
+      const nextNames = s.names.includes(name) ? s.names : [...s.names, name];
+      return {
+        names: nextNames,
+        tracks: nextTracks,
+      };
+    }),
+
+  addPersisted: (name, sourceMode = defaultSwapSourceMode()) =>
+    set((s) => {
+      if (s.tracks.has(name)) return {};
+      const nextTracks = new Map(s.tracks);
+      nextTracks.set(name, {
         sourceMode,
         stemStatus: "idle",
       });

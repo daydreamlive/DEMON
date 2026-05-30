@@ -14,7 +14,8 @@ from acestep.audio.key_detection import detect_key
 from acestep.constants import VALID_TIME_SIGNATURES
 from acestep.engine.obs import logger
 from acestep.engine.session import PreparedSource, Session
-from acestep.fixtures import FixtureSidecar, fixture_sidecar, audio_fixture
+from acestep.audio_clips import audio_clip_sidecar, audio_clip_track_metadata
+from acestep.fixtures import FixtureSidecar, audio_fixture
 from acestep.nodes.types import Audio, Latent
 
 
@@ -26,7 +27,7 @@ SAMPLE_RATE = 48000
 
 
 def _try_load_sidecar(
-    fixture_name: str | None, *, samples: int,
+    fixture_name: str | None, *, samples: int, source_mode: str | None = "full",
 ) -> FixtureSidecar | None:
     """Look up a fixture sidecar; return None on miss / mismatch.
 
@@ -42,7 +43,7 @@ def _try_load_sidecar(
     if not fixture_name:
         return None
     try:
-        sc = fixture_sidecar(fixture_name)
+        sc = audio_clip_sidecar(fixture_name, source_mode)
     except Exception as e:
         logger.warning(
             "sidecar_lookup_failed fixture={} error={}", fixture_name, e,
@@ -125,6 +126,27 @@ def _normalize_time_signature(value: object) -> str | None:
     return None
 
 
+def _metadata_bpm(meta: dict) -> int | None:
+    value = meta.get("bpm")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value.strip()))
+        except ValueError:
+            return None
+    return None
+
+
+def _metadata_str(meta: dict, key: str) -> str | None:
+    value = meta.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
 def _resolve_bpm_key_source(
     session: Session,
     *,
@@ -153,15 +175,17 @@ def _resolve_bpm_key_source(
       - audio-length truncation mismatch (e.g. operator's TRT profile
         cap is smaller than the natural fixture length)
 
+    Clean v2 ``track.json`` metadata wins for BPM/key/time-signature when
+    present because that file is the editable track-level authority.
     ``key_override`` and ``time_signature_override`` are the operator's
-    manual choices coming from the swap_source path. They are **only**
-    consulted on the live path: when a sidecar hits, the sidecar's
-    recorded values are authoritative for the test fixture (a previous
-    fixture's dropdown value or any other client-side staleness must
-    not be allowed to mask the fixture's recorded ground truth). After
-    the swap, post-hoc dropdown edits flow through ``mtype == "prompt"``
-    instead, where overrides do apply.
+    manual choices coming from the swap_source path and are consulted on
+    the live path only when track metadata does not pin those fields.
     """
+    track_meta = audio_clip_track_metadata(fixture_name) if fixture_name else {}
+    meta_bpm = _metadata_bpm(track_meta)
+    meta_key = _metadata_str(track_meta, "key")
+    meta_time_signature = _normalize_time_signature(track_meta.get("time_signature"))
+
     sc = _try_load_sidecar(fixture_name, samples=samples)
 
     if sc is not None:
@@ -171,24 +195,20 @@ def _resolve_bpm_key_source(
             latent=Latent(tensor=sc.latent.to(device, dtype).contiguous()),
             context_latent=Latent(tensor=sc.context_latent.to(device, dtype).contiguous()),
         )
-        bpm = sc.bpm
-        # Sidecar is the source of truth for known fixtures; do NOT
-        # apply key_override here. (Earlier this read
-        # `key = key_override or sc.key`, which let the previous
-        # fixture's dropdown value, sent on swap_source, beat the new
-        # fixture's recorded key — e.g. a swap from low_fi (G minor)
-        # to prog_rock (E minor) printed
-        # `sidecar hit (prog_rock_..._enm.wav) ... key='G minor'`.)
-        key = sc.key
+        bpm = meta_bpm if meta_bpm is not None else sc.bpm
+        # Track metadata is the editable source of truth; otherwise the
+        # sidecar metadata beats client-supplied swap overrides. That
+        # prevents a stale dropdown value from the previous track from
+        # masking the new track's recorded key.
+        key = meta_key or sc.key
         if key_override and key_override != sc.key:
             logger.info(
                 "sidecar_override_ignored fixture={} field=key "
                 "override={} sidecar={}",
                 fixture_name, key_override, sc.key,
             )
-        # Same precedence rule for time signature: sidecar.time_signature
-        # beats any client-supplied override on a hit.
-        time_signature = sc.time_signature
+        # Same precedence rule for time signature.
+        time_signature = meta_time_signature or sc.time_signature
         if (
             time_signature_override
             and time_signature_override != sc.time_signature
@@ -211,15 +231,17 @@ def _resolve_bpm_key_source(
     import librosa
     logger.info("bpm_key_detect_start")
     mono_np = audio_in.waveform.mean(dim=0).numpy()
-    bpm_raw, _ = librosa.beat.beat_track(y=mono_np, sr=SAMPLE_RATE)
-    bpm = int(round(float(np.asarray(bpm_raw).flat[0])))
-    key = key_override or detect_key(mono_np, SAMPLE_RATE)
-    time_signature = time_signature_override or "4"
+    if meta_bpm is not None:
+        bpm = meta_bpm
+    else:
+        bpm_raw, _ = librosa.beat.beat_track(y=mono_np, sr=SAMPLE_RATE)
+        bpm = int(round(float(np.asarray(bpm_raw).flat[0])))
+    key = meta_key or key_override or detect_key(mono_np, SAMPLE_RATE)
+    time_signature = meta_time_signature or time_signature_override or "4"
     logger.info(
         "bpm_key_detected bpm={} key={} time_signature={}",
         bpm, key, time_signature,
     )
 
     logger.info("prepare_source_start")
-    source = session.prepare_source(audio_in)
-    return source, bpm, key, time_signature
+    return session.prepare_source(audio_in), bpm, key, time_signature

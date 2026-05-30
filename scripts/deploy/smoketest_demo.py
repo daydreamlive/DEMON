@@ -21,7 +21,7 @@ from acestep.fixtures import audio_fixture
 
 WS_URL = "ws://localhost:8765/"
 # Same fixture the live demo opens by default; pulled (and cached) from
-# the daydreamlive/demon-fixtures HF dataset inside main() so importing
+# the daydreamlive/demon-fixtures-v2 HF dataset inside main() so importing
 # this module doesn't hit the network.
 DEFAULT_FIXTURE = "inside_confusion_loop_60s_gsm.wav"
 

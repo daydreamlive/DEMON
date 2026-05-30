@@ -16,6 +16,8 @@ import {
   type DcwWavelet,
 } from "@/types/engine";
 
+export type SwapSourceMode = "full" | "vocals" | "instruments";
+
 // Operator-editable startup config. Mirrors the static app's
 // static/config.json (now lost in the React port). Lives at
 // web/public/config.json so an installer can edit and refresh without a
@@ -290,6 +292,10 @@ export interface RtmgConfig {
    * ScriptProcessor fallback already restarts on swap; this aligns the
    * worklet path with that behavior and makes it operator-tunable. */
   restart_song_on_swap: boolean;
+  /** Default inference source for uploaded-track swaps. Built-in
+   *  fixtures keep using their full source unless the track is present
+   *  in the custom upload store. */
+  swap_source_mode: SwapSourceMode;
   /** Per-param schedule curves. Same shape useCurveStore persists to
    *  localStorage today, lifted into the operator-editable config so a
    *  pod's deployed sound can ship its automation alongside its
@@ -388,6 +394,7 @@ export const DEFAULT_CONFIG: RtmgConfig = {
     glide_ms: 700,
   },
   restart_song_on_swap: true,
+  swap_source_mode: "instruments",
 };
 
 let _activeConfig: RtmgConfig = DEFAULT_CONFIG;
@@ -399,6 +406,16 @@ const listeners = new Set<(c: RtmgConfig) => void>();
  * runs once per Play click). For reactive reads, use useConfig(). */
 export function getConfig(): RtmgConfig {
   return _activeConfig;
+}
+
+export function isSwapSourceMode(v: unknown): v is SwapSourceMode {
+  return v === "full" || v === "vocals" || v === "instruments";
+}
+
+export function defaultSwapSourceMode(): SwapSourceMode {
+  return isSwapSourceMode(_activeConfig.swap_source_mode)
+    ? _activeConfig.swap_source_mode
+    : DEFAULT_CONFIG.swap_source_mode;
 }
 
 /** Resolve the LoRA cap for a given source duration. Tiers (when
@@ -553,6 +570,9 @@ export function mergeConfig(
       typeof override.restart_song_on_swap === "boolean"
         ? override.restart_song_on_swap
         : base.restart_song_on_swap,
+    swap_source_mode: isSwapSourceMode(override.swap_source_mode)
+      ? override.swap_source_mode
+      : base.swap_source_mode,
     // Curves are operator-authored and only meaningful as a whole bag,
     // so the override entry replaces the base entry whole when present.
     // Absent override keeps whatever the base has (DEFAULT_CONFIG leaves
@@ -753,7 +773,7 @@ export function applyConfig(c: RtmgConfig): void {
  * logic.
  *
  * Fields the stores don't own (channel_ranges, effects, audio
- * defaults, denoise_session_gate, restart_song_on_swap, the
+ * defaults, denoise_session_gate, restart_song_on_swap, swap_source_mode, the
  * non-numeric engine.* config) are pulled from the active config so
  * exports round-trip cleanly through Import.
  */
@@ -800,6 +820,7 @@ export function captureRtmgConfig(): RtmgConfig {
     reset_seconds: active.reset_seconds,
     denoise_session_gate: active.denoise_session_gate,
     restart_song_on_swap: active.restart_song_on_swap,
+    swap_source_mode: active.swap_source_mode,
     curves: {
       scheduleEnabled: curveStore.scheduleEnabled,
       curves: Object.fromEntries(

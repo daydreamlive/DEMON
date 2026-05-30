@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { type StemSourceMode } from "@/engine/audio/loadFixture";
+import { defaultSwapSourceMode } from "@/lib/config";
 import {
   TIME_SIGNATURE_LABELS,
   VALID_KEYSCALES,
@@ -76,7 +77,9 @@ export function AlmostReadyDialog({
 }: AlmostReadyDialogProps) {
   const [mounted, setMounted] = useState(false);
   const [step, setStep] = useState<Step>(1);
-  const [sourceMode, setSourceMode] = useState<StemSourceMode>("full");
+  const [sourceMode, setSourceMode] = useState<StemSourceMode>(() =>
+    defaultSwapSourceMode(),
+  );
   const [keyChoice, setKeyChoice] = useState<string>(AUTO);
   const [tsChoice, setTsChoice] = useState<string>(AUTO);
   const primaryRef = useRef<HTMLButtonElement | null>(null);

@@ -284,7 +284,7 @@ async def session_state(session_id: Optional[str] = None) -> dict:
 
 @mcp.tool()
 async def list_fixtures() -> list[str]:
-    """Canonical audio fixture names from the daydreamlive/demon-fixtures
+    """Canonical audio fixture names from the daydreamlive/demon-fixtures-v2
     Hugging Face dataset. Any name here can be passed to swap_to_fixture
     / set_timbre_fixture / set_structure_fixture.
     """

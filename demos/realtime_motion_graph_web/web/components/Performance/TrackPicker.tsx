@@ -9,6 +9,8 @@ import {
   type DecodedFixture,
   type StemSourceMode,
 } from "@/engine/audio/loadFixture";
+import { useSeedUserUploads } from "@/hooks/useSeedUserUploads";
+import { commitUploadedTrack } from "@/lib/audio/commitUploadedTrack";
 import { trimAudioBuffer } from "@/lib/audio/trimAudioBuffer";
 import { useConfig } from "@/lib/config";
 import { LOCAL_MODE } from "@/lib/runtime";
@@ -61,6 +63,7 @@ export function TrackPicker() {
     useConfig().engine.max_source_duration_s ?? DEFAULT_TRIM_CAP_S;
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  useSeedUserUploads();
 
   useEffect(() => {
     if (!sessionWsUrl && !LOCAL_MODE) return;
@@ -112,25 +115,22 @@ export function TrackPicker() {
     setTrimming(null);
   }
 
-  function commitPending(
+  async function commitPending(
     keyOverride: string | null,
     timeSignatureOverride: TimeSignature | null,
     sourceMode: StemSourceMode,
   ) {
     if (!pending) return;
-    const { decoded, fileName, originalFile } = pending;
-    addCustomTrack(fileName, decoded, originalFile, sourceMode);
-    const perf = usePerformanceStore.getState();
-    if (keyOverride) {
-      perf.setPendingKeyOverride(keyOverride);
-      perf.setKey(keyOverride);
-    }
-    if (timeSignatureOverride) {
-      perf.setPendingTimeSignatureOverride(timeSignatureOverride);
-      perf.setTimeSignature(timeSignatureOverride);
-    }
-    setFixture(fileName);
-    setPending(null);
+    await commitUploadedTrack({
+      pending,
+      keyOverride,
+      timeSignatureOverride,
+      sourceMode,
+      addCustomTrack,
+      setFixture,
+      setPending,
+      setUploading,
+    });
   }
 
   return (

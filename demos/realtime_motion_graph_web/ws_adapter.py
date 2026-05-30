@@ -39,14 +39,19 @@ torch._dynamo.config.disable = True
 
 import numpy as np
 
+from acestep.audio.key_detection import detect_key
 from acestep.engine.obs import logger, spawn_thread
+from acestep.engine.session import Session
 from acestep.fixtures import KNOWN_FIXTURES
 from acestep.nodes.types import Audio
 from acestep.paths import (
     EngineNotBuiltError,
     checkpoint_scale,
+    checkpoints_dir,
     loras_dir,
+    max_profile_duration_s,
 )
+from acestep.sidecars import truncate_to_pool
 
 from acestep.streaming.commands import CommandOrigin
 from acestep.streaming.config import SessionConfig
@@ -76,10 +81,151 @@ from acestep.streaming import registry as session_registry
 from acestep.streaming.source import (
     _decode_audio_msg,
     _load_known_fixture_waveform,
+    _normalize_time_signature,
+)
+from acestep.streaming.stems import extract_upload_stems
+from acestep.user_uploads import (
+    persist_user_upload_packet,
+    unique_user_upload_name,
 )
 
 from .audio_codec import SliceCodec, send_stem_payload
 from .protocol import SAMPLE_RATE
+
+
+# ---------------------------------------------------------------------------
+# Canonical user-upload packet processing
+# ---------------------------------------------------------------------------
+
+# A single eager encoder Session per checkpoint, shared across all
+# connections and held for the process lifetime. This is the lone shared
+# mutable GPU object in the system (every StreamingSession otherwise owns
+# its own Session). The tradeoff is deliberate: encoding uploads needs the
+# VAE encoder, which the streaming TRT path doesn't expose, so we keep a
+# second resident eager copy of the weights rather than rebuild one per
+# upload. Two costs follow from the sharing:
+#   - VRAM: the first upload permanently adds a second model copy.
+#   - Concurrency: prepare_source / stem extraction are NOT thread-safe on
+#     a shared Session, so _UPLOAD_INFER_LOCK serializes all GPU work on it.
+_UPLOAD_ENCODERS: dict[str, Session] = {}
+_UPLOAD_ENCODERS_LOCK = threading.Lock()
+_UPLOAD_INFER_LOCK = threading.Lock()
+
+
+def _upload_encoder_session(checkpoint: str) -> Session:
+    with _UPLOAD_ENCODERS_LOCK:
+        session = _UPLOAD_ENCODERS.get(checkpoint)
+        if session is None:
+            logger.info("upload_encoder_load_start checkpoint={}", checkpoint)
+            session = Session(
+                project_root=str(checkpoints_dir()),
+                config_path=checkpoint,
+                decoder_backend="eager",
+                vae_backend="eager",
+            )
+            _UPLOAD_ENCODERS[checkpoint] = session
+            logger.info("upload_encoder_loaded checkpoint={}", checkpoint)
+        return session
+
+
+def _truncate_upload_waveform(waveform: torch.Tensor) -> torch.Tensor:
+    max_samples = int(max_profile_duration_s() * SAMPLE_RATE)
+    return truncate_to_pool(waveform[:2, :max_samples])
+
+
+def _analyze_upload_waveform(waveform: torch.Tensor) -> tuple[int, str, str]:
+    import librosa
+
+    mono_np = waveform.mean(dim=0).detach().cpu().numpy()
+    bpm_raw, _ = librosa.beat.beat_track(y=mono_np, sr=SAMPLE_RATE)
+    bpm = int(round(float(np.asarray(bpm_raw).flat[0])))
+    return bpm, detect_key(mono_np, SAMPLE_RATE), "4"
+
+
+def _send_upload_failure(ws, error: str) -> None:
+    logger.warning("upload_track_failed error={}", error)
+    try:
+        ws.send(json.dumps({"type": "upload_failed", "error": error}))
+    except Exception:
+        pass
+
+
+def _handle_upload_track(ws, header: dict, *, checkpoint: str) -> None:
+    requested_name = str(header.get("name") or "upload")
+    key_override = header.get("key")
+    key_override = key_override.strip() if isinstance(key_override, str) else None
+    time_signature_override = _normalize_time_signature(header.get("time_signature"))
+    try:
+        audio_msg = ws.recv()
+    except ConnectionClosed:
+        return
+    if isinstance(audio_msg, str):
+        _send_upload_failure(ws, "expected binary PCM frame after upload header")
+        return
+
+    name = unique_user_upload_name(requested_name)
+    try:
+        waveform = _truncate_upload_waveform(_decode_audio_msg(audio_msg))
+        if waveform.shape[-1] <= 0:
+            raise ValueError("audio too short after pool alignment")
+        bpm, detected_key, detected_time_signature = _analyze_upload_waveform(waveform)
+        key = key_override or detected_key
+        time_signature = time_signature_override or detected_time_signature
+        encoder = _upload_encoder_session(checkpoint)
+        logger.info(
+            "upload_track_process_start name={} samples={} duration_s={:.1f}",
+            name, int(waveform.shape[-1]), waveform.shape[-1] / SAMPLE_RATE,
+        )
+        # Serialize all GPU work on the shared encoder: concurrent uploads
+        # from multiple connections would otherwise drive prepare_source /
+        # stem extraction on one Session at once and corrupt its state.
+        with _UPLOAD_INFER_LOCK:
+            sources = {
+                "full": encoder.prepare_source(
+                    Audio(waveform=waveform, sample_rate=SAMPLE_RATE),
+                ),
+            }
+            stems = extract_upload_stems(
+                waveform=waveform,
+                device=encoder.handler.device,
+                backend_sample_rate=SAMPLE_RATE,
+            )
+            for mode in ("vocals", "instruments"):
+                sources[mode] = encoder.prepare_source(
+                    Audio(waveform=stems[mode], sample_rate=SAMPLE_RATE),
+                )
+        packet = persist_user_upload_packet(
+            name,
+            waveform=waveform,
+            stems=stems,
+            sources=sources,
+            sample_rate=SAMPLE_RATE,
+            checkpoint=checkpoint,
+            bpm=bpm,
+            key=key,
+            time_signature=time_signature,
+        )
+    except Exception as exc:
+        logger.exception("upload_track_process_failed name={} error={}", name, exc)
+        _send_upload_failure(ws, str(exc))
+        return
+
+    try:
+        ws.send(json.dumps({
+            "type": "upload_ok",
+            "name": packet.name,
+            "bpm": packet.bpm,
+            "key": packet.key,
+            "time_signature": packet.time_signature,
+            "duration_s": packet.duration_s,
+            "samples": packet.samples,
+        }))
+    except ConnectionClosed:
+        return
+    logger.info(
+        "upload_track_ready name={} bpm={} key={} duration_s={:.1f}",
+        packet.name, packet.bpm, packet.key, packet.duration_s,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +278,15 @@ def _handle_client_body(
 
     # ---- Init handshake ----
     config_dict = json.loads(ws.recv())
+    if isinstance(config_dict, dict) and config_dict.get("type") == "upload_track":
+        try:
+            _handle_upload_track(ws, config_dict, checkpoint=checkpoint)
+        finally:
+            try:
+                ws.close()
+            except Exception:
+                pass
+        return
 
     # Mint session_id immediately and bind it (plus the client's
     # optional client_id) into loguru's contextvars so every log record
