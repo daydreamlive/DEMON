@@ -118,6 +118,14 @@ export interface DepthAppliedMessage {
   value: number;
 }
 
+export interface LoopBandSuggestionMessage {
+  type: "loop_band_suggestion";
+  request_id: number;
+  start_sec: number;
+  end_sec: number;
+  score: number;
+}
+
 /** Structured init failure from the server. */
 export interface ServerErrorMessage {
   type: "error";
@@ -257,6 +265,7 @@ export type ServerJsonMessage =
   | StemAssetsMessage
   | StemFailedMessage
   | DepthAppliedMessage
+  | LoopBandSuggestionMessage
   | TimbreSetMessage
   | TimbreClearedMessage
   | TimbreFailedMessage

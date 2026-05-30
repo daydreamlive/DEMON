@@ -5,9 +5,11 @@ import { useEffect, useRef, useState } from "react";
 import { computePeaks, drawPeaks } from "@/engine/curves/waveformPeaks";
 import { frameScheduler } from "@/engine/scheduler/FrameScheduler";
 import { useOneShotTooltip } from "@/hooks/useOneShotTooltip";
+import { useConfig } from "@/lib/config";
 import { useCurveStore } from "@/store/useCurveStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
+import type { LoopBandSuggestionMessage } from "@/types/protocol";
 
 // Bottom-center scrub strip. Shows the source-track waveform, overlays
 // a playhead at the current AudioPlayer.positionSec, lets the operator
@@ -91,6 +93,7 @@ interface DragState {
 }
 
 export function WaveformScrubBox() {
+  const config = useConfig();
   const player = useSessionStore((s) => s.player);
   const curvesOpen = useCurveStore((s) => s.overlayOpen);
   // Musical grid inputs — drive both the drawn grid and edge snapping.
@@ -107,6 +110,15 @@ export function WaveformScrubBox() {
   const [bandState, setBandState] = useState<Band | null>(null);
   const bandRef = useRef<Band | null>(null);
   bandRef.current = bandState;
+  const smartAnchorRef = useRef<Band | null>(null);
+  const smartRequestIdRef = useRef(0);
+  const smartPendingRef = useRef<{ id: number; sentAt: number } | null>(null);
+
+  const setUserBand = (band: Band | null) => {
+    smartAnchorRef.current = band ? { ...band } : null;
+    smartPendingRef.current = null;
+    setBandState(band);
+  };
 
   // Loop mode: when armed, a plain drag on the waveform draws/edits the
   // band (Shift no longer required). The pointer handlers read the ref.
@@ -123,6 +135,8 @@ export function WaveformScrubBox() {
 
   const [hasPeaks, setHasPeaks] = useState(false);
   const hasPlayer = player !== null;
+  const audioConfig = config.audio;
+  const smartLoopEnabled = audioConfig.smart_loop_enabled;
 
   // ── Background canvas: waveform ───────────────────────────────────
   useEffect(() => {
@@ -290,6 +304,80 @@ export function WaveformScrubBox() {
     }
   }, [bandState, hasPlayer, player]);
 
+  // Smart loop: ask the backend to run PyMusicLooper against its live
+  // denoised buffer. The browser only owns the transport and applies the
+  // suggested band; loop-point analysis stays in the Python library the
+  // feature is based on.
+  useEffect(() => {
+    const remote = useSessionStore.getState().remote;
+    if (!hasPlayer || !player || !remote || !smartLoopEnabled) return;
+
+    const request = () => {
+      const anchor = smartAnchorRef.current;
+      const current = bandRef.current;
+      if (!anchor || !current) return;
+      const anchorDuration = anchor.end - anchor.start;
+      const minDuration = Math.max(
+        MIN_BAND_SEC,
+        audioConfig.smart_loop_min_duration_sec,
+      );
+      if (anchorDuration < minDuration) return;
+      const pending = smartPendingRef.current;
+      if (pending && performance.now() - pending.sentAt < 8000) return;
+      const requestId = ++smartRequestIdRef.current;
+      smartPendingRef.current = { id: requestId, sentAt: performance.now() };
+      // Search stays anchored to the user's original band. Chaining each
+      // analysis from the previous suggestion lets one bad candidate
+      // recursively collapse the loop.
+      remote.sendSmartLoop(
+        requestId,
+        anchor.start,
+        anchor.end,
+        anchorDuration,
+        {
+          durationFlexPct: audioConfig.smart_loop_duration_flex_pct,
+          maxEdgeShiftSec: audioConfig.smart_loop_max_edge_shift_sec,
+          minLoopDurationSec: minDuration,
+          disablePruning: audioConfig.smart_loop_disable_pruning,
+        },
+      );
+    };
+
+    const onSuggestion = (event: Event) => {
+      const msg = (event as CustomEvent<LoopBandSuggestionMessage>).detail;
+      if (!msg || msg.request_id !== smartRequestIdRef.current) return;
+      smartPendingRef.current = null;
+      const current = bandRef.current;
+      if (!current) return;
+      const anchor = smartAnchorRef.current;
+      if (!anchor) return;
+      const anchorDuration = anchor.end - anchor.start;
+      const nextDuration = msg.end_sec - msg.start_sec;
+      const flex = Math.max(0, audioConfig.smart_loop_duration_flex_pct);
+      const maxShift = Math.max(0, audioConfig.smart_loop_max_edge_shift_sec);
+      if (nextDuration < audioConfig.smart_loop_min_duration_sec) return;
+      if (Math.abs(nextDuration - anchorDuration) > anchorDuration * flex) return;
+      if (Math.abs(msg.start_sec - anchor.start) > maxShift) return;
+      if (Math.abs(msg.end_sec - anchor.end) > maxShift) return;
+      const moved =
+        Math.abs(msg.start_sec - current.start) > 0.015 ||
+        Math.abs(msg.end_sec - current.end) > 0.015;
+      if (moved) {
+        setBandState({ start: msg.start_sec, end: msg.end_sec });
+      }
+    };
+
+    remote.addEventListener("loop_band_suggestion", onSuggestion);
+    const intervalMs = Math.max(1000, audioConfig.smart_loop_interval_ms);
+    const intervalId = window.setInterval(request, intervalMs);
+    request();
+
+    return () => {
+      remote.removeEventListener("loop_band_suggestion", onSuggestion);
+      window.clearInterval(intervalId);
+    };
+  }, [audioConfig, hasPlayer, player, smartLoopEnabled]);
+
   // ── Pointer state machine ─────────────────────────────────────────
   useEffect(() => {
     if (!hasPlayer) return;
@@ -359,7 +447,7 @@ export function WaveformScrubBox() {
         // Draw a brand-new band from this point (snapped to the grid).
         mode = "draw-band";
         anchorT = snapT(t, e);
-        setBandState({ start: anchorT, end: anchorT });
+        setUserBand({ start: anchorT, end: anchorT });
       } else {
         // Plain click outside any band → regular seek.
         mode = "seek";
@@ -389,7 +477,7 @@ export function WaveformScrubBox() {
           const ts = snapT(t, e);
           const start = Math.max(0, Math.min(a, ts));
           const end = Math.min(duration, Math.max(a, ts));
-          setBandState({ start, end });
+          setUserBand({ start, end });
           return;
         }
         case "move-band": {
@@ -408,7 +496,7 @@ export function WaveformScrubBox() {
             end = duration;
             start = end - len;
           }
-          setBandState({ start, end });
+          setUserBand({ start, end });
           return;
         }
         case "resize-band-start": {
@@ -418,7 +506,7 @@ export function WaveformScrubBox() {
             b.end - MIN_BAND_SEC,
             Math.max(0, snapT(t, e)),
           );
-          setBandState({ start: newStart, end: b.end });
+          setUserBand({ start: newStart, end: b.end });
           return;
         }
         case "resize-band-end": {
@@ -428,7 +516,7 @@ export function WaveformScrubBox() {
             b.start + MIN_BAND_SEC,
             Math.min(duration, snapT(t, e)),
           );
-          setBandState({ start: b.start, end: newEnd });
+          setUserBand({ start: b.start, end: newEnd });
           return;
         }
       }
@@ -442,7 +530,7 @@ export function WaveformScrubBox() {
       if (drag.mode === "draw-band") {
         const b = bandRef.current;
         if (!b || b.end - b.start < MIN_BAND_SEC) {
-          setBandState(null);
+          setUserBand(null);
         }
       }
       drag = null;
@@ -457,7 +545,7 @@ export function WaveformScrubBox() {
       // without spinning up a real context menu in v1.
       if (bandRef.current) {
         e.preventDefault();
-        setBandState(null);
+        setUserBand(null);
       }
     };
 
@@ -488,7 +576,7 @@ export function WaveformScrubBox() {
   const toggleLoop = () => {
     if (loopActive) {
       setLoopMode(false);
-      setBandState(null);
+      setUserBand(null);
     } else {
       setLoopMode(true);
     }

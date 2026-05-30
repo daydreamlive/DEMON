@@ -264,12 +264,19 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
 
     const ch = this.channels;
     const nCur = this.frameCount;
+    const bandStart = Math.max(0, Math.min(nCur - 1, this.loopBandStart | 0));
+    const bandEnd = Math.max(bandStart + 1, Math.min(nCur, this.loopBandEnd | 0));
+    const hasBand =
+      this.loopBandStart >= 0 &&
+      this.loopBandEnd > this.loopBandStart &&
+      bandEnd > bandStart;
     // Loop-seam crossfade: blend the last `seam` frames with the first
-    // `seam` frames of the buffer, then wrap the playhead to `seam` so
-    // the head we just mixed isn't replayed. Hides the click that would
-    // otherwise pop on every wrap, and softens the structural mismatch
-    // when the source song doesn't loop musically.
-    const seam = Math.min(this.seamFadeLen, Math.floor(nCur / 4));
+    // `seam` frames of the active loop range, then wrap the playhead past
+    // the blended head so those frames aren't replayed. Applies to both
+    // whole-buffer loops and user-drawn band loops.
+    const wrapStart = hasBand ? bandStart : 0;
+    const wrapEnd = hasBand ? bandEnd : nCur;
+    const seam = Math.min(this.seamFadeLen, Math.floor((wrapEnd - wrapStart) / 4));
 
     for (let i = 0; i < frames; i++) {
       const pos = this.position;
@@ -301,10 +308,16 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
           this.fading = false;
           this.oldBuffer = null;
         }
-      } else if (this.loop && seam > 0 && (nCur - pos) <= seam) {
-        const distFromEnd = nCur - pos;
+      } else if (
+        this.loop &&
+        seam > 0 &&
+        pos >= wrapStart &&
+        pos < wrapEnd &&
+        (wrapEnd - pos) <= seam
+      ) {
+        const distFromEnd = wrapEnd - pos;
         const t = (seam - distFromEnd) / seam;
-        const headPos = seam - distFromEnd;
+        const headPos = wrapStart + seam - distFromEnd;
         for (let c = 0; c < outChannels; c++) {
           const cc = Math.min(c, ch - 1);
           const sTail = this.current[pos * ch + cc];
@@ -337,10 +350,16 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
         if (pos >= ov.frameCount) continue;
         const ovCh = ov.channels;
         const ovVol = ov.volume;
-        if (this.loop && seam > 0 && (nCur - pos) <= seam) {
-          const distFromEnd = nCur - pos;
+        if (
+          this.loop &&
+          seam > 0 &&
+          pos >= wrapStart &&
+          pos < wrapEnd &&
+          (wrapEnd - pos) <= seam
+        ) {
+          const distFromEnd = wrapEnd - pos;
           const t = (seam - distFromEnd) / seam;
-          const headPos = seam - distFromEnd;
+          const headPos = wrapStart + seam - distFromEnd;
           if (headPos < ov.frameCount) {
             for (let c = 0; c < outChannels; c++) {
               const cc = Math.min(c, ovCh - 1);
@@ -393,12 +412,8 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
       // crossfade later). The band is only honoured when fully defined
       // (start ≥ 0 AND end > start) so a partially-cleared state can't
       // freeze the playhead at the band start.
-      if (
-        this.loopBandStart >= 0 &&
-        this.loopBandEnd > this.loopBandStart &&
-        this.position >= this.loopBandEnd
-      ) {
-        this.position = this.loopBandStart;
+      if (hasBand && this.position >= bandEnd) {
+        this.position = Math.min(bandEnd - 1, bandStart + seam);
       } else if (this.position >= nCur) {
         // Loop: wrap to `seam` so the head frames blended by the
         // crossfade above aren't replayed. No loop: clamp at end so

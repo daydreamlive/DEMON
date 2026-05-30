@@ -23,6 +23,7 @@ import {
   type AudioSlice,
   type LoraCatalogEntry,
   type SessionConfig,
+  type LoopBandSuggestionMessage,
   type StemAssetsMessage,
   type SwapReadyMessage,
 } from "@/types/protocol";
@@ -426,6 +427,12 @@ export class RemoteBackend extends EventTarget {
                 new CustomEvent("depth_applied", { detail: v }),
               );
             }
+          } else if (msg.type === "loop_band_suggestion") {
+            this.dispatchEvent(
+              new CustomEvent("loop_band_suggestion", {
+                detail: msg as unknown as LoopBandSuggestionMessage,
+              }),
+            );
           } else {
             this.dispatchEvent(new CustomEvent("json", { detail: msg }));
           }
@@ -664,6 +671,39 @@ export class RemoteBackend extends EventTarget {
           end_sec: endSec,
         }),
       );
+    } catch {}
+  }
+
+  /**
+   * Ask the backend to run PyMusicLooper against its current live buffer,
+   * searching near the active loop band. The response arrives as a
+   * `loop_band_suggestion` event carrying the same request id.
+   */
+  sendSmartLoop(
+    requestId: number,
+    startSec: number,
+    endSec: number,
+    anchorDurationSec: number,
+    options?: {
+      durationFlexPct?: number;
+      maxEdgeShiftSec?: number;
+      minLoopDurationSec?: number;
+      disablePruning?: boolean;
+    },
+  ): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(JSON.stringify({
+        type: "smart_loop",
+        request_id: requestId,
+        start_sec: startSec,
+        end_sec: endSec,
+        anchor_duration_sec: anchorDurationSec,
+        duration_flex_pct: options?.durationFlexPct,
+        max_edge_shift_sec: options?.maxEdgeShiftSec,
+        min_loop_duration_sec: options?.minLoopDurationSec,
+        disable_pruning: options?.disablePruning,
+      }));
     } catch {}
   }
 

@@ -72,6 +72,7 @@ dependencies = [
     # MCP SDK for the realtime motion-graph demo's onboard MCP server,
     # which exposes every user-facing demo action as an MCP tool.
     "mcp>=1.0",
+    "pymusiclooper>=3.4.1",
 ]
 
 [[tool.uv.index]]

@@ -53,6 +53,7 @@ from acestep.streaming.config import SessionConfig
 from acestep.streaming.events import (
     AudioReady,
     DepthApplied,
+    LoopBandSuggested,
     LoraCatalogUpdate,
     ParamsEcho,
     PromptApplied,
@@ -349,6 +350,14 @@ def _handle_client_body(
             _send_json({"type": "lora_catalog", "catalog": event.catalog})
         elif isinstance(event, DepthApplied):
             _send_json({"type": "depth_applied", "value": event.value})
+        elif isinstance(event, LoopBandSuggested):
+            _send_json({
+                "type": "loop_band_suggestion",
+                "request_id": event.request_id,
+                "start_sec": event.start_sec,
+                "end_sec": event.end_sec,
+                "score": event.score,
+            })
         elif isinstance(event, TimbreSet):
             _send_json({
                 "type": "timbre_set", "name": event.name,
@@ -473,6 +482,30 @@ def _handle_client_body(
             elif mtype == "loop_band":
                 streaming.set_loop_band(
                     data.get("start_sec"), data.get("end_sec"),
+                    origin=origin,
+                )
+            elif mtype == "smart_loop":
+                try:
+                    rid = int(data.get("request_id", 0))
+                    start = float(data.get("start_sec"))
+                    end = float(data.get("end_sec"))
+                    anchor = data.get("anchor_duration_sec")
+                    anchor_duration = float(anchor) if anchor is not None else None
+                    flex = float(data.get("duration_flex_pct", 0.03))
+                    edge_shift = float(data.get("max_edge_shift_sec", 0.5))
+                    min_loop = float(data.get("min_loop_duration_sec", 1.0))
+                    disable_pruning = bool(data.get("disable_pruning", False))
+                except (TypeError, ValueError):
+                    return
+                streaming.request_smart_loop(
+                    rid,
+                    start,
+                    end,
+                    anchor_duration_sec=anchor_duration,
+                    duration_flex_pct=flex,
+                    max_edge_shift_sec=edge_shift,
+                    min_loop_duration_sec=min_loop,
+                    disable_pruning=disable_pruning,
                     origin=origin,
                 )
             elif mtype == "prompt":

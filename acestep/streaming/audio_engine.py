@@ -49,6 +49,11 @@ class AudioEngine:
     def playback_position(self):
         return self.position / self.sr
 
+    def snapshot(self):
+        """Return a stable copy of the current playback buffer."""
+        with self._lock:
+            return self.current.copy()
+
     def swap(self, new_data):
         if new_data.ndim == 1:
             new_data = new_data.reshape(-1, 1)

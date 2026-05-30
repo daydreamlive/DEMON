@@ -120,6 +120,8 @@ export class AudioPlayer {
   private _loop = true;
   private _spEndSignaled = false;
   private _endOfBufferListeners: Set<() => void> = new Set();
+  private _spLoopBandStart = -1;
+  private _spLoopBandEnd = -1;
 
   // Loudness matching: a GainNode sits between the worklet and
   // destination. We measure the source's integrated loudness once at
@@ -187,7 +189,7 @@ export class AudioPlayer {
       // surface changes (v2 = setLoopBand, v3 = stem overlays inside the
       // worklet). The browser caches worklet bytes per-URL and hard
       // refresh doesn't always invalidate.
-      await this.ctx.audioWorklet.addModule("/audio-worklet.js?v=3");
+      await this.ctx.audioWorklet.addModule("/audio-worklet.js?v=4");
 
       const node = new AudioWorkletNode(this.ctx, "realtime-buffer", {
         numberOfInputs: 0,
@@ -521,6 +523,8 @@ export class AudioPlayer {
       startFrames + Math.floor(SAMPLE_RATE * 0.03),
       Math.min(this.frameCount, Math.round(endSec * SAMPLE_RATE)),
     );
+    this._spLoopBandStart = startFrames;
+    this._spLoopBandEnd = endFrames;
     if (this._useWorklet && this.node) {
       (this.node as AudioWorkletNode).port.postMessage({
         type: "setLoopBand",
@@ -533,6 +537,8 @@ export class AudioPlayer {
   /** Remove any active band loop; playback resumes wrapping at
    *  end-of-buffer (subject to `setLoop`). */
   clearLoopBand(): void {
+    this._spLoopBandStart = -1;
+    this._spLoopBandEnd = -1;
     if (this._useWorklet && this.node) {
       (this.node as AudioWorkletNode).port.postMessage({
         type: "clearLoopBand",
@@ -829,10 +835,24 @@ export class AudioPlayer {
       return;
     }
     const nFrames = this.frameCount;
+    const bandStart = Math.max(
+      0,
+      Math.min(nFrames - 1, this._spLoopBandStart | 0),
+    );
+    const bandEnd = Math.max(
+      bandStart + 1,
+      Math.min(nFrames, this._spLoopBandEnd | 0),
+    );
+    const hasBand =
+      this._spLoopBandStart >= 0 &&
+      this._spLoopBandEnd > this._spLoopBandStart &&
+      bandEnd > bandStart;
     // Mirror the worklet's loop-seam crossfade so non-secure-context playback
     // (ScriptProcessor fallback) gets the same smooth wrap.
     const seamFadeLen = Math.max(1, Math.floor(this.ctx.sampleRate * 0.05));
-    const seam = Math.min(seamFadeLen, Math.floor(nFrames / 4));
+    const wrapStart = hasBand ? bandStart : 0;
+    const wrapEnd = hasBand ? bandEnd : nFrames;
+    const seam = Math.min(seamFadeLen, Math.floor((wrapEnd - wrapStart) / 4));
     const outChs: Float32Array[] = [];
     for (let c = 0; c < output.numberOfChannels; c++) {
       outChs.push(output.getChannelData(c));
@@ -861,10 +881,15 @@ export class AudioPlayer {
         }
         continue;
       }
-      const inSeam = this._loop && seam > 0 && nFrames - pos <= seam;
-      const distFromEnd = inSeam ? nFrames - pos : 0;
+      const inSeam =
+        this._loop &&
+        seam > 0 &&
+        pos >= wrapStart &&
+        pos < wrapEnd &&
+        wrapEnd - pos <= seam;
+      const distFromEnd = inSeam ? wrapEnd - pos : 0;
       const seamT = inSeam ? (seam - distFromEnd) / seam : 0;
-      const headPos = inSeam ? seam - distFromEnd : 0;
+      const headPos = inSeam ? wrapStart + seam - distFromEnd : 0;
       if (inSeam) {
         for (let c = 0; c < outChs.length; c++) {
           const cc = Math.min(c, ch - 1);
@@ -903,7 +928,11 @@ export class AudioPlayer {
         }
       }
       pos++;
-      if (pos >= nFrames) pos = this._loop ? seam : nFrames;
+      if (hasBand && pos >= bandEnd) {
+        pos = Math.min(bandEnd - 1, bandStart + seam);
+      } else if (pos >= nFrames) {
+        pos = this._loop ? seam : nFrames;
+      }
     }
     this._spPosition = pos;
     this.positionSec = this._spPosition / SAMPLE_RATE;

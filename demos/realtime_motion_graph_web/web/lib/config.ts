@@ -207,6 +207,17 @@ export interface RtmgConfigAudio {
    *  threshold from flipping every tick (audible as volume swells).
    *  Set to 0 for a hard threshold; raise to widen the dead band. */
   lufs_silence_floor_hysteresis_db: number;
+  /** When true, user-drawn waveform loop bands are periodically
+   *  re-scored against the live denoised buffer. The original loop
+   *  duration remains the anchor, but nearby start/end candidates are
+   *  chosen so the wrap seam stays correlated and low-energy as the
+   *  generated audio replaces the source. */
+  smart_loop_enabled: boolean;
+  smart_loop_interval_ms: number;
+  smart_loop_duration_flex_pct: number;
+  smart_loop_max_edge_shift_sec: number;
+  smart_loop_min_duration_sec: number;
+  smart_loop_disable_pruning: boolean;
 }
 
 /** controls.* — initial slider values plus the DCW companion controls
@@ -381,6 +392,12 @@ export const DEFAULT_CONFIG: RtmgConfig = {
     lufs_peak_headroom: 4.0,
     lufs_silence_floor_db: 30.0,
     lufs_silence_floor_hysteresis_db: 6.0,
+    smart_loop_enabled: false,
+    smart_loop_interval_ms: 5000,
+    smart_loop_duration_flex_pct: 0.03,
+    smart_loop_max_edge_shift_sec: 0.5,
+    smart_loop_min_duration_sec: 1.0,
+    smart_loop_disable_pruning: false,
   },
   reset_seconds: 0,
   denoise_session_gate: {

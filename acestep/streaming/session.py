@@ -44,7 +44,7 @@ import numpy as np
 import torch
 
 from acestep.constants import TASK_INSTRUCTIONS
-from acestep.engine.obs import logger
+from acestep.engine.obs import logger, spawn_thread
 from acestep.engine.session import PreparedSource, Session
 from acestep.engine.trt.profile_manager import (
     TRTProfileLoadError,
@@ -1089,6 +1089,86 @@ class StreamingSession:
                 self.audio_eng.loop_band = (float(start_sec), float(end_sec))
         except (TypeError, ValueError):
             self.audio_eng.loop_band = None
+
+    def request_smart_loop(
+        self,
+        request_id: int,
+        start_sec: float,
+        end_sec: float,
+        *,
+        anchor_duration_sec: float | None = None,
+        duration_flex_pct: float = 0.03,
+        max_edge_shift_sec: float = 0.5,
+        min_loop_duration_sec: float = 1.0,
+        disable_pruning: bool = False,
+        origin: CommandOrigin = CommandOrigin.PRIMARY,
+    ) -> None:
+        """Refine a loop band using PyMusicLooper on the live audio buffer.
+
+        Runs off the dispatcher thread because PyMusicLooper performs an
+        analysis pass over the whole buffer. Result is published as a bus
+        event; failure only logs, leaving the user's current loop intact.
+        """
+        from pymusiclooper.analysis import LoopNotFoundError
+
+        from acestep.streaming.events import LoopBandSuggested
+        from acestep.streaming.smart_loop import refine_loop_points
+
+        self.state.last_activity_ts = time.monotonic()
+        try:
+            rid = int(request_id)
+            start = float(start_sec)
+            end = float(end_sec)
+        except (TypeError, ValueError):
+            return
+        if end <= start:
+            return
+        audio = self.audio_eng.snapshot()
+        sr = self.audio_eng.sr
+
+        def _worker() -> None:
+            try:
+                result = refine_loop_points(
+                    audio,
+                    sr,
+                    approx_start_sec=start,
+                    approx_end_sec=end,
+                    anchor_duration_sec=anchor_duration_sec,
+                    duration_flex_pct=duration_flex_pct,
+                    max_edge_shift_sec=max_edge_shift_sec,
+                    min_loop_duration_sec=min_loop_duration_sec,
+                    disable_pruning=disable_pruning,
+                )
+            except LoopNotFoundError as exc:
+                logger.info(
+                    "smart_loop_not_found origin={} request_id={} start={:.3f} end={:.3f} error={}",
+                    origin.value,
+                    rid,
+                    start,
+                    end,
+                    exc,
+                )
+                return
+            except Exception as exc:
+                logger.opt(exception=True).warning(
+                    "smart_loop_failed origin={} request_id={} start={:.3f} end={:.3f} error={}",
+                    origin.value,
+                    rid,
+                    start,
+                    end,
+                    exc,
+                )
+                return
+            self.bus.publish(
+                LoopBandSuggested(
+                    request_id=rid,
+                    start_sec=result.start_sec,
+                    end_sec=result.end_sec,
+                    score=result.score,
+                ),
+            )
+
+        spawn_thread(_worker, name="smart_loop")
 
     def set_prompt(
         self,

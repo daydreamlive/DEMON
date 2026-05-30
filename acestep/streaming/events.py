@@ -58,6 +58,7 @@ __all__ = [
     "PromptBlendEcho",
     "LoraCatalogUpdate",
     "DepthApplied",
+    "LoopBandSuggested",
     "SwapReady",
     "SwapFailed",
     "StemAssets",
@@ -163,6 +164,16 @@ class DepthApplied:
     actually-applied depth."""
 
     value: int
+
+
+@dataclass(frozen=True)
+class LoopBandSuggested:
+    """PyMusicLooper-refined loop band for the current live buffer."""
+
+    request_id: int
+    start_sec: float
+    end_sec: float
+    score: float
 
 
 @dataclass(frozen=True)
