@@ -21,6 +21,8 @@ const CC_ROWS: RowDef[] = [
   { kind: "cc", target: "shift", label: "Shift" },
   { kind: "cc", target: LORA_SLOT_MARKER[0], label: "LoRA slot 1 strength" },
   { kind: "cc", target: LORA_SLOT_MARKER[1], label: "LoRA slot 2 strength" },
+  { kind: "cc", target: "stem_vocals", label: "Stem: vocals" },
+  { kind: "cc", target: "stem_instruments", label: "Stem: instruments" },
 ];
 
 const NOTE_ACTIONS: { target: NoteAction; label: string }[] = [

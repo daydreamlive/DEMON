@@ -2958,6 +2958,54 @@ body.drawer-open .hud-help-readout {
   margin-top: 4px;
 }
 
+/* CORE-tab stem layers — the same panners as the HeroMacros bay, stacked
+   under the reference-track pickers. Own wrapper class (not
+   .hero-macros-stems) so the `body.drawer-open .hero-macros-stems` hide
+   rule doesn't catch this copy: it must stay visible precisely when the
+   drawer is open. Reuses the .hero-stem-panner* widget styling. */
+.core-stems {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  /* Same frame-line section divider the MOD / CONFIG / Voice tabs use to
+     separate stacked control groups — sets the stems apart from the
+     reference-track pickers above. */
+  border-top: 1px solid var(--frame-line);
+  padding-top: 12px;
+}
+.core-stems-label {
+  font-family: var(--font-mono);
+  font-size: 0.55em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.core-stems-status {
+  font-family: var(--font-mono);
+  font-size: 0.48em;
+  font-style: italic;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+/* Descendant selector (not the bare .core-stem-panners class) so this
+   wins over the later `.hero-stem-panners { width: 160px }` rule at equal
+   specificity. Wider than the bay's 160px so the longer track gives
+   finer control in the roomier drawer. */
+.core-stems .hero-stem-panners {
+  margin-top: 4px;
+  width: min(280px, 100%);
+}
+/* The bay right-aligns the stem name against the track to hug it; in the
+   drawer the section header + status are left-aligned, so left-align the
+   panner labels too — their left edge then lines up with the text above. */
+.core-stems .hero-stem-panner-label {
+  text-align: left;
+}
+
 /* ── Knob component ────────────────────────────────────────────────
    Rotary control. Body is 48px; with the label above + value below the
    group lands at ~80x76 — same footprint as a compact fader strip

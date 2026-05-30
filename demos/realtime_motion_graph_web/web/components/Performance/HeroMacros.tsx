@@ -2,10 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import type { StemOverlayKind } from "@/engine/audio/loadFixture";
 import { LORA_SLOT_MARKER } from "@/engine/midi/types";
 import { useLoraFaderDrag } from "@/hooks/useLoraFaderDrag";
-import { useStemPannerDrag } from "@/hooks/useStemPannerDrag";
 import { loraDisplayName } from "@/lib/loraLabels";
 import { useCurveStore } from "@/store/useCurveStore";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
@@ -17,13 +15,13 @@ import {
   useRecordingStore,
 } from "@/store/useRecordingStore";
 import { useSessionStore } from "@/store/useSessionStore";
-import { useStemOverlayStore } from "@/store/useStemOverlayStore";
 import { LORA_SLIDER_MAX } from "@/types/engine";
 
 import { Knob } from "./Knob";
 import { MidiInToggle } from "./MidiInToggle";
 import { SeedKnob } from "./SeedKnob";
 import { defaultLabelFor, kbdHintFor } from "./SliderTile";
+import { StemPanner } from "./StemPanner";
 import { StrengthOnboardingHint } from "./StrengthOnboardingHint";
 
 // Bottom-center bay. Three zones, left to right:
@@ -163,83 +161,11 @@ function HeroStyleFader({ slotIndex }: HeroStyleFaderProps) {
   );
 }
 
-const STEM_OVERLAY_MAX = 6.0;
-const STEM_LABELS: Record<StemOverlayKind, string> = {
-  vocals: "Vocals",
-  instruments: "Instr",
-};
 // Keyboard hold-chord shortcuts (V/I + ▲▼) still work via
 // useKeyboardShortcuts.ts — they're documented in the section-header
 // tooltip below rather than under each panner.
 const STEM_SECTION_TOOLTIP =
   "Vocal and instrumental stems extracted from the source track. Drag a panner right to mix that layer into the model output. Click the layer name to mute or unmute without losing the level. Hold V (vocals) or I (instruments) + ▲▼ to nudge from the keyboard.";
-
-interface HeroStemPannerProps {
-  kind: StemOverlayKind;
-}
-function HeroStemPanner({ kind }: HeroStemPannerProps) {
-  const fixture = usePerformanceStore((s) => s.fixture);
-  const stems = useCustomTracksStore((s) =>
-    fixture ? s.tracks.get(fixture)?.stems : undefined,
-  );
-  const enabled = useStemOverlayStore((s) => s.enabled[kind]);
-  const volume = useStemOverlayStore((s) => s.volumes[kind]);
-  const toggle = useStemOverlayStore((s) => s.toggle);
-  const stemsReady = Boolean(stems);
-  const trackRef = useRef<HTMLDivElement | null>(null);
-  useStemPannerDrag(trackRef, kind, stemsReady);
-  const displayValue = enabled ? volume : 0;
-  const fraction =
-    STEM_OVERLAY_MAX > 0
-      ? Math.max(0, Math.min(1, displayValue / STEM_OVERLAY_MAX))
-      : 0;
-  const label = STEM_LABELS[kind];
-  return (
-    <div
-      className={`hero-stem-panner${stemsReady ? "" : " hero-stem-panner--empty"}`}
-      data-param={stemsReady ? `stem_${kind}` : undefined}
-    >
-      {/* Click the label to mute / unmute without losing the level —
-          mirrors the original StemOverlayPanel toggle. The drag still
-          sets enabled = volume > 0, so the two interactions cooperate.
-          Tiny non-wide tooltip — uses the CSS pseudo since the rich
-          two-tone HeroMacrosTooltip is reserved for the section
-          header above. */}
-      <button
-        type="button"
-        className="hero-stem-panner-label"
-        onClick={() => {
-          if (stemsReady) toggle(kind);
-        }}
-        disabled={!stemsReady}
-        aria-pressed={enabled}
-        data-dd-tooltip={enabled ? "Click to mute layer" : "Click to unmute layer"}
-      >
-        {label}
-      </button>
-      <div
-        ref={trackRef}
-        className="hero-stem-panner-track"
-        role="slider"
-        aria-label={`${label} overlay volume`}
-        aria-orientation="horizontal"
-        aria-valuemin={0}
-        aria-valuemax={STEM_OVERLAY_MAX}
-        aria-valuenow={displayValue}
-      >
-        <div
-          className="hero-stem-panner-fill"
-          style={{ width: `${fraction * 100}%` }}
-        />
-        <div
-          className="hero-stem-panner-cap"
-          style={{ left: `${fraction * 100}%` }}
-        />
-      </div>
-      <span className="hero-stem-panner-value">{displayValue.toFixed(2)}</span>
-    </div>
-  );
-}
 
 export function HeroMacros() {
   const status = useSessionStore((s) => s.status);
@@ -358,8 +284,8 @@ export function HeroMacros() {
               </div>
             )}
             <div className="hero-stem-panners">
-              <HeroStemPanner kind="vocals" />
-              <HeroStemPanner kind="instruments" />
+              <StemPanner kind="vocals" />
+              <StemPanner kind="instruments" />
             </div>
           </div>
         </>
