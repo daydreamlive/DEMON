@@ -2,14 +2,15 @@
 
 For each fixture in :data:`acestep.fixtures.KNOWN_FIXTURES` this writes
 a ``<name>.sidecar.json`` and ``<name>.sidecar.safetensors`` pair into
-``--out`` (default ``out/fixture_sidecars``):
+``--out`` (default :func:`acestep.paths.fixtures_dir`, i.e.
+``MODELS_DIR/fixtures/``):
 
   JSON   bpm, key, time_signature, post-truncation duration / sample
          counts, sample rate, channels, checkpoint, format_version.
 
   Safetensors
          Tensors: latent, context_latent. Conditioning is *not* cached
-         (see fixtures.py for rationale).
+         (see :mod:`acestep.sidecars` for rationale).
 
 The script is idempotent: existing bpm / key / time_signature values
 are preserved (so an operator override survives a re-run). Pass
@@ -17,20 +18,21 @@ are preserved (so an operator override survives a re-run). Pass
 
 Pipeline per fixture:
   1. Download the WAV (cache hit if already present).
-  2. Apply the same audio-level truncation the streaming session
-     applies before prepare_source: stereo cap + drop trailing samples
-     below a
-     1920*5-sample boundary. The TRT max-profile cap is intentionally
-     NOT applied here so the precompute is profile-agnostic; the
-     runtime only uses the cache when the live truncated length
-     matches the recorded ``samples`` field.
+  2. Apply the same pool-alignment truncation the realtime backend
+     applies before prepare_source (see
+     :func:`acestep.sidecars.truncate_to_pool`). The TRT max-profile
+     cap is intentionally NOT applied here so the precompute is
+     profile-agnostic; the runtime only uses the cache when the live
+     truncated length matches the recorded ``samples`` field.
   3. Resolve bpm / key / time_signature. Existing JSON wins;
      otherwise compute bpm via librosa, parse key from the filename
      suffix, and default time_signature to "4" (no automated detector
      today; operators can edit the JSON to override).
-  4. ``Session.prepare_source`` -> raw VAE latent + semantic
-     context_latent.
-  5. Write the JSON and safetensors.
+  4. Hand off to :func:`acestep.sidecars.encode_and_save_sidecar`,
+     which runs ``Session.prepare_source`` and writes both files
+     atomically. The user-upload path in the rtmg backend calls the
+     same function, so both libraries produce byte-identical sidecar
+     formats from byte-identical encode logic.
 
 Run on a machine with the model checkpoint and a working CUDA build.
 Eager backends are forced so this works without prebuilt TRT engines:
@@ -57,35 +59,18 @@ import librosa
 import numpy as np
 import soundfile as sf
 import torch
-from safetensors.torch import save_file as safetensors_save
 
 from acestep.engine.session import Session
 from acestep.constants import VALID_TIME_SIGNATURES
 from acestep.fixtures import (
     KNOWN_FIXTURES,
-    SIDECAR_FORMAT_VERSION,
     audio_fixture,
     parse_key_from_filename,
 )
-from acestep.nodes.types import Audio
-from acestep.paths import checkpoints_dir
+from acestep.paths import checkpoints_dir, fixtures_dir
+from acestep.sidecars import encode_and_save_sidecar, truncate_to_pool
 
 SAMPLE_RATE = 48000  # matches demos.realtime_motion_graph_web.protocol.SAMPLE_RATE
-POOL = 1920 * 5  # 9600 samples = 5 latent frames at 25 fps; matches acestep.streaming.session
-
-
-def truncate_audio(waveform: torch.Tensor) -> torch.Tensor:
-    """Stereo cap + mod-9600-sample drop, mirroring acestep.streaming.session.
-
-    Does not apply the runtime's TRT-profile-based duration cap: the
-    precompute is profile-agnostic and relies on a length check at
-    load time to invalidate when truncation differs.
-    """
-    waveform = waveform[:2]
-    rem = waveform.shape[-1] % POOL
-    if rem:
-        waveform = waveform[:, :waveform.shape[-1] - rem]
-    return waveform
 
 
 def _load_existing(json_path: Path) -> dict:
@@ -98,29 +83,17 @@ def _load_existing(json_path: Path) -> dict:
         return {}
 
 
-def precompute_one(
-    session: Session,
-    name: str,
-    *,
-    out_dir: Path,
-    checkpoint: str,
-    force: bool,
-) -> None:
-    fixture_path = audio_fixture(name)
+def _resolve_bpm_key_ts(
+    name: str, waveform: torch.Tensor, existing: dict,
+) -> tuple[int, str, str, tuple[str, str, str]]:
+    """Pick bpm / key / time_signature for a fixture, preferring existing JSON.
 
-    audio_data, sr = sf.read(str(fixture_path), always_2d=True)
-    if sr != SAMPLE_RATE:
-        raise RuntimeError(f"{name}: unexpected sample rate {sr} (expected {SAMPLE_RATE})")
-    waveform = torch.from_numpy(audio_data.T.copy()).float()
-    waveform = truncate_audio(waveform)
-    samples = int(waveform.shape[1])
-    duration_s = samples / SAMPLE_RATE
-    channels = int(waveform.shape[0])
-
-    json_path = out_dir / f"{name}.sidecar.json"
-    sf_path = out_dir / f"{name}.sidecar.safetensors"
-    existing = {} if force else _load_existing(json_path)
-
+    Returns ``(bpm, key, time_signature, (bpm_source, key_source, ts_source))``;
+    the source tuple is for the log line. Raises :class:`RuntimeError`
+    when key has no JSON value *and* the filename suffix doesn't parse
+    (the only unrecoverable case — bpm and time_signature both have
+    deterministic fallbacks).
+    """
     # bpm: prefer the existing JSON value (operator override) over a
     # fresh librosa run. librosa.beat_track is non-deterministic enough
     # that re-running shouldn't quietly clobber a value the operator
@@ -164,50 +137,54 @@ def precompute_one(
         time_signature = "4"
         ts_source = "default"
 
+    return bpm, key, time_signature, (bpm_source, key_source, ts_source)
+
+
+def precompute_one(
+    session: Session,
+    name: str,
+    *,
+    out_dir: Path,
+    checkpoint: str,
+    force: bool,
+) -> None:
+    fixture_path = audio_fixture(name)
+
+    audio_data, sr = sf.read(str(fixture_path), always_2d=True)
+    if sr != SAMPLE_RATE:
+        raise RuntimeError(f"{name}: unexpected sample rate {sr} (expected {SAMPLE_RATE})")
+    waveform = truncate_to_pool(torch.from_numpy(audio_data.T.copy()).float())
+
+    json_path = out_dir / f"{name}.sidecar.json"
+    existing = {} if force else _load_existing(json_path)
+    bpm, key, time_signature, sources = _resolve_bpm_key_ts(name, waveform, existing)
+    bpm_source, key_source, ts_source = sources
+
     print(
         f"  bpm={bpm} ({bpm_source})  key={key!r} ({key_source})  "
         f"time_signature={time_signature!r} ({ts_source})  "
-        f"dur={duration_s:.2f}s  samples={samples}"
+        f"dur={waveform.shape[1] / SAMPLE_RATE:.2f}s  samples={waveform.shape[1]}"
     )
 
-    audio_in = Audio(waveform=waveform, sample_rate=SAMPLE_RATE)
-    t0 = time.time()
-    source = session.prepare_source(audio_in)
-    print(f"  prepare_source: {time.time() - t0:.2f}s")
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    meta = {
-        "format_version": SIDECAR_FORMAT_VERSION,
-        "checkpoint": checkpoint,
-        "bpm": bpm,
-        "key": key,
-        "time_signature": time_signature,
-        "duration_s": duration_s,
-        "samples": samples,
-        "sample_rate": SAMPLE_RATE,
-        "channels": channels,
-    }
-    json_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
-
-    tensors = {
-        "latent": source.latent.tensor.detach().to("cpu").contiguous(),
-        "context_latent": source.context_latent.tensor.detach().to("cpu").contiguous(),
-    }
-    sf_meta = {k: str(v) for k, v in meta.items()}
-    safetensors_save(tensors, str(sf_path), metadata=sf_meta)
-
-    sizes = {k: tuple(v.shape) for k, v in tensors.items()}
-    dtypes = {k: str(v.dtype) for k, v in tensors.items()}
-    print(f"  wrote {json_path.name} + {sf_path.name}")
-    print(f"    shapes: {sizes}  dtypes: {dtypes}")
+    encode_and_save_sidecar(
+        session,
+        out_dir=out_dir,
+        name=name,
+        waveform=waveform,
+        sample_rate=SAMPLE_RATE,
+        checkpoint=checkpoint,
+        bpm=bpm,
+        key=key,
+        time_signature=time_signature,
+    )
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--out", type=Path,
-        default=Path("out") / "fixture_sidecars",
-        help="Output directory (default: out/fixture_sidecars)",
+        default=fixtures_dir(),
+        help="Output directory (default: MODELS_DIR/fixtures, alongside the WAVs themselves)",
     )
     parser.add_argument(
         "--checkpoint", default="acestep-v15-turbo",
