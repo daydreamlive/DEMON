@@ -5,6 +5,7 @@ Drives a :class:`~acestep.engine.session.StreamHandle` by calling
 knob state.
 """
 
+import math
 import os
 import time
 
@@ -251,23 +252,108 @@ class PipelineRunner:
         self._vae_paused = False
         self._dit_paused_at_wall_s = 0.0
 
-        # Predictive decode: rolling EMA of (tick + decode) wall time.
-        # Dynamic-window decoders use this as the target lead. Fixed 1 s
-        # decoders also apply a floor from the decode span below so the
-        # tiny kept wire slice does not collapse DiT lookahead.
-        self._predicted_advance_s = 0.1
-        # ``vae_window`` is now the kept wire slice for fixed-profile
-        # windowed VAE decoders, not the full decode span. Keep the
-        # patch cadence on ``vae_window`` for coverage, but lead the
-        # decode target by the fixed engine's span so the DiT has time
-        # to settle the region before the listener reaches it.
-        fixed_vae_span_s = _fixed_windowed_vae_span_s()
-        self._vae_advance_floor_s = (
-            fixed_vae_span_s * 0.5
-            if fixed_vae_span_s > self.vae_window > 0
-            else 0.0
-        )
-        self._vae_advance_cap_s = max(self.vae_window, fixed_vae_span_s) * 0.5
+        # ----- Playback lead vs VAE decode span: two SEPARATE concerns -----
+        # The runner used to fold these together, pinning the playhead lead
+        # to half the VAE decode span (0.5s for the fixed 1s profile). That
+        # made every param change land ~0.5s ahead of the playhead, so the
+        # listener heard it ~0.5s late no matter how fast it was produced
+        # (~0.47s of the felt knob→ear latency was this lead, not compute).
+        # They are now decoupled:
+        #
+        #   * decode span (``_decode_span_s``): the VAE's receptive field.
+        #     The kept ``vae_window`` slice sits INSIDE this larger decode so
+        #     its edges aren't boundary-artifact garbage. Lives entirely
+        #     inside ``session.decode`` and must NEVER feed the playhead lead.
+        #
+        #   * playback lead (``_decode_advance_s``): how far ahead of the live
+        #     playhead a freshly decoded slice is written so it lands before
+        #     the listener reaches it. Sized from the *observed production
+        #     interval*, below.
+        self._decode_span_s = _fixed_windowed_vae_span_s()
+
+        # ----- Lead sizing: gap-fill + adaptive interval EMA + stall bump ----
+        # The playback lead must guarantee a freshly decoded slice lands AHEAD
+        # of the live playhead and is replaced by the next write before the
+        # playhead overruns it. The binding quantity is therefore the
+        # *inter-write interval*, NOT the VAE decode span.
+        #
+        # The engine produces completed generations in BURSTS (a batch drains,
+        # then it stalls ~steps ticks while the next batch generates): measured
+        # ~0.25s stalls at steps=8 and ~0.65s at steps=16, at every depth. If
+        # the lead chases that raw stall it slams up at a param change and
+        # wobbles at the burst cadence — the audible bounce. The fix has two
+        # parts that together make the lead small AND smooth across the whole
+        # depth x steps grid:
+        #
+        #   1) GAP-FILL (in ``run()``): on an active tick where ``stream.tick()``
+        #      returns no new generation, re-decode the last latent at the
+        #      advancing playhead so a slice still lands. This collapses the
+        #      inter-write interval to ~1 tick everywhere, so the burst stalls
+        #      never reach the lead at all.
+        #   2) This adaptive lead: an EMA of the (now ~1-tick) inter-write
+        #      interval, scaled by a small gain, plus a fixed transit margin.
+        #      Smooth because gap-fill removed the bursts that used to jerk it.
+        #      It still self-sizes: heavier per-step compute (RCFG full, LoRA
+        #      stacks, steps=16) lengthens the tick, the EMA tracks it, the
+        #      lead grows proportionally. No magic constant.
+        #
+        # The one interval gap-fill cannot remove is a genuine pipeline REBUILD
+        # (steps/RCFG/LoRA change), where ``tick()`` blocks ~1s in a single
+        # iteration — no loop turn runs to gap-fill it. ``_stall_extra_s``
+        # covers that: a predictive prewarm raises it the instant a
+        # rebuild-triggering param changes (before the stall lands), and a
+        # reactive term raises it for any observed gap whose SHORTFALL beyond
+        # the slice width would otherwise underrun. It decays back over
+        # ``_stall_release_tau_s`` so it never becomes a permanent latency.
+        self._last_decode_wall_s = time.monotonic()
+        # EMA of the inter-write interval. Seeded near a steady active tick.
+        self._decode_interval_ema_s = 0.07
+        # EMA smoothing per write (~15 writes/s under gap-fill -> ~0.7s tau).
+        self._decode_interval_alpha = 0.1
+        # Gaps above this are treated as stalls (rebuild / unexpected): they
+        # feed ``_stall_extra_s`` via the shortfall term, NOT the steady EMA,
+        # so one stall can't inflate the steady interval estimate.
+        self._interval_ema_cap_s = 0.18
+        # Lead = EMA * gain + margin + stall_extra. Gain gives headroom over a
+        # single inter-write interval against tick jitter; margin covers
+        # client scheduling slop and the measure->land transit.
+        self._lead_interval_gain = 1.6
+        self._lead_safety_margin_s = 0.05
+        # Floor so a slice is never parked basically on top of the playhead.
+        self._lead_floor_s = 0.05
+        # Defensive ceiling: never park a slice more than this far ahead, so
+        # the modulo-``eff_dur`` wrap below can't fold the write back onto the
+        # playhead. Kept BELOW ``_stall_release_tau_s`` so the decay rate
+        # (<= ceiling/tau < 1.0/s) can never shrink the lead faster than the
+        # playhead advances — i.e. ``decode_start`` stays monotonic during
+        # decay and we never re-decode an earlier position.
+        self._decode_lead_ceiling_s = 1.6
+        # One-shot stall coverage (rebuild prewarm + reactive shortfall). Rises
+        # immediately, decays over tau so it is never a permanent lead.
+        self._stall_extra_s = 0.0
+        self._stall_release_tau_s = 1.8
+
+        # ----- Predictive prewarm on rebuild-triggering param changes -----
+        # A reactive term can't pre-fill the single ~1s stall on the very tick
+        # a rebuild-triggering param first lands (the slow ``tick()`` and the
+        # new value arrive together, and the loop is blocked inside ``tick()``
+        # so no gap-fill runs). So when we detect such a change we raise
+        # ``_stall_extra_s`` to a learned worst-rebuild estimate BEFORE the
+        # stall, placing the pre-stall write far enough ahead to cover it. The
+        # estimate self-calibrates toward the largest stall we actually
+        # observe, seeded from the measured ~1.1s rebuild and capped so a
+        # one-off outlier (e.g. the multi-second session-startup build) can't
+        # push it to the ceiling.
+        self._rebuild_prewarm_s = 1.1
+        self._rebuild_prewarm_cap_s = 1.3
+        self._last_rebuild_keys = None
+        self._playhead_clock = _RemotePlayheadClock(self.audio_eng)
+        # Walk-mode chunk pre-warm lookahead. Independent of the playback
+        # lead: it decides how early to swap to the next static source chunk
+        # so its ring-buffer warmup lands before the playhead crosses the
+        # boundary. Sized from the decode span, NOT the (now much smaller)
+        # playback lead, so chunk swaps don't glitch.
+        self._walk_chunk_prewarm_s = max(self.vae_window, self._decode_span_s) * 0.5
         self._playhead_clock = _RemotePlayheadClock(self.audio_eng)
 
         # Cache silence once; used by the hint-strength blend node.
@@ -313,13 +399,84 @@ class PipelineRunner:
         )["latent"]
 
     def _decode_advance_s(self) -> float:
-        """Lead windowed VAE decode targets ahead of the live playhead."""
+        """Playback lead: how far AHEAD of the live playhead to place a fresh
+        slice. Adaptive, NOT a constant and NOT the VAE decode span:
+
+            lead = interval_ema * gain + safety_margin + stall_extra
+
+        ``interval_ema`` tracks the (gap-filled, ~1-tick) inter-write interval,
+        so it self-sizes with per-step compute; ``stall_extra`` is the decaying
+        one-shot bump that covers rebuild stalls. Clamped to ``[floor, ceiling]``.
+        See the init block and ``_note_decode_gap``.
+        """
         if self.vae_window <= 0:
             return 0.0
-        advance_s = max(self._predicted_advance_s, self._vae_advance_floor_s)
-        if self._vae_advance_cap_s > 0:
-            advance_s = min(advance_s, self._vae_advance_cap_s)
-        return advance_s
+        lead = (
+            self._decode_interval_ema_s * self._lead_interval_gain
+            + self._lead_safety_margin_s
+            + self._stall_extra_s
+        )
+        return min(max(lead, self._lead_floor_s), self._decode_lead_ceiling_s)
+
+    def _note_decode_gap(self) -> float:
+        """Fold this write's wall-clock gap since the previous write into the
+        adaptive lead state, and return the gap (for the trace). Call once per
+        successful windowed write — real generation OR gap-fill.
+
+        Two updates:
+          * The steady interval EMA tracks normal ~1-tick gaps (gaps are capped
+            into the EMA so a one-off stall can't inflate the steady estimate).
+          * ``_stall_extra_s`` decays toward 0 by the elapsed wall time, then
+            is lifted by the SHORTFALL of this gap beyond the slice width — the
+            only part a slice's own width does not already cover. Normal
+            sub-slice gaps never move it; a genuine stall does, transiently.
+        """
+        now = time.monotonic()
+        gap = now - self._last_decode_wall_s
+        self._last_decode_wall_s = now
+        if gap <= 0.0:
+            return 0.0
+        # Steady interval EMA, on the capped gap (stalls are excluded here and
+        # handled by the stall bump below).
+        capped = min(gap, self._interval_ema_cap_s)
+        a = self._decode_interval_alpha
+        self._decode_interval_ema_s = (
+            (1.0 - a) * self._decode_interval_ema_s + a * capped
+        )
+        # Time-based decay of the one-shot stall bump.
+        self._stall_extra_s *= math.exp(-gap / self._stall_release_tau_s)
+        # Reactive shortfall: only the part of this gap beyond the slice width
+        # (plus a small margin) can leave a hole; lift the bump to cover it.
+        shortfall = gap - self.vae_window + self._lead_safety_margin_s
+        if shortfall > self._stall_extra_s:
+            self._stall_extra_s = min(shortfall, self._decode_lead_ceiling_s)
+        # Self-calibrate the rebuild prewarm toward the worst real stall, but
+        # cap it so a single outlier can't push the predictive lead toward
+        # the ceiling.
+        if gap > self._rebuild_prewarm_s:
+            self._rebuild_prewarm_s = min(gap, self._rebuild_prewarm_cap_s)
+        return gap
+
+    @staticmethod
+    def _rebuild_signature(raw: dict) -> tuple:
+        """Params whose change forces a pipeline rebuild / multi-hundred-ms
+        warmup stall. When this tuple changes between ticks we pre-raise the
+        lead envelope before the stall lands (``_decode_advance_s`` can't see
+        it reactively, since the slow ``tick()`` and the new value arrive on
+        the same iteration). Keep in sync with what actually triggers a
+        rebuild in the engine: step count, RCFG mode, and LoRA enablement.
+        """
+        loras = tuple(
+            sorted(
+                k for k, v in raw.items()
+                if k.startswith("lora_") and v
+            )
+        )
+        return (
+            int(raw.get("steps_override", 8)),
+            str(raw.get("rcfg_mode", "off")),
+            loras,
+        )
 
     def _playhead_seconds_now(self) -> float:
         return self._playhead_clock.seconds()
@@ -396,13 +553,18 @@ class PipelineRunner:
         cached_live_ctx_raw_t = None
         logger.info(
             "stream decode: vae_window={:.3f}s decode_span={:.3f}s "
-            "advance=[{:.3f},{:.3f}]s walk_window_s={:.3f}",
+            "lead_margin={:.3f}s lead~={:.3f}s walk_window_s={:.3f}",
             self.vae_window,
-            _fixed_windowed_vae_span_s(),
-            self._vae_advance_floor_s,
-            self._vae_advance_cap_s,
+            self._decode_span_s,
+            self._lead_safety_margin_s,
+            self._decode_advance_s(),
             self.walk_window_s,
         )
+
+        # Anchor the gap clock at loop entry so the first write doesn't fold
+        # the (multi-second) model-load time into the envelope as a spurious
+        # giant gap.
+        self._last_decode_wall_s = time.monotonic()
 
         while self.state.running:
             if self.before_tick is not None:
@@ -498,7 +660,7 @@ class PipelineRunner:
             if walk_active:
                 playhead_now_s = self._playhead_seconds_now()
                 advance_s_for_chunk = min(
-                    self._decode_advance_s(), self.walk_window_s * 0.5,
+                    self._walk_chunk_prewarm_s, self.walk_window_s * 0.5,
                 )
                 # Wrap target through the playable buffer length so the
                 # song-end → song-start loop transitions cleanly back to
@@ -564,6 +726,26 @@ class PipelineRunner:
                 }
                 if self.use_sde:
                     raw["periodicity"] = 0.0
+
+            # Predictive prewarm: if a rebuild-triggering param changed since
+            # the last tick (step count, RCFG mode, LoRA set), raise the
+            # one-shot stall bump NOW, before the slow rebuild ``tick()`` below
+            # stalls ~1s in a single iteration. Gap-fill cannot cover that
+            # stall (the loop is blocked inside ``tick()``), and the reactive
+            # shortfall can't see it in time (the new value and the stall land
+            # on the same iteration), so without this the playhead would run
+            # into un-refreshed buffer at the transition. The bump decays back
+            # out via ``_note_decode_gap``. ``None`` on the first tick just
+            # seeds the baseline.
+            rebuild_keys = self._rebuild_signature(raw)
+            if (
+                self._last_rebuild_keys is not None
+                and rebuild_keys != self._last_rebuild_keys
+            ):
+                self._stall_extra_s = max(
+                    self._stall_extra_s, self._rebuild_prewarm_s,
+                )
+            self._last_rebuild_keys = rebuild_keys
 
             # Materialize the live source / context for this tick. In
             # walk mode this is the static chunk slice and is built once
@@ -821,8 +1003,28 @@ class PipelineRunner:
             tick_ms = (time.perf_counter() - t0) * 1000
 
             dec_ms = 0.0
-            if result_latent is not None:
-                result = result_latent.tensor
+            # Gap-fill: on an active tick where the engine produced no new
+            # generation (``stream.tick()`` returned None), re-decode the most
+            # recent latent at the ADVANCING playhead so a fresh windowed slice
+            # still lands this tick. Without it the inter-write gap balloons to
+            # the production stall (~0.25s at steps=8, ~0.65s at steps=16) and
+            # the lead has to chase that stall; with it the gap is ~1 tick
+            # everywhere, so the lead stays small and smooth across the whole
+            # depth x steps grid. A gap-fill tick does the windowed decode+write
+            # ONLY — it must NOT touch ``latent_history`` / ``last_latent`` /
+            # ``num_gens`` (that bookkeeping belongs to real generations and
+            # would corrupt the feedback delay-tap). Windowed path only; the
+            # full-buffer path has no advancing slice to refresh. The idle /
+            # DiT-pause branch above feeds a non-None ``result_latent``, so
+            # gap-fill is purely additive to the active path.
+            is_fresh = result_latent is not None
+            gap_fill = (
+                not is_fresh
+                and self.vae_window > 0
+                and self._last_result_latent is not None
+            )
+            decode_src = result_latent if is_fresh else self._last_result_latent
+            if is_fresh or gap_fill:
                 # Decode scheduling policy:
                 #   * Windowed decode (vae_window > 0) is coverage-driven:
                 #     it refreshes a fresh slice every tick so live control
@@ -833,18 +1035,20 @@ class PipelineRunner:
                 #     MSE skip: re-decoding the whole song each tick when the
                 #     latent barely changed is pure waste.
                 skip_full_decode = False
-                if (
-                    self.vae_window <= 0
-                    and last_latent is not None
-                    and last_wav is not None
-                    and (result - last_latent).pow(2).mean().item() < self.skip_threshold
-                ):
-                    skip_full_decode = True
+                if is_fresh:
+                    result = result_latent.tensor
+                    if (
+                        self.vae_window <= 0
+                        and last_latent is not None
+                        and last_wav is not None
+                        and (result - last_latent).pow(2).mean().item() < self.skip_threshold
+                    ):
+                        skip_full_decode = True
 
-                last_latent = result.clone()
-                # appendleft so latent_history[0] is the most recent;
-                # tap_idx = depth-1 reads "N ticks back."
-                latent_history.appendleft(last_latent)
+                    last_latent = result.clone()
+                    # appendleft so latent_history[0] is the most recent;
+                    # tap_idx = depth-1 reads "N ticks back."
+                    latent_history.appendleft(last_latent)
 
                 if not skip_full_decode:
                     t1 = time.perf_counter()
@@ -864,11 +1068,11 @@ class PipelineRunner:
                     if self.vae_window > 0:
                         playhead_now = self._playhead_seconds_now()
                         # Predictive decode start: target where the playhead
-                        # WILL be by the time this window lands in the buffer,
-                        # with fixed-profile decoders held ahead by their
-                        # decode span rather than the tiny kept wire slice.
-                        # Wrap modulo ``eff_dur`` since the decoder supports
-                        # cyclic.
+                        # WILL be by the time this slice lands in the buffer.
+                        # The lead is the adaptive interval EMA (+ stall bump),
+                        # NOT the VAE decode span — see ``_decode_advance_s``.
+                        # Wrap modulo
+                        # ``eff_dur`` since the decoder supports cyclic.
                         advance_s = self._decode_advance_s()
                         decode_start = playhead_now + advance_s
                         if eff_dur > 0:
@@ -945,11 +1149,11 @@ class PipelineRunner:
                                 min(local_t_start, self.walk_window_s - self.vae_window),
                             )
                             audio_out = self.session.decode(
-                                result_latent, t_start=local_t_start, cyclic=False,
+                                decode_src, t_start=local_t_start, cyclic=False,
                             )
                             win_offset_samples = int(round(win_start_s * SAMPLE_RATE))
                         else:
-                            audio_out = self.session.decode(result_latent, t_start=decode_start, cyclic=True)
+                            audio_out = self.session.decode(decode_src, t_start=decode_start, cyclic=True)
                             win_offset_samples = 0
                         torch.cuda.synchronize()
                         dec_ms = (time.perf_counter() - t1) * 1000
@@ -1003,15 +1207,25 @@ class PipelineRunner:
                         # its client mirror; standalone callers can
                         # ignore the args.
                         self.on_audio_ready(patched, win_start, win_end)
+                        # Fold this write's wall gap into the adaptive lead
+                        # state. One call per successful write — real
+                        # generation OR gap-fill; the band-wrap second decode
+                        # below is part of the same tick and must not count as
+                        # its own interval.
+                        decode_gap_s = self._note_decode_gap()
                         if _LAT_TRACE:
                             logger.info(
                                 "lat_decode num_gens={} denoise={:.3f} "
-                                "playhead_s={:.3f} advance_s={:.3f} "
+                                "fresh={} playhead_s={:.3f} advance_s={:.3f} "
+                                "gap_s={:.3f} ema_s={:.3f} stall_s={:.3f} "
                                 "decode_start_s={:.3f} win_start_s={:.3f} "
                                 "win_end_s={:.3f} lead_s={:.3f} "
                                 "tick_ms={:.1f} dec_ms={:.1f}",
                                 self.state.params.get("num_gens", 0) + 1,
-                                denoise, playhead_now, advance_s, decode_start,
+                                denoise, int(is_fresh), playhead_now, advance_s,
+                                decode_gap_s, self._decode_interval_ema_s,
+                                self._stall_extra_s,
+                                decode_start,
                                 win_start / SAMPLE_RATE, win_end / SAMPLE_RATE,
                                 win_start / SAMPLE_RATE - playhead_now,
                                 tick_ms, dec_ms,
@@ -1034,7 +1248,7 @@ class PipelineRunner:
                             )
                             if wrap_len > 0:
                                 wrap_audio = self.session.decode(
-                                    result_latent,
+                                    decode_src,
                                     t_start=band_wrap_start_s,
                                     cyclic=True,
                                 )
@@ -1086,51 +1300,48 @@ class PipelineRunner:
                         last_wav = wav_np
                         self.on_audio_ready(wav_np)
 
-                self.state.params["num_gens"] = self.state.params.get("num_gens", 0) + 1
-                self.state.params["tick_ms"] = tick_ms
-                self.state.params["dec_ms"] = dec_ms
+                # Per-generation state mirror. A gap-fill tick produced no new
+                # generation, so it must NOT bump ``num_gens`` or restamp the
+                # param snapshot — only real generations advance this.
+                if is_fresh:
+                    self.state.params["num_gens"] = self.state.params.get("num_gens", 0) + 1
+                    self.state.params["tick_ms"] = tick_ms
+                    self.state.params["dec_ms"] = dec_ms
 
-                # Sampled TRACE so DEMON_LOG_LEVEL=TRACE gives the operator
-                # a tick-by-tick snapshot for perf chases without paying the
-                # cost on every iteration. _TRACE_SAMPLE_EVERY=0 disables it
-                # outright; loguru's level gate elides the call cheaply when
-                # no sink is at TRACE.
-                if _TRACE_SAMPLE_EVERY and (
-                    self.state.params["num_gens"] % _TRACE_SAMPLE_EVERY == 0
-                ):
-                    logger.trace(
-                        "tick num_gens={} tick_ms={:.1f} dec_ms={:.1f} "
-                        "shift={:.2f} seed={} hint_str={:.2f}",
-                        self.state.params["num_gens"], tick_ms, dec_ms,
-                        shift_val, seed, hint_str,
-                    )
-                # Update predictive-decode EMA from this iteration's actual
-                # wall time. alpha=0.3 reacts in a handful of ticks while
-                # smoothing out one-off spikes (e.g. a CUDA sync stall).
-                # Skipped ticks (no decode) leave dec_ms=0 and would
-                # otherwise pull the EMA toward zero, so only update when
-                # we actually decoded.
-                if dec_ms > 0:
-                    new_advance = (tick_ms + dec_ms) / 1000.0
-                    self._predicted_advance_s = (
-                        0.3 * new_advance + 0.7 * self._predicted_advance_s
-                    )
-                self.state.params[self.k1_name] = round(k1, 2)
-                self.state.params["seed"] = seed
-                self.state.params["feedback"] = round(feedback, 2)
-                self.state.params["feedback_depth"] = fb_depth
-                self.state.params["shift"] = round(shift_val, 2)
-                if self.use_lora and self.engine_obj is not None:
-                    for desc in self.engine_obj.list_loras():
-                        if desc.state != "enabled":
-                            continue
-                        key = f"lora_str_{desc.id}"
-                        self.state.params[key] = round(raw.get(key, desc.strength), 2)
-                if self.use_sde:
-                    self.state.params["periodicity"] = round(raw.get("periodicity", 0.0), 2)
-                self.state.params["hint_strength"] = round(hint_str, 2)
-                for name, _, _ in CHANNEL_GROUPS:
-                    self.state.params[name] = round(raw.get(name, 1.0), 2)
-                for name, _ in KEYSTONE_CHANNELS:
-                    self.state.params[name] = round(raw.get(name, 1.0), 2)
-                self.state.params["_prompt"] = self.state.prompt_text
+                    # Sampled TRACE so DEMON_LOG_LEVEL=TRACE gives the operator
+                    # a tick-by-tick snapshot for perf chases without paying the
+                    # cost on every iteration. _TRACE_SAMPLE_EVERY=0 disables it
+                    # outright; loguru's level gate elides the call cheaply when
+                    # no sink is at TRACE.
+                    if _TRACE_SAMPLE_EVERY and (
+                        self.state.params["num_gens"] % _TRACE_SAMPLE_EVERY == 0
+                    ):
+                        logger.trace(
+                            "tick num_gens={} tick_ms={:.1f} dec_ms={:.1f} "
+                            "shift={:.2f} seed={} hint_str={:.2f}",
+                            self.state.params["num_gens"], tick_ms, dec_ms,
+                            shift_val, seed, hint_str,
+                        )
+                    # (The playback lead is updated from the inter-write wall
+                    # gap in ``_note_decode_gap`` at each successful write
+                    # above — real generation OR gap-fill — not from per-tick
+                    # compute; see the init block for why.)
+                    self.state.params[self.k1_name] = round(k1, 2)
+                    self.state.params["seed"] = seed
+                    self.state.params["feedback"] = round(feedback, 2)
+                    self.state.params["feedback_depth"] = fb_depth
+                    self.state.params["shift"] = round(shift_val, 2)
+                    if self.use_lora and self.engine_obj is not None:
+                        for desc in self.engine_obj.list_loras():
+                            if desc.state != "enabled":
+                                continue
+                            key = f"lora_str_{desc.id}"
+                            self.state.params[key] = round(raw.get(key, desc.strength), 2)
+                    if self.use_sde:
+                        self.state.params["periodicity"] = round(raw.get("periodicity", 0.0), 2)
+                    self.state.params["hint_strength"] = round(hint_str, 2)
+                    for name, _, _ in CHANNEL_GROUPS:
+                        self.state.params[name] = round(raw.get(name, 1.0), 2)
+                    for name, _ in KEYSTONE_CHANNELS:
+                        self.state.params[name] = round(raw.get(name, 1.0), 2)
+                    self.state.params["_prompt"] = self.state.prompt_text
