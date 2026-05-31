@@ -40,6 +40,26 @@ Open `http://localhost:6660`. Next.js rewrites `/api/*`, `/fixtures/*`,
 `/loras/*`, and `/videos/*` to the backend at `:1318`; the WebSocket
 URL comes from `NEXT_PUBLIC_POD_BASE_URL` (set by the launcher).
 
+### Remote / headless server
+
+To run the GPU server on one machine and open the UI from another, bind the
+backend to all interfaces and tell the browser the server's address:
+
+```bash
+uv run python -u -m demos.realtime_motion_graph_web.run \
+  --host 0.0.0.0 --client-host 10.0.0.5     # 10.0.0.5 = the server's LAN IP
+```
+
+Then open `http://10.0.0.5:6660` from the client. Note:
+
+- `--client-host` sets the address the **browser** uses. The HTTP routes are
+  proxied through the dev server, but the **WebSocket connects straight to the
+  backend**, so this must be reachable from the client — not `localhost`.
+- Open **both** ports on the server's firewall: `:6660` (UI) and `:1318`
+  (WebSocket).
+- Changing `web/.env.local` or `next.config.ts` requires restarting the dev
+  server — those are read only at startup.
+
 The full UI lives under `web/` (React + zustand, mirrored from the
 internal `daydreamlive/demon-react` package). See `web/components/`,
 `web/engine/`, `web/hooks/`, and `web/store/` for the source.
