@@ -53,6 +53,7 @@ from acestep.engine.trt.profile_manager import (
 )
 from acestep.fixtures import KNOWN_FIXTURES, audio_fixture
 from acestep.lora_metadata import load_lora_metadata
+from acestep.nodes.interpolation import INTERP_METHOD_NAMES
 from acestep.nodes.types import Audio, Latent
 from acestep.paths import (
     EngineNotBuiltError,
@@ -109,6 +110,17 @@ from acestep.streaming.stems import (
 # the eager / compile cap is fixed.
 MIN_PIPELINE_DEPTH = 1
 EAGER_MAX_PIPELINE_DEPTH = 4
+
+# Live-switchable interpolation. Each of the four blend paths can walk a
+# straight average ("linear") or the per-frame geodesic ("slerp"); the
+# dispatcher flips them via set_interp_method so an operator can A/B the
+# two without restarting the session. ``prompt``/``timbre`` drive the
+# cached conditioning recompute; ``structure``/``feedback`` are read live
+# by the runner each tick. The method names are owned by
+# acestep.nodes.interpolation (one source of truth shared with the
+# ConditioningBlend / LatentBlend nodes).
+INTERP_PATHS = ("prompt", "timbre", "structure", "feedback")
+INTERP_METHODS = INTERP_METHOD_NAMES
 
 # Idle GPU pause threshold. After this many seconds with no incoming
 # WS or control-bus message, the runner stops invoking the DiT each
@@ -413,6 +425,10 @@ class StreamingSession:
             "timbre_name": state.timbre_name,
             "timbre_strength": state.timbre_strength,
             "structure_name": state.struct_name,
+            "interp_prompt": state.interp_prompt,
+            "interp_timbre": state.interp_timbre,
+            "interp_structure": state.interp_structure,
+            "interp_feedback": state.interp_feedback,
             "lora_catalog": self.lora_catalog_payload(),
             "knob_values": self.virtual_knobs.get_all_values(),
             "channels": state.n_channels,
@@ -845,17 +861,27 @@ class StreamingSession:
         current timbre strength, and current prompt blend."""
         state = self.state
         cs_a, cf_a = state.cond_pair
-        ca = blend_for_strength(cs_a, cf_a, state.timbre_strength)
+        ca = blend_for_strength(
+            cs_a, cf_a, state.timbre_strength, method=state.interp_timbre,
+        )
         pb = state.prompt_blend
         if pb <= 0.001:
             self.stream.conditioning = ca
             return
         cs_b, cf_b = state.cond_pair_b
-        cb = blend_for_strength(cs_b, cf_b, state.timbre_strength)
+        cb = blend_for_strength(
+            cs_b, cf_b, state.timbre_strength, method=state.interp_timbre,
+        )
         if pb >= 0.999:
             self.stream.conditioning = cb
             return
-        self.stream.conditioning = blend_for_strength(ca, cb, pb)
+        # The A↔B crossfade defaults to slerp: linear averaging collapses
+        # the conditioning norm at the midpoint, so blend≈0.5 of two
+        # unrelated prompts is under-conditioned and sounds washed out.
+        # Both paths are operator-switchable live (set_interp_method).
+        self.stream.conditioning = blend_for_strength(
+            ca, cb, pb, method=state.interp_prompt,
+        )
 
     def _load_fixture_waveform(self, name: str) -> torch.Tensor:
         """Read a known fixture WAV from the local HF cache into a
@@ -1185,6 +1211,45 @@ class StreamingSession:
             self.state.prompt_blend = v
             self._refresh_conditioning()
         logger.debug("prompt_blend_set origin={} value={:.3f}", origin.value, v)
+
+    def set_interp_method(
+        self,
+        path: str,
+        method: str,
+        *,
+        origin: CommandOrigin = CommandOrigin.PRIMARY,
+    ) -> None:
+        """Switch the interpolation path for one of the four live blends
+        (``prompt`` / ``timbre`` / ``structure`` / ``feedback``) between
+        ``"slerp"`` and ``"linear"``. Applies for both origins (the
+        setting is discrete, not a smoothed slider, so there's no UI
+        tween to defer to). Unknown ``path``/``method`` are ignored."""
+        path = str(path)
+        method = str(method)
+        if path not in INTERP_PATHS or method not in INTERP_METHODS:
+            logger.warning(
+                "set_interp_method_ignored path={} method={}", path, method,
+            )
+            return
+        self.state.last_activity_ts = time.monotonic()
+        with self.state._lock:
+            setattr(self.state, f"interp_{path}", method)
+            # prompt/timbre feed the cached conditioning; recompute now so
+            # the change is audible without waiting on a slider move.
+            if path in ("prompt", "timbre"):
+                self._refresh_conditioning()
+        if path == "structure":
+            # The runner only rebuilds the hint blend when it's marked
+            # dirty or the strength slider moves; flipping the method has
+            # to force a rebuild or the change wouldn't land until the
+            # next slider touch.
+            r = self.runner_holder[0]
+            if r is not None:
+                r.mark_hint_dirty()
+        logger.info(
+            "set_interp_method origin={} path={} method={}",
+            origin.value, path, method,
+        )
 
     def set_depth(
         self,

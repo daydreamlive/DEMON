@@ -78,6 +78,21 @@ class SessionState:
     prompt_blend: float = 0.0
     timbre_strength: float = 1.0
 
+    # === Interpolation method per live blend path ===
+    # Each of the four live blends can walk either a straight average
+    # ("linear") or the per-frame geodesic ("slerp"). slerp holds the
+    # blended vector's norm constant across the sweep instead of dipping
+    # at the midpoint. The dispatcher flips these live (set_interp_method)
+    # so an operator can A/B the two paths without restarting. Plain
+    # single-field string writes rely on GIL atomicity, same as the
+    # slider floats above. ``interp_prompt`` / ``interp_timbre`` are read
+    # by the session's _refresh_conditioning; ``interp_structure`` /
+    # ``interp_feedback`` are read by the runner each tick.
+    interp_prompt: str = "slerp"
+    interp_timbre: str = "slerp"
+    interp_structure: str = "slerp"
+    interp_feedback: str = "slerp"
+
     # === Timbre override (uploaded ref vs. self) ===
     timbre_latent: Any = None            # Latent | None
     timbre_name: str | None = None

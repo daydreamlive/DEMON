@@ -18,6 +18,13 @@ import {
   type SerializedInputs,
 } from "@/lib/inputBundle";
 import { confirm } from "@/store/useConfirmStore";
+import {
+  INTERP_PATHS,
+  INTERP_PATH_LABELS,
+  useInterpStore,
+  type InterpMethod,
+  type InterpPath,
+} from "@/store/useInterpStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
@@ -30,6 +37,7 @@ import {
 
 import { ExportDialog } from "./ExportDialog";
 import { MidiBadge } from "./MidiBadge";
+import { RefSelect } from "./RefSelect";
 
 // Exported file shape: an RtmgConfig plus the optional embedded inputs.
 // Old DEMON builds importing this just ignore `inputs` (mergeConfig
@@ -47,6 +55,42 @@ function flashStatus(message: string): void {
     const cur = useSessionStore.getState();
     if (cur.message === message) cur.setStatus(cur.status, "");
   }, 2000);
+}
+
+const INTERP_METHOD_OPTIONS: { value: InterpMethod; label: string }[] = [
+  { value: "slerp", label: "Slerp" },
+  { value: "linear", label: "Linear" },
+];
+
+const INTERP_PATH_TOOLTIPS: Record<InterpPath, string> = {
+  structure:
+    "How structural (semantic-hint) guidance blends in. Slerp holds the latent's norm constant; linear averages.",
+  timbre:
+    "How the timbre reference blends from silence to full. Slerp holds the conditioning norm constant; linear averages.",
+  prompt:
+    "How prompt A crossfades to prompt B. Slerp avoids the washed-out midpoint a linear average produces between unrelated prompts.",
+  feedback:
+    "How the latent feedback tap mixes into the source. Slerp holds the latent's norm constant; linear averages.",
+};
+
+// One labelled dropdown per live blend path, using the same RefSelect
+// component as the core input / structure / timbre pickers so they match
+// visually. Subscribes narrowly to its own method so flipping one path
+// doesn't re-render the others.
+function InterpRow({ path }: { path: InterpPath }) {
+  const method = useInterpStore((s) => s.methods[path]);
+  const setMethod = useInterpStore((s) => s.setMethod);
+  return (
+    <RefSelect
+      label={INTERP_PATH_LABELS[path]}
+      value={method}
+      pinned={INTERP_METHOD_OPTIONS}
+      groups={[]}
+      onSelect={(v) => setMethod(path, v as InterpMethod)}
+      ariaLabel={`${INTERP_PATH_LABELS[path]} interpolation method`}
+      tooltip={INTERP_PATH_TOOLTIPS[path]}
+    />
+  );
 }
 
 export function OperatorStrip() {
@@ -378,6 +422,16 @@ export function OperatorStrip() {
             KIOSK
           </button>
         </div>
+      </section>
+
+      {/* ── Interpolation ──────────────────────────────────────────
+          Per-path blend method (slerp vs linear) for the four live
+          blends. Changes apply immediately via set_interp_method. */}
+      <section className="operator-section">
+        <h3 className="operator-section-label">Interpolation</h3>
+        {INTERP_PATHS.map((path) => (
+          <InterpRow key={path} path={path} />
+        ))}
       </section>
 
       {/* ── Status ─────────────────────────────────────────────────

@@ -10,6 +10,7 @@ from loguru import logger
 import torch
 
 from .base import BaseNode, NodeDefinition, NodeParam, NodePort, NodeRegistry
+from .interpolation import INTERP_METHOD_NAMES, INTERPOLATIONS
 from .types import Audio, Curve, Latent, ModelHandle, VAEHandle
 
 
@@ -744,6 +745,8 @@ class LatentBlend(BaseNode):
     Node parameters:
         alpha: Blend factor (0.0 = all A, 1.0 = all B).
                Ignored if a blend_curve input is connected.
+        method: "linear" (straight average) or "slerp" (per-frame
+               geodesic, holds the blended latent's norm constant).
     """
 
     node_type_id: ClassVar[str] = "acestep.LatentBlend"
@@ -774,6 +777,17 @@ class LatentBlend(BaseNode):
                     description="Blend factor (0 = all A, 1 = all B). Overridden by blend_curve.",
                     min=0.0, max=1.0, step=0.01,
                 ),
+                NodeParam(
+                    name="method", type="select", default="linear",
+                    description=(
+                        "Interpolation method (see acestep.nodes.interpolation). "
+                        "'linear' (default) averages the two latents. 'slerp' "
+                        "walks the per-frame geodesic so the blended latent's "
+                        "norm stays constant across the sweep instead of dipping "
+                        "at the midpoint."
+                    ),
+                    options=INTERP_METHOD_NAMES,
+                ),
             ),
         )
 
@@ -781,6 +795,7 @@ class LatentBlend(BaseNode):
         latent_a: Latent = kwargs["latent_a"]
         latent_b: Latent = kwargs["latent_b"]
         blend_curve: Optional[Curve] = kwargs.get("blend_curve")
+        method = str(kwargs.get("method", "linear"))
 
         a = latent_a.tensor
         b = latent_b.tensor
@@ -793,5 +808,5 @@ class LatentBlend(BaseNode):
             elif alpha.ndim == 2:
                 alpha = alpha.unsqueeze(-1)  # [B, T, 1]
 
-        blended = (1.0 - alpha) * a + alpha * b
+        blended = INTERPOLATIONS[method](a, b, alpha)
         return {"latent": Latent(tensor=blended)}

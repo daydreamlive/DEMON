@@ -8,6 +8,7 @@ import { useCursor } from "@/hooks/useCursor";
 import { useEdgeLoraBinding } from "@/hooks/useEdgeLoraBinding";
 import { useFixtureSwap } from "@/hooks/useFixtureSwap";
 import { useIdleReset } from "@/hooks/useIdleReset";
+import { useInterpSync } from "@/hooks/useInterpSync";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useMcpMirror } from "@/hooks/useMcpMirror";
@@ -77,6 +78,7 @@ export function PerformanceShell() {
   useEdgeLoraBinding();
   useTimbreSync();
   usePromptBlendSync();
+  useInterpSync();
   useLoraTriggerSync();
   useStemOverlaySync();
   useRefSourceAcks("timbre");

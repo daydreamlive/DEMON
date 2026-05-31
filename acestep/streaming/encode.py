@@ -43,7 +43,17 @@ def encode_cond_pair(
     return cs, cf
 
 
-def blend_for_strength(cs, cf, strength):
+def blend_for_strength(cs, cf, strength, method="slerp"):
+    """Lerp between two conditionings by ``strength`` ∈ [0, 1].
+
+    ``method="slerp"`` (default) walks the per-token geodesic instead of a
+    straight average, which holds conditioning norm constant across the
+    sweep. This matters most for the prompt A↔B crossfade (two unrelated
+    prompts, where a linear midpoint collapses in norm and sounds washed
+    out). For near-parallel endpoints (e.g. the timbre silence↔full blend,
+    which shares a prompt) slerp degrades gracefully to linear per token,
+    so the default is safe everywhere.
+    """
     from acestep.nodes.cond_nodes import ConditioningBlend
     if strength >= 0.999:
         return cf
@@ -53,4 +63,5 @@ def blend_for_strength(cs, cf, strength):
         conditioning_a=cs,
         conditioning_b=cf,
         alpha=float(strength),
+        method=method,
     )["conditioning"]

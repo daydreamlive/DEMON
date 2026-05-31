@@ -629,6 +629,27 @@ export class RemoteBackend extends EventTarget {
   }
 
   /**
+   * Switch the interpolation path for one of the four live blends
+   * (prompt / timbre / structure / feedback) between "slerp" and
+   * "linear". slerp walks the per-frame geodesic so the blended value's
+   * norm stays constant across the sweep; linear is a straight average
+   * that dips at the midpoint. The server applies it immediately
+   * (prompt/timbre recompute the cached conditioning; structure/feedback
+   * are read live each tick), so the change is audible without a
+   * restart. Discrete setting, so no smoothing/echo channel.
+   */
+  sendSetInterpMethod(path: string, method: string): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(JSON.stringify({
+        type: "set_interp_method",
+        path,
+        method,
+      }));
+    } catch {}
+  }
+
+  /**
    * Live pipeline_depth retune. The server stages the value and applies
    * it on the next runner-thread before_tick rendezvous, then echoes
    * the (clamped) result back as ``depth_applied``. Shrinking discards

@@ -645,6 +645,12 @@ def _handle_client_body(
                 except (TypeError, ValueError):
                     v = 0.0
                 streaming.set_prompt_blend(v, origin=origin)
+            elif mtype == "set_interp_method":
+                streaming.set_interp_method(
+                    str(data.get("path", "")),
+                    str(data.get("method", "")),
+                    origin=origin,
+                )
             elif mtype == "set_depth":
                 try:
                     v = int(data.get("value"))

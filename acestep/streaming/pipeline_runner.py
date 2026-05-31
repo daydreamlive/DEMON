@@ -14,6 +14,7 @@ import torch
 from acestep.engine.dcw import DCWAdvanced
 from acestep.engine.obs import logger
 from acestep.nodes.types import ChannelGuidanceEntry, Latent
+from acestep.nodes.interpolation import INTERPOLATIONS
 from acestep.nodes.vae_nodes import EmptyLatent, LatentBlend
 
 from acestep.streaming.knobs import CHANNEL_GROUPS, KEYSTONE_CHANNELS
@@ -332,6 +333,7 @@ class PipelineRunner:
             latent_a=self._silence_latent,
             latent_b=self.stream.source.context_latent,
             alpha=hint_str,
+            method=self.state.interp_structure,
         )["latent"]
 
     def _sync_channel_guidance(self, raw: dict, last: list) -> list:
@@ -644,6 +646,7 @@ class PipelineRunner:
                         latent_a=self._silence_latent,
                         latent_b=Latent(tensor=live_ctx_raw_t),
                         alpha=hint_str,
+                        method=self.state.interp_structure,
                     )["latent"]
                 last_hint_str = hint_str
                 self._hint_dirty = False
@@ -675,7 +678,9 @@ class PipelineRunner:
             source_lat = None
             if fb_latent is not None:
                 src_tensor = live_src_lat.tensor
-                source_lat = (1.0 - feedback) * src_tensor + feedback * fb_latent
+                source_lat = INTERPOLATIONS[self.state.interp_feedback](
+                    src_tensor, fb_latent, feedback,
+                )
 
             sde_curve = None
             if self.use_sde:
