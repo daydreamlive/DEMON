@@ -126,6 +126,17 @@ def main() -> int:
         help="Next.js dev port (default 6660).",
     )
     parser.add_argument(
+        "--client-host",
+        default=None,
+        help=(
+            "Address the browser should use to reach the backend, for a "
+            "remote client (UI and GPU server on different machines). The "
+            "WebSocket connects to this directly, so it must be reachable "
+            "from the client — e.g. the server's LAN IP. Defaults to the "
+            "local backend address (fine when UI and backend share a host)."
+        ),
+    )
+    parser.add_argument(
         "--no-install",
         action="store_true",
         help="Skip the `npm install` check.",
@@ -134,6 +145,20 @@ def main() -> int:
     # `--` separator is preserved by parse_known_args; strip it if present.
     if backend_extras and backend_extras[0] == "--":
         backend_extras = backend_extras[1:]
+
+    # Common footgun: launcher-only flags placed *after* `--` get forwarded to
+    # the backend instead of parsed here, so e.g. --client-host silently has no
+    # effect and the browser falls back to 127.0.0.1. Warn loudly.
+    _launcher_only = {"--client-host", "--web-port", "--no-install"}
+    _misplaced = [a for a in backend_extras if a.split("=", 1)[0] in _launcher_only]
+    if _misplaced:
+        print(
+            f"WARNING: {', '.join(_misplaced)} came after `--`, so it was "
+            f"forwarded to the backend, not parsed by the launcher (it has no "
+            f"effect there). Put launcher flags BEFORE `--`, e.g.:\n"
+            f"    run.py --host 0.0.0.0 --client-host <server-ip> -- --accel tensorrt",
+            flush=True,
+        )
 
     npm = _resolve_npm()
     if not args.no_install:
@@ -150,11 +175,38 @@ def main() -> int:
         str(args.port),
         *backend_extras,
     ]
-    web_cmd = [npm, "run", "dev", "--", "-p", str(args.web_port)]
+    # The browser uses NEXT_PUBLIC_POD_BASE_URL directly for the WebSocket, so
+    # for a remote client it must point at an address the *client* can reach
+    # (not 127.0.0.1). Precedence:
+    #   1. --client-host <host>                    -> http://<host>:<port>
+    #   2. an explicitly pre-set NEXT_PUBLIC_POD_BASE_URL in the environment
+    #   3. the local backend address (default; fine when UI+backend share a host)
+    remote = bool(args.client_host) or args.host in ("0.0.0.0", "::")
 
     web_env = os.environ.copy()
-    backend_url = f"http://{_local_backend_host(args.host)}:{args.port}"
+    if args.client_host:
+        backend_url = f"http://{args.client_host}:{args.port}"
+    elif os.environ.get("NEXT_PUBLIC_POD_BASE_URL"):
+        backend_url = os.environ["NEXT_PUBLIC_POD_BASE_URL"].rstrip("/")
+    else:
+        backend_url = f"http://{_local_backend_host(args.host)}:{args.port}"
     web_env["NEXT_PUBLIC_POD_BASE_URL"] = backend_url
+
+    # Build the web dev command. When the client is remote, bind the dev
+    # server to all interfaces so it's reachable, and surface a hint if the
+    # base URL still points at localhost (the browser can't reach that).
+    web_cmd = [npm, "run", "dev", "--", "-p", str(args.web_port)]
+    if remote:
+        web_cmd += ["-H", "0.0.0.0"]
+        if "localhost" in backend_url or "127.0.0.1" in backend_url:
+            print(
+                f"{_PREFIXES['web']} WARNING: NEXT_PUBLIC_POD_BASE_URL is "
+                f"{backend_url}, which a remote browser can't reach. Pass "
+                f"--client-host <server-ip> so the WebSocket connects to the "
+                f"server, not the client.",
+                flush=True,
+            )
+    print(f"{_PREFIXES['web']} engine base URL (for browser): {backend_url}", flush=True)
 
     print(f"{_PREFIXES['backend']} {' '.join(backend_cmd)}", flush=True)
     print(
@@ -197,8 +249,9 @@ def main() -> int:
         stderr=subprocess.STDOUT,
     )
     banner = _color("\x1b[1;32m")
+    ui_host = args.client_host or "localhost"
     print(
-        f"\n{banner}>>> Open http://localhost:{args.web_port}/{_RESET}\n",
+        f"\n{banner}>>> Open http://{ui_host}:{args.web_port}/{_RESET}\n",
         flush=True,
     )
 
