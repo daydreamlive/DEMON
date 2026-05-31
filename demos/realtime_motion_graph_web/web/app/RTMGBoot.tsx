@@ -16,14 +16,25 @@ import type { LoraCatalogEntry } from "@demon/client";
 import type { WireContract } from "@demon/client";
 import { KNOB_SCHEMA_VERSION, PROTOCOL_VERSION } from "@demon/client";
 
-// Same-origin URL builder. The engine's HTTP routes (/api/*, /fixtures/*,
-// /loras/*, /videos/*) are proxied to the Python backend at :8765 by the
-// Next.js rewrites in next.config.ts. The WebSocket URL goes through
-// `defaultWsUrl()` which reads NEXT_PUBLIC_POD_BASE_URL — set in .env.local.
+// Engine URL builder. Builds ABSOLUTE URLs straight to the backend
+// (NEXT_PUBLIC_POD_BASE_URL) for /api/*, /fixtures/*, /loras/*, /videos/* —
+// the same host the WebSocket connects to. The backend sends
+// `Access-Control-Allow-Origin: *`, so the cross-origin fetch is allowed.
 //
-// Configured at module load (top-level, not in useEffect) so it's ready
-// before any child component's mount-time fetch fires.
-setEngineUrlBuilder((path) => (path.startsWith("/") ? path : `/${path}`));
+// We deliberately do NOT rely on next.config.ts rewrites to proxy these:
+// the dev bundler doesn't reliably forward them, which surfaces as 404s on
+// /api/* even though the engine serves them fine over curl. Going direct to
+// the backend makes the remote client/server case "just work" once
+// NEXT_PUBLIC_POD_BASE_URL points at the server (see run.py --client-host).
+//
+// Falls back to a same-origin relative path when the base URL is unset (the
+// old rewrite path). Configured at module load (top-level, not in useEffect)
+// so it's ready before any child component's mount-time fetch fires.
+const _engineBase = (process.env.NEXT_PUBLIC_POD_BASE_URL ?? "").replace(/\/$/, "");
+setEngineUrlBuilder((path) => {
+  const p = path.startsWith("/") ? path : `/${path}`;
+  return _engineBase ? `${_engineBase}${p}` : p;
+});
 
 // Fire the config + LoRA catalog fetches in parallel and await both
 // before applyConfig(). listLoras' side effect writes the server's
