@@ -46,19 +46,28 @@ To run the GPU server on one machine and open the UI from another, bind the
 backend to all interfaces and tell the browser the server's address:
 
 ```bash
+# launcher flags go BEFORE `--`; backend flags (e.g. --accel) go AFTER it.
 uv run python -u -m demos.realtime_motion_graph_web.run \
-  --host 0.0.0.0 --client-host 10.0.0.5     # 10.0.0.5 = the server's LAN IP
+  --host 0.0.0.0 --client-host 10.0.0.5 \
+  -- --accel tensorrt
+# (10.0.0.5 = the server's LAN IP)
 ```
 
-Then open `http://10.0.0.5:6660` from the client. Note:
+On startup the launcher prints `engine base URL (for browser): …` — it must be
+the server's address, not `127.0.0.1`. Then open `http://10.0.0.5:6660` from
+the client. Note:
 
-- `--client-host` sets the address the **browser** uses. The HTTP routes are
-  proxied through the dev server, but the **WebSocket connects straight to the
-  backend**, so this must be reachable from the client — not `localhost`.
+- **Argument order matters.** Everything after `--` is forwarded to the
+  backend, so a launcher flag like `--client-host` placed after `--` silently
+  has no effect (the base URL falls back to `127.0.0.1`, which a remote browser
+  resolves to *itself*). Put launcher flags before `--`.
+- `--client-host` sets the address the **browser** uses for both the HTTP API
+  and the WebSocket — both connect straight to the backend, so it must be
+  reachable from the client, not `localhost`.
 - Open **both** ports on the server's firewall: `:6660` (UI) and `:1318`
-  (WebSocket).
-- Changing `web/.env.local` or `next.config.ts` requires restarting the dev
-  server — those are read only at startup.
+  (backend HTTP + WebSocket).
+- Changing `web/.env.local` requires restarting the dev server — it's read
+  only at startup.
 
 The full UI lives under `web/` (React + zustand, mirrored from the
 internal `daydreamlive/demon-react` package). See `web/components/`,

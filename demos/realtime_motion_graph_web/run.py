@@ -146,6 +146,20 @@ def main() -> int:
     if backend_extras and backend_extras[0] == "--":
         backend_extras = backend_extras[1:]
 
+    # Common footgun: launcher-only flags placed *after* `--` get forwarded to
+    # the backend instead of parsed here, so e.g. --client-host silently has no
+    # effect and the browser falls back to 127.0.0.1. Warn loudly.
+    _launcher_only = {"--client-host", "--web-port", "--no-install"}
+    _misplaced = [a for a in backend_extras if a.split("=", 1)[0] in _launcher_only]
+    if _misplaced:
+        print(
+            f"WARNING: {', '.join(_misplaced)} came after `--`, so it was "
+            f"forwarded to the backend, not parsed by the launcher (it has no "
+            f"effect there). Put launcher flags BEFORE `--`, e.g.:\n"
+            f"    run.py --host 0.0.0.0 --client-host <server-ip> -- --accel tensorrt",
+            flush=True,
+        )
+
     npm = _resolve_npm()
     if not args.no_install:
         _ensure_node_modules(npm)
