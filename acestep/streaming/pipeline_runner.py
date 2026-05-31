@@ -36,6 +36,11 @@ try:
 except ValueError:
     _TRACE_SAMPLE_EVERY = 50
 
+# Knob→ear latency tracing. When DEMON_LAT_TRACE is set, every windowed
+# decode logs where the fresh slice lands relative to the live playhead
+# (``lead_s``) so the kbon→ear floor is directly observable in the log.
+_LAT_TRACE = os.environ.get("DEMON_LAT_TRACE", "") not in ("", "0")
+
 # Largest tap index the feedback delay can address. Matches the
 # ``feedback_depth`` knob's ``max_val`` (knobs.py) and the SLIDER_META
 # max in web/types/engine.ts; the three must stay in sync. depth=1
@@ -998,6 +1003,19 @@ class PipelineRunner:
                         # its client mirror; standalone callers can
                         # ignore the args.
                         self.on_audio_ready(patched, win_start, win_end)
+                        if _LAT_TRACE:
+                            logger.info(
+                                "lat_decode num_gens={} denoise={:.3f} "
+                                "playhead_s={:.3f} advance_s={:.3f} "
+                                "decode_start_s={:.3f} win_start_s={:.3f} "
+                                "win_end_s={:.3f} lead_s={:.3f} "
+                                "tick_ms={:.1f} dec_ms={:.1f}",
+                                self.state.params.get("num_gens", 0) + 1,
+                                denoise, playhead_now, advance_s, decode_start,
+                                win_start / SAMPLE_RATE, win_end / SAMPLE_RATE,
+                                win_start / SAMPLE_RATE - playhead_now,
+                                tick_ms, dec_ms,
+                            )
                         if (
                             band_start_sample is not None
                             and band_end_sample is not None

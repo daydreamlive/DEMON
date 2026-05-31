@@ -1089,6 +1089,21 @@ class StreamingSession:
         # it's a clock, not user input.
         if raw != state.last_params_raw:
             state.last_activity_ts = time.monotonic()
+            # Knob→ear latency marker: log the denoise value + the playhead
+            # at the instant a real knob change lands, so the lat_decode
+            # line for the first slice carrying it can be correlated.
+            if os.environ.get("DEMON_LAT_TRACE", "") not in ("", "0"):
+                _prev = state.last_params_raw or {}
+                _changed = sorted(
+                    k for k in set(raw) | set(_prev)
+                    if raw.get(k) != _prev.get(k)
+                )
+                logger.info(
+                    "lat_knob origin={} playback_s={:.3f} changed={} "
+                    "denoise={}",
+                    origin.value, float(playback_pos), _changed,
+                    raw.get("denoise"),
+                )
             state.last_params_raw = dict(raw)
             logger.debug(
                 "params_changed origin={} raw_keys={}",

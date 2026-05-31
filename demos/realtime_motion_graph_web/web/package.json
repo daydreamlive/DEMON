@@ -20,6 +20,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/webmidi": "^2.1.0",
+    "playwright": "^1.60.0",
     "typescript": "^5"
   }
 }

@@ -591,6 +591,16 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   setSlider: (param, value) => {
     stampManualTouch(param);
     const target = clampToMeta(param, value);
+    // Knob→ear latency marker. `window.__demonLatTrace = true` to enable.
+    if (
+      typeof window !== "undefined" &&
+      (window as unknown as { __demonLatTrace?: boolean }).__demonLatTrace
+    ) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[lat] setSlider ${param}=${target.toFixed(3)} t=${performance.now().toFixed(0)}`,
+      );
+    }
     const state = usePerformanceStore.getState();
     // Cancel both regular and drop-tween for this param: the user just
     // touched the slider, no in-flight demo or smoothing should keep

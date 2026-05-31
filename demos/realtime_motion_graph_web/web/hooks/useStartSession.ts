@@ -7,7 +7,7 @@ import { listFixtures, loadFixtureAudio, pickDefaultFixture } from "@/engine/aud
 import { resetKnobDelta } from "@/engine/midi/absoluteDelta";
 import { createNetworkMonitor } from "@/engine/networkMonitor";
 import { defaultWsUrl } from "@/engine/podUrl";
-import { RemoteBackend, SLICE_FLAG_DELTA } from "@/engine/protocol";
+import { RemoteBackend, SAMPLE_RATE, SLICE_FLAG_DELTA } from "@/engine/protocol";
 import { getApiKey, getClientId } from "@/engine/rtmgConfig";
 import { WsReconnector } from "@/engine/wsReconnect";
 import {
@@ -184,6 +184,21 @@ function wireRemoteListeners(
     // bleeding through after a swap.
     if (detail.epoch !== player.swapCount) return;
     const startFrame = Math.floor(detail.startSample);
+    // Knob→ear latency trace: how far AHEAD of the live playhead each
+    // fresh slice lands. `window.__demonLatTrace = true` to enable.
+    // A steady `lead` ≈ the floor latency before any change is audible.
+    if ((window as unknown as { __demonLatTrace?: boolean }).__demonLatTrace) {
+      const startSec = startFrame / SAMPLE_RATE;
+      const playheadSec = player.positionSec;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[lat] slice numGens=${detail.numGens} ` +
+          `startSec=${startSec.toFixed(3)} playheadSec=${playheadSec.toFixed(3)} ` +
+          `lead=${(startSec - playheadSec).toFixed(3)} ` +
+          `decMs=${detail.decMs?.toFixed?.(1)} tickMs=${detail.tickMs?.toFixed?.(1)} ` +
+          `t=${performance.now().toFixed(0)}`,
+      );
+    }
     if (detail.flags === SLICE_FLAG_DELTA) {
       player.addDelta(startFrame, detail.audio);
     } else {
