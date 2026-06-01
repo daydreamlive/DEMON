@@ -183,11 +183,12 @@ export class AudioPlayer {
 
     if (this._useWorklet) {
       // Stable URL — worklet ships from public/ so AudioContext can resolve it.
-      // Cache-busting query bumped manually when the worklet message
-      // surface changes (v2 = setLoopBand, v3 = stem overlays inside the
-      // worklet). The browser caches worklet bytes per-URL and hard
-      // refresh doesn't always invalidate.
-      await this.ctx.audioWorklet.addModule("/audio-worklet.js?v=3");
+      // Cache-busting query bumped manually when the worklet behaviour or
+      // message surface changes (v2 = setLoopBand, v3 = stem overlays
+      // inside the worklet, v4 = band-loop seam crossfade, v5 = band loop
+      // at the buffer end no longer freezes). The browser caches worklet
+      // bytes per-URL and hard refresh doesn't always invalidate.
+      await this.ctx.audioWorklet.addModule("/audio-worklet.js?v=5");
 
       const node = new AudioWorkletNode(this.ctx, "realtime-buffer", {
         numberOfInputs: 0,
