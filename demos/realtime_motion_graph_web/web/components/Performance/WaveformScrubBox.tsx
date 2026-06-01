@@ -5,6 +5,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { computePeaks, drawPeaks } from "@/engine/curves/waveformPeaks";
 import { frameScheduler } from "@/engine/scheduler/FrameScheduler";
 import { useOneShotTooltip } from "@/hooks/useOneShotTooltip";
+import {
+  LOOP_GRID_LABEL,
+  LOOP_GRID_ORDER,
+  type LoopGridRes,
+} from "@/lib/loopGrid";
 import { useCurveStore } from "@/store/useCurveStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
@@ -58,21 +63,29 @@ const BAND_EDGE_HIT_PX = 7; // hit-zone radius around each band edge
 const MIN_BAND_SEC = 0.05;  // 50 ms — below this the band is meaningless
 const FALLBACK_STEP_SEC = 0.5; // nudge step when BPM is unknown
 
-// Snap resolutions, coarse→fine. `barMult` is the unit length expressed
-// in beats: a bar is `beatsPerBar` beats, a beat is 1, an eighth is ½.
-type GridRes = "bar" | "half" | "beat" | "eighth";
-const GRID_ORDER: GridRes[] = ["bar", "half", "beat", "eighth"];
-const GRID_LABEL: Record<GridRes, string> = {
-  bar: "Bar",
-  half: "½ Bar",
-  beat: "Beat",
-  eighth: "⅛",
-};
+function ensureCanvasSize(canvas: HTMLCanvasElement): {
+  w: number;
+  h: number;
+  dpr: number;
+} {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, Math.floor(rect.width));
+  const h = Math.max(1, Math.floor(rect.height));
+  const targetW = Math.floor(w * dpr);
+  const targetH = Math.floor(h * dpr);
+  if (canvas.width !== targetW || canvas.height !== targetH) {
+    canvas.width = targetW;
+    canvas.height = targetH;
+  }
+  return { w, h, dpr };
+}
 
 /** Length (seconds) of one snap unit at the given resolution. Returns 0
  *  when the beat length is unknown (BPM not detected) → snapping is a
- *  no-op and edits stay free. */
-function snapUnitSec(res: GridRes, beatSec: number, beatsPerBar: number): number {
+ *  no-op and edits stay free. A bar is `beatsPerBar` beats, a half-bar is
+ *  half that, a beat is 1, an eighth is ½ a beat. */
+function snapUnitSec(res: LoopGridRes, beatSec: number, beatsPerBar: number): number {
   if (beatSec <= 0) return 0;
   switch (res) {
     case "bar":
@@ -152,25 +165,32 @@ export function WaveformScrubBox() {
   const bgCanvasRef = useRef<HTMLCanvasElement>(null);
   const fgCanvasRef = useRef<HTMLCanvasElement>(null);
 
-  // The loop region (seconds), persistent across enable/disable. Mirrored
-  // to the worklet + server only when `loopEnabled` is also true. Kept in
-  // a ref so the rAF foreground tick + pointer/keyboard handlers can read
-  // it without re-subscribing on every change.
-  const [bandState, setBandState] = useState<Band | null>(null);
+  // The loop region (seconds), its enabled flag, and the snap resolution
+  // all live in the performance store so they survive config export /
+  // import — WaveformScrubBox is just the editor. Mirrored to the worklet
+  // + server only when `bandLoopEnabled` is also true. Refs mirror the
+  // store values so the rAF foreground tick + pointer/keyboard handlers can
+  // read them without re-subscribing on every change.
+  const bandState = usePerformanceStore((s) => s.loopBand);
+  const setBandState = usePerformanceStore((s) => s.setLoopBand);
   const bandRef = useRef<Band | null>(null);
   bandRef.current = bandState;
 
-  // Whether looping is active. Decoupled from the region's existence: a
-  // region can sit armed-but-off (drawn dim) and be re-enabled without
+  // Whether band looping is active. Decoupled from the region's existence:
+  // a region can sit armed-but-off (drawn dim) and be re-enabled without
   // redrawing — exactly how a DAW loop toggle behaves. Defaults on so a
   // freshly drawn region loops immediately.
-  const [loopEnabled, setLoopEnabled] = useState(true);
-  const loopEnabledRef = useRef(true);
-  loopEnabledRef.current = loopEnabled;
+  const bandLoopEnabled = usePerformanceStore((s) => s.bandLoopEnabled);
+  const setBandLoopEnabledStore = usePerformanceStore(
+    (s) => s.setBandLoopEnabled,
+  );
+  const bandLoopEnabledRef = useRef(true);
+  bandLoopEnabledRef.current = bandLoopEnabled;
 
   // Draw-arm: when true (and no region yet) a plain drag draws a band.
-  // Replaces the old "loopMode" — once a region exists the LOOP button
-  // toggles `loopEnabled` instead.
+  // Transient UI (not exported), so it stays local. Replaces the old
+  // "loopMode" — once a region exists the LOOP button toggles
+  // `bandLoopEnabled` instead.
   const [armDraw, setArmDraw] = useState(false);
   const armDrawRef = useRef(false);
   armDrawRef.current = armDraw;
@@ -178,8 +198,9 @@ export function WaveformScrubBox() {
   // Snap resolution. Beat by default — fine enough to grab sub-bar loops
   // straight away (matches the pre-grid-selector behaviour); cycle to
   // Bar / ½ / ⅛ as needed. Hold Alt while dragging for fully free edits.
-  const [gridRes, setGridRes] = useState<GridRes>("beat");
-  const gridResRef = useRef<GridRes>("beat");
+  const gridRes = usePerformanceStore((s) => s.loopGridRes);
+  const setGridResStore = usePerformanceStore((s) => s.setLoopGridRes);
+  const gridResRef = useRef<LoopGridRes>("beat");
   gridResRef.current = gridRes;
 
   // Beat grid, recomputed each render and shared with the rAF tick +
@@ -292,7 +313,7 @@ export function WaveformScrubBox() {
       // glance (the region is still there, just not looping).
       const band = bandRef.current;
       if (band) {
-        const enabled = loopEnabledRef.current;
+        const enabled = bandLoopEnabledRef.current;
         const x0 = tToX(band.start);
         const x1 = tToX(band.end);
         ctx.fillStyle = enabled
@@ -348,7 +369,7 @@ export function WaveformScrubBox() {
     const remote = useSessionStore.getState().remote;
     const active =
       bandState !== null &&
-      loopEnabled &&
+      bandLoopEnabled &&
       bandState.end - bandState.start >= MIN_BAND_SEC &&
       bandState.start >= 0;
     if (active) {
@@ -360,70 +381,80 @@ export function WaveformScrubBox() {
       if (typeof clearBand === "function") clearBand.call(player);
       remote?.sendLoopBand(null, null);
     }
-  }, [bandState, loopEnabled, hasPlayer, player]);
+  }, [bandState, bandLoopEnabled, hasPlayer, player]);
 
   // ── Shared loop actions (used by buttons + keyboard) ──────────────
   // All read live state from refs / the session store, so the stable
   // ([]) identities never go stale.
 
-  // LOOP toggle: with a region, flip enabled (region persists). With no
-  // region, arm/disarm draw mode.
+  // LOOP toggle: with a region, flip band looping (region persists). With
+  // no region, arm/disarm draw mode.
   const toggleLoop = useCallback(() => {
     if (bandRef.current) {
-      setLoopEnabled((v) => !v);
+      setBandLoopEnabledStore(!bandLoopEnabledRef.current);
     } else {
       setArmDraw((v) => !v);
     }
-  }, []);
+  }, [setBandLoopEnabledStore]);
 
-  // Remove the region entirely. Leaves enabled=true so the next drawn
+  // Remove the region entirely. Leaves band-loop enabled so the next drawn
   // region loops immediately.
   const clearRegion = useCallback(() => {
     setBandState(null);
     setArmDraw(false);
-    setLoopEnabled(true);
+    setBandLoopEnabledStore(true);
+  }, [setBandState, setBandLoopEnabledStore]);
+
+  // Live edit context (region + buffer length + snap unit) shared by nudge
+  // and scale. Null when there's nothing editable (no region, or duration
+  // not known yet). Reads only refs / the session store, so it's stable.
+  const editCtx = useCallback(() => {
+    const b = bandRef.current;
+    if (!b) return null;
+    const duration = useSessionStore.getState().player?.duration ?? 0;
+    if (duration <= 0) return null;
+    const unit = snapUnitSec(
+      gridResRef.current,
+      gridRef.current.beatSec,
+      gridRef.current.beatsPerBar,
+    );
+    return { b, duration, unit };
   }, []);
 
   // Nudge / move the region. `byLength` moves by the region's own length
   // (phrase jump); otherwise by one grid step (falls back to a fixed step
   // when BPM is unknown).
-  const nudgeRegion = useCallback((dir: 1 | -1, byLength: boolean) => {
-    const b = bandRef.current;
-    if (!b) return;
-    const p = useSessionStore.getState().player;
-    const duration = p?.duration ?? 0;
-    if (duration <= 0) return;
-    const unit = snapUnitSec(
-      gridResRef.current,
-      gridRef.current.beatSec,
-      gridRef.current.beatsPerBar,
-    );
-    const step = byLength
-      ? b.end - b.start
-      : unit > 0
-        ? unit
-        : FALLBACK_STEP_SEC;
-    setBandState(moveBandBy(b, dir * step, duration));
-  }, []);
+  const nudgeRegion = useCallback(
+    (dir: 1 | -1, byLength: boolean) => {
+      const ctx = editCtx();
+      if (!ctx) return;
+      const { b, duration, unit } = ctx;
+      const step = byLength
+        ? b.end - b.start
+        : unit > 0
+          ? unit
+          : FALLBACK_STEP_SEC;
+      setBandState(moveBandBy(b, dir * step, duration));
+    },
+    [editCtx, setBandState],
+  );
 
   // Halve / double the region length, anchored at its start.
-  const scaleRegion = useCallback((factor: number) => {
-    const b = bandRef.current;
-    if (!b) return;
-    const p = useSessionStore.getState().player;
-    const duration = p?.duration ?? 0;
-    if (duration <= 0) return;
-    const unit = snapUnitSec(
-      gridResRef.current,
-      gridRef.current.beatSec,
-      gridRef.current.beatsPerBar,
-    );
-    setBandState(scaleBand(b, factor, duration, unit));
-  }, []);
+  const scaleRegion = useCallback(
+    (factor: number) => {
+      const ctx = editCtx();
+      if (!ctx) return;
+      setBandState(scaleBand(ctx.b, factor, ctx.duration, ctx.unit));
+    },
+    [editCtx, setBandState],
+  );
 
   const cycleGrid = useCallback(() => {
-    setGridRes((r) => GRID_ORDER[(GRID_ORDER.indexOf(r) + 1) % GRID_ORDER.length]);
-  }, []);
+    const cur = gridResRef.current;
+    setGridResStore(
+      LOOP_GRID_ORDER[(LOOP_GRID_ORDER.indexOf(cur) + 1) % LOOP_GRID_ORDER.length],
+    );
+  }, [setGridResStore]);
 
   // ── Keyboard bridge ───────────────────────────────────────────────
   // useKeyboardShortcuts dispatches dd:loop-toggle / dd:loop-nudge so the
@@ -526,7 +557,7 @@ export function WaveformScrubBox() {
         // A fresh draw re-enables looping so it's audible immediately.
         mode = "draw-band";
         anchorT = snapT(t, e);
-        setLoopEnabled(true);
+        setBandLoopEnabledStore(true);
         setBandState({ start: anchorT, end: anchorT });
       } else {
         // Plain click outside any band → regular seek.
@@ -643,12 +674,12 @@ export function WaveformScrubBox() {
     "Click to scrub · LOOP to set a loop region",
   );
 
-  // Button visual state: with a region, "active" tracks loopEnabled; with
-  // no region, it tracks the draw-arm.
+  // Button visual state: with a region, "active" tracks bandLoopEnabled;
+  // with no region, it tracks the draw-arm.
   const hasBand = bandState !== null;
-  const loopActive = hasBand ? loopEnabled : armDraw;
+  const loopActive = hasBand ? bandLoopEnabled : armDraw;
   const loopTitle = hasBand
-    ? loopEnabled
+    ? bandLoopEnabled
       ? "Disable loop (keeps the region)"
       : "Enable loop"
     : armDraw
@@ -709,13 +740,13 @@ export function WaveformScrubBox() {
           <button
             type="button"
             className="waveform-loop-btn"
-            title={`Loop snap: ${GRID_LABEL[gridRes]} (click to cycle · hold Alt while dragging for free)`}
+            title={`Loop snap: ${LOOP_GRID_LABEL[gridRes]} (click to cycle · hold Alt while dragging for free)`}
             onClick={(e) => {
               e.stopPropagation();
               cycleGrid();
             }}
           >
-            {GRID_LABEL[gridRes]}
+            {LOOP_GRID_LABEL[gridRes]}
           </button>
         )}
         {hasBand && (
@@ -783,22 +814,4 @@ export function WaveformScrubBox() {
       </div>
     </div>
   );
-}
-
-function ensureCanvasSize(canvas: HTMLCanvasElement): {
-  w: number;
-  h: number;
-  dpr: number;
-} {
-  const rect = canvas.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-  const w = Math.max(1, Math.floor(rect.width));
-  const h = Math.max(1, Math.floor(rect.height));
-  const targetW = Math.floor(w * dpr);
-  const targetH = Math.floor(h * dpr);
-  if (canvas.width !== targetW || canvas.height !== targetH) {
-    canvas.width = targetW;
-    canvas.height = targetH;
-  }
-  return { w, h, dpr };
 }
