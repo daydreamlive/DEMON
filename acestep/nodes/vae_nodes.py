@@ -708,6 +708,15 @@ class EmptyLatent(BaseNode):
                     description="Duration (s)",
                     min=1.0, max=600.0, step=1.0,
                 ),
+                NodeParam(
+                    name="frames", type="number", default=0,
+                    description=(
+                        "Exact latent frame count (0 = derive from duration). "
+                        "Set by the streaming runner to avoid the "
+                        "duration round-trip dropping a frame."
+                    ),
+                    hidden=True,
+                ),
             ),
         )
 
@@ -719,7 +728,18 @@ class EmptyLatent(BaseNode):
         handler._ensure_silence_latent_on_device()
         silence = handler.silence_latent  # [1, T_full, D]
 
-        T = int(duration * 25)  # 25 fps latent rate
+        # Frame count: prefer an explicit integer ``frames`` (exact — used by
+        # the streaming runner so the silence latent matches the source
+        # latent's T exactly). Fall back to deriving it from ``duration``,
+        # using round() rather than truncation: int(duration * 25) drops a
+        # frame for durations whose frame count round-trips just under an
+        # integer (e.g. 410 frames -> 16.4s -> int(409.9999...) == 409),
+        # which then can't blend against a real 410-frame context latent.
+        frames = kwargs.get("frames") or 0
+        if frames:
+            T = int(frames)
+        else:
+            T = int(round(duration * 25))  # 25 fps latent rate
         # Take first T frames from the silence latent (tiled if needed)
         if silence.dim() == 3:
             latent = silence[:, :T, :].clone()
