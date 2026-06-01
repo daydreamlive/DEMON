@@ -2543,6 +2543,9 @@ body.drawer-open .hud-help-readout {
   gap: 8px;
   align-items: center;
 }
+.operator-config-readout {
+  display: none;
+}
 .install-section-operator .ws-url-input { width: 220px; }
 /* Density toggle anchors the right cluster — its margin-left: auto pushes
    itself plus the trailing pause button to the far right of the row. */
@@ -5937,6 +5940,36 @@ body.curve-open #install-video-area #graph {
   gap: 10px;
 }
 .mobile-sheet-section .install-section-operator > * { width: 100%; }
+@media (max-width: 768px), (max-height: 500px) and (orientation: landscape) {
+  .mobile-sheet-section .operator-config-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+  }
+  .mobile-sheet-section .operator-config-actions .pause-btn {
+    width: 100%;
+  }
+  .mobile-sheet-section .operator-config-actions [data-dd-tooltip]::after {
+    display: none !important;
+  }
+  .mobile-sheet-section .operator-config-readout {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-height: 56px;
+    margin: 2px 0 0;
+    padding: 9px 10px;
+    border: 1px solid var(--frame-line);
+    border-radius: var(--radius-sm);
+    background: rgba(8, 8, 14, 0.55);
+    color: var(--text-dim);
+    font-size: 11px;
+    line-height: 1.45;
+  }
+  .mobile-sheet-section .operator-config-readout-item {
+    display: block;
+  }
+}
 /* Stack prompts vertically on mobile — the desktop layout is a single
    row (Prompt A | blend | Prompt B | Send) that crushes textareas to
    ~30px wide at 414px viewport. */
