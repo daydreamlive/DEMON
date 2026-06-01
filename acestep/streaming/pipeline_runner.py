@@ -309,7 +309,7 @@ class PipelineRunner:
         walk_active = self.walk_window and full_src_T > self.walk_window_T
         T_frames = self.walk_window_T if walk_active else full_src_T
         self._silence_latent = EmptyLatent().execute(
-            model=self.stream.model, duration=T_frames / 25.0,
+            model=self.stream.model, frames=T_frames,
         )["latent"]
 
     def _decode_advance_s(self) -> float:
