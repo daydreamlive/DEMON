@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   applySessionSnapshot,
   captureSessionSnapshot,
+  persistSessionSnapshotAssets,
   sessionSnapshotSignature,
   validateSessionSnapshotShape,
   type SessionSnapshot,
@@ -14,8 +15,6 @@ import {
   getLocalSavedSessionRecord,
   listLocalSavedSessionRecords,
   putLocalSavedSessionRecord,
-  putSessionAudioAsset,
-  putSessionUploadFile,
 } from "@/lib/sessionAudioAssets";
 import { useCurveStore } from "@/store/useCurveStore";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
@@ -26,31 +25,11 @@ import { useStemOverlayStore } from "@/store/useStemOverlayStore";
 const STORAGE_KEY = "demon:local-saved-sessions:v1";
 const ACTIVE_ID_KEY = "demon:local-saved-sessions:active-id";
 
-interface LocalSavedSessionAudioAsset {
-  id: string;
-  decoded: {
-    interleaved: Float32Array;
-    channels: number;
-    frames: number;
-    sampleRate: number;
-  };
-}
-
-interface LocalSavedSessionUploadFile {
-  id: string;
-  file: File;
-}
-
 export interface LocalSavedSessionRecord {
   id: string;
   name: string;
   updatedAt: number;
   snapshot: SessionSnapshot;
-}
-
-interface StoredLocalSavedSessionRecord extends LocalSavedSessionRecord {
-  audioAssets: LocalSavedSessionAudioAsset[];
-  uploadFiles: LocalSavedSessionUploadFile[];
 }
 
 export interface LocalSavedSessionsController {
@@ -81,15 +60,6 @@ function sessionName(snapshot: SessionSnapshot): string {
   return fixture.replace(/\.[a-z0-9]+$/i, "") || fixture;
 }
 
-function asSummary(record: StoredLocalSavedSessionRecord): LocalSavedSessionRecord {
-  return {
-    id: record.id,
-    name: record.name,
-    updatedAt: record.updatedAt,
-    snapshot: record.snapshot,
-  };
-}
-
 function readLegacySessions(): LocalSavedSessionRecord[] {
   if (typeof localStorage === "undefined") return [];
   try {
@@ -113,10 +83,10 @@ function readLegacySessions(): LocalSavedSessionRecord[] {
 }
 
 async function readSessions(): Promise<LocalSavedSessionRecord[]> {
-  const stored = await listLocalSavedSessionRecords<StoredLocalSavedSessionRecord>();
-  const sessions = stored
-    .filter((record) => validateSessionSnapshotShape(record.snapshot))
-    .map(asSummary);
+  const stored = await listLocalSavedSessionRecords<LocalSavedSessionRecord>();
+  const sessions = stored.filter((record) =>
+    validateSessionSnapshotShape(record.snapshot),
+  );
   if (sessions.length > 0) {
     return sessions.sort((a, b) => b.updatedAt - a.updatedAt);
   }
@@ -134,48 +104,6 @@ function writeActiveId(id: string | null): void {
   else localStorage.removeItem(ACTIVE_ID_KEY);
 }
 
-function collectStoredSession(
-  base: LocalSavedSessionRecord,
-): StoredLocalSavedSessionRecord {
-  const custom = useCustomTracksStore.getState();
-  const audioAssets: LocalSavedSessionAudioAsset[] = [];
-  const uploadFiles: LocalSavedSessionUploadFile[] = [];
-
-  for (const trackMeta of base.snapshot.customTracks) {
-    const track = custom.tracks.get(trackMeta.name);
-    if (!track) {
-      throw new Error(`Uploaded source missing: ${trackMeta.name}`);
-    }
-    audioAssets.push({ id: trackMeta.assetId, decoded: track.decoded });
-    if (track.originalFile) {
-      uploadFiles.push({ id: trackMeta.assetId, file: track.originalFile });
-    }
-    if (track.stems && track.stemAssetIds) {
-      audioAssets.push({
-        id: track.stemAssetIds.vocals,
-        decoded: track.stems.vocals,
-      });
-      audioAssets.push({
-        id: track.stemAssetIds.instruments,
-        decoded: track.stems.instruments,
-      });
-    } else if (trackMeta.sourceMode !== "full") {
-      throw new Error("Wait for stem extraction to finish before saving this session.");
-    }
-  }
-
-  return { ...base, audioAssets, uploadFiles };
-}
-
-async function seedSessionAssets(record: StoredLocalSavedSessionRecord): Promise<void> {
-  for (const asset of record.audioAssets) {
-    await putSessionAudioAsset(asset.id, asset.decoded);
-  }
-  for (const upload of record.uploadFiles) {
-    await putSessionUploadFile(upload.id, upload.file);
-  }
-}
-
 export function useLocalSavedSessions(): LocalSavedSessionsController {
   const [sessions, setSessions] = useState<LocalSavedSessionRecord[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -188,6 +116,7 @@ export function useLocalSavedSessions(): LocalSavedSessionsController {
   const sessionsRef = useRef(sessions);
   const activeSessionIdRef = useRef(activeSessionId);
   const activeSignatureRef = useRef(activeSignature);
+  const dirtyTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     sessionsRef.current = sessions;
@@ -211,6 +140,17 @@ export function useLocalSavedSessions(): LocalSavedSessionsController {
       setDirty(true);
     }
   }, []);
+
+  // Store mutations (knob turns, MIDI, automation) can fire many times per
+  // frame during a performance. Coalesce them into one signature check per
+  // window instead of stringifying the full snapshot on every emission.
+  const scheduleSyncDirty = useCallback(() => {
+    if (dirtyTimerRef.current !== null) return;
+    dirtyTimerRef.current = window.setTimeout(() => {
+      dirtyTimerRef.current = null;
+      syncDirty();
+    }, 200);
+  }, [syncDirty]);
 
   useEffect(() => {
     let cancelled = false;
@@ -240,16 +180,20 @@ export function useLocalSavedSessions(): LocalSavedSessionsController {
 
   useEffect(() => {
     const unsubscribers = [
-      usePerformanceStore.subscribe(syncDirty),
-      useLoraStore.subscribe(syncDirty),
-      useCurveStore.subscribe(syncDirty),
-      useCustomTracksStore.subscribe(syncDirty),
-      useStemOverlayStore.subscribe(syncDirty),
+      usePerformanceStore.subscribe(scheduleSyncDirty),
+      useLoraStore.subscribe(scheduleSyncDirty),
+      useCurveStore.subscribe(scheduleSyncDirty),
+      useCustomTracksStore.subscribe(scheduleSyncDirty),
+      useStemOverlayStore.subscribe(scheduleSyncDirty),
     ];
     return () => {
       unsubscribers.forEach((unsubscribe) => unsubscribe());
+      if (dirtyTimerRef.current !== null) {
+        window.clearTimeout(dirtyTimerRef.current);
+        dirtyTimerRef.current = null;
+      }
     };
-  }, [syncDirty]);
+  }, [scheduleSyncDirty]);
 
   const replaceSessionSummaries = useCallback((next: LocalSavedSessionRecord[]) => {
     const ordered = [...next].sort((a, b) => b.updatedAt - a.updatedAt);
@@ -274,9 +218,12 @@ export function useLocalSavedSessions(): LocalSavedSessionsController {
           updatedAt: now,
           snapshot,
         };
-        const stored = collectStoredSession(record);
-        await seedSessionAssets(stored);
-        await putLocalSavedSessionRecord(stored);
+        const persisted = await persistSessionSnapshotAssets(snapshot);
+        if (persisted.status !== "complete") {
+          setError(persisted.message);
+          return false;
+        }
+        await putLocalSavedSessionRecord(record);
         const next = existing
           ? sessionsRef.current.map((session) =>
               session.id === existing.id ? record : session,
@@ -306,11 +253,8 @@ export function useLocalSavedSessions(): LocalSavedSessionsController {
     setError(null);
     try {
       const stored =
-        await getLocalSavedSessionRecord<StoredLocalSavedSessionRecord>(id);
+        await getLocalSavedSessionRecord<LocalSavedSessionRecord>(id);
       const record = stored ?? summary;
-      if (stored) {
-        await seedSessionAssets(stored);
-      }
       const restored = await applySessionSnapshot(record.snapshot);
       if (restored.status !== "complete") {
         setError(restored.message);
@@ -338,7 +282,7 @@ export function useLocalSavedSessions(): LocalSavedSessionsController {
         session.id === id ? { ...session, name: trimmed } : session,
       );
       replaceSessionSummaries(next);
-      void getLocalSavedSessionRecord<StoredLocalSavedSessionRecord>(id).then(
+      void getLocalSavedSessionRecord<LocalSavedSessionRecord>(id).then(
         (record) => {
           if (record) {
             void putLocalSavedSessionRecord({ ...record, name: trimmed });

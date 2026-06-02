@@ -105,10 +105,6 @@ export async function hasSessionAudioAsset(id: string): Promise<boolean> {
   return count > 0;
 }
 
-export async function deleteSessionAudioAsset(id: string): Promise<void> {
-  await withStore(AUDIO_STORE, "readwrite", (store) => store.delete(id));
-}
-
 export async function putSessionUploadFile(id: string, file: File): Promise<void> {
   const record: UploadFileRecord = {
     id,
@@ -139,10 +135,6 @@ export async function hasSessionUploadFile(id: string): Promise<boolean> {
     store.count(id),
   );
   return count > 0;
-}
-
-export async function deleteSessionUploadFile(id: string): Promise<void> {
-  await withStore(FILE_STORE, "readwrite", (store) => store.delete(id));
 }
 
 export async function putLocalSavedSessionRecord<T extends { id: string }>(

@@ -55,13 +55,6 @@ export interface SessionSnapshotV1 {
 
 export type SessionSnapshot = SessionSnapshotV1;
 
-export type RestoreProgress =
-  | "validating"
-  | "loading-assets"
-  | "restoring-controls"
-  | "restoring-stems"
-  | "ready";
-
 export function captureSessionSnapshot(): SessionSnapshot {
   const perf = usePerformanceStore.getState();
   const stemOverlay = useStemOverlayStore.getState();
@@ -158,7 +151,7 @@ export async function persistSessionSnapshotAssets(
   try {
     for (const trackMeta of snapshot.customTracks) {
       const track = custom.tracks.get(trackMeta.name);
-      if (!track) {
+      if (!track || !track.decoded) {
         return {
           status: "missing-audio-asset",
           message: `Uploaded source missing: ${trackMeta.name}`,
@@ -300,21 +293,15 @@ function flashSessionStatus(message: string): void {
 
 export async function applySessionSnapshot(
   snapshot: unknown,
-  opts: {
-    onProgress?: (progress: RestoreProgress) => void;
-  } = {},
 ): Promise<SessionCompleteness> {
-  opts.onProgress?.("validating");
   const completeness = await checkSessionCompleteness(snapshot);
   if (completeness.status !== "complete") return completeness;
   if (!validateSessionSnapshotShape(snapshot)) return completeness;
 
-  opts.onProgress?.("loading-assets");
   flashSessionStatus("Loading uploaded audio...");
   const hydrated = await hydrateCustomTracks(snapshot);
   if (hydrated.status !== "complete") return hydrated;
 
-  opts.onProgress?.("restoring-controls");
   flashSessionStatus("Restoring controls...");
   const perf = usePerformanceStore.getState();
   perf.setSkipNextDenoiseGate(true);
@@ -329,7 +316,6 @@ export async function applySessionSnapshot(
     stem.setVolume(kind, snapshot.stemOverlay.volumes[kind]);
   });
 
-  opts.onProgress?.("restoring-stems");
   if (
     snapshot.customTracks.some(
       (track) => track.name === snapshot.fixture && track.stemAssetIds,
@@ -338,7 +324,6 @@ export async function applySessionSnapshot(
     flashSessionStatus("Restored saved stem audio.");
   }
 
-  opts.onProgress?.("ready");
   window.setTimeout(() => {
     const session = useSessionStore.getState();
     if (
@@ -355,21 +340,6 @@ export async function applySessionSnapshot(
     message: "Session restored.",
     missingAssetIds: [],
   };
-}
-
-export async function relinkSessionAudioAsset(
-  snapshot: SessionSnapshot,
-  assetId: string,
-  file: File,
-): Promise<DecodedFixture> {
-  const metadata = snapshot.customTracks.find((track) => track.assetId === assetId);
-  if (!metadata) throw new Error("Saved session does not reference this audio asset.");
-
-  const asset = await decodeSavedUploadForMetadata(metadata, file);
-
-  await putSessionAudioAsset(assetId, asset);
-  await putSessionUploadFile(assetId, file);
-  return asset;
 }
 
 export function sessionSnapshotSignature(snapshot: SessionSnapshot): string {

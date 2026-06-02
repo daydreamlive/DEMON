@@ -70,8 +70,8 @@ export function LiteTrackCarousel() {
     decoded: DecodedFixture;
     fileName: string;
     originalFile: File;
-    trimStartS: number;
-    trimEndS: number;
+    trimStartS?: number;
+    trimEndS?: number;
   } | null>(null);
   const trimCapS =
     useConfig().engine.max_source_duration_s ?? DEFAULT_TRIM_CAP_S;
