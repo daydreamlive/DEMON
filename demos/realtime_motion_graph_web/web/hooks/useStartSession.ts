@@ -56,7 +56,8 @@ async function probeServerSideFixtures(wsUrl: string): Promise<string[]> {
   try {
     const u = new URL(wsUrl);
     u.protocol = u.protocol === "wss:" ? "https:" : "http:";
-    u.pathname = "/api/server-info";
+    const basePath = u.pathname.replace(/\/+$/, "");
+    u.pathname = `${basePath}/api/server-info`;
     u.search = "";
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 4000);
