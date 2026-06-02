@@ -182,8 +182,8 @@ export function LiteTrackCarousel() {
             if (v === MIC_VALUE) {
               // Same sentinel pattern as UPLOAD_VALUE — open the
               // MicRecorder modal; the controlled select snaps back
-              // to the active track on the next render. Mic isn't
-              // gated — only track-pick and upload are.
+              // to the active track on the next render.
+              if (!(await gate("mic"))) return;
               setMicOpen(true);
               return;
             }

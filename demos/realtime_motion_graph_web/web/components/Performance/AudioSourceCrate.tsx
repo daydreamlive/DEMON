@@ -368,7 +368,10 @@ export function AudioSourceCrate() {
           type="button"
           className="audio-source-mic-btn"
           disabled={uploading}
-          onClick={() => setMicOpen(true)}
+          onClick={async () => {
+            if (!(await gate("mic"))) return;
+            setMicOpen(true);
+          }}
           aria-label="Record audio from microphone"
           data-dd-tooltip="Record audio from your microphone"
         >
