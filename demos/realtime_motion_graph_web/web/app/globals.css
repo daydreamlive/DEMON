@@ -2389,8 +2389,11 @@ body.drawer-open {
 .drawer-help-bar {
   flex: 0 0 auto;
   margin-top: auto;
-  min-height: 88px;
-  max-height: 28vh;
+  /* Fixed height, NOT content-driven. A band that grew/shrank with the
+     hovered control's description length would resize the control grid
+     above it on every hover — a constant stutter. Keep it constant and
+     let a rare long description scroll inside (overflow-y below). */
+  height: 92px;
   padding: 10px 12px 11px;
   border-top: 1px solid var(--frame-line);
   background: rgba(8, 8, 14, 0.55);
@@ -2399,6 +2402,13 @@ body.drawer-open {
   flex-direction: column;
   gap: 4px;
   overflow-y: auto;
+}
+/* Spread (all-controls) layout is far wider, so descriptions wrap to
+   one or two lines instead of the three-plus the narrow tabbed panel
+   needs. Reserve a shorter fixed band there so the help strip doesn't
+   eat grid height it no longer needs. */
+.install-sheet--spread .drawer-help-bar {
+  height: 58px;
 }
 .drawer-help-bar--active {
   background: rgba(12, 12, 20, 0.7);
@@ -2423,30 +2433,6 @@ body.drawer-open {
   color: var(--text-dim);
   font-style: italic;
   margin: 0;
-}
-/* Overlay variant — used by the drawer's spread (all-controls) layout
-   so the bar floats over the bottom of the panel without stealing
-   grid height. Only mounted while the user is actively hovering a
-   tooltipped control (see DrawerHelpBar's `spread` prop), so there's
-   no idle chrome over the section grid. The right edge stops before
-   the 32px edge-handle column so the handle and the spread-toggle
-   pinned inside it stay clickable. */
-.drawer-help-bar--overlay {
-  position: absolute;
-  left: 0;
-  right: 32px;
-  bottom: 0;
-  margin-top: 0;
-  flex: none;
-  min-height: 0;
-  max-height: 25%;
-  background: rgba(8, 8, 14, 0.78);
-  -webkit-backdrop-filter: blur(6px);
-          backdrop-filter: blur(6px);
-  border-radius: 0 0 0 var(--radius-md);
-  /* Above the section grid (no explicit z-index → auto) but below the
-     edge handle and the spread toggle, both of which sit at z-index 3. */
-  z-index: 2;
 }
 @media (max-width: 768px) {
   /* No drawer on mobile — the help bar lives in the desktop install
