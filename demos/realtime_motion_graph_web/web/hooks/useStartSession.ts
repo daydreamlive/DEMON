@@ -4,7 +4,6 @@ import { useCallback } from "react";
 
 import { AudioPlayer } from "@/engine/audio/AudioPlayer";
 import { listFixtures, loadFixtureAudio, pickDefaultFixture } from "@/engine/audio/loadFixture";
-import { resetKnobDelta } from "@/engine/midi/absoluteDelta";
 import { createNetworkMonitor } from "@/engine/networkMonitor";
 import { defaultWsUrl } from "@/engine/podUrl";
 import { RemoteBackend, SAMPLE_RATE, SLICE_FLAG_DELTA } from "@/engine/protocol";
@@ -129,6 +128,9 @@ function buildConfig(
     fast_vae: cfg.fast_vae,
     walk_window: cfg.walk_window ?? false,
     walk_window_s: cfg.walk_window_s ?? 60,
+    lead_floor_s: cfg.lead_floor_s,
+    lead_ceiling_s: cfg.lead_ceiling_s,
+    lead_release_tau_s: cfg.lead_release_tau_s,
     enabled_loras: enabledLoras,
     prompt: perf.promptA,
     prompt_b: perf.promptB,
@@ -376,11 +378,6 @@ export function useStartSession() {
       prev.remote?.close();
     } catch {}
     reset();
-    // Clear the per-CC MIDI delta cache. Stale `lastValue` entries
-    // from the previous session would otherwise produce phantom
-    // deltas on the first knob wiggle of the new one — a long-
-    // reported "knobs go crazy on session start" complaint.
-    resetKnobDelta();
     // A fresh session boots with no timbre / structure override. Drop
     // any RefSource recorded by a prior session so the reconnect path
     // (restoreRefs) can't re-apply a ref the operator didn't set this

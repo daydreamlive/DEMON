@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 from acestep.paths import user_uploads_dir
-from acestep.sidecars import AudioSidecar, load_sidecar, save_sidecar_pair
+from acestep.sidecars import POOL, AudioSidecar, load_sidecar, save_sidecar_pair
 from acestep.track_assets import (
     STEM_MODES,
     load_track_metadata,
@@ -167,6 +167,81 @@ def unique_user_upload_name(requested_name: str) -> str:
         if not track_dir(root, candidate).exists() and not (root / candidate).exists():
             return candidate
         i += 1
+
+
+def find_duplicate_upload(
+    requested_name: str,
+    *,
+    waveform: "torch.Tensor",
+    sample_rate: int,
+    tolerance: float = 1e-3,
+) -> Optional[UserUploadPacket]:
+    """Return a packet for an existing upload already holding this audio.
+
+    The realtime client's "serialize inputs" export embeds a track's PCM as
+    a 16-bit WAV; re-importing it pushes that audio back through the upload
+    pipeline under its ORIGINAL name. Without dedup the name-collision branch
+    in :func:`unique_user_upload_name` mints a ``Foo (1).wav`` duplicate and
+    re-runs the (expensive) VAE encode + stem rip for audio already on disk.
+
+    Dedup is anchored on the requested name's canonical track dir (the export
+    preserves the name) and confirmed by a *tolerant* content compare. We do
+    NOT compare :func:`acestep.track_assets.waveform_fingerprint`: the 16-bit
+    WAV round trip shifts samples by up to one LSB (~3e-5), which is far below
+    ``tolerance`` here but enough to flip a few hundred of the fingerprint's
+    quantized sample bins, so an exact-hash equality check misses on exactly
+    this round trip. A genuinely different track sharing the name diffs by
+    orders of magnitude more than ``tolerance`` and is correctly not reused.
+
+    Returns ``None`` (caller proceeds to a fresh encode) when no same-named
+    track exists, its metadata lacks the fields needed to rebuild a packet,
+    its length differs by more than one latent pool, its source WAV can't be
+    read, or the content compare exceeds ``tolerance``.
+    """
+    import torch
+    import soundfile as sf
+
+    root = user_uploads_dir()
+    meta = load_track_metadata(root, requested_name)
+    if not meta:
+        return None
+    src = source_audio_path(root, requested_name)
+    if not src.is_file():
+        return None
+    sr = int(meta.get("sample_rate") or 0)
+    samples = int(meta.get("samples") or 0)
+    if sr != int(sample_rate) or samples <= 0:
+        return None
+    # A different-length clip of the same song (a different trim window) is a
+    # distinct selection and must re-upload. Allow drift up to one pool since
+    # pool alignment can land a sample or two apart.
+    if abs(samples - int(waveform.shape[-1])) > POOL:
+        return None
+    try:
+        data, file_sr = sf.read(str(src), dtype="float32", always_2d=True)
+    except Exception:
+        return None
+    if int(file_sr) != int(sample_rate):
+        return None
+    existing = torch.from_numpy(data.T.copy()).float().mean(dim=0)
+    incoming = waveform.detach().cpu().float().mean(dim=0)
+    n = min(int(existing.shape[-1]), int(incoming.shape[-1]))
+    if n <= 0:
+        return None
+    if float((existing[:n] - incoming[:n]).abs().max()) > tolerance:
+        return None
+    name = str(meta.get("source_name") or meta.get("display_name") or requested_name)
+    channels = int(meta.get("channels") or int(waveform.shape[0]))
+    return UserUploadPacket(
+        name=name,
+        bpm=int(meta.get("bpm") or 0),
+        key=str(meta.get("key") or ""),
+        time_signature=str(meta.get("time_signature") or "4"),
+        duration_s=samples / sr,
+        samples=samples,
+        channels=channels,
+        sample_rate=sr,
+    )
 
 
 def persist_user_upload_packet(

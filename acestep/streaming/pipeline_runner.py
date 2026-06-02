@@ -15,6 +15,7 @@ import torch
 from acestep.engine.dcw import DCWAdvanced
 from acestep.engine.obs import logger
 from acestep.nodes.types import ChannelGuidanceEntry, Latent
+from acestep.nodes.interpolation import INTERPOLATIONS
 from acestep.nodes.vae_nodes import EmptyLatent, LatentBlend
 
 from acestep.streaming.knobs import CHANNEL_GROUPS, KEYSTONE_CHANNELS
@@ -158,6 +159,9 @@ class PipelineRunner:
         walk_window_s=60.0,
         neg_conditioning=None,
         idle_threshold_s=0.0,
+        lead_floor_s=None,
+        lead_ceiling_s=None,
+        lead_release_tau_s=None,
     ):
         self.session = session
         self.stream = stream  # StreamHandle
@@ -321,19 +325,44 @@ class PipelineRunner:
         # client scheduling slop and the measure->land transit.
         self._lead_interval_gain = 1.6
         self._lead_safety_margin_s = 0.05
-        # Floor so a slice is never parked basically on top of the playhead.
-        self._lead_floor_s = 0.05
+        # Floor on the steady lead. The original 0.05s self-sizes to an *idle*
+        # GPU but leaves no slack for contention: ANY co-resident load (screen
+        # capture, the WebGPU display, a second process) lengthens ticks, and a
+        # tiny baseline lead then underruns on the first slow tick and has to
+        # chase it reactively — the audible sawtooth that "explodes" under
+        # contention. Set MIDWAY between that bare floor and the old fixed
+        # ~0.5s lead: enough baseline slack to absorb moderate contention up
+        # front without paying the full latency of the old fixed behavior.
+        # Operator-overridable via config.json (engine.lead_floor_s); the
+        # literal is the standalone-caller default when no override is passed.
+        self._lead_floor_s = 0.25 if lead_floor_s is None else float(lead_floor_s)
         # Defensive ceiling: never park a slice more than this far ahead, so
         # the modulo-``eff_dur`` wrap below can't fold the write back onto the
-        # playhead. Kept BELOW ``_stall_release_tau_s`` so the decay rate
-        # (<= ceiling/tau < 1.0/s) can never shrink the lead faster than the
-        # playhead advances — i.e. ``decode_start`` stays monotonic during
-        # decay and we never re-decode an earlier position.
-        self._decode_lead_ceiling_s = 1.6
+        # playhead. Lowered from 1.6 (midway) so sustained contention can't
+        # inflate the lead toward a multi-second latency; it still clears the
+        # rebuild-prewarm bump (~1.1s) so a refit stall stays covered. Kept
+        # BELOW ``_stall_release_tau_s`` so the decay rate (<= ceiling/tau <
+        # 1.0/s) can never shrink the lead faster than the playhead advances —
+        # i.e. ``decode_start`` stays monotonic during decay and we never
+        # re-decode an earlier position. Operator-overridable via config.json
+        # (engine.lead_ceiling_s).
+        self._decode_lead_ceiling_s = (
+            1.35 if lead_ceiling_s is None else float(lead_ceiling_s)
+        )
         # One-shot stall coverage (rebuild prewarm + reactive shortfall). Rises
-        # immediately, decays over tau so it is never a permanent lead.
+        # immediately, decays over tau so it is never a permanent lead. tau is
+        # kept >= the ceiling (the monotonic-decode invariant: 1.5 >= 1.35) and
+        # shortened from 1.8s (midway) so a contention spike releases faster
+        # instead of pinning the lead high. Operator-overridable via
+        # config.json (engine.lead_release_tau_s); clamped up to the ceiling
+        # just below so an operator misconfig can't break the invariant.
         self._stall_extra_s = 0.0
-        self._stall_release_tau_s = 1.8
+        self._stall_release_tau_s = (
+            1.5 if lead_release_tau_s is None else float(lead_release_tau_s)
+        )
+        self._stall_release_tau_s = max(
+            self._stall_release_tau_s, self._decode_lead_ceiling_s,
+        )
 
         # ----- Pre-stall coverage on rebuild-triggering param changes -----
         # The single ~1s stall on the tick a rebuild-triggering param first
@@ -526,6 +555,7 @@ class PipelineRunner:
             latent_a=self._silence_latent,
             latent_b=self.stream.source.context_latent,
             alpha=hint_str,
+            method=self.state.interp_structure,
         )["latent"]
 
     def _sync_channel_guidance(self, raw: dict, last: list) -> list:
@@ -895,6 +925,7 @@ class PipelineRunner:
                         latent_a=self._silence_latent,
                         latent_b=Latent(tensor=live_ctx_raw_t),
                         alpha=hint_str,
+                        method=self.state.interp_structure,
                     )["latent"]
                 last_hint_str = hint_str
                 self._hint_dirty = False
@@ -926,7 +957,9 @@ class PipelineRunner:
             source_lat = None
             if fb_latent is not None:
                 src_tensor = live_src_lat.tensor
-                source_lat = (1.0 - feedback) * src_tensor + feedback * fb_latent
+                source_lat = INTERPOLATIONS[self.state.interp_feedback](
+                    src_tensor, fb_latent, feedback,
+                )
 
             sde_curve = None
             if self.use_sde:

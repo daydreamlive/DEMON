@@ -8,6 +8,7 @@ import { useCursor } from "@/hooks/useCursor";
 import { useEdgeLoraBinding } from "@/hooks/useEdgeLoraBinding";
 import { useFixtureSwap } from "@/hooks/useFixtureSwap";
 import { useIdleReset } from "@/hooks/useIdleReset";
+import { useInterpSync } from "@/hooks/useInterpSync";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useMcpMirror } from "@/hooks/useMcpMirror";
@@ -41,6 +42,7 @@ import { HUDFrame } from "./HUDFrame";
 import { HudHelpReadout } from "./HudHelpReadout";
 import { InstallStage } from "./InstallStage";
 import { LiveIndicator } from "./LiveIndicator";
+import { MidiContextMenu } from "./MidiContextMenu";
 import {
   MobileLoraBlendStepper,
   MobileRemixStepper,
@@ -80,6 +82,7 @@ export function PerformanceShell() {
   useEdgeLoraBinding();
   useTimbreSync();
   usePromptBlendSync();
+  useInterpSync();
   useLoraTriggerSync();
   useStemOverlaySync();
   useRefSourceAcks("timbre");
@@ -159,6 +162,7 @@ export function PerformanceShell() {
       <HudHelpReadout />
       <HeroMacrosTooltip />
       <ConfigModal />
+      <MidiContextMenu />
       <ConfirmDialog />
 
       <StatusBar />

@@ -542,9 +542,9 @@ def main():
         # so every real "begin" gets the ~5s warm path instead of ~40s.
         # Synchronous on purpose: the heartbeat sidecar only advertises
         # this pod to the pool after main() proceeds, so the pod isn't
-        # routed real users until it's warm. Disable with
-        # DEMON_STARTUP_WARMUP=0.
-        if os.environ.get("DEMON_STARTUP_WARMUP", "1") != "0":
+        # routed real users until it's warm. Enable with
+        # DEMON_STARTUP_WARMUP=1.
+        if os.environ.get("DEMON_STARTUP_WARMUP", "0") != "0":
             from acestep.streaming.warmup import run_startup_warmup
 
             run_startup_warmup(

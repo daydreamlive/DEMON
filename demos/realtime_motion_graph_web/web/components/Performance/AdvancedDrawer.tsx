@@ -4,6 +4,7 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useCurveStore } from "@/store/useCurveStore";
+import { useMidiStore } from "@/store/useMidiStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 
@@ -160,6 +161,18 @@ export function AdvancedDrawer({ savedTab, unsavedDot }: Props = {}) {
         disabled={!started}
         aria-label={open ? "Close Full Controls" : "Open Full Controls"}
         aria-expanded={open}
+        data-midi-learn="drawer_toggle"
+        onContextMenu={(e) => {
+          if (!started) return;
+          e.preventDefault();
+          useMidiStore.getState().openMenu({
+            x: e.clientX,
+            y: e.clientY,
+            kind: "note",
+            target: "drawer_toggle",
+            el: e.currentTarget,
+          });
+        }}
       >
         <span className="install-sheet-edge-handle-caret" aria-hidden="true">
           {open ? "◂" : "▸"}
@@ -190,6 +203,18 @@ export function AdvancedDrawer({ savedTab, unsavedDot }: Props = {}) {
         }
         aria-pressed={open && spread}
         title={!open ? "Expanded controls" : spread ? "Tabbed view" : "Spread view"}
+        data-midi-learn="drawer_expand_toggle"
+        onContextMenu={(e) => {
+          if (!started) return;
+          e.preventDefault();
+          useMidiStore.getState().openMenu({
+            x: e.clientX,
+            y: e.clientY,
+            kind: "note",
+            target: "drawer_expand_toggle",
+            el: e.currentTarget,
+          });
+        }}
       >
         <svg
           viewBox="0 0 16 16"

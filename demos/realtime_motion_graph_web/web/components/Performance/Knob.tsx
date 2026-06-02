@@ -3,6 +3,7 @@
 import type { CSSProperties } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { MIDI_TICK_T } from "@/engine/midi/absoluteDelta";
 import { useTactileSlider } from "@/hooks/useTactileSlider";
 import { tToValue, valueToT } from "@/lib/sliderMapping";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
@@ -52,7 +53,9 @@ const ARC_RANGE_DEG = ARC_END_DEG - ARC_START_DEG;
 // Ableton's default ratio for a ~44px knob cap. Shift = fine (×5).
 const PIXELS_PER_RANGE = 280;
 const FINE_DIVISOR = 5;
-const SCROLL_STEP = 0.01;
+// One scroll notch = one MIDI relative-encoder tick (shared constant so
+// the wheel and a mapped encoder move the knob by the same amount).
+const SCROLL_STEP = MIDI_TICK_T;
 const DBLCLICK_MS = 350;
 
 // Palette stops mirror the .slider-fill gradient. Same array as

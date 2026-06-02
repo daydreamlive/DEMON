@@ -1880,6 +1880,12 @@ body[data-mode="graph"]::before {
   background: rgba(255, 255, 255, 0.07);
   color: var(--text-strong);
 }
+.lora-context-menu-divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--frame-line);
+  opacity: 0.85;
+}
 
 /* ── Hidden-LoRA footer ── */
 .lora-hidden-footer {
@@ -2542,6 +2548,21 @@ body.drawer-open .hud-help-readout {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+/* Visually hidden on desktop rather than display:none, so the
+   aria-describedby targets stay in the accessibility tree (the visible
+   affordance on desktop is the hover tooltip). The mobile sheet promotes
+   this to a real visible readout below the buttons. */
+.operator-config-readout {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 .install-section-operator .ws-url-input { width: 220px; }
 /* Density toggle anchors the right cluster — its margin-left: auto pushes
@@ -5937,6 +5958,42 @@ body.curve-open #install-video-area #graph {
   gap: 10px;
 }
 .mobile-sheet-section .install-section-operator > * { width: 100%; }
+@media (max-width: 768px), (max-height: 500px) and (orientation: landscape) {
+  .mobile-sheet-section .operator-config-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+  }
+  .mobile-sheet-section .operator-config-actions .pause-btn {
+    width: 100%;
+  }
+  .mobile-sheet-section .operator-config-actions [data-dd-tooltip]::after {
+    display: none !important;
+  }
+  .mobile-sheet-section .operator-config-readout {
+    position: static;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: auto;
+    height: auto;
+    min-height: 56px;
+    margin: 2px 0 0;
+    padding: 9px 10px;
+    overflow: visible;
+    clip-path: none;
+    white-space: normal;
+    border: 1px solid var(--frame-line);
+    border-radius: var(--radius-sm);
+    background: rgba(8, 8, 14, 0.55);
+    color: var(--text-dim);
+    font-size: 11px;
+    line-height: 1.45;
+  }
+  .mobile-sheet-section .operator-config-readout-item {
+    display: block;
+  }
+}
 /* Stack prompts vertically on mobile — the desktop layout is a single
    row (Prompt A | blend | Prompt B | Send) that crushes textareas to
    ~30px wide at 414px viewport. */
@@ -7510,13 +7567,31 @@ body.curve-open #install-video-area #graph {
 .waveform-scrub-box[data-loop-mode="true"] {
   cursor: crosshair;
 }
-/* LOOP toggle — the discoverable entry point for the loop band. Sits in
-   the top-left corner of the strip; flat per the design language. */
-.waveform-loop-toggle {
+/* Loop control cluster — the LOOP toggle plus, once a region exists, the
+   grid / ÷2·×2 / nudge / length / clear controls. Sits top-left of the
+   strip; hidden until hover (or until a loop region is set / draw mode is
+   armed) so it never sits in the way of a scrub click. Flat per the
+   design language. */
+.waveform-loop-controls {
   position: absolute;
   top: 4px;
   left: 6px;
   z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease-out;
+}
+.waveform-scrub-box:hover .waveform-loop-controls,
+.waveform-scrub-box[data-has-band="true"] .waveform-loop-controls,
+.waveform-scrub-box[data-loop-mode="true"] .waveform-loop-controls {
+  opacity: 1;
+  pointer-events: auto;
+}
+.waveform-loop-toggle,
+.waveform-loop-btn {
   padding: 2px 8px;
   font: 600 9px/1.4 var(--font-ui, ui-sans-serif), sans-serif;
   letter-spacing: 0.08em;
@@ -7525,19 +7600,14 @@ body.curve-open #install-video-area #graph {
   color: rgba(255, 222, 196, 0.62);
   border: 1px solid rgba(255, 222, 196, 0.22);
   cursor: pointer;
-  /* Hidden until the operator hovers the scrub strip (or a loop is
-     active) — so it never sits in the way of a scrub click. */
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 120ms ease-out, background 120ms ease-out,
-    color 120ms ease-out, border-color 120ms ease-out;
+  transition: background 120ms ease-out, color 120ms ease-out,
+    border-color 120ms ease-out;
 }
-.waveform-scrub-box:hover .waveform-loop-toggle,
-.waveform-loop-toggle[data-active="true"] {
-  opacity: 1;
-  pointer-events: auto;
+.waveform-loop-btn {
+  padding: 2px 6px;
 }
-.waveform-loop-toggle:hover {
+.waveform-loop-toggle:hover,
+.waveform-loop-btn:hover {
   color: rgba(255, 222, 196, 0.95);
   border-color: rgba(255, 222, 196, 0.45);
 }
@@ -7545,6 +7615,21 @@ body.curve-open #install-video-area #graph {
   background: rgba(240, 138, 72, 0.9);
   color: #1a0e05;
   border-color: transparent;
+}
+.waveform-loop-clear {
+  color: rgba(255, 180, 180, 0.6);
+}
+.waveform-loop-clear:hover {
+  color: rgba(255, 200, 200, 0.95);
+  border-color: rgba(255, 160, 160, 0.5);
+}
+.waveform-loop-len {
+  font: 600 9px/1.4 var(--font-ui, ui-sans-serif), sans-serif;
+  letter-spacing: 0.04em;
+  color: rgba(255, 222, 196, 0.7);
+  padding: 0 2px;
+  white-space: nowrap;
+  user-select: none;
 }
 
 /* Mobile waveform strip. Sits below the DEMON brand mark and inside the
@@ -7585,9 +7670,9 @@ body.curve-open #install-video-area #graph {
        LiteControls bay. */
     z-index: 5;
   }
-  /* Mobile sliders are touch-only — the LOOP toggle's hover-reveal would
+  /* Mobile sliders are touch-only — the loop cluster's hover-reveal would
      never fire, so keep it permanently visible (faint until armed). */
-  .waveform-scrub-box .waveform-loop-toggle {
+  .waveform-scrub-box .waveform-loop-controls {
     opacity: 0.85;
     pointer-events: auto;
   }

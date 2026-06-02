@@ -1,7 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 
 import { loraStrengthDispatcher } from "@/engine/lora/dispatcher";
 import { listHiddenLoras, listLoras } from "@/engine/lora/listLoras";
@@ -34,8 +40,8 @@ import type { LoraCatalogEntry, LoraMetadata } from "@/types/protocol";
 //
 // A search box at the top filters across name + description + tags +
 // genre; while a query is active the accordion flattens to a plain
-// results list. Right-click any row → portaled context menu (MIDI learn,
-// Copy trigger). Enabling/disabling a LoRA does not mutate the Tags A/B
+// results list. Right-click any row → shared MIDI context menu with a
+// Copy trigger action. Enabling/disabling a LoRA does not mutate the Tags A/B
 // textareas — the trigger word rides the WS `prompt` message, injected by
 // RemoteBackend.sendPrompt (enabledLoraTriggerPrefix), and the toggle
 // re-sends the prompt so the engine re-encodes with the new trigger set.
@@ -173,95 +179,6 @@ function shortDescription(md: LoraMetadata | undefined): string | undefined {
 
 // ── Context menu ────────────────────────────────────────────────────────
 
-interface ContextMenuItem {
-  label: string;
-  onClick: () => void;
-}
-
-interface ContextMenuProps {
-  x: number;
-  y: number;
-  items: ContextMenuItem[];
-  onClose: () => void;
-}
-
-// Portaled to document.body so it escapes the drawer + library-list
-// overflow clipping and z-index. Click position is clamped to the
-// viewport before paint (useLayoutEffect) so the menu never opens
-// off-screen near a corner.
-function LoraContextMenu({ x, y, items, onClose }: ContextMenuProps) {
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const [pos, setPos] = useState({ x, y });
-
-  useLayoutEffect(() => {
-    const el = menuRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const pad = 8;
-    let nx = x;
-    let ny = y;
-    if (nx + rect.width > window.innerWidth - pad) {
-      nx = Math.max(pad, window.innerWidth - rect.width - pad);
-    }
-    if (ny + rect.height > window.innerHeight - pad) {
-      ny = Math.max(pad, window.innerHeight - rect.height - pad);
-    }
-    if (nx !== x || ny !== y) setPos({ x: nx, y: ny });
-  }, [x, y]);
-
-  useEffect(() => {
-    const onPointerDown = (e: PointerEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        onClose();
-      }
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    const onScroll = () => onClose();
-    // Defer attach by one tick so the right-click that opened the menu
-    // (still bubbling at the pointer-event level) doesn't immediately
-    // dismiss it via the outside-pointerdown handler.
-    const t = window.setTimeout(() => {
-      document.addEventListener("pointerdown", onPointerDown);
-      document.addEventListener("keydown", onKey);
-      window.addEventListener("scroll", onScroll, true);
-    }, 0);
-    return () => {
-      window.clearTimeout(t);
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKey);
-      window.removeEventListener("scroll", onScroll, true);
-    };
-  }, [onClose]);
-
-  return createPortal(
-    <div
-      ref={menuRef}
-      className="lora-context-menu"
-      style={{ left: pos.x, top: pos.y }}
-      role="menu"
-      onContextMenu={(e) => e.preventDefault()}
-    >
-      {items.map((item) => (
-        <button
-          key={item.label}
-          type="button"
-          className="lora-context-menu-item"
-          role="menuitem"
-          onClick={() => {
-            item.onClick();
-            onClose();
-          }}
-        >
-          {item.label}
-        </button>
-      ))}
-    </div>,
-    document.body,
-  );
-}
-
 // ── Clipboard ───────────────────────────────────────────────────────────
 
 async function copyTriggerToClipboard(
@@ -359,41 +276,32 @@ function useConfirmFlash(): [string | null, (text: string) => void] {
   return [msg, flash];
 }
 
-// Right-click context menu state for a row.
-function useRowMenu() {
-  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
-  const onContextMenu = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setMenuPos({ x: e.clientX, y: e.clientY });
-  }, []);
-  const close = useCallback(() => setMenuPos(null), []);
-  return { menuPos, onContextMenu, close };
-}
-
-function buildMenuItems(
+function openLoraMidiMenu(
+  e: ReactMouseEvent<HTMLElement>,
   id: string,
   trigger: string | null,
-  rowEl: HTMLElement | null,
   flashConfirm: (text: string) => void,
-): ContextMenuItem[] {
-  const items: ContextMenuItem[] = [
-    {
-      label: "MIDI learn",
-      onClick: () => {
-        useMidiStore.getState().startLearn("cc", `lora_str_${id}`, rowEl);
-      },
-    },
-  ];
-  if (trigger) {
-    items.push({
-      label: `Copy trigger "${trigger}"`,
-      onClick: () => {
-        void copyTriggerToClipboard(trigger, flashConfirm);
-      },
-    });
-  }
-  return items;
+): void {
+  e.preventDefault();
+  e.stopPropagation();
+  useMidiStore.getState().openMenu({
+    x: e.clientX,
+    y: e.clientY,
+    kind: "cc",
+    target: `lora_str_${id}`,
+    el: e.currentTarget,
+    extraItems: trigger
+      ? [
+          {
+            label: `Copy trigger "${trigger}"`,
+            dividerBefore: true,
+            onClick: () => {
+              void copyTriggerToClipboard(trigger, flashConfirm);
+            },
+          },
+        ]
+      : undefined,
+  });
 }
 
 // ── Active rack row ─────────────────────────────────────────────────────
@@ -421,7 +329,6 @@ function ActiveLoraRow({ entry }: { entry: LoraCatalogEntry }) {
   const rowRef = useRef<HTMLDivElement | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
   const [confirmMsg, flashConfirm] = useConfirmFlash();
-  const { menuPos, onContextMenu, close } = useRowMenu();
 
   const setFromClientX = useCallback(
     (clientX: number) => {
@@ -475,19 +382,16 @@ function ActiveLoraRow({ entry }: { entry: LoraCatalogEntry }) {
   }, [id, setFromClientX]);
 
   const pct = Math.max(0, Math.min(1, value / LORA_SLIDER_MAX)) * 100;
-  const menuItems = useMemo(
-    () => buildMenuItems(id, trigger, rowRef.current, flashConfirm),
-    [id, trigger, flashConfirm],
-  );
-
   return (
-    <>
-      <div
-        ref={rowRef}
-        className={`lora-active-row${isRefitPending ? " refit-pending" : ""}`}
-        data-param={`lora_str_${id}`}
-        onContextMenu={onContextMenu}
-      >
+    <div
+      ref={rowRef}
+      className={`lora-active-row${isRefitPending ? " refit-pending" : ""}`}
+      data-param={`lora_str_${id}`}
+      data-midi-kind="cc"
+      data-midi-target={`lora_str_${id}`}
+      data-dd-tooltip-title={displayName}
+      onContextMenu={(e) => openLoraMidiMenu(e, id, trigger, flashConfirm)}
+    >
         <span className="lora-active-name" title={displayName}>
           {confirmMsg ?? displayName}
         </span>
@@ -519,16 +423,7 @@ function ActiveLoraRow({ entry }: { entry: LoraCatalogEntry }) {
           </div>
           <span className="lora-strength-value">{value.toFixed(2)}</span>
         </div>
-      </div>
-      {menuPos && (
-        <LoraContextMenu
-          x={menuPos.x}
-          y={menuPos.y}
-          items={menuItems}
-          onClose={close}
-        />
-      )}
-    </>
+    </div>
   );
 }
 
@@ -556,12 +451,6 @@ function BrowseLoraRow({ entry }: { entry: LoraCatalogEntry }) {
 
   const rowRef = useRef<HTMLButtonElement | null>(null);
   const [confirmMsg, flashConfirm] = useConfirmFlash();
-  const { menuPos, onContextMenu, close } = useRowMenu();
-
-  const menuItems = useMemo(
-    () => buildMenuItems(id, trigger, rowRef.current, flashConfirm),
-    [id, trigger, flashConfirm],
-  );
 
   // Cap blocks new enables, never disables. So a row that's already
   // enabled stays clickable (so the user can free a slot); only the
@@ -572,18 +461,20 @@ function BrowseLoraRow({ entry }: { entry: LoraCatalogEntry }) {
     : displayName;
 
   return (
-    <>
-      <button
-        ref={rowRef}
-        type="button"
-        className={`lora-browse-row${enabled ? " enabled" : ""}${capBlocked ? " cap-blocked" : ""}`}
-        onClick={() => toggle(id, enabled)}
-        onContextMenu={onContextMenu}
-        aria-pressed={enabled}
-        aria-disabled={capBlocked}
-        disabled={capBlocked}
-        title={rowTitle}
-      >
+    <button
+      ref={rowRef}
+      type="button"
+      className={`lora-browse-row${enabled ? " enabled" : ""}${capBlocked ? " cap-blocked" : ""}`}
+      data-midi-kind="cc"
+      data-midi-target={`lora_str_${id}`}
+      data-dd-tooltip-title={displayName}
+      onClick={() => toggle(id, enabled)}
+      onContextMenu={(e) => openLoraMidiMenu(e, id, trigger, flashConfirm)}
+      aria-pressed={enabled}
+      aria-disabled={capBlocked}
+      disabled={capBlocked}
+      title={rowTitle}
+    >
         <span className="lora-browse-main">
           <span className="lora-browse-name" title={displayName}>
             {confirmMsg ?? displayName}
@@ -593,16 +484,7 @@ function BrowseLoraRow({ entry }: { entry: LoraCatalogEntry }) {
           </span>
         </span>
         {desc && <span className="lora-browse-desc">{desc}</span>}
-      </button>
-      {menuPos && (
-        <LoraContextMenu
-          x={menuPos.x}
-          y={menuPos.y}
-          items={menuItems}
-          onClose={close}
-        />
-      )}
-    </>
+    </button>
   );
 }
 

@@ -264,12 +264,24 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
 
     const ch = this.channels;
     const nCur = this.frameCount;
-    // Loop-seam crossfade: blend the last `seam` frames with the first
-    // `seam` frames of the buffer, then wrap the playhead to `seam` so
-    // the head we just mixed isn't replayed. Hides the click that would
-    // otherwise pop on every wrap, and softens the structural mismatch
-    // when the source song doesn't loop musically.
-    const seam = Math.min(this.seamFadeLen, Math.floor(nCur / 4));
+    // Active loop region: a band when one is armed, else the whole
+    // buffer. The seam crossfade and the wrap target both key off this,
+    // so a band loop now gets the SAME click-free seam the end-of-buffer
+    // wrap always had — the band wrap used to be a hard cut and clicked
+    // on every lap.
+    const bandActive =
+      this.loopBandStart >= 0 && this.loopBandEnd > this.loopBandStart;
+    const regionStart = bandActive ? this.loopBandStart : 0;
+    const regionEnd = bandActive ? this.loopBandEnd : nCur;
+    const regionLen = regionEnd - regionStart;
+    // A band always loops; the full buffer loops only when `loop` is on.
+    const wrapping = bandActive || this.loop;
+    // Loop-seam crossfade: blend the last `seam` frames before regionEnd
+    // with the region head, then wrap the playhead to regionStart + seam
+    // so the head we just mixed isn't replayed. Hides the wrap click and
+    // softens a source that doesn't loop musically. Shrinks for short
+    // regions so even a tiny band still fades cleanly.
+    const seam = Math.min(this.seamFadeLen, Math.floor(regionLen / 4));
 
     for (let i = 0; i < frames; i++) {
       const pos = this.position;
@@ -277,7 +289,10 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
       // Loop-off freeze: position has been clamped at end-of-buffer,
       // emit silence and stop advancing. Fire endOfBuffer once so the
       // main thread can flip the paused flag and suspend the context.
-      if (!this.loop && pos >= nCur - 1) {
+      // Keyed off `wrapping`, not `this.loop`, so a band loop whose end
+      // sits exactly at the buffer end still wraps instead of freezing
+      // (the band always loops, even with the full-buffer loop off).
+      if (!wrapping && pos >= nCur - 1) {
         for (let c = 0; c < outChannels; c++) output[c][i] = 0;
         if (!this._endSignaled) {
           this.port.postMessage({ type: "endOfBuffer" });
@@ -285,6 +300,22 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
         }
         // Skip kick + advance below — the playhead is parked.
         continue;
+      }
+
+      // Per-frame seam state, shared by the main read and the overlay
+      // mix below so they wrap phase-locked. Active in the last `seam`
+      // frames before regionEnd: blend the tail at `pos` toward the
+      // region head at `headPos` (regionStart-relative).
+      let seamActive = false;
+      let seamT = 0;
+      let headPos = 0;
+      {
+        const distFromEnd = regionEnd - pos;
+        if (wrapping && seam > 0 && distFromEnd > 0 && distFromEnd <= seam) {
+          seamActive = true;
+          seamT = (seam - distFromEnd) / seam;
+          headPos = regionStart + (seam - distFromEnd);
+        }
       }
 
       if (this.fading && this.oldBuffer) {
@@ -301,15 +332,12 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
           this.fading = false;
           this.oldBuffer = null;
         }
-      } else if (this.loop && seam > 0 && (nCur - pos) <= seam) {
-        const distFromEnd = nCur - pos;
-        const t = (seam - distFromEnd) / seam;
-        const headPos = seam - distFromEnd;
+      } else if (seamActive) {
         for (let c = 0; c < outChannels; c++) {
           const cc = Math.min(c, ch - 1);
           const sTail = this.current[pos * ch + cc];
           const sHead = this.current[headPos * ch + cc];
-          output[c][i] = sTail * (1 - t) + sHead * t;
+          output[c][i] = sTail * (1 - seamT) + sHead * seamT;
         }
       } else {
         for (let c = 0; c < outChannels; c++) {
@@ -337,22 +365,12 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
         if (pos >= ov.frameCount) continue;
         const ovCh = ov.channels;
         const ovVol = ov.volume;
-        if (this.loop && seam > 0 && (nCur - pos) <= seam) {
-          const distFromEnd = nCur - pos;
-          const t = (seam - distFromEnd) / seam;
-          const headPos = seam - distFromEnd;
-          if (headPos < ov.frameCount) {
-            for (let c = 0; c < outChannels; c++) {
-              const cc = Math.min(c, ovCh - 1);
-              const sTail = buf[pos * ovCh + cc];
-              const sHead = buf[headPos * ovCh + cc];
-              output[c][i] += (sTail * (1 - t) + sHead * t) * ovVol;
-            }
-          } else {
-            for (let c = 0; c < outChannels; c++) {
-              const cc = Math.min(c, ovCh - 1);
-              output[c][i] += buf[pos * ovCh + cc] * ovVol;
-            }
+        if (seamActive && headPos < ov.frameCount) {
+          for (let c = 0; c < outChannels; c++) {
+            const cc = Math.min(c, ovCh - 1);
+            const sTail = buf[pos * ovCh + cc];
+            const sHead = buf[headPos * ovCh + cc];
+            output[c][i] += (sTail * (1 - seamT) + sHead * seamT) * ovVol;
           }
         } else {
           for (let c = 0; c < outChannels; c++) {
@@ -388,22 +406,14 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
       if (this._kickFilled < KICK_WINDOW) this._kickFilled++;
 
       this.position++;
-      // Band loop takes precedence — wrap end → start, no seam fade
-      // for v1 (tiny click is acceptable; can polish with a per-band
-      // crossfade later). The band is only honoured when fully defined
-      // (start ≥ 0 AND end > start) so a partially-cleared state can't
-      // freeze the playhead at the band start.
-      if (
-        this.loopBandStart >= 0 &&
-        this.loopBandEnd > this.loopBandStart &&
-        this.position >= this.loopBandEnd
-      ) {
-        this.position = this.loopBandStart;
-      } else if (this.position >= nCur) {
-        // Loop: wrap to `seam` so the head frames blended by the
-        // crossfade above aren't replayed. No loop: clamp at end so
-        // the freeze branch on the next iteration takes over.
-        this.position = this.loop ? seam : nCur;
+      // Wrap at regionEnd. A band loop takes precedence over the full
+      // buffer and always wraps; the full buffer wraps only when `loop`
+      // is on, else it clamps at end so the freeze branch on the next
+      // iteration takes over. When wrapping we land at regionStart + seam
+      // so the head frames already blended by the crossfade above aren't
+      // replayed — same click-free behaviour for band and full buffer.
+      if (this.position >= regionEnd) {
+        this.position = wrapping ? regionStart + seam : nCur;
       }
     }
 

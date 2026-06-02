@@ -58,6 +58,8 @@ export function StemPanner({ kind }: Props) {
         }}
         disabled={!stemsReady}
         aria-pressed={enabled}
+        aria-label={`${label} mute`}
+        data-midi-learn={stemsReady ? `stem_${kind}_toggle` : undefined}
         data-dd-tooltip={enabled ? "Click to mute layer" : "Click to unmute layer"}
       >
         {label}

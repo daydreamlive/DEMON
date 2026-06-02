@@ -60,6 +60,12 @@ export interface SessionConfig {
   crop?: number;
   steps?: number;
   fast_vae?: boolean;
+  /** Playback-lead tuning forwarded to the server-side PipelineRunner.
+   *  Bound how far the adaptive playhead-lead buffer self-sizes. Omitted
+   *  fields fall back to the server default. */
+  lead_floor_s?: number;
+  lead_ceiling_s?: number;
+  lead_release_tau_s?: number;
   key?: string;
   /** One of "2" | "3" | "4" | "6" — meter numerator that the encoder
    *  bakes into the prompt. Same intentional-omission rule as `key`:

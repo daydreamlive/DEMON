@@ -45,6 +45,9 @@ import {
 //   Esc / O      toggle Advanced Controls drawer
 //   Esc Esc      open expanded (all-controls) drawer / close if open
 //   R            record / stop audio (no modifiers — ⌘R still reloads)
+//   L            toggle loop (enable/disable the region, or arm drawing)
+//   ←/→          nudge loop region by one grid step
+//   Shift+←/→    move loop region by its own length (jump phrases)
 
 const HELD_KEYS = new Set<string>();
 const HELD_DIGITS = new Set<string>(); // KeyboardEvent.code, e.g. "Digit3"
@@ -336,6 +339,28 @@ export function useKeyboardShortcuts() {
       // ⌘R / ⌘⇧R / Ctrl+R / Alt+R remain pure browser-reload shortcuts.
       if (k === "r" && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
         document.dispatchEvent(new CustomEvent("dd:toggle-record"));
+        return;
+      }
+      // `l` toggles the loop; WaveformScrubBox owns the actual state
+      // (enable/disable a region, or arm drawing when none exists).
+      if (k === "l" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        document.dispatchEvent(new CustomEvent("dd:loop-toggle"));
+        return;
+      }
+      // ←/→ nudge the loop region one grid step; Shift moves it by its
+      // own length (jump to the next/prev phrase). No-op in the listener
+      // when no region is set, so arrows stay free otherwise.
+      if (
+        (k === "arrowleft" || k === "arrowright") &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey
+      ) {
+        document.dispatchEvent(
+          new CustomEvent("dd:loop-nudge", {
+            detail: { dir: k === "arrowright" ? 1 : -1, byLength: e.shiftKey },
+          }),
+        );
         return;
       }
     }
