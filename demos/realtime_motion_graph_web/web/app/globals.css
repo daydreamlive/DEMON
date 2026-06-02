@@ -2543,8 +2543,20 @@ body.drawer-open .hud-help-readout {
   gap: 8px;
   align-items: center;
 }
+/* Visually hidden on desktop rather than display:none, so the
+   aria-describedby targets stay in the accessibility tree (the visible
+   affordance on desktop is the hover tooltip). The mobile sheet promotes
+   this to a real visible readout below the buttons. */
 .operator-config-readout {
-  display: none;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 .install-section-operator .ws-url-input { width: 220px; }
 /* Density toggle anchors the right cluster — its margin-left: auto pushes
@@ -5953,12 +5965,18 @@ body.curve-open #install-video-area #graph {
     display: none !important;
   }
   .mobile-sheet-section .operator-config-readout {
+    position: static;
     display: flex;
     flex-direction: column;
     gap: 4px;
+    width: auto;
+    height: auto;
     min-height: 56px;
     margin: 2px 0 0;
     padding: 9px 10px;
+    overflow: visible;
+    clip-path: none;
+    white-space: normal;
     border: 1px solid var(--frame-line);
     border-radius: var(--radius-sm);
     background: rgba(8, 8, 14, 0.55);
