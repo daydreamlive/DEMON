@@ -9367,6 +9367,12 @@ body.curve-open #install-video-area #graph {
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.04em;
 }
+.deck-bus-readout--a strong {
+  color: var(--deck-bus-a-color, var(--text-strong));
+}
+.deck-bus-readout--b strong {
+  color: var(--deck-bus-b-color, var(--text-strong));
+}
 .deck-bus-readout span:last-child {
   min-height: 1em;
   color: var(--text-dim);
@@ -9416,13 +9422,21 @@ body.curve-open #install-video-area #graph {
 }
 .deck-crossfade-fill--a {
   left: 0;
-  right: 0;
-  background: linear-gradient(to right, rgba(240, 138, 72, 0.42), #f08a48);
+  width: var(--deck-crossfade);
+  background: linear-gradient(
+    to right,
+    color-mix(in oklch, var(--deck-bus-a-color, var(--accent)) 42%, transparent),
+    var(--deck-bus-a-color, var(--accent))
+  );
 }
 .deck-crossfade-fill--b {
-  left: 0;
-  width: var(--deck-crossfade);
-  background: linear-gradient(to right, rgba(132, 96, 255, 0.42), #9a6cff);
+  left: var(--deck-crossfade);
+  right: 0;
+  background: linear-gradient(
+    to right,
+    color-mix(in oklch, var(--deck-bus-b-color, var(--accent)) 42%, transparent),
+    var(--deck-bus-b-color, var(--accent))
+  );
 }
 .deck-crossfade-cap {
   position: absolute;
@@ -9455,7 +9469,11 @@ body.curve-open #install-video-area #graph {
   width: 1px;
   transform: translateX(-50%);
   border-radius: 1px;
-  background: color-mix(in srgb, #f08a48 calc(100% - var(--deck-crossfade)), #9a6cff var(--deck-crossfade));
+  background: color-mix(
+    in oklch,
+    var(--deck-bus-a-color, var(--accent)) calc(100% - var(--deck-crossfade)),
+    var(--deck-bus-b-color, var(--accent)) var(--deck-crossfade)
+  );
   box-shadow: 0 0 4px currentColor;
 }
 .deck-crossfade-input {
@@ -9510,6 +9528,7 @@ body.curve-open #install-video-area #graph {
   line-height: 1.35;
 }
 .deck-add-card .ref-control {
+  width: 100%;
   min-width: 0;
   font-size: 10px;
 }
@@ -9590,6 +9609,7 @@ body.curve-open #install-video-area #graph {
   margin-top: 8px;
 }
 .deck-card .ref-control {
+  width: 100%;
   min-width: 0;
   font-size: 10px;
 }
@@ -9635,6 +9655,37 @@ body.curve-open #install-video-area #graph {
 .deck-performance-row,
 .deck-fader-row {
   margin-top: 7px;
+}
+.deck-stem-overlay-controls {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.055);
+}
+.deck-stem-fader-row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 6px;
+}
+.deck-stem-fader-row span,
+.deck-stem-fader-row output {
+  color: var(--text-dim);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.deck-stem-fader-row output {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.deck-stem-fader-row input {
+  min-width: 0;
+  accent-color: var(--deck-color, var(--accent));
+}
+.deck-stem-fader-row.is-disabled {
+  opacity: 0.45;
 }
 .deck-performance-row {
   flex-wrap: wrap;

@@ -13,6 +13,7 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useMcpMirror } from "@/hooks/useMcpMirror";
 import { useLoraTriggerSync } from "@/hooks/useLoraTriggerSync";
+import { useLocalSavedSessions } from "@/hooks/useLocalSavedSessions";
 import { useMidi } from "@/hooks/useMidi";
 import { useParamSync } from "@/hooks/useParamSync";
 import { usePromptBlendSync } from "@/hooks/usePromptBlendSync";
@@ -50,6 +51,8 @@ import {
 import { NetworkIndicator } from "./NetworkIndicator";
 import { PortraitLockOverlay } from "./PortraitLockOverlay";
 import { RecordingPreview } from "./RecordingPreview";
+import { SavePill } from "./SavePill";
+import { SessionsTile } from "./SessionsTile";
 import { StartOverlay } from "./StartOverlay";
 import { StatusBar } from "./StatusBar";
 import { WaveformScrubBox } from "./WaveformScrubBox";
@@ -92,6 +95,7 @@ export function PerformanceShell() {
   useIdleReset(config.reset_seconds);
 
   const startSession = useStartSession();
+  const localSavedSessions = useLocalSavedSessions();
   const status = useSessionStore((s) => s.status);
   const isMobile = useIsMobile();
 
@@ -116,6 +120,7 @@ export function PerformanceShell() {
   return (
     <>
     <div id="performance" className="screen">
+      <SavePill sessions={localSavedSessions} />
       {/* Permanent 3-knob row above the drawer handle — performance
           palette (DENOISE / STRUCTURE / FEEDBACK / SEED). The component
           handles its own visibility internally; mount it unconditionally
@@ -152,7 +157,10 @@ export function PerformanceShell() {
           <MobileLoraBlendStepper />
         </>
       )}
-      <AdvancedDrawer />
+      <AdvancedDrawer
+        savedTab={<SessionsTile sessions={localSavedSessions} />}
+        unsavedDot={localSavedSessions.dirty}
+      />
       <HudHelpReadout />
       <HeroMacrosTooltip />
       <ConfigModal />

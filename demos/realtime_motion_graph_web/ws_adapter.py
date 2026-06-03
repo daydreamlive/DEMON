@@ -826,6 +826,9 @@ def _handle_client_body(
                     time_signature=data.get("time_signature"),
                     fixture_name=data.get("fixture_name"),
                     stem_source_mode=data.get("stem_source_mode"),
+                    skip_stem_extraction=bool(
+                        data.get("skip_stem_extraction", False)
+                    ),
                     origin=origin,
                 )
             else:

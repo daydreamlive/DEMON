@@ -40,6 +40,7 @@ function poolAlign(frames: number): number {
 }
 
 function crossfadeGain(deck: DeckSlot, crossfade: number): number {
+  if (deck.crossfadeSide === null) return 0;
   const x = clamp01(crossfade);
   return deck.crossfadeSide === "left" ? 1 - x : x;
 }

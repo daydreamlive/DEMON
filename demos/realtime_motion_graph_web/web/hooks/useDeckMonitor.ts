@@ -87,6 +87,8 @@ export function useDeckMonitor({
       const key = [
         deck.trackName ?? "",
         deck.sourcePart,
+        source?.frames ?? 0,
+        source?.interleaved.byteLength ?? 0,
         deck.playing ? "play" : "stop",
         deck.positionSec.toFixed(3),
         deck.lastStartedAtMs ?? "",

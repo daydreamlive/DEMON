@@ -59,6 +59,8 @@ export function TrackPicker() {
     decoded: DecodedFixture;
     fileName: string;
     originalFile: File;
+    trimStartS?: number;
+    trimEndS?: number;
   } | null>(null);
   const trimCapS =
     useConfig().engine.max_source_duration_s ?? DEFAULT_TRIM_CAP_S;
@@ -115,6 +117,8 @@ export function TrackPicker() {
       decoded: trimmed,
       fileName: trimming.fileName,
       originalFile: trimming.originalFile,
+      trimStartS: startS,
+      trimEndS: endS,
     });
     setTrimming(null);
   }

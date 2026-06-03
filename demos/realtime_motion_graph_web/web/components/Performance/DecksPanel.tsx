@@ -19,6 +19,7 @@ import { LOCAL_MODE } from "@/lib/runtime";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import {
   DECK_IDS,
+  DECK_STEM_OVERLAY_MAX,
   MAX_DECKS,
   useDeckStore,
   type DeckId,
@@ -33,6 +34,10 @@ import { WaveformTrimDialog } from "./WaveformTrimDialog";
 
 const DEFAULT_TRIM_CAP_S = 120;
 const SOURCE_PARTS: StemSourceMode[] = ["full", "vocals", "instruments"];
+const STEM_OVERLAY_PARTS = [
+  { kind: "vocals", label: "Vocal" },
+  { kind: "instruments", label: "Instr" },
+] as const;
 type UploadTarget = DeckId | "new";
 
 export function DecksPanel() {
@@ -276,12 +281,14 @@ export function DecksPanel() {
       options: customNames.map((name) => ({ value: name, label: name })),
     },
   ];
-  const leftDecks = DECK_IDS.filter(
+  const busADeckId = DECK_IDS.find(
     (id) => deckIds.includes(id) && decks[id].crossfadeSide === "left",
   );
-  const rightDecks = DECK_IDS.filter(
+  const busBDeckId = DECK_IDS.find(
     (id) => deckIds.includes(id) && decks[id].crossfadeSide === "right",
   );
+  const busAColor = busADeckId ? decks[busADeckId].color : "oklch(0.72 0.16 42)";
+  const busBColor = busBDeckId ? decks[busBDeckId].color : "oklch(0.70 0.16 305)";
   const busAPct = Math.round((1 - crossfade) * 100);
   const busBPct = Math.round(crossfade * 100);
 
@@ -330,12 +337,18 @@ export function DecksPanel() {
         data-dd-tooltip="Inference input is the rendered mixer output. Decks assigned to bus A and bus B are blended here, then the mixed PCM is sent to inference."
         data-dd-tooltip-wide=""
         data-dd-tooltip-title="Deck mix input"
-        style={{ "--deck-crossfade": `${crossfade * 100}%` } as CSSProperties}
+        style={
+          {
+            "--deck-crossfade": `${crossfade * 100}%`,
+            "--deck-bus-a-color": busAColor,
+            "--deck-bus-b-color": busBColor,
+          } as CSSProperties
+        }
       >
         <div className="deck-bus-readout deck-bus-readout--a">
           <span className="deck-bus-label">Bus A</span>
           <strong>{busAPct}%</strong>
-          <span>{leftDecks.length ? leftDecks.join(" ") : "empty"}</span>
+          <span>{busADeckId ?? "empty"}</span>
         </div>
         <div className="deck-crossfade-control">
           <div className="deck-crossfade-track" aria-hidden="true">
@@ -360,7 +373,7 @@ export function DecksPanel() {
         <div className="deck-bus-readout deck-bus-readout--b">
           <span className="deck-bus-label">Bus B</span>
           <strong>{busBPct}%</strong>
-          <span>{rightDecks.length ? rightDecks.join(" ") : "empty"}</span>
+          <span>{busBDeckId ?? "empty"}</span>
         </div>
       </div>
 
@@ -500,8 +513,7 @@ export function DecksPanel() {
                     part === "vocals" || part === "instruments" ? part : null;
                   const disabled =
                     stemPart !== null &&
-                    assets !== undefined &&
-                    !assets.stems[stemPart];
+                    (assets === undefined || !assets.stems[stemPart]);
                   return (
                     <button
                       key={part}
@@ -563,7 +575,7 @@ export function DecksPanel() {
                       role="radio"
                       aria-checked={deck.crossfadeSide === side}
                       className={deck.crossfadeSide === side ? "is-active" : ""}
-                      data-dd-tooltip={`Assign deck ${id} to mix bus ${side === "left" ? "A" : "B"}. Multiple decks can share a bus and are layered before the crossfader.`}
+                      data-dd-tooltip={`Assign deck ${id} to mix bus ${side === "left" ? "A" : "B"}. A bus holds one deck at a time; assigning this deck parks the previous one on that bus.`}
                       onClick={() =>
                         useDeckStore.getState().setCrossfadeSide(id, side)
                       }
@@ -594,6 +606,43 @@ export function DecksPanel() {
                 />
               </div>
 
+              {(assets?.stems.vocals || assets?.stems.instruments) && (
+                <div
+                  className="deck-stem-overlay-controls"
+                  data-dd-tooltip="Layer this deck's cached vocal or instrumental stem on top of the generated output. These faders do not change the deck's inference source."
+                  data-dd-tooltip-wide=""
+                  data-dd-tooltip-title={`Deck ${id} output layers`}
+                >
+                  {STEM_OVERLAY_PARTS.map(({ kind, label }) => {
+                    const source = assets?.stems[kind];
+                    const value = deck.stemOverlayLevels?.[kind] ?? 0;
+                    return (
+                      <div
+                        key={kind}
+                        className={`deck-stem-fader-row${source ? "" : " is-disabled"}`}
+                      >
+                        <span>{label}</span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={DECK_STEM_OVERLAY_MAX}
+                          step={0.001}
+                          value={value}
+                          disabled={!source}
+                          onChange={(e) =>
+                            useDeckStore
+                              .getState()
+                              .setStemOverlayLevel(id, kind, Number(e.target.value))
+                          }
+                          aria-label={`Deck ${id} ${label.toLowerCase()} output layer`}
+                        />
+                        <output>{value.toFixed(1)}</output>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
               <div className="deck-status">
                 {uploadingThisDeck
                   ? `Deck ${id}: decoding upload…`
@@ -604,7 +653,7 @@ export function DecksPanel() {
                     : missingSelectedStem
                       ? "Stem unavailable"
                       : deck.trackName
-                        ? `${deck.sourcePart} ready${roleSummary(isTimbre, isStructure)}`
+                        ? `${deck.crossfadeSide === null ? "parked · " : ""}${deck.sourcePart} ready${roleSummary(isTimbre, isStructure)}`
                         : "Loading library…"}
               </div>
             </article>

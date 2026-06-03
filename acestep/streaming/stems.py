@@ -763,6 +763,29 @@ def resolve_upload_stem_source_mode(
     return "full"
 
 
+def resolve_swap_stem_source_mode(
+    fixture_name: object,
+    requested_mode: str | None,
+    *,
+    known_fixtures: Collection[str],
+    skip_stem_extraction: bool,
+) -> str | None:
+    """Gate auto-stem extraction for a start/swap.
+
+    Restored local sessions ship their own cached stems and pass
+    ``skip_stem_extraction=True`` so the backend never re-runs Mel-Band on a
+    source it already has stems for. Otherwise this falls back to the normal
+    upload auto-stem resolution.
+    """
+    if skip_stem_extraction:
+        return None
+    return resolve_upload_stem_source_mode(
+        fixture_name,
+        requested_mode,
+        known_fixtures=known_fixtures,
+    )
+
+
 def extract_upload_stems(
     *,
     waveform: torch.Tensor,

@@ -2,16 +2,17 @@
 
 import { create } from "zustand";
 
-import type { StemSourceMode } from "@/engine/audio/loadFixture";
+import type { StemOverlayKind, StemSourceMode } from "@/engine/audio/loadFixture";
 
 export type DeckId = "A" | "B" | "C" | "D";
-export type DeckCrossfadeSide = "left" | "right";
+export type DeckCrossfadeSide = "left" | "right" | null;
 
 export interface DeckSlot {
   id: DeckId;
   trackName: string | null;
   color: string;
   sourcePart: StemSourceMode;
+  stemOverlayLevels: Record<StemOverlayKind, number>;
   volume: number;
   muted: boolean;
   solo: boolean;
@@ -38,6 +39,11 @@ interface DeckStoreState {
   setStructureDeck: (id: DeckId | null) => void;
   setTrack: (id: DeckId, trackName: string) => void;
   setSourcePart: (id: DeckId, part: StemSourceMode) => void;
+  setStemOverlayLevel: (
+    id: DeckId,
+    kind: StemOverlayKind,
+    level: number,
+  ) => void;
   setVolume: (id: DeckId, volume: number) => void;
   setMuted: (id: DeckId, muted: boolean) => void;
   toggleMuted: (id: DeckId) => void;
@@ -61,6 +67,7 @@ const DECK_COLORS: Record<DeckId, string> = {
   C: "oklch(0.70 0.16 305)",
   D: "oklch(0.74 0.13 215)",
 };
+export const DECK_STEM_OVERLAY_MAX = 6.0;
 
 function now(): number {
   return typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -69,6 +76,11 @@ function now(): number {
 function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(1, value));
+}
+
+function clampStemOverlay(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(DECK_STEM_OVERLAY_MAX, value));
 }
 
 function clampSec(value: number): number {
@@ -82,6 +94,7 @@ function makeDeck(id: DeckId, crossfadeSide: DeckCrossfadeSide): DeckSlot {
     trackName: null,
     color: DECK_COLORS[id],
     sourcePart: "full",
+    stemOverlayLevels: { vocals: 0, instruments: 0 },
     volume: 1,
     muted: false,
     solo: false,
@@ -120,8 +133,8 @@ export const useDeckStore = create<DeckStoreState>((set) => ({
   decks: {
     A: makeDeck("A", "left"),
     B: makeDeck("B", "right"),
-    C: makeDeck("C", "left"),
-    D: makeDeck("D", "right"),
+    C: makeDeck("C", null),
+    D: makeDeck("D", null),
   },
   deckIds: ["A"],
   timbreDeckId: null,
@@ -159,6 +172,17 @@ export const useDeckStore = create<DeckStoreState>((set) => ({
       const id = DECK_IDS.find((candidate) => !state.deckIds.includes(candidate));
       if (!id) return {};
       added = id;
+      const hasLeft = state.deckIds.some(
+        (deckId) => state.decks[deckId].crossfadeSide === "left",
+      );
+      const hasRight = state.deckIds.some(
+        (deckId) => state.decks[deckId].crossfadeSide === "right",
+      );
+      const crossfadeSide: DeckCrossfadeSide = !hasLeft
+        ? "left"
+        : !hasRight
+          ? "right"
+          : null;
       return {
         deckIds: [...state.deckIds, id],
         decks: {
@@ -167,6 +191,7 @@ export const useDeckStore = create<DeckStoreState>((set) => ({
             ...state.decks[id],
             trackName,
             sourcePart: "full",
+            stemOverlayLevels: { vocals: 0, instruments: 0 },
             volume: 1,
             muted: false,
             solo: false,
@@ -174,11 +199,7 @@ export const useDeckStore = create<DeckStoreState>((set) => ({
             cueSec: 0,
             positionSec: 0,
             lastStartedAtMs: null,
-            crossfadeSide:
-              state.deckIds.filter((deckId) => state.decks[deckId].crossfadeSide === "left").length <=
-              state.deckIds.filter((deckId) => state.decks[deckId].crossfadeSide === "right").length
-                ? "left"
-                : "right",
+            crossfadeSide,
           },
         },
         mixRevision: state.mixRevision + 1,
@@ -201,6 +222,7 @@ export const useDeckStore = create<DeckStoreState>((set) => ({
           [id]: {
             ...state.decks[id],
             trackName: null,
+            stemOverlayLevels: { vocals: 0, instruments: 0 },
             playing: false,
             muted: false,
             solo: false,
@@ -237,6 +259,16 @@ export const useDeckStore = create<DeckStoreState>((set) => ({
     ),
   setSourcePart: (id, part) =>
     set(patchDeck(id, (deck) => ({ ...deck, sourcePart: part }))),
+  setStemOverlayLevel: (id, kind, level) =>
+    set(
+      patchDeck(id, (deck) => ({
+        ...deck,
+        stemOverlayLevels: {
+          ...deck.stemOverlayLevels,
+          [kind]: clampStemOverlay(level),
+        },
+      })),
+    ),
   setVolume: (id, volume) =>
     set(patchDeck(id, (deck) => ({ ...deck, volume: clamp01(volume) }))),
   setMuted: (id, muted) =>
@@ -278,7 +310,20 @@ export const useDeckStore = create<DeckStoreState>((set) => ({
       })),
     ),
   setCrossfadeSide: (id, side) =>
-    set(patchDeck(id, (deck) => ({ ...deck, crossfadeSide: side }))),
+    set((state) => {
+      if (!state.deckIds.includes(id)) return {};
+      const nextDecks = { ...state.decks };
+      for (const deckId of state.deckIds) {
+        if (deckId !== id && nextDecks[deckId].crossfadeSide === side) {
+          nextDecks[deckId] = { ...nextDecks[deckId], crossfadeSide: null };
+        }
+      }
+      nextDecks[id] = { ...nextDecks[id], crossfadeSide: side };
+      return {
+        decks: nextDecks,
+        mixRevision: state.mixRevision + 1,
+      };
+    }),
   setCrossfade: (value) =>
     set((state) => ({ crossfade: clamp01(value), mixRevision: state.mixRevision + 1 })),
   setMonitorEnabled: (enabled) => set({ monitorEnabled: enabled }),

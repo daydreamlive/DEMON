@@ -356,20 +356,24 @@ export class AudioPlayer {
 
   clearStemOverlays(): void {
     (Object.keys(this._stemOverlays) as StemOverlayKind[]).forEach((kind) => {
-      const state = this._stemOverlays[kind];
-      state.interleaved = null;
-      state.frameCount = 0;
-      state.volume = 0;
-      // targetVolume is intentionally preserved across a clear: the
-      // user's slider position outlives a song swap, and setStemOverlay
-      // re-asserts it to the worklet when the next buffer lands.
-      if (this._useWorklet && this.node) {
-        (this.node as AudioWorkletNode).port.postMessage({
-          type: "clearOverlayBuffer",
-          kind,
-        });
-      }
+      this.clearStemOverlay(kind);
     });
+  }
+
+  clearStemOverlay(kind: StemOverlayKind): void {
+    const state = this._stemOverlays[kind];
+    state.interleaved = null;
+    state.frameCount = 0;
+    state.volume = 0;
+    // targetVolume is intentionally preserved across a clear: the user's
+    // slider position outlives a song swap, and setStemOverlay re-asserts it
+    // to the worklet when the next buffer lands.
+    if (this._useWorklet && this.node) {
+      (this.node as AudioWorkletNode).port.postMessage({
+        type: "clearOverlayBuffer",
+        kind,
+      });
+    }
   }
 
   setStemOverlayVolume(kind: StemOverlayKind, volume: number): void {

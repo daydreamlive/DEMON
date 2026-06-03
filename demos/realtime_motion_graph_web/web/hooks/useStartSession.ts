@@ -112,7 +112,8 @@ function buildConfig(
   // headroom is what unlocks longer audio uploads (cap lives in
   // loadFixture.ts; depth=4 makes future bumps VRAM-safe).
   const custom = useCustomTracksStore.getState();
-  const sourceMode = custom.resolveSourceMode(fixtureName);
+  const sourceMode = custom.resolveBackendSourceMode(fixtureName);
+  const skipStemExtraction = custom.shouldSkipStemExtraction(fixtureName);
   // Optional opaque per-browser identifier from the host (the demo's
   // standalone shell wires no getter, so this is null and the field is
   // omitted; demon-public-demo wires PostHog's distinct_id).
@@ -144,6 +145,7 @@ function buildConfig(
     // override-wins-over-sidecar regression.
     fixture_name: fixtureName,
     ...(sourceMode ? { stem_source_mode: sourceMode } : {}),
+    ...(skipStemExtraction ? { skip_stem_extraction: true } : {}),
     // Only set when the target pod advertised it can load this fixture
     // server-side (capability-gated by the caller via
     // probeServerSideFixtures). When true the pod reads the waveform
@@ -408,10 +410,14 @@ export function useStartSession() {
 
     setStatus("connecting", "Connecting…");
     if (sessionFixture.fixtureName) {
-      const sourceMode = useCustomTracksStore
+      // Only show "processing" when the backend will actually rip stems for
+      // this upload: a fresh custom track with no client-side stems and no
+      // skip flag. Restored sessions (stems cached, skip set) and built-in
+      // fixtures get no stem_assets echo, so a pill set here would hang.
+      const track = useCustomTracksStore
         .getState()
-        .resolveSourceMode(sessionFixture.fixtureName);
-      if (sourceMode) {
+        .tracks.get(sessionFixture.fixtureName);
+      if (track && !track.stems && !track.skipStemExtraction) {
         useCustomTracksStore
           .getState()
           .setStemStatus(sessionFixture.fixtureName, "processing");

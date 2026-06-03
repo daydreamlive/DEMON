@@ -40,7 +40,7 @@ export function useDeckServerSync({
   const payload = useMemo(() => {
     return DECK_IDS.flatMap((id): WireDeck[] => {
       const deck = decks[id];
-      if (!deck?.trackName) return [];
+      if (!deck?.trackName || deck.crossfadeSide === null) return [];
       return [{
         id,
         track_name: deck.trackName,
