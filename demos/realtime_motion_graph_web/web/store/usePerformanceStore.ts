@@ -272,6 +272,26 @@ const DEFAULT_SLIDER_VALUES: Record<string, number> = {
   steps_override: 8,
 };
 
+/** A named slot in the prompt deck. The deck is a client-only abstraction
+ *  over the engine's two-slot A/B model — the user manages many named
+ *  slots, only one is "active" at a time, and switching slots tweens the
+ *  engine through the existing prompt_blend lerp. See lib/promptDeck.ts
+ *  for the ping-pong orchestration. */
+export interface PromptSlot {
+  id: string;
+  label: string;
+  text: string;
+}
+
+/** Seed deck used on first session. The two entries are the same defaults
+ *  the legacy promptA/promptB carried — operators who never touched Tags
+ *  still get a useful starting palette, and the deck UX is non-empty from
+ *  the first second. */
+export const DEFAULT_PROMPT_SLOTS: PromptSlot[] = [
+  { id: "slot-1", label: "Dubstep", text: "heavy dubstep, deathstep, afxdump, growl heavy bass distortion" },
+  { id: "slot-2", label: "Daft Punk", text: "daft punk style, beautiful, four to the floor, angelic" },
+];
+
 /** A re-applyable record of an active timbre / structure reference.
  *  `timbreName` / `structName` are the server-acked DISPLAY name
  *  (cleared whenever the session leaves "ready"); this is the client's
@@ -322,12 +342,53 @@ interface PerformanceState {
    *  pipeline.py multiplied by 1000 — that hidden multiplier capped
    *  entropy at 1001 values; we send the int as-is now. */
   seed: number;
-  /** Two prompts. The A/B blend itself lives in
-   *  ``sliderValues["prompt_blend"]`` so it rides the Smooth tween
+  /** Engine-bound A/B prompts. The wire only knows two prompt slots; the
+   *  ``promptSlots`` deck is a client-only construct that maps the active
+   *  logical slot onto one of these (A or B) and ping-pongs on switch.
+   *  Direct edits to promptA/promptB still work (saved-session restore,
+   *  curve replays, etc.), but the UI now writes to the slot deck first
+   *  and lets the deck propagate to promptA/promptB. The A/B blend lives
+   *  in ``sliderValues["prompt_blend"]`` so it rides the Smooth tween
    *  machinery, the graph, and the generic MIDI / keyboard / param
    *  pipelines the same way every other knob does. */
   promptA: string;
   promptB: string;
+  /** Client-only prompt deck. The user sees a strip of named slots; the
+   *  engine still only has two prompt slots (A and B), so at any moment
+   *  two deck entries are loaded into the engine. Mapping:
+   *
+   *    - ``currentSlotId`` → engine A (the foreground / textarea-bound
+   *      slot). Editing the textarea writes here; tapping a chip in the
+   *      deck sets this and snaps ``prompt_blend`` to 0.
+   *    - ``blendPartnerId`` → engine B. ``null`` means no blending —
+   *      the deck behaves purely as a switcher. Set via the "Blend
+   *      with…" picker in PromptsTile; clearing it removes the
+   *      crossfader. Any non-current slot can be picked, so A→B, A→C,
+   *      B→C etc. are all expressible by re-picking A and/or B.
+   *
+   *  When ``blendPartnerId`` is non-null the engine's ``prompt_blend``
+   *  slider lerps between the two named slots, MIDI-learnable like any
+   *  other slider. Not persisted across reloads — saved sessions
+   *  restore promptA/promptB directly via the legacy path. */
+  promptSlots: PromptSlot[];
+  /** Engine A endpoint (loaded into promptA). Changes only when the
+   *  operator explicitly picks a new A via the crossfader's A-label
+   *  popover — never on chip tap. Stable mid-performance. */
+  currentSlotId: string;
+  /** Engine B endpoint (loaded into promptB). Same stability rule —
+   *  changes via the B-label popover only. */
+  blendPartnerId: string | null;
+  /** UI-only: which slot the PromptsTile textarea is bound to. Tap a
+   *  chip in the deck to focus it; editing the textarea writes to
+   *  this slot's text. Focus is *decoupled* from A/B — if the focused
+   *  slot is also loaded as A or B, edits mirror to promptA/promptB
+   *  and the engine hears them. If the focused slot is neither A nor
+   *  B (you focused a chip just to rename or pre-author it), edits
+   *  stay in the slot and reach the engine only when you load that
+   *  slot into A or B. Separating these three concerns is what
+   *  prevents the crossfader's endpoints from shifting under the
+   *  operator every time they tap a chip. */
+  focusedSlotId: string;
   /** Currently active key (e.g. "G# minor"). May come from auto-detect. */
   activeKey: string;
   /** Currently active time-signature numerator as a wire string
@@ -447,6 +508,15 @@ interface PerformanceState {
   bandLoopEnabled: boolean;
   /** Snap resolution for loop-region edits. Beat by default. */
   loopGridRes: LoopGridRes;
+  /** Operator opt-out for the automatic LoRA-trigger prefix. When true,
+   *  `enabledLoraTriggerPrefix()` returns "" regardless of which LoRAs
+   *  are enabled, so the wire prompt is exactly the operator's text.
+   *  Per-session (not persisted) — defaults off, matching the prior
+   *  "auto-prepend always on" behavior. Toggled from the Prompt Mode
+   *  view; affects every send path (Prompt Mode Send, in-tile Send
+   *  Tags, key/LoRA change triggers, etc) because the helper reads
+   *  this flag at call time. */
+  disableLoraAutoTrigger: boolean;
 
   // ── actions ───────────────────────────────────────────────────────────
   setSlider: (param: string, value: number) => void;
@@ -461,6 +531,37 @@ interface PerformanceState {
   randomizeSeed: () => void;
   setPromptA: (s: string) => void;
   setPromptB: (s: string) => void;
+  /** Append a new deck slot. Returns the new slot's id. The label defaults
+   *  to "Slot N" where N is the next available number; text defaults to
+   *  empty. Does not change which slot is active. */
+  addPromptSlot: (label?: string, text?: string) => string;
+  /** Remove a deck slot by id. No-op if it's the only remaining slot
+   *  (deck floor is 1) or the id doesn't exist. If the removed slot was
+   *  the active one, the first remaining slot becomes active — engine
+   *  state (promptA/promptB) is untouched here; the caller should issue
+   *  a switch to re-sync the wire. */
+  removePromptSlot: (id: string) => void;
+  /** Rename a deck slot (label only — text is unaffected). */
+  renamePromptSlot: (id: string, label: string) => void;
+  /** Update a slot's prompt text. If the slot is loaded as the current
+   *  endpoint (engine A) or the blend partner (engine B), the matching
+   *  promptA/promptB mirror is also updated so the engine-bound state
+   *  stays consistent. Does NOT re-encode — the operator commits via
+   *  Send Tags. */
+  setPromptSlotText: (id: string, text: string) => void;
+  /** Raw state write — record which deck slot is "current" (engine A).
+   *  Used by lib/promptDeck.ts after it has loaded the new prompt
+   *  into engine A and snapped the blend. UI shouldn't call directly. */
+  setCurrentSlot: (id: string) => void;
+  /** Raw state write — record which deck slot is the blend partner
+   *  (engine B), or null when blending is off. Used by lib/promptDeck.ts
+   *  after it has loaded the new prompt into engine B (or cleared it).
+   *  UI shouldn't call directly. */
+  setBlendPartner: (id: string | null) => void;
+  /** Set which slot the PromptsTile textarea is bound to. Pure UI
+   *  state — does not touch the engine or re-send. Called on chip
+   *  tap in the deck. */
+  setFocusedSlot: (id: string) => void;
   setKey: (k: string) => void;
   setTimeSignature: (s: TimeSignature) => void;
   setFixture: (name: string) => void;
@@ -524,6 +625,7 @@ interface PerformanceState {
   setSmoothMs: (ms: number) => void;
   toggleLufs: () => void;
   toggleLoop: () => void;
+  toggleDisableLoraAutoTrigger: () => void;
   /** Read localStorage-backed prefs (showKbdHints) and
    *  apply them to the store. Called from a client-only useEffect so SSR
    *  always renders with the defaults — without this, hydration mismatches
@@ -582,8 +684,16 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   sliderTargets: { ...DEFAULT_SLIDER_VALUES },
   sliderDisplayOverride: {},
   seed: 0,
-  promptA: "heavy dubstep, deathstep, afxdump, growl heavy bass distortion",
-  promptB: "daft punk style, beautiful, four to the floor, angelic",
+  // Engine state starts with A = slot 0, B = slot 1. The crossfader
+  // in PromptsTile is always-on whenever there are 2+ slots — both
+  // endpoints clickable to re-point. Operator opts OUT of blending by
+  // never moving the slider off 0, not by hiding the affordance.
+  promptA: DEFAULT_PROMPT_SLOTS[0].text,
+  promptB: DEFAULT_PROMPT_SLOTS[1].text,
+  promptSlots: DEFAULT_PROMPT_SLOTS.map((s) => ({ ...s })),
+  currentSlotId: DEFAULT_PROMPT_SLOTS[0].id,
+  blendPartnerId: DEFAULT_PROMPT_SLOTS[1].id,
+  focusedSlotId: DEFAULT_PROMPT_SLOTS[0].id,
   activeKey: "G# minor",
   activeTimeSignature: DEFAULT_TIME_SIGNATURE,
   fixture: "",
@@ -618,6 +728,7 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   loopBand: null,
   bandLoopEnabled: true,
   loopGridRes: "beat",
+  disableLoraAutoTrigger: false,
 
   setSlider: (param, value) => {
     stampManualTouch(param);
@@ -697,6 +808,74 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
     set({ seed: Math.floor(Math.random() * 0x100000000) }),
   setPromptA: (s) => set({ promptA: s }),
   setPromptB: (s) => set({ promptB: s }),
+  addPromptSlot: (label, text) => {
+    // Generate the new id from current state read inside set() so we
+    // avoid usePerformanceStore.getState() inside the create() body —
+    // that recursive self-reference breaks TS's type inference for the
+    // whole store. Side-channel `newId` out of the set callback.
+    let newId = "";
+    set((s) => {
+      let n = s.promptSlots.length + 1;
+      while (s.promptSlots.some((slot) => slot.id === `slot-${n}`)) n += 1;
+      newId = `slot-${n}`;
+      return {
+        promptSlots: [
+          ...s.promptSlots,
+          { id: newId, label: label ?? `Slot ${n}`, text: text ?? "" },
+        ],
+      };
+    });
+    return newId;
+  },
+  removePromptSlot: (id) =>
+    set((s) => {
+      if (s.promptSlots.length <= 1) return {};
+      const idx = s.promptSlots.findIndex((slot) => slot.id === id);
+      if (idx < 0) return {};
+      const nextSlots = s.promptSlots.filter((slot) => slot.id !== id);
+      const patch: Partial<PerformanceState> = { promptSlots: nextSlots };
+      const neighbor = nextSlots[Math.max(0, idx - 1)] ?? nextSlots[0];
+      // If the removed slot was the current (A endpoint), pick the
+      // neighbor as the new current. lib/promptDeck.removePromptSlot
+      // re-sends both prompts after this so the engine catches up.
+      if (s.currentSlotId === id) {
+        patch.currentSlotId = neighbor.id;
+      }
+      // If the removed slot was the blend partner (B endpoint), clear
+      // the partner — lib/promptDeck.ensureValidPartner will backfill.
+      if (s.blendPartnerId === id) {
+        patch.blendPartnerId = null;
+      }
+      // Likewise re-point focus if the deleted slot was focused.
+      if (s.focusedSlotId === id) {
+        patch.focusedSlotId = neighbor.id;
+      }
+      return patch;
+    }),
+  renamePromptSlot: (id, label) =>
+    set((s) => ({
+      promptSlots: s.promptSlots.map((slot) =>
+        slot.id === id ? { ...slot, label } : slot,
+      ),
+    })),
+  setPromptSlotText: (id, text) =>
+    set((s) => {
+      const patch: Partial<PerformanceState> = {
+        promptSlots: s.promptSlots.map((slot) =>
+          slot.id === id ? { ...slot, text } : slot,
+        ),
+      };
+      // Mirror to whichever engine slot the deck slot is mapped onto.
+      // A slot can be both current AND partner (degenerate "blend
+      // with self") if the operator picks the same slot for both;
+      // in that case both promptA and promptB update.
+      if (id === s.currentSlotId) patch.promptA = text;
+      if (id === s.blendPartnerId) patch.promptB = text;
+      return patch;
+    }),
+  setCurrentSlot: (id) => set({ currentSlotId: id }),
+  setBlendPartner: (id) => set({ blendPartnerId: id }),
+  setFocusedSlot: (id) => set({ focusedSlotId: id }),
   setKey: (k) => set({ activeKey: k }),
   setTimeSignature: (s) => set({ activeTimeSignature: s }),
   setFixture: (name) => set({ fixture: name }),
@@ -792,6 +971,8 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   setLoopBand: (band) => set({ loopBand: band }),
   setBandLoopEnabled: (enabled) => set({ bandLoopEnabled: enabled }),
   setLoopGridRes: (res) => set({ loopGridRes: res }),
+  toggleDisableLoraAutoTrigger: () =>
+    set((s) => ({ disableLoraAutoTrigger: !s.disableLoraAutoTrigger })),
   hydratePersistedPrefs: () =>
     set({
       showKbdHints: loadBool(SHOW_KBD_HINTS_STORAGE_KEY, true),
