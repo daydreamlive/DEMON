@@ -3,6 +3,7 @@
 import type { CSSProperties } from "react";
 import { useEffect, useRef, useState } from "react";
 
+import { MIDI_TICK_T } from "@/engine/midi/absoluteDelta";
 import { useTactileSlider } from "@/hooks/useTactileSlider";
 import { tToValue, valueToT } from "@/lib/sliderMapping";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
@@ -270,7 +271,9 @@ export function SliderGroup({
     const onWheel = (e: WheelEvent) => {
       if (editingRef.current) return;
       e.preventDefault();
-      const step = e.shiftKey ? 0.005 : 0.01;
+      // One notch = one MIDI relative-encoder tick (shared constant);
+      // Shift = half-notch fine.
+      const step = e.shiftKey ? MIDI_TICK_T / 2 : MIDI_TICK_T;
       const dir = -Math.sign(e.deltaY);
       if (dir === 0) return;
       const current = usePerformanceStore.getState().sliderTargets[param] ?? 0;

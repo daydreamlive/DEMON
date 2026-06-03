@@ -86,6 +86,8 @@ from acestep.streaming.source import (
 )
 from acestep.streaming.stems import extract_upload_stems
 from acestep.user_uploads import (
+    UserUploadPacket,
+    find_duplicate_upload,
     persist_user_upload_packet,
     unique_user_upload_name,
 )
@@ -151,6 +153,18 @@ def _send_upload_failure(ws, error: str) -> None:
         pass
 
 
+def _send_upload_ok(ws, packet: UserUploadPacket) -> None:
+    ws.send(json.dumps({
+        "type": "upload_ok",
+        "name": packet.name,
+        "bpm": packet.bpm,
+        "key": packet.key,
+        "time_signature": packet.time_signature,
+        "duration_s": packet.duration_s,
+        "samples": packet.samples,
+    }))
+
+
 def _handle_upload_track(ws, header: dict, *, checkpoint: str) -> None:
     requested_name = str(header.get("name") or "upload")
     key_override = header.get("key")
@@ -164,11 +178,36 @@ def _handle_upload_track(ws, header: dict, *, checkpoint: str) -> None:
         _send_upload_failure(ws, "expected binary PCM frame after upload header")
         return
 
-    name = unique_user_upload_name(requested_name)
     try:
         waveform = _truncate_upload_waveform(_decode_audio_msg(audio_msg))
         if waveform.shape[-1] <= 0:
             raise ValueError("audio too short after pool alignment")
+    except Exception as exc:
+        logger.exception("upload_track_decode_failed name={} error={}", requested_name, exc)
+        _send_upload_failure(ws, str(exc))
+        return
+
+    # Content dedup: re-importing a "serialize inputs" config pushes audio
+    # that's already on the pod back through this handler under its original
+    # name. Reuse the on-disk track instead of minting a `(1)` duplicate and
+    # re-encoding. Gated on no key/time-signature override (the import path
+    # passes none) so an operator's explicit-override upload still re-encodes.
+    if key_override is None and time_signature_override is None:
+        dup = find_duplicate_upload(
+            requested_name, waveform=waveform, sample_rate=SAMPLE_RATE,
+        )
+        if dup is not None:
+            logger.info(
+                "upload_track_dedup requested={} reused={}", requested_name, dup.name,
+            )
+            try:
+                _send_upload_ok(ws, dup)
+            except ConnectionClosed:
+                pass
+            return
+
+    name = unique_user_upload_name(requested_name)
+    try:
         bpm, detected_key, detected_time_signature = _analyze_upload_waveform(waveform)
         key = key_override or detected_key
         time_signature = time_signature_override or detected_time_signature
@@ -212,15 +251,7 @@ def _handle_upload_track(ws, header: dict, *, checkpoint: str) -> None:
         return
 
     try:
-        ws.send(json.dumps({
-            "type": "upload_ok",
-            "name": packet.name,
-            "bpm": packet.bpm,
-            "key": packet.key,
-            "time_signature": packet.time_signature,
-            "duration_s": packet.duration_s,
-            "samples": packet.samples,
-        }))
+        _send_upload_ok(ws, packet)
     except ConnectionClosed:
         return
     logger.info(
@@ -645,6 +676,12 @@ def _handle_client_body(
                 except (TypeError, ValueError):
                     v = 0.0
                 streaming.set_prompt_blend(v, origin=origin)
+            elif mtype == "set_interp_method":
+                streaming.set_interp_method(
+                    str(data.get("path", "")),
+                    str(data.get("method", "")),
+                    origin=origin,
+                )
             elif mtype == "set_depth":
                 try:
                     v = int(data.get("value"))

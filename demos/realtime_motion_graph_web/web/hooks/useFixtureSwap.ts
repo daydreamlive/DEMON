@@ -112,11 +112,12 @@ export function useFixtureSwap() {
           // prefix drops their triggers too.
           applyLoraCapWithServerSync(resolveLoraCapForSource(remote.duration));
           session.player?.swap(detail.interleaved, detail.channels);
-          // Worklet's swap message keeps `position` untouched, so a swap
-          // at 1:30 into the old track would otherwise resume at 1:30 of
-          // the new track. The ScriptProcessor fallback already restarts
-          // (AudioPlayer.swap sets _spPosition = 0); this aligns the
-          // worklet path. Operator can disable via config.
+          // Both backends keep the playhead phase across a swap (the
+          // worklet leaves `position` untouched; AudioPlayer.swap clamps
+          // `_spPosition` into the new buffer rather than zeroing it), so a
+          // swap at 1:30 resumes at 1:30 of the new track unless we seek.
+          // This gate is the single source of truth for restart-on-swap on
+          // both paths. Operator can disable via config.
           if (getConfig().restart_song_on_swap) {
             session.player?.seek(0);
           }

@@ -9,6 +9,7 @@ import {
   type DecodedFixture,
   type StemSourceMode,
 } from "@/engine/audio/loadFixture";
+import { useActionGate } from "@/hooks/useActionGate";
 import { useSeedUserUploads } from "@/hooks/useSeedUserUploads";
 import { commitUploadedTrack } from "@/lib/audio/commitUploadedTrack";
 import { trimAudioBuffer } from "@/lib/audio/trimAudioBuffer";
@@ -74,6 +75,9 @@ export function LiteTrackCarousel() {
     useConfig().engine.max_source_duration_s ?? DEFAULT_TRIM_CAP_S;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   useSeedUserUploads();
+  // Host-supplied gate for track-change + upload (see useActionGate).
+  // Default is allow-all; demon-public-demo overrides to require sign-up.
+  const gate = useActionGate();
 
   // Daydream-webapp queue-admit gate: standalone DEMON has no queue
   // (LOCAL_MODE), so we skip the wait there.
@@ -164,13 +168,14 @@ export function LiteTrackCarousel() {
           value={fixture ?? ""}
           disabled={uploading}
           aria-label="Audio track"
-          onChange={(e) => {
+          onChange={async (e) => {
             const v = e.target.value;
             if (v === UPLOAD_VALUE) {
               // Don't actually setFixture("__upload__"); the controlled
               // ``value=fixture`` re-render snaps the visible selection
               // back to the active track while the file picker opens
               // in front.
+              if (!(await gate("upload"))) return;
               fileInputRef.current?.click();
               return;
             }
@@ -178,10 +183,14 @@ export function LiteTrackCarousel() {
               // Same sentinel pattern as UPLOAD_VALUE — open the
               // MicRecorder modal; the controlled select snaps back
               // to the active track on the next render.
+              if (!(await gate("mic"))) return;
               setMicOpen(true);
               return;
             }
-            if (v) setFixture(v);
+            if (v) {
+              if (!(await gate("track_change"))) return;
+              setFixture(v);
+            }
           }}
         >
           {totalTracks === 0 && (

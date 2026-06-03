@@ -30,7 +30,10 @@
 
 import {
   decodeAudioFile,
+  listFixtures,
+  listUserUploads,
   loadFixtureAudio,
+  pickDefaultFixture,
   uploadTrackToServer,
   type DecodedFixture,
   type StemSourceMode,
@@ -215,6 +218,29 @@ export async function captureInputs(): Promise<SerializedInputs> {
   return { track, timbre, structure };
 }
 
+/** Lightweight, name-only snapshot of the active input track for a local
+ *  export: records the track by name with NO embedded audio, so the file
+ *  reopens the correct upload from the user's own library/pod uploads
+ *  without carrying the multi-MB base64 WAV. An upload and a library
+ *  fixture both serialize as a by-name `fixture` reference — a
+ *  server-resident upload swaps by name on import exactly like a library
+ *  track (applyTrack → setFixture → useFixtureSwap's serverResident path).
+ *  Timbre / structure refs are intentionally omitted; they only resolve
+ *  against a live session and a name-only ref can't be re-sent, so the
+ *  full-serialize path remains the way to carry those. Returns {} when no
+ *  track is active, or when the active track is a non-persisted in-memory
+ *  upload (no-pod fallback): its name resolves nowhere on a later load, so
+ *  a by-name ref would be dead — only the Serialize-on embed can carry it.
+ *  A built-in fixture and a persisted upload both pass isServerResident
+ *  (the upload lives on the pod's /user_uploads and re-seeds into the store
+ *  as persisted), so both serialize as a resolvable by-name reference. */
+export function captureTrackReference(): SerializedInputs {
+  const name = usePerformanceStore.getState().fixture;
+  if (!name) return {};
+  if (!useCustomTracksStore.getState().isServerResident(name)) return {};
+  return { track: { kind: "fixture", name } };
+}
+
 /** Whether any input axis is currently active — gates the Export
  *  dialog's "Serialize inputs" checkbox. */
 export function anyInputPresent(): boolean {
@@ -223,6 +249,55 @@ export function anyInputPresent(): boolean {
 }
 
 // ── Apply (import) ─────────────────────────────────────────────────────
+
+/** Snapshot of what names resolve on this pod, used to validate by-name
+ *  (`kind:"fixture"`) inputs at import time. A name resolves if it's a
+ *  built-in fixture, a persisted pod upload, or an in-memory custom track.
+ *  `canValidate` is false when the fixture catalog couldn't be fetched
+ *  (pod unreachable) — callers then skip validation rather than falsely
+ *  flag a valid name as missing. */
+interface ResolveCtx {
+  /** Built-in fixture names, for picking the default when a track is
+   *  missing. Empty when the catalog couldn't be fetched. */
+  fixtureNames: string[];
+  /** Union of every name that resolves by name on this pod. */
+  known: Set<string>;
+  canValidate: boolean;
+}
+
+async function buildResolveCtx(): Promise<ResolveCtx> {
+  const storeNames = useCustomTracksStore.getState().names;
+  let fixtureNames: string[] | null = null;
+  try {
+    fixtureNames = await listFixtures();
+  } catch {
+    // Pod unreachable / catalog endpoint down — can't validate names.
+    fixtureNames = null;
+  }
+  let uploadNames: string[] = [];
+  try {
+    uploadNames = await listUserUploads();
+  } catch {
+    uploadNames = [];
+  }
+  const known = new Set<string>([
+    ...storeNames,
+    ...uploadNames,
+    ...(fixtureNames ?? []),
+  ]);
+  return {
+    fixtureNames: fixtureNames ?? [],
+    known,
+    canValidate: fixtureNames !== null,
+  };
+}
+
+/** A by-name input resolves when validation is impossible (offline) or the
+ *  name is in the known set. Clip inputs carry their own audio, so they
+ *  never route through here. */
+function fixtureResolves(ctx: ResolveCtx, name: string): boolean {
+  return !ctx.canValidate || ctx.known.has(name);
+}
 
 /** Decode a clip's embedded WAV and register it as a custom track,
  *  best-effort pre-encoding it through the upload pipeline first.
@@ -287,11 +362,26 @@ function clampRefDuration(decoded: DecodedFixture, capS: number): DecodedFixture
   return trimAudioBuffer(decoded, 0, capS);
 }
 
-async function applyTrack(input: SerializedInput): Promise<void> {
+/** Apply the input track. Returns "applied" when the requested track was
+ *  used, or "defaulted" when its by-name reference didn't resolve on this
+ *  pod and we fell back to the default fixture (the caller warns). */
+async function applyTrack(
+  input: SerializedInput,
+  ctx: ResolveCtx,
+): Promise<"applied" | "defaulted"> {
   const perf = usePerformanceStore.getState();
   if (input.kind === "fixture") {
+    if (!fixtureResolves(ctx, input.name)) {
+      // The imported config names a track this pod doesn't have. Fall back
+      // to the default fixture so the session is still usable, and let the
+      // caller surface a warning. pickDefaultFixture returns "" only when
+      // the catalog is empty — leave the current selection untouched then.
+      const def = pickDefaultFixture(ctx.fixtureNames);
+      if (def) perf.setFixture(def);
+      return "defaulted";
+    }
     perf.setFixture(input.name);
-    return;
+    return "applied";
   }
   const name = await registerClip(input);
   // Writing perf.fixture drives useFixtureSwap: live sessions hot-swap
@@ -299,18 +389,20 @@ async function applyTrack(input: SerializedInput): Promise<void> {
   // (resolveFixtureForConnect reads perf.fixture, loadFixtureAudio finds
   // the clip in the custom-tracks cache).
   perf.setFixture(name);
+  return "applied";
 }
 
-/** Apply a timbre / structure ref. Returns true if it reached the
- *  server. Clip audio is always registered so it shows up in the
- *  dropdowns, but a ref can only take effect against a LIVE session
- *  (the server boots with no overrides and refs aren't part of
- *  SessionConfig) — so when no session is ready we register + report
- *  false, matching how the manual ref pickers behave. */
+/** Apply a timbre / structure ref. Returns "applied" when it reached the
+ *  server, "needSession" when its audio is registered/selectable but no
+ *  live session exists to send it to yet (refs aren't part of
+ *  SessionConfig, so the server boots without them), or "missing" when a
+ *  by-name ref doesn't resolve on this pod (dropped — no default analog).
+ *  Clip audio is always registered first so it shows in the dropdowns. */
 async function applyRef(
   kind: "timbre" | "structure",
   input: SerializedInput,
-): Promise<boolean> {
+  ctx: ResolveCtx,
+): Promise<"applied" | "needSession" | "missing"> {
   const session = useSessionStore.getState();
   const perf = usePerformanceStore.getState();
   const ready = session.status === "ready" && session.remote != null;
@@ -318,18 +410,22 @@ async function applyRef(
     kind === "timbre" ? perf.setTimbreRef : perf.setStructRef;
 
   if (input.kind === "fixture") {
-    if (!ready || !session.remote) return false;
+    // A ref has no "default" analog (it's an optional overlay), so an
+    // unresolvable by-name ref is dropped rather than substituted — the
+    // caller warns and the axis simply stays unset.
+    if (!fixtureResolves(ctx, input.name)) return "missing";
+    if (!ready || !session.remote) return "needSession";
     if (kind === "timbre") session.remote.sendSetTimbreFixture(input.name);
     else session.remote.sendSetStructureFixture(input.name);
     setRef({ mode: "fixture", name: input.name });
-    return true;
+    return "applied";
   }
 
   // Clip: register first so it's selectable regardless of session state.
   const name = await registerClip(input);
-  if (!ready || !session.remote) return false;
+  if (!ready || !session.remote) return "needSession";
   const decoded = useCustomTracksStore.getState().tracks.get(name)?.decoded;
-  if (!decoded) return false;
+  if (!decoded) return "needSession";
   const capS = getConfig().engine.max_source_duration_s ?? DEFAULT_TRIM_CAP_S;
   const clamped = clampRefDuration(decoded, capS);
   const ok =
@@ -346,9 +442,9 @@ async function applyRef(
         );
   if (ok) {
     setRef({ mode: "clip", name });
-    return true;
+    return "applied";
   }
-  return false;
+  return "needSession";
 }
 
 export interface ApplyInputsResult {
@@ -357,24 +453,34 @@ export interface ApplyInputsResult {
   /** Refs whose audio was registered but couldn't be sent because no
    *  session is live yet — the caller can hint the user to press Play. */
   needSession: string[];
+  /** Inputs whose by-name reference didn't resolve on this pod. Each entry
+   *  is a human phrase describing the axis and what happened (track →
+   *  defaulted, refs → skipped) so the caller can warn directly. */
+  missing: string[];
 }
 
 /** Apply a deserialized `inputs` object to the live stores + session.
- *  Best-effort: a malformed or unresolvable input is skipped rather than
- *  aborting the whole import. */
+ *  Best-effort: a malformed or unresolvable input is skipped (or, for the
+ *  track, replaced with the default fixture) rather than aborting the whole
+ *  import. Validation of by-name inputs uses one catalog snapshot
+ *  (buildResolveCtx) shared across all three axes. */
 export async function applyInputs(
   inputs: SerializedInputs,
 ): Promise<ApplyInputsResult> {
   const applied: string[] = [];
   const needSession: string[] = [];
+  const missing: string[] = [];
+  const ctx = await buildResolveCtx();
 
   if (inputs.track) {
     try {
-      await applyTrack(inputs.track);
-      applied.push("track");
+      const result = await applyTrack(inputs.track, ctx);
+      if (result === "applied") applied.push("track");
+      else missing.push("track not found (using default)");
     } catch {
-      // Unresolvable track (bad base64 / too short) — leave the current
-      // source untouched.
+      // Unresolvable embedded clip (bad base64 / too short) — leave the
+      // current source untouched and warn.
+      missing.push("track unreadable");
     }
   }
 
@@ -385,15 +491,17 @@ export async function applyInputs(
   for (const [kind, ref] of refs) {
     if (!ref) continue;
     try {
-      const ok = await applyRef(kind, ref);
-      if (ok) applied.push(kind);
-      else needSession.push(kind);
+      const result = await applyRef(kind, ref, ctx);
+      if (result === "applied") applied.push(kind);
+      else if (result === "needSession") needSession.push(kind);
+      else missing.push(`${kind} not found (skipped)`);
     } catch {
       // Skip a ref that fails to decode / send.
+      missing.push(`${kind} unreadable`);
     }
   }
 
-  return { applied, needSession };
+  return { applied, needSession, missing };
 }
 
 /** True when an imported, parsed object actually carries any input. */

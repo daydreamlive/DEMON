@@ -9,6 +9,7 @@ import {
   type DecodedFixture,
   type StemSourceMode,
 } from "@/engine/audio/loadFixture";
+import { useActionGate } from "@/hooks/useActionGate";
 import { useSeedUserUploads } from "@/hooks/useSeedUserUploads";
 import { commitUploadedTrack } from "@/lib/audio/commitUploadedTrack";
 import { useUploadOnboardingHint } from "@/hooks/useUploadOnboardingHint";
@@ -148,6 +149,10 @@ export function AudioSourceCrate() {
   const uploadBtnRef = useRef<HTMLButtonElement | null>(null);
   const fanRef = useRef<HTMLDivElement | null>(null);
   useSeedUserUploads();
+  // Host-supplied gate for high-intent actions (track change + upload).
+  // Defaults to allow-all when no provider is mounted; demon-public-demo
+  // overrides this to show a sign-up dialog for anonymous users.
+  const gate = useActionGate();
 
   // Daydream-webapp queue-admit gate: /api/pod/* returns 401 pre-admit,
   // so prod waits for wsUrl before fetching. Standalone DEMON has no
@@ -342,11 +347,12 @@ export function AudioSourceCrate() {
             type="button"
             className="audio-source-upload-btn"
             disabled={uploading}
-            onClick={() => {
+            onClick={async () => {
               // Clicking dismisses the onboarding hint — the user has
               // clearly found the button, even if they cancel the
               // picker.
               uploadHint.dismiss();
+              if (!(await gate("upload"))) return;
               fileInputRef.current?.click();
             }}
             aria-label="Upload your own audio track"
@@ -362,7 +368,10 @@ export function AudioSourceCrate() {
           type="button"
           className="audio-source-mic-btn"
           disabled={uploading}
-          onClick={() => setMicOpen(true)}
+          onClick={async () => {
+            if (!(await gate("mic"))) return;
+            setMicOpen(true);
+          }}
           aria-label="Record audio from microphone"
           data-dd-tooltip="Record audio from your microphone"
         >
@@ -393,9 +402,14 @@ export function AudioSourceCrate() {
                     .filter(Boolean)
                     .join(" ")}
                   style={{ "--idx": i } as CSSProperties}
-                  onClick={() => {
-                    setFixture(t.name);
+                  onClick={async () => {
+                    // Close the fan optimistically so the gate dialog
+                    // (if any) doesn't compete with the open menu for
+                    // the user's attention. Gate denial leaves the fan
+                    // closed; user can re-open after signing up.
                     setOpen(false);
+                    if (!(await gate("track_change"))) return;
+                    setFixture(t.name);
                   }}
                   title={t.name}
                 >
@@ -412,7 +426,10 @@ export function AudioSourceCrate() {
             role="menuitem"
             className="audio-source-sleeve audio-source-sleeve--upload"
             disabled={uploading}
-            onClick={() => fileInputRef.current?.click()}
+            onClick={async () => {
+              if (!(await gate("upload"))) return;
+              fileInputRef.current?.click();
+            }}
             data-dd-tooltip="Upload your own audio track"
           >
             <span

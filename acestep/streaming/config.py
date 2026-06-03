@@ -39,6 +39,15 @@ class SessionConfig:
     fast_vae: bool = False
     walk_window: bool = False
     walk_window_s: float = 60.0
+    # Playback-lead tuning (see PipelineRunner._decode_advance_s). The lead
+    # is the adaptive buffer placed ahead of the live playhead; these bound
+    # how it self-sizes. Defaults are the "midway" profile: robust enough to
+    # absorb moderate GPU contention without the full latency of a fixed lead.
+    # ``lead_release_tau_s`` must stay >= ``lead_ceiling_s`` (monotonic-decode
+    # invariant); the runner clamps it up if a config violates that.
+    lead_floor_s: float = 0.25
+    lead_ceiling_s: float = 1.35
+    lead_release_tau_s: float = 1.5
     fixture_name: str | None = None
     use_server_fixture: bool = False
     stem_source_mode: str | None = None

@@ -4,42 +4,20 @@ import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { KEY_BINDINGS } from "@/engine/keyboard/bindings";
-import { LORA_SLOT_MARKER, type NoteAction } from "@/engine/midi/types";
+import {
+  MIDI_CC_ROWS,
+  MIDI_ENUM_ROWS,
+  MIDI_MODE_OPTIONS,
+  MIDI_NOTE_ROWS,
+  MIDI_TARGET_ROWS,
+  midiTargetLabel,
+  type MidiTargetKind,
+} from "@/engine/midi/targetRegistry";
+import type { CcMode } from "@/engine/midi/types";
 import { useMidiStore } from "@/store/useMidiStore";
 import { useUiStore } from "@/store/useUiStore";
 
-interface RowDef {
-  kind: "cc" | "note";
-  target: string;
-  label: string;
-}
-
-const CC_ROWS: RowDef[] = [
-  { kind: "cc", target: "denoise", label: "Remix strength" },
-  { kind: "cc", target: "hint_strength", label: "Structure strength" },
-  { kind: "cc", target: "feedback", label: "Feedback" },
-  { kind: "cc", target: "shift", label: "Shift" },
-  { kind: "cc", target: LORA_SLOT_MARKER[0], label: "LoRA slot 1 strength" },
-  { kind: "cc", target: LORA_SLOT_MARKER[1], label: "LoRA slot 2 strength" },
-  { kind: "cc", target: "stem_vocals", label: "Stem: vocals" },
-  { kind: "cc", target: "stem_instruments", label: "Stem: instruments" },
-];
-
-const NOTE_ACTIONS: { target: NoteAction; label: string }[] = [
-  { target: "seed", label: "Randomize seed" },
-  { target: "send_prompt", label: "Send prompt" },
-  { target: "pause", label: "Pause / resume" },
-  { target: "mode_toggle", label: "Toggle display mode" },
-  { target: "kiosk_toggle", label: "Toggle kiosk" },
-];
-
-const NOTE_ROWS: RowDef[] = NOTE_ACTIONS.map((n) => ({
-  kind: "note",
-  target: n.target,
-  label: n.label,
-}));
-
-const ALL_ROWS = [...CC_ROWS, ...NOTE_ROWS];
+type RowKind = MidiTargetKind;
 
 export function ConfigModal() {
   const open = useUiStore((s) => s.configOpen);
@@ -136,22 +114,87 @@ function MidiTab() {
   const startLearn = useMidiStore((s) => s.startLearn);
   const cancelLearn = useMidiStore((s) => s.cancelLearn);
   const clearBinding = useMidiStore((s) => s.clearBinding);
+  const setCcMode = useMidiStore((s) => s.setCcMode);
   const resetMap = useMidiStore((s) => s.resetMap);
+  const [learnModes, setLearnModes] = useState<Record<string, CcMode>>({});
 
-  const findNum = useMemo(() => {
-    return (kind: "cc" | "note", target: string): string | null => {
-      const slot = kind === "cc" ? map.cc : map.notes;
-      for (const [num, t] of Object.entries(slot)) {
-        if (t === target) return num;
+  const selectedModeFor = (target: string, num: string | null): CcMode =>
+    (num ? map.ccMode?.[num] : undefined) ?? learnModes[target] ?? "absolute";
+
+  const setSelectedMode = (target: string, mode: CcMode, num: string | null) => {
+    if (num) setCcMode(num, mode);
+    setLearnModes((s) => ({ ...s, [target]: mode }));
+  };
+
+  // Find the bound controller number for a row, searching every bucket
+  // the target can legitimately live in. `cc` is a continuous slider param,
+  // `enum` a dropdown (ccEnum / noteEnum), `note` an action (notes /
+  // ccActions). Returns the number plus how it's bound so the table can
+  // label it.
+  const findBinding = useMemo(() => {
+    return (
+      kind: RowKind,
+      target: string,
+    ): { num: string; via: "cc" | "note" } | null => {
+      const search = (
+        slot: Record<string, string> | undefined,
+        via: "cc" | "note",
+      ): { num: string; via: "cc" | "note" } | null => {
+        if (!slot) return null;
+        for (const [num, t] of Object.entries(slot)) {
+          if (t === target) return { num, via };
+        }
+        return null;
+      };
+      if (kind === "cc") {
+        return search(map.cc, "cc");
       }
-      return null;
+      if (kind === "enum") {
+        return search(map.ccEnum, "cc") ?? search(map.noteEnum, "note");
+      }
+      return search(map.notes, "note") ?? search(map.ccActions, "cc");
     };
+  }, [map]);
+
+  // Bindings made by right-clicking a control that has no curated row
+  // above — channel faders, LoRA strength, the blend slider, etc. Listed
+  // here so their binding mode (the spring modes a mod wheel needs) is
+  // reachable. Keyed by what's NOT covered by the curated targets.
+  const extraRows = useMemo(() => {
+    const curatedCc = new Set(MIDI_CC_ROWS.map((r) => r.target));
+    const curatedNote = new Set(MIDI_NOTE_ROWS.map((r) => r.target));
+    const curatedEnum = new Set(MIDI_ENUM_ROWS.map((r) => r.target));
+    const out: {
+      kind: RowKind;
+      target: string;
+      num: string;
+      via: "cc" | "note";
+    }[] = [];
+    const sweep = (
+      slot: Record<string, string> | undefined,
+      kind: RowKind,
+      via: "cc" | "note",
+      curated: Set<string>,
+    ) => {
+      for (const [num, t] of Object.entries(slot ?? {})) {
+        if (!curated.has(t)) out.push({ kind, target: t, num, via });
+      }
+    };
+    sweep(map.cc, "cc", "cc", curatedCc);
+    sweep(map.ccActions, "note", "cc", curatedNote);
+    sweep(map.notes, "note", "note", curatedNote);
+    sweep(map.ccEnum, "enum", "cc", curatedEnum);
+    sweep(map.noteEnum, "enum", "note", curatedEnum);
+    return out;
   }, [map]);
 
   return (
     <div className="config-midi">
       <p className="config-midi-tip">
-        Right-click any slider in Full Controls to learn directly.
+        Right-click any slider, knob, dropdown, or toggle in Full Controls
+        to learn directly. For a CC, pick what the physical control does:
+        position sets the value, clicks nudge it, center returns to default,
+        or bottom returns to default.
       </p>
 
       <div
@@ -174,20 +217,54 @@ function MidiTab() {
           <span />
         </div>
 
-        {ALL_ROWS.map((row) => {
-          const num = findNum(row.kind, row.target);
+        {MIDI_TARGET_ROWS.map((row) => {
+          const binding = findBinding(row.kind, row.target);
+          const num = binding?.num ?? null;
           const isLearning =
             learn?.kind === row.kind && learn.target === row.target;
+          // Type cell: a continuous CC, an enum (knob or pad), or an
+          // action note. For enums show how it actually landed.
+          const typeLabel =
+            row.kind === "cc"
+              ? "CC"
+              : row.kind === "enum"
+                ? binding
+                  ? binding.via === "cc"
+                    ? "Enum · CC"
+                    : "Enum · Note"
+                  : "Enum"
+                : "Note";
           return (
             <div className="config-midi-row" key={`${row.kind}:${row.target}`}>
               <span className="config-midi-cell-label">{row.label}</span>
-              <span className="config-midi-cell-kind">
-                {row.kind === "cc" ? "CC" : "Note"}
-              </span>
+              <span className="config-midi-cell-kind">{typeLabel}</span>
               <span className="config-midi-cell-num">
                 {isLearning ? "…" : (num ?? "—")}
               </span>
               <span className="config-midi-cell-actions">
+                {/* Binding mode — only meaningful for a CC-bound slider
+                    (and only once a controller is assigned). Enum knobs
+                    and action notes have no continuous mode. */}
+                {row.kind === "cc" && (
+                  <select
+                    className="config-midi-mode"
+                    title="Choose what the physical control does before learning it."
+                    value={selectedModeFor(row.target, binding?.via === "cc" ? num : null)}
+                    onChange={(e) =>
+                      setSelectedMode(
+                        row.target,
+                        e.target.value as CcMode,
+                        binding?.via === "cc" ? num : null,
+                      )
+                    }
+                  >
+                    {MIDI_MODE_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 <button
                   type="button"
                   className={`config-midi-btn${isLearning ? " config-midi-btn--learning" : ""}`}
@@ -195,7 +272,14 @@ function MidiTab() {
                     if (isLearning) {
                       cancelLearn();
                     } else {
-                      startLearn(row.kind, row.target, null);
+                      startLearn(
+                        row.kind,
+                        row.target,
+                        null,
+                        row.kind === "cc"
+                          ? selectedModeFor(row.target, binding?.via === "cc" ? num : null)
+                          : undefined,
+                      );
                     }
                   }}
                 >
@@ -215,11 +299,76 @@ function MidiTab() {
         })}
       </div>
 
+      {extraRows.length > 0 && (
+        <div className="config-midi-table">
+          <div className="config-midi-row config-midi-row--head">
+            <span>Mapped control</span>
+            <span>Type</span>
+            <span>#</span>
+            <span />
+          </div>
+          {extraRows.map((row) => {
+            const typeLabel =
+              row.kind === "cc"
+                ? "CC"
+                : row.kind === "enum"
+                  ? row.via === "cc"
+                    ? "Enum · CC"
+                    : "Enum · Note"
+                  : row.via === "cc"
+                    ? "Note · CC"
+                    : "Note";
+            return (
+              <div
+                className="config-midi-row"
+                key={`extra:${row.kind}:${row.via}:${row.num}`}
+              >
+                <span className="config-midi-cell-label">
+                  {midiTargetLabel(row.target)}
+                </span>
+                <span className="config-midi-cell-kind">{typeLabel}</span>
+                <span className="config-midi-cell-num">{row.num}</span>
+                <span className="config-midi-cell-actions">
+                  {row.kind === "cc" && row.via === "cc" && (
+                    <select
+                      className="config-midi-mode"
+                      title="Choose what the physical control does."
+                      value={map.ccMode?.[row.num] ?? "absolute"}
+                      onChange={(e) =>
+                        setCcMode(row.num, e.target.value as CcMode)
+                      }
+                    >
+                      {MIDI_MODE_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <button
+                    type="button"
+                    className="config-midi-btn config-midi-btn--ghost"
+                    onClick={() => clearBinding(row.kind, row.target)}
+                  >
+                    Clear
+                  </button>
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       <div className="config-midi-footer">
         <button
           type="button"
           className="config-midi-btn config-midi-btn--ghost"
-          onClick={() => resetMap()}
+          onClick={() => {
+            resetMap();
+            // Drop locally-remembered learn modes so a row's dropdown can't
+            // keep showing a stale mode after the binding reverts to default.
+            setLearnModes({});
+          }}
         >
           Reset to defaults
         </button>

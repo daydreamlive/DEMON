@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import { isLoopGridRes, type LoopGridRes } from "@/lib/loopGrid";
 import { useCurveStore } from "@/store/useCurveStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
@@ -53,6 +54,19 @@ export interface RtmgConfigEngine {
    * parameter-update latency. Backend ignores when source ≤ window. */
   walk_window?: boolean;
   walk_window_s?: number;
+  /** Playback-lead tuning (server-side PipelineRunner). The lead is the
+   *  adaptive audio buffer placed ahead of the live playhead; these bound
+   *  how far it self-sizes. Raise the floor for more robustness to GPU
+   *  contention (screen capture, a co-resident visualizer, a second
+   *  process) at the cost of latency; the ceiling caps how far contention
+   *  can inflate it; the release tau sets how fast a contention spike
+   *  decays back out. Defaults are the "midway" profile. The server clamps
+   *  ``lead_release_tau_s`` up to ``lead_ceiling_s`` if a config sets it
+   *  lower (monotonic-decode invariant). Omit any field to use the
+   *  server-side default. */
+  lead_floor_s?: number;
+  lead_ceiling_s?: number;
+  lead_release_tau_s?: number;
   key: string;
   /** Default meter numerator the operator dropdown starts on. Mirrors
    * `key` in posture: the server's session-init resolver still wins on
@@ -276,6 +290,21 @@ export interface RtmgConfigCurves {
   curves: Record<string, RtmgConfigCurve>;
 }
 
+/** Playback loop region ("brace") — the same state WaveformScrubBox edits,
+ *  lifted into the config so an exported sound carries its loop. */
+export interface RtmgConfigLoop {
+  /** Loop region in seconds, or null when no region is set. */
+  band: { start: number; end: number } | null;
+  /** Whether the region is actively looping (vs. armed-but-off). */
+  enabled: boolean;
+  /** Snap resolution for loop edits. */
+  grid: LoopGridRes;
+  /** Global full-buffer loop toggle (store `loopOn`) — distinct from the
+   *  band loop. Optional so older exports that predate it leave the live
+   *  transport setting untouched on import. */
+  fullBuffer?: boolean;
+}
+
 export interface RtmgConfig {
   engine: RtmgConfigEngine;
   prompts: RtmgConfigPrompts;
@@ -302,6 +331,10 @@ export interface RtmgConfig {
    *  sliders + prompts. Optional — absent = stock pods fall back to
    *  the store's localStorage hydration / defaultCurveState. */
   curves?: RtmgConfigCurves;
+  /** Playback loop region + enabled + snap resolution. Optional — older
+   *  exports and stock pods omit it; absent on import leaves the live
+   *  loop untouched. */
+  loop?: RtmgConfigLoop;
 }
 
 export const DEFAULT_CONFIG: RtmgConfig = {
@@ -315,6 +348,9 @@ export const DEFAULT_CONFIG: RtmgConfig = {
     fast_vae: false,
     walk_window: false,
     walk_window_s: 60,
+    lead_floor_s: 0.25,
+    lead_ceiling_s: 1.35,
+    lead_release_tau_s: 1.5,
     max_source_duration_s: 120,
     key: "G# minor",
     time_signature: DEFAULT_TIME_SIGNATURE,
@@ -578,6 +614,9 @@ export function mergeConfig(
     // Absent override keeps whatever the base has (DEFAULT_CONFIG leaves
     // this undefined; stock pods fall through to localStorage hydration).
     ...(override.curves !== undefined ? { curves: override.curves } : (base.curves !== undefined ? { curves: base.curves } : {})),
+    // Loop region replaces whole when the import carries one; otherwise
+    // keep whatever the base (the live config) holds.
+    ...(override.loop !== undefined ? { loop: override.loop } : (base.loop !== undefined ? { loop: base.loop } : {})),
   };
 }
 
@@ -687,6 +726,36 @@ export function applyConfig(c: RtmgConfig): void {
     rcfgMode: isRcfgMode(resolved.controls.rcfg_mode) ? resolved.controls.rcfg_mode : s.rcfgMode,
     lufsOn: resolved.audio.lufs_enabled,
   }));
+
+  // Loop region: when the config carries one, push it into the perf
+  // store. WaveformScrubBox subscribes, so a mounted editor re-syncs the
+  // worklet + server via its own effect; an import before a session just
+  // seeds the store and applies once the waveform mounts. Validated
+  // because the JSON is operator-editable: a malformed band → no loop.
+  if (resolved.loop) {
+    const lp = resolved.loop;
+    const validBand =
+      lp.band &&
+      typeof lp.band.start === "number" &&
+      typeof lp.band.end === "number" &&
+      lp.band.end > lp.band.start
+        ? { start: lp.band.start, end: lp.band.end }
+        : null;
+    const next: Partial<{
+      loopBand: { start: number; end: number } | null;
+      bandLoopEnabled: boolean;
+      loopGridRes: LoopGridRes;
+      loopOn: boolean;
+    }> = {
+      loopBand: validBand,
+      bandLoopEnabled: typeof lp.enabled === "boolean" ? lp.enabled : true,
+      loopGridRes: isLoopGridRes(lp.grid) ? lp.grid : "beat",
+    };
+    // Only touch the global full-buffer loop when the export carried it,
+    // so an older config (or hand-edited JSON) leaves the live setting be.
+    if (typeof lp.fullBuffer === "boolean") next.loopOn = lp.fullBuffer;
+    usePerformanceStore.setState(next);
+  }
 
   // Curves: when the config carries them, push the whole bag into
   // useCurveStore via setState (the store has no batch action). Skipped
@@ -821,6 +890,12 @@ export function captureRtmgConfig(): RtmgConfig {
     denoise_session_gate: active.denoise_session_gate,
     restart_song_on_swap: active.restart_song_on_swap,
     swap_source_mode: active.swap_source_mode,
+    loop: {
+      band: perf.loopBand,
+      enabled: perf.bandLoopEnabled,
+      grid: perf.loopGridRes,
+      fullBuffer: perf.loopOn,
+    },
     curves: {
       scheduleEnabled: curveStore.scheduleEnabled,
       curves: Object.fromEntries(

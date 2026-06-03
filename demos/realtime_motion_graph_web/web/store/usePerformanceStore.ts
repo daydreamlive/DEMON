@@ -4,6 +4,7 @@ import { create } from "zustand";
 
 import { frameScheduler } from "@/engine/scheduler/FrameScheduler";
 import { getChannelRange } from "@/lib/config";
+import { type LoopGridRes } from "@/lib/loopGrid";
 
 import {
   DEFAULT_TIME_SIGNATURE,
@@ -281,6 +282,16 @@ export type RefSource =
   | { mode: "fixture"; name: string }
   | { mode: "clip"; name: string };
 
+/** Loop region (the playback "brace") in seconds, or null when none is
+ *  set. Owned here rather than in WaveformScrubBox local state so it can
+ *  round-trip through config export/import. */
+export interface LoopBand {
+  start: number;
+  end: number;
+}
+
+export { type LoopGridRes };
+
 interface PerformanceState {
   /** Per-param defaults used by double-click reset, long-press snap-back,
    *  and idle reset. Seeded from DEFAULT_SLIDER_VALUES and overwritten by
@@ -425,6 +436,17 @@ interface PerformanceState {
    *  the playhead via the seam crossfade. When false, the playhead
    *  freezes at end-of-buffer and the transport auto-pauses. */
   loopOn: boolean;
+  /** Loop region ("brace") in seconds, or null when none is set.
+   *  WaveformScrubBox is the editor; this is the source of truth so the
+   *  region survives config export/import. */
+  loopBand: LoopBand | null;
+  /** Whether the loop *region* is actively looping. Distinct from
+   *  `loopOn` (the global full-buffer loop): this gates only the band.
+   *  Decoupled from the region's existence so a region can sit
+   *  armed-but-off (the DAW loop-toggle behaviour). */
+  bandLoopEnabled: boolean;
+  /** Snap resolution for loop-region edits. Beat by default. */
+  loopGridRes: LoopGridRes;
 
   // ── actions ───────────────────────────────────────────────────────────
   setSlider: (param: string, value: number) => void;
@@ -469,6 +491,12 @@ interface PerformanceState {
   toggleKiosk: () => void;
   setPaused: (p: boolean) => void;
   togglePause: () => void;
+  /** Set / clear the loop region (seconds). Null clears it. */
+  setLoopBand: (band: LoopBand | null) => void;
+  /** Enable / disable band looping without destroying the region. */
+  setBandLoopEnabled: (enabled: boolean) => void;
+  /** Pick the snap resolution for loop edits. */
+  setLoopGridRes: (res: LoopGridRes) => void;
   setRemixStarted: (b: boolean) => void;
   setSkipNextFixtureSwap: (b: boolean) => void;
   setSkipNextDenoiseGate: (b: boolean) => void;
@@ -587,6 +615,9 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
   smoothMs: DEFAULT_SMOOTH_MS,
   lufsOn: false,
   loopOn: true,
+  loopBand: null,
+  bandLoopEnabled: true,
+  loopGridRes: "beat",
 
   setSlider: (param, value) => {
     stampManualTouch(param);
@@ -758,6 +789,9 @@ export const usePerformanceStore = create<PerformanceState>((set) => ({
     set((s) => ({ lufsOn: !s.lufsOn })),
   toggleLoop: () =>
     set((s) => ({ loopOn: !s.loopOn })),
+  setLoopBand: (band) => set({ loopBand: band }),
+  setBandLoopEnabled: (enabled) => set({ bandLoopEnabled: enabled }),
+  setLoopGridRes: (res) => set({ loopGridRes: res }),
   hydratePersistedPrefs: () =>
     set({
       showKbdHints: loadBool(SHOW_KBD_HINTS_STORAGE_KEY, true),

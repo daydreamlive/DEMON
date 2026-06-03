@@ -86,6 +86,7 @@ export function ModTile() {
             <span className="dcw-row-label">depth</span>
             <select
               className="dcw-select"
+              data-midi-enum="pipeline_depth"
               value={depthValue}
               disabled={!depthEnabled}
               onChange={(e) => {
@@ -151,7 +152,8 @@ export function ModTile() {
             type="button"
             className={`dcw-toggle${dcwEnabled ? " active" : ""}`}
             data-role="dcw-enabled"
-            data-dd-tooltip="Toggle DCW (T)"
+            data-midi-learn="dcw_enabled"
+            data-dd-tooltip="Toggle DCW (T) — right-click to MIDI-learn"
             onClick={toggleDcw}
           >
             DCW: {dcwEnabled ? "ON" : "OFF"}
@@ -160,6 +162,7 @@ export function ModTile() {
             <span className="dcw-row-label">DCW mode</span>
             <select
               className="dcw-select"
+              data-midi-enum="dcw_mode"
               title="Cycle DCW mode (Shift + T)"
               value={dcwMode}
               onChange={(e) =>
@@ -177,6 +180,7 @@ export function ModTile() {
             <span className="dcw-row-label">wavelet</span>
             <select
               className="dcw-select"
+              data-midi-enum="dcw_wavelet"
               title="Cycle wavelet (Shift + W)"
               value={dcwWavelet}
               onChange={(e) =>
@@ -217,6 +221,7 @@ export function ModTile() {
             <span className="dcw-row-label">RCFG</span>
             <select
               className="dcw-select"
+              data-midi-enum="rcfg_mode"
               value={rcfgMode}
               onChange={(e) => setRcfgMode(e.target.value as RcfgMode)}
             >

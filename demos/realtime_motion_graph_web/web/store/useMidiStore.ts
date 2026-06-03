@@ -2,37 +2,36 @@
 
 import { create } from "zustand";
 
-import { resetKnobDelta } from "@/engine/midi/absoluteDelta";
 import {
   DEFAULT_MIDI_MAP,
   MIDI_STORAGE_KEY,
+  type CcMode,
   type MidiMap,
   type NoteAction,
 } from "@/engine/midi/types";
 
+/** Deep-clone a (possibly partial / legacy) map into the full current
+ *  shape. Every reconstruction in this store routes through here so a new
+ *  bucket can never be silently dropped on save — the class of bug that
+ *  let `ccActions` disappear through `clearBinding` before this existed. */
+function cloneMap(m: Partial<MidiMap> | null | undefined): MidiMap {
+  return {
+    cc: { ...(m?.cc ?? {}) },
+    notes: { ...(m?.notes ?? {}) },
+    ccActions: { ...(m?.ccActions ?? {}) },
+    ccMode: { ...(m?.ccMode ?? {}) },
+    ccEnum: { ...(m?.ccEnum ?? {}) },
+    noteEnum: { ...(m?.noteEnum ?? {}) },
+  };
+}
+
 function loadMap(): MidiMap {
-  if (typeof localStorage === "undefined") {
-    return {
-      cc: { ...DEFAULT_MIDI_MAP.cc },
-      notes: { ...DEFAULT_MIDI_MAP.notes },
-      ccActions: { ...(DEFAULT_MIDI_MAP.ccActions ?? {}) },
-    };
-  }
+  if (typeof localStorage === "undefined") return cloneMap(DEFAULT_MIDI_MAP);
   try {
     const stored = JSON.parse(localStorage.getItem(MIDI_STORAGE_KEY) || "null");
-    if (stored && stored.cc && stored.notes) {
-      return {
-        cc: { ...stored.cc },
-        notes: { ...stored.notes },
-        ccActions: { ...(stored.ccActions ?? {}) },
-      };
-    }
+    if (stored && stored.cc && stored.notes) return cloneMap(stored);
   } catch {}
-  return {
-    cc: { ...DEFAULT_MIDI_MAP.cc },
-    notes: { ...DEFAULT_MIDI_MAP.notes },
-    ccActions: { ...(DEFAULT_MIDI_MAP.ccActions ?? {}) },
-  };
+  return cloneMap(DEFAULT_MIDI_MAP);
 }
 
 function saveMap(m: MidiMap): void {
@@ -64,16 +63,89 @@ function saveEnabled(b: boolean): void {
   } catch {}
 }
 
+function clearPhysicalCc(map: MidiMap, key: string): void {
+  delete map.cc[key];
+  delete map.ccActions![key];
+  delete map.ccEnum![key];
+  delete map.ccMode![key];
+}
+
+function clearPhysicalNote(map: MidiMap, key: string): void {
+  delete map.notes[key];
+  delete map.noteEnum![key];
+}
+
+function clearContinuousTarget(map: MidiMap, target: string): void {
+  for (const [key, value] of Object.entries(map.cc)) {
+    if (value !== target) continue;
+    delete map.cc[key];
+    delete map.ccMode![key];
+  }
+}
+
+function clearActionTarget(map: MidiMap, target: string): void {
+  for (const [key, value] of Object.entries(map.notes)) {
+    if (value === target) delete map.notes[key];
+  }
+  for (const [key, value] of Object.entries(map.ccActions ?? {})) {
+    if (value !== target) continue;
+    delete map.ccActions![key];
+    delete map.ccMode![key];
+  }
+}
+
+function clearEnumTarget(map: MidiMap, target: string): void {
+  for (const [key, value] of Object.entries(map.ccEnum ?? {})) {
+    if (value !== target) continue;
+    delete map.ccEnum![key];
+    delete map.ccMode![key];
+  }
+  for (const [key, value] of Object.entries(map.noteEnum ?? {})) {
+    if (value === target) delete map.noteEnum![key];
+  }
+}
+
+function clearTarget(map: MidiMap, kind: "cc" | "note" | "enum", target: string): void {
+  if (kind === "cc") clearContinuousTarget(map, target);
+  else if (kind === "note") clearActionTarget(map, target);
+  else clearEnumTarget(map, target);
+}
+
 interface LearnState {
-  kind: "cc" | "note";
+  /** "cc" = slider param learning a continuous controller.
+   *  "note" = action/toggle button learning a pad (or a pad-in-CC-mode).
+   *  "enum" = dropdown learning EITHER a knob (→ ccEnum, quantized) OR a
+   *           pad (→ noteEnum, cycle), whichever message arrives first. */
+  kind: "cc" | "note" | "enum";
   target: string;
   el: HTMLElement | null;
+  /** When set (cc learns only), the binding lands with this mode — lets
+   *  the right-click menu offer "Learn as Spring" in one gesture. */
+  mode?: CcMode;
+}
+
+/** Right-click MIDI menu anchor. Opened by the document-level
+ *  contextmenu handler in useMidi; rendered by <MidiContextMenu>. */
+interface MidiMenuState {
+  x: number;
+  y: number;
+  kind: "cc" | "note" | "enum";
+  target: string;
+  el: HTMLElement | null;
+  extraItems?: MidiMenuItem[];
+}
+
+export interface MidiMenuItem {
+  label: string;
+  onClick: () => void;
+  dividerBefore?: boolean;
 }
 
 interface MidiState {
   map: MidiMap;
   status: { message: string; tone: "ok" | "warn" | "info" | "off" };
   learn: LearnState | null;
+  menu: MidiMenuState | null;
   available: boolean;
   /** User-opt-in gate on the Web MIDI permission prompt. The MIDI-in
    *  jack toggle (HeroMacros' MidiInToggle) flips this; useMidi only
@@ -90,10 +162,16 @@ interface MidiState {
     kind: LearnState["kind"],
     target: string,
     el: HTMLElement | null,
+    mode?: CcMode,
   ) => void;
   cancelLearn: () => void;
-  applyLearn: (kind: "cc" | "note", num: number) => boolean;
-  clearBinding: (kind: "cc" | "note", target: string) => void;
+  /** Open / close the right-click MIDI menu. */
+  openMenu: (menu: MidiMenuState) => void;
+  closeMenu: () => void;
+  applyLearn: (kind: "cc" | "note", key: string) => boolean;
+  clearBinding: (kind: "cc" | "note" | "enum", target: string) => void;
+  /** Set the explicit controller type for a bound CC. */
+  setCcMode: (cc: string, mode: CcMode) => void;
 
   resetMap: () => void;
 }
@@ -102,6 +180,7 @@ export const useMidiStore = create<MidiState>((set, get) => ({
   map: loadMap(),
   status: { message: "MIDI", tone: "off" },
   learn: null,
+  menu: null,
   available: false,
   enabled: loadEnabled(),
 
@@ -112,13 +191,14 @@ export const useMidiStore = create<MidiState>((set, get) => ({
     set({ enabled: b });
   },
 
-  startLearn: (kind, target, el) => {
+  startLearn: (kind, target, el, mode) => {
     const prev = get().learn;
     if (prev?.el) prev.el.classList.remove("midi-learning");
     if (el) el.classList.add("midi-learning");
     set({
-      learn: { kind, target, el },
-      status: { message: `Learn: ${target} — twist or press`, tone: "warn" },
+      learn: { kind, target, el, mode },
+      menu: null,
+      status: { message: `Learning ${target} — now move the control`, tone: "warn" },
     });
   },
   cancelLearn: () => {
@@ -126,9 +206,15 @@ export const useMidiStore = create<MidiState>((set, get) => ({
     if (learn?.el) learn.el.classList.remove("midi-learning");
     set({ learn: null });
   },
-  applyLearn: (kind, num) => {
+  openMenu: (menu) => set({ menu }),
+  closeMenu: () => set({ menu: null }),
+  applyLearn: (kind, key) => {
     const { learn, map } = get();
     if (!learn) return false;
+    // Pitch bend is a continuous center-resting axis. Do not let it land
+    // in enum/action buckets, where runtime dispatch would have no useful
+    // press or sweep semantics.
+    if (key.startsWith("pb") && learn.kind !== "cc") return false;
     // Strict match: learning a slider param ("cc") only accepts CC.
     // Permissive match: learning an action button ("note") accepts EITHER
     // a NOTE message (the usual pad signal) OR a CC message — some pads
@@ -136,39 +222,39 @@ export const useMidiStore = create<MidiState>((set, get) => ({
     // than to demand the user reconfigure their hardware. The CC binding
     // for an action goes into `ccActions` so the dispatcher can fire the
     // discrete action when that CC arrives, separately from the
-    // continuous-controller `cc` map used by sliders.
+    // continuous-controller `cc` map used by sliders. An enum target
+    // accepts either: a CC binds the knob-sweep (ccEnum), a note binds
+    // the pad-cycle (noteEnum).
     if (learn.kind === "cc" && kind !== "cc") return false;
-    const next: MidiMap = {
-      cc: { ...map.cc },
-      notes: { ...map.notes },
-      ccActions: { ...(map.ccActions ?? {}) },
-    };
+    const next = cloneMap(map);
+
     if (learn.kind === "cc") {
       // Slider param learning a CC.
-      for (const k of Object.keys(next.cc)) {
-        if (next.cc[k] === learn.target) delete next.cc[k];
+      clearContinuousTarget(next, learn.target);
+      clearPhysicalCc(next, key);
+      next.cc[key] = learn.target;
+      next.ccMode![key] = learn.mode ?? "absolute";
+    } else if (learn.kind === "enum") {
+      clearEnumTarget(next, learn.target);
+      if (kind === "cc") {
+        // Knob → quantized sweep across the enum's options.
+        clearPhysicalCc(next, key);
+        next.ccEnum![key] = learn.target;
+      } else {
+        // Pad → cycle to the next option per press.
+        clearPhysicalNote(next, key);
+        next.noteEnum![key] = learn.target;
       }
-      next.cc[String(num)] = learn.target;
-      // Drop any cached prior value for this CC so the next message
-      // re-establishes a baseline. Without this, rebinding CC X from
-      // param A to param B would treat the first post-rebind message
-      // as a delta from A's last raw value, producing a wrong jump on
-      // B's slider.
-      resetKnobDelta(num);
     } else if (kind === "note") {
       // Action button learning a NOTE.
-      for (const k of Object.keys(next.notes)) {
-        if (next.notes[k] === learn.target) delete next.notes[k];
-      }
-      next.notes[String(num)] = learn.target as NoteAction;
+      clearActionTarget(next, learn.target);
+      clearPhysicalNote(next, key);
+      next.notes[key] = learn.target as NoteAction;
     } else {
       // Action button learning a CC (pad in CC mode).
-      const ccActions = next.ccActions ?? {};
-      for (const k of Object.keys(ccActions)) {
-        if (ccActions[k] === learn.target) delete ccActions[k];
-      }
-      ccActions[String(num)] = learn.target as NoteAction;
-      next.ccActions = ccActions;
+      clearActionTarget(next, learn.target);
+      clearPhysicalCc(next, key);
+      next.ccActions![key] = learn.target as NoteAction;
     }
     saveMap(next);
     if (learn.el) learn.el.classList.remove("midi-learning");
@@ -176,7 +262,7 @@ export const useMidiStore = create<MidiState>((set, get) => ({
       map: next,
       learn: null,
       status: {
-        message: `Learned ${learn.target} ← ${kind} ${num}`,
+        message: `Learned ${learn.target} ← ${key}`,
         tone: "ok",
       },
     });
@@ -184,31 +270,24 @@ export const useMidiStore = create<MidiState>((set, get) => ({
   },
   clearBinding: (kind, target) => {
     const { map } = get();
-    const next: MidiMap = {
-      cc: { ...map.cc },
-      notes: { ...map.notes },
-    };
-    const slot = kind === "cc" ? next.cc : next.notes;
-    for (const k of Object.keys(slot)) {
-      if (slot[k] === target) delete slot[k];
-    }
+    const next = cloneMap(map);
+    clearTarget(next, kind, target);
     saveMap(next);
     set({
       map: next,
       status: { message: `Cleared ${target}`, tone: "info" },
     });
   },
+  setCcMode: (cc, mode) => {
+    const next = cloneMap(get().map);
+    next.ccMode![cc] = mode;
+    saveMap(next);
+    set({ map: next });
+  },
 
   resetMap: () => {
-    const def: MidiMap = {
-      cc: { ...DEFAULT_MIDI_MAP.cc },
-      notes: { ...DEFAULT_MIDI_MAP.notes },
-    };
+    const def = cloneMap(DEFAULT_MIDI_MAP);
     saveMap(def);
-    // Drop every per-CC delta-tracking baseline. After a full map
-    // reset, the next message on any CC should re-establish a
-    // baseline, not compute a delta against the previous binding.
-    resetKnobDelta();
     set({ map: def, status: { message: "MIDI reset", tone: "ok" } });
   },
 }));

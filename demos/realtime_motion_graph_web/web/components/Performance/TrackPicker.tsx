@@ -9,6 +9,7 @@ import {
   type DecodedFixture,
   type StemSourceMode,
 } from "@/engine/audio/loadFixture";
+import { useActionGate } from "@/hooks/useActionGate";
 import { useSeedUserUploads } from "@/hooks/useSeedUserUploads";
 import { commitUploadedTrack } from "@/lib/audio/commitUploadedTrack";
 import { trimAudioBuffer } from "@/lib/audio/trimAudioBuffer";
@@ -64,6 +65,9 @@ export function TrackPicker() {
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   useSeedUserUploads();
+  // Host-supplied gate for track-change + upload (see useActionGate).
+  // Default is allow-all; demon-public-demo overrides to require sign-up.
+  const gate = useActionGate();
 
   useEffect(() => {
     if (!sessionWsUrl && !LOCAL_MODE) return;
@@ -149,10 +153,16 @@ export function TrackPicker() {
             options: customNames.map((n) => ({ value: n, label: n })),
           },
         ]}
-        onSelect={setFixture}
+        onSelect={async (v) => {
+          if (!(await gate("track_change"))) return;
+          setFixture(v);
+        }}
         disabled={uploading}
         ariaLabel="Input track"
-        onUpload={() => fileInputRef.current?.click()}
+        onUpload={async () => {
+          if (!(await gate("upload"))) return;
+          fileInputRef.current?.click();
+        }}
         uploadLabel={uploading ? "Decoding…" : "Upload audio track"}
         tooltip="The input song the model is processing. Pick a built-in fixture, one of your uploads, or click the upload icon to drop in a new file. New uploads decode locally, then the Almost-Ready dialog gates the swap so the previous track keeps playing if you cancel."
       />

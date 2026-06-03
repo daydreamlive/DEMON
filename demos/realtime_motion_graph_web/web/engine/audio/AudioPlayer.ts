@@ -183,11 +183,12 @@ export class AudioPlayer {
 
     if (this._useWorklet) {
       // Stable URL — worklet ships from public/ so AudioContext can resolve it.
-      // Cache-busting query bumped manually when the worklet message
-      // surface changes (v2 = setLoopBand, v3 = stem overlays inside the
-      // worklet). The browser caches worklet bytes per-URL and hard
-      // refresh doesn't always invalidate.
-      await this.ctx.audioWorklet.addModule("/audio-worklet.js?v=3");
+      // Cache-busting query bumped manually when the worklet behaviour or
+      // message surface changes (v2 = setLoopBand, v3 = stem overlays
+      // inside the worklet, v4 = band-loop seam crossfade, v5 = band loop
+      // at the buffer end no longer freezes). The browser caches worklet
+      // bytes per-URL and hard refresh doesn't always invalidate.
+      await this.ctx.audioWorklet.addModule("/audio-worklet.js?v=5");
 
       const node = new AudioWorkletNode(this.ctx, "realtime-buffer", {
         numberOfInputs: 0,
@@ -284,7 +285,16 @@ export class AudioPlayer {
       );
     } else {
       this._spBuffer = interleavedBuffer.slice();
-      this._spPosition = 0;
+      // Preserve playhead phase across the swap, mirroring the worklet
+      // `swap` handler (which leaves `this.position` untouched). Clamp into
+      // the new buffer so a shorter track can't read past its end. Whether
+      // a swap restarts from 0 is owned solely by the restart_song_on_swap
+      // gate in useFixtureSwap (which issues seek(0)); hard-zeroing here
+      // overrode that flag on the SP fallback path, so `false` never took.
+      this._spPosition = Math.max(
+        0,
+        Math.min(this.frameCount - 1, this._spPosition),
+      );
     }
     // Track changed: re-measure source loudness for the new buffer.
     this._sourceTarget = null;

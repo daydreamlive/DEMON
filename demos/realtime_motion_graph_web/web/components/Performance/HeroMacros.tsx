@@ -8,6 +8,7 @@ import { loraDisplayName } from "@/lib/loraLabels";
 import { useCurveStore } from "@/store/useCurveStore";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { useLoraStore } from "@/store/useLoraStore";
+import { useMidiStore } from "@/store/useMidiStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import {
   elapsedMs,
@@ -311,8 +312,19 @@ export function HeroMacros() {
           type="button"
           className="hero-macros-toggle"
           onClick={() => document.dispatchEvent(new Event("dd:toggle-drawer"))}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            useMidiStore.getState().openMenu({
+              x: e.clientX,
+              y: e.clientY,
+              kind: "note",
+              target: "drawer_toggle",
+              el: e.currentTarget,
+            });
+          }}
           aria-label={drawerOpen ? "Close Full Controls" : "Open Full Controls"}
           aria-expanded={drawerOpen}
+          data-midi-learn="drawer_toggle"
         >
           <span className="hero-macros-toggle-label">
             {drawerOpen ? "Simple Controls" : "Full Controls"}

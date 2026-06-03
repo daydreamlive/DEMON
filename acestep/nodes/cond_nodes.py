@@ -6,6 +6,7 @@ import torch
 from typing import Any, ClassVar, Optional
 
 from .base import BaseNode, NodeDefinition, NodeParam, NodePort, NodeRegistry
+from .interpolation import INTERP_METHOD_NAMES, INTERPOLATIONS
 from .types import (
     CLIPHandle,
     Conditioning,
@@ -402,6 +403,17 @@ class ConditioningBlend(BaseNode):
                     description="Blend factor (0 = all A, 1 = all B)",
                     min=0.0, max=1.0, step=0.01,
                 ),
+                NodeParam(
+                    name="method", type="select", default="linear",
+                    description=(
+                        "Interpolation method (see acestep.nodes.interpolation). "
+                        "'linear' (default) averages the two conditionings, which "
+                        "dips the norm at the midpoint so the blend sounds washed "
+                        "out halfway. 'slerp' walks the per-token geodesic instead, "
+                        "holding each token's norm constant across the sweep."
+                    ),
+                    options=INTERP_METHOD_NAMES,
+                ),
             ),
         )
 
@@ -409,6 +421,7 @@ class ConditioningBlend(BaseNode):
         cond_a: Conditioning = kwargs["conditioning_a"]
         cond_b: Conditioning = kwargs["conditioning_b"]
         alpha = float(kwargs.get("alpha", 0.5))
+        method = str(kwargs.get("method", "linear"))
 
         ea = cond_a.to_entries()[0]
         eb = cond_b.to_entries()[0]
@@ -423,7 +436,7 @@ class ConditioningBlend(BaseNode):
             sb = torch.nn.functional.pad(sb, (0, 0, 0, La - Lb))
             mb = torch.nn.functional.pad(mb, (0, La - Lb), value=0)
 
-        blended = (1.0 - alpha) * sa + alpha * sb
+        blended = INTERPOLATIONS[method](sa, sb, alpha)
         mask = torch.max(ma, mb)
 
         return {
