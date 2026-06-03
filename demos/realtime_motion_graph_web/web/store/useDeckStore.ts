@@ -6,6 +6,7 @@ import type { StemOverlayKind, StemSourceMode } from "@/engine/audio/loadFixture
 
 export type DeckId = "A" | "B" | "C" | "D";
 export type DeckCrossfadeSide = "left" | "right" | null;
+export const DECK_STATE_SNAPSHOT_VERSION = 1;
 
 export interface DeckSlot {
   id: DeckId;
@@ -22,6 +23,31 @@ export interface DeckSlot {
   lastStartedAtMs: number | null;
   crossfadeSide: DeckCrossfadeSide;
 }
+
+export interface DeckSlotSnapshot {
+  id: DeckId;
+  trackName: string | null;
+  sourcePart: StemSourceMode;
+  stemOverlayLevels: Record<StemOverlayKind, number>;
+  volume: number;
+  muted: boolean;
+  solo: boolean;
+  cueSec: number;
+  positionSec: number;
+  crossfadeSide: DeckCrossfadeSide;
+}
+
+export interface DeckStateSnapshotV1 {
+  version: typeof DECK_STATE_SNAPSHOT_VERSION;
+  deckIds: DeckId[];
+  decks: Record<DeckId, DeckSlotSnapshot>;
+  timbreDeckId: DeckId | null;
+  structureDeckId: DeckId | null;
+  crossfade: number;
+  inferenceEnabled: boolean;
+}
+
+export type DeckStateSnapshot = DeckStateSnapshotV1;
 
 interface DeckStoreState {
   decks: Record<DeckId, DeckSlot>;
@@ -57,6 +83,7 @@ interface DeckStoreState {
   setCrossfade: (value: number) => void;
   setMonitorEnabled: (enabled: boolean) => void;
   setInferenceEnabled: (enabled: boolean) => void;
+  restoreDeckState: (snapshot: DeckStateSnapshot) => void;
 }
 
 export const DECK_IDS: DeckId[] = ["A", "B", "C", "D"];
@@ -106,6 +133,15 @@ function makeDeck(id: DeckId, crossfadeSide: DeckCrossfadeSide): DeckSlot {
   };
 }
 
+function makeDefaultDecks(): Record<DeckId, DeckSlot> {
+  return {
+    A: makeDeck("A", "left"),
+    B: makeDeck("B", "right"),
+    C: makeDeck("C", null),
+    D: makeDeck("D", null),
+  };
+}
+
 function currentDeckPosition(deck: DeckSlot, nowMs = now()): number {
   if (!deck.playing || deck.lastStartedAtMs === null) return deck.positionSec;
   return deck.positionSec + Math.max(0, nowMs - deck.lastStartedAtMs) / 1000;
@@ -129,13 +165,117 @@ export function deckPositionSec(deck: DeckSlot, nowMs = now()): number {
   return currentDeckPosition(deck, nowMs);
 }
 
+function deckSlotSnapshot(deck: DeckSlot): DeckSlotSnapshot {
+  return {
+    id: deck.id,
+    trackName: deck.trackName,
+    sourcePart: deck.sourcePart,
+    stemOverlayLevels: { ...deck.stemOverlayLevels },
+    volume: deck.volume,
+    muted: deck.muted,
+    solo: deck.solo,
+    cueSec: deck.cueSec,
+    positionSec: deckPositionSec(deck),
+    crossfadeSide: deck.crossfadeSide,
+  };
+}
+
+function isDeckId(value: unknown): value is DeckId {
+  return value === "A" || value === "B" || value === "C" || value === "D";
+}
+
+function isSourcePart(value: unknown): value is StemSourceMode {
+  return value === "full" || value === "vocals" || value === "instruments";
+}
+
+function isCrossfadeSide(value: unknown): value is DeckCrossfadeSide {
+  return value === "left" || value === "right" || value === null;
+}
+
+function restoreDeckSlot(
+  id: DeckId,
+  snapshot: Partial<DeckSlotSnapshot> | undefined,
+  fallback: DeckSlot,
+): DeckSlot {
+  const stemLevels = snapshot?.stemOverlayLevels ?? fallback.stemOverlayLevels;
+  return {
+    ...fallback,
+    trackName:
+      typeof snapshot?.trackName === "string" || snapshot?.trackName === null
+        ? snapshot.trackName
+        : fallback.trackName,
+    sourcePart: isSourcePart(snapshot?.sourcePart)
+      ? snapshot.sourcePart
+      : fallback.sourcePart,
+    stemOverlayLevels: {
+      vocals: clampStemOverlay(stemLevels.vocals),
+      instruments: clampStemOverlay(stemLevels.instruments),
+    },
+    volume:
+      typeof snapshot?.volume === "number"
+        ? clamp01(snapshot.volume)
+        : fallback.volume,
+    muted:
+      typeof snapshot?.muted === "boolean" ? snapshot.muted : fallback.muted,
+    solo: typeof snapshot?.solo === "boolean" ? snapshot.solo : fallback.solo,
+    playing: false,
+    cueSec:
+      typeof snapshot?.cueSec === "number"
+        ? clampSec(snapshot.cueSec)
+        : fallback.cueSec,
+    positionSec:
+      typeof snapshot?.positionSec === "number"
+        ? clampSec(snapshot.positionSec)
+        : fallback.positionSec,
+    lastStartedAtMs: null,
+    crossfadeSide: isCrossfadeSide(snapshot?.crossfadeSide)
+      ? snapshot.crossfadeSide
+      : fallback.crossfadeSide,
+    id,
+  };
+}
+
+export function captureDeckStateSnapshot(): DeckStateSnapshot {
+  const state = useDeckStore.getState();
+  return {
+    version: DECK_STATE_SNAPSHOT_VERSION,
+    deckIds: [...state.deckIds],
+    decks: {
+      A: deckSlotSnapshot(state.decks.A),
+      B: deckSlotSnapshot(state.decks.B),
+      C: deckSlotSnapshot(state.decks.C),
+      D: deckSlotSnapshot(state.decks.D),
+    },
+    timbreDeckId: state.timbreDeckId,
+    structureDeckId: state.structureDeckId,
+    crossfade: state.crossfade,
+    inferenceEnabled: state.inferenceEnabled,
+  };
+}
+
+export function createDefaultDeckStateSnapshot(
+  trackName: string | null = null,
+): DeckStateSnapshot {
+  const decks = makeDefaultDecks();
+  decks.A.trackName = trackName;
+  return {
+    version: DECK_STATE_SNAPSHOT_VERSION,
+    deckIds: ["A"],
+    decks: {
+      A: deckSlotSnapshot(decks.A),
+      B: deckSlotSnapshot(decks.B),
+      C: deckSlotSnapshot(decks.C),
+      D: deckSlotSnapshot(decks.D),
+    },
+    timbreDeckId: null,
+    structureDeckId: null,
+    crossfade: 0.5,
+    inferenceEnabled: true,
+  };
+}
+
 export const useDeckStore = create<DeckStoreState>((set) => ({
-  decks: {
-    A: makeDeck("A", "left"),
-    B: makeDeck("B", "right"),
-    C: makeDeck("C", null),
-    D: makeDeck("D", null),
-  },
+  decks: makeDefaultDecks(),
   deckIds: ["A"],
   timbreDeckId: null,
   structureDeckId: null,
@@ -328,4 +468,30 @@ export const useDeckStore = create<DeckStoreState>((set) => ({
     set((state) => ({ crossfade: clamp01(value), mixRevision: state.mixRevision + 1 })),
   setMonitorEnabled: (enabled) => set({ monitorEnabled: enabled }),
   setInferenceEnabled: (enabled) => set({ inferenceEnabled: enabled }),
+  restoreDeckState: (snapshot) =>
+    set((state) => {
+      if (snapshot.version !== DECK_STATE_SNAPSHOT_VERSION) return {};
+      const defaults = makeDefaultDecks();
+      const deckIds = snapshot.deckIds.filter(isDeckId);
+      const nextDeckIds = Array.from(new Set(deckIds));
+      if (nextDeckIds.length === 0) nextDeckIds.push("A");
+      const decks = {
+        A: restoreDeckSlot("A", snapshot.decks.A, defaults.A),
+        B: restoreDeckSlot("B", snapshot.decks.B, defaults.B),
+        C: restoreDeckSlot("C", snapshot.decks.C, defaults.C),
+        D: restoreDeckSlot("D", snapshot.decks.D, defaults.D),
+      };
+      const validRole = (id: DeckId | null): DeckId | null =>
+        id && nextDeckIds.includes(id) ? id : null;
+      return {
+        decks,
+        deckIds: nextDeckIds,
+        timbreDeckId: validRole(snapshot.timbreDeckId),
+        structureDeckId: validRole(snapshot.structureDeckId),
+        crossfade: clamp01(snapshot.crossfade),
+        monitorEnabled: false,
+        inferenceEnabled: snapshot.inferenceEnabled,
+        mixRevision: state.mixRevision + 1,
+      };
+    }),
 }));

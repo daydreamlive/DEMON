@@ -2,6 +2,7 @@
 
 import {
   decodeAudioFile,
+  loadFixtureAudio,
   type DecodedFixture,
   type DecodedStemAssets,
   type StemOverlayKind,
@@ -21,6 +22,14 @@ import {
   type CustomTrackAssetMetadata,
   type HydratedCustomTrack,
 } from "@/store/useCustomTracksStore";
+import {
+  captureDeckStateSnapshot,
+  createDefaultDeckStateSnapshot,
+  DECK_STATE_SNAPSHOT_VERSION,
+  useDeckStore,
+  type DeckId,
+  type DeckStateSnapshot,
+} from "@/store/useDeckStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 import { useStemOverlayStore } from "@/store/useStemOverlayStore";
@@ -47,6 +56,7 @@ export interface SessionSnapshotV1 {
   config: RtmgConfig;
   fixture: string;
   customTracks: CustomTrackAssetMetadata[];
+  deckState?: DeckStateSnapshot;
   stemOverlay: {
     enabled: Record<StemOverlayKind, boolean>;
     volumes: Record<StemOverlayKind, number>;
@@ -64,11 +74,27 @@ export function captureSessionSnapshot(): SessionSnapshot {
     config: captureRtmgConfig(),
     fixture: perf.fixture,
     customTracks: useCustomTracksStore.getState().exportMetadata(),
+    deckState: captureDeckStateSnapshot(),
     stemOverlay: {
       enabled: { ...stemOverlay.enabled },
       volumes: { ...stemOverlay.volumes },
     },
   };
+}
+
+function validateDeckStateSnapshotShape(value: unknown): value is DeckStateSnapshot {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const snapshot = value as Partial<DeckStateSnapshot>;
+  return (
+    snapshot.version === DECK_STATE_SNAPSHOT_VERSION &&
+    Array.isArray(snapshot.deckIds) &&
+    typeof snapshot.decks === "object" &&
+    snapshot.decks !== null &&
+    typeof snapshot.crossfade === "number" &&
+    typeof snapshot.inferenceEnabled === "boolean"
+  );
 }
 
 export function validateSessionSnapshotShape(
@@ -85,6 +111,8 @@ export function validateSessionSnapshotShape(
     typeof snapshot.config === "object" &&
     snapshot.config !== null &&
     Array.isArray(snapshot.customTracks) &&
+    (typeof snapshot.deckState === "undefined" ||
+      validateDeckStateSnapshotShape(snapshot.deckState)) &&
     typeof snapshot.stemOverlay === "object" &&
     snapshot.stemOverlay !== null
   );
@@ -313,6 +341,57 @@ function flashSessionStatus(message: string): void {
   session.setStatus(session.status, message);
 }
 
+function deckTrackRef(
+  deckState: DeckStateSnapshot,
+  id: DeckId | null,
+): { mode: "fixture" | "clip"; name: string } | null {
+  if (!id) return null;
+  const name = deckState.decks[id]?.trackName;
+  if (!name) return null;
+  const mode = useCustomTracksStore.getState().has(name) ? "clip" : "fixture";
+  return { mode, name };
+}
+
+async function restoreDeckReferences(deckState: DeckStateSnapshot): Promise<void> {
+  const perf = usePerformanceStore.getState();
+  const timbreRef = deckTrackRef(deckState, deckState.timbreDeckId);
+  const structRef = deckTrackRef(deckState, deckState.structureDeckId);
+  perf.setTimbreRef(timbreRef);
+  perf.setStructRef(structRef);
+
+  const session = useSessionStore.getState();
+  if (session.status !== "ready" || !session.remote) return;
+  const apply = async (
+    ref: { mode: "fixture" | "clip"; name: string } | null,
+    sendFixture: (name: string) => void,
+    sendSource: (i: Float32Array, c: number, n: string) => boolean,
+  ): Promise<void> => {
+    if (!ref) return;
+    try {
+      if (ref.mode === "fixture") {
+        sendFixture(ref.name);
+        return;
+      }
+      const decoded = await loadFixtureAudio(ref.name);
+      sendSource(decoded.interleaved, decoded.channels, ref.name);
+    } catch {
+      // Missing/deleted ref sources should not block restoring the session.
+    }
+  };
+  await apply(
+    timbreRef,
+    (name) => session.remote?.sendSetTimbreFixture(name),
+    (interleaved, channels, name) =>
+      session.remote?.sendSetTimbreSource(interleaved, channels, name) ?? false,
+  );
+  await apply(
+    structRef,
+    (name) => session.remote?.sendSetStructureFixture(name),
+    (interleaved, channels, name) =>
+      session.remote?.sendSetStructureSource(interleaved, channels, name) ?? false,
+  );
+}
+
 export async function applySessionSnapshot(
   snapshot: unknown,
 ): Promise<SessionCompleteness> {
@@ -329,6 +408,10 @@ export async function applySessionSnapshot(
   perf.setSkipNextDenoiseGate(true);
   applyConfig(snapshot.config);
   usePerformanceStore.getState().setFixture(snapshot.fixture);
+  const deckState =
+    snapshot.deckState ?? createDefaultDeckStateSnapshot(snapshot.fixture || null);
+  useDeckStore.getState().restoreDeckState(deckState);
+  await restoreDeckReferences(deckState);
 
   const stem = useStemOverlayStore.getState();
   (Object.keys(snapshot.stemOverlay.enabled) as StemOverlayKind[]).forEach((kind) => {
@@ -370,6 +453,7 @@ export function sessionSnapshotSignature(snapshot: SessionSnapshot): string {
     config: snapshot.config,
     fixture: snapshot.fixture,
     customTracks: snapshot.customTracks,
+    deckState: snapshot.deckState,
     stemOverlay: snapshot.stemOverlay,
   });
 }

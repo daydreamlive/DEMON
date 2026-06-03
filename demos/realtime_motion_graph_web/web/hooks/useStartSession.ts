@@ -15,6 +15,7 @@ import {
   resolveLoraCapForSource,
 } from "@/lib/config";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
+import { type DeckId, useDeckStore } from "@/store/useDeckStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore, type RefSource } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
@@ -365,6 +366,16 @@ async function restoreRefs(remote: RemoteBackend): Promise<void> {
   );
 }
 
+function refFromDeckRole(id: DeckId | null): RefSource | null {
+  if (!id) return null;
+  const name = useDeckStore.getState().decks[id]?.trackName;
+  if (!name) return null;
+  return {
+    mode: useCustomTracksStore.getState().has(name) ? "clip" : "fixture",
+    name,
+  };
+}
+
 export function useStartSession() {
   return useCallback(async () => {
     const { setStatus, setSession, reset } = useSessionStore.getState();
@@ -378,13 +389,13 @@ export function useStartSession() {
       prev.remote?.close();
     } catch {}
     reset();
-    // A fresh session boots with no timbre / structure override. Drop
-    // any RefSource recorded by a prior session so the reconnect path
-    // (restoreRefs) can't re-apply a ref the operator didn't set this
-    // session. Reconnects go through buildAndConnect, never this hook,
-    // so the in-session record is preserved across a recovery.
-    usePerformanceStore.getState().setTimbreRef(null);
-    usePerformanceStore.getState().setStructRef(null);
+    // A fresh session boots with no timbre / structure override. Rebuild
+    // the ref records from deck roles so saved-session roles survive the
+    // initial Play click, while absent roles still clear stale refs.
+    const deck = useDeckStore.getState();
+    const perf = usePerformanceStore.getState();
+    perf.setTimbreRef(refFromDeckRole(deck.timbreDeckId));
+    perf.setStructRef(refFromDeckRole(deck.structureDeckId));
 
     setStatus("loading-fixture", "Loading track…");
 

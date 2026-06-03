@@ -37,6 +37,7 @@ export function useDeckServerSync({
   enabled: boolean;
   revision: number;
 }) {
+  const ready = useSessionStore((s) => s.status === "ready" && Boolean(s.remote));
   const payload = useMemo(() => {
     return DECK_IDS.flatMap((id): WireDeck[] => {
       const deck = decks[id];
@@ -54,12 +55,12 @@ export function useDeckServerSync({
   }, [decks, revision]);
 
   useEffect(() => {
-    if (!enabled || payload.length === 0) return;
+    if (!enabled || !ready || payload.length === 0) return;
     const timer = window.setTimeout(() => {
       const { remote, status } = useSessionStore.getState();
       if (status !== "ready" || !remote) return;
       remote.sendDeckMixState(payload, crossfade);
     }, DECK_PARAM_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [crossfade, enabled, payload, revision]);
+  }, [crossfade, enabled, payload, ready, revision]);
 }

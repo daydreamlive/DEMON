@@ -18,6 +18,7 @@ import {
 } from "@/lib/sessionAudioAssets";
 import { useCurveStore } from "@/store/useCurveStore";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
+import { useDeckStore } from "@/store/useDeckStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useStemOverlayStore } from "@/store/useStemOverlayStore";
@@ -184,6 +185,7 @@ export function useLocalSavedSessions(): LocalSavedSessionsController {
       useLoraStore.subscribe(scheduleSyncDirty),
       useCurveStore.subscribe(scheduleSyncDirty),
       useCustomTracksStore.subscribe(scheduleSyncDirty),
+      useDeckStore.subscribe(scheduleSyncDirty),
       useStemOverlayStore.subscribe(scheduleSyncDirty),
     ];
     return () => {
