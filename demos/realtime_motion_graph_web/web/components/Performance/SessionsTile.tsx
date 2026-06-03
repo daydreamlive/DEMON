@@ -20,6 +20,15 @@ function formatAge(timestamp: number): string {
   return `${days}d ago`;
 }
 
+function inferenceModeLabel(
+  session: LocalSavedSessionsController["sessions"][number],
+): string {
+  const activeTrack = session.snapshot.customTracks.find(
+    (track) => track.name === session.snapshot.fixture,
+  );
+  return activeTrack ? activeTrack.sourceMode : "full";
+}
+
 export function SessionsTile({ sessions }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState("");
@@ -93,6 +102,7 @@ export function SessionsTile({ sessions }: Props) {
           {sessions.sessions.map((session) => {
             const current = session.id === sessions.activeSessionId;
             const editing = session.id === editingId;
+            const inferenceMode = inferenceModeLabel(session);
             return (
               <div
                 key={session.id}
@@ -126,6 +136,8 @@ export function SessionsTile({ sessions }: Props) {
                   )}
                   <span className="sessions-row-age">
                     {current ? "Current" : "Saved"} {formatAge(session.updatedAt)}
+                    {" · "}
+                    Inference: {inferenceMode}
                   </span>
                 </div>
                 <div className="sessions-row-actions">

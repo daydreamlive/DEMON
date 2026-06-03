@@ -19,6 +19,7 @@ export type StemStatus = "idle" | "processing" | "ready" | "failed";
 export interface CustomTrackAssetMetadata {
   name: string;
   assetId: string;
+  sourceAssetIds?: Partial<Record<StemSourceMode, string>> & { full: string };
   stemAssetIds?: Record<StemOverlayKind, string>;
   sourceMode: StemSourceMode;
   originalFileName?: string;
@@ -32,14 +33,21 @@ export interface CustomTrackAssetMetadata {
 
 export interface HydratedCustomTrack {
   metadata: CustomTrackAssetMetadata;
-  decoded: DecodedFixture;
+  /** Full-mix PCM. The active inference source is derived from this plus
+   *  `stems` and `metadata.sourceMode`. */
+  full: DecodedFixture;
   originalFile?: File;
   stems?: DecodedStemAssets;
   skipStemExtraction?: boolean;
 }
 
 export interface CustomTrack {
+  /** The PCM that currently feeds inference — derived from `full`/`stems`
+   *  for the active `sourceMode`. Kept in sync by setSourceMode/setStems. */
   decoded?: DecodedFixture;
+  /** The full-mix PCM, retained so the inference source can switch back to
+   *  "full" and so all three sources stay available without re-ripping. */
+  full?: DecodedFixture;
   /** Original encoded upload, when available from the file-picker path. */
   originalFile?: File;
   /** Stable key for the trimmed PCM stored in IndexedDB. */
@@ -116,6 +124,16 @@ interface CustomTracksState {
   isServerResident: (name: string) => boolean;
 }
 
+/** The PCM that should feed inference for the track's active source mode.
+ *  "full" uses the full mix; "vocals"/"instruments" use the matching cached
+ *  stem when available, falling back to the full mix until stems arrive. */
+function resolveActiveDecoded(track: CustomTrack): DecodedFixture | undefined {
+  if (track.sourceMode !== "full" && track.stems) {
+    return track.stems[track.sourceMode];
+  }
+  return track.full ?? track.decoded;
+}
+
 function createAssetId(name: string): string {
   const slug = name
     .toLowerCase()
@@ -151,6 +169,7 @@ export const useCustomTracksStore = create<CustomTracksState>((set, get) => ({
       const nextTracks = new Map(s.tracks);
       nextTracks.set(name, {
         decoded,
+        full: decoded,
         ...(file ? { originalFile: file } : {}),
         assetId: metadata.assetId ?? createAssetId(name),
         originalFileName: metadata.originalFileName ?? file?.name,
@@ -207,8 +226,12 @@ export const useCustomTracksStore = create<CustomTracksState>((set, get) => ({
     set((s) => {
       const track = s.tracks.get(name);
       if (!track) return {};
+      const next: CustomTrack = { ...track, sourceMode };
+      // Re-point the inference PCM at the newly selected source so the swap
+      // actually feeds vocals/instruments/full — not just relabels it.
+      next.decoded = resolveActiveDecoded(next) ?? next.decoded;
       const nextTracks = new Map(s.tracks);
-      nextTracks.set(name, { ...track, sourceMode });
+      nextTracks.set(name, next);
       return { tracks: nextTracks };
     }),
 
@@ -216,8 +239,7 @@ export const useCustomTracksStore = create<CustomTracksState>((set, get) => ({
     set((s) => {
       const track = s.tracks.get(name);
       if (!track) return {};
-      const nextTracks = new Map(s.tracks);
-      nextTracks.set(name, {
+      const next: CustomTrack = {
         ...track,
         stems,
         stemAssetIds: track.stemAssetIds ?? {
@@ -226,7 +248,13 @@ export const useCustomTracksStore = create<CustomTracksState>((set, get) => ({
         },
         stemStatus: "ready",
         stemError: undefined,
-      });
+      };
+      // Now that the matching stem PCM exists, make sure the active source
+      // mode points at it (e.g. a track uploaded as "vocals" switches its
+      // inference PCM from the full mix to the vocal stem on arrival).
+      next.decoded = resolveActiveDecoded(next) ?? next.decoded;
+      const nextTracks = new Map(s.tracks);
+      nextTracks.set(name, next);
       return { tracks: nextTracks };
     }),
 
@@ -234,10 +262,12 @@ export const useCustomTracksStore = create<CustomTracksState>((set, get) => ({
     return get().tracks.get(name)?.sourceMode;
   },
 
+  // The source mode is always informative to the backend: on the
+  // server-resident path it selects the cached per-mode sidecar, and on the
+  // client-PCM path it is ignored when skip_stem_extraction is set. There is
+  // no longer a reason to suppress it for restored sessions.
   resolveBackendSourceMode: (name) => {
-    const track = get().tracks.get(name);
-    if (!track || track.skipStemExtraction) return undefined;
-    return track.sourceMode;
+    return get().tracks.get(name)?.sourceMode;
   },
 
   shouldSkipStemExtraction: (name) => {
@@ -247,10 +277,21 @@ export const useCustomTracksStore = create<CustomTracksState>((set, get) => ({
   exportMetadata: () => {
     const out: CustomTrackAssetMetadata[] = [];
     for (const [name, track] of get().tracks.entries()) {
-      if (!track.decoded) continue;
+      const full = track.full ?? track.decoded;
+      if (!full) continue;
+      const sourceAssetIds: CustomTrackAssetMetadata["sourceAssetIds"] = {
+        full: track.assetId,
+        ...(track.stemAssetIds
+          ? {
+              vocals: track.stemAssetIds.vocals,
+              instruments: track.stemAssetIds.instruments,
+            }
+          : {}),
+      };
       out.push({
         name,
         assetId: track.assetId,
+        sourceAssetIds,
         ...(track.stemAssetIds ? { stemAssetIds: track.stemAssetIds } : {}),
         sourceMode: track.sourceMode,
         ...(track.originalFileName
@@ -262,9 +303,9 @@ export const useCustomTracksStore = create<CustomTracksState>((set, get) => ({
         ...(typeof track.trimEndS === "number"
           ? { trimEndS: track.trimEndS }
           : {}),
-        frames: track.decoded.frames,
-        channels: track.decoded.channels,
-        sampleRate: track.decoded.sampleRate,
+        frames: full.frames,
+        channels: full.channels,
+        sampleRate: full.sampleRate,
         addedAt: track.addedAt,
       });
     }
@@ -277,13 +318,14 @@ export const useCustomTracksStore = create<CustomTracksState>((set, get) => ({
       const nextNames = [...s.names];
       for (const {
         metadata,
-        decoded,
+        full,
         originalFile,
         stems,
         skipStemExtraction,
       } of tracks) {
-        nextTracks.set(metadata.name, {
-          decoded,
+        const next: CustomTrack = {
+          decoded: full,
+          full,
           ...(originalFile ? { originalFile } : {}),
           assetId: metadata.assetId,
           stemAssetIds: metadata.stemAssetIds,
@@ -296,7 +338,10 @@ export const useCustomTracksStore = create<CustomTracksState>((set, get) => ({
           skipStemExtraction,
           stemStatus: stems ? "ready" : "idle",
           persisted: false,
-        });
+        };
+        // Restore the saved inference source (full mix or a cached stem).
+        next.decoded = resolveActiveDecoded(next) ?? full;
+        nextTracks.set(metadata.name, next);
         if (!nextNames.includes(metadata.name)) nextNames.push(metadata.name);
       }
       return {

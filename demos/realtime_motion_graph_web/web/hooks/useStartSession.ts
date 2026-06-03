@@ -410,10 +410,14 @@ export function useStartSession() {
 
     setStatus("connecting", "Connecting…");
     if (sessionFixture.fixtureName) {
-      const sourceMode = useCustomTracksStore
+      // Only show "processing" when the backend will actually rip stems for
+      // this upload: a fresh custom track with no client-side stems and no
+      // skip flag. Restored sessions (stems cached, skip set) and built-in
+      // fixtures get no stem_assets echo, so a pill set here would hang.
+      const track = useCustomTracksStore
         .getState()
-        .resolveBackendSourceMode(sessionFixture.fixtureName);
-      if (sourceMode) {
+        .tracks.get(sessionFixture.fixtureName);
+      if (track && !track.stems && !track.skipStemExtraction) {
         useCustomTracksStore
           .getState()
           .setStemStatus(sessionFixture.fixtureName, "processing");

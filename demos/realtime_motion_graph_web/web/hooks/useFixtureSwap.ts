@@ -193,15 +193,23 @@ export function useFixtureSwap() {
         const sourceMode = useCustomTracksStore
           .getState()
           .resolveBackendSourceMode(name);
-        const skipStemExtraction = useCustomTracksStore
-          .getState()
-          .shouldSkipStemExtraction(name);
+        // Skip backend extraction whenever the client already holds the
+        // stems: the PCM we send (`decoded`) is already the selected
+        // inference source, so re-ripping would only re-derive it (and risks
+        // extracting stems from an already-isolated stem). Only fresh uploads
+        // with no client-side stems still ask the backend to extract.
+        const skipStemExtraction =
+          useCustomTracksStore.getState().shouldSkipStemExtraction(name) ||
+          Boolean(useCustomTracksStore.getState().tracks.get(name)?.stems);
         // Record what we're about to send BEFORE the round-trip so the
         // server's `stem_assets` source_mode echo (which calls
         // setSourceMode) is recognised as already-applied and doesn't
         // re-enter the hotswap subscription below.
         lastSwappedMode.current = sourceMode ?? null;
-        if (sourceMode) {
+        // Only show "processing" when the backend is actually going to rip
+        // stems. When we skip extraction (client already holds the stems) no
+        // stem_assets echo comes back, so a "processing" pill would hang.
+        if (sourceMode && !skipStemExtraction) {
           useCustomTracksStore.getState().setStemStatus(name, "processing");
         }
         // Key is intentionally NOT sent: the server resolves via the

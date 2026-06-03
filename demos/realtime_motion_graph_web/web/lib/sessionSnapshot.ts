@@ -90,6 +90,26 @@ export function validateSessionSnapshotShape(
   );
 }
 
+function sourceAssetIdsFor(
+  metadata: CustomTrackAssetMetadata,
+): Partial<Record<"full" | "vocals" | "instruments", string>> & { full: string } {
+  return {
+    full: metadata.sourceAssetIds?.full ?? metadata.assetId,
+    ...(metadata.sourceAssetIds?.vocals || metadata.stemAssetIds?.vocals
+      ? {
+          vocals: metadata.sourceAssetIds?.vocals ?? metadata.stemAssetIds?.vocals,
+        }
+      : {}),
+    ...(metadata.sourceAssetIds?.instruments || metadata.stemAssetIds?.instruments
+      ? {
+          instruments:
+            metadata.sourceAssetIds?.instruments ??
+            metadata.stemAssetIds?.instruments,
+        }
+      : {}),
+  };
+}
+
 export async function checkSessionCompleteness(
   snapshot: unknown,
 ): Promise<SessionCompleteness> {
@@ -103,23 +123,24 @@ export async function checkSessionCompleteness(
 
   const missing: string[] = [];
   for (const track of snapshot.customTracks) {
+    const sourceAssetIds = sourceAssetIdsFor(track);
     if (
-      !(await hasSessionAudioAsset(track.assetId)) &&
-      !(await hasSessionUploadFile(track.assetId))
+      !(await hasSessionAudioAsset(sourceAssetIds.full)) &&
+      !(await hasSessionUploadFile(sourceAssetIds.full))
     ) {
-      missing.push(track.assetId);
+      missing.push(sourceAssetIds.full);
     }
-    if (track.sourceMode !== "full" && !track.stemAssetIds) {
+    const selectedAssetId = sourceAssetIds[track.sourceMode];
+    if (track.sourceMode !== "full" && !selectedAssetId) {
       return {
         status: "stems-not-ready",
         message: "Wait for stems to finish, then save again.",
         missingAssetIds: [],
       };
     }
-    if (track.stemAssetIds) {
-      for (const assetId of Object.values(track.stemAssetIds)) {
-        if (!(await hasSessionAudioAsset(assetId))) missing.push(assetId);
-      }
+    for (const mode of ["vocals", "instruments"] as const) {
+      const assetId = sourceAssetIds[mode];
+      if (assetId && !(await hasSessionAudioAsset(assetId))) missing.push(assetId);
     }
   }
 
@@ -151,21 +172,26 @@ export async function persistSessionSnapshotAssets(
   try {
     for (const trackMeta of snapshot.customTracks) {
       const track = custom.tracks.get(trackMeta.name);
-      if (!track || !track.decoded) {
+      const sourceAssetIds = sourceAssetIdsFor(trackMeta);
+      // Persist the full mix under the track's assetId (not the active stem),
+      // so the saved "source" asset is always the complete upload regardless
+      // of which inference source is currently selected.
+      const fullPcm = track?.full ?? track?.decoded;
+      if (!track || !fullPcm) {
         return {
           status: "missing-audio-asset",
           message: `Uploaded source missing: ${trackMeta.name}`,
-          missingAssetIds: [trackMeta.assetId],
+          missingAssetIds: [sourceAssetIds.full],
         };
       }
-      await putSessionAudioAsset(trackMeta.assetId, track.decoded);
+      await putSessionAudioAsset(sourceAssetIds.full, fullPcm);
       if (track.originalFile) {
-        await putSessionUploadFile(trackMeta.assetId, track.originalFile);
+        await putSessionUploadFile(sourceAssetIds.full, track.originalFile);
       }
-      if (track.stems && track.stemAssetIds) {
-        await putSessionAudioAsset(track.stemAssetIds.vocals, track.stems.vocals);
+      if (track.stems && sourceAssetIds.vocals && sourceAssetIds.instruments) {
+        await putSessionAudioAsset(sourceAssetIds.vocals, track.stems.vocals);
         await putSessionAudioAsset(
-          track.stemAssetIds.instruments,
+          sourceAssetIds.instruments,
           track.stems.instruments,
         );
       } else if (trackMeta.sourceMode !== "full") {
@@ -217,27 +243,26 @@ async function hydrateCustomTracks(
   const hydrated: HydratedCustomTrack[] = [];
   const missing: string[] = [];
   for (const metadata of snapshot.customTracks) {
-    let source = await getSessionAudioAsset(metadata.assetId);
-    const originalFile = await getSessionUploadFile(metadata.assetId);
+    const sourceAssetIds = sourceAssetIdsFor(metadata);
+    let source = await getSessionAudioAsset(sourceAssetIds.full);
+    const originalFile = await getSessionUploadFile(sourceAssetIds.full);
     if (!source) {
       if (!originalFile) {
-        missing.push(metadata.assetId);
+        missing.push(sourceAssetIds.full);
         continue;
       }
       source = await decodeSavedUploadForMetadata(metadata, originalFile);
-      await putSessionAudioAsset(metadata.assetId, source);
+      await putSessionAudioAsset(sourceAssetIds.full, source);
     }
     let stems: DecodedStemAssets | undefined;
-    if (metadata.stemAssetIds) {
-      const vocals = await getSessionAudioAsset(metadata.stemAssetIds.vocals);
-      const instruments = await getSessionAudioAsset(
-        metadata.stemAssetIds.instruments,
-      );
+    if (sourceAssetIds.vocals && sourceAssetIds.instruments) {
+      const vocals = await getSessionAudioAsset(sourceAssetIds.vocals);
+      const instruments = await getSessionAudioAsset(sourceAssetIds.instruments);
       if (!vocals || !instruments) {
         missing.push(
           ...[
-            !vocals ? metadata.stemAssetIds.vocals : null,
-            !instruments ? metadata.stemAssetIds.instruments : null,
+            !vocals ? sourceAssetIds.vocals : null,
+            !instruments ? sourceAssetIds.instruments : null,
           ].filter((id): id is string => id !== null),
         );
         continue;
@@ -251,21 +276,18 @@ async function hydrateCustomTracks(
         missingAssetIds: [],
       };
     }
-    const decoded =
-      metadata.sourceMode !== "full" && stems
-        ? stems[metadata.sourceMode]
-        : source;
     const hasSavedStemAssets = Boolean(stems);
     const skipStemExtraction =
       metadata.sourceMode !== "full" || hasSavedStemAssets;
     hydrated.push({
       metadata,
-      decoded,
+      full: source,
       ...(originalFile ? { originalFile } : {}),
       ...(stems ? { stems } : {}),
-      // Avoid re-running MelFormer when saved stems already exist or the
-      // selected inference PCM came from a saved stem. Legacy/full saves
-      // without cached stems are allowed to re-rip on play for overlays.
+      // Avoid re-running MelFormer when saved stems already exist. The store
+      // derives the active inference PCM (full mix or cached stem) from
+      // metadata.sourceMode. Legacy/full saves without cached stems re-rip on
+      // play for overlays.
       ...(skipStemExtraction ? { skipStemExtraction } : {}),
     });
   }
