@@ -441,6 +441,14 @@ def _handle_client_body(
         return
     _ms("resolve_source_done")
 
+    streaming_entered_run = False
+
+    def _close_streaming_if_init_fails() -> None:
+        if not streaming_entered_run:
+            streaming.close()
+
+    ctx_stack.callback(_close_streaming_if_init_fails)
+
     state = streaming.state
 
     # ---- Per-subscriber transport state ----
@@ -912,6 +920,7 @@ def _handle_client_body(
                 )
 
     try:
+        streaming_entered_run = True
         streaming.run()
     finally:
         session_registry.unregister(session_id)

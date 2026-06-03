@@ -464,47 +464,53 @@ class StreamingSession:
         ``state.running`` flips False, and tear down GPU state + the
         event bus.
         """
-        runner = PipelineRunner(
-            self.session, self.stream, self.audio_eng,
-            state=self.state,
-            idle_threshold_s=IDLE_PAUSE_S,
-            use_midi=True,  # always "MIDI" mode; KnobState provides values
-            use_sde=self.use_sde, use_lora=self.use_lora,
-            midi_knobs=self.virtual_knobs,
-            engine_obj=self.engine_obj,
-            vae_window=self.vae_window, crop_seconds=self.crop_seconds,
-            k1_name=self.k1_name, seed=1528, skip_threshold=5e-4,
-            on_audio_ready=self._on_audio_ready,
-            before_tick=self.apply_pending,
-            walk_window=self.walk_window,
-            walk_window_s=self.walk_window_s,
-            neg_conditioning=self.cond_negative,
-            lead_floor_s=self.config.lead_floor_s,
-            lead_ceiling_s=self.config.lead_ceiling_s,
-            lead_release_tau_s=self.config.lead_release_tau_s,
-        )
-        self.runner_holder[0] = runner
-
         try:
+            runner = PipelineRunner(
+                self.session, self.stream, self.audio_eng,
+                state=self.state,
+                idle_threshold_s=IDLE_PAUSE_S,
+                use_midi=True,  # always "MIDI" mode; KnobState provides values
+                use_sde=self.use_sde, use_lora=self.use_lora,
+                midi_knobs=self.virtual_knobs,
+                engine_obj=self.engine_obj,
+                vae_window=self.vae_window, crop_seconds=self.crop_seconds,
+                k1_name=self.k1_name, seed=1528, skip_threshold=5e-4,
+                on_audio_ready=self._on_audio_ready,
+                before_tick=self.apply_pending,
+                walk_window=self.walk_window,
+                walk_window_s=self.walk_window_s,
+                neg_conditioning=self.cond_negative,
+                lead_floor_s=self.config.lead_floor_s,
+                lead_ceiling_s=self.config.lead_ceiling_s,
+                lead_release_tau_s=self.config.lead_release_tau_s,
+            )
+            self.runner_holder[0] = runner
             logger.info("pipeline_running")
             runner.run()
         except Exception as exc:
             logger.opt(exception=True).error("pipeline_error error={}", exc)
         finally:
-            # Order matters: stream.close() drops the StreamPipeline's
-            # references into the engine before session.close()
-            # actually destroys the engine + ModelContext.
-            # session.close() ends with gc.collect() + cuda.empty_cache().
-            self.state.running = False
+            self.close()
+
+    def close(self) -> None:
+        """Tear down GPU state even when a session exits before ``run``."""
+        # Order matters: stream.close() drops the StreamPipeline's
+        # references into the engine before session.close()
+        # actually destroys the engine + ModelContext.
+        # session.close() ends with gc.collect() + cuda.empty_cache().
+        self.state.running = False
+        try:
             self.bus.close()
-            try:
-                self.stream.close()
-            except Exception as exc:
-                logger.warning("stream_close_raised error={}", exc)
-            try:
-                self.session.close()
-            except Exception as exc:
-                logger.warning("session_close_raised error={}", exc)
+        except Exception as exc:
+            logger.warning("bus_close_raised error={}", exc)
+        try:
+            self.stream.close()
+        except Exception as exc:
+            logger.warning("stream_close_raised error={}", exc)
+        try:
+            self.session.close()
+        except Exception as exc:
+            logger.warning("session_close_raised error={}", exc)
 
     def _on_audio_ready(self, wav_np, win_start=None, win_end=None):
         """Runner callback. Mutates ``audio_eng`` for full-buffer
