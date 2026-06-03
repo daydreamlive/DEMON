@@ -55,7 +55,9 @@ export interface LoraCatalogEntry {
 export interface SessionConfig {
   /** Opt-in version for optional browser/backend telemetry messages.
    *  Servers only emit telemetry-only messages such as ``init_ack`` when
-   *  this is present, keeping old clients compatible with new pods. */
+   *  this is present, keeping old clients compatible with new pods.
+   *  In the standalone DEMON app this trace stays browser-local; hosts
+   *  that embed the UI may choose to consume/report it downstream. */
   telemetry_version?: number;
   sde?: boolean;
   lora?: boolean;
