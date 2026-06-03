@@ -21,6 +21,7 @@ import {
   SLICE_FLAG_DELTA,
   SLICE_HDR_SIZE,
   type AudioSlice,
+  type InitAckMessage,
   type LoraCatalogEntry,
   type SessionConfig,
   type StemAssetsMessage,
@@ -84,6 +85,52 @@ interface PendingPayload {
   config: SessionConfig;
 }
 
+export type WsTracePhase =
+  | "idle"
+  | "connecting"
+  | "open"
+  | "config_sent"
+  | "init_ack"
+  | "ready"
+  | "streaming"
+  | "error"
+  | "closed";
+
+export interface WsTrace {
+  attemptId: string;
+  urlHost: string;
+  connectStartAt: number | null;
+  openAt: number | null;
+  configSentAt: number | null;
+  initAckAt: number | null;
+  readyAt: number | null;
+  closeAt: number | null;
+  errorAt: number | null;
+  phase: WsTracePhase;
+  ready: boolean;
+  closedByUser: boolean;
+  wsReadyState: number | null;
+  closeCode: number | null;
+  closeReason: string;
+}
+
+function makeAttemptId(): string {
+  try {
+    if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+      return crypto.randomUUID();
+    }
+  } catch {}
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function hostFromWsUrl(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "";
+  }
+}
+
 export class RemoteBackend extends EventTarget {
   readonly url: string;
   ws: WebSocket | null = null;
@@ -118,6 +165,12 @@ export class RemoteBackend extends EventTarget {
    *  report their hidden_states batch_max; eager / compile pin to 4.
    *  Null until ready. */
   maxPipelineDepth: number | null = null;
+  /** Browser-observed WS lifecycle for this concrete connection attempt. */
+  wsTrace: WsTrace;
+  /** Pod-side session id from the optional init_ack telemetry message. */
+  backendSessionId: string | null = null;
+  /** Client id echoed in init_ack; mirrors the config client_id. */
+  backendClientId: string | null = null;
 
   private _pending: PendingPayload | null;
   private _pendingSwap: SwapReadyMessage | null = null;
@@ -146,7 +199,48 @@ export class RemoteBackend extends EventTarget {
     super();
     this.url = url;
     this._pending = { interleaved, channels, config };
+    this.wsTrace = {
+      attemptId: makeAttemptId(),
+      urlHost: hostFromWsUrl(url),
+      connectStartAt: null,
+      openAt: null,
+      configSentAt: null,
+      initAckAt: null,
+      readyAt: null,
+      closeAt: null,
+      errorAt: null,
+      phase: "idle",
+      ready: false,
+      closedByUser: false,
+      wsReadyState: null,
+      closeCode: null,
+      closeReason: "",
+    };
     this._initDecoderWorker();
+  }
+
+  private _snapshotTrace(): WsTrace {
+    return { ...this.wsTrace };
+  }
+
+  private _updateTrace(patch: Partial<WsTrace>): WsTrace {
+    this.wsTrace = {
+      ...this.wsTrace,
+      ...patch,
+      ready: this.ready,
+      closedByUser: this.closedByUser,
+      wsReadyState: this.ws?.readyState ?? null,
+    };
+    const snapshot = this._snapshotTrace();
+    try {
+      useSessionStore.getState().setLastWsTrace(snapshot);
+    } catch {}
+    this.dispatchEvent(new CustomEvent("ws_trace_update", { detail: snapshot }));
+    return snapshot;
+  }
+
+  getWsTrace(): WsTrace {
+    return this._snapshotTrace();
   }
 
   private _initDecoderWorker(): void {
@@ -197,11 +291,24 @@ export class RemoteBackend extends EventTarget {
       const ws = new WebSocket(this.url);
       ws.binaryType = "arraybuffer";
       this.ws = ws;
+      this._updateTrace({
+        connectStartAt: Date.now(),
+        openAt: null,
+        configSentAt: null,
+        initAckAt: null,
+        readyAt: null,
+        closeAt: null,
+        errorAt: null,
+        phase: "connecting",
+        closeCode: null,
+        closeReason: "",
+      });
 
       let phase: Phase = "config";
 
       ws.onopen = () => {
         if (!this._pending) return;
+        this._updateTrace({ openAt: Date.now(), phase: "open" });
         // Phase 1: JSON config, then (unless server-side fixture) the
         // binary audio upload. For known fixtures the pod loads the
         // waveform from its own cache, so re-uploading ~20 MB of PCM
@@ -225,6 +332,7 @@ export class RemoteBackend extends EventTarget {
           combined.set(pcm, hdr.byteLength);
           ws.send(combined);
         }
+        this._updateTrace({ configSentAt: Date.now(), phase: "config_sent" });
         phase = "ready";
       };
 
@@ -232,7 +340,23 @@ export class RemoteBackend extends EventTarget {
         if (phase === "ready") {
           try {
             const msg = JSON.parse(ev.data as string);
+            if (msg.type === "init_ack") {
+              const ack = msg as InitAckMessage;
+              this.backendSessionId =
+                typeof ack.session_id === "string" ? ack.session_id : null;
+              this.backendClientId =
+                typeof ack.client_id === "string" ? ack.client_id : null;
+              {
+                const s = useSessionStore.getState();
+                s.setLastBackendSessionId(this.backendSessionId);
+                s.setLastBackendClientId(this.backendClientId);
+              }
+              this._updateTrace({ initAckAt: Date.now(), phase: "init_ack" });
+              this.dispatchEvent(new CustomEvent("ws_init_ack", { detail: ack }));
+              return;
+            }
             if (msg.type === "error") {
+              this._updateTrace({ errorAt: Date.now(), phase: "error" });
               reject(
                 new Error(
                   msg.message || `Server error: ${msg.code || "unknown"}`,
@@ -241,6 +365,7 @@ export class RemoteBackend extends EventTarget {
               return;
             }
             if (msg.type !== "ready") {
+              this._updateTrace({ errorAt: Date.now(), phase: "error" });
               reject(new Error(`Unexpected init message: ${ev.data}`));
               return;
             }
@@ -273,6 +398,7 @@ export class RemoteBackend extends EventTarget {
             }
             phase = "initial-buffer";
           } catch (e) {
+            this._updateTrace({ errorAt: Date.now(), phase: "error" });
             reject(e);
           }
           return;
@@ -282,10 +408,12 @@ export class RemoteBackend extends EventTarget {
           const u16 = new Uint16Array(ev.data as ArrayBuffer);
           this.initialBuffer = float16ArrayToFloat32(u16);
           this.ready = true;
+          this._updateTrace({ readyAt: Date.now(), phase: "ready" });
           phase = "streaming";
           this._pending = null;
           resolve(this);
           this.dispatchEvent(new CustomEvent("ready"));
+          this._updateTrace({ phase: "streaming" });
           return;
         }
 
@@ -457,6 +585,10 @@ export class RemoteBackend extends EventTarget {
 
       ws.onerror = (e) => {
         console.error("[protocol] ws error", e);
+        const trace = this._updateTrace({
+          errorAt: Date.now(),
+          phase: this.ready ? this.wsTrace.phase : "error",
+        });
         if (!this.ready) {
           reject(
             new Error(
@@ -464,6 +596,7 @@ export class RemoteBackend extends EventTarget {
             ),
           );
         }
+        this.dispatchEvent(new CustomEvent("ws_connect_error", { detail: trace }));
         this.dispatchEvent(new CustomEvent("error", { detail: e }));
       };
 
@@ -489,6 +622,13 @@ export class RemoteBackend extends EventTarget {
           }
           reject(new Error(msg));
         }
+        const trace = this._updateTrace({
+          closeAt: Date.now(),
+          phase: "closed",
+          closeCode: e.code,
+          closeReason: e.reason || "",
+        });
+        this.dispatchEvent(new CustomEvent("ws_close", { detail: trace }));
         this.dispatchEvent(new CustomEvent("close", { detail: e }));
       };
     });
@@ -935,6 +1075,7 @@ export class RemoteBackend extends EventTarget {
 
   close(): void {
     this.closedByUser = true;
+    this._updateTrace({ closedByUser: true });
     try {
       this.ws?.close();
     } catch {}
@@ -986,6 +1127,13 @@ export class RemoteBackend extends EventTarget {
       } catch {}
     }
     this.ws = null;
+    const trace = this._updateTrace({
+      closeAt: Date.now(),
+      phase: "closed",
+      closeCode: code,
+      closeReason: reason,
+    });
+    this.dispatchEvent(new CustomEvent("ws_close", { detail: trace }));
     // Build a CloseEvent shaped like the real thing. CloseEvent isn't
     // always constructible in older environments, so fall back to a
     // plain Event with the relevant fields glued on.

@@ -118,6 +118,7 @@ function buildConfig(
   // omitted; demon-public-demo wires PostHog's distinct_id).
   const clientId = getClientId();
   return {
+    telemetry_version: 1,
     sde: cfg.sde,
     lora: cfg.lora,
     depth: cfg.depth,

@@ -4,7 +4,7 @@ import { create } from "zustand";
 
 import type { AudioPlayer } from "@/engine/audio/AudioPlayer";
 import type { NetworkMonitor } from "@/engine/networkMonitor";
-import type { RemoteBackend } from "@/engine/protocol";
+import type { RemoteBackend, WsTrace } from "@/engine/protocol";
 import type { WsReconnector } from "@/engine/wsReconnect";
 
 // Live-session lifecycle state. The non-serializable RemoteBackend +
@@ -49,6 +49,13 @@ interface SessionState {
   /** Server-imposed ceiling on ``pipelineDepth`` — TRT engine batch_max
    *  for TRT decoders, 4 for eager / compile. Null until ready. */
   maxPipelineDepth: number | null;
+  /** Latest browser-observed WS trace, including orphan remotes that
+   *  failed before setSession() could publish them. */
+  lastWsTrace: WsTrace | null;
+  /** Pod-side session id from optional init_ack telemetry. */
+  lastBackendSessionId: string | null;
+  /** Client id echoed by init_ack. */
+  lastBackendClientId: string | null;
 
   setStatus: (status: SessionStatus, message?: string) => void;
   setSession: (remote: RemoteBackend | null, player: AudioPlayer | null) => void;
@@ -58,6 +65,9 @@ interface SessionState {
   setCheckpointScale: (scale: string | null) => void;
   setPipelineDepth: (depth: number | null) => void;
   setMaxPipelineDepth: (max: number | null) => void;
+  setLastWsTrace: (trace: WsTrace | null) => void;
+  setLastBackendSessionId: (id: string | null) => void;
+  setLastBackendClientId: (id: string | null) => void;
   reset: () => void;
 }
 
@@ -72,6 +82,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   checkpointScale: null,
   pipelineDepth: null,
   maxPipelineDepth: null,
+  lastWsTrace: null,
+  lastBackendSessionId: null,
+  lastBackendClientId: null,
 
   setStatus: (status, message = "") => set({ status, message }),
   setSession: (remote, player) => set({ remote, player }),
@@ -81,6 +94,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setCheckpointScale: (scale) => set({ checkpointScale: scale }),
   setPipelineDepth: (depth) => set({ pipelineDepth: depth }),
   setMaxPipelineDepth: (max) => set({ maxPipelineDepth: max }),
+  setLastWsTrace: (trace) => set({ lastWsTrace: trace }),
+  setLastBackendSessionId: (id) => set({ lastBackendSessionId: id }),
+  setLastBackendClientId: (id) => set({ lastBackendClientId: id }),
   reset: () => {
     try {
       get().monitor?.stop();
@@ -97,6 +113,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       reconnector: null,
       pipelineDepth: null,
       maxPipelineDepth: null,
+      lastWsTrace: null,
+      lastBackendSessionId: null,
+      lastBackendClientId: null,
       // checkpointScale survives reset on purpose: the server's
       // checkpoint doesn't change across sessions, and pre-fetching
       // it from /api/loras lets the library filter render correctly

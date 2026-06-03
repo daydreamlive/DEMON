@@ -53,6 +53,10 @@ export interface LoraCatalogEntry {
 
 /** Sent by the client at session start (config phase). */
 export interface SessionConfig {
+  /** Opt-in version for optional browser/backend telemetry messages.
+   *  Servers only emit telemetry-only messages such as ``init_ack`` when
+   *  this is present, keeping old clients compatible with new pods. */
+  telemetry_version?: number;
   sde?: boolean;
   lora?: boolean;
   depth?: number;
@@ -89,6 +93,14 @@ export interface SessionConfig {
   client_id?: string;
   // Allow extras — pyproject's config object is permissive.
   [k: string]: unknown;
+}
+
+/** Optional server acknowledgement emitted after config parse and log
+ *  context binding, before expensive audio/model init work starts. */
+export interface InitAckMessage {
+  type: "init_ack";
+  session_id?: string;
+  client_id?: string | null;
 }
 
 /** First JSON the server returns once the audio upload is in. */

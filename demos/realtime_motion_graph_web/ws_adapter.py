@@ -333,6 +333,12 @@ def _handle_client_body(
         "session_init config_keys={} client_id={}",
         sorted(config_dict.keys()), _client_id,
     )
+    if config_dict.get("telemetry_version"):
+        ws.send(json.dumps({
+            "type": "init_ack",
+            "session_id": session_id,
+            "client_id": _client_id,
+        }))
 
     _t0 = time.monotonic()
     _first_slice = [False]
