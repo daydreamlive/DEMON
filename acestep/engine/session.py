@@ -192,6 +192,11 @@ class Session:
             validate_backends,
         )
 
+        self.model = None  # type: ignore[assignment]
+        self.clip = None  # type: ignore[assignment]
+        self.vae = None  # type: ignore[assignment]
+        self._trt_vae_engine_paths = ()
+
         trt_engines = validate_backends(
             decoder_backend=decoder_backend,
             vae_backend=vae_backend,
@@ -237,86 +242,94 @@ class Session:
             decoder_backend=decoder_backend, vae_backend=vae_backend
         )
 
-        ctx = ModelContext(
-            project_root=project_root,
-            config_path=config_path,
-            device=device,
-            use_flash_attention=use_flash_attention,
-            offload_to_cpu=offload_to_cpu,
-            offload_text_encoder=offload_text_encoder,
-            quantization=quantization,
-            **ctx_flags,
-        )
-
-        self.model = ModelHandle(handler=ctx)
-        self.clip = CLIPHandle(handler=ctx)
-        self.vae = VAEHandle(handler=ctx)
-
-        # Windowed VAE decode config (seconds; 0 = full decode).
-        # Hard-clamp positive windows to the engine-supported range so
-        # the auto-selected windowed engine is never asked to decode a
-        # chunk longer than its profile max. <= 0 is the disable
-        # sentinel and stays as-is.
-        if vae_window > 0:
-            from acestep.paths import WINDOWED_VAE_WINDOW_RANGE_S
-            lo, hi = WINDOWED_VAE_WINDOW_RANGE_S
-            vae_window = max(lo, min(hi, vae_window))
-        self._vae_window = vae_window
-        self._vae_overlap = vae_overlap
-
-        # Auto-select the windowed VAE decode engine when windowing is
-        # active. Saves ~7.7 GB of TRT workspace at context-creation
-        # time vs the canonical 240s engine (see
-        # scripts/benchmarks/bench_vae_decode_profiles.py). Falls back
-        # silently to whatever the caller passed in when the windowed
-        # engine isn't built yet.
-        if vae_window > 0 and vae_backend == "tensorrt" and "vae_decode" in trt_engines:
-            from acestep.paths import (
-                available_windowed_vae_decode_engine,
-                looks_like_dreamvae_engine,
-                windowed_vae_decode_engine_name,
+        try:
+            ctx = ModelContext(
+                project_root=project_root,
+                config_path=config_path,
+                device=device,
+                use_flash_attention=use_flash_attention,
+                offload_to_cpu=offload_to_cpu,
+                offload_text_encoder=offload_text_encoder,
+                quantization=quantization,
+                **ctx_flags,
             )
-            from loguru import logger as _log
 
-            current = trt_engines["vae_decode"]
-            is_dreamvae = looks_like_dreamvae_engine(current)
-            windowed = available_windowed_vae_decode_engine(dreamvae=is_dreamvae)
-            if windowed is not None and str(windowed) != current:
-                _log.info(
-                    "vae_window={:.1f}s active: swapping vae_decode engine "
-                    "{} -> {}", vae_window,
-                    Path(current).stem, windowed.stem,
+            self.model = ModelHandle(handler=ctx)
+            self.clip = CLIPHandle(handler=ctx)
+            self.vae = VAEHandle(handler=ctx)
+
+            # Windowed VAE decode config (seconds; 0 = full decode).
+            # Hard-clamp positive windows to the engine-supported range so
+            # the auto-selected windowed engine is never asked to decode a
+            # chunk longer than its profile max. <= 0 is the disable
+            # sentinel and stays as-is.
+            if vae_window > 0:
+                from acestep.paths import WINDOWED_VAE_WINDOW_RANGE_S
+                lo, hi = WINDOWED_VAE_WINDOW_RANGE_S
+                vae_window = max(lo, min(hi, vae_window))
+            self._vae_window = vae_window
+            self._vae_overlap = vae_overlap
+
+            # Auto-select the windowed VAE decode engine when windowing is
+            # active. Saves ~7.7 GB of TRT workspace at context-creation
+            # time vs the canonical 240s engine (see
+            # scripts/benchmarks/bench_vae_decode_profiles.py). Falls back
+            # silently to whatever the caller passed in when the windowed
+            # engine isn't built yet.
+            if vae_window > 0 and vae_backend == "tensorrt" and "vae_decode" in trt_engines:
+                from acestep.paths import (
+                    available_windowed_vae_decode_engine,
+                    looks_like_dreamvae_engine,
+                    windowed_vae_decode_engine_name,
                 )
-                # Don't mutate the caller's dict.
-                trt_engines = dict(trt_engines)
-                trt_engines["vae_decode"] = str(windowed)
-            elif windowed is None:
-                _log.warning(
-                    "vae_window={:.1f}s active but windowed engine not "
-                    "built ({}); using {} (will reserve more VRAM than "
-                    "necessary). Build with: python -m "
-                    "acestep.engine.trt.build --all{}",
-                    vae_window,
-                    windowed_vae_decode_engine_name(dreamvae=is_dreamvae),
-                    Path(current).stem,
-                    " --with-dreamvae" if is_dreamvae else "",
-                )
+                from loguru import logger as _log
 
-        self._trt_vae_engine_paths = tuple(
-            str(trt_engines[key])
-            for key in ("vae_encode", "vae_decode")
-            if vae_backend == "tensorrt" and key in trt_engines
-        )
+                current = trt_engines["vae_decode"]
+                is_dreamvae = looks_like_dreamvae_engine(current)
+                windowed = available_windowed_vae_decode_engine(dreamvae=is_dreamvae)
+                if windowed is not None and str(windowed) != current:
+                    _log.info(
+                        "vae_window={:.1f}s active: swapping vae_decode engine "
+                        "{} -> {}", vae_window,
+                        Path(current).stem, windowed.stem,
+                    )
+                    # Don't mutate the caller's dict.
+                    trt_engines = dict(trt_engines)
+                    trt_engines["vae_decode"] = str(windowed)
+                elif windowed is None:
+                    _log.warning(
+                        "vae_window={:.1f}s active but windowed engine not "
+                        "built ({}); using {} (will reserve more VRAM than "
+                        "necessary). Build with: python -m "
+                        "acestep.engine.trt.build --all{}",
+                        vae_window,
+                        windowed_vae_decode_engine_name(dreamvae=is_dreamvae),
+                        Path(current).stem,
+                        " --with-dreamvae" if is_dreamvae else "",
+                    )
 
-        apply_trt_backends(
-            ctx,
-            decoder_backend=decoder_backend,
-            vae_backend=vae_backend,
-            trt_engines=trt_engines,
-            device=device,
-            trt_decoder_bytes_future=trt_decoder_bytes_future,
-            lora_discovery_future=lora_discovery_future,
-        )
+            self._trt_vae_engine_paths = tuple(
+                str(trt_engines[key])
+                for key in ("vae_encode", "vae_decode")
+                if vae_backend == "tensorrt" and key in trt_engines
+            )
+
+            apply_trt_backends(
+                ctx,
+                decoder_backend=decoder_backend,
+                vae_backend=vae_backend,
+                trt_engines=trt_engines,
+                device=device,
+                trt_decoder_bytes_future=trt_decoder_bytes_future,
+                lora_discovery_future=lora_discovery_future,
+            )
+        except Exception:
+            logger.warning(
+                "session_init_failed_cleanup decoder={} vae={}",
+                decoder_backend, vae_backend,
+            )
+            self.close()
+            raise
 
     @property
     def handler(self):

@@ -607,13 +607,11 @@ export class RemoteBackend extends EventTarget {
         //
         // Tailor the message by close code: 1011 (server internal error)
         // and 1006 (abnormal closure) are the two shapes operators see
-        // most often, both recoverable by reloading. The previous
-        // "Check the server console" tail was useless to end users and
-        // made the error feel scarier than it is.
+        // most often, both recoverable by reloading.
         if (!this.ready) {
           let msg: string;
           if (e.code === 1011) {
-            msg = "Server restarted to clear memory — refresh the page to retry.";
+            msg = "Session failed while starting — refresh the page to retry.";
           } else if (e.code === 1006) {
             msg = "Connection lost — refresh to retry.";
           } else {
