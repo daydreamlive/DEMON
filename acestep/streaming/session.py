@@ -518,6 +518,10 @@ class StreamingSession:
         except Exception as exc:
             logger.warning("bus_close_raised error={}", exc)
         try:
+            self.audio_eng.stop()
+        except Exception as exc:
+            logger.warning("audio_engine_stop_raised error={}", exc)
+        try:
             self.stream.close()
         except Exception as exc:
             logger.warning("stream_close_raised error={}", exc)
