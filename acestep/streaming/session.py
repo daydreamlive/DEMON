@@ -36,6 +36,8 @@ serialize with ticks (``enable_lora``/``disable_lora``/``set_depth``/
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import ExitStack
 import os
 import time
 from pathlib import Path
@@ -153,6 +155,17 @@ def _compute_max_pipeline_depth(diffusion_engine) -> int:
             exc, EAGER_MAX_PIPELINE_DEPTH,
         )
         return EAGER_MAX_PIPELINE_DEPTH
+
+
+def _cleanup_create_resource(name: str, close_fn: Callable[[], None]) -> None:
+    """Run a startup cleanup callback without masking the original failure."""
+    try:
+        close_fn()
+    except Exception as exc:
+        logger.warning(
+            "streaming_create_cleanup_raised resource={} error={}",
+            name, exc,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1631,213 +1644,231 @@ class StreamingSession:
             )
             fast_vae = False
 
-        logger.info(
-            "model_load_start decoder={} vae={} checkpoint={}",
-            decoder_backend, vae_backend, checkpoint,
-        )
-        t0 = time.time()
-        engine_session = Session(
-            project_root=str(checkpoints_dir()),
-            config_path=checkpoint,
-            decoder_backend=decoder_backend,
-            vae_backend=vae_backend,
-            offload_text_encoder=offload_text_encoder,
-            trt_engines=trt_engines,
-            vae_window=vae_window,
-        )
-        logger.info("model_loaded duration_s={:.1f}", time.time() - t0)
+        with ExitStack() as cleanup:
+            logger.info(
+                "model_load_start decoder={} vae={} checkpoint={}",
+                decoder_backend, vae_backend, checkpoint,
+            )
+            t0 = time.time()
+            engine_session = Session(
+                project_root=str(checkpoints_dir()),
+                config_path=checkpoint,
+                decoder_backend=decoder_backend,
+                vae_backend=vae_backend,
+                offload_text_encoder=offload_text_encoder,
+                trt_engines=trt_engines,
+                vae_window=vae_window,
+            )
+            cleanup.callback(
+                _cleanup_create_resource,
+                "engine_session",
+                engine_session.close,
+            )
+            logger.info("model_loaded duration_s={:.1f}", time.time() - t0)
 
-        if profile_mgr is not None:
-            profile_mgr.bind(
-                engine_session.handler._diffusion_engine,
-                trt_engines, picked_dur,
+            if profile_mgr is not None:
+                profile_mgr.bind(
+                    engine_session.handler._diffusion_engine,
+                    trt_engines, picked_dur,
+                )
+
+            engine_obj = engine_session.handler._diffusion_engine
+            lora_available = bool(engine_obj and engine_obj.lora_available)
+            if use_lora and not lora_available:
+                logger.warning(
+                    "lora_engine_unavailable decoder_backend={}",
+                    decoder_backend,
+                )
+                use_lora = False
+
+            max_pipeline_depth = _compute_max_pipeline_depth(engine_obj)
+            depth = max(MIN_PIPELINE_DEPTH, min(int(depth), max_pipeline_depth))
+            logger.info(
+                "pipeline_depth_set depth={} max={} backend={}",
+                depth, max_pipeline_depth,
+                "trt" if engine_obj._trt_engine is not None else "eager",
             )
 
-        engine_obj = engine_session.handler._diffusion_engine
-        lora_available = bool(engine_obj and engine_obj.lora_available)
-        if use_lora and not lora_available:
-            logger.warning(
-                "lora_engine_unavailable decoder_backend={}",
-                decoder_backend,
-            )
-            use_lora = False
-
-        max_pipeline_depth = _compute_max_pipeline_depth(engine_obj)
-        depth = max(MIN_PIPELINE_DEPTH, min(int(depth), max_pipeline_depth))
-        logger.info(
-            "pipeline_depth_set depth={} max={} backend={}",
-            depth, max_pipeline_depth,
-            "trt" if engine_obj._trt_engine is not None else "eager",
-        )
-
-        initial_enable_ids: list[str] = []
-        if use_lora:
-            catalog_ids = {d.id for d in engine_obj.list_loras()}
-            for lid in enabled_lora_ids:
-                if lid in catalog_ids:
-                    initial_enable_ids.append(lid)
-                else:
-                    logger.warning("lora_id_not_in_catalog id={}", lid)
-            for p in extra_lora_paths:
-                pp = Path(p)
-                if not pp.exists():
-                    logger.warning("lora_path_missing path={}", p)
-                    continue
-                try:
-                    lid = engine_obj.register_lora(str(pp))
-                    if lid not in initial_enable_ids:
+            initial_enable_ids: list[str] = []
+            if use_lora:
+                catalog_ids = {d.id for d in engine_obj.list_loras()}
+                for lid in enabled_lora_ids:
+                    if lid in catalog_ids:
                         initial_enable_ids.append(lid)
-                except Exception as e:
-                    logger.exception(
-                        "lora_register_failed path={} error={}", p, e,
-                    )
-            for lid in initial_enable_ids:
-                try:
-                    engine_obj.prewarm_lora(lid)
-                except Exception as e:
-                    logger.exception(
-                        "lora_prewarm_failed id={} error={}", lid, e,
-                    )
-            if not initial_enable_ids:
-                logger.info("lora_startup_empty reason=catalog_only")
+                    else:
+                        logger.warning("lora_id_not_in_catalog id={}", lid)
+                for p in extra_lora_paths:
+                    pp = Path(p)
+                    if not pp.exists():
+                        logger.warning("lora_path_missing path={}", p)
+                        continue
+                    try:
+                        lid = engine_obj.register_lora(str(pp))
+                        if lid not in initial_enable_ids:
+                            initial_enable_ids.append(lid)
+                    except Exception as e:
+                        logger.exception(
+                            "lora_register_failed path={} error={}", p, e,
+                        )
+                for lid in initial_enable_ids:
+                    try:
+                        engine_obj.prewarm_lora(lid)
+                    except Exception as e:
+                        logger.exception(
+                            "lora_prewarm_failed id={} error={}", lid, e,
+                        )
+                if not initial_enable_ids:
+                    logger.info("lora_startup_empty reason=catalog_only")
 
-        audio_in = Audio(waveform=waveform, sample_rate=SAMPLE_RATE)
+            audio_in = Audio(waveform=waveform, sample_rate=SAMPLE_RATE)
 
-        source, detected_bpm, detected_key, detected_time_signature = (
-            _resolve_bpm_key_source(
-                engine_session,
-                audio_in=audio_in,
-                fixture_name=fixture_name,
-                samples=int(waveform.shape[1]),
-            )
-        )
-
-        upload_stems, stem_error, source, waveform = (
-            extract_and_select_upload_stem(
-                waveform,
-                session=engine_session,
-                source=source,
-                source_mode=stem_source_mode,
-                fixture_name=fixture_name,
-            )
-        )
-        if stem_error is not None and stem_source_mode != "full":
-            logger.error(
-                "stem_extract_failed_fatal source_mode={} error={}",
-                stem_source_mode, stem_error,
-            )
-            raise StemExtractFailedError(
-                f"Stem extraction failed: {stem_error}",
+            source, detected_bpm, detected_key, detected_time_signature = (
+                _resolve_bpm_key_source(
+                    engine_session,
+                    audio_in=audio_in,
+                    fixture_name=fixture_name,
+                    samples=int(waveform.shape[1]),
+                )
             )
 
-        # Two-conditioning cache for the live timbre-strength slider.
-        logger.info("text_encode_start variant=silence_and_self")
-        cond_silence, cond_full = encode_cond_pair(
-            engine_session, prompt, source.latent,
-            detected_bpm, audio_duration_s,
-            detected_key, detected_time_signature,
-        )
-        # Encode prompt B at session start so the blend slider works
-        # immediately.
-        if prompt_b and prompt_b != prompt:
-            cond_silence_b, cond_full_b = encode_cond_pair(
-                engine_session, prompt_b, source.latent,
+            upload_stems, stem_error, source, waveform = (
+                extract_and_select_upload_stem(
+                    waveform,
+                    session=engine_session,
+                    source=source,
+                    source_mode=stem_source_mode,
+                    fixture_name=fixture_name,
+                )
+            )
+            if stem_error is not None and stem_source_mode != "full":
+                logger.error(
+                    "stem_extract_failed_fatal source_mode={} error={}",
+                    stem_source_mode, stem_error,
+                )
+                raise StemExtractFailedError(
+                    f"Stem extraction failed: {stem_error}",
+                )
+
+            # Two-conditioning cache for the live timbre-strength slider.
+            logger.info("text_encode_start variant=silence_and_self")
+            cond_silence, cond_full = encode_cond_pair(
+                engine_session, prompt, source.latent,
                 detected_bpm, audio_duration_s,
                 detected_key, detected_time_signature,
             )
-        else:
-            cond_silence_b, cond_full_b = cond_silence, cond_full
-        conditioning = cond_full  # default strength=1.0 == cond_full
-
-        # Negative conditioning for the RCFG path (Residual CFG).
-        cond_negative = engine_session.encode_text(
-            tags="",
-            instruction=TASK_INSTRUCTIONS["cover"],
-            refer_latent=None,
-            bpm=detected_bpm, duration=audio_duration_s,
-            key=detected_key,
-            time_signature=detected_time_signature,
-        )
-
-        logger.info(
-            "stream_create_start steps={} pipeline_depth={}", steps, depth,
-        )
-        stream = engine_session.stream(
-            source=source,
-            conditioning=conditioning,
-            steps=steps,
-            shift=3.0,
-            pipeline_depth=depth,
-        )
-        logger.info("stream_handle_ready")
-
-        # Initial buffer
-        src_np = waveform.numpy().T
-        if crop_seconds > 0:
-            src_np = src_np[:int(crop_seconds * SAMPLE_RATE)]
-        n_channels = src_np.shape[1] if src_np.ndim > 1 else 1
-
-        _seam_fade_samples = int(0.05 * SAMPLE_RATE)
-        _seam_fade_samples = min(_seam_fade_samples, len(src_np) // 4)
-        if _seam_fade_samples > 0:
-            if src_np.ndim == 1:
-                _fade_out = np.linspace(1.0, 0.0, _seam_fade_samples).astype(src_np.dtype)
-                _fade_in = np.linspace(0.0, 1.0, _seam_fade_samples).astype(src_np.dtype)
+            # Encode prompt B at session start so the blend slider works
+            # immediately.
+            if prompt_b and prompt_b != prompt:
+                cond_silence_b, cond_full_b = encode_cond_pair(
+                    engine_session, prompt_b, source.latent,
+                    detected_bpm, audio_duration_s,
+                    detected_key, detected_time_signature,
+                )
             else:
-                _fade_out = np.linspace(1.0, 0.0, _seam_fade_samples).reshape(-1, 1).astype(src_np.dtype)
-                _fade_in = np.linspace(0.0, 1.0, _seam_fade_samples).reshape(-1, 1).astype(src_np.dtype)
-            _tail = src_np[-_seam_fade_samples:].copy()
-            _head = src_np[:_seam_fade_samples].copy()
-            src_np[-_seam_fade_samples:] = _tail * _fade_out + _head * _fade_in
+                cond_silence_b, cond_full_b = cond_silence, cond_full
+            conditioning = cond_full  # default strength=1.0 == cond_full
 
-        audio_eng = AudioEngine(src_np, SAMPLE_RATE)
+            # Negative conditioning for the RCFG path (Residual CFG).
+            cond_negative = engine_session.encode_text(
+                tags="",
+                instruction=TASK_INSTRUCTIONS["cover"],
+                refer_latent=None,
+                bpm=detected_bpm, duration=audio_duration_s,
+                key=detected_key,
+                time_signature=detected_time_signature,
+            )
 
-        k1_name = "sde_amp" if use_sde else "denoise"
-        initial_knob_ids = list(initial_enable_ids) if use_lora else []
-        banks = build_banks(use_sde, loras=initial_knob_ids)
-        virtual_knobs = KnobState(banks)
+            logger.info(
+                "stream_create_start steps={} pipeline_depth={}", steps, depth,
+            )
+            stream = engine_session.stream(
+                source=source,
+                conditioning=conditioning,
+                steps=steps,
+                shift=3.0,
+                pipeline_depth=depth,
+            )
+            cleanup.callback(
+                _cleanup_create_resource,
+                "stream",
+                stream.close,
+            )
+            logger.info("stream_handle_ready")
 
-        state = SessionState(
-            source=source,
-            bpm=detected_bpm,
-            key=detected_key,
-            time_signature=detected_time_signature,
-            duration=audio_duration_s,
-            n_channels=n_channels,
-            playback_samples=int(waveform.shape[-1]),
-            cond_pair=(cond_silence, cond_full),
-            cond_pair_b=(cond_silence_b, cond_full_b),
-            prompt_text=prompt,
-            prompt_text_b=prompt_b,
-            current_depth=int(depth),
-        )
+            # Initial buffer
+            src_np = waveform.numpy().T
+            if crop_seconds > 0:
+                src_np = src_np[:int(crop_seconds * SAMPLE_RATE)]
+            n_channels = src_np.shape[1] if src_np.ndim > 1 else 1
 
-        return cls(
-            session_id=session_id,
-            checkpoint=checkpoint,
-            config=config,
-            engine_session=engine_session,
-            stream=stream,
-            state=state,
-            audio_eng=audio_eng,
-            virtual_knobs=virtual_knobs,
-            engine_obj=engine_obj,
-            profile_mgr=profile_mgr,
-            cond_negative=cond_negative,
-            initial_buffer=src_np,
-            initial_upload_stems=upload_stems,
-            initial_stem_error=stem_error,
-            initial_stem_source_mode=stem_source_mode,
-            initial_enable_ids=initial_enable_ids,
-            lora_strengths_init=lora_strengths_init,
-            lora_available=lora_available,
-            max_pipeline_depth=max_pipeline_depth,
-            max_seconds=max_seconds,
-            walk_window=walk_window,
-            walk_window_s=walk_window_s,
-            vae_window=vae_window,
-            crop_seconds=crop_seconds,
-            use_sde=use_sde,
-            use_lora=use_lora,
-            k1_name=k1_name,
-        )
+            _seam_fade_samples = int(0.05 * SAMPLE_RATE)
+            _seam_fade_samples = min(_seam_fade_samples, len(src_np) // 4)
+            if _seam_fade_samples > 0:
+                if src_np.ndim == 1:
+                    _fade_out = np.linspace(1.0, 0.0, _seam_fade_samples).astype(src_np.dtype)
+                    _fade_in = np.linspace(0.0, 1.0, _seam_fade_samples).astype(src_np.dtype)
+                else:
+                    _fade_out = np.linspace(1.0, 0.0, _seam_fade_samples).reshape(-1, 1).astype(src_np.dtype)
+                    _fade_in = np.linspace(0.0, 1.0, _seam_fade_samples).reshape(-1, 1).astype(src_np.dtype)
+                _tail = src_np[-_seam_fade_samples:].copy()
+                _head = src_np[:_seam_fade_samples].copy()
+                src_np[-_seam_fade_samples:] = _tail * _fade_out + _head * _fade_in
+
+            audio_eng = AudioEngine(src_np, SAMPLE_RATE)
+            cleanup.callback(
+                _cleanup_create_resource,
+                "audio_engine",
+                audio_eng.stop,
+            )
+
+            k1_name = "sde_amp" if use_sde else "denoise"
+            initial_knob_ids = list(initial_enable_ids) if use_lora else []
+            banks = build_banks(use_sde, loras=initial_knob_ids)
+            virtual_knobs = KnobState(banks)
+
+            state = SessionState(
+                source=source,
+                bpm=detected_bpm,
+                key=detected_key,
+                time_signature=detected_time_signature,
+                duration=audio_duration_s,
+                n_channels=n_channels,
+                playback_samples=int(waveform.shape[-1]),
+                cond_pair=(cond_silence, cond_full),
+                cond_pair_b=(cond_silence_b, cond_full_b),
+                prompt_text=prompt,
+                prompt_text_b=prompt_b,
+                current_depth=int(depth),
+            )
+
+            streaming = cls(
+                session_id=session_id,
+                checkpoint=checkpoint,
+                config=config,
+                engine_session=engine_session,
+                stream=stream,
+                state=state,
+                audio_eng=audio_eng,
+                virtual_knobs=virtual_knobs,
+                engine_obj=engine_obj,
+                profile_mgr=profile_mgr,
+                cond_negative=cond_negative,
+                initial_buffer=src_np,
+                initial_upload_stems=upload_stems,
+                initial_stem_error=stem_error,
+                initial_stem_source_mode=stem_source_mode,
+                initial_enable_ids=initial_enable_ids,
+                lora_strengths_init=lora_strengths_init,
+                lora_available=lora_available,
+                max_pipeline_depth=max_pipeline_depth,
+                max_seconds=max_seconds,
+                walk_window=walk_window,
+                walk_window_s=walk_window_s,
+                vae_window=vae_window,
+                crop_seconds=crop_seconds,
+                use_sde=use_sde,
+                use_lora=use_lora,
+                k1_name=k1_name,
+            )
+            cleanup.pop_all()
+            return streaming
