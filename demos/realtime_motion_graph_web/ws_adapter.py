@@ -444,11 +444,6 @@ def _handle_client_body(
     streaming_entered_run = False
 
     def _close_streaming_if_init_fails() -> None:
-        # StreamingSession.create() cleans up failures before it returns.
-        # Once it returns, this adapter owns the pre-run handshake window
-        # (ready frame, initial audio buffer, optional stems). If any of
-        # those sends fail before run() takes over, close the returned
-        # session here.
         if not streaming_entered_run:
             streaming.close()
 

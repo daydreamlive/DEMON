@@ -1518,12 +1518,6 @@ class StreamingSession:
     ) -> "StreamingSession":
         """Build a ready-to-run session for one connection.
 
-        Resource ownership is transactional. Once a resource is acquired
-        below, it is immediately registered with the cleanup stack. If any
-        later startup step raises before ``StreamingSession`` exists, the
-        partial session unwinds here. On success, ownership transfers to
-        :meth:`close`.
-
         Raises:
             UnsupportedTrtCheckpointError: ``checkpoint`` isn't in any
                 registered TRT profile family.
