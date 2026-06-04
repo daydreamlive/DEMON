@@ -499,9 +499,10 @@ class StreamingSession:
             )
             self.runner_holder[0] = runner
             logger.info("pipeline_running")
-            runner.run()
-        except Exception as exc:
-            logger.opt(exception=True).error("pipeline_error error={}", exc)
+            try:
+                runner.run()
+            except Exception as exc:
+                logger.opt(exception=True).error("pipeline_error error={}", exc)
         finally:
             self.close()
 
