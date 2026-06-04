@@ -112,7 +112,7 @@ def test_create_closes_stream_and_engine_session_when_late_setup_fails(monkeypat
     monkeypatch.setattr(
         session_mod,
         "encode_cond_pair",
-        lambda *_args, **_kwargs: object(),
+        lambda *_args, **_kwargs: (object(), object()),
     )
 
     def fail_audio_engine(*_args, **_kwargs):
