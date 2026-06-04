@@ -442,9 +442,12 @@ def _handle_client_body(
     _ms("resolve_source_done")
 
     streaming_entered_run = False
+    session_registered = False
 
     def _close_streaming_if_init_fails() -> None:
         if not streaming_entered_run:
+            if session_registered:
+                session_registry.unregister(session_id)
             streaming.close()
 
     ctx_stack.callback(_close_streaming_if_init_fails)
@@ -907,6 +910,7 @@ def _handle_client_body(
         inject=inject_control,
         snapshot=snapshot_session,
     ))
+    session_registered = True
     logger.info("session_registered")
 
     # Stage the initial enable set so they get applied on the runner
