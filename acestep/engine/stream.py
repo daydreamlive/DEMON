@@ -91,6 +91,15 @@ class SlotRequest:
     seed: Optional["int | List[int]"] = None
     source_latents: Optional[torch.Tensor] = None  # [1, T, D] for cover
     denoise: float = 1.0  # per-request denoise strength
+    # Draw the bare-SDE (pingpong) renoise from a per-slot generator
+    # seeded by ``seed`` instead of the global RNG, making the SDE
+    # trajectory deterministic per (seed, denoise, schedule): identical
+    # consecutive requests emit identical latents, so advancing playback
+    # windows splice into one coherent song. This is the SA3 pingpong
+    # continuity contract (the spike pipeline's per-slot generator).
+    # ACE requests leave it False — their SDE keeps upstream's
+    # fresh-global-noise semantics.
+    sde_noise_seeded: bool = False
     sde_denoise_curve: Optional[torch.Tensor] = None  # [1, T, 1] per-frame denoise
     velocity_scale: Optional[torch.Tensor] = None     # [1, T, 1] per-frame velocity scaling
     ode_noise_curve: Optional[torch.Tensor] = None    # [1, T, 1] per-step noise injection
@@ -224,6 +233,9 @@ class _Slot:
     # normalize + .any().item() per slot per tick. Only consulted when
     # no shared x0_target_strength override is active.
     x0_strength_active: bool = False
+    # Per-slot seeded renoise stream for ``request.sde_noise_seeded``
+    # (see SlotRequest). None = global RNG (upstream/ACE behavior).
+    sde_generator: Optional[torch.Generator] = None
 
 
 class StreamPipeline:
@@ -605,12 +617,21 @@ class StreamPipeline:
         else:
             x0_active = bool(strength)
 
+        # Deterministic renoise stream (see SlotRequest.sde_noise_seeded):
+        # one device generator per slot, seeded by the request seed, so
+        # the SDE trajectory replays exactly for identical requests.
+        sde_generator = None
+        if request.sde_noise_seeded and isinstance(request.seed, int):
+            sde_generator = torch.Generator(device=self._device)
+            sde_generator.manual_seed(int(request.seed))
+
         return _Slot(
             request=request, xt=xt,
             t_schedule=t_schedule, step_idx=0,
             momentum_buffer=momentum_buffer,
             initial_noise=initial_noise,
             x0_strength_active=x0_active,
+            sde_generator=sde_generator,
         )
 
     # ------------------------------------------------------------------
@@ -1453,11 +1474,24 @@ class StreamPipeline:
             elif use_sde:
                 # Bare SDE (no curve). Use the mask's fixed noise when a
                 # latent_mask is active so inpainting semantics are
-                # preserved; otherwise draw fresh noise.
+                # preserved; otherwise draw fresh noise — from the slot's
+                # seeded generator when the request asked for a
+                # deterministic trajectory. The unseeded path keeps
+                # randn_like, NOT randn(shape): xt is a transposed
+                # (non-contiguous) view here, and randn_like preserves
+                # its memory format — the same global-RNG draws land in
+                # transposed order, so torch.randn(shape) would arrange
+                # them differently and silently change every ACE SDE
+                # trajectory (caught by test_ace_adapter_parity).
                 noise = (
                     req.latent_mask.ensure_noise(xt.device, xt.dtype)
                     if req.latent_mask is not None
                     else torch.randn_like(xt)
+                    if slot.sde_generator is None
+                    else torch.randn(
+                        xt.shape, device=xt.device, dtype=xt.dtype,
+                        generator=slot.sde_generator,
+                    )
                 )
                 xt_new = step_sde_renoise(xt, x0_pred, t_next, noise)
             else:
