@@ -34,6 +34,15 @@ interface CommitUploadedTrackArgs {
   signal?: AbortSignal;
 }
 
+/** What the AlmostReadyDialog needs to know after the await resolves:
+ *  success unmounts the dialog (parent cleared `pending`); an error
+ *  leaves it mounted so the dialog can show the message inline and let
+ *  the user retry; an abort means the user already closed it. */
+export type UploadOutcome =
+  | { ok: true }
+  | { ok: false; aborted: true }
+  | { ok: false; aborted?: false; error: string };
+
 export async function commitUploadedTrack({
   pending,
   keyOverride,
@@ -44,7 +53,7 @@ export async function commitUploadedTrack({
   setPending,
   setUploading,
   signal,
-}: CommitUploadedTrackArgs): Promise<void> {
+}: CommitUploadedTrackArgs): Promise<UploadOutcome> {
   const { decoded, fileName, originalFile } = pending;
   // Keep `pending` set until the upload actually succeeds: encoding can
   // fail (bad audio, server/network), and clearing it up front would throw
@@ -73,15 +82,19 @@ export async function commitUploadedTrack({
     setFixture(uploaded.name);
     setPending(null);
     setStatus(useSessionStore.getState().status, "");
+    return { ok: true };
   } catch (e) {
     // User closed the dialog mid-encode → just clear the status, no error.
     if (signal?.aborted || (e instanceof DOMException && e.name === "AbortError")) {
       setStatus(useSessionStore.getState().status, "");
-    } else {
-      const msg = e instanceof Error ? e.message : String(e);
-      setStatus(useSessionStore.getState().status, `Upload failed: ${msg}`);
-      // `pending` is intentionally left in place so the user can retry.
+      return { ok: false, aborted: true };
     }
+    const msg = e instanceof Error ? e.message : String(e);
+    setStatus(useSessionStore.getState().status, `Upload failed: ${msg}`);
+    // `pending` is intentionally left in place so the user can retry, and
+    // the dialog surfaces `error` inline (the status bar is hidden behind
+    // the modal, so returning it is the only way the user sees it).
+    return { ok: false, error: msg };
   } finally {
     setUploading(false);
   }

@@ -143,7 +143,7 @@ export function LiteTrackCarousel() {
     if (!pending) return;
     const controller = new AbortController();
     uploadAbortRef.current = controller;
-    await commitUploadedTrack({
+    return commitUploadedTrack({
       pending,
       keyOverride,
       timeSignatureOverride,

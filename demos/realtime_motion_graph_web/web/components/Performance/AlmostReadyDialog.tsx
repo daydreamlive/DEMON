@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { type StemSourceMode } from "@/engine/audio/loadFixture";
+import { type UploadOutcome } from "@/lib/audio/commitUploadedTrack";
 import { defaultSwapSourceMode } from "@/lib/config";
 import {
   TIME_SIGNATURE_LABELS,
@@ -61,7 +62,7 @@ export interface AlmostReadyDialogProps {
     keyOverride: string | null;
     timeSignatureOverride: TimeSignature | null;
     sourceMode: StemSourceMode;
-  }) => void;
+  }) => void | Promise<UploadOutcome | void>;
   /** Only invoked when wasTrimmed is true; parent re-opens the file
    *  picker so the user can swap to a shorter source. */
   onPickAnother: () => void;
@@ -82,17 +83,44 @@ export function AlmostReadyDialog({
   );
   const [keyChoice, setKeyChoice] = useState<string>(AUTO);
   const [tsChoice, setTsChoice] = useState<string>(AUTO);
+  // Encoding happens on the server (GPU stem-rip + source prep) and can
+  // take many seconds. Without an in-modal busy state the user clicks
+  // Start and sees nothing change — the dialog looks frozen — because the
+  // "Encoding…" status and any error land in the status bar *behind* the
+  // modal. Track it here so Start shows progress and surfaces failures.
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const primaryRef = useRef<HTMLButtonElement | null>(null);
+  // Guards the post-await state writes: a successful upload (or the user
+  // hitting ×) unmounts this dialog, so we must not setState afterwards.
+  const aliveRef = useRef(true);
 
   useEffect(() => setMounted(true), []);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
 
-  function finish() {
-    onContinue({
+  async function finish() {
+    if (submitting) return;
+    setSubmitting(true);
+    setError(null);
+    const outcome = await onContinue({
       keyOverride: keyChoice === AUTO ? null : keyChoice,
       timeSignatureOverride:
         tsChoice !== AUTO && isTimeSignature(tsChoice) ? tsChoice : null,
       sourceMode,
     });
+    // Success/abort unmounts us (parent cleared `pending`); only a failure
+    // leaves the dialog mounted, in which case show the reason and re-arm
+    // Start so the user can retry without re-picking the file.
+    if (!aliveRef.current) return;
+    setSubmitting(false);
+    if (outcome && outcome.ok === false && !outcome.aborted) {
+      setError(outcome.error || "Upload failed. Please try again.");
+    }
   }
 
   // Esc closes; Enter advances (step 1 → next, step 2 → start) unless
@@ -127,7 +155,13 @@ export function AlmostReadyDialog({
   if (!mounted) return null;
 
   return createPortal(
-    <div className="almost-ready-backdrop" onClick={onClose} role="presentation">
+    // Backdrop click closes — but not mid-encode, so a stray click can't
+    // silently abort a running upload. The × stays live as the explicit out.
+    <div
+      className="almost-ready-backdrop"
+      onClick={submitting ? undefined : onClose}
+      role="presentation"
+    >
       <div
         className="almost-ready-modal"
         role="dialog"
@@ -145,7 +179,7 @@ export function AlmostReadyDialog({
             type="button"
             className="config-modal-close"
             onClick={onClose}
-            aria-label="Cancel upload"
+            aria-label={submitting ? "Cancel encoding" : "Cancel upload"}
           >
             ×
           </button>
@@ -266,6 +300,28 @@ export function AlmostReadyDialog({
           )}
         </div>
 
+        {(submitting || error) && (
+          <div
+            className={`almost-ready-uploading${error ? " is-error" : ""}`}
+            role="status"
+            aria-live="polite"
+          >
+            {submitting ? (
+              <>
+                <span
+                  className="almost-ready-spinner"
+                  aria-hidden="true"
+                />
+                <span>
+                  Encoding on the server — this can take up to a minute.
+                </span>
+              </>
+            ) : (
+              <span>{error}</span>
+            )}
+          </div>
+        )}
+
         <div className="almost-ready-footer">
           {step === 1 ? (
             <>
@@ -300,6 +356,7 @@ export function AlmostReadyDialog({
                 type="button"
                 className="almost-ready-btn almost-ready-btn--secondary"
                 onClick={() => setStep(1)}
+                disabled={submitting}
               >
                 ← Back
               </button>
@@ -308,8 +365,10 @@ export function AlmostReadyDialog({
                 type="button"
                 className="almost-ready-btn almost-ready-btn--primary"
                 onClick={finish}
+                disabled={submitting}
+                aria-busy={submitting}
               >
-                Start
+                {submitting ? "Encoding…" : error ? "Retry" : "Start"}
               </button>
             </>
           )}

@@ -8507,6 +8507,47 @@ body.curve-open #install-video-area #graph {
   margin-right: auto;
 }
 .almost-ready-btn--ghost:hover { color: var(--text); }
+.almost-ready-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+  filter: none;
+}
+
+/* In-modal busy / error banner shown between body and footer once Start
+   is pressed. Without it the "Encoding…" status lands in the status bar
+   behind the modal, so the dialog reads as frozen. */
+.almost-ready-uploading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 18px;
+  padding: 10px 12px;
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  color: var(--text);
+  font-size: 0.84em;
+  line-height: 1.4;
+}
+.almost-ready-uploading.is-error {
+  border-color: color-mix(in srgb, #ff5b5b 55%, var(--frame-line));
+  background: color-mix(in srgb, #ff5b5b 10%, transparent);
+  color: color-mix(in srgb, #ff9b9b 70%, var(--text));
+}
+.almost-ready-spinner {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  animation: almost-ready-spin 0.7s linear infinite;
+}
+@keyframes almost-ready-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 
 /* ─────────────────────────────────────────────────────────────────────
    WaveformTrimDialog — interactive trim that runs between
