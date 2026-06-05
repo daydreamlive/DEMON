@@ -92,6 +92,7 @@ FAMILIES = {
 CHECKPOINT_ALIASES = {
     "xl": ("acestep", "acestep-v15-xl-turbo"),
     "sa3-small": ("sa3", "small-music"),
+    "sa3-medium": ("sa3", "medium"),
 }
 
 

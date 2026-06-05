@@ -97,6 +97,29 @@ class SA3Adapter:
     ) -> torch.Tensor:
         if any(b is None for b in aux_list):
             raise ValueError("SA3 SlotRequest must carry aux_cond")
+        if getattr(self.dit, "trt_batch1", False):
+            # TRT DiT engines are batch-1 (every profile fixes dim 0 at
+            # 1 — see acestep/engine/sa3_trt.py), so the ring buffer's
+            # batched tick LOOPS slots through the engine. Per-slot
+            # bundles are passed individually (no stacking/padding):
+            # after a prompt swap, in-flight slots legitimately carry
+            # the old bundle while new submissions carry the new one.
+            # Measured ~11-17 ms per call on the 5090, so depth 4 stays
+            # well inside the tick budget where one eager batched
+            # forward (~54 ms/slot-equivalent) would not.
+            outs = []
+            for i in range(xt_batch.shape[0]):
+                v_1ct = self.dit.step_bundle(
+                    xt_batch[i:i + 1].movedim(1, 2),
+                    float(timestep_list[i]),
+                    aux_list[i],
+                )
+                # The wrapper returns its persistent output buffer —
+                # materialize before the next iteration overwrites it.
+                outs.append(
+                    v_1ct.movedim(1, 2).to(dtype=xt_batch.dtype, copy=True)
+                )
+            return torch.cat(outs, dim=0)
         cond = self._stack(list(aux_list))
         x_bct = xt_batch.movedim(1, 2)  # [B,T,C] -> SA3-native [B,C,T]
         t_b = torch.tensor(

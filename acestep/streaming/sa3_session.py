@@ -59,6 +59,12 @@ SA3_MAX_DURATION_S = 120.0
 # (demos/test_stream_sa3_graph.py) ran end-to-end on the 5090.
 SA3_MAX_PIPELINE_DEPTH = 8
 
+# Wire-slice width for SA3 sessions, seconds. The reference branch's
+# web demo ran SA3 at 3.0 s (``config.get("vae_window", 3.0)``);
+# ``SessionConfig.vae_window``'s 0.36 default is the ACE windowed-VAE
+# geometry and must not leak in here.
+SA3_VAE_WINDOW_S = 3.0
+
 # One loaded SA3 model per model_id per process (module docstring).
 # Lock held across the load on purpose: a second concurrent first
 # session should wait for the shared context, not load a duplicate.
@@ -94,10 +100,16 @@ def create_sa3_session(*, audio, config, model_id: str, session_id: str):
     from acestep.streaming.audio_engine import AudioEngine
     from acestep.streaming.session import StreamingSession
 
+    context = get_sa3_context(model_id)
+
     waveform = audio.waveform[:2].float()
     source_duration_s = waveform.shape[-1] / SAMPLE_RATE
     duration_s = float(config.sa3_duration_s or 0.0) or source_duration_s
     duration_s = min(duration_s, SA3_MAX_DURATION_S)
+    # Land on the TRT DiT fast path when engines are built (medium):
+    # a duration whose padded latent window exceeds every engine
+    # profile would silently fall back to the ~5x-slower eager DiT.
+    duration_s = context.clamp_duration_for_trt(duration_s)
     waveform = waveform[:, : int(duration_s * SAMPLE_RATE)]
 
     prompt = config.prompt
@@ -117,7 +129,6 @@ def create_sa3_session(*, audio, config, model_id: str, session_id: str):
         model_id, duration_s, source_duration_s, steps, depth,
     )
 
-    context = get_sa3_context(model_id)
     cond = context.prepare_cond(prompt=prompt, duration=duration_s, steps=steps)
     source_latent = context.encode_source(
         (SAMPLE_RATE, waveform), cond.audio_sample_size,
@@ -183,7 +194,7 @@ def create_sa3_session(*, audio, config, model_id: str, session_id: str):
         max_seconds=playable_s,
         walk_window=False,
         walk_window_s=0.0,
-        vae_window=float(config.vae_window),
+        vae_window=SA3_VAE_WINDOW_S,
         crop_seconds=0.0,
         use_sde=False,
         use_lora=False,

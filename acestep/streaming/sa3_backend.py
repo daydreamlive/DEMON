@@ -105,8 +105,15 @@ class SA3Backend(DiffusionBackend):
         steps: int = 8,
         depth: int = 4,
         default_seed: int = 1528,
-        vae_window_s: float = 0.36,
-        sampler: str = "ode",
+        vae_window_s: float = 3.0,
+        # SA3 checkpoints are ``diffusion_objective: rf_denoiser`` —
+        # upstream samples them with pingpong ONLY (euler isn't even
+        # offered in their UI for this objective, and 8-step euler is
+        # audibly degraded). Determinism — and therefore window-splice
+        # continuity — is preserved via the seeded per-slot renoise
+        # stream (SlotRequest.sde_noise_seeded), the spike pipeline's
+        # per-slot generator semantics.
+        sampler: str = "pingpong",
         prompt_rebuilder: Optional[Callable] = None,
     ):
         super().__init__(adapter=adapter, codec=codec)
@@ -124,7 +131,9 @@ class SA3Backend(DiffusionBackend):
         self._depth = int(depth)
         self._default_seed = int(default_seed)
         self.vae_window = float(vae_window_s)
-        self._sampler = sampler  # "ode" (continuity) | "sde" (pingpong)
+        # "pingpong"/"sde" (rf_denoiser-native, deterministic via seeded
+        # renoise) | "ode" (euler; off-objective for SA3, debug only)
+        self._sampler = sampler
 
         # Source anchor for audio-to-audio: engine layout [1, T, 256].
         self._source_latent_btc = (
@@ -135,8 +144,11 @@ class SA3Backend(DiffusionBackend):
         # Rendered-audio cache: one full decode+resample per fresh
         # latent (SAME-S decodes the whole window in ~11 ms); window
         # renders slice it, so gap-fill re-renders are bit-stable.
+        # Windowed codecs (SAME-L / medium: full decode ~80 ms) bypass
+        # the cache and decode per render instead — see render_window.
         self._rendered_for = None     # latent tensor identity
         self._rendered_48k = None     # np.ndarray [N, C] float32
+        self._windowed_codec = hasattr(codec, "decode_window")
 
         self.pipeline = self._build_pipeline(self._steps)
 
@@ -163,9 +175,13 @@ class SA3Backend(DiffusionBackend):
         serving-layer create path (:mod:`acestep.streaming.sa3_session`),
         which runs ``prepare_cond`` + source encode itself before the
         session exists, doesn't pay them twice; absent, they're computed
-        here (the in-process assembly the GPU smoke validated)."""
+        here (the in-process assembly the GPU smoke validated).
+
+        Component selection is the context's call (``make_dit`` /
+        ``make_codec``): small runs the torch DiT + SAME-S full-decode
+        codec; medium gets the TRT DiT engine (when built) and the
+        SAME-L windowed codec."""
         from acestep.engine.sa3_adapter import SA3Adapter
-        from acestep.engine.sa3_context import SA3SAMECodec
 
         steps = int(kwargs.get("steps", 8))
         if cond is None:
@@ -178,7 +194,10 @@ class SA3Backend(DiffusionBackend):
             if source_audio is not None else None
         )
         adapter = SA3Adapter(
-            context.dit,
+            context.make_dit(
+                latent_frames=cond.latent_frames,
+                seconds_total=duration_s,
+            ),
             schedule_builder=context.make_schedule_builder(cond, steps),
             device=context.device,
             dtype=context.dtype,
@@ -197,7 +216,7 @@ class SA3Backend(DiffusionBackend):
 
         return cls(
             adapter=adapter,
-            codec=SA3SAMECodec(context),
+            codec=context.make_codec(),
             cond=cond,
             schedule_builder_factory=(
                 lambda s: context.make_schedule_builder(cond, s)
@@ -312,6 +331,10 @@ class SA3Backend(DiffusionBackend):
             source_latents=self._source_latent_btc,
             aux_cond=self._cond.cond_bundle,
             latent_frames=self._cond.latent_frames,
+            # Deterministic pingpong: identical requests must replay the
+            # same trajectory or advancing windows splice different
+            # realizations (incoherent audio). See SlotRequest.
+            sde_noise_seeded=True,
         ))
         return self.pipeline.tick()  # engine-layout [1, T, 256] | None
 
@@ -349,11 +372,56 @@ class SA3Backend(DiffusionBackend):
         )
         if decode_src is None:
             return None
+        if self._windowed_codec:
+            return self._render_window_via_codec(decode_src, t_start_s)
         audio = self._rendered_audio(decode_src)
         n = int(round(self.vae_window * DELIVERY_SAMPLE_RATE))
         start = int(round(t_start_s * DELIVERY_SAMPLE_RATE))
         start = max(0, min(start, max(0, audio.shape[0] - n)))
         return AudioChunk(pcm=audio[start:start + n], start_sample=start)
+
+    def _render_window_via_codec(self, latent_btc: torch.Tensor, t_start_s: float):
+        """Windowed-codec render (SAME-L / medium): decode ONLY a small
+        latent window around the target, then resample that window.
+
+        44.1k↔48k bookkeeping uses the exact 147:160 ratio. The decode
+        request carries a 588-sample (= 640 at 48 k) guard margin on
+        each side so the resampler's filter edges land outside the kept
+        slice; the runner's 25 ms crossfade against the live buffer
+        covers the (deterministic) window seams, exactly as it does for
+        ACE's windowed VAE decode.
+        """
+        import torchaudio
+
+        n48 = int(round(self.vae_window * DELIVERY_SAMPLE_RATE))
+        dur48 = int(round((self.playable_duration_s() or 0.0) * DELIVERY_SAMPLE_RATE))
+        start48 = int(round(t_start_s * DELIVERY_SAMPLE_RATE))
+        start48 = max(0, min(start48, max(0, dur48 - n48)))
+
+        m44 = 588                                # guard margin; 588*160/147 == 640
+        start44 = (start48 * SA3_SAMPLE_RATE) // DELIVERY_SAMPLE_RATE
+        n44 = -(-n48 * 147 // 160)               # ceil to cover n48 after resample
+        lo44 = max(0, start44 - m44)
+        lead44 = start44 - lo44
+        total44 = lead44 + n44 + m44
+
+        t0 = time.perf_counter()
+        audio_ct = self.codec.decode_window(
+            latent_btc.movedim(1, 2), lo44, total44,
+        )
+        audio48 = torchaudio.functional.resample(
+            audio_ct.float(), SA3_SAMPLE_RATE, DELIVERY_SAMPLE_RATE,
+        )
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        self.last_dec_ms += (time.perf_counter() - t0) * 1000
+
+        lead48 = (lead44 * DELIVERY_SAMPLE_RATE) // SA3_SAMPLE_RATE
+        pcm48 = audio48[:, lead48:lead48 + n48]
+        if pcm48.shape[-1] < n48:
+            pcm48 = torch.nn.functional.pad(pcm48, (0, n48 - pcm48.shape[-1]))
+        pcm = pcm48.clamp(-1, 1).cpu().numpy().T  # [N, C]
+        return AudioChunk(pcm=pcm, start_sample=start48)
 
     def render_full(self):
         if self._current_result is None:
