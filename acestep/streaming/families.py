@@ -46,9 +46,45 @@ def _make_acestep(ss):
     )
 
 
+def _make_sa3(ss):
+    # The SA3 GeneratorBackend is fully implemented
+    # (acestep/streaming/sa3_backend.py) but the serving-layer create
+    # path that would assemble it onto a StreamingSession (SA3Context
+    # load, source resample+encode, per-prompt conditioning) is
+    # canonical-plan Phase 3. Until that lands, a session assembled
+    # with SA3 state gets its backend; a plain create() fails loudly
+    # at config time, never silently.
+    backend = getattr(ss, "sa3_backend", None)
+    if backend is None:
+        raise ValueError(
+            "backend 'sa3' has no serving-layer session path yet "
+            "(canonical SA3 plan Phase 3); drive SA3 in-process via "
+            "SA3Backend.from_context (see acestep/streaming/sa3_backend.py)"
+        )
+    return backend
+
+
 FAMILIES = {
     "acestep": _make_acestep,
+    "sa3": _make_sa3,
 }
+
+# ---------------------------------------------------------------------------
+# Checkpoint aliases (plan §3.5): a server --checkpoint name resolves to
+# (backend family, model id). Names absent from the map are ACE
+# checkpoint directory names, exactly as before — so plain "xl" and the
+# canonical directory names keep working.
+# ---------------------------------------------------------------------------
+
+CHECKPOINT_ALIASES = {
+    "xl": ("acestep", "acestep-v15-xl-turbo"),
+    "sa3-small": ("sa3", "small-music"),
+}
+
+
+def resolve_checkpoint(name: str) -> tuple:
+    """``--checkpoint`` name -> ``(backend_family, model_id)``."""
+    return CHECKPOINT_ALIASES.get(name, ("acestep", name))
 
 
 def _acestep_knob_universe():
@@ -105,8 +141,15 @@ def _acestep_knob_universe():
 # must be renamed (prefix / group), so the first lazily-reused name
 # can't become a silent semantic fork. Keyed identically to FAMILIES;
 # the guard enforces the keys stay in sync.
+def _sa3_knob_universe():
+    from acestep.streaming.sa3_backend import sa3_knob_specs
+
+    return sa3_knob_specs()
+
+
 FAMILY_KNOB_UNIVERSES = {
     "acestep": _acestep_knob_universe,
+    "sa3": _sa3_knob_universe,
 }
 
 

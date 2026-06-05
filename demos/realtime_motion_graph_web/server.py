@@ -87,11 +87,10 @@ _DEFAULT_MODE = "graph"
 _CHECKPOINT: str = "acestep-v15-turbo"
 _VALID_MODES = ("graph", "video")
 
-# Short aliases for --checkpoint. Map directly to the canonical
-# checkpoint directory name under <MODELS_DIR>/checkpoints/.
-_CHECKPOINT_ALIASES = {
-    "xl": "acestep-v15-xl-turbo",
-}
+# --checkpoint aliases live in acestep.streaming.families
+# (CHECKPOINT_ALIASES / resolve_checkpoint): each alias names a
+# (backend family, model id) pair, e.g. "xl" -> acestep, "sa3-small"
+# -> the sa3 family. Resolved in main() at CLI parse.
 
 _NO_CACHE_HEADERS = [
     ("Cache-Control", "no-store, must-revalidate"),
@@ -697,10 +696,18 @@ def main():
         raise SystemExit(
             f"[Server] --vae-accel must be one of {_VALID_ACCEL}, got {vae_accel!r}"
         )
+    backend_family = "acestep"
     if "--checkpoint" in args:
         idx = args.index("--checkpoint")
         checkpoint = args[idx + 1]
-        checkpoint = _CHECKPOINT_ALIASES.get(checkpoint, checkpoint)
+        # Aliases resolve to (backend family, model id) pairs (plan
+        # §3.5): "xl" stays an ACE checkpoint name, "sa3-small" selects
+        # the sa3 family with model id "small-music". Plain directory
+        # names pass through as ACE checkpoints, as before. The import
+        # is lazy/light (no torch) so --no-backend stays cheap.
+        from acestep.streaming.families import resolve_checkpoint
+
+        backend_family, checkpoint = resolve_checkpoint(checkpoint)
     if "--control-host" in args:
         idx = args.index("--control-host")
         control_host = args[idx + 1]
@@ -766,6 +773,7 @@ def main():
                 decoder_backend=decoder_accel,
                 vae_backend=vae_accel,
                 checkpoint=checkpoint,
+                backend_family=backend_family,
                 offload_text_encoder=offload_text_encoder,
             )
 

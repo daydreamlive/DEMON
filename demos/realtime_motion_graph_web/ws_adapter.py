@@ -952,6 +952,7 @@ def handle_client(
     decoder_backend: str = "tensorrt",
     vae_backend: str = "tensorrt",
     checkpoint: str = "acestep-v15-turbo",
+    backend_family: str = "acestep",
     offload_text_encoder: bool = False,
 ):
     """Connection entrypoint. The body lives in ``_handle_client_body``;
@@ -965,6 +966,7 @@ def handle_client(
                 decoder_backend=decoder_backend,
                 vae_backend=vae_backend,
                 checkpoint=checkpoint,
+                backend_family=backend_family,
                 offload_text_encoder=offload_text_encoder,
             )
     finally:
@@ -994,11 +996,12 @@ def _handle_client_body(
     decoder_backend: str,
     vae_backend: str,
     checkpoint: str,
+    backend_family: str,
     offload_text_encoder: bool,
 ):
     logger.info(
-        "client_connected decoder={} vae={} checkpoint={} text_encoder={}",
-        decoder_backend, vae_backend, checkpoint,
+        "client_connected decoder={} vae={} checkpoint={} family={} text_encoder={}",
+        decoder_backend, vae_backend, checkpoint, backend_family,
         "offload" if offload_text_encoder else "resident",
     )
 
@@ -1117,6 +1120,10 @@ def _handle_client_body(
     ))
 
     cfg = SessionConfig.from_dict(config_dict)
+    # The server's resolved checkpoint family is the default; an
+    # explicit client-config "backend" key still wins.
+    if "backend" not in config_dict:
+        cfg.backend = backend_family
     audio_in = Audio(waveform=waveform, sample_rate=SAMPLE_RATE)
 
     # A stem-source create (vocals/instruments) for a track whose

@@ -2090,6 +2090,23 @@ class StreamingSession:
             StemExtractFailedError: stem extraction failed for an
                 upload whose ``stem_source_mode`` selected a stem.
         """
+        # Per-family session assembly is canonical-plan Phase 3; the
+        # body below is the ACE path. Reject other families BEFORE any
+        # model/TRT loading so the failure is config-time and cheap.
+        # (families.make_backend would reject too, but only after the
+        # full ACE stack loaded.)
+        family = getattr(config, "backend", "acestep") or "acestep"
+        if family != "acestep":
+            from acestep.streaming.families import FAMILIES
+
+            detail = (
+                "has no serving-layer create path yet (canonical SA3 "
+                "plan Phase 3)" if family in FAMILIES
+                else f"is not a registered family ({', '.join(sorted(FAMILIES))})"
+            )
+            logger.error("unsupported_backend_family family={}", family)
+            raise ValueError(f"backend family {family!r} {detail}")
+
         waveform = audio.waveform
 
         use_trt = decoder_backend == "tensorrt" or vae_backend == "tensorrt"

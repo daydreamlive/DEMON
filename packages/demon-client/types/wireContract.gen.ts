@@ -475,6 +475,7 @@ export interface SessionConfigPayload {
   lora_paths?: unknown[];
   client_id?: string | null;
   backend?: string;
+  sa3_duration_s?: number | null;
   // SessionConfig is permissive; extras pass through.
   [k: string]: unknown;
 }
