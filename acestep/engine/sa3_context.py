@@ -29,7 +29,11 @@ from typing import Callable
 import torch
 
 from acestep.engine.obs import logger
-from acestep.engine.sa3_helpers import import_loader_helpers, import_stream_helpers
+from acestep.engine.sa3_helpers import (
+    import_loader_helpers,
+    import_stream_helpers,
+    require_sa3_vendor,
+)
 
 
 class SA3Context:
@@ -42,6 +46,7 @@ class SA3Context:
         device: str = "cuda",
         model_half: bool = True,
     ):
+        require_sa3_vendor()  # actionable ImportError when the tree is absent
         loader = import_loader_helpers()
         self._helpers = import_stream_helpers()
 

@@ -785,15 +785,29 @@ def main():
         # this pod to the pool after main() proceeds, so the pod isn't
         # routed real users until it's warm. Enable with
         # DEMON_STARTUP_WARMUP=1.
+        #
+        # Warmup is backend policy (plan §3.5): the synthetic warmup
+        # session is ACE-shaped (TRT engines, fixture upload path), so
+        # families whose policy isn't "ace_trt" skip it — sa3's one-time
+        # cost is the process-cached SA3Context load, paid by the first
+        # real session.
         if os.environ.get("DEMON_STARTUP_WARMUP", "0") != "0":
-            from acestep.streaming.warmup import run_startup_warmup
+            from acestep.streaming.families import warmup_policy
 
-            run_startup_warmup(
-                decoder_backend=decoder_accel,
-                vae_backend=vae_accel,
-                checkpoint=checkpoint,
-                offload_text_encoder=offload_text_encoder,
-            )
+            if warmup_policy(backend_family) == "ace_trt":
+                from acestep.streaming.warmup import run_startup_warmup
+
+                run_startup_warmup(
+                    decoder_backend=decoder_accel,
+                    vae_backend=vae_accel,
+                    checkpoint=checkpoint,
+                    offload_text_encoder=offload_text_encoder,
+                )
+            else:
+                logger.info(
+                    "startup_warmup_skipped family={} policy={}",
+                    backend_family, warmup_policy(backend_family),
+                )
 
     # Start the MCP control bus FIRST so registry registrations from the
     # WS handler land in an already-listening HTTP server. Skipped in

@@ -472,6 +472,7 @@ class StreamingSession:
         use_sde: bool,
         use_lora: bool,
         k1_name: str,
+        backend_init: dict | None = None,
     ):
         self.session_id = session_id
         self.checkpoint = checkpoint
@@ -537,6 +538,14 @@ class StreamingSession:
         # policy) waits on this before creating its own session so the
         # two model stacks never need VRAM simultaneously.
         self.closed = threading.Event()
+
+        # Per-family construction payload (plan §3.5). The ACE path
+        # passes None (its factory reads ordinary session attributes);
+        # a per-family create path (acestep.streaming.sa3_session)
+        # stashes whatever its registry factory additionally needs —
+        # the loaded family context, precomputed conditioning, the
+        # encoded source anchor. Must be set BEFORE make_backend below.
+        self.backend_init = backend_init
 
         # The session's GeneratorBackend, selected by SessionConfig.backend
         # via the family registry. Constructed here (not in run()) so the
@@ -787,6 +796,9 @@ class StreamingSession:
         # references into the engine before session.close()
         # actually destroys the engine + ModelContext.
         # session.close() ends with gc.collect() + cuda.empty_cache().
+        # Both are None on non-ACE families (the sa3 create path
+        # builds no engine Session; its model context is process-
+        # cached and deliberately outlives the session).
         self.state.running = False
         try:
             self.bus.close()
@@ -796,14 +808,16 @@ class StreamingSession:
             self.audio_eng.stop()
         except Exception as exc:
             logger.warning("audio_engine_stop_raised error={}", exc)
-        try:
-            self.stream.close()
-        except Exception as exc:
-            logger.warning("stream_close_raised error={}", exc)
-        try:
-            self.session.close()
-        except Exception as exc:
-            logger.warning("session_close_raised error={}", exc)
+        if self.stream is not None:
+            try:
+                self.stream.close()
+            except Exception as exc:
+                logger.warning("stream_close_raised error={}", exc)
+        if self.session is not None:
+            try:
+                self.session.close()
+            except Exception as exc:
+                logger.warning("session_close_raised error={}", exc)
         # Last: signal waiters (preempting connections) that this
         # session's GPU state is gone.
         self.closed.set()
@@ -1540,9 +1554,33 @@ class StreamingSession:
     ) -> None:
         """Re-encode A (and optionally B) against the active timbre
         reference and refresh the live conditioning. Publishes
-        :class:`PromptApplied`."""
+        :class:`PromptApplied`.
+
+        Backends that own their prompt path (plan §2: set_prompt is the
+        universal control) expose a ``set_prompt`` method and the
+        session dispatches there — SA3 re-runs ``prepare_cond`` and
+        swaps the conditioning bundle. The ACE backend has no such
+        method, so the engine-session re-encode below runs unchanged.
+        """
         state = self.state
         state.last_activity_ts = time.monotonic()
+        backend_set_prompt = getattr(self.backend, "set_prompt", None)
+        if backend_set_prompt is not None:
+            logger.info(
+                "prompt_set origin={} backend={} tags={!r} tags_b={!r}",
+                origin.value, self.backend.name, tags, tags_b,
+            )
+            with state._lock:
+                # key / time_signature have no family meaning here (SA3
+                # conditions on prompt text alone); they ride the prompt
+                # string when the operator wants them honored.
+                backend_set_prompt(tags, tags_b)
+                state.prompt_text = tags
+                state.prompt_text_b = (
+                    tags_b if (tags_b and tags_b != tags) else tags
+                )
+            self.bus.publish(PromptApplied(tags=tags))
+            return
         with state._lock:
             bpm_override = _normalize_bpm_override(bpm)
             if bpm_override is not None:
@@ -2090,18 +2128,27 @@ class StreamingSession:
             StemExtractFailedError: stem extraction failed for an
                 upload whose ``stem_source_mode`` selected a stem.
         """
-        # Per-family session assembly is canonical-plan Phase 3; the
-        # body below is the ACE path. Reject other families BEFORE any
-        # model/TRT loading so the failure is config-time and cheap.
-        # (families.make_backend would reject too, but only after the
-        # full ACE stack loaded.)
+        # Per-family session assembly (plan §3.5): the body below is
+        # the ACE path; other families dispatch to their own create
+        # module BEFORE any ACE model/TRT loading. ``checkpoint`` is
+        # the family model id by this point (families.resolve_checkpoint
+        # mapped the server alias, e.g. "sa3-small" -> "small-music").
+        # The accel/offload knobs are ACE-shaped and don't apply.
         family = getattr(config, "backend", "acestep") or "acestep"
+        if family == "sa3":
+            from acestep.streaming.sa3_session import create_sa3_session
+
+            return create_sa3_session(
+                audio=audio,
+                config=config,
+                model_id=checkpoint,
+                session_id=session_id,
+            )
         if family != "acestep":
             from acestep.streaming.families import FAMILIES
 
             detail = (
-                "has no serving-layer create path yet (canonical SA3 "
-                "plan Phase 3)" if family in FAMILIES
+                "has no serving-layer create path yet" if family in FAMILIES
                 else f"is not a registered family ({', '.join(sorted(FAMILIES))})"
             )
             logger.error("unsupported_backend_family family={}", family)

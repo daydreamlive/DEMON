@@ -48,6 +48,24 @@ def ensure_sa3_paths() -> None:
             sys.path.insert(0, p)
 
 
+def require_sa3_vendor() -> Path:
+    """Fail loudly and actionably when the vendored ``stable_audio_3``
+    source is absent. Called by vendor-needing entry points (SA3Context
+    construction) so the operator sees the remedy instead of a deep
+    ``ModuleNotFoundError: No module named 'stable_audio_3'`` from
+    inside the spike loader. Returns the vendor dir on success."""
+    vendor = sa3_vendor_dir()
+    if not (vendor / "stable_audio_3").is_dir():
+        raise ImportError(
+            f"vendored stable_audio_3 source not found at {vendor}; its "
+            "canonical location is the untracked notes/SA3/stable-audio-3 "
+            "tree. In a worktree that doesn't carry it, set DEMON_SA3_SRC "
+            "to a checkout that does (e.g. "
+            "DEMON_SA3_SRC=C:\\_dev\\projects\\DEMON\\notes\\SA3\\stable-audio-3)"
+        )
+    return vendor
+
+
 def import_stream_helpers():
     """The spike's streaming helpers (``scripts/sa3/sa3_stream_pipeline``):
     cond-bundle stacking, decode-window resolution, SAME windowed decode,

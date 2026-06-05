@@ -47,21 +47,34 @@ def _make_acestep(ss):
 
 
 def _make_sa3(ss):
-    # The SA3 GeneratorBackend is fully implemented
-    # (acestep/streaming/sa3_backend.py) but the serving-layer create
-    # path that would assemble it onto a StreamingSession (SA3Context
-    # load, source resample+encode, per-prompt conditioning) is
-    # canonical-plan Phase 3. Until that lands, a session assembled
-    # with SA3 state gets its backend; a plain create() fails loudly
-    # at config time, never silently.
-    backend = getattr(ss, "sa3_backend", None)
-    if backend is None:
+    # Assembles SA3Backend.from_context from the construction payload
+    # the per-family create path (acestep.streaming.sa3_session) stashed
+    # on the session: the process-cached SA3Context, the precomputed
+    # conditioning capture, and the SAME-encoded source anchor. Plain
+    # session attributes (knob state, steps/depth, vae_window) come off
+    # the session itself, per the factory contract above.
+    from acestep.streaming.sa3_backend import SA3Backend
+
+    init = getattr(ss, "backend_init", None)
+    if not init or "context" not in init:
         raise ValueError(
-            "backend 'sa3' has no serving-layer session path yet "
-            "(canonical SA3 plan Phase 3); drive SA3 in-process via "
-            "SA3Backend.from_context (see acestep/streaming/sa3_backend.py)"
+            "backend 'sa3' requires the per-family create path "
+            "(acestep.streaming.sa3_session.create_sa3_session) to stash "
+            "its construction payload; an ACE-shaped session cannot "
+            "assemble an SA3 backend"
         )
-    return backend
+    return SA3Backend.from_context(
+        init["context"],
+        prompt=ss.state.prompt_text,
+        duration_s=float(init["duration_s"]),
+        knob_state=ss.virtual_knobs,
+        state=ss.state,
+        cond=init["cond"],
+        source_latent_bct=init["source_latent_bct"],
+        steps=int(ss.config.steps),
+        depth=int(ss.state.current_depth),
+        vae_window_s=float(ss.vae_window),
+    )
 
 
 FAMILIES = {
@@ -85,6 +98,27 @@ CHECKPOINT_ALIASES = {
 def resolve_checkpoint(name: str) -> tuple:
     """``--checkpoint`` name -> ``(backend_family, model_id)``."""
     return CHECKPOINT_ALIASES.get(name, ("acestep", name))
+
+
+# ---------------------------------------------------------------------------
+# Startup-warmup policy (plan §3.5: warmup is backend policy, replacing
+# checkpoint-name sniffing in server.py). "ace_trt" drives the synthetic
+# ACE warmup session (acestep.streaming.warmup: TRT decoder-engine load,
+# LoRA-refit manager, first-tick pipeline build — ~30s of one-time
+# engine-resident state). "none" skips it: SA3's one-time cost is the
+# SA3Context load, which the per-family create path process-caches, so
+# the first real session pays it once and the rest are warm.
+# ---------------------------------------------------------------------------
+
+WARMUP_POLICIES = {
+    "acestep": "ace_trt",
+    "sa3": "none",
+}
+
+
+def warmup_policy(family: str) -> str:
+    """Startup-warmup policy for ``family`` ("ace_trt" | "none")."""
+    return WARMUP_POLICIES.get(family, "none")
 
 
 def _acestep_knob_universe():

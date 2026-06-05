@@ -13,8 +13,9 @@ stay 48 kHz-untouched in v1; ``geometry().sample_rate`` declares the
 DELIVERED rate, 48000 — native-44.1k delivery later is a geometry +
 client change only).
 
-v1 surface (everything else off, capability-gated): ``prompt`` (fixed
-per conditioning bundle), fixed duration, ``seed``, ``steps_override``,
+v1 surface (everything else off, capability-gated): ``prompt`` (one
+conditioning bundle at a time, swapped per-prompt via
+:meth:`SA3Backend.set_prompt`), fixed duration, ``seed``, ``steps_override``,
 and ``sa3_denoise`` — SA3's ``init_noise_level``, the audio-to-audio
 blend against the source anchor. The name is load-bearing: ACE's
 ``denoise`` is a different control, and the homonym rule
@@ -35,6 +36,7 @@ from typing import Callable, Optional
 
 import torch
 
+from acestep.engine.obs import logger
 from acestep.streaming.diffusion_backend import DiffusionBackend
 from acestep.streaming.generator_backend import (
     AudioChunk,
@@ -105,10 +107,17 @@ class SA3Backend(DiffusionBackend):
         default_seed: int = 1528,
         vae_window_s: float = 0.36,
         sampler: str = "ode",
+        prompt_rebuilder: Optional[Callable] = None,
     ):
         super().__init__(adapter=adapter, codec=codec)
         self._cond = cond
         self._schedule_builder_factory = schedule_builder_factory
+        # ``(tags, steps) -> (cond, steps -> (denoise -> schedule))`` —
+        # the per-prompt re-conditioning hook behind :meth:`set_prompt`.
+        # Supplied by :meth:`from_context` (a closure over the
+        # SA3Context); None on directly-constructed test backends, where
+        # set_prompt fails loudly instead.
+        self._prompt_rebuilder = prompt_rebuilder
         self.knob_state = knob_state
         self.state = state
         self._steps = int(steps)
@@ -143,19 +152,29 @@ class SA3Backend(DiffusionBackend):
         knob_state,
         state=None,
         source_audio=None,
+        cond=None,
+        source_latent_bct=None,
         **kwargs,
     ) -> "SA3Backend":
         """Production assembly over a loaded
-        :class:`~acestep.engine.sa3_context.SA3Context`."""
+        :class:`~acestep.engine.sa3_context.SA3Context`.
+
+        ``cond`` / ``source_latent_bct`` accept precomputed values so the
+        serving-layer create path (:mod:`acestep.streaming.sa3_session`),
+        which runs ``prepare_cond`` + source encode itself before the
+        session exists, doesn't pay them twice; absent, they're computed
+        here (the in-process assembly the GPU smoke validated)."""
         from acestep.engine.sa3_adapter import SA3Adapter
         from acestep.engine.sa3_context import SA3SAMECodec
 
         steps = int(kwargs.get("steps", 8))
-        cond = context.prepare_cond(
-            prompt=prompt, duration=duration_s, steps=steps,
-        )
+        if cond is None:
+            cond = context.prepare_cond(
+                prompt=prompt, duration=duration_s, steps=steps,
+            )
         source_latent = (
-            context.encode_source(source_audio, cond.audio_sample_size)
+            source_latent_bct if source_latent_bct is not None
+            else context.encode_source(source_audio, cond.audio_sample_size)
             if source_audio is not None else None
         )
         adapter = SA3Adapter(
@@ -164,6 +183,18 @@ class SA3Backend(DiffusionBackend):
             device=context.device,
             dtype=context.dtype,
         )
+
+        def _prompt_rebuilder(tags: str, steps_now: int):
+            # Per-prompt re-conditioning (set_prompt): same fixed
+            # duration, fresh T5Gemma capture + a schedule-builder
+            # factory closed over the NEW cond's sched_args.
+            new_cond = context.prepare_cond(
+                prompt=tags, duration=duration_s, steps=steps_now,
+            )
+            return new_cond, (
+                lambda s, _c=new_cond: context.make_schedule_builder(_c, s)
+            )
+
         return cls(
             adapter=adapter,
             codec=SA3SAMECodec(context),
@@ -174,6 +205,7 @@ class SA3Backend(DiffusionBackend):
             knob_state=knob_state,
             state=state,
             source_latent_bct=source_latent,
+            prompt_rebuilder=_prompt_rebuilder,
             **kwargs,
         )
 
@@ -216,6 +248,44 @@ class SA3Backend(DiffusionBackend):
 
     def rebuild_imminent(self, knobs: dict) -> bool:
         return int(knobs.get("steps_override", self._steps)) != self._steps
+
+    # ---- control (universal): per-prompt re-conditioning ------------------------
+
+    def set_prompt(self, tags: str, tags_b: Optional[str] = None) -> None:
+        """Re-run ``prepare_cond`` for ``tags`` and swap the conditioning
+        bundle (the session dispatches its ``set_prompt`` here — plan §2:
+        prompt is the universal control). Per-prompt, OUTSIDE the hot
+        loop: one T5Gemma capture on the dispatcher thread, then two
+        GIL-atomic reference swaps; in-flight slots finish on the old
+        bundle, the next ``submit`` carries the new one.
+
+        SA3 v1 has no A/B conditioning cache, so a distinct ``tags_b``
+        is not honored — logged loudly rather than silently blended.
+        """
+        if self._prompt_rebuilder is None:
+            raise RuntimeError(
+                "SA3Backend was constructed without a prompt_rebuilder; "
+                "set_prompt requires the from_context assembly"
+            )
+        if tags_b and tags_b != tags:
+            logger.warning(
+                "sa3_prompt_b_ignored tags_b={!r} reason=no_ab_blend_v1",
+                tags_b,
+            )
+        cond, sched_factory = self._prompt_rebuilder(tags, self._steps)
+        if int(cond.latent_frames) != int(self._cond.latent_frames):
+            # Duration is fixed for the session lifetime, so the latent
+            # geometry must hold: a mismatch would desync the ring
+            # buffer, the source anchor, and the cond bundle.
+            raise ValueError(
+                f"sa3 prompt swap changed latent_frames "
+                f"({self._cond.latent_frames} -> {cond.latent_frames}); "
+                f"duration is fixed per session"
+            )
+        self._schedule_builder_factory = sched_factory
+        self.adapter.schedule_builder = sched_factory(self._steps)
+        self._cond = cond
+        logger.info("sa3_prompt_applied tags={!r}", tags)
 
     # ---- produce hooks ---------------------------------------------------------
 
