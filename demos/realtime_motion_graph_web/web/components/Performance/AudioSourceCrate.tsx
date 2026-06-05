@@ -145,6 +145,8 @@ export function AudioSourceCrate() {
   const uploadHint = useUploadOnboardingHint();
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Aborts an in-flight upload when the Almost-Ready dialog is closed.
+  const uploadAbortRef = useRef<AbortController | null>(null);
   const placardRef = useRef<HTMLButtonElement | null>(null);
   const uploadBtnRef = useRef<HTMLButtonElement | null>(null);
   const fanRef = useRef<HTMLDivElement | null>(null);
@@ -255,6 +257,8 @@ export function AudioSourceCrate() {
     sourceMode: StemSourceMode,
   ) {
     if (!pending) return;
+    const controller = new AbortController();
+    uploadAbortRef.current = controller;
     await commitUploadedTrack({
       pending,
       keyOverride,
@@ -264,6 +268,7 @@ export function AudioSourceCrate() {
       setFixture,
       setPending,
       setUploading,
+      signal: controller.signal,
     });
   }
 
@@ -479,12 +484,16 @@ export function AudioSourceCrate() {
             commitPending(keyOverride, timeSignatureOverride, sourceMode)
           }
           onPickAnother={() => {
+            uploadAbortRef.current?.abort();
             setPending(null);
             // Re-open the picker on the next tick so the file input
             // change handler isn't racing the close.
             setTimeout(() => fileInputRef.current?.click(), 0);
           }}
-          onClose={() => setPending(null)}
+          onClose={() => {
+            uploadAbortRef.current?.abort();
+            setPending(null);
+          }}
         />
       )}
 

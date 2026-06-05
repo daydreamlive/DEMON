@@ -74,6 +74,8 @@ export function LiteTrackCarousel() {
   const trimCapS =
     useConfig().engine.max_source_duration_s ?? DEFAULT_TRIM_CAP_S;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Aborts an in-flight upload when the Almost-Ready dialog is closed.
+  const uploadAbortRef = useRef<AbortController | null>(null);
   useSeedUserUploads();
   // Host-supplied gate for track-change + upload (see useActionGate).
   // Default is allow-all; demon-public-demo overrides to require sign-up.
@@ -139,6 +141,8 @@ export function LiteTrackCarousel() {
     sourceMode: StemSourceMode,
   ) {
     if (!pending) return;
+    const controller = new AbortController();
+    uploadAbortRef.current = controller;
     await commitUploadedTrack({
       pending,
       keyOverride,
@@ -148,6 +152,7 @@ export function LiteTrackCarousel() {
       setFixture,
       setPending,
       setUploading,
+      signal: controller.signal,
     });
   }
 
@@ -261,10 +266,14 @@ export function LiteTrackCarousel() {
             commitPending(keyOverride, timeSignatureOverride, sourceMode)
           }
           onPickAnother={() => {
+            uploadAbortRef.current?.abort();
             setPending(null);
             setTimeout(() => fileInputRef.current?.click(), 0);
           }}
-          onClose={() => setPending(null)}
+          onClose={() => {
+            uploadAbortRef.current?.abort();
+            setPending(null);
+          }}
         />
       )}
 

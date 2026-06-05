@@ -30,6 +30,8 @@ interface CommitUploadedTrackArgs {
   setFixture: (name: string) => void;
   setPending: (pending: PendingTrackUpload | null) => void;
   setUploading: (uploading: boolean) => void;
+  /** Aborts the upload when the dialog is closed mid-encode. */
+  signal?: AbortSignal;
 }
 
 export async function commitUploadedTrack({
@@ -41,6 +43,7 @@ export async function commitUploadedTrack({
   setFixture,
   setPending,
   setUploading,
+  signal,
 }: CommitUploadedTrackArgs): Promise<void> {
   const { decoded, fileName, originalFile } = pending;
   // Keep `pending` set until the upload actually succeeds: encoding can
@@ -53,6 +56,7 @@ export async function commitUploadedTrack({
     const uploaded = await uploadTrackToServer(fileName, decoded, {
       key: keyOverride,
       timeSignature: timeSignatureOverride,
+      signal,
     });
     // The server persisted audio + sidecars + stems to disk before
     // replying upload_ok, so swaps to this track can load by name.
@@ -70,9 +74,14 @@ export async function commitUploadedTrack({
     setPending(null);
     setStatus(useSessionStore.getState().status, "");
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    setStatus(useSessionStore.getState().status, `Upload failed: ${msg}`);
-    // `pending` is intentionally left in place so the user can retry.
+    // User closed the dialog mid-encode → just clear the status, no error.
+    if (signal?.aborted || (e instanceof DOMException && e.name === "AbortError")) {
+      setStatus(useSessionStore.getState().status, "");
+    } else {
+      const msg = e instanceof Error ? e.message : String(e);
+      setStatus(useSessionStore.getState().status, `Upload failed: ${msg}`);
+      // `pending` is intentionally left in place so the user can retry.
+    }
   } finally {
     setUploading(false);
   }

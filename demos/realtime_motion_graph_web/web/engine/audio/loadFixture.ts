@@ -208,6 +208,11 @@ export interface UploadTrackResult {
 export interface UploadTrackOptions {
   key?: string | null;
   timeSignature?: string | null;
+  /** Aborts the in-flight upload (e.g. the user closed the dialog). */
+  signal?: AbortSignal;
+  /** Overall deadline; the server can accept the socket but never reply
+   *  (encode hang / unsupported duration), which would hang the caller. */
+  timeoutMs?: number;
 }
 
 async function resolveUploadWsUrl(): Promise<string> {
@@ -251,7 +256,12 @@ export async function uploadTrackToServer(
   options: UploadTrackOptions = {},
 ): Promise<UploadTrackResult> {
   const wsUrl = await resolveUploadWsUrl();
+  const timeoutMs = options.timeoutMs ?? 120_000;
   return new Promise((resolve, reject) => {
+    if (options.signal?.aborted) {
+      reject(new DOMException("upload aborted", "AbortError"));
+      return;
+    }
     let settled = false;
     const ws = new WebSocket(wsUrl);
     ws.binaryType = "arraybuffer";
@@ -259,11 +269,26 @@ export async function uploadTrackToServer(
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
       try {
         ws.close();
       } catch {}
       fn();
     };
+
+    // A pod can accept the upload socket but never reply (encode hang,
+    // missing/old handler) and never close it — without a deadline the caller
+    // hangs forever (the "Encoding…" / stuck-dialog bug). Fail recoverably.
+    const timer = setTimeout(() => {
+      finish(() =>
+        reject(new Error("Upload timed out — the server didn't respond.")),
+      );
+    }, timeoutMs);
+
+    const onAbort = () =>
+      finish(() => reject(new DOMException("upload aborted", "AbortError")));
+    options.signal?.addEventListener("abort", onAbort);
 
     ws.onopen = () => {
       try {
