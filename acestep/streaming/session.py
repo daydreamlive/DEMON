@@ -99,7 +99,7 @@ from acestep.streaming.knobs import (
     knob_specs,
     lora_strength_spec,
 )
-from acestep.streaming.families import make_backend
+from acestep.streaming.families import SESSION_CREATORS, make_backend
 from acestep.streaming.generator_backend import UnsupportedOperation
 from acestep.streaming.pipeline_runner import PipelineRunner
 from acestep.streaming.source import (
@@ -373,7 +373,9 @@ class StreamingSession:
         session_id: str,
         checkpoint: str,
         config: SessionConfig,
-        engine_session: Session,
+        # None for families whose generation lives behind the backend
+        # seam without the ACE engine stack (e.g. mrt2's sidecar).
+        engine_session: Session | None,
         stream,
         state: SessionState,
         audio_eng: AudioEngine,
@@ -460,12 +462,26 @@ class StreamingSession:
             getattr(config, "backend", "acestep") or "acestep", self,
         )
 
-        # Cached {name: KnobSpec} map for hot-path validation in set_knobs.
-        # knob_specs() rebuilds 34 dataclasses, so we never call it per tick;
-        # rebuilt only when the LoRA set changes (see _apply_lora_pending).
-        # Reassigned wholesale (atomic ref swap), so set_knobs can read it
-        # without a lock from the dispatch thread.
-        self._rebuild_knob_specs(self.initial_enable_ids)
+        try:
+            # Cached {name: KnobSpec} map for hot-path validation in set_knobs.
+            # knob_specs() rebuilds 34 dataclasses, so we never call it per tick;
+            # rebuilt only when the LoRA set changes (see _apply_lora_pending).
+            # Reassigned wholesale (atomic ref swap), so set_knobs can read it
+            # without a lock from the dispatch thread.
+            self._rebuild_knob_specs(self.initial_enable_ids)
+        except BaseException:
+            # The backend may own real acquired resources (the MRT2
+            # sidecar socket); if __init__ fails after make_backend, the
+            # caller never receives the object and can't close them.
+            # Same transactional-constructor contract as ModelContext /
+            # Session.__init__.
+            close = getattr(self.backend, "close", None)
+            if close is not None:
+                try:
+                    close()
+                except Exception as exc:
+                    logger.warning("backend_close_raised error={}", exc)
+            raise
 
     def _rebuild_knob_specs(self, lora_ids: list) -> None:
         # Backend-owned manifest: which specs the LoRA set expands to is
@@ -664,14 +680,24 @@ class StreamingSession:
             self.audio_eng.stop()
         except Exception as exc:
             logger.warning("audio_engine_stop_raised error={}", exc)
-        try:
-            self.stream.close()
-        except Exception as exc:
-            logger.warning("stream_close_raised error={}", exc)
-        try:
-            self.session.close()
-        except Exception as exc:
-            logger.warning("session_close_raised error={}", exc)
+        # Backend-owned resources first (e.g. the MRT2 sidecar
+        # socket); families without a close() have nothing to do.
+        close = getattr(self.backend, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception as exc:
+                logger.warning("backend_close_raised error={}", exc)
+        if self.stream is not None:
+            try:
+                self.stream.close()
+            except Exception as exc:
+                logger.warning("stream_close_raised error={}", exc)
+        if self.session is not None:
+            try:
+                self.session.close()
+            except Exception as exc:
+                logger.warning("session_close_raised error={}", exc)
 
     def _on_audio_ready(self, wav_np, win_start=None, win_end=None):
         """Runner callback. Mutates ``audio_eng`` for full-buffer
@@ -1034,6 +1060,11 @@ class StreamingSession:
         """Recompose ``stream.conditioning`` from the cached A/B pairs,
         current timbre strength, and current prompt blend."""
         state = self.state
+        if state.cond_pair is None:
+            # Families that own their conditioning (backend control
+            # hooks) carry no cached pairs; interp-method flips and
+            # other incidental callers are no-ops here.
+            return
         cs_a, cf_a = state.cond_pair
         ca = blend_for_strength(
             cs_a, cf_a, state.timbre_strength, method=state.interp_timbre,
@@ -1361,6 +1392,25 @@ class StreamingSession:
         :class:`PromptApplied`."""
         state = self.state
         state.last_activity_ts = time.monotonic()
+
+        # Backend control hook (universal op, family-specific
+        # implementation): a backend that owns its own conditioning
+        # (MRT2 forwards tags to its sidecar's MusicCoCa) defines
+        # ``handle_set_prompt`` and the ACE encode path below never
+        # runs. The ACE backend defines no hook — byte-identical path.
+        handle = getattr(self.backend, "handle_set_prompt", None)
+        if handle is not None:
+            with state._lock:
+                state.prompt_text = tags
+                state.prompt_text_b = tags_b if tags_b else tags
+            logger.info(
+                "prompt_set origin={} tags={!r} tags_b={!r} backend={}",
+                origin.value, tags, tags_b, self.backend.name,
+            )
+            handle(tags, tags_b=tags_b)
+            self.bus.publish(PromptApplied(tags=tags))
+            return
+
         with state._lock:
             ts_override = _normalize_time_signature(time_signature)
             if ts_override is not None:
@@ -1401,6 +1451,19 @@ class StreamingSession:
         v = max(0.0, min(1.0, float(value)))
         if origin is CommandOrigin.EXTERNAL:
             self.bus.publish(PromptBlendEcho(value=v))
+            return
+        # Backend control hook — same pattern as set_prompt: MRT2 lerps
+        # cached style embeddings in its sidecar; ACE recomposes the
+        # cached conditioning pairs below.
+        handle = getattr(self.backend, "handle_set_prompt_blend", None)
+        if handle is not None:
+            with self.state._lock:
+                self.state.prompt_blend = v
+            handle(v)
+            logger.debug(
+                "prompt_blend_set origin={} value={:.3f} backend={}",
+                origin.value, v, self.backend.name,
+            )
             return
         with self.state._lock:
             self.state.prompt_blend = v
@@ -1696,6 +1759,26 @@ class StreamingSession:
             StemExtractFailedError: stem extraction failed for an
                 upload whose ``stem_source_mode`` selected a stem.
         """
+        # Family dispatch BEFORE any ACE-shaped setup (TRT profiles,
+        # model load, conditioning encode): a family with its own
+        # creator builds the session itself. The default body below IS
+        # the acestep creator. Families without a creator entry that
+        # aren't acestep still fail loudly later in __init__ via
+        # families.make_backend.
+        family = getattr(config, "backend", "acestep") or "acestep"
+        creator = SESSION_CREATORS.get(family)
+        if creator is not None:
+            return creator(
+                cls,
+                audio=audio,
+                config=config,
+                checkpoint=checkpoint,
+                session_id=session_id,
+                decoder_backend=decoder_backend,
+                vae_backend=vae_backend,
+                offload_text_encoder=offload_text_encoder,
+            )
+
         waveform = audio.waveform
 
         use_trt = decoder_backend == "tensorrt" or vae_backend == "tensorrt"
