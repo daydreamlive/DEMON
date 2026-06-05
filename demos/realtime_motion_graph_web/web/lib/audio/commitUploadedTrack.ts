@@ -72,7 +72,8 @@ export async function commitUploadedTrack({
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     setStatus(useSessionStore.getState().status, `Upload failed: ${msg}`);
-    // `pending` is intentionally left in place so the user can retry.
+    // If the caller keeps the modal mounted, `pending` remains retryable.
+    // Immediate-dismiss callers have already cleared it and rely on status.
   } finally {
     setUploading(false);
   }

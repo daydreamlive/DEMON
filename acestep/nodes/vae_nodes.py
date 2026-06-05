@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import os
+import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any, ClassVar, Optional
 
@@ -19,12 +22,93 @@ from .types import Audio, Curve, Latent, ModelHandle, VAEHandle
 # -----------------------------------------------------------------------
 
 _trt_vae_cache: dict[str, Any] = {}
+_vae_activity_lock = threading.Lock()
+_vae_activity: dict[tuple[str, str], dict[str, Any]] = {}
+_VAE_STATUS_INTERVAL_S = 0.25
+_VAE_LOG_INTERVAL_S = 5.0
 
 # Shared polygraphy CUDA stream for all TRT engines in this process.
 # Using torch.cuda.Stream causes a 14x performance degradation on
 # Blackwell GPUs when multiple TRT engines coexist. Polygraphy's
 # cuda.Stream (a thin wrapper around cudaStreamCreate) avoids this.
 _trt_stream = None
+
+
+def _stderr_is_interactive() -> bool:
+    try:
+        return bool(sys.stderr.isatty())
+    except Exception:
+        return False
+
+
+def _clear_vae_status_line() -> None:
+    """Clear the transient same-line VAE status before regular log output."""
+    if not _stderr_is_interactive():
+        return
+    with _vae_activity_lock:
+        active = any(state.get("status_len", 0) for state in _vae_activity.values())
+        if not active:
+            return
+        try:
+            sys.stderr.write("\r\033[K")
+            sys.stderr.flush()
+        except Exception:
+            pass
+        for state in _vae_activity.values():
+            state["status_len"] = 0
+
+
+def _report_vae_activity(
+    *,
+    action: str,
+    backend: str,
+    shape: tuple[int, ...] | None = None,
+) -> None:
+    """Report hot-loop VAE work without emitting one log line per call."""
+    now = time.monotonic()
+    key = (backend, action)
+    with _vae_activity_lock:
+        state = _vae_activity.setdefault(
+            key,
+            {
+                "count": 0,
+                "last_status": 0.0,
+                "last_log": 0.0,
+                "status_len": 0,
+            },
+        )
+        state["count"] += 1
+        count = int(state["count"])
+
+        if _stderr_is_interactive():
+            last_status = float(state["last_status"])
+            if now - last_status < _VAE_STATUS_INTERVAL_S:
+                return
+            msg = (
+                f"VAE {backend.upper()} {action} active "
+                f"· {count:,} calls"
+            )
+            if shape is not None:
+                msg += f" · shape={shape}"
+            pad = max(0, int(state["status_len"]) - len(msg))
+            try:
+                sys.stderr.write(f"\r\033[K{msg}{' ' * pad}")
+                sys.stderr.flush()
+                state["status_len"] = len(msg)
+                state["last_status"] = now
+            except Exception:
+                state["status_len"] = 0
+            return
+
+        last_log = float(state["last_log"])
+        if count != 1 and now - last_log < _VAE_LOG_INTERVAL_S:
+            return
+        state["last_log"] = now
+
+    logger.info(
+        "VAE {} {} active · calls={} shape={}",
+        backend.upper(), action, count, shape,
+    )
 
 def _get_trt_stream():
     """Get or create the shared polygraphy CUDA stream."""
@@ -89,6 +173,7 @@ def _get_trt_vae(engine_path: str, device: torch.device):
             f"TRT VAE engine.create_execution_context() returned None "
             f"(likely CUDA OOM on workspace alloc): {engine_path}"
         )
+    _clear_vae_status_line()
     logger.info("Loaded TRT VAE engine: {}", engine_path)
 
     tensor_dtypes = {
@@ -123,6 +208,7 @@ def _evict_trt_vae(engine_path: str) -> bool:
     entry["context"] = None
     entry["engine"] = None
     torch.cuda.empty_cache()
+    _clear_vae_status_line()
     logger.info("Evicted TRT VAE engine: {}", engine_path)
     return True
 
@@ -348,12 +434,16 @@ class VAEEncodeAudio(BaseNode):
 
         trt_path = _find_best_vae_engine("vae_encode") if _trt_available() else None
         if trt_path:
-            logger.info("VAE encode via TRT")
+            _report_vae_activity(
+                action="encode",
+                backend="trt",
+                shape=tuple(waveform.shape),
+            )
             latents_bdt = _trt_vae_encode(waveform, trt_path, device)
             # [B, D, T] -> [B, T, D]
             latents = latents_bdt.transpose(1, 2).to(dtype)
         else:
-            logger.info("VAE encode via PyTorch")
+            logger.debug("VAE encode via PyTorch")
             with handler._load_model_context("vae"):
                 latents = handler._encode_audio_to_latents(waveform)
             if latents.dim() == 2:
@@ -399,10 +489,14 @@ class VAEDecodeAudio(BaseNode):
 
         trt_path = _find_best_vae_engine("vae_decode") if _trt_available() else None
         if trt_path:
-            logger.info("VAE decode via TRT")
+            _report_vae_activity(
+                action="decode",
+                backend="trt",
+                shape=tuple(lat_bdt.shape),
+            )
             waveform = _trt_vae_decode(lat_bdt, trt_path, device)
         else:
-            logger.info("VAE decode via PyTorch (no TRT engine found)")
+            logger.debug("VAE decode via PyTorch (no TRT engine found)")
             with handler._load_model_context("vae"):
                 waveform = handler.tiled_decode(lat_bdt)
 
