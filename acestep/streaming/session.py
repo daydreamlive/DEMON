@@ -99,7 +99,7 @@ from acestep.streaming.state import SessionState
 from acestep.streaming.stems import (
     extract_upload_stems,
     normalize_stem_source_mode,
-    resolve_upload_stem_source_mode,
+    resolve_swap_stem_source_mode,
 )
 
 
@@ -661,10 +661,13 @@ class StreamingSession:
             requested_key = state.swap_pending.get("key")
             requested_time_sig = state.swap_pending.get("time_signature")
             new_fixture_name = state.swap_pending.get("fixture_name")
-            new_stem_source_mode = resolve_upload_stem_source_mode(
+            new_stem_source_mode = resolve_swap_stem_source_mode(
                 new_fixture_name,
                 state.swap_pending.get("stem_source_mode"),
                 known_fixtures=KNOWN_FIXTURES,
+                skip_stem_extraction=bool(
+                    state.swap_pending.get("skip_stem_extraction")
+                ),
             )
             if new_wf is None:
                 return
@@ -674,6 +677,7 @@ class StreamingSession:
             state.swap_pending["time_signature"] = None
             state.swap_pending["fixture_name"] = None
             state.swap_pending["stem_source_mode"] = None
+            state.swap_pending["skip_stem_extraction"] = False
 
         # Initialized to None so the finally below can None-guard
         # cleanly in the (rare) case an exception fires between the
@@ -1487,6 +1491,7 @@ class StreamingSession:
         time_signature: str | None = None,
         fixture_name: str | None = None,
         stem_source_mode: str | None = None,
+        skip_stem_extraction: bool = False,
         origin: CommandOrigin = CommandOrigin.PRIMARY,
     ) -> None:
         """Stage a source swap. The runner applies it inside
@@ -1505,6 +1510,9 @@ class StreamingSession:
             state.swap_pending["fixture_name"] = fixture_name
             state.swap_pending["stem_source_mode"] = normalize_stem_source_mode(
                 stem_source_mode,
+            )
+            state.swap_pending["skip_stem_extraction"] = bool(
+                skip_stem_extraction,
             )
 
     # ---- Constructor ---------------------------------------------------
@@ -1575,10 +1583,11 @@ class StreamingSession:
         walk_window = config.walk_window
         walk_window_s = config.walk_window_s
         fixture_name = config.fixture_name
-        stem_source_mode = resolve_upload_stem_source_mode(
+        stem_source_mode = resolve_swap_stem_source_mode(
             fixture_name,
             normalize_stem_source_mode(config.stem_source_mode),
             known_fixtures=KNOWN_FIXTURES,
+            skip_stem_extraction=bool(config.skip_stem_extraction),
         )
 
         enabled_lora_ids = list(config.enabled_loras)
