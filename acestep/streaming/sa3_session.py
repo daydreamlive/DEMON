@@ -19,7 +19,7 @@ catalog), :func:`create_sa3_session` builds the SA3 one:
   how ``demos/test_stream_sa3_graph.py`` feeds it.
 * **Conditioning, once.** ``prepare_cond(prompt, duration)`` per
   session create; per-prompt re-captures afterwards go through
-  ``SA3Backend.set_prompt`` (the session dispatches there).
+  ``SA3Backend.handle_set_prompt`` (the session dispatches there).
 * **Duration.** ``config.sa3_duration_s`` when set, else the uploaded
   source length; capped at the small-music 120 s window.
 * **ACE-only fields neutral.** ``StreamingSession`` is constructed with
@@ -94,12 +94,19 @@ def _delivered_samples(n_44k: int) -> int:
     return -(-new * n_44k // orig)
 
 
-def create_sa3_session(*, audio, config, model_id: str, session_id: str):
-    """Build a ready-to-run sa3 :class:`StreamingSession`. See the
-    module docstring for what differs from the ACE create path."""
-    from acestep.streaming.audio_engine import AudioEngine
-    from acestep.streaming.session import StreamingSession
+def create_sa3_session(cls, *, audio, config, checkpoint, session_id, **_unused):
+    """Build a ready-to-run sa3 :class:`StreamingSession` (``cls``). See
+    the module docstring for what differs from the ACE create path.
+    Signature is the ``families.SESSION_CREATORS`` contract; the
+    ACE-shaped accel/offload kwargs land in ``_unused``. ``checkpoint``
+    is the family model id by this point (families.resolve_checkpoint
+    mapped the server alias, e.g. "sa3-small" -> "small-music")."""
+    from contextlib import ExitStack
 
+    from acestep.streaming.audio_engine import AudioEngine
+    from acestep.streaming.session import _cleanup_create_resource
+
+    model_id = checkpoint
     context = get_sa3_context(model_id)
 
     waveform = audio.waveform[:2].float()
@@ -162,50 +169,67 @@ def create_sa3_session(*, audio, config, model_id: str, session_id: str):
         duration=playable_s,
         n_channels=n_channels,
         playback_samples=int(src_np.shape[0]),
-        cond_pair=(None, None),      # ACE conditioning cache: unused behind the sa3 mask
-        cond_pair_b=(None, None),
+        cond_pair=None,              # ACE conditioning cache: absent for sa3
+        cond_pair_b=None,            # (None = backend owns conditioning; see
+                                     # _refresh_conditioning's guard)
         prompt_text=prompt,
         prompt_text_b=prompt,
         current_depth=depth,
     )
 
-    audio_eng = AudioEngine(src_np, SAMPLE_RATE)
-
-    return StreamingSession(
-        session_id=session_id,
-        checkpoint=model_id,
-        config=config,
-        engine_session=None,         # ACE-only fields, neutral from here down
-        stream=None,
-        state=state,
-        audio_eng=audio_eng,
-        virtual_knobs=virtual_knobs,
-        engine_obj=None,
-        profile_mgr=None,
-        cond_negative=None,
-        initial_buffer=src_np,
-        initial_upload_stems=None,
-        initial_stem_error=None,
-        initial_stem_source_mode=None,
-        initial_enable_ids=[],
-        lora_strengths_init={},
-        lora_available=False,
-        max_pipeline_depth=SA3_MAX_PIPELINE_DEPTH,
-        max_seconds=playable_s,
-        walk_window=False,
-        walk_window_s=0.0,
-        vae_window=SA3_VAE_WINDOW_S,
-        crop_seconds=0.0,
-        use_sde=False,
-        use_lora=False,
-        k1_name="sa3_denoise",
-        # Construction payload for families._make_sa3 (the registry
-        # factory assembles SA3Backend.from_context from this + the
-        # session's own attributes).
-        backend_init={
-            "context": context,
-            "cond": cond,
-            "source_latent_bct": source_latent,
-            "duration_s": duration_s,
-        },
-    )
+    # Same transactional create shape as StreamingSession.create's ACE
+    # body: per-session resources acquired before ``cls(...)`` succeeds
+    # register on the stack the moment they exist; ownership transfers
+    # via ``pop_all()`` only on success. The process-cached SA3Context
+    # deliberately does NOT register (it outlives the session by
+    # design; closing it on a failed create would break the cache for
+    # every later session). ``cond`` / ``source_latent`` are plain
+    # tensors with no close() — GC reclaims them, same as the ACE
+    # path's conditioning.
+    with ExitStack() as cleanup:
+        audio_eng = AudioEngine(src_np, SAMPLE_RATE)
+        cleanup.callback(
+            _cleanup_create_resource,
+            "audio_engine",
+            audio_eng.stop,
+        )
+        streaming = cls(
+            session_id=session_id,
+            checkpoint=model_id,
+            config=config,
+            engine_session=None,         # ACE-only fields, neutral from here down
+            stream=None,
+            state=state,
+            audio_eng=audio_eng,
+            virtual_knobs=virtual_knobs,
+            engine_obj=None,
+            profile_mgr=None,
+            cond_negative=None,
+            initial_buffer=src_np,
+            initial_upload_stems=None,
+            initial_stem_error=None,
+            initial_stem_source_mode=None,
+            initial_enable_ids=[],
+            lora_strengths_init={},
+            lora_available=False,
+            max_pipeline_depth=SA3_MAX_PIPELINE_DEPTH,
+            max_seconds=playable_s,
+            walk_window=False,
+            walk_window_s=0.0,
+            vae_window=SA3_VAE_WINDOW_S,
+            crop_seconds=0.0,
+            use_sde=False,
+            use_lora=False,
+            k1_name="sa3_denoise",
+            # Construction payload for families._make_sa3 (the registry
+            # factory assembles SA3Backend.from_context from this + the
+            # session's own attributes).
+            backend_init={
+                "context": context,
+                "cond": cond,
+                "source_latent_bct": source_latent,
+                "duration_s": duration_s,
+            },
+        )
+        cleanup.pop_all()
+        return streaming

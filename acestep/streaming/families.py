@@ -188,6 +188,22 @@ FAMILY_KNOB_UNIVERSES = {
 }
 
 
+def _create_sa3_session(cls, **kwargs):
+    from acestep.streaming.sa3_session import create_sa3_session
+
+    return create_sa3_session(cls, **kwargs)
+
+
+# Families whose per-connect setup doesn't fit the ACE create path
+# (TRT profiles, model load, demucs, conditioning encode). Keyed like
+# FAMILIES; absent = the family rides StreamingSession.create's default
+# body. Contract: ``creator(cls, *, audio, config, checkpoint,
+# session_id, **rest) -> StreamingSession``.
+SESSION_CREATORS = {
+    "sa3": _create_sa3_session,
+}
+
+
 def make_backend(name: str, streaming_session):
     """Build the GeneratorBackend for ``name``.
 

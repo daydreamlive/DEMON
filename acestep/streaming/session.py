@@ -106,7 +106,7 @@ from acestep.streaming.knobs import (
     knob_specs,
     lora_strength_spec,
 )
-from acestep.streaming.families import make_backend
+from acestep.streaming.families import SESSION_CREATORS, make_backend
 from acestep.streaming.generator_backend import UnsupportedOperation
 from acestep.streaming.pipeline_runner import (
     PipelineRunner,
@@ -447,7 +447,9 @@ class StreamingSession:
         session_id: str,
         checkpoint: str,
         config: SessionConfig,
-        engine_session: Session,
+        # None for families whose generation lives behind the backend
+        # seam without the ACE engine stack (e.g. mrt2's sidecar).
+        engine_session: Session | None,
         stream,
         state: SessionState,
         audio_eng: AudioEngine,
@@ -796,9 +798,6 @@ class StreamingSession:
         # references into the engine before session.close()
         # actually destroys the engine + ModelContext.
         # session.close() ends with gc.collect() + cuda.empty_cache().
-        # Both are None on non-ACE families (the sa3 create path
-        # builds no engine Session; its model context is process-
-        # cached and deliberately outlives the session).
         self.state.running = False
         try:
             self.bus.close()
@@ -808,6 +807,14 @@ class StreamingSession:
             self.audio_eng.stop()
         except Exception as exc:
             logger.warning("audio_engine_stop_raised error={}", exc)
+        # Backend-owned resources first (e.g. the MRT2 sidecar
+        # socket); families without a close() have nothing to do.
+        close = getattr(self.backend, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception as exc:
+                logger.warning("backend_close_raised error={}", exc)
         if self.stream is not None:
             try:
                 self.stream.close()
@@ -1205,6 +1212,11 @@ class StreamingSession:
         """Recompose ``stream.conditioning`` from the cached A/B pairs,
         current timbre strength, and current prompt blend."""
         state = self.state
+        if state.cond_pair is None:
+            # Families that own their conditioning (backend control
+            # hooks) carry no cached pairs; interp-method flips and
+            # other incidental callers are no-ops here.
+            return
         cs_a, cf_a = state.cond_pair
         ca = blend_for_strength(
             cs_a, cf_a, state.timbre_strength, method=state.interp_timbre,
@@ -1554,31 +1566,25 @@ class StreamingSession:
     ) -> None:
         """Re-encode A (and optionally B) against the active timbre
         reference and refresh the live conditioning. Publishes
-        :class:`PromptApplied`.
-
-        Backends that own their prompt path (plan §2: set_prompt is the
-        universal control) expose a ``set_prompt`` method and the
-        session dispatches there — SA3 re-runs ``prepare_cond`` and
-        swaps the conditioning bundle. The ACE backend has no such
-        method, so the engine-session re-encode below runs unchanged.
-        """
+        :class:`PromptApplied`."""
         state = self.state
         state.last_activity_ts = time.monotonic()
-        backend_set_prompt = getattr(self.backend, "set_prompt", None)
-        if backend_set_prompt is not None:
-            logger.info(
-                "prompt_set origin={} backend={} tags={!r} tags_b={!r}",
-                origin.value, self.backend.name, tags, tags_b,
-            )
+
+        # Backend control hook (universal op, family-specific
+        # implementation): a backend that owns its own conditioning
+        # (SA3 re-runs ``prepare_cond`` and swaps the bundle) defines
+        # ``handle_set_prompt`` and the ACE encode path below never
+        # runs. The ACE backend defines no hook — byte-identical path.
+        handle = getattr(self.backend, "handle_set_prompt", None)
+        if handle is not None:
             with state._lock:
-                # key / time_signature have no family meaning here (SA3
-                # conditions on prompt text alone); they ride the prompt
-                # string when the operator wants them honored.
-                backend_set_prompt(tags, tags_b)
                 state.prompt_text = tags
-                state.prompt_text_b = (
-                    tags_b if (tags_b and tags_b != tags) else tags
-                )
+                state.prompt_text_b = tags_b if tags_b else tags
+            logger.info(
+                "prompt_set origin={} tags={!r} tags_b={!r} backend={}",
+                origin.value, tags, tags_b, self.backend.name,
+            )
+            handle(tags, tags_b=tags_b)
             self.bus.publish(PromptApplied(tags=tags))
             return
         with state._lock:
@@ -1625,6 +1631,19 @@ class StreamingSession:
         v = max(0.0, min(1.0, float(value)))
         if origin is CommandOrigin.EXTERNAL:
             self.bus.publish(PromptBlendEcho(value=v))
+            return
+        # Backend control hook — same pattern as set_prompt: MRT2 lerps
+        # cached style embeddings in its sidecar; ACE recomposes the
+        # cached conditioning pairs below.
+        handle = getattr(self.backend, "handle_set_prompt_blend", None)
+        if handle is not None:
+            with self.state._lock:
+                self.state.prompt_blend = v
+            handle(v)
+            logger.debug(
+                "prompt_blend_set origin={} value={:.3f} backend={}",
+                origin.value, v, self.backend.name,
+            )
             return
         with self.state._lock:
             self.state.prompt_blend = v
@@ -2128,31 +2147,25 @@ class StreamingSession:
             StemExtractFailedError: stem extraction failed for an
                 upload whose ``stem_source_mode`` selected a stem.
         """
-        # Per-family session assembly (plan §3.5): the body below is
-        # the ACE path; other families dispatch to their own create
-        # module BEFORE any ACE model/TRT loading. ``checkpoint`` is
-        # the family model id by this point (families.resolve_checkpoint
-        # mapped the server alias, e.g. "sa3-small" -> "small-music").
-        # The accel/offload knobs are ACE-shaped and don't apply.
+        # Family dispatch BEFORE any ACE-shaped setup (TRT profiles,
+        # model load, conditioning encode): a family with its own
+        # creator builds the session itself. The default body below IS
+        # the acestep creator. Families without a creator entry that
+        # aren't acestep still fail loudly later in __init__ via
+        # families.make_backend.
         family = getattr(config, "backend", "acestep") or "acestep"
-        if family == "sa3":
-            from acestep.streaming.sa3_session import create_sa3_session
-
-            return create_sa3_session(
+        creator = SESSION_CREATORS.get(family)
+        if creator is not None:
+            return creator(
+                cls,
                 audio=audio,
                 config=config,
-                model_id=checkpoint,
+                checkpoint=checkpoint,
                 session_id=session_id,
+                decoder_backend=decoder_backend,
+                vae_backend=vae_backend,
+                offload_text_encoder=offload_text_encoder,
             )
-        if family != "acestep":
-            from acestep.streaming.families import FAMILIES
-
-            detail = (
-                "has no serving-layer create path yet" if family in FAMILIES
-                else f"is not a registered family ({', '.join(sorted(FAMILIES))})"
-            )
-            logger.error("unsupported_backend_family family={}", family)
-            raise ValueError(f"backend family {family!r} {detail}")
 
         waveform = audio.waveform
 

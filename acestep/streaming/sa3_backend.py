@@ -15,7 +15,7 @@ client change only).
 
 v1 surface (everything else off, capability-gated): ``prompt`` (one
 conditioning bundle at a time, swapped per-prompt via
-:meth:`SA3Backend.set_prompt`), fixed duration, ``seed``, ``steps_override``,
+:meth:`SA3Backend.handle_set_prompt`), fixed duration, ``seed``, ``steps_override``,
 and ``sa3_denoise`` — SA3's ``init_noise_level``, the audio-to-audio
 blend against the source anchor. The name is load-bearing: ACE's
 ``denoise`` is a different control, and the homonym rule
@@ -120,10 +120,10 @@ class SA3Backend(DiffusionBackend):
         self._cond = cond
         self._schedule_builder_factory = schedule_builder_factory
         # ``(tags, steps) -> (cond, steps -> (denoise -> schedule))`` —
-        # the per-prompt re-conditioning hook behind :meth:`set_prompt`.
+        # the per-prompt re-conditioning hook behind :meth:`handle_set_prompt`.
         # Supplied by :meth:`from_context` (a closure over the
         # SA3Context); None on directly-constructed test backends, where
-        # set_prompt fails loudly instead.
+        # handle_set_prompt fails loudly instead.
         self._prompt_rebuilder = prompt_rebuilder
         self.knob_state = knob_state
         self.state = state
@@ -204,7 +204,7 @@ class SA3Backend(DiffusionBackend):
         )
 
         def _prompt_rebuilder(tags: str, steps_now: int):
-            # Per-prompt re-conditioning (set_prompt): same fixed
+            # Per-prompt re-conditioning (handle_set_prompt): same fixed
             # duration, fresh T5Gemma capture + a schedule-builder
             # factory closed over the NEW cond's sched_args.
             new_cond = context.prepare_cond(
@@ -270,13 +270,13 @@ class SA3Backend(DiffusionBackend):
 
     # ---- control (universal): per-prompt re-conditioning ------------------------
 
-    def set_prompt(self, tags: str, tags_b: Optional[str] = None) -> None:
+    def handle_set_prompt(self, tags: str, *, tags_b: Optional[str] = None) -> None:
         """Re-run ``prepare_cond`` for ``tags`` and swap the conditioning
-        bundle (the session dispatches its ``set_prompt`` here — plan §2:
-        prompt is the universal control). Per-prompt, OUTSIDE the hot
-        loop: one T5Gemma capture on the dispatcher thread, then two
-        GIL-atomic reference swaps; in-flight slots finish on the old
-        bundle, the next ``submit`` carries the new one.
+        bundle (the session's backend control hook — plan §2: prompt is
+        the universal control). Per-prompt, OUTSIDE the hot loop: one
+        T5Gemma capture on the dispatcher thread, then two GIL-atomic
+        reference swaps; in-flight slots finish on the old bundle, the
+        next ``submit`` carries the new one.
 
         SA3 v1 has no A/B conditioning cache, so a distinct ``tags_b``
         is not honored — logged loudly rather than silently blended.
@@ -284,7 +284,7 @@ class SA3Backend(DiffusionBackend):
         if self._prompt_rebuilder is None:
             raise RuntimeError(
                 "SA3Backend was constructed without a prompt_rebuilder; "
-                "set_prompt requires the from_context assembly"
+                "handle_set_prompt requires the from_context assembly"
             )
         if tags_b and tags_b != tags:
             logger.warning(
