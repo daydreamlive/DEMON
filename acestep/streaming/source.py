@@ -65,15 +65,48 @@ def _try_load_sidecar(
     return sc
 
 
+# Compact-frame sentinel: a leading 0xFFFFFFFF (never a valid channel count,
+# which is always 1 or 2) marks an optional compressed / low-precision source
+# frame. Legacy frames begin with the channel count, so the two are unambiguous.
+_COMPACT_SENTINEL = 0xFFFFFFFF
+_COMPACT_FLAG_ZSTD = 0x1
+_COMPACT_FLAG_F16 = 0x2
+
+
 def _decode_audio_msg(audio_msg: bytes) -> torch.Tensor:
     """Parse a binary audio frame into a [≤2, N] float32 tensor.
 
     Wire format (shared by the init handshake, ``swap_source``,
-    ``set_timbre_source``, ``set_structure_source``): little-endian
-    ``<II`` header carrying (channels, samples), followed by interleaved
-    float32 PCM. Returns the waveform clipped to stereo (the model only
-    consumes 2 channels).
+    ``set_timbre_source``, ``set_structure_source``):
+
+    * **Legacy** — little-endian ``<II`` header (channels, samples) followed
+      by interleaved float32 PCM.
+    * **Compact** (optional, backward-compatible) — ``<I`` sentinel
+      ``0xFFFFFFFF`` + ``<B`` flags + ``<II`` (channels, samples) + payload.
+      ``flags`` bit0 = zstd-compressed, bit1 = float16 samples. The source is
+      only a conditioning reference (it is encoded to a latent), so float16 +
+      zstd shrink the upload substantially with no audible cost — particularly
+      for repetitive/looped material that zstd compresses heavily.
+
+    Returns the waveform clipped to stereo (the model only consumes 2 channels).
     """
+    (lead,) = struct.unpack_from("<I", audio_msg, 0)
+    if lead == _COMPACT_SENTINEL:
+        flags = audio_msg[4]
+        ch, n = struct.unpack_from("<II", audio_msg, 5)
+        payload = audio_msg[13:]
+        f16 = bool(flags & _COMPACT_FLAG_F16)
+        itemsize = 2 if f16 else 4
+        if flags & _COMPACT_FLAG_ZSTD:
+            import zstandard as zstd
+
+            payload = zstd.ZstdDecompressor().decompress(
+                payload, max_output_size=n * ch * itemsize
+            )
+        dtype = np.float16 if f16 else np.float32
+        arr = np.frombuffer(payload, dtype=dtype).astype(np.float32).reshape(n, ch)
+        return torch.from_numpy(arr.T.copy())[:2]
+
     ch, n = struct.unpack("<II", audio_msg[:8])
     arr = np.frombuffer(audio_msg[8:], dtype=np.float32).reshape(n, ch)
     return torch.from_numpy(arr.T.copy())[:2]

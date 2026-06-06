@@ -603,6 +603,10 @@ def _handle_client_body(
         "pipeline_depth": state.current_depth,
         "max_pipeline_depth": streaming.max_pipeline_depth,
         "session_id": session_id,
+        # Compact source-frame encodings this server accepts (see
+        # _decode_audio_msg). Clients may compress uploads with these; absent =
+        # legacy float32 only. Always safe to ignore.
+        "src_encodings": ["zstd", "f16"],
     }))
     ws.send(src_np.astype(np.float16).tobytes())
     if streaming.initial_upload_stems is not None:
