@@ -71,6 +71,11 @@ def _make_sa3(ss):
         state=ss.state,
         cond=init["cond"],
         source_latent_bct=init["source_latent_bct"],
+        # Resolved accel values (compile already normalized to eager by
+        # the create path); .get so an in-process payload without them
+        # stays on the eager default.
+        dit_backend=init.get("dit_backend", "eager"),
+        codec_backend=init.get("codec_backend", "eager"),
         steps=int(ss.config.steps),
         depth=int(ss.state.current_depth),
         vae_window_s=float(ss.vae_window),

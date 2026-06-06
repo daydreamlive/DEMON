@@ -94,18 +94,39 @@ def _delivered_samples(n_44k: int) -> int:
     return -(-new * n_44k // orig)
 
 
-def create_sa3_session(cls, *, audio, config, checkpoint, session_id, **_unused):
+def _resolve_accel(value: str, component: str) -> str:
+    """Map the serving layer's accel value onto SA3's two execution
+    modes. SA3 has no torch.compile path, so "compile" (the ACE server
+    default for throughput) degrades to eager — loudly, not silently."""
+    if value == "compile":
+        logger.info("sa3_accel_compile_ignored component={} using=eager", component)
+        return "eager"
+    return value
+
+
+def create_sa3_session(
+    cls, *, audio, config, checkpoint, session_id,
+    decoder_backend: str = "tensorrt", vae_backend: str = "tensorrt",
+    **_unused,
+):
     """Build a ready-to-run sa3 :class:`StreamingSession` (``cls``). See
     the module docstring for what differs from the ACE create path.
     Signature is the ``families.SESSION_CREATORS`` contract; the
-    ACE-shaped accel/offload kwargs land in ``_unused``. ``checkpoint``
-    is the family model id by this point (families.resolve_checkpoint
-    mapped the server alias, e.g. "sa3-small" -> "small-music")."""
+    remaining ACE-shaped kwargs (offload) land in ``_unused``.
+    ``decoder_backend`` / ``vae_backend`` are the same accel params the
+    ACE path takes (server ``--accel``): "tensorrt" puts the DiT and
+    the SAME-L window decode on their built engines (eager fallback
+    when none covers the session), "compile" degrades to eager (no SA3
+    torch.compile path), "eager" is fully eager. ``checkpoint`` is the
+    family model id by this point (families.resolve_checkpoint mapped
+    the server alias, e.g. "sa3-small" -> "small-music")."""
     from contextlib import ExitStack
 
     from acestep.streaming.audio_engine import AudioEngine
     from acestep.streaming.session import _cleanup_create_resource
 
+    dit_backend = _resolve_accel(decoder_backend, "dit")
+    codec_backend = _resolve_accel(vae_backend, "codec")
     model_id = checkpoint
     context = get_sa3_context(model_id)
 
@@ -116,7 +137,7 @@ def create_sa3_session(cls, *, audio, config, checkpoint, session_id, **_unused)
     # Land on the TRT DiT fast path when engines are built (medium):
     # a duration whose padded latent window exceeds every engine
     # profile would silently fall back to the ~5x-slower eager DiT.
-    duration_s = context.clamp_duration_for_trt(duration_s)
+    duration_s = context.clamp_duration_for_trt(duration_s, backend=dit_backend)
     waveform = waveform[:, : int(duration_s * SAMPLE_RATE)]
 
     prompt = config.prompt
@@ -132,8 +153,10 @@ def create_sa3_session(cls, *, audio, config, checkpoint, session_id, **_unused)
 
     logger.info(
         "sa3_session_create model_id={} duration_s={:.1f} "
-        "source_duration_s={:.1f} steps={} depth={}",
+        "source_duration_s={:.1f} steps={} depth={} dit_backend={} "
+        "codec_backend={}",
         model_id, duration_s, source_duration_s, steps, depth,
+        dit_backend, codec_backend,
     )
 
     cond = context.prepare_cond(prompt=prompt, duration=duration_s, steps=steps)
@@ -229,6 +252,8 @@ def create_sa3_session(cls, *, audio, config, checkpoint, session_id, **_unused)
                 "cond": cond,
                 "source_latent_bct": source_latent,
                 "duration_s": duration_s,
+                "dit_backend": dit_backend,
+                "codec_backend": codec_backend,
             },
         )
         cleanup.pop_all()

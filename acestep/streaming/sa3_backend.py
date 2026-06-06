@@ -166,6 +166,8 @@ class SA3Backend(DiffusionBackend):
         source_audio=None,
         cond=None,
         source_latent_bct=None,
+        dit_backend: str = "eager",
+        codec_backend: str = "eager",
         **kwargs,
     ) -> "SA3Backend":
         """Production assembly over a loaded
@@ -177,10 +179,14 @@ class SA3Backend(DiffusionBackend):
         session exists, doesn't pay them twice; absent, they're computed
         here (the in-process assembly the GPU smoke validated).
 
-        Component selection is the context's call (``make_dit`` /
-        ``make_codec``): small runs the torch DiT + SAME-S full-decode
-        codec; medium gets the TRT DiT engine (when built) and the
-        SAME-L windowed codec."""
+        ``dit_backend`` / ``codec_backend`` are the session's resolved
+        acceleration values (the serving layer's decoder/vae accel
+        params, compile already normalized to eager by the create
+        path); the context maps them onto its components (``make_dit``
+        / ``make_codec``): "tensorrt" selects the built engines when
+        they cover the session, with eager fallback; small has no TRT
+        flavors and runs the torch DiT + SAME-S full-decode codec
+        either way."""
         from acestep.engine.sa3_adapter import SA3Adapter
 
         steps = int(kwargs.get("steps", 8))
@@ -197,6 +203,7 @@ class SA3Backend(DiffusionBackend):
             context.make_dit(
                 latent_frames=cond.latent_frames,
                 seconds_total=duration_s,
+                backend=dit_backend,
             ),
             schedule_builder=context.make_schedule_builder(cond, steps),
             device=context.device,
@@ -216,7 +223,7 @@ class SA3Backend(DiffusionBackend):
 
         return cls(
             adapter=adapter,
-            codec=context.make_codec(),
+            codec=context.make_codec(backend=codec_backend),
             cond=cond,
             schedule_builder_factory=(
                 lambda s: context.make_schedule_builder(cond, s)

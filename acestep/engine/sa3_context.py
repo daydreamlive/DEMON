@@ -83,29 +83,28 @@ class SA3Context:
 
     # ---- TRT-or-eager component selection ----------------------------------
 
-    def make_dit(self, *, latent_frames: int, seconds_total: float):
-        """The per-step velocity callable for one session: the built TRT
-        engine when one covers this session's latent window (medium:
-        ~11-17 ms/step vs ~54 ms eager), the torch ``DiTWrapper``
-        otherwise. The TRT wrapper is per-session (fixed L + duration,
-        own execution context); the deserialized engine is shared.
+    def make_dit(
+        self, *, latent_frames: int, seconds_total: float, backend: str = "eager",
+    ):
+        """The per-step velocity callable for one session: with
+        ``backend="tensorrt"``, the built TRT engine when one covers
+        this session's latent window (medium: ~11-17 ms/step vs ~54 ms
+        eager, per-step cos >= 0.9998 vs eager on real conditioning,
+        ``scripts/sa3/sa3_trt_dit_cond_parity.py``); the torch
+        ``DiTWrapper`` otherwise. The TRT wrapper is per-session (fixed
+        L + duration, own execution context); the deserialized engine
+        is shared.
 
-        TRT is OPT-IN for now (``DEMON_SA3_TRT_DIT=1``): the engine is
-        NOT step-parity-identical to the eager DiT on real conditioning
-        (cos 0.80-0.97, ``scripts/sa3/sa3_trt_dit_cond_parity.py``;
-        likely differing cross-attn padding/mask semantics between the
-        official ONNX tail and the local eager path — undiagnosed,
-        tracked there). Eager is the validated-by-ear reference path
-        until that's resolved."""
-        import os
-
+        ``backend`` is the resolved acceleration value the session
+        creator threads through from the serving layer's accel param
+        (compile is already normalized to eager there: SA3 has no
+        torch.compile path)."""
         from acestep.engine.sa3_trt import SA3TRTDit, find_dit_engine
 
-        if os.environ.get("DEMON_SA3_TRT_DIT") != "1":
+        if backend != "tensorrt":
             logger.info(
-                "sa3_dit_eager model_id={} latent_frames={} "
-                "reason=trt_opt_in (DEMON_SA3_TRT_DIT=1 to enable)",
-                self.model_id, latent_frames,
+                "sa3_dit_eager model_id={} latent_frames={} reason=backend_{}",
+                self.model_id, latent_frames, backend,
             )
             return self.dit
 
@@ -122,28 +121,31 @@ class SA3Context:
             seconds_total=float(seconds_total),
         )
 
-    def make_codec(self):
+    def make_codec(self, *, backend: str = "eager"):
         """The family codec for one session: SAME-S full decode for
-        small (measured ~11 ms flat, so windowing buys nothing), the
-        SAME-L windowed codec for medium (full decode is ~80 ms per
-        call — too slow to run per render tick)."""
+        small (measured ~11 ms flat, so windowing buys nothing; eager
+        only, ``backend`` has no TRT flavor to select), the SAME-L
+        windowed codec for medium (full decode is ~80 ms per call — too
+        slow to run per render tick), whose per-window decode runs the
+        built TRT engine when ``backend="tensorrt"`` and eager
+        otherwise."""
         if self.model_id in WINDOWED_DECODE_MODELS:
-            return SA3SAMEWindowCodec(self)
+            return SA3SAMEWindowCodec(self, use_trt=(backend == "tensorrt"))
         return SA3SAMECodec(self)
 
-    def clamp_duration_for_trt(self, duration_s: float, *, padding_s: float = 6.0) -> float:
+    def clamp_duration_for_trt(
+        self, duration_s: float, *, padding_s: float = 6.0, backend: str = "eager",
+    ) -> float:
         """Clamp a requested duration so its padded latent window fits a
         built TRT DiT engine — landing on the fast path instead of
         silently falling back to the ~5x-slower eager DiT. No-op for
         models without engines (small) or durations already inside.
-        No-op while the TRT DiT is opt-in-disabled (see
-        :meth:`make_dit`) — the eager DiT has no length cap worth
-        truncating the source for."""
-        import os
-
+        No-op unless ``backend="tensorrt"`` (see :meth:`make_dit`) —
+        the eager DiT has no length cap worth truncating the source
+        for."""
         from acestep.engine.sa3_trt import trt_duration_cap_s
 
-        if os.environ.get("DEMON_SA3_TRT_DIT") != "1":
+        if backend != "tensorrt":
             return duration_s
         cap = trt_duration_cap_s(self.model_id, padding_s=padding_s)
         if cap is None or duration_s <= cap:
@@ -235,7 +237,7 @@ class SA3SAMEWindowCodec:
     SAME-L's sliding-window attention needs no chunk-phase snapping).
     Two execution paths, identical interface:
 
-    * **TRT** when the built window engine exists
+    * **TRT** when ``use_trt`` and the built window engine exists
       (``same_l_decode_window_t*``): ~9-10 ms per ~1 s window, latent
       scaled by ``pretransform.scale`` before the call (spike
       ``scale_mode="pretransform"``, rel_rms ~8e-3 vs eager full).
@@ -250,7 +252,7 @@ class SA3SAMEWindowCodec:
     #: engine's 96-frame max, parity rel_rms ~8e-3).
     context_sec = 2.0
 
-    def __init__(self, context: SA3Context):
+    def __init__(self, context: SA3Context, *, use_trt: bool = True):
         from acestep.engine.sa3_trt import (
             SameLWindowTRTDecoder,
             find_same_l_window_engine,
@@ -259,9 +261,12 @@ class SA3SAMEWindowCodec:
         self._context = context
         self._helpers = context._helpers
         self._scale = float(getattr(context.sam.model.pretransform, "scale", 1.0))
-        found = find_same_l_window_engine()
+        found = find_same_l_window_engine() if use_trt else None
         if found is None:
-            logger.info("sa3_same_l_window_decode mode=eager reason=no_trt_engine")
+            logger.info(
+                "sa3_same_l_window_decode mode=eager reason={}",
+                "no_trt_engine" if use_trt else "backend",
+            )
             self._trt = None
             self._min_t = self._max_t = 0
         else:
