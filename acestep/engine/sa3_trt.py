@@ -1,11 +1,10 @@
 """TensorRT runtimes for the SA3 family: the medium DiT engine and the
 SAME-L windowed decoder, wrapped for the production streaming stack.
 
-The engines are the spike-built artifacts under
-``<MODELS_DIR>/sa3/trt_engines/`` (build scripts:
-``scripts/sa3/sa3_build_medium_dit_trt.py`` and
-``sa3_build_same_l_window_trt.py``; both wrap Stability's OFFICIAL ONNX
-exports from ``stabilityai/stable-audio-3-optimized``, so the graphs are
+The engines live under ``<MODELS_DIR>/sa3/trt_engines/`` (builder:
+``python -m acestep.engine.trt.sa3_build``, which holds the same shape
+as the ACE-Step builder and wraps Stability's OFFICIAL ONNX exports
+from ``stabilityai/stable-audio-3-optimized``, so the graphs are
 upstream's, not a hand export). Facts the wrappers encode, measured by
 the spike benchmarks (``sa3_bench_medium_dit_trt.py``,
 ``sa3_medium_window_trt_benchmark.py``, 5090):
@@ -13,7 +12,14 @@ the spike benchmarks (``sa3_bench_medium_dit_trt.py``,
 * **The DiT engine is BATCH-1** — every profile fixes dim 0 at 1 — with
   raw-conditioning inputs: ``x(1,256,L)``, ``t(1,)``,
   ``t5_hidden(1,256,768)``, ``t5_mask(1,256)``, ``seconds_total(1,)``,
-  ``local_add_cond(1,257,L)`` → ``velocity``; fp32 IO, BF16 internals.
+  ``local_add_cond(1,257,L)`` → ``velocity``; fp32 IO, fp16-mixed
+  internals (upstream's pre-surgered ``dit_fp16mixed.onnx`` built
+  STRONGLY_TYPED — per-step cos ≥ 0.9998 vs eager on real cond; the
+  early BF16-flag builds drifted to cos 0.8-0.97 and are retired).
+  The engine has no ``padding_mask`` input: every latent frame is
+  treated as valid, so at durations whose padded window has masked
+  tail frames the eager path's masked attention differs slightly
+  (cos ~0.991-0.999/step; see ``sa3_trt_dit_cond_parity.py``).
   The conditioner tail (padding_embedding + seconds_total Linear) is
   baked into the graph as constants, so it consumes the RAW T5Gemma
   hidden states — the prompt block of the torch ``cond_bundle``'s
