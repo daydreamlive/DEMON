@@ -37,8 +37,19 @@ def _make_acestep(ss):
     )
 
 
+def _make_mrt2(ss):
+    from acestep.streaming.mrt2.backend import MRT2Backend
+
+    return MRT2Backend(
+        config=ss.config,
+        state=ss.state,
+        midi_knobs=ss.virtual_knobs,
+    )
+
+
 FAMILIES = {
     "acestep": _make_acestep,
+    "mrt2": _make_mrt2,
 }
 
 
@@ -62,8 +73,31 @@ def _acestep_knob_universe():
 # must be renamed (prefix / group), so the first lazily-reused name
 # can't become a silent semantic fork. Keyed identically to FAMILIES;
 # the guard enforces the keys stay in sync.
+def _mrt2_knob_universe():
+    from acestep.streaming.mrt2.backend import mrt2_knob_specs
+
+    return mrt2_knob_specs()
+
+
 FAMILY_KNOB_UNIVERSES = {
     "acestep": _acestep_knob_universe,
+    "mrt2": _mrt2_knob_universe,
+}
+
+
+def _create_mrt2_session(cls, **kwargs):
+    from acestep.streaming.mrt2.backend import create_mrt2_session
+
+    return create_mrt2_session(cls, **kwargs)
+
+
+# Families whose per-connect setup doesn't fit the ACE create path
+# (TRT profiles, model load, demucs, conditioning encode). Keyed like
+# FAMILIES; absent = the family rides StreamingSession.create's default
+# body. Contract: ``creator(cls, *, audio, config, checkpoint,
+# session_id, **rest) -> StreamingSession``.
+SESSION_CREATORS = {
+    "mrt2": _create_mrt2_session,
 }
 
 
