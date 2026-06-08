@@ -421,6 +421,13 @@ class StreamPipeline:
         self.ticks: int = 0
         self._last_tick_ms: float = 0.0
 
+        # The SlotRequest whose latent the most recent finishing tick()
+        # returned. Observability only (e.g. the SA3 backend stamps the
+        # emerged request's params into the per-slice params echo so
+        # knob→ear latency is measurable on the wire). Valid ONLY right
+        # after a tick() that returned a latent; stale otherwise.
+        self.last_finished_request: Optional[SlotRequest] = None
+
     @property
     def depth(self) -> int:
         return self._depth
@@ -1073,6 +1080,7 @@ class StreamPipeline:
         for i, slot in enumerate(self._slots):
             if slot is not None and slot.step_idx >= len(slot.t_schedule) - 1:
                 finished = slot.xt
+                self.last_finished_request = slot.request
                 self._slots[i] = None
                 break
 

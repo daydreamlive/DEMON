@@ -115,6 +115,7 @@ class SA3Backend(DiffusionBackend):
         # per-slot generator semantics.
         sampler: str = "pingpong",
         prompt_rebuilder: Optional[Callable] = None,
+        prompt_tags: Optional[str] = None,
     ):
         super().__init__(adapter=adapter, codec=codec)
         self._cond = cond
@@ -140,6 +141,24 @@ class SA3Backend(DiffusionBackend):
             source_latent_bct.movedim(1, 2).contiguous()
             if source_latent_bct is not None else None
         )
+
+        # Emerged-generation observability. SA3 knob/prompt changes ride
+        # the NEXT SlotRequest only (no shared-curve writes onto
+        # in-flight slots), so the effect of a control change surfaces
+        # one pipeline-flush later. To make that observable on the wire
+        # (knob→ear measurement, params panel truth), we label each
+        # fresh latent with the request it was generated FROM
+        # (pipeline.last_finished_request) and stamp those values into
+        # ``state.params`` as ``gen_*`` keys BEFORE the same tick's
+        # windowed render publishes its params echo. Conditioning
+        # bundles are tracked by identity: ``_cond_history`` holds
+        # (bundle, epoch, tags) strong refs (bounded) so an in-flight
+        # request's ``aux_cond`` can be mapped back to the prompt it
+        # carried even after a handle_set_prompt swap.
+        self._cond_epoch = 0
+        self._cond_history: list = [(cond.cond_bundle, 0, prompt_tags)]
+        self._emerged_request = None
+        self._emerged_marker = None  # (denoise, epoch) of the last log
 
         # Rendered-audio cache: one full decode+resample per fresh
         # latent (SAME-S decodes the whole window in ~11 ms); window
@@ -232,6 +251,7 @@ class SA3Backend(DiffusionBackend):
             state=state,
             source_latent_bct=source_latent,
             prompt_rebuilder=_prompt_rebuilder,
+            prompt_tags=prompt,
             **kwargs,
         )
 
@@ -298,7 +318,9 @@ class SA3Backend(DiffusionBackend):
                 "sa3_prompt_b_ignored tags_b={!r} reason=no_ab_blend_v1",
                 tags_b,
             )
+        t0 = time.perf_counter()
         cond, sched_factory = self._prompt_rebuilder(tags, self._steps)
+        rebuild_ms = (time.perf_counter() - t0) * 1000
         if int(cond.latent_frames) != int(self._cond.latent_frames):
             # Duration is fixed for the session lifetime, so the latent
             # geometry must hold: a mismatch would desync the ring
@@ -311,7 +333,16 @@ class SA3Backend(DiffusionBackend):
         self._schedule_builder_factory = sched_factory
         self.adapter.schedule_builder = sched_factory(self._steps)
         self._cond = cond
-        logger.info("sa3_prompt_applied tags={!r}", tags)
+        # Emerged-generation labeling (see __init__): the new bundle gets
+        # the next cond epoch; keep a short identity history so latents
+        # still in flight on the OLD bundle stay attributable.
+        self._cond_epoch += 1
+        self._cond_history.append((cond.cond_bundle, self._cond_epoch, tags))
+        del self._cond_history[:-4]
+        logger.info(
+            "sa3_prompt_applied tags={!r} cond_epoch={} rebuild_ms={:.1f}",
+            tags, self._cond_epoch, rebuild_ms,
+        )
 
     # ---- produce hooks ---------------------------------------------------------
 
@@ -343,11 +374,50 @@ class SA3Backend(DiffusionBackend):
             # realizations (incoherent audio). See SlotRequest.
             sde_noise_seeded=True,
         ))
-        return self.pipeline.tick()  # engine-layout [1, T, 256] | None
+        latent = self.pipeline.tick()  # engine-layout [1, T, 256] | None
+        if latent is not None:
+            # The request this latent was generated from (valid only
+            # right after a finishing tick — see StreamPipeline).
+            self._emerged_request = getattr(
+                self.pipeline, "last_finished_request", None,
+            )
+        return latent
+
+    def _cond_meta_for(self, bundle) -> tuple:
+        """(epoch, tags) for a request's aux_cond, by identity."""
+        for b, epoch, tags in self._cond_history:
+            if b is bundle:
+                return epoch, tags
+        return None, None
 
     def _after_produce(self, prep: dict, result_latent, is_fresh: bool) -> None:
         self.last_denoise = prep["denoise"]
         self._last_prep = prep
+        if not is_fresh or self.state is None:
+            return
+        req = self._emerged_request
+        if req is None:
+            return
+        # Stamp the EMERGED request's params (what this latent was
+        # actually generated with) before the runner renders + publishes
+        # this tick's slice, so the accompanying params echo describes
+        # the audio it rides with. The plain knob keys stamped by
+        # on_fresh_generation reflect prepare-time values instead (the
+        # ACE-shaped convention) and stay as-is.
+        epoch, tags = self._cond_meta_for(req.aux_cond)
+        p = self.state.params
+        p["gen_sa3_denoise"] = round(float(req.denoise), 4)
+        if req.seed is not None and not isinstance(req.seed, list):
+            p["gen_seed"] = int(req.seed)
+        p["gen_cond_epoch"] = epoch
+        p["gen_prompt"] = tags
+        marker = (p["gen_sa3_denoise"], epoch)
+        if marker != self._emerged_marker:
+            self._emerged_marker = marker
+            logger.info(
+                "sa3_gen_emerged denoise={} cond_epoch={} tags={!r}",
+                p["gen_sa3_denoise"], epoch, tags,
+            )
 
     # ---- rendering -------------------------------------------------------------
 
