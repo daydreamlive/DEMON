@@ -40,12 +40,22 @@ def sa3_vendor_dir() -> Path:
 
 
 def ensure_sa3_paths() -> None:
-    """Put the spike-helper dir (and the vendor tree, when present) on
-    ``sys.path``. Idempotent; vendor absence is not an error here —
-    vendor-needing call sites fail with their own ImportError."""
-    for p in (str(sa3_vendor_dir()), str(sa3_scripts_dir())):
-        if p not in sys.path:
-            sys.path.insert(0, p)
+    """Make the spike helpers and the vendored ``stable_audio_3`` importable.
+
+    ``scripts/sa3`` (DEMON's own, uniquely-named spike modules) goes at the
+    FRONT. The vendor repo ROOT is APPENDED, not prepended: it must be on
+    ``sys.path`` for ``import stable_audio_3``, but its sibling top-level
+    entries (``scripts/``, ``tests/``, ``run_gradio.py``) would otherwise
+    shadow DEMON's own same-named packages. Appending keeps DEMON's modules
+    winning while the vendor-only ``stable_audio_3`` still resolves.
+    Idempotent; vendor absence is not an error here — vendor-needing call
+    sites fail with their own ImportError."""
+    scripts = str(sa3_scripts_dir())
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    vendor = str(sa3_vendor_dir())
+    if vendor not in sys.path:
+        sys.path.append(vendor)
 
 
 def require_sa3_vendor() -> Path:
@@ -59,8 +69,9 @@ def require_sa3_vendor() -> Path:
         raise ImportError(
             f"vendored stable_audio_3 source not found at {vendor}; its "
             "canonical location is the untracked notes/SA3/stable-audio-3 "
-            "tree. In a worktree that doesn't carry it, set DEMON_SA3_SRC "
-            "to a checkout that does (e.g. "
+            "tree. Fetch it with `python scripts/sa3/vendor_sa3.py` (clones "
+            "the upstream repo at the pinned commit), or set DEMON_SA3_SRC "
+            "to a checkout that has it (e.g. "
             "DEMON_SA3_SRC=C:\\_dev\\projects\\DEMON\\notes\\SA3\\stable-audio-3)"
         )
     return vendor

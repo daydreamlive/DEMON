@@ -72,6 +72,19 @@ SA3_SAMPLE_RATE = 44100
 DIT_ENGINE_PREFIX = {"medium": "sa3_m_dit"}
 
 _DIT_DIR_RE = re.compile(r"^(?P<prefix>.+_dit)_l(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$")
+# The fp8-trunk DiT engine: same ranged-profile naming as the fp16mixed
+# engine with an ``_fp8`` marker (``sa3_m_dit_fp8_l{min}_{opt}_{max}``).
+# It runs ~1.8x faster per step than fp16mixed at compounded-euler cos
+# ~0.976 vs it; under the production pingpong sampler it yields an
+# equally-good but different take (the chaotic early steps amplify any
+# non-bit-identical perturbation). Built by ``acestep.engine.trt.sa3_build``
+# alongside the fp16mixed engine; discovery prefers it under the
+# ``tensorrt`` accel path when one covers the window, falling back to
+# fp16mixed otherwise. No env opt-in: selection rides the standard accel
+# param like every other engine.
+_DIT_FP8_DIR_RE = re.compile(
+    r"^(?P<prefix>.+_dit)_fp8_l(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$"
+)
 _SAME_L_DIR_RE = re.compile(r"^same_l_decode_window_t(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$")
 
 # Deserialized-engine process cache. Engines are immutable post-load and
@@ -114,10 +127,14 @@ def _register_same_plugin() -> None:
     if not (plugin_dir / "diff_attn_nocast_plugin.py").is_file():
         raise ImportError(
             f"SAME-L TRT plugin not found at {plugin_dir}; the vendored "
-            "stable_audio_3 tree must include optimized/tensorRT/scripts"
+            "stable_audio_3 tree must include optimized/tensorRT/scripts. "
+            "Fetch it with `python scripts/sa3/vendor_sa3.py`, or set "
+            "DEMON_SA3_SRC to a checkout that has it."
         )
+    # Append, not prepend: this dir also exposes bare modules (sa3_trt,
+    # sa3_trt_core, ...) that would shadow if placed ahead of DEMON's path.
     if str(plugin_dir) not in sys.path:
-        sys.path.insert(0, str(plugin_dir))
+        sys.path.append(str(plugin_dir))
     import diff_attn_nocast_plugin  # noqa: F401  (registers on import)
 
     _SAME_PLUGIN_REGISTERED = True
@@ -135,16 +152,30 @@ def find_dit_engine(model_id: str, latent_frames: int) -> Optional[Path]:
     base = trt_engines_dir()
     if prefix is None or not base.is_dir():
         return None
-    best = None
+    best = None       # smallest-covering fp16mixed engine
+    best_fp8 = None   # smallest-covering fp8 engine (preferred when present)
     for sub in base.iterdir():
-        m = _DIT_DIR_RE.match(sub.name)
-        if not m or m.group("prefix") != prefix:
-            continue
-        lo, hi = int(m.group("lo")), int(m.group("hi"))
         f = sub / f"{sub.name}.trt"
-        if lo <= latent_frames <= hi and f.is_file():
-            if best is None or hi < best[0]:
+        if not f.is_file():
+            continue
+        mf = _DIT_FP8_DIR_RE.match(sub.name)
+        if mf and mf.group("prefix") == prefix:
+            lo, hi = int(mf.group("lo")), int(mf.group("hi"))
+            if lo <= latent_frames <= hi and (best_fp8 is None or hi < best_fp8[0]):
+                best_fp8 = (hi, f)
+            continue
+        m = _DIT_DIR_RE.match(sub.name)
+        if m and m.group("prefix") == prefix:
+            lo, hi = int(m.group("lo")), int(m.group("hi"))
+            if lo <= latent_frames <= hi and (best is None or hi < best[0]):
                 best = (hi, f)
+    # fp8 is ~1.8x faster; prefer it when one covers the window.
+    if best_fp8 is not None:
+        logger.info(
+            "sa3_dit_fp8_selected engine={} latent_frames={}",
+            best_fp8[1].parent.name, latent_frames,
+        )
+        return best_fp8[1]
     return best[1] if best else None
 
 

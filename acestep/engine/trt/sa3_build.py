@@ -23,6 +23,13 @@ on first use.
   real-cond parity gap (cos 0.80-0.97/step). The fp16mixed build measures
   cos >= 0.9998/step vs eager on real conditioning
   (``scripts/sa3/sa3_trt_dit_cond_parity.py``).
+* **sa3-m DiT (FP8, opt-in)**: ``dit_fp8.onnx`` (ModelOpt FP8 GEMM trunk on
+  top of the fp16mixed graph) compiled to ``sa3_m_dit_fp8_l*`` engines,
+  ~1.8x/step at compounded-euler cos ~0.976 vs fp16mixed. Built only with
+  ``--fp8`` (additive to the fp16mixed DiT). The ONNX is not yet on HF; pass
+  ``--fp8-onnx`` a producer-built graph until it is.
+  :func:`acestep.engine.sa3_trt.find_dit_engine` prefers an fp8 engine when one
+  covers the window, else fp16mixed.
 * **SAME-L window decoder**: ``dec_dynamic_triton_swa.onnx``,
   STRONGLY_TYPED; needs the ``samel::diff_attn_swa`` plugin registered
   before the ONNX parse (vendored tree, via
@@ -40,6 +47,11 @@ Usage:
 
     # SAME-L window decoder (defaults t32_56_96):
     python -m acestep.engine.trt.sa3_build --same-l-window
+
+    # Canonical matrix plus the FP8 DiT variants (producer-built ONNX until
+    # dit_fp8.onnx is published to HF):
+    python -m acestep.engine.trt.sa3_build --all --fp8 \
+        --fp8-onnx /path/to/dit_fp8.onnx
 
 Requirements:
     - tensorrt (uv pip install tensorrt; version-gated by the shared
@@ -66,6 +78,7 @@ from ._engine_metadata import (
 )
 from .build import _preflight, _save_build_report, _verify_engines
 
+from acestep.engine.sa3_helpers import require_sa3_vendor
 from acestep.engine.sa3_trt import (
     COND_DIM,
     IO_CHANNELS,
@@ -82,6 +95,14 @@ HF_REPO = "stabilityai/stable-audio-3-optimized"
 DIT_ONNX_FILES = (
     "onnx/sa3-m/dit_fp16mixed.onnx",
     "onnx/sa3-m/dit_fp16mixed.onnx.data",
+)
+# FP8-trunk DiT (opt-in, ~1.8x/step). Not yet published to HF, so the fetch
+# 404s until the upstream artifact upload; build it locally with the vendored
+# producer (optimized/tensorRT/build: make_calib.py then build_dit_fp8.py) and
+# pass --fp8-onnx. acestep.engine.sa3_trt does the runtime selection.
+DIT_FP8_ONNX_FILES = (
+    "onnx/sa3-m/dit_fp8.onnx",
+    "onnx/sa3-m/dit_fp8.onnx.data",
 )
 SAME_L_ONNX_FILES = ("onnx/same-l/dec_dynamic_triton_swa.onnx",)
 
@@ -122,6 +143,29 @@ class SA3DiTBuildConfig:
 
     def engine_name(self) -> str:
         return f"sa3_m_dit_l{self.min_latents}_{self.opt_latents}_{self.max_latents}"
+
+
+@dataclass
+class SA3DiTFp8BuildConfig:
+    """Build parameters for one sa3-m FP8-trunk DiT engine.
+
+    A separate dataclass from :class:`SA3DiTBuildConfig` on purpose: the
+    metadata skip gate hashes the whole config, so folding precision into one
+    class would change the fp16mixed engines' identity and force a needless
+    rebuild. Same profile inputs, ``_fp8`` engine name, fp8 ONNX files.
+    """
+
+    min_latents: int
+    opt_latents: int
+    max_latents: int
+    workspace_gb: float = 16.0
+    onnx_files: list[str] = field(default_factory=lambda: list(DIT_FP8_ONNX_FILES))
+
+    def engine_name(self) -> str:
+        return (
+            f"sa3_m_dit_fp8_l{self.min_latents}"
+            f"_{self.opt_latents}_{self.max_latents}"
+        )
 
 
 @dataclass
@@ -207,21 +251,46 @@ def _build_strongly_typed_engine(
 def _build_dit_engine(
     *,
     output_dir: str,
-    config: SA3DiTBuildConfig,
+    config,
     env: dict,
     force_rebuild: bool = False,
+    component: str = "sa3_m_dit",
+    precision_label: str = "fp16mixed",
+    local_onnx: str | None = None,
 ) -> tuple[str, str, float, str]:
-    """Build one sa3-m DiT engine. Returns (label, path, elapsed, status)."""
+    """Build one sa3-m DiT engine. Returns (label, path, elapsed, status).
+
+    ``config`` is an :class:`SA3DiTBuildConfig` (fp16mixed) or
+    :class:`SA3DiTFp8BuildConfig` (fp8); they are duck-compatible. ``local_onnx``
+    compiles a producer-built ONNX from disk (its ``.onnx.data`` sidecar must
+    sit alongside) instead of fetching from HF, used for fp8 before the artifact
+    is published."""
     name = config.engine_name()
     engine_path = os.path.join(output_dir, name, f"{name}.trt")
     label = (
-        f"SA3-M DiT l{config.min_latents}_{config.opt_latents}_{config.max_latents}"
+        f"SA3-M DiT {precision_label} "
+        f"l{config.min_latents}_{config.opt_latents}_{config.max_latents}"
         f" (~{config.max_latents * SAMPLES_PER_LATENT / SA3_SAMPLE_RATE:.0f}s window)"
     )
 
-    onnx_path = _fetch_onnx(config.onnx_files)
+    if local_onnx:
+        onnx_path = local_onnx
+        logger.info("Using local ONNX: {}", onnx_path)
+    else:
+        try:
+            onnx_path = _fetch_onnx(config.onnx_files)
+        except Exception as exc:
+            if precision_label == "fp8":
+                raise RuntimeError(
+                    f"dit_fp8.onnx is not on HF ({HF_REPO}) yet. Build it with "
+                    "the vendored producer (notes/SA3/stable-audio-3/optimized/"
+                    "tensorRT/build: make_calib.py then build_dit_fp8.py) and "
+                    "pass --fp8-onnx <dit_fp8.onnx>, or wait for the upstream "
+                    "artifact upload."
+                ) from exc
+            raise
     expected = _expected_metadata(
-        component="sa3_m_dit", onnx_path=onnx_path, config=config, env=env,
+        component=component, onnx_path=onnx_path, config=config, env=env,
     )
 
     if not force_rebuild and os.path.exists(engine_path):
@@ -234,8 +303,8 @@ def _build_dit_engine(
 
     logger.info("=" * 60)
     logger.info(
-        "SA3 DiT TRT BUILD: {} (fp16mixed, STRONGLY_TYPED, workspace {:.0f} GB)",
-        name, config.workspace_gb,
+        "SA3 DiT TRT BUILD: {} ({}, STRONGLY_TYPED, workspace {:.0f} GB)",
+        name, precision_label, config.workspace_gb,
     )
     logger.info("=" * 60)
 
@@ -335,10 +404,18 @@ def _matrix_jobs(args) -> list[tuple[str, str]]:
         for lo, opt, hi in dit_profiles:
             cfg = SA3DiTBuildConfig(lo, opt, hi)
             jobs.append((
-                f"SA3-M DiT l{lo}_{opt}_{hi}"
+                f"SA3-M DiT fp16mixed l{lo}_{opt}_{hi}"
                 f" (~{hi * SAMPLES_PER_LATENT / SA3_SAMPLE_RATE:.0f}s window)",
                 cfg.engine_name(),
             ))
+        if args.fp8:
+            for lo, opt, hi in dit_profiles:
+                cfg = SA3DiTFp8BuildConfig(lo, opt, hi)
+                jobs.append((
+                    f"SA3-M DiT fp8 l{lo}_{opt}_{hi}"
+                    f" (~{hi * SAMPLES_PER_LATENT / SA3_SAMPLE_RATE:.0f}s window)",
+                    cfg.engine_name(),
+                ))
     if not args.dit_only:
         lo, opt, hi = CANONICAL_SAME_L_WINDOW
         cfg = SameLWindowBuildConfig(lo, opt, hi)
@@ -442,8 +519,19 @@ def main() -> int:
     single.add_argument("--max-latents", type=int, default=None)
     single.add_argument("--workspace-gb", type=float, default=16.0,
                         help="TRT builder workspace in GB (default: 16)")
+    single.add_argument("--fp8", action="store_true",
+                        help="Also build the FP8-trunk DiT variant(s) "
+                             "(~1.8x/step; preferred at runtime when present, "
+                             "fp16mixed fallback). Needs the published "
+                             "dit_fp8.onnx or --fp8-onnx.")
+    single.add_argument("--fp8-onnx", default=None,
+                        help="Path to a producer-built dit_fp8.onnx (with its "
+                             ".onnx.data sidecar alongside) to compile instead "
+                             "of fetching from HF; implies --fp8.")
 
     args = parser.parse_args()
+    if args.fp8_onnx:
+        args.fp8 = True
     if not (args.all or args.dit or args.same_l_window):
         parser.error("nothing to build: pass --all, --dit, or --same-l-window")
     if args.dit and args.same_l_window:
@@ -459,6 +547,11 @@ def main() -> int:
         _print_matrix(jobs, args.output_dir)
         if args.dry_run:
             return 0
+        # SAME-L parse needs the vendored Triton plugin; fail fast with the
+        # actionable remedy BEFORE the (minutes-long) DiT builds rather than
+        # after, when the matrix includes a SAME-L job.
+        if not args.dit_only:
+            require_sa3_vendor()
         env = _preflight("cuda")
         results = []
         if args.duration:
@@ -476,6 +569,18 @@ def main() -> int:
                     env=env,
                     force_rebuild=args.force_rebuild,
                 ))
+            if args.fp8:
+                for lo, opt, hi in dit_profiles:
+                    results.append(_build_dit_engine(
+                        output_dir=args.output_dir,
+                        config=SA3DiTFp8BuildConfig(
+                            lo, opt, hi, workspace_gb=args.workspace_gb),
+                        env=env,
+                        force_rebuild=args.force_rebuild,
+                        component="sa3_m_dit_fp8",
+                        precision_label="fp8",
+                        local_onnx=args.fp8_onnx,
+                    ))
         if not args.dit_only:
             lo, opt, hi = CANONICAL_SAME_L_WINDOW
             results.append(_build_same_l_window_engine(
@@ -489,6 +594,9 @@ def main() -> int:
         return 1 if failures else 0
 
     # Single mode
+    if args.same_l_window:
+        # Same vendor-plugin requirement as the --all path; fail fast.
+        require_sa3_vendor()
     env = _preflight("cuda")
     built = []
     if args.dit:
@@ -506,6 +614,19 @@ def main() -> int:
             force_rebuild=args.force_rebuild,
         )
         built.append(result)
+        if args.fp8:
+            fp8_cfg = SA3DiTFp8BuildConfig(
+                min_latents=config.min_latents,
+                opt_latents=config.opt_latents,
+                max_latents=config.max_latents,
+                workspace_gb=args.workspace_gb,
+            )
+            built.append(_build_dit_engine(
+                output_dir=args.output_dir, config=fp8_cfg, env=env,
+                force_rebuild=args.force_rebuild,
+                component="sa3_m_dit_fp8", precision_label="fp8",
+                local_onnx=args.fp8_onnx,
+            ))
     if args.same_l_window:
         d_lo, d_opt, d_hi = CANONICAL_SAME_L_WINDOW
         config = SameLWindowBuildConfig(
