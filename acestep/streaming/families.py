@@ -70,6 +70,9 @@ def _make_sa3(ss):
         knob_state=ss.virtual_knobs,
         state=ss.state,
         cond=init["cond"],
+        # Prompt-B capture for the A/B crossfade; .get so an in-process
+        # payload predating the blend surface stays blend-neutral.
+        cond_b=init.get("cond_b"),
         source_latent_bct=init["source_latent_bct"],
         # Resolved accel values (compile already normalized to eager by
         # the create path); .get so an in-process payload without them

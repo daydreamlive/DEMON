@@ -203,3 +203,63 @@ def test_missing_aux_cond_fails_loudly():
     pipe.submit(SlotRequest(seed=1, latent_frames=T))  # no aux_cond
     with pytest.raises(ValueError, match="aux_cond"):
         pipe.tick()
+
+
+def _adapter(steps=4):
+    return SA3Adapter(
+        _ZeroDit(),
+        schedule_builder=_schedule_builder(steps),
+        device="cpu",
+        dtype=torch.float32,
+    )
+
+
+def test_shift_alpha_warps_schedule_and_pins_endpoints():
+    adapter = _adapter(steps=4)
+    config = DiffusionConfig(
+        infer_steps=4, infer_method="ode", noise_on_cpu=True, dcw_enabled=False,
+    )
+    base = adapter.build_schedule(config, 0.8, "cpu", torch.float32)
+
+    adapter.shift_alpha = 2.0
+    warped = adapter.build_schedule(config, 0.8, "cpu", torch.float32)
+
+    # t[0] re-pinned to sigma_max exactly (slot init mixes source/noise
+    # by it — upstream build_schedule pins the same way post-shift);
+    # t[-1]=0 is a fixed point of the Flux map.
+    assert torch.equal(warped[0], base[0])
+    assert warped[-1].item() == 0.0
+    # Interior follows the Flux alpha map, pushed toward noise (a>1).
+    expect = 2.0 * base[1:-1] / (1.0 + 1.0 * base[1:-1])
+    assert torch.allclose(warped[1:-1], expect, atol=1e-6)
+    assert torch.all(warped[1:-1] > base[1:-1])
+    # Still a strictly decreasing schedule.
+    assert torch.all(warped[:-1] > warped[1:])
+
+    # alpha=1 is exactly the stock schedule (no warp branch entered).
+    adapter.shift_alpha = 1.0
+    assert torch.equal(
+        adapter.build_schedule(config, 0.8, "cpu", torch.float32), base,
+    )
+
+
+def test_shift_alpha_below_one_pulls_toward_refinement():
+    adapter = _adapter(steps=4)
+    config = DiffusionConfig(
+        infer_steps=4, infer_method="ode", noise_on_cpu=True, dcw_enabled=False,
+    )
+    base = adapter.build_schedule(config, 1.0, "cpu", torch.float32)
+    adapter.shift_alpha = 0.5
+    warped = adapter.build_schedule(config, 1.0, "cpu", torch.float32)
+    assert torch.all(warped[1:-1] < base[1:-1])
+    assert torch.all(warped[:-1] > warped[1:])
+
+
+def test_shift_alpha_invalid_fails_loudly():
+    adapter = _adapter(steps=4)
+    config = DiffusionConfig(
+        infer_steps=4, infer_method="ode", noise_on_cpu=True, dcw_enabled=False,
+    )
+    adapter.shift_alpha = 0.0
+    with pytest.raises(ValueError, match="shift_alpha"):
+        adapter.build_schedule(config, 1.0, "cpu", torch.float32)

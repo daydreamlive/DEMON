@@ -515,6 +515,19 @@ class StreamPipeline:
             self._schedule_cache.popitem(last=False)
         return schedule
 
+    def invalidate_schedule_cache(self) -> None:
+        """Drop the cached per-denoise schedules.
+
+        The cache is keyed by ``denoise`` only, so any change that
+        alters what ``adapter.build_schedule`` returns for the SAME
+        denoise value (a swapped ``schedule_builder``, a schedule-warp
+        parameter like SA3's ``shift_alpha``) must call this or already-
+        seen denoise values keep serving stale schedules. In-flight
+        slots keep the schedule they were submitted with (per-slot
+        copy); only new submissions rebuild.
+        """
+        self._schedule_cache.clear()
+
     def _ensure_device(self, device: torch.device, dtype: torch.dtype):
         if self._device is None:
             self._device = device

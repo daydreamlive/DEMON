@@ -13,17 +13,34 @@ stay 48 kHz-untouched in v1; ``geometry().sample_rate`` declares the
 DELIVERED rate, 48000 — native-44.1k delivery later is a geometry +
 client change only).
 
-v1 surface (everything else off, capability-gated): ``prompt`` (one
-conditioning bundle at a time, swapped per-prompt via
-:meth:`SA3Backend.handle_set_prompt`), fixed duration, ``seed``, ``steps_override``,
-and ``sa3_denoise`` — SA3's ``init_noise_level``, the audio-to-audio
-blend against the source anchor. The name is load-bearing: ACE's
-``denoise`` is a different control, and the homonym rule
-(``tests/unit/test_knob_homonyms.py``) forbids reusing the name with
-different semantics. Continuity comes the same way the spike demo
-proved (``demos/test_stream_sa3_graph.py``): every emit is a
-partial-denoise cover of the SAME source latent at the same seed, so
-advancing playback windows reconstruct one evolving song.
+Control surface (everything else off, capability-gated):
+
+* ``prompt`` — per-prompt re-conditioning via
+  :meth:`SA3Backend.handle_set_prompt`; an A/B pair when ``tags_b``
+  differs, crossfaded by :meth:`SA3Backend.handle_set_prompt_blend`
+  (per-token slerp of the T5Gemma cross-attn conditioning, the same
+  geodesic ACE's ``blend_for_strength`` walks — a linear midpoint
+  collapses conditioning norm and sounds washed out).
+* ``sa3_denoise`` — SA3's ``init_noise_level``, the audio-to-audio
+  blend against the source anchor. The name is load-bearing: ACE's
+  ``denoise`` is a different control, and the homonym rule
+  (``tests/unit/test_knob_homonyms.py``) forbids reusing the name with
+  different semantics.
+* ``sa3_shift`` — relative schedule warp on top of the checkpoint's
+  dist_shift (``SA3Adapter.shift_alpha``); changes invalidate the
+  pipeline's per-denoise schedule cache.
+* ``x0_target`` / ``feedback`` / ``feedback_depth`` — taken FROM the
+  shared registry (identical semantics to ACE, solver-level latent
+  mechanics that are family-agnostic): the source-lock morph toward
+  the anchor latent and the past-latent delay-tap blend. Both are only
+  audible at ``sa3_denoise`` < 1, where slot init actually reads
+  ``source_latents`` — at 1.0 every slot starts from pure noise.
+* ``seed`` / ``steps_override`` — shared registry, as before.
+
+Continuity comes the same way the spike demo proved
+(``demos/test_stream_sa3_graph.py``): every emit is a partial-denoise
+cover of the SAME source latent at the same seed, so advancing playback
+windows reconstruct one evolving song.
 
 Capabilities: ``refines_audio`` only. No swap/timbre/structure/LoRA/
 stems/loop-band/depth/curves until validated (canonical plan Phase 5).
@@ -32,11 +49,13 @@ stems/loop-band/depth/curves until validated (canonical plan Phase 5).
 from __future__ import annotations
 
 import time
+from collections import deque
 from typing import Callable, Optional
 
 import torch
 
 from acestep.engine.obs import logger
+from acestep.nodes.interpolation import INTERPOLATIONS, slerp
 from acestep.streaming.diffusion_backend import DiffusionBackend
 from acestep.streaming.generator_backend import (
     AudioChunk,
@@ -53,15 +72,25 @@ DELIVERY_SAMPLE_RATE = 48000
 SA3_SAMPLE_RATE = 44100
 SA3_LATENT_RATE_HZ = 44100.0 / 4096.0
 
+# Largest tap index the feedback delay can address. Derived from the
+# shared registry spec (the same one the manifest serves) so the knob
+# bound and the history ring can never drift apart.
+MAX_FEEDBACK_DEPTH = int(
+    next(s for s in registry_knob_specs(False) if s.name == "feedback_depth").max_val
+)
+
 
 def sa3_knob_specs() -> list:
     """The SA3 family knob manifest (backend-owned, plan §3.3).
 
-    ``seed`` and ``steps_override`` are genuinely neutral controls and
-    are taken FROM the shared registry by name, so their semantics can
-    never fork from ACE's (the homonym test would catch it; this makes
-    the fork impossible instead). ``sa3_denoise`` is family-prefixed
-    because ACE's ``denoise`` means something else.
+    ``seed``, ``steps_override``, ``x0_target``, ``feedback`` and
+    ``feedback_depth`` are genuinely neutral controls (solver-level
+    latent mechanics for the latter three) and are taken FROM the
+    shared registry by name, so their semantics can never fork from
+    ACE's (the homonym test would catch it; this makes the fork
+    impossible instead). ``sa3_denoise`` / ``sa3_shift`` are
+    family-prefixed because ACE's ``denoise`` and ``shift`` mean
+    different things.
     """
     shared = {s.name: s for s in registry_knob_specs(False)}
     return [
@@ -74,6 +103,19 @@ def sa3_knob_specs() -> list:
                 "'denoise' (k1 strength), hence the prefix."
             ),
         ),
+        KnobSpec(
+            "sa3_shift", default=1.0, min_val=0.25, max_val=4.0, group="sa3",
+            description=(
+                "Relative timestep-schedule warp on top of the "
+                "checkpoint's own dist_shift (Flux alpha map). 1.0 = "
+                "stock schedule; >1 spends steps near noise (structure), "
+                "<1 near data (refinement). Distinct from ACE's 'shift' "
+                "(absolute flow-matching shift), hence the prefix."
+            ),
+        ),
+        shared["x0_target"],
+        shared["feedback"],
+        shared["feedback_depth"],
         shared["seed"],
         shared["steps_override"],
     ]
@@ -116,9 +158,23 @@ class SA3Backend(DiffusionBackend):
         sampler: str = "pingpong",
         prompt_rebuilder: Optional[Callable] = None,
         prompt_tags: Optional[str] = None,
+        # Prompt-B conditioning capture for the A/B crossfade. None
+        # (or identical to ``cond``) means no B prompt: the blend is a
+        # no-op and handle_set_prompt_blend keeps serving bundle A.
+        cond_b=None,
     ):
         super().__init__(adapter=adapter, codec=codec)
         self._cond = cond
+        self._cond_b = cond_b if cond_b is not None else cond
+        # Live A↔B crossfade value and the bundle the next submit
+        # carries (A verbatim at 0, B verbatim at 1, slerp between).
+        # Swapped GIL-atomically from the command thread, exactly like
+        # handle_set_prompt's reference swaps.
+        self._blend = 0.0
+        self._active_bundle = cond.cond_bundle
+        # Ring of past finished latents for the feedback delay-tap
+        # (engine layout [1, T, C]; [0] is the most recent).
+        self._latent_history: deque = deque(maxlen=MAX_FEEDBACK_DEPTH)
         self._schedule_builder_factory = schedule_builder_factory
         # ``(tags, steps) -> (cond, steps -> (denoise -> schedule))`` —
         # the per-prompt re-conditioning hook behind :meth:`handle_set_prompt`.
@@ -184,6 +240,8 @@ class SA3Backend(DiffusionBackend):
         state=None,
         source_audio=None,
         cond=None,
+        prompt_b: Optional[str] = None,
+        cond_b=None,
         source_latent_bct=None,
         dit_backend: str = "eager",
         codec_backend: str = "eager",
@@ -192,11 +250,14 @@ class SA3Backend(DiffusionBackend):
         """Production assembly over a loaded
         :class:`~acestep.engine.sa3_context.SA3Context`.
 
-        ``cond`` / ``source_latent_bct`` accept precomputed values so the
-        serving-layer create path (:mod:`acestep.streaming.sa3_session`),
-        which runs ``prepare_cond`` + source encode itself before the
-        session exists, doesn't pay them twice; absent, they're computed
-        here (the in-process assembly the GPU smoke validated).
+        ``cond`` / ``cond_b`` / ``source_latent_bct`` accept precomputed
+        values so the serving-layer create path
+        (:mod:`acestep.streaming.sa3_session`), which runs
+        ``prepare_cond`` + source encode itself before the session
+        exists, doesn't pay them twice; absent, they're computed here
+        (the in-process assembly the GPU smoke validated). ``prompt_b``
+        seeds the A/B crossfade pair; a missing/empty/identical B means
+        the blend is a no-op until a later ``set_prompt`` supplies one.
 
         ``dit_backend`` / ``codec_backend`` are the session's resolved
         acceleration values (the serving layer's decoder/vae accel
@@ -212,6 +273,18 @@ class SA3Backend(DiffusionBackend):
         if cond is None:
             cond = context.prepare_cond(
                 prompt=prompt, duration=duration_s, steps=steps,
+            )
+        if cond_b is None and prompt_b not in (None, "", prompt):
+            cond_b = context.prepare_cond(
+                prompt=prompt_b, duration=duration_s, steps=steps,
+            )
+        if cond_b is not None and int(cond_b.latent_frames) != int(cond.latent_frames):
+            # Same fixed duration must mean the same latent geometry;
+            # a mismatch would desync the blend against the ring
+            # buffer and the source anchor (cf. handle_set_prompt).
+            raise ValueError(
+                f"sa3 prompt-B conditioning changed latent_frames "
+                f"({cond.latent_frames} -> {cond_b.latent_frames})"
             )
         source_latent = (
             source_latent_bct if source_latent_bct is not None
@@ -244,6 +317,7 @@ class SA3Backend(DiffusionBackend):
             adapter=adapter,
             codec=context.make_codec(backend=codec_backend),
             cond=cond,
+            cond_b=cond_b,
             schedule_builder_factory=(
                 lambda s: context.make_schedule_builder(cond, s)
             ),
@@ -298,25 +372,21 @@ class SA3Backend(DiffusionBackend):
     # ---- control (universal): per-prompt re-conditioning ------------------------
 
     def handle_set_prompt(self, tags: str, *, tags_b: Optional[str] = None) -> None:
-        """Re-run ``prepare_cond`` for ``tags`` and swap the conditioning
-        bundle (the session's backend control hook — plan §2: prompt is
-        the universal control). Per-prompt, OUTSIDE the hot loop: one
-        T5Gemma capture on the dispatcher thread, then two GIL-atomic
-        reference swaps; in-flight slots finish on the old bundle, the
-        next ``submit`` carries the new one.
-
-        SA3 v1 has no A/B conditioning cache, so a distinct ``tags_b``
-        is not honored — logged loudly rather than silently blended.
+        """Re-run ``prepare_cond`` for ``tags`` (and ``tags_b`` when it
+        differs) and swap the conditioning captures (the session's
+        backend control hook — plan §2: prompt is the universal
+        control). Per-prompt, OUTSIDE the hot loop: T5Gemma captures on
+        the dispatcher thread, then GIL-atomic reference swaps;
+        in-flight slots finish on the old bundle, the next ``submit``
+        carries the new one. An absent/empty/identical ``tags_b``
+        resets B to A (the ACE ``set_prompt`` convention:
+        ``cond_pair_b = cond_pair``), so a stale B can't linger behind
+        the blend knob.
         """
         if self._prompt_rebuilder is None:
             raise RuntimeError(
                 "SA3Backend was constructed without a prompt_rebuilder; "
                 "handle_set_prompt requires the from_context assembly"
-            )
-        if tags_b and tags_b != tags:
-            logger.warning(
-                "sa3_prompt_b_ignored tags_b={!r} reason=no_ab_blend_v1",
-                tags_b,
             )
         t0 = time.perf_counter()
         cond, sched_factory = self._prompt_rebuilder(tags, self._steps)
@@ -330,9 +400,27 @@ class SA3Backend(DiffusionBackend):
                 f"({self._cond.latent_frames} -> {cond.latent_frames}); "
                 f"duration is fixed per session"
             )
+        if tags_b and tags_b != tags:
+            cond_b, _ = self._prompt_rebuilder(tags_b, self._steps)
+            if int(cond_b.latent_frames) != int(cond.latent_frames):
+                raise ValueError(
+                    f"sa3 prompt-B swap changed latent_frames "
+                    f"({cond.latent_frames} -> {cond_b.latent_frames}); "
+                    f"duration is fixed per session"
+                )
+        else:
+            cond_b = cond
         self._schedule_builder_factory = sched_factory
         self.adapter.schedule_builder = sched_factory(self._steps)
+        # The pipeline caches schedules per denoise value; the builder
+        # swap changes what build_schedule returns for the same key.
+        # (Same duration means the same effective_seq_len today, so
+        # this is currently belt-and-braces — but the cache key carries
+        # no prompt identity, so correctness must not depend on that.)
+        self.pipeline.invalidate_schedule_cache()
         self._cond = cond
+        self._cond_b = cond_b
+        self._active_bundle = self._blend_bundles(self._blend)
         # Emerged-generation labeling (see __init__): the new bundle gets
         # the next cond epoch; keep a short identity history so latents
         # still in flight on the OLD bundle stay attributable.
@@ -340,17 +428,92 @@ class SA3Backend(DiffusionBackend):
         self._cond_history.append((cond.cond_bundle, self._cond_epoch, tags))
         del self._cond_history[:-4]
         logger.info(
-            "sa3_prompt_applied tags={!r} cond_epoch={} rebuild_ms={:.1f}",
-            tags, self._cond_epoch, rebuild_ms,
+            "sa3_prompt_applied tags={!r} tags_b={!r} cond_epoch={} "
+            "rebuild_ms={:.1f}",
+            tags, tags_b, self._cond_epoch, rebuild_ms,
         )
+
+    def handle_set_prompt_blend(self, value: float) -> None:
+        """Crossfade the live conditioning between the A and B captures
+        (the session's ``set_prompt_blend`` backend hook). Per-token
+        slerp of the T5Gemma cross-attn conditioning — cheap tensor
+        math on the command thread, then one GIL-atomic bundle swap;
+        in-flight slots finish on their submitted bundle.
+        """
+        v = max(0.0, min(1.0, float(value)))
+        self._blend = v
+        self._active_bundle = self._blend_bundles(v)
+
+    def _blend_bundles(self, v: float) -> dict:
+        """The active cond bundle for blend value ``v``: A verbatim at
+        0, B verbatim at 1 (endpoint identity keeps the TRT wrapper's
+        id()-keyed staging cache warm on the common path), otherwise a
+        NEW dict with the cross-attn conditioning slerped and the token
+        masks unioned. Slerp runs in float32 (norm math degrades in
+        bf16) and degenerates to linear per token where either side is
+        zero-padding, so A-only / B-only token positions survive at
+        scaled strength under the unioned mask.
+
+        Everything else (padding_mask, cfg/apg scalars, local_add_cond)
+        comes from A: both captures share the session's fixed duration,
+        which is what those encode.
+        """
+        a = self._cond.cond_bundle
+        b = self._cond_b.cond_bundle
+        if b is a or v <= 0.001:
+            return a
+        if v >= 0.999:
+            return b
+        ca, cb = a["cross_attn_cond"], b["cross_attn_cond"]
+        if ca.shape != cb.shape:
+            # Both captures are max-length-padded by the conditioner;
+            # a shape mismatch means the captures disagree about more
+            # than token content — refuse rather than mis-blend.
+            raise ValueError(
+                f"sa3 prompt blend shape mismatch: A {tuple(ca.shape)} "
+                f"vs B {tuple(cb.shape)}"
+            )
+        blended = dict(a)
+        blended["cross_attn_cond"] = slerp(
+            ca.float(), cb.float(), v,
+        ).to(ca.dtype)
+        blended["cross_attn_mask"] = torch.maximum(
+            a["cross_attn_mask"], b["cross_attn_mask"],
+        )
+        return blended
 
     # ---- produce hooks ---------------------------------------------------------
 
     def _prepare_tick(self, knobs: dict, ctx: TickContext) -> dict:
+        # Schedule warp: hot-applied, but cache-coupled — the pipeline
+        # caches schedules per denoise value, so a changed alpha must
+        # invalidate or already-seen denoise values keep the old warp.
+        shift = float(knobs.get("sa3_shift", 1.0))
+        if abs(shift - float(self.adapter.shift_alpha)) > 1e-3:
+            self.adapter.shift_alpha = shift
+            self.pipeline.invalidate_schedule_cache()
+
+        # Source-lock strength rides the shared override so a strength
+        # bump engages the blend on in-flight slots submitted while it
+        # was 0 — the ACE runner's exact per-tick convention.
+        x0_str = float(knobs.get("x0_target", 0.0))
+        if self._source_latent_btc is not None:
+            self.pipeline.set_shared_curve("x0_target_strength", x0_str)
+
+        try:
+            fb_depth_raw = float(knobs.get("feedback_depth", 1.0))
+        except (TypeError, ValueError):
+            fb_depth_raw = 1.0
         return {
             "denoise": float(knobs.get("sa3_denoise", 1.0)),
             "seed": int(knobs.get("seed", self._default_seed)),
             "steps": int(knobs.get("steps_override", self._steps)),
+            "shift": shift,
+            "x0_target": x0_str,
+            "feedback": float(knobs.get("feedback", 0.0)),
+            "feedback_depth": max(
+                1, min(MAX_FEEDBACK_DEPTH, int(round(fb_depth_raw))),
+            ),
         }
 
     def _generate(self, prep: dict):
@@ -363,11 +526,45 @@ class SA3Backend(DiffusionBackend):
             self._steps = prep["steps"]
             self.pipeline = self._build_pipeline(self._steps)
 
+        # Feedback delay-tap (the ACE mechanic, verbatim): blend the
+        # tapped past latent into the source anchor at slot init. If
+        # history is shorter than the requested depth (early ticks),
+        # fall back to the oldest available tap rather than disabling
+        # feedback. Audible only at sa3_denoise < 1 — at 1.0 slot init
+        # is pure noise and source_latents never enters.
+        source = self._source_latent_btc
+        if (
+            prep["feedback"] > 0.0
+            and self._latent_history
+            and source is not None
+        ):
+            tap_idx = min(
+                prep["feedback_depth"] - 1, len(self._latent_history) - 1,
+            )
+            fb_latent = self._latent_history[tap_idx]
+            method = (
+                getattr(self.state, "interp_feedback", "slerp")
+                if self.state is not None else "slerp"
+            )
+            source = INTERPOLATIONS[method](
+                source, fb_latent, prep["feedback"],
+            )
+
         self.pipeline.submit(SlotRequest(
             seed=prep["seed"],
             denoise=prep["denoise"],
-            source_latents=self._source_latent_btc,
-            aux_cond=self._cond.cond_bundle,
+            source_latents=source,
+            # The morph target stays the clean anchor (not the
+            # feedback-blended source), matching ACE: x0_target is a
+            # source LOCK, feedback is deliberately upstream of it.
+            # Attached whenever an anchor exists so a strength bump via
+            # the shared override engages on in-flight slots; the
+            # request field carries the live value so a fresh pipeline
+            # (steps rebuild) is correct before the next prepare
+            # re-establishes the shared override.
+            x0_target=self._source_latent_btc,
+            x0_target_strength=prep["x0_target"],
+            aux_cond=self._active_bundle,
             latent_frames=self._cond.latent_frames,
             # Deterministic pingpong: identical requests must replay the
             # same trajectory or advancing windows splice different
@@ -393,6 +590,10 @@ class SA3Backend(DiffusionBackend):
     def _after_produce(self, prep: dict, result_latent, is_fresh: bool) -> None:
         self.last_denoise = prep["denoise"]
         self._last_prep = prep
+        if is_fresh:
+            # appendleft so latent_history[0] is the most recent;
+            # tap_idx = depth-1 reads "N ticks back" (ACE convention).
+            self._latent_history.appendleft(result_latent.detach().clone())
         if not is_fresh or self.state is None:
             return
         req = self._emerged_request
@@ -521,4 +722,8 @@ class SA3Backend(DiffusionBackend):
             p["sa3_denoise"] = round(prep["denoise"], 2)
             p["seed"] = prep["seed"]
             p["steps_override"] = prep["steps"]
+            p["sa3_shift"] = round(prep["shift"], 2)
+            p["x0_target"] = round(prep["x0_target"], 2)
+            p["feedback"] = round(prep["feedback"], 2)
+            p["feedback_depth"] = prep["feedback_depth"]
         p["_prompt"] = getattr(self.state, "prompt_text", "")

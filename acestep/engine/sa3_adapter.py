@@ -56,6 +56,15 @@ class SA3Adapter:
     ):
         self.dit = dit
         self.schedule_builder = schedule_builder
+        # Relative schedule warp on top of the checkpoint's own
+        # dist_shift (the ``sa3_shift`` knob): the Flux/SD3 map
+        # ``t -> a*t / (1 + (a-1)*t)`` upstream itself uses for
+        # constant-alpha shifts (``FluxDistributionShift``). 1.0 is the
+        # untouched checkpoint schedule; >1 pushes steps toward noise
+        # (more structure work), <1 toward refinement. The backend
+        # mutates this and must invalidate the pipeline's schedule
+        # cache — the cache is keyed by denoise alone.
+        self.shift_alpha: float = 1.0
         self._device = torch.device(device)
         self._dtype = dtype
         # The spike's cond stacker (pads cross-attn tensors to the
@@ -76,6 +85,18 @@ class SA3Adapter:
                 f"{config.infer_steps + 1}, got {schedule.numel()} — "
                 "rebuild the pipeline when the step count changes"
             )
+        alpha = float(self.shift_alpha)
+        if alpha <= 0.0:
+            raise ValueError(f"sa3 shift_alpha must be > 0, got {alpha}")
+        if abs(alpha - 1.0) > 1e-6:
+            # Composed AFTER the builder's dist_shift warp. The first
+            # entry is re-pinned to sigma_max (= denoise) afterwards,
+            # mirroring upstream build_schedule's own post-shift pin:
+            # slot init mixes source/noise by sigma_max, so t[0] must
+            # stay exactly there. t[-1]=0 is a fixed point of the map.
+            sigma_max = schedule[0].clone()
+            schedule = alpha * schedule / (1.0 + (alpha - 1.0) * schedule)
+            schedule[0] = sigma_max
         return schedule.to(device=device, dtype=dtype)
 
     def request_frames(self, request) -> int:

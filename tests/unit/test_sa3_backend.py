@@ -76,7 +76,7 @@ def _backend(**kw):
     return SA3Backend(
         adapter=adapter,
         codec=_FakeCodec(),
-        cond=_FakeCond(),
+        cond=kw.pop("cond", _FakeCond()),
         schedule_builder_factory=_schedule_builder_factory,
         knob_state=KnobState(sa3_knob_specs()),
         steps=steps,
@@ -84,6 +84,27 @@ def _backend(**kw):
         vae_window_s=0.1,
         **kw,
     )
+
+
+def _knobs(b, **over):
+    """Registry defaults with steps_override pinned to the ctor steps,
+    so produce() doesn't swap in a fresh pipeline (which would discard
+    the submit wrapper / shared curves the wiring tests inspect)."""
+    return {**b.read_knobs(), "steps_override": b._steps, **over}
+
+
+def _capture_submits(b):
+    """Wrap the live pipeline's submit so tests can inspect the exact
+    SlotRequest the backend builds (knob wiring lands there)."""
+    submitted: list = []
+    orig = b.pipeline.submit
+
+    def _wrapped(req):
+        submitted.append(req)
+        return orig(req)
+
+    b.pipeline.submit = _wrapped
+    return submitted
 
 
 def test_contract_surface():
@@ -102,7 +123,10 @@ def test_contract_surface():
     assert abs(g.duration_s - N44 / SA3_SAMPLE_RATE) < 1e-9
 
     names = [s.name for s in b.knob_specs()]
-    assert names == ["sa3_denoise", "seed", "steps_override"]
+    assert names == [
+        "sa3_denoise", "sa3_shift", "x0_target",
+        "feedback", "feedback_depth", "seed", "steps_override",
+    ]
 
 
 def test_knob_defaults_flow_through_read_knobs():
@@ -110,6 +134,10 @@ def test_knob_defaults_flow_through_read_knobs():
     raw = b.read_knobs()
     assert raw["sa3_denoise"] == 1.0
     assert raw["steps_override"] == 8.0  # registry default; ctor steps differ
+    assert raw["sa3_shift"] == 1.0      # stock checkpoint schedule
+    assert raw["x0_target"] == 0.0
+    assert raw["feedback"] == 0.0
+    assert raw["feedback_depth"] == 1.0
 
 
 def test_produce_emits_and_renders_windows():
@@ -178,3 +206,162 @@ def test_steps_override_rebuilds_pipeline():
                      CTX, "generate"):
             fresh += 1
     assert fresh >= 1
+
+
+def test_sa3_shift_applies_and_invalidates_schedule_cache():
+    b = _backend()
+    knobs = {**_knobs(b), "sa3_denoise": 0.7}
+    b.produce(knobs, CTX, "generate")
+    assert 0.7 in b.pipeline._schedule_cache
+    stock = b.pipeline._schedule_cache[0.7].clone()
+
+    b.produce({**knobs, "sa3_shift": 2.0}, CTX, "generate")
+    assert b.adapter.shift_alpha == 2.0
+    warped = b.pipeline._schedule_cache[0.7]
+    # Same cache key, different schedule — exactly the staleness the
+    # invalidation exists to prevent.
+    assert not torch.allclose(warped, stock)
+    assert warped[0].item() == stock[0].item()   # sigma_max pinned
+    assert warped[-1].item() == 0.0
+
+    # No-op change (same alpha) must not clear the cache every tick.
+    cache_id = id(b.pipeline._schedule_cache)
+    b.produce({**knobs, "sa3_shift": 2.0}, CTX, "generate")
+    assert 0.7 in b.pipeline._schedule_cache
+    assert id(b.pipeline._schedule_cache) == cache_id
+
+
+def test_x0_target_rides_shared_curve_and_request():
+    src = torch.randn(1, C, T)
+    b = _backend(source_latent_bct=src)
+    submitted = _capture_submits(b)
+
+    b.produce({**_knobs(b), "x0_target": 0.5}, CTX, "generate")
+
+    shared = b.pipeline._shared_curves["x0_target_strength"]
+    assert float(shared.flatten()[0]) == 0.5
+    req = submitted[-1]
+    assert req.x0_target_strength == 0.5
+    # The morph target is the clean anchor in engine layout.
+    assert torch.equal(req.x0_target, src.movedim(1, 2))
+
+    # Dropping the knob back to 0 releases in-flight slots too.
+    b.produce(_knobs(b), CTX, "generate")
+    shared = b.pipeline._shared_curves["x0_target_strength"]
+    assert float(shared.flatten()[0]) == 0.0
+
+
+def test_feedback_taps_latent_history():
+    src = torch.randn(1, C, T)
+    b = _backend(source_latent_bct=src)
+    knobs = _knobs(b)
+    for _ in range(10):
+        b.produce(knobs, CTX, "generate")
+    assert len(b._latent_history) >= 1
+    tap = b._latent_history[0].clone()
+
+    submitted = _capture_submits(b)
+    b.produce({**knobs, "feedback": 1.0, "feedback_depth": 1},
+              CTX, "generate")
+    # feedback=1.0 fully replaces the anchor with the tapped latent
+    # (slerp endpoint); the request's init source must be the tap, and
+    # the morph target must stay the clean anchor.
+    req = submitted[-1]
+    assert torch.allclose(req.source_latents, tap, atol=1e-6)
+    assert torch.equal(req.x0_target, src.movedim(1, 2))
+
+    # Depth beyond available history falls back to the oldest tap
+    # rather than disabling feedback (the operator said "feedback").
+    oldest = b._latent_history[-1].clone()
+    b.produce({**knobs, "feedback": 1.0, "feedback_depth": 8},
+              CTX, "generate")
+    assert torch.allclose(submitted[-1].source_latents, oldest, atol=1e-6)
+
+
+def test_feedback_without_history_or_source_is_inert():
+    b = _backend()  # no source anchor
+    submitted = _capture_submits(b)
+    b.produce({**_knobs(b), "feedback": 1.0}, CTX, "generate")
+    assert submitted[-1].source_latents is None
+
+
+def _cond_ab():
+    """A/B captures with orthogonal unit token embeddings (so the
+    slerp midpoint is checkable in closed form) and disjoint mask
+    tails (so the union is observable)."""
+    a, b = _FakeCond(), _FakeCond()
+    a.cond_bundle["cross_attn_cond"] = (
+        torch.tensor([1.0, 0.0, 0.0, 0.0]).repeat(1, 3, 1)
+    )
+    a.cond_bundle["cross_attn_mask"] = torch.tensor([[1.0, 1.0, 0.0]])
+    b.cond_bundle["cross_attn_cond"] = (
+        torch.tensor([0.0, 1.0, 0.0, 0.0]).repeat(1, 3, 1)
+    )
+    b.cond_bundle["cross_attn_mask"] = torch.tensor([[1.0, 0.0, 1.0]])
+    return a, b
+
+
+def test_prompt_blend_endpoints_midpoint_and_submit():
+    ca, cb = _cond_ab()
+    b = _backend(cond=ca, cond_b=cb)
+
+    # Endpoints return the captures verbatim (identity keeps the TRT
+    # wrapper's id()-keyed staging warm).
+    assert b._active_bundle is ca.cond_bundle
+    b.handle_set_prompt_blend(1.0)
+    assert b._active_bundle is cb.cond_bundle
+
+    b.handle_set_prompt_blend(0.5)
+    mid = b._active_bundle
+    assert mid is not ca.cond_bundle and mid is not cb.cond_bundle
+    cc = mid["cross_attn_cond"]
+    # Slerp, not lerp: unit vectors stay unit at the midpoint (a linear
+    # blend of orthogonal units collapses to norm ~0.707).
+    assert torch.allclose(cc.norm(dim=-1), torch.ones(1, 3), atol=1e-5)
+    r = 2.0 ** -0.5
+    assert torch.allclose(
+        cc, torch.tensor([r, r, 0.0, 0.0]).repeat(1, 3, 1), atol=1e-5,
+    )
+    # Token masks union so either side's tokens stay attended.
+    assert torch.equal(mid["cross_attn_mask"], torch.tensor([[1.0, 1.0, 1.0]]))
+    # The captures themselves are never mutated.
+    assert torch.equal(
+        ca.cond_bundle["cross_attn_cond"],
+        torch.tensor([1.0, 0.0, 0.0, 0.0]).repeat(1, 3, 1),
+    )
+
+    # The next submit carries the blended bundle.
+    submitted = _capture_submits(b)
+    b.produce(_knobs(b), CTX, "generate")
+    assert submitted[-1].aux_cond is mid
+
+
+def test_prompt_blend_without_b_is_a_noop():
+    b = _backend()  # cond_b defaults to cond: blend A against A
+    b.handle_set_prompt_blend(0.7)
+    assert b._active_bundle is b._cond.cond_bundle
+
+
+def test_set_prompt_recaptures_b_and_invalidates_schedules():
+    captures = []
+
+    def rebuilder(tags, steps):
+        captures.append(tags)
+        cond = _FakeCond()
+        return cond, lambda s: _schedule_builder_factory(s)
+
+    b = _backend(prompt_rebuilder=rebuilder)
+    b.pipeline._get_schedule(0.9)
+    assert b.pipeline._schedule_cache
+
+    b.handle_set_prompt("tags a", tags_b="tags b")
+    assert captures == ["tags a", "tags b"]
+    # The builder swap changes what the same denoise key would build —
+    # stale schedules must not survive the prompt change.
+    assert not b.pipeline._schedule_cache
+    assert b._cond_b is not b._cond
+    assert b._active_bundle is b._cond.cond_bundle  # blend still 0
+
+    # An absent B resets B to A (the ACE set_prompt convention).
+    b.handle_set_prompt("tags solo")
+    assert b._cond_b is b._cond

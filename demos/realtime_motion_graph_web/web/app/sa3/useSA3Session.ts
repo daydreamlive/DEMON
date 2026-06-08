@@ -22,13 +22,16 @@ import { defaultWsUrl, podHttp } from "@/engine/podUrl";
 //     the server reads the waveform off its own disk.
 //   * `sa3_duration_s` optionally fixes the generation window; absent,
 //     the server derives it from the fixture length (capped at 120 s).
-//   * No Tags B / blend: sa3 v1 keeps one conditioning bundle at a
-//     time; "Send Prompt" re-runs the conditioner server-side.
+//   * "Send Prompt" re-runs the conditioner server-side; an optional
+//     prompt B rides the same command (`tags_b`) into the backend's
+//     A/B conditioning pair, crossfaded live via `set_prompt_blend`
+//     (sendPromptBlend below — slerp server-side, snappy per-tick).
 //
 // The knob bank comes from the session's own `ready.knob_manifest`
 // (backend-owned, session-resolved), NOT the static /api/knobs probe —
 // the panel renders whatever the sa3 backend declares (sa3_denoise,
-// seed, steps_override today) and future knobs appear without UI edits.
+// sa3_shift, x0_target, feedback, feedback_depth, seed, steps_override
+// today) and future knobs appear without UI edits.
 
 export type SA3Status = "idle" | "connecting" | "ready" | "error";
 
@@ -117,7 +120,12 @@ export function useSA3Session() {
   }, [stop]);
 
   const start = useCallback(
-    async (prompt: string, fixtureName: string, durationS: number | null) => {
+    async (
+      prompt: string,
+      fixtureName: string,
+      durationS: number | null,
+      promptB?: string,
+    ) => {
       await stop();
       setStatus("connecting");
       setMessage("Connecting…");
@@ -129,6 +137,12 @@ export function useSA3Session() {
           use_server_fixture: true,
           fixture_name: fixtureName,
         };
+        // Seeds the backend's A/B conditioning pair at create, so the
+        // blend knob is live from the first tick (a later Send Prompt
+        // with a B re-captures the pair).
+        if (promptB && promptB !== prompt) {
+          config.prompt_b = promptB;
+        }
         if (durationS != null && durationS > 0) {
           config.sa3_duration_s = durationS;
         }
@@ -214,10 +228,23 @@ export function useSA3Session() {
     }
   }, []);
 
-  const sendPrompt = useCallback((prompt: string) => {
-    // No tags_b: sa3 v1 holds one conditioning bundle; the server
-    // re-runs prepare_cond for this prompt and swaps it in.
-    remoteRef.current?.sendPrompt(prompt);
+  const sendPrompt = useCallback((prompt: string, promptB?: string) => {
+    // The server re-runs prepare_cond and swaps the bundle(s) in. A
+    // non-empty B rides `tags_b` into the A/B pair; absent, the
+    // backend resets B to A (so a stale B can't linger behind the
+    // blend knob).
+    remoteRef.current?.sendPrompt(
+      prompt,
+      undefined,
+      undefined,
+      promptB && promptB !== prompt ? promptB : undefined,
+    );
+  }, []);
+
+  const sendPromptBlend = useCallback((value: number) => {
+    // Live A↔B crossfade (server-side slerp of the T5Gemma cross-attn
+    // conditioning). Cheap per slider tick — same shape as a knob.
+    remoteRef.current?.sendSetPromptBlend(value);
   }, []);
 
   return {
@@ -225,6 +252,7 @@ export function useSA3Session() {
     knobs,
     message,
     sendPrompt,
+    sendPromptBlend,
     setKnob,
     start,
     status,

@@ -8,12 +8,14 @@ import styles from "./sa3.module.css";
 import { useSA3Session } from "./useSA3Session";
 
 // Stable Audio 3 frontend — the hardware-pedal chassis the magenta
-// route established, laid out for the sa3 family's v1 surface: the
-// knob bank straight from ready.knob_manifest (sa3_denoise, seed,
-// steps_override today), a single prompt, and the audio-to-audio
-// source picker (pod-side fixture + optional fixed duration). Nothing
-// acestep-shaped exists here — no LoRAs, no timbre/structure, no A/B
-// blend (sa3 v1 holds one conditioning bundle at a time).
+// route established: the knob bank straight from ready.knob_manifest
+// (sa3_denoise / sa3_shift / x0_target / feedback / feedback_depth /
+// seed / steps_override today — new backend knobs appear here with
+// zero UI work), prompt A plus an optional prompt B with a live A↔B
+// blend fader (set_prompt tags_b + set_prompt_blend; slerp
+// server-side), and the audio-to-audio source picker (pod-side fixture
+// + optional fixed duration). Nothing acestep-shaped exists here — no
+// LoRAs, no timbre/structure.
 
 const DEFAULT_PROMPT =
   "driving cinematic synthwave, analog arpeggios, gated reverb snare, " +
@@ -76,6 +78,8 @@ function RotorKnob({ name, entry, value, onChange }: RotorKnobProps) {
 export function SA3Panel() {
   const session = useSA3Session();
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
+  const [promptB, setPromptB] = useState("");
+  const [blend, setBlend] = useState(0);
   const [fixture, setFixture] = useState(DEFAULT_FIXTURE);
   const [durationS, setDurationS] = useState("");
 
@@ -95,12 +99,21 @@ export function SA3Panel() {
       void session.stop();
     } else {
       const parsed = Number(durationS);
+      // The backend's blend starts at 0 (pure A) on every create —
+      // mirror it so the slider and the audio agree.
+      setBlend(0);
       void session.start(
         prompt,
         fixture,
         Number.isFinite(parsed) && parsed > 0 ? parsed : null,
+        promptB.trim() || undefined,
       );
     }
+  }
+
+  function onBlend(value: number) {
+    setBlend(value);
+    session.sendPromptBlend(value);
   }
 
   return (
@@ -139,6 +152,31 @@ export function SA3Panel() {
               onChange={(event) => setPrompt(event.target.value)}
             />
           </label>
+          <label className={styles.fieldSlot}>
+            <span>Prompt B (blend)</span>
+            <textarea
+              rows={2}
+              placeholder="optional — second prompt for the A↔B crossfade"
+              value={promptB}
+              onChange={(event) => setPromptB(event.target.value)}
+            />
+          </label>
+          <label className={`${styles.fieldSlot} ${styles.blendSlot}`}>
+            <span>
+              A↔B blend
+              <em className={styles.blendValue}>{blend.toFixed(2)}</em>
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={blend}
+              disabled={session.status !== "ready" || !promptB.trim()}
+              onChange={(event) => onBlend(Number(event.target.value))}
+              aria-label="Prompt A/B blend"
+            />
+          </label>
           <div className={styles.sourceRow}>
             <label className={styles.fieldSlot}>
               <span>Source</span>
@@ -174,7 +212,7 @@ export function SA3Panel() {
             type="button"
             className={styles.sendBtn}
             disabled={session.status !== "ready"}
-            onClick={() => session.sendPrompt(prompt)}
+            onClick={() => session.sendPrompt(prompt, promptB.trim() || undefined)}
           >
             Send Prompt
           </button>

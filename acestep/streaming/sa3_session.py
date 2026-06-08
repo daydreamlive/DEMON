@@ -18,7 +18,9 @@ catalog), :func:`create_sa3_session` builds the SA3 one:
   ``_encode_audio_input`` — the ``(48000, waveform)`` tuple is exactly
   how ``demos/test_stream_sa3_graph.py`` feeds it.
 * **Conditioning, once.** ``prepare_cond(prompt, duration)`` per
-  session create; per-prompt re-captures afterwards go through
+  session create — twice when ``config.prompt_b`` differs (the A/B
+  crossfade pair behind ``SA3Backend.handle_set_prompt_blend``);
+  per-prompt re-captures afterwards go through
   ``SA3Backend.handle_set_prompt`` (the session dispatches there).
 * **Duration.** ``config.sa3_duration_s`` when set, else the uploaded
   source length; capped at the small-music 120 s window.
@@ -141,13 +143,7 @@ def create_sa3_session(
     waveform = waveform[:, : int(duration_s * SAMPLE_RATE)]
 
     prompt = config.prompt
-    if config.prompt_b not in (None, "", prompt):
-        # v1 has no A/B conditioning cache (plan Phase 3a surface);
-        # loud, not silent (§3.4 spirit — config field, not a command).
-        logger.warning(
-            "sa3_prompt_b_ignored tags_b={!r} reason=no_ab_blend_v1",
-            config.prompt_b,
-        )
+    prompt_b = config.prompt_b if config.prompt_b not in (None, "") else prompt
     steps = int(config.steps)
     depth = max(1, min(int(config.depth), SA3_MAX_PIPELINE_DEPTH))
 
@@ -160,6 +156,13 @@ def create_sa3_session(
     )
 
     cond = context.prepare_cond(prompt=prompt, duration=duration_s, steps=steps)
+    # Second capture for the A/B crossfade pair (SA3Backend
+    # handle_set_prompt_blend); skipped when B is absent/identical —
+    # the backend then blends A against A, a no-op.
+    cond_b = (
+        context.prepare_cond(prompt=prompt_b, duration=duration_s, steps=steps)
+        if prompt_b != prompt else None
+    )
     source_latent = context.encode_source(
         (SAMPLE_RATE, waveform), cond.audio_sample_size,
     )
@@ -196,7 +199,7 @@ def create_sa3_session(
         cond_pair_b=None,            # (None = backend owns conditioning; see
                                      # _refresh_conditioning's guard)
         prompt_text=prompt,
-        prompt_text_b=prompt,
+        prompt_text_b=prompt_b,
         current_depth=depth,
     )
 
@@ -250,6 +253,7 @@ def create_sa3_session(
             backend_init={
                 "context": context,
                 "cond": cond,
+                "cond_b": cond_b,
                 "source_latent_bct": source_latent,
                 "duration_s": duration_s,
                 "dit_backend": dit_backend,

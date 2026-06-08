@@ -1,8 +1,9 @@
 /* Stable Audio 3 panel — the hardware-pedal chassis the magenta route
    established (itself lifted from the ambient-oneknob POC): same shell
    gradient, same wood side rails, same brand/title typography. The knob
-   bank renders the sa3 family's manifest; below it sit the prompt and
-   the audio-to-audio source picker (fixture + optional duration). */
+   bank renders the sa3 family's manifest; below it sit the A/B prompts
+   with the blend fader and the audio-to-audio source picker (fixture +
+   optional duration). */
 
 .shell {
   align-items: center;
@@ -236,6 +237,68 @@
 
 .durationSlot input {
   font-variant-numeric: tabular-nums;
+}
+
+/* A↔B blend fader. The generic .fieldSlot input chrome (text-box
+   background/padding) reads wrong on a range track — strip it and
+   style the native track/thumb to match the chassis. */
+.blendSlot input {
+  appearance: none;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  height: 22px;
+  padding: 0;
+}
+
+.blendSlot input:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.blendSlot input::-webkit-slider-runnable-track {
+  background: linear-gradient(180deg, #0c0d0e, #181a1d);
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 3px;
+  height: 6px;
+}
+
+.blendSlot input::-webkit-slider-thumb {
+  appearance: none;
+  background: linear-gradient(180deg, #2c3037, #14171b);
+  border: 1px solid rgb(255 255 255 / 30%);
+  border-radius: 3px;
+  height: 16px;
+  margin-top: -6px;
+  width: 10px;
+}
+
+.blendSlot input::-moz-range-track {
+  background: linear-gradient(180deg, #0c0d0e, #181a1d);
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 3px;
+  height: 6px;
+}
+
+.blendSlot input::-moz-range-thumb {
+  background: linear-gradient(180deg, #2c3037, #14171b);
+  border: 1px solid rgb(255 255 255 / 30%);
+  border-radius: 3px;
+  height: 16px;
+  width: 10px;
+}
+
+.blendSlot > span {
+  display: flex;
+  justify-content: space-between;
+}
+
+.blendValue {
+  color: #8f938f;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+  text-transform: none;
 }
 
 .sendBtn {
