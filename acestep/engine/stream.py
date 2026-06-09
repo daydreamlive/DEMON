@@ -219,6 +219,11 @@ class _Slot:
     # populated on step 0, reused on every subsequent step of this slot.
     initial_noise: Optional[torch.Tensor] = None
     vt_neg_cached: Optional[torch.Tensor] = None
+    # Host-side precompute of "request.x0_target_strength is anywhere
+    # nonzero", taken once at slot init. Request fields are immutable
+    # after submit (hot mutation goes through set_shared_curve, which
+    # keeps its own flag), so this never goes stale.
+    x0_strength_nonzero: bool = False
 
 
 class StreamPipeline:
@@ -326,6 +331,11 @@ class StreamPipeline:
         # at the setter so callers can pass scalars without thinking
         # about shape.
         self._shared_curves: dict[str, torch.Tensor] = {}
+        # Host-side "is this curve anywhere nonzero?" companion to
+        # ``_shared_curves``, computed once at the setter. Lets hot-path
+        # gates (e.g. the x0_target_strength fast-path check) stay pure
+        # Python instead of paying a GPU readback per slot per step.
+        self._shared_curves_nonzero: dict[str, bool] = {}
 
         # Channel guidance: a ``[1, T, 64]`` per-channel gain applied to
         # ``xt`` before each forward pass. Lives in its own field rather
@@ -557,11 +567,18 @@ class StreamPipeline:
             noise.clone() if request.rcfg_mode == "self" else None
         )
 
+        strength = request.x0_target_strength
+        if isinstance(strength, torch.Tensor):
+            x0_strength_nonzero = bool(strength.abs().any().item())
+        else:
+            x0_strength_nonzero = bool(strength)
+
         return _Slot(
             request=request, xt=xt,
             t_schedule=t_schedule, step_idx=0,
             momentum_buffer=momentum_buffer,
             initial_noise=initial_noise,
+            x0_strength_nonzero=x0_strength_nonzero,
         )
 
     # ------------------------------------------------------------------
@@ -1219,14 +1236,18 @@ class StreamPipeline:
             # ``x0_target_strength`` path: blend toward a target latent
             # at scalar (or per-frame curve) strength, gated to the
             # refinement half.  Preserving the historical "strength==0
-            # falls through to the fast path" behavior — checks the
-            # effective (shared override or slot field) strength via a
-            # tensor.any() sync, which costs one host-device fence per
-            # slot per step but lets the gate stay tensor-safe.
-            eff_strength = self._eff_shared(slot, "x0_target_strength")
+            # falls through to the fast path" behavior — the yes/no is
+            # resolved from host-side flags (shared-curve setter / slot
+            # init), so the gate costs no GPU readback; the strength
+            # tensor itself is only materialized inside the blend branch
+            # that consumes it.
+            shared_strength_nonzero = self._shared_curves_nonzero.get(
+                "x0_target_strength"
+            )
             strength_active = (
-                eff_strength is not None
-                and bool(eff_strength.abs().any().item())
+                shared_strength_nonzero
+                if shared_strength_nonzero is not None
+                else slot.x0_strength_nonzero
             )
             scalar_x0_target = (
                 req.x0_target is not None
@@ -1300,6 +1321,9 @@ class StreamPipeline:
                         x0_pred, req.x0_target, curve * blend_gate,
                     )
             elif scalar_x0_target:
+                # strength_active guarantees a nonzero shared override or
+                # slot field, so _eff_shared cannot return None here.
+                eff_strength = self._eff_shared(slot, "x0_target_strength")
                 alpha = eff_strength.to(device=x0_pred.device, dtype=x0_pred.dtype)
                 x0_pred = (1.0 - alpha) * x0_pred + alpha * req.x0_target
 
@@ -1407,8 +1431,13 @@ class StreamPipeline:
         """
         if value is None:
             self._shared_curves.pop(name, None)
+            self._shared_curves_nonzero.pop(name, None)
             return
-        self._shared_curves[name] = ode_steps.normalize_curve(value)
+        curve = ode_steps.normalize_curve(value)
+        self._shared_curves[name] = curve
+        # One readback here (setter cadence) instead of per slot per step
+        # at the gates that only need a yes/no.
+        self._shared_curves_nonzero[name] = bool(curve.abs().any().item())
 
     def _eff_shared(self, slot: "_Slot", name: str):
         """Return shared override for ``name`` if set, else slot's field.
@@ -1625,6 +1654,7 @@ class StreamPipeline:
         self._schedule_cache.clear()
         self._compiled_cache.clear()
         self._shared_curves.clear()
+        self._shared_curves_nonzero.clear()
         # DCW corrector holds wavelet basis tensors on GPU; drop it.
         self._dcw_corrector = None
         # Detach references to the engine + decoder so DiffusionEngine.close
