@@ -1325,6 +1325,13 @@ class StreamPipeline:
         step_sde_curve = self._get_compiled(ode_steps.step_sde_curve)
         step_sde_renoise = self._get_compiled(ode_steps.step_sde_renoise)
 
+        # Fast-path rows with sentinel curves and DCW off integrate as
+        # one batched foreach op after the loop (see flush below);
+        # collected as (si, t_curr, t_next).
+        ones_3d, zeros_3d = self._ensure_sentinels()
+        dcw_active = self._dcw_corrector.is_active
+        fast_rows: List[Tuple[int, float, float]] = []
+
         for si, slot in enumerate(slots):
             t_curr = slot.t_schedule[slot.step_idx].item()
             t_next = slot.t_schedule[slot.step_idx + 1].item()
@@ -1400,6 +1407,18 @@ class StreamPipeline:
                 # velocity. Byte-identical to the pre-refactor
                 # ``_step_simple_ode``. When ``onc`` is the zeros sentinel
                 # the post-step noise injection is a no-op.
+                if vs is ones_3d and onc is zeros_3d and not dcw_active:
+                    # Sentinel curves make the kernel exactly
+                    # ``xt + dt * vt`` (multiplying by the ones sentinel
+                    # is value-exact; the injected noise term is exactly
+                    # zero), so the row joins the batched flush below
+                    # instead of launching its own kernels. Skipping the
+                    # sentinel randn_like also skips its RNG advance —
+                    # safe because slot noise is drawn per-request from
+                    # explicit seeds, never from ambient generator state
+                    # mid-schedule.
+                    fast_rows.append((si, t_curr, t_next))
+                    continue
                 xt_new = step_ode(xt, vt, t_curr, t_next, vs, onc)
                 slot.xt = self._maybe_dcw(xt, vt, xt_new, t_curr)
                 slot.step_idx += 1
@@ -1479,6 +1498,25 @@ class StreamPipeline:
 
             slot.xt = self._maybe_dcw(xt, vt, xt_new, t_curr)
             slot.step_idx += 1
+
+        # --- Batched fast-path flush ---
+        # All collected rows integrate in two multi-tensor launches
+        # (dt * vt, then xt + that) instead of one kernel chain per
+        # slot. Scalars ride in host-side (no H2D copy), and the ops
+        # run directly on the per-slot views (no cat, no shared output
+        # buffer). Arithmetic is the exact fast-path expression —
+        # bit-identical to the eager per-slot kernels (the compiled
+        # variant may differ at bf16 LSB where inductor fused the
+        # mul+add; the golden tier judges that).
+        if fast_rows:
+            vt_rows = [vt_per_slot[si] for si, _, _ in fast_rows]
+            dts = [tn - tc for _, tc, tn in fast_rows]
+            steps = torch._foreach_mul(vt_rows, dts)
+            xt_rows = [xt_mask_list[si] for si, _, _ in fast_rows]
+            new_rows = torch._foreach_add(xt_rows, steps)
+            for (si, _, _), xt_new in zip(fast_rows, new_rows):
+                slots[si].xt = xt_new
+                slots[si].step_idx += 1
 
     def set_depth(self, depth: int) -> None:
         """Resize the ring buffer. Active slots drain naturally.
