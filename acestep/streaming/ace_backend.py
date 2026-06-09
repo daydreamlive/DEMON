@@ -903,6 +903,25 @@ class ACEStepBackend(DiffusionBackend):
         # Stash the values the params echo + sampled trace need.
         self._echo = prep["echo"]
 
+    def _dec_event_pair(self):
+        """Cached CUDA-event pair for timing decodes, or None on CPU.
+
+        Events replace the old ``torch.cuda.synchronize()`` bracket so
+        the decode measurement never stalls the runner thread: the
+        bracket is resolved right after the waveform's D2H copy, which
+        already completed everything the events depend on.
+        """
+        if not torch.cuda.is_available():
+            return None
+        pair = getattr(self, "_dec_ev_pair", None)
+        if pair is None:
+            pair = (
+                torch.cuda.Event(enable_timing=True),
+                torch.cuda.Event(enable_timing=True),
+            )
+            self._dec_ev_pair = pair
+        return pair
+
     def render_window(self, t_start_s: float):
         decode_src = (
             self._current_result if self._current_result is not None
@@ -910,7 +929,11 @@ class ACEStepBackend(DiffusionBackend):
         )
         if decode_src is None:
             return None
-        t1 = time.perf_counter()
+        dec_ev = self._dec_event_pair()
+        if dec_ev is not None:
+            dec_ev[0].record()
+        else:
+            t1 = time.perf_counter()
         if self._walk_active:
             # The DiT output spans [win_start_s,
             # win_start_s + walk_window_s] of the song.
@@ -939,9 +962,15 @@ class ACEStepBackend(DiffusionBackend):
         else:
             audio_out = self.codec.decode(decode_src, t_start=t_start_s, cyclic=True)
             win_offset_samples = 0
-        torch.cuda.synchronize()
-        self.last_dec_ms += (time.perf_counter() - t1) * 1000
+        if dec_ev is not None:
+            dec_ev[1].record()
+        else:
+            self.last_dec_ms += (time.perf_counter() - t1) * 1000
         win_wav = audio_out.waveform.detach().cpu().float().squeeze(0)
+        if dec_ev is not None:
+            # The D2H copy above drained the decode work past the end
+            # event, so this resolves without a device-wide sync.
+            self.last_dec_ms += dec_ev[0].elapsed_time(dec_ev[1])
         win_np = win_wav.numpy().T
         win_start = audio_out.start_sample + win_offset_samples
         return AudioChunk(pcm=win_np, start_sample=win_start)
@@ -962,11 +991,19 @@ class ACEStepBackend(DiffusionBackend):
             and (result - self._mse_prev).pow(2).mean().item() < self.skip_threshold
         ):
             return None
-        t1 = time.perf_counter()
+        dec_ev = self._dec_event_pair()
+        if dec_ev is not None:
+            dec_ev[0].record()
+        else:
+            t1 = time.perf_counter()
         audio_out = self.codec.decode(result_latent)
-        torch.cuda.synchronize()
-        self.last_dec_ms += (time.perf_counter() - t1) * 1000
+        if dec_ev is not None:
+            dec_ev[1].record()
+        else:
+            self.last_dec_ms += (time.perf_counter() - t1) * 1000
         wav = audio_out.waveform.detach().cpu().float().squeeze(0)
+        if dec_ev is not None:
+            self.last_dec_ms += dec_ev[0].elapsed_time(dec_ev[1])
         wav_np = wav.numpy().T
         if self.crop_seconds > 0:
             wav_np = wav_np[:int(self.crop_seconds * SAMPLE_RATE)]
