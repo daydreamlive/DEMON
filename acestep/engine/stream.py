@@ -225,6 +225,12 @@ class _Slot:
     # is normalized once per slot instead of allocating a fresh
     # ``[1, 1, 1]`` tensor on every read (per slot, per step).
     curve_cache: Dict[str, torch.Tensor] = field(default_factory=dict)
+    # Memo for "does this slot field have any nonzero value" — the
+    # x0_target gate used to answer that with a per-slot-per-step
+    # ``.abs().any().item()`` device readback; the flag is computed at
+    # most once per slot here (and without any tensor op for the
+    # common Python-scalar fields).
+    nonzero_cache: Dict[str, bool] = field(default_factory=dict)
 
 
 class StreamPipeline:
@@ -332,6 +338,12 @@ class StreamPipeline:
         # at the setter so callers can pass scalars without thinking
         # about shape.
         self._shared_curves: dict[str, torch.Tensor] = {}
+        # Sidecar of ``_shared_curves``: "any nonzero value" per name,
+        # computed at the setter (no tensor op for scalar sets) so the
+        # x0_target gate in the step loop never has to read a tensor
+        # back from the device. Maintained strictly in lockstep with
+        # ``_shared_curves`` — see set_shared_curve / _curve_nonzero.
+        self._shared_curve_nonzero: dict[str, bool] = {}
 
         # Channel guidance: a ``[1, T, 64]`` per-channel gain applied to
         # ``xt`` before each forward pass. Lives in its own field rather
@@ -1224,16 +1236,11 @@ class StreamPipeline:
 
             # ``x0_target_strength`` path: blend toward a target latent
             # at scalar (or per-frame curve) strength, gated to the
-            # refinement half.  Preserving the historical "strength==0
-            # falls through to the fast path" behavior — checks the
-            # effective (shared override or slot field) strength via a
-            # tensor.any() sync, which costs one host-device fence per
-            # slot per step but lets the gate stay tensor-safe.
-            eff_strength = self._eff_shared(slot, "x0_target_strength")
-            strength_active = (
-                eff_strength is not None
-                and bool(eff_strength.abs().any().item())
-            )
+            # refinement half. Preserves the historical "strength==0
+            # falls through to the fast path" behavior; the nonzero
+            # check reads cached flags (maintained at set time), not
+            # tensor data, so the gate costs no host-device fence.
+            strength_active = self._curve_nonzero(slot, "x0_target_strength")
             scalar_x0_target = (
                 req.x0_target is not None
                 and strength_active
@@ -1306,6 +1313,9 @@ class StreamPipeline:
                         x0_pred, req.x0_target, curve * blend_gate,
                     )
             elif scalar_x0_target:
+                # Non-None whenever ``strength_active`` held: the gate
+                # and this read resolve from the same sources.
+                eff_strength = self._eff_shared(slot, "x0_target_strength")
                 alpha = eff_strength.to(device=x0_pred.device, dtype=x0_pred.dtype)
                 x0_pred = (1.0 - alpha) * x0_pred + alpha * req.x0_target
 
@@ -1416,11 +1426,21 @@ class StreamPipeline:
         """
         if value is None:
             self._shared_curves.pop(name, None)
+            self._shared_curve_nonzero.pop(name, None)
             return
+        # Nonzero flag for the x0_target gate, computed where it is
+        # free: scalar sets need no tensor op at all, and tensor sets
+        # pay one readback here (per knob write) instead of one per
+        # slot per step in the loop.
+        if isinstance(value, (int, float, bool)):
+            nonzero = float(value) != 0.0
+        else:
+            nonzero = bool(value.abs().any().item())
         v = ode_steps.normalize_curve(value)
         if self._device is not None and v.device != self._device:
             v = v.to(device=self._device)
         self._shared_curves[name] = v
+        self._shared_curve_nonzero[name] = nonzero
 
     def _eff_shared(self, slot: "_Slot", name: str):
         """Return shared override for ``name`` if set, else slot's field.
@@ -1450,6 +1470,31 @@ class StreamPipeline:
             v = v.to(device=self._device)
         slot.curve_cache[name] = v
         return v
+
+    def _curve_nonzero(self, slot: "_Slot", name: str) -> bool:
+        """True when the effective curve for ``name`` has any nonzero.
+
+        Same source-resolution order as :meth:`_eff_shared` (shared
+        override, then slot field), but answers the boolean gate
+        without touching tensor data in the hot loop: the shared flag
+        is maintained by ``set_shared_curve`` and the slot-field flag
+        is computed at most once per slot — for free when the field is
+        a Python scalar (every production caller), with a single
+        readback when it is a tensor.
+        """
+        if name in self._shared_curves:
+            return self._shared_curve_nonzero.get(name, True)
+        flag = slot.nonzero_cache.get(name)
+        if flag is None:
+            raw = getattr(slot.request, name, None)
+            if raw is None:
+                flag = False
+            elif isinstance(raw, (int, float, bool)):
+                flag = float(raw) != 0.0
+            else:
+                flag = bool(raw.abs().any().item())
+            slot.nonzero_cache[name] = flag
+        return flag
 
     def set_dcw(
         self,
@@ -1651,6 +1696,7 @@ class StreamPipeline:
         self._schedule_cache.clear()
         self._compiled_cache.clear()
         self._shared_curves.clear()
+        self._shared_curve_nonzero.clear()
         # DCW corrector holds wavelet basis tensors on GPU; drop it.
         self._dcw_corrector = None
         # Detach references to the engine + decoder so DiffusionEngine.close
