@@ -312,6 +312,17 @@ class StreamPipeline:
         self._trt_ctx = engine._trt_ctx if engine is not None else None
         self._trt_stream = engine._trt_stream if engine is not None else None
         self._trt_engine = engine._trt_engine if engine is not None else None
+        # Torch-side view of the shared polygraphy stream + a reusable
+        # completion event. Lets _trt_forward order the engine's output
+        # against torch's current stream device-side (wait_event)
+        # instead of blocking the host for the whole execution.
+        self._trt_torch_stream = (
+            torch.cuda.ExternalStream(self._trt_stream.ptr)
+            if self._trt_stream is not None else None
+        )
+        self._trt_done_event = (
+            torch.cuda.Event() if self._trt_stream is not None else None
+        )
         self._trt_io_dtype = getattr(engine, '_trt_io_dtype', torch.float32)
         self._trt_input_dtypes = getattr(engine, "_trt_input_dtypes", {}) or {}
         self._trt_output_dtype = getattr(engine, "_trt_output_dtype", self._trt_io_dtype)
@@ -449,6 +460,13 @@ class StreamPipeline:
         self._trt_engine = engine._trt_engine
         self._trt_ctx = engine._trt_ctx
         self._trt_stream = engine._trt_stream
+        self._trt_torch_stream = (
+            torch.cuda.ExternalStream(self._trt_stream.ptr)
+            if self._trt_stream is not None else None
+        )
+        self._trt_done_event = (
+            torch.cuda.Event() if self._trt_stream is not None else None
+        )
         self._trt_max_batch = _read_trt_max_batch(self._trt_engine)
         self._trt_io_dtype = getattr(engine, "_trt_io_dtype", torch.float32)
         self._trt_input_dtypes = getattr(engine, "_trt_input_dtypes", {})
@@ -793,7 +811,18 @@ class StreamPipeline:
 
         if not ctx.execute_async_v3(self._trt_stream.ptr):
             raise RuntimeError("TRT decoder execution failed")
-        self._trt_stream.synchronize()
+        # Device-side completion ordering instead of a host block:
+        # torch's current stream waits on an event recorded after the
+        # enqueue, so the cast below (and everything the tick enqueues
+        # after it) runs only once the engine finished — while the CPU
+        # is already free to assemble the rest of the tick. Input-side
+        # ordering (our copy_ writes above vs the engine reading them)
+        # was always implicit: torch's default current stream is the
+        # legacy default stream and the polygraphy stream is a blocking
+        # stream, so the two never run concurrently. This change keeps
+        # that assumption and only removes the host-side join.
+        self._trt_done_event.record(self._trt_torch_stream)
+        torch.cuda.current_stream().wait_event(self._trt_done_event)
 
         out = self._trt_out_buf
         if pad:
@@ -863,6 +892,15 @@ class StreamPipeline:
             self._trt_bufs = cached
             self._trt_out_buf = cached["_out_buf"]
             return
+
+        # Cache miss: about to allocate fresh buffers and possibly evict
+        # the oldest entry. With async execution an in-flight forward
+        # may still be reading the evicted entry's memory, and freeing
+        # hands it to the torch allocator for reuse — so drain the TRT
+        # stream first. Shape changes are transition-rare; steady-state
+        # ticks stay on the no-sync hit path above.
+        if self._trt_stream is not None:
+            self._trt_stream.synchronize()
 
         device = self._device
         io_dtype = self._trt_io_dtype
@@ -1720,6 +1758,8 @@ class StreamPipeline:
         self._trt_ctx = None
         self._trt_engine = None
         self._trt_stream = None
+        self._trt_torch_stream = None
+        self._trt_done_event = None
         self._trt_max_batch = None
         self._channel_gain = None
         self._ones_3d = None
