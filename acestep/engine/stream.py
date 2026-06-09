@@ -736,9 +736,14 @@ class StreamPipeline:
         else:
             bufs["hidden_states"].copy_(xt_io)
 
-        # timestep: one scalar per row.
+        # timestep: stage all rows in the pinned host buffer, then one
+        # async H2D copy — instead of one tiny device write per row.
+        # Ordering with the TRT exec below is the same as the other
+        # input copies (legacy default stream → blocking TRT stream).
+        t_host = bufs["_timestep_host"]
         for i, t in enumerate(timestep_list):
-            bufs["timestep"][i] = t
+            t_host[i] = t
+        bufs["timestep"].copy_(t_host, non_blocking=True)
 
         # encoder_hidden_states: already padded to max_L + catted by
         # the caller. The engine has no ``encoder_attention_mask``
@@ -906,6 +911,11 @@ class StreamPipeline:
         bufs["_eff_T"] = eff_T
         bufs["_T"] = T
         bufs["_out_buf"] = out_buf
+        # Pinned host staging for the per-row timestep scalars (see
+        # _trt_forward). Underscore-prefixed so the bind loops skip it.
+        bufs["_timestep_host"] = torch.empty(
+            B, dtype=bufs["timestep"].dtype, pin_memory=True,
+        )
         self._trt_bufs_cache[key] = bufs
         while len(self._trt_bufs_cache) > self._trt_bufs_cache_max:
             self._trt_bufs_cache.popitem(last=False)

@@ -104,6 +104,14 @@ class ACEAdapter:
 
     def __init__(self, pipeline):
         self._pipeline = pipeline
+        # Per-shape reuse caches for the eager (non-TRT) forward:
+        # (pinned-host, device) timestep buffer pairs keyed by B, and
+        # the all-ones attention mask keyed by (B, T). Both were
+        # allocated fresh on every forward. Shapes only vary with the
+        # ring-buffer fill level and the source duration, so the dicts
+        # stay tiny; cleared wholesale if they ever grow past 16.
+        self._t_bufs: dict = {}
+        self._attn_ones: dict = {}
 
     def build_schedule(self, config, denoise: float, device, dtype) -> torch.Tensor:
         from .diffusion import DiffusionConfig
@@ -163,14 +171,32 @@ class ACEAdapter:
                 ctx_batch=ctx_b,
             )
 
-        t_b = torch.tensor(
-            timestep_list, device=p._device, dtype=p._dtype,
-        )
+        B = xt_batch.shape[0]
+        tb = self._t_bufs.get(B)
+        if tb is None:
+            if len(self._t_bufs) > 16:
+                self._t_bufs.clear()
+            pin = p._device is not None and p._device.type == "cuda"
+            tb = (
+                torch.empty(B, dtype=p._dtype, pin_memory=pin),
+                torch.empty(B, dtype=p._dtype, device=p._device),
+            )
+            self._t_bufs[B] = tb
+        t_host, t_b = tb
+        for i, t in enumerate(timestep_list):
+            t_host[i] = t
+        t_b.copy_(t_host, non_blocking=True)
+
         mask_b = torch.cat(mask_list, dim=0)
-        attn_b = torch.ones(
-            xt_batch.shape[0], xt_batch.shape[1],
-            device=p._device, dtype=p._dtype,
-        )
+        key = (B, xt_batch.shape[1])
+        attn_b = self._attn_ones.get(key)
+        if attn_b is None:
+            if len(self._attn_ones) > 16:
+                self._attn_ones.clear()
+            attn_b = torch.ones(
+                key[0], key[1], device=p._device, dtype=p._dtype,
+            )
+            self._attn_ones[key] = attn_b
 
         out = p.decoder(
             hidden_states=xt_batch,
