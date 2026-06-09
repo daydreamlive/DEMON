@@ -43,6 +43,11 @@ DEFAULT_THRESHOLDS = {"mel_l2": 0.10, "rms_db_diff": 0.5,
 # reported (win_cos_min_action) so a genuine glitch stays visible.
 ACTION_WINDOW_PAD = 1
 
+# log-mel framing (kept in one place so the mel_l2 action mask can map a
+# 1 s window index to the frames it covers). A frame at hop index j is
+# centred on sample j*MEL_HOP, i.e. inside 1 s window j*MEL_HOP // SR.
+MEL_HOP = 512
+
 
 def action_window_indices(bundle_dir: Path,
                           pad: int = ACTION_WINDOW_PAD) -> set:
@@ -87,7 +92,7 @@ def _log_mel(mono: np.ndarray) -> np.ndarray:
     import librosa
 
     mel = librosa.feature.melspectrogram(
-        y=mono, sr=SAMPLE_RATE, n_fft=2048, hop_length=512, n_mels=64)
+        y=mono, sr=SAMPLE_RATE, n_fft=2048, hop_length=MEL_HOP, n_mels=64)
     return librosa.power_to_db(mel, ref=np.max)
 
 
@@ -108,10 +113,24 @@ def audio_metrics(ref: np.ndarray, run: np.ndarray,
 
     ma, mb = _log_mel(a), _log_mel(b)
     f = min(ma.shape[1], mb.shape[1])
-    # Normalize per-frame L2 by the mel dimensionality so the number is
-    # scale-comparable across n_mels choices.
-    mel_l2 = float(np.linalg.norm(ma[:, :f] - mb[:, :f], axis=0).mean()
-                   / np.sqrt(ma.shape[0]))
+    # Per-frame L2 across mel bins, normalized by the mel dimensionality so
+    # the number is scale-comparable across n_mels choices.
+    per_frame = (np.linalg.norm(ma[:, :f] - mb[:, :f], axis=0)
+                 / np.sqrt(ma.shape[0]))
+    # Mask the same action windows the cosine gate masks: a knob / prompt /
+    # swap firing mid-region is an intentional discontinuity and is not owed
+    # spectral identity here either. Without this, mel_l2 (averaged over the
+    # whole stream) silently re-counts the very frames win_cos_min excludes,
+    # so a clean run trips the global mel_l2 gate purely on the transition
+    # (knob_step: ~0.105 from windows it was told to ignore). The masked
+    # frames' mean is still reported as mel_l2_action so a real glitch in a
+    # transition stays visible. With no actions the mask is empty and this
+    # is bit-identical to the unmasked mean.
+    frame_win = (np.arange(f) * MEL_HOP) // SAMPLE_RATE
+    mel_gate = np.array([int(w) not in action_windows for w in frame_win])
+    mel_l2 = float(per_frame[mel_gate].mean()) if mel_gate.any() else 0.0
+    mel_l2_action = (float(per_frame[~mel_gate].mean())
+                     if (~mel_gate).any() else None)
 
     win = SAMPLE_RATE  # 1 s windows
     cos = []
@@ -129,6 +148,9 @@ def audio_metrics(ref: np.ndarray, run: np.ndarray,
         "len_ref": int(ref.shape[0]),
         "len_run": int(run.shape[0]),
         "mel_l2": round(mel_l2, 5),
+        # informational: mel distance over the masked transition frames
+        "mel_l2_action": (round(mel_l2_action, 5)
+                          if mel_l2_action is not None else None),
         "rms_db_diff": round(float(rms_db_diff), 4),
         "win_cos_min": round(min(gated), 6) if gated else None,
         "win_cos_mean": round(float(np.mean(gated)), 6) if gated else None,

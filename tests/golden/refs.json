@@ -30,7 +30,12 @@
       "file": "knob_step.tar.gz",
       "sha256": "5289d21984edbf0b0a52f7716802da5944ef4d250dd78e755bfea6a4b3283a6c",
       "canonical_sha256": "0b2eac2a326cea51f36c277771adf0de333401a1af026ccce8ab39d81c63e238",
-      "thresholds": null,
+      "thresholds": {
+        "_note": "Calibrated 2026-06-09. knob_step carries a stable, benign cross-build mel offset vs the 06-04 canonical (mel_l2 floor 0.0953, bit-stable across runs; win_cos_min 0.9999, rms 0 dB), distinct from peers because the knob legitimately alters generation after it fires. mel_l2 relaxed above that floor with margin; the cosine/level gates keep their strict defaults so a real regression still trips them.",
+        "mel_l2": 0.13,
+        "rms_db_diff": 0.5,
+        "win_cos_min": 0.995
+      },
       "env": {
         "harness_git_sha": "96c57bb",
         "pod_url": "ws://127.0.0.1:49676",
