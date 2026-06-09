@@ -354,13 +354,18 @@ class StreamingSession:
       ``state.pending_*`` and drain inside ``apply_pending`` which the
       runner calls from ``before_tick``. Cheap from any thread.
     - Conditioning, timbre, structure, and prompt-blend mutations run
-      ``encode_cond_pair`` / ``encode_audio`` on the caller thread and
-      serialize against each other and against the source-swap commit
-      via ``state._lock``. Two transports calling these concurrently
-      will block one until the other returns. The swap's setup work
-      (TRT profile resolve, ``prepare_source``, stem extract) runs
-      unlocked; only the commit phase that writes the new track's
-      fields holds the lock.
+      ``encode_cond_pair`` / ``encode_audio`` on the caller thread.
+      Prompt and timbre encodes run OFF ``state._lock`` (the runner
+      acquires that lock every tick, so a locked encode used to stall
+      the whole tick loop): inputs are snapshotted under the lock, the
+      encode serializes against other encodes via
+      ``state._encode_lock``, and the commit re-checks
+      ``state.cond_epoch``, re-encoding if another conditioning commit
+      landed meanwhile. Structure mutations and the source-swap commit
+      still hold ``state._lock`` throughout (the swap's setup work —
+      TRT profile resolve, ``prepare_source``, stem extract — runs
+      unlocked; the commit bumps ``cond_epoch`` so racing encodes
+      retry against the new track).
     - ``set_knobs`` and ``set_prompt_blend`` echo without mutating when
       ``origin=CommandOrigin.EXTERNAL``.
 
@@ -967,6 +972,13 @@ class StreamingSession:
                 # Use the active timbre reference if one is uploaded;
                 # otherwise the new playback source's own latent.
                 # Override persists across source swaps.
+                #
+                # This commit rewrites cond_pair AND its encode inputs
+                # (bpm/key/duration/source), so bump the conditioning
+                # epoch: any prompt/timbre encode in flight on another
+                # thread re-snapshots and re-encodes instead of
+                # committing pairs built from the old track.
+                state.cond_epoch += 1
                 self.stream.source = new_source
                 state.source = new_source
                 state.playback_samples = int(new_wf.shape[-1])
@@ -1061,6 +1073,42 @@ class StreamingSession:
     def _active_refer_latent(self):
         tl = self.state.timbre_latent
         return tl if tl is not None else self.state.source.latent
+
+    def _encode_cond_pairs(
+        self,
+        tags: str,
+        tags_b: str | None,
+        refer,
+        bpm,
+        duration,
+        key,
+        time_signature,
+        *,
+        encode_b: bool,
+    ):
+        """Run the text encodes for an A (and optionally B) cond pair
+        WITHOUT holding ``state._lock``.
+
+        The runner takes ``state._lock`` at the top of every tick
+        (``read_knobs`` / ``has_pending_refit``), so encoding under it
+        stalled the whole tick loop — no ticks, no gap-fill — for the
+        encoder's duration on every prompt/timbre change.
+        ``state._encode_lock`` keeps the historical "encodes serialize
+        against each other" property. Returns ``(pair, pair_b)`` with
+        ``pair_b`` None when ``encode_b`` is False (caller mirrors A).
+        """
+        with self.state._encode_lock:
+            pair = encode_cond_pair(
+                self.session, tags, refer, bpm, duration, key,
+                time_signature,
+            )
+            pair_b = None
+            if encode_b:
+                pair_b = encode_cond_pair(
+                    self.session, tags_b, refer, bpm, duration, key,
+                    time_signature,
+                )
+        return pair, pair_b
 
     def _refresh_conditioning(self):
         """Recompose ``stream.conditioning`` from the cached A/B pairs,
@@ -1166,26 +1214,34 @@ class StreamingSession:
             r.mark_hint_dirty()
 
     def _apply_timbre_waveform(self, t_wf: torch.Tensor, name: str) -> float:
-        """Mutate timbre state for a new ref. Returns post-truncation
-        duration (seconds). Rolls back to prior state and re-raises on
-        any failure."""
+        """Apply a new timbre ref. Returns post-truncation duration
+        (seconds). Compute-then-commit: the VAE encode and the cond
+        re-encodes run WITHOUT ``state._lock`` (the runner takes that
+        lock every tick), into locals; the commit under the lock is
+        atomic and re-checks ``cond_epoch``, retrying the encodes if
+        another conditioning commit landed meanwhile. Nothing is
+        mutated before the commit, so failure needs no rollback —
+        exceptions propagate to ``_apply_ref``'s handler as before."""
         state = self.state
-        prev_timbre_latent = state.timbre_latent
-        prev_timbre_name = state.timbre_name
-        prev_cond_pair = state.cond_pair
-        prev_cond_pair_b = state.cond_pair_b
-        prev_stream_cond = self.stream.conditioning
-        try:
-            cap = int(state.duration * SAMPLE_RATE)
-            t_wf = t_wf[:, :cap]
-            rem = t_wf.shape[-1] % self.pool
+        for _ in range(5):
+            with state._lock:
+                duration = state.duration
+                prompt_text = state.prompt_text
+                prompt_text_b = state.prompt_text_b
+                bpm = state.bpm
+                key = state.key
+                ts = state.time_signature
+                epoch = state.cond_epoch
+            cap = int(duration * SAMPLE_RATE)
+            wf = t_wf[:, :cap]
+            rem = wf.shape[-1] % self.pool
             if rem:
-                t_wf = t_wf[:, :t_wf.shape[-1] - rem]
-            if t_wf.shape[-1] < self.pool:
+                wf = wf[:, :wf.shape[-1] - rem]
+            if wf.shape[-1] < self.pool:
                 raise ValueError("timbre clip too short")
-            clip_s = t_wf.shape[-1] / SAMPLE_RATE
+            clip_s = wf.shape[-1] / SAMPLE_RATE
             sc = _try_load_sidecar(
-                name, samples=int(t_wf.shape[-1]),
+                name, samples=int(wf.shape[-1]),
             )
             if sc is not None:
                 device = self.session.handler.device
@@ -1196,42 +1252,36 @@ class StreamingSession:
                 logger.debug("timbre_sidecar_hit name={}", name)
             else:
                 timbre_audio = Audio(
-                    waveform=t_wf, sample_rate=SAMPLE_RATE,
+                    waveform=wf, sample_rate=SAMPLE_RATE,
                 )
                 logger.debug(
                     "timbre_vae_encode_start clip_s={:.1f} channels={}",
-                    clip_s, t_wf.shape[0],
+                    clip_s, wf.shape[0],
                 )
-                timbre_latent = self.session.encode_audio(timbre_audio)
+                with state._encode_lock:
+                    timbre_latent = self.session.encode_audio(timbre_audio)
                 logger.debug(
                     "timbre_vae_encode_done latent_shape={}",
                     tuple(timbre_latent.tensor.shape),
                 )
-            state.timbre_latent = timbre_latent
-            state.timbre_name = name
-            state.cond_pair = encode_cond_pair(
-                self.session, state.prompt_text, timbre_latent,
-                state.bpm, state.duration, state.key,
-                state.time_signature,
+            pair, pair_b = self._encode_cond_pairs(
+                prompt_text, prompt_text_b, timbre_latent,
+                bpm, duration, key, ts,
+                encode_b=(prompt_text_b != prompt_text),
             )
-            # Re-encode B against the new timbre too.
-            if state.prompt_text_b != state.prompt_text:
-                state.cond_pair_b = encode_cond_pair(
-                    self.session, state.prompt_text_b, timbre_latent,
-                    state.bpm, state.duration, state.key,
-                    state.time_signature,
-                )
-            else:
-                state.cond_pair_b = state.cond_pair
-            self._refresh_conditioning()
+            with state._lock:
+                if state.cond_epoch != epoch:
+                    continue
+                state.cond_epoch += 1
+                state.timbre_latent = timbre_latent
+                state.timbre_name = name
+                state.cond_pair = pair
+                state.cond_pair_b = pair_b if pair_b is not None else pair
+                self._refresh_conditioning()
             return clip_s
-        except Exception:
-            state.timbre_latent = prev_timbre_latent
-            state.timbre_name = prev_timbre_name
-            state.cond_pair = prev_cond_pair
-            state.cond_pair_b = prev_cond_pair_b
-            self.stream.conditioning = prev_stream_cond
-            raise
+        raise RuntimeError(
+            "timbre apply lost to concurrent conditioning changes 5 times",
+        )
 
     def _apply_structure_waveform(self, s_wf: torch.Tensor, name: str) -> tuple[float, float]:
         """Stash a structure-ref waveform and re-derive the override's
@@ -1390,34 +1440,56 @@ class StreamingSession:
     ) -> None:
         """Re-encode A (and optionally B) against the active timbre
         reference and refresh the live conditioning. Publishes
-        :class:`PromptApplied`."""
+        :class:`PromptApplied`.
+
+        Snapshot-encode-commit: inputs are read under ``state._lock``,
+        the text encodes run unlocked (see ``_encode_cond_pairs``), and
+        the commit re-checks ``cond_epoch`` — if another conditioning
+        commit landed while we encoded, re-snapshot and re-encode so
+        both effects land (the old whole-method lock gave the same
+        end state by serializing callers)."""
         state = self.state
         state.last_activity_ts = time.monotonic()
-        with state._lock:
-            ts_override = _normalize_time_signature(time_signature)
-            if ts_override is not None:
-                state.time_signature = ts_override
-            refer = self._active_refer_latent()
-            key_used = key or state.key
+        for _ in range(5):
+            with state._lock:
+                ts_override = _normalize_time_signature(time_signature)
+                if ts_override is not None:
+                    state.time_signature = ts_override
+                refer = self._active_refer_latent()
+                key_used = key or state.key
+                bpm = state.bpm
+                duration = state.duration
+                ts_used = state.time_signature
+                epoch = state.cond_epoch
             logger.info(
                 "prompt_set origin={} tags={!r} tags_b={!r} key={} time_signature={}",
-                origin.value, tags, tags_b, key_used, state.time_signature,
+                origin.value, tags, tags_b, key_used, ts_used,
             )
-            state.cond_pair = encode_cond_pair(
-                self.session, tags, refer, state.bpm, state.duration,
-                key_used, state.time_signature,
+            encode_b = bool(tags_b and tags_b != tags)
+            pair, pair_b = self._encode_cond_pairs(
+                tags, tags_b, refer, bpm, duration, key_used, ts_used,
+                encode_b=encode_b,
             )
-            state.prompt_text = tags
-            if tags_b and tags_b != tags:
-                state.cond_pair_b = encode_cond_pair(
-                    self.session, tags_b, refer, state.bpm, state.duration,
-                    key_used, state.time_signature,
-                )
-                state.prompt_text_b = tags_b
-            else:
-                state.cond_pair_b = state.cond_pair
-                state.prompt_text_b = tags
-            self._refresh_conditioning()
+            with state._lock:
+                if state.cond_epoch != epoch:
+                    continue
+                state.cond_epoch += 1
+                state.cond_pair = pair
+                state.prompt_text = tags
+                if pair_b is not None:
+                    state.cond_pair_b = pair_b
+                    state.prompt_text_b = tags_b
+                else:
+                    state.cond_pair_b = pair
+                    state.prompt_text_b = tags
+                self._refresh_conditioning()
+            break
+        else:
+            logger.warning(
+                "prompt_set_dropped tags={!r}: lost to concurrent "
+                "conditioning changes 5 times", tags,
+            )
+            return
         self.bus.publish(PromptApplied(tags=tags))
 
     def set_prompt_blend(
@@ -1622,12 +1694,14 @@ class StreamingSession:
         (or hits the fixture sidecar) and replaces cond_full."""
         self.state.last_activity_ts = time.monotonic()
         logger.info("set_timbre_source_recv origin={} name={}", origin.value, name)
-        with self.state._lock:
-            self._apply_ref(
-                "timbre", name,
-                lambda: audio.waveform[:2],
-                "source",
-            )
+        # No outer lock: _apply_timbre_waveform snapshots, encodes
+        # unlocked, and commits under state._lock itself, so the tick
+        # loop keeps running through the encode.
+        self._apply_ref(
+            "timbre", name,
+            lambda: audio.waveform[:2],
+            "source",
+        )
 
     @requires_capability("timbre", "set_timbre_fixture")
     def set_timbre_fixture(
@@ -1640,12 +1714,12 @@ class StreamingSession:
         from the pod's local cache; same apply path as upload."""
         self.state.last_activity_ts = time.monotonic()
         logger.info("set_timbre_fixture origin={} name={}", origin.value, name)
-        with self.state._lock:
-            self._apply_ref(
-                "timbre", name,
-                lambda: self._load_fixture_waveform(name),
-                "fixture",
-            )
+        # No outer lock — same reasoning as set_timbre_source.
+        self._apply_ref(
+            "timbre", name,
+            lambda: self._load_fixture_waveform(name),
+            "fixture",
+        )
 
     @requires_capability("timbre", "clear_timbre_source")
     def clear_timbre_source(
@@ -1657,24 +1731,38 @@ class StreamingSession:
         (encode against the playback source's own latent)."""
         state = self.state
         state.last_activity_ts = time.monotonic()
-        with state._lock:
-            state.timbre_latent = None
-            state.timbre_name = None
-            refer = state.source.latent
-            state.cond_pair = encode_cond_pair(
-                self.session, state.prompt_text, refer,
-                state.bpm, state.duration, state.key,
-                state.time_signature,
+        # Snapshot-encode-commit, same shape as set_prompt: the
+        # re-encodes run without state._lock so ticks keep flowing.
+        for _ in range(5):
+            with state._lock:
+                refer = state.source.latent
+                prompt_text = state.prompt_text
+                prompt_text_b = state.prompt_text_b
+                bpm = state.bpm
+                duration = state.duration
+                key = state.key
+                ts = state.time_signature
+                epoch = state.cond_epoch
+            pair, pair_b = self._encode_cond_pairs(
+                prompt_text, prompt_text_b, refer, bpm, duration, key, ts,
+                encode_b=(prompt_text_b != prompt_text),
             )
-            if state.prompt_text_b != state.prompt_text:
-                state.cond_pair_b = encode_cond_pair(
-                    self.session, state.prompt_text_b, refer,
-                    state.bpm, state.duration, state.key,
-                    state.time_signature,
-                )
-            else:
-                state.cond_pair_b = state.cond_pair
-            self._refresh_conditioning()
+            with state._lock:
+                if state.cond_epoch != epoch:
+                    continue
+                state.cond_epoch += 1
+                state.timbre_latent = None
+                state.timbre_name = None
+                state.cond_pair = pair
+                state.cond_pair_b = pair_b if pair_b is not None else pair
+                self._refresh_conditioning()
+            break
+        else:
+            logger.warning(
+                "timbre_clear_dropped: lost to concurrent conditioning "
+                "changes 5 times",
+            )
+            return
         self.bus.publish(TimbreCleared())
         logger.info("timbre_cleared origin={}", origin.value)
 
