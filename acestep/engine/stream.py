@@ -219,6 +219,12 @@ class _Slot:
     # populated on step 0, reused on every subsequent step of this slot.
     initial_noise: Optional[torch.Tensor] = None
     vt_neg_cached: Optional[torch.Tensor] = None
+    # Memo for normalized per-slot curve fields (the ``_eff_shared``
+    # fallback path). Request fields are fixed after submit — the
+    # hot-mutation contract is ``set_shared_curve`` — so a scalar field
+    # is normalized once per slot instead of allocating a fresh
+    # ``[1, 1, 1]`` tensor on every read (per slot, per step).
+    curve_cache: Dict[str, torch.Tensor] = field(default_factory=dict)
 
 
 class StreamPipeline:
@@ -1402,28 +1408,48 @@ class StreamPipeline:
         ``value`` can be a scalar or a per-frame tensor; both flow
         through :func:`ode_steps.normalize_curve` so the storage form is
         always ``[B, T, 1]`` and downstream consumers do not need to
-        type-discriminate. Pass ``None`` to revert that name to per-slot
-        behavior.
+        type-discriminate. The canonical tensor is moved to the
+        pipeline's device here (dtype is left alone — consumers cast at
+        their own boundary exactly as before) so the per-step readers
+        never pay a host-to-device copy. Pass ``None`` to revert that
+        name to per-slot behavior.
         """
         if value is None:
             self._shared_curves.pop(name, None)
             return
-        self._shared_curves[name] = ode_steps.normalize_curve(value)
+        v = ode_steps.normalize_curve(value)
+        if self._device is not None and v.device != self._device:
+            v = v.to(device=self._device)
+        self._shared_curves[name] = v
 
     def _eff_shared(self, slot: "_Slot", name: str):
         """Return shared override for ``name`` if set, else slot's field.
 
         Output is always either ``None`` or a normalized ``[B, T, 1]``
-        tensor — the shared override is canonicalized at the setter, and
-        any ``SlotRequest`` field is normalized here so callers never
-        need to ``isinstance``-check.
+        tensor — the shared override is canonicalized (and device-cast)
+        at the setter, and any ``SlotRequest`` field is normalized once
+        per slot via ``slot.curve_cache``, so this hot-path read never
+        allocates or copies. Curves set before the pipeline learned its
+        device (first submit) are device-fixed here once and stored
+        back.
         """
         v = self._shared_curves.get(name)
-        if v is None:
-            v = getattr(slot.request, name, None)
-            if v is None:
-                return None
-        return ode_steps.normalize_curve(v)
+        if v is not None:
+            if self._device is not None and v.device != self._device:
+                v = v.to(device=self._device)
+                self._shared_curves[name] = v
+            return v
+        v = slot.curve_cache.get(name)
+        if v is not None:
+            return v
+        raw = getattr(slot.request, name, None)
+        if raw is None:
+            return None
+        v = ode_steps.normalize_curve(raw)
+        if self._device is not None and v.device != self._device:
+            v = v.to(device=self._device)
+        slot.curve_cache[name] = v
+        return v
 
     def set_dcw(
         self,
