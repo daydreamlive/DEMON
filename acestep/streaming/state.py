@@ -110,6 +110,14 @@ class SessionState:
     pending_disable: list = field(default_factory=list)
     pending_depth: int | None = None
     swap_pending: dict = field(default_factory=_default_swap_pending)
+    # Conditioning changes (prompt / blend / timbre) staged by the live
+    # set_* handlers and applied in before_tick, so the encode + conditioning
+    # recompose serialize with the generation step instead of mutating
+    # ``stream.conditioning`` mid-tick (which corrupts the in-flight latent and
+    # leaves a stuck silent section until reconnect). Latest value wins per tick.
+    pending_prompt: dict | None = None       # {tags, tags_b, key, time_signature}
+    pending_prompt_blend: float | None = None
+    pending_timbre_strength: float | None = None
 
     # === Activity gating for the idle pause ===
     # The runner reads ``last_activity_ts`` each tick. Dispatchers bump
