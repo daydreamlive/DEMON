@@ -36,6 +36,24 @@ class _SteeringApply(NamedTuple):
     step: int              # gate: only rows at this denoise step receive it
 
 
+def _read_trt_max_batch(trt_engine) -> Optional[int]:
+    """Max batch from the engine's optimization profile, or None.
+
+    Same read as ``streaming.session._compute_max_pipeline_depth``;
+    fail-soft so an engine without a readable profile just disables
+    CFG pass fusion instead of breaking pipeline construction.
+    """
+    if trt_engine is None:
+        return None
+    try:
+        _, _, max_shape = trt_engine.get_tensor_profile_shape(
+            "hidden_states", 0,
+        )
+        return int(max_shape[0])
+    except Exception:
+        return None
+
+
 @dataclass
 class SlotCondition:
     """One conditioning entry for multi-condition per-frame blending.
@@ -297,6 +315,10 @@ class StreamPipeline:
         self._trt_io_dtype = getattr(engine, '_trt_io_dtype', torch.float32)
         self._trt_input_dtypes = getattr(engine, "_trt_input_dtypes", {}) or {}
         self._trt_output_dtype = getattr(engine, "_trt_output_dtype", self._trt_io_dtype)
+        # Engine profile batch ceiling; None = no TRT (eager has no cap).
+        # Gates whether a CFG tick can fuse pos+neg pairs into one
+        # execute instead of two sequential ones.
+        self._trt_max_batch = _read_trt_max_batch(self._trt_engine)
         # Steering shape (constants per engine); snapshotted so the
         # per-tick buffer fill doesn't re-query TRT.
         self._steering_num_layers = getattr(engine, "_steering_num_layers", 0)
@@ -427,6 +449,7 @@ class StreamPipeline:
         self._trt_engine = engine._trt_engine
         self._trt_ctx = engine._trt_ctx
         self._trt_stream = engine._trt_stream
+        self._trt_max_batch = _read_trt_max_batch(self._trt_engine)
         self._trt_io_dtype = getattr(engine, "_trt_io_dtype", torch.float32)
         self._trt_input_dtypes = getattr(engine, "_trt_input_dtypes", {})
         self._trt_output_dtype = getattr(
@@ -1114,36 +1137,81 @@ class StreamPipeline:
                 ],
             )
 
-        # --- Positive pass: one call across all slots' pos conditions ---
+        # --- Pair lists for both passes (pure Python, built up front) ---
         pos_pair_si: List[int] = []
         pos_pair_cond: List[SlotCondition] = []
         for si in range(len(slots)):
             for c in pos_conds_per_slot[si]:
                 pos_pair_si.append(si)
                 pos_pair_cond.append(c)
-        # Per-row step mapping for the steering hook; try/finally so a
-        # stale list never leaks into a forward outside this rendezvous.
-        self._current_step_per_row = [slots[si].step_idx for si in pos_pair_si]
-        try:
-            vt_pos_all = _forward_pairs(pos_pair_si, pos_pair_cond)
-        finally:
-            self._current_step_per_row = []
-
-        # --- Negative pass (CFG only): skipped when no slot has CFG. ---
         neg_pair_si: List[int] = []
         neg_pair_cond: List[SlotCondition] = []
         for si in range(len(slots)):
             for c in neg_conds_per_slot[si]:
                 neg_pair_si.append(si)
                 neg_pair_cond.append(c)
-        if neg_pair_si:
-            self._current_step_per_row = [slots[si].step_idx for si in neg_pair_si]
+
+        n_pos = len(pos_pair_si)
+        # CFG pass fusion: run pos+neg pairs as ONE batched forward when
+        # the combined batch fits the engine profile (eager has no cap).
+        # Halves the per-tick enqueue/sync round trips and removes the
+        # same-tick reuse of the shared TRT output buffer between the
+        # two passes. Numerics: fused neg rows pad to the combined
+        # encoder max_L; the decoder discards attention masks and
+        # attends zero rows by convention (DecoderForExport docstring),
+        # so this is the same class of perturbation the pos pass
+        # already applies across slots — bit-exact with the two-pass
+        # path only when pos and neg max_L coincide.
+        fuse_neg = bool(neg_pair_si) and (
+            self._trt_max_batch is None
+            or n_pos + len(neg_pair_si) <= self._trt_max_batch
+        )
+
+        # Per-row step mapping for the steering hook; try/finally so a
+        # stale list never leaks into a forward outside this rendezvous.
+        if fuse_neg:
+            all_si = pos_pair_si + neg_pair_si
+            self._current_step_per_row = [slots[si].step_idx for si in all_si]
             try:
-                vt_neg_all = _forward_pairs(neg_pair_si, neg_pair_cond)
+                vt_all = _forward_pairs(all_si, pos_pair_cond + neg_pair_cond)
             finally:
                 self._current_step_per_row = []
+            vt_pos_all = vt_all[:n_pos]
+            vt_neg_all = vt_all[n_pos:]
         else:
-            vt_neg_all = None
+            # --- Positive pass: one call across all slots' pos conditions ---
+            self._current_step_per_row = [
+                slots[si].step_idx for si in pos_pair_si
+            ]
+            try:
+                vt_pos_all = _forward_pairs(pos_pair_si, pos_pair_cond)
+            finally:
+                self._current_step_per_row = []
+
+            # --- Negative pass: only when CFG is active and fusion
+            # didn't fit the engine profile. ---
+            if neg_pair_si:
+                # When the engine's output dtype equals the pipeline
+                # dtype, the post-execute cast in _trt_forward is a
+                # no-op view of the shared TRT output buffer — the neg
+                # execute below would overwrite vt_pos_all in place and
+                # silently neutralize guidance (APG sees pos == neg).
+                # Clone before the second execute. The fused path has
+                # no second execute, so it needs no copy.
+                if (
+                    self._trt_engine is not None
+                    and self._trt_output_dtype == self._dtype
+                ):
+                    vt_pos_all = vt_pos_all.clone()
+                self._current_step_per_row = [
+                    slots[si].step_idx for si in neg_pair_si
+                ]
+                try:
+                    vt_neg_all = _forward_pairs(neg_pair_si, neg_pair_cond)
+                finally:
+                    self._current_step_per_row = []
+            else:
+                vt_neg_all = None
 
         # --- Per-slot: blend pos, blend neg (if CFG), APG-combine ---
         vt_per_slot: List[torch.Tensor] = [None] * len(slots)  # type: ignore[list-item]
@@ -1186,7 +1254,11 @@ class StreamPipeline:
                             self._device, self._dtype,
                         )
                     if slot.request.rcfg_mode == "initialize":
-                        slot.vt_neg_cached = vt_neg.detach()
+                        # clone: vt_neg can be a view of the shared TRT
+                        # output buffer (engine I/O dtype == pipeline
+                        # dtype makes the post-execute cast a no-op),
+                        # and this cache outlives the tick.
+                        slot.vt_neg_cached = vt_neg.detach().clone()
                 elif slot.vt_neg_cached is not None:
                     vt_neg = slot.vt_neg_cached
 
@@ -1648,6 +1720,7 @@ class StreamPipeline:
         self._trt_ctx = None
         self._trt_engine = None
         self._trt_stream = None
+        self._trt_max_batch = None
         self._channel_gain = None
         self._ones_3d = None
         self._zeros_3d = None
