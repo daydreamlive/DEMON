@@ -616,12 +616,32 @@ def available_trt_engines(
         checkpoint if "decoder" in needs else _DEFAULT_TRT_CHECKPOINT
     )
     profiles = trt_engine_profiles(profile_checkpoint)
+
+    # vae_encode is duration-independent: the TRT encode path chunks
+    # inputs longer than the engine's max profile shape (see
+    # acestep/nodes/vae_nodes.py), so the smallest BUILT encode engine
+    # serves every source duration. Larger encode engines exist only
+    # for pods that never built the small one; preferring the smallest
+    # saves multi-GB of context-creation workspace (the 240 s engine
+    # reserves ~6.4 GB more than the 60 s one — see
+    # scripts/benchmarks/vram_60s_vs_240s_results.md) and means profile
+    # swaps never reload vae_encode, removing the highest-pressure
+    # engine load from the swap path entirely.
+    smallest_built_enc: str | None = None
+    for max_dur in sorted(profiles.keys()):
+        enc_path = trt_engine_path(profiles[max_dur]["vae_encode"])
+        if enc_path.exists():
+            smallest_built_enc = str(enc_path)
+            break
+
     missing: dict[float, list[str]] = {}
     for max_dur in sorted(profiles.keys()):
         if max_dur < duration_s:
             continue
         profile = profiles[max_dur]
         paths = default_trt_engines(**profile)
+        if smallest_built_enc is not None:
+            paths["vae_encode"] = smallest_built_enc
         absent = [paths[k] for k in needs if not Path(paths[k]).exists()]
         if not absent:
             return paths, max_dur

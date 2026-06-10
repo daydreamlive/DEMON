@@ -184,6 +184,21 @@ class DiffusionEngine:
         # freed; engine_from_bytes has consumed it.
         del engine_bytes
         self._trt_ctx = self._trt_engine.create_execution_context()
+        if self._trt_ctx is None:
+            # TensorRT signals workspace-alloc failure (CUDA OOM) by
+            # returning None rather than raising. Drop the deserialized
+            # engine so its weight memory is freed before we raise —
+            # callers (profile manager) retry after empty_cache(), and
+            # holding the dead engine would double-book VRAM during
+            # that retry. Without this raise, the load would "succeed"
+            # and the next decode tick would crash on a bare NoneType
+            # attribute error.
+            self._trt_engine = None
+            torch.cuda.empty_cache()
+            raise RuntimeError(
+                f"TRT decoder engine.create_execution_context() returned "
+                f"None (likely CUDA OOM on workspace alloc): {engine_path}"
+            )
         self._trt_stream = _get_trt_stream()
         self._trt_buf_cache = {}
 
