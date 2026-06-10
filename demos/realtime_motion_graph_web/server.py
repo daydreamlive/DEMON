@@ -673,7 +673,13 @@ def main():
         # Defer the heavy import until we know we need it. Pulling this in
         # loads torch + acestep + TRT machinery; in --no-backend we never
         # touch any of it.
-        from .ws_adapter import handle_client
+        from .ws_adapter import handle_client, start_idle_vram_janitor
+
+        # Session teardown frees its last GPU tensors asynchronously;
+        # the janitor returns the caching allocator's freed pool to the
+        # driver whenever the pod sits idle (see its docstring for the
+        # measured numbers).
+        start_idle_vram_janitor()
 
         def ws_handler(ws):
             handle_client(
