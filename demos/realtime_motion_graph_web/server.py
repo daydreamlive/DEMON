@@ -25,6 +25,22 @@ import time
 import urllib.parse
 from pathlib import Path
 
+# Opt the CUDA caching allocator into expandable segments before torch
+# initializes it (first CUDA allocation). On long-uptime pods the torch
+# pool fragments across LoRA enable/disable rotations, stem-extraction
+# loads, and source swaps; classic segments then OOM on a ~100 MiB
+# request while hundreds of MiB sit "reserved but unallocated" (the
+# fleet's swap-time stem-extraction OOM signature). Expandable segments
+# grow/shrink in place via the CUDA VMM API, eliminating that
+# fragmentation class. PYTORCH_ALLOC_CONF is the torch>=2.8 name and
+# takes precedence over the deprecated PYTORCH_CUDA_ALLOC_CONF, so only
+# default it when the operator set neither.
+if not (
+    os.environ.get("PYTORCH_ALLOC_CONF")
+    or os.environ.get("PYTORCH_CUDA_ALLOC_CONF")
+):
+    os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
+
 from websockets.http11 import Response
 from websockets.datastructures import Headers
 from websockets.sync.server import serve as ws_serve

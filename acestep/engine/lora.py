@@ -313,12 +313,30 @@ class LoRAManagerBase(abc.ABC):
             if param_name not in self._param_dtype:
                 skipped += 1
                 continue
-            A = ab["A"].to(device=device, dtype=torch.float32)
-            B = ab["B"].to(device=device, dtype=torch.float32)
             target_dt = self._param_dtype[param_name]
-            d = (B @ A).to(dtype=target_dt).to(
-                device=self._delta_storage_device(),
-            ).contiguous()
+            try:
+                A = ab["A"].to(device=device, dtype=torch.float32)
+                B = ab["B"].to(device=device, dtype=torch.float32)
+                d = (B @ A).to(dtype=target_dt)
+            except torch.OutOfMemoryError:
+                # The GPU matmul is a speed nicety; on a VRAM-pressured
+                # pod (TRT workspaces + stems + engine swaps) it can OOM
+                # even though the deltas themselves live on CPU. Fall
+                # back to CPU compute for the rest of this LoRA instead
+                # of failing the enable.
+                if device.type == "cpu":
+                    raise
+                logger.warning(
+                    "_compute_deltas({}): GPU OOM during delta matmul; "
+                    "falling back to CPU compute",
+                    Path(lora_path).name,
+                )
+                device = torch.device("cpu")
+                torch.cuda.empty_cache()
+                A = ab["A"].to(device=device, dtype=torch.float32)
+                B = ab["B"].to(device=device, dtype=torch.float32)
+                d = (B @ A).to(dtype=target_dt)
+            d = d.to(device=self._delta_storage_device()).contiguous()
             # Catch base-model mismatches (e.g. 2B LoRA on XL engine):
             # element count is invariant under transpose, so a numel
             # mismatch here is unambiguous. We don't compare full
@@ -334,6 +352,12 @@ class LoRAManagerBase(abc.ABC):
                 continue
             deltas[param_name] = d
             total_bytes += d.numel() * d.element_size()
+        # When deltas are stored on CPU (TRT path) the GPU was only a
+        # matmul scratchpad; hand its pooled temporaries back to the
+        # driver so they don't sit reserved against the next TRT
+        # workspace or stem-extraction allocation.
+        if torch.cuda.is_available() and self._delta_storage_device().type == "cpu":
+            torch.cuda.empty_cache()
         if skipped:
             logger.debug(
                 "_compute_deltas({}): {} params skipped (not in engine)",

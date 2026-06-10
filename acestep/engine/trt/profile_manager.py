@@ -208,45 +208,28 @@ class TRTProfileManager:
         walk_window_s: float,
         source_duration_s: float,
     ) -> tuple[dict[str, str], float]:
-        """Swap to walk-mode mixed engines: decoder + vae_decode pinned
-        to ``walk_window_s``, vae_encode sized to ``source_duration_s``.
+        """Ensure walk-mode engines: decoder + vae_decode pinned to
+        ``walk_window_s``.
 
-        Mirrors the initial walk-mode wiring in
-        ``acestep/streaming/session.py`` (the runner only sees
-        walk_window_s of latent at a time, but VAE-encode still needs
-        to ingest the full song once at load). When a long-track swap
-        happens mid-session this is the right swap shape: keeping the
-        60s decoder on the line, only resizing vae_encode.
+        Historically this also resized ``vae_encode`` to
+        ``source_duration_s`` (the runner only sees walk_window_s of
+        latent at a time, but VAE-encode still ingests the full song
+        once at load). The encode path now chunks inputs longer than
+        the engine's max profile shape (see ``acestep/nodes/vae_nodes``)
+        and :func:`acestep.paths.available_trt_engines` pins vae_encode
+        to the smallest built engine for every duration — so the walk
+        profile's own engine set already serves any source length, and
+        resolving a larger profile here would wrongly require a bigger
+        *decoder* to exist on disk for long sources.
 
-        Falls through to :meth:`ensure_profile` semantics if the request
-        doesn't actually need a mix (source fits the walk profile).
+        ``source_duration_s`` is kept for API stability; it no longer
+        affects engine choice.
 
         Returns ``(paths, picked_dur)`` where ``picked_dur`` reflects
         the decoder/vae_decode profile (i.e. ``walk_window_s``).
         """
-        walk_paths, walk_dur = self.resolve(walk_window_s)
-        if source_duration_s <= walk_dur + 0.1:
-            return self.ensure_profile(source_duration_s)
-
-        enc_paths, _enc_dur = self.resolve(source_duration_s)
-        target_paths = {
-            "decoder": walk_paths["decoder"],
-            "vae_encode": enc_paths["vae_encode"],
-            "vae_decode": walk_paths["vae_decode"],
-        }
-
-        if self._loaded_paths == target_paths:
-            return dict(self._loaded_paths), walk_dur
-
-        prior_paths = dict(self._loaded_paths)
-        logger.info(
-            "TRT walk-profile swap: decoder={}s, vae_encode for {:.0f}s source",
-            int(walk_dur), source_duration_s,
-        )
-        self._swap(prior_paths=prior_paths, target_paths=target_paths)
-        self._loaded_dur = float(walk_dur)
-        self._loaded_paths = dict(target_paths)
-        return dict(target_paths), walk_dur
+        del source_duration_s  # encode is duration-independent now
+        return self.ensure_profile(walk_window_s)
 
     def ensure_profile(
         self, duration_s: float,
@@ -361,20 +344,37 @@ class TRTProfileManager:
             # a clean swap_failed to the client instead of letting the
             # session crash on the next decode tick with a bare
             # NoneType / "engine not bound" attribute error.
+            #
+            # Same single-retry policy as the vae_encode load below: a
+            # workspace-alloc OOM right after the eviction is often
+            # just PyTorch's cache still holding the freed blocks, and
+            # one empty_cache() + retry reliably recovers.
             try:
                 engine.load_trt_engine(new_decoder)
-            except BaseException as e:
-                self._loaded_dur = None
-                self._loaded_paths = {}
-                logger.error(
-                    "trt_profile_swap_decoder_load_failed engine={} error={}",
-                    new_decoder, e,
+            except BaseException as e_first:
+                logger.warning(
+                    "trt_profile_swap_decoder_load_retry engine={} "
+                    "first_error={}",
+                    new_decoder, e_first,
                 )
-                raise TRTProfileLoadError(
-                    component="decoder",
-                    engine_path=new_decoder,
-                    cause=e,
-                ) from e
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+                try:
+                    engine.load_trt_engine(new_decoder)
+                except BaseException as e:
+                    self._loaded_dur = None
+                    self._loaded_paths = {}
+                    logger.error(
+                        "trt_profile_swap_decoder_load_failed engine={} error={}",
+                        new_decoder, e,
+                    )
+                    raise TRTProfileLoadError(
+                        component="decoder",
+                        engine_path=new_decoder,
+                        cause=e,
+                    ) from e
 
         if self._vae_tensorrt:
             from acestep.nodes.vae_nodes import _get_trt_vae

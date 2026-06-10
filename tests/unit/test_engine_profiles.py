@@ -202,6 +202,107 @@ class TestAvailableTrtEnginesNeedsParameter:
 
 
 # -----------------------------------------------------------------------
+# vae_encode pinning: smallest built encode engine serves every duration
+# (the TRT encode path chunks longer inputs — see vae_nodes)
+# -----------------------------------------------------------------------
+
+class TestVaeEncodePinnedToSmallestBuilt:
+    def test_long_audio_keeps_smallest_built_vae_encode(self, tmp_models_dir):
+        for d in (60.0, 120.0, 240.0):
+            _create_engine_files(tmp_models_dir, d, keys=("decoder", "vae_encode", "vae_decode"))
+        paths, picked = available_trt_engines(duration_s=200.0)
+        assert picked == 240.0
+        assert "_240s" in paths["decoder"]
+        assert "_240s" in paths["vae_decode"]
+        assert "vae_encode_fp16_60s" in paths["vae_encode"]
+
+    def test_swap_between_profiles_shares_vae_encode(self, tmp_models_dir):
+        for d in (60.0, 240.0):
+            _create_engine_files(tmp_models_dir, d, keys=("decoder", "vae_encode", "vae_decode"))
+        short, _ = available_trt_engines(duration_s=30.0)
+        long, _ = available_trt_engines(duration_s=200.0)
+        assert short["vae_encode"] == long["vae_encode"]
+
+    def test_falls_back_to_larger_encode_when_small_not_built(self, tmp_models_dir):
+        # A pod that only built the 240s profile keeps using it.
+        _create_engine_files(tmp_models_dir, 240.0, keys=("decoder", "vae_encode", "vae_decode"))
+        paths, picked = available_trt_engines(duration_s=200.0)
+        assert picked == 240.0
+        assert "vae_encode_fp16_240s" in paths["vae_encode"]
+
+    def test_no_encode_built_still_raises_when_needed(self, tmp_models_dir):
+        _create_engine_files(tmp_models_dir, 60.0, keys=("decoder", "vae_decode"))
+        with pytest.raises(EngineNotBuiltError):
+            available_trt_engines(duration_s=30.0)
+
+    def test_decoder_only_needs_ignores_vae_encode_state(self, tmp_models_dir):
+        _create_engine_files(tmp_models_dir, 60.0, keys=("decoder",))
+        paths, picked = available_trt_engines(duration_s=30.0, needs=("decoder",))
+        assert picked == 60.0
+
+
+# -----------------------------------------------------------------------
+# Chunked VAE encode planning (pure; mirrors vae_nodes chunk geometry)
+# -----------------------------------------------------------------------
+
+class TestPlanEncodeChunks:
+    SPF = 1920  # samples per latent frame
+
+    def _check_plan(self, n_samples, max_samples, min_samples):
+        from acestep.nodes.vae_nodes import (
+            _VAE_ENCODE_CHUNK_MARGIN_FRAMES,
+            _plan_encode_chunks,
+        )
+
+        plan = _plan_encode_chunks(n_samples, max_samples, min_samples)
+        total_frames = (n_samples + self.SPF - 1) // self.SPF
+        # Cores tile [0, total_frames) exactly, in order.
+        assert plan[0][2] == 0
+        assert plan[-1][3] == total_frames
+        for (a, b), (c, d) in zip(
+            [(p[2], p[3]) for p in plan], [(p[2], p[3]) for p in plan[1:]],
+        ):
+            assert b == c
+        for ctx_start, ctx_end, core_start, core_end in plan:
+            # Context spans fit the engine profile.
+            ctx_samples = (ctx_end - ctx_start) * self.SPF
+            assert ctx_samples <= max_samples
+            assert ctx_samples >= min(min_samples, n_samples)
+            # Core sits inside the context with the required margin
+            # (or extends to the input edge).
+            assert ctx_start <= core_start <= core_end <= ctx_end
+            if core_start > 0:
+                assert core_start - ctx_start >= _VAE_ENCODE_CHUNK_MARGIN_FRAMES
+            if core_end < total_frames:
+                assert ctx_end - core_end >= _VAE_ENCODE_CHUNK_MARGIN_FRAMES
+        return plan
+
+    def test_240s_input_through_60s_engine(self):
+        plan = self._check_plan(240 * 48000, 2_880_000, 240_000)
+        assert len(plan) > 1
+
+    def test_61s_input_through_60s_engine(self):
+        self._check_plan(61 * 48000, 2_880_000, 240_000)
+
+    def test_tail_chunk_extends_left_context_to_engine_min(self):
+        # Craft a tail chunk shorter than the engine min: the plan must
+        # widen its context to min_samples rather than emit an
+        # out-of-profile shape.
+        plan = self._check_plan(2_880_000 + 5 * self.SPF, 2_880_000, 240_000)
+        ctx_start, ctx_end, _, core_end = plan[-1]
+        assert (ctx_end - ctx_start) * self.SPF >= 240_000
+
+    def test_non_frame_aligned_input(self):
+        self._check_plan(240 * 48000 + 777, 2_880_000, 240_000)
+
+    def test_engine_smaller_than_margins_raises(self):
+        from acestep.nodes.vae_nodes import _plan_encode_chunks
+
+        with pytest.raises(RuntimeError, match="too small"):
+            _plan_encode_chunks(10_000_000, 100 * self.SPF, 1)
+
+
+# -----------------------------------------------------------------------
 # EngineNotBuiltError: actionable build command
 # -----------------------------------------------------------------------
 
