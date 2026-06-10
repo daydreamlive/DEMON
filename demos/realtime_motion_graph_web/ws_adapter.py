@@ -112,6 +112,77 @@ from .protocol import COMMAND_NAMES, SAMPLE_RATE, coerce_command_payload
 
 
 # ---------------------------------------------------------------------------
+# Idle VRAM janitor
+# ---------------------------------------------------------------------------
+
+_JANITOR_STARTED = False
+_JANITOR_LOCK = threading.Lock()
+
+
+def start_idle_vram_janitor(
+    *,
+    interval_s: float = 5.0,
+    min_trim_bytes: int = 512 * 2**20,
+) -> None:
+    """Trim the CUDA caching allocator while no session is live.
+
+    Session teardown frees its last tensors asynchronously: the recv
+    thread is joined with a timeout, and polygraphy/TRT finalizer
+    chains can release buffers seconds after the connection handler
+    returned — after every in-band ``empty_cache()`` call has already
+    run. Those late frees land in PyTorch's caching pool and stay
+    reserved against the driver for as long as the pod idles
+    (measured: ~3 GB after a plain 60 s session, ~5 GB after one that
+    swapped to the 240 s decoder profile). That reserved-but-unused
+    pool is invisible to TensorRT, whose workspace comes from
+    cudaMalloc, so it directly eats the headroom the next session's
+    engine loads and stem extraction need.
+
+    A point-in-time trim can't win that race, so this janitor owns it:
+    every ``interval_s`` it checks that no session is registered and,
+    when the pool holds more than ``min_trim_bytes`` of freed blocks,
+    runs ``gc.collect()`` + ``torch.cuda.empty_cache()``. Idle-only by
+    construction — it never competes with a live session's allocator.
+    """
+    global _JANITOR_STARTED
+    with _JANITOR_LOCK:
+        if _JANITOR_STARTED:
+            return
+        _JANITOR_STARTED = True
+
+    def _loop() -> None:
+        import gc
+
+        while True:
+            time.sleep(interval_s)
+            try:
+                if session_registry.list_handles():
+                    continue
+                if not torch.cuda.is_available():
+                    continue
+                reserved = torch.cuda.memory_reserved()
+                allocated = torch.cuda.memory_allocated()
+                if reserved - allocated < min_trim_bytes:
+                    continue
+                gc.collect()
+                torch.cuda.empty_cache()
+                freed = reserved - torch.cuda.memory_reserved()
+                logger.info(
+                    "idle_vram_trim freed_mib={:.0f} reserved_mib={:.0f} "
+                    "allocated_mib={:.0f}",
+                    freed / 2**20,
+                    torch.cuda.memory_reserved() / 2**20,
+                    torch.cuda.memory_allocated() / 2**20,
+                )
+            except Exception as exc:  # never kill the janitor
+                logger.warning("idle_vram_trim_failed error={}", exc)
+
+    threading.Thread(
+        target=_loop, name="idle-vram-janitor", daemon=True,
+    ).start()
+
+
+# ---------------------------------------------------------------------------
 # Canonical user-upload packet processing
 # ---------------------------------------------------------------------------
 
@@ -724,14 +795,33 @@ def handle_client(
     this wrapper exists only to own a single ``ExitStack`` so the
     contextvar tokens bound for session / track unwind in reverse
     order on every exit path."""
-    with contextlib.ExitStack() as ctx_stack:
-        _handle_client_body(
-            ws, ctx_stack,
-            decoder_backend=decoder_backend,
-            vae_backend=vae_backend,
-            checkpoint=checkpoint,
-            offload_text_encoder=offload_text_encoder,
-        )
+    try:
+        with contextlib.ExitStack() as ctx_stack:
+            _handle_client_body(
+                ws, ctx_stack,
+                decoder_backend=decoder_backend,
+                vae_backend=vae_backend,
+                checkpoint=checkpoint,
+                offload_text_encoder=offload_text_encoder,
+            )
+    finally:
+        # Final allocator trim, AFTER the body frame (the last holder of
+        # the session, its state, codec, and recv-thread closures) is
+        # gone. ``Session.close()`` runs its own gc + empty_cache, but at
+        # that point this connection still references those objects, so
+        # their pool blocks are live and the trim can't return them.
+        # Once the body returns they are garbage — without this trim the
+        # caching allocator keeps the session's transient peak reserved
+        # (~3 GB after a 60s session, ~6 GB after a 240s-profile one,
+        # measured driver-level) for as long as the pod idles, which is
+        # exactly the headroom the next session's engine loads and stem
+        # extraction need. Reserved-but-unallocated VRAM also can't be
+        # used by TensorRT, whose workspace comes from cudaMalloc.
+        import gc
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 def _handle_client_body(

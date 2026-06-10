@@ -182,6 +182,13 @@ class Session:
             trt_engines: Engine paths, used iff a *_backend is "tensorrt".
                 Keys: "decoder", "vae_encode", "vae_decode". Use
                 acestep.paths.default_trt_engines() for the canonical paths.
+            offload_to_cpu: Build every model on CPU and hop weights to
+                the GPU per call. NOTE: without ``offload_dit_to_cpu``
+                the DiT becomes GPU-resident on its FIRST use and stays
+                (see ``ModelContext._load_model_context``); set both for
+                a session whose steady-state VRAM must stay ~0.
+            offload_dit_to_cpu: Move the DiT back to CPU after each use
+                instead of letting it go resident on first touch.
             offload_text_encoder: Override text encoder placement policy.
                 Defaults to ``False`` so prompt edits do not pay CPU/GPU
                 transfer cost. Set ``True`` for lower steady VRAM usage.
