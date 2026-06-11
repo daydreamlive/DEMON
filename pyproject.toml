@@ -27,6 +27,12 @@ dependencies = [
     "loguru>=0.7.3",
     "einops>=0.8.1",
     "accelerate>=1.12.0",
+    # Xet-backed downloads for the ~18 GB checkpoint fetch; without it
+    # huggingface_hub falls back to plain HTTP and warns repeatedly.
+    # huggingface_hub's own hf-xet requirement is platform-marker-gated
+    # and misses Windows AMD64, so it must be declared here; floor
+    # mirrors huggingface_hub's (>=1.1.3, <2 cap comes from the lock).
+    "hf_xet>=1.1.3",
     "fastapi>=0.110.0",
     "diskcache",
     "uvicorn[standard]>=0.27.0",
