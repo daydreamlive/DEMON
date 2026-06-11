@@ -237,6 +237,19 @@ def _summary(*, engines_skipped: bool) -> None:
 
 
 def main() -> int:
+    # Piped stdout (CI, `| tee`, log wrappers) is block-buffered by
+    # default, which holds phase banners back until kilobytes accumulate
+    # and lets the subprocesses' unbuffered stderr interleave ahead of
+    # them. Line-buffer it, and never die on a character the console's
+    # code page can't encode (legacy Windows pipes are cp125x). stderr
+    # needs neither: Python starts it line-buffered with
+    # errors="backslashreplace", which already can't raise and keeps
+    # more fidelity than "replace" would.
+    try:
+        sys.stdout.reconfigure(line_buffering=True, errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
+
     parser = argparse.ArgumentParser(
         prog="demon-setup",
         description=(
