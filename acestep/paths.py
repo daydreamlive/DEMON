@@ -340,42 +340,6 @@ _TRT_ENGINE_PROFILES_BY_CHECKPOINT: dict[str, dict[float, dict[str, str]]] = {
 _DEFAULT_TRT_NEEDS: tuple[str, ...] = ("decoder", "vae_encode", "vae_decode")
 
 
-def trt_engine_needs(
-    *,
-    decoder_tensorrt: bool,
-    vae_tensorrt: bool,
-    windowed_decode: bool = False,
-) -> tuple[str, ...]:
-    """Engine keys a session with these backends actually consumes.
-
-    Feed the result to :func:`available_trt_engines` /
-    :func:`max_built_profile_duration_s` so missing engines that won't
-    be loaded anyway don't disqualify a profile.
-
-    ``windowed_decode`` is the ``vae_window > 0`` case: the runtime pins
-    vae_decode to the fixed 1 s windowed engine
-    (``vae_decode_fp16_1s_fixed``), which is profile-independent — so
-    when that engine is built, no full-length vae_decode engine is
-    required at all. This is what lets the minimal engine preset
-    (``acestep.engine.trt.build --preset minimal``) skip the full-length
-    decode builds. When the windowed engine is NOT built, vae_decode
-    stays in the needs so the session falls back to the full-length
-    engine exactly as before.
-    """
-    keys: list[str] = []
-    if decoder_tensorrt:
-        keys.append("decoder")
-    if vae_tensorrt:
-        keys.append("vae_encode")
-        windowed_built = (
-            windowed_decode
-            and available_windowed_vae_decode_engine() is not None
-        )
-        if not windowed_built:
-            keys.append("vae_decode")
-    return tuple(keys)
-
-
 def _checkpoint_name(checkpoint: str | Path | None) -> str:
     if checkpoint is None:
         return _DEFAULT_TRT_CHECKPOINT
@@ -462,38 +426,6 @@ def max_profile_duration_s(
     hardcoding a single duration.
     """
     profiles = trt_engine_profiles(checkpoint)
-    return max(profiles.keys())
-
-
-def max_built_profile_duration_s(
-    *,
-    checkpoint: str | Path = _DEFAULT_TRT_CHECKPOINT,
-    needs: tuple[str, ...] = _DEFAULT_TRT_NEEDS,
-) -> float:
-    """Largest profile duration whose ``needs`` engines are all built.
-
-    The existence-aware sibling of :func:`max_profile_duration_s`: use
-    it to cap user-supplied audio at what the machine can actually run
-    today, instead of the registry's theoretical maximum. A default
-    install builds only the 60 s profile (``--preset minimal``), so
-    capping at the registered max (240 s) would accept audio that then
-    fails at engine resolution.
-
-    Falls back to :func:`max_profile_duration_s` when no profile has
-    all ``needs`` engines built — non-TRT sessions (eager / compile)
-    have no engines on disk and must keep the registry cap.
-    """
-    profiles = trt_engine_profiles(checkpoint)
-    built = [
-        max_dur
-        for max_dur, profile in profiles.items()
-        if all(
-            Path(default_trt_engines(**profile)[k]).exists()
-            for k in needs
-        )
-    ]
-    if built:
-        return max(built)
     return max(profiles.keys())
 
 

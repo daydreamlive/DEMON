@@ -49,8 +49,7 @@ from acestep.paths import (
     checkpoint_scale,
     checkpoints_dir,
     loras_dir,
-    max_built_profile_duration_s,
-    trt_engine_needs,
+    max_profile_duration_s,
 )
 from acestep.sidecars import truncate_to_pool
 
@@ -135,34 +134,8 @@ def _upload_encoder_session(checkpoint: str) -> Session:
         return session
 
 
-def _truncate_upload_waveform(
-    waveform: torch.Tensor,
-    *,
-    decoder_backend: str = "tensorrt",
-    vae_backend: str = "tensorrt",
-    checkpoint: str = "acestep-v15-turbo",
-) -> torch.Tensor:
-    """Trim an upload to the longest duration this server can stream.
-
-    Built-aware: a default install carries only the 60 s engine preset,
-    so storing a 240 s upload would just defer the trim to session
-    create. ``windowed_decode=True`` because the demo always runs with
-    ``vae_window > 0``; a session that overrides vae_window to 0 trims
-    further at create time. Non-TRT servers keep the registry ceiling
-    (needs resolves empty → every profile counts as built).
-    """
-    trt_profile_checkpoint = (
-        checkpoint if decoder_backend == "tensorrt" else "acestep-v15-turbo"
-    )
-    max_seconds = max_built_profile_duration_s(
-        checkpoint=trt_profile_checkpoint,
-        needs=trt_engine_needs(
-            decoder_tensorrt=decoder_backend == "tensorrt",
-            vae_tensorrt=vae_backend == "tensorrt",
-            windowed_decode=True,
-        ),
-    )
-    max_samples = int(max_seconds * SAMPLE_RATE)
+def _truncate_upload_waveform(waveform: torch.Tensor) -> torch.Tensor:
+    max_samples = int(max_profile_duration_s() * SAMPLE_RATE)
     return truncate_to_pool(waveform[:2, :max_samples])
 
 
@@ -195,14 +168,7 @@ def _send_upload_ok(ws, packet: UserUploadPacket) -> None:
     }))
 
 
-def _handle_upload_track(
-    ws,
-    header: dict,
-    *,
-    checkpoint: str,
-    decoder_backend: str = "tensorrt",
-    vae_backend: str = "tensorrt",
-) -> None:
+def _handle_upload_track(ws, header: dict, *, checkpoint: str) -> None:
     requested_name = str(header.get("name") or "upload")
     key_override = header.get("key")
     key_override = key_override.strip() if isinstance(key_override, str) else None
@@ -216,12 +182,7 @@ def _handle_upload_track(
         return
 
     try:
-        waveform = _truncate_upload_waveform(
-            _decode_audio_msg(audio_msg),
-            decoder_backend=decoder_backend,
-            vae_backend=vae_backend,
-            checkpoint=checkpoint,
-        )
+        waveform = _truncate_upload_waveform(_decode_audio_msg(audio_msg))
         if waveform.shape[-1] <= 0:
             raise ValueError("audio too short after pool alignment")
     except Exception as exc:
@@ -354,12 +315,7 @@ def _handle_client_body(
     config_dict = json.loads(ws.recv())
     if isinstance(config_dict, dict) and config_dict.get("type") == "upload_track":
         try:
-            _handle_upload_track(
-                ws, config_dict,
-                checkpoint=checkpoint,
-                decoder_backend=decoder_backend,
-                vae_backend=vae_backend,
-            )
+            _handle_upload_track(ws, config_dict, checkpoint=checkpoint)
         finally:
             try:
                 ws.close()

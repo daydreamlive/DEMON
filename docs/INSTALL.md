@@ -162,24 +162,22 @@ debugging. You can mix per component: `--decoder-accel compile
 
 ## Engine sets and song duration
 
-The minimal preset builds exactly three engines:
+The minimal preset builds exactly four engines:
 
 | Engine | Role |
 |---|---|
 | `spectral_decoder_mixed_refit_b8_60s` | DiT decoder, sources up to 60 s, LoRA-refittable |
 | `vae_encode_fp16_60s` | VAE encode, sources up to 60 s |
+| `vae_decode_fp16_60s` | Full-length VAE decode, sources up to 60 s (used by `vae_window=0` sessions) |
 | `vae_decode_fp16_1s_fixed` | Windowed VAE decode — fixed 1 s profile, used for **all** streaming decode regardless of song length |
 
-There is deliberately no full-length VAE decode engine in the minimal
-set: with `vae_window > 0` (the demo default) every decode goes through
-the windowed engine. Full-length decode engines are only needed for
-`vae_window=0` sessions — build them with `--all --vae-only`.
-
-**Maximum song duration follows what's built.** The server trims any
-source to the largest engine profile actually on disk, and the web UI's
-trim dialog caps at `engine.max_source_duration_s` in
+**Maximum song duration follows what's built.** The web UI trims every
+source to `engine.max_source_duration_s` in
 [`demos/realtime_motion_graph_web/web/public/config.json`](../demos/realtime_motion_graph_web/web/public/config.json)
-(default 60, matching the minimal set). To run longer sources:
+(default 60, matching the minimal set); a source that needs an engine
+profile that isn't on disk fails at session create with an
+`engine_not_built` error naming the build command. To run longer
+sources:
 
 ```bash
 uv run python -m acestep.engine.trt.build --all --duration 120
@@ -227,7 +225,7 @@ uv run python -u -m demos.realtime_motion_graph_web.run
 | Engine build: decoder ONNX "missing the 'steering' input" | A stale cached file is replaced automatically when the Hugging Face artifact is current. If the message says the *prebuilt* artifact itself is stale, the HF upload needs refreshing — build locally in the meantime with `--export-locally` (set `PYTHONUTF8=1` on Windows; needs the checkpoints downloaded) and report it. |
 | Every session dies instantly on a headless Linux pod (WS close 1011) | Install PortAudio: `apt-get install -y libportaudio2` (the audio engine imports `sounddevice` even headless). |
 | Playback stops and the UI shows "Generation stopped: …" | The generation pipeline hit a runtime error; the same message with a full traceback is in the server terminal / `logs/sessions`. |
-| Upload longer than 60 s gets trimmed | Expected with the minimal engine set — see [Engine sets](#engine-sets-and-song-duration) to build larger profiles. |
+| Upload longer than 60 s gets trimmed by the UI | Expected with the default `max_source_duration_s` — see [Engine sets](#engine-sets-and-song-duration) to build larger profiles, then raise it. |
 | `--export-locally` ONNX export crashes on Windows with a console encoding error | Set `PYTHONUTF8=1` for the build command. |
 | A sibling `ACE-Step/` checkout shadows `acestep` imports in standalone scripts | Force the repo root to the front of `sys.path` (see `demos/realtime_motion_graph_web/scripts/gen_wire_types.py` for the pattern). |
 

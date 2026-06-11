@@ -16,7 +16,7 @@ uv sync
 uv run demon-setup
 ```
 
-`demon-setup` checks your environment, downloads the ACE-Step v1.5 checkpoints (~18 GB from [`ACE-Step/Ace-Step1.5`](https://huggingface.co/ACE-Step/Ace-Step1.5) on Hugging Face, with a ModelScope fallback) plus a starter pack of genre LoRAs, and builds the minimal TensorRT engine set (60 s decoder + 60 s VAE encode + fixed 1 s windowed VAE decode — a few minutes on a recent GPU since the ONNX comes prebuilt; older cards can take longer). It is idempotent: re-run it any time, finished work is skipped.
+`demon-setup` checks your environment, downloads the ACE-Step v1.5 checkpoints (~18 GB from [`ACE-Step/Ace-Step1.5`](https://huggingface.co/ACE-Step/Ace-Step1.5) on Hugging Face, with a ModelScope fallback) plus a starter pack of genre LoRAs, and builds the minimal TensorRT engine set (the 60 s profile: decoder + VAE encode/decode, plus the fixed 1 s windowed VAE decode — a few minutes on a recent GPU since the ONNX comes prebuilt; older cards can take longer). It is idempotent: re-run it any time, finished work is skipped.
 
 Then launch the web demo:
 
@@ -80,7 +80,7 @@ Three knobs trade off against each other. Picking the right point on the curve i
 
 These are per-engine peaks captured in separate subprocesses, not a live-runtime sum. At inference time the decoder peak dominates and the VAE workspaces do not peak alongside it, which is why the live demo fits on a 24 GB card. The comparison is what matters: switching three engines from 240 s to 60 s frees about 9 GB. Source: [`scripts/benchmarks/vram_60s_vs_240s_results.md`](scripts/benchmarks/vram_60s_vs_240s_results.md). Longer engines also pay more per-tick latency since the diffusion sequence length scales with duration. Build only the durations you need.
 
-**VAE windowing.** Optional, and the demo's default. When `vae_window > 0`, every streaming decode runs through the fixed 1 s windowed engine: 25 latent frames go in, the middle `vae_window` seconds (keep range 0.04 to 0.36 s) come out, and the surrounding frames are receptive-field margin that gets trimmed. Only the requested window is decoded per call rather than the full latent — this is what unlocks low-latency streaming updates, and it means no full-length decode engine is required. Set to 0 to fall back to full-length decode (requires a full-length `vae_decode` engine for the duration).
+**VAE windowing.** Optional, and the demo's default. When `vae_window > 0`, every streaming decode runs through the fixed 1 s windowed engine: 25 latent frames go in, the middle `vae_window` seconds (keep range 0.04 to 0.36 s) come out, and the surrounding frames are receptive-field margin that gets trimmed. Only the requested window is decoded per call rather than the full latent — this is what unlocks low-latency streaming updates. Set to 0 to fall back to full-length decode through the `vae_decode` engine for the duration.
 
 ## Performance
 
@@ -216,7 +216,7 @@ DEMON targets TensorRT 10.16.x. Plans are version- and GPU-architecture-specific
 
 ```bash
 # Minimal set for the realtime web demo (what `demon-setup` builds):
-# 60s decoder + 60s VAE encode + fixed 1s windowed VAE decode.
+# the 60s profile (decoder + VAE encode/decode) + fixed 1s windowed VAE decode.
 uv run python -m acestep.engine.trt.build --preset minimal
 
 # Full matrix (decoder refit + VAE encode/decode for 60s / 120s / 240s).

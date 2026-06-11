@@ -11,9 +11,10 @@ demo in one idempotent pass:
                   swapping works out of the box. Optional; failures
                   never block setup.
     4. Engines  - builds the minimal TensorRT engine set
-                  (``acestep.engine.trt.build --preset minimal``):
-                  60 s decoder + 60 s VAE encode + fixed 1 s windowed
-                  VAE decode. Existing engines are skipped.
+                  (``acestep.engine.trt.build --preset minimal``): the
+                  60 s profile (decoder + VAE encode + VAE decode) plus
+                  the fixed 1 s windowed VAE decode. Existing engines
+                  are skipped.
     5. Summary  - what's on disk and the exact command to launch the demo.
 
 Every step skips work that's already done, so re-running after a partial
@@ -269,8 +270,8 @@ def _build_engines(extra_args: list[str]) -> bool:
 
     _header("4/4  TensorRT engines (minimal preset)")
     print(f"  destination: {trt_engines_dir()}")
-    print("  set: 60s decoder + 60s VAE encode + fixed 1s windowed VAE "
-          "decode")
+    print("  set: 60s decoder + 60s VAE encode/decode + fixed 1s windowed "
+          "VAE decode")
     print("  ONNX is fetched prebuilt from huggingface.co/daydreamlive/"
           "demon-onnx;")
     print("  expect a few minutes on a recent GPU (under 2 minutes of TRT")

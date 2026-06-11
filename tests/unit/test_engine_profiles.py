@@ -16,14 +16,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from acestep.paths import (
-    WINDOWED_VAE_DECODE_NAME,
     EngineNotBuiltError,
     available_trt_engines,
-    max_built_profile_duration_s,
     max_profile_duration_s,
     select_trt_engines,
     smallest_fitting_profile_duration_s,
-    trt_engine_needs,
     trt_engine_path,
     trt_engine_profiles,
 )
@@ -51,13 +48,6 @@ def _create_engine_files(
         engine_path = trt_engine_path(engine_name)
         engine_path.parent.mkdir(parents=True, exist_ok=True)
         engine_path.write_bytes(b"")
-
-
-def _create_windowed_decode_engine() -> None:
-    """Create the fixed 1 s windowed VAE decode engine file."""
-    engine_path = trt_engine_path(WINDOWED_VAE_DECODE_NAME)
-    engine_path.parent.mkdir(parents=True, exist_ok=True)
-    engine_path.write_bytes(b"")
 
 
 # -----------------------------------------------------------------------
@@ -259,118 +249,3 @@ class TestEngineNotBuiltError:
         assert "--decoder-precision fp8_mixed" in command
         assert "--activation-absmax-json" in command
         assert "decoder_xl_fp8/60s/activation_absmax.json" in command
-
-
-# -----------------------------------------------------------------------
-# trt_engine_needs: which engine keys a session actually consumes
-# -----------------------------------------------------------------------
-
-class TestTrtEngineNeeds:
-    def test_non_trt_session_needs_nothing(self):
-        assert trt_engine_needs(
-            decoder_tensorrt=False, vae_tensorrt=False,
-        ) == ()
-
-    def test_decoder_only(self):
-        assert trt_engine_needs(
-            decoder_tensorrt=True, vae_tensorrt=False,
-        ) == ("decoder",)
-
-    def test_full_trt_without_windowing_needs_all_three(self, tmp_models_dir):
-        assert trt_engine_needs(
-            decoder_tensorrt=True, vae_tensorrt=True,
-        ) == ("decoder", "vae_encode", "vae_decode")
-
-    def test_windowed_decode_without_built_engine_still_needs_vae_decode(
-        self, tmp_models_dir,
-    ):
-        # vae_window > 0 but the 1s fixed engine isn't built: the
-        # session would fall back to the full-length engine, so it
-        # stays in the needs.
-        assert trt_engine_needs(
-            decoder_tensorrt=True, vae_tensorrt=True, windowed_decode=True,
-        ) == ("decoder", "vae_encode", "vae_decode")
-
-    def test_windowed_decode_with_built_engine_drops_vae_decode(
-        self, tmp_models_dir,
-    ):
-        _create_windowed_decode_engine()
-        assert trt_engine_needs(
-            decoder_tensorrt=True, vae_tensorrt=True, windowed_decode=True,
-        ) == ("decoder", "vae_encode")
-
-
-# -----------------------------------------------------------------------
-# max_built_profile_duration_s: existence-aware source-duration cap
-# -----------------------------------------------------------------------
-
-class TestMaxBuiltProfileDuration:
-    def test_falls_back_to_registry_max_when_nothing_built(self, tmp_models_dir):
-        # Non-TRT sessions / truly-unbuilt installs keep the registered
-        # ceiling; EngineNotBuiltError fires later with the fix command.
-        assert max_built_profile_duration_s() == max_profile_duration_s()
-
-    def test_only_60s_built_caps_at_60(self, tmp_models_dir):
-        _create_engine_files(
-            tmp_models_dir, 60.0, keys=("decoder", "vae_encode", "vae_decode"),
-        )
-        assert max_built_profile_duration_s() == 60.0
-
-    def test_60_and_120_built_caps_at_120(self, tmp_models_dir):
-        for d in (60.0, 120.0):
-            _create_engine_files(
-                tmp_models_dir, d, keys=("decoder", "vae_encode", "vae_decode"),
-            )
-        assert max_built_profile_duration_s() == 120.0
-
-    def test_respects_needs(self, tmp_models_dir):
-        # Decoder-only session: 120s decoder exists but its VAE engines
-        # don't — with needs=("decoder",) the 120s profile still counts.
-        _create_engine_files(tmp_models_dir, 60.0, keys=("decoder", "vae_encode", "vae_decode"))
-        _create_engine_files(tmp_models_dir, 120.0, keys=("decoder",))
-        assert max_built_profile_duration_s(needs=("decoder",)) == 120.0
-        assert max_built_profile_duration_s() == 60.0
-
-
-# -----------------------------------------------------------------------
-# Minimal preset end-to-end: the engine set `demon-setup` builds must
-# resolve cleanly for the demo's windowed-decode session shape.
-# -----------------------------------------------------------------------
-
-class TestMinimalPresetResolution:
-    def _build_minimal_set(self, tmp_models_dir):
-        # What `acestep.engine.trt.build --preset minimal` produces:
-        # 60s decoder + 60s vae_encode + fixed 1s windowed vae_decode.
-        # No full-length vae_decode engine at any duration.
-        _create_engine_files(
-            tmp_models_dir, 60.0, keys=("decoder", "vae_encode"),
-        )
-        _create_windowed_decode_engine()
-
-    def test_windowed_session_resolves_on_minimal_set(self, tmp_models_dir):
-        self._build_minimal_set(tmp_models_dir)
-        needs = trt_engine_needs(
-            decoder_tensorrt=True, vae_tensorrt=True, windowed_decode=True,
-        )
-        paths, picked = available_trt_engines(duration_s=45.0, needs=needs)
-        assert picked == 60.0
-        assert "_60s" in paths["decoder"]
-
-    def test_minimal_set_caps_sources_at_60s(self, tmp_models_dir):
-        self._build_minimal_set(tmp_models_dir)
-        needs = trt_engine_needs(
-            decoder_tensorrt=True, vae_tensorrt=True, windowed_decode=True,
-        )
-        assert max_built_profile_duration_s(needs=needs) == 60.0
-
-    def test_full_length_decode_session_fails_on_minimal_set(
-        self, tmp_models_dir,
-    ):
-        # vae_window=0 sessions still need a full-length decode engine,
-        # which the minimal preset deliberately does not build.
-        self._build_minimal_set(tmp_models_dir)
-        needs = trt_engine_needs(
-            decoder_tensorrt=True, vae_tensorrt=True, windowed_decode=False,
-        )
-        with pytest.raises(EngineNotBuiltError):
-            available_trt_engines(duration_s=45.0, needs=needs)

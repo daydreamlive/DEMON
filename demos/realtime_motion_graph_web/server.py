@@ -486,8 +486,8 @@ def _run_preflight(decoder_accel: str, vae_accel: str, checkpoint: str) -> None:
        terminal where the operator can see progress, rather than
        stalling the first silent WS connect for 5-15 minutes.
     2. TRT engines — when either component runs TensorRT, verify a 60 s
-       profile is built (same needs logic the session uses, windowed
-       decode counted). On failure, print the fix and exit non-zero.
+       profile is built (decoder and/or VAE engines, matching the
+       backends in use). On failure, print the fix and exit non-zero.
 
     ``--skip-preflight`` bypasses both checks (e.g. exotic mixed setups,
     or testing the error paths themselves).
@@ -497,7 +497,6 @@ def _run_preflight(decoder_accel: str, vae_accel: str, checkpoint: str) -> None:
         EngineNotBuiltError,
         available_trt_engines,
         checkpoints_dir,
-        trt_engine_needs,
     )
     from acestep.setup import DEMO_COMMAND, SETUP_COMMAND
 
@@ -516,14 +515,11 @@ def _run_preflight(decoder_accel: str, vae_accel: str, checkpoint: str) -> None:
         raise SystemExit(1)
     logger.info("preflight_checkpoints_ok checkpoint={}", checkpoint)
 
-    needs = trt_engine_needs(
-        decoder_tensorrt=decoder_accel == "tensorrt",
-        vae_tensorrt=vae_accel == "tensorrt",
-        # The demo always streams with vae_window > 0 (config.json
-        # default 0.36 s), so the fixed 1 s windowed engine satisfies
-        # the decode need and no full-length decode engine is required.
-        windowed_decode=True,
-    )
+    needs: tuple[str, ...] = ()
+    if decoder_accel == "tensorrt":
+        needs += ("decoder",)
+    if vae_accel == "tensorrt":
+        needs += ("vae_encode", "vae_decode")
     if not needs:
         return
     trt_profile_checkpoint = (
