@@ -109,7 +109,7 @@ async function decodeArrayBuffer(bytes: ArrayBuffer): Promise<DecodedFixture> {
   return { interleaved, channels, frames, sampleRate: sr };
 }
 
-async function fetchAndDecode(url: string): Promise<DecodedFixture> {
+export async function fetchAndDecodeAudio(url: string): Promise<DecodedFixture> {
   const res = await fetch(url);
   if (!res.ok) {
     throw new Error(`Audio fetch failed: ${res.status} ${res.statusText}`);
@@ -148,7 +148,7 @@ export async function loadFixtureAudio(name: string): Promise<DecodedFixture> {
     );
     if (fromUpload) return fromUpload;
   }
-  return fetchAndDecode(podHttp(`/fixtures/${encoded}`));
+  return fetchAndDecodeAudio(podHttp(`/fixtures/${encoded}`));
 }
 
 // Hard upper bound on upload length. The interactive trim dialog

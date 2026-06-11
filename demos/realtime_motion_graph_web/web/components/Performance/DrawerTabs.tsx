@@ -21,11 +21,12 @@ import { useState, type ReactElement } from "react";
 //   SAVED    — saved sessions
 //   CONFIG   — session controls: key/sig, transport, MIDI, prefs
 
-export const DRAWER_TABS = ["core", "styles", "mod", "voice", "auto", "saved", "config"] as const;
+export const DRAWER_TABS = ["core", "decks", "styles", "mod", "voice", "auto", "saved", "config"] as const;
 export type DrawerTab = (typeof DRAWER_TABS)[number];
 
 const TAB_LABELS: Record<DrawerTab, string> = {
   core: "Core",
+  decks: "Decks",
   mod: "Mod",
   voice: "Experimental",
   styles: "Styles",
@@ -43,6 +44,15 @@ const TAB_ICONS: Record<DrawerTab, ReactElement> = {
     <>
       <circle cx="8" cy="8" r="5.2" />
       <line x1="8" y1="3.2" x2="8" y2="5.6" />
+    </>
+  ),
+  decks: (
+    <>
+      <rect x="2" y="3" width="5" height="10" rx="0.8" />
+      <rect x="9" y="3" width="5" height="10" rx="0.8" />
+      <circle cx="4.5" cy="6" r="1" />
+      <circle cx="11.5" cy="6" r="1" />
+      <path d="M4 10h1 M11 10h1" />
     </>
   ),
   mod: <path d="M2 8 Q 4.5 3.5 7 8 T 12 8 T 14 8" />,

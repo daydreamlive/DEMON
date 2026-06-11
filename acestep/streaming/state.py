@@ -38,6 +38,7 @@ def _default_swap_pending() -> dict:
         "time_signature": None,
         "fixture_name": None,
         "stem_source_mode": None,
+        "skip_stem_extraction": False,
     }
 
 

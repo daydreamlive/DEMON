@@ -16,6 +16,7 @@ import {
 } from "@/lib/config";
 import { wirePromptTransform } from "@/lib/loraTriggers";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
+import { type DeckId, useDeckStore } from "@/store/useDeckStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore, type RefSource } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
@@ -114,7 +115,8 @@ function buildConfig(
   // headroom is what unlocks longer audio uploads (cap lives in
   // loadFixture.ts; depth=4 makes future bumps VRAM-safe).
   const custom = useCustomTracksStore.getState();
-  const sourceMode = custom.resolveSourceMode(fixtureName);
+  const sourceMode = custom.resolveBackendSourceMode(fixtureName);
+  const skipStemExtraction = custom.shouldSkipStemExtraction(fixtureName);
   // Optional opaque per-browser identifier from the host (the demo's
   // standalone shell wires no getter, so this is null and the field is
   // omitted; demon-public-demo wires PostHog's distinct_id).
@@ -147,6 +149,7 @@ function buildConfig(
     // override-wins-over-sidecar regression.
     fixture_name: fixtureName,
     ...(sourceMode ? { stem_source_mode: sourceMode } : {}),
+    ...(skipStemExtraction ? { skip_stem_extraction: true } : {}),
     // Only set when the target pod advertised it can load this fixture
     // server-side (capability-gated by the caller via
     // probeServerSideFixtures). When true the pod reads the waveform
@@ -413,6 +416,16 @@ async function restoreRefs(remote: RemoteBackend): Promise<void> {
   );
 }
 
+function refFromDeckRole(id: DeckId | null): RefSource | null {
+  if (!id) return null;
+  const name = useDeckStore.getState().decks[id]?.trackName;
+  if (!name) return null;
+  return {
+    mode: useCustomTracksStore.getState().has(name) ? "clip" : "fixture",
+    name,
+  };
+}
+
 export function useStartSession() {
   return useCallback(async () => {
     const { setStatus, setSession, reset } = useSessionStore.getState();
@@ -426,13 +439,13 @@ export function useStartSession() {
       prev.remote?.close();
     } catch {}
     reset();
-    // A fresh session boots with no timbre / structure override. Drop
-    // any RefSource recorded by a prior session so the reconnect path
-    // (restoreRefs) can't re-apply a ref the operator didn't set this
-    // session. Reconnects go through buildAndConnect, never this hook,
-    // so the in-session record is preserved across a recovery.
-    usePerformanceStore.getState().setTimbreRef(null);
-    usePerformanceStore.getState().setStructRef(null);
+    // A fresh session boots with no timbre / structure override. Rebuild
+    // the ref records from deck roles so saved-session roles survive the
+    // initial Play click, while absent roles still clear stale refs.
+    const deck = useDeckStore.getState();
+    const perf = usePerformanceStore.getState();
+    perf.setTimbreRef(refFromDeckRole(deck.timbreDeckId));
+    perf.setStructRef(refFromDeckRole(deck.structureDeckId));
 
     setStatus("loading-fixture", "Loading track…");
 
@@ -458,10 +471,14 @@ export function useStartSession() {
 
     setStatus("connecting", "Connecting…");
     if (sessionFixture.fixtureName) {
-      const sourceMode = useCustomTracksStore
+      // Only show "processing" when the backend will actually rip stems for
+      // this upload: a fresh custom track with no client-side stems and no
+      // skip flag. Restored sessions (stems cached, skip set) and built-in
+      // fixtures get no stem_assets echo, so a pill set here would hang.
+      const track = useCustomTracksStore
         .getState()
-        .resolveSourceMode(sessionFixture.fixtureName);
-      if (sourceMode) {
+        .tracks.get(sessionFixture.fixtureName);
+      if (track && !track.stems && !track.skipStemExtraction) {
         useCustomTracksStore
           .getState()
           .setStemStatus(sessionFixture.fixtureName, "processing");

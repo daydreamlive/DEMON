@@ -30,7 +30,14 @@ from websockets.datastructures import Headers
 from websockets.sync.server import serve as ws_serve
 
 from acestep.engine.obs import configure as configure_logging, logger
-from acestep.fixtures import KNOWN_FIXTURES, audio_fixture
+from acestep.fixtures import (
+    KNOWN_FIXTURES,
+    audio_fixture,
+    fixture_stem_audio,
+    fixture_track_metadata,
+)
+from acestep.paths import user_uploads_dir
+from acestep.track_assets import load_track_metadata, stem_audio_path
 from acestep.user_uploads import enumerate_user_uploads, user_upload_audio
 
 # The generative backend is imported lazily inside main(): in --no-backend
@@ -96,6 +103,65 @@ def _log_http(remote: str, status: int, method: str, url: str):
         "http_request remote={} method={} url={} status={}",
         remote, method, url, status,
     )
+
+
+def _json_response(
+    remote: str,
+    url: str,
+    status: int,
+    reason: str,
+    payload,
+) -> Response:
+    body = json.dumps(payload).encode()
+    _log_http(remote, status, "GET", url)
+    return Response(
+        status,
+        reason,
+        Headers([
+            ("Content-Type", "application/json; charset=utf-8"),
+            ("Content-Length", str(len(body))),
+            *_NO_CACHE_HEADERS,
+        ]),
+        body,
+    )
+
+
+def _not_found(remote: str, url: str, message: str = "not found") -> Response:
+    return _json_response(remote, url, 404, "Not Found", {"error": message})
+
+
+def _serve_binary_file(remote: str, url: str, candidate: Path) -> Response:
+    try:
+        body = candidate.read_bytes()
+    except OSError as e:
+        msg = f"500 {e}\n".encode()
+        _log_http(remote, 500, "GET", url)
+        return Response(
+            500, "Internal Server Error",
+            Headers([
+                ("Content-Type", "text/plain; charset=utf-8"),
+                ("Content-Length", str(len(msg))),
+                *_NO_CACHE_HEADERS,
+            ]),
+            msg,
+        )
+    ctype, _ = mimetypes.guess_type(candidate.name)
+    _log_http(remote, 200, "GET", url)
+    return Response(
+        200, "OK",
+        Headers([
+            ("Content-Type", ctype or "application/octet-stream"),
+            ("Content-Length", str(len(body))),
+            *_NO_CACHE_HEADERS,
+        ]),
+        body,
+    )
+
+
+def _query_value(url: str, key: str) -> str:
+    parsed = urllib.parse.urlsplit(url)
+    values = urllib.parse.parse_qs(parsed.query).get(key)
+    return values[0] if values else ""
 
 
 def _process_request(connection, request):
@@ -335,6 +401,68 @@ def _process_request(connection, request):
             ]),
             body,
         )
+
+    # API: metadata + stem manifest for either a user upload or a known
+    # fixture. Used by the browser-side deck mixer to decide which stem
+    # source buttons are actually available before fetching WAV payloads.
+    if path_only == "/api/track_asset":
+        name = urllib.parse.unquote(_query_value(url, "name"))
+        if not name:
+            return _not_found(remote, url, "missing track name")
+        stems = {}
+        metadata = {}
+        try:
+            uploads = set(enumerate_user_uploads())
+        except Exception:
+            uploads = set()
+        if name in uploads:
+            metadata = load_track_metadata(user_uploads_dir(), name)
+            for mode in ("vocals", "instruments"):
+                if stem_audio_path(user_uploads_dir(), name, mode).is_file():
+                    stems[mode] = (
+                        "/api/track_stem?"
+                        f"name={urllib.parse.quote(name)}&mode={mode}"
+                    )
+        elif name in KNOWN_FIXTURES:
+            metadata = fixture_track_metadata(name)
+            for mode in ("vocals", "instruments"):
+                if fixture_stem_audio(name, mode) is not None:
+                    stems[mode] = (
+                        "/api/track_stem?"
+                        f"name={urllib.parse.quote(name)}&mode={mode}"
+                    )
+        else:
+            return _not_found(remote, url, f"unknown track: {name}")
+        return _json_response(
+            remote,
+            url,
+            200,
+            "OK",
+            {"name": name, "metadata": metadata, "stems": stems},
+        )
+
+    # API: serve a cached vocal/instrument stem WAV for a user upload or
+    # fixture. This deliberately stays under /api so Next's existing
+    # rewrite covers it, and every lookup is gated by the same allowlists
+    # as /user_uploads and /fixtures.
+    if path_only == "/api/track_stem":
+        name = urllib.parse.unquote(_query_value(url, "name"))
+        mode = _query_value(url, "mode")
+        if mode not in ("vocals", "instruments"):
+            return _not_found(remote, url, "unsupported stem mode")
+        try:
+            uploads = set(enumerate_user_uploads())
+        except Exception:
+            uploads = set()
+        candidate = None
+        if name in uploads:
+            p = stem_audio_path(user_uploads_dir(), name, mode)
+            candidate = p if p.is_file() else None
+        elif name in KNOWN_FIXTURES:
+            candidate = fixture_stem_audio(name, mode)
+        if candidate is None or not candidate.is_file():
+            return _not_found(remote, url, "stem not found")
+        return _serve_binary_file(remote, url, candidate)
 
     # Serve files from the HF fixture dataset under /fixtures/<name>.
     # audio_fixture() validates `name` against KNOWN_FIXTURES (so this is

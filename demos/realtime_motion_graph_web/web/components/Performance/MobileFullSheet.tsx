@@ -6,13 +6,14 @@ import { createPortal } from "react-dom";
 import { useScrollSyncedTabs } from "@/hooks/useScrollSyncedTabs";
 
 import { CoreTile } from "./CoreTile";
+import { DecksPanel } from "./DecksPanel";
 import { LibraryTile } from "./LibraryTile";
 import { ModTile } from "./ModTile";
 import { OperatorStrip } from "./OperatorStrip";
 import { PromptsTile } from "./PromptsTile";
 import { VoiceTile } from "./VoiceTile";
 
-type Tab = "core" | "mod" | "voice" | "styles" | "saved" | "config";
+type Tab = "core" | "decks" | "mod" | "voice" | "styles" | "saved" | "config";
 
 interface Props {
   open: boolean;
@@ -27,6 +28,7 @@ interface Props {
 // together) / MOD / CHANNELS (key=voice) / SAVED / CONFIG.
 const TABS: { id: Tab; label: string }[] = [
   { id: "core", label: "Core" },
+  { id: "decks", label: "Decks" },
   { id: "styles", label: "Styles" },
   { id: "mod", label: "Mod" },
   { id: "voice", label: "Experimental" },
@@ -84,6 +86,9 @@ export function MobileFullSheet({ open, onClose, savedTab }: Props) {
       <div ref={trackRef} className="mobile-sheet-track">
         <section data-section="core" className="mobile-sheet-section">
           <CoreTile />
+        </section>
+        <section data-section="decks" className="mobile-sheet-section">
+          <DecksPanel />
         </section>
         <section data-section="mod" className="mobile-sheet-section">
           <ModTile />

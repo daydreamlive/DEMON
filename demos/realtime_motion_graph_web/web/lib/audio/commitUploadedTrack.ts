@@ -13,6 +13,8 @@ export interface PendingTrackUpload {
   decoded: DecodedFixture;
   fileName: string;
   originalFile: File;
+  trimStartS?: number;
+  trimEndS?: number;
 }
 
 interface CommitUploadedTrackArgs {
@@ -25,6 +27,13 @@ interface CommitUploadedTrackArgs {
     decoded: DecodedFixture,
     file?: File,
     sourceMode?: StemSourceMode,
+    metadataOrPersisted?:
+      | {
+          originalFileName?: string;
+          trimStartS?: number;
+          trimEndS?: number;
+        }
+      | boolean,
     persisted?: boolean,
   ) => void;
   setFixture: (name: string) => void;
@@ -54,7 +63,7 @@ export async function commitUploadedTrack({
   setUploading,
   signal,
 }: CommitUploadedTrackArgs): Promise<UploadOutcome> {
-  const { decoded, fileName, originalFile } = pending;
+  const { decoded, fileName, originalFile, trimStartS, trimEndS } = pending;
   // Keep `pending` set until the upload actually succeeds: encoding can
   // fail (bad audio, server/network), and clearing it up front would throw
   // away the user's trimmed selection with no way to retry.
@@ -69,7 +78,18 @@ export async function commitUploadedTrack({
     });
     // The server persisted audio + sidecars + stems to disk before
     // replying upload_ok, so swaps to this track can load by name.
-    addCustomTrack(uploaded.name, decoded, originalFile, sourceMode, true);
+    addCustomTrack(
+      uploaded.name,
+      decoded,
+      originalFile,
+      sourceMode,
+      {
+        originalFileName: originalFile.name,
+        trimStartS,
+        trimEndS,
+      },
+      true,
+    );
     const perf = usePerformanceStore.getState();
     if (keyOverride) {
       perf.setPendingKeyOverride(keyOverride);

@@ -869,6 +869,12 @@ def _handle_client_body(
                 )
             elif mtype == "clear_structure_source":
                 streaming.clear_structure_source(origin=origin)
+            elif mtype == "deck_mix_state":
+                streaming.set_deck_mix_state(
+                    data.get("decks") or [],
+                    data.get("crossfade", 0.5),
+                    origin=origin,
+                )
             elif mtype == "swap_source":
                 # Server-side source load: when the user picks a track that
                 # already lives on the pod (a built-in fixture or a
@@ -915,6 +921,9 @@ def _handle_client_body(
                     time_signature=data.get("time_signature"),
                     fixture_name=data.get("fixture_name"),
                     stem_source_mode=data.get("stem_source_mode"),
+                    skip_stem_extraction=bool(
+                        data.get("skip_stem_extraction", False)
+                    ),
                     origin=origin,
                 )
         except ConnectionClosed:

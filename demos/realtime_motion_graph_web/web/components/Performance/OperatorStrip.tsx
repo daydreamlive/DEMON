@@ -242,7 +242,7 @@ export function OperatorStrip() {
     <div className="operator-strip">
       {/* ── Key & Time ──────────────────────────────────────────────
           The "what's playing" group: key + time signature. Track
-          dropdown + upload now live in the CORE tab via <TrackPicker/>. */}
+          selection now lives in the Decks input mixer. */}
       <section className="operator-section">
         <h3 className="operator-section-label">Key &amp; Time</h3>
         <div className="operator-row">

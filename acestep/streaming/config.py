@@ -52,6 +52,7 @@ class SessionConfig:
     fixture_name: str | None = None
     use_server_fixture: bool = False
     stem_source_mode: str | None = None
+    skip_stem_extraction: bool = False
     enabled_loras: list = field(default_factory=list)
     lora_strengths: dict = field(default_factory=dict)
     lora_paths: list = field(default_factory=list)

@@ -2864,6 +2864,7 @@ body.drawer-open .hud-help-readout {
      panel; CORE/MOD/PROMPT/LIB rely on the tab itself for labeling. */
 }
 .mixer-rack--tabbed[data-active-tab="core"] > .knob-tile > .knob-tile-label,
+.mixer-rack--tabbed[data-active-tab="decks"] > .decks-panel > .decks-panel-head .decks-panel-title,
 .mixer-rack--tabbed[data-active-tab="mod"] > .knob-tile > .knob-tile-label,
 .mixer-rack--tabbed[data-active-tab="lib"] > .mixer-tile > .mixer-tile-label,
 .mixer-rack--tabbed[data-active-tab="prompt"] > .mixer-tile > .mixer-tile-label {
@@ -2895,8 +2896,8 @@ body.drawer-open .hud-help-readout {
      a 1/3 column; everything else slots into a single cell. Saved is
      dropped from spread mode (see AdvancedDrawer.tsx). */
   grid-template-areas:
-    "core   styles  mod"
-    "voice  voice   config";
+    "core   decks   styles"
+    "mod    voice   config";
   align-items: stretch;
   gap: 8px;
   /* Override the base .mixer-rack overflow-y: auto — outer scroll is
@@ -2905,6 +2906,7 @@ body.drawer-open .hud-help-readout {
   min-height: 0;
 }
 .spread-section[data-section="core"]   { grid-area: core; }
+.spread-section[data-section="decks"]  { grid-area: decks; }
 .spread-section[data-section="styles"] { grid-area: styles; }
 .spread-section[data-section="mod"]    { grid-area: mod; }
 .spread-section[data-section="voice"]  { grid-area: voice; }
@@ -9301,6 +9303,465 @@ body.curve-open #install-video-area #graph {
   pointer-events: none;
 }
 
+/* Four-deck inference input mixer. Lives inside the Advanced Drawer so the
+   right-side graph lane/mod display remains untouched. */
+.decks-panel {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 4px 4px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  scrollbar-width: thin;
+  scrollbar-color: var(--frame-line) transparent;
+}
+.decks-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.decks-panel-kicker {
+  display: block;
+  color: var(--text-dim);
+  font-size: 9px;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+.decks-panel-title {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 15px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.decks-panel-toggles,
+.deck-performance-row,
+.deck-source-parts,
+.deck-fader-row,
+.deck-side-switch {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.decks-panel button,
+.decks-panel select {
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.decks-panel button {
+  cursor: pointer;
+  padding: 5px 7px;
+}
+.decks-panel button:disabled,
+.decks-panel select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.decks-panel button.is-active {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: rgba(255, 111, 58, 0.12);
+}
+.deck-crossfader-card {
+  display: grid;
+  grid-template-columns: minmax(54px, 0.7fr) minmax(128px, 1.6fr) minmax(54px, 0.7fr);
+  align-items: center;
+  gap: 9px;
+  padding: 9px;
+  margin-bottom: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: calc(var(--radius-sm) + 2px);
+  background:
+    radial-gradient(circle at 18% 0%, rgba(240, 138, 72, 0.14), transparent 34%),
+    radial-gradient(circle at 82% 100%, rgba(132, 96, 255, 0.14), transparent 36%),
+    rgba(255, 255, 255, 0.025);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+}
+.deck-bus-readout {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.deck-bus-readout--b {
+  text-align: right;
+}
+.deck-bus-label {
+  color: var(--text-dim);
+  font-size: 8px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.deck-bus-readout strong {
+  color: var(--text-strong);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+.deck-bus-readout--a strong {
+  color: var(--deck-bus-a-color, var(--text-strong));
+}
+.deck-bus-readout--b strong {
+  color: var(--deck-bus-b-color, var(--text-strong));
+}
+.deck-bus-readout span:last-child {
+  min-height: 1em;
+  color: var(--text-dim);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.deck-crossfade-control {
+  position: relative;
+  min-width: 0;
+  padding-top: 2px;
+}
+.deck-crossfade-track {
+  position: relative;
+  height: 24px;
+}
+.deck-crossfade-track::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 3px;
+  transform: translateY(-50%);
+  border-radius: 2px;
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.6) 0%,
+    rgba(0, 0, 0, 0.42) 50%,
+    rgba(255, 255, 255, 0.05) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(0, 0, 0, 0.75),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.055);
+}
+.deck-crossfade-fill {
+  position: absolute;
+  top: 50%;
+  height: 3px;
+  transform: translateY(-50%);
+  border-radius: 2px;
+  pointer-events: none;
+  transition: width 70ms linear, left 70ms linear, right 70ms linear;
+}
+.deck-crossfade-fill--a {
+  left: 0;
+  width: var(--deck-crossfade);
+  background: linear-gradient(
+    to right,
+    color-mix(in oklch, var(--deck-bus-a-color, var(--accent)) 42%, transparent),
+    var(--deck-bus-a-color, var(--accent))
+  );
+}
+.deck-crossfade-fill--b {
+  left: var(--deck-crossfade);
+  right: 0;
+  background: linear-gradient(
+    to right,
+    color-mix(in oklch, var(--deck-bus-b-color, var(--accent)) 42%, transparent),
+    var(--deck-bus-b-color, var(--accent))
+  );
+}
+.deck-crossfade-cap {
+  position: absolute;
+  top: 50%;
+  left: var(--deck-crossfade);
+  width: 9px;
+  height: 19px;
+  transform: translate(-50%, -50%);
+  border-radius: 2px;
+  background: linear-gradient(
+    to bottom,
+    rgb(80, 84, 94) 0%,
+    rgb(40, 43, 50) 48%,
+    rgb(16, 18, 22) 100%
+  );
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.65),
+    0 0 0 1px rgba(0, 0, 0, 0.55),
+    inset 1px 0 0 rgba(255, 255, 255, 0.16),
+    inset -1px 0 0 rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  transition: left 70ms linear;
+}
+.deck-crossfade-cap::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  border-radius: 1px;
+  background: color-mix(
+    in oklch,
+    var(--deck-bus-a-color, var(--accent)) calc(100% - var(--deck-crossfade)),
+    var(--deck-bus-b-color, var(--accent)) var(--deck-crossfade)
+  );
+  box-shadow: 0 0 4px currentColor;
+}
+.deck-crossfade-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 24px;
+  cursor: ew-resize;
+  opacity: 0;
+}
+.deck-crossfade-caption {
+  display: block;
+  margin-top: -1px;
+  color: var(--text-dim);
+  font-size: 7.5px;
+  letter-spacing: 0.12em;
+  text-align: center;
+  text-transform: uppercase;
+}
+.deck-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.deck-add-card {
+  display: grid;
+  grid-template-columns: minmax(96px, 0.9fr) minmax(0, 1.25fr) auto;
+  align-items: end;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 9px;
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: calc(var(--radius-sm) + 2px);
+  background: rgba(255, 255, 255, 0.025);
+}
+.deck-add-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.deck-add-copy strong {
+  color: var(--text-strong);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.deck-add-copy span:last-child {
+  color: var(--text-dim);
+  font-size: 8px;
+  letter-spacing: 0.04em;
+  line-height: 1.35;
+}
+.deck-add-card .ref-control {
+  width: 100%;
+  min-width: 0;
+  font-size: 10px;
+}
+.deck-add-cancel {
+  align-self: end;
+}
+.deck-card {
+  position: relative;
+  overflow: hidden;
+  padding: 10px 10px 9px 14px;
+  border: 1px solid color-mix(in oklch, var(--deck-color, var(--accent)) 38%, rgba(255, 255, 255, 0.07));
+  border-radius: calc(var(--radius-sm) + 2px);
+  background:
+    linear-gradient(90deg, color-mix(in oklch, var(--deck-color, var(--accent)) 16%, transparent), transparent 42%),
+    radial-gradient(circle at 8% 0%, color-mix(in oklch, var(--deck-color, var(--accent)) 18%, transparent), transparent 34%),
+    rgba(255, 255, 255, 0.025);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+}
+.deck-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--deck-color, var(--accent));
+  box-shadow: 0 0 18px color-mix(in oklch, var(--deck-color, var(--accent)) 58%, transparent);
+}
+.deck-card-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+.deck-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  color: var(--deck-color, var(--accent));
+  border: 1px solid color-mix(in oklch, var(--deck-color, var(--accent)) 65%, transparent);
+  border-radius: 50%;
+  font-size: 11px;
+  background: color-mix(in oklch, var(--deck-color, var(--accent)) 13%, transparent);
+}
+.deck-title-block {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.deck-name,
+.deck-track-meta {
+  color: var(--text-dim);
+  font-size: 8px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.deck-track-title {
+  display: block;
+  min-width: 0;
+  color: var(--text-strong);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.deck-remove-button {
+  width: 24px;
+  height: 24px;
+  padding: 0 !important;
+  font-size: 14px !important;
+  line-height: 1;
+}
+.deck-track-picker {
+  margin-top: 8px;
+}
+.deck-card .ref-control {
+  width: 100%;
+  min-width: 0;
+  font-size: 10px;
+}
+.deck-card .ref-control-label {
+  color: var(--deck-color, var(--accent));
+}
+.deck-role-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  margin-top: 7px;
+}
+.deck-role-row button.is-active {
+  color: var(--deck-color, var(--accent));
+  border-color: color-mix(in oklch, var(--deck-color, var(--accent)) 70%, transparent);
+  background: color-mix(in oklch, var(--deck-color, var(--accent)) 14%, transparent);
+}
+.deck-loading-strip {
+  height: 2px;
+  margin-top: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.deck-loading-strip span {
+  display: block;
+  width: 44%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, var(--deck-color, var(--accent)), transparent);
+  animation: deck-loading-scan 1.1s ease-in-out infinite;
+}
+@keyframes deck-loading-scan {
+  from { transform: translateX(-115%); }
+  to { transform: translateX(255%); }
+}
+.deck-source-parts {
+  margin-top: 7px;
+}
+.deck-source-parts button {
+  flex: 1;
+}
+.deck-performance-row,
+.deck-fader-row {
+  margin-top: 7px;
+}
+.deck-stem-overlay-controls {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.055);
+}
+.deck-stem-fader-row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 6px;
+}
+.deck-stem-fader-row span,
+.deck-stem-fader-row output {
+  color: var(--text-dim);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.deck-stem-fader-row output {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.deck-stem-fader-row input {
+  min-width: 0;
+  accent-color: var(--deck-color, var(--accent));
+}
+.deck-stem-fader-row.is-disabled {
+  opacity: 0.45;
+}
+.deck-performance-row {
+  flex-wrap: wrap;
+}
+.deck-side-switch {
+  margin-left: auto;
+  padding: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-sm);
+}
+.deck-side-switch button {
+  min-width: 24px;
+  padding-inline: 6px;
+}
+.deck-fader-row span {
+  color: var(--text-dim);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.deck-fader-row input {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+.deck-status {
+  min-height: 14px;
+  margin-top: 6px;
+  color: var(--text-dim);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 /* Auto-generated knob panel (DynamicKnobPanel) — the manifest-driven
    reference surface in the drawer's "Auto" tab. Deliberately plain: it's a
    template for re-skins, not a designed tile. Slider rows reuse .knob-rack;
@@ -9371,4 +9832,3 @@ body.curve-open #install-video-area #graph {
   font-style: normal;
   opacity: 0.4;
 }
-

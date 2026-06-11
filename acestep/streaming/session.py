@@ -49,7 +49,7 @@ import numpy as np
 import torch
 
 from acestep.constants import TASK_INSTRUCTIONS
-from acestep.audio_clips import audio_clip_stems
+from acestep.audio_clips import audio_clip_sidecar, audio_clip_stems
 from acestep.engine.obs import logger
 from acestep.engine.session import PreparedSource, Session
 from acestep.engine.trt.profile_manager import (
@@ -60,6 +60,7 @@ from acestep.fixtures import KNOWN_FIXTURES, audio_fixture
 from acestep.lora_metadata import load_lora_metadata
 from acestep.nodes.interpolation import INTERP_METHOD_NAMES
 from acestep.nodes.types import Audio, Latent
+from acestep.nodes.cond_nodes import ConditioningBlend
 from acestep.paths import (
     EngineNotBuiltError,
     available_dreamvae_decode_engine,
@@ -105,6 +106,7 @@ from acestep.streaming.families import make_backend
 from acestep.streaming.generator_backend import UnsupportedOperation
 from acestep.streaming.pipeline_runner import PipelineRunner
 from acestep.streaming.source import (
+    _load_clip_waveform,
     _normalize_time_signature,
     _resolve_bpm_key_source,
     _try_load_sidecar,
@@ -114,7 +116,7 @@ from acestep.streaming.state import SessionState
 from acestep.streaming.stems import (
     extract_upload_stems,
     normalize_stem_source_mode,
-    resolve_upload_stem_source_mode,
+    resolve_swap_stem_source_mode,
 )
 
 
@@ -152,6 +154,36 @@ IDLE_PAUSE_S = float(os.environ.get("DEMON_IDLE_PAUSE_S", "20"))
 # graph builds latents in 5-frame groups at 48 kHz / 25 fps; sources
 # must be trimmed to a multiple of this length or the encoder rejects.
 _POOL = 1920 * 5
+
+
+def _resize_latent_tensor(tensor: torch.Tensor, target_t: int) -> torch.Tensor:
+    """Repeat/truncate a [1, T, D] latent tensor to a target timeline."""
+    current_t = int(tensor.shape[1])
+    if current_t == target_t:
+        return tensor
+    if current_t <= 0:
+        return tensor
+    if current_t > target_t:
+        return tensor[:, :target_t, :]
+    repeats = (target_t + current_t - 1) // current_t
+    return tensor.repeat(1, repeats, 1)[:, :target_t, :]
+
+
+def _blend_conditioning_weighted(items: list[tuple[object, float]]):
+    """Blend conditioning objects by normalized scalar weights."""
+    usable = [(cond, float(weight)) for cond, weight in items if weight > 0]
+    if not usable:
+        return None
+    acc, total = usable[0]
+    for cond, weight in usable[1:]:
+        alpha = weight / (total + weight)
+        acc = ConditioningBlend().execute(
+            conditioning_a=acc,
+            conditioning_b=cond,
+            alpha=alpha,
+        )["conditioning"]
+        total += weight
+    return acc
 
 
 def _compute_max_pipeline_depth(diffusion_engine) -> int:
@@ -451,6 +483,12 @@ class StreamingSession:
         # Event bus: typed events the runner thread and operation
         # methods publish; transport adapters subscribe and serialize.
         self.bus = EventBus()
+
+        # Server-side deck mixer cache. Keys are (track_name, source_mode);
+        # values hold prepared source/context latents plus prompt condition
+        # pairs encoded against that deck source. Loading a new deck may hit
+        # disk/sidecars once; crossfade/volume/stem edits reuse these tensors.
+        self._deck_cache: dict[tuple[str, str], dict] = {}
 
         # The session's GeneratorBackend, selected by SessionConfig.backend
         # via the family registry. Constructed here (not in run()) so the
@@ -840,10 +878,13 @@ class StreamingSession:
             requested_key = state.swap_pending.get("key")
             requested_time_sig = state.swap_pending.get("time_signature")
             new_fixture_name = state.swap_pending.get("fixture_name")
-            new_stem_source_mode = resolve_upload_stem_source_mode(
+            new_stem_source_mode = resolve_swap_stem_source_mode(
                 new_fixture_name,
                 state.swap_pending.get("stem_source_mode"),
                 known_fixtures=KNOWN_FIXTURES,
+                skip_stem_extraction=bool(
+                    state.swap_pending.get("skip_stem_extraction")
+                ),
             )
             if new_wf is None:
                 return
@@ -853,6 +894,7 @@ class StreamingSession:
             state.swap_pending["time_signature"] = None
             state.swap_pending["fixture_name"] = None
             state.swap_pending["stem_source_mode"] = None
+            state.swap_pending["skip_stem_extraction"] = False
 
         # Initialized to None so the finally below can None-guard
         # cleanly in the (rare) case an exception fires between the
@@ -1061,6 +1103,193 @@ class StreamingSession:
     def _active_refer_latent(self):
         tl = self.state.timbre_latent
         return tl if tl is not None else self.state.source.latent
+
+    def _load_deck_cache_entry(self, name: str, source_mode: str) -> dict:
+        key = (str(name), str(source_mode or "full"))
+        cached = self._deck_cache.get(key)
+        state = self.state
+        prompt_sig = (
+            state.prompt_text,
+            state.prompt_text_b,
+            state.bpm,
+            state.duration,
+            state.key,
+            state.time_signature,
+        )
+        if cached is not None and cached.get("prompt_sig") == prompt_sig:
+            return cached
+
+        mode = source_mode if source_mode in ("full", "vocals", "instruments") else "full"
+        sidecar = audio_clip_sidecar(name, mode)
+        if sidecar is not None:
+            device = self.session.handler.device
+            dtype = self.session.handler.dtype
+            source = PreparedSource(
+                latent=Latent(tensor=sidecar.latent.to(device, dtype).contiguous()),
+                context_latent=Latent(
+                    tensor=sidecar.context_latent.to(device, dtype).contiguous(),
+                ),
+            )
+        elif mode == "full":
+            waveform = _load_clip_waveform(name)
+            waveform = waveform[:, :int(self.max_seconds * SAMPLE_RATE)]
+            rem = waveform.shape[-1] % self.pool
+            if rem:
+                waveform = waveform[:, :waveform.shape[-1] - rem]
+            source = self.session.prepare_source(
+                Audio(waveform=waveform, sample_rate=SAMPLE_RATE),
+            )
+        else:
+            raise ValueError(f"missing cached {mode} source for {name}")
+
+        cond_pair = encode_cond_pair(
+            self.session,
+            state.prompt_text,
+            source.latent,
+            state.bpm,
+            state.duration,
+            state.key,
+            state.time_signature,
+        )
+        if state.prompt_text_b != state.prompt_text:
+            cond_pair_b = encode_cond_pair(
+                self.session,
+                state.prompt_text_b,
+                source.latent,
+                state.bpm,
+                state.duration,
+                state.key,
+                state.time_signature,
+            )
+        else:
+            cond_pair_b = cond_pair
+
+        cached = {
+            "source": source,
+            "cond_pair": cond_pair,
+            "cond_pair_b": cond_pair_b,
+            "prompt_sig": prompt_sig,
+        }
+        self._deck_cache[key] = cached
+        return cached
+
+    @staticmethod
+    def _deck_gain(deck: dict, crossfade: float) -> float:
+        try:
+            volume = max(0.0, min(1.0, float(deck.get("volume", 1.0))))
+        except (TypeError, ValueError):
+            volume = 1.0
+        # Inference contribution is decoupled from the local monitor's
+        # play/pause state: a loaded, unmuted deck always feeds the mix,
+        # weighted by volume x crossfade bus gain. ``playing`` only drives
+        # the browser monitor transport. Empty/stopped buses are still
+        # protected against all-zero latents by the ``if not active``
+        # guard in ``set_deck_mix_state``.
+        if deck.get("muted"):
+            return 0.0
+        side = "right" if deck.get("side") == "right" else "left"
+        x = max(0.0, min(1.0, float(crossfade)))
+        bus_gain = x if side == "right" else 1.0 - x
+        return volume * bus_gain
+
+    def set_deck_mix_state(
+        self,
+        decks: list,
+        crossfade: float,
+        *,
+        origin: CommandOrigin = CommandOrigin.PRIMARY,
+    ) -> None:
+        """Apply the server-side deck mixer as live source conditioning.
+
+        Deck tracks/stems are prepared once into source/context latents and
+        prompt condition pairs. Param edits then blend those cached tensors
+        into stream.source and stream.conditioning without entering the
+        heavy swap_source path.
+        """
+        state = self.state
+        state.last_activity_ts = time.monotonic()
+        target_t = int(state.source.latent.tensor.shape[1])
+        if target_t <= 0:
+            return
+
+        active: list[tuple[dict, dict, float]] = []
+        for deck in decks:
+            if not isinstance(deck, dict):
+                continue
+            name = deck.get("track_name")
+            if not name:
+                continue
+            gain = self._deck_gain(deck, crossfade)
+            if gain <= 0:
+                continue
+            mode = deck.get("source_part") or "full"
+            try:
+                entry = self._load_deck_cache_entry(str(name), str(mode))
+            except Exception as exc:
+                logger.warning(
+                    "deck_mix_source_skip origin={} deck={} track={} mode={} error={}",
+                    origin.value, deck.get("id"), name, mode, exc,
+                )
+                continue
+            active.append((deck, entry, gain))
+
+        if not active:
+            # Never inject an all-zero latent when the crossfader points at
+            # an empty/stopped bus. Zero latents are not equivalent to silence
+            # for this model and can produce harsh transients; hold the last
+            # valid source until a playing deck contributes again.
+            logger.debug(
+                "deck_mix_ignored origin={} reason=no_playing_decks crossfade={:.3f}",
+                origin.value, float(crossfade),
+            )
+            return
+
+        ref_lat = active[0][1]["source"].latent.tensor
+        ref_ctx = active[0][1]["source"].context_latent.tensor
+        mixed_lat = torch.zeros_like(_resize_latent_tensor(ref_lat, target_t))
+        mixed_ctx = torch.zeros_like(_resize_latent_tensor(ref_ctx, target_t))
+        cond_full_items = []
+        cond_full_b_items = []
+        active_ids = []
+        total_gain = sum(gain for _, _, gain in active)
+        if total_gain <= 0:
+            return
+
+        for deck, entry, gain in active:
+            source = entry["source"]
+            weight = gain / total_gain
+            mixed_lat = mixed_lat + _resize_latent_tensor(source.latent.tensor, target_t) * weight
+            mixed_ctx = mixed_ctx + _resize_latent_tensor(source.context_latent.tensor, target_t) * weight
+            cond_full_items.append((entry["cond_pair"][1], gain))
+            cond_full_b_items.append((entry["cond_pair_b"][1], gain))
+            active_ids.append(str(deck.get("id") or "?"))
+
+        mixed_source = PreparedSource(
+            latent=Latent(tensor=mixed_lat.contiguous()),
+            context_latent=Latent(tensor=mixed_ctx.contiguous()),
+        )
+        cond_full = _blend_conditioning_weighted(cond_full_items)
+        cond_full_b = _blend_conditioning_weighted(cond_full_b_items)
+
+        with state._lock:
+            state.source = mixed_source
+            self.stream.source = mixed_source
+            self.stream.context_latent = mixed_source.context_latent
+            if cond_full is not None:
+                # Keep the silence baseline from the current prompt encode,
+                # but replace the source/timbre-conditioned side with the
+                # mixed deck conditioning.
+                state.cond_pair = (state.cond_pair[0], cond_full)
+                if cond_full_b is not None:
+                    state.cond_pair_b = (state.cond_pair_b[0], cond_full_b)
+                self._refresh_conditioning()
+            runner = self.runner_holder[0]
+            if runner is not None:
+                runner.mark_hint_dirty()
+        logger.debug(
+            "deck_mix_applied origin={} decks={} crossfade={:.3f}",
+            origin.value, "+".join(active_ids), float(crossfade),
+        )
 
     def _refresh_conditioning(self):
         """Recompose ``stream.conditioning`` from the cached A/B pairs,
@@ -1744,6 +1973,7 @@ class StreamingSession:
         time_signature: str | None = None,
         fixture_name: str | None = None,
         stem_source_mode: str | None = None,
+        skip_stem_extraction: bool = False,
         origin: CommandOrigin = CommandOrigin.PRIMARY,
     ) -> None:
         """Stage a source swap. The runner applies it inside
@@ -1762,6 +1992,9 @@ class StreamingSession:
             state.swap_pending["fixture_name"] = fixture_name
             state.swap_pending["stem_source_mode"] = normalize_stem_source_mode(
                 stem_source_mode,
+            )
+            state.swap_pending["skip_stem_extraction"] = bool(
+                skip_stem_extraction,
             )
 
     # ---- Constructor ---------------------------------------------------
@@ -1832,10 +2065,11 @@ class StreamingSession:
         walk_window = config.walk_window
         walk_window_s = config.walk_window_s
         fixture_name = config.fixture_name
-        stem_source_mode = resolve_upload_stem_source_mode(
+        stem_source_mode = resolve_swap_stem_source_mode(
             fixture_name,
             normalize_stem_source_mode(config.stem_source_mode),
             known_fixtures=KNOWN_FIXTURES,
+            skip_stem_extraction=bool(config.skip_stem_extraction),
         )
 
         enabled_lora_ids = list(config.enabled_loras)

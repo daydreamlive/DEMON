@@ -38,6 +38,7 @@ export type CommandName =
   | "set_structure_source"
   | "set_structure_fixture"
   | "clear_structure_source"
+  | "deck_mix_state"
   | "swap_source";
 
 export const COMMAND_NAMES: readonly CommandName[] = [
@@ -58,6 +59,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "set_structure_source",
   "set_structure_fixture",
   "clear_structure_source",
+  "deck_mix_state",
   "swap_source",
 ] as const;
 
@@ -224,6 +226,14 @@ export interface ClearStructureSourceCommand {
   type: "clear_structure_source";
 }
 
+export interface DeckMixStateCommand {
+  type: "deck_mix_state";
+  /** Live deck bus: each entry carries id, track_name, source_part, volume, muted, playing, and side (left/right). */
+  decks: unknown[];
+  /** Crossfader position in [0, 1]; 0 = full left bus, 1 = full right bus. */
+  crossfade?: number;
+}
+
 export interface SwapSourceCommand {
   type: "swap_source";
   /** Optional new prompt A. */
@@ -234,6 +244,8 @@ export interface SwapSourceCommand {
   fixture_name?: string;
   /** For uploads: which model-ripped stem feeds inference. */
   stem_source_mode?: "full" | "vocals" | "instruments";
+  /** When true, skip Mel-Band stem extraction because the client already holds cached stems for this source. */
+  skip_stem_extraction?: boolean;
   /** When true, the server loads the named source off its own disk and NO binary frame is sent. */
   use_server_source?: boolean;
 }
@@ -422,6 +434,7 @@ export interface SessionConfigPayload {
   fixture_name?: string | null;
   use_server_fixture?: boolean;
   stem_source_mode?: string | null;
+  skip_stem_extraction?: boolean;
   enabled_loras?: unknown[];
   lora_strengths?: Record<string, unknown>;
   lora_paths?: unknown[];
@@ -479,6 +492,7 @@ export type WireCommand =
   | SetStructureSourceCommand
   | SetStructureFixtureCommand
   | ClearStructureSourceCommand
+  | DeckMixStateCommand
   | SwapSourceCommand;
 
 export type WireEvent =

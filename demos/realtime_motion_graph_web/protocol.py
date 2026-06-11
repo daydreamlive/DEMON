@@ -363,6 +363,21 @@ COMMANDS: tuple = (
                     "context_latent. Acked by structure_cleared.",
     ),
     CommandSpec(
+        "deck_mix_state",
+        fields=(
+            FieldSpec("decks", "list", required=True,
+                      description="Live deck bus: each entry carries id, "
+                                  "track_name, source_part, volume, muted, "
+                                  "playing, and side (left/right)."),
+            FieldSpec("crossfade", "float", default=0.5,
+                      description="Crossfader position in [0, 1]; 0 = full "
+                                  "left bus, 1 = full right bus."),
+        ),
+        description="Apply the server-side deck mixer: blend cached "
+                    "source/context latents from named tracks without a "
+                    "full swap_source round-trip.",
+    ),
+    CommandSpec(
         "swap_source",
         fields=(
             FieldSpec("tags", "str", description="Optional new prompt A."),
@@ -376,6 +391,10 @@ COMMANDS: tuple = (
                       options=("full", "vocals", "instruments"),
                       description="For uploads: which model-ripped stem feeds "
                                   "inference."),
+            FieldSpec("skip_stem_extraction", "bool",
+                      description="When true, skip Mel-Band stem extraction "
+                                  "because the client already holds cached "
+                                  "stems for this source."),
             FieldSpec("use_server_source", "bool",
                       description="When true, the server loads the named source "
                                   "off its own disk and NO binary frame is "

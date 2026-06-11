@@ -62,6 +62,7 @@ __all__ = [
     "audio_fixture",
     "ensure_all",
     "fixture_sidecar",
+    "fixture_stem_audio",
     "fixture_stems",
     "fixture_track_metadata",
     "parse_key_from_filename",
@@ -303,6 +304,13 @@ def fixture_stems(name: str, *, waveform, sample_rate: int) -> Optional[dict]:
         sample_rate=sample_rate,
         metadata=metadata,
     )
+
+
+def fixture_stem_audio(name: str, mode: str) -> Optional[Path]:
+    """Return a local/HF fixture stem WAV path when the asset exists."""
+    if name not in KNOWN_FIXTURES or mode not in ("vocals", "instruments"):
+        return None
+    return _resolve_sidecar_file(stem_audio_name(name, mode))
 
 
 # Backward-compat alias. Old callers imported ``FixtureSidecar`` from
