@@ -61,7 +61,6 @@ def _download_from_huggingface_internal(
     snapshot_download(
         repo_id=repo_id,
         local_dir=str(local_dir),
-        local_dir_use_symlinks=False,
         token=token,
     )
 
@@ -405,7 +404,6 @@ def download_melband_roformer_model(
             repo_id=MELBAND_ROFORMER_REPO,
             filename=MELBAND_ROFORMER_MODEL_FILE,
             local_dir=str(model_dir),
-            local_dir_use_symlinks=False,
             token=token,
             force_download=force,
         )
