@@ -17,6 +17,7 @@ Usage:
 """
 
 import json
+import logging
 import mimetypes
 import os
 import sys
@@ -476,11 +477,27 @@ def _stub_handle_client(ws):
         pass
 
 
+class _DropHandshakeNoise(logging.Filter):
+    """Drop the `opening handshake failed` records websockets logs for every
+    non-WebSocket connection that hits the port — health probes, port
+    scanners, the tunnel's TCP checks. Each is a full InvalidMessage/EOFError
+    traceback (~2k per pod per session) and never actionable. Real failures
+    log a different message (`connection handler failed`) and pass through.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.getMessage() != "opening handshake failed"
+
+
 def main():
     # Wire logging FIRST so even the CLI-arg validation prints flow through
     # the configured sinks. configure() is idempotent so a duplicate call
     # in any nested entry point is a no-op.
     configure_logging()
+    # Silence the handshake-failure traceback flood from port probes. The
+    # record is logged directly on `websockets.server` (not a per-connection
+    # child), so a filter on that logger catches every one.
+    logging.getLogger("websockets.server").addFilter(_DropHandshakeNoise())
 
     host = "0.0.0.0"
     port = 1318  # single port: serves both HTTP and WebSocket
