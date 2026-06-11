@@ -1,0 +1,47 @@
+---
+title: "Hosted Demo"
+description: "Play DEMON in the browser with no GPU — music.daydream.live"
+icon: "music"
+---
+
+[Daydream](https://daydream.live) runs a hosted instance of the demo app at:
+
+<Card title="music.daydream.live" icon="play" href="https://music.daydream.live">
+  Open it in any modern Chromium or Firefox browser, click **click to begin**,
+  and you're playing — no install, no GPU, no account required to jam.
+</Card>
+
+## What you get
+
+The hosted instance is the same application documented in
+[The Demo App](/demo/overview), running on cloud GPUs:
+
+- The full control surface — prompts, LoRA library, automation curves, channel
+  faders, timbre/structure references, MIDI learn, recording.
+- **Saved sessions** — the drawer's *Saved* tab is live in the hosted app
+  (standalone builds show a notice instead).
+- Uploads work the same way: your track is encoded server-side, stems are
+  ripped automatically, and you choose what feeds inference.
+
+## Hosted vs. local
+
+| | Hosted | Local |
+|---|---|---|
+| GPU required | No | Yes (NVIDIA) |
+| Cold start | Pod warm-up varies | ~15 s after model load |
+| Saved sessions | Yes | Not available |
+| Custom LoRAs | Server library only | Drop your own into `loras/` |
+| Custom fixtures / videos | Server set only | Fully yours |
+| MCP / control bus access | No | Yes — [drive it from an LLM](/advanced/mcp) |
+| Config.json editing | No | Yes |
+
+When you outgrow the hosted sandbox — your own LoRAs, MCP control, kiosk
+installations, latency tuning — move to a
+[local install](/getting-started/quickstart) or
+[deploy your own pod](/cloud/deployment).
+
+<Tip>
+On phones, the app is landscape-only. Web MIDI needs Chromium; the hosted
+app's HTTPS origin satisfies the secure-context requirement, so hardware
+controllers work there too.
+</Tip>

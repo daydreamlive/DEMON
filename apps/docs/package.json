@@ -1,0 +1,14 @@
+{
+  "name": "demon-docs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DEMON documentation site (Mintlify)",
+  "scripts": {
+    "dev": "mintlify dev --port 3033",
+    "build": "mintlify build",
+    "broken-links": "mintlify broken-links"
+  },
+  "devDependencies": {
+    "mintlify": "^4.2.67"
+  }
+}

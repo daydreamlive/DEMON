@@ -1,0 +1,145 @@
+---
+title: "TensorRT Engines"
+description: "Build the TensorRT engines that unlock DEMON's full real-time performance"
+icon: "bolt"
+---
+
+DEMON's fastest path runs the DiT decoder, VAE encode, and VAE decode through
+TensorRT. Engines are optional — `compile` and `eager` backends work without
+any build step — but TensorRT is what the headline performance numbers are
+measured on.
+
+DEMON targets **TensorRT 10.16.x** (installed by `uv sync`). Engine plans are
+specific to the TensorRT version, CUDA stack, driver, and GPU architecture
+they were built on; treat `.engine` files as local build artifacts and rebuild
+after changing any part of that stack.
+
+## Building engines
+
+All builds go through one entry point:
+
+```bash
+# Preview what would be built:
+uv run python -m acestep.engine.trt.build --all --dry-run
+
+# Recommended starting point — full 60 s set (decoder refit + VAE):
+uv run python -m acestep.engine.trt.build --all --duration 60
+
+# Full matrix (decoder refit + VAE for 60 s / 120 s / 240 s):
+uv run python -m acestep.engine.trt.build --all
+
+# Just the windowed VAE decoder — smallest build, biggest payoff:
+uv run python -m acestep.engine.trt.build --vae-only --duration 60
+
+# Decoder only / force rebuild / force ONNX re-export:
+uv run python -m acestep.engine.trt.build --all --decoder-only --duration 60
+uv run python -m acestep.engine.trt.build --all --duration 60 --force-rebuild
+uv run python -m acestep.engine.trt.build --all --duration 60 --force-rebuild --force-onnx
+```
+
+ONNX intermediates are duration-agnostic and auto-reused across builds. By
+default, missing ONNX is fetched from Hugging Face; pass `--export-locally` to
+export from local checkpoint weights instead.
+
+<Tip>
+**Build only the durations you need.** Engines reserve VRAM workspace sized to
+their profile — switching the three 240 s engines down to 60 s frees roughly
+9 GB. Longer engines also pay more per-tick latency, since the diffusion
+sequence length scales with duration.
+</Tip>
+
+## Storage layout
+
+Engines land under the model root (default
+`~/.daydream-scope/models/demon/`, override with `ACESTEP_MODELS_DIR`):
+
+```text
+trt_engines/
+  _onnx*/                          # shared ONNX cache, reused across durations
+  decoder_mixed_refit_b8_60s/
+    decoder_mixed_refit_b8_60s.engine
+  vae_encode_fp16_60s/
+  vae_decode_fp16_3to30s/          # windowed VAE decode (3–30 s), duration-agnostic
+  build_report.csv
+```
+
+Every engine gets a sibling `<engine>.metadata.json` recording the TensorRT,
+CUDA, PyTorch, ONNX, GPU, and driver versions it was built against. The build
+script rebuilds automatically when any of those (or the ONNX sha256) changes.
+
+Decoder engines are built with TensorRT **refit** enabled, so
+[LoRA](/demo/prompts-and-loras) weight swaps apply against the live engine
+without a rebuild.
+
+## How the demo picks engines
+
+At session-create time, the backend measures the source audio duration and
+selects the **smallest built profile that fits**. If that profile is missing
+it falls back to the next larger built profile (with a VRAM-cost warning in
+the log). If no suitable engine exists, the UI receives an `engine_not_built`
+error that includes the exact build command to run.
+
+For `acestep-v15-turbo` (default, 2B) the decoder profiles are
+`decoder_mixed_refit_b8_{60,120,240}s`; VAE engines are shared across
+checkpoints. The windowed `vae_decode_fp16_3to30s` engine is used whenever
+`vae_window > 0` — it is built once and reused for every duration and
+checkpoint.
+
+## XL checkpoint (acestep-v15-xl-turbo)
+
+The XL (5B) checkpoint is supported with FP8 W8A8 decoder engines
+(`decoder_xl-turbo_fp8_refit_b4_{60,120,240}s`). Building them is a two-stage
+pipeline per duration: build a `bf16_mixed` engine first (it drives
+calibration capture), then run the FP8 calibration + build flow.
+
+```bash
+# Download the XL checkpoint:
+uv run acestep-download --model acestep-v15-xl-turbo --skip-main
+
+# Stage 1 — bf16 calibration driver (per duration):
+uv run python -m acestep.engine.trt.build --all --checkpoint acestep-v15-xl-turbo \
+    --decoder-only --duration 60 --batch-max 4 --batch-opt 4 \
+    --builder-optimization-level 5 --workspace-gb 20 \
+    --export-locally --decoder-precision bf16_mixed
+```
+
+Stage 2 (calibration capture and the FP8 build) is documented step-by-step in
+the repo's [`docs/TRT.md`](https://github.com/daydreamlive/DEMON/blob/main/docs/TRT.md),
+including the per-duration `collect_decoder_calibration.py` /
+`collect_activation_absmax.py` scripts. At matching quality, FP8 is
+meaningfully faster than bf16 and roughly half the engine size.
+
+<Note>
+XL TRT generation is validated; **dynamic LoRA refit on XL engines is not yet**
+— runtime logs show `No engine weights matched` when a LoRA apply is attempted
+against an XL engine.
+</Note>
+
+## RTX 5090 / Blackwell note
+
+TensorRT 10.15/10.16 can generate a Myelin fusion for the Oobleck VAE graph
+that segfaults on RTX 5090 at the first inference call. DEMON pins VAE builds
+to `builder_optimization_level=1` to avoid it. Any VAE engine built before
+that pin should be treated as unsafe on Blackwell — rebuild it:
+
+```bash
+uv run python -m acestep.engine.trt.build --all --vae-only --duration 60 --force-rebuild
+```
+
+## Using engines from the Session API
+
+The demo selects engines automatically. When driving the
+[Session API](/engine/session-api) directly, pass paths explicitly or use the
+canonical helper:
+
+```python
+from acestep.engine.session import Session
+from acestep.paths import default_trt_engines
+
+session = Session(
+    decoder_backend="tensorrt",
+    vae_backend="tensorrt",
+    trt_engines=default_trt_engines(),
+    vae_window=3.0,
+)
+```
