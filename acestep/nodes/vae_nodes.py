@@ -478,7 +478,7 @@ class VAEEncodeAudio(BaseNode):
             )
             trt_path = None
         if trt_path:
-            logger.info("VAE encode via TRT")
+            logger.debug("VAE encode via TRT")
             try:
                 latents_bdt = _trt_vae_encode(waveform, trt_path, device)
             except RuntimeError as exc:
@@ -499,7 +499,7 @@ class VAEEncodeAudio(BaseNode):
                 # [B, D, T] -> [B, T, D]
                 latents = latents_bdt.transpose(1, 2).to(dtype)
         if not trt_path:
-            logger.info("VAE encode via PyTorch")
+            logger.debug("VAE encode via PyTorch")
             with handler._load_model_context("vae"):
                 latents = handler._encode_audio_to_latents(waveform)
             if latents.dim() == 2:
@@ -575,7 +575,7 @@ class VAEDecodeAudio(BaseNode):
                 )
                 trt_path = None
         if not trt_path:
-            logger.info("VAE decode via PyTorch (no TRT engine found)")
+            logger.debug("VAE decode via PyTorch (no TRT engine found)")
             with handler._load_model_context("vae"):
                 waveform = handler.tiled_decode(lat_bdt)
 
