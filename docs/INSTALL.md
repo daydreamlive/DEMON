@@ -56,7 +56,10 @@ Every step is idempotent: re-running `demon-setup` after a partial
 failure (network drop mid-download, OOM mid-build) resumes where it
 left off. Useful flags: `--skip-engines` (run the demo in `compile`
 mode instead), `--skip-models`, `--skip-loras`, `--duration 60 120`
-(build extra profiles), `--skip-doctor`.
+(build extra profiles), `--skip-doctor`. Managed/remote deployments
+that curate their own LoRA library can set
+`DEMON_SKIP_STARTER_LORAS=1` in the environment instead of passing
+`--skip-loras`.
 
 ## Where everything lives
 

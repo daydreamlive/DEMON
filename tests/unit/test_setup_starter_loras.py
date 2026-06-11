@@ -66,3 +66,16 @@ def test_failures_never_block_setup(tmp_models_dir, monkeypatch):
     # Must not raise; setup continues to the engine step regardless.
     demon_setup._download_starter_loras()
     assert not list(loras_dir().rglob("*.safetensors"))
+
+
+def test_env_gate_for_managed_deployments(monkeypatch):
+    # Pods curate their own LoRA library; DEMON_SKIP_STARTER_LORAS=1 in
+    # the pod env must disable the pack without a CLI flag.
+    monkeypatch.delenv("DEMON_SKIP_STARTER_LORAS", raising=False)
+    assert demon_setup._env_skip_loras() is False
+    for truthy in ("1", "true", "TRUE", "yes"):
+        monkeypatch.setenv("DEMON_SKIP_STARTER_LORAS", truthy)
+        assert demon_setup._env_skip_loras() is True
+    for falsy in ("0", "false", "no", ""):
+        monkeypatch.setenv("DEMON_SKIP_STARTER_LORAS", falsy)
+        assert demon_setup._env_skip_loras() is False

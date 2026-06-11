@@ -68,6 +68,19 @@ STARTER_LORA_REPOS: tuple[str, ...] = (
 _MIN_FREE_DISK_GB = 40.0   # ~18 GB checkpoints + ~10 GB ONNX/engines + slack
 _ADVISORY_VRAM_GB = 16.0   # 60 s decoder build peaks ~13.5 GB workspace
 
+# Env gate for the starter LoRA pack, equivalent to --skip-loras.
+# Managed/remote deployments (pods) curate their own LoRA library via
+# their bootstrap (demon-public-demo's download_loras pipeline) and set
+# this in the pod environment so a demon-setup run there never mixes
+# the starter pack into the curated library.
+_SKIP_LORAS_ENV = "DEMON_SKIP_STARTER_LORAS"
+
+
+def _env_skip_loras() -> bool:
+    return os.environ.get(_SKIP_LORAS_ENV, "0").strip().lower() not in (
+        "", "0", "false", "no",
+    )
+
 
 def _ok(msg: str) -> None:
     print(f"  [ok]   {msg}")
@@ -346,7 +359,9 @@ def main() -> int:
     )
     parser.add_argument(
         "--skip-loras", action="store_true",
-        help="Skip the starter LoRA pack download.",
+        help="Skip the starter LoRA pack download. Also settable via "
+             f"{_SKIP_LORAS_ENV}=1 (used by managed pod deployments, "
+             "which curate their own LoRA library).",
     )
     parser.add_argument(
         "--skip-engines", action="store_true",
@@ -375,7 +390,10 @@ def main() -> int:
         if not _download_models():
             return 1
 
-    if not args.skip_loras:
+    if args.skip_loras or _env_skip_loras():
+        if not args.skip_loras:
+            print(f"\nStarter LoRA pack skipped ({_SKIP_LORAS_ENV} is set).")
+    else:
         _download_starter_loras()
 
     if not args.skip_engines:
