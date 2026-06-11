@@ -65,6 +65,15 @@ class DiffusionBackend:
         # runner for its latency trace.
         self.last_tick_ms = 0.0
         self.last_dec_ms = 0.0
+        # CUDA-event bracket around the engine step. Recorded each
+        # produce, resolved lazily at the START of the next produce so
+        # the measurement never inserts a full-device synchronize into
+        # the tick (the old bracket cost two of them). ``last_tick_ms``
+        # is therefore one tick stale on GPU — it only feeds the
+        # runner trace and the params echo, both diagnostics.
+        self._tick_ev_start = None
+        self._tick_ev_end = None
+        self._tick_ev_pending = False
 
     # ---- contract defaults --------------------------------------------------
 
@@ -99,9 +108,23 @@ class DiffusionBackend:
         """
         prep = self._prepare_tick(knobs, ctx)
 
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        t0 = time.perf_counter()
+        use_events = torch.cuda.is_available()
+        if use_events:
+            if self._tick_ev_start is None:
+                self._tick_ev_start = torch.cuda.Event(enable_timing=True)
+                self._tick_ev_end = torch.cuda.Event(enable_timing=True)
+            if self._tick_ev_pending:
+                # Last tick's bracket. Its work completed long ago (the
+                # render's D2H copy synced the stream), so this resolves
+                # without stalling; if it somehow hasn't, blocking here
+                # is no worse than the old synchronize.
+                self._tick_ev_end.synchronize()
+                self.last_tick_ms = self._tick_ev_start.elapsed_time(
+                    self._tick_ev_end
+                )
+            self._tick_ev_start.record()
+        else:
+            t0 = time.perf_counter()
 
         if mode == "reuse":
             result_latent = self._last_result_latent
@@ -115,9 +138,11 @@ class DiffusionBackend:
         if result_latent is not None:
             self._last_result_latent = result_latent
 
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        self.last_tick_ms = (time.perf_counter() - t0) * 1000
+        if use_events:
+            self._tick_ev_end.record()
+            self._tick_ev_pending = True
+        else:
+            self.last_tick_ms = (time.perf_counter() - t0) * 1000
         self.last_dec_ms = 0.0
 
         self._current_result = result_latent

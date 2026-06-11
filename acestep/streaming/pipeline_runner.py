@@ -96,6 +96,7 @@ class PipelineRunner:
         lead_floor_s=None,
         lead_ceiling_s=None,
         lead_release_tau_s=None,
+        near_patch_enabled=True,
     ):
         self.backend = backend
         self.audio_eng = audio_eng
@@ -288,6 +289,30 @@ class PipelineRunner:
         # the multi-second session-startup build) can't push it to the ceiling.
         self._rebuild_prewarm_s = 1.1
         self._rebuild_prewarm_cap_s = 1.3
+
+        # ----- Near-playhead re-patch (knob-to-ear) -----
+        # The frontier write above always lands at the adaptive lead,
+        # which is FLOORED (0.25s default) for stall safety — and the
+        # region between the playhead and that lead is never otherwise
+        # rewritten. That makes the lead floor the hard audibility
+        # floor for every control change: however fast the engine
+        # reacts, the listener plays out the floor's worth of
+        # already-written audio first. After a real generation lands
+        # (and only while the operator is actively driving the
+        # session), a SECOND window is rendered from the new latent at
+        # ``playhead + (interval_ema * gain + margin)`` — the same lead
+        # formula WITHOUT the floor and stall bump — and patched in.
+        # The frontier write keeps the buffer covered through stalls
+        # exactly as before; this write is purely opportunistic (if it
+        # lands late the buffer simply keeps the valid, older audio),
+        # so it can run as close as transit allows. See
+        # ``_near_playhead_repatch``.
+        self._near_patch_enabled = bool(near_patch_enabled)
+        # Only re-patch within this window after the last inbound
+        # activity: while knobs are being ridden the close-in region
+        # refreshes every tick; an untouched session pays zero extra
+        # decode/wire traffic.
+        self._near_patch_active_window_s = 2.0
         self._playhead_clock = _RemotePlayheadClock(self.audio_eng)
 
     # ---- delegates kept for the session's runner_holder contract ----------
@@ -367,6 +392,78 @@ class PipelineRunner:
 
     def _playhead_seconds_now(self) -> float:
         return self._playhead_clock.seconds()
+
+    def _near_playhead_repatch(self, backend, eff_dur: float, band) -> None:
+        """Render + patch a window just ahead of the playhead from the
+        backend's newest latent. See the init-block comment for why
+        this exists (the lead floor is otherwise the audibility floor
+        for every control change).
+
+        Mirrors the frontier write's crossfade/clamp behavior; loop-band
+        aware (wraps the target inside an armed band, clamps the write
+        at B, and skips bands narrower than one window — the frontier
+        render already rewrites those whole). Does NOT feed
+        ``_note_decode_gap``: like the band-wrap render, it is a second
+        write within the same tick, not its own production interval.
+        """
+        close_s = (
+            self._decode_interval_ema_s * self._lead_interval_gain
+            + self._lead_safety_margin_s
+        )
+        if close_s >= self._decode_advance_s():
+            return  # frontier write already lands this close
+        playhead_now = self._playhead_seconds_now()
+        target = playhead_now + close_s
+        band_end_sample = None
+        if band is not None and eff_dur > 0:
+            a_s = max(0.0, min(float(band[0]), eff_dur))
+            b_s = max(0.0, min(float(band[1]), eff_dur))
+            span = b_s - a_s
+            if span > 1e-3 and a_s <= playhead_now <= b_s:
+                if span < self.vae_window:
+                    return
+                target = a_s + ((playhead_now + close_s - a_s) % span)
+                band_end_sample = int(round(b_s * SAMPLE_RATE))
+        if eff_dur > 0:
+            target = target % eff_dur
+        chunk = backend.render_window(target)
+        if chunk is None:
+            return
+        win_np = chunk.pcm
+        win_start = chunk.start_sample
+        win_end = win_start + win_np.shape[0]
+        current = self.audio_eng.current
+        xfade = min(1200, win_np.shape[0] // 4)
+        if win_start > 0 and xfade > 0:
+            t_in = np.linspace(0.0, 1.0, xfade).reshape(-1, 1)
+            win_np[:xfade] = (
+                current[win_start:win_start + xfade] * (1 - t_in)
+                + win_np[:xfade] * t_in
+            )
+        if win_end < current.shape[0] and xfade > 0:
+            t_out = np.linspace(1.0, 0.0, xfade).reshape(-1, 1)
+            tail = min(xfade, current.shape[0] - win_end + xfade)
+            s = win_np.shape[0] - tail
+            win_np[s:] = (
+                win_np[s:] * t_out[:tail]
+                + current[win_start + s:win_start + s + tail]
+                * (1 - t_out[:tail])
+            )
+        clamp_end = min(win_end, current.shape[0])
+        if band_end_sample is not None and band_end_sample > win_start:
+            clamp_end = min(clamp_end, band_end_sample)
+        if clamp_end <= win_start:
+            return
+        patched = win_np[:clamp_end - win_start]
+        self.audio_eng.patch_window(patched, win_start)
+        self.on_audio_ready(patched, win_start, win_end)
+        if _LAT_TRACE:
+            logger.info(
+                "lat_nearpatch playhead_s={:.3f} close_s={:.3f} "
+                "win_start_s={:.3f} win_end_s={:.3f}",
+                playhead_now, close_s,
+                win_start / SAMPLE_RATE, win_end / SAMPLE_RATE,
+            )
 
     # ---- the loop -------------------------------------------------------------
 
@@ -754,6 +851,26 @@ class PipelineRunner:
                                         )
                                     self.audio_eng.patch_window(wrap_np, wrap_start)
                                     self.on_audio_ready(wrap_np, wrap_start, wrap_end)
+
+                    # Knob-to-ear: after a real generation, also refresh
+                    # the window just ahead of the playhead from the new
+                    # latent (see _near_playhead_repatch). Gated to
+                    # active operation so an idle session pays nothing;
+                    # "reuse" (DiT-pause) and gap-fill ticks carry no new
+                    # content, so only mode=="generate" qualifies.
+                    if (
+                        self._near_patch_enabled
+                        and is_fresh
+                        and mode == "generate"
+                        and (
+                            time.monotonic() - self.state.last_activity_ts
+                            < self._near_patch_active_window_s
+                        )
+                    ):
+                        self._near_playhead_repatch(
+                            backend, eff_dur,
+                            None if position_chase_only else band,
+                        )
                 else:
                     # Legacy full-buffer mode. Gap-fill never reaches
                     # here (it requires vae_window > 0), so only fresh

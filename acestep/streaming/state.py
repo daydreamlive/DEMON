@@ -141,3 +141,16 @@ class SessionState:
     # dict, or that read/write multiple fields atomically. Plain
     # single-field reads/writes don't take the lock (GIL atomicity).
     _lock: threading.RLock = field(default_factory=threading.RLock)
+
+    # === Conditioning epoch + encode serialization ===
+    # ``cond_epoch`` is bumped under ``_lock`` by every commit that
+    # writes ``cond_pair``/``cond_pair_b`` or their encode inputs
+    # (prompt, timbre latent, swap commit). The unlocked encode flows
+    # in the session snapshot it before encoding and retry when it
+    # moved, so a slow encode can never commit conditioning built from
+    # stale inputs. ``_encode_lock`` serializes the GPU encodes
+    # themselves against each other (the historical property that
+    # holding ``_lock`` provided) without blocking the runner's
+    # per-tick ``_lock`` acquisitions.
+    cond_epoch: int = 0
+    _encode_lock: threading.Lock = field(default_factory=threading.Lock)

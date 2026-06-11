@@ -157,13 +157,18 @@ def _action_audible(ready_at: float, slices: list, entry: dict) -> dict:
     later = slices[entry["slices_before"]:]
     out: dict = {"audible_first_ms": None, "audible_full_ms": None}
 
-    first = next((s for s in later
-                  if s.recv_at >= sent
-                  and s.start_sample / SAMPLE_RATE > pos_at_send), None)
-    if first is not None:
-        heard = max(first.recv_at,
-                    ready_at + first.start_sample / SAMPLE_RATE)
-        out["audible_first_ms"] = round((heard - sent) * 1000.0, 1)
+    # Earliest HEARD over all qualifying slices, not the first arrival:
+    # the near-playhead re-patch emits a second, closer-to-playhead
+    # slice a few ms after each frontier write, so slice starts are no
+    # longer monotonic in arrival order. A late-arriving slice can't
+    # game this — arrival time is inside the max().
+    first_heard = [
+        max(s.recv_at, ready_at + s.start_sample / SAMPLE_RATE)
+        for s in later
+        if s.recv_at >= sent and s.start_sample / SAMPLE_RATE > pos_at_send
+    ]
+    if first_heard:
+        out["audible_first_ms"] = round((min(first_heard) - sent) * 1000.0, 1)
 
     frontier = entry.get("frontier_s")
     if frontier is not None:
