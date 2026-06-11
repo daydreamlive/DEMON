@@ -42,6 +42,21 @@ WEB_DIR = Path(__file__).parent / "web"
 ROOT_DIR = Path(__file__).resolve().parents[2]
 
 
+def _harden_stdout() -> None:
+    """On Windows a piped stdout defaults to the legacy code page
+    (cp1252), which can't encode characters the children routinely emit
+    (Next.js's "▲" logo, tqdm's "▎" blocks). An encode error would kill
+    a _tee thread, and with no reader the child blocks on a full pipe
+    and the demo freezes minutes later. Replace unencodable characters
+    instead. stderr already defaults to errors="backslashreplace" and
+    can't raise, so it's left alone.
+    """
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
+
+
 # ANSI dim/colour helpers for prefixing combined output. Falls back to no
 # colour if stdout isn't a TTY (CI logs, redirected output).
 def _color(code: str) -> str:
@@ -59,7 +74,13 @@ def _tee(stream: IO[bytes], label: str) -> None:
     prefix = _PREFIXES[label]
     for raw in iter(stream.readline, b""):
         line = raw.decode("utf-8", errors="replace").rstrip("\n")
-        print(f"{prefix} {line}", flush=True)
+        # This thread is the child's only stdout reader; if it dies the
+        # child eventually blocks on a full pipe and hangs the demo. No
+        # single line is worth that.
+        try:
+            print(f"{prefix} {line}", flush=True)
+        except Exception:
+            pass
 
 
 def _resolve_npm() -> str:
@@ -106,6 +127,7 @@ def _wait_for_backend(
 
 
 def main() -> int:
+    _harden_stdout()
     parser = argparse.ArgumentParser(
         description="Run the demo backend + Next.js frontend together.",
         epilog=(
