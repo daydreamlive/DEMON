@@ -25,6 +25,8 @@ uv run python -u -m demos.realtime_motion_graph_web.run
 # open http://localhost:6660
 ```
 
+Once a session is playing, the spectral-control sliders live in the control drawer's **Experimental** tab. They steer generation itself, so changes land on the upcoming audio after a moment - sweep slowly and listen.
+
 **Where things live.** Everything downloads to `~/.daydream-scope/models/demon/` (override with the `ACESTEP_MODELS_DIR` environment variable), *not* into the repository: checkpoints under `<models dir>/checkpoints/`, TensorRT engines under `<models dir>/trt_engines/`. The models must be the ACE-Step v1.5 weights fetched by `demon-setup` (equivalently: `uv run acestep-download`) — do not substitute other checkpoints or paths.
 
 Don't want to build TensorRT engines yet? Run `uv run demon-setup --skip-engines`, then launch with `-- --accel compile` (no engines needed; expect a long `torch.compile` warmup on the first tick).
