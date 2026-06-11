@@ -7,11 +7,14 @@ demo in one idempotent pass:
                   explicit printout of where models live on this machine.
     2. Models   - downloads the ACE-Step v1.5 checkpoints (HuggingFace,
                   ModelScope fallback) via :mod:`acestep.model_downloader`.
-    3. Engines  - builds the minimal TensorRT engine set
+    3. LoRAs    - starter LoRA pack (16 genre adapters) so hot LoRA
+                  swapping works out of the box. Optional; failures
+                  never block setup.
+    4. Engines  - builds the minimal TensorRT engine set
                   (``acestep.engine.trt.build --preset minimal``):
                   60 s decoder + 60 s VAE encode + fixed 1 s windowed
                   VAE decode. Existing engines are skipped.
-    4. Summary  - what's on disk and the exact command to launch the demo.
+    5. Summary  - what's on disk and the exact command to launch the demo.
 
 Every step skips work that's already done, so re-running after a partial
 failure (network drop mid-download, OOM mid-build) resumes where it
@@ -34,6 +37,33 @@ import sys
 # this" hint can't drift from what this script actually does.
 SETUP_COMMAND = "uv run demon-setup"
 DEMO_COMMAND = "uv run python -u -m demos.realtime_motion_graph_web.run"
+
+# Starter LoRA pack: hot LoRA swapping is a headline feature, and the
+# library is empty on a fresh install without these. Each repo carries
+# ``<stem>.safetensors`` + ``<stem>.metadata.json`` in exactly the
+# sidecar convention acestep/lora_metadata.py reads (display name,
+# trigger, recommended strength, base_model_scale); the demo hides
+# entries whose scale doesn't match the active checkpoint, so shipping
+# both 2B and XL variants is safe. The demo config's default
+# auto-enables ("Ambient", "Deep House") match these sidecar names.
+STARTER_LORA_REPOS: tuple[str, ...] = (
+    "ryanontheinside/jazz-acestep1.5-v1",
+    "ryanontheinside/jazz-acestep1.5-xl-v1",
+    "ryanontheinside/phonk-acestep1.5-v1",
+    "ryanontheinside/phonk-acestep1.5-xl-v1",
+    "ryanontheinside/lo_fi-acestep1.5-v1",
+    "ryanontheinside/lo_fi-acestep1.5-xl-v1",
+    "ryanontheinside/punk-acestep1.5-v1",
+    "ryanontheinside/punk-acestep1.5-xl-v1",
+    "ryanontheinside/acoustic-acestep1.5-v1",
+    "ryanontheinside/acoustic-acestep1.5-xl-v1",
+    "ryanontheinside/ambient-acestep1.5-v1",
+    "ryanontheinside/ambient-acestep1.5-xl-v1",
+    "ryanontheinside/deep_house-acestep1.5-v1",
+    "ryanontheinside/deep_house-acestep1.5-xl-v1",
+    "ryanontheinside/funk50-acestep1.5-dora-v2",
+    "ryanontheinside/deathsteap_1",
+)
 
 _MIN_FREE_DISK_GB = 40.0   # ~18 GB checkpoints + ~10 GB ONNX/engines + slack
 _ADVISORY_VRAM_GB = 16.0   # 60 s decoder build peaks ~13.5 GB workspace
@@ -63,7 +93,7 @@ def _doctor() -> bool:
     GPU stack); advisory problems only warn."""
     from acestep.paths import models_dir
 
-    _header("1/3  Environment check")
+    _header("1/4  Environment check")
 
     hard_fail = False
 
@@ -162,7 +192,7 @@ def _download_models() -> bool:
     from acestep.model_downloader import ensure_main_model
     from acestep.paths import checkpoints_dir
 
-    _header("2/3  Model checkpoints (ACE-Step v1.5)")
+    _header("2/4  Model checkpoints (ACE-Step v1.5)")
     print(f"  destination: {checkpoints_dir()}")
     print("  source: huggingface.co/ACE-Step/Ace-Step1.5 "
           "(ModelScope fallback), ~18 GB on first run\n")
@@ -179,10 +209,52 @@ def _download_models() -> bool:
     return False
 
 
+def _download_starter_loras() -> None:
+    """Fetch the starter LoRA pack. Non-fatal: a failed (or skipped)
+    LoRA never blocks setup — the demo runs fine with an empty library,
+    it just can't demonstrate hot LoRA swapping."""
+    from huggingface_hub import snapshot_download
+    from acestep.paths import loras_dir
+
+    _header("3/4  Starter LoRA pack")
+    dest_root = loras_dir()
+    print(f"  destination: {dest_root}")
+    print(f"  {len(STARTER_LORA_REPOS)} genre LoRAs from "
+          "huggingface.co/ryanontheinside (2B + XL")
+    print("  variants; the demo shows only the ones matching the active "
+          "checkpoint).")
+    print("  Optional - skip with --skip-loras.\n")
+
+    failures = 0
+    for repo in STARTER_LORA_REPOS:
+        name = repo.rsplit("/", 1)[-1]
+        dest = dest_root / name
+        if any(dest.glob("*.safetensors")):
+            _ok(f"{name} (already present)")
+            continue
+        try:
+            snapshot_download(
+                repo_id=repo,
+                local_dir=str(dest),
+                allow_patterns=[
+                    "*.safetensors", "*.metadata.json", "*.trigger.txt",
+                ],
+            )
+            _ok(name)
+        except Exception as exc:
+            failures += 1
+            _warn(f"{name}: download failed ({exc}); continuing")
+    if failures:
+        _warn(
+            f"{failures} LoRA download(s) failed - re-run "
+            f"`{SETUP_COMMAND}` to retry; the demo works without them."
+        )
+
+
 def _build_engines(extra_args: list[str]) -> bool:
     from acestep.paths import trt_engines_dir
 
-    _header("3/3  TensorRT engines (minimal preset)")
+    _header("4/4  TensorRT engines (minimal preset)")
     print(f"  destination: {trt_engines_dir()}")
     print("  set: 60s decoder + 60s VAE encode + fixed 1s windowed VAE "
           "decode")
@@ -224,6 +296,10 @@ def _summary(*, engines_skipped: bool) -> None:
             print("  engines:")
             for name in engines:
                 print(f"    {name}")
+    from acestep.paths import discover_loras
+    n_loras = len(discover_loras())
+    if n_loras:
+        print(f"  loras: {n_loras} in the library")
     if engines_skipped:
         print("\n  Engines were skipped (--skip-engines). The demo's "
               "default TRT mode")
@@ -269,6 +345,10 @@ def main() -> int:
         help="Skip the checkpoint download step.",
     )
     parser.add_argument(
+        "--skip-loras", action="store_true",
+        help="Skip the starter LoRA pack download.",
+    )
+    parser.add_argument(
         "--skip-engines", action="store_true",
         help="Skip the TensorRT engine build (e.g. when planning to run "
              "with --accel compile).",
@@ -294,6 +374,9 @@ def main() -> int:
     if not args.skip_models:
         if not _download_models():
             return 1
+
+    if not args.skip_loras:
+        _download_starter_loras()
 
     if not args.skip_engines:
         extra: list[str] = []

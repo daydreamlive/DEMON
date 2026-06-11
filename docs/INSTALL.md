@@ -40,18 +40,23 @@ uv run python -u -m demos.realtime_motion_graph_web.run
    [`ACE-Step/Ace-Step1.5`](https://huggingface.co/ACE-Step/Ace-Step1.5)
    on Hugging Face (~18 GB), falling back to ModelScope when Hugging
    Face is unreachable.
-3. **Engines** — builds the minimal TensorRT engine set (see
+3. **Starter LoRAs** — downloads 16 genre LoRAs (jazz, phonk, lo-fi,
+   punk, acoustic, ambient, deep house, funk, deathstep; 2B and XL
+   variants) so hot LoRA swapping works out of the box. Optional and
+   non-fatal: skip with `--skip-loras`, and a failed download never
+   blocks setup.
+4. **Engines** — builds the minimal TensorRT engine set (see
    [Engine sets](#engine-sets-and-song-duration) below). A few minutes
    on a recent GPU (the ONNX comes prebuilt; the TRT builds themselves
    took under 2 minutes on a 5090); older cards and `--export-locally`
    runs can take 10–30 minutes.
-4. **Summary** — lists what is on disk and the launch command.
+5. **Summary** — lists what is on disk and the launch command.
 
 Every step is idempotent: re-running `demon-setup` after a partial
 failure (network drop mid-download, OOM mid-build) resumes where it
 left off. Useful flags: `--skip-engines` (run the demo in `compile`
-mode instead), `--skip-models`, `--duration 60 120` (build extra
-profiles), `--skip-doctor`.
+mode instead), `--skip-models`, `--skip-loras`, `--duration 60 120`
+(build extra profiles), `--skip-doctor`.
 
 ## Where everything lives
 
@@ -66,7 +71,7 @@ single models directory:
     Qwen3-Embedding-0.6B/              # text encoder
     acestep-5Hz-lm-1.7B/               # 5 Hz LM
   trt_engines/                         # TensorRT engines + ONNX
-  loras/                               # your LoRA .safetensors (manual)
+  loras/                               # starter LoRA pack + your own .safetensors
   fixtures/                            # cached demo audio + sidecars
   user_uploads/                        # session uploads (wiped per boot)
 ```
