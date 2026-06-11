@@ -16,7 +16,7 @@ uv sync
 uv run demon-setup
 ```
 
-`demon-setup` checks your environment, downloads the ACE-Step v1.5 checkpoints (~18 GB from [`ACE-Step/Ace-Step1.5`](https://huggingface.co/ACE-Step/Ace-Step1.5) on Hugging Face, with a ModelScope fallback), and builds the minimal TensorRT engine set (60 s decoder + 60 s VAE encode + fixed 1 s windowed VAE decode — roughly 10 to 30 minutes on first run). It is idempotent: re-run it any time, finished work is skipped.
+`demon-setup` checks your environment, downloads the ACE-Step v1.5 checkpoints (~18 GB from [`ACE-Step/Ace-Step1.5`](https://huggingface.co/ACE-Step/Ace-Step1.5) on Hugging Face, with a ModelScope fallback), and builds the minimal TensorRT engine set (60 s decoder + 60 s VAE encode + fixed 1 s windowed VAE decode — a few minutes on a recent GPU since the ONNX comes prebuilt; older cards can take longer). It is idempotent: re-run it any time, finished work is skipped.
 
 Then launch the web demo:
 

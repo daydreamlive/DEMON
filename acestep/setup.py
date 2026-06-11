@@ -188,7 +188,9 @@ def _build_engines(extra_args: list[str]) -> bool:
           "decode")
     print("  ONNX is fetched prebuilt from huggingface.co/daydreamlive/"
           "demon-onnx;")
-    print("  expect roughly 10-30 minutes of build time on first run.\n")
+    print("  expect a few minutes on a recent GPU (under 2 minutes of TRT")
+    print("  build on a 5090) plus the ONNX download; older cards and")
+    print("  --export-locally runs can take 10-30 minutes.\n")
 
     cmd = [
         sys.executable, "-m", "acestep.engine.trt.build",

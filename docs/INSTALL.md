@@ -41,8 +41,10 @@ uv run python -u -m demos.realtime_motion_graph_web.run
    on Hugging Face (~18 GB), falling back to ModelScope when Hugging
    Face is unreachable.
 3. **Engines** — builds the minimal TensorRT engine set (see
-   [Engine sets](#engine-sets-and-song-duration) below). Roughly 10 to
-   30 minutes on first run depending on the GPU.
+   [Engine sets](#engine-sets-and-song-duration) below). A few minutes
+   on a recent GPU (the ONNX comes prebuilt; the TRT builds themselves
+   took under 2 minutes on a 5090); older cards and `--export-locally`
+   runs can take 10–30 minutes.
 4. **Summary** — lists what is on disk and the launch command.
 
 Every step is idempotent: re-running `demon-setup` after a partial
@@ -214,6 +216,7 @@ uv run python -u -m demos.realtime_motion_graph_web.run
 | Model download fails on both Hugging Face and ModelScope | Network/proxy issue. Retry `uv run acestep-download`; or download manually: `huggingface-cli download ACE-Step/Ace-Step1.5 --local-dir ~/.daydream-scope/models/demon/checkpoints`. |
 | "npm not found on PATH" at demo launch | Install Node.js 20+ from nodejs.org, reopen the terminal. |
 | Engine build OOMs or a freshly built engine crashes at load | Build on an idle GPU: stop the demo server and other GPU processes, re-run the build with `--force-rebuild` for the affected engine's duration. |
+| Engine build: decoder ONNX "missing the 'steering' input" | A stale cached file is replaced automatically when the Hugging Face artifact is current. If the message says the *prebuilt* artifact itself is stale, the HF upload needs refreshing — build locally in the meantime with `--export-locally` (set `PYTHONUTF8=1` on Windows; needs the checkpoints downloaded) and report it. |
 | Every session dies instantly on a headless Linux pod (WS close 1011) | Install PortAudio: `apt-get install -y libportaudio2` (the audio engine imports `sounddevice` even headless). |
 | Playback stops and the UI shows "Generation stopped: …" | The generation pipeline hit a runtime error; the same message with a full traceback is in the server terminal / `logs/sessions`. |
 | Upload longer than 60 s gets trimmed | Expected with the minimal engine set — see [Engine sets](#engine-sets-and-song-duration) to build larger profiles. |
