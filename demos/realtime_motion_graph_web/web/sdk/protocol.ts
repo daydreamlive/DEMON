@@ -686,6 +686,22 @@ export class RemoteBackend extends EventTarget {
               );
               break;
             }
+            case "error":
+              // Mid-session structured failure (e.g. code=pipeline_error
+              // when the server's generation loop dies). Handshake-phase
+              // errors reject the connect() promise above; this case is
+              // the post-ready path. Dispatched as "server_error" (the
+              // plain "error" listener name is reserved for the WS-level
+              // transport error) so the host can surface the message
+              // instead of leaving a silently frozen UI.
+              console.error(
+                `[protocol] server error: ${msg.code || "unknown"}` +
+                  (msg.message ? ` — ${msg.message}` : ""),
+              );
+              this.dispatchEvent(
+                new CustomEvent("server_error", { detail: msg }),
+              );
+              break;
             default:
               this.dispatchEvent(new CustomEvent("json", { detail: msg }));
           }

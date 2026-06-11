@@ -96,6 +96,7 @@ tensorrt = { index = "pypi" }
 
 [project.scripts]
 acestep-download = "acestep.model_downloader:main"
+demon-setup = "acestep.setup:main"
 
 [project.entry-points.scope]
 ace_step = "scope_plugin.plugin"

@@ -5,6 +5,34 @@ DEMON is a streaming diffusion engine for ACE-Step v1.5 (see
 find your task below, then read the linked doc — it carries the
 specifics this one deliberately doesn't duplicate.
 
+## Setting up this repo from scratch
+
+If you are helping a user install or run DEMON, follow this exactly —
+do not improvise model sources, versions, or paths.
+
+1. `uv sync` (installs Python 3.11 + all deps; never pip-install into
+   a system Python).
+2. `uv run demon-setup` — downloads the model checkpoints AND builds
+   the minimal TensorRT engine set. Idempotent; re-run to resume.
+3. `uv run python -u -m demos.realtime_motion_graph_web.run`, then
+   open http://localhost:6660.
+
+Hard rules:
+
+- **Models are the ACE-Step v1.5 weights from the Hugging Face repo
+  `ACE-Step/Ace-Step1.5`**, fetched by `demon-setup` or
+  `uv run acestep-download`. Do NOT substitute other ACE-Step releases,
+  other checkpoints, or hand-built paths — the loaders check for exact
+  component directories and fail on anything else.
+- **Everything lives under `~/.daydream-scope/models/demon/`**
+  (override: `ACESTEP_MODELS_DIR` env var), NOT in the repository.
+  Checkpoints in `<models dir>/checkpoints/`, TensorRT engines in
+  `<models dir>/trt_engines/`.
+- The demo's default `--accel tensorrt` requires built engines; the
+  server preflight at boot prints the exact fix when they're missing.
+  The no-engines fallback is `-- --accel compile`, not eager hacks.
+- Full walkthrough + troubleshooting table: [docs/INSTALL.md](docs/INSTALL.md).
+
 ## Where to go by task
 
 | Task | Read first |

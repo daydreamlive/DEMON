@@ -6,6 +6,31 @@ DEMON is a streaming diffusion engine for ACE-Step v1.5. Think StreamDiffusion, 
 
 > Don't have a GPU, or just want to play first? Try the hosted instance at **[music.daydream.live](https://music.daydream.live)**.
 
+## Quickstart
+
+You need: an NVIDIA GPU (tested on RTX 3090 / 4090 / 5090), [uv](https://docs.astral.sh/uv/), Node.js 20+ (web demo only), and about 40 GB of free disk.
+
+```bash
+git clone https://github.com/daydreamlive/DEMON.git && cd DEMON
+uv sync
+uv run demon-setup
+```
+
+`demon-setup` checks your environment, downloads the ACE-Step v1.5 checkpoints (~18 GB from [`ACE-Step/Ace-Step1.5`](https://huggingface.co/ACE-Step/Ace-Step1.5) on Hugging Face, with a ModelScope fallback), and builds the minimal TensorRT engine set (60 s decoder + 60 s VAE encode + fixed 1 s windowed VAE decode — roughly 10 to 30 minutes on first run). It is idempotent: re-run it any time, finished work is skipped.
+
+Then launch the web demo:
+
+```bash
+uv run python -u -m demos.realtime_motion_graph_web.run
+# open http://localhost:6660
+```
+
+**Where things live.** Everything downloads to `~/.daydream-scope/models/demon/` (override with the `ACESTEP_MODELS_DIR` environment variable), *not* into the repository: checkpoints under `<models dir>/checkpoints/`, TensorRT engines under `<models dir>/trt_engines/`. The models must be the ACE-Step v1.5 weights fetched by `demon-setup` (equivalently: `uv run acestep-download`) — do not substitute other checkpoints or paths.
+
+Don't want to build TensorRT engines yet? Run `uv run demon-setup --skip-engines`, then launch with `-- --accel compile` (no engines needed; expect a long `torch.compile` warmup on the first tick).
+
+Full walkthrough — manual model download, engine build options, headless/pod notes, troubleshooting — in [docs/INSTALL.md](docs/INSTALL.md).
+
 ## What DEMON is
 
 The engine lives in [`acestep/`](acestep/). One process loads the model once and exposes two things:
@@ -27,7 +52,7 @@ Anything on top, a CLI, a notebook, a VST, the bundled web demo, an MCP tool, or
 - **Latent-noise-mask inpainting.** Two-sided x0 blending matching ComfyUI semantics: pre-blend on `xt` (so the decoder sees correctly-noised context in preserved regions) and post-blend on the predicted `x0`. Supports a per-step strength function for progressive masking.
 - **DCW post-step correction.** Wavelet-domain sampler-side correction from Yu et al. CVPR 2026, ported from upstream ACE-Step v0.1.7. Four modes (low / high / double / pix), with an optional advanced surface (`mult_blend`, `mag_phase`, `soft_thresh`) that at zero is byte-identical to the upstream reference. Hot-updatable via `pipeline.set_dcw(...)`.
 - **Hot LoRA.** Register a directory once, then enable / set_strength / remove without rebuilding anything. The LoRA manager ([`acestep/engine/lora.py`](acestep/engine/lora.py)) handles the lifecycle and delta math; when the decoder is in TRT mode, applies route through a refitter against the live engine.
-- **TRT acceleration end-to-end.** The DiT decoder, VAE encode, and VAE decode each pick `tensorrt | compile | eager` independently. The TRT decoder is refit-enabled, so LoRA swaps do not rebuild the engine. The VAE decode has a windowed variant (`vae_decode_fp16_3to30s`, range 3 to 30 s) that is built once and reused across all durations; the caller specifies the window start via `t_start`.
+- **TRT acceleration end-to-end.** The DiT decoder, VAE encode, and VAE decode each pick `tensorrt | compile | eager` independently. The TRT decoder is refit-enabled, so LoRA swaps do not rebuild the engine. The VAE decode has a windowed variant (`vae_decode_fp16_1s_fixed`, a fixed 1 s profile) that is built once and reused across all durations; the caller specifies the window start via `t_start`.
 - **Bit-identical streaming vs. batch.** The streaming and one-shot paths compose the same pure step primitives from [`acestep/engine/ode_steps.py`](acestep/engine/ode_steps.py); they produce the same output.
 
 ## Tested on
@@ -53,7 +78,7 @@ Three knobs trade off against each other. Picking the right point on the curve i
 
 These are per-engine peaks captured in separate subprocesses, not a live-runtime sum. At inference time the decoder peak dominates and the VAE workspaces do not peak alongside it, which is why the live demo fits on a 24 GB card. The comparison is what matters: switching three engines from 240 s to 60 s frees about 9 GB. Source: [`scripts/benchmarks/vram_60s_vs_240s_results.md`](scripts/benchmarks/vram_60s_vs_240s_results.md). Longer engines also pay more per-tick latency since the diffusion sequence length scales with duration. Build only the durations you need.
 
-**VAE windowing.** Optional. When `vae_window > 0`, decode happens in overlapped time windows (range 3 to 30 s) instead of full-length, controlled by a `t_start` parameter on each decode call. This is what unlocks low-latency streaming updates: only the requested window is decoded per call rather than the full latent. Set to 0 to fall back to full-length decode.
+**VAE windowing.** Optional, and the demo's default. When `vae_window > 0`, every streaming decode runs through the fixed 1 s windowed engine: 25 latent frames go in, the middle `vae_window` seconds (keep range 0.04 to 0.36 s) come out, and the surrounding frames are receptive-field margin that gets trimmed. Only the requested window is decoded per call rather than the full latent — this is what unlocks low-latency streaming updates, and it means no full-length decode engine is required. Set to 0 to fall back to full-length decode (requires a full-length `vae_decode` engine for the duration).
 
 ## Performance
 
@@ -77,7 +102,7 @@ The DiT decoder and the VAE pick a backend independently. Three values each: `te
 | Decoder           | `tensorrt`  | Fastest. Requires a built decoder engine for the target duration and checkpoint. Refit-enabled engines support LoRA swaps. |
 | Decoder           | `compile`   | `torch.compile`. Long warmup, no engine to build, good fallback. |
 | Decoder           | `eager`     | Plain PyTorch. Useful for debugging. |
-| VAE encode/decode | `tensorrt`  | Fastest. The windowed-decode engine (`vae_decode_fp16_3to30s`) is built once and reused across all durations. |
+| VAE encode/decode | `tensorrt`  | Fastest. The windowed-decode engine (`vae_decode_fp16_1s_fixed`) is built once and reused across all durations. |
 | VAE encode/decode | `compile`   | `torch.compile`. |
 | VAE encode/decode | `eager`     | Plain PyTorch. |
 
@@ -96,18 +121,16 @@ uv run python -u -m demos.realtime_motion_graph_web.run -- \
 
 ## Requirements
 
-- Python 3.11
+- Python 3.11 (managed by `uv sync`)
 - NVIDIA GPU. Tested on RTX 3090, 4090, and 5090.
-- ACE-Step v1.5 checkpoints in `checkpoints/` (auto-downloaded on first run)
+- ACE-Step v1.5 checkpoints in `~/.daydream-scope/models/demon/checkpoints/` — downloaded by `demon-setup` (see [Quickstart](#quickstart)), or automatically on first model load
 - Node.js 20+ (only if you run the bundled web demo; first run installs `web/node_modules` automatically)
 
 ## Setup
 
-```bash
-uv sync
-```
+See the [Quickstart](#quickstart) above — `uv sync` then `uv run demon-setup` — or [docs/INSTALL.md](docs/INSTALL.md) for the step-by-step version.
 
-That is it for Python. Audio fixtures pull on first use from the [`daydreamlive/demon-fixtures`](https://huggingface.co/datasets/daydreamlive/demon-fixtures) Hugging Face dataset and cache under `~/.cache/huggingface/`. See [`acestep/fixtures.py`](acestep/fixtures.py) for the canonical set.
+Audio fixtures pull on first use from the [`daydreamlive/demon-fixtures`](https://huggingface.co/datasets/daydreamlive/demon-fixtures) Hugging Face dataset and cache under `~/.cache/huggingface/`. See [`acestep/fixtures.py`](acestep/fixtures.py) for the canonical set.
 
 LoRAs are not auto-downloaded. Drop a `.safetensors` file into `$ACESTEP_MODELS_DIR/loras/` (defaults to `~/.daydream-scope/models/demon/loras/`) and it will appear in any consumer that scans the library on next refresh. See [`acestep/paths.py`](acestep/paths.py).
 
@@ -122,7 +145,7 @@ from acestep.constants import TASK_INSTRUCTIONS
 session = Session(
     decoder_backend="compile",  # or "tensorrt", "eager"
     vae_backend="compile",
-    vae_window=3.0,             # 0 = full decode; >0 enables windowed decode
+    vae_window=0.36,            # 0 = full decode; >0 enables windowed decode
 )
 
 # Load audio, encode it, extract semantic context (cache across iterations).
@@ -190,7 +213,11 @@ Quick-start scripts:
 DEMON targets TensorRT 10.16.x. Plans are version- and GPU-architecture-specific by default, so rebuild after changing TensorRT, CUDA, driver, or the GPU used for inference.
 
 ```bash
-# Full matrix (decoder refit + VAE for 60s / 120s / 240s).
+# Minimal set for the realtime web demo (what `demon-setup` builds):
+# 60s decoder + 60s VAE encode + fixed 1s windowed VAE decode.
+uv run python -m acestep.engine.trt.build --preset minimal
+
+# Full matrix (decoder refit + VAE encode/decode for 60s / 120s / 240s).
 uv run python -m acestep.engine.trt.build --all
 
 # 60s only (recommended starting point).
@@ -212,31 +239,32 @@ uv run python -m acestep.engine.trt.build --all --duration 60 --force-rebuild --
 ONNX intermediates are duration-agnostic and auto-reused across builds; the model is only loaded when an export is actually needed.
 
 ```
-trt_engines/
-  _onnx/                          # shared, auto-reused across durations
+~/.daydream-scope/models/demon/trt_engines/
+  _onnx_vae/                      # shared across checkpoints, auto-reused
     vae_encode/vae_encode.onnx
     vae_decode/vae_decode.onnx
-    decoder/decoder.onnx          # + external data shards
-    decoder_refit/decoder_refit.onnx
-  decoder_mixed_refit_b8_60s/
-    decoder_mixed_refit_b8_60s.engine
-  vae_decode_fp16_3to30s/
-    vae_decode_fp16_3to30s.engine
+  _onnx_acestep-v15-turbo/        # checkpoint-specific
+    decoder_refit/decoder_refit.onnx   # + external data shards
+  spectral_decoder_mixed_refit_b8_60s/
+    spectral_decoder_mixed_refit_b8_60s.engine
+  vae_encode_fp16_60s/
+    vae_encode_fp16_60s.engine
+  vae_decode_fp16_1s_fixed/       # windowed decode, duration-independent
+    vae_decode_fp16_1s_fixed.engine
   ...
 ```
 
-Pass engine paths to `Session` when using the API directly:
+Pass engine paths to `Session` when using the API directly (`acestep.paths.select_trt_engines` / `available_trt_engines` resolve these for you):
 
 ```python
+from acestep.paths import available_trt_engines
+
+engines, picked_dur = available_trt_engines(duration_s=60.0)
 session = Session(
     decoder_backend="tensorrt",
     vae_backend="tensorrt",
-    vae_window=3.0,
-    trt_engines={
-        "decoder": "trt_engines/decoder_mixed_refit_b8_60s/decoder_mixed_refit_b8_60s.engine",
-        "vae_encode": "trt_engines/vae_encode_fp16_60s/vae_encode_fp16_60s.engine",
-        "vae_decode": "trt_engines/vae_decode_fp16_3to30s/vae_decode_fp16_3to30s.engine",
-    },
+    vae_window=0.36,
+    trt_engines=engines,
 )
 ```
 

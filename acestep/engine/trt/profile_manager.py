@@ -42,7 +42,7 @@ from typing import Optional
 from loguru import logger
 import torch
 
-from acestep.paths import available_trt_engines
+from acestep.paths import available_trt_engines, trt_engine_needs
 
 
 @dataclass
@@ -103,11 +103,13 @@ class TRTProfileManager:
         vae_backend: str,
         checkpoint: str = "acestep-v15-turbo",
         device: str = "cuda",
+        vae_window: float = 0.0,
     ):
         self._decoder_tensorrt = decoder_backend == "tensorrt"
         self._vae_tensorrt = vae_backend == "tensorrt"
         self._checkpoint = checkpoint
         self._device = torch.device(device)
+        self._vae_window = float(vae_window)
 
         self._diffusion_engine = None
         self._loaded_dur: Optional[float] = None
@@ -129,14 +131,16 @@ class TRTProfileManager:
 
         Drives :func:`available_trt_engines` so a mixed-backend setup
         (e.g. tensorrt decoder + eager VAE) doesn't disqualify a profile
-        for missing VAE engines that won't be loaded anyway.
+        for missing VAE engines that won't be loaded anyway. With
+        ``vae_window > 0`` and the windowed 1 s engine built, vae_decode
+        drops out entirely (see :func:`acestep.paths.trt_engine_needs`)
+        — the minimal engine preset builds no full-length decode engine.
         """
-        keys: list[str] = []
-        if self._decoder_tensorrt:
-            keys.append("decoder")
-        if self._vae_tensorrt:
-            keys.extend(["vae_encode", "vae_decode"])
-        return tuple(keys)
+        return trt_engine_needs(
+            decoder_tensorrt=self._decoder_tensorrt,
+            vae_tensorrt=self._vae_tensorrt,
+            windowed_decode=self._vae_window > 0,
+        )
 
     def resolve(self, duration_s: float) -> tuple[dict[str, str], float]:
         """Pick the smallest built profile that fits ``duration_s``.

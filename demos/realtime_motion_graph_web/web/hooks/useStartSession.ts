@@ -318,6 +318,22 @@ function wireRemoteListeners(
     // The connect() promise rejects on initial-handshake errors; the
     // close listener handles post-ready drops. Nothing else to do here.
   });
+
+  remote.addEventListener("server_error", (e) => {
+    // Mid-session structured failure from the backend (e.g. the
+    // generation pipeline died: code=pipeline_error). The server closes
+    // the WS right after, so the close listener / reconnect loop still
+    // runs — but surfacing the message first turns a silently frozen UI
+    // into an explained one.
+    const detail = (e as CustomEvent<{ code?: string; message?: string }>)
+      .detail;
+    useSessionStore
+      .getState()
+      .setStatus(
+        "error",
+        detail?.message || `Server error: ${detail?.code || "unknown"}`,
+      );
+  });
 }
 
 interface ResolvedFixture {

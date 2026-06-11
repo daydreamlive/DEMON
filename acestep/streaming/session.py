@@ -65,8 +65,10 @@ from acestep.paths import (
     available_dreamvae_decode_engine,
     checkpoints_dir,
     dreamvae_decode_engine_name,
+    max_built_profile_duration_s,
     max_profile_duration_s,
     smallest_fitting_profile_duration_s,
+    trt_engine_needs,
 )
 
 from acestep.streaming.audio_engine import AudioEngine
@@ -84,6 +86,7 @@ from acestep.streaming.events import (
     ParamsEcho,
     PromptApplied,
     PromptBlendEcho,
+    SessionError,
     StructureCleared,
     StructureFailed,
     StructureSet,
@@ -678,6 +681,20 @@ class StreamingSession:
                 runner.run()
             except Exception as exc:
                 logger.opt(exception=True).error("pipeline_error error={}", exc)
+                # Surface the failure to transports BEFORE close() tears
+                # the bus down: without this the client sees a frozen UI
+                # (no slices, no error) when generation dies post-ready.
+                # Subscription drainers deliver already-queued events
+                # after bus.close(), so publish-then-close is safe.
+                try:
+                    self.bus.publish(SessionError(
+                        code="pipeline_error",
+                        message=(
+                            f"Generation stopped: {type(exc).__name__}: {exc}"
+                        ),
+                    ))
+                except Exception:
+                    pass
         finally:
             self.close()
 
@@ -1797,13 +1814,23 @@ class StreamingSession:
             else "acestep-v15-turbo"
         )
 
-        # Cap at the largest registered TRT engine profile. Operator
-        # can stretch up to the ceiling; smallest-fitting selection
-        # happens below in ``profile_mgr.resolve``.
+        # Cap at the largest BUILT TRT engine profile (a default install
+        # builds only the 60 s preset; trimming here means a longer
+        # source just plays its head instead of failing at engine
+        # resolution). Falls back to the registered ceiling when nothing
+        # is built — non-TRT sessions, and the truly-unbuilt case where
+        # ``profile_mgr.resolve`` below raises the actionable
+        # EngineNotBuiltError. Smallest-fitting selection also happens
+        # below in ``profile_mgr.resolve``.
         if use_trt:
             try:
-                max_seconds = max_profile_duration_s(
+                max_seconds = max_built_profile_duration_s(
                     checkpoint=trt_profile_checkpoint,
+                    needs=trt_engine_needs(
+                        decoder_tensorrt=decoder_backend == "tensorrt",
+                        vae_tensorrt=vae_backend == "tensorrt",
+                        windowed_decode=config.vae_window > 0,
+                    ),
                 )
             except ValueError as exc:
                 logger.error("unsupported_trt_checkpoint error={}", exc)
@@ -1852,6 +1879,7 @@ class StreamingSession:
                 decoder_backend=decoder_backend,
                 vae_backend=vae_backend,
                 checkpoint=trt_profile_checkpoint,
+                vae_window=vae_window,
             )
             trt_engines, picked_dur = profile_mgr.resolve(audio_duration_s)
             # Walk-window override: pin decoder + vae_decode at

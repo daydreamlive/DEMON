@@ -19,10 +19,18 @@ renders the live UI:
 
 ## Requirements
 
-- **Server**: the full ACE-Step install (CUDA GPU, `uv sync`, prebuilt
-  TensorRT engines). No extra dependencies beyond the main project.
+- **Server**: the full DEMON install — `uv sync` then `uv run
+  demon-setup` (downloads the model checkpoints and builds the minimal
+  TensorRT engine set; see the [repo README Quickstart](../../README.md#quickstart)
+  and [docs/INSTALL.md](../../docs/INSTALL.md)). No extra dependencies
+  beyond the main project.
 - **Client**: any modern Chromium or Firefox. Web MIDI and webcam
   support are optional.
+
+At boot the backend runs a preflight: it downloads checkpoints if they
+are missing (visible in the terminal) and verifies the TensorRT
+engines for the configured `--accel`, exiting with the exact fix
+command when they are absent. Bypass with `--skip-preflight`.
 
 ## Run
 

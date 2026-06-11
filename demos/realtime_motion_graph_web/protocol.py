@@ -490,7 +490,11 @@ EVENTS: tuple = (
                                   "the source duration whose TRT profile is "
                                   "missing."),
         ),
-        description="Structured init failure (sent during the handshake).",
+        description="Structured failure. Sent during the init handshake "
+                    "(engine_not_built, unsupported_trt_checkpoint, ...) "
+                    "AND mid-session when the pipeline runner dies "
+                    "(code=pipeline_error) so the client can show a "
+                    "reason instead of a silently frozen UI.",
     ),
     EventSpec(
         "params_update",

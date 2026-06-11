@@ -476,6 +476,86 @@ def _stub_handle_client(ws):
         pass
 
 
+def _run_preflight(decoder_accel: str, vae_accel: str, checkpoint: str) -> None:
+    """Fail fast (and loudly) at boot instead of on the first browser
+    connection.
+
+    Two checks, mirroring what the first WebSocket session would hit:
+
+    1. Checkpoints — downloads the ACE-Step weights NOW, in the
+       terminal where the operator can see progress, rather than
+       stalling the first silent WS connect for 5-15 minutes.
+    2. TRT engines — when either component runs TensorRT, verify a 60 s
+       profile is built (same needs logic the session uses, windowed
+       decode counted). On failure, print the fix and exit non-zero.
+
+    ``--skip-preflight`` bypasses both checks (e.g. exotic mixed setups,
+    or testing the error paths themselves).
+    """
+    from acestep.model_downloader import ensure_main_model, ensure_dit_model
+    from acestep.paths import (
+        EngineNotBuiltError,
+        available_trt_engines,
+        checkpoints_dir,
+        trt_engine_needs,
+    )
+    from acestep.setup import DEMO_COMMAND, SETUP_COMMAND
+
+    ok, msg = ensure_main_model()
+    if ok and checkpoint != "acestep-v15-turbo":
+        ok, msg = ensure_dit_model(checkpoint)
+    if not ok:
+        print()
+        print("=" * 64)
+        print("  Model checkpoints unavailable")
+        print("=" * 64)
+        print(f"  {msg}")
+        print(f"  expected location: {checkpoints_dir()}")
+        print(f"  fix: run `{SETUP_COMMAND}` (or `uv run acestep-download`)")
+        print("=" * 64)
+        raise SystemExit(1)
+    logger.info("preflight_checkpoints_ok checkpoint={}", checkpoint)
+
+    needs = trt_engine_needs(
+        decoder_tensorrt=decoder_accel == "tensorrt",
+        vae_tensorrt=vae_accel == "tensorrt",
+        # The demo always streams with vae_window > 0 (config.json
+        # default 0.36 s), so the fixed 1 s windowed engine satisfies
+        # the decode need and no full-length decode engine is required.
+        windowed_decode=True,
+    )
+    if not needs:
+        return
+    trt_profile_checkpoint = (
+        checkpoint if decoder_accel == "tensorrt" else "acestep-v15-turbo"
+    )
+    try:
+        available_trt_engines(
+            duration_s=60.0,
+            needs=needs,
+            checkpoint=trt_profile_checkpoint,
+        )
+    except EngineNotBuiltError as exc:
+        print()
+        print("=" * 64)
+        print("  TensorRT engines not built")
+        print("=" * 64)
+        print(f"  {exc}")
+        print()
+        print(f"  fix (recommended): {SETUP_COMMAND}")
+        if exc.build_command:
+            print(f"  fix (manual):      {exc.build_command}")
+        print()
+        print("  Or run without TensorRT (slower, long first-tick warmup):")
+        print(f"    {DEMO_COMMAND} -- --accel compile")
+        print("=" * 64)
+        raise SystemExit(1)
+    logger.info(
+        "preflight_engines_ok needs={} checkpoint={}",
+        ",".join(needs), trt_profile_checkpoint,
+    )
+
+
 def main():
     # Wire logging FIRST so even the CLI-arg validation prints flow through
     # the configured sinks. configure() is idempotent so a duplicate call
@@ -571,6 +651,13 @@ def main():
             "ui_only_mode skipped=gpu_and_model_imports",
         )
     else:
+        # Fail fast at boot on missing checkpoints / engines instead of
+        # on the first browser connection (where the failure used to
+        # surface as a silent stall or a WS error frame). Also performs
+        # the checkpoint download here, visibly, when needed.
+        if "--skip-preflight" not in args:
+            _run_preflight(decoder_accel, vae_accel, checkpoint)
+
         # Defer the heavy import until we know we need it. Pulling this in
         # loads torch + acestep + TRT machinery; in --no-backend we never
         # touch any of it.

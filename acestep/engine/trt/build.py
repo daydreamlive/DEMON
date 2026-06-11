@@ -9,6 +9,10 @@ directory.  Existing ONNX files are auto-detected and reused; the model is
 only loaded when an ONNX export is actually needed.
 
 Usage:
+    # Minimal set for the realtime web demo (60s decoder + 60s VAE encode
+    # + fixed 1s windowed VAE decode). What `demon-setup` runs.
+    python -m acestep.engine.trt.build --preset minimal
+
     # Build the canonical engine matrix (60s + 120s + 240s, VAE + decoder
     # refit-only). Matches acestep.paths._TRT_ENGINE_PROFILES.
     python -m acestep.engine.trt.build --all
@@ -659,11 +663,15 @@ def _build_vae_engines(
     workspace_gb: float,
     env: dict,
     force_rebuild: bool = False,
+    include_full_decode: bool = True,
 ) -> list[tuple[str, str, float, str]]:
     """Build VAE encode + decode TRT engines for one duration.
 
     Returns list of (label, engine_path, elapsed_seconds, status).
     Existing engines are skipped unless force_rebuild is True.
+    ``include_full_decode=False`` (the minimal preset) builds only the
+    encoder; streaming decode goes through the fixed 1 s windowed
+    engine built separately by :func:`_build_windowed_vae_decode_engine`.
     """
     from .vae_export import (
         build_vae_decode_engine, build_vae_encode_engine, VAETRTBuildConfig,
@@ -675,11 +683,15 @@ def _build_vae_engines(
         encode_max_samples=duration * 48000,
     )
 
-    results = []
-    for component, builder in [
+    components = [
         ("vae_decode", build_vae_decode_engine),
         ("vae_encode", build_vae_encode_engine),
-    ]:
+    ]
+    if not include_full_decode:
+        components = components[1:]
+
+    results = []
+    for component, builder in components:
         name = config.engine_filename(component).replace(".engine", "")
         engine_dir = os.path.join(output_dir, name)
         engine_path = os.path.join(engine_dir, f"{name}.engine")
@@ -896,7 +908,8 @@ def _build_decoder_engine(
 # ------------------------------------------------------------------
 
 def _print_matrix(durations, build_vae, build_decoder, output_dir, batch_max,
-                   checkpoint="acestep-v15-turbo", build_dreamvae=False):
+                   checkpoint="acestep-v15-turbo", build_dreamvae=False,
+                   full_vae_decode=True):
     """Print the build matrix for --all mode, showing existing vs new."""
     variant = _checkpoint_to_variant(checkpoint)
 
@@ -923,7 +936,8 @@ def _print_matrix(durations, build_vae, build_decoder, output_dir, batch_max,
     jobs = []
     for dur in durations:
         if build_vae:
-            jobs.append((f"VAE decode {dur}s", f"vae_decode_fp16_{dur}s"))
+            if full_vae_decode:
+                jobs.append((f"VAE decode {dur}s", f"vae_decode_fp16_{dur}s"))
             jobs.append((f"VAE encode {dur}s", f"vae_encode_fp16_{dur}s"))
         if build_decoder:
             jobs.append((f"Decoder {variant} {dur}s, refit", _decoder_dir_name(dur)))
@@ -1026,6 +1040,14 @@ def main():
     batch.add_argument("--all", action="store_true",
                        help="Build full engine matrix (VAE + refit-only "
                             "decoder, across durations)")
+    batch.add_argument("--preset", choices=("minimal",), default=None,
+                       help="Named engine set. 'minimal' is the smallest set "
+                            "that runs the realtime web demo: 60s decoder + "
+                            "60s VAE encode + the fixed 1s windowed VAE "
+                            "decode. Skips the full-length VAE decode "
+                            "engines (the demo streams through the windowed "
+                            "engine) and the 120/240s profiles. Implies "
+                            "--all; combine with --duration to widen.")
     batch.add_argument("--duration", nargs="*", type=int, default=None,
                        help="Duration(s) in seconds for --all mode "
                             "(default: 60 120 240 — the canonical profile set "
@@ -1128,6 +1150,8 @@ def main():
                           "standard).")
 
     args = parser.parse_args()
+    if args.preset:
+        args.all = True
     if args.skip_onnx and args.force_onnx:
         parser.error("--skip-onnx and --force-onnx are mutually exclusive")
     if args.batch_opt is not None and args.batch_opt < 1:
@@ -1159,7 +1183,19 @@ def main():
 
 def _run_all(args, project_root, onnx_dir, env):
     """Build the full engine matrix."""
-    durations = tuple(args.duration) if args.duration else (60, 120, 240)
+    minimal = args.preset == "minimal"
+    if args.duration:
+        durations = tuple(args.duration)
+    elif minimal:
+        durations = (60,)
+    else:
+        durations = (60, 120, 240)
+    # The minimal preset skips full-length VAE decode engines: with
+    # vae_window > 0 (the demo default) the runtime decodes exclusively
+    # through the fixed 1 s windowed engine built below, and the needs
+    # resolution in acestep.paths.trt_engine_needs no longer requires a
+    # full-length decode engine when the windowed one is present.
+    full_vae_decode = not minimal
     decoder_precision = _resolve_decoder_precision(
         checkpoint=args.checkpoint,
         requested=args.decoder_precision,
@@ -1182,7 +1218,8 @@ def _run_all(args, project_root, onnx_dir, env):
     # Print matrix
     _print_matrix(durations, build_vae, build_decoder,
                   args.output_dir, args.batch_max, args.checkpoint,
-                  build_dreamvae=build_dreamvae)
+                  build_dreamvae=build_dreamvae,
+                  full_vae_decode=full_vae_decode)
 
     if args.dry_run:
         return
@@ -1240,6 +1277,7 @@ def _run_all(args, project_root, onnx_dir, env):
                 workspace_gb=args.workspace_gb,
                 env=env,
                 force_rebuild=args.force_rebuild,
+                include_full_decode=full_vae_decode,
             ))
         if build_decoder:
             results.append(_build_decoder_engine(
