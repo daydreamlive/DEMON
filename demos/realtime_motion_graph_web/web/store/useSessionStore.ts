@@ -2,10 +2,10 @@
 
 import { create } from "zustand";
 
-import type { AudioPlayer } from "@/engine/audio/AudioPlayer";
+import type { AudioPlayer } from "@demon/client";
 import type { NetworkMonitor } from "@/engine/networkMonitor";
-import type { RemoteBackend } from "@/engine/protocol";
-import type { WsReconnector } from "@/engine/wsReconnect";
+import type { CapabilityMask, RemoteBackend, WsTrace } from "@demon/client";
+import type { WsReconnector } from "@demon/client";
 
 // Live-session lifecycle state. The non-serializable RemoteBackend +
 // AudioPlayer instances live here so React components and hooks can react
@@ -49,6 +49,29 @@ interface SessionState {
   /** Server-imposed ceiling on ``pipelineDepth`` — TRT engine batch_max
    *  for TRT decoders, 4 for eager / compile. Null until ready. */
   maxPipelineDepth: number | null;
+  /** Backend capability mask from the WS ``ready`` message. The
+   *  hand-coded panels (track swap, timbre/structure refs, LoRA
+   *  library) gate on it so a backend family that can't honor a
+   *  command doesn't render dead controls. Null until ready — and on
+   *  pre-Phase-2 servers / recorded replays, which means "ungated"
+   *  (see useCapability). */
+  capabilities: CapabilityMask | null;
+  /** Latest browser-observed WS trace, including orphan remotes that
+   *  failed before setSession() could publish them. */
+  lastWsTrace: WsTrace | null;
+  /** Pod-side session id from optional init_ack telemetry. */
+  lastBackendSessionId: string | null;
+  /** Client id echoed by init_ack. */
+  lastBackendClientId: string | null;
+  /** Active manual steering slot count, mirrored from the server.
+   *  Null until ready. */
+  manualSlotCount: number | null;
+  /** Server-imposed cap on manual steering slots. Drives the +/- enable
+   *  state in ModTile. Null until ready. */
+  manualSlotCap: number | null;
+  /** Whether the session's checkpoint has steering vectors. When false,
+   *  ModTile hides both steering tiles. Null until ready. */
+  steeringAvailable: boolean | null;
 
   setStatus: (status: SessionStatus, message?: string) => void;
   setSession: (remote: RemoteBackend | null, player: AudioPlayer | null) => void;
@@ -58,6 +81,13 @@ interface SessionState {
   setCheckpointScale: (scale: string | null) => void;
   setPipelineDepth: (depth: number | null) => void;
   setMaxPipelineDepth: (max: number | null) => void;
+  setCapabilities: (capabilities: CapabilityMask | null) => void;
+  setLastWsTrace: (trace: WsTrace | null) => void;
+  setLastBackendSessionId: (id: string | null) => void;
+  setLastBackendClientId: (id: string | null) => void;
+  setManualSlotCount: (count: number | null) => void;
+  setManualSlotCap: (cap: number | null) => void;
+  setSteeringAvailable: (available: boolean | null) => void;
   reset: () => void;
 }
 
@@ -72,6 +102,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   checkpointScale: null,
   pipelineDepth: null,
   maxPipelineDepth: null,
+  capabilities: null,
+  lastWsTrace: null,
+  lastBackendSessionId: null,
+  lastBackendClientId: null,
+  manualSlotCount: null,
+  manualSlotCap: null,
+  steeringAvailable: null,
 
   setStatus: (status, message = "") => set({ status, message }),
   setSession: (remote, player) => set({ remote, player }),
@@ -81,6 +118,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setCheckpointScale: (scale) => set({ checkpointScale: scale }),
   setPipelineDepth: (depth) => set({ pipelineDepth: depth }),
   setMaxPipelineDepth: (max) => set({ maxPipelineDepth: max }),
+  setCapabilities: (capabilities) => set({ capabilities }),
+  setLastWsTrace: (trace) => set({ lastWsTrace: trace }),
+  setLastBackendSessionId: (id) => set({ lastBackendSessionId: id }),
+  setLastBackendClientId: (id) => set({ lastBackendClientId: id }),
+  setManualSlotCount: (count) => set({ manualSlotCount: count }),
+  setManualSlotCap: (cap) => set({ manualSlotCap: cap }),
+  setSteeringAvailable: (available) => set({ steeringAvailable: available }),
   reset: () => {
     try {
       get().monitor?.stop();
@@ -97,6 +141,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       reconnector: null,
       pipelineDepth: null,
       maxPipelineDepth: null,
+      // Capability mask is per-session truth (the next session may pick
+      // a different backend family), unlike checkpointScale below.
+      capabilities: null,
+      lastWsTrace: null,
+      lastBackendSessionId: null,
+      lastBackendClientId: null,
+      manualSlotCount: null,
+      manualSlotCap: null,
+      steeringAvailable: null,
       // checkpointScale survives reset on purpose: the server's
       // checkpoint doesn't change across sessions, and pre-fetching
       // it from /api/loras lets the library filter render correctly

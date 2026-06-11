@@ -80,18 +80,26 @@ class ModelContext:
         self._offload_text_encoder = False
         self._diffusion_engine = None
 
-        self._load_models(
-            project_root=project_root,
-            config_path=config_path,
-            device=device,
-            compile_decoder=compile_decoder,
-            compile_vae=compile_vae,
-            use_flash_attention=use_flash_attention,
-            offload_text_encoder=offload_text_encoder,
-            prefer_source=prefer_source,
-            skip_decoder=skip_decoder,
-            skip_vae=skip_vae,
-        )
+        try:
+            self._load_models(
+                project_root=project_root,
+                config_path=config_path,
+                device=device,
+                compile_decoder=compile_decoder,
+                compile_vae=compile_vae,
+                use_flash_attention=use_flash_attention,
+                offload_text_encoder=offload_text_encoder,
+                prefer_source=prefer_source,
+                skip_decoder=skip_decoder,
+                skip_vae=skip_vae,
+            )
+        except Exception:
+            logger.warning(
+                "model_context_load_failed_cleanup checkpoint={} device={}",
+                config_path, device,
+            )
+            self._cleanup_after_failed_load()
+            raise
 
     def close(self) -> None:
         """Release model weights + diffusion engine.
@@ -127,6 +135,17 @@ class ModelContext:
                      "text_tokenizer", "silence_latent", "config",
                      "_pending_decoder"):
             setattr(self, attr, None)
+
+    def _cleanup_after_failed_load(self) -> None:
+        """Release partially constructed model state after __init__ fails."""
+        import gc
+
+        try:
+            self.close()
+        finally:
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     # ------------------------------------------------------------------
     # Initialization
@@ -337,8 +356,9 @@ class ModelContext:
             ("acestep.models.modeling_acestep_v15_xl_turbo", "AceStepConditionGenerationModel"),
         # Non-distilled 2B variants (acestep-v15-sft, acestep-v15-base) ship
         # the same modeling file under this auto_map module path. Forward
-        # signature on the inner DiT matches what stream.py:_decoder_forward
-        # calls, so the per-step path works without an adapter.
+        # signature on the inner DiT matches what ACEAdapter.batched_forward
+        # (acestep/engine/model_adapter.py) calls, so the per-step path
+        # works on the stock ACE adapter.
         "modeling_acestep_v15_base.AceStepConditionGenerationModel":
             ("acestep.models.modeling_acestep_v15_base", "AceStepConditionGenerationModel"),
     }

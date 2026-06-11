@@ -309,3 +309,9 @@ If you use DEMON in your work, please also cite ACE-Step.
 ## Authors
 
 DEMON originally created by Ryan Fosdick ([@RyanOnTheInside](https://ryanontheinside.com)). Maintained by [Daydream Live](https://daydream.live) and contributors.
+
+## License
+
+DEMON is distributed under the **GNU Affero General Public License v3.0 or later** (`AGPL-3.0-or-later`); see [`LICENSE`](LICENSE) for the full text. Among other things, this means modified versions made available to users over a network must offer those users the corresponding source code (AGPL §13).
+
+Portions of DEMON are derived from [ACE-Step](https://github.com/ace-step/ACE-Step), originally released under the MIT license. The original MIT notice is preserved in [`LICENSE-MIT`](LICENSE-MIT) as required by that license; the ACE-Step portions remain available under MIT on their own terms, while the combined work is offered under AGPL-3.0-or-later.

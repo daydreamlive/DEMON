@@ -1,5 +1,5 @@
 import type { DecodedFixture } from "@/engine/audio/loadFixture";
-import { SAMPLE_RATE } from "@/engine/protocol";
+import { SAMPLE_RATE } from "@demon/client";
 import {
   deckPositionSec,
   type DeckId,

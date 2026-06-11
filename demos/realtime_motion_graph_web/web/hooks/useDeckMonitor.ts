@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 
-import { SAMPLE_RATE } from "@/engine/protocol";
+import { SAMPLE_RATE } from "@demon/client";
 import { deckAssetSource, type DeckTrackAssets } from "@/lib/audio/deckAssets";
 import { effectiveDeckGain } from "@/lib/audio/deckMixer";
 import {

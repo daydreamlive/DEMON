@@ -14,7 +14,7 @@ import { trimAudioBuffer } from "@/lib/audio/trimAudioBuffer";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { usePerformanceStore, type RefSource } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
-import type { RemoteBackend } from "@/engine/protocol";
+import type { RemoteBackend } from "@demon/client";
 
 import { RefSelect } from "./RefSelect";
 

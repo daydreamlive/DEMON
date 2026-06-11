@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 
-import { SAMPLE_RATE } from "@/engine/protocol";
+import { SAMPLE_RATE } from "@demon/client";
 import { useDeckAssets } from "@/hooks/useDeckAssets";
 import type { DecodedFixture, StemOverlayKind } from "@/engine/audio/loadFixture";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";

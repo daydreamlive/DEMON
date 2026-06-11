@@ -57,8 +57,10 @@ from acestep.streaming.commands import CommandOrigin
 from acestep.streaming.config import SessionConfig
 from acestep.streaming.events import (
     AudioReady,
+    CommandFailed,
     DepthApplied,
     LoraCatalogUpdate,
+    ManualSlotCount,
     ParamsEcho,
     PromptApplied,
     PromptBlendEcho,
@@ -93,7 +95,7 @@ from acestep.user_uploads import (
 )
 
 from .audio_codec import SliceCodec, send_stem_payload
-from .protocol import SAMPLE_RATE
+from .protocol import COMMAND_NAMES, SAMPLE_RATE, coerce_command_payload
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +336,32 @@ def _handle_client_body(
         sorted(config_dict.keys()), _client_id,
     )
 
+    # When this main session ends, wipe MODELS_DIR/user_uploads/ so
+    # the next renter on this pod can't list (or replay) what this
+    # user uploaded. Registered AFTER the upload_track early-return
+    # above on purpose: that branch is a separate, short-lived WS
+    # used to PUSH a file into user_uploads/ — wiping on its exit
+    # would delete the upload we just persisted. Only the main
+    # session (this point onward) registers the wipe. Process-boot
+    # also wipes once in server.main() so a crashed-process scenario
+    # is still covered.
+    def _wipe_on_session_end() -> None:
+        from acestep.user_uploads import wipe_user_uploads
+        try:
+            wiped = wipe_user_uploads()
+            if wiped:
+                logger.info("user_uploads_wiped_at_session_end entries={}", wiped)
+        except Exception as exc:
+            logger.warning("user_uploads_wipe_at_session_end_failed error={}", exc)
+
+    ctx_stack.callback(_wipe_on_session_end)
+    if config_dict.get("telemetry_version"):
+        ws.send(json.dumps({
+            "type": "init_ack",
+            "session_id": session_id,
+            "client_id": _client_id,
+        }))
+
     _t0 = time.monotonic()
     _first_slice = [False]
 
@@ -434,6 +462,17 @@ def _handle_client_body(
         ws.close(1011, "stem extraction failed")
         return
     _ms("resolve_source_done")
+
+    streaming_entered_run = False
+    session_registered = False
+
+    def _close_streaming_if_init_fails() -> None:
+        if not streaming_entered_run:
+            if session_registered:
+                session_registry.unregister(session_id)
+            streaming.close()
+
+    ctx_stack.callback(_close_streaming_if_init_fails)
 
     state = streaming.state
 
@@ -536,6 +575,15 @@ def _handle_client_body(
             _send_json({"type": "lora_catalog", "catalog": event.catalog})
         elif isinstance(event, DepthApplied):
             _send_json({"type": "depth_applied", "value": event.value})
+        elif isinstance(event, ManualSlotCount):
+            _send_json({"type": "manual_slot_count", "count": event.count})
+        elif isinstance(event, CommandFailed):
+            _send_json({
+                "type": "command_failed",
+                "command": event.command,
+                "requires": event.requires,
+                "error": event.error,
+            })
         elif isinstance(event, TimbreSet):
             _send_json({
                 "type": "timbre_set", "name": event.name,
@@ -586,6 +634,16 @@ def _handle_client_body(
         "pipeline_depth": state.current_depth,
         "max_pipeline_depth": streaming.max_pipeline_depth,
         "session_id": session_id,
+        # Phase-2 contract surface, declared by the session's backend
+        # (plan §3.1–3.3). The legacy flat duration/sample_rate/channels
+        # fields above stay as-is for old clients; geometry is the
+        # backend-declared truth new clients read instead of constants.
+        "geometry": streaming.geometry_payload(),
+        "capabilities": streaming.capabilities_payload(),
+        "knob_manifest": streaming.knob_manifest_payload(),
+        # Activation-steering surface (manual_slot_count /
+        # manual_slot_cap / steering_available).
+        **streaming.steering_payload(),
     }))
     ws.send(src_np.astype(np.float16).tobytes())
     if streaming.initial_upload_stems is not None:
@@ -626,6 +684,13 @@ def _handle_client_body(
         snap["fixture_name"] = fixture_name
         return snap
 
+    # Throttle state for coercion warnings, keyed (source, mtype). The
+    # params channel runs at ~125 Hz; a client that trips coercion on
+    # every tick would otherwise emit a warning per message on the
+    # dispatch thread (the same thread that feeds set_knobs).
+    _coerce_warn_last: dict = {}
+    _COERCE_WARN_INTERVAL_S = 5.0
+
     # --- Dispatcher router: WS / control bus JSON → session method ---
     def _dispatch_message(
         data: dict,
@@ -642,12 +707,38 @@ def _handle_client_body(
         ``source`` is ``"ws"`` for the browser's own WebSocket and
         ``"control"`` for control-bus messages. Maps to
         ``CommandOrigin`` for the two origin-dependent verbs.
+
+        Inbound envelopes are validated against the wire-contract registry
+        before dispatch: unknown command names are rejected up front
+        (registry-derived, replacing the old fall-through log), and
+        declared fields are type-coerced by ``coerce_command_payload`` —
+        the same enforcement point the MCP tools use, so per-field checks
+        can't drift between transports. Hot-path semantics are preserved:
+        coercion silently cleans (clamp-style, like the knob channel) and
+        the arms' own defensive fallbacks still apply to dropped fields.
         """
         mtype = data.get("type")
         origin = (
             CommandOrigin.EXTERNAL if source == "control"
             else CommandOrigin.PRIMARY
         )
+        if mtype not in COMMAND_NAMES:
+            # Unknown mtype — log but don't crash; lets future protocol
+            # additions degrade gracefully on older servers.
+            logger.warning(
+                "unknown_message_type origin={} mtype={}", source, mtype,
+            )
+            return
+        data, coerce_errors = coerce_command_payload(mtype, data)
+        if coerce_errors:
+            _now = time.monotonic()
+            _key = (source, mtype)
+            if _now - _coerce_warn_last.get(_key, 0.0) >= _COERCE_WARN_INTERVAL_S:
+                _coerce_warn_last[_key] = _now
+                logger.warning(
+                    "command_payload_coerced origin={} mtype={} errors={}",
+                    source, mtype, coerce_errors,
+                )
         try:
             if mtype == "params":
                 try:
@@ -703,6 +794,10 @@ def _handle_client_body(
                 lid = data.get("id")
                 if lid:
                     streaming.disable_lora(str(lid), origin=origin)
+            elif mtype == "manual_slot_add":
+                streaming.manual_slot_add(origin=origin)
+            elif mtype == "manual_slot_pop":
+                streaming.manual_slot_pop(origin=origin)
             elif mtype == "set_timbre_strength":
                 try:
                     v = float(data.get("value", 1.0))
@@ -831,14 +926,6 @@ def _handle_client_body(
                     ),
                     origin=origin,
                 )
-            else:
-                # Unknown mtype — log but don't crash; lets future
-                # protocol additions degrade gracefully on older
-                # servers.
-                logger.warning(
-                    "unknown_message_type origin={} mtype={}",
-                    source, mtype,
-                )
         except ConnectionClosed:
             state.running = False
 
@@ -902,6 +989,7 @@ def _handle_client_body(
         inject=inject_control,
         snapshot=snapshot_session,
     ))
+    session_registered = True
     logger.info("session_registered")
 
     # Stage the initial enable set so they get applied on the runner
@@ -915,6 +1003,7 @@ def _handle_client_body(
                 )
 
     try:
+        streaming_entered_run = True
         streaming.run()
     finally:
         session_registry.unregister(session_id)

@@ -36,8 +36,13 @@ serialize with ticks (``enable_lora``/``disable_lora``/``set_depth``/
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import ExitStack
+
+import functools
 import os
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -69,11 +74,14 @@ from acestep.streaming.audio_engine import AudioEngine
 from acestep.streaming.commands import CommandOrigin
 from acestep.streaming.config import SessionConfig
 from acestep.streaming.encode import blend_for_strength, encode_cond_pair
+from acestep.steering import CapacityError, EmptyError
 from acestep.streaming.events import (
     AudioReady,
+    CommandFailed,
     DepthApplied,
     EventBus,
     LoraCatalogUpdate,
+    ManualSlotCount,
     ParamsEcho,
     PromptApplied,
     PromptBlendEcho,
@@ -86,7 +94,16 @@ from acestep.streaming.events import (
     TimbreFailed,
     TimbreSet,
 )
-from acestep.streaming.knobs import KnobDef, KnobState, build_banks
+from acestep.streaming.knobs import (
+    KNOB_SCHEMA_VERSION,
+    KnobState,
+    catalog_from_specs,
+    coerce_knob_values,
+    knob_specs,
+    lora_strength_spec,
+)
+from acestep.streaming.families import make_backend
+from acestep.streaming.generator_backend import UnsupportedOperation
 from acestep.streaming.pipeline_runner import PipelineRunner
 from acestep.streaming.source import (
     _load_clip_waveform,
@@ -185,6 +202,17 @@ def _compute_max_pipeline_depth(diffusion_engine) -> int:
             exc, EAGER_MAX_PIPELINE_DEPTH,
         )
         return EAGER_MAX_PIPELINE_DEPTH
+
+
+def _cleanup_create_resource(name: str, close_fn: Callable[[], None]) -> None:
+    """Run a startup cleanup callback without masking the original failure."""
+    try:
+        close_fn()
+    except Exception as exc:
+        logger.warning(
+            "streaming_create_cleanup_raised resource={} error={}",
+            name, exc,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +322,51 @@ def extract_and_select_upload_stem(
             log_context or None, exc,
         )
         return None, str(exc), source, waveform
+
+
+# ---------------------------------------------------------------------------
+# Capability gate
+# ---------------------------------------------------------------------------
+
+
+def requires_capability(capability: str, command: str):
+    """Gate a session operation on the backend's capability mask.
+
+    ``capability`` is the :class:`~acestep.streaming.generator_backend.
+    Capabilities` field the operation needs; ``command`` is the wire
+    command name carrying the matching ``requires`` tag in the
+    wire-contract registry (``demos/realtime_motion_graph_web/
+    protocol.py``). The drift guard in ``tests/unit/test_wire_contract``
+    AST-parses these decorators and asserts the mapping matches the
+    registry's tagged commands exactly, so a tagged command can't ship
+    without defined failure behavior (and vice versa).
+
+    On an unsupported backend the wrapped operation does NOT run; the
+    session maps the :class:`UnsupportedOperation` to a typed
+    :class:`CommandFailed` event instead (plan §3.4 — loud failure,
+    never a silent no-op). ``UnsupportedOperation`` raised from inside
+    the operation (a future backend's own control method) maps the
+    same way.
+    """
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            try:
+                self._require_capability(capability, command)
+                return fn(self, *args, **kwargs)
+            except UnsupportedOperation as exc:
+                logger.warning(
+                    "command_unsupported command={} requires={} backend={}",
+                    command, exc.capability, self.backend.name,
+                )
+                self.bus.publish(CommandFailed(
+                    command=command,
+                    requires=exc.capability,
+                    error=str(exc),
+                ))
+                return None
+        return wrapper
+    return deco
 
 
 # ---------------------------------------------------------------------------
@@ -417,7 +490,106 @@ class StreamingSession:
         # disk/sidecars once; crossfade/volume/stem edits reuse these tensors.
         self._deck_cache: dict[tuple[str, str], dict] = {}
 
+        # The session's GeneratorBackend, selected by SessionConfig.backend
+        # via the family registry. Constructed here (not in run()) so the
+        # contract surface — capabilities()/geometry()/knob_specs() — is
+        # readable for the wire ``ready`` frame and the session snapshot
+        # before the runner starts, and so an unknown family fails at
+        # session create (config-time, per families.make_backend).
+        self.backend = make_backend(
+            getattr(config, "backend", "acestep") or "acestep", self,
+        )
+
+        # Cached {name: KnobSpec} map for hot-path validation in set_knobs.
+        # knob_specs() rebuilds 34 dataclasses, so we never call it per tick;
+        # rebuilt only when the LoRA set changes (see _apply_lora_pending)
+        # or a manual steering slot is added/popped.
+        # Reassigned wholesale (atomic ref swap), so set_knobs can read it
+        # without a lock from the dispatch thread.
+        self._rebuild_knob_specs(self.initial_enable_ids)
+
+        # The backend's manifest can extend the shared registry set the
+        # KnobState was seeded from (today: the activation-steering
+        # knobs, present only when the checkpoint has a vector bundle).
+        # Seed any such knob so snapshot ``knob_values`` stays complete
+        # from t=0 — add_knob is a no-op for already-seeded names.
+        for spec in self._knob_specs_by_name.values():
+            self.virtual_knobs.add_knob(spec)
+
+    def _rebuild_knob_specs(self, lora_ids: list) -> None:
+        # Backend-owned manifest: which specs the LoRA set expands to is
+        # family knowledge behind the seam; the session only tracks the
+        # enabled-id list.
+        self._knob_specs_by_name = {
+            s.name: s for s in self.backend.knob_specs(list(lora_ids or []))
+        }
+
+    def _require_capability(self, capability: str, command: str) -> None:
+        """Raise :class:`UnsupportedOperation` when the backend's
+        capability mask doesn't include ``capability``. The single
+        check behind :func:`requires_capability`."""
+        if not getattr(self.backend.capabilities(), capability):
+            raise UnsupportedOperation(
+                capability,
+                f"backend {self.backend.name!r} does not support "
+                f"{command!r} (requires capability {capability!r})",
+            )
+
+    def _enabled_lora_ids(self) -> list:
+        if not (self.use_lora and self.engine_obj is not None):
+            return []
+        return [d.id for d in self.engine_obj.list_loras() if d.state == "enabled"]
+
     # ---- Snapshot / catalog helpers -------------------------------------
+
+    def geometry_payload(self) -> dict:
+        """Wire-shaped geometry block (plan §3.2), declared by the
+        backend. Replaces deriving sample rate / latent cadence from
+        client-side constants; ``duration_s`` is null for endless
+        streams (reserved v2 ``append`` shape)."""
+        g = self.backend.geometry()
+        return {
+            "sample_rate": g.sample_rate,
+            "channels": g.channels,
+            "chunk_rate_hz": g.chunk_rate_hz,
+            "duration_s": g.duration_s,
+        }
+
+    def capabilities_payload(self) -> dict:
+        """Wire-shaped capability mask (plan §3.1), declared by the
+        backend. Consumed by client panel gating and the session's own
+        capability gate (:func:`requires_capability`)."""
+        return asdict(self.backend.capabilities())
+
+    def knob_manifest_payload(self) -> dict:
+        """The per-session knob manifest (plan §3.3): the same
+        ``{version, knobs}`` envelope ``GET /api/knobs`` serves, but
+        projected from this session's LIVE spec map — backend-owned,
+        SDE-mode-resolved, including the enabled ``lora_str_<id>``
+        knobs. ``/api/knobs`` stays for the replay server and static
+        tooling; this is the gated per-session truth."""
+        return {
+            "version": KNOB_SCHEMA_VERSION,
+            "knobs": catalog_from_specs(self._knob_specs_by_name.values()),
+        }
+
+    def steering_payload(self) -> dict:
+        """Wire-shaped activation-steering block, shared by the ``ready``
+        frame and the snapshot. ``steering_available`` mirrors the
+        backend's ``steering`` capability bit; the count/cap fields drive
+        the client's manual-slot row rendering and +/- enablement."""
+        ctl = getattr(self.backend, "steering", None)
+        if ctl is None:
+            return {
+                "manual_slot_count": 0,
+                "manual_slot_cap": 0,
+                "steering_available": False,
+            }
+        return {
+            "manual_slot_count": ctl.slot_count,
+            "manual_slot_cap": ctl.slot_cap,
+            "steering_available": bool(ctl.is_loaded),
+        }
 
     def lora_catalog_payload(self) -> list:
         """Wire-shaped LoRA catalog for the active engine. Empty list
@@ -471,6 +643,22 @@ class StreamingSession:
             "knob_values": self.virtual_knobs.get_all_values(),
             "channels": state.n_channels,
             "sample_rate": SAMPLE_RATE,
+            # One of the two inputs that determine this session's knob
+            # universe (see knob_specs; the other is the enabled-LoRA set
+            # in lora_catalog). Lets transport adapters (the MCP server's
+            # schema validation) reproduce the knob set without sniffing
+            # knob names out of knob_values.
+            "sde": self.use_sde,
+            # Phase-2 contract surface, mirroring the wire ``ready``
+            # frame (plan §3.1–3.3). The manifest here tracks the LIVE
+            # knob universe (runtime LoRA toggles included), unlike the
+            # ready frame's session-start copy.
+            "geometry": self.geometry_payload(),
+            "capabilities": self.capabilities_payload(),
+            "knob_manifest": self.knob_manifest_payload(),
+            # Activation-steering surface (count drives manual-slot row
+            # rendering; available=False hides the steering tiles).
+            **self.steering_payload(),
         }
 
     # ---- Runner lifecycle ----------------------------------------------
@@ -502,47 +690,58 @@ class StreamingSession:
         ``state.running`` flips False, and tear down GPU state + the
         event bus.
         """
-        runner = PipelineRunner(
-            self.session, self.stream, self.audio_eng,
-            state=self.state,
-            idle_threshold_s=IDLE_PAUSE_S,
-            use_midi=True,  # always "MIDI" mode; KnobState provides values
-            use_sde=self.use_sde, use_lora=self.use_lora,
-            midi_knobs=self.virtual_knobs,
-            engine_obj=self.engine_obj,
-            vae_window=self.vae_window, crop_seconds=self.crop_seconds,
-            k1_name=self.k1_name, seed=1528, skip_threshold=5e-4,
-            on_audio_ready=self._on_audio_ready,
-            before_tick=self.apply_pending,
-            walk_window=self.walk_window,
-            walk_window_s=self.walk_window_s,
-            neg_conditioning=self.cond_negative,
-            lead_floor_s=self.config.lead_floor_s,
-            lead_ceiling_s=self.config.lead_ceiling_s,
-            lead_release_tau_s=self.config.lead_release_tau_s,
-        )
-        self.runner_holder[0] = runner
-
         try:
+            # Runner construction stays inside the try so a setup
+            # failure still reaches the finally's close(), but it is
+            # NOT inside the run() swallow-path below: constructor
+            # errors propagate to the caller (warmup must see them).
+            backend = self.backend
+            runner = PipelineRunner(
+                backend, self.audio_eng,
+                state=self.state,
+                # The backend clamps vae_window to the Session's effective
+                # post-engine-profile value; the runner's slice scheduling
+                # must match the slice length the backend actually renders.
+                vae_window=backend.vae_window,
+                idle_threshold_s=IDLE_PAUSE_S,
+                on_audio_ready=self._on_audio_ready,
+                before_tick=self.apply_pending,
+                lead_floor_s=self.config.lead_floor_s,
+                lead_ceiling_s=self.config.lead_ceiling_s,
+                lead_release_tau_s=self.config.lead_release_tau_s,
+            )
+            self.runner_holder[0] = runner
             logger.info("pipeline_running")
-            runner.run()
-        except Exception as exc:
-            logger.opt(exception=True).error("pipeline_error error={}", exc)
+            try:
+                runner.run()
+            except Exception as exc:
+                logger.opt(exception=True).error("pipeline_error error={}", exc)
         finally:
-            # Order matters: stream.close() drops the StreamPipeline's
-            # references into the engine before session.close()
-            # actually destroys the engine + ModelContext.
-            # session.close() ends with gc.collect() + cuda.empty_cache().
-            self.state.running = False
+            self.close()
+
+    def close(self) -> None:
+        """Tear down GPU state even when a session exits before ``run``."""
+        # Order matters: stream.close() drops the StreamPipeline's
+        # references into the engine before session.close()
+        # actually destroys the engine + ModelContext.
+        # session.close() ends with gc.collect() + cuda.empty_cache().
+        self.state.running = False
+        try:
             self.bus.close()
-            try:
-                self.stream.close()
-            except Exception as exc:
-                logger.warning("stream_close_raised error={}", exc)
-            try:
-                self.session.close()
-            except Exception as exc:
-                logger.warning("session_close_raised error={}", exc)
+        except Exception as exc:
+            logger.warning("bus_close_raised error={}", exc)
+        try:
+            self.audio_eng.stop()
+        except Exception as exc:
+            logger.warning("audio_engine_stop_raised error={}", exc)
+        try:
+            self.stream.close()
+        except Exception as exc:
+            logger.warning("stream_close_raised error={}", exc)
+        try:
+            self.session.close()
+        except Exception as exc:
+            logger.warning("session_close_raised error={}", exc)
 
     def _on_audio_ready(self, wav_np, win_start=None, win_end=None):
         """Runner callback. Mutates ``audio_eng`` for full-buffer
@@ -608,7 +807,7 @@ class StreamingSession:
         for lid in local_disable:
             try:
                 self.engine_obj.disable_lora(lid)
-                self.virtual_knobs.remove_knob(f"lora_str_{lid}")
+                self.virtual_knobs.remove_knob(lora_strength_spec(lid).name)
                 logger.info("lora_disabled id={}", lid)
             except Exception as e:
                 logger.exception("lora_disable_failed id={} error={}", lid, e)
@@ -620,18 +819,18 @@ class StreamingSession:
                     lid, strength,
                 )
                 # Allocate a knob slot so set_lora_strength can be
-                # driven by the client's params dict. Default the slot
-                # to the strength we just enabled at so the runner's
+                # driven by the client's params dict. The knob's shape
+                # comes from the registry (lora_strength_spec), never
+                # re-declared here; only the default is overridden to
+                # the strength we just enabled at (the spec is a fresh
+                # instance, so mutating it is safe), so the runner's
                 # slider-delta check (set_lora_strength only when the
                 # new value differs by > 0.02) doesn't fire a
                 # redundant refit on tick 1.
-                self.virtual_knobs.add_knob(
-                    f"lora_str_{lid}",
-                    KnobDef(
-                        default=float(strength) if strength is not None else 0.0,
-                        sensitivity=2.0, max_val=2.0,
-                    ),
-                )
+                spec = lora_strength_spec(lid)
+                if strength is not None:
+                    spec.default = float(strength)
+                self.virtual_knobs.add_knob(spec)
             except Exception as e:
                 logger.exception("lora_enable_failed id={} error={}", lid, e)
         # Publish the refreshed catalog. No automatic re-encode here.
@@ -639,6 +838,10 @@ class StreamingSession:
         # promptA/promptB text; the client's visible-prepend logic
         # mutates the prompt on toggle and sends a normal
         # prompt-update message.
+        # The LoRA set changed, so the lora_str_<id> knob universe did too —
+        # refresh the cached validation spec map (atomic ref swap; set_knobs
+        # reads it lock-free from the dispatch thread).
+        self._rebuild_knob_specs(self._enabled_lora_ids())
         self.bus.publish(LoraCatalogUpdate(catalog=self.lora_catalog_payload()))
 
     def _apply_depth_pending(self) -> None:
@@ -1370,8 +1573,13 @@ class StreamingSession:
         if origin is CommandOrigin.EXTERNAL:
             self.bus.publish(ParamsEcho(raw=dict(raw)))
             return
+        # Enforce the knob contract on the load-bearing path: clamp numerics
+        # to [min,max], coerce ints, drop invalid enum/bool values. Unknown
+        # keys (curve specs, the playback clock) pass through untouched.
+        # Silent clamp — never reject a 125 Hz tick over one bad value.
+        clean, _errors = coerce_knob_values(raw, self._knob_specs_by_name)
         with state._lock:
-            self.virtual_knobs.update(raw)
+            self.virtual_knobs.update(clean)
             try:
                 self.audio_eng.position = int(playback_pos * SAMPLE_RATE) % max(
                     1, len(self.audio_eng.current),
@@ -1379,6 +1587,7 @@ class StreamingSession:
             except Exception:
                 pass
 
+    @requires_capability("loop_band", "loop_band")
     def set_loop_band(
         self,
         start_sec: float | None,
@@ -1498,6 +1707,7 @@ class StreamingSession:
             origin.value, path, method,
         )
 
+    @requires_capability("depth", "set_depth")
     def set_depth(
         self,
         value: int,
@@ -1515,6 +1725,7 @@ class StreamingSession:
             "set_depth_requested origin={} value={}", origin.value, v,
         )
 
+    @requires_capability("lora", "enable_lora")
     def enable_lora(
         self,
         lora_id: str,
@@ -1533,6 +1744,7 @@ class StreamingSession:
             origin.value, lora_id, strength,
         )
 
+    @requires_capability("lora", "disable_lora")
     def disable_lora(
         self,
         lora_id: str,
@@ -1547,6 +1759,68 @@ class StreamingSession:
             origin.value, lora_id,
         )
 
+    @requires_capability("steering", "manual_slot_add")
+    def manual_slot_add(
+        self,
+        *,
+        origin: CommandOrigin = CommandOrigin.PRIMARY,
+    ) -> None:
+        """Allocate the next manual steering slot (LIFO).
+
+        The controller is the primary write; KnobState and the cached
+        spec map mirror it so the four ``man_*_<N>`` knobs validate and
+        snapshot from the moment the slot exists. No GPU work, so it
+        applies inline (no pending queue). Publishes
+        :class:`ManualSlotCount` on success AND refusal — the client's
+        +/- UI resyncs from the echo either way.
+        """
+        self.state.last_activity_ts = time.monotonic()
+        ctl = self.backend.steering
+        try:
+            new_slot = ctl.add_slot()
+        except CapacityError:
+            logger.info(
+                "manual_slot_add_refused origin={} cap={}",
+                origin.value, ctl.slot_cap,
+            )
+        else:
+            self._rebuild_knob_specs(self._enabled_lora_ids())
+            names = ctl.knob_names(new_slot)
+            for name in (names.src, names.layer, names.step, names.alpha):
+                spec = self._knob_specs_by_name.get(name)
+                if spec is not None:
+                    self.virtual_knobs.add_knob(spec)
+            logger.info(
+                "manual_slot_added origin={} slot={}", origin.value, new_slot,
+            )
+        self.bus.publish(ManualSlotCount(count=ctl.slot_count))
+
+    @requires_capability("steering", "manual_slot_pop")
+    def manual_slot_pop(
+        self,
+        *,
+        origin: CommandOrigin = CommandOrigin.PRIMARY,
+    ) -> None:
+        """Remove the highest-numbered manual steering slot (LIFO;
+        interior deletion is not supported). Refusal on an empty
+        registry still publishes :class:`ManualSlotCount`."""
+        self.state.last_activity_ts = time.monotonic()
+        ctl = self.backend.steering
+        try:
+            popped = ctl.pop_slot()
+        except EmptyError:
+            logger.info("manual_slot_pop_refused origin={}", origin.value)
+        else:
+            names = ctl.knob_names(popped)
+            for name in (names.src, names.layer, names.step, names.alpha):
+                self.virtual_knobs.remove_knob(name)
+            self._rebuild_knob_specs(self._enabled_lora_ids())
+            logger.info(
+                "manual_slot_popped origin={} slot={}", origin.value, popped,
+            )
+        self.bus.publish(ManualSlotCount(count=ctl.slot_count))
+
+    @requires_capability("timbre", "set_timbre_strength")
     def set_timbre_strength(
         self,
         value: float,
@@ -1565,6 +1839,7 @@ class StreamingSession:
             origin.value, v,
         )
 
+    @requires_capability("timbre", "set_timbre_source")
     def set_timbre_source(
         self,
         audio: Audio,
@@ -1583,6 +1858,7 @@ class StreamingSession:
                 "source",
             )
 
+    @requires_capability("timbre", "set_timbre_fixture")
     def set_timbre_fixture(
         self,
         name: str,
@@ -1600,6 +1876,7 @@ class StreamingSession:
                 "fixture",
             )
 
+    @requires_capability("timbre", "clear_timbre_source")
     def clear_timbre_source(
         self,
         *,
@@ -1630,6 +1907,7 @@ class StreamingSession:
         self.bus.publish(TimbreCleared())
         logger.info("timbre_cleared origin={}", origin.value)
 
+    @requires_capability("structure", "set_structure_source")
     def set_structure_source(
         self,
         audio: Audio,
@@ -1652,6 +1930,7 @@ class StreamingSession:
                 "source",
             )
 
+    @requires_capability("structure", "set_structure_fixture")
     def set_structure_fixture(
         self,
         name: str,
@@ -1670,6 +1949,7 @@ class StreamingSession:
                 "fixture",
             )
 
+    @requires_capability("structure", "clear_structure_source")
     def clear_structure_source(
         self,
         *,
@@ -1683,6 +1963,7 @@ class StreamingSession:
         self.bus.publish(StructureCleared())
         logger.info("structure_cleared origin={}", origin.value)
 
+    @requires_capability("swap", "swap_source")
     def swap_source(
         self,
         audio: Audio,
@@ -1859,213 +2140,234 @@ class StreamingSession:
             )
             fast_vae = False
 
-        logger.info(
-            "model_load_start decoder={} vae={} checkpoint={}",
-            decoder_backend, vae_backend, checkpoint,
-        )
-        t0 = time.time()
-        engine_session = Session(
-            project_root=str(checkpoints_dir()),
-            config_path=checkpoint,
-            decoder_backend=decoder_backend,
-            vae_backend=vae_backend,
-            offload_text_encoder=offload_text_encoder,
-            trt_engines=trt_engines,
-            vae_window=vae_window,
-        )
-        logger.info("model_loaded duration_s={:.1f}", time.time() - t0)
+        with ExitStack() as cleanup:
+            logger.info(
+                "model_load_start decoder={} vae={} checkpoint={}",
+                decoder_backend, vae_backend, checkpoint,
+            )
+            t0 = time.time()
+            engine_session = Session(
+                project_root=str(checkpoints_dir()),
+                config_path=checkpoint,
+                decoder_backend=decoder_backend,
+                vae_backend=vae_backend,
+                offload_text_encoder=offload_text_encoder,
+                trt_engines=trt_engines,
+                vae_window=vae_window,
+            )
+            cleanup.callback(
+                _cleanup_create_resource,
+                "engine_session",
+                engine_session.close,
+            )
+            logger.info("model_loaded duration_s={:.1f}", time.time() - t0)
 
-        if profile_mgr is not None:
-            profile_mgr.bind(
-                engine_session.handler._diffusion_engine,
-                trt_engines, picked_dur,
+            if profile_mgr is not None:
+                profile_mgr.bind(
+                    engine_session.handler._diffusion_engine,
+                    trt_engines, picked_dur,
+                )
+
+            engine_obj = engine_session.handler._diffusion_engine
+            lora_available = bool(engine_obj and engine_obj.lora_available)
+            if use_lora and not lora_available:
+                logger.warning(
+                    "lora_engine_unavailable decoder_backend={}",
+                    decoder_backend,
+                )
+                use_lora = False
+
+            max_pipeline_depth = _compute_max_pipeline_depth(engine_obj)
+            depth = max(MIN_PIPELINE_DEPTH, min(int(depth), max_pipeline_depth))
+            logger.info(
+                "pipeline_depth_set depth={} max={} backend={}",
+                depth, max_pipeline_depth,
+                "trt" if engine_obj._trt_engine is not None else "eager",
             )
 
-        engine_obj = engine_session.handler._diffusion_engine
-        lora_available = bool(engine_obj and engine_obj.lora_available)
-        if use_lora and not lora_available:
-            logger.warning(
-                "lora_engine_unavailable decoder_backend={}",
-                decoder_backend,
-            )
-            use_lora = False
-
-        max_pipeline_depth = _compute_max_pipeline_depth(engine_obj)
-        depth = max(MIN_PIPELINE_DEPTH, min(int(depth), max_pipeline_depth))
-        logger.info(
-            "pipeline_depth_set depth={} max={} backend={}",
-            depth, max_pipeline_depth,
-            "trt" if engine_obj._trt_engine is not None else "eager",
-        )
-
-        initial_enable_ids: list[str] = []
-        if use_lora:
-            catalog_ids = {d.id for d in engine_obj.list_loras()}
-            for lid in enabled_lora_ids:
-                if lid in catalog_ids:
-                    initial_enable_ids.append(lid)
-                else:
-                    logger.warning("lora_id_not_in_catalog id={}", lid)
-            for p in extra_lora_paths:
-                pp = Path(p)
-                if not pp.exists():
-                    logger.warning("lora_path_missing path={}", p)
-                    continue
-                try:
-                    lid = engine_obj.register_lora(str(pp))
-                    if lid not in initial_enable_ids:
+            initial_enable_ids: list[str] = []
+            if use_lora:
+                catalog_ids = {d.id for d in engine_obj.list_loras()}
+                for lid in enabled_lora_ids:
+                    if lid in catalog_ids:
                         initial_enable_ids.append(lid)
-                except Exception as e:
-                    logger.exception(
-                        "lora_register_failed path={} error={}", p, e,
-                    )
-            for lid in initial_enable_ids:
-                try:
-                    engine_obj.prewarm_lora(lid)
-                except Exception as e:
-                    logger.exception(
-                        "lora_prewarm_failed id={} error={}", lid, e,
-                    )
-            if not initial_enable_ids:
-                logger.info("lora_startup_empty reason=catalog_only")
+                    else:
+                        logger.warning("lora_id_not_in_catalog id={}", lid)
+                for p in extra_lora_paths:
+                    pp = Path(p)
+                    if not pp.exists():
+                        logger.warning("lora_path_missing path={}", p)
+                        continue
+                    try:
+                        lid = engine_obj.register_lora(str(pp))
+                        if lid not in initial_enable_ids:
+                            initial_enable_ids.append(lid)
+                    except Exception as e:
+                        logger.exception(
+                            "lora_register_failed path={} error={}", p, e,
+                        )
+                for lid in initial_enable_ids:
+                    try:
+                        engine_obj.prewarm_lora(lid)
+                    except Exception as e:
+                        logger.exception(
+                            "lora_prewarm_failed id={} error={}", lid, e,
+                        )
+                if not initial_enable_ids:
+                    logger.info("lora_startup_empty reason=catalog_only")
 
-        audio_in = Audio(waveform=waveform, sample_rate=SAMPLE_RATE)
+            audio_in = Audio(waveform=waveform, sample_rate=SAMPLE_RATE)
 
-        source, detected_bpm, detected_key, detected_time_signature = (
-            _resolve_bpm_key_source(
-                engine_session,
-                audio_in=audio_in,
-                fixture_name=fixture_name,
-                samples=int(waveform.shape[1]),
-            )
-        )
-
-        upload_stems, stem_error, source, waveform = (
-            extract_and_select_upload_stem(
-                waveform,
-                session=engine_session,
-                source=source,
-                source_mode=stem_source_mode,
-                fixture_name=fixture_name,
-            )
-        )
-        if stem_error is not None and stem_source_mode != "full":
-            logger.error(
-                "stem_extract_failed_fatal source_mode={} error={}",
-                stem_source_mode, stem_error,
-            )
-            raise StemExtractFailedError(
-                f"Stem extraction failed: {stem_error}",
+            source, detected_bpm, detected_key, detected_time_signature = (
+                _resolve_bpm_key_source(
+                    engine_session,
+                    audio_in=audio_in,
+                    fixture_name=fixture_name,
+                    samples=int(waveform.shape[1]),
+                )
             )
 
-        # Two-conditioning cache for the live timbre-strength slider.
-        logger.info("text_encode_start variant=silence_and_self")
-        cond_silence, cond_full = encode_cond_pair(
-            engine_session, prompt, source.latent,
-            detected_bpm, audio_duration_s,
-            detected_key, detected_time_signature,
-        )
-        # Encode prompt B at session start so the blend slider works
-        # immediately.
-        if prompt_b and prompt_b != prompt:
-            cond_silence_b, cond_full_b = encode_cond_pair(
-                engine_session, prompt_b, source.latent,
+            upload_stems, stem_error, source, waveform = (
+                extract_and_select_upload_stem(
+                    waveform,
+                    session=engine_session,
+                    source=source,
+                    source_mode=stem_source_mode,
+                    fixture_name=fixture_name,
+                )
+            )
+            if stem_error is not None and stem_source_mode != "full":
+                logger.error(
+                    "stem_extract_failed_fatal source_mode={} error={}",
+                    stem_source_mode, stem_error,
+                )
+                raise StemExtractFailedError(
+                    f"Stem extraction failed: {stem_error}",
+                )
+
+            # Two-conditioning cache for the live timbre-strength slider.
+            logger.info("text_encode_start variant=silence_and_self")
+            cond_silence, cond_full = encode_cond_pair(
+                engine_session, prompt, source.latent,
                 detected_bpm, audio_duration_s,
                 detected_key, detected_time_signature,
             )
-        else:
-            cond_silence_b, cond_full_b = cond_silence, cond_full
-        conditioning = cond_full  # default strength=1.0 == cond_full
-
-        # Negative conditioning for the RCFG path (Residual CFG).
-        cond_negative = engine_session.encode_text(
-            tags="",
-            instruction=TASK_INSTRUCTIONS["cover"],
-            refer_latent=None,
-            bpm=detected_bpm, duration=audio_duration_s,
-            key=detected_key,
-            time_signature=detected_time_signature,
-        )
-
-        logger.info(
-            "stream_create_start steps={} pipeline_depth={}", steps, depth,
-        )
-        stream = engine_session.stream(
-            source=source,
-            conditioning=conditioning,
-            steps=steps,
-            shift=3.0,
-            pipeline_depth=depth,
-        )
-        logger.info("stream_handle_ready")
-
-        # Initial buffer
-        src_np = waveform.numpy().T
-        if crop_seconds > 0:
-            src_np = src_np[:int(crop_seconds * SAMPLE_RATE)]
-        n_channels = src_np.shape[1] if src_np.ndim > 1 else 1
-
-        _seam_fade_samples = int(0.05 * SAMPLE_RATE)
-        _seam_fade_samples = min(_seam_fade_samples, len(src_np) // 4)
-        if _seam_fade_samples > 0:
-            if src_np.ndim == 1:
-                _fade_out = np.linspace(1.0, 0.0, _seam_fade_samples).astype(src_np.dtype)
-                _fade_in = np.linspace(0.0, 1.0, _seam_fade_samples).astype(src_np.dtype)
+            # Encode prompt B at session start so the blend slider works
+            # immediately.
+            if prompt_b and prompt_b != prompt:
+                cond_silence_b, cond_full_b = encode_cond_pair(
+                    engine_session, prompt_b, source.latent,
+                    detected_bpm, audio_duration_s,
+                    detected_key, detected_time_signature,
+                )
             else:
-                _fade_out = np.linspace(1.0, 0.0, _seam_fade_samples).reshape(-1, 1).astype(src_np.dtype)
-                _fade_in = np.linspace(0.0, 1.0, _seam_fade_samples).reshape(-1, 1).astype(src_np.dtype)
-            _tail = src_np[-_seam_fade_samples:].copy()
-            _head = src_np[:_seam_fade_samples].copy()
-            src_np[-_seam_fade_samples:] = _tail * _fade_out + _head * _fade_in
+                cond_silence_b, cond_full_b = cond_silence, cond_full
+            conditioning = cond_full  # default strength=1.0 == cond_full
 
-        audio_eng = AudioEngine(src_np, SAMPLE_RATE)
+            # Negative conditioning for the RCFG path (Residual CFG).
+            cond_negative = engine_session.encode_text(
+                tags="",
+                instruction=TASK_INSTRUCTIONS["cover"],
+                refer_latent=None,
+                bpm=detected_bpm, duration=audio_duration_s,
+                key=detected_key,
+                time_signature=detected_time_signature,
+            )
 
-        k1_name = "sde_amp" if use_sde else "denoise"
-        initial_knob_ids = list(initial_enable_ids) if use_lora else []
-        banks = build_banks(use_sde, loras=initial_knob_ids)
-        virtual_knobs = KnobState(banks)
+            logger.info(
+                "stream_create_start steps={} pipeline_depth={}", steps, depth,
+            )
+            stream = engine_session.stream(
+                source=source,
+                conditioning=conditioning,
+                steps=steps,
+                shift=3.0,
+                pipeline_depth=depth,
+            )
+            cleanup.callback(
+                _cleanup_create_resource,
+                "stream",
+                stream.close,
+            )
+            logger.info("stream_handle_ready")
 
-        state = SessionState(
-            source=source,
-            bpm=detected_bpm,
-            key=detected_key,
-            time_signature=detected_time_signature,
-            duration=audio_duration_s,
-            n_channels=n_channels,
-            playback_samples=int(waveform.shape[-1]),
-            cond_pair=(cond_silence, cond_full),
-            cond_pair_b=(cond_silence_b, cond_full_b),
-            prompt_text=prompt,
-            prompt_text_b=prompt_b,
-            current_depth=int(depth),
-        )
+            # Initial buffer
+            src_np = waveform.numpy().T
+            if crop_seconds > 0:
+                src_np = src_np[:int(crop_seconds * SAMPLE_RATE)]
+            n_channels = src_np.shape[1] if src_np.ndim > 1 else 1
 
-        return cls(
-            session_id=session_id,
-            checkpoint=checkpoint,
-            config=config,
-            engine_session=engine_session,
-            stream=stream,
-            state=state,
-            audio_eng=audio_eng,
-            virtual_knobs=virtual_knobs,
-            engine_obj=engine_obj,
-            profile_mgr=profile_mgr,
-            cond_negative=cond_negative,
-            initial_buffer=src_np,
-            initial_upload_stems=upload_stems,
-            initial_stem_error=stem_error,
-            initial_stem_source_mode=stem_source_mode,
-            initial_enable_ids=initial_enable_ids,
-            lora_strengths_init=lora_strengths_init,
-            lora_available=lora_available,
-            max_pipeline_depth=max_pipeline_depth,
-            max_seconds=max_seconds,
-            walk_window=walk_window,
-            walk_window_s=walk_window_s,
-            vae_window=vae_window,
-            crop_seconds=crop_seconds,
-            use_sde=use_sde,
-            use_lora=use_lora,
-            k1_name=k1_name,
-        )
+            _seam_fade_samples = int(0.05 * SAMPLE_RATE)
+            _seam_fade_samples = min(_seam_fade_samples, len(src_np) // 4)
+            if _seam_fade_samples > 0:
+                if src_np.ndim == 1:
+                    _fade_out = np.linspace(1.0, 0.0, _seam_fade_samples).astype(src_np.dtype)
+                    _fade_in = np.linspace(0.0, 1.0, _seam_fade_samples).astype(src_np.dtype)
+                else:
+                    _fade_out = np.linspace(1.0, 0.0, _seam_fade_samples).reshape(-1, 1).astype(src_np.dtype)
+                    _fade_in = np.linspace(0.0, 1.0, _seam_fade_samples).reshape(-1, 1).astype(src_np.dtype)
+                _tail = src_np[-_seam_fade_samples:].copy()
+                _head = src_np[:_seam_fade_samples].copy()
+                src_np[-_seam_fade_samples:] = _tail * _fade_out + _head * _fade_in
+
+            audio_eng = AudioEngine(src_np, SAMPLE_RATE)
+            cleanup.callback(
+                _cleanup_create_resource,
+                "audio_engine",
+                audio_eng.stop,
+            )
+
+            k1_name = "sde_amp" if use_sde else "denoise"
+            initial_knob_ids = list(initial_enable_ids) if use_lora else []
+            # Seeded from the full registry (bank knobs and raw-param knobs
+            # alike), so the session snapshot's knob_values is complete from
+            # t=0 — before the first client param tick and for headless /
+            # MCP-only sessions.
+            virtual_knobs = KnobState(knob_specs(use_sde, loras=initial_knob_ids))
+
+            state = SessionState(
+                source=source,
+                bpm=detected_bpm,
+                key=detected_key,
+                time_signature=detected_time_signature,
+                duration=audio_duration_s,
+                n_channels=n_channels,
+                playback_samples=int(waveform.shape[-1]),
+                cond_pair=(cond_silence, cond_full),
+                cond_pair_b=(cond_silence_b, cond_full_b),
+                prompt_text=prompt,
+                prompt_text_b=prompt_b,
+                current_depth=int(depth),
+            )
+
+            streaming = cls(
+                session_id=session_id,
+                checkpoint=checkpoint,
+                config=config,
+                engine_session=engine_session,
+                stream=stream,
+                state=state,
+                audio_eng=audio_eng,
+                virtual_knobs=virtual_knobs,
+                engine_obj=engine_obj,
+                profile_mgr=profile_mgr,
+                cond_negative=cond_negative,
+                initial_buffer=src_np,
+                initial_upload_stems=upload_stems,
+                initial_stem_error=stem_error,
+                initial_stem_source_mode=stem_source_mode,
+                initial_enable_ids=initial_enable_ids,
+                lora_strengths_init=lora_strengths_init,
+                lora_available=lora_available,
+                max_pipeline_depth=max_pipeline_depth,
+                max_seconds=max_seconds,
+                walk_window=walk_window,
+                walk_window_s=walk_window_s,
+                vae_window=vae_window,
+                crop_seconds=crop_seconds,
+                use_sde=use_sde,
+                use_lora=use_lora,
+                k1_name=k1_name,
+            )
+            cleanup.pop_all()
+            return streaming

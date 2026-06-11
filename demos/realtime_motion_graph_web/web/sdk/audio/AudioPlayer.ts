@@ -1,9 +1,12 @@
 // Main-thread wrapper around the realtime-buffer AudioWorklet.
 // Falls back to ScriptProcessorNode when AudioWorklet is unavailable
 // (non-secure contexts like plain HTTP to a remote IP).
+//
+// Part of the demon-client SDK: no imports from the host app. App-level
+// tuning (the loudness matcher) is injected via AudioPlayerOptions; every
+// field has a default so `new AudioPlayer()` works out of the box.
 
-import { SAMPLE_RATE } from "@/engine/protocol";
-import { getConfig } from "@/lib/config";
+import { SAMPLE_RATE } from "../types/protocol";
 
 import {
   lufsMakeupGain,
@@ -11,6 +14,36 @@ import {
   measureLoudness,
   type LoudnessMetric,
 } from "./lufs";
+
+/** Loudness-matcher tuning, structurally compatible with the shipped app's
+ *  `config.json` `audio` block. All fields optional; absent values fall
+ *  back to the same defaults the app has always used. */
+export interface AudioLoudnessConfig {
+  lufs_window_sec?: number;
+  lufs_metric?: string;
+  lufs_silence_floor_db?: number;
+  lufs_silence_floor_hysteresis_db?: number;
+  lufs_peak_headroom?: number;
+}
+
+export interface AudioPlayerOptions {
+  /** Lazy provider for loudness-matcher tuning. Called at meter start and
+   *  at init/swap measurement time (not cached at construction) so a host
+   *  config reload between sessions takes effect. Default: all defaults. */
+  loudnessConfig?: () => AudioLoudnessConfig;
+  /** URL the realtime-buffer worklet module is served from. The worklet
+   *  source ships with the SDK (assets/audio-worklet.js); the host must
+   *  serve it as a static asset. Default matches the shipped app's
+   *  public/ path, including the cache-busting version tag. */
+  workletUrl?: string;
+}
+
+// Bumped manually when the worklet behaviour or message surface changes
+// (v2 = setLoopBand, v3 = stem overlays inside the worklet, v4 = band-loop
+// seam crossfade, v5 = band loop at the buffer end no longer freezes). The
+// browser caches worklet bytes per-URL and hard refresh doesn't always
+// invalidate.
+const DEFAULT_WORKLET_URL = "/audio-worklet.js?v=5";
 
 type MirrorListener = () => void;
 type StemOverlayKind = "vocals" | "instruments";
@@ -86,6 +119,14 @@ interface AudioWorkletNodeWithPort extends AudioNode {
 }
 
 export class AudioPlayer {
+  private _loudnessConfig: () => AudioLoudnessConfig;
+  private _workletUrl: string;
+
+  constructor(opts: AudioPlayerOptions = {}) {
+    this._loudnessConfig = opts.loudnessConfig ?? (() => ({}));
+    this._workletUrl = opts.workletUrl ?? DEFAULT_WORKLET_URL;
+  }
+
   ctx: AudioContext | null = null;
   node: AudioWorkletNode | ScriptProcessorNode | null = null;
   positionSec = 0;
@@ -182,13 +223,10 @@ export class AudioPlayer {
     this._useWorklet = !!this.ctx.audioWorklet;
 
     if (this._useWorklet) {
-      // Stable URL — worklet ships from public/ so AudioContext can resolve it.
-      // Cache-busting query bumped manually when the worklet behaviour or
-      // message surface changes (v2 = setLoopBand, v3 = stem overlays
-      // inside the worklet, v4 = band-loop seam crossfade, v5 = band loop
-      // at the buffer end no longer freezes). The browser caches worklet
-      // bytes per-URL and hard refresh doesn't always invalidate.
-      await this.ctx.audioWorklet.addModule("/audio-worklet.js?v=5");
+      // Stable URL — the worklet must be served as a static asset so
+      // AudioContext can resolve it (the shipped app serves it from
+      // public/; see AudioPlayerOptions.workletUrl).
+      await this.ctx.audioWorklet.addModule(this._workletUrl);
 
       const node = new AudioWorkletNode(this.ctx, "realtime-buffer", {
         numberOfInputs: 0,
@@ -584,20 +622,20 @@ export class AudioPlayer {
     if (this._meterIntervalId !== null) return;
     // Snapshot the window length and metric at meter-start so a
     // config reload mid-session can't cause a discontinuity.
-    const audioCfg = getConfig().audio;
-    const cfgWin = audioCfg.lufs_window_sec;
+    const audioCfg = this._loudnessConfig();
+    const cfgWin = audioCfg.lufs_window_sec ?? NaN;
     this._meterWindowSec = Math.max(
       LUFS_METER_WINDOW_MIN_SEC,
       Number.isFinite(cfgWin) ? cfgWin : LUFS_METER_WINDOW_DEFAULT_SEC,
     );
     this._loudnessMetric =
       audioCfg.lufs_metric === "dba" ? "dba" : "lufs";
-    const cfgFloor = audioCfg.lufs_silence_floor_db;
+    const cfgFloor = audioCfg.lufs_silence_floor_db ?? NaN;
     this._silenceFloorDb =
       Number.isFinite(cfgFloor) && cfgFloor > 0
         ? cfgFloor
         : LUFS_SILENCE_FLOOR_DB_DEFAULT;
-    const cfgHyst = audioCfg.lufs_silence_floor_hysteresis_db;
+    const cfgHyst = audioCfg.lufs_silence_floor_hysteresis_db ?? NaN;
     this._silenceFloorHysteresisDb =
       Number.isFinite(cfgHyst) && cfgHyst >= 0
         ? cfgHyst
@@ -630,7 +668,7 @@ export class AudioPlayer {
    */
   private _measureSourceTarget(): void {
     if (!this._mirror) return;
-    const audioCfg = getConfig().audio;
+    const audioCfg = this._loudnessConfig();
     const metric: LoudnessMetric =
       audioCfg.lufs_metric === "dba" ? "dba" : "lufs";
     // Snap the metric on init/swap so chunk-map readings stay in
@@ -645,8 +683,9 @@ export class AudioPlayer {
     );
     this._sourceTarget = value;
 
-    const headroomFactor = Number.isFinite(audioCfg.lufs_peak_headroom)
-      ? audioCfg.lufs_peak_headroom
+    const cfgHeadroom = audioCfg.lufs_peak_headroom ?? NaN;
+    const headroomFactor = Number.isFinite(cfgHeadroom)
+      ? cfgHeadroom
       : LUFS_PEAK_HEADROOM_DEFAULT;
     this._peakCeiling = Math.max(
       LUFS_PEAK_CEILING,

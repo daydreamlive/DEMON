@@ -4195,15 +4195,15 @@ body.curve-open #install-video-area #graph {
   margin: 0;
   max-width: 70ch;
 }
-/* Side-by-side columns for the two voice banks. Internal voices on the
-   left (8 wide), tuned morph on the right (6 wide), thin vertical
-   divider between them — the inShaper "shaper-1 / shaper-2" two-pane
-   layout in miniature. */
+/* Two-column grid shared by every row inside the voice tile (channels
+   on row 1, steering on row 2 when present). Grid (not flex) so the
+   columns auto-size to the widest content across rows — that's what
+   makes "manual steering" line up with "channel groups" above. */
 .voice-sections-row {
-  display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
-  gap: 14px;
+  display: grid;
+  grid-template-columns: auto 1px auto;
+  row-gap: 14px;
+  column-gap: 14px;
   align-items: stretch;
 }
 .voice-section {
@@ -4216,8 +4216,7 @@ body.curve-open #install-video-area #graph {
   width: 1px;
   align-self: stretch;
   background: var(--frame-line);
-  margin: 4px 4px;
-  flex: 0 0 auto;
+  margin: 4px 0;
 }
 .voice-section-label {
   font-family: var(--font-mono);
@@ -4226,6 +4225,7 @@ body.curve-open #install-video-area #graph {
   text-transform: uppercase;
   color: var(--text-dim);
 }
+
 
 /* A tile is a labeled card that groups related controls. Tiles are sized
    to their content (no fixed widths beyond what their inner channels and
@@ -8509,6 +8509,47 @@ body.curve-open #install-video-area #graph {
   margin-right: auto;
 }
 .almost-ready-btn--ghost:hover { color: var(--text); }
+.almost-ready-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+  filter: none;
+}
+
+/* In-modal busy / error banner shown between body and footer once Start
+   is pressed. Without it the "Encoding…" status lands in the status bar
+   behind the modal, so the dialog reads as frozen. */
+.almost-ready-uploading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 18px;
+  padding: 10px 12px;
+  border: 1px solid var(--frame-line);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  color: var(--text);
+  font-size: 0.84em;
+  line-height: 1.4;
+}
+.almost-ready-uploading.is-error {
+  border-color: color-mix(in srgb, #ff5b5b 55%, var(--frame-line));
+  background: color-mix(in srgb, #ff5b5b 10%, transparent);
+  color: color-mix(in srgb, #ff9b9b 70%, var(--text));
+}
+.almost-ready-spinner {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  animation: almost-ready-spin 0.7s linear infinite;
+}
+@keyframes almost-ready-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 
 /* ─────────────────────────────────────────────────────────────────────
    WaveformTrimDialog — interactive trim that runs between
@@ -9720,4 +9761,74 @@ body.curve-open #install-video-area #graph {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* Auto-generated knob panel (DynamicKnobPanel) — the manifest-driven
+   reference surface in the drawer's "Auto" tab. Deliberately plain: it's a
+   template for re-skins, not a designed tile. Slider rows reuse .knob-rack;
+   these rules only cover the group headers and the enum/bool/number
+   fields that have no shipped-tile equivalent. */
+.dyn-knob-note {
+  margin: 0 0 10px;
+  font-size: 11px;
+  line-height: 1.4;
+  opacity: 0.6;
+}
+.dyn-knob-note code {
+  font-size: 10px;
+  opacity: 0.85;
+}
+.dyn-knob-empty {
+  padding: 24px 8px;
+  font-size: 12px;
+  opacity: 0.6;
+  text-align: center;
+}
+.dyn-knob-group {
+  margin-bottom: 16px;
+}
+.dyn-knob-group-label {
+  margin: 0 0 6px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.55;
+}
+.dyn-knob-group .knob-rack {
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+}
+.dyn-knob-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+}
+.dyn-knob-field--bool {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+.dyn-knob-field-label {
+  opacity: 0.75;
+}
+.dyn-knob-number,
+.dyn-knob-select {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 6px;
+  min-width: 96px;
+}
+.dyn-knob-number:disabled,
+.dyn-knob-select:disabled {
+  opacity: 0.4;
+}
+.dyn-knob-unbound {
+  font-size: 9px;
+  font-style: normal;
+  opacity: 0.4;
 }

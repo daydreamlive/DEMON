@@ -6,7 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:replay": "vitest run tests/replay",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "fzstd": "^0.1.1",
@@ -21,6 +25,7 @@
     "@types/react-dom": "^19",
     "@types/webmidi": "^2.1.0",
     "playwright": "^1.60.0",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.8"
   }
 }

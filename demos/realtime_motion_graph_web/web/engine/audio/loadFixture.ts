@@ -8,9 +8,9 @@
 // existing Play / fixture-swap paths work unchanged when the active
 // fixture is an upload.
 
-import { fetchWithRetry } from "@/engine/fetchWithRetry";
+import { fetchWithRetry } from "@demon/client";
 import { defaultWsUrl, podHttp } from "@/engine/podUrl";
-import { SAMPLE_RATE } from "@/engine/protocol";
+import { SAMPLE_RATE } from "@demon/client";
 import { getApiKey } from "@/engine/rtmgConfig";
 
 export interface DecodedFixture {
@@ -208,6 +208,11 @@ export interface UploadTrackResult {
 export interface UploadTrackOptions {
   key?: string | null;
   timeSignature?: string | null;
+  /** Aborts the in-flight upload (e.g. the user closed the dialog). */
+  signal?: AbortSignal;
+  /** Overall deadline; the server can accept the socket but never reply
+   *  (encode hang / unsupported duration), which would hang the caller. */
+  timeoutMs?: number;
 }
 
 async function resolveUploadWsUrl(): Promise<string> {
@@ -223,7 +228,13 @@ async function resolveUploadWsUrl(): Promise<string> {
   return url;
 }
 
-function pcmFrame(decoded: DecodedFixture): Uint8Array {
+// Returns Uint8Array<ArrayBuffer> (not the wider Uint8Array<ArrayBufferLike>
+// that's the default in TS 5.7+'s libdom) so ws.send accepts it without
+// a cast — BufferSource excludes SharedArrayBuffer-backed views, and
+// the `new Uint8Array(byteLength)` allocation here is always ArrayBuffer-
+// backed. Without the narrow return type, consumers compiling on TS
+// 5.7+ hit "Uint8Array<ArrayBufferLike> not assignable to BufferSource".
+function pcmFrame(decoded: DecodedFixture): Uint8Array<ArrayBuffer> {
   const hdr = new ArrayBuffer(8);
   const dv = new DataView(hdr);
   dv.setUint32(0, decoded.channels, true);
@@ -245,7 +256,12 @@ export async function uploadTrackToServer(
   options: UploadTrackOptions = {},
 ): Promise<UploadTrackResult> {
   const wsUrl = await resolveUploadWsUrl();
+  const timeoutMs = options.timeoutMs ?? 120_000;
   return new Promise((resolve, reject) => {
+    if (options.signal?.aborted) {
+      reject(new DOMException("upload aborted", "AbortError"));
+      return;
+    }
     let settled = false;
     const ws = new WebSocket(wsUrl);
     ws.binaryType = "arraybuffer";
@@ -253,11 +269,26 @@ export async function uploadTrackToServer(
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
       try {
         ws.close();
       } catch {}
       fn();
     };
+
+    // A pod can accept the upload socket but never reply (encode hang,
+    // missing/old handler) and never close it — without a deadline the caller
+    // hangs forever (the "Encoding…" / stuck-dialog bug). Fail recoverably.
+    const timer = setTimeout(() => {
+      finish(() =>
+        reject(new Error("Upload timed out — the server didn't respond.")),
+      );
+    }, timeoutMs);
+
+    const onAbort = () =>
+      finish(() => reject(new DOMException("upload aborted", "AbortError")));
+    options.signal?.addEventListener("abort", onAbort);
 
     ws.onopen = () => {
       try {

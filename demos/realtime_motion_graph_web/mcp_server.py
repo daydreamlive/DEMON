@@ -47,6 +47,25 @@ import soundfile as sf
 from loguru import logger
 from mcp.server.fastmcp import FastMCP
 
+from acestep.steering import (
+    MANUAL_SLOT_CAP,
+    ensure_steering_vectors,
+    enumerate_catalog,
+)
+from acestep.streaming.knobs import (
+    KNOB_SCHEMA_VERSION,
+    KnobSpec,
+    coerce_knob_values,
+    knob_catalog,
+    knob_specs,
+)
+from .protocol import coerce_command_payload, wire_contract
+
+# MCP runs as a single global process, so we pre-fetch the canonical
+# 2B turbo bundle at module init. Fetch failures leave the cache empty;
+# the next streaming session retries.
+_MANUAL_VECTOR_DIR = ensure_steering_vectors("acestep-v15-turbo")
+
 
 # MCP wire protocol owns stdout — every log MUST go to stderr. Lazy
 # configure so this module stays importable without a hard dependency on
@@ -166,8 +185,28 @@ def _encode_cmd(data: dict, audio: Optional[bytes] = None) -> bytes:
     return prefix + json_bytes + audio
 
 
+def _validate_command(data: dict) -> dict:
+    """Coerce + validate a command envelope against the wire contract
+    (:func:`demos.realtime_motion_graph_web.protocol.coerce_command_payload`).
+
+    Raises ``ValueError`` on any contract violation so the agent gets explicit
+    feedback instead of the backend silently ignoring a malformed command.
+    This is the command-envelope counterpart to the knob-level validation in
+    ``_validate_against_session``: every MCP command now derives its validity
+    from the same registry the backend and a re-skinned UI build against.
+    Returns the cleaned envelope to forward. The free-form ``params.raw`` knob
+    dict rides through untouched here — its schema is the /api/knobs manifest,
+    enforced separately by ``_validate_against_session``.
+    """
+    clean, errors = coerce_command_payload(str(data.get("type")), data)
+    if errors:
+        raise ValueError("; ".join(errors))
+    return clean
+
+
 def _send_cmd(session_id: Optional[str], data: dict,
               audio: Optional[bytes] = None) -> dict:
+    data = _validate_command(data)
     sid = _resolve_session_id(session_id)
     body = _encode_cmd(data, audio)
     return _http_json("POST", f"{CONTROL_HTTP}/sessions/{sid}/cmd",
@@ -212,50 +251,24 @@ def _waveform_to_audio_bytes(waveform: np.ndarray) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Knob catalog (mirrors demos/realtime_motion_graph_web/knobs.py)
+# Manual steering vector catalog (local view of the prefetched bundle)
 # ---------------------------------------------------------------------------
 
 
-_GROUP_NAMES = [
-    "ch_g0", "ch_g1", "ch_g2", "ch_g3", "ch_g4", "ch_g5", "ch_g6", "ch_g7",
-]
-_KEYSTONE_NAMES = ["ch13", "ch14", "ch19", "ch23", "ch29", "ch56"]
-
-
-def _build_knob_catalog(sde: bool, enabled_lora_ids: list[str]) -> dict[str, dict]:
-    out: dict[str, dict] = {}
-    if sde:
-        out["sde_amp"] = {"default": 0.0, "max": 1.0, "group": "core",
-                          "description": "SDE diffusion amplitude (replaces denoise in SDE mode)"}
-        out["periodicity"] = {"default": 0.0, "max": 12.5, "group": "core",
-                              "description": "SDE periodicity"}
-    else:
-        out["denoise"] = {"default": 0.0, "max": 1.0, "group": "core",
-                          "description": "ODE denoise strength"}
-    out["seed"] = {"default": 0, "max": 0xFFFFFFFF, "group": "core",
-                   "description": "Stream seed (uint32 integer; passed to torch.manual_seed)"}
-    out["feedback"] = {"default": 0.0, "max": 1.0, "group": "core",
-                       "description": "Feedback amount"}
-    out["shift"] = {"default": 3.5, "min": 1.0, "max": 6.0, "group": "core",
-                    "description": "Flow shift (timing/curve shape). Passed verbatim to the diffusion solver."}
-    out["steps_override"] = {"default": 8, "min": 1, "max": 16, "group": "core",
-                             "description": "Diffusion step count. Lower = lower quality, higher = more latency. Changing rebuilds the StreamPipeline."}
-    for lid in enabled_lora_ids:
-        out[f"lora_str_{lid}"] = {
-            "default": 0.0, "max": 2.0, "group": "core",
-            "description": f"Strength for LoRA {lid!r}",
+def _enumerate_manual_catalog() -> list[dict]:
+    """Manual steering catalog flattened to wire-stable dicts."""
+    if _MANUAL_VECTOR_DIR is None:
+        return []
+    return [
+        {
+            "index": entry.index,
+            "axis": entry.axis,
+            "build_layer": entry.build_layer,
+            "build_step": entry.build_step,
+            "filename": entry.filename,
         }
-    out["hint_strength"] = {"default": 1.0, "max": 1.0, "group": "core",
-                            "description": "Structure (semantic hint) blend strength"}
-    out["feedback_depth"] = {"default": 1.0, "max": 8.0, "group": "core",
-                             "description": "Feedback delay-tap depth in ticks (1 = last, N = N ticks back)"}
-    for name in _GROUP_NAMES:
-        out[name] = {"default": 1.0, "max": 3.0, "group": "groups",
-                     "description": f"Channel-group amplifier {name}"}
-    for name in _KEYSTONE_NAMES:
-        out[name] = {"default": 1.0, "max": 3.0, "group": "keystones",
-                     "description": f"Keystone channel amplifier {name}"}
-    return out
+        for entry in enumerate_catalog(_MANUAL_VECTOR_DIR)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -323,23 +336,157 @@ async def get_lora_metadata(lora_id: str) -> dict:
 
 
 @mcp.tool()
+async def describe_protocol() -> dict:
+    """The full WebSocket wire contract: ``{version, commands, events}``.
+
+    Same self-describing manifest the backend serves at ``GET /api/protocol``.
+    ``commands`` is every client->server message type (name -> fields / binary
+    / origin_sensitive / description); ``events`` is every server->client
+    message type. A consumer can build every control message and decode every
+    server event from this alone, modulo the binary framing noted per entry
+    and the separate ``/api/knobs`` payload schema for the ``params`` command.
+
+    Static (session-independent): the vocabulary doesn't change per session,
+    only the ``params`` knob set does (see list_knobs).
+    """
+    return wire_contract()
+
+
+@mcp.tool()
 async def list_knobs(session_id: Optional[str] = None) -> dict:
-    """Knob catalog (name → default/max/group/description) plus the
-    session's current knob_values dict.
+    """Knob catalog (name → type/default/min/max/group/options/description/
+    bank) plus the session's current knob_values dict.
+
+    Same manifest the backend serves at ``/api/knobs`` — the complete
+    operator-knob set, including the non-bank params (guidance_scale,
+    cfg_rescale, dcw_*, steps_override) and the string-valued enums
+    (rcfg_mode, dcw_mode, dcw_wavelet). ``bank: false`` marks a knob that
+    rides the params channel but isn't stored in KnobState as a live knob;
+    its default is still seeded into the snapshot, so every manifest knob
+    reports a value in ``current``. ``version`` is the schema version
+    (bump = the contract changed shape; re-skins/agents can detect a stale
+    build).
 
     Knob set depends on whether the session was started in SDE mode and
     which LoRAs are currently enabled — pulled from the live snapshot.
     """
     snap = await session_state(session_id)
-    sde = "sde_amp" in (snap.get("knob_values") or {})
+    # Prefer the snapshot's backend-owned manifest (Phase 2): it is the
+    # session's LIVE knob universe, including the backend-specific knobs
+    # the static registry projection can't reproduce (the steering
+    # steer_* axes and the per-slot man_*_<N> quadruples).
+    manifest = snap.get("knob_manifest") or {}
+    if isinstance(manifest, dict) and manifest.get("knobs"):
+        return {
+            "version": manifest.get("version", KNOB_SCHEMA_VERSION),
+            "knobs": manifest["knobs"],
+            "current": snap.get("knob_values") or {},
+        }
+    # Older server snapshot without a manifest: re-derive from the
+    # shared registry (no steering surface on those servers anyway).
+    sde, enabled = _session_knob_shape(snap)
+    return {
+        "version": KNOB_SCHEMA_VERSION,
+        "knobs": knob_catalog(sde=sde, loras=enabled),
+        "current": snap.get("knob_values") or {},
+    }
+
+
+def _session_knob_shape(snap: dict) -> tuple[bool, list]:
+    """(sde, enabled_lora_ids) for a session snapshot — the two inputs
+    knob_specs/knob_catalog need to reproduce that session's knob set."""
+    sde = snap.get("sde")
+    if not isinstance(sde, bool):
+        # Older server whose snapshot doesn't carry ``sde``: infer it from
+        # the SDE-only knob's presence.
+        sde = "sde_amp" in (snap.get("knob_values") or {})
     enabled = [
         d.get("id") for d in (snap.get("lora_catalog") or [])
         if d.get("state") == "enabled" and d.get("id")
     ]
+    return sde, enabled
+
+
+def _specs_from_snapshot(snap: dict) -> dict:
+    """``{name: KnobSpec}`` for a session snapshot.
+
+    Reconstructed from the snapshot's backend-owned ``knob_manifest``
+    when present (so validation covers backend-specific knobs like the
+    steering surface); falls back to the shared registry for older
+    servers. The manifest is itself a registry projection
+    (``catalog_from_specs``), so this stays single-source."""
+    manifest = (snap.get("knob_manifest") or {}).get("knobs")
+    if isinstance(manifest, dict) and manifest:
+        return {
+            name: KnobSpec(
+                name=name,
+                default=e.get("default", 0.0),
+                min_val=e.get("min"),
+                max_val=e.get("max", 1.0),
+                type=e.get("type", "float"),
+                options=tuple(e.get("options") or ()),
+                group=e.get("group", "core"),
+                bank=bool(e.get("bank", True)),
+            )
+            for name, e in manifest.items()
+        }
+    sde, enabled = _session_knob_shape(snap)
+    return {s.name: s for s in knob_specs(sde=sde, loras=enabled)}
+
+
+async def _validate_against_session(
+    raw: dict, session_id: Optional[str]
+) -> dict:
+    """Validate a raw knob dict against the live session's schema. Returns
+    the coerced dict to send; raises ValueError (surfaced to the agent) if
+    any value is out of range or not an allowed enum/bool option. Reuses
+    the same coerce_knob_values the server enforces, so MCP can't drift."""
+    snap = await session_state(session_id)
+    clean, errors = coerce_knob_values(raw, _specs_from_snapshot(snap))
+    if errors:
+        raise ValueError("; ".join(errors))
+    return clean
+
+
+@mcp.tool()
+async def add_manual_slot(session_id: Optional[str] = None) -> dict:
+    """Spawn the next manual steering slot (LIFO; alpha defaults to 0).
+
+    Refused (no-op echo) at MANUAL_SLOT_CAP.
+    """
+    _send_cmd(session_id, {"type": "manual_slot_add"})
+    snap = await session_state(session_id)
     return {
-        "knobs": _build_knob_catalog(sde=sde, enabled_lora_ids=enabled),
-        "current": snap.get("knob_values") or {},
+        "count": int(snap.get("manual_slot_count") or 0),
+        "cap": MANUAL_SLOT_CAP,
     }
+
+
+@mcp.tool()
+async def pop_manual_slot(session_id: Optional[str] = None) -> dict:
+    """Remove the highest-numbered manual steering slot.
+
+    LIFO; interior deletion is not supported. Refused (no-op echo) on
+    an empty registry.
+    """
+    _send_cmd(session_id, {"type": "manual_slot_pop"})
+    snap = await session_state(session_id)
+    return {
+        "count": int(snap.get("manual_slot_count") or 0),
+        "cap": MANUAL_SLOT_CAP,
+    }
+
+
+@mcp.tool()
+async def list_manual_steering_vectors() -> dict:
+    """Catalog of pre-built steering vectors for the manual slots.
+
+    Returns ``{"count": N, "vectors": [...]}``. Each entry's ``index``
+    is the value to set on ``man_src_<slot>``. Order is stable across
+    sessions (axis-major, then build_layer asc, then build_step asc).
+    """
+    cat = _enumerate_manual_catalog()
+    return {"count": len(cat), "vectors": cat}
 
 
 # ---------------------------------------------------------------------------
@@ -394,10 +541,16 @@ async def set_knob(name: str, value: float,
     Backend merges into its current state. The browser's UI mirrors
     MCP-driven knob changes via the new ``params_echo`` message; the
     next UI param tick then carries the same value back so it sticks.
+
+    Validated against the live session's schema: an out-of-range value or
+    an unknown knob raises rather than silently clamping. Enum/bool knobs
+    (rcfg_mode, dcw_mode/wavelet, dcw_enabled) are float-rejected here —
+    use set_rcfg_mode and friends for those.
     """
+    clean = await _validate_against_session({name: value}, session_id)
     return _send_cmd(session_id, {
         "type": "params",
-        "raw": {name: float(value)},
+        "raw": clean,
         "playback_pos": 0.0,
     })
 
@@ -405,11 +558,15 @@ async def set_knob(name: str, value: float,
 @mcp.tool()
 async def set_knobs(values: dict[str, float],
                     session_id: Optional[str] = None) -> dict:
-    """Bulk knob update."""
-    coerced = {k: float(v) for k, v in values.items()}
+    """Bulk knob update. Validated against the live session's schema; any
+    out-of-range or unknown knob raises (the whole batch is rejected) so the
+    agent gets explicit feedback instead of a silent clamp. Numeric parsing
+    is owned by coerce_knob_values, so a bad value yields a contract error
+    naming the knob rather than a bare float() crash."""
+    clean = await _validate_against_session(dict(values), session_id)
     return _send_cmd(session_id, {
         "type": "params",
-        "raw": coerced,
+        "raw": clean,
         "playback_pos": 0.0,
     })
 
@@ -422,15 +579,12 @@ async def get_knob(name: str, session_id: Optional[str] = None) -> dict:
     return {"name": name, "value": kv.get(name)}
 
 
-_RCFG_MODES = ("off", "self", "initialize", "full")
-
-
 @mcp.tool()
 async def set_rcfg_mode(mode: str, session_id: Optional[str] = None) -> dict:
     """Set the RCFG (Residual CFG) mode. String-valued, so it can't ride
     set_knob (which is float-only).
 
-    Modes:
+    Modes (the authoritative set is the ``rcfg_mode`` entry in list_knobs):
       "off"        — no guidance (turbo default; free)
       "self"       — virtual uncond from initial noise (~1.06x cost)
       "initialize" — uncond run once per slot then cached (~1.07x cost)
@@ -443,13 +597,13 @@ async def set_rcfg_mode(mode: str, session_id: Optional[str] = None) -> dict:
     useMcpMirror has a string-value branch that drives setRcfgMode so
     the value persists across the next UI param tick.
     """
-    if mode not in _RCFG_MODES:
-        raise ValueError(
-            f"mode must be one of {list(_RCFG_MODES)}; got {mode!r}"
-        )
+    # Enum membership comes from the knob registry (coerce_knob_values
+    # checks ``mode`` against the rcfg_mode spec's options), so adding a
+    # mode is a one-place edit in knobs.py.
+    clean = await _validate_against_session({"rcfg_mode": mode}, session_id)
     return _send_cmd(session_id, {
         "type": "params",
-        "raw": {"rcfg_mode": mode},
+        "raw": clean,
         "playback_pos": 0.0,
     })
 

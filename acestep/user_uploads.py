@@ -16,6 +16,8 @@ sidecar read). The write half is :mod:`acestep.sidecars`; callers run
 
 from __future__ import annotations
 
+import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
@@ -91,6 +93,43 @@ def enumerate_user_uploads() -> list[str]:
         ):
             names.add(p.name)
     return sorted(names)
+
+
+def wipe_user_uploads() -> int:
+    """Delete every entry under ``user_uploads_dir()``.
+
+    The directory is per-pod scratch space, not per-user storage —
+    uploads are durable on Tigris (see demon-public-demo's
+    ``app/api/sessions/uploads/audio/presign``); the on-disk copy
+    here is a fast-path cache for the current session only. Pods are
+    rented from a pool and reused across users, so any file we leave
+    behind would surface to the next renter via
+    :func:`enumerate_user_uploads` and the ``/api/user_uploads``
+    HTTP endpoint — that's the cross-user fixture leak the rtmg
+    backend now closes by calling this between sessions.
+
+    Returns the number of top-level entries removed. Tolerates the
+    directory being absent (returns 0). Individual delete failures
+    are logged to stdout and skipped — a stuck file on one user's
+    upload must not prevent us from cleaning up the others.
+    """
+    d = user_uploads_dir()
+    if not d.is_dir():
+        return 0
+    removed = 0
+    for entry in d.iterdir():
+        try:
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+            removed += 1
+        except OSError as exc:
+            sys.stdout.write(
+                f"[user_uploads] wipe failed for {entry.name!r}: {exc}\n"
+            )
+            sys.stdout.flush()
+    return removed
 
 
 def user_upload_audio(name: str) -> Path:

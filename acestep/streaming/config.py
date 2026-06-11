@@ -1,9 +1,10 @@
 """Typed init-time configuration for :class:`StreamingSession`.
 
-Field names mirror the wire config keys (see
-``demos/realtime_motion_graph_web/web/types/protocol.ts``
-``SessionConfig``) so the adapter's :meth:`SessionConfig.from_dict`
-parse is a simple known-key filter.
+Field names ARE the wire config keys: the session-init contract
+(``config_catalog`` in ``demos/realtime_motion_graph_web/protocol.py``
+and the generated TS ``SessionConfigPayload``) is derived from this
+dataclass, and the adapter's :meth:`SessionConfig.from_dict` parse is a
+simple known-key filter.
 
 Transport-agnostic: no torch, no acestep imports.
 """
@@ -56,6 +57,11 @@ class SessionConfig:
     lora_strengths: dict = field(default_factory=dict)
     lora_paths: list = field(default_factory=list)
     client_id: str | None = None
+    # Generation backend family for this session (see
+    # acestep/streaming/families.py). "acestep" is the only registered
+    # family today; SA3 and Magenta RT2 register here as their tracks
+    # land. Selected per-session at create-time, never hot-swapped.
+    backend: str = "acestep"
 
     @classmethod
     def from_dict(cls, data: dict) -> "SessionConfig":

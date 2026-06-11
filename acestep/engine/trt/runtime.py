@@ -51,7 +51,10 @@ class TRTDecoder:
         )
     """
 
-    INPUT_NAMES = ("hidden_states", "timestep", "encoder_hidden_states", "context_latents")
+    INPUT_NAMES = (
+        "hidden_states", "timestep", "encoder_hidden_states",
+        "context_latents", "steering",
+    )
     OUTPUT_NAME = "velocity"
 
     def __init__(
@@ -93,6 +96,13 @@ class TRTDecoder:
         out_trt_dtype = self.engine.get_tensor_dtype(self.OUTPUT_NAME)
         self._output_dtype = dtype_map.get(out_trt_dtype, torch.float32)
 
+        # Static L, D; B is dynamic per call.
+        steer_shape = tuple(self.engine.get_tensor_shape("steering"))
+        if len(steer_shape) != 3:
+            raise RuntimeError(f"Unexpected steering input rank: {steer_shape}")
+        self._steer_L = int(steer_shape[1])
+        self._steer_D = int(steer_shape[2])
+
         # Per-shape buffer cache: shape_key -> {bufs, output}
         self._buf_cache: dict[tuple, dict] = {}
 
@@ -115,11 +125,16 @@ class TRTDecoder:
         dev = self.device
 
         in_dt = self._input_dtypes
+        B = hs_shape[0]
         bufs = {
             "hidden_states": torch.empty(hs_shape, dtype=in_dt["hidden_states"], device=dev),
             "timestep": torch.empty(ts_shape, dtype=in_dt["timestep"], device=dev),
             "encoder_hidden_states": torch.empty(enc_shape, dtype=in_dt["encoder_hidden_states"], device=dev),
             "context_latents": torch.empty(cl_shape, dtype=in_dt["context_latents"], device=dev),
+            "steering": torch.zeros(
+                B, self._steer_L, self._steer_D,
+                dtype=in_dt["steering"], device=dev,
+            ),
         }
 
         for name, buf in bufs.items():
@@ -148,12 +163,16 @@ class TRTDecoder:
         timestep: torch.Tensor,
         encoder_hidden_states: torch.Tensor,
         context_latents: torch.Tensor,
+        steering: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run one decoder step through TensorRT.
 
         Accepts any dtype; inputs are copied into pre-allocated fp32 buffers.
         Returns a view of the internal output buffer (caller must not hold
         references across calls with different shapes).
+
+        ``steering`` is optional ``[B, num_layers, hidden_size]``; when
+        omitted the per-layer adds are no-ops.
         """
         orig_T = hidden_states.shape[1]
         pad = orig_T % 2 == 1
@@ -178,6 +197,10 @@ class TRTDecoder:
             bufs["context_latents"].copy_(context_latents)
         bufs["timestep"].copy_(timestep)
         bufs["encoder_hidden_states"].copy_(encoder_hidden_states)
+        if steering is not None:
+            bufs["steering"].copy_(steering)
+        else:
+            bufs["steering"].zero_()
 
         # Bind addresses
         ctx = self.context

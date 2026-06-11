@@ -19,7 +19,7 @@ import { useMidiStore } from "@/store/useMidiStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 import { LORA_SLIDER_MAX } from "@/types/engine";
-import type { LoraCatalogEntry, LoraMetadata } from "@/types/protocol";
+import type { LoraCatalogEntry, LoraMetadata } from "@demon/client";
 
 // LoRA library tile — redesigned for a large catalog (40+ genre LoRAs).
 //

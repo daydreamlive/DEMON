@@ -1,4 +1,4 @@
-import { SAMPLE_RATE } from "@/engine/protocol";
+import { SAMPLE_RATE } from "@demon/client";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 

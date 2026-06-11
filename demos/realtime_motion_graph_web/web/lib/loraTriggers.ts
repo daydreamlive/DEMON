@@ -10,12 +10,13 @@
 // the triggers onto the WIRE at send-time.
 //
 // `enabledLoraTriggerPrefix()` builds the comma-joined prefix for the
-// currently-enabled LoRAs. `RemoteBackend.sendPrompt` prepends it to
-// both `tags` and `tags_b` right before the WS `prompt` message goes
-// out. Callers always pass the clean prompt text; sendPrompt adds the
-// triggers. The prefix is computed fresh on every send, so there is no
-// double-prepend and toggling a LoRA immediately changes what the
-// encoder sees on the next send.
+// currently-enabled LoRAs. `wirePromptTransform` (injected into
+// RemoteBackend via RemoteBackendOptions.promptTransform at session
+// start) applies it to both `tags` and `tags_b` right before the WS
+// `prompt` message goes out. Callers always pass the clean prompt text;
+// the transform adds the triggers. The prefix is computed fresh on
+// every send, so there is no double-prepend and toggling a LoRA
+// immediately changes what the encoder sees on the next send.
 //
 // Gated on `engine.auto_prepend_lora_triggers` (default true): with it
 // off, the operator owns the trigger workflow manually and the prefix
@@ -95,4 +96,17 @@ export function stripLeadingTriggers(text: string): string {
   }
   if (i === 0) return text;
   return parts.slice(i).join(",").replace(/^\s+/, "");
+}
+
+/** The app's wire-prompt transform, passed to RemoteBackend as
+ *  `RemoteBackendOptions.promptTransform`.
+ *
+ *  Hard guarantee, independent of upstream state: stripLeadingTriggers
+ *  removes ANY trigger prefix already on the text (stale, stacked, or
+ *  belonging to a since-disabled LoRA), then we prepend exactly the
+ *  de-duped enabled-set prefix. So the wire prompt always carries a
+ *  disabled LoRA's trigger zero times and an enabled LoRA's trigger
+ *  exactly once — per tag (A and B alike). */
+export function wirePromptTransform(tags: string): string {
+  return enabledLoraTriggerPrefix() + stripLeadingTriggers(tags);
 }

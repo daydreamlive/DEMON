@@ -1,0 +1,20 @@
+{
+  "name": "demon-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser SDK for the DEMON realtime music backend: WebSocket session client, binary slice decoding, realtime audio playback, and the self-describing wire-contract/knob manifests.",
+  "type": "module",
+  "main": "index.ts",
+  "types": "index.ts",
+  "sideEffects": false,
+  "peerDependencies": {
+    "fzstd": "^0.1.1"
+  },
+  "//": [
+    "Consumed in-tree by the demo app via the @demon/client tsconfig path",
+    "alias (TS source, transpiled by the host bundler). To lift it into a",
+    "standalone package: copy this directory, add a build step (e.g. tsup)",
+    "if you need compiled output, and serve assets/audio-worklet.js as a",
+    "static asset (see AudioPlayerOptions.workletUrl)."
+  ]
+}

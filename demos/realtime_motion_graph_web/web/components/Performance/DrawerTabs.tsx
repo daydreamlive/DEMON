@@ -21,15 +21,18 @@ import { useState, type ReactElement } from "react";
 //   SAVED    — saved sessions
 //   CONFIG   — session controls: key/sig, transport, MIDI, prefs
 
-export const DRAWER_TABS = ["core", "decks", "styles", "mod", "voice", "saved", "config"] as const;
+export const DRAWER_TABS = ["core", "decks", "styles", "mod", "voice", "auto", "saved", "config"] as const;
 export type DrawerTab = (typeof DRAWER_TABS)[number];
 
 const TAB_LABELS: Record<DrawerTab, string> = {
   core: "Core",
   decks: "Decks",
   mod: "Mod",
-  voice: "Channels",
+  voice: "Experimental",
   styles: "Styles",
+  // Auto-generated control surface, rendered straight from the backend
+  // /api/knobs manifest. Reference template for a re-skinned UI.
+  auto: "Auto",
   saved: "Saved",
   config: "Config",
 };
@@ -53,6 +56,13 @@ const TAB_ICONS: Record<DrawerTab, ReactElement> = {
     </>
   ),
   mod: <path d="M2 8 Q 4.5 3.5 7 8 T 12 8 T 14 8" />,
+  // Auto tab — sparkle/wand glyph: the manifest-driven surface.
+  auto: (
+    <>
+      <path d="M3 13l7-7" />
+      <path d="M11 3.5l.7 1.6 1.6.7-1.6.7-.7 1.6-.7-1.6L8.7 5.8l1.6-.7z" />
+    </>
+  ),
   voice: (
     <>
       <line x1="4" y1="2.5" x2="4" y2="13.5" />

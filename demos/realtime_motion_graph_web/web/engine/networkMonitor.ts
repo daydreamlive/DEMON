@@ -1,6 +1,6 @@
 import { useNetworkStore } from "@/store/useNetworkStore";
-import type { RemoteBackend } from "@/engine/protocol";
-import type { AudioSlice } from "@/types/protocol";
+import type { RemoteBackend } from "@demon/client";
+import type { AudioSlice } from "@demon/client";
 
 // Detect "connection is actually broken" from existing WebSocket signals.
 // One input, one verdict:

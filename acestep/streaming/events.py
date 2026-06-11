@@ -52,6 +52,7 @@ __all__ = [
     "Subscription",
     "SubscriptionClosed",
     "AudioReady",
+    "CommandFailed",
     "ParamsUpdate",
     "ParamsEcho",
     "PromptApplied",
@@ -166,6 +167,15 @@ class DepthApplied:
 
 
 @dataclass(frozen=True)
+class ManualSlotCount:
+    """Manual steering slot count after a manual_slot_add / manual_slot_pop
+    (published on success AND refusal so the client's +/- UI resyncs
+    either way). ``count`` is the controller's live slot count."""
+
+    count: int
+
+
+@dataclass(frozen=True)
 class SwapReady:
     """Source swap completed. Carries enough state for the transport to
     crossfade into the new buffer and update its detected-metadata UI.
@@ -266,6 +276,28 @@ class StructureCleared:
 
 @dataclass(frozen=True)
 class StructureFailed:
+    error: str
+
+
+@dataclass(frozen=True)
+class CommandFailed:
+    """A capability-gated command was rejected because the session's
+    backend doesn't declare the required capability (plan §3.4: loud
+    failure, never a silent no-op).
+
+    ``command`` is the wire command name (the ``requires``-tagged
+    :class:`CommandSpec` in ``demos/realtime_motion_graph_web/
+    protocol.py``); ``requires`` is the :class:`~acestep.streaming.
+    generator_backend.Capabilities` field the command needs; ``error``
+    is the human-readable reason (the mapped
+    :class:`~acestep.streaming.generator_backend.UnsupportedOperation`
+    message). With only the ACE backend registered this is wired but
+    never fires for capability reasons other than ``lora`` on a
+    LoRA-disabled session.
+    """
+
+    command: str
+    requires: str
     error: str
 
 

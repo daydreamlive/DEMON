@@ -6,7 +6,7 @@
 
 import * as fzstd from "fzstd";
 
-import { SLICE_FLAG_DELTA, SLICE_HDR_SIZE } from "@/types/protocol";
+import { SLICE_FLAG_DELTA, SLICE_HDR_SIZE } from "../types/protocol";
 
 interface DecodeRequest {
   id: number;

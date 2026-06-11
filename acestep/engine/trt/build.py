@@ -899,12 +899,25 @@ def _print_matrix(durations, build_vae, build_decoder, output_dir, batch_max,
                    checkpoint="acestep-v15-turbo", build_dreamvae=False):
     """Print the build matrix for --all mode, showing existing vs new."""
     variant = _checkpoint_to_variant(checkpoint)
-    vtag = f"_{variant}" if variant != "turbo" else ""
 
     from acestep.paths import (
         WINDOWED_VAE_DECODE_NAME,
         WINDOWED_DREAMVAE_DECODE_NAME,
     )
+    # Defer to TRTBuildConfig.engine_filename so this preview can't
+    # drift from what _build_decoder_engine writes.
+    from .export import TRTBuildConfig
+
+    def _decoder_dir_name(dur: int) -> str:
+        cfg = TRTBuildConfig(
+            fp16=True,
+            strongly_typed=True,
+            refit=True,
+            batch_max=batch_max,
+            seq_max=dur * 25,
+            variant=variant,
+        )
+        return cfg.engine_filename().replace(".engine", "")
 
     # (label, engine_dir_name) pairs
     jobs = []
@@ -913,7 +926,7 @@ def _print_matrix(durations, build_vae, build_decoder, output_dir, batch_max,
             jobs.append((f"VAE decode {dur}s", f"vae_decode_fp16_{dur}s"))
             jobs.append((f"VAE encode {dur}s", f"vae_encode_fp16_{dur}s"))
         if build_decoder:
-            jobs.append((f"Decoder {variant} {dur}s, refit", f"decoder{vtag}_mixed_refit_b{batch_max}_{dur}s"))
+            jobs.append((f"Decoder {variant} {dur}s, refit", _decoder_dir_name(dur)))
         if build_dreamvae:
             jobs.append((f"DreamVAE decode {dur}s", f"dreamvae_decode_fp16_{dur}s"))
 

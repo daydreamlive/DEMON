@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 
+import { useCapability } from "@/hooks/useCapability";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useCurveStore } from "@/store/useCurveStore";
 import { useMidiStore } from "@/store/useMidiStore";
@@ -12,6 +13,7 @@ import { CollapsibleTile } from "./CollapsibleTile";
 import { CoreTile } from "./CoreTile";
 import { DecksPanel } from "./DecksPanel";
 import { DrawerHelpBar } from "./DrawerHelpBar";
+import { DynamicKnobPanel } from "./DynamicKnobPanel";
 import { DrawerTabs, useDrawerTab, type DrawerTab } from "./DrawerTabs";
 import { LibraryTile } from "./LibraryTile";
 import { LiteControls } from "./LiteControls";
@@ -265,7 +267,7 @@ const SPREAD_SECTIONS: Array<{ id: DrawerTab; label: string }> = [
   { id: "decks", label: "Decks" },
   { id: "styles", label: "Styles" },
   { id: "mod", label: "Mod" },
-  { id: "voice", label: "Channels" },
+  { id: "voice", label: "Experimental" },
   { id: "config", label: "Config" },
 ];
 
@@ -292,29 +294,10 @@ function renderTabBody(tab: DrawerTab, savedTab?: ReactNode, spread = false) {
       return <ModTile />;
     case "voice":
       return <VoiceTile />;
+    case "auto":
+      return <DynamicKnobPanel />;
     case "styles":
-      // Tabbed view: each panel sits under its own collapsed accordion
-      // so the operator expands only what they're working on. Spread
-      // view is a show-everything surface, so the tiles render bare.
-      return (
-        <div className="styles-tab">
-          {spread ? (
-            <>
-              <PromptsTile />
-              <LibraryTile />
-            </>
-          ) : (
-            <>
-              <CollapsibleTile title="Tags">
-                <PromptsTile />
-              </CollapsibleTile>
-              <CollapsibleTile title="LoRA Library">
-                <LibraryTile />
-              </CollapsibleTile>
-            </>
-          )}
-        </div>
-      );
+      return <StylesTab spread={spread} />;
     case "saved":
       return savedTab ?? (
         <div className="install-sheet-saved-placeholder">
@@ -324,4 +307,36 @@ function renderTabBody(tab: DrawerTab, savedTab?: ReactNode, spread = false) {
     case "config":
       return <OperatorStrip />;
   }
+}
+
+// Styles tab body. A real component (unlike renderTabBody) so it can
+// gate the LoRA library on the backend capability mask: a backend
+// family without `lora` (or a lora-disabled session) doesn't get a
+// dead library panel. Tabbed view: each panel sits under its own
+// collapsed accordion so the operator expands only what they're
+// working on. Spread view is a show-everything surface, so the tiles
+// render bare.
+function StylesTab({ spread }: { spread: boolean }) {
+  const canLora = useCapability("lora");
+  return (
+    <div className="styles-tab">
+      {spread ? (
+        <>
+          <PromptsTile />
+          {canLora && <LibraryTile />}
+        </>
+      ) : (
+        <>
+          <CollapsibleTile title="Tags">
+            <PromptsTile />
+          </CollapsibleTile>
+          {canLora && (
+            <CollapsibleTile title="LoRA Library">
+              <LibraryTile />
+            </CollapsibleTile>
+          )}
+        </>
+      )}
+    </div>
+  );
 }

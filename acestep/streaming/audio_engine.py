@@ -1,7 +1,7 @@
-"""Lock-protected audio buffer with sounddevice playback.
+"""Lock-protected audio buffer with optional sounddevice playback.
 
-Torch-free. sounddevice is imported lazily inside ``__init__`` so headless
-test harnesses can import this module without an audio device present.
+Torch-free. sounddevice is imported lazily inside ``start`` so headless
+test harnesses and websocket backends can use the buffer without PortAudio.
 """
 
 import threading
@@ -20,8 +20,8 @@ class AudioEngine:
     """Lock-protected audio buffer with sounddevice playback."""
 
     def __init__(self, data, sr, *, crossfade_seconds: float = CROSSFADE_SECONDS):
-        import sounddevice as sd
-        self._sd = sd
+        self._sd = None
+        self._stream = None
         if data.ndim == 1:
             data = data.reshape(-1, 1)
         self.sr = sr
@@ -157,6 +157,9 @@ class AudioEngine:
         outdata[:] = out
 
     def start(self):
+        if self._sd is None:
+            import sounddevice as sd
+            self._sd = sd
         self._stream = self._sd.OutputStream(
             samplerate=self.sr,
             channels=self.channels,
@@ -166,5 +169,8 @@ class AudioEngine:
         self._stream.start()
 
     def stop(self):
+        if self._stream is None:
+            return
         self._stream.stop()
         self._stream.close()
+        self._stream = None

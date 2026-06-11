@@ -8,7 +8,7 @@ import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 import { isRcfgMode, isTimeSignature } from "@/types/engine";
-import type { LoraCatalogEntry } from "@/types/protocol";
+import type { LoraCatalogEntry } from "@demon/client";
 
 // Mirror state changes driven by the onboard MCP control bus back into
 // the front-end stores so the user can see Claude's edits land in the
@@ -171,6 +171,7 @@ export function useMcpMirror() {
           fixture_name?: string;
           interleaved: Float32Array;
           channels: number;
+          sample_rate: number;
           key?: string;
           time_signature?: string;
         }>).detail;
@@ -187,7 +188,9 @@ export function useMcpMirror() {
         useCustomTracksStore.getState().add(detail.fixture_name, {
           interleaved: detail.interleaved,
           channels,
-          sampleRate: 48000,
+          // swap_ready declares the buffer's rate on the wire — don't
+          // re-derive it from the client-side constant.
+          sampleRate: detail.sample_rate,
           frames: detail.interleaved.length / channels,
         });
 

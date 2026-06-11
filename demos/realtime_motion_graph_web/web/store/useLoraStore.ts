@@ -9,7 +9,7 @@ import {
   LORA_DEFAULT_STRENGTH_FRACTION,
   LORA_SLIDER_MAX,
 } from "@/types/engine";
-import type { LoraCatalogEntry } from "@/types/protocol";
+import type { LoraCatalogEntry } from "@demon/client";
 
 /** True iff a LoRA's trained ``base_model_scale`` is compatible with
  *  the active session's checkpoint scale. Unknown values on EITHER

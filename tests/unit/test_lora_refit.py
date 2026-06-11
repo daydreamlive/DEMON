@@ -4,7 +4,9 @@ These don't build a real TRT engine; they bypass __init__ and wire up
 the manager with a fake refitter so we can assert what would have been
 sent to the engine.
 """
+import ctypes
 import sys
+import types
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -17,6 +19,25 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from acestep.engine.trt.lora_refit import (
     TRTLoRAManager, _LoRAEntry, LoRAState,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_cuda_sync(monkeypatch):
+    """_refit_weights issues torch.cuda.synchronize(self._device) after the
+    D2H batch; the fixture manager lives on CPU (no real engine), where that
+    call raises. No-op it — there is nothing in flight to synchronize."""
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *a, **kw: None)
+
+
+def _snapshot_weights(np_dtype, ptr, count):
+    """Stand-in for tensorrt.Weights: copy ``count`` elements of ``np_dtype``
+    out of the raw host pointer so set_named_weights receives comparable
+    values instead of an address. The fixture stores numpy dtypes in
+    ``_trt_dtype`` (production stores trt dtypes; only this fake reads them).
+    Snapshotting matters: the host refit buffers are reused across refits."""
+    nbytes = count * np.dtype(np_dtype).itemsize
+    raw = (ctypes.c_char * nbytes).from_address(ptr)
+    return np.frombuffer(bytes(raw), dtype=np_dtype).copy()
 
 
 def _make_mgr():
@@ -44,6 +65,14 @@ def _make_mgr():
     }
     mgr._np_dtype = {"q.weight": np.float16, "k.weight": np.float16}
     mgr._param_dtype = {"q.weight": torch.float16, "k.weight": torch.float16}
+    # torch orientation, no fp8 (matches __init__ defaults when no refit
+    # manifest sits next to the engine)
+    mgr._transpose_for_engine = {}
+    mgr._is_fp8 = {}
+    # shared fp32 accumulation scratch, sized to the largest param
+    mgr._scratch_acc = torch.zeros(8 * 16, dtype=torch.float32)
+    mgr._trt = types.SimpleNamespace(Weights=_snapshot_weights)
+    mgr._trt_dtype = {"q.weight": np.float16, "k.weight": np.float16}
     mgr._loras = {}
     mgr._ever_dirty = set()
     mgr._executor = None
@@ -80,7 +109,7 @@ def test_strength_zero_lora_in_stack_does_not_leak_into_output():
     mgr._refit_weights({"q.weight"})
 
     refitter.set_named_weights.assert_called_once()
-    arr = refitter.set_named_weights.call_args[0][1]
+    arr = refitter.set_named_weights.call_args[0][1].reshape(8, 16)
     np.testing.assert_array_equal(arr, np.zeros((8, 16), dtype=np.float16))
 
 
@@ -96,7 +125,7 @@ def test_strength_zero_lora_skipped_when_other_active_present():
 
     mgr._refit_weights({"q.weight"})
 
-    arr = refitter.set_named_weights.call_args[0][1]
+    arr = refitter.set_named_weights.call_args[0][1].reshape(8, 16)
     expected = (delta_active.float() * 0.5).to(torch.float16).numpy()
     np.testing.assert_allclose(arr, expected, rtol=1e-3)
 
@@ -201,7 +230,7 @@ def test_enable_with_strength_refits_once_at_target(monkeypatch):
 
     # Exactly one refit, with the LoRA contributing at 0.5.
     refitter.refit_cuda_engine.assert_called_once()
-    arr = refitter.set_named_weights.call_args_list[0][0][1]
+    arr = refitter.set_named_weights.call_args_list[0][0][1].reshape(8, 16)
     expected = (delta.float() * 0.5).to(torch.float16).numpy()
     np.testing.assert_allclose(arr, expected, rtol=1e-3)
     assert mgr.get_lora("x").strength == 0.5
@@ -294,7 +323,7 @@ def test_re_enable_restores_last_strength(monkeypatch):
 
     # Re-enable with strength 0.7 should refit and apply the contribution.
     refitter.refit_cuda_engine.assert_called_once()
-    arr = refitter.set_named_weights.call_args_list[0][0][1]
+    arr = refitter.set_named_weights.call_args_list[0][0][1].reshape(8, 16)
     expected = (canned["q.weight"].float() * 0.7).to(torch.float16).numpy()
     np.testing.assert_allclose(arr, expected, rtol=1e-3)
 

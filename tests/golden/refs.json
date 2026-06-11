@@ -1,0 +1,155 @@
+{
+  "dataset": "daydreamlive/demon-test-refs",
+  "revision": null,
+  "bundles": {
+    "baseline_stream": {
+      "file": "baseline_stream.tar.gz",
+      "sha256": "ad6cab59224821e15a4b84f96b8f8d4f16dd6b9a42c4ee5904981aa4724581ab",
+      "canonical_sha256": "f8d9eb4fa7e2967aa1ecb00aeaafb0e32fb3d852ded91fac7ec905eb17e50f4a",
+      "thresholds": null,
+      "env": {
+        "harness_git_sha": "96c57bb",
+        "pod_url": "ws://127.0.0.1:49676",
+        "gpu": "NVIDIA GeForce RTX 5090",
+        "server_info": {
+          "no_backend": false,
+          "kiosk": false,
+          "default_mode": "graph",
+          "warmup": null,
+          "server_side_fixtures": [
+            "inside_confusion_loop_60s_gsm.wav",
+            "low_fi_Gm_loop_60s_gnm.wav",
+            "prog_rock_loop_60s_enm.wav",
+            "thrash_metal_loop_60s_enm.wav"
+          ]
+        },
+        "captured_at": "2026-06-04T13:18:37.202829+00:00"
+      }
+    },
+    "knob_step": {
+      "file": "knob_step.tar.gz",
+      "sha256": "5289d21984edbf0b0a52f7716802da5944ef4d250dd78e755bfea6a4b3283a6c",
+      "canonical_sha256": "0b2eac2a326cea51f36c277771adf0de333401a1af026ccce8ab39d81c63e238",
+      "thresholds": {
+        "_note": "Calibrated 2026-06-09. knob_step carries a stable, benign cross-build mel offset vs the 06-04 canonical (mel_l2 floor 0.0953, bit-stable across runs; win_cos_min 0.9999, rms 0 dB), distinct from peers because the knob legitimately alters generation after it fires. mel_l2 relaxed above that floor with margin; the cosine/level gates keep their strict defaults so a real regression still trips them.",
+        "mel_l2": 0.13,
+        "rms_db_diff": 0.5,
+        "win_cos_min": 0.995
+      },
+      "env": {
+        "harness_git_sha": "96c57bb",
+        "pod_url": "ws://127.0.0.1:49676",
+        "gpu": "NVIDIA GeForce RTX 5090",
+        "server_info": {
+          "no_backend": false,
+          "kiosk": false,
+          "default_mode": "graph",
+          "warmup": null,
+          "server_side_fixtures": [
+            "inside_confusion_loop_60s_gsm.wav",
+            "low_fi_Gm_loop_60s_gnm.wav",
+            "prog_rock_loop_60s_enm.wav",
+            "thrash_metal_loop_60s_enm.wav"
+          ]
+        },
+        "captured_at": "2026-06-04T13:18:37.202829+00:00"
+      }
+    },
+    "lora_enable": {
+      "file": "lora_enable.tar.gz",
+      "sha256": "2f2bc4060847ea0548e554b9623cf4014847dbcfd02fd82d5847b23fd56a60ad",
+      "canonical_sha256": "102f36ea1cf780cc98c72eb98a1eafbe57ba595171898dcdcfcf7e6e290e1c60",
+      "thresholds": null,
+      "env": {
+        "harness_git_sha": "96c57bb",
+        "pod_url": "ws://127.0.0.1:49676",
+        "gpu": "NVIDIA GeForce RTX 5090",
+        "server_info": {
+          "no_backend": false,
+          "kiosk": false,
+          "default_mode": "graph",
+          "warmup": null,
+          "server_side_fixtures": [
+            "inside_confusion_loop_60s_gsm.wav",
+            "low_fi_Gm_loop_60s_gnm.wav",
+            "prog_rock_loop_60s_enm.wav",
+            "thrash_metal_loop_60s_enm.wav"
+          ]
+        },
+        "captured_at": "2026-06-04T13:18:37.202829+00:00"
+      }
+    },
+    "prompt_change": {
+      "file": "prompt_change.tar.gz",
+      "sha256": "0a54e837195a4082dbb4850e49587bf95138d9ab50dafc1ed327a8b59672594d",
+      "canonical_sha256": "ee31afcb9d33a8b74dd25317b7a11d23a1ca19eee03e1bbf1cd007b7a6b82895",
+      "thresholds": null,
+      "env": {
+        "harness_git_sha": "96c57bb",
+        "pod_url": "ws://127.0.0.1:49676",
+        "gpu": "NVIDIA GeForce RTX 5090",
+        "server_info": {
+          "no_backend": false,
+          "kiosk": false,
+          "default_mode": "graph",
+          "warmup": null,
+          "server_side_fixtures": [
+            "inside_confusion_loop_60s_gsm.wav",
+            "low_fi_Gm_loop_60s_gnm.wav",
+            "prog_rock_loop_60s_enm.wav",
+            "thrash_metal_loop_60s_enm.wav"
+          ]
+        },
+        "captured_at": "2026-06-04T13:18:37.202829+00:00"
+      }
+    },
+    "swap_fixture": {
+      "file": "swap_fixture.tar.gz",
+      "sha256": "bb5d788c5d4b729f0d136af68cf7d9e7077727228cd1587d032a93fbf03e7b6b",
+      "canonical_sha256": "2eb31995827fd368b0e692c01ad75bb3efc565b9d08e87307d11d964365e9a22",
+      "thresholds": null,
+      "env": {
+        "harness_git_sha": "96c57bb",
+        "pod_url": "ws://127.0.0.1:49676",
+        "gpu": "NVIDIA GeForce RTX 5090",
+        "server_info": {
+          "no_backend": false,
+          "kiosk": false,
+          "default_mode": "graph",
+          "warmup": null,
+          "server_side_fixtures": [
+            "inside_confusion_loop_60s_gsm.wav",
+            "low_fi_Gm_loop_60s_gnm.wav",
+            "prog_rock_loop_60s_enm.wav",
+            "thrash_metal_loop_60s_enm.wav"
+          ]
+        },
+        "captured_at": "2026-06-04T13:18:37.202829+00:00"
+      }
+    },
+    "upload_path": {
+      "file": "upload_path.tar.gz",
+      "sha256": "03386e0c96f844d3b4154723e1d3f1a5022a2d4c49d3f4b76b3d0e098b88aa23",
+      "canonical_sha256": "4b3bdc2a09244a83a4c1dc426944320fb899a251681ced2fb17dee86b95d633e",
+      "thresholds": null,
+      "env": {
+        "harness_git_sha": "96c57bb",
+        "pod_url": "ws://127.0.0.1:49676",
+        "gpu": "NVIDIA GeForce RTX 5090",
+        "server_info": {
+          "no_backend": false,
+          "kiosk": false,
+          "default_mode": "graph",
+          "warmup": null,
+          "server_side_fixtures": [
+            "inside_confusion_loop_60s_gsm.wav",
+            "low_fi_Gm_loop_60s_gnm.wav",
+            "prog_rock_loop_60s_enm.wav",
+            "thrash_metal_loop_60s_enm.wav"
+          ]
+        },
+        "captured_at": "2026-06-04T13:18:37.202829+00:00"
+      }
+    }
+  }
+}

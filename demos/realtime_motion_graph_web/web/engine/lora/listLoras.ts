@@ -1,7 +1,7 @@
-import { fetchWithRetry } from "@/engine/fetchWithRetry";
+import { fetchWithRetry } from "@demon/client";
 import { podHttp } from "@/engine/podUrl";
 import { useSessionStore } from "@/store/useSessionStore";
-import type { LoraCatalogEntry } from "@/types/protocol";
+import type { LoraCatalogEntry } from "@demon/client";
 
 /** Fetch /api/loras and return the LoRA catalog.
  *

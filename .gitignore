@@ -270,3 +270,7 @@ python_embeded/
 PortableGit/
 
 .codex/*
+
+# golden-harness scratch (bundles live on the HF dataset, see tests/golden)
+runs/
+refs-out/

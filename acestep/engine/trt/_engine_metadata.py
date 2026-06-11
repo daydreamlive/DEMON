@@ -37,7 +37,10 @@ from pathlib import Path
 from loguru import logger
 
 
-_ENGINE_METADATA_SCHEMA = 1
+# Schema 2: decoder ONNX/engines carry the ``steering`` input (the
+# ``spectral_decoder_*`` family); pre-steering engine metadata is
+# invalidated so the next build run refreshes it.
+_ENGINE_METADATA_SCHEMA = 2
 
 
 def _sha256_file(path: str | os.PathLike[str]) -> str:
