@@ -36,6 +36,24 @@ class _SteeringApply(NamedTuple):
     step: int              # gate: only rows at this denoise step receive it
 
 
+def _read_trt_max_batch(trt_engine) -> Optional[int]:
+    """Max batch from the engine's optimization profile, or None.
+
+    Same read as ``streaming.session._compute_max_pipeline_depth``;
+    fail-soft so an engine without a readable profile just disables
+    CFG pass fusion instead of breaking pipeline construction.
+    """
+    if trt_engine is None:
+        return None
+    try:
+        _, _, max_shape = trt_engine.get_tensor_profile_shape(
+            "hidden_states", 0,
+        )
+        return int(max_shape[0])
+    except Exception:
+        return None
+
+
 @dataclass
 class SlotCondition:
     """One conditioning entry for multi-condition per-frame blending.
@@ -219,6 +237,11 @@ class _Slot:
     # populated on step 0, reused on every subsequent step of this slot.
     initial_noise: Optional[torch.Tensor] = None
     vt_neg_cached: Optional[torch.Tensor] = None
+    # Host-side precompute of "request.x0_target_strength is anywhere
+    # nonzero", taken once at slot init. Request fields are immutable
+    # after submit (hot mutation goes through set_shared_curve, which
+    # keeps its own flag), so this never goes stale.
+    x0_strength_nonzero: bool = False
 
 
 class StreamPipeline:
@@ -289,9 +312,24 @@ class StreamPipeline:
         self._trt_ctx = engine._trt_ctx if engine is not None else None
         self._trt_stream = engine._trt_stream if engine is not None else None
         self._trt_engine = engine._trt_engine if engine is not None else None
+        # Torch-side view of the shared polygraphy stream + a reusable
+        # completion event. Lets _trt_forward order the engine's output
+        # against torch's current stream device-side (wait_event)
+        # instead of blocking the host for the whole execution.
+        self._trt_torch_stream = (
+            torch.cuda.ExternalStream(self._trt_stream.ptr)
+            if self._trt_stream is not None else None
+        )
+        self._trt_done_event = (
+            torch.cuda.Event() if self._trt_stream is not None else None
+        )
         self._trt_io_dtype = getattr(engine, '_trt_io_dtype', torch.float32)
         self._trt_input_dtypes = getattr(engine, "_trt_input_dtypes", {}) or {}
         self._trt_output_dtype = getattr(engine, "_trt_output_dtype", self._trt_io_dtype)
+        # Engine profile batch ceiling; None = no TRT (eager has no cap).
+        # Gates whether a CFG tick can fuse pos+neg pairs into one
+        # execute instead of two sequential ones.
+        self._trt_max_batch = _read_trt_max_batch(self._trt_engine)
         # Steering shape (constants per engine); snapshotted so the
         # per-tick buffer fill doesn't re-query TRT.
         self._steering_num_layers = getattr(engine, "_steering_num_layers", 0)
@@ -326,6 +364,11 @@ class StreamPipeline:
         # at the setter so callers can pass scalars without thinking
         # about shape.
         self._shared_curves: dict[str, torch.Tensor] = {}
+        # Host-side "is this curve anywhere nonzero?" companion to
+        # ``_shared_curves``, computed once at the setter. Lets hot-path
+        # gates (e.g. the x0_target_strength fast-path check) stay pure
+        # Python instead of paying a GPU readback per slot per step.
+        self._shared_curves_nonzero: dict[str, bool] = {}
 
         # Channel guidance: a ``[1, T, 64]`` per-channel gain applied to
         # ``xt`` before each forward pass. Lives in its own field rather
@@ -417,6 +460,14 @@ class StreamPipeline:
         self._trt_engine = engine._trt_engine
         self._trt_ctx = engine._trt_ctx
         self._trt_stream = engine._trt_stream
+        self._trt_torch_stream = (
+            torch.cuda.ExternalStream(self._trt_stream.ptr)
+            if self._trt_stream is not None else None
+        )
+        self._trt_done_event = (
+            torch.cuda.Event() if self._trt_stream is not None else None
+        )
+        self._trt_max_batch = _read_trt_max_batch(self._trt_engine)
         self._trt_io_dtype = getattr(engine, "_trt_io_dtype", torch.float32)
         self._trt_input_dtypes = getattr(engine, "_trt_input_dtypes", {})
         self._trt_output_dtype = getattr(
@@ -557,11 +608,18 @@ class StreamPipeline:
             noise.clone() if request.rcfg_mode == "self" else None
         )
 
+        strength = request.x0_target_strength
+        if isinstance(strength, torch.Tensor):
+            x0_strength_nonzero = bool(strength.abs().any().item())
+        else:
+            x0_strength_nonzero = bool(strength)
+
         return _Slot(
             request=request, xt=xt,
             t_schedule=t_schedule, step_idx=0,
             momentum_buffer=momentum_buffer,
             initial_noise=initial_noise,
+            x0_strength_nonzero=x0_strength_nonzero,
         )
 
     # ------------------------------------------------------------------
@@ -753,7 +811,18 @@ class StreamPipeline:
 
         if not ctx.execute_async_v3(self._trt_stream.ptr):
             raise RuntimeError("TRT decoder execution failed")
-        self._trt_stream.synchronize()
+        # Device-side completion ordering instead of a host block:
+        # torch's current stream waits on an event recorded after the
+        # enqueue, so the cast below (and everything the tick enqueues
+        # after it) runs only once the engine finished — while the CPU
+        # is already free to assemble the rest of the tick. Input-side
+        # ordering (our copy_ writes above vs the engine reading them)
+        # was always implicit: torch's default current stream is the
+        # legacy default stream and the polygraphy stream is a blocking
+        # stream, so the two never run concurrently. This change keeps
+        # that assumption and only removes the host-side join.
+        self._trt_done_event.record(self._trt_torch_stream)
+        torch.cuda.current_stream().wait_event(self._trt_done_event)
 
         out = self._trt_out_buf
         if pad:
@@ -823,6 +892,15 @@ class StreamPipeline:
             self._trt_bufs = cached
             self._trt_out_buf = cached["_out_buf"]
             return
+
+        # Cache miss: about to allocate fresh buffers and possibly evict
+        # the oldest entry. With async execution an in-flight forward
+        # may still be reading the evicted entry's memory, and freeing
+        # hands it to the torch allocator for reuse — so drain the TRT
+        # stream first. Shape changes are transition-rare; steady-state
+        # ticks stay on the no-sync hit path above.
+        if self._trt_stream is not None:
+            self._trt_stream.synchronize()
 
         device = self._device
         io_dtype = self._trt_io_dtype
@@ -1097,36 +1175,81 @@ class StreamPipeline:
                 ],
             )
 
-        # --- Positive pass: one call across all slots' pos conditions ---
+        # --- Pair lists for both passes (pure Python, built up front) ---
         pos_pair_si: List[int] = []
         pos_pair_cond: List[SlotCondition] = []
         for si in range(len(slots)):
             for c in pos_conds_per_slot[si]:
                 pos_pair_si.append(si)
                 pos_pair_cond.append(c)
-        # Per-row step mapping for the steering hook; try/finally so a
-        # stale list never leaks into a forward outside this rendezvous.
-        self._current_step_per_row = [slots[si].step_idx for si in pos_pair_si]
-        try:
-            vt_pos_all = _forward_pairs(pos_pair_si, pos_pair_cond)
-        finally:
-            self._current_step_per_row = []
-
-        # --- Negative pass (CFG only): skipped when no slot has CFG. ---
         neg_pair_si: List[int] = []
         neg_pair_cond: List[SlotCondition] = []
         for si in range(len(slots)):
             for c in neg_conds_per_slot[si]:
                 neg_pair_si.append(si)
                 neg_pair_cond.append(c)
-        if neg_pair_si:
-            self._current_step_per_row = [slots[si].step_idx for si in neg_pair_si]
+
+        n_pos = len(pos_pair_si)
+        # CFG pass fusion: run pos+neg pairs as ONE batched forward when
+        # the combined batch fits the engine profile (eager has no cap).
+        # Halves the per-tick enqueue/sync round trips and removes the
+        # same-tick reuse of the shared TRT output buffer between the
+        # two passes. Numerics: fused neg rows pad to the combined
+        # encoder max_L; the decoder discards attention masks and
+        # attends zero rows by convention (DecoderForExport docstring),
+        # so this is the same class of perturbation the pos pass
+        # already applies across slots — bit-exact with the two-pass
+        # path only when pos and neg max_L coincide.
+        fuse_neg = bool(neg_pair_si) and (
+            self._trt_max_batch is None
+            or n_pos + len(neg_pair_si) <= self._trt_max_batch
+        )
+
+        # Per-row step mapping for the steering hook; try/finally so a
+        # stale list never leaks into a forward outside this rendezvous.
+        if fuse_neg:
+            all_si = pos_pair_si + neg_pair_si
+            self._current_step_per_row = [slots[si].step_idx for si in all_si]
             try:
-                vt_neg_all = _forward_pairs(neg_pair_si, neg_pair_cond)
+                vt_all = _forward_pairs(all_si, pos_pair_cond + neg_pair_cond)
             finally:
                 self._current_step_per_row = []
+            vt_pos_all = vt_all[:n_pos]
+            vt_neg_all = vt_all[n_pos:]
         else:
-            vt_neg_all = None
+            # --- Positive pass: one call across all slots' pos conditions ---
+            self._current_step_per_row = [
+                slots[si].step_idx for si in pos_pair_si
+            ]
+            try:
+                vt_pos_all = _forward_pairs(pos_pair_si, pos_pair_cond)
+            finally:
+                self._current_step_per_row = []
+
+            # --- Negative pass: only when CFG is active and fusion
+            # didn't fit the engine profile. ---
+            if neg_pair_si:
+                # When the engine's output dtype equals the pipeline
+                # dtype, the post-execute cast in _trt_forward is a
+                # no-op view of the shared TRT output buffer — the neg
+                # execute below would overwrite vt_pos_all in place and
+                # silently neutralize guidance (APG sees pos == neg).
+                # Clone before the second execute. The fused path has
+                # no second execute, so it needs no copy.
+                if (
+                    self._trt_engine is not None
+                    and self._trt_output_dtype == self._dtype
+                ):
+                    vt_pos_all = vt_pos_all.clone()
+                self._current_step_per_row = [
+                    slots[si].step_idx for si in neg_pair_si
+                ]
+                try:
+                    vt_neg_all = _forward_pairs(neg_pair_si, neg_pair_cond)
+                finally:
+                    self._current_step_per_row = []
+            else:
+                vt_neg_all = None
 
         # --- Per-slot: blend pos, blend neg (if CFG), APG-combine ---
         vt_per_slot: List[torch.Tensor] = [None] * len(slots)  # type: ignore[list-item]
@@ -1169,7 +1292,11 @@ class StreamPipeline:
                             self._device, self._dtype,
                         )
                     if slot.request.rcfg_mode == "initialize":
-                        slot.vt_neg_cached = vt_neg.detach()
+                        # clone: vt_neg can be a view of the shared TRT
+                        # output buffer (engine I/O dtype == pipeline
+                        # dtype makes the post-execute cast a no-op),
+                        # and this cache outlives the tick.
+                        slot.vt_neg_cached = vt_neg.detach().clone()
                 elif slot.vt_neg_cached is not None:
                     vt_neg = slot.vt_neg_cached
 
@@ -1198,6 +1325,13 @@ class StreamPipeline:
         step_sde_curve = self._get_compiled(ode_steps.step_sde_curve)
         step_sde_renoise = self._get_compiled(ode_steps.step_sde_renoise)
 
+        # Fast-path rows with sentinel curves and DCW off integrate as
+        # one batched foreach op after the loop (see flush below);
+        # collected as (si, t_curr, t_next).
+        ones_3d, zeros_3d = self._ensure_sentinels()
+        dcw_active = self._dcw_corrector.is_active
+        fast_rows: List[Tuple[int, float, float]] = []
+
         for si, slot in enumerate(slots):
             t_curr = slot.t_schedule[slot.step_idx].item()
             t_next = slot.t_schedule[slot.step_idx + 1].item()
@@ -1219,14 +1353,18 @@ class StreamPipeline:
             # ``x0_target_strength`` path: blend toward a target latent
             # at scalar (or per-frame curve) strength, gated to the
             # refinement half.  Preserving the historical "strength==0
-            # falls through to the fast path" behavior — checks the
-            # effective (shared override or slot field) strength via a
-            # tensor.any() sync, which costs one host-device fence per
-            # slot per step but lets the gate stay tensor-safe.
-            eff_strength = self._eff_shared(slot, "x0_target_strength")
+            # falls through to the fast path" behavior — the yes/no is
+            # resolved from host-side flags (shared-curve setter / slot
+            # init), so the gate costs no GPU readback; the strength
+            # tensor itself is only materialized inside the blend branch
+            # that consumes it.
+            shared_strength_nonzero = self._shared_curves_nonzero.get(
+                "x0_target_strength"
+            )
             strength_active = (
-                eff_strength is not None
-                and bool(eff_strength.abs().any().item())
+                shared_strength_nonzero
+                if shared_strength_nonzero is not None
+                else slot.x0_strength_nonzero
             )
             scalar_x0_target = (
                 req.x0_target is not None
@@ -1269,6 +1407,18 @@ class StreamPipeline:
                 # velocity. Byte-identical to the pre-refactor
                 # ``_step_simple_ode``. When ``onc`` is the zeros sentinel
                 # the post-step noise injection is a no-op.
+                if vs is ones_3d and onc is zeros_3d and not dcw_active:
+                    # Sentinel curves make the kernel exactly
+                    # ``xt + dt * vt`` (multiplying by the ones sentinel
+                    # is value-exact; the injected noise term is exactly
+                    # zero), so the row joins the batched flush below
+                    # instead of launching its own kernels. Skipping the
+                    # sentinel randn_like also skips its RNG advance —
+                    # safe because slot noise is drawn per-request from
+                    # explicit seeds, never from ambient generator state
+                    # mid-schedule.
+                    fast_rows.append((si, t_curr, t_next))
+                    continue
                 xt_new = step_ode(xt, vt, t_curr, t_next, vs, onc)
                 slot.xt = self._maybe_dcw(xt, vt, xt_new, t_curr)
                 slot.step_idx += 1
@@ -1300,6 +1450,9 @@ class StreamPipeline:
                         x0_pred, req.x0_target, curve * blend_gate,
                     )
             elif scalar_x0_target:
+                # strength_active guarantees a nonzero shared override or
+                # slot field, so _eff_shared cannot return None here.
+                eff_strength = self._eff_shared(slot, "x0_target_strength")
                 alpha = eff_strength.to(device=x0_pred.device, dtype=x0_pred.dtype)
                 x0_pred = (1.0 - alpha) * x0_pred + alpha * req.x0_target
 
@@ -1345,6 +1498,25 @@ class StreamPipeline:
 
             slot.xt = self._maybe_dcw(xt, vt, xt_new, t_curr)
             slot.step_idx += 1
+
+        # --- Batched fast-path flush ---
+        # All collected rows integrate in two multi-tensor launches
+        # (dt * vt, then xt + that) instead of one kernel chain per
+        # slot. Scalars ride in host-side (no H2D copy), and the ops
+        # run directly on the per-slot views (no cat, no shared output
+        # buffer). Arithmetic is the exact fast-path expression —
+        # bit-identical to the eager per-slot kernels (the compiled
+        # variant may differ at bf16 LSB where inductor fused the
+        # mul+add; the golden tier judges that).
+        if fast_rows:
+            vt_rows = [vt_per_slot[si] for si, _, _ in fast_rows]
+            dts = [tn - tc for _, tc, tn in fast_rows]
+            steps = torch._foreach_mul(vt_rows, dts)
+            xt_rows = [xt_mask_list[si] for si, _, _ in fast_rows]
+            new_rows = torch._foreach_add(xt_rows, steps)
+            for (si, _, _), xt_new in zip(fast_rows, new_rows):
+                slots[si].xt = xt_new
+                slots[si].step_idx += 1
 
     def set_depth(self, depth: int) -> None:
         """Resize the ring buffer. Active slots drain naturally.
@@ -1407,8 +1579,13 @@ class StreamPipeline:
         """
         if value is None:
             self._shared_curves.pop(name, None)
+            self._shared_curves_nonzero.pop(name, None)
             return
-        self._shared_curves[name] = ode_steps.normalize_curve(value)
+        curve = ode_steps.normalize_curve(value)
+        self._shared_curves[name] = curve
+        # One readback here (setter cadence) instead of per slot per step
+        # at the gates that only need a yes/no.
+        self._shared_curves_nonzero[name] = bool(curve.abs().any().item())
 
     def _eff_shared(self, slot: "_Slot", name: str):
         """Return shared override for ``name`` if set, else slot's field.
@@ -1619,12 +1796,16 @@ class StreamPipeline:
         self._trt_ctx = None
         self._trt_engine = None
         self._trt_stream = None
+        self._trt_torch_stream = None
+        self._trt_done_event = None
+        self._trt_max_batch = None
         self._channel_gain = None
         self._ones_3d = None
         self._zeros_3d = None
         self._schedule_cache.clear()
         self._compiled_cache.clear()
         self._shared_curves.clear()
+        self._shared_curves_nonzero.clear()
         # DCW corrector holds wavelet basis tensors on GPU; drop it.
         self._dcw_corrector = None
         # Detach references to the engine + decoder so DiffusionEngine.close

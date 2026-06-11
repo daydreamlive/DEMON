@@ -40,6 +40,7 @@ the doc can be updated from working code):
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import List, Optional, Protocol, Tuple, runtime_checkable
 
 import torch
@@ -104,6 +105,19 @@ class ACEAdapter:
 
     def __init__(self, pipeline):
         self._pipeline = pipeline
+        # Padded+catted conditioning batches, keyed on the identity of
+        # the per-pair input tensors. Conditioning is frozen per
+        # (slot, condition) — encoder states and context latents are
+        # never mutated in place after submit — so identical id tuples
+        # imply an identical batch, and the pad/cat work (twice per
+        # tick under unfused CFG) collapses to a dict hit. Entries hold
+        # strong refs to their source tensors, which also keeps the
+        # keyed ids from being recycled while an entry lives.
+        self._cond_batch_cache: "OrderedDict[tuple, tuple]" = OrderedDict()
+        # Ring slots cycle through a handful of active pair-sets
+        # (pos / neg / fused × transition windows); 8 covers the
+        # alternation the TRT buffer cache already plans for.
+        self._cond_batch_cache_max = 8
 
     def build_schedule(self, config, denoise: float, device, dtype) -> torch.Tensor:
         from .diffusion import DiffusionConfig
@@ -134,9 +148,11 @@ class ACEAdapter:
         """Run one batched decoder forward pass, dispatching TRT or PyTorch.
 
         Pads encoder tensors to max sequence length and concats along
-        the batch dim. Callers apply any channel-gain scaling to
-        ``xt_batch`` before this call. List lengths must match
-        ``xt_batch.shape[0]``. ``aux_list`` is unused by ACE.
+        the batch dim — memoized per identity of the input tensor
+        lists, since conditioning is frozen per (slot, condition) and
+        ticks repeat the same pair-sets. Callers apply any channel-gain
+        scaling to ``xt_batch`` before this call. List lengths must
+        match ``xt_batch.shape[0]``. ``aux_list`` is unused by ACE.
 
         The TRT engine doesn't consume ``attention_mask`` or
         ``encoder_attention_mask`` — it handles padding via the
@@ -145,15 +161,35 @@ class ACEAdapter:
         """
         p = self._pipeline
 
-        mL = max(e.shape[1] for e in enc_list)
-        for i, (e, m) in enumerate(zip(enc_list, mask_list)):
-            if e.shape[1] < mL:
-                pad = mL - e.shape[1]
-                enc_list[i] = torch.nn.functional.pad(e, (0, 0, 0, pad))
-                mask_list[i] = torch.nn.functional.pad(m, (0, pad), value=0)
+        key = (
+            tuple(id(e) for e in enc_list),
+            tuple(id(m) for m in mask_list),
+            tuple(id(c) for c in ctx_list),
+        )
+        cached = self._cond_batch_cache.get(key)
+        if cached is None:
+            mL = max(e.shape[1] for e in enc_list)
+            enc_padded = list(enc_list)
+            mask_padded = list(mask_list)
+            for i, (e, m) in enumerate(zip(enc_padded, mask_padded)):
+                if e.shape[1] < mL:
+                    pad = mL - e.shape[1]
+                    enc_padded[i] = torch.nn.functional.pad(e, (0, 0, 0, pad))
+                    mask_padded[i] = torch.nn.functional.pad(m, (0, pad), value=0)
 
-        enc_b = torch.cat(enc_list, dim=0)
-        ctx_b = torch.cat(ctx_list, dim=0)
+            enc_b = torch.cat(enc_padded, dim=0)
+            ctx_b = torch.cat(ctx_list, dim=0)
+            mask_b = torch.cat(mask_padded, dim=0)
+            cached = (
+                enc_b, ctx_b, mask_b,
+                tuple(enc_list) + tuple(mask_list) + tuple(ctx_list),
+            )
+            self._cond_batch_cache[key] = cached
+            if len(self._cond_batch_cache) > self._cond_batch_cache_max:
+                self._cond_batch_cache.popitem(last=False)
+        else:
+            self._cond_batch_cache.move_to_end(key)
+        enc_b, ctx_b, mask_b = cached[0], cached[1], cached[2]
 
         if p._trt_engine is not None:
             return p._trt_forward(
@@ -166,7 +202,6 @@ class ACEAdapter:
         t_b = torch.tensor(
             timestep_list, device=p._device, dtype=p._dtype,
         )
-        mask_b = torch.cat(mask_list, dim=0)
         attn_b = torch.ones(
             xt_batch.shape[0], xt_batch.shape[1],
             device=p._device, dtype=p._dtype,
