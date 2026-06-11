@@ -1216,8 +1216,10 @@ def build_trt_engine(
             break
     if steering_idx is None:
         raise RuntimeError(
-            "Decoder ONNX is missing the 'steering' input; re-export with "
-            "the current export.py."
+            f"Decoder ONNX at {onnx_path} is missing the 'steering' input "
+            "(it predates spectral steering). Delete it and re-run the "
+            "build to fetch/export a current one, or re-run with "
+            "--export-locally to export from your local checkpoint."
         )
     steering_shape = tuple(network.get_input(steering_idx).shape)
     if len(steering_shape) != 3:

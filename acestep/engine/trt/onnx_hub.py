@@ -117,6 +117,59 @@ def known_components() -> tuple[str, ...]:
 
 
 # ------------------------------------------------------------------
+# Staleness inspection
+# ------------------------------------------------------------------
+
+def decoder_onnx_has_steering(path: Union[str, Path]) -> bool:
+    """Whether a decoder ONNX carries the 'steering' graph input.
+
+    Spectral steering added this input; export.py's engine build hard-
+    fails on ONNX exported before it. Checking the graph proto here
+    (external weight data is not loaded; ~ms on the 2 MB proto) lets
+    the build's ONNX resolver treat a pre-steering file as stale and
+    replace it, instead of failing deep in the TRT build with no
+    recovery path. Unreadable files count as stale for the same reason.
+    """
+    import onnx
+
+    try:
+        model = onnx.load(str(path), load_external_data=False)
+    except Exception as exc:
+        logger.warning("Could not inspect decoder ONNX at {}: {}", path, exc)
+        return False
+    return any(i.name == "steering" for i in model.graph.input)
+
+
+def probe_onnx_main_file(
+    component: str,
+    *,
+    checkpoint: Optional[str] = None,
+) -> Path:
+    """Fetch ONLY the component's main ``.onnx`` into the HF cache.
+
+    Cheap freshness probe for the multi-file decoder components: the
+    graph proto is ~2 MB while the external-weight siblings are
+    multi-GB. hf_hub_download is etag-aware, so a repeat probe against
+    an unchanged repo costs a couple of metadata requests, not a
+    download. Returns the cached file path; writes nothing into the
+    local ONNX tree.
+    """
+    if component not in _ONNX_REGISTRY:
+        raise ValueError(
+            f"Unknown ONNX component: {component!r}. "
+            f"Known: {known_components()}"
+        )
+    source = _ONNX_REGISTRY[component]
+    ctx = {"checkpoint": checkpoint} if checkpoint else {}
+    from huggingface_hub import hf_hub_download
+
+    return Path(hf_hub_download(
+        repo_id=source.repo,
+        filename=source.hf_main_file.format(**ctx),
+    ))
+
+
+# ------------------------------------------------------------------
 # Fetch
 # ------------------------------------------------------------------
 

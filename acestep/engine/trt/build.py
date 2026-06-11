@@ -468,7 +468,9 @@ def _ensure_onnx(
     ``onnx_dir``) since all DiT variants share the same VAE. Decoder
     ONNX lives in ``onnx_dir`` (checkpoint-specific).
     """
-    from .onnx_hub import fetch_onnx
+    from .onnx_hub import (
+        decoder_onnx_has_steering, fetch_onnx, probe_onnx_main_file,
+    )
 
     # VAE is shared across checkpoints; decoder is checkpoint-specific
     vae_onnx_dir = os.path.join(os.path.dirname(onnx_dir), "_onnx_vae")
@@ -504,11 +506,28 @@ def _ensure_onnx(
             requested.append(("vae_decode", {}))
         else:
             logger.info("Reusing existing VAE decoder ONNX: {}", paths["vae_decode"])
-    if need_decoder_std and (force_onnx or not os.path.exists(paths["decoder"])):
+    # Decoder ONNX cached from before spectral steering fails the engine
+    # build; treat it as missing so it gets re-fetched (or re-exported)
+    # rather than reused into a guaranteed failure on every retry.
+    stale: set[str] = set()
+    for key, needed in (("decoder", need_decoder_std),
+                        ("decoder_refit", need_decoder_refit)):
+        if (needed and not force_onnx and os.path.exists(paths[key])
+                and not decoder_onnx_has_steering(paths[key])):
+            stale.add(key)
+            logger.warning(
+                "Cached decoder ONNX at {} is missing the 'steering' input "
+                "(predates spectral steering); treating it as missing.",
+                paths[key],
+            )
+
+    if need_decoder_std and (force_onnx or "decoder" in stale
+                             or not os.path.exists(paths["decoder"])):
         requested.append(("decoder", {"checkpoint": checkpoint}))
     elif need_decoder_std:
         logger.info("Reusing existing decoder ONNX: {}", paths["decoder"])
-    if need_decoder_refit and (force_onnx or not os.path.exists(paths["decoder_refit"])):
+    if need_decoder_refit and (force_onnx or "decoder_refit" in stale
+                               or not os.path.exists(paths["decoder_refit"])):
         requested.append(("decoder_refit", {"checkpoint": checkpoint}))
     elif need_decoder_refit:
         logger.info("Reusing existing decoder ONNX (refit): {}", paths["decoder_refit"])
@@ -517,10 +536,18 @@ def _ensure_onnx(
     if skip_onnx:
         if requested:
             for comp, _ in requested:
-                logger.error(
-                    "Missing ONNX file (refusing to fetch/export with --skip-onnx): {}",
-                    paths[comp],
-                )
+                if comp in stale:
+                    logger.error(
+                        "Stale ONNX file (present but missing the "
+                        "'steering' input; refusing to fetch/export with "
+                        "--skip-onnx): {}",
+                        paths[comp],
+                    )
+                else:
+                    logger.error(
+                        "Missing ONNX file (refusing to fetch/export with --skip-onnx): {}",
+                        paths[comp],
+                    )
             sys.exit(1)
         logger.info("All ONNX exports found, --skip-onnx satisfied.")
         return paths
@@ -536,12 +563,52 @@ def _ensure_onnx(
         local_root = os.path.dirname(onnx_dir)  # the trt_engines dir
         try:
             for comp, kw in requested:
+                if comp in stale:
+                    # Probe the hub's graph proto (~2 MB, etag-cached)
+                    # BEFORE replacing anything. If the hub artifact is
+                    # itself pre-steering, downloading/copying the
+                    # multi-GB weight siblings would buy nothing - fail
+                    # now with the recovery path, and let retries cost
+                    # two metadata requests instead of a re-download.
+                    probed = probe_onnx_main_file(comp, **kw)
+                    if not decoder_onnx_has_steering(probed):
+                        logger.error(
+                            "The prebuilt decoder ONNX on HuggingFace is "
+                            "also missing the 'steering' input - the "
+                            "artifact for checkpoint {!r} predates "
+                            "spectral steering and needs to be "
+                            "re-uploaded. Until then, re-run with "
+                            "--export-locally to export from your local "
+                            "checkpoint (on Windows set PYTHONUTF8=1), "
+                            "and please report this on the issue tracker.",
+                            checkpoint,
+                        )
+                        sys.exit(1)
+                    # Hub is fresh: drop the stale local proto so
+                    # fetch_onnx's exists-check doesn't short-circuit.
+                    # snapshot_download below is etag-aware, so only
+                    # changed files are actually downloaded.
+                    os.remove(paths[comp])
                 fetched = fetch_onnx(comp, local_root=local_root, **kw)
                 # fetch_onnx returns the canonical local path; the
                 # ``paths`` dict already points at the same location, but
                 # update it in case the registry's local_subdir ever
                 # diverges from this function's hardcoded layout.
                 paths[comp] = str(fetched)
+                if (comp in ("decoder", "decoder_refit")
+                        and not decoder_onnx_has_steering(paths[comp])):
+                    logger.error(
+                        "Decoder ONNX fetched from HuggingFace is missing "
+                        "the 'steering' input (or unreadable) - the "
+                        "prebuilt artifact for checkpoint {!r} predates "
+                        "spectral steering and needs to be re-uploaded. "
+                        "Until then, re-run with --export-locally to "
+                        "export from your local checkpoint (on Windows "
+                        "set PYTHONUTF8=1), and please report this on "
+                        "the issue tracker.",
+                        checkpoint,
+                    )
+                    sys.exit(1)
             return paths
         except Exception as exc:
             logger.error(
