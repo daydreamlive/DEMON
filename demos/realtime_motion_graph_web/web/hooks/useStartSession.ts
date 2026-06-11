@@ -6,7 +6,7 @@ import { AudioPlayer } from "@demon/client";
 import { listFixtures, loadFixtureAudio, pickDefaultFixture } from "@/engine/audio/loadFixture";
 import { createNetworkMonitor } from "@/engine/networkMonitor";
 import { defaultWsUrl } from "@/engine/podUrl";
-import { RemoteBackend, SAMPLE_RATE, SLICE_FLAG_DELTA } from "@demon/client";
+import { PREEMPTED_CLOSE_CODE, RemoteBackend, SAMPLE_RATE, SLICE_FLAG_DELTA } from "@demon/client";
 import { getApiKey, getClientId } from "@/engine/rtmgConfig";
 import { WsReconnector } from "@demon/client";
 import {
@@ -311,6 +311,19 @@ function wireRemoteListeners(
     // session start is tearing this one down. Don't reconnect; just
     // get out of the way.
     if (remote.closedByUser) return;
+    // Server preempted this session because a newer connection took
+    // the pod (one-session-per-pod). FINAL: reconnecting would just
+    // preempt the newer session back and ping-pong the pod through
+    // full session rebuilds.
+    if (detail?.code === PREEMPTED_CLOSE_CODE) {
+      useSessionStore
+        .getState()
+        .setStatus(
+          "closed",
+          "Session ended: another connection took over this pod.",
+        );
+      return;
+    }
     onUnexpectedClose(detail ?? { code: undefined, reason: undefined });
   });
 

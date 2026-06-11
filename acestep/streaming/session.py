@@ -41,6 +41,7 @@ from contextlib import ExitStack
 
 import functools
 import os
+import threading
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -253,6 +254,11 @@ def extract_and_select_upload_stem(
                 waveform=waveform,
                 device=session.handler.device,
                 backend_sample_rate=SAMPLE_RATE,
+                # Park this session's eager modules while the RoFormer
+                # runs (restored before the prepare_source below needs
+                # them back). Safe here: at create the runner doesn't
+                # exist yet, and at swap WE ARE the runner thread.
+                model_context=session.handler,
             )
         if source_mode == "full":
             return upload_stems, None, source, waveform
@@ -451,6 +457,12 @@ class StreamingSession:
         # Event bus: typed events the runner thread and operation
         # methods publish; transport adapters subscribe and serialize.
         self.bus = EventBus()
+
+        # Set at the end of close(), after GPU state is released. A
+        # preempting connection (ws_adapter's single-active-session
+        # policy) waits on this before creating its own session so the
+        # two model stacks never need VRAM simultaneously.
+        self.closed = threading.Event()
 
         # The session's GeneratorBackend, selected by SessionConfig.backend
         # via the family registry. Constructed here (not in run()) so the
@@ -704,6 +716,9 @@ class StreamingSession:
             self.session.close()
         except Exception as exc:
             logger.warning("session_close_raised error={}", exc)
+        # Last: signal waiters (preempting connections) that this
+        # session's GPU state is gone.
+        self.closed.set()
 
     def _on_audio_ready(self, wav_np, win_start=None, win_end=None):
         """Runner callback. Mutates ``audio_eng`` for full-buffer
