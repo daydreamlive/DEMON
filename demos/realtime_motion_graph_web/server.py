@@ -72,6 +72,10 @@ _NO_CACHE_HEADERS = [
     # Chrome requires this for Web MIDI API device enumeration.
     ("Permissions-Policy", "midi=*"),
 ]
+_PUBLIC_HTTP_HEADERS = [
+    ("Access-Control-Allow-Origin", "*"),
+    *_NO_CACHE_HEADERS,
+]
 
 
 def _resolve_video(name: str) -> Path | None:
@@ -155,8 +159,7 @@ def _process_request(connection, request):
                 # no credentials/custom headers → no preflight; a single
                 # ACAO:* on the response is sufficient and safe (nothing
                 # sensitive here).
-                ("Access-Control-Allow-Origin", "*"),
-                *_NO_CACHE_HEADERS,
+                *_PUBLIC_HTTP_HEADERS,
             ]),
             body,
         )
@@ -223,7 +226,7 @@ def _process_request(connection, request):
             Headers([
                 ("Content-Type", "application/json; charset=utf-8"),
                 ("Content-Length", str(len(body))),
-                *_NO_CACHE_HEADERS,
+                *_PUBLIC_HTTP_HEADERS,
             ]),
             body,
         )
@@ -243,7 +246,7 @@ def _process_request(connection, request):
             Headers([
                 ("Content-Type", "application/json; charset=utf-8"),
                 ("Content-Length", str(len(body))),
-                *_NO_CACHE_HEADERS,
+                *_PUBLIC_HTTP_HEADERS,
             ]),
             body,
         )
@@ -260,7 +263,7 @@ def _process_request(connection, request):
             Headers([
                 ("Content-Type", "application/json; charset=utf-8"),
                 ("Content-Length", str(len(body))),
-                *_NO_CACHE_HEADERS,
+                *_PUBLIC_HTTP_HEADERS,
             ]),
             body,
         )
@@ -286,8 +289,7 @@ def _process_request(connection, request):
             Headers([
                 ("Content-Type", "application/json; charset=utf-8"),
                 ("Content-Length", str(len(body))),
-                ("Access-Control-Allow-Origin", "*"),
-                *_NO_CACHE_HEADERS,
+                *_PUBLIC_HTTP_HEADERS,
             ]),
             body,
         )
@@ -308,8 +310,7 @@ def _process_request(connection, request):
             Headers([
                 ("Content-Type", "application/json; charset=utf-8"),
                 ("Content-Length", str(len(body))),
-                ("Access-Control-Allow-Origin", "*"),
-                *_NO_CACHE_HEADERS,
+                *_PUBLIC_HTTP_HEADERS,
             ]),
             body,
         )
@@ -331,7 +332,7 @@ def _process_request(connection, request):
             Headers([
                 ("Content-Type", "application/json; charset=utf-8"),
                 ("Content-Length", str(len(body))),
-                *_NO_CACHE_HEADERS,
+                *_PUBLIC_HTTP_HEADERS,
             ]),
             body,
         )
@@ -353,7 +354,7 @@ def _process_request(connection, request):
                 Headers([
                     ("Content-Type", "text/plain; charset=utf-8"),
                     ("Content-Length", str(len(msg))),
-                    *_NO_CACHE_HEADERS,
+                    *_PUBLIC_HTTP_HEADERS,
                 ]),
                 msg,
             )
@@ -368,7 +369,7 @@ def _process_request(connection, request):
                     Headers([
                         ("Content-Type", "text/plain; charset=utf-8"),
                         ("Content-Length", str(len(msg))),
-                        *_NO_CACHE_HEADERS,
+                        *_PUBLIC_HTTP_HEADERS,
                     ]),
                     msg,
                 )
@@ -379,7 +380,7 @@ def _process_request(connection, request):
                 Headers([
                     ("Content-Type", ctype or "application/octet-stream"),
                     ("Content-Length", str(len(body))),
-                    *_NO_CACHE_HEADERS,
+                    *_PUBLIC_HTTP_HEADERS,
                 ]),
                 body,
             )
@@ -407,7 +408,7 @@ def _process_request(connection, request):
                         Headers([
                             ("Content-Type", "text/plain; charset=utf-8"),
                             ("Content-Length", str(len(msg))),
-                            *_NO_CACHE_HEADERS,
+                            *_PUBLIC_HTTP_HEADERS,
                         ]),
                         msg,
                     )
@@ -418,7 +419,7 @@ def _process_request(connection, request):
                     Headers([
                         ("Content-Type", ctype or "application/octet-stream"),
                         ("Content-Length", str(len(body))),
-                        *_NO_CACHE_HEADERS,
+                        *_PUBLIC_HTTP_HEADERS,
                     ]),
                     body,
                 )
@@ -437,7 +438,7 @@ def _process_request(connection, request):
                     Headers([
                         ("Content-Type", "text/plain; charset=utf-8"),
                         ("Content-Length", str(len(msg))),
-                        *_NO_CACHE_HEADERS,
+                        *_PUBLIC_HTTP_HEADERS,
                     ]),
                     msg,
                 )
@@ -448,7 +449,7 @@ def _process_request(connection, request):
                 Headers([
                     ("Content-Type", ctype or "application/octet-stream"),
                     ("Content-Length", str(len(body))),
-                    *_NO_CACHE_HEADERS,
+                    *_PUBLIC_HTTP_HEADERS,
                 ]),
                 body,
             )
@@ -461,7 +462,7 @@ def _process_request(connection, request):
         Headers([
             ("Content-Type", "text/plain; charset=utf-8"),
             ("Content-Length", str(len(body))),
-            *_NO_CACHE_HEADERS,
+            *_PUBLIC_HTTP_HEADERS,
         ]),
         body,
     )
