@@ -348,8 +348,15 @@ def _handle_client_body(
     # session (this point onward) registers the wipe. Process-boot
     # also wipes once in server.main() so a crashed-process scenario
     # is still covered.
+    # Gated by DEMON_WIPE_USER_UPLOADS so local installs preserve uploads.
     def _wipe_on_session_end() -> None:
-        from acestep.user_uploads import wipe_user_uploads
+        from acestep.user_uploads import (
+            user_upload_wipe_enabled,
+            wipe_user_uploads,
+        )
+        if not user_upload_wipe_enabled():
+            logger.info("user_uploads_wipe_at_session_end skipped=env_disabled")
+            return
         try:
             wiped = wipe_user_uploads()
             if wiped:

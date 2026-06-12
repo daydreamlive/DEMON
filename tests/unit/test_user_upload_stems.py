@@ -19,6 +19,7 @@ from acestep.user_uploads import (
     load_user_upload_stems,
     persist_user_upload_packet,
     unique_user_upload_name,
+    user_upload_wipe_enabled,
 )
 from acestep.user_uploads import user_upload_audio, user_upload_sidecar
 
@@ -30,6 +31,22 @@ def _persist_stems(name, *, waveform, stems, sample_rate):
     root = user_uploads_dir()
     write_stem_wavs(root, name, stems=stems, sample_rate=sample_rate)
     save_track_metadata(root, name, waveform=waveform, sample_rate=sample_rate)
+
+
+def test_user_upload_auto_wipe_is_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("DEMON_WIPE_USER_UPLOADS", raising=False)
+
+    assert user_upload_wipe_enabled() is False
+
+
+def test_user_upload_auto_wipe_requires_explicit_truthy_env(monkeypatch):
+    for value in ("1", "true", "TRUE", "yes", "on"):
+        monkeypatch.setenv("DEMON_WIPE_USER_UPLOADS", value)
+        assert user_upload_wipe_enabled() is True
+
+    for value in ("", "0", "false", "no", "off", "pod"):
+        monkeypatch.setenv("DEMON_WIPE_USER_UPLOADS", value)
+        assert user_upload_wipe_enabled() is False
 
 
 def test_user_upload_stem_cache_round_trips(tmp_path, monkeypatch):

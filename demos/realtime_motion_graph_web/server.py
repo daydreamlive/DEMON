@@ -716,14 +716,22 @@ def main():
     # wipe in ws_adapter.handle_client covers consecutive sessions on
     # a single process; this one covers cold boot. Skipped in
     # --no-backend (no sessions ever land).
+    # The actual wipe is gated by DEMON_WIPE_USER_UPLOADS so local installs
+    # preserve their upload library by default.
     if not no_backend:
-        from acestep.user_uploads import wipe_user_uploads
-        try:
-            wiped = wipe_user_uploads()
-            if wiped:
-                logger.info("user_uploads_wiped_at_startup entries={}", wiped)
-        except Exception as exc:
-            logger.warning("user_uploads_wipe_at_startup_failed error={}", exc)
+        from acestep.user_uploads import (
+            user_upload_wipe_enabled,
+            wipe_user_uploads,
+        )
+        if user_upload_wipe_enabled():
+            try:
+                wiped = wipe_user_uploads()
+                if wiped:
+                    logger.info("user_uploads_wiped_at_startup entries={}", wiped)
+            except Exception as exc:
+                logger.warning("user_uploads_wipe_at_startup_failed error={}", exc)
+        else:
+            logger.info("user_uploads_wipe_at_startup skipped=env_disabled")
 
     logger.info("server_starting port={}", port)
     srv = ws_serve(

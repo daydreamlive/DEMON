@@ -16,6 +16,7 @@ sidecar read). The write half is :mod:`acestep.sidecars`; callers run
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 from dataclasses import dataclass
@@ -48,6 +49,12 @@ if TYPE_CHECKING:
 USER_UPLOAD_EXTS: frozenset[str] = frozenset({
     ".wav", ".mp3", ".flac", ".ogg", ".m4a",
 })
+
+# Destructive cleanup is only valid for hosted rented pods where uploaded
+# audio is durable outside this process. Local installs use user_uploads_dir()
+# as their library, so the safe default is to preserve it.
+WIPE_USER_UPLOADS_ENV = "DEMON_WIPE_USER_UPLOADS"
+_TRUTHY_ENV = {"1", "true", "yes", "on"}
 
 
 @dataclass(frozen=True)
@@ -130,6 +137,11 @@ def wipe_user_uploads() -> int:
             )
             sys.stdout.flush()
     return removed
+
+
+def user_upload_wipe_enabled() -> bool:
+    """Return whether automatic user-upload wipes are explicitly enabled."""
+    return os.environ.get(WIPE_USER_UPLOADS_ENV, "").strip().lower() in _TRUTHY_ENV
 
 
 def user_upload_audio(name: str) -> Path:

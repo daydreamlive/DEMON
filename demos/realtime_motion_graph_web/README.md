@@ -322,6 +322,9 @@ Env-var overrides:
   (default `127.0.0.1:1318`).
 - `DEMON_CONTROL_HOST` / `DEMON_CONTROL_PORT` — control bus
   (default `127.0.0.1:1319`).
+- `DEMON_WIPE_USER_UPLOADS=1` - hosted rented-pod cleanup only. When set,
+  the backend wipes `MODELS_DIR/user_uploads/` at startup and main-session
+  teardown to prevent cross-user leakage. Leave unset for local installs.
 
 Server-side flags:
 
