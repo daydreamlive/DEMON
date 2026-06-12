@@ -34,9 +34,7 @@ from acestep.fixtures import KNOWN_FIXTURES, audio_fixture
 from acestep.user_uploads import enumerate_user_uploads, user_upload_audio
 
 from ..common.static_site import (
-    SDK_ROUTE,
-    discover_static_demos,
-    sdk_dist_dir,
+    build_static_mounts,
     serve_static_mounts,
 )
 
@@ -48,13 +46,12 @@ from ..common.static_site import (
 VIDEOS_DIR = Path(__file__).parent / "videos"
 _VIDEO_EXTS = {".mp4", ".webm", ".mov"}
 
-# Standalone static demos (each a self-contained page in demos/<name>/
-# with a demo.static.json manifest, e.g. the Arpeggiator -> DEMON demo at
-# /arp) plus the shared demon-client browser bundle they load from /sdk/.
-# Served from this backend so each page and the WS share one origin/port;
-# no Next.js involved. Built at import time so a malformed manifest fails
-# the server at boot instead of 404ing mysteriously.
-_STATIC_MOUNTS = {SDK_ROUTE: sdk_dist_dir(), **discover_static_demos()}
+# Standalone static demos (repo-local manifests plus any external repos
+# passed with --demo) and the shared demon-client browser bundle they load
+# from /sdk/. Served from this backend so each page and the WS share one
+# origin/port; no Next.js involved. Built in main() after CLI parsing so
+# external demo manifest errors fail clearly at startup.
+_STATIC_MOUNTS = {}
 
 # Set in main() based on --no-backend; read by _process_request when the
 # client polls /api/server-info on startup.
@@ -91,6 +88,28 @@ _PUBLIC_HTTP_HEADERS = [
     ("Access-Control-Allow-Origin", "*"),
     *_NO_CACHE_HEADERS,
 ]
+
+
+def _collect_repeated_arg(args: list[str], flag: str) -> list[str]:
+    """Collect repeated ``--flag value`` and ``--flag=value`` occurrences."""
+    values: list[str] = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == flag:
+            if i + 1 >= len(args):
+                raise SystemExit(f"[Server] {flag} requires a path")
+            values.append(args[i + 1])
+            i += 2
+            continue
+        prefix = flag + "="
+        if arg.startswith(prefix):
+            value = arg[len(prefix):]
+            if not value:
+                raise SystemExit(f"[Server] {flag} requires a path")
+            values.append(value)
+        i += 1
+    return values
 
 
 def _resolve_video(name: str) -> Path | None:
@@ -591,6 +610,7 @@ def main():
     checkpoint = "acestep-v15-turbo"  # DiT variant; overridden by --checkpoint
 
     args = sys.argv[1:]
+    static_demo_paths = _collect_repeated_arg(args, "--demo")
     no_backend = "--no-backend" in args or "--ui-only" in args
     offload_text_encoder = "--offload-text-encoder" in args
     if "--host" in args:
@@ -656,12 +676,22 @@ def main():
             f"[Server] --mode must be one of {_VALID_MODES}, got {default_mode!r}"
         )
 
-    global _NO_BACKEND, _ACCEL, _KIOSK, _DEFAULT_MODE, _CHECKPOINT
+    global _NO_BACKEND, _ACCEL, _KIOSK, _DEFAULT_MODE, _CHECKPOINT, _STATIC_MOUNTS
     _NO_BACKEND = no_backend
     _ACCEL = accel
     _KIOSK = kiosk
     _DEFAULT_MODE = default_mode
     _CHECKPOINT = checkpoint
+
+    try:
+        _STATIC_MOUNTS = build_static_mounts(static_demo_paths)
+    except ValueError as exc:
+        raise SystemExit(f"[Server] invalid static demo: {exc}") from exc
+    for route, mount in _STATIC_MOUNTS.items():
+        logger.info(
+            "static_route_mounted route={} root={} entry={}",
+            route, mount.root, mount.entry,
+        )
 
     if no_backend:
         ws_handler = _stub_handle_client
@@ -829,6 +859,9 @@ def main():
     print("=" * 60)
     print(f"  WebSocket: ws://{browsable_host}:{port}/")
     print(f"  HTTP API:  http://{browsable_host}:{port}/api/...")
+    static_routes = [route for route in _STATIC_MOUNTS if route != "/sdk"]
+    for route in static_routes:
+        print(f"  Static demo: http://{browsable_host}:{port}{route}/")
     print(f"  Fixtures:  daydreamlive/demon-fixtures-v2 (HF, {len(KNOWN_FIXTURES)} files, on-demand)")
     print("  Ctrl+C to stop")
     print("=" * 60)

@@ -290,6 +290,23 @@ uv run python -u -m demos.realtime_motion_graph_web.run -- --accel tensorrt
 uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint xl
 ```
 
+External static demo repos can be mounted at runtime with `--demo <path>`.
+DEMON serves them as already-built static files and prints their direct
+URLs at startup:
+
+```bash
+uv run python -u -m demos.realtime_motion_graph_web.run --demo C:\path\to\demo
+```
+
+Those repos own any browser/CDN/build dependencies; DEMON only provides
+static hosting plus the shared browser SDK at `/sdk/demon-client.js`.
+For a concrete no-build example, see the external
+`demon-summon-frontend` demo:
+
+```bash
+uv run python -u -m demos.realtime_motion_graph_web.run --demo C:\_dev\projects\demos\demon-summon-frontend
+```
+
 Highlights:
 
 - **Prompt A ↔ B blending.** Two text fields plus a blend slider. One encoder pass per submission; the slider lerps per tick.

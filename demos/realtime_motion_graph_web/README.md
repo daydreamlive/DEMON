@@ -48,6 +48,53 @@ Open `http://localhost:6660`. Next.js rewrites `/api/*`, `/fixtures/*`,
 `/loras/*`, and `/videos/*` to the backend at `:1318`; the WebSocket
 URL comes from `NEXT_PUBLIC_POD_BASE_URL` (set by the launcher).
 
+### External static demos
+
+Static demo repos can be mounted at runtime without vendoring them into
+DEMON. Add a `demon.demo.json` manifest to the external repo:
+
+```json
+{
+  "route": "/arp",
+  "entry": "index.html"
+}
+```
+
+`entry` is optional and defaults to `index.html`. The demo is served as
+static files only; DEMON does not run build scripts or import demo code.
+Browser code should load the shared SDK from `/sdk/demon-client.js`.
+
+Run the backend directly with one or more external demos:
+
+```powershell
+uv run python -u -m demos.realtime_motion_graph_web.server --demo C:\path\to\demo
+```
+
+Or pass the demo path to the launcher:
+
+```powershell
+uv run python -u -m demos.realtime_motion_graph_web.run --demo C:\path\to\demo
+```
+
+Example: `demon-summon-frontend` is a no-build external demo that uses the
+shared `/sdk/demon-client.js` bundle, server fixtures, live LoRA controls, and
+MediaPipe hand tracking as a control surface:
+
+```powershell
+uv run python -u -m demos.realtime_motion_graph_web.run --demo C:\_dev\projects\demos\demon-summon-frontend
+```
+
+The backend prints each mounted static demo URL at startup, for example
+`Static demo: http://localhost:1318/arp/`. `--demo` may be repeated.
+The older forwarding form also works when you need to pass backend args
+verbatim: `uv run python -u -m demos.realtime_motion_graph_web.run -- --demo C:\path\to\demo`.
+
+DEMON treats these paths as already-built static files. It does not run
+`npm install`, `uv sync`, build scripts, or demo code. No-build demos can
+use browser-native modules, committed static assets, pinned CDN imports,
+or DEMON's shared `/sdk/` browser bundle. Demos with their own build
+tooling should build themselves before being mounted.
+
 ### Remote / headless server
 
 To run the GPU server on one machine and open the UI from another, bind the

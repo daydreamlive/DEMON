@@ -179,6 +179,16 @@ def main() -> int:
         action="store_true",
         help="Skip the `npm install` check.",
     )
+    parser.add_argument(
+        "--demo",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "Mount an external static demo repo. May be repeated. "
+            "Equivalent to forwarding `--demo PATH` to the backend."
+        ),
+    )
     args, backend_extras = parser.parse_known_args()
     # `--` separator is preserved by parse_known_args; strip it if present.
     if backend_extras and backend_extras[0] == "--":
@@ -211,6 +221,7 @@ def main() -> int:
         args.host,
         "--port",
         str(args.port),
+        *[item for demo in args.demo for item in ("--demo", demo)],
         *backend_extras,
     ]
     # The browser uses NEXT_PUBLIC_POD_BASE_URL directly for the WebSocket, so
