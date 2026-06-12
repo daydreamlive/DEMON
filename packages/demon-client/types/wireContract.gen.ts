@@ -242,6 +242,8 @@ export interface SwapSourceCommand {
   stem_source_mode?: "full" | "vocals" | "instruments";
   /** When true, the server loads the named source off its own disk and NO binary frame is sent. */
   use_server_source?: boolean;
+  /** When true, the server swaps to a synthesized silent source (text-to-music mode: generation is conditioned on the prompt alone) and NO binary frame is sent. fixture_name is ignored. */
+  text2music?: boolean;
 }
 
 export interface WriteAudioCommand {
@@ -459,6 +461,8 @@ export interface SessionConfigPayload {
   fixture_name?: string | null;
   use_server_fixture?: boolean;
   stem_source_mode?: string | null;
+  text2music?: boolean;
+  text2music_duration_s?: number;
   enabled_loras?: unknown[];
   lora_strengths?: Record<string, unknown>;
   lora_paths?: unknown[];

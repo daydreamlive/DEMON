@@ -133,6 +133,79 @@ def _load_clip_waveform(name: str) -> torch.Tensor:
     return _load_waveform_from_path(str(resolve_audio_clip(name)))
 
 
+# ---------------------------------------------------------------------------
+# Text-to-music (no input audio)
+# ---------------------------------------------------------------------------
+
+# Conditioning defaults baked into the text encoder when there is no audio
+# to detect them from. 120 BPM / C major / 4 are the model family's
+# most-supported values; the operator can re-steer key / time signature
+# live via the ``prompt`` command.
+TEXT2MUSIC_BPM = 120
+TEXT2MUSIC_KEY = "C major"
+TEXT2MUSIC_TIME_SIGNATURE = "4"
+
+# Floor for the synthesized silent source. Below ~10 s the loop seam
+# dominates the listening experience; the ceiling is the caller's TRT
+# profile cap (same clamp every uploaded source gets).
+TEXT2MUSIC_MIN_DURATION_S = 10.0
+
+# Samples per latent frame at the 48 kHz / 25 fps latent rate.
+_SAMPLES_PER_LATENT_FRAME = SAMPLE_RATE // 25
+
+
+def text2music_waveform(duration_s: float, *, max_seconds: float) -> torch.Tensor:
+    """Synthesize the silent stereo placeholder for a text-to-music source.
+
+    The waveform only seeds the playback ring buffer (the user hears
+    silence until generated slices land) and sets the session length;
+    callers run it through the same TRT-cap / pool-alignment trim as an
+    uploaded source.
+    """
+    dur = min(
+        max(float(duration_s), TEXT2MUSIC_MIN_DURATION_S), float(max_seconds),
+    )
+    return torch.zeros(2, int(dur * SAMPLE_RATE))
+
+
+def resolve_text2music_source(
+    session: Session, *, samples: int,
+) -> tuple[PreparedSource, int, str, str]:
+    """Text-to-music analog of :func:`_resolve_bpm_key_source`.
+
+    Both the source latent and the context latent are the CANONICAL
+    silence latent from the checkpoint (``EmptyLatent``), not a VAE
+    encode of digital zeros: ``silence_latent`` is what the model was
+    trained to read as "no reference audio" (its forward uses it to
+    simulate text2music mode), so structure conditioning is genuinely
+    absent rather than "semantic hints of an all-zero clip". This also
+    skips the VAE encode + semantic extract entirely, along with
+    librosa beat-tracking and CNN key detection (both meaningless on
+    silence — beat_track returns 0 BPM, which would poison the text
+    conditioning).
+    """
+    from acestep.nodes.vae_nodes import EmptyLatent
+
+    frames = samples // _SAMPLES_PER_LATENT_FRAME
+    latent = EmptyLatent().execute(
+        model=session.model, frames=frames,
+    )["latent"]
+    source = PreparedSource(
+        latent=latent,
+        context_latent=Latent(tensor=latent.tensor.clone()),
+    )
+    logger.info(
+        "text2music_source_ready frames={} duration_s={:.1f}",
+        frames, samples / SAMPLE_RATE,
+    )
+    return (
+        source,
+        TEXT2MUSIC_BPM,
+        TEXT2MUSIC_KEY,
+        TEXT2MUSIC_TIME_SIGNATURE,
+    )
+
+
 _VALID_TIME_SIG_STRS = frozenset(str(s) for s in VALID_TIME_SIGNATURES)
 
 

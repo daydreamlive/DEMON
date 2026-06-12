@@ -15,6 +15,7 @@ import { commitUploadedTrack } from "@/lib/audio/commitUploadedTrack";
 import { trimAudioBuffer } from "@/lib/audio/trimAudioBuffer";
 import { useConfig } from "@/lib/config";
 import { LOCAL_MODE } from "@/lib/runtime";
+import { TEXT2MUSIC_LABEL, TEXT2MUSIC_SOURCE } from "@/lib/text2music";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
@@ -147,7 +148,7 @@ export function TrackPicker() {
       <RefSelect
         label="input track"
         value={fixture || ""}
-        pinned={[]}
+        pinned={[{ value: TEXT2MUSIC_SOURCE, label: TEXT2MUSIC_LABEL }]}
         groups={[
           {
             label: "Library",

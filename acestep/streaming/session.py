@@ -114,6 +114,7 @@ from acestep.streaming.source import (
     _resolve_bpm_key_source,
     _try_load_sidecar,
     SAMPLE_RATE,
+    resolve_text2music_source,
 )
 from acestep.streaming.state import SessionState
 from acestep.streaming.stems import (
@@ -935,11 +936,19 @@ class StreamingSession:
             tags = state.swap_pending.get("tags")
             requested_key = state.swap_pending.get("key")
             requested_time_sig = state.swap_pending.get("time_signature")
-            new_fixture_name = state.swap_pending.get("fixture_name")
-            new_stem_source_mode = resolve_upload_stem_source_mode(
-                new_fixture_name,
-                state.swap_pending.get("stem_source_mode"),
-                known_fixtures=KNOWN_FIXTURES,
+            new_text2music = bool(state.swap_pending.get("text2music"))
+            # Text-to-music swap: the placeholder waveform carries no
+            # fixture identity and the stem machinery doesn't apply.
+            new_fixture_name = (
+                None if new_text2music
+                else state.swap_pending.get("fixture_name")
+            )
+            new_stem_source_mode = None if new_text2music else (
+                resolve_upload_stem_source_mode(
+                    new_fixture_name,
+                    state.swap_pending.get("stem_source_mode"),
+                    known_fixtures=KNOWN_FIXTURES,
+                )
             )
             if new_wf is None:
                 return
@@ -949,6 +958,7 @@ class StreamingSession:
             state.swap_pending["time_signature"] = None
             state.swap_pending["fixture_name"] = None
             state.swap_pending["stem_source_mode"] = None
+            state.swap_pending["text2music"] = False
 
         # Initialized to None so the finally below can None-guard
         # cleanly in the (rare) case an exception fires between the
@@ -1028,16 +1038,27 @@ class StreamingSession:
                     return
 
             new_audio_in = Audio(waveform=new_wf, sample_rate=SAMPLE_RATE)
-            new_source, new_bpm, new_key, new_time_sig = (
-                _resolve_bpm_key_source(
-                    self.session,
-                    audio_in=new_audio_in,
-                    fixture_name=new_fixture_name,
-                    samples=int(new_wf.shape[1]),
-                    key_override=requested_key,
-                    time_signature_override=requested_time_sig,
+            if new_text2music:
+                new_source, new_bpm, new_key, new_time_sig = (
+                    resolve_text2music_source(
+                        self.session, samples=int(new_wf.shape[1]),
+                    )
                 )
-            )
+                if requested_key:
+                    new_key = requested_key
+                if requested_time_sig:
+                    new_time_sig = requested_time_sig
+            else:
+                new_source, new_bpm, new_key, new_time_sig = (
+                    _resolve_bpm_key_source(
+                        self.session,
+                        audio_in=new_audio_in,
+                        fixture_name=new_fixture_name,
+                        samples=int(new_wf.shape[1]),
+                        key_override=requested_key,
+                        time_signature_override=requested_time_sig,
+                    )
+                )
             new_upload_stems, new_stem_error, new_source, new_wf = (
                 extract_and_select_upload_stem(
                     new_wf,
@@ -1858,11 +1879,16 @@ class StreamingSession:
         time_signature: str | None = None,
         fixture_name: str | None = None,
         stem_source_mode: str | None = None,
+        text2music: bool = False,
         origin: CommandOrigin = CommandOrigin.PRIMARY,
     ) -> None:
         """Stage a source swap. The runner applies it inside
         ``before_tick``; publishes :class:`SwapReady` or
-        :class:`SwapFailed` when the swap completes."""
+        :class:`SwapFailed` when the swap completes.
+
+        ``text2music=True`` marks ``audio`` as a synthesized silent
+        placeholder: the swap resolves the canonical-silence source
+        (prompt-only conditioning) instead of encoding the waveform."""
         state = self.state
         state.last_activity_ts = time.monotonic()
         effective_tags = tags or state.prompt_text
@@ -1877,6 +1903,7 @@ class StreamingSession:
             state.swap_pending["stem_source_mode"] = normalize_stem_source_mode(
                 stem_source_mode,
             )
+            state.swap_pending["text2music"] = bool(text2music)
 
     @requires_capability("write_audio", "write_audio")
     def write_audio(
@@ -2090,8 +2117,12 @@ class StreamingSession:
         fast_vae = config.fast_vae
         walk_window = config.walk_window
         walk_window_s = config.walk_window_s
-        fixture_name = config.fixture_name
-        stem_source_mode = resolve_upload_stem_source_mode(
+        # Text-to-music: no input audio. The waveform is the synthesized
+        # silence placeholder; fixture / stem machinery doesn't apply
+        # (running Mel-Band RoFormer on zeros would be pure waste).
+        text2music = config.text2music
+        fixture_name = None if text2music else config.fixture_name
+        stem_source_mode = None if text2music else resolve_upload_stem_source_mode(
             fixture_name,
             normalize_stem_source_mode(config.stem_source_mode),
             known_fixtures=KNOWN_FIXTURES,
@@ -2242,14 +2273,21 @@ class StreamingSession:
 
             audio_in = Audio(waveform=waveform, sample_rate=SAMPLE_RATE)
 
-            source, detected_bpm, detected_key, detected_time_signature = (
-                _resolve_bpm_key_source(
-                    engine_session,
-                    audio_in=audio_in,
-                    fixture_name=fixture_name,
-                    samples=int(waveform.shape[1]),
+            if text2music:
+                source, detected_bpm, detected_key, detected_time_signature = (
+                    resolve_text2music_source(
+                        engine_session, samples=int(waveform.shape[1]),
+                    )
                 )
-            )
+            else:
+                source, detected_bpm, detected_key, detected_time_signature = (
+                    _resolve_bpm_key_source(
+                        engine_session,
+                        audio_in=audio_in,
+                        fixture_name=fixture_name,
+                        samples=int(waveform.shape[1]),
+                    )
+                )
 
             upload_stems, stem_error, source, waveform = (
                 extract_and_select_upload_stem(

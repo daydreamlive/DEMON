@@ -7102,6 +7102,45 @@ body.curve-open #install-video-area #graph {
   opacity: 1;
 }
 
+/* Pinned text-to-music sleeve — prompt-only generation, no input audio.
+   Sits in the pinned region above the upload sleeve, separated from the
+   scroll list by the same hairline treatment. */
+.audio-source-sleeve--text2music {
+  flex-shrink: 0;
+  position: relative;
+  margin-top: 2px;
+  padding-top: 9px;
+  color: var(--accent-hover);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  font-size: 10px;
+}
+.audio-source-sleeve--text2music::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 8px;
+  right: 8px;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent,
+    var(--frame-line) 25%,
+    var(--frame-line) 75%,
+    transparent);
+}
+.audio-source-sleeve--text2music:hover {
+  background: var(--accent-medium);
+  color: var(--accent-hover);
+}
+.audio-source-sleeve-art--text2music {
+  border: none;
+  color: var(--accent);
+  width: 14px;
+  height: 14px;
+  opacity: 1;
+}
+.audio-source-sleeve-art--text2music::after { display: none; }
+
 /* Pinned upload sleeve — always rendered, separated from the scroll list
    above by a thin hairline so it reads as a distinct "you" slot. */
 .audio-source-sleeve--upload {

@@ -11,6 +11,7 @@ import {
   getConfig,
   resolveLoraCapForSource,
 } from "@/lib/config";
+import { isText2Music } from "@/lib/text2music";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
@@ -62,13 +63,16 @@ export function useFixtureSwap() {
       // re-rip stems. The playback buffer still comes back in the
       // swap_ready echo. Only tracks that live solely in browser memory
       // (no-pod fallback, MCP mirror) take the decode + upload path.
-      const serverResident = useCustomTracksStore
+      // Text-to-music swap: no audio to load — the server synthesizes
+      // the silent source and conditions on the prompt alone.
+      const text2music = isText2Music(name);
+      const serverResident = !text2music && useCustomTracksStore
         .getState()
         .isServerResident(name);
 
       let interleaved: Float32Array | null = null;
       let channels = 0;
-      if (!serverResident) {
+      if (!serverResident && !text2music) {
         setStatus("ready", `Loading ${name}…`);
         try {
           const decoded = await loadFixtureAudio(name);
@@ -211,7 +215,9 @@ export function useFixtureSwap() {
         // fixture's sidecar.key on the server side.
         // Operator overrides flow through the OperatorStrip dropdown's
         // onChange handler (sendPrompt), not through swap_source.
-        const sent = serverResident
+        const sent = text2music
+          ? remote.sendSwapTextToMusic(perf.promptA)
+          : serverResident
           ? remote.sendSwapSourceByName(
               name,
               perf.promptA,
@@ -261,14 +267,23 @@ export function useFixtureSwap() {
         // the next legitimate swap reverts to the normal behaviour.
         const perfState = usePerformanceStore.getState();
         const gate = getConfig().denoise_session_gate;
-        if (perfState.skipNextDenoiseGate) {
+        if (text2music) {
+          // Text-to-music: the source is silence — gating denoise to 0
+          // would play nothing. Full generation immediately, and the
+          // "drag to start" affordance doesn't apply.
+          perfState.setSliderDirect("denoise", 1);
+          perfState.setRemixStarted(true);
+        } else if (perfState.skipNextDenoiseGate) {
           perfState.setSkipNextDenoiseGate(false);
+          perfState.setRemixStarted(false);
         } else if (gate.enabled) {
           const prevDenoise = perfState.sliderTargets["denoise"] ?? 0;
           perfState.setSliderDirect("denoise", 0);
           perfState.animateSliderDisplayFrom("denoise", prevDenoise, gate.glide_ms);
+          perfState.setRemixStarted(false);
+        } else {
+          perfState.setRemixStarted(false);
         }
-        perfState.setRemixStarted(false);
       }
       setStatus("ready", "Playing");
     };

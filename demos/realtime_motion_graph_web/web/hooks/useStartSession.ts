@@ -15,6 +15,7 @@ import {
   resolveLoraCapForSource,
 } from "@/lib/config";
 import { wirePromptTransform } from "@/lib/loraTriggers";
+import { isText2Music } from "@/lib/text2music";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore, type RefSource } from "@/store/usePerformanceStore";
@@ -119,6 +120,33 @@ function buildConfig(
   // standalone shell wires no getter, so this is null and the field is
   // omitted; demon-public-demo wires PostHog's distinct_id).
   const clientId = getClientId();
+  // Text-to-music: the sentinel never goes on the wire as a
+  // fixture_name; the server synthesizes a silent source and conditions
+  // on the prompt alone. No binary PCM frame is sent (the SDK skips it
+  // when config.text2music is set).
+  if (isText2Music(fixtureName)) {
+    return {
+      telemetry_version: 1,
+      sde: cfg.sde,
+      lora: cfg.lora,
+      depth: cfg.depth,
+      vae_window: cfg.vae_window,
+      crop: cfg.crop,
+      steps: cfg.steps,
+      fast_vae: cfg.fast_vae,
+      walk_window: cfg.walk_window ?? false,
+      walk_window_s: cfg.walk_window_s ?? 60,
+      lead_floor_s: cfg.lead_floor_s,
+      lead_ceiling_s: cfg.lead_ceiling_s,
+      lead_release_tau_s: cfg.lead_release_tau_s,
+      enabled_loras: enabledLoras,
+      prompt: perf.promptA,
+      prompt_b: perf.promptB,
+      lora_strengths: loraStrengths,
+      text2music: true,
+      ...(clientId ? { client_id: clientId } : {}),
+    };
+  }
   return {
     telemetry_version: 1,
     sde: cfg.sde,
@@ -371,6 +399,17 @@ interface ResolvedFixture {
  */
 async function resolveFixtureForConnect(): Promise<ResolvedFixture | null> {
   let fixtureName = usePerformanceStore.getState().fixture;
+  // Text-to-music: nothing to load or probe — there is no input audio.
+  // The empty interleaved array mirrors the server-side-fixture path
+  // (the SDK sends no PCM frame when config.text2music is set).
+  if (isText2Music(fixtureName)) {
+    return {
+      fixtureName,
+      useServerFixture: false,
+      interleaved: new Float32Array(0),
+      channels: 2,
+    };
+  }
   if (!fixtureName) {
     const list = await listFixtures();
     fixtureName = pickDefaultFixture(list);
@@ -743,14 +782,23 @@ export function useStartSession() {
     // so their gate behaviour is unchanged.
     const perfState = usePerformanceStore.getState();
     const gate = getConfig().denoise_session_gate;
-    if (perfState.skipNextDenoiseGate) {
+    if (isText2Music(sessionFixture.fixtureName)) {
+      // Text-to-music: the "source" is silence, so the hear-source-first
+      // gate (and any partial denoise) would just play nothing / blend
+      // toward silence. Full generation from the first slice.
+      perfState.setSliderDirect("denoise", 1);
+      perfState.setRemixStarted(true);
+    } else if (perfState.skipNextDenoiseGate) {
       perfState.setSkipNextDenoiseGate(false);
+      perfState.setRemixStarted(false);
     } else if (gate.enabled) {
       const prevDenoise = perfState.sliderTargets["denoise"] ?? 0;
       perfState.setSliderDirect("denoise", 0);
       perfState.animateSliderDisplayFrom("denoise", prevDenoise, gate.glide_ms);
+      perfState.setRemixStarted(false);
+    } else {
+      perfState.setRemixStarted(false);
     }
-    perfState.setRemixStarted(false);
 
     setSession(remote, player);
     setStatus("ready", "Playing");
