@@ -110,6 +110,69 @@ def test_unknown_on_trt_api_error(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Chunk-aware encode guard
+# ---------------------------------------------------------------------------
+#
+# ``_trt_vae_encode_fits_or_chunkable`` is the encode node's variant of
+# the fit guard: a samples dim above the profile max must NOT trigger
+# the eager fallback, because _trt_vae_encode serves it via overlapping
+# chunks — that is the very case the chunked encode was built for
+# (>60 s upload vs the pinned 60 s engine). Only non-chunkable
+# mismatches (rank, batch/channel, below the profile min) reject.
+
+
+def test_chunkable_above_profile_max_uses_trt(monkeypatch):
+    # 60 s engine (2_880_000 samples = 1500 frames), 120 s upload.
+    _install(monkeypatch, _FakeEngine(
+        mn=(1, 2, 48_000), opt=(1, 2, 1_440_000), mx=(1, 2, 2_880_000),
+    ))
+    assert vn._trt_vae_encode_fits_or_chunkable(_PATH, (1, 2, 5_760_000)) is True
+
+
+def test_chunk_guard_still_accepts_in_profile_shapes(monkeypatch):
+    _install(monkeypatch, _FakeEngine(
+        mn=(1, 2, 48_000), opt=(1, 2, 1_440_000), mx=(1, 2, 2_880_000),
+    ))
+    assert vn._trt_vae_encode_fits_or_chunkable(_PATH, (1, 2, 1_000_000)) is True
+    assert vn._trt_vae_encode_fits_or_chunkable(_PATH, (1, 2, 2_880_000)) is True
+
+
+def test_chunk_guard_rejects_non_chunkable_mismatches(monkeypatch):
+    _install(monkeypatch, _FakeEngine(
+        mn=(1, 2, 48_000), opt=(1, 2, 1_440_000), mx=(1, 2, 2_880_000),
+    ))
+    # Below the profile min: chunking can't help a too-short input.
+    assert vn._trt_vae_encode_fits_or_chunkable(_PATH, (1, 2, 1_000)) is False
+    # Batch out of range.
+    assert vn._trt_vae_encode_fits_or_chunkable(_PATH, (2, 2, 5_760_000)) is False
+    # Rank mismatch.
+    assert vn._trt_vae_encode_fits_or_chunkable(_PATH, (2, 48_000)) is False
+
+
+def test_chunk_guard_rejects_engine_too_small_to_chunk(monkeypatch):
+    # Max window of 128 frames leaves no core beyond the 2 x 64-frame
+    # margins — _plan_encode_chunks would raise, so reject up front.
+    too_small = 2 * vn._VAE_ENCODE_CHUNK_MARGIN_FRAMES * vn._VAE_SAMPLES_PER_FRAME
+    _install(monkeypatch, _FakeEngine(
+        mn=(1, 2, 48_000), opt=(1, 2, too_small), mx=(1, 2, too_small),
+    ))
+    assert vn._trt_vae_encode_fits_or_chunkable(_PATH, (1, 2, too_small + 1)) is False
+
+
+def test_chunk_guard_unknown_when_engine_not_cached(monkeypatch):
+    monkeypatch.setattr(vn, "_trt_vae_cache", {})
+    assert vn._trt_vae_encode_fits_or_chunkable(_PATH, (1, 2, 5_760_000)) is None
+
+
+def test_chunk_guard_unknown_on_trt_api_error(monkeypatch):
+    _install(monkeypatch, _FakeEngine(
+        mn=(1, 2, 48_000), opt=(1, 2, 1_440_000), mx=(1, 2, 2_880_000),
+        error=RuntimeError("TRT API exploded"),
+    ))
+    assert vn._trt_vae_encode_fits_or_chunkable(_PATH, (1, 2, 5_760_000)) is None
+
+
+# ---------------------------------------------------------------------------
 # Cold-cache shape rejection → eager fallback (encode node)
 # ---------------------------------------------------------------------------
 #
@@ -183,3 +246,29 @@ def test_non_shape_trt_errors_still_raise(monkeypatch):
             _eager_handler(with_vae=True),
             RuntimeError("TRT VAE encode failed"),
         )
+
+
+def test_warm_cache_long_upload_stays_on_trt_chunked_path(monkeypatch):
+    # The PR-242 review case: cached 60 s engine, eager-VAE handler
+    # (upload encoder session), >60 s upload. The guard must keep the
+    # TRT path so _trt_vae_encode chunks it, instead of pulling the
+    # eager VAE onto the GPU.
+    monkeypatch.setattr(vn, "_trt_available", lambda: True)
+    monkeypatch.setattr(vn, "_find_best_vae_engine", lambda c: _PATH)
+    _install(monkeypatch, _FakeEngine(
+        mn=(1, 2, 48_000), opt=(1, 2, 1_440_000), mx=(1, 2, 2_880_000),
+    ))
+
+    trt_called = []
+
+    def _fake_trt_encode(waveform, path, device):
+        trt_called.append(tuple(waveform.shape))
+        return torch.zeros((1, 64, 3000), dtype=torch.float32)
+
+    monkeypatch.setattr(vn, "_trt_vae_encode", _fake_trt_encode)
+    result = vn.VAEEncodeAudio().execute(
+        vae=SimpleNamespace(handler=_eager_handler(with_vae=True)),
+        audio=SimpleNamespace(waveform=torch.zeros((2, 5_760_000))),
+    )
+    assert trt_called == [(1, 2, 5_760_000)]  # TRT ran, eager did not
+    assert result["latent"].tensor.shape == (1, 3000, 64)

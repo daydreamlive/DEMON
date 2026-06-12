@@ -496,6 +496,53 @@ def _trt_vae_profile_fits(
         return None
 
 
+def _trt_vae_encode_fits_or_chunkable(engine_path: str, shape) -> Optional[bool]:
+    """Whether the cached encode engine can serve ``shape``, directly or chunked.
+
+    Chunk-aware variant of :func:`_trt_vae_profile_fits` for the encode
+    path. A samples dim above the profile max is NOT a mismatch here:
+    :func:`_trt_vae_encode` serves it via overlapping chunks, which is
+    the whole point of pinning the small encode engine. Only
+    non-chunkable mismatches reject — rank, batch/channel out of range,
+    or samples below the profile min. Same ``None`` semantics as
+    ``_trt_vae_profile_fits`` (engine not cached, API error → "behave
+    as before", i.e. use TRT).
+    """
+    try:
+        entry = _trt_vae_cache.get(os.path.abspath(engine_path))
+        if entry is None or entry.get("engine") is None:
+            return None
+        engine = entry["engine"]
+        num_profiles = int(getattr(engine, "num_optimization_profiles", 1) or 1)
+        for profile in range(num_profiles):
+            mn, _opt, mx = engine.get_tensor_profile_shape("audio", profile)
+            if len(mn) != len(shape):
+                continue
+            if not all(
+                int(mn[i]) <= int(shape[i]) <= int(mx[i])
+                for i in range(len(shape) - 1)
+            ):
+                continue
+            n_samples = int(shape[-1])
+            if n_samples < int(mn[-1]):
+                continue
+            if n_samples <= int(mx[-1]):
+                return True
+            # Above the profile max: chunkable iff the max window leaves
+            # room for core frames beyond the two per-side margins (the
+            # same bound _plan_encode_chunks enforces).
+            max_frames = int(mx[-1]) // _VAE_SAMPLES_PER_FRAME
+            if max_frames > 2 * _VAE_ENCODE_CHUNK_MARGIN_FRAMES:
+                return True
+        return False
+    except Exception as exc:
+        logger.warning(
+            "trt_vae_encode_fit_check_failed engine={} error={}",
+            engine_path, exc,
+        )
+        return None
+
+
 def _find_best_vae_engine(component: str) -> Optional[str]:
     """Return a TRT VAE engine path for *component* if one was preloaded.
 
@@ -567,12 +614,15 @@ class VAEEncodeAudio(BaseNode):
         if (
             trt_path
             and handler.vae is not None
-            and _trt_vae_profile_fits(trt_path, "audio", tuple(waveform.shape)) is False
+            and _trt_vae_encode_fits_or_chunkable(trt_path, tuple(waveform.shape))
+            is False
         ):
-            # The cached engine belongs to another session and its
-            # profile can't take this input (e.g. a >60 s upload vs the
-            # live session's 60 s engine). This handler carries an eager
-            # VAE — use it instead of letting TRT reject the shape.
+            # The cached engine can't take this input directly OR via
+            # the chunked encode path (rank/batch/channel mismatch, or
+            # input below the profile min). This handler carries an
+            # eager VAE — use it instead of letting TRT reject the
+            # shape. Inputs that merely exceed the profile max stay on
+            # TRT: _trt_vae_encode chunks them.
             logger.info(
                 "vae_encode_trt_profile_mismatch input_shape={} engine={} "
                 "fallback=eager",
