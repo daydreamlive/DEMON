@@ -139,3 +139,12 @@ export const CROSSFADE_SECONDS = 0.025;
 export const SLICE_HDR_SIZE = 23; // 1+4+4+2+4+4+4
 export const SLICE_FLAG_RAW = 0;
 export const SLICE_FLAG_DELTA = 1;
+
+/**
+ * Server-initiated WebSocket close meaning "a newer connection took
+ * over this pod" (one-session-per-pod policy; see ws_adapter.py
+ * PREEMPTED_CLOSE_CODE). Treated as FINAL by the client: reconnecting
+ * would preempt the newer session back and ping-pong the pod through
+ * full session rebuilds.
+ */
+export const PREEMPTED_CLOSE_CODE = 4001;

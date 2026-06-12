@@ -110,14 +110,125 @@ from .protocol import COMMAND_NAMES, SAMPLE_RATE, coerce_command_payload
 # mutable GPU object in the system (every StreamingSession otherwise owns
 # its own Session). The tradeoff is deliberate: encoding uploads needs the
 # VAE encoder, which the streaming TRT path doesn't expose, so we keep a
-# second resident eager copy of the weights rather than rebuild one per
-# upload. Two costs follow from the sharing:
-#   - VRAM: the first upload permanently adds a second model copy.
+# second eager copy of the weights rather than rebuild one per upload.
+# Two costs follow from the sharing:
+#   - VRAM: the eager weights occupy GPU memory WHILE AN UPLOAD IS IN
+#     FLIGHT. Between uploads they are parked in system RAM
+#     (ModelContext.offload_eager_to_cpu in _handle_upload_track's
+#     finally); ModelContext._load_model_context lazily restores exactly
+#     the modules the next upload touches. Without the parking, the
+#     first upload would permanently pin ~6 GB next to the live
+#     streaming session.
 #   - Concurrency: prepare_source / stem extraction are NOT thread-safe on
 #     a shared Session, so _UPLOAD_INFER_LOCK serializes all GPU work on it.
 _UPLOAD_ENCODERS: dict[str, Session] = {}
 _UPLOAD_ENCODERS_LOCK = threading.Lock()
 _UPLOAD_INFER_LOCK = threading.Lock()
+
+
+# ---------------------------------------------------------------------------
+# Single-active-session policy
+# ---------------------------------------------------------------------------
+#
+# The rtmg backend is one-session-per-pod: the TRT VAE cache, the LoRA
+# library, and the GPU budget are all sized for exactly one streaming
+# session. Two concurrent ``StreamingSession.create`` calls stack two
+# full model stacks (OOM on a 24 GB card), and either session's
+# teardown evicts shared TRT VAE cache entries out from under the
+# other — the failure cascade is: dual create → one OOMs → its cleanup
+# evicts the shared engines → the HEALTHY session crashes on its next
+# decode. Doubled connections happen routinely (page reload while the
+# old socket is still draining, dev StrictMode double-mount, a stale
+# tab auto-reconnecting), so the policy is enforced here:
+#
+#   - ``_SESSION_LIFECYCLE_LOCK`` serializes preempt+create: at most one
+#     session is ever being constructed, and construction never overlaps
+#     another session's teardown.
+#   - A new main-session connection PREEMPTS the active session: its
+#     runner is stopped, its WebSocket is closed with
+#     ``PREEMPTED_CLOSE_CODE`` (the client treats that close as final —
+#     no reconnect war between two tabs), and the new connection WAITS
+#     for ``StreamingSession.closed`` so the old stack's VRAM is
+#     actually free before the new stack loads.
+#
+# The ``upload_track`` side-channel WS never touches this policy.
+
+_SESSION_LIFECYCLE_LOCK = threading.Lock()
+_ACTIVE_SLOT_LOCK = threading.Lock()
+_ACTIVE_SESSION: list = [None]  # [_ActiveSession | None]
+
+# 4000-range application close code: "this session was replaced by a
+# newer connection". The web client (web/sdk/protocol.ts +
+# web/hooks/useStartSession.ts) recognizes it and does NOT enter the
+# reconnect loop — reconnecting would just preempt the newer session
+# back and ping-pong the pod through full session rebuilds.
+PREEMPTED_CLOSE_CODE = 4001
+
+# How long a preempting connection waits for the old session's teardown
+# to release VRAM. Generous: the old runner may be mid stem-extraction
+# (it only observes running=False between pipeline iterations).
+_PREEMPT_TEARDOWN_TIMEOUT_S = 45.0
+
+
+class _ActiveSession:
+    __slots__ = ("session_id", "streaming", "ws")
+
+    def __init__(self, session_id: str, streaming, ws):
+        self.session_id = session_id
+        self.streaming = streaming
+        self.ws = ws
+
+
+def _preempt_active_session(new_session_id: str) -> None:
+    """Stop and drain the currently-active session, if any.
+
+    Caller must hold ``_SESSION_LIFECYCLE_LOCK``. Returns once the old
+    session has released its GPU state (or after a bounded wait with a
+    warning — create proceeds either way; the OOM-retry paths downstream
+    are the backstop)."""
+    with _ACTIVE_SLOT_LOCK:
+        prev = _ACTIVE_SESSION[0]
+    if prev is None:
+        return
+    logger.info(
+        "session_preempt prev={} new={} reason=single_session_policy",
+        prev.session_id, new_session_id,
+    )
+    # Stop the runner; it observes this between pipeline iterations and
+    # exits run() into close().
+    prev.streaming.state.running = False
+    # Close the old socket so its handler unblocks from any recv/send
+    # and the client sees a deliberate, final close (not a 1006 blip).
+    try:
+        prev.ws.close(PREEMPTED_CLOSE_CODE, "preempted by a newer session")
+    except Exception:
+        pass
+    if not prev.streaming.closed.wait(timeout=_PREEMPT_TEARDOWN_TIMEOUT_S):
+        logger.warning(
+            "session_preempt_teardown_timeout prev={} waited_s={}",
+            prev.session_id, _PREEMPT_TEARDOWN_TIMEOUT_S,
+        )
+    else:
+        logger.info("session_preempt_complete prev={}", prev.session_id)
+    with _ACTIVE_SLOT_LOCK:
+        if _ACTIVE_SESSION[0] is prev:
+            _ACTIVE_SESSION[0] = None
+
+
+def _log_session_vram(stage: str) -> None:
+    from acestep.gpu_config import get_vram_telemetry
+
+    telemetry = get_vram_telemetry()
+    if telemetry is not None:
+        logger.info(
+            "session_vram stage={} free_gb={:.2f} available_gb={:.2f} "
+            "allocated_gb={:.2f} reserved_gb={:.2f}",
+            stage,
+            telemetry["free_gb"],
+            telemetry["available_gb"],
+            telemetry["allocated_gb"],
+            telemetry["reserved_gb"],
+        )
 
 
 def _upload_encoder_session(checkpoint: str) -> Session:
@@ -225,20 +336,42 @@ def _handle_upload_track(ws, header: dict, *, checkpoint: str) -> None:
         # from multiple connections would otherwise drive prepare_source /
         # stem extraction on one Session at once and corrupt its state.
         with _UPLOAD_INFER_LOCK:
-            sources = {
-                "full": encoder.prepare_source(
-                    Audio(waveform=waveform, sample_rate=SAMPLE_RATE),
-                ),
-            }
-            stems = extract_upload_stems(
-                waveform=waveform,
-                device=encoder.handler.device,
-                backend_sample_rate=SAMPLE_RATE,
-            )
-            for mode in ("vocals", "instruments"):
-                sources[mode] = encoder.prepare_source(
-                    Audio(waveform=stems[mode], sample_rate=SAMPLE_RATE),
+            try:
+                sources = {
+                    "full": encoder.prepare_source(
+                        Audio(waveform=waveform, sample_rate=SAMPLE_RATE),
+                    ),
+                }
+                stems = extract_upload_stems(
+                    waveform=waveform,
+                    device=encoder.handler.device,
+                    backend_sample_rate=SAMPLE_RATE,
+                    # Park the shared eager encoder (a full second copy
+                    # of the ACE-Step weights) while the RoFormer runs.
+                    # Any live StreamingSession owns its own
+                    # ModelContext and keeps streaming untouched.
+                    model_context=encoder.handler,
                 )
+                for mode in ("vocals", "instruments"):
+                    sources[mode] = encoder.prepare_source(
+                        Audio(waveform=stems[mode], sample_rate=SAMPLE_RATE),
+                    )
+            finally:
+                # The encoder's eager weights are only needed while an
+                # upload is in flight. Between uploads they would pin
+                # ~6 GB of VRAM next to the live streaming session, so
+                # park them in system RAM; _load_model_context restores
+                # exactly the modules the next upload touches, lazily.
+                try:
+                    parked = encoder.handler.offload_eager_to_cpu()
+                    if parked:
+                        logger.info(
+                            "upload_encoder_offloaded modules={}", parked,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "upload_encoder_offload_failed error={}", exc,
+                    )
         packet = persist_user_upload_packet(
             name,
             waveform=waveform,
@@ -413,15 +546,24 @@ def _handle_client_body(
 
     _ms("resolve_source_start")
     try:
-        streaming = StreamingSession.create(
-            audio=audio_in,
-            config=cfg,
-            checkpoint=checkpoint,
-            decoder_backend=decoder_backend,
-            vae_backend=vae_backend,
-            offload_text_encoder=offload_text_encoder,
-            session_id=session_id,
-        )
+        # Single-active-session policy: serialize construction and
+        # preempt whatever session currently owns the GPU. See the
+        # policy comment block at module top.
+        with _SESSION_LIFECYCLE_LOCK:
+            _preempt_active_session(session_id)
+            _log_session_vram("create_start")
+            streaming = StreamingSession.create(
+                audio=audio_in,
+                config=cfg,
+                checkpoint=checkpoint,
+                decoder_backend=decoder_backend,
+                vae_backend=vae_backend,
+                offload_text_encoder=offload_text_encoder,
+                session_id=session_id,
+            )
+            with _ACTIVE_SLOT_LOCK:
+                _ACTIVE_SESSION[0] = _ActiveSession(session_id, streaming, ws)
+            _log_session_vram("create_done")
     except UnsupportedTrtCheckpointError as exc:
         try:
             ws.send(json.dumps({
@@ -468,6 +610,16 @@ def _handle_client_body(
 
     streaming_entered_run = False
     session_registered = False
+
+    def _release_active_slot() -> None:
+        # Compare-and-swap: only clear the slot if it's still ours (a
+        # preempting connection may have already replaced it).
+        with _ACTIVE_SLOT_LOCK:
+            cur = _ACTIVE_SESSION[0]
+            if cur is not None and cur.streaming is streaming:
+                _ACTIVE_SESSION[0] = None
+
+    ctx_stack.callback(_release_active_slot)
 
     def _close_streaming_if_init_fails() -> None:
         if not streaming_entered_run:

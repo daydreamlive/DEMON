@@ -201,6 +201,7 @@ def precompute_one(
             waveform=waveform,
             device=session.handler.device,
             backend_sample_rate=SAMPLE_RATE,
+            model_context=session.handler,
         )
         write_stem_wavs(out_dir, name, stems=stems, sample_rate=SAMPLE_RATE)
         for mode in ("vocals", "instruments"):

@@ -149,6 +149,45 @@ def get_gpu_memory_gb() -> float:
         return 0
 
 
+def get_vram_telemetry(device=None) -> Optional[Dict[str, float]]:
+    """Snapshot of CUDA VRAM occupancy in GiB for ``device``.
+
+    Returns ``None`` when CUDA isn't available or ``device`` isn't a
+    CUDA device — callers treat that as "no VRAM to manage".
+
+    Keys:
+        free_gb: driver-reported free memory (excludes torch's cache).
+        total_gb: device capacity.
+        allocated_gb: torch tensors currently live.
+        reserved_gb: torch caching-allocator pages held from the driver.
+        available_gb: what a new allocation can realistically claim —
+            driver-free plus pages torch has cached but not handed out.
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        dev = torch.device(device if device is not None else "cuda")
+        if dev.type != "cuda":
+            return None
+        index = dev.index if dev.index is not None else torch.cuda.current_device()
+        free_b, total_b = torch.cuda.mem_get_info(index)
+        allocated_b = torch.cuda.memory_allocated(index)
+        reserved_b = torch.cuda.memory_reserved(index)
+        gib = float(1024 ** 3)
+        return {
+            "free_gb": free_b / gib,
+            "total_gb": total_b / gib,
+            "allocated_gb": allocated_b / gib,
+            "reserved_gb": reserved_b / gib,
+            "available_gb": (free_b + max(0, reserved_b - allocated_b)) / gib,
+        }
+    except Exception as e:
+        logger.warning(f"Failed to read VRAM telemetry: {e}")
+        return None
+
+
 def get_gpu_tier(gpu_memory_gb: float) -> str:
     """
     Determine GPU tier based on available memory.

@@ -15,6 +15,7 @@
 import * as fzstd from "fzstd";
 
 import {
+  PREEMPTED_CLOSE_CODE,
   SAMPLE_RATE,
   SLICE_FLAG_DELTA,
   SLICE_HDR_SIZE,
@@ -758,7 +759,9 @@ export class RemoteBackend extends EventTarget {
         // most often, both recoverable by reloading.
         if (!this.ready) {
           let msg: string;
-          if (e.code === 1011) {
+          if (e.code === PREEMPTED_CLOSE_CODE) {
+            msg = "Another connection took over this session.";
+          } else if (e.code === 1011) {
             msg = "Session failed while starting — refresh the page to retry.";
           } else if (e.code === 1006) {
             msg = "Connection lost — refresh to retry.";
