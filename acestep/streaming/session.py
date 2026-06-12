@@ -2112,24 +2112,23 @@ class StreamingSession:
                 vae_backend=vae_backend,
                 checkpoint=trt_profile_checkpoint,
             )
-            trt_engines, picked_dur = profile_mgr.resolve(audio_duration_s)
             # Walk-window override: pin decoder + vae_decode at
-            # walk_window_s while keeping vae_encode sized to the full
-            # song so the source can be encoded once at load.
+            # walk_window_s. vae_encode is duration-independent (the
+            # encode path chunks long inputs and ``resolve`` always
+            # pins the smallest built encode engine), so the walk
+            # profile's own engine set serves any source length —
+            # resolving the full-source profile here would wrongly
+            # require a bigger decoder to exist on disk.
             if walk_window and use_trt and audio_duration_s > walk_window_s + 0.1:
-                walk_engines, walk_dur = profile_mgr.resolve(walk_window_s)
+                trt_engines, picked_dur = profile_mgr.resolve(walk_window_s)
                 logger.info(
                     "walk_window_active window_s={:.0f} decoder={} vae_encode={}",
                     walk_window_s,
-                    Path(walk_engines["decoder"]).stem,
+                    Path(trt_engines["decoder"]).stem,
                     Path(trt_engines["vae_encode"]).stem,
                 )
-                trt_engines = {
-                    "decoder": walk_engines["decoder"],
-                    "vae_encode": trt_engines["vae_encode"],
-                    "vae_decode": walk_engines["vae_decode"],
-                }
-                picked_dur = walk_dur
+            else:
+                trt_engines, picked_dur = profile_mgr.resolve(audio_duration_s)
 
             ideal_dur = smallest_fitting_profile_duration_s(
                 audio_duration_s,
