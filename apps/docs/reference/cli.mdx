@@ -85,6 +85,16 @@ uv run acestep-download --model acestep-v15-xl-turbo --skip-main
 
 Checkpoints otherwise auto-download on first use.
 
+## Setup doctor
+
+```bash
+uv run demon-setup [--skip-engines] [--skip-models] [--skip-loras] [--duration 60 120]
+```
+
+Runs the local setup workflow: doctor checks, checkpoint download, optional
+starter LoRA pack, and TensorRT engine builds. Managed deployments can set
+`DEMON_SKIP_STARTER_LORAS=1` instead of passing `--skip-loras`.
+
 ## Fixture sidecar precompute
 
 ```bash

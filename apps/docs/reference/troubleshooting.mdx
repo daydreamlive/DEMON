@@ -34,10 +34,14 @@ lead inflates toward its ceiling; see `lead_floor_s` in
 
 ## TensorRT
 
-**UI reports `engine_not_built`** — build the smallest profile that fits
-your source, exactly as the error's `build_command` suggests:
+**Server exits at boot: "TensorRT engines not built" or UI reports
+`engine_not_built`** — run setup, launch without engines, or build the
+smallest profile that fits your source exactly as the error's `build_command`
+suggests:
 
 ```bash
+uv run demon-setup
+uv run python -u -m demos.realtime_motion_graph_web.run -- --accel compile
 uv run python -m acestep.engine.trt.build --all --duration 60   # 60 s source
 uv run python -m acestep.engine.trt.build --all --duration 120  # 120 s source
 ```

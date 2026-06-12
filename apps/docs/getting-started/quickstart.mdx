@@ -14,49 +14,37 @@ browser. If you just want to play without a GPU, skip straight to
     git clone https://github.com/daydreamlive/DEMON.git
     cd DEMON
     uv sync
+    uv run demon-setup
     ```
 
-    That is the entire Python setup. ACE-Step v1.5 checkpoints and audio
-    fixtures auto-download on first use and cache under
-    `~/.daydream-scope/models/demon/` and `~/.cache/huggingface/`.
-  </Step>
-
-  <Step title="(Recommended) Build the windowed VAE TensorRT engine">
-    DEMON runs without TensorRT, but the windowed VAE decode engine is the
-    cheapest engine to build, works for every checkpoint and duration, and
-    unlocks the low-latency streaming path:
-
-    ```bash
-    uv run python -m acestep.engine.trt.build --vae-only --duration 60
-    ```
-
-    For the full-speed experience, build the complete 60 s engine set
-    (decoder + VAE):
-
-    ```bash
-    uv run python -m acestep.engine.trt.build --all --duration 60
-    ```
-
-    See [TensorRT Engines](/getting-started/tensorrt) for the full build
-    matrix, XL checkpoints, and storage layout.
+    `demon-setup` checks your environment, downloads the ACE-Step v1.5
+    checkpoints and starter LoRA pack, and builds the minimal TensorRT engine
+    set. It is idempotent, so re-running it after a partial download or failed
+    build resumes finished work.
   </Step>
 
   <Step title="Launch the demo">
     ```bash
-    # All-TRT (default — requires built engines):
     uv run python -u -m demos.realtime_motion_graph_web.run
-
-    # No engines built yet? Run fully in PyTorch:
-    uv run python -u -m demos.realtime_motion_graph_web.run -- --accel eager
-
-    # Or: TRT windowed VAE + torch.compile decoder (no decoder engine needed):
-    uv run python -u -m demos.realtime_motion_graph_web.run -- \
-        --decoder-accel compile --vae-accel tensorrt
     ```
 
     The launcher starts the Python backend on `:1318` and a Next.js dev server
     on `:6660`. First run installs `web/node_modules` automatically
     (Node.js 20+ required). Backend flags go after the `--` separator.
+  </Step>
+
+  <Step title="Need a no-engine path?">
+    If you want to skip TensorRT builds for now, run setup without engines and
+    launch in `compile` mode:
+
+    ```bash
+    uv run demon-setup --skip-engines
+    uv run python -u -m demos.realtime_motion_graph_web.run -- --accel compile
+    ```
+
+    `compile` needs no engines, but the first tick pays a long
+    `torch.compile` warmup. See [TensorRT Engines](/getting-started/tensorrt)
+    for the manual build commands and storage layout.
   </Step>
 
   <Step title="Open the app and play">
@@ -76,6 +64,8 @@ browser. If you just want to play without a GPU, skip straight to
     - Edit the prompt and press <kbd>Enter</kbd> to re-encode it live.
     - Press <kbd>O</kbd> to open the **Full Controls** drawer for everything
       else: LoRAs, channel faders, guidance, automation curves.
+    - The spectral-control sliders live in the **Experimental** tab. They steer
+      generation itself, so sweep slowly and listen to upcoming audio.
 
     The full control surface is documented in
     [The Demo App](/demo/overview).

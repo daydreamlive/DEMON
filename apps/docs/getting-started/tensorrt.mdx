@@ -20,10 +20,10 @@ All builds go through one entry point:
 
 ```bash
 # Preview what would be built:
-uv run python -m acestep.engine.trt.build --all --dry-run
+uv run python -m acestep.engine.trt.build --preset minimal --dry-run
 
-# Recommended starting point — full 60 s set (decoder refit + VAE):
-uv run python -m acestep.engine.trt.build --all --duration 60
+# Recommended starting point — what `demon-setup` builds:
+uv run python -m acestep.engine.trt.build --preset minimal
 
 # Full matrix (decoder refit + VAE for 60 s / 120 s / 240 s):
 uv run python -m acestep.engine.trt.build --all
@@ -55,11 +55,13 @@ Engines land under the model root (default
 
 ```text
 trt_engines/
-  _onnx*/                          # shared ONNX cache, reused across durations
-  decoder_mixed_refit_b8_60s/
-    decoder_mixed_refit_b8_60s.engine
+  _onnx_vae/                       # shared VAE ONNX cache
+  _onnx_acestep-v15-turbo/         # checkpoint-specific decoder ONNX cache
+  spectral_decoder_mixed_refit_b8_60s/
+    spectral_decoder_mixed_refit_b8_60s.engine
   vae_encode_fp16_60s/
-  vae_decode_fp16_3to30s/          # windowed VAE decode (3–30 s), duration-agnostic
+  vae_decode_fp16_60s/
+  vae_decode_fp16_1s_fixed/        # windowed VAE decode, duration-agnostic
   build_report.csv
 ```
 
@@ -80,8 +82,8 @@ the log). If no suitable engine exists, the UI receives an `engine_not_built`
 error that includes the exact build command to run.
 
 For `acestep-v15-turbo` (default, 2B) the decoder profiles are
-`decoder_mixed_refit_b8_{60,120,240}s`; VAE engines are shared across
-checkpoints. The windowed `vae_decode_fp16_3to30s` engine is used whenever
+`spectral_decoder_mixed_refit_b8_{60,120,240}s`; VAE engines are shared across
+checkpoints. The windowed `vae_decode_fp16_1s_fixed` engine is used whenever
 `vae_window > 0` — it is built once and reused for every duration and
 checkpoint.
 
@@ -134,12 +136,14 @@ canonical helper:
 
 ```python
 from acestep.engine.session import Session
-from acestep.paths import default_trt_engines
+from acestep.paths import available_trt_engines
+
+engines, picked_duration = available_trt_engines(duration_s=60.0)
 
 session = Session(
     decoder_backend="tensorrt",
     vae_backend="tensorrt",
-    trt_engines=default_trt_engines(),
-    vae_window=3.0,
+    trt_engines=engines,
+    vae_window=0.36,
 )
 ```

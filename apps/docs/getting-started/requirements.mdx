@@ -9,7 +9,7 @@ icon: "microchip"
 | Component | Requirement |
 |---|---|
 | GPU | NVIDIA, CUDA-capable. Tested on RTX 3090, 4090, and 5090; H100 is used for cloud deployments. |
-| VRAM | ~24 GB for full TensorRT mode with 60 s engines (RTX 4090 class). Less is workable with mixed backends, shorter engine durations, and `--offload-text-encoder`. |
+| VRAM | ~24 GB for full TensorRT mode with the 60 s minimal engine set (RTX 4090 class). Less is workable with mixed backends, shorter engine durations, and `--offload-text-encoder`. |
 | Audio | Any output device; the web demo plays through the browser. |
 
 <Note>
@@ -45,11 +45,13 @@ root, by default:
 ~/.daydream-scope/models/demon/
 ```
 
-Override it with the `ACESTEP_MODELS_DIR` environment variable. ACE-Step v1.5
-checkpoints and audio fixtures auto-download on first use (fixtures come from
-the [`daydreamlive/demon-fixtures-v2`](https://huggingface.co/datasets/daydreamlive/demon-fixtures-v2)
-Hugging Face dataset). LoRAs are *not* auto-downloaded — drop `.safetensors`
-files into `$ACESTEP_MODELS_DIR/loras/`.
+Override it with the `ACESTEP_MODELS_DIR` environment variable. `uv run
+demon-setup` downloads the ACE-Step v1.5 checkpoints, a starter pack of 16
+genre LoRAs, and the minimal TensorRT engine set. Audio fixtures stream on
+first use from the
+[`daydreamlive/demon-fixtures-v2`](https://huggingface.co/datasets/daydreamlive/demon-fixtures-v2)
+Hugging Face dataset. To skip the starter LoRA pack, pass `--skip-loras` or
+set `DEMON_SKIP_STARTER_LORAS=1`.
 
 <Warning>
 TensorRT engines are **not portable**: they are specific to the TensorRT

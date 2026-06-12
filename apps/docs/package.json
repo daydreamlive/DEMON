@@ -5,7 +5,7 @@
   "description": "DEMON documentation site (Mintlify)",
   "scripts": {
     "dev": "mintlify dev --port 3033",
-    "build": "mintlify build",
+    "build": "mintlify validate",
     "broken-links": "mintlify broken-links"
   },
   "devDependencies": {

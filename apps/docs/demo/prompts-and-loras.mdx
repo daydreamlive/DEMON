@@ -29,8 +29,10 @@ moods, production descriptors). The shipped defaults are in
 The LoRA browser lists every `.safetensors` under the server's
 `$ACESTEP_MODELS_DIR/loras/` directory (default
 `~/.daydream-scope/models/demon/loras/`), grouped by genre from sidecar
-metadata. LoRAs are not auto-downloaded — drop files in that folder and
-refresh.
+metadata. `demon-setup` downloads a starter pack of 16 genre LoRAs so hot
+swapping works immediately; skip it with `uv run demon-setup --skip-loras` or
+`DEMON_SKIP_STARTER_LORAS=1`. Drop your own `.safetensors` files in that
+folder, optionally with `<stem>.metadata.json` sidecars, and refresh.
 
 - **Click to enable / disable.** Enabling allocates a strength knob
   (`lora_str_<id>`) and applies the weights live. On a TensorRT decoder this

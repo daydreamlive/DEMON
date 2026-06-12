@@ -17,7 +17,7 @@ from acestep.constants import TASK_INSTRUCTIONS
 session = Session(
     decoder_backend="compile",  # or "tensorrt", "eager"
     vae_backend="compile",
-    vae_window=3.0,             # 0 = full decode; >0 enables windowed decode
+    vae_window=0.36,            # 0 = full decode; >0 enables windowed decode
 )
 
 # Load audio, encode it, extract semantic context (cache across iterations).
@@ -84,13 +84,14 @@ Pass engine paths explicitly, or use the canonical helper for the default
 checkpoint:
 
 ```python
-from acestep.paths import default_trt_engines
+from acestep.paths import available_trt_engines
 
+engines, picked_duration = available_trt_engines(duration_s=60.0)
 session = Session(
     decoder_backend="tensorrt",
     vae_backend="tensorrt",
-    vae_window=3.0,
-    trt_engines=default_trt_engines(),
+    vae_window=0.36,
+    trt_engines=engines,
 )
 ```
 
@@ -99,9 +100,9 @@ Explicit paths follow the layout in
 
 ```python
 trt_engines={
-    "decoder": "trt_engines/decoder_mixed_refit_b8_60s/decoder_mixed_refit_b8_60s.engine",
+    "decoder": "trt_engines/spectral_decoder_mixed_refit_b8_60s/spectral_decoder_mixed_refit_b8_60s.engine",
     "vae_encode": "trt_engines/vae_encode_fp16_60s/vae_encode_fp16_60s.engine",
-    "vae_decode": "trt_engines/vae_decode_fp16_3to30s/vae_decode_fp16_3to30s.engine",
+    "vae_decode": "trt_engines/vae_decode_fp16_1s_fixed/vae_decode_fp16_1s_fixed.engine",
 }
 ```
 

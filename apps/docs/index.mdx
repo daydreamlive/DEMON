@@ -52,12 +52,12 @@ client — drives those same primitives.
 ## Headline numbers
 
 Measured on an RTX 5090 with ACE-Step v1.5 turbo (2B), all-TRT, ring depth 4,
-8 diffusion steps, 3 s VAE decode window, 60 s source:
+8 diffusion steps, the fixed 1 s windowed VAE decode engine, and a 60 s source:
 
 | Metric | Value |
 |---|---|
 | Tick (decoder forward, depth 4) | ~43 ms |
-| Decode (windowed VAE, 3 s) | 4.5 ms |
+| Decode (windowed VAE) | 4.5 ms |
 | Throughput | 11.3 generations/second |
 | Parameter convergence | ~248 ms |
 | Per-frame control resolution | 25 Hz (40 ms latent steps) |
@@ -69,7 +69,7 @@ Measured on an RTX 5090 with ACE-Step v1.5 turbo (2B), all-TRT, ring depth 4,
 
 <CardGroup cols={2}>
   <Card title="Run it locally" icon="rocket" href="/getting-started/quickstart">
-    One `uv sync`, one launcher command, and the demo is playing on your own GPU.
+    `uv sync`, `uv run demon-setup`, then the launcher on your own GPU.
   </Card>
   <Card title="Tour the demo app" icon="compass" href="/demo/interface">
     The HUD, the hero macros, the Full Controls drawer, and the start flow.
