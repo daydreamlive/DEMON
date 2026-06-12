@@ -2,12 +2,21 @@
 
 Exposes every user-facing demo action as an MCP tool so an LLM (Claude
 Code or any MCP client) can drive an already-running session for
-automated testing. The MCP attaches to a *live* session — the user
-opens the demo in their browser as usual, and the MCP injects commands
-into that session over an HTTP control bus the server hosts on
-``127.0.0.1:1319``. The front-end's own WebSocket stays primary, so
-MCP-driven changes propagate back to the browser via the same ack
-messages the UI already listens to.
+automated testing. Two ways to get a session:
+
+1. **Attach** (the original mode): the user opens the demo in their
+   browser as usual, and the MCP injects commands into that session
+   over an HTTP control bus the server hosts on ``127.0.0.1:1319``.
+   The front-end's own WebSocket stays primary, so MCP-driven changes
+   propagate back to the browser via the same ack messages the UI
+   already listens to.
+2. **Headless** (``headless_start``): the MCP spawns its own PRIMARY
+   WebSocket client (:mod:`.headless_client`) with a simulated audio
+   clock — no browser needed. The session registers in the same
+   registry, so every other tool drives it unchanged, and the client
+   measures realtime health (slice lead vs the playhead, staleness of
+   the audio under the playhead) so generation-lag bugs reproduce
+   headlessly via ``headless_lag_report``.
 
 Run as a stdio MCP server. Example Claude Code config:
 
@@ -36,6 +45,8 @@ import json
 import os
 import struct
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 from math import gcd
@@ -59,6 +70,7 @@ from acestep.streaming.knobs import (
     knob_catalog,
     knob_specs,
 )
+from .headless_client import HeadlessClient
 from .protocol import coerce_command_payload, wire_contract
 
 # MCP runs as a single global process, so we pre-fetch the canonical
@@ -161,9 +173,9 @@ def _resolve_session_id(session_id: Optional[str]) -> str:
     sessions = _list_sessions()
     if not sessions:
         raise RuntimeError(
-            "No active session. Open the demo in your browser first "
-            f"(http://localhost:{BACKEND_PORT}/) — the MCP attaches to the "
-            "live session; it does not spawn its own.",
+            "No active session. Either open the demo in your browser "
+            f"(http://localhost:{BACKEND_PORT}/) or start a headless one "
+            "with the headless_start tool.",
         )
     if session_id is not None:
         for s in sessions:
@@ -845,6 +857,279 @@ async def write_audio(
         msg["refresh_timbre"] = True
     return _send_cmd(
         session_id, msg, audio=_waveform_to_audio_bytes(waveform),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tools — headless session (no browser)
+# ---------------------------------------------------------------------------
+#
+# The headless client is the PRIMARY transport for its session: it owns
+# the playhead clock and the params tick, exactly like the browser. All
+# other MCP tools keep working against it through the control bus (it
+# mirrors params_echo back, so knob changes persist). One headless
+# client per MCP process — the backend is one-session-per-pod anyway,
+# and starting a session preempts whatever session currently owns the
+# GPU (including a live browser tab).
+
+_HEADLESS_LOCK = threading.Lock()
+_HEADLESS: Optional[HeadlessClient] = None
+
+
+def _headless() -> HeadlessClient:
+    with _HEADLESS_LOCK:
+        client = _HEADLESS
+    if client is None or client.player is None:
+        raise RuntimeError(
+            "No headless session. Start one with headless_start first.",
+        )
+    if not client.running:
+        raise RuntimeError(
+            "Headless session has stopped "
+            f"({client.closed_reason or 'stopped by user'}). "
+            "Start a new one with headless_start.",
+        )
+    return client
+
+
+def _stop_headless_locked() -> None:
+    global _HEADLESS
+    if _HEADLESS is not None:
+        _HEADLESS.stop()
+        _HEADLESS = None
+
+
+@mcp.tool()
+async def headless_start(
+    fixture: Optional[str] = None,
+    audio_file: Optional[str] = None,
+    prompt: str = "instrumental music",
+    sde: bool = False,
+    lora: bool = False,
+    depth: int = 4,
+    steps: int = 8,
+    params_hz: float = 30.0,
+    playback_rate: float = 1.0,
+    record_playback_s: float = 120.0,
+    config_overrides: Optional[dict] = None,
+    timeout_s: float = 240.0,
+) -> dict:
+    """Start a headless streaming session — the frontend's realtime
+    behavior with no browser.
+
+    Connects to the backend as the PRIMARY WebSocket client, simulates
+    the audible playhead at wall-clock rate, reports it via the params
+    channel like the browser does, decodes every audio slice, and
+    measures realtime health. Typical lag-bug repro:
+
+        headless_start(fixture="...") → wait / drive knobs & prompts
+        → headless_lag_report() → lead_s p5 < 0 or stale_ticks > 0
+        means generation fell behind the playhead.
+
+    Source: pass ``fixture`` (a name from list_fixtures; loaded
+    server-side, no upload) or ``audio_file`` (local path, uploaded as
+    PCM). Exactly one is required.
+
+    ``playback_rate`` skews the simulated clock (e.g. 1.02 reproduces a
+    fast client AudioContext). ``record_playback_s`` rings that many
+    seconds of the audio the simulated listener "heard" for
+    headless_dump_audio. ``config_overrides`` merges extra session
+    config keys (see the config catalog in describe_protocol), e.g.
+    ``{"lead_floor_s": 0.1}``.
+
+    WARNING: the backend is one-session-per-pod — this PREEMPTS any
+    live session, including a user's open browser tab.
+
+    First session on a cold backend can take minutes (TRT engine load);
+    ``timeout_s`` bounds the wait. Returns the ready frame summary.
+    """
+    global _HEADLESS
+    if (fixture is None) == (audio_file is None):
+        raise ValueError("pass exactly one of fixture / audio_file")
+
+    waveform: Optional[np.ndarray] = None
+    config: dict[str, Any] = {
+        "prompt": prompt,
+        "sde": bool(sde),
+        "lora": bool(lora),
+        "depth": int(depth),
+        "steps": int(steps),
+        "client_id": "mcp-headless",
+    }
+    if fixture is not None:
+        known = _http_json("GET", f"{BACKEND_HTTP}/api/fixtures", timeout=10.0)
+        if fixture not in known:
+            raise ValueError(
+                f"unknown fixture {fixture!r}; see list_fixtures",
+            )
+        config["fixture_name"] = fixture
+        config["use_server_fixture"] = True
+    else:
+        waveform = _load_audio(audio_file)
+        config["fixture_name"] = Path(audio_file).name
+    if config_overrides:
+        config.update(dict(config_overrides))
+
+    ws_url = f"ws://{BACKEND_HOST}:{BACKEND_PORT}/"
+    with _HEADLESS_LOCK:
+        _stop_headless_locked()
+        client = HeadlessClient(
+            ws_url, config, waveform,
+            params_hz=params_hz,
+            playback_rate=playback_rate,
+            record_playback_s=record_playback_s,
+        )
+        _log(f"headless_start url={ws_url} config={config}")
+        try:
+            ready = client.start(timeout_s=float(timeout_s))
+        except Exception as exc:
+            raise RuntimeError(
+                f"headless session failed to start: {exc} "
+                f"(is the demo backend running on "
+                f"{BACKEND_HOST}:{BACKEND_PORT}?)",
+            ) from exc
+        _HEADLESS = client
+    return {
+        "session_id": ready.get("session_id"),
+        "duration_s": ready.get("duration"),
+        "sample_rate": ready.get("sample_rate"),
+        "channels": ready.get("channels"),
+        "bpm": ready.get("bpm"),
+        "key": ready.get("key"),
+        "time_signature": ready.get("time_signature"),
+        "checkpoint": ready.get("checkpoint"),
+        "geometry": ready.get("geometry"),
+        "note": (
+            "Headless session is live and registered; all other tools "
+            "target it by default. Use headless_lag_report to measure "
+            "generation vs playhead."
+        ),
+    }
+
+
+@mcp.tool()
+async def headless_stop() -> dict:
+    """Stop the headless session and disconnect (the backend tears the
+    session down like a closed browser tab)."""
+    with _HEADLESS_LOCK:
+        had = _HEADLESS is not None
+        _stop_headless_locked()
+    return {"stopped": had}
+
+
+@mcp.tool()
+async def headless_status() -> dict:
+    """Headless session health: playhead position, slice count, a
+    10 s lag snapshot, and the most recent server events
+    (swap_ready / errors / acks)."""
+    with _HEADLESS_LOCK:
+        client = _HEADLESS
+    if client is None:
+        return {"running": False, "note": "no headless session"}
+    return client.status()
+
+
+@mcp.tool()
+async def headless_lag_report(
+    window_s: float = 30.0,
+    stale_threshold_s: float = 3.0,
+    include_timeline: bool = False,
+) -> dict:
+    """Generation-vs-playhead lag report over the trailing ``window_s``.
+
+    Reads two measurements taken on every event in the headless client:
+
+    * ``slices.lead_s`` — for each received audio slice, how far AHEAD
+      of the simulated playhead its first sample landed (seconds,
+      circular-folded). Healthy: roughly the adaptive lead
+      (~0.25–1.35 s). Negative percentiles mean slices are landing
+      BEHIND the listener — generation is lagging the playhead.
+    * ``ticks.staleness_s`` — at each params tick, the age of the audio
+      currently under the playhead. Healthy: near the lead. Values
+      approaching ``buffer_duration_s`` mean the listener is hearing
+      audio from a previous lap, i.e. the generator fell a full lap
+      behind. ``stale_ticks`` counts ticks above ``stale_threshold_s``.
+
+    ``include_timeline=True`` adds a per-second rollup (min lead, max
+    staleness, slice count) to localize WHEN the lag happened —
+    correlate it with knob/prompt changes you issued.
+    """
+    client = _headless()
+    return client.tracker.report(
+        window_s=float(window_s),
+        stale_threshold_s=float(stale_threshold_s),
+        include_timeline=bool(include_timeline),
+    )
+
+
+@mcp.tool()
+async def headless_observe(duration_s: float = 15.0) -> dict:
+    """Block for ``duration_s`` of streaming, then return the lag report
+    for exactly that window. One-shot measurement: start it right after
+    the action you want to evaluate (a knob sweep, a prompt change, a
+    swap)."""
+    client = _headless()
+    duration_s = min(max(float(duration_s), 1.0), 110.0)
+    time.sleep(duration_s)
+    if not client.running:
+        raise RuntimeError(
+            f"headless session died during observation: "
+            f"{client.closed_reason}",
+        )
+    return client.tracker.report(
+        window_s=duration_s, include_timeline=True,
+    )
+
+
+@mcp.tool()
+async def headless_seek(seconds: float) -> dict:
+    """Jump the simulated playhead (like the user scrubbing the
+    transport). The next params tick reports the new position to the
+    server, which re-anchors generation there."""
+    client = _headless()
+    client.player.seek(float(seconds))
+    return {"playhead_s": round(client.player.seconds(), 3)}
+
+
+@mcp.tool()
+async def headless_set_playback(
+    rate: Optional[float] = None,
+    paused: Optional[bool] = None,
+) -> dict:
+    """Adjust the simulated clock. ``rate`` ≠ 1.0 reproduces client
+    clock skew (a fast clock eats the generation lead); ``paused``
+    freezes the reported playhead (browser tab in background /
+    suspended AudioContext)."""
+    client = _headless()
+    if rate is not None:
+        client.player.set_rate(float(rate))
+    if paused is not None:
+        client.player.set_paused(bool(paused))
+    return {
+        "rate": client.player.rate,
+        "paused": client.player.paused,
+        "playhead_s": round(client.player.seconds(), 3),
+    }
+
+
+@mcp.tool()
+async def headless_dump_audio(
+    path: str,
+    source: str = "played",
+    last_s: Optional[float] = 30.0,
+) -> dict:
+    """Save captured audio to a WAV file for listening/inspection.
+
+    ``source="played"``: the stream the simulated listener heard
+    (the ring of the last record_playback_s seconds) — stale or
+    repeated audio from a lagging generator is audible here exactly as
+    a user would hear it. ``source="buffer"``: the client's current
+    mirror of the server's full circular buffer.
+    """
+    client = _headless()
+    return client.dump_audio(
+        str(path), source=str(source),
+        last_s=float(last_s) if last_s is not None else None,
     )
 
 
