@@ -6,6 +6,7 @@ import { AudioPlayer } from "@demon/client";
 import { listFixtures, loadFixtureAudio, pickDefaultFixture } from "@/engine/audio/loadFixture";
 import { createNetworkMonitor } from "@/engine/networkMonitor";
 import { defaultWsUrl } from "@/engine/podUrl";
+import { noteSliceLead } from "@/engine/sliceLeadTracker";
 import { PREEMPTED_CLOSE_CODE, RemoteBackend, SAMPLE_RATE, SLICE_FLAG_DELTA } from "@demon/client";
 import { getApiKey, getClientId } from "@/engine/rtmgConfig";
 import { WsReconnector } from "@demon/client";
@@ -236,17 +237,29 @@ function wireRemoteListeners(
     // bleeding through after a swap.
     if (detail.epoch !== player.swapCount) return;
     const startFrame = Math.floor(detail.startSample);
-    // Knob→ear latency trace: how far AHEAD of the live playhead each
-    // fresh slice lands. `window.__demonLatTrace = true` to enable.
+    // Landing lead at APPLY time: how far ahead of the audible playhead
+    // this slice lands, folded modulo track duration into [-dur/2, dur/2)
+    // (the loop pre-write — slices at the buffer head while the playhead
+    // nears the end — is a small positive lead, not -duration). Negative
+    // = the slice patched audio that already played, i.e. the listener
+    // heard raw source there. Reported back to the server via the params
+    // channel (slice_lead_s) so it can widen its playback lead.
+    const startSec = startFrame / SAMPLE_RATE;
+    const playheadSec = player.positionSec;
+    let lead = startSec - playheadSec;
+    const dur = player.duration;
+    if (dur > 0) {
+      lead = ((((lead + dur / 2) % dur) + dur) % dur) - dur / 2;
+    }
+    noteSliceLead(lead);
+    // Knob→ear latency trace: `window.__demonLatTrace = true` to enable.
     // A steady `lead` ≈ the floor latency before any change is audible.
     if ((window as unknown as { __demonLatTrace?: boolean }).__demonLatTrace) {
-      const startSec = startFrame / SAMPLE_RATE;
-      const playheadSec = player.positionSec;
       // eslint-disable-next-line no-console
       console.log(
         `[lat] slice numGens=${detail.numGens} ` +
           `startSec=${startSec.toFixed(3)} playheadSec=${playheadSec.toFixed(3)} ` +
-          `lead=${(startSec - playheadSec).toFixed(3)} ` +
+          `lead=${lead.toFixed(3)} ` +
           `decMs=${detail.decMs?.toFixed?.(1)} tickMs=${detail.tickMs?.toFixed?.(1)} ` +
           `t=${performance.now().toFixed(0)}`,
       );

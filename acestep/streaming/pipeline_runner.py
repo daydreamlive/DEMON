@@ -46,6 +46,52 @@ T = 1500
 _LAT_TRACE = os.environ.get("DEMON_LAT_TRACE", "") not in ("", "0")
 
 
+class ReportStalenessEstimator:
+    """Estimates how stale each client playhead report is at arrival.
+
+    The client stamps every params message with a monotonic send time
+    (arbitrary origin). ``offset = arrival_wall - client_time`` is then
+    ``(clock origin delta) + (transit time)``: the origin delta is
+    unknowable but constant, so the *minimum* offset seen over a sliding
+    window approximates ``delta + min_transit``, and any excess above
+    that minimum is queueing delay — time the report spent buffered in
+    the socket, a tunnel middlebox, or the server's own recv backlog.
+    That excess is exactly how far the reported position lags the
+    client's true playhead.
+
+    Windowed (rather than all-time) minimum so client/server crystal
+    drift (~tens of ppm) can't slowly poison the baseline over a long
+    session. A congestion episode longer than the window degrades
+    gracefully: the minimum rises, staleness reads low, and behavior
+    falls back to today's uncompensated clock.
+    """
+
+    _WINDOW_S = 120.0
+    _BUCKET_S = 10.0
+
+    def __init__(self):
+        # (bucket_index, min_offset_in_bucket), oldest first.
+        self._buckets: list = []
+
+    def staleness_s(self, client_time_s: float, now_s: float) -> float:
+        offset = now_s - float(client_time_s)
+        bucket = int(now_s / self._BUCKET_S)
+        if self._buckets and self._buckets[-1][0] == bucket:
+            if offset < self._buckets[-1][1]:
+                self._buckets[-1] = (bucket, offset)
+        else:
+            self._buckets.append((bucket, offset))
+            # Age-based eviction (not count-based): after a traffic gap
+            # the bucket list is sparse, and counting buckets would let
+            # a minimum far older than the window keep anchoring the
+            # baseline.
+            cutoff = bucket - int(self._WINDOW_S / self._BUCKET_S)
+            while self._buckets and self._buckets[0][0] < cutoff:
+                self._buckets.pop(0)
+        floor = min(m for _, m in self._buckets)
+        return max(0.0, offset - floor)
+
+
 class _RemotePlayheadClock:
     """Monotonic estimate of the client's audible playhead.
 
@@ -55,6 +101,17 @@ class _RemotePlayheadClock:
     the most recent observed sample and advances by wall time between
     anchors, so VAE scheduling remains continuous even when controls and
     WebSocket heartbeats are quiet.
+
+    Staleness compensation: a report that spent time queued (congested
+    uplink, tunnel buffering, recv backlog) describes where the playhead
+    was when it was SENT, not where it is now. The session estimates that
+    queueing delay per report (see :class:`ReportStalenessEstimator`) and
+    publishes it as ``audio_eng.position_staleness_s``; anchoring the
+    report's wall time that far in the past projects the estimate forward
+    onto the client's true playhead. Without this, a growing backlog
+    walks the estimate steadily into the past and every rendered slice
+    lands behind the listener — heard as the raw source playing instead
+    of the processed audio.
     """
 
     def __init__(self, audio_eng):
@@ -68,9 +125,12 @@ class _RemotePlayheadClock:
         now = time.monotonic()
         observed = int(self.audio_eng.position) % n
         if observed != self._observed:
+            staleness = float(
+                getattr(self.audio_eng, "position_staleness_s", 0.0) or 0.0
+            )
             self._observed = observed
             self._anchor_sample = observed
-            self._anchor_wall_s = now
+            self._anchor_wall_s = now - staleness
         elapsed = max(0.0, now - self._anchor_wall_s)
         return int(self._anchor_sample + elapsed * SAMPLE_RATE) % n
 
@@ -290,6 +350,46 @@ class PipelineRunner:
         self._rebuild_prewarm_cap_s = 1.3
         self._playhead_clock = _RemotePlayheadClock(self.audio_eng)
 
+        # ----- Transport lead: close the loop on where slices LAND ---------
+        # Everything above sizes the lead from server-side signals, but the
+        # binding constraint is on the CLIENT: a slice must be applied to the
+        # playback buffer before the playhead reaches it, and between our
+        # write and that apply sit WS transit, decode, and the client's main-
+        # thread scheduling (a background-throttled tab applies slices in
+        # ~1 s bursts). The client reports the worst landing lead it observed
+        # via the params channel (``slice_lead_s``, negative = the slice
+        # landed in already-played audio and the listener heard raw source);
+        # ``_transport_extra_s`` rises immediately to cover the deficit and
+        # decays slowly while reports stay healthy. Asymmetric on purpose:
+        # the deficit signal arrives late (one client report cycle + uplink),
+        # so raise-fast/decay-slow is what keeps the loop stable.
+        self._transport_extra_s = 0.0
+        # Keep reported leads at or above this margin before easing off.
+        self._slice_lead_margin_s = 0.15
+        # Hard cap: beyond this the client isn't late, it's not consuming
+        # (e.g. mid-drain of a long backlog) — writing further ahead just
+        # queues more. Also bounds added knob→ear latency.
+        self._transport_extra_cap_s = 3.0
+        # Decay time constant. Max decay rate = cap/tau = 0.15 s/s, far
+        # below the playhead rate, so decode_start stays monotonic during
+        # release (same invariant the stall-bump tau preserves).
+        self._transport_release_tau_s = 20.0
+        # Wall stamp of the last report folded in (rate-limits the fold to
+        # one per client report).
+        self._last_slice_lead_wall_s = 0.0
+        # Most recent reported lead value + when it was folded. The decay
+        # below is CONDITIONAL on these: shrink the transport extra only
+        # while reports show comfortable headroom (lead > margin +
+        # hysteresis) or have gone stale. An unconditional fixed-rate
+        # decay limit-cycles on a saturated link: extra decays, the next
+        # report dips negative, extra re-raises — audible as alternating
+        # clean/raw seconds. Hold-in-band turns that into a stable lead.
+        self._last_slice_lead_value = None
+        self._transport_decay_hysteresis_s = 0.2
+        # Reports older than this allow decay regardless (client gone
+        # quiet — drain the extra rather than pinning latency forever).
+        self._transport_report_stale_s = 10.0
+
     # ---- delegates kept for the session's runner_holder contract ----------
 
     def mark_hint_dirty(self) -> None:
@@ -324,7 +424,12 @@ class PipelineRunner:
             + self._lead_safety_margin_s
             + self._stall_extra_s
         )
-        return min(max(lead, self._lead_floor_s), self._decode_lead_ceiling_s)
+        lead = min(max(lead, self._lead_floor_s), self._decode_lead_ceiling_s)
+        # Transport extra rides OUTSIDE the clamp: the ceiling bounds the
+        # server-side adaptive term, while the transport term covers the
+        # client-side path the server can't observe locally. It has its
+        # own cap (_transport_extra_cap_s).
+        return lead + self._transport_extra_s
 
     def _note_decode_gap(self) -> float:
         """Fold this write's wall-clock gap since the previous write into the
@@ -353,6 +458,28 @@ class PipelineRunner:
         )
         # Time-based decay of the one-shot stall bump.
         self._stall_extra_s *= math.exp(-gap / self._stall_release_tau_s)
+        # Conditional decay of the transport lead — only while the client
+        # reports comfortable headroom (or went quiet). See the hysteresis
+        # comment in __init__; deficit reports re-raise it in
+        # _fold_slice_lead_report.
+        if self._transport_extra_s > 0.0:
+            last_lead = self._last_slice_lead_value
+            report_age = now - self._last_slice_lead_wall_s
+            healthy = (
+                last_lead is not None
+                and last_lead > (
+                    self._slice_lead_margin_s
+                    + self._transport_decay_hysteresis_s
+                )
+            )
+            stale = (
+                last_lead is None
+                or report_age > self._transport_report_stale_s
+            )
+            if healthy or stale:
+                self._transport_extra_s *= math.exp(
+                    -gap / self._transport_release_tau_s,
+                )
         # Reactive shortfall: only the part of this gap beyond the slice width
         # (plus a small margin) can leave a hole; lift the bump to cover it.
         shortfall = gap - self.vae_window + self._lead_safety_margin_s
@@ -364,6 +491,41 @@ class PipelineRunner:
         if gap > self._rebuild_prewarm_s:
             self._rebuild_prewarm_s = min(gap, self._rebuild_prewarm_cap_s)
         return gap
+
+    def _fold_slice_lead_report(self) -> None:
+        """Fold the client's latest landing-lead report into the transport
+        lead. Called once per windowed tick, rate-limited to one fold per
+        report by the report's arrival stamp.
+
+        Skipped while a loop band is armed: the client computes leads
+        linearly, but band playback wraps B→A, so a render correctly
+        pre-filling the seam after A reads as a large NEGATIVE linear lead
+        and would spuriously inflate the transport term.
+        """
+        if getattr(self.audio_eng, "loop_band", None) is not None:
+            return
+        lead = getattr(self.audio_eng, "observed_slice_lead_s", None)
+        if lead is None:
+            return
+        wall = float(
+            getattr(self.audio_eng, "observed_slice_lead_wall_s", 0.0) or 0.0
+        )
+        if wall <= self._last_slice_lead_wall_s:
+            return
+        self._last_slice_lead_wall_s = wall
+        self._last_slice_lead_value = float(lead)
+        deficit = self._slice_lead_margin_s - float(lead)
+        if deficit > 0.0:
+            # ADDITIVE raise: the reported lead was observed under the
+            # transport extra already in effect, so a shortfall means the
+            # current total is short by that amount. (A max() rule would
+            # equilibrate with reports sitting BELOW the margin by the
+            # extra's size.) Rate-limited to one fold per client report;
+            # the cap bounds drain-phase overshoot and added latency.
+            self._transport_extra_s = min(
+                self._transport_extra_s + deficit,
+                self._transport_extra_cap_s,
+            )
 
     def _playhead_seconds_now(self) -> float:
         return self._playhead_clock.seconds()
@@ -570,6 +732,10 @@ class PipelineRunner:
                         if pd is None else pd
                     )
 
+                    # Fold the client's latest landing-lead report into the
+                    # transport lead before sizing this tick's advance.
+                    self._fold_slice_lead_report()
+
                     playhead_now = self._playhead_seconds_now()
                     # Predictive render start: target where the playhead
                     # WILL be by the time this slice lands in the buffer.
@@ -694,10 +860,23 @@ class PipelineRunner:
                         if note is not None:
                             note(current)
                         if _LAT_TRACE:
+                            # Wrap the lead modulo the playable duration and
+                            # center it in [-dur/2, dur/2): a slice written at
+                            # the buffer head while the playhead nears the end
+                            # (the loop pre-write) is a small POSITIVE lead,
+                            # not -duration. Without the fold, every wrap
+                            # printed lead_s≈-57 and drowned real underruns.
+                            lead_trace_s = win_start / SAMPLE_RATE - playhead_now
+                            if eff_dur > 0:
+                                lead_trace_s = (
+                                    (lead_trace_s + eff_dur / 2) % eff_dur
+                                    - eff_dur / 2
+                                )
                             logger.info(
                                 "lat_decode num_gens={} denoise={:.3f} "
                                 "fresh={} playhead_s={:.3f} advance_s={:.3f} "
                                 "gap_s={:.3f} ema_s={:.3f} stall_s={:.3f} "
+                                "transport_s={:.3f} staleness_s={:.3f} "
                                 "decode_start_s={:.3f} win_start_s={:.3f} "
                                 "win_end_s={:.3f} lead_s={:.3f} "
                                 "tick_ms={:.1f} dec_ms={:.1f}",
@@ -706,9 +885,13 @@ class PipelineRunner:
                                 int(is_fresh), playhead_now, advance_s,
                                 decode_gap_s, self._decode_interval_ema_s,
                                 self._stall_extra_s,
+                                self._transport_extra_s,
+                                float(getattr(
+                                    self.audio_eng, "position_staleness_s", 0.0,
+                                ) or 0.0),
                                 decode_start,
                                 win_start / SAMPLE_RATE, win_end / SAMPLE_RATE,
-                                win_start / SAMPLE_RATE - playhead_now,
+                                lead_trace_s,
                                 backend.last_tick_ms, backend.last_dec_ms,
                             )
                         if (

@@ -111,6 +111,16 @@ class AudioReady:
     dec_ms: float
     num_gens: int
     params: dict                   # snapshot of state.params at slice time
+    # Publish wall time (``time.monotonic()``). Slices are produced at up
+    # to ~20-50/s with heavily overlapping windows; when a transport can't
+    # drain that bitrate, its subscriber queue holds many seconds of
+    # slices that are each superseded by the next. The wire serializer
+    # uses this stamp to drop windowed slices that aged out in the queue
+    # INSTEAD of sending an ever-later backlog (delta consistency is
+    # preserved because the client mirror only advances for slices
+    # actually encoded+sent). 0.0 = unstamped (older publishers); never
+    # dropped.
+    published_wall_s: float = 0.0
 
 
 @dataclass(frozen=True)

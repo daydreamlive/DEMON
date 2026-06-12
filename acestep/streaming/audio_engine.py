@@ -28,6 +28,21 @@ class AudioEngine:
         self.channels = data.shape[1]
         self.current = data.copy()
         self.position = 0
+        # Estimated queueing delay (seconds) of the report that last set
+        # ``position``, written by the session alongside it (see
+        # StreamingSession.set_knobs / pipeline_runner.
+        # ReportStalenessEstimator). The runner's playhead clock advances
+        # its anchor by this much so delayed reports don't drag the
+        # estimate into the past. 0.0 when reports carry no send stamp.
+        self.position_staleness_s = 0.0
+        # Client-observed slice landing lead (seconds; negative = the
+        # slice patched audio the listener already played) and the wall
+        # time the report arrived. None until the client sends one. The
+        # runner's transport-lead controller folds each new report into
+        # its playback lead so slices land ahead of the ear even with
+        # network transit and client main-thread scheduling in the path.
+        self.observed_slice_lead_s = None
+        self.observed_slice_lead_wall_s = 0.0
         self.swap_count = 0
         # Active client loop band as ``(start_sec, end_sec)`` or ``None``.
         # Set cross-thread by the WS recv thread (backend ``loop_band``

@@ -108,7 +108,10 @@ from acestep.streaming.knobs import (
 )
 from acestep.streaming.families import make_backend
 from acestep.streaming.generator_backend import UnsupportedOperation
-from acestep.streaming.pipeline_runner import PipelineRunner
+from acestep.streaming.pipeline_runner import (
+    PipelineRunner,
+    ReportStalenessEstimator,
+)
 from acestep.streaming.source import (
     _normalize_time_signature,
     _resolve_bpm_key_source,
@@ -482,6 +485,9 @@ class StreamingSession:
         self.stream = stream
         self.state = state
         self.audio_eng = audio_eng
+        # Staleness estimator for client playhead reports (params channel
+        # ``client_time`` stamps). Only ever touched from set_knobs.
+        self._report_staleness = ReportStalenessEstimator()
         # Sample-exact audio mirror of the source latent, the substrate
         # for write_audio. Replaced wholesale (with a source_epoch bump)
         # by every swap; never mutated by playback.
@@ -839,6 +845,7 @@ class StreamingSession:
             dec_ms=float(params_snapshot.get("dec_ms", 0) or 0),
             num_gens=int(params_snapshot.get("num_gens", 0) or 0),
             params=params_snapshot,
+            published_wall_s=time.monotonic(),
         ))
 
     # ---- Pending drain (runs inside before_tick) -----------------------
@@ -1423,11 +1430,23 @@ class StreamingSession:
         playback_pos: float = 0.0,
         *,
         origin: CommandOrigin = CommandOrigin.PRIMARY,
+        client_time: float | None = None,
+        slice_lead_s: float | None = None,
     ) -> None:
         """Apply or echo a knob update. ``raw`` is the unfiltered
         wire dict; values land in ``virtual_knobs`` only on PRIMARY.
         EXTERNAL emits :class:`ParamsEcho` so the primary transport's
-        UI tween owns the smoothed sequence."""
+        UI tween owns the smoothed sequence.
+
+        ``client_time`` is the client's monotonic send stamp (seconds,
+        arbitrary origin) when the transport carries one. It feeds the
+        report-staleness estimate published to the runner's playhead
+        clock alongside ``playback_pos`` — see
+        :class:`~acestep.streaming.pipeline_runner.ReportStalenessEstimator`.
+
+        ``slice_lead_s`` is the client's worst observed slice landing
+        lead since its previous report (see the wire contract); the
+        runner widens its playback lead until these stay positive."""
         state = self.state
         raw = raw or {}
         # Activity gating: only bump on a real change. ``playback_pos``
@@ -1463,12 +1482,24 @@ class StreamingSession:
         # keys (curve specs, the playback clock) pass through untouched.
         # Silent clamp — never reject a 125 Hz tick over one bad value.
         clean, _errors = coerce_knob_values(raw, self._knob_specs_by_name)
+        staleness_s = 0.0
+        if client_time is not None:
+            try:
+                staleness_s = self._report_staleness.staleness_s(
+                    client_time, time.monotonic(),
+                )
+            except Exception:
+                staleness_s = 0.0
         with state._lock:
             self.virtual_knobs.update(clean)
             try:
                 self.audio_eng.position = int(playback_pos * SAMPLE_RATE) % max(
                     1, len(self.audio_eng.current),
                 )
+                self.audio_eng.position_staleness_s = staleness_s
+                if slice_lead_s is not None:
+                    self.audio_eng.observed_slice_lead_s = slice_lead_s
+                    self.audio_eng.observed_slice_lead_wall_s = time.monotonic()
             except Exception:
                 pass
 

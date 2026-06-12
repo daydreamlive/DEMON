@@ -215,6 +215,39 @@ COMMANDS: tuple = (
             FieldSpec("playback_pos", "float", default=0.0,
                       description="Playhead position in SECONDS (not a 0..1 "
                                   "ratio); used for time-keyed curve sampling."),
+            FieldSpec("client_time", "float", nullable=True,
+                      description="Client monotonic send time in seconds "
+                                  "(performance.now()/1000; arbitrary origin). "
+                                  "Lets the server estimate how stale a "
+                                  "playback_pos report is when messages queue "
+                                  "(network congestion, recv backlog) and "
+                                  "advance its playhead estimate accordingly. "
+                                  "Optional: absent on older clients, which "
+                                  "get the uncompensated behavior."),
+            FieldSpec("slice_bytes_rx", "float", nullable=True,
+                      description="Flow-control ack: cumulative bytes of "
+                                  "binary slice frames received on this "
+                                  "connection. The server holds back slice "
+                                  "emission while its sent-bytes minus this "
+                                  "ack exceeds the in-flight window "
+                                  "(DEMON_SLICE_WINDOW_BYTES, default 512 KiB) "
+                                  "so a bandwidth-limited link receives fresh "
+                                  "slices at link rate instead of an ever-"
+                                  "staler buffered backlog. Optional; absent "
+                                  "on older clients = no flow control."),
+            FieldSpec("slice_lead_s", "float", nullable=True,
+                      description="Worst observed slice landing lead since "
+                                  "the previous params message: how far AHEAD "
+                                  "of the audible playhead the most-behind "
+                                  "audio slice landed when the client applied "
+                                  "it (negative = it landed in already-played "
+                                  "audio and the raw source was heard). Folded "
+                                  "modulo track duration. The server widens "
+                                  "its playback lead to keep this positive — "
+                                  "covering network transit and client "
+                                  "main-thread scheduling (e.g. throttled "
+                                  "background tabs). Optional; omitted when "
+                                  "no slice arrived since the last report."),
         ),
         origin_sensitive=True,
         echo_event="params_echo",

@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 
+import { takeSliceLead } from "@/engine/sliceLeadTracker";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
@@ -81,7 +82,11 @@ export function useParamSync() {
       // Playback position is *seconds* (raw audio.positionSec), not a 0..1
       // ratio. The server uses absolute time for curve sampling.
       const playbackSec = session.player.positionSec;
-      session.remote.sendParams(raw, playbackSec);
+      // Worst slice landing lead since the previous tick (null when no
+      // slice arrived). The server widens its playback lead until these
+      // stay positive — see sliceLeadTracker.ts.
+      const sliceLead = takeSliceLead();
+      session.remote.sendParams(raw, playbackSec, sliceLead ?? undefined);
     }, TICK_MS);
 
     return () => {

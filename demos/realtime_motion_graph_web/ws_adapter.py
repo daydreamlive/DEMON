@@ -26,6 +26,7 @@ imports :func:`handle_client` directly from here.
 
 import contextlib
 import json
+import os
 import queue
 import socket
 import threading
@@ -999,7 +1000,82 @@ def _handle_client_body(
         except Exception:
             pass
 
+    # Backpressure shedding for the slice stream. Slices are produced at
+    # ~20-50/s of heavily overlapping windows (~1-2.5 MB/s encoded); on a
+    # link that can't drain that (SSH/IDE tunnel, congested uplink) the
+    # backlog accumulates in queues and the client receives every slice
+    # late — each patch lands behind the playhead and the listener hears
+    # the raw source. Each windowed slice is superseded by the next write
+    # over the same region (and the writer re-covers every region each
+    # lap), so dropping is always safe; drops happen BEFORE encoding so
+    # the delta mirror only advances for slices actually sent and the
+    # delta chain stays consistent. Two independent layers:
+    #
+    #   1. In-flight window (the load-bearing one): the client acks
+    #      cumulative received slice bytes via ``params.slice_bytes_rx``;
+    #      while sent-minus-acked exceeds the window, emission stops.
+    #      This is end-to-end — it sees the buffering a saturated SSH
+    #      channel or kernel socket buffer hides from the server (where
+    #      ws.send keeps succeeding while bytes crawl). Old clients send
+    #      no ack -> no flow control (legacy behavior).
+    #   2. Bus-queue age: a slice that waited > the age threshold between
+    #      publish and serialization (send thread blocked in ws.send) is
+    #      dropped. Catches the case where TCP itself pushes back.
+    #
+    # Healthy links keep in-flight at a few slices and queue age at
+    # milliseconds — neither layer engages. Full-buffer renders and
+    # unstamped events are never dropped.
+    _SLICE_MAX_QUEUE_AGE_S = 2.0
+    # 256 KiB default: covers bandwidth-delay products up to ~2.5 MB/s at
+    # 100 ms RTT (full slice-stream rate on healthy remote links) while
+    # keeping queue transit on a saturated link short — at 200 KB/s the
+    # in-flight backlog is ~1.3 s, comfortably inside the runner's
+    # transport-lead range. 512 KiB measured ~2.6 s transit at that rate,
+    # forcing the lead controller to its cap and oscillating around it.
+    try:
+        _SLICE_WINDOW_BYTES = max(
+            64 * 1024,
+            int(os.environ.get("DEMON_SLICE_WINDOW_BYTES", "") or 256 * 1024),
+        )
+    except ValueError:
+        _SLICE_WINDOW_BYTES = 256 * 1024
+    # [bytes sent, bytes acked (None until first ack), drops since last
+    # log, last log wall]. Shared between the WS subscriber thread
+    # (writer of sent/drops) and the recv thread (writer of acked);
+    # single-field updates under the GIL, no torn reads that matter.
+    _slice_flow = {
+        "sent": 0, "acked": None, "drops": 0, "log_wall": 0.0,
+    }
+
+    def _note_slice_drop(reason: str, detail: float) -> None:
+        _slice_flow["drops"] += 1
+        now = time.monotonic()
+        if now - _slice_flow["log_wall"] > 5.0:
+            logger.warning(
+                "slice_backpressure_drop n={} reason={} detail={:.2f} "
+                "sent={} acked={}",
+                _slice_flow["drops"], reason, detail,
+                _slice_flow["sent"], _slice_flow["acked"],
+            )
+            _slice_flow["drops"] = 0
+            _slice_flow["log_wall"] = now
+
     def _serialize_audio_ready(event: AudioReady) -> None:
+        is_windowed = (
+            event.published_wall_s > 0.0
+            and event.num_samples < len(codec.mirror)
+        )
+        if is_windowed:
+            acked = _slice_flow["acked"]
+            if acked is not None:
+                in_flight = _slice_flow["sent"] - acked
+                if in_flight > _SLICE_WINDOW_BYTES:
+                    _note_slice_drop("window", float(in_flight))
+                    return
+            age_s = time.monotonic() - event.published_wall_s
+            if age_s > _SLICE_MAX_QUEUE_AGE_S:
+                _note_slice_drop("age", age_s)
+                return
         frame = codec.encode(
             event.audio,
             start_sample=event.start_sample,
@@ -1020,6 +1096,12 @@ def _handle_client_body(
                     "type": "params_update",
                     "params": dict(event.params),
                 }))
+            # Count only after the send call returned (frame handed to
+            # the transport); the client acks the same byte total via
+            # params.slice_bytes_rx. Windowed slices only — the client
+            # counter excludes swap/stem binaries the same way.
+            if is_windowed:
+                _slice_flow["sent"] += len(frame)
         except ConnectionClosed:
             state.running = False
 
@@ -1328,8 +1410,32 @@ def _handle_client_body(
                     pp = float(data.get("playback_pos", 0.0))
                 except (TypeError, ValueError):
                     pp = 0.0
+                ct = data.get("client_time")
+                try:
+                    ct = float(ct) if ct is not None else None
+                except (TypeError, ValueError):
+                    ct = None
+                sl = data.get("slice_lead_s")
+                try:
+                    sl = float(sl) if sl is not None else None
+                except (TypeError, ValueError):
+                    sl = None
+                # Flow-control ack: monotone cumulative byte count. Only
+                # ever ratchets forward — a reordered/stale report can't
+                # reopen the window spuriously.
+                ack = data.get("slice_bytes_rx")
+                if ack is not None:
+                    try:
+                        ack = int(float(ack))
+                    except (TypeError, ValueError):
+                        ack = None
+                    if ack is not None:
+                        prev = _slice_flow["acked"]
+                        if prev is None or ack > prev:
+                            _slice_flow["acked"] = ack
                 streaming.set_knobs(
                     data.get("raw") or {}, pp, origin=origin,
+                    client_time=ct, slice_lead_s=sl,
                 )
             elif mtype == "loop_band":
                 streaming.set_loop_band(
@@ -1525,31 +1631,62 @@ def _handle_client_body(
             state.running = False
 
     def recv_loop():
+        # Params coalescing: each ``params`` message is a full knob
+        # snapshot plus a playhead report, sent at ~125 Hz, so when a
+        # backlog forms (recv thread starved by GIL-heavy GPU work, or a
+        # burst of delayed messages arriving at once after network
+        # congestion) only the NEWEST queued snapshot matters. Applying
+        # the whole backlog one-by-one re-anchors the runner's playhead
+        # clock to progressively staler positions — slices then render
+        # behind the live playhead and the client audibly falls back to
+        # the raw source. Buffer consecutive ``params`` and dispatch only
+        # the last one; any other message type flushes the pending params
+        # first so cross-type ordering is preserved.
+        def _dispatch_safe(data):
+            try:
+                _dispatch_message(data, ws.recv, "ws")
+            except Exception as exc:
+                logger.exception("ws_dispatch_error error={}", exc)
+
         while state.running:
+            pending_params = None
             try:
                 while True:
-                    msg = ws.recv(timeout=0.001)
+                    # While a params snapshot is pending, poll without
+                    # blocking so the drain reaches the newest message
+                    # before anything is applied; otherwise allow the
+                    # normal 1 ms wait.
+                    try:
+                        msg = ws.recv(
+                            timeout=0.0 if pending_params is not None else 0.001,
+                        )
+                    except TimeoutError:
+                        break
                     if isinstance(msg, str):
                         try:
                             data = json.loads(msg)
                         except Exception:
                             continue
-                        try:
-                            _dispatch_message(data, ws.recv, "ws")
-                        except Exception as exc:
-                            logger.exception(
-                                "ws_dispatch_error error={}", exc,
-                            )
+                        if (
+                            isinstance(data, dict)
+                            and data.get("type") == "params"
+                        ):
+                            pending_params = data  # newest wins
+                        else:
+                            if pending_params is not None:
+                                _dispatch_safe(pending_params)
+                                pending_params = None
+                            _dispatch_safe(data)
                     if not state.running:
                         break
-            except TimeoutError:
-                pass
             except ConnectionClosed:
                 state.running = False
-                break
             except Exception as exc:
                 logger.exception("recv_loop_error error={}", exc)
                 state.running = False
+            if pending_params is not None and state.running:
+                _dispatch_safe(pending_params)
+            if not state.running:
                 break
 
             # Drain the MCP / external control bus.

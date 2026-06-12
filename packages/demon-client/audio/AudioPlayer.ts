@@ -142,6 +142,16 @@ export class AudioPlayer {
   kick = 0;
 
   private _listeners: Set<MirrorListener> = new Set();
+  // Trailing-throttle handle for mirror-change notifications. Slices
+  // stream in at up to ~40-50/s and every patch used to fire the full
+  // listener set synchronously (waveform recompute, HUD refresh, curve
+  // overlays) — ~tens of ms of main-thread work PER SLICE. When the tab
+  // is busy or background-throttled that made slice-apply slower than
+  // slice production, so the receive queue grew without bound and
+  // patches landed ever further behind the playhead (heard as the raw
+  // source bleeding through). Subscribers are visual consumers; 10 Hz
+  // is plenty. swap() still notifies synchronously (rare + structural).
+  private _notifyTimer: ReturnType<typeof setTimeout> | null = null;
   private _mirror: Float32Array | null = null;
   private _useWorklet = false;
   private _spBuffer: Float32Array | null = null;
@@ -497,6 +507,13 @@ export class AudioPlayer {
     this._lufsEnabled = enabled;
     if (!this._makeupGain || !this.ctx) return;
     if (enabled) {
+      // Catch up the chunk map: _refreshChunks is gated off while the
+      // matcher is disabled, so slices streamed since init/swap (or the
+      // last disable) haven't been measured. One full pass (~tens of ms
+      // for a 60 s buffer) on the toggle, not per slice.
+      if (this._mirror) {
+        this._refreshChunks(0, (this._mirror.length / this.channels) | 0);
+      }
       this._startMetering();
     } else {
       this._stopMetering();
@@ -599,6 +616,10 @@ export class AudioPlayer {
 
   async close(): Promise<void> {
     this._stopMetering();
+    if (this._notifyTimer !== null) {
+      clearTimeout(this._notifyTimer);
+      this._notifyTimer = null;
+    }
     this.clearStemOverlays();
     try {
       this.node?.disconnect();
@@ -706,6 +727,13 @@ export class AudioPlayer {
    * initial pass.
    */
   private _refreshChunks(startFrame: number, frames: number): void {
+    // The chunk map only feeds the loudness matcher's meter tick. While
+    // the matcher is off, re-measuring K/A-weighted loudness on every
+    // streamed slice is pure main-thread cost on the hot slice-apply
+    // path (it contributed to slice-apply falling behind slice
+    // production on busy/throttled tabs). setLufs(true) recomputes the
+    // full map to catch up on everything skipped here.
+    if (!this._lufsEnabled) return;
     if (!this._mirror || !this._chunkLoudness || !this._chunkPeak) return;
     const ch = this.channels;
     const totalFrames = (this._mirror.length / ch) | 0;
@@ -862,8 +890,19 @@ export class AudioPlayer {
     // its delta baseline, so the dropped slice's region desynced and the
     // error accumulated over loops: "multiple decoded versions stacked."
     // The mirror-changed notification (for waveform recompute) is the
-    // listener fire below; it doesn't need a counter.
-    for (const fn of this._listeners) fn();
+    // throttled fire below; it doesn't need a counter.
+    this._scheduleMirrorNotify();
+  }
+
+  /** Trailing-throttled mirror-change notification (~10 Hz). See the
+   *  _notifyTimer comment for why per-patch synchronous fires are not
+   *  affordable on the slice path. */
+  private _scheduleMirrorNotify(): void {
+    if (this._notifyTimer !== null) return;
+    this._notifyTimer = setTimeout(() => {
+      this._notifyTimer = null;
+      for (const fn of this._listeners) fn();
+    }, 100);
   }
 
   private _spProcess(e: AudioProcessingEvent): void {

@@ -70,6 +70,13 @@ export interface RemoteBackendOptions {
   sliceWorkerUrl?: string | URL;
 }
 
+// Skip a 125 Hz params tick when this many bytes are already queued in
+// the WebSocket send buffer (see sendParams). One params message is
+// ~1-2 KB of JSON, so this is roughly 4-8 ticks of backlog — far above
+// anything a healthy connection accumulates, low enough that staleness
+// stays bounded at a few tens of ms when the uplink degrades.
+const PARAMS_BACKPRESSURE_BYTES = 8 * 1024;
+
 // ── float16 → float32 ──────────────────────────────────────────────────
 // Browsers don't have native float16; decode by hand via a reusable
 // Uint32Array/Float32Array overlay to avoid per-sample object churn.
@@ -264,6 +271,15 @@ export class RemoteBackend extends EventTarget {
   // the listener — without this they'd land in the new track and bleed
   // chunks of the previous song through.
   private _sliceEpoch = 0;
+  // Cumulative bytes of binary SLICE frames received on this connection
+  // (swap buffers and stem payloads excluded — the server counts the
+  // same set on its side). Reported as `slice_bytes_rx` with every
+  // params message; the server uses sent-minus-acked as its in-flight
+  // window and stops emitting slices when the link can't drain them.
+  // Without this, a bandwidth-limited path (SSH tunnel, weak uplink)
+  // buffers many seconds of slices in socket/tunnel queues the server
+  // can't observe, and every slice lands behind the playhead.
+  private _sliceBytesRx = 0;
 
   private _promptTransform: (tags: string) => string;
   private _sliceWorkerUrl: string | URL | undefined;
@@ -725,6 +741,8 @@ export class RemoteBackend extends EventTarget {
 
         if (this._decoderWorker) {
           const buf = ev.data as ArrayBuffer;
+          // Count BEFORE the transfer detaches the buffer.
+          this._sliceBytesRx += buf.byteLength;
           this._decoderWorker.postMessage(
             {
               id: this._nextDecodeId++,
@@ -735,6 +753,7 @@ export class RemoteBackend extends EventTarget {
           );
         } else {
           try {
+            this._sliceBytesRx += (ev.data as ArrayBuffer).byteLength;
             const slice = this._parseSlice(ev.data as ArrayBuffer);
             if (slice) {
               slice.epoch = this._sliceEpoch;
@@ -845,14 +864,41 @@ export class RemoteBackend extends EventTarget {
   sendParams(
     raw: Record<string, number | string | boolean>,
     playbackPos: number,
+    /** Worst slice landing lead (seconds, folded modulo duration) observed
+     *  since the previous params send; see the wire contract's
+     *  `slice_lead_s`. Omit when no slice arrived in the interval. */
+    sliceLeadS?: number,
   ): void {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
+    // Backpressure gate: when the socket can't drain (slow uplink, TCP
+    // retransmit storms), queueing more 125 Hz reports only makes every
+    // report STALER — the server re-anchors its playhead clock on each
+    // arriving playback_pos, so a growing send queue walks its estimate
+    // further into the past and freshly rendered slices land behind the
+    // listener (heard as the raw source bleeding through). Fresh-or-
+    // nothing: skip the tick instead. The server's playhead clock
+    // free-runs at 1x while reports are quiet, which is the correct
+    // degradation. Threshold is several ticks' worth of params JSON —
+    // normal operation never accumulates that much.
+    if (this.ws.bufferedAmount > PARAMS_BACKPRESSURE_BYTES) return;
     try {
       const msg: ParamsCommand = {
         type: "params",
         raw,
         playback_pos: playbackPos,
+        // Monotonic send stamp; the server pairs it with arrival time to
+        // estimate report staleness for queueing the gate above can't see
+        // (middlebox/tunnel buffering, server-side recv backlog).
+        client_time: performance.now() / 1000,
+        // Flow-control ack: cumulative slice bytes received. The server
+        // holds back slice emission while sent-minus-acked exceeds its
+        // in-flight window, so a slow link gets fresh slices at link
+        // rate instead of an ever-staler backlog.
+        slice_bytes_rx: this._sliceBytesRx,
       };
+      if (sliceLeadS !== undefined && Number.isFinite(sliceLeadS)) {
+        msg.slice_lead_s = sliceLeadS;
+      }
       this.ws.send(JSON.stringify(msg));
     } catch {}
   }
