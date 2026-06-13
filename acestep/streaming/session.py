@@ -453,7 +453,7 @@ class StreamingSession:
         stream,
         state: SessionState,
         audio_eng: AudioEngine,
-        canvas: SourceCanvas,
+        canvas: SourceCanvas | None,
         virtual_knobs: KnobState,
         engine_obj,
         profile_mgr: TRTProfileManager | None,
@@ -494,7 +494,9 @@ class StreamingSession:
         self._report_staleness = ReportStalenessEstimator()
         # Sample-exact audio mirror of the source latent, the substrate
         # for write_audio. Replaced wholesale (with a source_epoch bump)
-        # by every swap; never mutated by playback.
+        # by every swap; never mutated by playback. None for families
+        # that gate write_audio/swap off (e.g. sa3), the same way
+        # ``stream``/``engine_session`` are None there.
         self.canvas = canvas
         self.virtual_knobs = virtual_knobs
         self.engine_obj = engine_obj

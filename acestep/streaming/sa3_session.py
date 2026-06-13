@@ -227,6 +227,8 @@ def create_sa3_session(
             stream=None,
             state=state,
             audio_eng=audio_eng,
+            canvas=None,                 # write_audio/swap gated off for sa3
+
             virtual_knobs=virtual_knobs,
             engine_obj=None,
             profile_mgr=None,
