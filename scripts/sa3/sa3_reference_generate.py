@@ -27,27 +27,26 @@ import sys
 import time
 from pathlib import Path
 
-# --- sys.path: repo root FIRST (so `acestep` is ours, not a sibling shadow),
-#     then the vendored SA3 source so `stable_audio_3` imports. Repo root is
-#     found by walking up for pyproject.toml so this works wherever the script
-#     lives. The SA3 source is still vendored (untracked) under notes/. ---
+# --- sys.path: repo root FIRST (so `acestep` is ours, not a sibling shadow).
+#     The managed SA3 vendor path is added through acestep.engine.sa3_helpers.
 _HERE = Path(__file__).resolve().parent
 _REPO_ROOT = next(p for p in (_HERE, *_HERE.parents) if (p / "pyproject.toml").exists())
-_SA3_SRC = _REPO_ROOT / "notes" / "SA3" / "stable-audio-3"
 # Force repo root to the FRONT. A sibling ACE-Step editable install
 # (_editable_impl_ace_step.pth -> C:/_dev/projects/ACE-Step-1.5_alt) injects
 # its own `acestep`; our repo path is also injected but lands after it, so an
 # "insert only if absent" leaves the sibling shadowing our edited acestep.
 # Remove-then-insert guarantees ours wins.
-for _p in (str(_SA3_SRC), str(_REPO_ROOT)):
+for _p in (str(_REPO_ROOT),):
     while _p in sys.path:
         sys.path.remove(_p)
-sys.path.insert(0, str(_SA3_SRC))
 sys.path.insert(0, str(_REPO_ROOT))
 
 import torch  # noqa: E402
 
 from acestep import paths  # noqa: E402
+from acestep.engine.sa3_helpers import ensure_sa3_paths, require_sa3_vendor  # noqa: E402
+
+ensure_sa3_paths()
 
 
 def checkpoint_dir(model_name: str = "small-music") -> Path:
@@ -73,6 +72,7 @@ def spike_out_dir() -> Path:
 def load_local_model(dest: Path, device: str, model_half: bool):
     """Replicate StableAudioModel.from_pretrained but from local paths,
     pointing the t5gemma conditioner at the bundled encoder subfolder."""
+    require_sa3_vendor()
     from stable_audio_3.loading_utils import load_diffusion_cond
     from stable_audio_3.model import StableAudioModel
 

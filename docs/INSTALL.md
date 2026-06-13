@@ -40,23 +40,27 @@ uv run python -u -m demos.realtime_motion_graph_web.run
    [`ACE-Step/Ace-Step1.5`](https://huggingface.co/ACE-Step/Ace-Step1.5)
    on Hugging Face (~18 GB), falling back to ModelScope when Hugging
    Face is unreachable.
-3. **Starter LoRAs** — downloads 16 genre LoRAs (jazz, phonk, lo-fi,
+3. **Stable Audio 3 source** — fetches DEMON's pinned Stable Audio 3
+   source checkout under the managed models directory. This is automatic;
+   you do not clone SA3 yourself.
+4. **Starter LoRAs** — downloads 16 genre LoRAs (jazz, phonk, lo-fi,
    punk, acoustic, ambient, deep house, funk, deathstep; 2B and XL
    variants) so hot LoRA swapping works out of the box. Optional and
    non-fatal: skip with `--skip-loras`, and a failed download never
    blocks setup.
-4. **Engines** — builds the minimal TensorRT engine set (see
+5. **Engines** — builds the minimal TensorRT engine set (see
    [Engine sets](#engine-sets-and-song-duration) below). A few minutes
    on a recent GPU (the ONNX comes prebuilt; the TRT builds themselves
    took under 2 minutes on a 5090); older cards and `--export-locally`
    runs can take 10–30 minutes.
-5. **Summary** — lists what is on disk and the launch command.
+6. **Summary** — lists what is on disk and the launch command.
 
 Every step is idempotent: re-running `demon-setup` after a partial
 failure (network drop mid-download, OOM mid-build) resumes where it
 left off. Useful flags: `--skip-engines` (run the demo in `compile`
-mode instead), `--skip-models`, `--skip-loras`, `--duration 60 120`
-(build extra profiles), `--skip-doctor`. Managed/remote deployments
+mode instead), `--skip-models`, `--skip-loras`, `--skip-sa3-source`,
+`--duration 60 120` (build extra profiles), `--skip-doctor`.
+Managed/remote deployments
 that curate their own LoRA library can set
 `DEMON_SKIP_STARTER_LORAS=1` in the environment instead of passing
 `--skip-loras`.
@@ -73,6 +77,8 @@ single models directory:
     vae/
     Qwen3-Embedding-0.6B/              # text encoder
     acestep-5Hz-lm-1.7B/               # 5 Hz LM
+  sa3/
+    vendor/stable-audio-3/             # managed pinned SA3 source checkout
   trt_engines/                         # TensorRT engines + ONNX
   loras/                               # starter LoRA pack + your own .safetensors
   fixtures/                            # cached demo audio + sidecars
@@ -110,7 +116,17 @@ The download is also triggered automatically the first time a model
 loads (including by the demo server at boot), but running it explicitly
 gives you the progress bar up front.
 
-### 3. TensorRT engines
+### 3. Stable Audio 3 source
+
+```bash
+uv run python scripts/sa3/vendor_sa3.py
+```
+
+This is the same managed vendoring step `demon-setup` runs. It clones
+the pinned SA3 source commit into `<models dir>/sa3/vendor/stable-audio-3`
+and is safe to re-run.
+
+### 4. TensorRT engines
 
 ```bash
 # Minimal set — what demon-setup builds (recommended first build):
@@ -147,7 +163,7 @@ Notes:
   power-user path. Run any session against XL without engines first
   and the error message prints the exact build command.
 
-### 4. Running without TensorRT
+### 5. Running without TensorRT
 
 The demo and the Session API run on plain PyTorch too:
 

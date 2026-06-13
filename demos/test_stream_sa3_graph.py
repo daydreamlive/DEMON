@@ -46,17 +46,13 @@ import time
 from pathlib import Path
 
 # --- sys.path: force THIS repo to the front (a sibling ACE-Step editable
-#     install otherwise shadows our edited `acestep`), then add scripts/sa3
-#     for the SA3 helpers and the vendored stable_audio_3 source. ---
+#     install otherwise shadows our edited `acestep`). The SA3 helper adds
+#     scripts/sa3 and the managed vendor checkout.
 _HERE = Path(__file__).resolve().parent
 _REPO_ROOT = next(p for p in (_HERE, *_HERE.parents) if (p / "pyproject.toml").exists())
-_SA3_DIR = _REPO_ROOT / "scripts" / "sa3"
-_SA3_SRC = _REPO_ROOT / "notes" / "SA3" / "stable-audio-3"
-for _p in (str(_SA3_SRC), str(_SA3_DIR), str(_REPO_ROOT)):
+for _p in (str(_REPO_ROOT),):
     while _p in sys.path:
         sys.path.remove(_p)
-sys.path.insert(0, str(_SA3_SRC))
-sys.path.insert(0, str(_SA3_DIR))
 sys.path.insert(0, str(_REPO_ROOT))
 
 import numpy as np
@@ -67,7 +63,9 @@ torch.set_grad_enabled(False)
 torch._dynamo.config.disable = True
 
 from acestep.fixtures import audio_fixture
+from acestep.engine.sa3_helpers import ensure_sa3_paths
 
+ensure_sa3_paths()
 from sa3_reference_generate import checkpoint_dir, load_local_model
 from sa3_stream_spike import capture_recipe
 from sa3_stream_pipeline import (

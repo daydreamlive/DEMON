@@ -283,7 +283,8 @@ def _build_dit_engine(
             if precision_label == "fp8":
                 raise RuntimeError(
                     f"dit_fp8.onnx is not on HF ({HF_REPO}) yet. Build it with "
-                    "the vendored producer (notes/SA3/stable-audio-3/optimized/"
+                    "the managed vendored producer "
+                    "(<MODELS_DIR>/sa3/vendor/stable-audio-3/optimized/"
                     "tensorRT/build: make_calib.py then build_dit_fp8.py) and "
                     "pass --fp8-onnx <dit_fp8.onnx>, or wait for the upstream "
                     "artifact upload."

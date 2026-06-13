@@ -34,21 +34,22 @@ from typing import Optional
 
 _HERE = Path(__file__).resolve().parent
 _REPO_ROOT = next(p for p in (_HERE, *_HERE.parents) if (p / "pyproject.toml").exists())
-_SA3_SRC = _REPO_ROOT / "notes" / "SA3" / "stable-audio-3"
 # Force repo root to the FRONT (a sibling ACE-Step editable install otherwise
 # shadows our `acestep`; see sa3_unified_stream.py for the full explanation).
-for _p in (str(_HERE), str(_SA3_SRC), str(_REPO_ROOT)):
+for _p in (str(_HERE), str(_REPO_ROOT)):
     while _p in sys.path:
         sys.path.remove(_p)
-sys.path.insert(0, str(_SA3_SRC))
 sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_REPO_ROOT))
 
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
+from acestep.engine.sa3_helpers import ensure_sa3_paths, require_sa3_vendor  # noqa: E402
 from acestep.engine import ode_steps  # noqa: E402  -- the reuse under test
 from sa3_reference_generate import checkpoint_dir, load_local_model  # noqa: E402
+
+ensure_sa3_paths()
 
 PROMPT = "warm analog house groove, 124 bpm, deep bassline"
 DURATION = 10.0
@@ -72,6 +73,7 @@ def capture_recipe(sam, *, prompt, duration, seed, steps, sampler_type="pingpong
     byte-faithful SA3 schedule. ``ref_latent`` doubles as a ready-made source
     song latent for that path.
     """
+    require_sa3_vendor()
     import stable_audio_3.inference.sampling as S
 
     fn_name = {"pingpong": "sample_flow_pingpong", "euler": "sample_discrete_euler"}[sampler_type]

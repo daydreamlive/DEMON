@@ -1,34 +1,24 @@
 from __future__ import annotations
 
 import importlib.util
-import os
 import sys
 from pathlib import Path
 
 import torch
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_SA3_DIR = _REPO_ROOT / "scripts" / "sa3"
-# Vendored SA3 source: the canonical location is the (untracked)
-# notes/SA3/stable-audio-3 tree; DEMON_SA3_SRC overrides for worktrees
-# that don't carry it. The vendor-parity tests below skip when the
-# package is unavailable; the ringbuffer tests run anywhere.
-_SA3_SRC = Path(
-    os.environ.get(
-        "DEMON_SA3_SRC", _REPO_ROOT / "notes" / "SA3" / "stable-audio-3",
-    )
-)
-if str(_SA3_SRC) not in sys.path:
-    sys.path.insert(0, str(_SA3_SRC))
-if str(_SA3_DIR) not in sys.path:
-    sys.path.insert(0, str(_SA3_DIR))
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from acestep.engine.sa3_helpers import ensure_sa3_paths
+
+ensure_sa3_paths()
 
 import pytest
 
 _requires_vendor = pytest.mark.skipif(
     importlib.util.find_spec("stable_audio_3") is None,
-    reason="vendored stable_audio_3 source not available "
-           "(set DEMON_SA3_SRC or vendor notes/SA3/stable-audio-3)",
+    reason="managed stable_audio_3 source not available; run demon-setup",
 )
 
 from sa3_stream_pipeline import SA3Request, SA3StreamPipeline, stack_sa3_cond_bundles

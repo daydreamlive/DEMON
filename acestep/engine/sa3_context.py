@@ -17,9 +17,9 @@ captured ``cond_bundle`` dict riding ``SlotRequest.aux_cond``. The
 T5Gemma conditioner stays private to this context — nothing above the
 backend seam touches it.
 
-Requires the vendored ``stable_audio_3`` source (see
-``sa3_helpers.sa3_vendor_dir``); construction fails with a clear
-ImportError when it's absent.
+Requires the managed ``stable_audio_3`` source. ``demon-setup`` fetches
+the pinned checkout, and construction retries that same vendoring path
+when it is absent.
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ class SA3Context:
         device: str = "cuda",
         model_half: bool = True,
     ):
-        require_sa3_vendor()  # actionable ImportError when the tree is absent
+        require_sa3_vendor()
         loader = import_loader_helpers()
         self._helpers = import_stream_helpers()
 

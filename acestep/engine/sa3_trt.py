@@ -128,8 +128,7 @@ def _register_same_plugin() -> None:
         raise ImportError(
             f"SAME-L TRT plugin not found at {plugin_dir}; the vendored "
             "stable_audio_3 tree must include optimized/tensorRT/scripts. "
-            "Fetch it with `python scripts/sa3/vendor_sa3.py`, or set "
-            "DEMON_SA3_SRC to a checkout that has it."
+            "Run `uv run demon-setup` to fetch the pinned SA3 source."
         )
     # Append, not prepend: this dir also exposes bare modules (sa3_trt,
     # sa3_trt_core, ...) that would shadow if placed ahead of DEMON's path.

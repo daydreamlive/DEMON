@@ -7,10 +7,12 @@ demo in one idempotent pass:
                   explicit printout of where models live on this machine.
     2. Models   - downloads the ACE-Step v1.5 checkpoints (HuggingFace,
                   ModelScope fallback) via :mod:`acestep.model_downloader`.
-    3. LoRAs    - starter LoRA pack (16 genre adapters) so hot LoRA
+    3. SA3      - fetches the pinned Stable Audio 3 source used by the
+                  SA3 backend and TRT plugin tooling.
+    4. LoRAs    - starter LoRA pack (16 genre adapters) so hot LoRA
                   swapping works out of the box. Optional; failures
                   never block setup.
-    4. Engines  - builds the minimal TensorRT engine set
+    5. Engines  - builds the minimal TensorRT engine set
                   (``acestep.engine.trt.build --preset minimal``): the
                   60 s profile (decoder + VAE encode + VAE decode) plus
                   the fixed 1 s windowed VAE decode. Existing engines
@@ -107,7 +109,7 @@ def _doctor() -> bool:
     GPU stack); advisory problems only warn."""
     from acestep.paths import models_dir
 
-    _header("1/4  Environment check")
+    _header("1/5  Environment check")
 
     hard_fail = False
 
@@ -206,7 +208,7 @@ def _download_models() -> bool:
     from acestep.model_downloader import ensure_main_model
     from acestep.paths import checkpoints_dir
 
-    _header("2/4  Model checkpoints (ACE-Step v1.5)")
+    _header("2/5  Model checkpoints (ACE-Step v1.5)")
     print(f"  destination: {checkpoints_dir()}")
     print("  source: huggingface.co/ACE-Step/Ace-Step1.5 "
           "(ModelScope fallback), ~18 GB on first run\n")
@@ -223,6 +225,29 @@ def _download_models() -> bool:
     return False
 
 
+def _ensure_sa3_source() -> bool:
+    from acestep.engine.sa3_helpers import (
+        SA3_VENDOR_SHA,
+        SA3_VENDOR_URL,
+        require_sa3_vendor,
+        sa3_vendor_dir,
+    )
+
+    _header("3/5  Stable Audio 3 source")
+    print(f"  destination: {sa3_vendor_dir()}")
+    print(f"  source: {SA3_VENDOR_URL}")
+    print(f"  commit: {SA3_VENDOR_SHA}\n")
+
+    try:
+        require_sa3_vendor()
+    except Exception as exc:
+        _fail(f"SA3 source setup failed: {exc}")
+        _fail(f"Re-run `{SETUP_COMMAND}` to retry.")
+        return False
+    _ok("SA3 source ready")
+    return True
+
+
 def _download_starter_loras() -> None:
     """Fetch the starter LoRA pack. Non-fatal: a failed (or skipped)
     LoRA never blocks setup — the demo runs fine with an empty library,
@@ -230,7 +255,7 @@ def _download_starter_loras() -> None:
     from huggingface_hub import snapshot_download
     from acestep.paths import loras_dir
 
-    _header("3/4  Starter LoRA pack")
+    _header("4/5  Starter LoRA pack")
     dest_root = loras_dir()
     print(f"  destination: {dest_root}")
     print(f"  {len(STARTER_LORA_REPOS)} genre LoRAs from "
@@ -268,7 +293,7 @@ def _download_starter_loras() -> None:
 def _build_engines(extra_args: list[str]) -> bool:
     from acestep.paths import trt_engines_dir
 
-    _header("4/4  TensorRT engines (minimal preset)")
+    _header("5/5  TensorRT engines (minimal preset)")
     print(f"  destination: {trt_engines_dir()}")
     print("  set: 60s decoder + 60s VAE encode/decode + fixed 1s windowed "
           "VAE decode")
@@ -365,6 +390,11 @@ def main() -> int:
              "which curate their own LoRA library).",
     )
     parser.add_argument(
+        "--skip-sa3-source", action="store_true",
+        help="Skip the managed Stable Audio 3 source checkout. Only useful "
+             "for developer environments that do not use the SA3 backend.",
+    )
+    parser.add_argument(
         "--skip-engines", action="store_true",
         help="Skip the TensorRT engine build (e.g. when planning to run "
              "with --accel compile).",
@@ -389,6 +419,10 @@ def main() -> int:
 
     if not args.skip_models:
         if not _download_models():
+            return 1
+
+    if not args.skip_sa3_source:
+        if not _ensure_sa3_source():
             return 1
 
     if args.skip_loras or _env_skip_loras():

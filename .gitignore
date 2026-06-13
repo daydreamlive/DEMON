@@ -257,6 +257,8 @@ playground.ipynb
 # DEMON-specific
 .claude/
 notes/
+# Guard against ACESTEP_MODELS_DIR=. or another repo-local override.
+/sa3/vendor/
 tmp*
 torchinductor_root/
 gradio_outputs/
