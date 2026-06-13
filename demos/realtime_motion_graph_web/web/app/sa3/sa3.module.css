@@ -360,6 +360,31 @@
   box-shadow: 0 0 12px rgb(107 160 205 / 30%);
 }
 
+.tickReadout {
+  align-items: baseline;
+  background: #101112;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 4px;
+  color: #f1f1ed;
+  display: inline-flex;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  gap: 4px;
+  justify-content: center;
+  min-height: 30px;
+  min-width: 92px;
+  padding: 7px 8px 0;
+}
+
+.tickReadout b,
+.tickReadout small {
+  color: #8f938f;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .statusDot {
   border-radius: 50%;
   height: 9px;

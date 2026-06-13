@@ -74,6 +74,7 @@ export function useSA3Session() {
   const [knobs, setKnobs] = useState<SA3Knob[]>([]);
   const [values, setValues] = useState<Record<string, number>>({});
   const [fixtures, setFixtures] = useState<string[]>([]);
+  const [tickMs, setTickMs] = useState<number | null>(null);
 
   // Pod-side fixture catalog for the source-anchor picker. server-info
   // is the right probe (vs /api/fixtures) because it lists exactly the
@@ -111,6 +112,7 @@ export function useSA3Session() {
     remoteRef.current = null;
     setStatus("idle");
     setMessage("");
+    setTickMs(null);
   }, []);
 
   useEffect(() => {
@@ -158,11 +160,21 @@ export function useSA3Session() {
           const detail = (event as CustomEvent<AudioSlice>).detail;
           const player = playerRef.current;
           if (!player || detail.epoch !== player.swapCount) return;
+          if (typeof detail.tickMs === "number" && Number.isFinite(detail.tickMs)) {
+            setTickMs(detail.tickMs);
+          }
           const startFrame = Math.floor(detail.startSample);
           if (detail.flags === SLICE_FLAG_DELTA) {
             player.addDelta(startFrame, detail.audio);
           } else {
             player.patch(startFrame, detail.audio);
+          }
+        });
+        remote.addEventListener("params", (event) => {
+          const detail = (event as CustomEvent<Record<string, unknown>>).detail;
+          const next = detail.tick_ms;
+          if (typeof next === "number" && Number.isFinite(next)) {
+            setTickMs(next);
           }
         });
         remote.addEventListener("close", () => {
@@ -257,6 +269,7 @@ export function useSA3Session() {
     start,
     status,
     stop,
+    tickMs,
     values,
   };
 }

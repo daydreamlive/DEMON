@@ -228,6 +228,11 @@ export function SA3Panel() {
           >
             {running ? "Stop" : "Start"}
           </button>
+          <span className={styles.tickReadout} title="Backend tick time">
+            <b>tick</b>
+            {session.tickMs == null ? "--.-" : session.tickMs.toFixed(1)}
+            <small>ms</small>
+          </span>
           <span
             className={`${styles.statusDot} ${styles[`status_${session.status}`]}`}
             aria-hidden="true"
