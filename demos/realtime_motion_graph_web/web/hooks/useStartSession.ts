@@ -626,7 +626,7 @@ export function useStartSession() {
           } catch {}
           useSessionStore
             .getState()
-            .setMonitor(createNetworkMonitor(remote));
+            .setMonitor(createNetworkMonitor(remote, player));
           // Re-apply the timbre / structure references the operator
           // had active. The fresh server session boots with none and
           // refs aren't carried in buildConfig, so without this a
@@ -758,6 +758,6 @@ export function useStartSession() {
     // Start the network-quality monitor now that the WS is "ready".
     // Lives on the session store so reset() (called at next session
     // start) tears it down — no orphan intervals across hot reloads.
-    useSessionStore.getState().setMonitor(createNetworkMonitor(remote));
+    useSessionStore.getState().setMonitor(createNetworkMonitor(remote, player));
   }, []);
 }

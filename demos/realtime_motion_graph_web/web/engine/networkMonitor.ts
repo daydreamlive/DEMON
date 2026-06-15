@@ -1,9 +1,9 @@
 import { useNetworkStore } from "@/store/useNetworkStore";
-import type { RemoteBackend } from "@demon/client";
-import type { AudioSlice } from "@demon/client";
+import { SAMPLE_RATE } from "@demon/client";
+import type { AudioPlayer, AudioSlice, RemoteBackend } from "@demon/client";
 
 // Detect "connection is actually broken" from existing WebSocket signals.
-// One input, one verdict:
+// Two inputs, one verdict:
 //
 //   Stall watchdog — no AudioSlice received in STALL_MS. The one signal
 //   that always corresponds to a real user-audible problem: slices
@@ -11,6 +11,20 @@ import type { AudioSlice } from "@demon/client";
 //   hitches. If the WebSocket dies for any reason (transient blip the
 //   server side recovered from, hard close, network drop), slices
 //   stop flowing and this catches it.
+//
+//   Bleed watchdog — slices ARE arriving, but landing BEHIND the
+//   playhead. The client's loop buffer always holds the raw source and
+//   denoised slices patch over it just ahead of the playhead, so a
+//   slice that lands in already-played audio means the listener heard
+//   the raw INPUT there. We measure each slice's landing lead (its
+//   start position minus the live playhead, folded modulo track
+//   duration so the loop-wrap pre-write reads as a small positive lead,
+//   not -duration) and flag a sustained negative worst-lead. The stall
+//   watchdog misses this — the stream is flowing, just too late — yet
+//   it is exactly what a slow / bandwidth-starved link produces and the
+//   most direct signal that the user is hearing raw source instead of
+//   the processed output. Same hysteresis as the stall path, so only a
+//   sustained problem trips it (a brief transient dip self-heals).
 //
 // What this monitor used to do but no longer does (2026-05-13):
 //
@@ -74,17 +88,59 @@ const THRESHOLDS = {
   /** Consecutive clean ticks before hiding (8s @ 500ms). Asymmetric
    *  ~1.3× the show debounce: easy to dismiss, hard to summon. */
   RECOVERY_TICKS: 16,
+
+  /** A slice landing this many seconds (or more) BEHIND the playhead is
+   *  counted as a bleed for the interval. Negative = behind. A small
+   *  margin (not exactly 0) so sub-perceptual jitter and measurement
+   *  noise around the playhead don't register; well inside the healthy
+   *  lead (~+0.2s), so a real underrun crosses it decisively. */
+  BLEED_LEAD_S: -0.05,
 } as const;
 
-export function createNetworkMonitor(remote: RemoteBackend): NetworkMonitor {
+/** Landing lead in seconds: how far ahead of the audible playhead a
+ *  slice landed, folded modulo track duration into [-dur/2, dur/2).
+ *  Positive = ahead (good); negative = it patched already-played audio
+ *  (raw source was heard). The fold makes a loop-wrap pre-write — a
+ *  slice at the buffer head while the playhead nears the end — read as
+ *  a small positive lead instead of ~-duration. `durationSec <= 0`
+ *  (unknown duration) skips the fold. Pure; unit-tested. */
+export function landingLeadSeconds(
+  startSample: number,
+  playheadSec: number,
+  durationSec: number,
+  sampleRate: number = SAMPLE_RATE,
+): number {
+  let lead = startSample / sampleRate - playheadSec;
+  if (durationSec > 0) {
+    lead = ((((lead + durationSec / 2) % durationSec) + durationSec)
+      % durationSec) - durationSec / 2;
+  }
+  return lead;
+}
+
+export function createNetworkMonitor(
+  remote: RemoteBackend,
+  player: AudioPlayer,
+): NetworkMonitor {
   let lastSliceAt = 0;
   let pendingQuality: "healthy" | "unstable" = "healthy";
   let pendingTicks = 0;
+  // Worst (most negative) landing lead observed since the last evaluate()
+  // tick, or null when no slice arrived in the interval. Worst-of-interval
+  // (not latest) so a single late slice inside an otherwise healthy 500ms
+  // still registers. Reset each tick.
+  let worstLeadS: number | null = null;
 
   const onSlice = (e: Event) => {
     const detail = (e as CustomEvent<AudioSlice>).detail;
     if (!detail) return;
     lastSliceAt = performance.now();
+    const lead = landingLeadSeconds(
+      detail.startSample, player.positionSec, player.duration,
+    );
+    if (Number.isFinite(lead)) {
+      worstLeadS = worstLeadS === null ? lead : Math.min(worstLeadS, lead);
+    }
   };
   remote.addEventListener("slice", onSlice);
 
@@ -92,11 +148,20 @@ export function createNetworkMonitor(remote: RemoteBackend): NetworkMonitor {
     const now = performance.now();
     const staleMs = lastSliceAt > 0 ? now - lastSliceAt : 0;
 
+    // Take-and-reset the worst lead for this interval. Bleeding = slices
+    // arrived but the worst one landed behind the playhead by more than
+    // the margin (heard as raw source).
+    const intervalWorstLead = worstLeadS;
+    worstLeadS = null;
+    const bleeding =
+      intervalWorstLead !== null
+      && intervalWorstLead < THRESHOLDS.BLEED_LEAD_S;
+
     // Only meaningful once we've seen at least one slice — pre-first-
     // slice we have no baseline and shouldn't flag a "stall" against zero.
     const haveBaseline = lastSliceAt > 0;
     let candidate: "healthy" | "unstable" = "healthy";
-    if (haveBaseline && staleMs >= THRESHOLDS.STALL_MS) {
+    if (haveBaseline && (staleMs >= THRESHOLDS.STALL_MS || bleeding)) {
       candidate = "unstable";
     }
 
@@ -139,6 +204,9 @@ export function createNetworkMonitor(remote: RemoteBackend): NetworkMonitor {
         quality: pendingQuality,
         staleMs: Math.round(staleMs),
         lastSliceAt: Math.round(lastSliceAt),
+        worstLeadS: intervalWorstLead === null
+          ? null : Number(intervalWorstLead.toFixed(3)),
+        bleeding,
       });
       pendingTicks = 0;
     }

@@ -3,12 +3,13 @@
 import { create } from "zustand";
 
 // Connection-quality store. Driven by createNetworkMonitor()
-// (engine/networkMonitor.ts), which fuses three signals — slice
-// inter-arrival jitter, server engine tickMs, and a stall watchdog —
-// into a single `quality` field consumed by NetworkIndicator. The
-// indicator is hidden when "healthy"; "unstable" fades in a subtle
-// bottom-center pill, agnostic about which leg of the connection is
-// the source of the degradation.
+// (engine/networkMonitor.ts), which fuses two signals — a stall
+// watchdog (no slices arriving) and a bleed watchdog (slices arriving
+// but landing behind the playhead, i.e. raw source audible) — into a
+// single `quality` field consumed by NetworkIndicator. The indicator
+// is hidden when "healthy"; "unstable" fades in a subtle bottom-center
+// pill, agnostic about which leg of the connection is the source of
+// the degradation.
 
 export type NetworkQuality = "healthy" | "unstable";
 
