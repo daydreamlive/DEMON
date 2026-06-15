@@ -312,6 +312,19 @@ def trt_engine_path(engine_name: str) -> Path:
 # scripts/benchmarks/vram_60s_vs_240s_results.md. Pick the smallest profile
 # that fits the audio (see `select_trt_engines` and `available_trt_engines`).
 _TRT_ENGINE_PROFILES: dict[float, dict[str, str]] = {
+    # 30s decoder for the loop-focused / short-source workflow: a smaller
+    # seq_max (750 frames vs 1500) reserves less DiT activation workspace
+    # (VRAM headroom) and is opt-tuned at 750 for lower param-update
+    # latency. The VAE engines are intentionally the 60s builds — the
+    # walk-window path keeps vae_encode sized to the full song, and the
+    # 60s vae_decode already accepts ≤1500 frames, so 750-frame decodes
+    # need no dedicated engine. Build with
+    # ``python -m acestep.engine.trt.build --all --duration 30 --decoder-only``.
+    30.0: {
+        "decoder": "spectral_decoder_mixed_refit_b8_30s",
+        "vae_encode": "vae_encode_fp16_60s",
+        "vae_decode": "vae_decode_fp16_60s",
+    },
     60.0: {
         "decoder": "spectral_decoder_mixed_refit_b8_60s",
         "vae_encode": "vae_encode_fp16_60s",

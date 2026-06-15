@@ -176,6 +176,25 @@ Build only decoder engines:
 uv run python -m acestep.engine.trt.build --all --decoder-only --duration 60
 ```
 
+Build the 30s loop-window decoder (decoder-only):
+
+```powershell
+uv run python -m acestep.engine.trt.build --all --decoder-only --duration 30
+```
+
+The `30.0` profile in `acestep/paths.py` serves the loop-focused /
+short-source workflow (`walk_window_s = 30`, or any source ≤ 30s). Its
+`seq_max` is 750 frames (vs 1500 for 60s), so the DiT context reserves
+less activation workspace and is opt-tuned at 750 for lower
+param-update latency. It is **decoder-only**: the profile reuses the
+existing 60s VAE engines, because the walk-window path keeps
+`vae_encode` sized to the full song and the 60s `vae_decode` already
+accepts ≤ 1500-frame inputs. (A dedicated sub-60s VAE engine is not
+needed and currently fails the TRT optimization-profile check on
+Blackwell — see `RTX 5090 / Blackwell VAE Builds` above.) Measured on a
+5090 vs running the same 750-frame window on the 60s engine: ~12% faster
+warm generate (0.121s vs 0.137s) and ~0.25 GB less process VRAM.
+
 Build only VAE engines:
 
 ```powershell
