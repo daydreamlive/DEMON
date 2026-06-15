@@ -23,6 +23,8 @@ import demos.realtime_motion_graph_web.ws_adapter as wa
 from acestep.streaming.events import StemAssets, StemFailed
 
 _DEMO = Path(wa.__file__).resolve().parent
+_REPO = _DEMO.parent.parent
+_SDK = _REPO / "packages" / "demon-client"
 
 
 # ---------------------------------------------------------------------------
@@ -31,13 +33,13 @@ _DEMO = Path(wa.__file__).resolve().parent
 
 
 def test_preempted_close_code_matches_web_sdk():
-    ts_src = (_DEMO / "web" / "sdk" / "types" / "protocol.ts").read_text(
+    ts_src = (_SDK / "types" / "protocol.ts").read_text(
         encoding="utf-8",
     )
     match = re.search(
         r"export const PREEMPTED_CLOSE_CODE\s*=\s*(\d+)", ts_src,
     )
-    assert match, "PREEMPTED_CLOSE_CODE missing from web/sdk/types/protocol.ts"
+    assert match, "PREEMPTED_CLOSE_CODE missing from packages/demon-client/types/protocol.ts"
     assert int(match.group(1)) == wa.PREEMPTED_CLOSE_CODE
 
 
@@ -50,9 +52,13 @@ def test_preempted_close_code_is_an_application_code():
 def test_web_client_handles_preempted_close():
     # Both client surfaces must reference the shared constant: the
     # reconnect loop (useStartSession) and the pre-ready error mapper
-    # (sdk/protocol.ts).
-    for rel in ("web/hooks/useStartSession.ts", "web/sdk/protocol.ts"):
-        src = (_DEMO / rel).read_text(encoding="utf-8")
+    # (packages/demon-client/protocol.ts).
+    for path in (
+        _DEMO / "web" / "hooks" / "useStartSession.ts",
+        _SDK / "protocol.ts",
+    ):
+        src = path.read_text(encoding="utf-8")
+        rel = path.relative_to(_REPO)
         assert "PREEMPTED_CLOSE_CODE" in src, f"{rel} ignores preemption"
 
 
