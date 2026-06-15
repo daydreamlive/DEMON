@@ -1129,10 +1129,15 @@ def _handle_client_body(
                 }))
             # Count only after the send call returned (frame handed to
             # the transport); the client acks the same byte total via
-            # params.slice_bytes_rx. Windowed slices only — the client
-            # counter excludes swap/stem binaries the same way.
-            if is_windowed:
-                _slice_flow["sent"] += len(frame)
+            # params.slice_bytes_rx. Counted for EVERY slice-path frame
+            # (windowed and full-buffer renders alike) because the client
+            # increments _sliceBytesRx for every binary slice it receives
+            # — only swap/stem binaries are excluded, and those go through
+            # separate serializers. Counting windowed-only here would let
+            # acked outrun sent by each full-buffer render's bytes, walking
+            # the in-flight window permanently negative so the load-bearing
+            # flow-control layer stops engaging.
+            _slice_flow["sent"] += len(frame)
         except ConnectionClosed:
             state.running = False
 
