@@ -187,6 +187,37 @@ PREEMPTED_CLOSE_CODE = 4001
 _PREEMPT_TEARDOWN_TIMEOUT_S = 45.0
 
 
+def _windowed_slice_drop_reason(
+    *,
+    acked: int | None,
+    sent: int,
+    window_bytes: int,
+    age_s: float,
+    max_age_s: float,
+) -> tuple[str, float] | None:
+    """Decide whether a windowed slice should be shed for backpressure.
+
+    Pure helper for the slice serializer's two-layer flow control so the
+    decision can be unit-tested without the WS subscriber machinery:
+
+      1. In-flight window (load-bearing): once the client has acked at
+         least once, drop while sent-minus-acked exceeds the window.
+      2. Bus-queue age: drop a slice that waited too long between publish
+         and serialization (TCP itself pushing back).
+
+    The window is checked first so an unbounded backlog sheds before the
+    age backstop ever trips. Returns ``(reason, detail)`` for the drop
+    log, or ``None`` to send the slice. ``acked is None`` (no ack yet,
+    e.g. an old client) disables only the window layer."""
+    if acked is not None:
+        in_flight = sent - acked
+        if in_flight > window_bytes:
+            return "window", float(in_flight)
+    if age_s > max_age_s:
+        return "age", age_s
+    return None
+
+
 class _ActiveSession:
     __slots__ = ("session_id", "streaming", "ws")
 
@@ -1066,15 +1097,15 @@ def _handle_client_body(
             and event.num_samples < len(codec.mirror)
         )
         if is_windowed:
-            acked = _slice_flow["acked"]
-            if acked is not None:
-                in_flight = _slice_flow["sent"] - acked
-                if in_flight > _SLICE_WINDOW_BYTES:
-                    _note_slice_drop("window", float(in_flight))
-                    return
-            age_s = time.monotonic() - event.published_wall_s
-            if age_s > _SLICE_MAX_QUEUE_AGE_S:
-                _note_slice_drop("age", age_s)
+            drop = _windowed_slice_drop_reason(
+                acked=_slice_flow["acked"],
+                sent=_slice_flow["sent"],
+                window_bytes=_SLICE_WINDOW_BYTES,
+                age_s=time.monotonic() - event.published_wall_s,
+                max_age_s=_SLICE_MAX_QUEUE_AGE_S,
+            )
+            if drop is not None:
+                _note_slice_drop(*drop)
                 return
         frame = codec.encode(
             event.audio,

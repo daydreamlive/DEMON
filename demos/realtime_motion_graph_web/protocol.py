@@ -230,7 +230,7 @@ COMMANDS: tuple = (
                                   "connection. The server holds back slice "
                                   "emission while its sent-bytes minus this "
                                   "ack exceeds the in-flight window "
-                                  "(DEMON_SLICE_WINDOW_BYTES, default 512 KiB) "
+                                  "(DEMON_SLICE_WINDOW_BYTES, default 256 KiB) "
                                   "so a bandwidth-limited link receives fresh "
                                   "slices at link rate instead of an ever-"
                                   "staler buffered backlog. Optional; absent "
