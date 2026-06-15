@@ -14,9 +14,8 @@ with no browser:
   ``params_echo`` mirror the web UI does: EXTERNAL (control-bus) knob
   changes are echoed by the server, merged into this client's raw dict,
   and carried back on the next PRIMARY params tick so they stick.
-- The simulated playhead advances at wall-clock rate (configurable, so
-  clock-skew scenarios are reproducible) and is reported to the server
-  exactly like the browser reports its audible position.
+- The simulated playhead advances at wall-clock rate and is reported to
+  the server exactly like the browser reports its audible position.
 
 On top of the transport it measures the two quantities that define
 "generation lagging behind the playhead":
@@ -65,10 +64,9 @@ class PlayheadSim:
     """Wall-clock simulation of the browser's audible playhead.
 
     Anchor-based like the server's ``_RemotePlayheadClock``: position is
-    ``anchor + elapsed * rate``, modulo the buffer length. ``rate``
-    deliberately exists so device-clock skew (an AudioContext running
-    slightly fast relative to the server's monotonic clock — a known
-    way to starve the lead) can be reproduced on demand.
+    ``anchor + elapsed`` (samples), modulo the buffer length, advancing
+    at wall-clock rate. Reported to the server exactly like the browser
+    reports its audible position.
     """
 
     def __init__(
@@ -76,29 +74,20 @@ class PlayheadSim:
         duration_samples: int,
         *,
         sample_rate: int = SAMPLE_RATE,
-        rate: float = 1.0,
         now_fn=time.monotonic,
     ):
         self._now = now_fn
         self.sample_rate = int(sample_rate)
         self._lock = threading.Lock()
         self._n = max(1, int(duration_samples))
-        self._rate = float(rate)
-        self._paused = False
         self._anchor_sample = 0.0
         self._anchor_wall = self._now()
 
     def _position_locked(self, now: float) -> float:
-        if self._paused:
-            return self._anchor_sample % self._n
         elapsed = max(0.0, now - self._anchor_wall)
         return (
-            self._anchor_sample + elapsed * self._rate * self.sample_rate
+            self._anchor_sample + elapsed * self.sample_rate
         ) % self._n
-
-    def _rebase_locked(self, now: float) -> None:
-        self._anchor_sample = self._position_locked(now)
-        self._anchor_wall = now
 
     @property
     def duration_samples(self) -> int:
@@ -111,33 +100,6 @@ class PlayheadSim:
     def seconds(self) -> float:
         with self._lock:
             return self._position_locked(self._now()) / self.sample_rate
-
-    def seek(self, seconds: float) -> None:
-        with self._lock:
-            self._anchor_sample = (
-                float(seconds) * self.sample_rate
-            ) % self._n
-            self._anchor_wall = self._now()
-
-    def set_rate(self, rate: float) -> None:
-        with self._lock:
-            self._rebase_locked(self._now())
-            self._rate = float(rate)
-
-    @property
-    def rate(self) -> float:
-        with self._lock:
-            return self._rate
-
-    def set_paused(self, paused: bool) -> None:
-        with self._lock:
-            self._rebase_locked(self._now())
-            self._paused = bool(paused)
-
-    @property
-    def paused(self) -> bool:
-        with self._lock:
-            return self._paused
 
     def reset(self, duration_samples: int) -> None:
         """New source buffer (swap): playhead restarts at 0, matching
@@ -478,8 +440,6 @@ class HeadlessClient:
         waveform: np.ndarray | None,
         *,
         params_hz: float = 30.0,
-        playback_rate: float = 1.0,
-        record_playback_s: float = 120.0,
         now_fn=time.monotonic,
     ):
         self.url = url
@@ -488,10 +448,6 @@ class HeadlessClient:
         # fixture itself (config.use_server_fixture).
         self._waveform = waveform
         self.params_hz = max(1.0, float(params_hz))
-        self._initial_rate = float(playback_rate)
-        self._record_cap_samples = max(
-            0, int(float(record_playback_s) * SAMPLE_RATE),
-        )
         self._now = now_fn
 
         self.ws = None
@@ -520,13 +476,6 @@ class HeadlessClient:
         self.events: deque[dict] = deque(maxlen=200)
         self.last_params_update: dict = {}
         self.slice_count = 0
-
-        # Played-audio recorder: what the simulated listener "heard",
-        # including any stale audio — the audible artifact of a lagging
-        # generator. Ring-capped at record_playback_s.
-        self._played: deque[np.ndarray] = deque()
-        self._played_samples = 0
-        self._played_read_pos: float | None = None
 
     # ---- lifecycle -------------------------------------------------------
 
@@ -601,9 +550,7 @@ class HeadlessClient:
             raise
 
         n = len(self.mirror)
-        self.player = PlayheadSim(
-            n, rate=self._initial_rate, now_fn=self._now,
-        )
+        self.player = PlayheadSim(n, now_fn=self._now)
         self.tracker = LagTracker(n, now_fn=self._now)
         self.running = True
         for fn, name in (
@@ -703,7 +650,6 @@ class HeadlessClient:
                 except Exception:
                     pass
                 tracker.on_tick(pos)
-                self._record_played(pos)
             elapsed = self._now() - t0
             time.sleep(max(0.0, interval - elapsed))
 
@@ -783,47 +729,6 @@ class HeadlessClient:
             self.player.reset(n)
         if self.tracker is not None:
             self.tracker.reset(n)
-        with self._state_lock:
-            self._played.clear()
-            self._played_samples = 0
-            self._played_read_pos = None
-
-    # ---- played-audio recorder -------------------------------------------
-
-    def _record_played(self, pos_sample: int) -> None:
-        if self._record_cap_samples <= 0 or self.mirror is None:
-            return
-        mirror = self.mirror
-        n = len(mirror)
-        with self._state_lock:
-            if self._played_read_pos is None:
-                self._played_read_pos = float(pos_sample)
-                return
-            start = int(self._played_read_pos)
-            advance = (pos_sample - start) % n
-            # A seek (or a pathological tick gap) can jump farther than
-            # the recorder should chase; resync instead of copying laps.
-            if advance > n // 2:
-                self._played_read_pos = float(pos_sample)
-                return
-            end = start + advance
-            if end <= n:
-                chunk = mirror[start:end].copy()
-            else:
-                chunk = np.concatenate(
-                    [mirror[start:], mirror[: end % n]], axis=0,
-                )
-            self._played_read_pos = float(pos_sample)
-            if len(chunk) == 0:
-                return
-            self._played.append(chunk)
-            self._played_samples += len(chunk)
-            while (
-                self._played_samples > self._record_cap_samples
-                and len(self._played) > 1
-            ):
-                dropped = self._played.popleft()
-                self._played_samples -= len(dropped)
 
     # ---- public accessors -----------------------------------------------
 
@@ -848,8 +753,6 @@ class HeadlessClient:
         if player is not None:
             out.update({
                 "playhead_s": round(player.seconds(), 3),
-                "playback_rate": player.rate,
-                "paused": player.paused,
                 "buffer_duration_s": round(
                     player.duration_samples / SAMPLE_RATE, 3,
                 ),
@@ -864,31 +767,3 @@ class HeadlessClient:
             for e in recent
         ]
         return out
-
-    def dump_audio(self, path: str, *, source: str = "played",
-                   last_s: float | None = None) -> dict:
-        """Write captured audio to a WAV file. ``source="played"`` is the
-        simulated listener's stream (stale audio audible); ``"buffer"``
-        is the current client mirror of the server's circular buffer."""
-        import soundfile as sf
-
-        if source == "buffer":
-            if self.mirror is None:
-                raise HeadlessClientError("no buffer yet")
-            data = self.mirror
-        elif source == "played":
-            with self._state_lock:
-                if not self._played:
-                    raise HeadlessClientError("no played audio recorded yet")
-                data = np.concatenate(list(self._played), axis=0)
-        else:
-            raise ValueError("source must be 'played' or 'buffer'")
-        if last_s is not None:
-            data = data[-int(float(last_s) * SAMPLE_RATE):]
-        sf.write(path, data, SAMPLE_RATE)
-        return {
-            "path": path,
-            "seconds": round(len(data) / SAMPLE_RATE, 2),
-            "channels": int(data.shape[1]),
-            "source": source,
-        }

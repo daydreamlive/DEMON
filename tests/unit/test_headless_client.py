@@ -55,31 +55,6 @@ def test_playhead_wraps_modulo_buffer():
     assert p.seconds() == pytest.approx(1.0)
 
 
-def test_playhead_rate_skew_and_rebase():
-    clock = FakeClock()
-    p = PlayheadSim(100 * SAMPLE_RATE, rate=2.0, now_fn=clock)
-    clock.advance(3.0)
-    assert p.seconds() == pytest.approx(6.0)
-    # Changing the rate must not teleport the position.
-    p.set_rate(1.0)
-    assert p.seconds() == pytest.approx(6.0)
-    clock.advance(1.0)
-    assert p.seconds() == pytest.approx(7.0)
-
-
-def test_playhead_seek_and_pause():
-    clock = FakeClock()
-    p = PlayheadSim(100 * SAMPLE_RATE, now_fn=clock)
-    p.seek(42.0)
-    assert p.seconds() == pytest.approx(42.0)
-    p.set_paused(True)
-    clock.advance(5.0)
-    assert p.seconds() == pytest.approx(42.0)
-    p.set_paused(False)
-    clock.advance(1.0)
-    assert p.seconds() == pytest.approx(43.0)
-
-
 def test_playhead_reset_on_swap():
     clock = FakeClock()
     p = PlayheadSim(100 * SAMPLE_RATE, now_fn=clock)

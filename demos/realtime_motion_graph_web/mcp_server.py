@@ -46,7 +46,6 @@ import os
 import struct
 import sys
 import threading
-import time
 import urllib.error
 import urllib.request
 from math import gcd
@@ -909,8 +908,6 @@ async def headless_start(
     depth: int = 4,
     steps: int = 8,
     params_hz: float = 30.0,
-    playback_rate: float = 1.0,
-    record_playback_s: float = 120.0,
     config_overrides: Optional[dict] = None,
     timeout_s: float = 240.0,
 ) -> dict:
@@ -930,12 +927,8 @@ async def headless_start(
     server-side, no upload) or ``audio_file`` (local path, uploaded as
     PCM). Exactly one is required.
 
-    ``playback_rate`` skews the simulated clock (e.g. 1.02 reproduces a
-    fast client AudioContext). ``record_playback_s`` rings that many
-    seconds of the audio the simulated listener "heard" for
-    headless_dump_audio. ``config_overrides`` merges extra session
-    config keys (see the config catalog in describe_protocol), e.g.
-    ``{"lead_floor_s": 0.1}``.
+    ``config_overrides`` merges extra session config keys (see the
+    config catalog in describe_protocol), e.g. ``{"lead_floor_s": 0.1}``.
 
     WARNING: the backend is one-session-per-pod — this PREEMPTS any
     live session, including a user's open browser tab.
@@ -976,8 +969,6 @@ async def headless_start(
         client = HeadlessClient(
             ws_url, config, waveform,
             params_hz=params_hz,
-            playback_rate=playback_rate,
-            record_playback_s=record_playback_s,
         )
         _log(f"headless_start url={ws_url} config={config}")
         try:
@@ -1059,77 +1050,6 @@ async def headless_lag_report(
         window_s=float(window_s),
         stale_threshold_s=float(stale_threshold_s),
         include_timeline=bool(include_timeline),
-    )
-
-
-@mcp.tool()
-async def headless_observe(duration_s: float = 15.0) -> dict:
-    """Block for ``duration_s`` of streaming, then return the lag report
-    for exactly that window. One-shot measurement: start it right after
-    the action you want to evaluate (a knob sweep, a prompt change, a
-    swap)."""
-    client = _headless()
-    duration_s = min(max(float(duration_s), 1.0), 110.0)
-    time.sleep(duration_s)
-    if not client.running:
-        raise RuntimeError(
-            f"headless session died during observation: "
-            f"{client.closed_reason}",
-        )
-    return client.tracker.report(
-        window_s=duration_s, include_timeline=True,
-    )
-
-
-@mcp.tool()
-async def headless_seek(seconds: float) -> dict:
-    """Jump the simulated playhead (like the user scrubbing the
-    transport). The next params tick reports the new position to the
-    server, which re-anchors generation there."""
-    client = _headless()
-    client.player.seek(float(seconds))
-    return {"playhead_s": round(client.player.seconds(), 3)}
-
-
-@mcp.tool()
-async def headless_set_playback(
-    rate: Optional[float] = None,
-    paused: Optional[bool] = None,
-) -> dict:
-    """Adjust the simulated clock. ``rate`` ≠ 1.0 reproduces client
-    clock skew (a fast clock eats the generation lead); ``paused``
-    freezes the reported playhead (browser tab in background /
-    suspended AudioContext)."""
-    client = _headless()
-    if rate is not None:
-        client.player.set_rate(float(rate))
-    if paused is not None:
-        client.player.set_paused(bool(paused))
-    return {
-        "rate": client.player.rate,
-        "paused": client.player.paused,
-        "playhead_s": round(client.player.seconds(), 3),
-    }
-
-
-@mcp.tool()
-async def headless_dump_audio(
-    path: str,
-    source: str = "played",
-    last_s: Optional[float] = 30.0,
-) -> dict:
-    """Save captured audio to a WAV file for listening/inspection.
-
-    ``source="played"``: the stream the simulated listener heard
-    (the ring of the last record_playback_s seconds) — stale or
-    repeated audio from a lagging generator is audible here exactly as
-    a user would hear it. ``source="buffer"``: the client's current
-    mirror of the server's full circular buffer.
-    """
-    client = _headless()
-    return client.dump_audio(
-        str(path), source=str(source),
-        last_s=float(last_s) if last_s is not None else None,
     )
 
 
