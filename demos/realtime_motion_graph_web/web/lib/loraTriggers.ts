@@ -23,6 +23,7 @@
 // is empty.
 
 import { getConfig } from "@/lib/config";
+import { loopPhrasePrefix, stripLeadingLoopPhrase } from "@/lib/loopPhrase";
 import { useLoraStore } from "@/store/useLoraStore";
 
 /** Comma-joined trigger prefix for the currently-enabled LoRAs, with a
@@ -108,5 +109,10 @@ export function stripLeadingTriggers(text: string): string {
  *  disabled LoRA's trigger zero times and an enabled LoRA's trigger
  *  exactly once — per tag (A and B alike). */
 export function wirePromptTransform(tags: string): string {
-  return enabledLoraTriggerPrefix() + stripLeadingTriggers(tags);
+  // Strip ANY prefix already on the text (stale/stacked LoRA triggers,
+  // and a leading loop phrase), then re-prepend the current prefixes.
+  // Wire order: <lora triggers><loop phrase><clean tags> — triggers stay
+  // at the head as activation tokens; the loop phrase wraps the prompt.
+  const clean = stripLeadingLoopPhrase(stripLeadingTriggers(tags));
+  return enabledLoraTriggerPrefix() + loopPhrasePrefix() + clean;
 }

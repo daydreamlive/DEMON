@@ -86,6 +86,24 @@ export interface RtmgConfigEngine {
    *  removes its trigger from the prompt when it's still at the head.
    *  Defaults to true. */
   auto_prepend_lora_triggers?: boolean;
+  /** When true, the loop-focused workflow prepends a "loopiness" phrase
+   *  (``loop_phrase``) onto the prompt ON THE WIRE — exactly like
+   *  ``auto_prepend_lora_triggers`` — so the text encoder is told the
+   *  section is a seamless loop. An offline A/B study found this lowers
+   *  the loop-seam discontinuity ~12–14% on average, concentrated on
+   *  rhythmic material (techno −22%, deep house −18%) and neutral on
+   *  smooth pads, with no measured downside. The Tags A/B textareas stay
+   *  the operator's clean text; the phrase is injected at send-time and
+   *  stripped on the next send, so toggling it (config.json + refresh)
+   *  immediately changes what the encoder sees. Default false (opt-in,
+   *  pending ear confirmation). See scripts/experiments/loop_prompting/. */
+  auto_prepend_loop_phrase?: boolean;
+  /** The phrase prepended when ``auto_prepend_loop_phrase`` is true. The
+   *  operator's prompt is appended after it, i.e. ``"<loop_phrase> <tags>"``.
+   *  Defaults to ``"a short perfect loop of"`` (the study's best
+   *  performer; it edged ``"seamless repeating loop of"``). Edit to
+   *  experiment with phrasing. */
+  loop_phrase?: string;
   /** When true, the LoRA library shows every entry regardless of
    *  whether its trained ``base_model_scale`` matches the active
    *  checkpoint. Useful for inspecting your full collection while
@@ -356,6 +374,8 @@ export const DEFAULT_CONFIG: RtmgConfig = {
     time_signature: DEFAULT_TIME_SIGNATURE,
     enabled_loras: [],
     auto_prepend_lora_triggers: true,
+    auto_prepend_loop_phrase: false,
+    loop_phrase: "a short perfect loop of",
     show_incompatible_loras: false,
   },
   prompts: {
