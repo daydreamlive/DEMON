@@ -7,7 +7,7 @@
 // owned solely by useFixtureSwap's seek(0)). swap() must CLAMP the
 // playhead into the new buffer, never reset it.
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AudioPlayer, SAMPLE_RATE } from "@demon/client";
 
@@ -143,16 +143,34 @@ describe("AudioPlayer (ScriptProcessor fallback)", () => {
     expect(Array.from(player.getMirror()!)).toEqual(Array.from(before));
   });
 
-  it("notifies mirror listeners on writes and swaps", () => {
-    let fired = 0;
-    const off = player.onMirrorChange(() => fired++);
-    player.patch(0, ramp(4));
-    player.addDelta(0, ramp(4));
-    player.swap(ramp(100), 2);
-    expect(fired).toBe(3);
-    off();
-    player.patch(0, ramp(4));
-    expect(fired).toBe(3);
+  it("notifies mirror listeners: swap fires sync, patch/addDelta coalesce", () => {
+    // Slice writes (patch/addDelta) can't afford a synchronous listener fire
+    // each — they land at slice rate on the hot path — so they schedule a
+    // single trailing-throttled notify (~100 ms). swap() is rare and still
+    // fires synchronously.
+    vi.useFakeTimers();
+    try {
+      let fired = 0;
+      const off = player.onMirrorChange(() => fired++);
+      player.patch(0, ramp(4));
+      player.addDelta(0, ramp(4));
+      player.swap(ramp(100), 2);
+      // Only the synchronous swap fire has landed; patch + addDelta are
+      // coalesced behind one pending timer.
+      expect(fired).toBe(1);
+      vi.advanceTimersByTime(100);
+      // The single coalesced patch/addDelta notify lands (two writes, one
+      // fire), so two total.
+      expect(fired).toBe(2);
+      off();
+      player.patch(0, ramp(4));
+      vi.advanceTimersByTime(100);
+      // Listener removed — the scheduled notify still fires its timer but
+      // hits an empty listener set.
+      expect(fired).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // ── seek ─────────────────────────────────────────────────────────────
