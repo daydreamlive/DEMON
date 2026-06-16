@@ -679,6 +679,7 @@ function decompress(dat, buf) {
 }
 
 // protocol.ts
+var PARAMS_BACKPRESSURE_BYTES = 8 * 1024;
 var _fBuf = new ArrayBuffer(4);
 var _fU32 = new Uint32Array(_fBuf);
 var _fF32 = new Float32Array(_fBuf);
@@ -818,6 +819,15 @@ var RemoteBackend = class extends EventTarget {
   // the listener — without this they'd land in the new track and bleed
   // chunks of the previous song through.
   _sliceEpoch = 0;
+  // Cumulative bytes of binary SLICE frames received on this connection
+  // (swap buffers and stem payloads excluded — the server counts the
+  // same set on its side). Reported as `slice_bytes_rx` with every
+  // params message; the server uses sent-minus-acked as its in-flight
+  // window and stops emitting slices when the link can't drain them.
+  // Without this, a bandwidth-limited path (SSH tunnel, weak uplink)
+  // buffers many seconds of slices in socket/tunnel queues the server
+  // can't observe, and every slice lands behind the playhead.
+  _sliceBytesRx = 0;
   _promptTransform;
   _sliceWorkerUrl;
   constructor(url, interleaved, channels, config, opts = {}) {
@@ -1149,6 +1159,7 @@ var RemoteBackend = class extends EventTarget {
         }
         if (this._decoderWorker) {
           const buf = ev.data;
+          this._sliceBytesRx += buf.byteLength;
           this._decoderWorker.postMessage(
             {
               id: this._nextDecodeId++,
@@ -1159,6 +1170,7 @@ var RemoteBackend = class extends EventTarget {
           );
         } else {
           try {
+            this._sliceBytesRx += ev.data.byteLength;
             const slice = this._parseSlice(ev.data);
             if (slice) {
               slice.epoch = this._sliceEpoch;
@@ -1251,16 +1263,35 @@ var RemoteBackend = class extends EventTarget {
       epoch: 0
     };
   }
-  sendParams(raw, playbackPos) {
-    if (this.ws?.readyState !== WebSocket.OPEN) return;
+  /** Returns true only when the message was actually handed to `ws.send`.
+   *  Callers that consume a one-shot sample (e.g. the worst-slice-lead
+   *  tracker, which clears on read) must re-arm it when this returns false,
+   *  or the sample is lost on a dropped tick. */
+  sendParams(raw, playbackPos, sliceLeadS) {
+    if (this.ws?.readyState !== WebSocket.OPEN) return false;
+    if (this.ws.bufferedAmount > PARAMS_BACKPRESSURE_BYTES) return false;
     try {
       const msg = {
         type: "params",
         raw,
-        playback_pos: playbackPos
+        playback_pos: playbackPos,
+        // Monotonic send stamp; the server pairs it with arrival time to
+        // estimate report staleness for queueing the gate above can't see
+        // (middlebox/tunnel buffering, server-side recv backlog).
+        client_time: performance.now() / 1e3,
+        // Flow-control ack: cumulative slice bytes received. The server
+        // holds back slice emission while sent-minus-acked exceeds its
+        // in-flight window, so a slow link gets fresh slices at link
+        // rate instead of an ever-staler backlog.
+        slice_bytes_rx: this._sliceBytesRx
       };
+      if (sliceLeadS !== void 0 && Number.isFinite(sliceLeadS)) {
+        msg.slice_lead_s = sliceLeadS;
+      }
       this.ws.send(JSON.stringify(msg));
+      return true;
     } catch {
+      return false;
     }
   }
   sendPrompt(tags, key, timeSignature, tagsB) {
@@ -1879,6 +1910,16 @@ var AudioPlayer = class {
   // with a per-frame RMS loop. See PERFORMANCE.md.
   kick = 0;
   _listeners = /* @__PURE__ */ new Set();
+  // Trailing-throttle handle for mirror-change notifications. Slices
+  // stream in at up to ~40-50/s and every patch used to fire the full
+  // listener set synchronously (waveform recompute, HUD refresh, curve
+  // overlays) — ~tens of ms of main-thread work PER SLICE. When the tab
+  // is busy or background-throttled that made slice-apply slower than
+  // slice production, so the receive queue grew without bound and
+  // patches landed ever further behind the playhead (heard as the raw
+  // source bleeding through). Subscribers are visual consumers; 10 Hz
+  // is plenty. swap() still notifies synchronously (rare + structural).
+  _notifyTimer = null;
   _mirror = null;
   _useWorklet = false;
   _spBuffer = null;
@@ -2154,6 +2195,9 @@ var AudioPlayer = class {
     this._lufsEnabled = enabled;
     if (!this._makeupGain || !this.ctx) return;
     if (enabled) {
+      if (this._mirror) {
+        this._refreshChunks(0, this._mirror.length / this.channels | 0);
+      }
       this._startMetering();
     } else {
       this._stopMetering();
@@ -2244,6 +2288,10 @@ var AudioPlayer = class {
   }
   async close() {
     this._stopMetering();
+    if (this._notifyTimer !== null) {
+      clearTimeout(this._notifyTimer);
+      this._notifyTimer = null;
+    }
     this.clearStemOverlays();
     try {
       this.node?.disconnect();
@@ -2329,6 +2377,7 @@ var AudioPlayer = class {
    * initial pass.
    */
   _refreshChunks(startFrame, frames) {
+    if (!this._lufsEnabled) return;
     if (!this._mirror || !this._chunkLoudness || !this._chunkPeak) return;
     const ch = this.channels;
     const totalFrames = this._mirror.length / ch | 0;
@@ -2447,7 +2496,17 @@ var AudioPlayer = class {
     } else {
       for (let i = 0; i < n; i++) this._mirror[base + i] = audioInterleaved[i];
     }
-    for (const fn of this._listeners) fn();
+    this._scheduleMirrorNotify();
+  }
+  /** Trailing-throttled mirror-change notification (~10 Hz). See the
+   *  _notifyTimer comment for why per-patch synchronous fires are not
+   *  affordable on the slice path. */
+  _scheduleMirrorNotify() {
+    if (this._notifyTimer !== null) return;
+    this._notifyTimer = setTimeout(() => {
+      this._notifyTimer = null;
+      for (const fn of this._listeners) fn();
+    }, 100);
   }
   _spProcess(e) {
     const output = e.outputBuffer;
