@@ -218,6 +218,22 @@ def _windowed_slice_drop_reason(
     return None
 
 
+def _coalesced_slice_lead(prev, new) -> float | None:
+    """Worst (min) ``slice_lead_s`` across two coalesced params messages, or
+    ``None`` if neither carries a numeric lead.
+
+    ``slice_lead_s`` is the worst lead since the previous report (wire
+    contract) and the feedback controller widens playback lead on that worst
+    value, so fold the min forward — newest-wins coalescing would drop a
+    transient negative spike hiding in a superseded report (e.g. leads
+    ``-1.25``, omitted, ``0.40`` would surface ``0.40``). The numeric guard is
+    crash-safety: this runs before the consumer's ``float()`` coercion, and
+    ``min()`` over a malformed str+float would throw and tear down the recv
+    loop."""
+    leads = [v for v in (prev, new) if isinstance(v, (int, float))]
+    return min(leads) if leads else None
+
+
 class _ActiveSession:
     __slots__ = ("session_id", "streaming", "ws")
 
@@ -1707,6 +1723,18 @@ def _handle_client_body(
                             isinstance(data, dict)
                             and data.get("type") == "params"
                         ):
+                            # Newest snapshot wins for the playhead and all
+                            # knobs, but slice_lead_s is worst-since-last-report
+                            # (wire contract): fold the min forward so a
+                            # transient negative spike in a superseded report
+                            # isn't lost. See _coalesced_slice_lead.
+                            if pending_params is not None:
+                                carried = _coalesced_slice_lead(
+                                    pending_params.get("slice_lead_s"),
+                                    data.get("slice_lead_s"),
+                                )
+                                if carried is not None:
+                                    data["slice_lead_s"] = carried
                             pending_params = data  # newest wins
                         else:
                             if pending_params is not None:
