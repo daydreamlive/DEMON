@@ -861,6 +861,10 @@ export class RemoteBackend extends EventTarget {
     };
   }
 
+  /** Returns true only when the message was actually handed to `ws.send`.
+   *  Callers that consume a one-shot sample (e.g. the worst-slice-lead
+   *  tracker, which clears on read) must re-arm it when this returns false,
+   *  or the sample is lost on a dropped tick. */
   sendParams(
     raw: Record<string, number | string | boolean>,
     playbackPos: number,
@@ -868,8 +872,8 @@ export class RemoteBackend extends EventTarget {
      *  since the previous params send; see the wire contract's
      *  `slice_lead_s`. Omit when no slice arrived in the interval. */
     sliceLeadS?: number,
-  ): void {
-    if (this.ws?.readyState !== WebSocket.OPEN) return;
+  ): boolean {
+    if (this.ws?.readyState !== WebSocket.OPEN) return false;
     // Backpressure gate: when the socket can't drain (slow uplink, TCP
     // retransmit storms), queueing more 125 Hz reports only makes every
     // report STALER — the server re-anchors its playhead clock on each
@@ -880,7 +884,7 @@ export class RemoteBackend extends EventTarget {
     // free-runs at 1x while reports are quiet, which is the correct
     // degradation. Threshold is several ticks' worth of params JSON —
     // normal operation never accumulates that much.
-    if (this.ws.bufferedAmount > PARAMS_BACKPRESSURE_BYTES) return;
+    if (this.ws.bufferedAmount > PARAMS_BACKPRESSURE_BYTES) return false;
     try {
       const msg: ParamsCommand = {
         type: "params",
@@ -900,7 +904,10 @@ export class RemoteBackend extends EventTarget {
         msg.slice_lead_s = sliceLeadS;
       }
       this.ws.send(JSON.stringify(msg));
-    } catch {}
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   sendPrompt(

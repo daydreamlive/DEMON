@@ -165,6 +165,10 @@ export class FakeWebSocket {
   url: string;
   binaryType = "blob";
   readyState = FakeWebSocket.CONNECTING;
+  /** Mirrors the real socket's send-queue depth. Tests set this to drive
+   *  RemoteBackend.sendParams's backpressure gate; send() never auto-bumps
+   *  it (the fake drains instantly). */
+  bufferedAmount = 0;
   onopen: (() => void) | null = null;
   onmessage: ((ev: { data: WsData }) => void) | null = null;
   onerror: ((e: unknown) => void) | null = null;
