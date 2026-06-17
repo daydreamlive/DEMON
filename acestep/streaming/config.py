@@ -52,6 +52,14 @@ class SessionConfig:
     fixture_name: str | None = None
     use_server_fixture: bool = False
     stem_source_mode: str | None = None
+    # Text-to-music mode: no input audio at all. The server synthesizes a
+    # silent source of ``text2music_duration_s`` seconds and conditions the
+    # diffusion purely on the prompt (canonical silence latent = the
+    # model's trained "no reference" signal), so generation is text-only.
+    # The client sends NO binary PCM frame during the handshake when this
+    # is set (mirrors ``use_server_fixture``).
+    text2music: bool = False
+    text2music_duration_s: float = 60.0
     enabled_loras: list = field(default_factory=list)
     lora_strengths: dict = field(default_factory=dict)
     lora_paths: list = field(default_factory=list)

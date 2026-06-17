@@ -16,6 +16,11 @@ import { useUploadOnboardingHint } from "@/hooks/useUploadOnboardingHint";
 import { trimAudioBuffer } from "@/lib/audio/trimAudioBuffer";
 import { useConfig } from "@/lib/config";
 import { LOCAL_MODE } from "@/lib/runtime";
+import {
+  TEXT2MUSIC_LABEL,
+  TEXT2MUSIC_SOURCE,
+  isText2Music,
+} from "@/lib/text2music";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
@@ -81,6 +86,28 @@ function MicIcon({ size = 14 }: { size?: number }) {
       <path d="M3.5 8.5a4.5 4.5 0 0 0 9 0" />
       <path d="M8 13v1.5" />
       <path d="M6 14.5h4" />
+    </svg>
+  );
+}
+
+function TextPromptIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.4}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M2.5 3.5h11" />
+      <path d="M2.5 6.5h7" />
+      <path d="M2.5 9.5h5" />
+      <path d="M13 7.5v4" />
+      <circle cx="11.6" cy="11.9" r="1.4" />
     </svg>
   );
 }
@@ -278,7 +305,9 @@ export function AudioSourceCrate() {
     ...fixtures.map((name) => ({ name, kind: "fixture" as const })),
     ...customNames.map((name) => ({ name, kind: "custom" as const })),
   ];
-  const displayedName = fixture || (tracks[0]?.name ?? "—");
+  const displayedName = isText2Music(fixture)
+    ? TEXT2MUSIC_LABEL
+    : fixture || (tracks[0]?.name ?? "—");
 
   return (
     <>
@@ -424,6 +453,36 @@ export function AudioSourceCrate() {
               );
             })}
           </div>
+          {/* Text-to-music sleeve — generation from the prompt alone, no
+              input audio. Pinned with the upload sleeve so it's always
+              visible regardless of fixture count. */}
+          <button
+            type="button"
+            role="menuitem"
+            className={[
+              "audio-source-sleeve",
+              "audio-source-sleeve--text2music",
+              isText2Music(fixture) ? "audio-source-sleeve--current" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+            onClick={async () => {
+              setOpen(false);
+              if (!(await gate("track_change"))) return;
+              setFixture(TEXT2MUSIC_SOURCE);
+            }}
+            data-dd-tooltip="Generate music from your text prompt alone — no input audio"
+          >
+            <span
+              className="audio-source-sleeve-art audio-source-sleeve-art--text2music"
+              aria-hidden="true"
+            >
+              <TextPromptIcon />
+            </span>
+            <span className="audio-source-sleeve-label">
+              {TEXT2MUSIC_LABEL}
+            </span>
+          </button>
           {/* Upload sleeve is pinned outside the scroll region so it stays
               visible regardless of fixture count. Always rendered. */}
           <button

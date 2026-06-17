@@ -410,16 +410,18 @@ export class RemoteBackend extends EventTarget {
       ws.onopen = () => {
         if (!this._pending) return;
         this._updateTrace({ openAt: Date.now(), phase: "open" });
-        // Phase 1: JSON config, then (unless server-side fixture) the
-        // binary audio upload. For known fixtures the pod loads the
-        // waveform from its own cache, so re-uploading ~20 MB of PCM
-        // here is pure waste (~11 s on the measured cold path). When
-        // `use_server_fixture` is set the server skips its audio recv,
-        // so we must skip the send to match.
+        // Phase 1: JSON config, then (unless the server sources its own
+        // audio) the binary audio upload. For known fixtures the pod
+        // loads the waveform from its own cache, so re-uploading ~20 MB
+        // of PCM here is pure waste (~11 s on the measured cold path);
+        // in text-to-music mode there is no input audio at all (the
+        // server synthesizes silence). In both cases the server skips
+        // its audio recv, so we must skip the send to match.
         ws.send(JSON.stringify(this._pending.config));
-        const useServerFixture =
-          this._pending.config.use_server_fixture === true;
-        if (!useServerFixture) {
+        const serverSourcesAudio =
+          this._pending.config.use_server_fixture === true ||
+          this._pending.config.text2music === true;
+        if (!serverSourcesAudio) {
           const { interleaved, channels } = this._pending;
           ws.send(packPcmFrame(interleaved, channels));
         }
@@ -1260,6 +1262,36 @@ export class RemoteBackend extends EventTarget {
       return true;
     } catch (e) {
       console.error("[protocol] sendSwapSourceByName failed:", e);
+      return false;
+    }
+  }
+
+  /**
+   * Swap to text-to-music mode mid-session: NO PCM is sent. The server
+   * synthesizes a silent source (at the session's configured
+   * text2music_duration_s) and conditions generation on the prompt
+   * alone. The reply is the same swap_ready + binary buffer as
+   * sendSwapSource — the buffer is silence, which generated slices
+   * progressively overwrite.
+   */
+  sendSwapTextToMusic(
+    tags?: string,
+    key?: string,
+    timeSignature?: string,
+  ): boolean {
+    if (this.ws?.readyState !== WebSocket.OPEN) return false;
+    try {
+      const msg: SwapSourceCommand = {
+        type: "swap_source",
+        text2music: true,
+      };
+      if (tags) msg.tags = tags;
+      if (key) msg.key = key;
+      if (timeSignature) msg.time_signature = timeSignature;
+      this.ws.send(JSON.stringify(msg));
+      return true;
+    } catch (e) {
+      console.error("[protocol] sendSwapTextToMusic failed:", e);
       return false;
     }
   }

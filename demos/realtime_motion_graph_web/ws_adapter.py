@@ -42,6 +42,7 @@ torch._dynamo.config.disable = True
 import numpy as np
 
 from acestep.audio.key_detection import detect_key
+from acestep.constants import DURATION_MAX
 from acestep.engine.obs import logger, spawn_thread
 from acestep.engine.session import Session
 from acestep.fixtures import KNOWN_FIXTURES
@@ -92,6 +93,7 @@ from acestep.streaming.source import (
     _load_clip_waveform,
     _load_known_fixture_waveform,
     _normalize_time_signature,
+    text2music_waveform,
 )
 from acestep.streaming.stems import (
     extract_upload_stems,
@@ -972,7 +974,20 @@ def _handle_client_body(
     # download→decode→re-upload round-trip and read the waveform
     # straight from the pod's fixture cache.
     fixture_name = config_dict.get("fixture_name")
-    if config_dict.get("use_server_fixture") and fixture_name in KNOWN_FIXTURES:
+    if config_dict.get("text2music"):
+        # Text-to-music: no input audio at all. The client sends NO
+        # binary frame; synthesize the silent placeholder here. The
+        # generous 600 s cap just bounds the zeros buffer —
+        # ``StreamingSession.create`` re-trims to the TRT profile
+        # ceiling like any uploaded source.
+        fixture_name = None
+        try:
+            _t2m_dur = float(config_dict.get("text2music_duration_s") or 60.0)
+        except (TypeError, ValueError):
+            _t2m_dur = 60.0
+        waveform = text2music_waveform(_t2m_dur, max_seconds=DURATION_MAX)
+        _ms("audio_text2music_synthesized")
+    elif config_dict.get("use_server_fixture") and fixture_name in KNOWN_FIXTURES:
         try:
             waveform = _load_known_fixture_waveform(fixture_name)
             _ms("audio_serverside_loaded")
@@ -1705,7 +1720,16 @@ def _handle_client_body(
                 # stem caches hit (no prepare_source, no Mel-Band RoFormer
                 # re-rip) instead of treating a re-decoded, re-uploaded PCM
                 # buffer as a brand-new source.
-                if data.get("use_server_source"):
+                if data.get("text2music"):
+                    # Text-to-music swap: no binary frame on the wire;
+                    # synthesize the silent placeholder at the session's
+                    # configured text2music duration (capped at the same
+                    # TRT ceiling every swap honors).
+                    wf = text2music_waveform(
+                        streaming.config.text2music_duration_s,
+                        max_seconds=streaming.max_seconds,
+                    )
+                elif data.get("use_server_source"):
                     name = data.get("fixture_name")
                     try:
                         wf = _load_clip_waveform(str(name))
@@ -1740,6 +1764,7 @@ def _handle_client_body(
                     time_signature=data.get("time_signature"),
                     fixture_name=data.get("fixture_name"),
                     stem_source_mode=data.get("stem_source_mode"),
+                    text2music=bool(data.get("text2music")),
                     origin=origin,
                 )
             elif mtype == "write_audio":

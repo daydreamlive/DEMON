@@ -413,13 +413,19 @@ COMMANDS: tuple = (
                       description="When true, the server loads the named source "
                                   "off its own disk and NO binary frame is "
                                   "sent."),
+            FieldSpec("text2music", "bool",
+                      description="When true, the server swaps to a synthesized "
+                                  "silent source (text-to-music mode: generation "
+                                  "is conditioned on the prompt alone) and NO "
+                                  "binary frame is sent. fixture_name is "
+                                  "ignored."),
         ),
         binary=True,
         binary_optional=True,
         requires="swap",
         description="Replace the playback source in-flight. A binary PCM frame "
-                    "follows UNLESS use_server_source is set. Acked by "
-                    "swap_ready (+ binary buffer) / swap_failed.",
+                    "follows UNLESS use_server_source or text2music is set. "
+                    "Acked by swap_ready (+ binary buffer) / swap_failed.",
     ),
     CommandSpec(
         "write_audio",
