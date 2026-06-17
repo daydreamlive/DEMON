@@ -42,6 +42,7 @@ from acestep.steering import SteeringController
 from acestep.streaming.knobs import (
     CHANNEL_GROUPS,
     KEYSTONE_CHANNELS,
+    KnobSlewLimiter,
     knob_specs as registry_knob_specs,
     manual_slot_specs,
     steering_axis_spec,
@@ -243,6 +244,19 @@ class ACEStepBackend(DiffusionBackend):
         # Rebuild-signature change detection (steps / LoRA enablement).
         # ``None`` on the first tick just seeds the baseline.
         self._last_rebuild_keys = None
+
+        # Continuous-knob slew limiter. Sits at the once-per-tick knob
+        # read so a fast/erratic sweep ramps toward its target instead of
+        # snapping — the single engine-side guard against control
+        # discontinuities driving the audio into distortion/clipping
+        # (protects every transport: web, VST, MCP, headless). Discrete
+        # knobs and non-registry keys pass through untouched; see
+        # :class:`acestep.streaming.knobs.KnobSlewLimiter`. The per-knob
+        # ceilings come from the session's live spec map (so runtime LoRA
+        # / steering knobs are covered); a static fallback keeps bare
+        # test fixtures (no session manifest) working.
+        self._slew = KnobSlewLimiter()
+        self._slew_fallback_specs_by_name = None
 
         # Activation steering. The controller is the source of truth for
         # the slot count and vector catalog; the session mirrors its
@@ -544,21 +558,47 @@ class ACEStepBackend(DiffusionBackend):
         self._walk_w1 = walk_w1
         self._walk_chunk_start_s = walk_chunk_start_s
 
+    def _slew_specs_by_name(self) -> dict:
+        """The live ``{name: KnobSpec}`` map the slew limiter reads its
+        per-knob ceilings from.
+
+        Prefers the session's manifest (``_knob_specs_by_name``), which
+        is reassigned wholesale when the LoRA / steering knob set changes
+        — so runtime knobs are covered and the limiter rebuilds its
+        ceilings exactly when the universe shifts. Falls back to this
+        backend's own static manifest for bare construction (test
+        fixtures with no session manifest)."""
+        sbn = getattr(self.session, "_knob_specs_by_name", None)
+        if sbn:
+            return sbn
+        if self._slew_fallback_specs_by_name is None:
+            self._slew_fallback_specs_by_name = {
+                s.name: s for s in self.knob_specs()
+            }
+        return self._slew_fallback_specs_by_name
+
     def read_knobs(self) -> dict:
         if self.use_midi:
-            return self.midi_knobs.get_all_values()
-        with self.state._lock:
-            m = self.state.motion_val
-        raw = {
-            self.k1_name: m,
-            "seed": 0.0,
-            "feedback": 0.0,
-            "feedback_depth": 1.0,
-            "shift": 3.5,
-        }
-        if self.use_sde:
-            raw["periodicity"] = 0.0
-        return raw
+            target = self.midi_knobs.get_all_values()
+        else:
+            with self.state._lock:
+                m = self.state.motion_val
+            target = {
+                self.k1_name: m,
+                "seed": 0.0,
+                "feedback": 0.0,
+                "feedback_depth": 1.0,
+                "shift": 3.5,
+            }
+            if self.use_sde:
+                target["periodicity"] = 0.0
+        # Rate-limit continuous knobs at this once-per-tick boundary so a
+        # fast sweep ramps instead of stepping. Discrete knobs and
+        # non-registry keys (curves, the playback clock) ride through
+        # unchanged. ``_prepare_tick`` and the channel/steering sync all
+        # read from this returned dict, so the whole translation path
+        # sees the slewed values.
+        return self._slew.apply(target, self._slew_specs_by_name())
 
     def has_pending_refit(self) -> bool:
         """True when ``before_tick`` is about to apply LoRA commands.
@@ -696,7 +736,12 @@ class ACEStepBackend(DiffusionBackend):
                 if abs(lora_str - self.state.params.get(key, -1)) > 0.02:
                     self.engine_obj.set_lora_strength(desc.id, lora_str)
 
-        hint_str = self.midi_knobs.get_param("hint_strength") if self.use_midi else 1.0
+        # Read the (already-slewed) value from ``raw`` rather than the
+        # backing KnobState so the hint-strength blend honors the slew
+        # limiter. ``raw`` carries hint_strength as a seeded bank knob in
+        # midi mode; the non-midi path has no such knob, so 1.0 (the
+        # historical default) applies.
+        hint_str = float(raw.get("hint_strength", 1.0))
         # Silence latent must match the T of the latent it's blended
         # against. walk_active can flip mid-session if a swap drops
         # the source below the window — rebuild on demand here so
@@ -797,7 +842,9 @@ class ACEStepBackend(DiffusionBackend):
         if x0_target_curve is not None:
             x0_str = 0.0
         else:
-            x0_str = self.midi_knobs.get_param("x0_target") if self.use_midi else 0.0
+            # Slewed value via ``raw`` (a seeded bank knob in midi mode);
+            # 0.0 when absent, matching the historical non-midi default.
+            x0_str = float(raw.get("x0_target", 0.0))
         # Use the live (possibly sliced) source as the x0_target so
         # the per-frame curve / strength scalar lines up with the
         # latent the DiT actually denoises against.
