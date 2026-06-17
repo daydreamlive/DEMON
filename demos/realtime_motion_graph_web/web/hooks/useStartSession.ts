@@ -15,6 +15,7 @@ import {
   resolveLoraCapForSource,
 } from "@/lib/config";
 import { wirePromptTransform } from "@/lib/loraTriggers";
+import { reconcileEnabledLoraStrengths } from "@/engine/lora/dispatcher";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore, type RefSource } from "@/store/usePerformanceStore";
@@ -617,6 +618,15 @@ export function useStartSession() {
           // ghost-LoRA leak when the reconnected source's tier is
           // tighter than what was previously enabled).
           applyLoraCapWithServerSync(resolveLoraCapForSource(remote.duration));
+          // Re-sync the engine-facing LoRA strengths from the store now
+          // that the (post-cap) enabled set is final. A reconnect rebuilds
+          // the server session from buildConfig, so the materialized
+          // strengths are correct — but useParamSync ships sliderValues,
+          // which may hold a stale per-LoRA entry from before a restore.
+          // Reconciling here keeps the streamed value equal to the UI
+          // strength (no-op when they already agree). See
+          // reconcileEnabledLoraStrengths.
+          reconcileEnabledLoraStrengths();
           useSessionStore.getState().setSession(remote, player);
           // Record what this recovered session is actually bound to. The
           // reconnect rebinds the fixture snapshotted at session start,
@@ -733,6 +743,18 @@ export function useStartSession() {
     // ghost-LoRA leak where the server keeps them materialized
     // server-side after they vanish from the UI.
     applyLoraCapWithServerSync(resolveLoraCapForSource(remote.duration));
+
+    // Re-sync the engine-facing LoRA strengths from the store before the
+    // first param tick ships. On a fresh session this is a no-op (the
+    // catalog seed already wrote matching sliderValues), but on a
+    // saved-session resume the host restores the persisted strength into
+    // useLoraStore.strengths WITHOUT touching perf.sliderValues — so
+    // useParamSync would otherwise keep streaming the stale value the
+    // catalog seed left behind (the LoRA shows its restored strength but
+    // is inaudible until the fader is moved). Runs once here, gated by
+    // this hook only reaching "ready" with a live remote, so it can't
+    // fire before the engine is connected or spam per-tick dispatches.
+    reconcileEnabledLoraStrengths();
 
     // "Hear the source first" gate: when enabled in config.json, every
     // session start snaps engine denoise to 0 and plays a visual-only
