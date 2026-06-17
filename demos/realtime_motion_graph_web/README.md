@@ -82,7 +82,7 @@ shared `/sdk/demon-client.js` bundle, server fixtures, live LoRA controls, and
 MediaPipe hand tracking as a control surface:
 
 ```powershell
-uv run python -u -m demos.realtime_motion_graph_web.run --demo C:\_dev\projects\demos\demon-summon-frontend
+uv run python -u -m demos.realtime_motion_graph_web.run --demo C:\path\to\demon-summon-frontend
 ```
 
 The backend prints each mounted static demo URL at startup, for example
@@ -417,7 +417,7 @@ then point Claude Code at the MCP server:
         "run", "python", "-u",
         "-m", "demos.realtime_motion_graph_web.mcp_server"
       ],
-      "cwd": "C:/_dev/projects/DEMON"
+      "cwd": "C:/path/to/DEMON"
     }
   }
 }
