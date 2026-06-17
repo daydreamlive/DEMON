@@ -214,6 +214,33 @@ def _process_request(connection, request):
             body,
         )
 
+    # API: prompt enhancer — expand a short music idea into a rich ACE-Step
+    # tag line via Haiku. Key-gated on ANTHROPIC_API_KEY (read from the pod's
+    # env; the key never ships to a client). With no key or any API error it
+    # returns the caller's text unchanged with ok=false, so every frontend
+    # treats enhance as best-effort and never blocks. The prompt rides the
+    # query string to stay on this all-GET probe surface; it's redacted from
+    # the access log.
+    if path_only == "/api/enhance":
+        from urllib.parse import parse_qs
+
+        from .prompt_enhancer import enhance_prompt
+
+        query = url.split("?", 1)[1] if "?" in url else ""
+        idea = (parse_qs(query).get("prompt", [""])[0] or "").strip()
+        enhanced, ok = enhance_prompt(idea)
+        body = json.dumps({"enhanced": enhanced, "ok": ok}).encode()
+        _log_http(remote, 200, "GET", "/api/enhance")  # redact prompt
+        return Response(
+            200, "OK",
+            Headers([
+                ("Content-Type", "application/json; charset=utf-8"),
+                ("Content-Length", str(len(body))),
+                *_PUBLIC_HTTP_HEADERS,
+            ]),
+            body,
+        )
+
     # API: list LoRAs in MODELS_DIR/loras/.  Cheap (filesystem glob, no
     # torch / no engine load), so the browser can render the Library
     # panel before the user even clicks Play.  Uses the same path
