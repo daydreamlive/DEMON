@@ -618,6 +618,16 @@ export function useStartSession() {
           // tighter than what was previously enabled).
           applyLoraCapWithServerSync(resolveLoraCapForSource(remote.duration));
           useSessionStore.getState().setSession(remote, player);
+          // Record what this recovered session is actually bound to. The
+          // reconnect rebinds the fixture snapshotted at session start,
+          // which can lag the user's current selection if they switched
+          // tracks while the socket was down. Set this BEFORE onSuccess
+          // flips status to "ready" so useFixtureSwap's reconnect
+          // reconcile observes the (possibly stale) bound fixture and
+          // heals the divergence by swapping to the live selection.
+          useSessionStore
+            .getState()
+            .setBoundFixture(sessionFixture.fixtureName);
           // Rebuild the network-quality monitor against the new
           // remote — the old one was bound to the dropped backend's
           // `slice` events and is dead now.
@@ -753,6 +763,10 @@ export function useStartSession() {
     perfState.setRemixStarted(false);
 
     setSession(remote, player);
+    // The live session is now bound to this fixture. Mirrored into the
+    // session store so the reconnect path can tell whether the user
+    // switched tracks during an outage (see useFixtureSwap).
+    useSessionStore.getState().setBoundFixture(resolved.fixtureName);
     setStatus("ready", "Playing");
 
     // Start the network-quality monitor now that the WS is "ready".
