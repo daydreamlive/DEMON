@@ -77,12 +77,14 @@ Or pass the demo path to the launcher:
 uv run python -u -m demos.realtime_motion_graph_web.run --demo C:\path\to\demo
 ```
 
-Example: `demon-summon-frontend` is a no-build external demo that uses the
-shared `/sdk/demon-client.js` bundle, server fixtures, live LoRA controls, and
+Example: [`daydreamlive/demon-example-apps`](https://github.com/daydreamlive/demon-example-apps)
+collects no-build static demos that use the shared `/sdk/demon-client.js`
+bundle. Its `apps/summon` demo uses server fixtures, live LoRA controls, and
 MediaPipe hand tracking as a control surface:
 
 ```powershell
-uv run python -u -m demos.realtime_motion_graph_web.run --demo C:\path\to\demon-summon-frontend
+git clone https://github.com/daydreamlive/demon-example-apps.git
+uv run python -u -m demos.realtime_motion_graph_web.run --demo C:\path\to\demon-example-apps\apps\summon
 ```
 
 The backend prints each mounted static demo URL at startup, for example

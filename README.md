@@ -340,10 +340,11 @@ External static demo repos can be mounted at runtime with `--demo <path>`. DEMON
 uv run python -u -m demos.realtime_motion_graph_web.run --demo C:\path\to\demo
 ```
 
-Those repos own any browser/CDN/build dependencies; DEMON only provides static hosting plus the shared browser SDK at `/sdk/demon-client.js`. For a concrete no-build example, point `--demo` at the external `demon-summon-frontend` demo:
+Those repos own any browser/CDN/build dependencies; DEMON only provides static hosting plus the shared browser SDK at `/sdk/demon-client.js`. For concrete no-build examples, see [`daydreamlive/demon-example-apps`](https://github.com/daydreamlive/demon-example-apps):
 
 ```bash
-uv run python -u -m demos.realtime_motion_graph_web.run --demo C:\path\to\demon-summon-frontend
+git clone https://github.com/daydreamlive/demon-example-apps.git
+uv run python -u -m demos.realtime_motion_graph_web.run --demo C:\path\to\demon-example-apps\apps\summon
 ```
 
 Highlights:

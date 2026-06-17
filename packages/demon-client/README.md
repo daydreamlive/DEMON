@@ -17,8 +17,9 @@ standalone. Two consumption modes ship in-repo:
 - **Static no-build pages** — `dist/` holds a committed esbuild bundle
   (`demon-client.js`, `sliceDecoder.worker.js`, `audio-worklet.js`) that
   the demo backend mounts at `/sdk/`. These pages live in external repos
-  mounted via the backend's `--demo <path>` flag (e.g. the
-  `demon-summon-frontend` demo), never inside this repo's `demos/` tree.
+  mounted via the backend's `--demo <path>` flag (e.g. demos from
+  [`daydreamlive/demon-example-apps`](https://github.com/daydreamlive/demon-example-apps)),
+  never inside this repo's `demos/` tree.
   Pass `RemoteBackendOptions.sliceWorkerUrl` and
   `AudioPlayerOptions.workletUrl` pointing at the mounted siblings.
   Regenerate after any SDK change: `npm install && npm run build` here
