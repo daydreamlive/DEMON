@@ -669,7 +669,7 @@ export function ScheduleCurvesOverlay() {
                 ensureCurve(tab.param);
                 onTabContext(e, tab.param);
               }}
-              data-dd-tooltip={`LoRA ${tab.label} — ${
+              data-dd-tooltip={`Trained Style ${tab.label} — ${
                 isEnabled ? "active" : "drawn but not driving"
               } (right-click for presets)`}
             >

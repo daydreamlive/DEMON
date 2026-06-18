@@ -301,7 +301,7 @@ export function HeroMacros() {
           aria-pressed={curveOpen}
           aria-label="Toggle curve editor"
           data-midi-learn="schedule_curves_toggle"
-          data-dd-tooltip="Draw param automation curves against the track timeline. Curves drive denoise / structure / timbre / LoRA strengths / etc. over time so the model performs an arrangement instead of a static patch. Right-click to MIDI-learn."
+          data-dd-tooltip="Draw param automation curves against the track timeline. Curves drive denoise / structure / timbre / Trained Style strengths / etc. over time so the model performs an arrangement instead of a static patch. Right-click to MIDI-learn."
           data-dd-tooltip-wide=""
           data-dd-tooltip-title="Curve Editor"
         >

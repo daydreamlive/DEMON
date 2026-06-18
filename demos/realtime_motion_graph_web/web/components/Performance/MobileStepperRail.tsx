@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef } from "react";
 
+import { LABELS } from "@demon/client";
+
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
@@ -211,7 +213,7 @@ export function MobileLoraBlendStepper() {
       side="right"
       param="lora_blend"
       max={1.0}
-      label="LoRA Blend"
+      label={LABELS.blend}
       sublabelTop={a ?? undefined}
       sublabelBottom={b ?? undefined}
       invert

@@ -1,5 +1,7 @@
 "use client";
 
+import { sharedTooltipFor, TOOLTIPS } from "@demon/client";
+
 import { SliderGroup } from "./SliderGroup";
 
 // Generic mixer tile that wraps a row of sliders. Replaces the dynamic
@@ -42,12 +44,11 @@ const DISPLAY_NAMES: Record<string, string> = {
 // data-dd-tooltip-wide (white-space: normal, max-width 280px).
 const PARAM_TOOLTIPS: Record<string, string> = {
   // ── Main remix controls ──
-  denoise:
-    "How much the model reshapes the source audio. Keep it low for a subtle remix that stays close to the original; push it high to fully transform the track into something new. The most expressive knob — try sweeping it during playback.",
-  hint_strength:
-    "How closely the model follows the original song's structure — sections, rhythm, dynamics. Crank it up to keep the arrangement intact; drop it to let the model rearrange more freely.",
-  timbre_strength:
-    "How much of the source's instrument character (tone, color) carries into the output. High keeps the original instruments recognizable; low frees the model to swap them for whatever fits the prompt.",
+  // The three macros are cross-client controls; their copy is the shared
+  // source of truth in @demon/client so the VST and Radio read identically.
+  denoise: TOOLTIPS.strength,
+  hint_strength: TOOLTIPS.structure,
+  timbre_strength: TOOLTIPS.timbre,
 
   // ── Engine internals ──
   feedback:
@@ -100,15 +101,10 @@ for (const p of NAMED_CHANNELS) {
 }
 
 export function tooltipFor(param: string): string | undefined {
-  // LoRA strength sliders (param like `lora_str_<id>`) get a generic
-  // tooltip rather than per-LoRA copy — the row already shows the
-  // LoRA's name as its visible label.
-  if (param.startsWith("lora_str_")) {
-    return "How strongly this LoRA shapes the output. LoRAs are little style packs — set a low value for a subtle flavor, crank past 1.0 to make this LoRA dominate the sound. Multiple LoRAs stack — turn several on at once for combined styles.";
-  }
-  if (param === "lora_blend") {
-    return "Crossfade between LoRA A and LoRA B. 0 = A only, 1 = B only, 0.5 = both at half strength. Use this to morph between two styles smoothly.";
-  }
+  // Trained Style controls (per-style strength `lora_str_<id>` + the A/B
+  // blend) share their copy with every other client via @demon/client.
+  const shared = sharedTooltipFor(param);
+  if (shared) return shared;
   // Manual steering tooltips share copy across all slots.
   if (param.startsWith("man_src_")) {
     return "Catalog index of the steering vector this slot fires. The catalog enumerates every pre-built (axis, build_layer, build_step) cell on disk in stable axis-major order. Double-click the readout to type an exact index; query the MCP list_manual_steering_vectors tool for the full table. Has no effect until α is non-zero.";

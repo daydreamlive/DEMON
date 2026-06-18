@@ -2,6 +2,8 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 
+import { LABELS } from "@demon/client";
+
 import { useCapability } from "@/hooks/useCapability";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useCurveStore } from "@/store/useCurveStore";
@@ -327,7 +329,7 @@ function StylesTab({ spread }: { spread: boolean }) {
             <PromptsTile />
           </CollapsibleTile>
           {canLora && (
-            <CollapsibleTile title="LoRA Library">
+            <CollapsibleTile title={LABELS.library}>
               <LibraryTile />
             </CollapsibleTile>
           )}
