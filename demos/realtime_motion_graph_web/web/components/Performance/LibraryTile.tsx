@@ -19,7 +19,12 @@ import { useMidiStore } from "@/store/useMidiStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 import { LORA_SLIDER_MAX } from "@/types/engine";
-import type { LoraCatalogEntry, LoraMetadata } from "@demon/client";
+import {
+  LABELS,
+  TRAINED_STYLES,
+  type LoraCatalogEntry,
+  type LoraMetadata,
+} from "@demon/client";
 
 // LoRA library tile — redesigned for a large catalog (40+ genre LoRAs).
 //
@@ -410,7 +415,7 @@ function ActiveLoraRow({ entry }: { entry: LoraCatalogEntry }) {
             aria-busy={isRefitPending}
             title={
               isRefitPending
-                ? "Applying… (LoRA refit in progress)"
+                ? LABELS.refitInProgress
                 : undefined
             }
           >
@@ -457,7 +462,7 @@ function BrowseLoraRow({ entry }: { entry: LoraCatalogEntry }) {
   // disabled-and-cap-reached rows become inert.
   const capBlocked = atCap && !enabled;
   const rowTitle = capBlocked
-    ? `Maximum ${cap} LoRAs active — disable one to enable this`
+    ? `Maximum ${cap} ${TRAINED_STYLES} active — disable one to enable this`
     : displayName;
 
   return (
@@ -652,23 +657,23 @@ export function LibraryTile() {
   if (catalog.length === 0) {
     return (
       <div className="mixer-tile" data-tile="library">
-        <div className="mixer-tile-label">LoRA Library</div>
-        <div className="lora-empty">no LoRAs found</div>
+        <div className="mixer-tile-label">{LABELS.library}</div>
+        <div className="lora-empty">{LABELS.noneFound}</div>
       </div>
     );
   }
 
   return (
     <div className="mixer-tile" data-tile="library">
-      <div className="mixer-tile-label">LoRA Library</div>
+      <div className="mixer-tile-label">{LABELS.library}</div>
       <div className="lora-search">
         <input
           type="text"
           className="lora-search-input"
-          placeholder="search LoRAs"
+          placeholder={LABELS.searchPlaceholder}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          aria-label="Search LoRA library"
+          aria-label={LABELS.searchAria}
         />
       </div>
 
@@ -687,7 +692,7 @@ export function LibraryTile() {
         <div className="lora-section-head">
           {searching
             ? `Results · ${filtered.length}`
-            : `All LoRAs · ${compatible.length}`}
+            : `All ${TRAINED_STYLES} · ${compatible.length}`}
         </div>
         <div className="lora-browse">
           {filtered.length === 0 ? (

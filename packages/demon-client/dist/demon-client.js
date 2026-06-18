@@ -445,6 +445,50 @@ function captureConfigFromState(snapshot, base) {
   );
 }
 
+// copy/terms.ts
+var TRAINED_STYLES = "Trained Styles";
+var TRAINED_STYLE = "Trained Style";
+
+// copy/labels.ts
+var LABELS = {
+  /** "Trained Styles" / "Trained Style" — re-exported for convenience. */
+  plural: TRAINED_STYLES,
+  singular: TRAINED_STYLE,
+  /** Library panel / accordion header. */
+  library: `${TRAINED_STYLES} Library`,
+  /** Empty-state copy when no styles are available. */
+  noneFound: `no ${TRAINED_STYLES} found`,
+  /** Search box placeholder (lowercase — reads as a hint). */
+  searchPlaceholder: `search ${TRAINED_STYLES.toLowerCase()}`,
+  /** Search box accessible name. */
+  searchAria: `Search ${TRAINED_STYLES} library`,
+  /** Crossfade control label (slot A ↔ slot B). */
+  blend: `${TRAINED_STYLE} Blend`,
+  /** Status shown while the engine reloads adapters. */
+  refitInProgress: `Applying\u2026 (${TRAINED_STYLE} refit in progress)`
+};
+
+// copy/tooltips.ts
+var TOOLTIPS = {
+  // ── Remix macros ──
+  strength: "How much the model reshapes the source audio. Keep it low for a subtle remix that stays close to the original; push it high to fully transform the track into something new. The most expressive knob \u2014 try sweeping it during playback.",
+  structure: "How closely the model follows the original song's structure \u2014 sections, rhythm, dynamics. Crank it up to keep the arrangement intact; drop it to let the model rearrange more freely.",
+  timbre: "How much of the source's instrument character (tone, color) carries into the output. High keeps the original instruments recognizable; low frees the model to swap them for whatever fits the prompt.",
+  // ── Trained Styles ──
+  trainedStyleStrength: "How strongly this Trained Style shapes the output. Trained Styles are little style packs \u2014 set a low value for a subtle flavor, crank past 1.0 to make this style dominate the sound. Multiple Trained Styles stack \u2014 turn several on at once for combined styles.",
+  trainedStyleBlend: "Crossfade between Trained Style A and Trained Style B. 0 = A only, 1 = B only, 0.5 = both at half strength. Use this to morph between two styles smoothly."
+};
+var SHARED_PARAM_TOOLTIPS = {
+  denoise: TOOLTIPS.strength,
+  hint_strength: TOOLTIPS.structure,
+  timbre_strength: TOOLTIPS.timbre,
+  lora_blend: TOOLTIPS.trainedStyleBlend
+};
+function sharedTooltipFor(param) {
+  if (param.startsWith("lora_str_")) return TOOLTIPS.trainedStyleStrength;
+  return SHARED_PARAM_TOOLTIPS[param];
+}
+
 // inputs.ts
 function writeAscii(view, offset, text) {
   for (let i = 0; i < text.length; i++) {
@@ -3259,6 +3303,7 @@ export {
   EVENT_NAMES,
   KNOB_SCHEMA_VERSION,
   KNOWN_TOP_LEVEL_KEYS,
+  LABELS,
   LOOP_GRID_ORDER,
   PREEMPTED_CLOSE_CODE,
   PROTOCOL_VERSION,
@@ -3269,6 +3314,9 @@ export {
   SLICE_FLAG_RAW,
   SLICE_HDR_SIZE,
   T,
+  TOOLTIPS,
+  TRAINED_STYLE,
+  TRAINED_STYLES,
   VALID_TIME_SIGNATURES,
   WsReconnector,
   applyConfigToState,
@@ -3300,5 +3348,6 @@ export {
   rtmgConfigToSessionConfig,
   selectVariant,
   serializeConfig,
+  sharedTooltipFor,
   withUnknownKeys
 };

@@ -365,11 +365,11 @@ export function OperatorStrip() {
           <button
             type="button"
             className="pause-btn"
-            data-dd-tooltip="Reset all sliders + LoRAs to defaults. Does NOT touch MIDI mapping, automation curves, or persisted UI prefs."
+            data-dd-tooltip="Reset all sliders + Trained Styles to defaults. Does NOT touch MIDI mapping, automation curves, or persisted UI prefs."
             onClick={async () => {
               const ok = await confirm({
                 title: "Reset",
-                message: "Reset sliders and LoRAs to defaults?",
+                message: "Reset sliders and Trained Styles to defaults?",
                 confirmLabel: "Reset",
                 variant: "danger",
               });
