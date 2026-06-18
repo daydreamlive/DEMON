@@ -3,6 +3,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WsReconnector, type ReconnectAttempt } from "@demon/client";
+import type { RemoteBackend } from "@demon/client";
+import { restoreLoopBand } from "@/hooks/useStartSession";
+import { usePerformanceStore } from "@/store/usePerformanceStore";
 
 describe("WsReconnector", () => {
   beforeEach(() => {
@@ -121,5 +124,57 @@ describe("WsReconnector", () => {
     const r = new WsReconnector(vi.fn());
     r.cancel();
     r.cancel();
+  });
+});
+
+// Regression: the reconnect success path re-applies session state that
+// isn't carried in SessionConfig (timbre/structure refs, and — the bug
+// this guards — the active loop band). WaveformScrubBox's sender effect
+// doesn't re-run on reconnect (the AudioPlayer persists, `loopBand`
+// unchanged), so without `restoreLoopBand` the freshly reconnected
+// backend never learns the band: the worklet keeps looping locally
+// while the server decodes the full timeline → drift / stale loop.
+describe("restoreLoopBand on reconnect", () => {
+  const pristine = usePerformanceStore.getState();
+  beforeEach(() => {
+    usePerformanceStore.setState(pristine, true);
+  });
+
+  function fakeRemote(): { remote: RemoteBackend; sendLoopBand: ReturnType<typeof vi.fn> } {
+    const sendLoopBand = vi.fn();
+    return { remote: { sendLoopBand } as unknown as RemoteBackend, sendLoopBand };
+  }
+
+  it("re-sends the active loop band with its exact region", () => {
+    usePerformanceStore.getState().setLoopBand({ start: 2.5, end: 6.0 });
+    usePerformanceStore.getState().setBandLoopEnabled(true);
+    const { remote, sendLoopBand } = fakeRemote();
+    restoreLoopBand(remote);
+    expect(sendLoopBand).toHaveBeenCalledTimes(1);
+    expect(sendLoopBand).toHaveBeenCalledWith(2.5, 6.0);
+  });
+
+  it("does not send anything when no band is set", () => {
+    // Pristine store: loopBand is null even though bandLoopEnabled defaults on.
+    expect(usePerformanceStore.getState().loopBand).toBeNull();
+    const { remote, sendLoopBand } = fakeRemote();
+    restoreLoopBand(remote);
+    expect(sendLoopBand).not.toHaveBeenCalled();
+  });
+
+  it("does not send a band that is armed-but-off (loop disabled)", () => {
+    usePerformanceStore.getState().setLoopBand({ start: 1.0, end: 4.0 });
+    usePerformanceStore.getState().setBandLoopEnabled(false);
+    const { remote, sendLoopBand } = fakeRemote();
+    restoreLoopBand(remote);
+    expect(sendLoopBand).not.toHaveBeenCalled();
+  });
+
+  it("ignores a degenerate sub-50ms region", () => {
+    usePerformanceStore.getState().setLoopBand({ start: 1.0, end: 1.02 });
+    usePerformanceStore.getState().setBandLoopEnabled(true);
+    const { remote, sendLoopBand } = fakeRemote();
+    restoreLoopBand(remote);
+    expect(sendLoopBand).not.toHaveBeenCalled();
   });
 });
