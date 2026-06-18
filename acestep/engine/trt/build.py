@@ -1056,6 +1056,7 @@ def _print_matrix(durations, build_vae, build_decoder, output_dir, batch_max,
     # Defer to TRTBuildConfig.engine_filename so this preview can't
     # drift from what _build_decoder_engine writes.
     from .export import TRTBuildConfig
+    from acestep.ui import style
 
     def _decoder_dir_name(dur: int) -> str:
         cfg = TRTBuildConfig(
@@ -1094,10 +1095,10 @@ def _print_matrix(durations, build_vae, build_decoder, output_dir, batch_max,
         engine_file = os.path.join(output_dir, dir_name, f"{dir_name}.engine")
         if os.path.exists(engine_file):
             size_mb = os.path.getsize(engine_file) / 1e6
-            lines.append(f"  [exists]  {label}  ({size_mb:.0f} MB)")
+            lines.append(f"  {style('[exists]', 'dim')}  {label}  ({size_mb:.0f} MB)")
             to_skip += 1
         else:
-            lines.append(f"  [build]   {label}")
+            lines.append(f"  {style('[build]', 'green')}   {label}")
             to_build += 1
 
     print(f"\nBuild matrix: {to_build} to build, {to_skip} existing (skipped)")
@@ -1109,11 +1110,14 @@ def _print_matrix(durations, build_vae, build_decoder, output_dir, batch_max,
 
 def _print_summary(results, output_dir):
     """Print build summary and list engines on disk."""
-    print(f"\n{'=' * 60}")
-    print("BUILD SUMMARY")
-    print(f"{'=' * 60}")
+    from acestep.ui import style
+    print(f"\n{style('=' * 60, 'orange')}")
+    print(style("BUILD SUMMARY", "orange_b"))
+    print(style('=' * 60, "orange"))
+    _verb = {"OK": "ok", "FAILED": "fail", "SKIPPED": "dim"}
     for label, path, elapsed, status in results:
-        print(f"  {status:7s} {elapsed:6.0f}s  {label}")
+        _s = style(f"{status:7s}", _verb.get(status.strip(), "dim"))
+        print(f"  {_s} {elapsed:6.0f}s  {label}")
 
     failures = sum(1 for _, _, _, s in results if s == "FAILED")
     if failures:
