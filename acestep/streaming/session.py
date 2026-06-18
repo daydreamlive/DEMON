@@ -851,12 +851,71 @@ class StreamingSession:
     # ---- Pending drain (runs inside before_tick) -----------------------
 
     def apply_pending(self) -> None:
-        """Drain LoRA, swap, and depth pending queues. Called by the
-        runner from ``before_tick`` so GPU mutations serialize with
-        the streaming pipeline."""
+        """Drain LoRA, swap, depth, and conditioning pending queues. Called
+        by the runner from ``before_tick`` so GPU mutations (encode +
+        conditioning recompose) serialize with the streaming pipeline."""
         self._apply_lora_pending()
         self._apply_swap_if_pending()
         self._apply_depth_pending()
+        self._apply_conditioning_pending()
+
+    def _apply_conditioning_pending(self) -> None:
+        """Apply staged prompt / blend / timbre changes (drained under
+        ``state._lock``) at the ``before_tick`` boundary. Previously the
+        live ``set_prompt`` / ``set_prompt_blend`` / ``set_timbre_strength``
+        handlers ran the encode + ``_refresh_conditioning`` immediately on
+        the command thread, so a change landing mid generation step swapped
+        ``stream.conditioning`` (and hogged the GPU with an encode) under
+        the running step — corrupting the in-flight audio chunk, which then
+        sticks in the looping latent buffer as a silent section until a
+        reconnect re-encodes a clean buffer. Routing them through the same
+        pending drain as swaps/lora/depth serializes them with the step.
+        Latest staged value wins per tick; one recompose covers all three."""
+        state = self.state
+        with state._lock:
+            pending_prompt = state.pending_prompt
+            pending_blend = state.pending_prompt_blend
+            pending_timbre = state.pending_timbre_strength
+            state.pending_prompt = None
+            state.pending_prompt_blend = None
+            state.pending_timbre_strength = None
+            if (pending_prompt is None and pending_blend is None
+                    and pending_timbre is None):
+                return
+
+            if pending_prompt is not None:
+                ts_override = _normalize_time_signature(
+                    pending_prompt.get("time_signature"))
+                if ts_override is not None:
+                    state.time_signature = ts_override
+                refer = self._active_refer_latent()
+                key_used = pending_prompt.get("key") or state.key
+                tags = pending_prompt["tags"]
+                tags_b = pending_prompt.get("tags_b")
+                state.cond_pair = encode_cond_pair(
+                    self.session, tags, refer, state.bpm, state.duration,
+                    key_used, state.time_signature,
+                )
+                state.prompt_text = tags
+                if tags_b and tags_b != tags:
+                    state.cond_pair_b = encode_cond_pair(
+                        self.session, tags_b, refer, state.bpm, state.duration,
+                        key_used, state.time_signature,
+                    )
+                    state.prompt_text_b = tags_b
+                else:
+                    state.cond_pair_b = state.cond_pair
+                    state.prompt_text_b = tags
+
+            if pending_blend is not None:
+                state.prompt_blend = pending_blend
+            if pending_timbre is not None:
+                state.timbre_strength = pending_timbre
+
+            self._refresh_conditioning()
+
+        if pending_prompt is not None:
+            self.bus.publish(PromptApplied(tags=pending_prompt["tags"]))
 
     def _apply_lora_pending(self) -> None:
         if not self.lora_available:
@@ -1533,37 +1592,24 @@ class StreamingSession:
         time_signature: str | None = None,
         origin: CommandOrigin = CommandOrigin.PRIMARY,
     ) -> None:
-        """Re-encode A (and optionally B) against the active timbre
-        reference and refresh the live conditioning. Publishes
-        :class:`PromptApplied`."""
+        """Stage a prompt change (re-encode A/B + refresh conditioning) for
+        the next ``before_tick`` boundary so the encode + conditioning swap
+        never land mid generation step (which corrupts the in-flight latent).
+        Applied — and :class:`PromptApplied` published — in
+        :meth:`_apply_conditioning_pending`."""
         state = self.state
         state.last_activity_ts = time.monotonic()
         with state._lock:
-            ts_override = _normalize_time_signature(time_signature)
-            if ts_override is not None:
-                state.time_signature = ts_override
-            refer = self._active_refer_latent()
-            key_used = key or state.key
-            logger.info(
-                "prompt_set origin={} tags={!r} tags_b={!r} key={} time_signature={}",
-                origin.value, tags, tags_b, key_used, state.time_signature,
-            )
-            state.cond_pair = encode_cond_pair(
-                self.session, tags, refer, state.bpm, state.duration,
-                key_used, state.time_signature,
-            )
-            state.prompt_text = tags
-            if tags_b and tags_b != tags:
-                state.cond_pair_b = encode_cond_pair(
-                    self.session, tags_b, refer, state.bpm, state.duration,
-                    key_used, state.time_signature,
-                )
-                state.prompt_text_b = tags_b
-            else:
-                state.cond_pair_b = state.cond_pair
-                state.prompt_text_b = tags
-            self._refresh_conditioning()
-        self.bus.publish(PromptApplied(tags=tags))
+            state.pending_prompt = {
+                "tags": tags,
+                "tags_b": tags_b,
+                "key": key,
+                "time_signature": time_signature,
+            }
+        logger.info(
+            "prompt_staged origin={} tags={!r} tags_b={!r} key={}",
+            origin.value, tags, tags_b, key,
+        )
 
     def set_prompt_blend(
         self,
@@ -1573,16 +1619,17 @@ class StreamingSession:
     ) -> None:
         """Crossfade between the cached A/B prompt cond pairs by
         ``value`` ∈ [0, 1]. EXTERNAL emits :class:`PromptBlendEcho`
-        only (the primary transport's UI owns the smoothed tween)."""
+        only (the primary transport's UI owns the smoothed tween).
+        PRIMARY stages the value for the next ``before_tick`` so the
+        conditioning recompose serializes with the generation step."""
         self.state.last_activity_ts = time.monotonic()
         v = max(0.0, min(1.0, float(value)))
         if origin is CommandOrigin.EXTERNAL:
             self.bus.publish(PromptBlendEcho(value=v))
             return
         with self.state._lock:
-            self.state.prompt_blend = v
-            self._refresh_conditioning()
-        logger.debug("prompt_blend_set origin={} value={:.3f}", origin.value, v)
+            self.state.pending_prompt_blend = v
+        logger.debug("prompt_blend_staged origin={} value={:.3f}", origin.value, v)
 
     def set_interp_method(
         self,
@@ -1744,14 +1791,15 @@ class StreamingSession:
         origin: CommandOrigin = CommandOrigin.PRIMARY,
     ) -> None:
         """Lerp the cached ``(cond_silence, cond_full)`` pair's encoder
-        hidden states by ``value`` ∈ [0, 1]."""
+        hidden states by ``value`` ∈ [0, 1]. Staged for the next
+        ``before_tick`` so the conditioning recompose serializes with the
+        generation step (see :meth:`_apply_conditioning_pending`)."""
         self.state.last_activity_ts = time.monotonic()
         v = max(0.0, min(1.0, float(value)))
         with self.state._lock:
-            self.state.timbre_strength = v
-            self._refresh_conditioning()
+            self.state.pending_timbre_strength = v
         logger.debug(
-            "timbre_strength_set origin={} value={:.3f}",
+            "timbre_strength_staged origin={} value={:.3f}",
             origin.value, v,
         )
 
