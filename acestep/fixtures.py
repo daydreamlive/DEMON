@@ -76,6 +76,31 @@ KNOWN_FIXTURES: frozenset[str] = frozenset({
     "low_fi_Gm_loop_60s_gnm.wav",
     "prog_rock_loop_60s_enm.wav",
     "thrash_metal_loop_60s_enm.wav",
+    # --- classical loops (key carried in filename suffix) ---
+    "amazing_grace_loop_55s_cM.wav",
+    "beethoven_9_scherzo_loop_37s_dnm.wav",
+    "bridal_chorus_loop_55s_bfM.wav",
+    "canon_in_d_loop_46s_dM.wav",
+    "gymnopedie_loop_49s_dM.wav",
+    "hall_of_the_mountain_king_loop_58s_bnm.wav",
+    "mozart_symphony_40_loop_49s_gnm.wav",
+    "toccata_and_fugue_loop_58s_dnm.wav",
+    # --- genre loops (bpm in seeded track.json; key in filename + track.json) ---
+    "acoustic_folk_loop_55s_gM.wav",
+    "baroque_quartet_loop_53s_dM.wav",
+    "cinematic_orchestral_loop_54s_dnm.wav",
+    "dark_ambient_drone_loop_56s_dnm.wav",
+    "deep_house_loop_54s_anm.wav",
+    "dub_reggae_loop_53s_anm.wav",
+    "glitch_idm_loop_57s_anm.wav",
+    "indian_raga_loop_59s_dfM.wav",
+    "jazz_organ_trio_loop_59s_fM.wav",
+    "latin_cumbia_loop_56s_enm.wav",
+    "liquid_dnb_loop_56s_fsm.wav",
+    "lofi_loop_51s_anm.wav",
+    "piano_nocturne_loop_58s_bfm.wav",
+    "synthpop_loop_58s_enm.wav",
+    "trap_beat_loop_55s_fnm.wav",
 })
 
 
