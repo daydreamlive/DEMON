@@ -7,7 +7,11 @@
 
 import type { LoopGridRes } from "./enums";
 
-export type SwapSourceMode = "full" | "vocals" | "instruments";
+// Runtime array is the single source of truth; the union derives from it (same
+// pattern as DCW_MODES etc. in ./enums) so the C++ contract emitter walks the
+// option values and the drift guard catches any addition/rename.
+export const SWAP_SOURCE_MODES = ["full", "vocals", "instruments"] as const;
+export type SwapSourceMode = (typeof SWAP_SOURCE_MODES)[number];
 
 /** One entry in `engine.enabled_loras`. Bare string = enable that LoRA
  *  at its sidecar's recommended_strength (or controls.lora_default_strength

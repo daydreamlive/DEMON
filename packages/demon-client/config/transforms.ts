@@ -5,6 +5,7 @@
 // serialization seam (read drops nothing it doesn't model; write re-emits
 // it untouched).
 
+import { SWAP_SOURCE_MODES } from "./types";
 import type {
   RtmgConfig,
   RtmgConfigEngine,
@@ -13,7 +14,7 @@ import type {
 } from "./types";
 
 export function isSwapSourceMode(v: unknown): v is SwapSourceMode {
-  return v === "full" || v === "vocals" || v === "instruments";
+  return (SWAP_SOURCE_MODES as readonly string[]).includes(v as string);
 }
 
 // ── Preserve-unknown-on-write ──────────────────────────────────────────

@@ -69,6 +69,8 @@ export type {
 // neutral (no btoa/atob/Buffer) so the bridge produces byte-identical
 // `wavBase64` to the web. The capture/apply (audio decode) stays per-client.
 export {
+  STEM_SOURCE_MODES,
+  SERIALIZED_INPUT_KINDS,
   encodeWavInterleaved,
   arrayBufferToBase64,
   base64ToArrayBuffer,

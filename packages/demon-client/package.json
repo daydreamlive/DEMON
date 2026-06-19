@@ -8,7 +8,8 @@
   "types": "index.ts",
   "sideEffects": false,
   "scripts": {
-    "build": "node build.mjs"
+    "build": "node build.mjs",
+    "gen:config": "node scripts/genConfigTypes.mjs"
   },
   "peerDependencies": {
     "fzstd": "^0.1.1"
