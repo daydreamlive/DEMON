@@ -80,6 +80,9 @@ function isTimeSignature(v) {
   return typeof v === "string" && VALID_TIME_SIGNATURES.includes(v);
 }
 
+// config/types.ts
+var SWAP_SOURCE_MODES = ["full", "vocals", "instruments"];
+
 // config/defaults.ts
 var DEFAULT_CONFIG = {
   version: 1,
@@ -182,7 +185,7 @@ var DEFAULT_CONFIG = {
 
 // config/transforms.ts
 function isSwapSourceMode(v) {
-  return v === "full" || v === "vocals" || v === "instruments";
+  return SWAP_SOURCE_MODES.includes(v);
 }
 var KNOWN_TOP_LEVEL_KEYS = /* @__PURE__ */ new Set([
   "version",
@@ -446,6 +449,8 @@ function captureConfigFromState(snapshot, base) {
 }
 
 // inputs.ts
+var STEM_SOURCE_MODES = ["full", "vocals", "instruments"];
+var SERIALIZED_INPUT_KINDS = ["fixture", "clip"];
 function writeAscii(view, offset, text) {
   for (let i = 0; i < text.length; i++) {
     view.setUint8(offset + i, text.charCodeAt(i));
@@ -3376,12 +3381,15 @@ export {
   RCFG_MODES,
   RemoteBackend,
   SAMPLE_RATE,
+  SERIALIZED_INPUT_KINDS,
   SLICE_FLAG_DELTA,
   SLICE_FLAG_RAW,
   SLICE_HDR_SIZE,
   SOURCE_MODE_HINTS,
   STEM_SECTION_DESCRIPTION,
+  STEM_SOURCE_MODES,
   STRUCTURE_REF_DESCRIPTION,
+  SWAP_SOURCE_MODES,
   T,
   TERMS,
   TIMBRE_REF_DESCRIPTION,

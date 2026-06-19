@@ -66,9 +66,11 @@ function cppStr(value) {
   return JSON.stringify(String(value));
 }
 
-/** Sanitize free text for a single-line /** ... *\/ doc comment. */
+/** Sanitize free text for a single-line /** ... *\/ doc comment. Escape EVERY
+ *  `*\/` (not just the first) so a description with two of them can't close the
+ *  comment early and corrupt the header. */
 function cppComment(text) {
-  return String(text).split(/\s+/).join(" ").replace("*/", "*\\/");
+  return String(text).split(/\s+/).join(" ").replaceAll("*/", "*\\/");
 }
 
 function indent(block, n) {
@@ -105,13 +107,11 @@ function valueNamespace(name, entries) {
 }
 
 // ── Enum option sets ────────────────────────────────────────────────────────
-// SwapSourceMode / StemSourceMode are TS string-literal UNIONS with no runtime
-// array in the SDK, so their option lists are mirrored here (the union in
-// config/types.ts resp. inputs.ts is the source of truth). The rest come from
-// runtime const arrays the SDK exports. The drift guard fails if any of these
-// fall out of sync with a regenerate.
-const SWAP_SOURCE_MODES = ["full", "vocals", "instruments"];
-const STEM_SOURCE_MODES = ["full", "vocals", "instruments"];
+// All enum option lists are walked from runtime const arrays the SDK exports
+// (SWAP_SOURCE_MODES, STEM_SOURCE_MODES, SERIALIZED_INPUT_KINDS, DCW_MODES, …),
+// each the single source of truth for its TS union. Nothing is hand-mirrored
+// here, so the drift guard genuinely fails if any option set changes upstream
+// without a regenerate.
 
 // ── configContract.gen.hpp ──────────────────────────────────────────────────
 
@@ -222,7 +222,7 @@ function renderConfigContractHpp(sdk) {
       ].join("\n"),
     ),
     "// ── Enum option values ──",
-    keyNamespace("swap_source_mode", SWAP_SOURCE_MODES),
+    keyNamespace("swap_source_mode", Array.from(sdk.SWAP_SOURCE_MODES)),
     keyNamespace("time_signature", Array.from(sdk.VALID_TIME_SIGNATURES)),
     keyNamespace("dcw_mode", Array.from(sdk.DCW_MODES)),
     keyNamespace("dcw_wavelet", Array.from(sdk.DCW_WAVELETS)),
@@ -247,9 +247,9 @@ function renderConfigContractHpp(sdk) {
             strConst("source_mode", "sourceMode"),
             strConst("wav_base64", "wavBase64"),
             "",
-            keyNamespace("kind_value", ["fixture", "clip"]),
+            keyNamespace("kind_value", Array.from(sdk.SERIALIZED_INPUT_KINDS)),
             "",
-            keyNamespace("source_mode_value", STEM_SOURCE_MODES),
+            keyNamespace("source_mode_value", Array.from(sdk.STEM_SOURCE_MODES)),
           ].join("\n"),
         ),
       ].join("\n"),

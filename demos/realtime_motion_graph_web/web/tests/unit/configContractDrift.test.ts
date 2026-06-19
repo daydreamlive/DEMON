@@ -81,6 +81,17 @@ describe("generated C++ config/controls contracts", () => {
     }
   });
 
+  it("projects enum option values from the SDK's runtime arrays (no hand-mirror)", () => {
+    // These option sets were once hand-mirrored in the generator, so the byte
+    // compare couldn't catch an upstream addition (both sides shared the same
+    // literal). They now derive from runtime const arrays the SDK exports —
+    // assert each option actually lands in the header so the guard has teeth.
+    const hpp = renderConfigContractHpp(sdk);
+    for (const v of sdk.SWAP_SOURCE_MODES) expect(hpp).toContain(`= "${v}";`);
+    for (const v of sdk.STEM_SOURCE_MODES) expect(hpp).toContain(`= "${v}";`);
+    for (const v of sdk.SERIALIZED_INPUT_KINDS) expect(hpp).toContain(`= "${v}";`);
+  });
+
   it("projects the controls lexicon + display-name overrides verbatim", () => {
     const hpp = renderControlsContractHpp(sdk);
     for (const [, label] of Object.entries(sdk.TERMS)) {

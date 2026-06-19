@@ -10,8 +10,15 @@
 // that CAPTURES and APPLIES inputs (AudioContext decode, zustand reads)
 // stays per-client; only the wire shape + codec are shared here.
 
-/** Which stem of a clip source the server should use. */
-export type StemSourceMode = "full" | "vocals" | "instruments";
+/** Which stem of a clip source the server should use. Runtime array is the
+ *  single source of truth (the union derives from it) so the C++ contract
+ *  emitter walks the option values and the drift guard catches any drift. */
+export const STEM_SOURCE_MODES = ["full", "vocals", "instruments"] as const;
+export type StemSourceMode = (typeof STEM_SOURCE_MODES)[number];
+
+/** The `kind` discriminant of a SerializedInput. Runtime array so the emitter
+ *  derives the `kind` option values instead of hand-mirroring them. */
+export const SERIALIZED_INPUT_KINDS = ["fixture", "clip"] as const;
 
 /** One serialized input. `fixture` is a library track the server can load
  *  by name (no audio on the wire). `clip` embeds the trimmed PCM as a base64
@@ -27,6 +34,20 @@ export type SerializedInput =
        *  the WAV header, so decode re-derives them. */
       wavBase64: string;
     };
+
+// Compile-time guard: SERIALIZED_INPUT_KINDS must stay exactly in sync with the
+// `kind` discriminant above, in both directions — `tsc --noEmit` fails if a kind
+// is added/renamed in one place but not the other, so the emitter's runtime
+// projection of kind values can never silently drift from the type.
+type _AssertKindsExhaustive = SerializedInput["kind"] extends
+  (typeof SERIALIZED_INPUT_KINDS)[number] ? true : never;
+type _AssertKindsExact = (typeof SERIALIZED_INPUT_KINDS)[number] extends
+  SerializedInput["kind"] ? true : never;
+const _serializedInputKindGuard: [_AssertKindsExhaustive, _AssertKindsExact] = [
+  true,
+  true,
+];
+void _serializedInputKindGuard;
 
 /** The three inputs as captured for export. A field is null when that input
  *  axis simply has nothing active. */
