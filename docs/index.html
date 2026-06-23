@@ -86,20 +86,20 @@
     </div>
 
     <p class="lead">
-      Four captures of the running engine under different configurations: live timbre and denoise under a blend between two prompts, live timbre/structure/denoise on the 5&nbsp;B XL model, a live LoRA refit, and an LLM agent driving the controls through the MCP server. Each clip plays the audio the engine generated.
+      Four captures of the running engine under different configurations: a custom MediaPipe hand-tracking interface built on DEMON's live control surface, live timbre/structure/denoise on the 5&nbsp;B XL model, a live LoRA refit, and an LLM agent driving the controls through the MCP server. Each clip plays the audio the engine generated.
     </p>
 
     <div class="morph-grid">
       <div class="morph-card" data-accent="red">
-        <div class="morph-card__media" data-tag="PROMPT · BLEND">
-          <video controls preload="none" playsinline poster="assets/img/poster-prompt-blend.jpg">
-            <source src="https://pub-d1b39d9529fd4ef8b125f56716c53163.r2.dev/prompt-blend.mp4" type="video/mp4">
+        <div class="morph-card__media" data-tag="HAND CONTROL">
+          <video controls preload="none" playsinline poster="assets/img/poster-bird-demo-hands.jpg">
+            <source src="https://pub-d1b39d9529fd4ef8b125f56716c53163.r2.dev/bird_demo_hands.mp4" type="video/mp4">
           </video>
         </div>
         <div class="morph-card__body">
-          <div class="morph-card__lora">TIMBRE + DENOISE</div>
-          <h4 class="morph-card__title">Prompt blend with live control</h4>
-          <p class="morph-card__caption">Timbre and denoise driven live, with the conditioning blended between two text prompts: acoustic deep house and a daft-punk four-to-the-floor.</p>
+          <div class="morph-card__lora">FLEXIBLE INTERFACE</div>
+          <h4 class="morph-card__title">Bird demo with hand control</h4>
+          <p class="morph-card__caption">A separate MediaPipe hand-tracking frontend maps gestures onto DEMON's live controls, showing the engine can support custom performance interfaces rather than a single fixed UI.</p>
         </div>
       </div>
 
