@@ -273,6 +273,10 @@ COMMANDS: tuple = (
                                   "are prepended client-side)."),
             FieldSpec("tags_b", "str",
                       description="Optional prompt B, cached for A/B blend."),
+            FieldSpec("bpm", "int",
+                      description="Optional BPM override for structured "
+                                  "conditioning metadata. Does not retime or "
+                                  "time-stretch the source audio."),
             FieldSpec("key", "str", description='Musical key, e.g. "C major".'),
             FieldSpec("time_signature", "str",
                       description='Meter numerator, e.g. "3"/"4"/"6".'),
@@ -399,6 +403,9 @@ COMMANDS: tuple = (
         "swap_source",
         fields=(
             FieldSpec("tags", "str", description="Optional new prompt A."),
+            FieldSpec("bpm", "int",
+                      description="Optional BPM override for the swapped "
+                                  "source's structured conditioning metadata."),
             FieldSpec("key", "str"),
             FieldSpec("time_signature", "str"),
             FieldSpec("fixture_name", "str",

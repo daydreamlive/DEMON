@@ -113,6 +113,7 @@ from acestep.streaming.pipeline_runner import (
     ReportStalenessEstimator,
 )
 from acestep.streaming.source import (
+    _normalize_bpm_override,
     _normalize_time_signature,
     _resolve_bpm_key_source,
     _try_load_sidecar,
@@ -941,6 +942,7 @@ class StreamingSession:
             new_wf = state.swap_pending.get("waveform")
             tags = state.swap_pending.get("tags")
             requested_key = state.swap_pending.get("key")
+            requested_bpm = state.swap_pending.get("bpm")
             requested_time_sig = state.swap_pending.get("time_signature")
             new_fixture_name = state.swap_pending.get("fixture_name")
             new_stem_source_mode = resolve_upload_stem_source_mode(
@@ -952,6 +954,7 @@ class StreamingSession:
                 return
             state.swap_pending["waveform"] = None
             state.swap_pending["tags"] = None
+            state.swap_pending["bpm"] = None
             state.swap_pending["key"] = None
             state.swap_pending["time_signature"] = None
             state.swap_pending["fixture_name"] = None
@@ -1041,6 +1044,7 @@ class StreamingSession:
                     audio_in=new_audio_in,
                     fixture_name=new_fixture_name,
                     samples=int(new_wf.shape[1]),
+                    bpm_override=requested_bpm,
                     key_override=requested_key,
                     time_signature_override=requested_time_sig,
                 )
@@ -1529,6 +1533,7 @@ class StreamingSession:
         tags: str,
         *,
         tags_b: str | None = None,
+        bpm: int | float | str | None = None,
         key: str | None = None,
         time_signature: str | None = None,
         origin: CommandOrigin = CommandOrigin.PRIMARY,
@@ -1539,14 +1544,18 @@ class StreamingSession:
         state = self.state
         state.last_activity_ts = time.monotonic()
         with state._lock:
+            bpm_override = _normalize_bpm_override(bpm)
+            if bpm_override is not None:
+                state.bpm = bpm_override
             ts_override = _normalize_time_signature(time_signature)
             if ts_override is not None:
                 state.time_signature = ts_override
             refer = self._active_refer_latent()
             key_used = key or state.key
             logger.info(
-                "prompt_set origin={} tags={!r} tags_b={!r} key={} time_signature={}",
-                origin.value, tags, tags_b, key_used, state.time_signature,
+                "prompt_set origin={} tags={!r} tags_b={!r} bpm={} key={} time_signature={}",
+                origin.value, tags, tags_b, state.bpm, key_used,
+                state.time_signature,
             )
             state.cond_pair = encode_cond_pair(
                 self.session, tags, refer, state.bpm, state.duration,
@@ -1885,6 +1894,7 @@ class StreamingSession:
         audio: Audio,
         *,
         tags: str | None = None,
+        bpm: int | float | str | None = None,
         key: str | None = None,
         time_signature: str | None = None,
         fixture_name: str | None = None,
@@ -1900,6 +1910,7 @@ class StreamingSession:
         with state._lock:
             state.swap_pending["waveform"] = audio.waveform
             state.swap_pending["tags"] = effective_tags
+            state.swap_pending["bpm"] = _normalize_bpm_override(bpm)
             state.swap_pending["key"] = key
             state.swap_pending["time_signature"] = _normalize_time_signature(
                 time_signature,
@@ -2279,6 +2290,7 @@ class StreamingSession:
                     audio_in=audio_in,
                     fixture_name=fixture_name,
                     samples=int(waveform.shape[1]),
+                    bpm_override=config.bpm,
                 )
             )
 

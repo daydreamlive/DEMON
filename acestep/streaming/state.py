@@ -34,6 +34,7 @@ def _default_swap_pending() -> dict:
     return {
         "waveform": None,
         "tags": None,
+        "bpm": None,
         "key": None,
         "time_signature": None,
         "fixture_name": None,

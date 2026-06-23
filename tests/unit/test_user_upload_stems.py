@@ -371,6 +371,76 @@ def test_track_metadata_overrides_user_upload_sidecar_values(tmp_path, monkeypat
     assert (bpm, key, time_signature) == (111, "D minor", "3")
 
 
+def test_bpm_override_beats_user_upload_metadata_and_sidecar(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("ACESTEP_MODELS_DIR", str(tmp_path))
+    root = tmp_path / "user_uploads"
+    name = "song.wav"
+    waveform = torch.zeros(2, 48_000)
+    root.mkdir()
+    meta_path = root / "song" / "track.json"
+    meta_path.parent.mkdir()
+    meta_path.write_text(
+        json.dumps({"bpm": 111, "key": "D minor", "time_signature": "3"}),
+        encoding="utf-8",
+    )
+    from acestep.sidecars import save_sidecar_pair
+
+    save_sidecar_pair(
+        root / "song" / "sidecars" / "full.json",
+        root / "song" / "sidecars" / "full.safetensors",
+        latent=torch.zeros(1, 2, 3),
+        context_latent=torch.ones(1, 4, 5),
+        checkpoint="ckpt",
+        bpm=120,
+        key="C major",
+        time_signature="4",
+        duration_s=1.0,
+        samples=48_000,
+        sample_rate=48_000,
+        channels=2,
+    )
+
+    _, bpm, key, time_signature = _resolve_bpm_key_source(
+        _FakeSession(),
+        audio_in=Audio(waveform=waveform, sample_rate=48_000),
+        fixture_name=name,
+        samples=48_000,
+        bpm_override=128,
+    )
+
+    assert (bpm, key, time_signature) == (128, "D minor", "3")
+
+
+def test_invalid_bpm_override_falls_back_to_user_upload_metadata(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("ACESTEP_MODELS_DIR", str(tmp_path))
+    root = tmp_path / "user_uploads"
+    name = "song.wav"
+    waveform = torch.zeros(2, 48_000)
+    root.mkdir()
+    meta_path = root / "song" / "track.json"
+    meta_path.parent.mkdir()
+    meta_path.write_text(
+        json.dumps({"bpm": 111, "key": "D minor", "time_signature": "3"}),
+        encoding="utf-8",
+    )
+
+    _, bpm, key, time_signature = _resolve_bpm_key_source(
+        _FakeSession(),
+        audio_in=Audio(waveform=waveform, sample_rate=48_000),
+        fixture_name=name,
+        samples=48_000,
+        bpm_override=999,
+    )
+
+    assert (bpm, key, time_signature) == (111, "D minor", "3")
+
+
 def test_live_user_upload_resolution_does_not_write_canonical_packet(
     tmp_path,
     monkeypatch,

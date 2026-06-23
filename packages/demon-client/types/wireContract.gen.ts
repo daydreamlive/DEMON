@@ -151,6 +151,8 @@ export interface PromptCommand {
   tags: string;
   /** Optional prompt B, cached for A/B blend. */
   tags_b?: string;
+  /** Optional BPM override for structured conditioning metadata. Does not retime or time-stretch the source audio. */
+  bpm?: number;
   /** Musical key, e.g. "C major". */
   key?: string;
   /** Meter numerator, e.g. "3"/"4"/"6". */
@@ -240,6 +242,8 @@ export interface SwapSourceCommand {
   type: "swap_source";
   /** Optional new prompt A. */
   tags?: string;
+  /** Optional BPM override for the swapped source's structured conditioning metadata. */
+  bpm?: number;
   key?: string;
   time_signature?: string;
   /** Source label; for server-side loads, the fixture/upload name to read off the pod's disk. */
@@ -455,6 +459,7 @@ export interface SessionConfigPayload {
   depth?: number;
   steps?: number;
   prompt?: string;
+  bpm?: number | null;
   prompt_b?: string | null;
   fast_vae?: boolean;
   walk_window?: boolean;

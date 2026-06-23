@@ -65,6 +65,8 @@ namespace command {
     inline constexpr const char* kTags = "tags";
     /** Optional prompt B, cached for A/B blend. */
     inline constexpr const char* kTagsB = "tags_b";
+    /** Optional BPM override for structured conditioning metadata. Does not retime or time-stretch the source audio. */
+    inline constexpr const char* kBpm = "bpm";
     /** Musical key, e.g. "C major". */
     inline constexpr const char* kKey = "key";
     /** Meter numerator, e.g. "3"/"4"/"6". */
@@ -166,6 +168,8 @@ namespace command {
     inline constexpr const char* kType = "swap_source";
     /** Optional new prompt A. */
     inline constexpr const char* kTags = "tags";
+    /** Optional BPM override for the swapped source's structured conditioning metadata. */
+    inline constexpr const char* kBpm = "bpm";
     inline constexpr const char* kKey = "key";
     inline constexpr const char* kTimeSignature = "time_signature";
     /** Source label; for server-side loads, the fixture/upload name to read off the pod's disk. */
@@ -409,6 +413,7 @@ namespace config {
   inline constexpr const char* kDepth = "depth";
   inline constexpr const char* kSteps = "steps";
   inline constexpr const char* kPrompt = "prompt";
+  inline constexpr const char* kBpm = "bpm";
   inline constexpr const char* kPromptB = "prompt_b";
   inline constexpr const char* kFastVae = "fast_vae";
   inline constexpr const char* kWalkWindow = "walk_window";

@@ -509,18 +509,21 @@ async def list_manual_steering_vectors() -> dict:
 async def set_prompt(
     prompt: str,
     prompt_b: Optional[str] = None,
+    bpm: Optional[int] = None,
     key: Optional[str] = None,
     time_signature: Optional[str] = None,
     session_id: Optional[str] = None,
 ) -> dict:
     """Change the live prompt. Pass ``prompt_b`` to cache a second prompt
-    for A/B blending via set_prompt_blend. ``key`` accepts strings like
-    ``"C major"`` / ``"A minor"``; ``time_signature`` accepts ``"3"`` /
-    ``"4"`` / ``"6"`` etc.
+    for A/B blending via set_prompt_blend. ``bpm`` overrides the structured
+    conditioning tempo; ``key`` accepts strings like ``"C major"`` /
+    ``"A minor"``; ``time_signature`` accepts ``"3"`` / ``"4"`` / ``"6"`` etc.
     """
     msg: dict[str, Any] = {"type": "prompt", "tags": prompt}
     if prompt_b is not None:
         msg["tags_b"] = prompt_b
+    if bpm is not None:
+        msg["bpm"] = bpm
     if key is not None:
         msg["key"] = key
     if time_signature is not None:
@@ -743,6 +746,7 @@ async def clear_structure(session_id: Optional[str] = None) -> dict:
 async def swap_to_fixture(
     name: str,
     prompt: Optional[str] = None,
+    bpm: Optional[int] = None,
     key: Optional[str] = None,
     time_signature: Optional[str] = None,
     session_id: Optional[str] = None,
@@ -762,6 +766,8 @@ async def swap_to_fixture(
     msg: dict[str, Any] = {"type": "swap_source", "fixture_name": name}
     if prompt is not None:
         msg["tags"] = prompt
+    if bpm is not None:
+        msg["bpm"] = bpm
     if key is not None:
         msg["key"] = key
     if time_signature is not None:
@@ -774,6 +780,7 @@ async def swap_to_audio(
     audio_file: str,
     name: Optional[str] = None,
     prompt: Optional[str] = None,
+    bpm: Optional[int] = None,
     key: Optional[str] = None,
     time_signature: Optional[str] = None,
     session_id: Optional[str] = None,
@@ -793,6 +800,8 @@ async def swap_to_audio(
     msg: dict[str, Any] = {"type": "swap_source", "fixture_name": label}
     if prompt is not None:
         msg["tags"] = prompt
+    if bpm is not None:
+        msg["bpm"] = bpm
     if key is not None:
         msg["key"] = key
     if time_signature is not None:
@@ -903,6 +912,7 @@ async def headless_start(
     fixture: Optional[str] = None,
     audio_file: Optional[str] = None,
     prompt: str = "instrumental music",
+    bpm: Optional[int] = None,
     sde: bool = False,
     lora: bool = False,
     depth: int = 4,
@@ -949,6 +959,8 @@ async def headless_start(
         "steps": int(steps),
         "client_id": "mcp-headless",
     }
+    if bpm is not None:
+        config["bpm"] = bpm
     if fixture is not None:
         known = _http_json("GET", f"{BACKEND_HTTP}/api/fixtures", timeout=10.0)
         if fixture not in known:

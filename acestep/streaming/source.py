@@ -11,7 +11,7 @@ import numpy as np
 import torch
 
 from acestep.audio.key_detection import detect_key
-from acestep.constants import VALID_TIME_SIGNATURES
+from acestep.constants import BPM_MAX, BPM_MIN, VALID_TIME_SIGNATURES
 from acestep.engine.obs import logger
 from acestep.engine.session import PreparedSource, Session
 from acestep.audio_clips import (
@@ -168,6 +168,29 @@ def _metadata_bpm(meta: dict) -> int | None:
     return None
 
 
+def _normalize_bpm_override(value) -> int | None:
+    """Return a validated BPM override, or None when absent/invalid.
+
+    The override is structured conditioning metadata only; it does not
+    time-stretch or retime the source audio.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    try:
+        bpm = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+    if bpm < BPM_MIN or bpm > BPM_MAX:
+        logger.warning(
+            "bpm_override_ignored value={} min={} max={}",
+            value, BPM_MIN, BPM_MAX,
+        )
+        return None
+    return bpm
+
+
 def _metadata_str(meta: dict, key: str) -> str | None:
     value = meta.get(key)
     if isinstance(value, str) and value.strip():
@@ -181,6 +204,7 @@ def _resolve_bpm_key_source(
     audio_in: Audio,
     fixture_name: str | None,
     samples: int,
+    bpm_override: int | float | str | None = None,
     key_override: str | None = None,
     time_signature_override: str | None = None,
 ) -> tuple[PreparedSource, int, str, str]:
@@ -203,12 +227,15 @@ def _resolve_bpm_key_source(
       - audio-length truncation mismatch (e.g. operator's TRT profile
         cap is smaller than the natural fixture length)
 
-    Clean v2 ``track.json`` metadata wins for BPM/key/time-signature when
-    present because that file is the editable track-level authority.
-    ``key_override`` and ``time_signature_override`` are the operator's
-    manual choices coming from the swap_source path and are consulted on
-    the live path only when track metadata does not pin those fields.
+    Clean v2 ``track.json`` metadata wins for key/time-signature when
+    present because that file is the editable track-level authority; BPM
+    metadata is used only when there is no explicit override.
+    ``bpm_override`` / ``key_override`` / ``time_signature_override`` are
+    operator-supplied manual choices. BPM override wins over metadata and
+    sidecars because it is an explicit host/session tempo; key and meter
+    preserve the existing metadata-first policy.
     """
+    bpm_override_norm = _normalize_bpm_override(bpm_override)
     track_meta = audio_clip_track_metadata(fixture_name) if fixture_name else {}
     meta_bpm = _metadata_bpm(track_meta)
     meta_key = _metadata_str(track_meta, "key")
@@ -223,7 +250,9 @@ def _resolve_bpm_key_source(
             latent=Latent(tensor=sc.latent.to(device, dtype).contiguous()),
             context_latent=Latent(tensor=sc.context_latent.to(device, dtype).contiguous()),
         )
-        bpm = meta_bpm if meta_bpm is not None else sc.bpm
+        bpm = bpm_override_norm if bpm_override_norm is not None else (
+            meta_bpm if meta_bpm is not None else sc.bpm
+        )
         # Track metadata is the editable source of truth; otherwise the
         # sidecar metadata beats client-supplied swap overrides. That
         # prevents a stale dropdown value from the previous track from
@@ -247,8 +276,8 @@ def _resolve_bpm_key_source(
                 fixture_name, time_signature_override, sc.time_signature,
             )
         logger.info(
-            "sidecar_hit fixture={} bpm={} key={} time_signature={}",
-            fixture_name, bpm, key, time_signature,
+            "sidecar_hit fixture={} bpm={} key={} time_signature={} bpm_override={}",
+            fixture_name, bpm, key, time_signature, bpm_override_norm,
         )
         return source, bpm, key, time_signature
 
@@ -259,7 +288,9 @@ def _resolve_bpm_key_source(
     import librosa
     logger.info("bpm_key_detect_start")
     mono_np = audio_in.waveform.mean(dim=0).numpy()
-    if meta_bpm is not None:
+    if bpm_override_norm is not None:
+        bpm = bpm_override_norm
+    elif meta_bpm is not None:
         bpm = meta_bpm
     else:
         bpm_raw, _ = librosa.beat.beat_track(y=mono_np, sr=SAMPLE_RATE)
