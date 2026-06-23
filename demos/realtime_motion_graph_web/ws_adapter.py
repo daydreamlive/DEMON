@@ -257,6 +257,28 @@ PREEMPTED_CLOSE_CODE = 4001
 # (it only observes running=False between pipeline iterations).
 _PREEMPT_TEARDOWN_TIMEOUT_S = 45.0
 
+# Dead-client reaper (the "app-level idle-session reaper" the server's
+# ws_serve ping_timeout comment calls for). When a client's transport
+# half-opens — tab closed without a close frame, network drop, or a
+# Cloudflare-tunnel half-open — ws.send buffers instead of raising
+# ConnectionClosed, so the session never tears down: it keeps generating
+# at full GPU and holds the one-session-per-pod seat forever, leaving the
+# pod heartbeating "healthy" but unconnectable (only a destroy clears it).
+# The keepalive ping is widened to 90s AND can be GIL-starved by a busy
+# generation tick, so it can't be the sole backstop while streaming.
+#
+# Signal: the client acks every received slice (monotonic byte count). If
+# we are actively SENDING slices (sent advancing) but the ack count has
+# not moved for this long, the client is gone — flip state.running so the
+# runner tears down on its next iteration. Gating on "sent advancing"
+# means an idle-paused session (no slices, so no acks expected) is never
+# falsely reaped; the keepalive covers idle+dead (GPU free → not starved).
+_DEAD_CLIENT_ACK_TIMEOUT_S = float(
+    os.environ.get("DEMON_DEAD_CLIENT_ACK_TIMEOUT_S", "") or 30.0
+)
+# How often the reaper samples slice flow.
+_DEAD_CLIENT_POLL_S = 5.0
+
 
 def _windowed_slice_drop_reason(
     *,
@@ -1177,11 +1199,14 @@ def _handle_client_body(
     except ValueError:
         _SLICE_WINDOW_BYTES = 256 * 1024
     # [bytes sent, bytes acked (None until first ack), drops since last
-    # log, last log wall]. Shared between the WS subscriber thread
-    # (writer of sent/drops) and the recv thread (writer of acked);
-    # single-field updates under the GIL, no torn reads that matter.
+    # log, last log wall, monotonic ts of last ack progress]. Shared
+    # between the WS subscriber thread (writer of sent/drops) and the recv
+    # thread (writer of acked/acked_ts); single-field updates under the
+    # GIL, no torn reads that matter. `acked_ts` seeds at session start so
+    # the dead-client reaper also catches a client that never acks at all.
     _slice_flow = {
         "sent": 0, "acked": None, "drops": 0, "log_wall": 0.0,
+        "acked_ts": time.monotonic(),
     }
 
     def _note_slice_drop(reason: str, detail: float) -> None:
@@ -1377,6 +1402,45 @@ def _handle_client_body(
             state.running = False
 
     streaming.bus.subscribe(on_event, name="ws")
+
+    # Dead-client reaper: a half-open transport (closed tab, dropped
+    # network, Cloudflare-tunnel half-open) lets ws.send keep buffering
+    # instead of raising ConnectionClosed, so without this the runner
+    # would generate forever and hold the one-session-per-pod seat. We
+    # only act while actively streaming (sent advancing) with a stalled
+    # ack clock — an idle-paused session sends nothing, so it's never
+    # falsely reaped; the WS keepalive covers idle+dead. Daemon thread
+    # self-exits when state.running flips (here or via normal teardown).
+    def _dead_client_reaper() -> None:
+        last_sent = -1
+        while state.running:
+            time.sleep(_DEAD_CLIENT_POLL_S)
+            if not state.running:
+                return
+            sent = _slice_flow["sent"]
+            streaming_now = sent > last_sent
+            last_sent = sent
+            if not streaming_now:
+                continue  # idle / not streaming → keepalive owns liveness
+            stalled_s = time.monotonic() - _slice_flow["acked_ts"]
+            if stalled_s > _DEAD_CLIENT_ACK_TIMEOUT_S:
+                logger.warning(
+                    "dead_client_reap session_id={} stalled_s={:.0f} "
+                    "sent={} acked={}",
+                    session_id, stalled_s, sent, _slice_flow["acked"],
+                )
+                state.running = False
+                try:
+                    ws.close(1011, "client unresponsive")
+                except Exception:
+                    pass
+                return
+
+    threading.Thread(
+        target=_dead_client_reaper,
+        name="ws-dead-client-reaper",
+        daemon=True,
+    ).start()
 
     # ---- Init handshake: ready + binary initial buffer + optional stems ----
     #
@@ -1575,6 +1639,9 @@ def _handle_client_body(
                         prev = _slice_flow["acked"]
                         if prev is None or ack > prev:
                             _slice_flow["acked"] = ack
+                            # Ack advanced → client is alive; reset the
+                            # dead-client reaper's stall clock.
+                            _slice_flow["acked_ts"] = time.monotonic()
                 streaming.set_knobs(
                     data.get("raw") or {}, pp, origin=origin,
                     client_time=ct, slice_lead_s=sl,
