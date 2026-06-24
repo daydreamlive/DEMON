@@ -180,7 +180,9 @@ def _normalize_bpm_override(value) -> int | None:
         return None
     try:
         bpm = int(round(float(value)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError guards against non-finite floats (``inf``/``-inf``),
+        # which ``json.loads`` accepts by default and ``int()`` rejects.
         return None
     if bpm < BPM_MIN or bpm > BPM_MAX:
         logger.warning(
@@ -253,10 +255,11 @@ def _resolve_bpm_key_source(
         bpm = bpm_override_norm if bpm_override_norm is not None else (
             meta_bpm if meta_bpm is not None else sc.bpm
         )
-        # Track metadata is the editable source of truth; otherwise the
-        # sidecar metadata beats client-supplied swap overrides. That
-        # prevents a stale dropdown value from the previous track from
-        # masking the new track's recorded key.
+        # For key/time-signature, track metadata is the editable source of
+        # truth; otherwise the sidecar metadata beats client-supplied swap
+        # overrides. That prevents a stale dropdown value from the previous
+        # track from masking the new track's recorded key. (BPM, resolved
+        # above, intentionally differs: an explicit override wins.)
         key = meta_key or sc.key
         if key_override and key_override != sc.key:
             logger.info(

@@ -12,7 +12,10 @@ import acestep.fixtures as fixtures_mod
 from acestep.fixtures import fixture_stems, fixture_track_metadata
 from acestep.nodes.types import Audio, Latent
 from acestep.paths import user_uploads_dir
-from acestep.streaming.source import _resolve_bpm_key_source
+from acestep.streaming.source import (
+    _normalize_bpm_override,
+    _resolve_bpm_key_source,
+)
 from acestep.track_assets import save_track_metadata, write_stem_wavs
 from acestep.user_uploads import (
     enumerate_user_uploads,
@@ -439,6 +442,22 @@ def test_invalid_bpm_override_falls_back_to_user_upload_metadata(
     )
 
     assert (bpm, key, time_signature) == (111, "D minor", "3")
+
+
+def test_normalize_bpm_override_rejects_unusable_values():
+    # ``json.loads`` accepts ``Infinity``/``NaN`` by default, so the
+    # resolver must treat non-finite floats (and other junk) as "no
+    # override" rather than letting ``int()`` raise.
+    assert _normalize_bpm_override(float("inf")) is None
+    assert _normalize_bpm_override(float("-inf")) is None
+    assert _normalize_bpm_override(float("nan")) is None
+    assert _normalize_bpm_override(None) is None
+    assert _normalize_bpm_override(True) is None
+    assert _normalize_bpm_override("not-a-number") is None
+    assert _normalize_bpm_override(0) is None  # below BPM_MIN
+    assert _normalize_bpm_override(120) == 120
+    assert _normalize_bpm_override("128") == 128
+    assert _normalize_bpm_override(120.7) == 121
 
 
 def test_live_user_upload_resolution_does_not_write_canonical_packet(
