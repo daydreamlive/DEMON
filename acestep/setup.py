@@ -34,6 +34,8 @@ import shutil
 import subprocess
 import sys
 
+from acestep.ui import style
+
 # Reused by the demo server's preflight banner so the "how do I fix
 # this" hint can't drift from what this script actually does.
 SETUP_COMMAND = "uv run demon-setup"
@@ -84,22 +86,22 @@ def _env_skip_loras() -> bool:
 
 
 def _ok(msg: str) -> None:
-    print(f"  [ok]   {msg}")
+    print(f"  {style('[ok]', 'ok')}   {msg}")
 
 
 def _warn(msg: str) -> None:
-    print(f"  [warn] {msg}")
+    print(f"  {style('[warn]', 'warn')} {msg}")
 
 
 def _fail(msg: str) -> None:
-    print(f"  [FAIL] {msg}")
+    print(f"  {style('[FAIL]', 'fail')} {msg}")
 
 
 def _header(title: str) -> None:
     print()
-    print("=" * 64)
-    print(f"  {title}")
-    print("=" * 64)
+    print(style("=" * 64, "orange"))
+    print(f"  {style(title, 'orange_b')}")
+    print(style("=" * 64, "orange"))
 
 
 def _doctor() -> bool:
@@ -269,9 +271,9 @@ def _build_engines(extra_args: list[str]) -> bool:
     from acestep.paths import trt_engines_dir
 
     _header("4/4  TensorRT engines (minimal preset)")
-    print(f"  destination: {trt_engines_dir()}")
-    print("  set: 60s decoder + 60s VAE encode/decode + fixed 1s windowed "
-          "VAE decode")
+    print(style(f"  destination: {trt_engines_dir()}", "green"))
+    print(style("  set: 60s decoder + 60s VAE encode/decode + fixed 1s windowed "
+                "VAE decode", "green"))
     print("  ONNX is fetched prebuilt from huggingface.co/daydreamlive/"
           "demon-onnx;")
     print("  expect a few minutes on a recent GPU (under 2 minutes of TRT")
@@ -298,7 +300,7 @@ def _summary(*, engines_skipped: bool) -> None:
     from acestep.paths import models_dir, trt_engines_dir
 
     _header("Setup complete")
-    print(f"  models dir: {models_dir()}")
+    print(f"  {style('models dir', 'green')}: {models_dir()}")
     trt_dir = trt_engines_dir()
     if trt_dir.is_dir():
         engines = sorted(
@@ -307,13 +309,13 @@ def _summary(*, engines_skipped: bool) -> None:
             and (d / f"{d.name}.engine").exists()
         )
         if engines:
-            print("  engines:")
+            print(f"  {style('engines', 'green')}:")
             for name in engines:
                 print(f"    {name}")
     from acestep.paths import discover_loras
     n_loras = len(discover_loras())
     if n_loras:
-        print(f"  loras: {n_loras} in the library")
+        print(f"  {style('loras', 'green')}: {n_loras} in the library")
     if engines_skipped:
         print("\n  Engines were skipped (--skip-engines). The demo's "
               "default TRT mode")
@@ -322,9 +324,9 @@ def _summary(*, engines_skipped: bool) -> None:
         print(f"  or launch with `-- --accel compile` (slow warmup, no "
               f"engines needed).")
     print()
-    print("  Launch the web demo:")
-    print(f"    {DEMO_COMMAND}")
-    print("  then open http://localhost:6660")
+    print(f"  {style('Launch the web demo:', 'blue')}")
+    print(f"    {style(DEMO_COMMAND, 'yellow')}")
+    print(f"  {style('then open', 'blue')} {style('http://localhost:6660', 'yellow')}")
     print()
 
 
