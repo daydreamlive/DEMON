@@ -33,6 +33,10 @@ class SessionConfig:
     depth: int = 4
     steps: int = 8
     prompt: str = "instrumental music"
+    # Optional structured tempo override for text/model conditioning. When
+    # omitted, the session resolves BPM from track metadata, sidecars, or
+    # librosa detection.
+    bpm: int | None = None
     # Defaulting to None lets ``StreamingSession.create`` use ``prompt``
     # when the wire didn't send a B variant. ``"" `` would force an
     # always-different encode pass — preserve the legacy behavior.

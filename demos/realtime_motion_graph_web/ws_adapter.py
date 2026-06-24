@@ -1588,6 +1588,7 @@ def _handle_client_body(
                 streaming.set_prompt(
                     data["tags"],
                     tags_b=data.get("tags_b"),
+                    bpm=data.get("bpm"),
                     key=data.get("key"),
                     time_signature=data.get("time_signature"),
                     origin=origin,
@@ -1736,6 +1737,7 @@ def _handle_client_body(
                 streaming.swap_source(
                     Audio(waveform=wf, sample_rate=SAMPLE_RATE),
                     tags=data.get("tags"),
+                    bpm=data.get("bpm"),
                     key=data.get("key"),
                     time_signature=data.get("time_signature"),
                     fixture_name=data.get("fixture_name"),
