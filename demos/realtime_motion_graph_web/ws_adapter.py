@@ -29,6 +29,8 @@ import json
 import os
 import queue
 import socket
+import struct
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -283,12 +285,16 @@ _PREEMPT_TEARDOWN_TIMEOUT_S = 45.0
 # I/O threads, using GIL- and lock-independent syscalls on the socket FD:
 #
 #   - Send stall: ``SIOCOUTQ`` reports bytes still queued in the kernel
-#     send buffer (unsent + unacked). A live client's KERNEL ACKs and
-#     drains that queue regardless of how busy/GIL-starved the client app
-#     is, so a slow link, a GC pause, or a briefly-backgrounded tab keeps
-#     the queue draining and is never reaped — only a queue that stays
-#     positive and shrinks by zero bytes across the whole grace window
-#     (a client reading nothing) trips it. This is the key distinction
+#     send buffer (unsent + unacked), and ``TCP_INFO.tcpi_bytes_acked`` is
+#     the kernel's monotonic count of peer-acked bytes. A live client's
+#     KERNEL ACKs and drains regardless of how busy/GIL-starved the client
+#     app is, so a slow link, a GC pause, or a briefly-backgrounded tab
+#     keeps bytes_acked advancing (and/or the queue draining) and is never
+#     reaped — only a positive queue whose bytes_acked AND backlog both go
+#     nowhere for the whole grace window (a client reading nothing) trips
+#     it. Keying on bytes_acked (not the SIOCOUTQ delta alone) closes the
+#     plateau gap where a backpressured queue sits pinned at a constant
+#     positive level while data still flows. This is the key distinction
 #     from an ack-progress timeout (DEMON PR #293), which is app-level and
 #     false-reaps a GIL-starved-but-alive client.
 #   - Peer close: ``TCP_INFO`` state leaves ESTABLISHED (FIN/RST) or the FD
@@ -301,8 +307,17 @@ _PREEMPT_TEARDOWN_TIMEOUT_S = 45.0
 # (holding the protocol lock) and the recv thread both unblock at once,
 # rather than waiting on the library's graceful-close handshake — which
 # needs that same pinned lock and would just re-block.
+#
+# SIOCOUTQ and the TCP_INFO byte layout are Linux-specific; off Linux the
+# syscalls would fail and reap every session, so the watchdog no-ops there.
 _SIOCOUTQ = 0x5411  # Linux ioctl: unsent+unacked bytes in the send queue
 _TCP_ESTABLISHED = 1
+# tcpi_bytes_acked: __u64 at this offset in struct tcp_info on 64-bit Linux
+# (stable since kernel 4.6); None if the running kernel's struct is shorter.
+_TCPI_BYTES_ACKED_OFF = 120
+_WATCHDOG_SUPPORTED = sys.platform.startswith("linux") and hasattr(
+    socket, "TCP_INFO",
+)
 
 # How long the kernel send queue must stay positive AND non-draining
 # before we declare the client dead. Generous against any real stall (a
@@ -330,12 +345,32 @@ def _socket_send_backlog(sock) -> int | None:
     (exactly the state we need to detect)."""
     try:
         import fcntl
-        import struct
 
         buf = fcntl.ioctl(sock.fileno(), _SIOCOUTQ, struct.pack("I", 0))
         return struct.unpack("I", buf)[0]
     except (OSError, ValueError, AttributeError):
         return None
+
+
+def _tcp_state_and_acked(sock) -> tuple[int, int | None] | None:
+    """``(tcp_state, bytes_acked)`` from ``TCP_INFO`` for ``sock``, or
+    ``None`` if the FD can't be queried (closed / errored).
+
+    ``bytes_acked`` is the kernel's monotonic count of peer-acked bytes —
+    it advances only while the peer is alive — or ``None`` when the running
+    kernel's ``struct tcp_info`` is too short to carry it (pre-4.6), in
+    which case the caller falls back to the SIOCOUTQ drain signal alone.
+    Like the backlog probe, a lock-/GIL-independent syscall on the FD."""
+    try:
+        buf = sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_INFO, 128)
+    except OSError:
+        return None
+    if not buf:
+        return None
+    acked = None
+    if len(buf) >= _TCPI_BYTES_ACKED_OFF + 8:
+        acked = struct.unpack_from("<Q", buf, _TCPI_BYTES_ACKED_OFF)[0]
+    return buf[0], acked
 
 
 def _windowed_slice_drop_reason(
@@ -1979,25 +2014,27 @@ def _handle_client_body(
 
         Polls GIL/lock-independent socket syscalls so it stays accurate
         even when the send path is wedged in ``sendall`` and the keepalive
-        ping is deadlocked behind the protocol lock."""
+        ping is deadlocked behind the protocol lock. No-ops off Linux,
+        where the syscalls aren't available and would false-reap."""
+        if not _WATCHDOG_SUPPORTED:
+            return
         sock = getattr(ws, "socket", None)
         if sock is None:
             return
         last_drain_wall = time.monotonic()
         prev_backlog = 0
+        prev_acked: int | None = None
         while state.running:
             time.sleep(_DEAD_CLIENT_POLL_S)
             if not state.running:
                 return
             # Peer close / dead FD — independent of the recv thread, which
             # a wedged connection may never schedule to read the EOF.
-            try:
-                tcp_state = sock.getsockopt(
-                    socket.IPPROTO_TCP, socket.TCP_INFO, 1,
-                )[0]
-            except (OSError, IndexError):
+            info = _tcp_state_and_acked(sock)
+            if info is None:
                 _reap_dead_client("socket_error", backlog=None, stall_s=0.0)
                 return
+            tcp_state, acked = info
             if tcp_state != _TCP_ESTABLISHED:
                 _reap_dead_client(
                     "peer_closed", backlog=None, stall_s=0.0,
@@ -2008,13 +2045,23 @@ def _handle_client_body(
             if backlog is None:
                 _reap_dead_client("socket_error", backlog=None, stall_s=0.0)
                 return
-            # An empty queue, or one that shrank since last poll, means the
-            # client is reading — reset the stall clock. Only a queue that
-            # stays positive and drains zero bytes for the whole grace
-            # window (a client reading nothing) accrues toward the reap.
-            if backlog == 0 or backlog < prev_backlog:
+            # The client is alive if the kernel is acking bytes
+            # (bytes_acked advancing) or the send queue is draining (empty
+            # or shrunk) — either resets the stall clock. bytes_acked is
+            # the robust signal: it keeps a backpressured-but-alive client
+            # whose queue plateaus at a constant positive level from being
+            # reaped. Only a positive queue with no ack progress and no
+            # drain for the whole grace window (a client reading nothing)
+            # accrues toward the reap.
+            acked_progress = (
+                acked is not None
+                and prev_acked is not None
+                and acked > prev_acked
+            )
+            if backlog == 0 or backlog < prev_backlog or acked_progress:
                 last_drain_wall = time.monotonic()
             prev_backlog = backlog
+            prev_acked = acked
             stall_s = time.monotonic() - last_drain_wall
             if backlog > 0 and stall_s >= _DEAD_CLIENT_SEND_STALL_S:
                 _reap_dead_client(
