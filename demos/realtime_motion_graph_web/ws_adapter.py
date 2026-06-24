@@ -258,6 +258,86 @@ PREEMPTED_CLOSE_CODE = 4001
 _PREEMPT_TEARDOWN_TIMEOUT_S = 45.0
 
 
+# ---------------------------------------------------------------------------
+# Dead-client watchdog
+# ---------------------------------------------------------------------------
+#
+# The `websockets` sync send path holds the connection's protocol lock
+# across a *blocking* ``socket.sendall`` with no send timeout
+# (websockets/sync/connection.py: send_context → send_data; close_deadline
+# is None during normal operation). So when a client stops reading — a
+# killed tab, a slept laptop, or a Cloudflare named-tunnel half-open where
+# the pod↔edge TCP stays ESTABLISHED while the browser is gone — the next
+# slice ``ws.send`` wedges on a full TCP window and pins the protocol lock
+# forever. The library's own keepalive ping (ping_timeout=90 in server.py)
+# then deadlocks acquiring that same lock, so it never tears the dead
+# client down: ``state.running`` stays True, the runner holds the pod's
+# one-session seat, and ``/sessions`` never empties (measured: a frozen
+# client left ~2.6 MB stuck in the server's send queue with the session
+# still registered 13+ minutes later). Our own ConnectionClosed detectors
+# can't fire either — the recv loop sees no close frame (no clean close
+# from a half-open peer) and the send paths are the threads *stuck* in
+# sendall.
+#
+# This watchdog detects the dead client from OUTSIDE those wedged Python
+# I/O threads, using GIL- and lock-independent syscalls on the socket FD:
+#
+#   - Send stall: ``SIOCOUTQ`` reports bytes still queued in the kernel
+#     send buffer (unsent + unacked). A live client's KERNEL ACKs and
+#     drains that queue regardless of how busy/GIL-starved the client app
+#     is, so a slow link, a GC pause, or a briefly-backgrounded tab keeps
+#     the queue draining and is never reaped — only a queue that stays
+#     positive and shrinks by zero bytes across the whole grace window
+#     (a client reading nothing) trips it. This is the key distinction
+#     from an ack-progress timeout (DEMON PR #293), which is app-level and
+#     false-reaps a GIL-starved-but-alive client.
+#   - Peer close: ``TCP_INFO`` state leaves ESTABLISHED (FIN/RST) or the FD
+#     errors — the "0 established sockets but session still registered"
+#     fingerprint, which means the library's recv thread missed the EOF.
+#
+# On either signal it flips ``state.running`` False (the runner observes
+# it between iterations and exits run() → the registry unregister in
+# run()'s finally fires) and force-shuts the socket so the wedged sendall
+# (holding the protocol lock) and the recv thread both unblock at once,
+# rather than waiting on the library's graceful-close handshake — which
+# needs that same pinned lock and would just re-block.
+_SIOCOUTQ = 0x5411  # Linux ioctl: unsent+unacked bytes in the send queue
+_TCP_ESTABLISHED = 1
+
+# How long the kernel send queue must stay positive AND non-draining
+# before we declare the client dead. Generous against any real stall (a
+# slow uplink, a stop-the-world GC, a throttled background tab all keep
+# draining *something*); a genuinely gone client drains exactly zero for
+# as long as the half-open socket survives. Reset on ANY drain.
+try:
+    _DEAD_CLIENT_SEND_STALL_S = max(
+        5.0,
+        float(os.environ.get("DEMON_DEAD_CLIENT_STALL_S", "") or 30.0),
+    )
+except ValueError:
+    _DEAD_CLIENT_SEND_STALL_S = 30.0
+_DEAD_CLIENT_POLL_S = 2.0
+
+
+def _socket_send_backlog(sock) -> int | None:
+    """Bytes queued in the kernel send buffer (unsent + unacked) for
+    ``sock``, or ``None`` if the FD can't be queried (closed / errored /
+    unsupported platform).
+
+    A plain ``ioctl`` on the FD — it touches neither the GIL-contended
+    Python recv path nor the WS protocol lock, so it stays accurate even
+    while another thread is blocked in ``sendall`` on the same socket
+    (exactly the state we need to detect)."""
+    try:
+        import fcntl
+        import struct
+
+        buf = fcntl.ioctl(sock.fileno(), _SIOCOUTQ, struct.pack("I", 0))
+        return struct.unpack("I", buf)[0]
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
 def _windowed_slice_drop_reason(
     *,
     acked: int | None,
@@ -1866,10 +1946,87 @@ def _handle_client_body(
                         "control_dispatch_error error={}", exc,
                     )
 
+    def _reap_dead_client(
+        reason: str,
+        *,
+        backlog: int | None,
+        stall_s: float,
+        tcp_state: int | None = None,
+    ) -> None:
+        logger.warning(
+            "dead_client_reaped reason={} backlog_bytes={} stall_s={:.1f} "
+            "tcp_state={}",
+            reason, backlog, stall_s, tcp_state,
+        )
+        # Stop the runner: it observes this between pipeline iterations
+        # and exits run() into close(), whose finally unregisters the
+        # session — so /sessions empties and the pod returns to the pool.
+        state.running = False
+        # Force the socket down so the wedged sendall (holding the WS
+        # protocol lock) and the library's recv thread both unblock now,
+        # instead of waiting on the graceful-close handshake — which needs
+        # that same pinned lock and would re-block.
+        sock = getattr(ws, "socket", None)
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def dead_client_watchdog() -> None:
+        """Tear the session down when its client is gone but the WS
+        machinery hasn't noticed (see the module-top comment block).
+
+        Polls GIL/lock-independent socket syscalls so it stays accurate
+        even when the send path is wedged in ``sendall`` and the keepalive
+        ping is deadlocked behind the protocol lock."""
+        sock = getattr(ws, "socket", None)
+        if sock is None:
+            return
+        last_drain_wall = time.monotonic()
+        prev_backlog = 0
+        while state.running:
+            time.sleep(_DEAD_CLIENT_POLL_S)
+            if not state.running:
+                return
+            # Peer close / dead FD — independent of the recv thread, which
+            # a wedged connection may never schedule to read the EOF.
+            try:
+                tcp_state = sock.getsockopt(
+                    socket.IPPROTO_TCP, socket.TCP_INFO, 1,
+                )[0]
+            except (OSError, IndexError):
+                _reap_dead_client("socket_error", backlog=None, stall_s=0.0)
+                return
+            if tcp_state != _TCP_ESTABLISHED:
+                _reap_dead_client(
+                    "peer_closed", backlog=None, stall_s=0.0,
+                    tcp_state=tcp_state,
+                )
+                return
+            backlog = _socket_send_backlog(sock)
+            if backlog is None:
+                _reap_dead_client("socket_error", backlog=None, stall_s=0.0)
+                return
+            # An empty queue, or one that shrank since last poll, means the
+            # client is reading — reset the stall clock. Only a queue that
+            # stays positive and drains zero bytes for the whole grace
+            # window (a client reading nothing) accrues toward the reap.
+            if backlog == 0 or backlog < prev_backlog:
+                last_drain_wall = time.monotonic()
+            prev_backlog = backlog
+            stall_s = time.monotonic() - last_drain_wall
+            if backlog > 0 and stall_s >= _DEAD_CLIENT_SEND_STALL_S:
+                _reap_dead_client(
+                    "send_stall", backlog=backlog, stall_s=stall_s,
+                )
+                return
+
     # spawn_thread copies the parent context (loguru contextvars), so
     # logs emitted from inside recv_loop still carry session_id and
     # friends.
     recv_t = spawn_thread(recv_loop, name="recv_loop")
+    spawn_thread(dead_client_watchdog, name="dead_client_watchdog")
 
     # Register with the process-global session registry so the demo's
     # onboard MCP server can drive this session via the HTTP control
