@@ -252,9 +252,13 @@ def _resolve_bpm_key_source(
             latent=Latent(tensor=sc.latent.to(device, dtype).contiguous()),
             context_latent=Latent(tensor=sc.context_latent.to(device, dtype).contiguous()),
         )
-        bpm = bpm_override_norm if bpm_override_norm is not None else (
-            meta_bpm if meta_bpm is not None else sc.bpm
-        )
+        # Precedence: explicit override > track metadata > sidecar.
+        if bpm_override_norm is not None:
+            bpm = bpm_override_norm
+        elif meta_bpm is not None:
+            bpm = meta_bpm
+        else:
+            bpm = sc.bpm
         # For key/time-signature, track metadata is the editable source of
         # truth; otherwise the sidecar metadata beats client-supplied swap
         # overrides. That prevents a stale dropdown value from the previous
