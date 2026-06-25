@@ -29,6 +29,8 @@ import json
 import os
 import queue
 import socket
+import struct
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -256,6 +258,119 @@ PREEMPTED_CLOSE_CODE = 4001
 # to release VRAM. Generous: the old runner may be mid stem-extraction
 # (it only observes running=False between pipeline iterations).
 _PREEMPT_TEARDOWN_TIMEOUT_S = 45.0
+
+
+# ---------------------------------------------------------------------------
+# Dead-client watchdog
+# ---------------------------------------------------------------------------
+#
+# The `websockets` sync send path holds the connection's protocol lock
+# across a *blocking* ``socket.sendall`` with no send timeout
+# (websockets/sync/connection.py: send_context → send_data; close_deadline
+# is None during normal operation). So when a client stops reading — a
+# killed tab, a slept laptop, or a Cloudflare named-tunnel half-open where
+# the pod↔edge TCP stays ESTABLISHED while the browser is gone — the next
+# slice ``ws.send`` wedges on a full TCP window and pins the protocol lock
+# forever. The library's own keepalive ping (ping_timeout=90 in server.py)
+# then deadlocks acquiring that same lock, so it never tears the dead
+# client down: ``state.running`` stays True, the runner holds the pod's
+# one-session seat, and ``/sessions`` never empties (measured: a frozen
+# client left ~2.6 MB stuck in the server's send queue with the session
+# still registered 13+ minutes later). Our own ConnectionClosed detectors
+# can't fire either — the recv loop sees no close frame (no clean close
+# from a half-open peer) and the send paths are the threads *stuck* in
+# sendall.
+#
+# This watchdog detects the dead client from OUTSIDE those wedged Python
+# I/O threads, using GIL- and lock-independent syscalls on the socket FD:
+#
+#   - Send stall: ``SIOCOUTQ`` reports bytes still queued in the kernel
+#     send buffer (unsent + unacked), and ``TCP_INFO.tcpi_bytes_acked`` is
+#     the kernel's monotonic count of peer-acked bytes. A live client's
+#     KERNEL ACKs and drains regardless of how busy/GIL-starved the client
+#     app is, so a slow link, a GC pause, or a briefly-backgrounded tab
+#     keeps bytes_acked advancing (and/or the queue draining) and is never
+#     reaped — only a positive queue whose bytes_acked AND backlog both go
+#     nowhere for the whole grace window (a client reading nothing) trips
+#     it. Keying on bytes_acked (not the SIOCOUTQ delta alone) closes the
+#     plateau gap where a backpressured queue sits pinned at a constant
+#     positive level while data still flows. This is the key distinction
+#     from an ack-progress timeout (DEMON PR #293), which is app-level and
+#     false-reaps a GIL-starved-but-alive client.
+#   - Peer close: ``TCP_INFO`` state leaves ESTABLISHED (FIN/RST) or the FD
+#     errors — the "0 established sockets but session still registered"
+#     fingerprint, which means the library's recv thread missed the EOF.
+#
+# On either signal it flips ``state.running`` False (the runner observes
+# it between iterations and exits run() → the registry unregister in
+# run()'s finally fires) and force-shuts the socket so the wedged sendall
+# (holding the protocol lock) and the recv thread both unblock at once,
+# rather than waiting on the library's graceful-close handshake — which
+# needs that same pinned lock and would just re-block.
+#
+# SIOCOUTQ and the TCP_INFO byte layout are Linux-specific; off Linux the
+# syscalls would fail and reap every session, so the watchdog no-ops there.
+_SIOCOUTQ = 0x5411  # Linux ioctl: unsent+unacked bytes in the send queue
+_TCP_ESTABLISHED = 1
+# tcpi_bytes_acked: __u64 at this offset in struct tcp_info on 64-bit Linux
+# (stable since kernel 4.6); None if the running kernel's struct is shorter.
+_TCPI_BYTES_ACKED_OFF = 120
+_WATCHDOG_SUPPORTED = sys.platform.startswith("linux") and hasattr(
+    socket, "TCP_INFO",
+)
+
+# How long the kernel send queue must stay positive AND non-draining
+# before we declare the client dead. Generous against any real stall (a
+# slow uplink, a stop-the-world GC, a throttled background tab all keep
+# draining *something*); a genuinely gone client drains exactly zero for
+# as long as the half-open socket survives. Reset on ANY drain.
+try:
+    _DEAD_CLIENT_SEND_STALL_S = max(
+        5.0,
+        float(os.environ.get("DEMON_DEAD_CLIENT_STALL_S", "") or 30.0),
+    )
+except ValueError:
+    _DEAD_CLIENT_SEND_STALL_S = 30.0
+_DEAD_CLIENT_POLL_S = 2.0
+
+
+def _socket_send_backlog(sock) -> int | None:
+    """Bytes queued in the kernel send buffer (unsent + unacked) for
+    ``sock``, or ``None`` if the FD can't be queried (closed / errored /
+    unsupported platform).
+
+    A plain ``ioctl`` on the FD — it touches neither the GIL-contended
+    Python recv path nor the WS protocol lock, so it stays accurate even
+    while another thread is blocked in ``sendall`` on the same socket
+    (exactly the state we need to detect)."""
+    try:
+        import fcntl
+
+        buf = fcntl.ioctl(sock.fileno(), _SIOCOUTQ, struct.pack("I", 0))
+        return struct.unpack("I", buf)[0]
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def _tcp_state_and_acked(sock) -> tuple[int, int | None] | None:
+    """``(tcp_state, bytes_acked)`` from ``TCP_INFO`` for ``sock``, or
+    ``None`` if the FD can't be queried (closed / errored).
+
+    ``bytes_acked`` is the kernel's monotonic count of peer-acked bytes —
+    it advances only while the peer is alive — or ``None`` when the running
+    kernel's ``struct tcp_info`` is too short to carry it (pre-4.6), in
+    which case the caller falls back to the SIOCOUTQ drain signal alone.
+    Like the backlog probe, a lock-/GIL-independent syscall on the FD."""
+    try:
+        buf = sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_INFO, 128)
+    except OSError:
+        return None
+    if not buf:
+        return None
+    acked = None
+    if len(buf) >= _TCPI_BYTES_ACKED_OFF + 8:
+        acked = struct.unpack_from("<Q", buf, _TCPI_BYTES_ACKED_OFF)[0]
+    return buf[0], acked
 
 
 def _windowed_slice_drop_reason(
@@ -1866,10 +1981,99 @@ def _handle_client_body(
                         "control_dispatch_error error={}", exc,
                     )
 
+    def _reap_dead_client(
+        reason: str,
+        *,
+        backlog: int | None,
+        stall_s: float,
+        tcp_state: int | None = None,
+    ) -> None:
+        logger.warning(
+            "dead_client_reaped reason={} backlog_bytes={} stall_s={:.1f} "
+            "tcp_state={}",
+            reason, backlog, stall_s, tcp_state,
+        )
+        # Stop the runner: it observes this between pipeline iterations
+        # and exits run() into close(), whose finally unregisters the
+        # session — so /sessions empties and the pod returns to the pool.
+        state.running = False
+        # Force the socket down so the wedged sendall (holding the WS
+        # protocol lock) and the library's recv thread both unblock now,
+        # instead of waiting on the graceful-close handshake — which needs
+        # that same pinned lock and would re-block.
+        sock = getattr(ws, "socket", None)
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def dead_client_watchdog() -> None:
+        """Tear the session down when its client is gone but the WS
+        machinery hasn't noticed (see the module-top comment block).
+
+        Polls GIL/lock-independent socket syscalls so it stays accurate
+        even when the send path is wedged in ``sendall`` and the keepalive
+        ping is deadlocked behind the protocol lock. No-ops off Linux,
+        where the syscalls aren't available and would false-reap."""
+        if not _WATCHDOG_SUPPORTED:
+            return
+        sock = getattr(ws, "socket", None)
+        if sock is None:
+            return
+        last_drain_wall = time.monotonic()
+        prev_backlog = 0
+        prev_acked: int | None = None
+        while state.running:
+            time.sleep(_DEAD_CLIENT_POLL_S)
+            if not state.running:
+                return
+            # Peer close / dead FD — independent of the recv thread, which
+            # a wedged connection may never schedule to read the EOF.
+            info = _tcp_state_and_acked(sock)
+            if info is None:
+                _reap_dead_client("socket_error", backlog=None, stall_s=0.0)
+                return
+            tcp_state, acked = info
+            if tcp_state != _TCP_ESTABLISHED:
+                _reap_dead_client(
+                    "peer_closed", backlog=None, stall_s=0.0,
+                    tcp_state=tcp_state,
+                )
+                return
+            backlog = _socket_send_backlog(sock)
+            if backlog is None:
+                _reap_dead_client("socket_error", backlog=None, stall_s=0.0)
+                return
+            # The client is alive if the kernel is acking bytes
+            # (bytes_acked advancing) or the send queue is draining (empty
+            # or shrunk) — either resets the stall clock. bytes_acked is
+            # the robust signal: it keeps a backpressured-but-alive client
+            # whose queue plateaus at a constant positive level from being
+            # reaped. Only a positive queue with no ack progress and no
+            # drain for the whole grace window (a client reading nothing)
+            # accrues toward the reap.
+            acked_progress = (
+                acked is not None
+                and prev_acked is not None
+                and acked > prev_acked
+            )
+            if backlog == 0 or backlog < prev_backlog or acked_progress:
+                last_drain_wall = time.monotonic()
+            prev_backlog = backlog
+            prev_acked = acked
+            stall_s = time.monotonic() - last_drain_wall
+            if backlog > 0 and stall_s >= _DEAD_CLIENT_SEND_STALL_S:
+                _reap_dead_client(
+                    "send_stall", backlog=backlog, stall_s=stall_s,
+                )
+                return
+
     # spawn_thread copies the parent context (loguru contextvars), so
     # logs emitted from inside recv_loop still carry session_id and
     # friends.
     recv_t = spawn_thread(recv_loop, name="recv_loop")
+    spawn_thread(dead_client_watchdog, name="dead_client_watchdog")
 
     # Register with the process-global session registry so the demo's
     # onboard MCP server can drive this session via the HTTP control
