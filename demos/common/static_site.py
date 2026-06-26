@@ -12,11 +12,11 @@ accepted::
 
     {"route": "/arp", "entry": "index.html"}
 
-Demos are external repos, mounted explicitly via the backend's
-``--demo <path>`` flag: :func:`build_static_mounts` assembles the mount
-table from those paths; :func:`serve_static_mounts` resolves a request
-path against it. Nothing inside the repo's ``demos/`` tree is scanned
-or mounted implicitly. The shared demon-client browser bundle
+Repo-local demos are direct children of ``demos/`` with a manifest and
+are mounted automatically; external repos may also be mounted explicitly
+via the backend's ``--demo <path>`` flag. :func:`build_static_mounts`
+assembles the mount table from both sources; :func:`serve_static_mounts`
+resolves a request path against it. The shared demon-client browser bundle
 (``packages/demon-client/dist``, see its ``build.mjs``) is mounted at
 :data:`SDK_ROUTE` so every static demo loads ONE copy of the SDK /
 slice-decoder worker / audio worklet instead of vendoring its own.
@@ -76,6 +76,20 @@ class StaticMount:
 def sdk_dist_dir() -> Path:
     """The committed demon-client browser bundle directory."""
     return _REPO_ROOT / "packages" / "demon-client" / "dist"
+
+
+def repo_static_demo_dirs() -> list[Path]:
+    """Repo-local static demos: direct ``demos/*`` dirs with a manifest."""
+    demos_dir = _REPO_ROOT / "demos"
+    if not demos_dir.is_dir():
+        return []
+    roots: list[Path] = []
+    for child in sorted(demos_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        if any((child / name).is_file() for name in MANIFEST_NAMES):
+            roots.append(child)
+    return roots
 
 
 def _validate_route(manifest: Path, route: object) -> str:
@@ -152,7 +166,7 @@ def _add_mount(
 def build_static_mounts(
     extra_demos: list[str | Path] | tuple[str | Path, ...] = (),
 ) -> dict[str, StaticMount]:
-    """Build the static mount table: /sdk plus the external ``--demo`` paths.
+    """Build the static mount table: /sdk, repo demos, and ``--demo`` paths.
 
     Malformed manifests and reserved/duplicate routes raise immediately:
     a typo'd mount should fail the server at boot, not 404 mysteriously.
@@ -160,6 +174,9 @@ def build_static_mounts(
     mounts: dict[str, StaticMount] = {
         SDK_ROUTE: StaticMount(route=SDK_ROUTE, root=sdk_dist_dir()),
     }
+    for demo in repo_static_demo_dirs():
+        mount = load_static_demo(demo)
+        _add_mount(mounts, mount, demo)
     for demo in extra_demos:
         mount = load_static_demo(demo)
         _add_mount(mounts, mount, Path(demo))

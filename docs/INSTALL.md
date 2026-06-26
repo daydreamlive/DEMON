@@ -31,6 +31,19 @@ uv run python -u -m demos.realtime_motion_graph_web.run
 # open http://localhost:6660
 ```
 
+For the Stable Audio 3 static demo, the backend must be launched with
+an SA3 checkpoint alias:
+
+```bash
+uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint sa3-small
+# or:
+uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint sa3-medium
+# open http://localhost:6660/sa3/
+```
+
+The `/sa3/` UI sends `backend: "sa3"`, but it does not switch the
+server's loaded model after boot.
+
 ### What `demon-setup` does
 
 1. **Doctor** — verifies GPU + CUDA, TensorRT import, free disk, Node
@@ -228,6 +241,24 @@ uv run python -u -m demos.realtime_motion_graph_web.run
 - Backend flags go after `--`:
   `-- --accel compile`, `-- --checkpoint xl`, `-- --vae-accel eager`, …
   See [`demos/realtime_motion_graph_web/README.md`](../demos/realtime_motion_graph_web/README.md).
+
+### Stable Audio 3 demo
+
+The SA3 panel is served as a no-build static demo at `/sa3/` and uses
+the shared browser SDK from the backend's `/sdk/` mount. The UI starts
+sessions with `backend: "sa3"`, but the actual SA3 model id is resolved
+from the server's startup `--checkpoint` alias. Launch with one of:
+
+```bash
+uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint sa3-small
+uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint sa3-medium
+```
+
+Then open `http://localhost:6660/sa3/` through the launcher, or
+`http://localhost:1318/sa3/` when running the backend server directly.
+If the backend was launched with the default ACE-Step checkpoint, the
+SA3 UI cannot switch it after boot; restart with `--checkpoint
+sa3-small` or `--checkpoint sa3-medium`.
 
 ## Troubleshooting
 

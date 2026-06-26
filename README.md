@@ -80,6 +80,24 @@ uv run python -u -m demos.realtime_motion_graph_web.run
 # open http://localhost:6660
 ```
 
+### Stable Audio 3 demo
+
+The SA3 UI is a separate static demo mounted at `/sa3/`. It starts
+sessions with `backend: "sa3"`, but the SA3 model variant is resolved
+when the backend boots from `--checkpoint`. Launch the backend with an
+SA3 checkpoint alias before opening the page:
+
+```bash
+uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint sa3-small
+# or:
+uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint sa3-medium
+```
+
+Then open `http://localhost:6660/sa3/` (or `http://localhost:1318/sa3/`
+if you are running the backend directly). Opening `/sa3/` against the
+default ACE-Step checkpoint will not switch models; restart the backend
+with `--checkpoint sa3-small` or `--checkpoint sa3-medium`.
+
 **What you'll see and hear.** The page loads with a default fixture already selected. Click **Play** â€” browsers gate audio behind a click, so this also unlocks sound. The first start takes ~15 s while the model and TensorRT engines load (longer under `--accel compile`); then the HUD goes live and audio streams continuously. Once a session is playing, the spectral-control sliders live in the control drawer's **Experimental** tab â€” they steer generation itself, so changes land on the upcoming audio after a moment; sweep slowly and listen.
 
 > **The bare launch command runs all-TensorRT by default**, which needs the engines `demon-setup` just built. If they are missing, the server exits at boot and prints the exact fix. If you ran `demon-setup --skip-engines`, you **must** launch with `-- --accel compile` (no engines needed; expect a long `torch.compile` warmup on the first tick).

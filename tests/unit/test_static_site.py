@@ -103,13 +103,18 @@ def test_rejects_duplicate_routes(tmp_path):
         static_site.build_static_mounts([first, second_manifest])
 
 
-def test_mounts_only_sdk_and_explicit_demos(tmp_path):
-    # Demos are external: nothing inside the repo's demos/ tree may mount
-    # implicitly. The table is /sdk plus exactly the --demo paths given.
-    assert set(static_site.build_static_mounts()) == {"/sdk"}
+def test_mounts_sdk_and_repo_demos_by_default():
+    mounts = static_site.build_static_mounts()
 
+    assert "/sdk" in mounts
+    assert "/sa3" in mounts
+    assert mounts["/sa3"].entry == "index.html"
+    assert mounts["/sa3"].root.name == "sa3"
+
+
+def test_mounts_explicit_demos_in_addition_to_repo_demos(tmp_path):
     demo = _write_demo(tmp_path, route="/external")
     mounts = static_site.build_static_mounts([demo])
 
-    assert set(mounts) == {"/sdk", "/external"}
+    assert {"/sdk", "/sa3", "/external"}.issubset(set(mounts))
     assert mounts["/external"].root == demo.resolve()

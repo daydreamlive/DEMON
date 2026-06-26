@@ -38,6 +38,8 @@ const nextConfig: NextConfig = {
       { source: "/user_uploads/:path*", destination: `${backendUrl}/user_uploads/:path*` },
       { source: "/loras/:path*", destination: `${backendUrl}/loras/:path*` },
       { source: "/videos/:path*", destination: `${backendUrl}/videos/:path*` },
+      { source: "/sa3", destination: `${backendUrl}/sa3` },
+      { source: "/sa3/:path*", destination: `${backendUrl}/sa3/:path*` },
     ];
   },
 };

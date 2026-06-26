@@ -1,17 +1,31 @@
-/* Stable Audio 3 panel — the hardware-pedal chassis the magenta route
-   established (itself lifted from the ambient-oneknob POC): same shell
-   gradient, same wood side rails, same brand/title typography. The knob
-   bank renders the sa3 family's manifest; below it sit the A/B prompts
-   with the blend fader and the audio-to-audio source picker (fixture +
-   optional duration). */
+* {
+  box-sizing: border-box;
+}
 
-.shell {
-  align-items: center;
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
   background:
     radial-gradient(circle at 50% 18%, rgb(255 255 255 / 10%), transparent 26%),
     radial-gradient(circle at 50% 86%, rgb(107 160 205 / 12%), transparent 32%),
     linear-gradient(145deg, #14171b, #050607 72%);
   color: #f1f1ed;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.shell {
+  align-items: center;
   display: flex;
   justify-content: center;
   min-height: 100svh;
@@ -67,7 +81,7 @@
   right: -17px;
 }
 
-.brandRow {
+.brand-row {
   align-items: center;
   display: flex;
   justify-content: center;
@@ -76,18 +90,15 @@
 }
 
 .brand {
-  color: #ffffff;
+  color: #fff;
   font-family: "Product Sans", "Google Sans", "Arial Rounded MT Bold", "Trebuchet MS", system-ui, sans-serif;
   font-size: 38px;
   font-weight: 800;
-  letter-spacing: -0.065em;
   line-height: 1;
   text-shadow: 0 2px 0 rgb(0 0 0 / 55%), 0 0 18px rgb(255 255 255 / 14%);
 }
 
-/* ── knob bank ─────────────────────────────────────────────────────── */
-
-.knobGrid {
+.knob-grid {
   display: grid;
   gap: 14px 10px;
   grid-template-columns: repeat(3, 1fr);
@@ -95,36 +106,26 @@
   min-height: 132px;
 }
 
-.knobPlaceholder {
+.knob-placeholder {
   align-self: center;
   color: #8b8f93;
   font-size: 12px;
   grid-column: 1 / -1;
-  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
-.knobCell {
+.knob-cell {
   display: grid;
   gap: 4px;
   justify-items: center;
 }
 
-.knobWrap {
+.knob-wrap {
   display: grid;
   height: 84px;
   place-items: center;
   position: relative;
   width: 84px;
-}
-
-.knobInput {
-  cursor: pointer;
-  height: 84px;
-  opacity: 0;
-  position: absolute;
-  width: 84px;
-  z-index: 4;
 }
 
 .knob {
@@ -139,11 +140,38 @@
     inset 0 5px 9px rgb(255 255 255 / 7%),
     inset 0 -9px 15px rgb(0 0 0 / 62%),
     0 8px 14px rgb(0 0 0 / 62%);
+  cursor: grab;
   display: flex;
   height: 76px;
   justify-content: center;
   position: relative;
+  /* Claim vertical-drag gestures so touch devices steer the knob
+     instead of scrolling the page. */
+  touch-action: none;
+  user-select: none;
   width: 76px;
+}
+
+.knob:focus-visible {
+  outline: 2px solid #6ba0cd;
+  outline-offset: 3px;
+}
+
+.knob.dragging {
+  cursor: ns-resize;
+}
+
+/* While dragging, kill the rotor's settle animation so the pointer
+   tracks the cursor 1:1 instead of easing behind it. */
+.knob.dragging .pointer-rotor {
+  transition: none;
+}
+
+/* A drag started on a knob can travel anywhere via pointer capture;
+   pin the resize cursor and suppress text selection page-wide. */
+body.knob-dragging {
+  cursor: ns-resize;
+  user-select: none;
 }
 
 .knob::before {
@@ -155,14 +183,14 @@
   width: 34px;
 }
 
-.pointerRotor {
+.pointer-rotor {
   inset: 0;
   position: absolute;
   transition: transform 90ms linear;
 }
 
-.knobPointer {
-  background: linear-gradient(180deg, #ffffff, #c9e0ee);
+.knob-pointer {
+  background: linear-gradient(180deg, #fff, #c9e0ee);
   border-radius: 999px;
   box-shadow: 0 0 6px rgb(255 255 255 / 34%);
   height: 20px;
@@ -172,77 +200,91 @@
   width: 4px;
 }
 
-.knobValue {
+.knob-value {
   color: #f6f7f7;
   font-size: 13px;
   font-variant-numeric: tabular-nums;
   font-weight: 800;
 }
 
-.knobLabel {
+.knob-label {
   color: #d3d3cc;
   font-size: 10px;
   font-weight: 900;
-  letter-spacing: 0.08em;
   text-align: center;
   text-transform: uppercase;
 }
 
-/* ── prompt + source ───────────────────────────────────────────────── */
+.select-knob,
+.bool-knob {
+  align-items: center;
+  background: #101112;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 4px;
+  color: #eee;
+  display: flex;
+  min-height: 40px;
+  padding: 7px 9px;
+}
+
+.select-knob {
+  width: 100%;
+}
+
+.bool-knob input {
+  accent-color: #6ba0cd;
+  height: 18px;
+  width: 18px;
+}
 
 .controls {
   display: grid;
   gap: 10px;
 }
 
-.fieldSlot {
+.field-slot {
   display: grid;
   gap: 5px;
 }
 
-.fieldSlot span {
+.field-slot span {
   color: #d3d3cc;
   font-size: 11px;
   font-weight: 900;
-  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
-.fieldSlot textarea,
-.fieldSlot select,
-.fieldSlot input {
+.field-slot textarea,
+.field-slot select,
+.field-slot input {
   background: #101112;
   border: 1px solid rgb(255 255 255 / 16%);
   border-radius: 4px;
   color: #eeeeea;
-  font: inherit;
   font-size: 13px;
   padding: 7px 9px;
 }
 
-.fieldSlot textarea {
+.field-slot textarea {
   resize: vertical;
 }
 
-.fieldSlot select:disabled,
-.fieldSlot input:disabled {
+.field-slot select:disabled,
+.field-slot input:disabled {
   opacity: 0.55;
 }
 
-.sourceRow {
+.source-row {
   display: grid;
   gap: 10px;
   grid-template-columns: 1fr 110px;
 }
 
-.durationSlot input {
+.duration-slot input {
   font-variant-numeric: tabular-nums;
 }
 
-/* A↔B blend fader. The generic .fieldSlot input chrome (text-box
-   background/padding) reads wrong on a range track — strip it and
-   style the native track/thumb to match the chassis. */
-.blendSlot input {
+.blend-slot input {
   appearance: none;
   background: transparent;
   border: none;
@@ -251,19 +293,19 @@
   padding: 0;
 }
 
-.blendSlot input:disabled {
+.blend-slot input:disabled {
   cursor: default;
   opacity: 0.45;
 }
 
-.blendSlot input::-webkit-slider-runnable-track {
+.blend-slot input::-webkit-slider-runnable-track {
   background: linear-gradient(180deg, #0c0d0e, #181a1d);
   border: 1px solid rgb(255 255 255 / 16%);
   border-radius: 3px;
   height: 6px;
 }
 
-.blendSlot input::-webkit-slider-thumb {
+.blend-slot input::-webkit-slider-thumb {
   appearance: none;
   background: linear-gradient(180deg, #2c3037, #14171b);
   border: 1px solid rgb(255 255 255 / 30%);
@@ -273,14 +315,14 @@
   width: 10px;
 }
 
-.blendSlot input::-moz-range-track {
+.blend-slot input::-moz-range-track {
   background: linear-gradient(180deg, #0c0d0e, #181a1d);
   border: 1px solid rgb(255 255 255 / 16%);
   border-radius: 3px;
   height: 6px;
 }
 
-.blendSlot input::-moz-range-thumb {
+.blend-slot input::-moz-range-thumb {
   background: linear-gradient(180deg, #2c3037, #14171b);
   border: 1px solid rgb(255 255 255 / 30%);
   border-radius: 3px;
@@ -288,12 +330,12 @@
   width: 10px;
 }
 
-.blendSlot > span {
+.blend-slot > span {
   display: flex;
   justify-content: space-between;
 }
 
-.blendValue {
+.blend-value {
   color: #8f938f;
   font-style: normal;
   font-variant-numeric: tabular-nums;
@@ -301,7 +343,8 @@
   text-transform: none;
 }
 
-.sendBtn {
+.send-btn,
+.power-btn {
   background: linear-gradient(180deg, #2c3037, #14171b);
   border: 1px solid rgb(255 255 255 / 22%);
   border-radius: 5px;
@@ -309,26 +352,26 @@
   cursor: pointer;
   font-size: 12px;
   font-weight: 900;
-  justify-self: end;
-  letter-spacing: 0.08em;
   min-height: 32px;
-  padding: 0 16px;
   text-transform: uppercase;
 }
 
-.sendBtn:disabled {
+.send-btn {
+  justify-self: end;
+  padding: 0 16px;
+}
+
+.send-btn:disabled,
+.power-btn:disabled {
   cursor: default;
   opacity: 0.45;
 }
 
-/* ── title + transport ─────────────────────────────────────────────── */
-
 .title {
-  color: #ffffff;
+  color: #fff;
   font-size: 30px;
   font-weight: 900;
   justify-self: center;
-  letter-spacing: -0.04em;
   line-height: 1;
   text-shadow: 0 2px 0 rgb(0 0 0 / 50%);
 }
@@ -341,26 +384,16 @@
   min-height: 36px;
 }
 
-.powerBtn {
-  background: linear-gradient(180deg, #2c3037, #14171b);
-  border: 1px solid rgb(255 255 255 / 22%);
-  border-radius: 5px;
-  color: #f1f1ed;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 900;
-  letter-spacing: 0.08em;
-  min-height: 32px;
+.power-btn {
   min-width: 88px;
-  text-transform: uppercase;
 }
 
-.powerOn {
+.power-on {
   border-color: rgb(107 160 205 / 70%);
   box-shadow: 0 0 12px rgb(107 160 205 / 30%);
 }
 
-.tickReadout {
+.tick-readout {
   align-items: baseline;
   background: #101112;
   border: 1px solid rgb(255 255 255 / 14%);
@@ -376,44 +409,42 @@
   padding: 7px 8px 0;
 }
 
-.tickReadout b,
-.tickReadout small {
+.tick-readout b,
+.tick-readout small {
   color: #8f938f;
   font-size: 9px;
   font-weight: 900;
-  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
-.statusDot {
+.status-dot {
   border-radius: 50%;
   height: 9px;
   width: 9px;
 }
 
-.status_idle {
+.status-idle {
   background: #5a5f66;
 }
 
-.status_connecting {
+.status-connecting {
   animation: sa3-pulse 1.1s ease-in-out infinite;
   background: #d9b54a;
 }
 
-.status_ready {
+.status-ready {
   background: #5fd97e;
   box-shadow: 0 0 8px rgb(95 217 126 / 55%);
 }
 
-.status_error {
+.status-error {
   background: #e0524d;
   box-shadow: 0 0 8px rgb(224 82 77 / 55%);
 }
 
-.statusText {
+.status-text {
   color: #c9cbc6;
   font-size: 12px;
-  letter-spacing: 0.04em;
 }
 
 @keyframes sa3-pulse {
@@ -437,7 +468,7 @@
     width: 28px;
   }
 
-  .sourceRow {
+  .source-row {
     grid-template-columns: 1fr;
   }
 }
