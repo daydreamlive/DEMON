@@ -50,6 +50,12 @@ dependencies = [
     "flash-attn @ https://github.com/kingbri1/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu128torch2.9.0cxx11abiFALSE-cp311-cp311-win_amd64.whl ; sys_platform == 'win32' and python_version == '3.11' and platform_machine == 'AMD64'",
     "flash-attn @ https://github.com/kingbri1/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu128torch2.9.0cxx11abiFALSE-cp311-cp311-linux_x86_64.whl ; sys_platform == 'linux' and python_version == '3.11' and platform_machine == 'x86_64'",
     "websockets>=13.0",
+    # Ed25519 verification for user-trained LoRAs fetched at runtime via
+    # the register_user_lora WS message (see
+    # demos/realtime_motion_graph_web/user_loras.py). Likely a transitive
+    # dep already via huggingface_hub's token plumbing, but declared
+    # explicitly so the boot doesn't go sideways on a fresh resolver run.
+    "cryptography>=42",
     "xxhash",
     "zstandard>=0.21",
     "librosa",

@@ -112,6 +112,97 @@ from acestep.user_uploads import (
 
 from .audio_codec import SliceCodec, chunked_ws_send, send_stem_payload
 from .protocol import COMMAND_NAMES, SAMPLE_RATE, coerce_command_payload
+from .user_loras import (
+    UserLoraError,
+    download_pack,
+    materialize_pack,
+    verify_pack,
+)
+
+
+# Heavy-lift dispatch for register_user_lora — runs on its own daemon
+# thread so a ~200 MB download doesn't stall the WS receive loop. Errors
+# come back as {type:"error"} frames via the supplied send_json callback.
+_USER_LORA_POOL = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="user_lora",
+)
+
+
+def _spawn_register_user_lora(streaming, data, origin, send_json) -> None:
+    """Off-thread runner for ``register_user_lora``. See the WS handler
+    dispatch table for context. Validates the message shape, downloads,
+    verifies the Ed25519 signature against the trusted-keys set, drops
+    the file under :func:`acestep.paths.user_loras_dir`, and asks the
+    session to register it (which publishes a refreshed catalog event
+    to every subscriber). Any failure surfaces as a single
+    ``{type:"error", code:..., message:...}`` frame to the calling
+    client; the catalog stays untouched."""
+    lora_id = data.get("id")
+    name = data.get("name")
+    trigger = data.get("trigger")
+    safetensors_url = data.get("safetensors_url")
+    signature_url = data.get("signature_url")
+    kid = data.get("kid")
+    sha256 = data.get("sha256")
+    if not isinstance(lora_id, str) or not lora_id.strip():
+        send_json({
+            "type": "error",
+            "code": "register_user_lora_bad_request",
+            "message": "register_user_lora: missing id",
+        })
+        return
+    if not isinstance(safetensors_url, str) or not isinstance(signature_url, str):
+        send_json({
+            "type": "error",
+            "code": "register_user_lora_bad_request",
+            "message": "register_user_lora: missing safetensors_url / signature_url",
+        })
+        return
+
+    def _run() -> None:
+        try:
+            safetensors_bytes, sidecar = download_pack(
+                safetensors_url, signature_url,
+            )
+            manifest = verify_pack(
+                safetensors_bytes,
+                sidecar,
+                expected_sha256=sha256 if isinstance(sha256, str) else None,
+                expected_kid=kid if isinstance(kid, str) else None,
+            )
+            path = materialize_pack(
+                safetensors_bytes,
+                manifest,
+                lora_id=lora_id,
+                display_name=name if isinstance(name, str) and name else lora_id,
+                trigger=trigger if isinstance(trigger, str) and trigger else None,
+            )
+            streaming.register_user_lora(
+                str(path),
+                name=name if isinstance(name, str) and name else None,
+                origin=origin,
+            )
+        except UserLoraError as exc:
+            logger.warning(
+                "register_user_lora rejected id={} code={} reason={}",
+                lora_id, exc.code, exc,
+            )
+            send_json({
+                "type": "error",
+                "code": exc.code,
+                "message": f"register_user_lora({lora_id}): {exc}",
+            })
+        except Exception as exc:
+            logger.exception(
+                "register_user_lora unexpected failure id={}", lora_id,
+            )
+            send_json({
+                "type": "error",
+                "code": "register_user_lora_failed",
+                "message": f"register_user_lora({lora_id}) crashed: {exc}",
+            })
+
+    _USER_LORA_POOL.submit(_run)
 
 
 # ---------------------------------------------------------------------------
@@ -1741,6 +1832,14 @@ def _handle_client_body(
                 lid = data.get("id")
                 if lid:
                     streaming.disable_lora(str(lid), origin=origin)
+            elif mtype == "register_user_lora":
+                # Download → verify → materialize → register a user-trained
+                # LoRA. Heavy I/O so dispatch off the WS-receive thread —
+                # the receive loop must keep accepting frames while a
+                # ~200MB safetensors comes down. Errors land on the bus
+                # as a {type:"error"} frame so the VST can surface a
+                # toast without freezing the catalog.
+                _spawn_register_user_lora(streaming, data, origin, _send_json)
             elif mtype == "manual_slot_add":
                 streaming.manual_slot_add(origin=origin)
             elif mtype == "manual_slot_pop":

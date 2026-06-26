@@ -142,6 +142,27 @@ def loras_dir() -> Path:
     return models_dir() / "loras"
 
 
+def user_loras_dir() -> Path:
+    """Directory the pod writes verified user-uploaded LoRAs into.
+
+    Held separate from :func:`loras_dir` so the stock library shipped
+    in the pod image stays read-only and an operator can mount this
+    dir on persistent storage without affecting boot-time discovery.
+    Auto-included in :func:`discover_all_loras` (via ``extra_lora_dirs``-
+    like inclusion in register_library) so the catalog event surfaces
+    user packs alongside stock LoRAs after registration.
+
+    Defaults to ``$ACESTEP_MODELS_DIR/user_loras``; override with
+    ``ACESTEP_USER_LORAS_DIR`` for non-default volume mounts. The
+    directory is created lazily by callers (the WS register handler
+    creates it on first write).
+    """
+    override = os.environ.get("ACESTEP_USER_LORAS_DIR", "").strip()
+    if override:
+        return Path(os.path.expanduser(override))
+    return models_dir() / "user_loras"
+
+
 def melband_roformer_dir() -> Path:
     """Directory containing the Mel-Band RoFormer stem-separation checkpoint."""
     return models_dir() / "MelBandRoFormer"
