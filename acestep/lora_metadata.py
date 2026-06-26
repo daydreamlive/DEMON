@@ -87,6 +87,14 @@ class LoraMetadata:
     # callers distinguish "rich metadata" from "synthesized fallback"
     # without inspecting individual field nullity.
     has_metadata: bool = False
+    # Provenance tag: ``"user_pack"`` for LoRAs the pod received via
+    # the runtime ``register_user_lora`` WS message (training output
+    # the user trained themselves), or ``None`` for everything else
+    # (the baked-in stock catalog discovered at boot from
+    # :func:`acestep.paths.loras_dir`). Surfaced to UI clients so
+    # they can group the catalog into "My Styles" vs "Stock Styles"
+    # sections.
+    source: Optional[str] = None
 
     def to_wire(self) -> dict[str, Any]:
         """JSON-safe dict for shipping to the UI / MCP clients."""
@@ -209,6 +217,14 @@ def _from_schema(raw: dict[str, Any], stem: str) -> LoraMetadata:
     cls = raw.get("classification") or {}
     model = raw.get("model") or {}
 
+    # ``source`` is a non-schema-v1 extension we write into sidecars for
+    # LoRAs the runtime registers via ``register_user_lora`` (see
+    # ``demos/realtime_motion_graph_web/user_loras.py``). Stock sidecars
+    # omit it; the field defaults to None which clients read as "stock".
+    source = raw.get("source")
+    if source is not None and not isinstance(source, str):
+        source = None
+
     return LoraMetadata(
         id=stem,
         name=raw.get("name") or stem,
@@ -226,6 +242,7 @@ def _from_schema(raw: dict[str, Any], stem: str) -> LoraMetadata:
         base_model=model.get("base_model"),
         base_model_scale=model.get("base_model_scale"),
         has_metadata=True,
+        source=source,
     )
 
 

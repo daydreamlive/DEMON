@@ -1684,6 +1684,41 @@ class StreamingSession:
             origin.value, lora_id,
         )
 
+    @requires_capability("lora", "register_user_lora")
+    def register_user_lora(
+        self,
+        path: str,
+        *,
+        name: str | None = None,
+        origin: CommandOrigin = CommandOrigin.PRIMARY,
+    ) -> str:
+        """Register a user-uploaded LoRA at ``path`` with the live engine
+        and publish a refreshed catalog so all WS clients pick it up.
+
+        Used by the ``register_user_lora`` WS message after the file has
+        been downloaded + Ed25519-verified by
+        :mod:`demos.realtime_motion_graph_web.user_loras`. Registration
+        is synchronous (no GPU work — just catalog bookkeeping) and
+        idempotent on the filename stem, so a retried message is a
+        no-op rather than an error.
+
+        Returns the LoRA id (filename stem) the engine now knows about.
+        """
+        if not self.lora_available or self.engine_obj is None:
+            raise RuntimeError("LoRA is not available on this engine")
+        self.state.last_activity_ts = time.monotonic()
+        lora_id = self.engine_obj.register_lora(str(path), name=name)
+        logger.info(
+            "register_user_lora_requested origin={} id={} path={}",
+            origin.value, lora_id, path,
+        )
+        # Mirror _apply_lora_pending's refresh sequence so the catalog
+        # event reaches all WS subscribers with the new entry, and the
+        # validation-spec map covers any future lora_str_<id> knob.
+        self._rebuild_knob_specs(self._enabled_lora_ids())
+        self.bus.publish(LoraCatalogUpdate(catalog=self.lora_catalog_payload()))
+        return lora_id
+
     @requires_capability("steering", "manual_slot_add")
     def manual_slot_add(
         self,

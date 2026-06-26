@@ -330,6 +330,42 @@ COMMANDS: tuple = (
         description="Disable a LoRA and drop its lora_str_<id> knob.",
     ),
     CommandSpec(
+        "register_user_lora",
+        fields=(
+            FieldSpec("id", "str", required=True,
+                      description="Stable id used as the filename stem and "
+                                  "the runtime LoRA id (enable/disable). "
+                                  "The registry-row UUID is canonical."),
+            FieldSpec("name", "str",
+                      description="Display name shown in the catalog "
+                                  "dropdown — typically the user's chosen "
+                                  "style name."),
+            FieldSpec("trigger", "str", nullable=True,
+                      description="Primary trigger word (4-16 chars). "
+                                  "Optional; matches the orchestrator's "
+                                  "triggerTag."),
+            FieldSpec("safetensors_url", "str", required=True,
+                      description="Presigned Tigris GET, ~10min TTL."),
+            FieldSpec("signature_url", "str", required=True,
+                      description="Presigned Tigris GET for "
+                                  "<style>.signature.json sidecar."),
+            FieldSpec("kid", "str", required=True,
+                      description="Expected signing key id; must be in "
+                                  "the pod's trusted set."),
+            FieldSpec("sha256", "str", required=True,
+                      description="Expected hex digest of the safetensors; "
+                                  "must match the value inside the signed "
+                                  "manifest."),
+        ),
+        requires="lora",
+        description="Download a user-trained LoRA from Tigris, verify the "
+                    "Ed25519 signature, drop it into the user-loras dir, "
+                    "and register it with the live engine. The refreshed "
+                    "lora_catalog event is then broadcast to all WS "
+                    "clients. Failures surface as {type:'error'} with "
+                    "code register_user_lora_* (no catalog mutation).",
+    ),
+    CommandSpec(
         "manual_slot_add",
         requires="steering",
         description="Allocate the next manual steering slot (LIFO); "
