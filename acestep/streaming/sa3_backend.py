@@ -347,7 +347,14 @@ class SA3Backend(DiffusionBackend):
     # ---- contract ------------------------------------------------------------
 
     def capabilities(self) -> Capabilities:
-        return Capabilities(refines_audio=True)
+        # loop_band: arm the playback band [A, B] server-side so the windowed
+        # renderer pre-fills the seam after A while the playhead finishes the
+        # lap near B (pipeline_runner band-awareness). Without it the region
+        # at the loop start holds pre-change audio for one window on every
+        # restart — the audible "snap back to the old buffer" at the loop
+        # point. SA3 uses the shared pipeline_runner, so the band path (and
+        # its band-wrap second render) work unchanged via render_window.
+        return Capabilities(refines_audio=True, loop_band=True)
 
     def geometry(self) -> AudioGeometry:
         return AudioGeometry(
