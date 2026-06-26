@@ -391,14 +391,23 @@ def _build_same_l_window_engine(
 # ------------------------------------------------------------------
 
 
+def _resolve_dit_profiles(args) -> tuple:
+    """DiT ``(lo, opt, hi)`` profiles for this invocation: per-duration
+    when ``--duration`` is given, else the canonical set. Single source
+    for both the ``--all`` matrix preview (``_matrix_jobs``) and the
+    actual build loop in ``main`` so the dry-run can't lie about what
+    ``--all`` will build."""
+    if args.duration:
+        return tuple(
+            (1, latents_for_seconds(s), latents_for_seconds(s))
+            for s in args.duration
+        )
+    return CANONICAL_DIT_PROFILES
+
+
 def _matrix_jobs(args) -> list[tuple[str, str]]:
     """(label, engine_dir_name) pairs for the --all matrix."""
-    if args.duration:
-        dit_profiles = tuple(
-            (1, latents_for_seconds(s), latents_for_seconds(s)) for s in args.duration
-        )
-    else:
-        dit_profiles = CANONICAL_DIT_PROFILES
+    dit_profiles = _resolve_dit_profiles(args)
 
     jobs = []
     if not args.same_l_only:
@@ -555,13 +564,7 @@ def main() -> int:
             require_sa3_vendor()
         env = _preflight("cuda")
         results = []
-        if args.duration:
-            dit_profiles = tuple(
-                (1, latents_for_seconds(s), latents_for_seconds(s))
-                for s in args.duration
-            )
-        else:
-            dit_profiles = CANONICAL_DIT_PROFILES
+        dit_profiles = _resolve_dit_profiles(args)
         if not args.same_l_only:
             for lo, opt, hi in dit_profiles:
                 results.append(_build_dit_engine(

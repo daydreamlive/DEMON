@@ -635,6 +635,32 @@ def _run_preflight(decoder_accel: str, vae_accel: str, checkpoint: str) -> None:
     )
 
 
+def _run_sa3_preflight(model_id: str) -> None:
+    """Boot fail-fast for the SA3 family.
+
+    The ACE ``_run_preflight`` checks the wrong tree — SA3 weights and
+    engines live under ``<models>/sa3/`` — so SA3 gets its own check.
+    Light path-existence only (the SA3 model id's safetensors + the
+    vendored ``stable_audio_3`` source). A missing TRT engine is NOT
+    fatal: SA3 degrades to the eager DiT at session create, so unlike
+    the ACE path this preflight never gates on engines.
+    """
+    from acestep.engine.sa3_helpers import sa3_checkpoint_status
+    from acestep.setup import SETUP_COMMAND
+
+    ok, msg = sa3_checkpoint_status(model_id)
+    if not ok:
+        print()
+        print("=" * 64)
+        print("  SA3 model unavailable")
+        print("=" * 64)
+        print(f"  {msg}")
+        print(f"  fix: run `{SETUP_COMMAND}`")
+        print("=" * 64)
+        raise SystemExit(1)
+    logger.info("preflight_sa3_ok model_id={}", model_id)
+
+
 def main():
     # Wire logging FIRST so even the CLI-arg validation prints flow through
     # the configured sinks. configure() is idempotent so a duplicate call
@@ -753,8 +779,17 @@ def main():
         # on the first browser connection (where the failure used to
         # surface as a silent stall or a WS error frame). Also performs
         # the checkpoint download here, visibly, when needed.
+        # The preflight is family-specific: each family resolves its own
+        # model tree (acestep -> <models>/checkpoints + acestep TRT
+        # profiles; sa3 -> <models>/sa3/checkpoints + <models>/sa3/
+        # trt_engines). Running the ACE check for a non-ACE family would
+        # false-fail at boot against the wrong directory.
         if "--skip-preflight" not in args:
-            _run_preflight(decoder_accel, vae_accel, checkpoint)
+            if backend_family == "acestep":
+                _run_preflight(decoder_accel, vae_accel, checkpoint)
+            elif backend_family == "sa3":
+                # `checkpoint` is the resolved SA3 model id here.
+                _run_sa3_preflight(checkpoint)
 
         # Defer the heavy import until we know we need it. Pulling this in
         # loads torch + acestep + TRT machinery; in --no-backend we never

@@ -279,7 +279,12 @@ class SA3TRTDit:
         ):
             self._ctx.set_tensor_address(name, buf.data_ptr())
 
-        self._bundle_key = None
+        # Strong ref to the currently-staged bundle (NOT its id()): an
+        # id() key can stale-hit after the old bundle is GC'd and a fresh
+        # one is allocated at the same address, silently skipping a
+        # re-stage and running the previous prompt's conditioning. Holding
+        # the object keeps its identity unique for as long as it's the key.
+        self._staged_bundle = None
         logger.info(
             "sa3_trt_dit_ready engine={} L={} seconds_total={:.1f}",
             engine_path.parent.name, L, seconds_total,
@@ -295,7 +300,7 @@ class SA3TRTDit:
         block is staged here. ``local_add_cond`` is the same (1,257,L)
         concat the torch DiT consumes (zeros for the streaming cover
         task)."""
-        if self._bundle_key == id(bundle):
+        if self._staged_bundle is bundle:
             return
         ca = bundle["cross_attn_cond"]
         mask = bundle["cross_attn_mask"].reshape(1, -1)
@@ -328,7 +333,7 @@ class SA3TRTDit:
                     f"local_add_cond L {lac.shape[-1]} != engine-bound L {self._L}"
                 )
             self._local_add.copy_(lac.float())
-        self._bundle_key = id(bundle)
+        self._staged_bundle = bundle
 
     @torch.no_grad()
     def step_bundle(self, x_1ct: torch.Tensor, t: float, bundle: dict) -> torch.Tensor:

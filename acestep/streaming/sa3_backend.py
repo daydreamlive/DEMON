@@ -48,6 +48,7 @@ stems/loop-band/depth/curves until validated (canonical plan Phase 5).
 
 from __future__ import annotations
 
+import threading
 import time
 from collections import deque
 from typing import Callable, Optional
@@ -215,6 +216,17 @@ class SA3Backend(DiffusionBackend):
         self._cond_history: list = [(cond.cond_bundle, 0, prompt_tags)]
         self._emerged_request = None
         self._emerged_marker = None  # (denoise, epoch) of the last log
+
+        # Guards the conditioning control state shared between the
+        # command thread (handle_set_prompt / handle_set_prompt_blend,
+        # called outside the session state lock) and the runner thread
+        # (_prepare_tick / _generate / _cond_meta_for). A prompt swap
+        # mutates several fields together — the schedule builder + cache,
+        # _cond/_cond_b, _active_bundle, and the _cond_history list (a
+        # non-atomic append+truncate the runner iterates) — so the bare
+        # GIL-atomic reference-swap argument doesn't cover it. The runner
+        # only ever holds this to snapshot, never across pipeline work.
+        self._control_lock = threading.Lock()
 
         # Rendered-audio cache: one full decode+resample per fresh
         # latent (SAME-S decodes the whole window in ~11 ms); window
@@ -417,23 +429,29 @@ class SA3Backend(DiffusionBackend):
                 )
         else:
             cond_b = cond
-        self._schedule_builder_factory = sched_factory
-        self.adapter.schedule_builder = sched_factory(self._steps)
-        # The pipeline caches schedules per denoise value; the builder
-        # swap changes what build_schedule returns for the same key.
-        # (Same duration means the same effective_seq_len today, so
-        # this is currently belt-and-braces — but the cache key carries
-        # no prompt identity, so correctness must not depend on that.)
-        self.pipeline.invalidate_schedule_cache()
-        self._cond = cond
-        self._cond_b = cond_b
-        self._active_bundle = self._blend_bundles(self._blend)
-        # Emerged-generation labeling (see __init__): the new bundle gets
-        # the next cond epoch; keep a short identity history so latents
-        # still in flight on the OLD bundle stay attributable.
-        self._cond_epoch += 1
-        self._cond_history.append((cond.cond_bundle, self._cond_epoch, tags))
-        del self._cond_history[:-4]
+        # Publish the whole new conditioning state atomically w.r.t. the
+        # runner (the GPU rebuild above ran lock-free). Without this the
+        # runner can read a half-swapped state — e.g. iterate
+        # _cond_history mid append+truncate, or submit the new bundle
+        # against the stale schedule cache.
+        with self._control_lock:
+            self._schedule_builder_factory = sched_factory
+            self.adapter.schedule_builder = sched_factory(self._steps)
+            # The pipeline caches schedules per denoise value; the builder
+            # swap changes what build_schedule returns for the same key.
+            # (Same duration means the same effective_seq_len today, so
+            # this is currently belt-and-braces — but the cache key carries
+            # no prompt identity, so correctness must not depend on that.)
+            self.pipeline.invalidate_schedule_cache()
+            self._cond = cond
+            self._cond_b = cond_b
+            self._active_bundle = self._blend_bundles(self._blend)
+            # Emerged-generation labeling (see __init__): the new bundle gets
+            # the next cond epoch; keep a short identity history so latents
+            # still in flight on the OLD bundle stay attributable.
+            self._cond_epoch += 1
+            self._cond_history.append((cond.cond_bundle, self._cond_epoch, tags))
+            del self._cond_history[:-4]
         logger.info(
             "sa3_prompt_applied tags={!r} tags_b={!r} cond_epoch={} "
             "rebuild_ms={:.1f}",
@@ -448,8 +466,10 @@ class SA3Backend(DiffusionBackend):
         in-flight slots finish on their submitted bundle.
         """
         v = max(0.0, min(1.0, float(value)))
-        self._blend = v
-        self._active_bundle = self._blend_bundles(v)
+        bundle = self._blend_bundles(v)
+        with self._control_lock:
+            self._blend = v
+            self._active_bundle = bundle
 
     def _blend_bundles(self, v: float) -> dict:
         """The active cond bundle for blend value ``v``: A verbatim at
@@ -497,8 +517,11 @@ class SA3Backend(DiffusionBackend):
         # invalidate or already-seen denoise values keep the old warp.
         shift = float(knobs.get("sa3_shift", 1.0))
         if abs(shift - float(self.adapter.shift_alpha)) > 1e-3:
-            self.adapter.shift_alpha = shift
-            self.pipeline.invalidate_schedule_cache()
+            # Atomic w.r.t. a concurrent prompt swap, which also retargets
+            # the schedule builder + invalidates this cache.
+            with self._control_lock:
+                self.adapter.shift_alpha = shift
+                self.pipeline.invalidate_schedule_cache()
 
         # Source-lock strength rides the shared override so a strength
         # bump engages the blend on in-flight slots submitted while it
@@ -557,6 +580,14 @@ class SA3Backend(DiffusionBackend):
                 source, fb_latent, prep["feedback"],
             )
 
+        # Snapshot the conditioning a prompt swap publishes atomically
+        # (active bundle + its latent geometry) so this request can't pair
+        # a new bundle with stale frames mid-swap. submit()/tick() below
+        # run lock-free.
+        with self._control_lock:
+            aux_cond = self._active_bundle
+            latent_frames = self._cond.latent_frames
+
         self.pipeline.submit(SlotRequest(
             seed=prep["seed"],
             denoise=prep["denoise"],
@@ -571,8 +602,8 @@ class SA3Backend(DiffusionBackend):
             # re-establishes the shared override.
             x0_target=self._source_latent_btc,
             x0_target_strength=prep["x0_target"],
-            aux_cond=self._active_bundle,
-            latent_frames=self._cond.latent_frames,
+            aux_cond=aux_cond,
+            latent_frames=latent_frames,
             # Deterministic pingpong: identical requests must replay the
             # same trajectory or advancing windows splice different
             # realizations (incoherent audio). See SlotRequest.
@@ -589,7 +620,11 @@ class SA3Backend(DiffusionBackend):
 
     def _cond_meta_for(self, bundle) -> tuple:
         """(epoch, tags) for a request's aux_cond, by identity."""
-        for b, epoch, tags in self._cond_history:
+        # Snapshot under the lock: a concurrent prompt swap does a
+        # non-atomic append + truncate on this list.
+        with self._control_lock:
+            history = tuple(self._cond_history)
+        for b, epoch, tags in history:
             if b is bundle:
                 return epoch, tags
         return None, None

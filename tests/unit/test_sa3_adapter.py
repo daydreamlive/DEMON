@@ -229,8 +229,12 @@ def test_shift_alpha_warps_schedule_and_pins_endpoints():
     # t[-1]=0 is a fixed point of the Flux map.
     assert torch.equal(warped[0], base[0])
     assert warped[-1].item() == 0.0
-    # Interior follows the Flux alpha map, pushed toward noise (a>1).
-    expect = 2.0 * base[1:-1] / (1.0 + 1.0 * base[1:-1])
+    # Interior follows the Flux alpha map applied to the schedule
+    # NORMALIZED by sigma_max (endpoints stay pinned), pushed toward
+    # noise (a>1).
+    sigma_max = base[0]
+    u = base[1:-1] / sigma_max
+    expect = sigma_max * (2.0 * u / (1.0 + 1.0 * u))
     assert torch.allclose(warped[1:-1], expect, atol=1e-6)
     assert torch.all(warped[1:-1] > base[1:-1])
     # Still a strictly decreasing schedule.
@@ -241,6 +245,25 @@ def test_shift_alpha_warps_schedule_and_pins_endpoints():
     assert torch.equal(
         adapter.build_schedule(config, 0.8, "cpu", torch.float32), base,
     )
+
+
+def test_shift_alpha_stays_monotone_on_aggressive_partial_denoise():
+    # Regression: warping the sigma_max-scaled values directly (instead of
+    # the [0,1]-normalized schedule) made the first interval invert at
+    # low denoise + high alpha — warp(t[1]) overshot the re-pinned
+    # sigma_max, giving a backward first step. The schedule must stay
+    # strictly decreasing for any valid alpha at any denoise.
+    adapter = _adapter(steps=4)
+    config = DiffusionConfig(
+        infer_steps=4, infer_method="ode", noise_on_cpu=True, dcw_enabled=False,
+    )
+    for denoise in (0.2, 0.5, 0.8, 1.0):
+        for alpha in (0.25, 0.5, 2.0, 4.0):
+            adapter.shift_alpha = alpha
+            warped = adapter.build_schedule(config, denoise, "cpu", torch.float32)
+            assert torch.equal(warped[0], torch.as_tensor(denoise)), (denoise, alpha)
+            assert warped[-1].item() == 0.0
+            assert torch.all(warped[:-1] > warped[1:]), (denoise, alpha)
 
 
 def test_shift_alpha_below_one_pulls_toward_refinement():

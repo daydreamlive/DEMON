@@ -44,7 +44,11 @@ sys.path.insert(0, str(_REPO_ROOT))
 import torch  # noqa: E402
 
 from acestep import paths  # noqa: E402
-from acestep.engine.sa3_helpers import ensure_sa3_paths, require_sa3_vendor  # noqa: E402
+from acestep.engine.sa3_helpers import (  # noqa: E402
+    ensure_sa3_paths,
+    require_sa3_vendor,
+    sa3_checkpoint_dir,
+)
 
 ensure_sa3_paths()
 
@@ -53,12 +57,10 @@ def checkpoint_dir(model_name: str = "small-music") -> Path:
     """Return the local checkpoint dir for a given SA3 model name.
 
     Defaults to ``small-music``; pass ``"medium"`` (or any other registry
-    name) to point at a different checkpoint. The layout mirrors what
-    ``snapshot_download(repo_id="stabilityai/stable-audio-3-<name>",
-    local_dir=<this>)`` produces: ``model_config.json``,
-    ``model.safetensors``, and bundled ``t5gemma-b-b-ul2/``.
+    name) to point at a different checkpoint. Single-sourced from
+    :func:`acestep.engine.sa3_helpers.sa3_checkpoint_dir`.
     """
-    return paths.models_dir() / "sa3" / "checkpoints" / f"stable-audio-3-{model_name}"
+    return sa3_checkpoint_dir(model_name)
 
 
 def spike_out_dir() -> Path:

@@ -103,6 +103,22 @@ def test_rejects_duplicate_routes(tmp_path):
         static_site.build_static_mounts([first, second_manifest])
 
 
+def test_malformed_repo_demo_is_skipped_not_fatal(tmp_path, monkeypatch):
+    # A bad AUTO-DISCOVERED repo demo must not take down the shared host
+    # (the ACE server): it is warned and skipped, the good ones still mount.
+    good = _write_demo(tmp_path, route="/good", dirname="good")
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    (bad / "demon.demo.json").write_text("{ not json", encoding="utf-8")
+    monkeypatch.setattr(static_site, "repo_static_demo_dirs", lambda: [good, bad])
+
+    with pytest.warns(UserWarning, match="skipping malformed repo static demo"):
+        mounts = static_site.build_static_mounts()
+
+    assert "/good" in mounts
+    assert "/sdk" in mounts
+
+
 def test_mounts_sdk_and_repo_demos_by_default():
     mounts = static_site.build_static_mounts()
 

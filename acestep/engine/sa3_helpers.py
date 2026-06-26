@@ -1,10 +1,13 @@
-"""Import and vendor management for the SA3 integration.
+"""Vendor management and SA3 source-path bootstrapping.
 
-The production SA3 path reuses the validated spike helpers in
-``scripts/sa3`` and the upstream ``stable_audio_3`` package source. The
-source checkout is a managed install artifact: normal setup fetches the
-pinned repository commit under ``ACESTEP_MODELS_DIR``. ``DEMON_SA3_SRC``
-remains as a developer-only override for experiments with a local checkout.
+The production SA3 runtime helpers live in
+``acestep.engine.sa3_stream_helpers``; the only thing still loaded from
+``scripts/sa3`` is the developer loader helper (``sa3_reference_generate``,
+via :func:`import_loader_helpers`). What this module manages is the
+upstream ``stable_audio_3`` package source: a managed install artifact
+that normal setup fetches at a pinned commit under ``ACESTEP_MODELS_DIR``.
+``DEMON_SA3_SRC`` remains as a developer-only override for experiments
+with a local checkout.
 """
 
 from __future__ import annotations
@@ -40,6 +43,40 @@ def sa3_vendor_dir() -> Path:
     if override:
         return Path(override).expanduser()
     return sa3_vendor_root() / SA3_VENDOR_DIRNAME
+
+
+def sa3_checkpoint_dir(model_id: str) -> Path:
+    """Local checkpoint dir for an SA3 ``model_id`` (e.g. ``"medium"``,
+    ``"small-music"``). Layout mirrors ``snapshot_download(repo_id=
+    "stabilityai/stable-audio-3-<id>", local_dir=<this>)``: a
+    ``model.safetensors`` + ``model_config.json`` + ``t5gemma-b-b-ul2/``.
+    Single source for both the loader and the boot preflight."""
+    return paths.models_dir() / "sa3" / "checkpoints" / f"stable-audio-3-{model_id}"
+
+
+def sa3_vendor_present() -> bool:
+    """Whether the vendored ``stable_audio_3`` source is on disk (existence
+    only — no git/network, unlike :func:`ensure_sa3_vendor`)."""
+    return (sa3_vendor_dir() / "stable_audio_3").is_dir()
+
+
+def sa3_checkpoint_status(model_id: str) -> tuple[bool, str]:
+    """``(ok, message)`` for an SA3 ``model_id``'s boot readiness — the SA3
+    analog of ``model_downloader.ensure_dit_model``'s contract, but a
+    light path-existence check (no torch, no download): the weights live
+    under :func:`sa3_checkpoint_dir` and the runtime needs the vendored
+    source to ``import stable_audio_3``. Engines are NOT required here —
+    a missing DiT engine degrades to the eager DiT at session create, it
+    doesn't block the run."""
+    ckpt = sa3_checkpoint_dir(model_id)
+    if not (ckpt / "model.safetensors").is_file():
+        return False, f"SA3 checkpoint {model_id!r} not found at {ckpt}"
+    if not sa3_vendor_present():
+        return False, (
+            f"SA3 source not found at {sa3_vendor_dir()} "
+            "(required to import stable_audio_3)"
+        )
+    return True, f"SA3 model {model_id!r} is available"
 
 
 def _git(args: list[str], cwd: Path | None = None) -> str:
@@ -181,11 +218,18 @@ def require_sa3_vendor() -> Path:
 
 
 def import_stream_helpers():
-    """Return the SA3 streaming helper module from ``scripts/sa3``."""
-    ensure_sa3_paths()
-    import sa3_stream_pipeline  # noqa: PLC0415
+    """Return the SA3 streaming helper module.
 
-    return sa3_stream_pipeline
+    The runtime helpers live in the ``acestep`` package now (production no
+    longer imports them out of ``scripts/`` over a front-injected
+    ``sys.path``). ``ensure_sa3_paths`` still runs so the vendored
+    ``stable_audio_3`` source — which the helpers' lazy imports need — is
+    importable without depending on a prior loader-helper call.
+    """
+    ensure_sa3_paths()
+    from acestep.engine import sa3_stream_helpers  # noqa: PLC0415
+
+    return sa3_stream_helpers
 
 
 def import_loader_helpers():

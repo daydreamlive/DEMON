@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import urllib.parse
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -168,15 +169,25 @@ def build_static_mounts(
 ) -> dict[str, StaticMount]:
     """Build the static mount table: /sdk, repo demos, and ``--demo`` paths.
 
-    Malformed manifests and reserved/duplicate routes raise immediately:
-    a typo'd mount should fail the server at boot, not 404 mysteriously.
+    Auto-discovered repo-local demos are isolated from the host: a
+    malformed manifest (or a duplicate route between two of them) is
+    warned and SKIPPED, so one stray ``demos/*`` dir can't take down the
+    backend it shares a process with (e.g. the production ACE server).
+    Explicitly requested ``--demo`` paths still raise — an operator who
+    named a mount should hear about a typo at boot, not 404 mysteriously.
     """
     mounts: dict[str, StaticMount] = {
         SDK_ROUTE: StaticMount(route=SDK_ROUTE, root=sdk_dist_dir()),
     }
     for demo in repo_static_demo_dirs():
-        mount = load_static_demo(demo)
-        _add_mount(mounts, mount, demo)
+        try:
+            mount = load_static_demo(demo)
+            _add_mount(mounts, mount, demo)
+        except ValueError as exc:
+            warnings.warn(
+                f"skipping malformed repo static demo {demo}: {exc}",
+                stacklevel=2,
+            )
     for demo in extra_demos:
         mount = load_static_demo(demo)
         _add_mount(mounts, mount, Path(demo))

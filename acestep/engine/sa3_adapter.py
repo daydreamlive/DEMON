@@ -89,13 +89,21 @@ class SA3Adapter:
         if alpha <= 0.0:
             raise ValueError(f"sa3 shift_alpha must be > 0, got {alpha}")
         if abs(alpha - 1.0) > 1e-6:
-            # Composed AFTER the builder's dist_shift warp. The first
-            # entry is re-pinned to sigma_max (= denoise) afterwards,
-            # mirroring upstream build_schedule's own post-shift pin:
-            # slot init mixes source/noise by sigma_max, so t[0] must
-            # stay exactly there. t[-1]=0 is a fixed point of the map.
+            # Composed AFTER the builder's dist_shift warp. The Flux/SD3
+            # map t -> a*t/(1+(a-1)*t) is a monotone [0,1] bijection with
+            # fixed points 0 and 1, so it must act on the schedule
+            # NORMALIZED to [0,1]. Warping the already-sigma_max-scaled
+            # values directly is wrong whenever sigma_max < 1 (the
+            # audio-to-audio / cover path, where sigma_max = denoise):
+            # the map neither keeps sigma_max fixed nor stays monotone —
+            # for a>1 an interior value can overshoot sigma_max and
+            # invert the first step's dt. Normalize, warp, rescale so
+            # t[0] lands back exactly on sigma_max and t[-1]=0 stays 0;
+            # at full denoise (sigma_max=1) this reduces to the bare map.
             sigma_max = schedule[0].clone()
-            schedule = alpha * schedule / (1.0 + (alpha - 1.0) * schedule)
+            u = schedule / sigma_max.clamp_min(1e-9)
+            u = alpha * u / (1.0 + (alpha - 1.0) * u)
+            schedule = u * sigma_max
             schedule[0] = sigma_max
         return schedule.to(device=device, dtype=dtype)
 

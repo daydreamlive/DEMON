@@ -112,8 +112,11 @@ def test_contract_surface():
 
     caps = b.capabilities()
     assert caps.refines_audio is True
+    # loop_band is armed for SA3 (windowed renderer pre-fills the seam at
+    # the loop point — see SA3Backend.capabilities).
+    assert caps.loop_band is True
     for field in ("swap", "timbre", "structure", "lora", "stems",
-                  "loop_band", "depth", "curves", "notes_conditioning"):
+                  "depth", "curves", "notes_conditioning"):
         assert getattr(caps, field) is False, field
 
     g = b.geometry()

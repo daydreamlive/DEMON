@@ -21,6 +21,62 @@ def test_default_vendor_dir_lives_under_models_dir(monkeypatch, tmp_path):
     )
 
 
+def test_checkpoint_dir_lives_under_models_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("ACESTEP_MODELS_DIR", str(tmp_path))
+
+    assert sa3_helpers.sa3_checkpoint_dir("medium") == (
+        tmp_path / "sa3" / "checkpoints" / "stable-audio-3-medium"
+    )
+
+
+def _seed_sa3(tmp_path: Path, model_id: str) -> None:
+    ckpt = tmp_path / "sa3" / "checkpoints" / f"stable-audio-3-{model_id}"
+    ckpt.mkdir(parents=True)
+    (ckpt / "model.safetensors").write_bytes(b"")
+    vendor = tmp_path / "sa3" / "vendor" / "stable-audio-3" / "stable_audio_3"
+    vendor.mkdir(parents=True)
+
+
+def test_checkpoint_status_ok_when_weights_and_vendor_present(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.delenv(sa3_helpers.SA3_VENDOR_ENV, raising=False)
+    monkeypatch.setenv("ACESTEP_MODELS_DIR", str(tmp_path))
+    _seed_sa3(tmp_path, "medium")
+
+    ok, msg = sa3_helpers.sa3_checkpoint_status("medium")
+
+    assert ok is True
+    assert "medium" in msg
+
+
+def test_checkpoint_status_fails_on_missing_weights(monkeypatch, tmp_path):
+    monkeypatch.delenv(sa3_helpers.SA3_VENDOR_ENV, raising=False)
+    monkeypatch.setenv("ACESTEP_MODELS_DIR", str(tmp_path))
+    # vendor present, but no checkpoint weights
+    (tmp_path / "sa3" / "vendor" / "stable-audio-3" / "stable_audio_3").mkdir(
+        parents=True,
+    )
+
+    ok, msg = sa3_helpers.sa3_checkpoint_status("medium")
+
+    assert ok is False
+    assert "checkpoint" in msg.lower()
+
+
+def test_checkpoint_status_fails_on_missing_vendor(monkeypatch, tmp_path):
+    monkeypatch.delenv(sa3_helpers.SA3_VENDOR_ENV, raising=False)
+    monkeypatch.setenv("ACESTEP_MODELS_DIR", str(tmp_path))
+    ckpt = tmp_path / "sa3" / "checkpoints" / "stable-audio-3-medium"
+    ckpt.mkdir(parents=True)
+    (ckpt / "model.safetensors").write_bytes(b"")
+
+    ok, msg = sa3_helpers.sa3_checkpoint_status("medium")
+
+    assert ok is False
+    assert "source" in msg.lower()
+
+
 def test_ensure_vendor_clones_missing_tree_at_pinned_commit(
     monkeypatch, tmp_path,
 ):
