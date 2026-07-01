@@ -133,6 +133,11 @@ def create_sa3_session(
     context = get_sa3_context(model_id)
 
     waveform = audio.waveform[:2].float()
+    # SA3 decodes stereo and geometry() declares 2 channels, so the
+    # source anchor / initial buffer must be stereo too — upmix a mono
+    # upload rather than ship a 1-channel buffer against stereo patches.
+    if waveform.shape[0] == 1:
+        waveform = waveform.repeat(2, 1)
     source_duration_s = waveform.shape[-1] / SAMPLE_RATE
     duration_s = float(config.sa3_duration_s or 0.0) or source_duration_s
     duration_s = min(duration_s, SA3_MAX_DURATION_S)

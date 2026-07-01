@@ -1,4 +1,4 @@
-﻿# DEMON
+# DEMON
 
 <p align="center"><strong>StreamDiffusion, for audio.</strong></p>
 <p align="center"><sub>Diffusion Engine for Musical Orchestrated Noise</sub></p>
@@ -17,9 +17,9 @@
 <p align="center">
   <img src="docs/assets/img/poster-hero.jpg" width="820" alt="The DEMON web demo: a live control drawer with automation curves and audio-reactive WebGL visuals reacting to generated music">
 </p>
-<p align="center"><sub><em>The DEMON realtime web demo â€” live control drawer, automation curves, and audio-reactive visuals.</em></sub></p>
+<p align="center"><sub><em>The DEMON realtime web demo — live control drawer, automation curves, and audio-reactive visuals.</em></sub></p>
 
-DEMON is **StreamDiffusion, for audio** â€” a GPU-accelerated streaming diffusion engine that generates and transforms music in real time, built on [ACE-Step v1.5](https://huggingface.co/ACE-Step/Ace-Step1.5). It streams continuous, low-latency audio you can steer live: every modulation parameter is a per-frame knob you can sweep while the model plays, and the streaming output is bit-identical to a batch run.
+DEMON is **StreamDiffusion, for audio** — a GPU-accelerated streaming diffusion engine that generates and transforms music in real time, built on [ACE-Step v1.5](https://huggingface.co/ACE-Step/Ace-Step1.5). It streams continuous, low-latency audio you can steer live: every modulation parameter is a per-frame knob you can sweep while the model plays, and the streaming output is bit-identical to a batch run.
 
 > Don't have a GPU, or just want to play first? Try the hosted instance at **[music.daydream.live](https://music.daydream.live)**.
 
@@ -58,7 +58,7 @@ The engine lives in [`acestep/`](acestep/). One process loads the model once and
 1. A programmatic **Session API** ([`acestep/engine/session.py`](acestep/engine/session.py)) that wraps the streaming pipeline, the typed node graph, and the TRT runtime in a small set of methods (`prepare_source`, `encode_text`, `generate`, `decode`, `stream`, `apply_lora`).
 2. A **typed node graph** ([`acestep/nodes/`](acestep/nodes/)) of 32 composable operations (latent / audio / conditioning / curve / mask / solver / config / DCW / channel guidance) wired through `NodeDefinition` / `NodePort` / `NodeParam`, with kwarg-validation at registration.
 
-Anything on top â€” a CLI, a notebook, a VST, the bundled web demo, an MCP tool, or your own protocol â€” drives the same primitives. The library does not know or care which one you use.
+Anything on top — a CLI, a notebook, a VST, the bundled web demo, an MCP tool, or your own protocol — drives the same primitives. The library does not know or care which one you use.
 
 ## Quickstart
 
@@ -71,7 +71,7 @@ uv sync
 uv run demon-setup
 ```
 
-`demon-setup` checks your environment, downloads the ACE-Step v1.5 checkpoints (~18 GB from [`ACE-Step/Ace-Step1.5`](https://huggingface.co/ACE-Step/Ace-Step1.5) on Hugging Face, with a ModelScope fallback), fetches DEMON's pinned Stable Audio 3 source checkout, downloads a starter pack of genre LoRAs, and builds the minimal TensorRT engine set (the 60 s profile: decoder + VAE encode/decode, plus the fixed 1 s windowed VAE decode - a few minutes on a recent GPU since the ONNX comes prebuilt; older cards can take longer). It is idempotent: re-run it any time, finished work is skipped. (A first run is dominated by the ~18 GB checkpoint download plus the engine build; later runs skip straight to launch.)
+`demon-setup` checks your environment, downloads the ACE-Step v1.5 checkpoints (~18 GB from [`ACE-Step/Ace-Step1.5`](https://huggingface.co/ACE-Step/Ace-Step1.5) on Hugging Face, with a ModelScope fallback), fetches DEMON's pinned Stable Audio 3 source checkout, downloads a starter pack of genre LoRAs, and builds the minimal TensorRT engine set (the 60 s profile: decoder + VAE encode/decode, plus the fixed 1 s windowed VAE decode — a few minutes on a recent GPU since the ONNX comes prebuilt; older cards can take longer). It is idempotent: re-run it any time, finished work is skipped. (A first run is dominated by the ~18 GB checkpoint download plus the engine build; later runs skip straight to launch.)
 
 Then launch the web demo:
 
@@ -98,11 +98,11 @@ if you are running the backend directly). Opening `/sa3/` against the
 default ACE-Step checkpoint will not switch models; restart the backend
 with `--checkpoint sa3-small` or `--checkpoint sa3-medium`.
 
-**What you'll see and hear.** The page loads with a default fixture already selected. Click **Play** â€” browsers gate audio behind a click, so this also unlocks sound. The first start takes ~15 s while the model and TensorRT engines load (longer under `--accel compile`); then the HUD goes live and audio streams continuously. Once a session is playing, the spectral-control sliders live in the control drawer's **Experimental** tab â€” they steer generation itself, so changes land on the upcoming audio after a moment; sweep slowly and listen.
+**What you'll see and hear.** The page loads with a default fixture already selected. Click **Play** — browsers gate audio behind a click, so this also unlocks sound. The first start takes ~15 s while the model and TensorRT engines load (longer under `--accel compile`); then the HUD goes live and audio streams continuously. Once a session is playing, the spectral-control sliders live in the control drawer's **Experimental** tab — they steer generation itself, so changes land on the upcoming audio after a moment; sweep slowly and listen.
 
 > **The bare launch command runs all-TensorRT by default**, which needs the engines `demon-setup` just built. If they are missing, the server exits at boot and prints the exact fix. If you ran `demon-setup --skip-engines`, you **must** launch with `-- --accel compile` (no engines needed; expect a long `torch.compile` warmup on the first tick).
 
-**Where things live.** Everything downloads to `~/.daydream-scope/models/demon/` (override with the `ACESTEP_MODELS_DIR` environment variable), *not* into the repository: checkpoints under `<models dir>/checkpoints/`, Stable Audio 3 source under `<models dir>/sa3/vendor/`, TensorRT engines under `<models dir>/trt_engines/`. The models must be the ACE-Step v1.5 weights fetched by `demon-setup` (equivalently `uv run acestep-download`) - do not substitute other checkpoints or paths. Full directory tree, manual download, engine-build options, headless/pod notes, and a troubleshooting table are in [docs/INSTALL.md](docs/INSTALL.md).
+**Where things live.** Everything downloads to `~/.daydream-scope/models/demon/` (override with the `ACESTEP_MODELS_DIR` environment variable), *not* into the repository: checkpoints under `<models dir>/checkpoints/`, Stable Audio 3 source under `<models dir>/sa3/vendor/`, TensorRT engines under `<models dir>/trt_engines/`. The models must be the ACE-Step v1.5 weights fetched by `demon-setup` (equivalently `uv run acestep-download`) — do not substitute other checkpoints or paths. Full directory tree, manual download, engine-build options, headless/pod notes, and a troubleshooting table are in [docs/INSTALL.md](docs/INSTALL.md).
 
 **Audio fixtures** pull on first use from the [`daydreamlive/demon-fixtures-v2`](https://huggingface.co/datasets/daydreamlive/demon-fixtures-v2) Hugging Face dataset (the older `daydreamlive/demon-fixtures` is kept as a fallback) and materialize under `<models dir>/fixtures/`. See [`acestep/fixtures.py`](acestep/fixtures.py) for the canonical set.
 
@@ -110,13 +110,13 @@ with `--checkpoint sa3-small` or `--checkpoint sa3-medium`.
 
 ## Features
 
-- **Streaming diffusion for ACE-Step v1.5** â€” a ring buffer of in-flight generations advanced one denoise step per tick; throughput is `depth/steps` finished generations per tick, and depth is hot-resizable mid-stream.
-- **End-to-end TensorRT** â€” the DiT decoder and VAE encode/decode all run through TRT, and the decoder is refit-enabled so LoRA swaps never rebuild an engine.
-- **Per-frame steering** â€” velocity, guidance, noise injection, x0 targets, and more each accept a scalar *or* a `[T]` curve, all hot-mutable mid-stream.
-- **Heterogeneous slots** â€” mix a full regeneration, a style transfer, and an RCFG request in a single batched forward pass.
-- **Typed 32-node graph + Session API** â€” compose latent / audio / conditioning / curve / mask / solver operations, and drive them from Python, a notebook, a VST, the web demo, or an MCP client.
-- **Onboard MCP server** â€” every user-facing action in the web demo is exposed as an MCP tool, so an agent can drive a live session.
-- **Bit-identical streaming vs. batch** â€” the streaming and one-shot paths compose the same pure step primitives and produce the same output.
+- **Streaming diffusion for ACE-Step v1.5** — a ring buffer of in-flight generations advanced one denoise step per tick; throughput is `depth/steps` finished generations per tick, and depth is hot-resizable mid-stream.
+- **End-to-end TensorRT** — the DiT decoder and VAE encode/decode all run through TRT, and the decoder is refit-enabled so LoRA swaps never rebuild an engine.
+- **Per-frame steering** — velocity, guidance, noise injection, x0 targets, and more each accept a scalar *or* a `[T]` curve, all hot-mutable mid-stream.
+- **Heterogeneous slots** — mix a full regeneration, a style transfer, and an RCFG request in a single batched forward pass.
+- **Typed 32-node graph + Session API** — compose latent / audio / conditioning / curve / mask / solver operations, and drive them from Python, a notebook, a VST, the web demo, or an MCP client.
+- **Onboard MCP server** — every user-facing action in the web demo is exposed as an MCP tool, so an agent can drive a live session.
+- **Bit-identical streaming vs. batch** — the streaming and one-shot paths compose the same pure step primitives and produce the same output.
 
 See [Engine internals](#engine-internals) for the full mechanism behind each of these.
 
@@ -140,15 +140,15 @@ Tested on NVIDIA RTX 3090, 4090, and 5090. The demo fits comfortably on a 24 GB 
 Three knobs trade off against each other. Picking the right point on the curve is what makes DEMON run well on a given card.
 
 - **Ring buffer depth (`pipeline_depth`, 1 to 8).** The pipeline keeps `depth` in-flight generations at different denoise stages, advanced together each tick. Higher depth makes parameter sweeps glide more smoothly (more slots in different denoise phases, so a curve change blends through finer intermediate states) at the cost of more per-tick batch compute and higher VRAM; lower depth feels snappier and more discrete, with lower per-tick VRAM and compute.
-- **Song duration.** TRT engines are profile-specific, and each reserves workspace sized to its profile â€” so a 240 s engine costs more VRAM and more per-tick latency than a 60 s engine even when the workload is only 60 seconds. Build only the durations you need (see the VRAM breakdown below).
-- **VAE windowing.** Optional, and the demo's default. When `vae_window > 0`, every streaming decode runs through the fixed 1 s windowed engine: 25 latent frames go in, the middle `vae_window` seconds (keep range 0.04 to 0.36 s) come out, and the surrounding frames are receptive-field margin that gets trimmed. Only the requested window is decoded per call rather than the full latent â€” this is what unlocks low-latency streaming updates. Set to 0 to fall back to full-length decode through the `vae_decode` engine.
+- **Song duration.** TRT engines are profile-specific, and each reserves workspace sized to its profile — so a 240 s engine costs more VRAM and more per-tick latency than a 60 s engine even when the workload is only 60 seconds. Build only the durations you need (see the VRAM breakdown below).
+- **VAE windowing.** Optional, and the demo's default. When `vae_window > 0`, every streaming decode runs through the fixed 1 s windowed engine: 25 latent frames go in, the middle `vae_window` seconds (keep range 0.04 to 0.36 s) come out, and the surrounding frames are receptive-field margin that gets trimmed. Only the requested window is decoded per call rather than the full latent — this is what unlocks low-latency streaming updates. Set to 0 to fall back to full-length decode through the `vae_decode` engine.
 
 <details>
 <summary><strong>Per-engine VRAM: 60 s vs 240 s profiles (5090)</strong></summary>
 
 Each engine reserves workspace sized to its profile, so a 240 s engine costs more VRAM than a 60 s engine even when the workload is only 60 seconds. Per-engine peak workspace, each measured in isolation on a 5090:
 
-| Component       | 60s engine | 240s engine |          Î” |
+| Component       | 60s engine | 240s engine |          Δ |
 |-----------------|-----------:|------------:|-----------:|
 | Decoder (refit) |  13,511 MB |   15,911 MB |  +2,400 MB |
 | VAE decode      |  10,547 MB |   10,814 MB |    +267 MB |
@@ -367,7 +367,7 @@ uv run python -u -m demos.realtime_motion_graph_web.run --demo C:\path\to\demon-
 
 Highlights:
 
-- **Prompt A â†” B blending.** Two text fields plus a blend slider. One encoder pass per submission; the slider lerps per tick.
+- **Prompt A ↔ B blending.** Two text fields plus a blend slider. One encoder pass per submission; the slider lerps per tick.
 - **LoRA library.** Browse genre-grouped LoRAs, click to enable, drag faders for strength. Optional auto-prepend of trigger words to keep prompts honest.
 - **Timbre and structure references.** Independent fixtures, uploaded clips, or short mic recordings bias instrument character and section / rhythm / dynamics. Mix freely.
 - **Source-audio swap.** Library, upload, or record a 60 s snippet from your mic.
@@ -417,24 +417,24 @@ The capabilities listed under [Features](#features) come from a handful of mecha
 
 ## How DEMON compares
 
-DEMON is to audio what StreamDiffusion is to images: a streaming, real-time-steerable diffusion runtime. Here is how it relates to its closest points of reference â€” a relationship map, not a benchmark:
+DEMON is to audio what StreamDiffusion is to images: a streaming, real-time-steerable diffusion runtime. Here is how it relates to its closest points of reference — a relationship map, not a benchmark:
 
 | | DEMON | ACE-Step v1.5 (upstream) | StreamDiffusion |
 |---|---|---|---|
 | Modality | Music / audio | Music / audio | Images |
 | Generation | Streaming ring buffer of in-flight denoise stages | One-shot batch | Streaming ring buffer (the image analogue) |
-| Per-frame control | Every knob is a scalar or a `[T]` curve, hot-mutable mid-stream | Per-generation parameters | â€” |
-| Ring-buffer depth | Hot-resizable mid-stream | â€” | â€” |
-| Streaming vs. batch | Bit-identical output | Batch only | â€” |
-| Acceleration | End-to-end TensorRT (decoder + VAE) | â€” | TensorRT |
+| Per-frame control | Every knob is a scalar or a `[T]` curve, hot-mutable mid-stream | Per-generation parameters | — |
+| Ring-buffer depth | Hot-resizable mid-stream | — | — |
+| Streaming vs. batch | Bit-identical output | Batch only | — |
+| Acceleration | End-to-end TensorRT (decoder + VAE) | — | TensorRT |
 
 ## Research & citation
 
 The main DEMON paper is on arXiv; two companion technical notes are forthcoming:
 
-- **[DEMON: Diffusion Engine for Musical Orchestrated Noise](https://arxiv.org/abs/2605.28657)** â€” the main paper (arXiv:2605.28657)
-- FastOobleckDecoder (VAE distillation) â€” *forthcoming*
-- Latent Channel Semantics (64-channel VAE characterization) â€” *forthcoming*
+- **[DEMON: Diffusion Engine for Musical Orchestrated Noise](https://arxiv.org/abs/2605.28657)** — the main paper (arXiv:2605.28657)
+- FastOobleckDecoder (VAE distillation) — *forthcoming*
+- Latent Channel Semantics (64-channel VAE characterization) — *forthcoming*
 
 If you use DEMON in your work, please cite both DEMON and the underlying ACE-Step model:
 
@@ -463,7 +463,7 @@ If you use DEMON in your work, please cite both DEMON and the underlying ACE-Ste
 
 ## Contributing
 
-Contributions are welcome. The maintained agent/developer guide is [AGENTS.md](AGENTS.md) â€” it covers the dev setup, the contract-first control surface (knobs and the wire protocol each live in exactly one registry), and how to regenerate the generated TypeScript types after a registry change. Run the test suite with:
+Contributions are welcome. The maintained agent/developer guide is [AGENTS.md](AGENTS.md) — it covers the dev setup, the contract-first control surface (knobs and the wire protocol each live in exactly one registry), and how to regenerate the generated TypeScript types after a registry change. Run the test suite with:
 
 ```bash
 uv run pytest tests/
@@ -483,6 +483,6 @@ DEMON originally created by Ryan Fosdick ([@RyanOnTheInside](https://ryanonthein
 
 ## License
 
-DEMON is distributed under the **GNU Affero General Public License v3.0 or later** (`AGPL-3.0-or-later`); see [`LICENSE`](LICENSE) for the full text. Among other things, this means modified versions made available to users over a network must offer those users the corresponding source code (AGPL Â§13).
+DEMON is distributed under the **GNU Affero General Public License v3.0 or later** (`AGPL-3.0-or-later`); see [`LICENSE`](LICENSE) for the full text. Among other things, this means modified versions made available to users over a network must offer those users the corresponding source code (AGPL §13).
 
 Portions of DEMON are derived from [ACE-Step](https://github.com/ace-step/ACE-Step), originally released under the MIT license. The original MIT notice is preserved in [`LICENSE-MIT`](LICENSE-MIT) as required by that license; the ACE-Step portions remain available under MIT on their own terms, while the combined work is offered under AGPL-3.0-or-later.

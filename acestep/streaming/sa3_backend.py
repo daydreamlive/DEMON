@@ -466,10 +466,14 @@ class SA3Backend(DiffusionBackend):
         in-flight slots finish on their submitted bundle.
         """
         v = max(0.0, min(1.0, float(value)))
-        bundle = self._blend_bundles(v)
+        # Blend under the lock: _blend_bundles reads _cond/_cond_b, which a
+        # concurrent handle_set_prompt swaps under this same lock. Computing
+        # it here (rather than before acquiring) keeps blend and prompt-swap
+        # correct even if they ever run off different threads. _control_lock
+        # is non-reentrant and _blend_bundles never re-acquires it.
         with self._control_lock:
             self._blend = v
-            self._active_bundle = bundle
+            self._active_bundle = self._blend_bundles(v)
 
     def _blend_bundles(self, v: float) -> dict:
         """The active cond bundle for blend value ``v``: A verbatim at

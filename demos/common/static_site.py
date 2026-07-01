@@ -184,8 +184,11 @@ def build_static_mounts(
             mount = load_static_demo(demo)
             _add_mount(mounts, mount, demo)
         except ValueError as exc:
+            # Covers both a malformed manifest and a route collision with
+            # an already-mounted repo demo — either way we skip this one
+            # rather than take down the shared backend.
             warnings.warn(
-                f"skipping malformed repo static demo {demo}: {exc}",
+                f"skipping repo static demo {demo}: {exc}",
                 stacklevel=2,
             )
     for demo in extra_demos:

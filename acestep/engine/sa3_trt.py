@@ -187,13 +187,18 @@ def max_dit_engine_latents(model_id: str) -> Optional[int]:
     base = trt_engines_dir()
     if prefix is None or not base.is_dir():
         return None
-    his = [
-        int(m.group("hi"))
-        for sub in base.iterdir()
-        if (m := _DIT_DIR_RE.match(sub.name))
-        and m.group("prefix") == prefix
-        and (sub / f"{sub.name}.trt").is_file()
-    ]
+    # Both the fp16mixed and fp8 engines can serve this model_id (see
+    # find_dit_engine), so the cap must consider either — an fp8-only
+    # install would otherwise report no cap and skip the clamp.
+    his = []
+    for sub in base.iterdir():
+        m = _DIT_DIR_RE.match(sub.name) or _DIT_FP8_DIR_RE.match(sub.name)
+        if (
+            m
+            and m.group("prefix") == prefix
+            and (sub / f"{sub.name}.trt").is_file()
+        ):
+            his.append(int(m.group("hi")))
     return max(his) if his else None
 
 
@@ -241,9 +246,13 @@ class SA3TRTDit:
     is re-staged only when its identity changes (per-prompt swap, or the
     old/new alternation while in-flight slots drain after one).
 
-    The private stream is a default-constructed (blocking) torch stream,
-    so it synchronizes with the legacy default stream the input ``copy_``
-    calls run on — the same ordering contract the spike runner used.
+    The engine runs on a private, non-default torch stream. Torch
+    streams are created ``cudaStreamNonBlocking``, so they do NOT
+    implicitly order after work on the caller's current stream (where
+    the input ``copy_`` calls run); :meth:`step_bundle` therefore issues
+    an explicit ``wait_stream`` before the launch so the engine can't
+    read a half-written input buffer. This is the same wait_stream
+    ordering contract ``acestep.engine.trt.runtime`` documents.
     """
 
     trt_batch1 = True
@@ -347,7 +356,14 @@ class SA3TRTDit:
         self._stage_bundle(bundle)
         self._x.copy_(x_1ct.float())
         self._t[0] = float(t)
+        # The copies above (and _stage_bundle's) ran on the caller's
+        # current stream; a non-blocking torch stream would otherwise race
+        # them, so make the launch wait for that stream first. Captured
+        # BEFORE the context switch — inside it current_stream() is already
+        # self._stream, which would make the wait a no-op.
+        caller_stream = torch.cuda.current_stream()
         with torch.cuda.stream(self._stream):
+            self._stream.wait_stream(caller_stream)
             ok = self._ctx.execute_async_v3(self._stream.cuda_stream)
         if not ok:
             raise RuntimeError("SA3 TRT DiT step failed")
@@ -389,7 +405,12 @@ class SameLWindowTRTDecoder:
             self._out_buf = torch.empty(out_shape, dtype=self._out_dtype, device="cuda")
         self._ctx.set_tensor_address("latent", lat.data_ptr())
         self._ctx.set_tensor_address(self._out_name, self._out_buf.data_ptr())
+        # ``lat`` was produced on the caller's current stream; a non-blocking
+        # torch stream would race it. Capture the caller stream before the
+        # context switch (see SA3TRTDit.step_bundle).
+        caller_stream = torch.cuda.current_stream()
         with torch.cuda.stream(self._stream):
+            self._stream.wait_stream(caller_stream)
             ok = self._ctx.execute_async_v3(self._stream.cuda_stream)
         if not ok:
             raise RuntimeError("SA3 TRT SAME-L decode failed")
