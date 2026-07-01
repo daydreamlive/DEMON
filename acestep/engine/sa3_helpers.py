@@ -12,6 +12,7 @@ with a local checkout.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 import sys
@@ -246,3 +247,53 @@ def import_loader_helpers():
     import sa3_reference_generate  # noqa: PLC0415
 
     return sa3_reference_generate
+
+
+@contextlib.contextmanager
+def skip_param_init():
+    """No-op the expensive random parameter inits during model construction.
+
+    SA3's loader (``stable_audio_3.loading_utils.load_diffusion_cond``)
+    builds the DiT + SAME + conditioner with full random init on CPU
+    (~20s for the medium checkpoint), then ``copy_state_dict``
+    immediately overwrites every parameter with the checkpoint's weights
+    — so the init is pure wasted work. Wrapping construction in this
+    context manager no-ops only the random *fills* (``kaiming_*``,
+    ``xavier_*``, ``normal_``, ``uniform_``, ``trunc_normal_`` — plus the
+    in-place ``Tensor.normal_``/``uniform_`` some inits call directly).
+    Weight *loading* (``load_state_dict``) is untouched, and deterministic
+    buffers (rotary ``inv_freq``, etc.) are arange-computed rather than
+    randomly filled, so they are unaffected.
+
+    Verified bit-identical to the un-skipped load across every parameter
+    and buffer of the medium checkpoint (see
+    ``tests/unit/test_sa3_fastload.py`` for the property test); cuts the
+    medium ``SA3Context`` load from ~30s to ~12s cold.
+
+    Safe only because every constructed parameter is subsequently
+    overwritten from the checkpoint (``missing_keys == 0``). A future SA3
+    model that ships parameters *not* present in its checkpoint would get
+    uninitialized values here — if that ever happens, gate this off or
+    re-init the leftover keys.
+    """
+    import torch  # noqa: PLC0415
+    import torch.nn.init as init  # noqa: PLC0415
+
+    fill_names = (
+        "kaiming_uniform_", "kaiming_normal_", "xavier_uniform_",
+        "xavier_normal_", "uniform_", "normal_", "trunc_normal_",
+    )
+    saved_init = {n: getattr(init, n) for n in fill_names if hasattr(init, n)}
+    saved_normal_ = torch.Tensor.normal_
+    saved_uniform_ = torch.Tensor.uniform_
+    for name in saved_init:
+        setattr(init, name, lambda tensor, *a, **k: tensor)
+    torch.Tensor.normal_ = lambda self, *a, **k: self
+    torch.Tensor.uniform_ = lambda self, *a, **k: self
+    try:
+        yield
+    finally:
+        for name, fn in saved_init.items():
+            setattr(init, name, fn)
+        torch.Tensor.normal_ = saved_normal_
+        torch.Tensor.uniform_ = saved_uniform_

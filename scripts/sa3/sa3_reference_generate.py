@@ -48,6 +48,7 @@ from acestep.engine.sa3_helpers import (  # noqa: E402
     ensure_sa3_paths,
     require_sa3_vendor,
     sa3_checkpoint_dir,
+    skip_param_init,
 )
 
 ensure_sa3_paths()
@@ -102,9 +103,15 @@ def load_local_model(dest: Path, device: str, model_half: bool):
     if not patched:
         raise RuntimeError("No t5gemma conditioner found in model_config to patch.")
 
-    model = load_diffusion_cond(
-        model_config, str(ckpt_path), device=device, model_half=model_half
-    )
+    # skip_param_init no-ops the wasted random init inside
+    # load_diffusion_cond's construct step (~20s for medium); the weights
+    # are overwritten from the checkpoint immediately after, so the init
+    # is pure waste. Bit-identical result — see skip_param_init's docstring
+    # and tests/unit/test_sa3_fastload.py.
+    with skip_param_init():
+        model = load_diffusion_cond(
+            model_config, str(ckpt_path), device=device, model_half=model_half
+        )
     model.use_lora = False
     model.lora_names = []
     return StableAudioModel(model, model_config, device, model_half)
