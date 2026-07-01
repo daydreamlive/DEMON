@@ -46,9 +46,88 @@ def _make_acestep(ss):
     )
 
 
+def _make_sa3(ss):
+    # Assembles SA3Backend.from_context from the construction payload
+    # the per-family create path (acestep.streaming.sa3_session) stashed
+    # on the session: the process-cached SA3Context, the precomputed
+    # conditioning capture, and the SAME-encoded source anchor. Plain
+    # session attributes (knob state, steps/depth, vae_window) come off
+    # the session itself, per the factory contract above.
+    from acestep.streaming.sa3_backend import SA3Backend
+
+    init = getattr(ss, "backend_init", None)
+    if not init or "context" not in init:
+        raise ValueError(
+            "backend 'sa3' requires the per-family create path "
+            "(acestep.streaming.sa3_session.create_sa3_session) to stash "
+            "its construction payload; an ACE-shaped session cannot "
+            "assemble an SA3 backend"
+        )
+    return SA3Backend.from_context(
+        init["context"],
+        prompt=ss.state.prompt_text,
+        duration_s=float(init["duration_s"]),
+        knob_state=ss.virtual_knobs,
+        state=ss.state,
+        cond=init["cond"],
+        # Prompt-B capture for the A/B crossfade; .get so an in-process
+        # payload predating the blend surface stays blend-neutral.
+        cond_b=init.get("cond_b"),
+        source_latent_bct=init["source_latent_bct"],
+        # Resolved accel values (compile already normalized to eager by
+        # the create path); .get so an in-process payload without them
+        # stays on the eager default.
+        dit_backend=init.get("dit_backend", "eager"),
+        codec_backend=init.get("codec_backend", "eager"),
+        steps=int(ss.config.steps),
+        depth=int(ss.state.current_depth),
+        vae_window_s=float(ss.vae_window),
+    )
+
+
 FAMILIES = {
     "acestep": _make_acestep,
+    "sa3": _make_sa3,
 }
+
+# ---------------------------------------------------------------------------
+# Checkpoint aliases (plan §3.5): a server --checkpoint name resolves to
+# (backend family, model id). Names absent from the map are ACE
+# checkpoint directory names, exactly as before — so plain "xl" and the
+# canonical directory names keep working.
+# ---------------------------------------------------------------------------
+
+CHECKPOINT_ALIASES = {
+    "xl": ("acestep", "acestep-v15-xl-turbo"),
+    "sa3-small": ("sa3", "small-music"),
+    "sa3-medium": ("sa3", "medium"),
+}
+
+
+def resolve_checkpoint(name: str) -> tuple:
+    """``--checkpoint`` name -> ``(backend_family, model_id)``."""
+    return CHECKPOINT_ALIASES.get(name, ("acestep", name))
+
+
+# ---------------------------------------------------------------------------
+# Startup-warmup policy (plan §3.5: warmup is backend policy, replacing
+# checkpoint-name sniffing in server.py). "ace_trt" drives the synthetic
+# ACE warmup session (acestep.streaming.warmup: TRT decoder-engine load,
+# LoRA-refit manager, first-tick pipeline build — ~30s of one-time
+# engine-resident state). "none" skips it: SA3's one-time cost is the
+# SA3Context load, which the per-family create path process-caches, so
+# the first real session pays it once and the rest are warm.
+# ---------------------------------------------------------------------------
+
+WARMUP_POLICIES = {
+    "acestep": "ace_trt",
+    "sa3": "none",
+}
+
+
+def warmup_policy(family: str) -> str:
+    """Startup-warmup policy for ``family`` ("ace_trt" | "none")."""
+    return WARMUP_POLICIES.get(family, "none")
 
 
 def _acestep_knob_universe():
@@ -105,8 +184,31 @@ def _acestep_knob_universe():
 # must be renamed (prefix / group), so the first lazily-reused name
 # can't become a silent semantic fork. Keyed identically to FAMILIES;
 # the guard enforces the keys stay in sync.
+def _sa3_knob_universe():
+    from acestep.streaming.sa3_backend import sa3_knob_specs
+
+    return sa3_knob_specs()
+
+
 FAMILY_KNOB_UNIVERSES = {
     "acestep": _acestep_knob_universe,
+    "sa3": _sa3_knob_universe,
+}
+
+
+def _create_sa3_session(cls, **kwargs):
+    from acestep.streaming.sa3_session import create_sa3_session
+
+    return create_sa3_session(cls, **kwargs)
+
+
+# Families whose per-connect setup doesn't fit the ACE create path
+# (TRT profiles, model load, demucs, conditioning encode). Keyed like
+# FAMILIES; absent = the family rides StreamingSession.create's default
+# body. Contract: ``creator(cls, *, audio, config, checkpoint,
+# session_id, **rest) -> StreamingSession``.
+SESSION_CREATORS = {
+    "sa3": _create_sa3_session,
 }
 
 

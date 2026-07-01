@@ -87,11 +87,10 @@ _DEFAULT_MODE = "graph"
 _CHECKPOINT: str = "acestep-v15-turbo"
 _VALID_MODES = ("graph", "video")
 
-# Short aliases for --checkpoint. Map directly to the canonical
-# checkpoint directory name under <MODELS_DIR>/checkpoints/.
-_CHECKPOINT_ALIASES = {
-    "xl": "acestep-v15-xl-turbo",
-}
+# --checkpoint aliases live in acestep.streaming.families
+# (CHECKPOINT_ALIASES / resolve_checkpoint): each alias names a
+# (backend family, model id) pair, e.g. "xl" -> acestep, "sa3-small"
+# -> the sa3 family. Resolved in main() at CLI parse.
 
 _NO_CACHE_HEADERS = [
     ("Cache-Control", "no-store, must-revalidate"),
@@ -636,6 +635,33 @@ def _run_preflight(decoder_accel: str, vae_accel: str, checkpoint: str) -> None:
     )
 
 
+def _run_sa3_preflight(model_id: str) -> None:
+    """Boot fail-fast for the SA3 family.
+
+    The ACE ``_run_preflight`` checks the wrong tree — SA3 weights and
+    engines live under ``<models>/sa3/`` — so SA3 gets its own check.
+    Light path-existence only (the SA3 model id's safetensors + the
+    vendored ``stable_audio_3`` source). A missing TRT engine is NOT
+    fatal: SA3 degrades to the eager DiT at session create, so unlike
+    the ACE path this preflight never gates on engines.
+    """
+    from acestep.engine.sa3_helpers import sa3_checkpoint_status
+
+    ok, msg = sa3_checkpoint_status(model_id)
+    if not ok:
+        # ``msg`` carries the failure-specific remedy: a manual HF download
+        # for missing weights (demon-setup does NOT fetch them), or
+        # `demon-setup` for the missing vendored source.
+        print()
+        print("=" * 64)
+        print("  SA3 model unavailable")
+        print("=" * 64)
+        print(f"  {msg}")
+        print("=" * 64)
+        raise SystemExit(1)
+    logger.info("preflight_sa3_ok model_id={}", model_id)
+
+
 def main():
     # Wire logging FIRST so even the CLI-arg validation prints flow through
     # the configured sinks. configure() is idempotent so a duplicate call
@@ -697,10 +723,18 @@ def main():
         raise SystemExit(
             f"[Server] --vae-accel must be one of {_VALID_ACCEL}, got {vae_accel!r}"
         )
+    backend_family = "acestep"
     if "--checkpoint" in args:
         idx = args.index("--checkpoint")
         checkpoint = args[idx + 1]
-        checkpoint = _CHECKPOINT_ALIASES.get(checkpoint, checkpoint)
+        # Aliases resolve to (backend family, model id) pairs (plan
+        # §3.5): "xl" stays an ACE checkpoint name, "sa3-small" selects
+        # the sa3 family with model id "small-music". Plain directory
+        # names pass through as ACE checkpoints, as before. The import
+        # is lazy/light (no torch) so --no-backend stays cheap.
+        from acestep.streaming.families import resolve_checkpoint
+
+        backend_family, checkpoint = resolve_checkpoint(checkpoint)
     if "--control-host" in args:
         idx = args.index("--control-host")
         control_host = args[idx + 1]
@@ -746,8 +780,17 @@ def main():
         # on the first browser connection (where the failure used to
         # surface as a silent stall or a WS error frame). Also performs
         # the checkpoint download here, visibly, when needed.
+        # The preflight is family-specific: each family resolves its own
+        # model tree (acestep -> <models>/checkpoints + acestep TRT
+        # profiles; sa3 -> <models>/sa3/checkpoints + <models>/sa3/
+        # trt_engines). Running the ACE check for a non-ACE family would
+        # false-fail at boot against the wrong directory.
         if "--skip-preflight" not in args:
-            _run_preflight(decoder_accel, vae_accel, checkpoint)
+            if backend_family == "acestep":
+                _run_preflight(decoder_accel, vae_accel, checkpoint)
+            elif backend_family == "sa3":
+                # `checkpoint` is the resolved SA3 model id here.
+                _run_sa3_preflight(checkpoint)
 
         # Defer the heavy import until we know we need it. Pulling this in
         # loads torch + acestep + TRT machinery; in --no-backend we never
@@ -766,6 +809,7 @@ def main():
                 decoder_backend=decoder_accel,
                 vae_backend=vae_accel,
                 checkpoint=checkpoint,
+                backend_family=backend_family,
                 offload_text_encoder=offload_text_encoder,
             )
 
@@ -777,15 +821,29 @@ def main():
         # this pod to the pool after main() proceeds, so the pod isn't
         # routed real users until it's warm. Enable with
         # DEMON_STARTUP_WARMUP=1.
+        #
+        # Warmup is backend policy (plan §3.5): the synthetic warmup
+        # session is ACE-shaped (TRT engines, fixture upload path), so
+        # families whose policy isn't "ace_trt" skip it — sa3's one-time
+        # cost is the process-cached SA3Context load, paid by the first
+        # real session.
         if os.environ.get("DEMON_STARTUP_WARMUP", "0") != "0":
-            from acestep.streaming.warmup import run_startup_warmup
+            from acestep.streaming.families import warmup_policy
 
-            run_startup_warmup(
-                decoder_backend=decoder_accel,
-                vae_backend=vae_accel,
-                checkpoint=checkpoint,
-                offload_text_encoder=offload_text_encoder,
-            )
+            if warmup_policy(backend_family) == "ace_trt":
+                from acestep.streaming.warmup import run_startup_warmup
+
+                run_startup_warmup(
+                    decoder_backend=decoder_accel,
+                    vae_backend=vae_accel,
+                    checkpoint=checkpoint,
+                    offload_text_encoder=offload_text_encoder,
+                )
+            else:
+                logger.info(
+                    "startup_warmup_skipped family={} policy={}",
+                    backend_family, warmup_policy(backend_family),
+                )
 
     # Start the MCP control bus FIRST so registry registrations from the
     # WS handler land in an already-listening HTTP server. Skipped in

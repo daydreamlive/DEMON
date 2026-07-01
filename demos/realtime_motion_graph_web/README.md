@@ -49,10 +49,15 @@ Open `http://localhost:6660`. Next.js rewrites `/api/*`, `/fixtures/*`,
 `/loras/*`, and `/videos/*` to the backend at `:1318`; the WebSocket
 URL comes from `NEXT_PUBLIC_POD_BASE_URL` (set by the launcher).
 
-### External static demos
+### Static demos
 
-Static demo repos can be mounted at runtime without vendoring them into
-DEMON. Add a `demon.demo.json` manifest to the external repo:
+Repo-local static demos are direct children of `demos/` with a
+`demon.demo.json` or `demo.static.json` manifest; they mount
+automatically. The SA3 demo lives at `demos/sa3` and is served at
+`/sa3/`.
+
+External static demo repos can also be mounted at runtime. Add a
+`demon.demo.json` manifest to the external repo:
 
 ```json
 {

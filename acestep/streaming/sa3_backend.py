@@ -1,0 +1,775 @@
+"""SA3Backend: Stable Audio 3 behind the GeneratorBackend seam.
+
+The second :class:`~acestep.streaming.diffusion_backend.DiffusionBackend`
+family, parameterized by (:class:`~acestep.engine.sa3_adapter.SA3Adapter`,
+:class:`~acestep.engine.sa3_context.SA3SAMECodec`). It owns BOTH halves
+of the parameterization (unlike ACE, whose adapter is pipeline-default
+and whose codec is the engine Session): a shared
+:class:`~acestep.engine.stream.StreamPipeline` is built here with
+``engine=None`` and the SA3 adapter, and rendering decodes through the
+SAME codec with the 44.1 → 48 kHz delivery resample applied at the
+decode boundary (round_3 decision 2: AudioEngine / worklet / client
+stay 48 kHz-untouched in v1; ``geometry().sample_rate`` declares the
+DELIVERED rate, 48000 — native-44.1k delivery later is a geometry +
+client change only).
+
+Control surface (everything else off, capability-gated):
+
+* ``prompt`` — per-prompt re-conditioning via
+  :meth:`SA3Backend.handle_set_prompt`; an A/B pair when ``tags_b``
+  differs, crossfaded by :meth:`SA3Backend.handle_set_prompt_blend`
+  (per-token slerp of the T5Gemma cross-attn conditioning, the same
+  geodesic ACE's ``blend_for_strength`` walks — a linear midpoint
+  collapses conditioning norm and sounds washed out).
+* ``sa3_denoise`` — SA3's ``init_noise_level``, the audio-to-audio
+  blend against the source anchor. The name is load-bearing: ACE's
+  ``denoise`` is a different control, and the homonym rule
+  (``tests/unit/test_knob_homonyms.py``) forbids reusing the name with
+  different semantics.
+* ``sa3_shift`` — relative schedule warp on top of the checkpoint's
+  dist_shift (``SA3Adapter.shift_alpha``); changes invalidate the
+  pipeline's per-denoise schedule cache.
+* ``x0_target`` / ``feedback`` / ``feedback_depth`` — taken FROM the
+  shared registry (identical semantics to ACE, solver-level latent
+  mechanics that are family-agnostic): the source-lock morph toward
+  the anchor latent and the past-latent delay-tap blend. Both are only
+  audible at ``sa3_denoise`` < 1, where slot init actually reads
+  ``source_latents`` — at 1.0 every slot starts from pure noise.
+* ``seed`` / ``steps_override`` — shared registry, as before.
+
+Continuity comes the same way the spike demo proved
+(``demos/test_stream_sa3_graph.py``): every emit is a partial-denoise
+cover of the SAME source latent at the same seed, so advancing playback
+windows reconstruct one evolving song.
+
+Capabilities: ``refines_audio`` only. No swap/timbre/structure/LoRA/
+stems/loop-band/depth/curves until validated (canonical plan Phase 5).
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from collections import deque
+from typing import Callable, Optional
+
+import torch
+
+from acestep.engine.obs import logger
+from acestep.nodes.interpolation import INTERPOLATIONS, slerp
+from acestep.streaming.diffusion_backend import DiffusionBackend
+from acestep.streaming.generator_backend import (
+    AudioChunk,
+    AudioGeometry,
+    Capabilities,
+    TickContext,
+)
+from acestep.streaming.knobs import KnobSpec, knob_specs as registry_knob_specs
+
+# Delivery rate (v1): SA3's native 44.1 kHz is resampled at the decode
+# boundary so everything downstream of the backend stays at the engine
+# rate. See module docstring / round_3 decision 2.
+DELIVERY_SAMPLE_RATE = 48000
+SA3_SAMPLE_RATE = 44100
+SA3_LATENT_RATE_HZ = 44100.0 / 4096.0
+
+# Largest tap index the feedback delay can address. Derived from the
+# shared registry spec (the same one the manifest serves) so the knob
+# bound and the history ring can never drift apart.
+MAX_FEEDBACK_DEPTH = int(
+    next(s for s in registry_knob_specs(False) if s.name == "feedback_depth").max_val
+)
+
+
+def sa3_knob_specs() -> list:
+    """The SA3 family knob manifest (backend-owned, plan §3.3).
+
+    ``seed``, ``steps_override``, ``x0_target``, ``feedback`` and
+    ``feedback_depth`` are genuinely neutral controls (solver-level
+    latent mechanics for the latter three) and are taken FROM the
+    shared registry by name, so their semantics can never fork from
+    ACE's (the homonym test would catch it; this makes the fork
+    impossible instead). ``sa3_denoise`` / ``sa3_shift`` are
+    family-prefixed because ACE's ``denoise`` and ``shift`` mean
+    different things.
+    """
+    shared = {s.name: s for s in registry_knob_specs(False)}
+    return [
+        KnobSpec(
+            "sa3_denoise", default=1.0, max_val=1.0, group="sa3",
+            description=(
+                "SA3 init_noise_level: fresh-noise vs source-anchor mix "
+                "at slot init (1.0 = generate from pure noise, lower = "
+                "closer cover of the source). Distinct from ACE's "
+                "'denoise' (k1 strength), hence the prefix."
+            ),
+        ),
+        KnobSpec(
+            "sa3_shift", default=1.0, min_val=0.25, max_val=4.0, group="sa3",
+            description=(
+                "Relative timestep-schedule warp on top of the "
+                "checkpoint's own dist_shift (Flux alpha map). 1.0 = "
+                "stock schedule; >1 spends steps near noise (structure), "
+                "<1 near data (refinement). Distinct from ACE's 'shift' "
+                "(absolute flow-matching shift), hence the prefix."
+            ),
+        ),
+        shared["x0_target"],
+        shared["feedback"],
+        shared["feedback_depth"],
+        shared["seed"],
+        shared["steps_override"],
+    ]
+
+
+class SA3Backend(DiffusionBackend):
+    """Stable Audio 3 streaming generation. See module docstring.
+
+    Decoupled from :class:`~acestep.engine.sa3_context.SA3Context` for
+    testability: takes the adapter, codec, conditioning, and a
+    schedule-builder factory (``steps -> (denoise -> schedule)``)
+    directly, so unit tests drive it with a mock DiT and codec. The
+    production assembly (context → adapter/codec/cond → backend) is
+    :meth:`from_context`.
+    """
+
+    name = "sa3"
+
+    def __init__(
+        self,
+        *,
+        adapter,
+        codec,
+        cond,
+        schedule_builder_factory: Callable[[int], Callable],
+        knob_state,
+        state=None,
+        source_latent_bct: Optional[torch.Tensor] = None,
+        steps: int = 8,
+        depth: int = 4,
+        default_seed: int = 1528,
+        vae_window_s: float = 3.0,
+        # SA3 checkpoints are ``diffusion_objective: rf_denoiser`` —
+        # upstream samples them with pingpong ONLY (euler isn't even
+        # offered in their UI for this objective, and 8-step euler is
+        # audibly degraded). Determinism — and therefore window-splice
+        # continuity — is preserved via the seeded per-slot renoise
+        # stream (SlotRequest.sde_noise_seeded), the spike pipeline's
+        # per-slot generator semantics.
+        sampler: str = "pingpong",
+        prompt_rebuilder: Optional[Callable] = None,
+        prompt_tags: Optional[str] = None,
+        # Prompt-B conditioning capture for the A/B crossfade. None
+        # (or identical to ``cond``) means no B prompt: the blend is a
+        # no-op and handle_set_prompt_blend keeps serving bundle A.
+        cond_b=None,
+    ):
+        super().__init__(adapter=adapter, codec=codec)
+        self._cond = cond
+        self._cond_b = cond_b if cond_b is not None else cond
+        # Live A↔B crossfade value and the bundle the next submit
+        # carries (A verbatim at 0, B verbatim at 1, slerp between).
+        # Swapped GIL-atomically from the command thread, exactly like
+        # handle_set_prompt's reference swaps.
+        self._blend = 0.0
+        self._active_bundle = cond.cond_bundle
+        # Ring of past finished latents for the feedback delay-tap
+        # (engine layout [1, T, C]; [0] is the most recent).
+        self._latent_history: deque = deque(maxlen=MAX_FEEDBACK_DEPTH)
+        self._schedule_builder_factory = schedule_builder_factory
+        # ``(tags, steps) -> (cond, steps -> (denoise -> schedule))`` —
+        # the per-prompt re-conditioning hook behind :meth:`handle_set_prompt`.
+        # Supplied by :meth:`from_context` (a closure over the
+        # SA3Context); None on directly-constructed test backends, where
+        # handle_set_prompt fails loudly instead.
+        self._prompt_rebuilder = prompt_rebuilder
+        self.knob_state = knob_state
+        self.state = state
+        self._steps = int(steps)
+        self._depth = int(depth)
+        self._default_seed = int(default_seed)
+        self.vae_window = float(vae_window_s)
+        # "pingpong"/"sde" (rf_denoiser-native, deterministic via seeded
+        # renoise) | "ode" (euler; off-objective for SA3, debug only)
+        self._sampler = sampler
+
+        # Source anchor for audio-to-audio: engine layout [1, T, 256].
+        self._source_latent_btc = (
+            source_latent_bct.movedim(1, 2).contiguous()
+            if source_latent_bct is not None else None
+        )
+
+        # Emerged-generation observability. SA3 knob/prompt changes ride
+        # the NEXT SlotRequest only (no shared-curve writes onto
+        # in-flight slots), so the effect of a control change surfaces
+        # one pipeline-flush later. To make that observable on the wire
+        # (knob→ear measurement, params panel truth), we label each
+        # fresh latent with the request it was generated FROM
+        # (pipeline.last_finished_request) and stamp those values into
+        # ``state.params`` as ``gen_*`` keys BEFORE the same tick's
+        # windowed render publishes its params echo. Conditioning
+        # bundles are tracked by identity: ``_cond_history`` holds
+        # (bundle, epoch, tags) strong refs (bounded) so an in-flight
+        # request's ``aux_cond`` can be mapped back to the prompt it
+        # carried even after a handle_set_prompt swap.
+        self._cond_epoch = 0
+        self._cond_history: list = [(cond.cond_bundle, 0, prompt_tags)]
+        self._emerged_request = None
+        self._emerged_marker = None  # (denoise, epoch) of the last log
+
+        # Guards the conditioning control state shared between the
+        # command thread (handle_set_prompt / handle_set_prompt_blend,
+        # called outside the session state lock) and the runner thread
+        # (_prepare_tick / _generate / _cond_meta_for). A prompt swap
+        # mutates several fields together — the schedule builder + cache,
+        # _cond/_cond_b, _active_bundle, and the _cond_history list (a
+        # non-atomic append+truncate the runner iterates) — so the bare
+        # GIL-atomic reference-swap argument doesn't cover it. The runner
+        # only ever holds this to snapshot, never across pipeline work.
+        self._control_lock = threading.Lock()
+
+        # Rendered-audio cache: one full decode+resample per fresh
+        # latent (SAME-S decodes the whole window in ~11 ms); window
+        # renders slice it, so gap-fill re-renders are bit-stable.
+        # Windowed codecs (SAME-L / medium: full decode ~80 ms) bypass
+        # the cache and decode per render instead — see render_window.
+        self._rendered_for = None     # latent tensor identity
+        self._rendered_48k = None     # np.ndarray [N, C] float32
+        self._windowed_codec = hasattr(codec, "decode_window")
+
+        self.pipeline = self._build_pipeline(self._steps)
+
+    # ---- assembly -----------------------------------------------------------
+
+    @classmethod
+    def from_context(
+        cls,
+        context,
+        *,
+        prompt: str,
+        duration_s: float,
+        knob_state,
+        state=None,
+        source_audio=None,
+        cond=None,
+        prompt_b: Optional[str] = None,
+        cond_b=None,
+        source_latent_bct=None,
+        dit_backend: str = "eager",
+        codec_backend: str = "eager",
+        **kwargs,
+    ) -> "SA3Backend":
+        """Production assembly over a loaded
+        :class:`~acestep.engine.sa3_context.SA3Context`.
+
+        ``cond`` / ``cond_b`` / ``source_latent_bct`` accept precomputed
+        values so the serving-layer create path
+        (:mod:`acestep.streaming.sa3_session`), which runs
+        ``prepare_cond`` + source encode itself before the session
+        exists, doesn't pay them twice; absent, they're computed here
+        (the in-process assembly the GPU smoke validated). ``prompt_b``
+        seeds the A/B crossfade pair; a missing/empty/identical B means
+        the blend is a no-op until a later ``set_prompt`` supplies one.
+
+        ``dit_backend`` / ``codec_backend`` are the session's resolved
+        acceleration values (the serving layer's decoder/vae accel
+        params, compile already normalized to eager by the create
+        path); the context maps them onto its components (``make_dit``
+        / ``make_codec``): "tensorrt" selects the built engines when
+        they cover the session, with eager fallback; small has no TRT
+        flavors and runs the torch DiT + SAME-S full-decode codec
+        either way."""
+        from acestep.engine.sa3_adapter import SA3Adapter
+
+        steps = int(kwargs.get("steps", 8))
+        if cond is None:
+            cond = context.prepare_cond(
+                prompt=prompt, duration=duration_s, steps=steps,
+            )
+        if cond_b is None and prompt_b not in (None, "", prompt):
+            cond_b = context.prepare_cond(
+                prompt=prompt_b, duration=duration_s, steps=steps,
+            )
+        if cond_b is not None and int(cond_b.latent_frames) != int(cond.latent_frames):
+            # Same fixed duration must mean the same latent geometry;
+            # a mismatch would desync the blend against the ring
+            # buffer and the source anchor (cf. handle_set_prompt).
+            raise ValueError(
+                f"sa3 prompt-B conditioning changed latent_frames "
+                f"({cond.latent_frames} -> {cond_b.latent_frames})"
+            )
+        source_latent = (
+            source_latent_bct if source_latent_bct is not None
+            else context.encode_source(source_audio, cond.audio_sample_size)
+            if source_audio is not None else None
+        )
+        adapter = SA3Adapter(
+            context.make_dit(
+                latent_frames=cond.latent_frames,
+                seconds_total=duration_s,
+                backend=dit_backend,
+            ),
+            schedule_builder=context.make_schedule_builder(cond, steps),
+            device=context.device,
+            dtype=context.dtype,
+        )
+
+        def _prompt_rebuilder(tags: str, steps_now: int):
+            # Per-prompt re-conditioning (handle_set_prompt): same fixed
+            # duration, fresh T5Gemma capture + a schedule-builder
+            # factory closed over the NEW cond's sched_args.
+            new_cond = context.prepare_cond(
+                prompt=tags, duration=duration_s, steps=steps_now,
+            )
+            return new_cond, (
+                lambda s, _c=new_cond: context.make_schedule_builder(_c, s)
+            )
+
+        return cls(
+            adapter=adapter,
+            codec=context.make_codec(backend=codec_backend),
+            cond=cond,
+            cond_b=cond_b,
+            schedule_builder_factory=(
+                lambda s: context.make_schedule_builder(cond, s)
+            ),
+            knob_state=knob_state,
+            state=state,
+            source_latent_bct=source_latent,
+            prompt_rebuilder=_prompt_rebuilder,
+            prompt_tags=prompt,
+            **kwargs,
+        )
+
+    def _build_pipeline(self, steps: int):
+        from acestep.engine.diffusion import DiffusionConfig
+        from acestep.engine.stream import StreamPipeline
+
+        self.adapter.schedule_builder = self._schedule_builder_factory(steps)
+        config = DiffusionConfig(
+            infer_steps=int(steps),
+            infer_method="sde" if self._sampler in ("sde", "pingpong") else "ode",
+            noise_on_cpu=True,
+            dcw_enabled=False,  # ACE wavelet corrector semantics; off for SA3
+        )
+        return StreamPipeline(
+            None, config, pipeline_depth=self._depth, adapter=self.adapter,
+        )
+
+    # ---- contract ------------------------------------------------------------
+
+    def capabilities(self) -> Capabilities:
+        # loop_band: arm the playback band [A, B] server-side so the windowed
+        # renderer pre-fills the seam after A while the playhead finishes the
+        # lap near B (pipeline_runner band-awareness). Without it the region
+        # at the loop start holds pre-change audio for one window on every
+        # restart — the audible "snap back to the old buffer" at the loop
+        # point. SA3 uses the shared pipeline_runner, so the band path (and
+        # its band-wrap second render) work unchanged via render_window.
+        return Capabilities(refines_audio=True, loop_band=True)
+
+    def geometry(self) -> AudioGeometry:
+        return AudioGeometry(
+            sample_rate=DELIVERY_SAMPLE_RATE,
+            channels=2,
+            chunk_rate_hz=SA3_LATENT_RATE_HZ,
+            duration_s=self.playable_duration_s(),
+        )
+
+    def knob_specs(self, lora_ids=()) -> list:
+        return sa3_knob_specs()
+
+    def playable_duration_s(self):
+        return self._cond.audio_sample_size / SA3_SAMPLE_RATE
+
+    def read_knobs(self) -> dict:
+        return self.knob_state.get_all_values()
+
+    def rebuild_imminent(self, knobs: dict) -> bool:
+        return int(knobs.get("steps_override", self._steps)) != self._steps
+
+    # ---- control (universal): per-prompt re-conditioning ------------------------
+
+    def handle_set_prompt(self, tags: str, *, tags_b: Optional[str] = None) -> None:
+        """Re-run ``prepare_cond`` for ``tags`` (and ``tags_b`` when it
+        differs) and swap the conditioning captures (the session's
+        backend control hook — plan §2: prompt is the universal
+        control). Per-prompt, OUTSIDE the hot loop: T5Gemma captures on
+        the dispatcher thread, then GIL-atomic reference swaps;
+        in-flight slots finish on the old bundle, the next ``submit``
+        carries the new one. An absent/empty/identical ``tags_b``
+        resets B to A (the ACE ``set_prompt`` convention:
+        ``cond_pair_b = cond_pair``), so a stale B can't linger behind
+        the blend knob.
+        """
+        if self._prompt_rebuilder is None:
+            raise RuntimeError(
+                "SA3Backend was constructed without a prompt_rebuilder; "
+                "handle_set_prompt requires the from_context assembly"
+            )
+        t0 = time.perf_counter()
+        cond, sched_factory = self._prompt_rebuilder(tags, self._steps)
+        rebuild_ms = (time.perf_counter() - t0) * 1000
+        if int(cond.latent_frames) != int(self._cond.latent_frames):
+            # Duration is fixed for the session lifetime, so the latent
+            # geometry must hold: a mismatch would desync the ring
+            # buffer, the source anchor, and the cond bundle.
+            raise ValueError(
+                f"sa3 prompt swap changed latent_frames "
+                f"({self._cond.latent_frames} -> {cond.latent_frames}); "
+                f"duration is fixed per session"
+            )
+        if tags_b and tags_b != tags:
+            cond_b, _ = self._prompt_rebuilder(tags_b, self._steps)
+            if int(cond_b.latent_frames) != int(cond.latent_frames):
+                raise ValueError(
+                    f"sa3 prompt-B swap changed latent_frames "
+                    f"({cond.latent_frames} -> {cond_b.latent_frames}); "
+                    f"duration is fixed per session"
+                )
+        else:
+            cond_b = cond
+        # Publish the whole new conditioning state atomically w.r.t. the
+        # runner (the GPU rebuild above ran lock-free). Without this the
+        # runner can read a half-swapped state — e.g. iterate
+        # _cond_history mid append+truncate, or submit the new bundle
+        # against the stale schedule cache.
+        with self._control_lock:
+            self._schedule_builder_factory = sched_factory
+            self.adapter.schedule_builder = sched_factory(self._steps)
+            # The pipeline caches schedules per denoise value; the builder
+            # swap changes what build_schedule returns for the same key.
+            # (Same duration means the same effective_seq_len today, so
+            # this is currently belt-and-braces — but the cache key carries
+            # no prompt identity, so correctness must not depend on that.)
+            self.pipeline.invalidate_schedule_cache()
+            self._cond = cond
+            self._cond_b = cond_b
+            self._active_bundle = self._blend_bundles(self._blend)
+            # Emerged-generation labeling (see __init__): the new bundle gets
+            # the next cond epoch; keep a short identity history so latents
+            # still in flight on the OLD bundle stay attributable.
+            self._cond_epoch += 1
+            self._cond_history.append((cond.cond_bundle, self._cond_epoch, tags))
+            del self._cond_history[:-4]
+        logger.info(
+            "sa3_prompt_applied tags={!r} tags_b={!r} cond_epoch={} "
+            "rebuild_ms={:.1f}",
+            tags, tags_b, self._cond_epoch, rebuild_ms,
+        )
+
+    def handle_set_prompt_blend(self, value: float) -> None:
+        """Crossfade the live conditioning between the A and B captures
+        (the session's ``set_prompt_blend`` backend hook). Per-token
+        slerp of the T5Gemma cross-attn conditioning — cheap tensor
+        math on the command thread, then one GIL-atomic bundle swap;
+        in-flight slots finish on their submitted bundle.
+        """
+        v = max(0.0, min(1.0, float(value)))
+        # Blend under the lock: _blend_bundles reads _cond/_cond_b, which a
+        # concurrent handle_set_prompt swaps under this same lock. Computing
+        # it here (rather than before acquiring) keeps blend and prompt-swap
+        # correct even if they ever run off different threads. _control_lock
+        # is non-reentrant and _blend_bundles never re-acquires it.
+        with self._control_lock:
+            self._blend = v
+            self._active_bundle = self._blend_bundles(v)
+
+    def _blend_bundles(self, v: float) -> dict:
+        """The active cond bundle for blend value ``v``: A verbatim at
+        0, B verbatim at 1 (endpoint identity keeps the TRT wrapper's
+        id()-keyed staging cache warm on the common path), otherwise a
+        NEW dict with the cross-attn conditioning slerped and the token
+        masks unioned. Slerp runs in float32 (norm math degrades in
+        bf16) and degenerates to linear per token where either side is
+        zero-padding, so A-only / B-only token positions survive at
+        scaled strength under the unioned mask.
+
+        Everything else (padding_mask, cfg/apg scalars, local_add_cond)
+        comes from A: both captures share the session's fixed duration,
+        which is what those encode.
+        """
+        a = self._cond.cond_bundle
+        b = self._cond_b.cond_bundle
+        if b is a or v <= 0.001:
+            return a
+        if v >= 0.999:
+            return b
+        ca, cb = a["cross_attn_cond"], b["cross_attn_cond"]
+        if ca.shape != cb.shape:
+            # Both captures are max-length-padded by the conditioner;
+            # a shape mismatch means the captures disagree about more
+            # than token content — refuse rather than mis-blend.
+            raise ValueError(
+                f"sa3 prompt blend shape mismatch: A {tuple(ca.shape)} "
+                f"vs B {tuple(cb.shape)}"
+            )
+        blended = dict(a)
+        blended["cross_attn_cond"] = slerp(
+            ca.float(), cb.float(), v,
+        ).to(ca.dtype)
+        blended["cross_attn_mask"] = torch.maximum(
+            a["cross_attn_mask"], b["cross_attn_mask"],
+        )
+        return blended
+
+    # ---- produce hooks ---------------------------------------------------------
+
+    def _prepare_tick(self, knobs: dict, ctx: TickContext) -> dict:
+        # Schedule warp: hot-applied, but cache-coupled — the pipeline
+        # caches schedules per denoise value, so a changed alpha must
+        # invalidate or already-seen denoise values keep the old warp.
+        shift = float(knobs.get("sa3_shift", 1.0))
+        if abs(shift - float(self.adapter.shift_alpha)) > 1e-3:
+            # Atomic w.r.t. a concurrent prompt swap, which also retargets
+            # the schedule builder + invalidates this cache.
+            with self._control_lock:
+                self.adapter.shift_alpha = shift
+                self.pipeline.invalidate_schedule_cache()
+
+        # Source-lock strength rides the shared override so a strength
+        # bump engages the blend on in-flight slots submitted while it
+        # was 0 — the ACE runner's exact per-tick convention.
+        x0_str = float(knobs.get("x0_target", 0.0))
+        if self._source_latent_btc is not None:
+            self.pipeline.set_shared_curve("x0_target_strength", x0_str)
+
+        try:
+            fb_depth_raw = float(knobs.get("feedback_depth", 1.0))
+        except (TypeError, ValueError):
+            fb_depth_raw = 1.0
+        return {
+            "denoise": float(knobs.get("sa3_denoise", 1.0)),
+            "seed": int(knobs.get("seed", self._default_seed)),
+            "steps": int(knobs.get("steps_override", self._steps)),
+            "shift": shift,
+            "x0_target": x0_str,
+            "feedback": float(knobs.get("feedback", 0.0)),
+            "feedback_depth": max(
+                1, min(MAX_FEEDBACK_DEPTH, int(round(fb_depth_raw))),
+            ),
+        }
+
+    def _generate(self, prep: dict):
+        from acestep.engine.stream import SlotRequest
+
+        if prep["steps"] != self._steps:
+            # Step-count change: schedules are (steps+1,)-shaped, so
+            # the ring buffer rebuilds — the SA3 analog of ACE's
+            # rebuild-signature stall, pre-covered via rebuild_imminent.
+            self._steps = prep["steps"]
+            self.pipeline = self._build_pipeline(self._steps)
+
+        # Feedback delay-tap (the ACE mechanic, verbatim): blend the
+        # tapped past latent into the source anchor at slot init. If
+        # history is shorter than the requested depth (early ticks),
+        # fall back to the oldest available tap rather than disabling
+        # feedback. Audible only at sa3_denoise < 1 — at 1.0 slot init
+        # is pure noise and source_latents never enters.
+        source = self._source_latent_btc
+        if (
+            prep["feedback"] > 0.0
+            and self._latent_history
+            and source is not None
+        ):
+            tap_idx = min(
+                prep["feedback_depth"] - 1, len(self._latent_history) - 1,
+            )
+            fb_latent = self._latent_history[tap_idx]
+            method = (
+                getattr(self.state, "interp_feedback", "slerp")
+                if self.state is not None else "slerp"
+            )
+            source = INTERPOLATIONS[method](
+                source, fb_latent, prep["feedback"],
+            )
+
+        # Snapshot the conditioning a prompt swap publishes atomically
+        # (active bundle + its latent geometry) so this request can't pair
+        # a new bundle with stale frames mid-swap. submit()/tick() below
+        # run lock-free.
+        with self._control_lock:
+            aux_cond = self._active_bundle
+            latent_frames = self._cond.latent_frames
+
+        self.pipeline.submit(SlotRequest(
+            seed=prep["seed"],
+            denoise=prep["denoise"],
+            source_latents=source,
+            # The morph target stays the clean anchor (not the
+            # feedback-blended source), matching ACE: x0_target is a
+            # source LOCK, feedback is deliberately upstream of it.
+            # Attached whenever an anchor exists so a strength bump via
+            # the shared override engages on in-flight slots; the
+            # request field carries the live value so a fresh pipeline
+            # (steps rebuild) is correct before the next prepare
+            # re-establishes the shared override.
+            x0_target=self._source_latent_btc,
+            x0_target_strength=prep["x0_target"],
+            aux_cond=aux_cond,
+            latent_frames=latent_frames,
+            # Deterministic pingpong: identical requests must replay the
+            # same trajectory or advancing windows splice different
+            # realizations (incoherent audio). See SlotRequest.
+            sde_noise_seeded=True,
+        ))
+        latent = self.pipeline.tick()  # engine-layout [1, T, 256] | None
+        if latent is not None:
+            # The request this latent was generated from (valid only
+            # right after a finishing tick — see StreamPipeline).
+            self._emerged_request = getattr(
+                self.pipeline, "last_finished_request", None,
+            )
+        return latent
+
+    def _cond_meta_for(self, bundle) -> tuple:
+        """(epoch, tags) for a request's aux_cond, by identity."""
+        # Snapshot under the lock: a concurrent prompt swap does a
+        # non-atomic append + truncate on this list.
+        with self._control_lock:
+            history = tuple(self._cond_history)
+        for b, epoch, tags in history:
+            if b is bundle:
+                return epoch, tags
+        return None, None
+
+    def _after_produce(self, prep: dict, result_latent, is_fresh: bool) -> None:
+        self.last_denoise = prep["denoise"]
+        self._last_prep = prep
+        if is_fresh:
+            # appendleft so latent_history[0] is the most recent;
+            # tap_idx = depth-1 reads "N ticks back" (ACE convention).
+            self._latent_history.appendleft(result_latent.detach().clone())
+        if not is_fresh or self.state is None:
+            return
+        req = self._emerged_request
+        if req is None:
+            return
+        # Stamp the EMERGED request's params (what this latent was
+        # actually generated with) before the runner renders + publishes
+        # this tick's slice, so the accompanying params echo describes
+        # the audio it rides with. The plain knob keys stamped by
+        # on_fresh_generation reflect prepare-time values instead (the
+        # ACE-shaped convention) and stay as-is.
+        epoch, tags = self._cond_meta_for(req.aux_cond)
+        p = self.state.params
+        p["gen_sa3_denoise"] = round(float(req.denoise), 4)
+        if req.seed is not None and not isinstance(req.seed, list):
+            p["gen_seed"] = int(req.seed)
+        p["gen_cond_epoch"] = epoch
+        p["gen_prompt"] = tags
+        marker = (p["gen_sa3_denoise"], epoch)
+        if marker != self._emerged_marker:
+            self._emerged_marker = marker
+            logger.info(
+                "sa3_gen_emerged denoise={} cond_epoch={} tags={!r}",
+                p["gen_sa3_denoise"], epoch, tags,
+            )
+
+    # ---- rendering -------------------------------------------------------------
+
+    def _rendered_audio(self, latent_btc: torch.Tensor):
+        """Full decode + delivery resample, cached per latent identity."""
+        if self._rendered_for is latent_btc and self._rendered_48k is not None:
+            return self._rendered_48k
+        import torchaudio
+
+        t0 = time.perf_counter()
+        audio_ct = self.codec.decode_full(latent_btc.movedim(1, 2))
+        # The decode boundary (round_3 decision 2): one whole-window
+        # resample per generation, so window slices share one filter
+        # pass and seams can't come from per-slice resampling.
+        audio_48 = torchaudio.functional.resample(
+            audio_ct.float(), SA3_SAMPLE_RATE, DELIVERY_SAMPLE_RATE,
+        )
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        self.last_dec_ms += (time.perf_counter() - t0) * 1000
+        self._rendered_48k = audio_48.clamp(-1, 1).cpu().numpy().T  # [N, C]
+        self._rendered_for = latent_btc
+        return self._rendered_48k
+
+    def render_window(self, t_start_s: float):
+        decode_src = (
+            self._current_result if self._current_result is not None
+            else self._last_result_latent
+        )
+        if decode_src is None:
+            return None
+        if self._windowed_codec:
+            return self._render_window_via_codec(decode_src, t_start_s)
+        audio = self._rendered_audio(decode_src)
+        n = int(round(self.vae_window * DELIVERY_SAMPLE_RATE))
+        start = int(round(t_start_s * DELIVERY_SAMPLE_RATE))
+        start = max(0, min(start, max(0, audio.shape[0] - n)))
+        return AudioChunk(pcm=audio[start:start + n], start_sample=start)
+
+    def _render_window_via_codec(self, latent_btc: torch.Tensor, t_start_s: float):
+        """Windowed-codec render (SAME-L / medium): decode ONLY a small
+        latent window around the target, then resample that window.
+
+        44.1k↔48k bookkeeping uses the exact 147:160 ratio. The decode
+        request carries a 588-sample (= 640 at 48 k) guard margin on
+        each side so the resampler's filter edges land outside the kept
+        slice; the runner's 25 ms crossfade against the live buffer
+        covers the (deterministic) window seams, exactly as it does for
+        ACE's windowed VAE decode.
+        """
+        import torchaudio
+
+        n48 = int(round(self.vae_window * DELIVERY_SAMPLE_RATE))
+        dur48 = int(round((self.playable_duration_s() or 0.0) * DELIVERY_SAMPLE_RATE))
+        start48 = int(round(t_start_s * DELIVERY_SAMPLE_RATE))
+        start48 = max(0, min(start48, max(0, dur48 - n48)))
+
+        m44 = 588                                # guard margin; 588*160/147 == 640
+        start44 = (start48 * SA3_SAMPLE_RATE) // DELIVERY_SAMPLE_RATE
+        n44 = -(-n48 * 147 // 160)               # ceil to cover n48 after resample
+        lo44 = max(0, start44 - m44)
+        lead44 = start44 - lo44
+        total44 = lead44 + n44 + m44
+
+        t0 = time.perf_counter()
+        audio_ct = self.codec.decode_window(
+            latent_btc.movedim(1, 2), lo44, total44,
+        )
+        audio48 = torchaudio.functional.resample(
+            audio_ct.float(), SA3_SAMPLE_RATE, DELIVERY_SAMPLE_RATE,
+        )
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        self.last_dec_ms += (time.perf_counter() - t0) * 1000
+
+        lead48 = (lead44 * DELIVERY_SAMPLE_RATE) // SA3_SAMPLE_RATE
+        pcm48 = audio48[:, lead48:lead48 + n48]
+        if pcm48.shape[-1] < n48:
+            pcm48 = torch.nn.functional.pad(pcm48, (0, n48 - pcm48.shape[-1]))
+        pcm = pcm48.clamp(-1, 1).cpu().numpy().T  # [N, C]
+        return AudioChunk(pcm=pcm, start_sample=start48)
+
+    def render_full(self):
+        if self._current_result is None:
+            return None
+        return AudioChunk(
+            pcm=self._rendered_audio(self._current_result), start_sample=0,
+        )
+
+    # ---- bookkeeping -------------------------------------------------------------
+
+    def on_fresh_generation(self, knobs: dict) -> None:
+        if self.state is None:
+            return
+        p = self.state.params
+        p["num_gens"] = p.get("num_gens", 0) + 1
+        p["tick_ms"] = self.last_tick_ms
+        p["dec_ms"] = self.last_dec_ms
+        prep = getattr(self, "_last_prep", None)
+        if prep:
+            p["sa3_denoise"] = round(prep["denoise"], 2)
+            p["seed"] = prep["seed"]
+            p["steps_override"] = prep["steps"]
+            p["sa3_shift"] = round(prep["shift"], 2)
+            p["x0_target"] = round(prep["x0_target"], 2)
+            p["feedback"] = round(prep["feedback"], 2)
+            p["feedback_depth"] = prep["feedback_depth"]
+        p["_prompt"] = getattr(self.state, "prompt_text", "")

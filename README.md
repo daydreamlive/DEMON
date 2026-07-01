@@ -71,7 +71,7 @@ uv sync
 uv run demon-setup
 ```
 
-`demon-setup` checks your environment, downloads the ACE-Step v1.5 checkpoints (~18 GB from [`ACE-Step/Ace-Step1.5`](https://huggingface.co/ACE-Step/Ace-Step1.5) on Hugging Face, with a ModelScope fallback) plus a starter pack of genre LoRAs, and builds the minimal TensorRT engine set (the 60 s profile: decoder + VAE encode/decode, plus the fixed 1 s windowed VAE decode — a few minutes on a recent GPU since the ONNX comes prebuilt; older cards can take longer). It is idempotent: re-run it any time, finished work is skipped. (A first run is dominated by the ~18 GB checkpoint download plus the engine build; later runs skip straight to launch.)
+`demon-setup` checks your environment, downloads the ACE-Step v1.5 checkpoints (~18 GB from [`ACE-Step/Ace-Step1.5`](https://huggingface.co/ACE-Step/Ace-Step1.5) on Hugging Face, with a ModelScope fallback), fetches DEMON's pinned Stable Audio 3 source checkout, downloads a starter pack of genre LoRAs, and builds the minimal TensorRT engine set (the 60 s profile: decoder + VAE encode/decode, plus the fixed 1 s windowed VAE decode — a few minutes on a recent GPU since the ONNX comes prebuilt; older cards can take longer). It is idempotent: re-run it any time, finished work is skipped. (A first run is dominated by the ~18 GB checkpoint download plus the engine build; later runs skip straight to launch.)
 
 Then launch the web demo:
 
@@ -80,11 +80,29 @@ uv run python -u -m demos.realtime_motion_graph_web.run
 # open http://localhost:6660
 ```
 
+### Stable Audio 3 demo
+
+The SA3 UI is a separate static demo mounted at `/sa3/`. It starts
+sessions with `backend: "sa3"`, but the SA3 model variant is resolved
+when the backend boots from `--checkpoint`. Launch the backend with an
+SA3 checkpoint alias before opening the page:
+
+```bash
+uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint sa3-small
+# or:
+uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint sa3-medium
+```
+
+Then open `http://localhost:6660/sa3/` (or `http://localhost:1318/sa3/`
+if you are running the backend directly). Opening `/sa3/` against the
+default ACE-Step checkpoint will not switch models; restart the backend
+with `--checkpoint sa3-small` or `--checkpoint sa3-medium`.
+
 **What you'll see and hear.** The page loads with a default fixture already selected. Click **Play** — browsers gate audio behind a click, so this also unlocks sound. The first start takes ~15 s while the model and TensorRT engines load (longer under `--accel compile`); then the HUD goes live and audio streams continuously. Once a session is playing, the spectral-control sliders live in the control drawer's **Experimental** tab — they steer generation itself, so changes land on the upcoming audio after a moment; sweep slowly and listen.
 
 > **The bare launch command runs all-TensorRT by default**, which needs the engines `demon-setup` just built. If they are missing, the server exits at boot and prints the exact fix. If you ran `demon-setup --skip-engines`, you **must** launch with `-- --accel compile` (no engines needed; expect a long `torch.compile` warmup on the first tick).
 
-**Where things live.** Everything downloads to `~/.daydream-scope/models/demon/` (override with the `ACESTEP_MODELS_DIR` environment variable), *not* into the repository: checkpoints under `<models dir>/checkpoints/`, TensorRT engines under `<models dir>/trt_engines/`. The models must be the ACE-Step v1.5 weights fetched by `demon-setup` (equivalently `uv run acestep-download`) — do not substitute other checkpoints or paths. Full directory tree, manual download, engine-build options, headless/pod notes, and a troubleshooting table are in [docs/INSTALL.md](docs/INSTALL.md).
+**Where things live.** Everything downloads to `~/.daydream-scope/models/demon/` (override with the `ACESTEP_MODELS_DIR` environment variable), *not* into the repository: checkpoints under `<models dir>/checkpoints/`, Stable Audio 3 source under `<models dir>/sa3/vendor/`, TensorRT engines under `<models dir>/trt_engines/`. The models must be the ACE-Step v1.5 weights fetched by `demon-setup` (equivalently `uv run acestep-download`) — do not substitute other checkpoints or paths. Full directory tree, manual download, engine-build options, headless/pod notes, and a troubleshooting table are in [docs/INSTALL.md](docs/INSTALL.md).
 
 **Audio fixtures** pull on first use from the [`daydreamlive/demon-fixtures-v2`](https://huggingface.co/datasets/daydreamlive/demon-fixtures-v2) Hugging Face dataset (the older `daydreamlive/demon-fixtures` is kept as a fallback) and materialize under `<models dir>/fixtures/`. See [`acestep/fixtures.py`](acestep/fixtures.py) for the canonical set.
 

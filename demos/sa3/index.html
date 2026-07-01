@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>DEMON SA3</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="plugin" aria-label="Stable Audio 3 demo">
+        <div class="brand-row">
+          <div class="brand">Daydream</div>
+        </div>
+
+        <div id="knobs" class="knob-grid">
+          <div class="knob-placeholder">knobs appear when the session starts</div>
+        </div>
+
+        <div class="controls">
+          <label class="field-slot">
+            <span>Prompt A</span>
+            <textarea id="prompt-a" rows="2"></textarea>
+          </label>
+
+          <label class="field-slot">
+            <span>Prompt B</span>
+            <textarea id="prompt-b" rows="2" placeholder="optional second prompt for the A/B blend"></textarea>
+          </label>
+
+          <label class="field-slot blend-slot">
+            <span>
+              A/B blend
+              <em id="blend-value" class="blend-value">0.00</em>
+            </span>
+            <input id="blend" type="range" min="0" max="1" step="0.01" value="0" disabled aria-label="Prompt A/B blend">
+          </label>
+
+          <div class="source-row">
+            <label class="field-slot">
+              <span>Source</span>
+              <select id="fixture"></select>
+            </label>
+            <label class="field-slot duration-slot">
+              <span>Duration s</span>
+              <input id="duration" type="number" min="1" max="120" placeholder="auto">
+            </label>
+          </div>
+
+          <button id="send-prompt" type="button" class="send-btn" disabled>Send Prompt</button>
+        </div>
+
+        <div class="title">sa3</div>
+
+        <div class="transport">
+          <button id="transport" type="button" class="power-btn">Start</button>
+          <span class="tick-readout" title="Backend tick time">
+            <b>tick</b>
+            <span id="tick">--.-</span>
+            <small>ms</small>
+          </span>
+          <span id="status-dot" class="status-dot status-idle" aria-hidden="true"></span>
+          <span id="status-text" class="status-text">idle</span>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="./sa3.js"></script>
+  </body>
+</html>

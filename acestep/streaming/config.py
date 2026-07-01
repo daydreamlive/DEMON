@@ -61,10 +61,16 @@ class SessionConfig:
     lora_paths: list = field(default_factory=list)
     client_id: str | None = None
     # Generation backend family for this session (see
-    # acestep/streaming/families.py). "acestep" is the only registered
-    # family today; SA3 and Magenta RT2 register here as their tracks
-    # land. Selected per-session at create-time, never hot-swapped.
+    # acestep/streaming/families.py). Selected per-session at
+    # create-time, never hot-swapped. When absent on the wire, the
+    # server's resolved --checkpoint family is the default.
     backend: str = "acestep"
+    # --- sa3_* family fields (flat + prefixed per plan §3.5) ---
+    # Fixed generation duration for sa3 sessions, seconds. None derives
+    # it from the uploaded source audio length (the audio-to-audio
+    # anchor); SA3 conditioning is captured per (prompt, duration), so
+    # this is fixed for the session lifetime.
+    sa3_duration_s: float | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "SessionConfig":

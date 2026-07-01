@@ -38,6 +38,14 @@ const nextConfig: NextConfig = {
       { source: "/user_uploads/:path*", destination: `${backendUrl}/user_uploads/:path*` },
       { source: "/loras/:path*", destination: `${backendUrl}/loras/:path*` },
       { source: "/videos/:path*", destination: `${backendUrl}/videos/:path*` },
+      // The shared demon-client browser SDK the backend mounts at /sdk/
+      // (demon-client.js, sliceDecoder.worker.js, audio-worklet.js). Static
+      // demos like /sa3/ import it by absolute /sdk/... path, so it must be
+      // proxied here or those imports 404 when the page is opened through the
+      // launcher on :6660 instead of the backend on :1318.
+      { source: "/sdk/:path*", destination: `${backendUrl}/sdk/:path*` },
+      { source: "/sa3", destination: `${backendUrl}/sa3` },
+      { source: "/sa3/:path*", destination: `${backendUrl}/sa3/:path*` },
     ];
   },
 };
