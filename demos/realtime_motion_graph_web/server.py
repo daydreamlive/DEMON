@@ -646,16 +646,17 @@ def _run_sa3_preflight(model_id: str) -> None:
     the ACE path this preflight never gates on engines.
     """
     from acestep.engine.sa3_helpers import sa3_checkpoint_status
-    from acestep.setup import SETUP_COMMAND
 
     ok, msg = sa3_checkpoint_status(model_id)
     if not ok:
+        # ``msg`` carries the failure-specific remedy: a manual HF download
+        # for missing weights (demon-setup does NOT fetch them), or
+        # `demon-setup` for the missing vendored source.
         print()
         print("=" * 64)
         print("  SA3 model unavailable")
         print("=" * 64)
         print(f"  {msg}")
-        print(f"  fix: run `{SETUP_COMMAND}`")
         print("=" * 64)
         raise SystemExit(1)
     logger.info("preflight_sa3_ok model_id={}", model_id)

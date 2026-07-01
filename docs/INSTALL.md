@@ -92,6 +92,9 @@ single models directory:
     acestep-5Hz-lm-1.7B/               # 5 Hz LM
   sa3/
     vendor/stable-audio-3/             # managed pinned SA3 source checkout
+    checkpoints/                       # SA3 weights (manual download; see below)
+      stable-audio-3-small-music/      #   model.safetensors + config + t5gemma
+      stable-audio-3-medium/
   trt_engines/                         # TensorRT engines + ONNX
   loras/                               # starter LoRA pack + your own .safetensors
   fixtures/                            # cached demo audio + sidecars
@@ -138,6 +141,20 @@ uv run python scripts/sa3/vendor_sa3.py
 This is the same managed vendoring step `demon-setup` runs. It clones
 the pinned SA3 source commit into `<models dir>/sa3/vendor/stable-audio-3`
 and is safe to re-run.
+
+The SA3 **weights** are a separate, manual download — `demon-setup` and
+`vendor_sa3.py` fetch only the source above, not the checkpoints. Only
+needed if you launch with `--checkpoint sa3-small` / `--checkpoint
+sa3-medium`:
+
+```bash
+# small-music (or stable-audio-3-medium for the medium checkpoint)
+huggingface-cli download stabilityai/stable-audio-3-small-music \
+  --local-dir ~/.daydream-scope/models/demon/sa3/checkpoints/stable-audio-3-small-music
+```
+
+The backend boot preflight fails fast with this exact command if the
+weights are missing.
 
 ### 4. TensorRT engines
 

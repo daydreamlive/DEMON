@@ -70,11 +70,19 @@ def sa3_checkpoint_status(model_id: str) -> tuple[bool, str]:
     doesn't block the run."""
     ckpt = sa3_checkpoint_dir(model_id)
     if not (ckpt / "model.safetensors").is_file():
-        return False, f"SA3 checkpoint {model_id!r} not found at {ckpt}"
+        # The weights are NOT fetched by demon-setup (which only vendors
+        # the source below) — they are downloaded manually from HF into
+        # the layout sa3_checkpoint_dir documents.
+        return False, (
+            f"SA3 checkpoint {model_id!r} not found at {ckpt}. Download it "
+            f"with: huggingface-cli download stabilityai/stable-audio-3-{model_id} "
+            f"--local-dir {ckpt}"
+        )
     if not sa3_vendor_present():
         return False, (
             f"SA3 source not found at {sa3_vendor_dir()} "
-            "(required to import stable_audio_3)"
+            "(required to import stable_audio_3). Run `uv run demon-setup` "
+            "to fetch it."
         )
     return True, f"SA3 model {model_id!r} is available"
 

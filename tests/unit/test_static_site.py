@@ -112,7 +112,7 @@ def test_malformed_repo_demo_is_skipped_not_fatal(tmp_path, monkeypatch):
     (bad / "demon.demo.json").write_text("{ not json", encoding="utf-8")
     monkeypatch.setattr(static_site, "repo_static_demo_dirs", lambda: [good, bad])
 
-    with pytest.warns(UserWarning, match="skipping malformed repo static demo"):
+    with pytest.warns(UserWarning, match="skipping repo static demo"):
         mounts = static_site.build_static_mounts()
 
     assert "/good" in mounts
