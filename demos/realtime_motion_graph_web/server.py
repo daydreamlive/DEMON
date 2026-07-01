@@ -87,10 +87,36 @@ _DEFAULT_MODE = "graph"
 _CHECKPOINT: str = "acestep-v15-turbo"
 _VALID_MODES = ("graph", "video")
 
+# Backend FAMILY of the active checkpoint ("acestep" | "sa3"), captured in
+# main() from resolve_checkpoint() at CLI parse. Kept separate from _CHECKPOINT
+# because _CHECKPOINT holds the resolved MODEL ID (e.g. "medium"), which no
+# longer carries the family — so the prompt enhancer must read the family here,
+# not sniff the checkpoint string. Defaults to acestep for --no-backend.
+_BACKEND_FAMILY: str = "acestep"
+
 # --checkpoint aliases live in acestep.streaming.families
 # (CHECKPOINT_ALIASES / resolve_checkpoint): each alias names a
 # (backend family, model id) pair, e.g. "xl" -> acestep, "sa3-small"
 # -> the sa3 family. Resolved in main() at CLI parse.
+
+# Prompt-enhancer backends: which LLM policy /api/enhance selects. The pod
+# already knows its own family via _BACKEND_FAMILY, so it INFERS the backend and
+# a client `backend=` query param is only an optional override.
+_ENHANCE_BACKENDS = ("acestep", "sa3")
+
+
+def _resolve_enhance_backend(override: str) -> str:
+    """Pick the enhancer backend: a valid client override wins, else infer.
+
+    Inference reads the pod's resolved backend family (``_BACKEND_FAMILY``): the
+    ``sa3`` family selects the Stable Audio 3 natural-language policy, everything
+    else keeps ACE-Step tags. An unknown/blank override never errors — it falls
+    back to the inferred backend, so a stale client can't break enhancement.
+    """
+    o = (override or "").strip().lower()
+    if o in _ENHANCE_BACKENDS:
+        return o
+    return _BACKEND_FAMILY if _BACKEND_FAMILY in _ENHANCE_BACKENDS else "acestep"
 
 _NO_CACHE_HEADERS = [
     ("Cache-Control", "no-store, must-revalidate"),
@@ -213,21 +239,27 @@ def _process_request(connection, request):
             body,
         )
 
-    # API: prompt enhancer — expand a short music idea into a rich ACE-Step
-    # tag line via Haiku. Key-gated on ANTHROPIC_API_KEY (read from the pod's
-    # env; the key never ships to a client). With no key or any API error it
-    # returns the caller's text unchanged with ok=false, so every frontend
-    # treats enhance as best-effort and never blocks. The prompt rides the
-    # query string to stay on this all-GET probe surface; it's redacted from
-    # the access log.
+    # API: prompt enhancer — expand a short music idea into a rich prompt via
+    # Haiku. The policy is backend-specific (ACE-Step comma tags vs SA3
+    # natural-language): the pod infers the backend from its own checkpoint
+    # family, and an optional client `backend=` hint can override it. Key-gated
+    # on ANTHROPIC_API_KEY (read from the pod's env; the key never ships to a
+    # client). With no key or any API error it returns the caller's text
+    # unchanged with ok=false, so every frontend treats enhance as best-effort
+    # and never blocks. The prompt rides the query string to stay on this
+    # all-GET probe surface; it's redacted from the access log.
     if path_only == "/api/enhance":
         from urllib.parse import parse_qs
 
         from .prompt_enhancer import enhance_prompt
 
         query = url.split("?", 1)[1] if "?" in url else ""
-        idea = (parse_qs(query).get("prompt", [""])[0] or "").strip()
-        enhanced, ok = enhance_prompt(idea)
+        params = parse_qs(query)
+        idea = (params.get("prompt", [""])[0] or "").strip()
+        # Pod infers the backend from its own checkpoint family; the client's
+        # optional backend= hint only overrides when it names a known policy.
+        backend = _resolve_enhance_backend(params.get("backend", [""])[0])
+        enhanced, ok = enhance_prompt(idea, backend)
         body = json.dumps({"enhanced": enhanced, "ok": ok}).encode()
         _log_http(remote, 200, "GET", "/api/enhance")  # redact prompt
         return Response(
@@ -754,11 +786,13 @@ def main():
         )
 
     global _NO_BACKEND, _ACCEL, _KIOSK, _DEFAULT_MODE, _CHECKPOINT, _STATIC_MOUNTS
+    global _BACKEND_FAMILY
     _NO_BACKEND = no_backend
     _ACCEL = accel
     _KIOSK = kiosk
     _DEFAULT_MODE = default_mode
     _CHECKPOINT = checkpoint
+    _BACKEND_FAMILY = backend_family
 
     try:
         _STATIC_MOUNTS = build_static_mounts(static_demo_paths)

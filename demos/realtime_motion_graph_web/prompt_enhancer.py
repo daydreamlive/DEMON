@@ -45,6 +45,57 @@ RULES:
   options, no explanation, no line breaks, no "Prompt:" label.
 """.strip()
 
+# Stable Audio 3 policy. SA3 is the same engine theDAW documents (T5Gemma text
+# encoder + separate duration signal), so its prompting guide
+# (theDAW/docs/guides/prompting.md) is the authoritative reference here. SA3
+# reads the prompt as a producer's natural-language DESCRIPTION of a track, not a
+# bare tag list, so this system prompt asks for compact descriptive phrases,
+# genre + hook instrument first (they carry the most weight and the first phrases
+# dominate the result). BPM stays OUT of the clean output on purpose: the M4L
+# wire helper (demon::promptMeta) appends the REAL project tempo/key downstream
+# for backend=="sa3", so a genre-typical number here would ship two conflicting
+# BPMs. _sanitize's bpm-strip is shared and stays active for both backends.
+_SYSTEM_SA3 = """
+You expand a user's rough music idea into ONE vivid prompt for the Stable Audio 3
+generative-music model.
+
+SA3 reads the prompt as a producer's DESCRIPTION of a track — the way one producer
+describes a song to another — NOT a list of bare tags. Its text encoder conditions
+on MEANING, so short DESCRIPTIVE PHRASES beat isolated one-word keywords, while
+dense, compact phrasing beats long prose. Write ONE line.
+
+Draw only from the dimensions that matter for the intended sound:
+- genre / subgenre
+- instrumentation (name the hook / lead instrument especially)
+- tempo / feel — qualitative words ONLY ("uptempo", "half-time", "rolling", "driving")
+- mood / energy
+- production / mix texture
+- structure / motion
+
+Genre and the hook instrument carry the most weight, and THE FIRST PHRASES DOMINATE
+the result — lead with the genre and the key instrument.
+
+Follow this pattern: <genre>, <key instruments>, <tempo/feel>, <mood>, <production texture>
+
+Examples:
+lo-fi boom bap, dusty Rhodes chords, vinyl crackle, lazy swung drums, nostalgic
+liquid drum & bass, lush reverb pads, rolling sub bass, chopped soul vocal, uplifting
+cinematic orchestral build, low strings, taiko hits, rising tension, percussion entering at the climax
+bossa nova, nylon guitar, soft brushes, upright bass, intimate jazz club, warm
+melodic techno, hypnotic arpeggio, deep kick, analog bass, wide stereo
+
+RULES:
+- Stay faithful to the user's idea — honor any named artist, genre, era, or instrument
+  they mention (e.g. "boards of canada style" -> that hazy, nostalgic analog sound).
+- Describe the DESIRED trait directly ("clean, dry, minimal reverb") — NEVER phrase it
+  as what to avoid.
+- NEVER include a bpm/tempo NUMBER or a duration in seconds — describe tempo with words
+  only. The real tempo and key are added downstream, not by you.
+- Roughly 5-9 comma-separated phrases. Lowercase. One cohesive vibe.
+- Reply with ONLY the single comma-separated line. No preamble, no quotes, no options,
+  no explanation, no line breaks, no "Prompt:" label.
+""".strip()
+
 
 def llm_available() -> bool:
     """True when an Anthropic key is configured in the environment."""
@@ -97,8 +148,14 @@ def _ask_haiku(system: str, user: str) -> str | None:
     return None
 
 
-def enhance_prompt(idea: str) -> tuple[str, bool]:
-    """Expand a rough idea into a rich ACE-Step prompt.
+def enhance_prompt(idea: str, backend: str = "acestep") -> tuple[str, bool]:
+    """Expand a rough idea into a rich prompt for the active backend.
+
+    ``backend`` selects the LLM policy: ``"sa3"`` uses the Stable Audio 3
+    natural-language description style; anything else (default) uses the legacy
+    ACE-Step comma-tag style. The default keeps the pre-existing no-``backend``
+    call path byte-identical. ``_sanitize`` (incl. the bpm-strip) is shared, so
+    both backends stay bpm-number-free.
 
     Returns ``(text, ok)``. ``ok=False`` means enhancement was unavailable or
     failed and ``text`` is the caller's input echoed back unchanged, so the
@@ -107,8 +164,13 @@ def enhance_prompt(idea: str) -> tuple[str, bool]:
     idea = (idea or "").strip()
     if not idea:
         return idea, False
-    user = f'Rough idea: "{idea[:300]}". Expand it into one rich ACE-Step prompt.'
-    raw = _ask_haiku(_SYSTEM, user)
+    if backend == "sa3":
+        system = _SYSTEM_SA3
+        user = f'Rough idea: "{idea[:300]}". Expand it into one rich Stable Audio 3 prompt.'
+    else:
+        system = _SYSTEM
+        user = f'Rough idea: "{idea[:300]}". Expand it into one rich ACE-Step prompt.'
+    raw = _ask_haiku(system, user)
     if not raw:
         return idea, False
     out = _sanitize(raw)
