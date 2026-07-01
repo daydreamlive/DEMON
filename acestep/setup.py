@@ -225,7 +225,12 @@ def _download_models() -> bool:
     return False
 
 
-def _ensure_sa3_source() -> bool:
+def _ensure_sa3_source() -> None:
+    """Fetch the pinned Stable Audio 3 source checkout. Non-fatal: a
+    failed (or skipped) fetch never blocks setup — the ACE-Step path
+    doesn't touch it, and the SA3 backend re-fetches it lazily on first
+    use (require_sa3_vendor in SA3Context), so an ACE-only user is
+    unaffected and an SA3 user gets it on demand."""
     from acestep.engine.sa3_helpers import (
         SA3_VENDOR_SHA,
         SA3_VENDOR_URL,
@@ -236,16 +241,18 @@ def _ensure_sa3_source() -> bool:
     _header("3/5  Stable Audio 3 source")
     print(f"  destination: {sa3_vendor_dir()}")
     print(f"  source: {SA3_VENDOR_URL}")
-    print(f"  commit: {SA3_VENDOR_SHA}\n")
+    print(f"  commit: {SA3_VENDOR_SHA}")
+    print("  Optional - skip with --skip-sa3-source; the SA3 backend "
+          "fetches it on first use if missing.\n")
 
     try:
         require_sa3_vendor()
     except Exception as exc:
         _fail(f"SA3 source setup failed: {exc}")
-        _fail(f"Re-run `{SETUP_COMMAND}` to retry.")
-        return False
+        _fail("Continuing anyway (non-fatal); the SA3 backend will retry "
+              f"on first use. Re-run `{SETUP_COMMAND}` to fetch it now.")
+        return
     _ok("SA3 source ready")
-    return True
 
 
 def _download_starter_loras() -> None:
@@ -422,8 +429,7 @@ def main() -> int:
             return 1
 
     if not args.skip_sa3_source:
-        if not _ensure_sa3_source():
-            return 1
+        _ensure_sa3_source()
 
     if args.skip_loras or _env_skip_loras():
         if not args.skip_loras:
