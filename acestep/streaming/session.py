@@ -983,6 +983,17 @@ class StreamingSession:
             state.swap_pending["fixture_name"] = None
             state.swap_pending["stem_source_mode"] = None
 
+        # Backend control hook (universal op, family-specific
+        # implementation, the handle_set_prompt convention): a backend
+        # that owns its source anchor (SA3 SAME-encodes a replacement
+        # latent at fixed geometry) defines ``handle_swap_source`` and
+        # the ACE prepare_source body below never runs. The ACE backend
+        # defines no hook — byte-identical path.
+        handle = getattr(self.backend, "handle_swap_source", None)
+        if handle is not None:
+            self._apply_swap_backend_owned(handle, new_wf, new_fixture_name)
+            return
+
         # Initialized to None so the finally below can None-guard
         # cleanly in the (rare) case an exception fires between the
         # start of the try and the contextualize bind.
@@ -1203,6 +1214,83 @@ class StreamingSession:
                     _swap_ctx.__exit__(None, None, None)
                 except Exception:
                     pass
+
+    def _apply_swap_backend_owned(self, handle, new_wf, fixture_name) -> None:
+        """Fixed-geometry swap for backends that own their source anchor
+        (the ``handle_swap_source`` hook — SA3). None of the ACE body
+        applies: no TRT profile management (the render geometry is fixed
+        for the session), no BPM/key detection or conditioning re-encode
+        (the backend owns conditioning; nullable metadata per the
+        capability mask), no stem extraction or canvas (both
+        capability-gated off). The backend re-encodes its anchor at the
+        session's fixed duration; the client buffer becomes the new
+        source padded/truncated to the UNCHANGED playback geometry.
+        Publishes :class:`SwapReady` / :class:`SwapFailed` like the ACE
+        body. Runner thread (before_tick), like everything above."""
+        state = self.state
+        try:
+            wf = new_wf[:, : int(self.max_seconds * SAMPLE_RATE)].float()
+            if wf.shape[0] == 1:
+                # Stereo delivery geometry (sa3_session create parity):
+                # upmix a mono upload rather than hand the backend a
+                # 1-channel anchor against stereo patches.
+                wf = wf.repeat(2, 1)
+            logger.info(
+                "source_swap_start backend_owned={} duration_s={:.1f} "
+                "channels={} fixture_name={}",
+                self.backend.name, wf.shape[-1] / SAMPLE_RATE,
+                wf.shape[0], fixture_name,
+            )
+            handle(wf, SAMPLE_RATE)
+
+            # Fresh client buffer: the (truncated) new source at the
+            # delivery rate, zero-padded out to the session's fixed
+            # render geometry — the same shape the create path shipped,
+            # so the runner keeps patching windows into a matching
+            # buffer and the wire duration doesn't move.
+            src_np = wf.cpu().numpy().T.copy()   # [N, C] float32
+            with state._lock:
+                n_play = int(state.playback_samples)
+                if src_np.shape[0] < n_play:
+                    src_np = np.concatenate([
+                        src_np,
+                        np.zeros(
+                            (n_play - src_np.shape[0], src_np.shape[1]),
+                            dtype=src_np.dtype,
+                        ),
+                    ])
+                else:
+                    src_np = src_np[:n_play]
+                state.n_channels = int(src_np.shape[1])
+                # Retire anything staged against the old source (ACE
+                # parity; inert for backends without write_audio).
+                state.source_epoch += 1
+                self.audio_eng.swap(src_np)
+                self.audio_eng.position = 0
+                # A loop band from the previous song is meaningless
+                # against the new buffer — drop it.
+                self.audio_eng.loop_band = None
+
+            self.bus.publish(SwapReady(
+                duration=len(src_np) / SAMPLE_RATE,
+                sample_rate=SAMPLE_RATE,
+                channels=int(src_np.shape[1]),
+                bpm=state.bpm,
+                key=state.key,
+                time_signature=state.time_signature,
+                fixture_name=fixture_name,
+                initial_buffer=src_np,
+                source_epoch=state.source_epoch,
+            ))
+            logger.info(
+                "source_swap_complete backend_owned duration_s={:.1f}",
+                len(src_np) / SAMPLE_RATE,
+            )
+        except Exception as exc:
+            logger.opt(exception=True).error(
+                "source_swap_error backend_owned error={}", exc,
+            )
+            self.bus.publish(SwapFailed(error=str(exc)))
 
     # ---- Internal helpers ----------------------------------------------
 

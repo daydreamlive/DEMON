@@ -42,8 +42,13 @@ Continuity comes the same way the spike demo proved
 cover of the SAME source latent at the same seed, so advancing playback
 windows reconstruct one evolving song.
 
-Capabilities: ``refines_audio`` only. No swap/timbre/structure/LoRA/
-stems/loop-band/depth/curves until validated (canonical plan Phase 5).
+Capabilities: ``refines_audio`` + ``loop_band`` + ``swap``. ``swap``
+re-anchors the session in place: the new upload is SAME-encoded into a
+replacement source latent (:meth:`SA3Backend.handle_swap_source`, the
+session's backend-owned swap hook) while duration/conditioning stay
+fixed — the geometry-invariant analog of ``handle_set_prompt``. No
+timbre/structure/LoRA/stems/depth/curves until validated (canonical
+plan Phase 5).
 """
 
 from __future__ import annotations
@@ -163,6 +168,12 @@ class SA3Backend(DiffusionBackend):
         # (or identical to ``cond``) means no B prompt: the blend is a
         # no-op and handle_set_prompt_blend keeps serving bundle A.
         cond_b=None,
+        # ``(waveform, sample_rate, audio_sample_size) -> [1, 256, T]``
+        # — the source re-encode hook behind :meth:`handle_swap_source`.
+        # Supplied by :meth:`from_context` (a closure over the
+        # SA3Context); None on directly-constructed test backends, where
+        # handle_swap_source fails loudly instead.
+        source_encoder: Optional[Callable] = None,
     ):
         super().__init__(adapter=adapter, codec=codec)
         self._cond = cond
@@ -183,6 +194,8 @@ class SA3Backend(DiffusionBackend):
         # SA3Context); None on directly-constructed test backends, where
         # handle_set_prompt fails loudly instead.
         self._prompt_rebuilder = prompt_rebuilder
+        # Source re-encode hook for handle_swap_source (see ctor arg).
+        self._source_encoder = source_encoder
         self.knob_state = knob_state
         self.state = state
         self._steps = int(steps)
@@ -325,6 +338,16 @@ class SA3Backend(DiffusionBackend):
                 lambda s, _c=new_cond: context.make_schedule_builder(_c, s)
             )
 
+        def _source_encoder(waveform, sample_rate, sample_size):
+            # Source re-anchor (handle_swap_source): the same
+            # SAME-encode the create path ran for the initial upload —
+            # the (sample_rate, waveform) tuple rides prepare_audio's
+            # resample, and sample_size (the session's fixed
+            # cond.audio_sample_size) pins the latent geometry.
+            return context.encode_source(
+                (int(sample_rate), waveform), int(sample_size),
+            )
+
         return cls(
             adapter=adapter,
             codec=context.make_codec(backend=codec_backend),
@@ -338,6 +361,7 @@ class SA3Backend(DiffusionBackend):
             source_latent_bct=source_latent,
             prompt_rebuilder=_prompt_rebuilder,
             prompt_tags=prompt,
+            source_encoder=_source_encoder,
             **kwargs,
         )
 
@@ -366,7 +390,10 @@ class SA3Backend(DiffusionBackend):
         # restart — the audible "snap back to the old buffer" at the loop
         # point. SA3 uses the shared pipeline_runner, so the band path (and
         # its band-wrap second render) work unchanged via render_window.
-        return Capabilities(refines_audio=True, loop_band=True)
+        # swap: backend-owned in-place re-anchor (handle_swap_source) — the
+        # session's _apply_swap_if_pending dispatches there instead of the
+        # ACE prepare_source body, so duration/conditioning stay fixed.
+        return Capabilities(refines_audio=True, loop_band=True, swap=True)
 
     def geometry(self) -> AudioGeometry:
         return AudioGeometry(
@@ -456,6 +483,46 @@ class SA3Backend(DiffusionBackend):
             "sa3_prompt_applied tags={!r} tags_b={!r} cond_epoch={} "
             "rebuild_ms={:.1f}",
             tags, tags_b, self._cond_epoch, rebuild_ms,
+        )
+
+    def handle_swap_source(self, waveform, sample_rate) -> None:
+        """Re-anchor the session on a new source (the session's
+        backend-owned ``swap_source`` hook, dispatched from
+        ``_apply_swap_if_pending`` on the runner thread). SAME-encodes
+        ``waveform`` at the session's FIXED latent geometry
+        (``cond.audio_sample_size`` — prepare_audio pads/truncates, so
+        any upload length lands on the same [1, T, 256] anchor shape),
+        then swaps the anchor and drops the feedback latent ring (its
+        taps are covers of the OLD source; blending them into the new
+        anchor would smear the previous song across the swap).
+
+        In-flight pipeline slots finish on the old anchor — the swap
+        emerges within pipeline depth, exactly the handle_set_prompt
+        convention. At ``sa3_denoise`` = 1.0 slot init is pure noise and
+        the anchor only re-enters when denoise drops below 1 (or via
+        x0_target), matching create-time semantics.
+        """
+        if self._source_encoder is None:
+            raise RuntimeError(
+                "SA3Backend was constructed without a source_encoder; "
+                "handle_swap_source requires the from_context assembly"
+            )
+        with self._control_lock:
+            sample_size = int(self._cond.audio_sample_size)
+        t0 = time.perf_counter()
+        latent_bct = self._source_encoder(waveform, sample_rate, sample_size)
+        encode_ms = (time.perf_counter() - t0) * 1000
+        latent_btc = latent_bct.movedim(1, 2).contiguous()
+        # Publish atomically w.r.t. the command thread's conditioning
+        # swaps (same lock discipline as handle_set_prompt); the runner
+        # reads the anchor on its own thread, which is also the thread
+        # calling this hook.
+        with self._control_lock:
+            self._source_latent_btc = latent_btc
+            self._latent_history.clear()
+        logger.info(
+            "sa3_source_swapped samples={} sample_rate={} encode_ms={:.1f}",
+            int(waveform.shape[-1]), int(sample_rate), encode_ms,
         )
 
     def handle_set_prompt_blend(self, value: float) -> None:

@@ -115,7 +115,10 @@ def test_contract_surface():
     # loop_band is armed for SA3 (windowed renderer pre-fills the seam at
     # the loop point — see SA3Backend.capabilities).
     assert caps.loop_band is True
-    for field in ("swap", "timbre", "structure", "lora", "stems",
+    # swap is backend-owned: handle_swap_source re-anchors in place at
+    # fixed geometry (the session dispatches there, not the ACE body).
+    assert caps.swap is True
+    for field in ("timbre", "structure", "lora", "stems",
                   "depth", "curves", "notes_conditioning"):
         assert getattr(caps, field) is False, field
 
@@ -368,3 +371,50 @@ def test_set_prompt_recaptures_b_and_invalidates_schedules():
     # An absent B resets B to A (the ACE set_prompt convention).
     b.handle_set_prompt("tags solo")
     assert b._cond_b is b._cond
+
+
+def test_handle_swap_source_reanchors_and_clears_history():
+    old_src = torch.randn(1, C, T)
+    new_latent_bct = torch.randn(1, C, T)
+    encodes = []
+
+    def encoder(waveform, sample_rate, sample_size):
+        encodes.append((int(waveform.shape[-1]), int(sample_rate),
+                        int(sample_size)))
+        return new_latent_bct
+
+    b = _backend(source_latent_bct=old_src, source_encoder=encoder)
+    # Build up feedback history on the OLD anchor.
+    knobs = _knobs(b)
+    for _ in range(10):
+        b.produce(knobs, CTX, "generate")
+    assert len(b._latent_history) >= 1
+
+    b.handle_swap_source(torch.zeros(2, 48000), 48000)
+    # Encoded at the session's FIXED cond geometry, not the upload's.
+    assert encodes == [(48000, 48000, N44)]
+    # The anchor is the new latent in engine layout [1, T, C]...
+    assert torch.equal(b._source_latent_btc, new_latent_bct.movedim(1, 2))
+    # ...and the feedback ring is dropped: its taps cover the OLD
+    # source and must not smear into the new anchor.
+    assert len(b._latent_history) == 0
+
+    # The next submit inits from (and morph-targets) the new anchor.
+    submitted = _capture_submits(b)
+    b.produce({**knobs, "sa3_denoise": 0.5}, CTX, "generate")
+    assert torch.equal(
+        submitted[-1].source_latents, new_latent_bct.movedim(1, 2),
+    )
+    assert torch.equal(
+        submitted[-1].x0_target, new_latent_bct.movedim(1, 2),
+    )
+
+
+def test_handle_swap_source_without_encoder_fails_loudly():
+    b = _backend()  # direct construction: no source_encoder
+    try:
+        b.handle_swap_source(torch.zeros(2, 48000), 48000)
+    except RuntimeError as exc:
+        assert "source_encoder" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError without source_encoder")
