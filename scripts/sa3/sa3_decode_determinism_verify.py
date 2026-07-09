@@ -126,6 +126,13 @@ def main() -> int:
         noiseless = codec.decode_full(latent)
     results["seeded vs noise-off (A/B)"] = stats(on1, noiseless)
 
+    # Windowed codecs (medium): the production per-tick render path.
+    if hasattr(codec, "decode_window"):
+        n = min(latent.shape[-1] * context.downsampling_ratio, 4 * sr)
+        w1 = codec.decode_window(latent, 0, n)
+        w2 = codec.decode_window(latent, 0, n)
+        results["hot path decode_window (x2)"] = stats(w1, w2)
+
     tag = f"{args.model}_seed{args.seed}_{int(args.duration)}s"
     wavs = {
         f"verify_{tag}_fixoff_run1.wav": off1,
