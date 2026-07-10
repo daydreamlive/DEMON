@@ -25,6 +25,12 @@ import time
 import urllib.parse
 from pathlib import Path
 
+try:
+    from .local_env import load_repo_env_defaults
+except ImportError:  # direct script execution: python demos/.../server.py
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from demos.realtime_motion_graph_web.local_env import load_repo_env_defaults
+
 # Opt the CUDA caching allocator into expandable segments before torch
 # initializes it (first CUDA allocation). On long-uptime pods the torch
 # pool fragments across LoRA enable/disable rotations, stem-extraction
@@ -695,6 +701,8 @@ def _run_sa3_preflight(model_id: str) -> None:
 
 
 def main():
+    load_repo_env_defaults()
+
     # Wire logging FIRST so even the CLI-arg validation prints flow through
     # the configured sinks. configure() is idempotent so a duplicate call
     # in any nested entry point is a no-op.
