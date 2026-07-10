@@ -51,9 +51,13 @@ class _FakeCodec:
 
     def __init__(self):
         self.decodes = 0
+        self.decode_seeds: list = []
 
-    def decode_full(self, latent_bct: torch.Tensor) -> torch.Tensor:
+    def decode_full(
+        self, latent_bct: torch.Tensor, *, decode_seed: int | None = None,
+    ) -> torch.Tensor:
         self.decodes += 1
+        self.decode_seeds.append(decode_seed)
         assert latent_bct.shape == (1, C, T), latent_bct.shape
         ramp = torch.linspace(-0.5, 0.5, N44)
         return torch.stack([ramp, -ramp])  # [2, N44]
@@ -418,3 +422,28 @@ def test_handle_swap_source_without_encoder_fails_loudly():
         assert "source_encoder" in str(exc)
     else:
         raise AssertionError("expected RuntimeError without source_encoder")
+
+
+def test_decode_seed_follows_the_emerged_request_seed():
+    """The render decode is pinned to the seed of the request that
+    produced the decoded latent, so identical session inputs replay to
+    bit-identical audio (the SAME decoder draws noise at inference)."""
+    b = _backend()
+
+    for _ in range(10):
+        b.produce(_knobs(b, seed=42), CTX, "generate")
+    b.render_window(0.0)
+    assert b.codec.decode_seeds == [42]
+
+    # A seed change pins subsequent fresh latents to the new seed.
+    for _ in range(10):
+        b.produce(_knobs(b, seed=99), CTX, "generate")
+    b.render_window(0.0)
+    assert b.codec.decode_seeds[-1] == 99
+
+    # DiT-pause "reuse" keeps the pairing: the re-adopted latent is the
+    # one seed 99 produced, and its render decode stays seed-99-pinned.
+    b._rendered_for = None  # drop the render cache to force a decode
+    b.produce(_knobs(b, seed=1234), CTX, "reuse")
+    b.render_window(0.0)
+    assert b.codec.decode_seeds[-1] == 99

@@ -248,6 +248,11 @@ class SA3Backend(DiffusionBackend):
         # the cache and decode per render instead — see render_window.
         self._rendered_for = None     # latent tensor identity
         self._rendered_48k = None     # np.ndarray [N, C] float32
+        # Seed pinning the SAME decoder's inference-time noise for the
+        # latest emerged latent (stamped in _after_produce), so repeated
+        # decodes — and re-runs of the same session inputs — produce
+        # bit-identical audio. None until the first fresh latent.
+        self._decode_seed = None
         self._windowed_codec = hasattr(codec, "decode_window")
 
         self.pipeline = self._build_pipeline(self._steps)
@@ -707,6 +712,15 @@ class SA3Backend(DiffusionBackend):
             # appendleft so latent_history[0] is the most recent;
             # tap_idx = depth-1 reads "N ticks back" (ACE convention).
             self._latent_history.appendleft(result_latent.detach().clone())
+            # Pin the decode RNG to the seed of the request that produced
+            # this latent (the emerged request survives DiT-pause "reuse"
+            # ticks, so the pairing holds there too). prep carries the
+            # same int in production; it covers non-int request seeds.
+            req_seed = getattr(self._emerged_request, "seed", None)
+            self._decode_seed = (
+                int(req_seed) if isinstance(req_seed, int)
+                else int(prep["seed"])
+            )
         if not is_fresh or self.state is None:
             return
         req = self._emerged_request
@@ -742,7 +756,9 @@ class SA3Backend(DiffusionBackend):
         import torchaudio
 
         t0 = time.perf_counter()
-        audio_ct = self.codec.decode_full(latent_btc.movedim(1, 2))
+        audio_ct = self.codec.decode_full(
+            latent_btc.movedim(1, 2), decode_seed=self._decode_seed,
+        )
         # The decode boundary (round_3 decision 2): one whole-window
         # resample per generation, so window slices share one filter
         # pass and seams can't come from per-slice resampling.

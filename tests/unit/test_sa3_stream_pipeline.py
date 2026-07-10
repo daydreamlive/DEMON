@@ -230,3 +230,54 @@ def test_depth2_pingpong_matches_independent_vendor_runs_per_seed():
     assert len(emitted) == len(expected)
     for out, ref in zip(emitted, expected):
         assert torch.allclose(out, ref)
+
+
+# ---- sa3_decode_rng: decode-noise seeding ----------------------------------
+
+from acestep.engine.sa3_stream_helpers import (  # noqa: E402
+    SA3_DECODE_SEED_SALT,
+    sa3_decode_rng,
+)
+
+
+def test_sa3_decode_rng_pins_the_noise_stream():
+    with sa3_decode_rng(123):
+        a = torch.randn(64)
+    with sa3_decode_rng(123):
+        b = torch.randn(64)
+    assert torch.equal(a, b)
+
+    # Distinct seeds are distinct noise streams.
+    with sa3_decode_rng(124):
+        c = torch.randn(64)
+    assert not torch.equal(a, c)
+
+    # The pinned stream is the salted seed's stream, decoupled from the
+    # raw generation seed's stream (slot-init noise uses that one).
+    torch.manual_seed(123 ^ SA3_DECODE_SEED_SALT)
+    assert torch.equal(a, torch.randn(64))
+    torch.manual_seed(123)
+    assert not torch.equal(a, torch.randn(64))
+
+
+def test_sa3_decode_rng_leaves_outer_stream_untouched():
+    torch.manual_seed(7)
+    before = torch.randn(16)
+    with sa3_decode_rng(123):
+        torch.randn(16)
+    after = torch.randn(16)
+
+    torch.manual_seed(7)
+    ref_before = torch.randn(16)
+    ref_after = torch.randn(16)
+    assert torch.equal(before, ref_before)
+    assert torch.equal(after, ref_after)
+
+
+def test_sa3_decode_rng_none_is_a_passthrough():
+    torch.manual_seed(7)
+    with sa3_decode_rng(None):
+        a = torch.randn(16)
+    torch.manual_seed(7)
+    b = torch.randn(16)
+    assert torch.equal(a, b)  # no reseed happened inside

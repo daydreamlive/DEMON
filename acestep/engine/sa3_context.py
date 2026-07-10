@@ -221,10 +221,19 @@ class SA3SAMECodec:
         self._context = context
         self._helpers = context._helpers
 
-    def decode_full(self, latent_bct: torch.Tensor) -> torch.Tensor:
+    def decode_full(
+        self, latent_bct: torch.Tensor, *, decode_seed: int | None = None,
+    ) -> torch.Tensor:
         """Native ``[1, 256, T]`` latent -> ``[C, N]`` float audio at
-        44.1 kHz, clamped to [-1, 1]."""
-        audio = self._helpers.decode_sa3_latent(self._context.sam, latent_bct)
+        44.1 kHz, clamped to [-1, 1].
+
+        ``decode_seed`` pins the decode RNG (``sa3_decode_rng``) so the
+        SAME decoder's inference-time noise (bottleneck renoise +
+        decoder mask_noise) is reproducible: same latent + same seed →
+        bit-identical audio. ``None`` keeps the legacy unseeded draw.
+        """
+        with self._helpers.sa3_decode_rng(decode_seed, device=latent_bct.device):
+            audio = self._helpers.decode_sa3_latent(self._context.sam, latent_bct)
         return audio[0]
 
 
@@ -326,8 +335,12 @@ class SA3SAMEWindowCodec:
             out = torch.nn.functional.pad(out, (0, int(num) - out.shape[-1]))
         return out
 
-    def decode_full(self, latent_bct: torch.Tensor) -> torch.Tensor:
+    def decode_full(
+        self, latent_bct: torch.Tensor, *, decode_seed: int | None = None,
+    ) -> torch.Tensor:
         """Eager full decode (legacy full-buffer mode only; the hot path
-        never calls this for windowed-codec families)."""
-        audio = self._helpers.decode_sa3_latent(self._context.sam, latent_bct)
+        never calls this for windowed-codec families). ``decode_seed``
+        pins the decode RNG exactly as on :class:`SA3SAMECodec`."""
+        with self._helpers.sa3_decode_rng(decode_seed, device=latent_bct.device):
+            audio = self._helpers.decode_sa3_latent(self._context.sam, latent_bct)
         return audio[0]
