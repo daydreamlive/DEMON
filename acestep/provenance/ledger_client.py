@@ -11,6 +11,16 @@ and parses the signed per-slice receipts the ledger returns
 (``{stream, chain_head, receipts:[{seq, chain_head, ts, receipt_kid,
 sig}]}``, spec 06 §2.3).
 
+Receipts are **verified as they arrive** per the full 06 §2.4
+procedure (key-cert chain, validity window, Ed25519 over the
+``ddp-receipt:v1`` framing, and — step 5 — equality with the chain
+head this client recomputes from its *own* submitted events via
+:class:`~acestep.provenance.receipts.ChainMirror`). Verification is
+fail-open: a failure logs one WARNING, bumps
+:attr:`~LedgerClient.receipts_unverified` and records
+:attr:`~LedgerClient.last_verification_failure`; it never interrupts
+reporting or streaming.
+
 ``DEMON_LEDGER_URL`` already includes the ``/v1`` prefix (it is the
 ``ledgerBaseUrl`` the queue broker hands the pod at session bootstrap,
 spec 06 §1). The bearer token is the per-session **pod ledger token**
@@ -46,6 +56,8 @@ from typing import Optional
 
 from loguru import logger
 
+from acestep.provenance.receipts import ChainMirror, ReceiptVerifier
+
 __all__ = [
     "LEDGER_URL_ENV",
     "LEDGER_TOKEN_ENV",
@@ -56,6 +68,9 @@ __all__ = [
 
 LEDGER_URL_ENV = "DEMON_LEDGER_URL"
 LEDGER_TOKEN_ENV = "DEMON_LEDGER_TOKEN"
+
+# This client reports the pod stream (its token is dlt_pod_…, spec 06 §2.1).
+_STREAM = "pod"
 
 # Event type whose ingestion returns a signed receipt (spec 06 §2.3).
 SLICE_POD_HASH_TYPE = "slice.pod_hash"
@@ -143,6 +158,17 @@ class LedgerClient:
         # Assigned by the worker thread only (single writer): the next
         # per-stream seq. Contiguous from 0 by construction.
         self._next_seq = 0
+        # Receipt verification (spec 06 §2.4), owned by the worker
+        # thread. The mirror replays our own submitted events through
+        # the §2.1 chain rules so step 5 checks receipts against *our*
+        # history, not just their signatures.
+        self._mirror: Optional[ChainMirror] = None
+        self._verifier: Optional[ReceiptVerifier] = None
+        self._mirror_broken: Optional[str] = None
+        self._verify_warned = False
+        self.receipts_verified = 0
+        self.receipts_unverified = 0
+        self.last_verification_failure: Optional[str] = None
 
     @property
     def enabled(self) -> bool:
@@ -296,6 +322,10 @@ class LedgerClient:
                 event["ppq"] = item["ppq"]
             events.append(event)
             self._next_seq += 1
+        # Extend the local chain mirror before the POST: it models the
+        # history we *submit* (spec 06 §2.1: "recompute the chain head
+        # ... from your own submitted events").
+        self._mirror_extend(events)
         body = json.dumps({"events": events}, default=str).encode("utf-8")
         url = f"{self.base_url}/sessions/{self.session_id}/events"
         try:
@@ -321,6 +351,10 @@ class LedgerClient:
                 receipt = LedgerReceipt.from_response(data)
                 if receipt is not None:
                     self._last_receipt = receipt
+                receipts = data.get("receipts")
+                if isinstance(receipts, list):
+                    for r in receipts:
+                        self._verify_receipt(r)
         except (urllib.error.URLError, OSError, ValueError) as exc:
             if not self._warned:
                 self._warned = True
@@ -329,3 +363,68 @@ class LedgerClient:
                     "(further failures silenced)",
                     url, exc,
                 )
+
+    # ---- receipt verification (spec 06 §2.4) -----------------------------
+
+    def _mirror_extend(self, events: list[dict]) -> None:
+        """Replay the outgoing batch through the local chain mirror.
+        Fail-open: a payload the mirror cannot canonicalize (non-JSON
+        type, JS-unsafe integer) permanently marks the mirror broken —
+        subsequent receipts count as unverified with that reason, and
+        reporting itself is untouched."""
+        if self._mirror_broken is not None:
+            return
+        if self._mirror is None:
+            self._mirror = ChainMirror(self.session_id, _STREAM)
+        try:
+            for event in events:
+                self._mirror.append(event)
+        except Exception as exc:  # noqa: BLE001 — never break reporting
+            self._mirror_broken = f"local chain mirror failed: {exc}"
+            logger.warning(
+                "ledger receipt verification degraded for session={}: {}",
+                self.session_id, self._mirror_broken,
+            )
+
+    def _verify_receipt(self, receipt: object) -> None:
+        """Run the full §2.4 procedure on one arriving receipt and keep
+        the verified/unverified tallies. Never raises."""
+        try:
+            if self._mirror_broken is not None:
+                ok, reason = False, self._mirror_broken
+            elif not isinstance(receipt, dict):
+                ok, reason = False, "malformed receipt (not an object)"
+            else:
+                if self._verifier is None:
+                    self._verifier = ReceiptVerifier(f"{self.base_url}/keys")
+                seq = receipt.get("seq")
+                expected = (
+                    self._mirror.head_at(seq)
+                    if self._mirror is not None and isinstance(seq, int)
+                    else None
+                )
+                ok, reason = self._verifier.verify(
+                    session_id=self.session_id,
+                    stream=_STREAM,
+                    seq=seq,
+                    chain_head=receipt.get("chain_head"),
+                    ts=receipt.get("ts"),
+                    receipt_kid=receipt.get("receipt_kid"),
+                    sig=receipt.get("sig"),
+                    expected_head=expected,
+                )
+        except Exception as exc:  # noqa: BLE001 — fail-open by contract
+            ok, reason = False, f"receipt verification error: {exc}"
+        if ok:
+            self.receipts_verified += 1
+            return
+        self.receipts_unverified += 1
+        self.last_verification_failure = reason
+        if not self._verify_warned:
+            self._verify_warned = True
+            logger.warning(
+                "ledger receipt FAILED verification session={}: {} "
+                "(further failures silenced; see receipts_unverified / "
+                "last_verification_failure)",
+                self.session_id, reason,
+            )

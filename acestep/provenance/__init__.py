@@ -12,6 +12,9 @@ demon-provenance spec, 02-architecture.md §2/§3/§5/§7):
   embedding on the track-asset WAV writers via ``c2pa-python``.
 - :mod:`~acestep.provenance.ledger_client` — thin event/slice-hash
   POST client, a complete no-op until ``DEMON_LEDGER_URL`` is set.
+- :mod:`~acestep.provenance.receipts` — client-side verification of
+  the ledger's signed receipts (spec 06 §2.4: key-cert chain, JCS +
+  chain-head recomputation, Ed25519 framing checks).
 
 Everything here degrades to a no-op (one logged warning, never an
 exception on a write path) when the optional ``provenance`` extra
