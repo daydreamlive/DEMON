@@ -28,6 +28,7 @@ from acestep.provenance import keys as provenance_keys
 __all__ = [
     "TRAINED_ALGORITHMIC_MEDIA",
     "COMPOSITE_WITH_TRAINED_ALGORITHMIC_MEDIA",
+    "DIGITAL_CAPTURE",
     "provenance_available",
     "build_manifest_definition",
     "embed_wav_manifest",
@@ -39,6 +40,13 @@ TRAINED_ALGORITHMIC_MEDIA = (
 COMPOSITE_WITH_TRAINED_ALGORITHMIC_MEDIA = (
     "http://cv.iptc.org/newscodes/digitalsourcetype/"
     "compositeWithTrainedAlgorithmicMedia"
+)
+# Human-origin content (recorded / uploaded, not synthesized). Used for
+# the user's own uploaded source track and separated stems: those are
+# the dry input, and marking them trained/composite would be an
+# affirmatively false synthetic claim (spec 02-architecture §4).
+DIGITAL_CAPTURE = (
+    "http://cv.iptc.org/newscodes/digitalsourcetype/digitalCapture"
 )
 
 _CAWG_CATEGORIES = (
@@ -162,10 +170,10 @@ def build_manifest_definition(
     }
 
 
-def _active_session_summary() -> Optional[dict]:
+def _session_summary_for(session_id: str) -> Optional[dict]:
     try:
-        from acestep.provenance.session_log import latest_session_summary
-        return latest_session_summary()
+        from acestep.provenance.session_log import session_summary_for
+        return session_summary_for(session_id)
     except Exception:  # noqa: BLE001
         return None
 
@@ -175,6 +183,7 @@ def embed_wav_manifest(
     *,
     ingredient_fingerprint: str | None = None,
     session: dict | None = None,
+    session_id: str | None = None,
     title: str | None = None,
     source_type: str | None = None,
 ) -> bool:
@@ -182,8 +191,13 @@ def embed_wav_manifest(
     (write-temp-then-replace, so a failure leaves the unsigned WAV
     intact). Returns True on success; NEVER raises.
 
-    ``session`` defaults to the most recently attached live session's
-    summary (see :mod:`acestep.provenance.session_log`).
+    The session assertion is bound to the SPECIFIC session that produced
+    the asset (spec 06 §2.5): pass an explicit ``session`` summary dict,
+    or a ``session_id`` to resolve the summary of that session's live tap.
+    When neither is given (pure-local write, or the producing session is
+    no longer live) the assertion ships with null session fields — the
+    manifest never borrows an arbitrary "latest" session's identity
+    (audit F7/G5).
     """
     c2pa = _import_c2pa()
     if c2pa is None:
@@ -194,10 +208,16 @@ def embed_wav_manifest(
     path = Path(path)
     tmp = path.with_name(path.name + ".c2pa.tmp")
     try:
+        if session is not None:
+            resolved_session = session
+        elif session_id is not None:
+            resolved_session = _session_summary_for(session_id)
+        else:
+            resolved_session = None
         manifest = build_manifest_definition(
             title=title or path.name,
             ingredient_fingerprint=ingredient_fingerprint,
-            session=session if session is not None else _active_session_summary(),
+            session=resolved_session,
             source_type=source_type,
         )
         # The wrapper's __init__ rejects ta_url=None but the native

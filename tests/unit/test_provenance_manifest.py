@@ -31,6 +31,7 @@ c2pa = pytest.importorskip("c2pa", reason="provenance extra not installed")
 import acestep.provenance.manifest as manifest_mod
 from acestep.provenance.manifest import (
     COMPOSITE_WITH_TRAINED_ALGORITHMIC_MEDIA,
+    DIGITAL_CAPTURE,
     TRAINED_ALGORITHMIC_MEDIA,
     build_manifest_definition,
     embed_wav_manifest,
@@ -76,7 +77,10 @@ def _assertion(active: dict, label: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def test_write_track_wav_embeds_readable_manifest(tmp_path):
+def test_write_track_wav_labels_upload_as_digital_capture(tmp_path):
+    """The written track is the user's UPLOADED source — human origin, dry
+    input before any generation. It must NOT be marked trained/composite
+    (audit G5); digitalCapture is the honest label."""
     root = tmp_path / "uploads"
     waveform = _waveform()
 
@@ -88,14 +92,15 @@ def test_write_track_wav_embeds_readable_manifest(tmp_path):
     # Claim generator identity: local self-signed, never Daydream.
     assert active["claim_generator_info"][0]["name"] == "DEMON (local, self-signed)"
 
-    # c2pa.created with the composite digitalSourceType (the written
-    # track IS seed audio, so it always carries the composite type).
+    # c2pa.created with digitalCapture — never a synthetic source type.
     actions = _assertion(active, "c2pa.actions")["actions"]
     created = [a for a in actions if a["action"] == "c2pa.created"]
     assert len(created) == 1
-    assert created[0]["digitalSourceType"] == COMPOSITE_WITH_TRAINED_ALGORITHMIC_MEDIA
+    assert created[0]["digitalSourceType"] == DIGITAL_CAPTURE
+    assert created[0]["digitalSourceType"] != COMPOSITE_WITH_TRAINED_ALGORITHMIC_MEDIA
+    assert created[0]["digitalSourceType"] != TRAINED_ALGORITHMIC_MEDIA
 
-    # CAWG do-not-train: every category notAllowed, on by default.
+    # CAWG do-not-train still rides along (protecting the user's content).
     entries = _assertion(active, "cawg.training-mining")["entries"]
     assert set(entries) == {
         "cawg.ai_generative_training",
@@ -105,13 +110,13 @@ def test_write_track_wav_embeds_readable_manifest(tmp_path):
     }
     assert all(v == {"use": "notAllowed"} for v in entries.values())
 
-    # com.daydream.session: no live session -> null identity fields,
-    # but the seed fingerprint matches what track.json advertises.
+    # com.daydream.session: no session bound, and no AI "seed" claim on
+    # human input.
     session = _assertion(active, "com.daydream.session")
     assert session["session_id"] is None
     assert session["model"] is None
     assert session["loras"] == []
-    assert session["seed_waveform_sha256"] == waveform_fingerprint(waveform)
+    assert "seed_waveform_sha256" not in session
 
     # The signed WAV must still be a decodable WAV.
     data, sr = sf.read(str(p), dtype="float32", always_2d=True)
@@ -119,43 +124,29 @@ def test_write_track_wav_embeds_readable_manifest(tmp_path):
     assert data.shape == (4800, 2)
 
 
-def test_write_stem_wavs_carries_seed_fingerprint_from_track_json(tmp_path):
+def test_write_stem_wavs_labels_stems_as_digital_capture(tmp_path):
+    """Separated stems are derived from the user's uploaded source —
+    still human origin, not synthetic. digitalCapture, no AI claim."""
     root = tmp_path / "uploads"
     waveform = _waveform()
     stems = {"vocals": waveform + 0.1, "instruments": waveform + 0.2}
 
-    # Metadata first: the stem writer picks the seed fingerprint off disk.
     save_track_metadata(root, "song.wav", waveform=waveform, sample_rate=SAMPLE_RATE)
     write_stem_wavs(root, "song.wav", stems=stems, sample_rate=SAMPLE_RATE)
 
     for mode in ("vocals", "instruments"):
         active = _read_active_manifest(stem_audio_path(root, "song.wav", mode))
         actions = _assertion(active, "c2pa.actions")["actions"]
-        assert actions[0]["digitalSourceType"] == COMPOSITE_WITH_TRAINED_ALGORITHMIC_MEDIA
+        assert actions[0]["digitalSourceType"] == DIGITAL_CAPTURE
+        assert actions[0]["digitalSourceType"] != COMPOSITE_WITH_TRAINED_ALGORITHMIC_MEDIA
         session = _assertion(active, "com.daydream.session")
-        assert session["seed_waveform_sha256"] == waveform_fingerprint(waveform)
+        assert "seed_waveform_sha256" not in session
 
 
-def test_write_stem_wavs_before_metadata_keeps_composite_type(tmp_path):
-    """Production order (assets first, track.json last): no fingerprint
-    on disk yet, but the source type stays composite — stems always
-    derive from seed audio."""
-    root = tmp_path / "uploads"
-    waveform = _waveform()
-    stems = {"vocals": waveform, "instruments": waveform}
-
-    write_stem_wavs(root, "song.wav", stems=stems, sample_rate=SAMPLE_RATE)
-
-    active = _read_active_manifest(stem_audio_path(root, "song.wav", "vocals"))
-    actions = _assertion(active, "c2pa.actions")["actions"]
-    assert actions[0]["digitalSourceType"] == COMPOSITE_WITH_TRAINED_ALGORITHMIC_MEDIA
-    session = _assertion(active, "com.daydream.session")
-    assert "seed_waveform_sha256" not in session
-
-
-def test_embed_picks_up_live_session_summary(tmp_path):
-    """With a session tap attached, the embedded com.daydream.session
-    assertion carries that session's identity and counts."""
+def test_uploads_never_borrow_a_live_session_identity(tmp_path):
+    """Even with a live session attached, an upload-path write must NOT be
+    stamped with that session's identity or an AI source type (audit
+    F7/G5): the upload is human input, produced before any generation."""
     from acestep.streaming.events import EventBus, PromptApplied
     from acestep.streaming import registry
 
@@ -178,14 +169,90 @@ def test_embed_picks_up_live_session_summary(tmp_path):
         registry.unregister(handle.id)
 
     active = _read_active_manifest(source_audio_path(root, "live.wav"))
+    actions = _assertion(active, "c2pa.actions")["actions"]
+    assert actions[0]["digitalSourceType"] == DIGITAL_CAPTURE
     session = _assertion(active, "com.daydream.session")
-    assert session["session_id"] == "prov-test-1"
-    assert session["model"] == "ace_step_v1"
+    # The upload did NOT grab the live session's identity.
+    assert session["session_id"] is None
+    assert session["model"] is None
+    assert session["loras"] == []
+
+
+def test_embed_binds_to_the_specific_session_not_latest(tmp_path):
+    """embed_wav_manifest(session_id=...) binds a genuinely-generated
+    asset to THAT session, even when a newer session is also live (audit
+    F7/G5: never the arbitrary 'latest' tap)."""
+    from acestep.streaming.events import EventBus
+    from acestep.streaming import registry
+
+    bus_a, bus_b = EventBus(), EventBus()
+    ha = registry.SessionHandle(
+        id="sess-A", started_at=time.time(),
+        inject=lambda d, a: None,
+        snapshot=lambda: {"lora_catalog": [{"id": "lead", "state": "enabled"}]},
+        bus=bus_a, provenance_meta={"checkpoint": "model-A"},
+    )
+    hb = registry.SessionHandle(
+        id="sess-B", started_at=time.time(),
+        inject=lambda d, a: None, snapshot=lambda: {},
+        bus=bus_b, provenance_meta={"checkpoint": "model-B"},
+    )
+    registry.register(ha)
+    registry.register(hb)  # B is newest → the old "latest" bug's target
+    try:
+        root = tmp_path / "gen"
+        write_track_wav(root, "seed.wav", waveform=_waveform(), sample_rate=SAMPLE_RATE)
+        p = source_audio_path(root, "seed.wav")
+        # Simulate a generated-output writer re-signing the asset bound to
+        # session A (the specific producing session), not the latest tap.
+        ok = embed_wav_manifest(
+            p, session_id="sess-A",
+            source_type=COMPOSITE_WITH_TRAINED_ALGORITHMIC_MEDIA,
+        )
+        assert ok
+    finally:
+        registry.unregister("sess-A")
+        registry.unregister("sess-B")
+
+    active = _read_active_manifest(p)
+    session = _assertion(active, "com.daydream.session")
+    assert session["session_id"] == "sess-A"
+    assert session["model"] == "model-A"
     assert session["loras"] == ["lead"]
     assert session["session_log_sha256"]
-    summary = session["timeline_summary"]
-    assert summary["events"] >= 1
-    assert isinstance(summary["duration_s"], float)
+    # The generated-output path keeps its synthetic source type.
+    actions = _assertion(active, "c2pa.actions")["actions"]
+    assert actions[0]["digitalSourceType"] == COMPOSITE_WITH_TRAINED_ALGORITHMIC_MEDIA
+
+
+def test_embed_without_session_context_emits_null_session(tmp_path):
+    """No session dict and no session_id → null session fields, never a
+    borrowed 'latest' identity."""
+    from acestep.streaming.events import EventBus
+    from acestep.streaming import registry
+
+    bus = EventBus()
+    h = registry.SessionHandle(
+        id="sess-live", started_at=time.time(),
+        inject=lambda d, a: None, snapshot=lambda: {},
+        bus=bus, provenance_meta={"checkpoint": "model-live"},
+    )
+    registry.register(h)
+    try:
+        root = tmp_path / "gen"
+        write_track_wav(root, "x.wav", waveform=_waveform(), sample_rate=SAMPLE_RATE)
+        p = source_audio_path(root, "x.wav")
+        # Re-embed with NO session context at all.
+        assert embed_wav_manifest(
+            p, source_type=COMPOSITE_WITH_TRAINED_ALGORITHMIC_MEDIA,
+        )
+    finally:
+        registry.unregister("sess-live")
+
+    active = _read_active_manifest(source_audio_path(root, "x.wav"))
+    session = _assertion(active, "com.daydream.session")
+    assert session["session_id"] is None
+    assert session["model"] is None
 
 
 # ---------------------------------------------------------------------------

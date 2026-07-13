@@ -188,30 +188,31 @@ def save_track_metadata(
     os.replace(tmp, p)
 
 
-def _embed_provenance(path: Path, *, ingredient_fingerprint: str | None) -> None:
-    """Best-effort C2PA manifest embed after a WAV lands on disk.
+def _embed_upload_provenance(path: Path) -> None:
+    """Best-effort C2PA manifest embed after a HUMAN-ORIGIN WAV lands on
+    disk (uploaded source track / separated stems).
 
     Import is lazy and the embed itself never raises (it degrades to a
     single logged warning without the ``provenance`` extra), so asset
     persistence is byte-identical in behaviour when provenance is off.
 
-    Every WAV these writers persist derives from seed audio (uploads,
-    fixture sources, separated stems), so the manifest is always
-    composite-with-trained-media regardless of whether the seed's
-    fingerprint was recoverable at write time.
+    These writers are called only from the user-upload path, i.e. on the
+    user's own uploaded/seed audio BEFORE any generation. That audio is
+    the dry input, so the manifest asserts ``digitalCapture`` (human
+    origin) and NOT any trained-algorithmic / composite source type —
+    marking the dry input as synthetic would be an affirmatively false
+    claim (spec 02-architecture §4, audit G5). The CAWG do-not-train
+    default still rides along (protecting the user's own content), and no
+    session identity is bound (these writes precede any session output).
     """
     try:
         from acestep.provenance.manifest import (
-            COMPOSITE_WITH_TRAINED_ALGORITHMIC_MEDIA,
+            DIGITAL_CAPTURE,
             embed_wav_manifest,
         )
     except Exception:
         return
-    embed_wav_manifest(
-        path,
-        ingredient_fingerprint=ingredient_fingerprint,
-        source_type=COMPOSITE_WITH_TRAINED_ALGORITHMIC_MEDIA,
-    )
+    embed_wav_manifest(path, source_type=DIGITAL_CAPTURE)
 
 
 def write_stem_wavs(
@@ -223,13 +224,9 @@ def write_stem_wavs(
 ) -> None:
     import soundfile as sf
 
-    # Stems are model-separated from the track's source audio; that
-    # source is the seed reference. Callers persist stems before
-    # track.json, so on the first write the fingerprint may not be on
-    # disk yet — the manifest then carries no seed hash but keeps the
-    # composite source type (seed audio always exists for stems).
-    meta = load_track_metadata(root, name)
-    seed_fp = meta.get("waveform_sha256") or None
+    # Stems are model-separated from the user's UPLOADED source track —
+    # human-origin audio, produced here before any generation. They are
+    # not synthetic, so their manifest asserts digitalCapture (audit G5).
     for mode in STEM_MODES:
         if mode not in stems:
             raise ValueError(f"missing stem: {mode}")
@@ -239,7 +236,9 @@ def write_stem_wavs(
         wav = stems[mode].detach().cpu().float()
         sf.write(str(tmp), wav.numpy().T, int(sample_rate), format="WAV", subtype="FLOAT")
         os.replace(tmp, p)
-        _embed_provenance(p, ingredient_fingerprint=seed_fp)
+        # Stems are separated from the user's uploaded source — human
+        # origin, not synthetic (audit G5). digitalCapture, no AI claim.
+        _embed_upload_provenance(p)
 
 
 def write_track_wav(
@@ -257,10 +256,10 @@ def write_track_wav(
     wav = waveform.detach().cpu().float()
     sf.write(str(tmp), wav.numpy().T, int(sample_rate), format="WAV", subtype="FLOAT")
     os.replace(tmp, p)
-    # The written track IS seed audio (user upload / fixture source), so
-    # the manifest is composite-with-trained-media and the ingredient
-    # hash is the same fingerprint track.json will advertise.
-    _embed_provenance(p, ingredient_fingerprint=waveform_fingerprint(waveform))
+    # The written track is the user's UPLOADED source (human origin, dry
+    # input before any generation), so the manifest asserts digitalCapture
+    # — never a trained-algorithmic / composite synthetic claim (audit G5).
+    _embed_upload_provenance(p)
 
 
 def read_stem_wavs(
