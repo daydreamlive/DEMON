@@ -2,25 +2,36 @@
 
 One file per streaming session under
 ``<provenance dir>/sessions/<session_id>.jsonl``. Every line is one
-timestamped event::
+event envelope in the **shared** schema of spec 06 §2.2, so "upload my
+local history" can replay these files into the cloud ledger unchanged
+(spec 02 §7)::
 
-    {"schema": 1, "ts": "...Z", "session_id": "...", "event": "...", ...}
+    {"stream": "local", "seq": 0, "type": "session.config",
+     "ts": 1751871234567, "payload": {...}}
 
-The event vocabulary follows the Session Record design (spec 02 §5):
-model/LoRA identifiers at session start, prompt and parameter changes,
-seed-audio fingerprints, a rolling hash chain over generated output
-slices (checkpointed, not per-slice — per-slice lines at 20-50/s would
-bloat the log for no evidentiary gain), and user-action records
-(action type, payload summary, wall-clock ts). A future "upload my
-local history" feature can replay these files into the cloud ledger
-unchanged, which is the whole point of sharing the schema (spec 02 §7).
+| Field | Meaning |
+|---|---|
+| ``stream`` | Always ``"local"`` for this file (spec 06 §2.2 file envelope). |
+| ``seq`` | Per-file, contiguous from 0 (single local stream). |
+| ``type`` | Namespaced event type (``session.config``, ``action.prompt``, ``action.param``, ``action.lora``, ``action.seed_audio``, ``action.transport``, ``session.note`` …), matching what :mod:`ledger_client` sends. |
+| ``ts`` | Wall-clock **milliseconds since epoch** (spec 06 §0: ISO-8601 is never on the wire). |
+| ``ppq`` | Optional DAW playhead in PPQ; omitted when unknown. |
+| ``payload`` | Type-specific object. Prompt text is allowed here (local-only, spec 02 §5); only counts ever enter a manifest. |
 
-Wiring: :func:`attach_session` subscribes a
-:class:`SessionLogTap` to the session's typed event bus
-(:mod:`acestep.streaming.events`). The session registry
-(:mod:`acestep.streaming.registry`) calls attach/detach when a handle
-carrying a ``bus`` is registered/unregistered, so transport adapters
-only have to hand the bus over. Torch-free, like the registry.
+Slice hashing: this tap counts decoded slices seen on the bus, but does
+**not** hash them. The §2.3 slice hash is SHA-256 over the *uncompressed
+interleaved float16 downlink payload bytes* — which are produced in the
+per-subscriber transport codec, not on this bus (the bus carries fully
+reconstructed float32 audio). Pod-side slice hashing therefore lives in
+the codec and is reported here via :meth:`SessionLogTap.record_pod_slice_hash`
+→ ``slice.pod_hash`` ledger events, so the pod and client hash the same
+bytes and can cross-check (spec 06 §2.3).
+
+Wiring: :func:`attach_session` subscribes a :class:`SessionLogTap` to
+the session's typed event bus (:mod:`acestep.streaming.events`). The
+session registry (:mod:`acestep.streaming.registry`) calls attach/detach
+when a handle carrying a ``bus`` is registered/unregistered, so transport
+adapters only have to hand the bus over. Torch-free, like the registry.
 """
 
 from __future__ import annotations
@@ -29,7 +40,6 @@ import hashlib
 import json
 import threading
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -65,23 +75,22 @@ from acestep.streaming.events import (
 )
 
 __all__ = [
-    "SESSION_LOG_SCHEMA_VERSION",
+    "LOCAL_STREAM",
     "SessionLogWriter",
     "SessionLogTap",
     "attach_session",
     "detach_session",
     "get_tap",
     "record_user_action",
+    "record_pod_slice_hash",
+    "session_summary_for",
     "latest_session_summary",
 ]
 
-SESSION_LOG_SCHEMA_VERSION = 1
+# File-envelope stream label for local logs (spec 06 §2.2).
+LOCAL_STREAM = "local"
 
-# Chain checkpoints land every N hashed slices (plus one at session
-# end), mirroring the ledger's periodic checkpoint seals.
-_CHAIN_CHECKPOINT_EVERY = 256
-
-# Params messages arrive at ~125 Hz; user-action records for them are
+# Params messages arrive at ~125 Hz; action.param records for them are
 # diffed against the last logged values and rate-limited.
 _PARAMS_ACTION_MIN_INTERVAL_S = 1.0
 
@@ -95,12 +104,9 @@ _MAX_SUMMARY_STR = 300
 _MAX_SUMMARY_LIST = 24
 
 
-def _utc_ts() -> str:
-    return (
-        datetime.now(timezone.utc)
-        .isoformat(timespec="milliseconds")
-        .replace("+00:00", "Z")
-    )
+def _now_ms() -> int:
+    """Wall-clock ms since epoch (spec 06 §0)."""
+    return int(time.time() * 1000)
 
 
 def buffer_fingerprint(arr: np.ndarray) -> str:
@@ -124,10 +130,10 @@ def buffer_fingerprint(arr: np.ndarray) -> str:
 
 
 def _summarize(value: Any) -> Any:
-    """Shrink a payload for a user-action record: bounded strings and
-    lists, no binary. Prompt text stays intact up to the cap — the log
-    is local-only, so prompt content is allowed here (spec 02 §5) even
-    though only counts ever enter a manifest."""
+    """Shrink a payload value: bounded strings and lists, no binary.
+    Prompt text stays intact up to the cap — the log is local-only, so
+    prompt content is allowed here (spec 02 §5) even though only counts
+    ever enter a manifest."""
     if isinstance(value, (bytes, bytearray, memoryview)):
         return {"bytes": len(value)}
     if isinstance(value, str):
@@ -144,33 +150,47 @@ def _summarize(value: Any) -> Any:
 
 
 class SessionLogWriter:
-    """Append-only JSONL writer. Thread-safe; one flush per event so a
-    crash loses at most the in-flight line. Never raises out of
-    :meth:`record` — a broken log must not take down the session."""
+    """Append-only JSONL writer for the spec 06 §2.2 envelope. Owns the
+    local stream's contiguous ``seq`` counter. Thread-safe; one flush per
+    event so a crash loses at most the in-flight line. Never raises out
+    of :meth:`record` — a broken log must not take down the session."""
 
     def __init__(self, path: Path, session_id: str) -> None:
         self.path = path
         self.session_id = session_id
         self._lock = threading.Lock()
+        self._seq = 0
         self._failed = False
         path.parent.mkdir(parents=True, exist_ok=True)
         self._fh = open(path, "a", encoding="utf-8")
 
-    def record(self, event: str, **fields: Any) -> None:
-        line = {
-            "schema": SESSION_LOG_SCHEMA_VERSION,
-            "ts": _utc_ts(),
-            "session_id": self.session_id,
-            "event": event,
-            **fields,
-        }
+    def record(
+        self,
+        type: str,
+        payload: dict,
+        *,
+        ts: int | None = None,
+        ppq: float | None = None,
+    ) -> None:
         try:
-            payload = json.dumps(line, default=str, separators=(",", ":"))
             with self._lock:
                 if self._fh.closed:
                     return
-                self._fh.write(payload + "\n")
+                line = {
+                    "stream": LOCAL_STREAM,
+                    "seq": self._seq,
+                    "type": type,
+                    "ts": _now_ms() if ts is None else int(ts),
+                    "payload": payload,
+                }
+                if ppq is not None:
+                    line["ppq"] = float(ppq)
+                payload_str = json.dumps(
+                    line, default=str, separators=(",", ":"),
+                )
+                self._fh.write(payload_str + "\n")
                 self._fh.flush()
+                self._seq += 1
         except Exception as exc:  # noqa: BLE001
             if not self._failed:
                 self._failed = True
@@ -198,13 +218,15 @@ class SessionLogWriter:
 
 class SessionLogTap:
     """Event-bus subscriber that serializes session events to the local
-    log (and forwards them to the ledger client when one is configured).
+    log in the shared §2.2 schema (and forwards them to the ledger client
+    when one is configured).
 
-    Owns the output-slice rolling hash chain: ``head = sha256(head_hex
-    || slice_bytes)``, checkpointed every ``_CHAIN_CHECKPOINT_EVERY``
-    slices and sealed into the ``session_end`` record. Runs entirely on
-    the subscription's drainer thread plus whichever thread calls
-    :meth:`record_user_action`; shared counters sit behind one lock.
+    Counts decoded output slices for the summary but does not hash them
+    (see the module docstring): the §2.3 slice hash is over the transport
+    codec's float16 downlink bytes, reported via
+    :meth:`record_pod_slice_hash`. Runs on the subscription's drainer
+    thread plus whichever thread calls :meth:`record_user_action` /
+    :meth:`record_pod_slice_hash`; shared counters sit behind one lock.
     """
 
     def __init__(
@@ -223,8 +245,8 @@ class SessionLogTap:
 
         self._lock = threading.Lock()
         self._started_wall = time.time()
-        self._chain_head = hashlib.sha256(b"").hexdigest()
-        self._slices = 0
+        self._slices = 0            # decoded slices seen on the bus
+        self._slice_hashes = 0      # slice.pod_hash reports forwarded
         self._counts = {
             "events": 0,
             "prompt_changes": 0,
@@ -252,18 +274,23 @@ class SessionLogTap:
         ]
         self._model = meta.get("checkpoint") or snap.get("checkpoint")
         self._loras = loras
+        # session.config: model + LoRA identifiers + initial config,
+        # mirroring the WS config handshake (spec 06 §2.2).
         self._record(
-            "session_start",
-            model=self._model,
-            loras=loras,
-            fixture_name=meta.get("fixture_name") or snap.get("fixture_name"),
-            prompt=snap.get("prompt"),
-            bpm=snap.get("bpm"),
-            key=snap.get("key"),
-            time_signature=snap.get("time_signature"),
-            extra={
-                k: v for k, v in meta.items()
-                if k not in ("checkpoint", "fixture_name")
+            "session.config",
+            {
+                "model": self._model,
+                "loras": loras,
+                "fixture_name": meta.get("fixture_name")
+                or snap.get("fixture_name"),
+                "prompt": snap.get("prompt"),
+                "bpm": snap.get("bpm"),
+                "key": snap.get("key"),
+                "time_signature": snap.get("time_signature"),
+                "extra": {
+                    k: v for k, v in meta.items()
+                    if k not in ("checkpoint", "fixture_name")
+                },
             },
         )
         if isinstance(snap.get("prompt"), str) and snap["prompt"]:
@@ -274,19 +301,20 @@ class SessionLogTap:
 
     # ---- recording -------------------------------------------------------
 
-    def _record(self, event: str, **fields: Any) -> None:
+    def _record(self, type: str, payload: dict, *, ppq: float | None = None) -> None:
+        ts = _now_ms()
         with self._lock:
             self._counts["events"] += 1
-        self.writer.record(event, **fields)
-        self.ledger.post_event({"event": event, **fields})
+        self.writer.record(type, payload, ts=ts, ppq=ppq)
+        self.ledger.post_event(type, payload, ts=ts, ppq=ppq)
 
     def record_user_action(
         self, action: str, payload: dict, *, source: str = "ws",
     ) -> None:
-        """One authorship-action record: action type, payload summary,
-        wall-clock ts (spec 02 §5 timeline). ``params`` actions are
-        diffed against the last logged knob values and rate-limited so
-        the ~125 Hz knob channel doesn't flood the log."""
+        """One authorship-action record in the §2.2 schema. ``params``
+        actions map to ``action.param`` and are diffed against the last
+        logged knob values and rate-limited so the ~125 Hz knob channel
+        doesn't flood the log."""
         if self._closed:
             return
         if action == "params":
@@ -309,8 +337,8 @@ class SessionLogTap:
                 self._counts["user_actions"] += 1
                 self._counts["param_changes"] += 1
             self._record(
-                "user_action", action="params", source=source,
-                summary=_summarize(changed),
+                "action.param",
+                {"source": source, "changed": _summarize(changed)},
             )
             return
         with self._lock:
@@ -323,8 +351,43 @@ class SessionLogTap:
         summary = _summarize({
             k: v for k, v in payload.items() if k != "type"
         })
-        self._record(
-            "user_action", action=action, source=source, summary=summary,
+        body = {"source": source}
+        if isinstance(summary, dict):
+            body.update(summary)
+        else:
+            body["value"] = summary
+        if action == "prompt":
+            self._record("action.prompt", body)
+        else:
+            body["action"] = action
+            self._record("session.note", {"note": "user_action", **body})
+
+    def record_pod_slice_hash(
+        self,
+        *,
+        sha256: str,
+        start_sample: int,
+        num_samples: int,
+        channels: int,
+        slice_seq: int | None = None,
+        mac_verified: bool | None = None,
+    ) -> None:
+        """Report a pod-side output-slice hash (spec 06 §2.3): SHA-256
+        over the uncompressed interleaved float16 downlink payload bytes,
+        computed in the transport codec where those exact bytes exist.
+        Emits a ``slice.pod_hash`` ledger event through this session's
+        ledger client so it shares the pod stream's contiguous seq."""
+        if self._closed:
+            return
+        with self._lock:
+            self._slice_hashes += 1
+        self.ledger.post_slice_hash(
+            sha256=sha256,
+            start_sample=start_sample,
+            num_samples=num_samples,
+            channels=channels,
+            slice_seq=slice_seq,
+            mac_verified=mac_verified,
         )
 
     # ---- bus tap ---------------------------------------------------------
@@ -346,15 +409,19 @@ class SessionLogTap:
                 self._counts["prompt_changes"] += 1
                 if event.tags:
                     self._prompts_seen.add(event.tags)
-            self._record("prompt_change", tags=_summarize(event.tags))
+            self._record("action.prompt", {"prompt": _summarize(event.tags)})
         elif isinstance(event, PromptBlendEcho):
-            self._record("prompt_blend", value=event.value)
+            self._record(
+                "action.param", {"name": "prompt_blend", "value": event.value},
+            )
         elif isinstance(event, ParamsEcho):
             with self._lock:
                 self._counts["param_changes"] += 1
-            self._record("params_external", raw=_summarize(event.raw))
+            self._record("action.param", {"raw": _summarize(event.raw)})
         elif isinstance(event, DepthApplied):
-            self._record("depth_change", value=event.value)
+            self._record(
+                "action.param", {"name": "depth", "value": event.value},
+            )
         elif isinstance(event, LoraCatalogUpdate):
             loras = [
                 e.get("id")
@@ -363,81 +430,87 @@ class SessionLogTap:
             ]
             with self._lock:
                 self._loras = loras
-            self._record("lora_catalog", loras=loras)
+            self._record("action.lora", {"loras": loras})
         elif isinstance(event, SessionReady):
             self._record(
-                "session_ready",
-                duration=event.duration,
-                sample_rate=event.sample_rate,
-                bpm=event.bpm,
-                key=event.key,
-                time_signature=event.time_signature,
-                pipeline_depth=event.pipeline_depth,
-                source_sha256=buffer_fingerprint(event.initial_buffer),
+                "action.seed_audio",
+                {
+                    "sha256": buffer_fingerprint(event.initial_buffer),
+                    "label": "initial_source",
+                    "duration_sec": event.duration,
+                    "sample_rate": event.sample_rate,
+                    "bpm": event.bpm,
+                    "key": event.key,
+                    "time_signature": event.time_signature,
+                    "pipeline_depth": event.pipeline_depth,
+                },
             )
         elif isinstance(event, SwapReady):
             self._record(
-                "source_swap",
-                fixture_name=event.fixture_name,
-                duration=event.duration,
-                bpm=event.bpm,
-                key=event.key,
-                source_epoch=event.source_epoch,
-                seed_sha256=buffer_fingerprint(event.initial_buffer),
+                "action.seed_audio",
+                {
+                    "sha256": buffer_fingerprint(event.initial_buffer),
+                    "label": "source_swap",
+                    "fixture_name": event.fixture_name,
+                    "duration_sec": event.duration,
+                    "bpm": event.bpm,
+                    "key": event.key,
+                    "source_epoch": event.source_epoch,
+                },
             )
         elif isinstance(event, TimbreSet):
-            self._record("timbre_set", name=event.name, duration=event.duration)
+            self._record(
+                "action.param",
+                {"name": "timbre", "op": "set",
+                 "timbre": event.name, "duration": event.duration},
+            )
         elif isinstance(event, TimbreCleared):
-            self._record("timbre_cleared")
+            self._record("action.param", {"name": "timbre", "op": "clear"})
         elif isinstance(event, StructureSet):
-            self._record("structure_set", name=event.name, duration=event.duration)
+            self._record(
+                "action.param",
+                {"name": "structure", "op": "set",
+                 "structure": event.name, "duration": event.duration},
+            )
         elif isinstance(event, StructureCleared):
-            self._record("structure_cleared")
+            self._record("action.param", {"name": "structure", "op": "clear"})
         elif isinstance(event, AudioWritten):
             self._record(
-                "audio_written",
-                start_s=event.start_s,
-                end_s=event.end_s,
-                source_epoch=event.source_epoch,
+                "action.transport",
+                {"op": "write_audio", "start_s": event.start_s,
+                 "end_s": event.end_s, "source_epoch": event.source_epoch},
             )
         elif isinstance(event, StemAssets):
             self._record(
-                "stem_assets",
-                fixture_name=event.fixture_name,
-                source_mode=event.source_mode,
-                frames=event.frames,
+                "session.note",
+                {"note": "stem_assets", "fixture_name": event.fixture_name,
+                 "source_mode": event.source_mode, "frames": event.frames},
             )
         elif isinstance(event, (
             CommandFailed, SwapFailed, StemFailed, TimbreFailed,
             StructureFailed, AudioWriteFailed, SessionError,
         )):
             self._record(
-                "error",
-                kind=type(event).__name__,
-                error=_summarize(getattr(event, "error", None)
-                                 or getattr(event, "message", "")),
+                "session.note",
+                {"note": "error", "kind": type(event).__name__,
+                 "error": _summarize(getattr(event, "error", None)
+                                     or getattr(event, "message", ""))},
             )
         elif isinstance(event, SubscriberDropped):
-            # Our own queue overflowed: the chain has a gap from here on.
-            self._record("log_tap_dropped", reason=event.reason)
+            # Our own queue overflowed: the log has a gap from here on.
+            self._record(
+                "session.note",
+                {"note": "log_tap_dropped", "reason": event.reason},
+            )
 
     def _on_slice(self, event: AudioReady) -> None:
-        data = np.ascontiguousarray(event.audio).tobytes()
+        # Count decoded slices for the summary. The bus carries fully
+        # reconstructed float32 audio, NOT the float16 downlink bytes the
+        # client hashes, so hashing here could never cross-check — that
+        # hash is produced in the transport codec and reported via
+        # record_pod_slice_hash (spec 06 §2.3).
         with self._lock:
-            self._chain_head = hashlib.sha256(
-                self._chain_head.encode("ascii") + data,
-            ).hexdigest()
             self._slices += 1
-            head, n = self._chain_head, self._slices
-            checkpoint = n % _CHAIN_CHECKPOINT_EVERY == 0
-        self.ledger.post_slice_hash(head, n)
-        if checkpoint:
-            self._record(
-                "output_chain_checkpoint",
-                chain_head=head,
-                slices=n,
-                start_sample=event.start_sample,
-            )
 
     # ---- summary / lifecycle ---------------------------------------------
 
@@ -449,7 +522,8 @@ class SessionLogTap:
             return {
                 **self._counts,
                 "distinct_prompts": len(self._prompts_seen),
-                "slices_hashed": self._slices,
+                "slices": self._slices,
+                "slice_hashes": self._slice_hashes,
                 "duration_s": round(elapsed, 3),
             }
 
@@ -474,12 +548,15 @@ class SessionLogTap:
         except Exception:  # noqa: BLE001
             pass
         with self._lock:
-            head, n = self._chain_head, self._slices
+            n, h = self._slices, self._slice_hashes
         self._record(
-            "session_end",
-            output_chain_head=head,
-            slices_hashed=n,
-            timeline_summary=self.timeline_summary(),
+            "session.note",
+            {
+                "note": "session_end",
+                "slices": n,
+                "slice_hashes": h,
+                "timeline_summary": self.timeline_summary(),
+            },
         )
         self.ledger.close()
         self.writer.close()
@@ -547,10 +624,50 @@ def record_user_action(
         tap.record_user_action(action, payload, source=source)
 
 
+def record_pod_slice_hash(
+    session_id: str,
+    *,
+    sha256: str,
+    start_sample: int,
+    num_samples: int,
+    channels: int,
+    slice_seq: int | None = None,
+    mac_verified: bool | None = None,
+) -> None:
+    """Module-level convenience for the transport codec: forward a
+    pod-side slice hash (spec 06 §2.3) to the session's tap, no-op when
+    there is none."""
+    tap = get_tap(session_id)
+    if tap is not None:
+        tap.record_pod_slice_hash(
+            sha256=sha256,
+            start_sample=start_sample,
+            num_samples=num_samples,
+            channels=channels,
+            slice_seq=slice_seq,
+            mac_verified=mac_verified,
+        )
+
+
+def session_summary_for(session_id: str) -> Optional[dict]:
+    """Manifest-ready summary of a **specific** session (spec 06 §2.5
+    binds a record to the session that produced the asset). ``None`` when
+    that session has no active tap — callers must then emit null session
+    fields rather than borrow another session's identity."""
+    tap = get_tap(session_id)
+    return tap.manifest_summary() if tap is not None else None
+
+
 def latest_session_summary() -> Optional[dict]:
-    """Manifest-ready summary of the most recently attached live
-    session, or ``None`` when no session is active (e.g. offline
-    precompute scripts)."""
+    """Summary of the most recently attached live session, or ``None``.
+
+    Do NOT use this to bind a manifest to an asset: under concurrent
+    sessions the newest tap is not necessarily the one that produced a
+    given asset (audit F7/G5). Use :func:`session_summary_for` with the
+    id of the session that produced the asset instead. Retained only for
+    diagnostics / single-session callers that explicitly want "whatever
+    is live now".
+    """
     with _taps_lock:
         if not _taps_order:
             return None

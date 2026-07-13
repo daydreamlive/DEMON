@@ -1,26 +1,27 @@
-"""Local JSONL session log: bus tap wiring, line schema, hash chain.
+"""Local JSONL session log: bus tap wiring, §2.2 envelope schema, slice
+counting, and the batched ledger client (spec 06 §2.3).
 
 Pure Python — no GPU, no c2pa. Drives a real
 :class:`acestep.streaming.events.EventBus` through the registry hook
 (:func:`acestep.streaming.registry.register` attaches the tap when the
-handle carries a ``bus``) and asserts the on-disk JSONL record: one
-``session_start`` with model/LoRA identity, timestamped typed events,
-diffed + rate-limited ``params`` user actions, output-chain
-checkpoints, and a sealing ``session_end``.
+handle carries a ``bus``) and asserts the on-disk JSONL record uses the
+shared ledger schema: ``{stream:"local", seq, type, ts(ms), payload}``
+envelopes with namespaced type names, a ``session.config`` opener, and a
+``session.note`` seal.
 
 Determinism: :meth:`SessionLogTap.close` (via ``unregister``)
 unsubscribes and joins the drainer, and the drainer delivers all
 already-queued events before exiting — so once ``unregister`` returns,
-every published event is on disk and ``session_end`` is the last line.
+every published event is on disk and the seal is the last line.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
+import threading
 import time
-from datetime import datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import numpy as np
@@ -28,11 +29,14 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import acestep.provenance.session_log as session_log_mod
+from acestep.provenance.ledger_client import LedgerClient
 from acestep.provenance.session_log import (
-    SESSION_LOG_SCHEMA_VERSION,
+    LOCAL_STREAM,
     get_tap,
     latest_session_summary,
+    record_pod_slice_hash,
     record_user_action,
+    session_summary_for,
 )
 from acestep.streaming import registry
 from acestep.streaming.events import (
@@ -71,8 +75,13 @@ def _read_log(tmp_path: Path, session_id: str) -> list[dict]:
     return [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines()]
 
 
-def _by_event(lines: list[dict], event: str) -> list[dict]:
-    return [l for l in lines if l["event"] == event]
+def _by_type(lines: list[dict], type_: str) -> list[dict]:
+    return [l for l in lines if l["type"] == type_]
+
+
+def _notes(lines: list[dict], note: str) -> list[dict]:
+    return [l for l in lines
+            if l["type"] == "session.note" and l["payload"].get("note") == note]
 
 
 def test_session_log_schema_and_lifecycle(tmp_path, monkeypatch):
@@ -101,45 +110,47 @@ def test_session_log_schema_and_lifecycle(tmp_path, monkeypatch):
 
     lines = _read_log(tmp_path, "sess-schema")
 
-    # Every line carries the shared envelope: schema version, a
-    # wall-clock UTC "Z" timestamp, the session id, and an event type.
-    for line in lines:
-        assert line["schema"] == SESSION_LOG_SCHEMA_VERSION
-        assert line["session_id"] == "sess-schema"
-        assert isinstance(line["event"], str)
-        assert line["ts"].endswith("Z")
-        datetime.fromisoformat(line["ts"].replace("Z", "+00:00"))  # parses
+    # Every line carries the shared §2.2 envelope: a "local" stream label,
+    # a contiguous-from-0 seq, a namespaced string type, an integer
+    # epoch-ms ts (never an ISO string), and a payload object.
+    for i, line in enumerate(lines):
+        assert line["stream"] == LOCAL_STREAM
+        assert line["seq"] == i
+        assert isinstance(line["type"], str) and "." in line["type"]
+        assert isinstance(line["ts"], int)
+        assert line["ts"] > 1_600_000_000_000  # plausibly ms, not seconds
+        assert isinstance(line["payload"], dict)
 
-    # session_start is first and carries the identity fields.
+    # session.config is first and carries the identity fields in payload.
     start = lines[0]
-    assert start["event"] == "session_start"
-    assert start["model"] == "ace_step_v1"
-    assert start["loras"] == ["lead-guitar"]
-    assert start["fixture_name"] == "loop60"
-    assert start["prompt"] == "warm analog dub"
-    assert start["bpm"] == 120
+    assert start["type"] == "session.config"
+    cfg = start["payload"]
+    assert cfg["model"] == "ace_step_v1"
+    assert cfg["loras"] == ["lead-guitar"]
+    assert cfg["fixture_name"] == "loop60"
+    assert cfg["prompt"] == "warm analog dub"
+    assert cfg["bpm"] == 120
 
-    # Typed bus events land with their payload fields.
-    prompt = _by_event(lines, "prompt_change")
-    assert len(prompt) == 1 and prompt[0]["tags"] == "dark techno"
-    errors = _by_event(lines, "error")
+    # Prompts (bus PromptApplied + user action) both map to action.prompt.
+    prompts = _by_type(lines, "action.prompt")
+    assert {p["payload"].get("prompt") for p in prompts} >= {"dark techno"}
+    user_prompt = [p for p in prompts if p["payload"].get("tags") == "dub 2"]
+    assert len(user_prompt) == 1
+    assert user_prompt[0]["payload"]["source"] == "ws"
+
+    # A failure lands as a session.note error with the kind + message.
+    errors = _notes(lines, "error")
     assert len(errors) == 1
-    assert errors[0]["kind"] == "SwapFailed"
-    assert errors[0]["error"] == "no such fixture"
+    assert errors[0]["payload"]["kind"] == "SwapFailed"
+    assert errors[0]["payload"]["error"] == "no such fixture"
 
-    # User actions carry action / source / bounded payload summary.
-    actions = _by_event(lines, "user_action")
-    assert len(actions) == 1
-    assert actions[0]["action"] == "prompt"
-    assert actions[0]["source"] == "ws"
-    assert actions[0]["summary"] == {"tags": "dub 2"}
-
-    # session_end seals the log: chain head + timeline summary counts.
+    # session_end seals the log with counts (never prompt content).
     end = lines[-1]
-    assert end["event"] == "session_end"
-    assert end["slices_hashed"] == 0
-    assert end["output_chain_head"] == hashlib.sha256(b"").hexdigest()
-    summary = end["timeline_summary"]
+    assert end["type"] == "session.note"
+    assert end["payload"]["note"] == "session_end"
+    assert end["payload"]["slices"] == 0
+    assert end["payload"]["slice_hashes"] == 0
+    summary = end["payload"]["timeline_summary"]
     assert summary["prompt_changes"] == 2  # bus PromptApplied + user action
     assert summary["user_actions"] == 1
     assert summary["distinct_prompts"] == 3  # snapshot + applied + user action
@@ -148,43 +159,47 @@ def test_session_log_schema_and_lifecycle(tmp_path, monkeypatch):
     assert summary["events"] == len(lines) - 1
     assert summary["duration_s"] >= 0.0
 
+    # No masquerading float32 slice-hash chain remains (audit F3).
+    assert not _by_type(lines, "output_chain_checkpoint")
+    assert all("chain_head" not in l["payload"] for l in lines)
+
     # Detach removed the tap from the process-global registry.
     assert get_tap("sess-schema") is None
     assert latest_session_summary() is None
+    assert session_summary_for("sess-schema") is None
 
 
-def test_output_chain_checkpoints_and_seal(tmp_path, monkeypatch):
+def test_slice_counting_and_pod_slice_hash(tmp_path, monkeypatch):
     monkeypatch.setenv("ACESTEP_PROVENANCE_DIR", str(tmp_path / "provenance"))
-    monkeypatch.setattr(session_log_mod, "_CHAIN_CHECKPOINT_EVERY", 4)
     bus = EventBus()
-    _register(bus, "sess-chain")
+    _register(bus, "sess-slice")
 
-    slices = [_slice(i) for i in range(6)]
-    for s in slices:
-        bus.publish(s)
-    registry.unregister("sess-chain")
+    # Decoded slices on the bus are counted, not hashed (the §2.3 hash is
+    # over the transport codec's float16 downlink bytes, reported
+    # separately via record_pod_slice_hash).
+    for i in range(6):
+        bus.publish(_slice(i))
+    for seq in range(3):
+        record_pod_slice_hash(
+            "sess-slice",
+            sha256="ab" * 32,
+            start_sample=seq * 16,
+            num_samples=16,
+            channels=2,
+            slice_seq=seq,
+        )
+    registry.unregister("sess-slice")
 
-    # Recompute the expected rolling chain: head = sha256(head_hex || bytes).
-    head = hashlib.sha256(b"").hexdigest()
-    heads = []
-    for s in slices:
-        head = hashlib.sha256(
-            head.encode("ascii") + np.ascontiguousarray(s.audio).tobytes(),
-        ).hexdigest()
-        heads.append(head)
-
-    lines = _read_log(tmp_path, "sess-chain")
-    checkpoints = _by_event(lines, "output_chain_checkpoint")
-    assert len(checkpoints) == 1  # 6 slices, checkpoint every 4
-    assert checkpoints[0]["slices"] == 4
-    assert checkpoints[0]["chain_head"] == heads[3]
-    assert checkpoints[0]["start_sample"] == slices[3].start_sample
+    lines = _read_log(tmp_path, "sess-slice")
+    # Per-slice hashes go to the ledger, not the local JSONL (anti-bloat).
+    assert not _by_type(lines, "slice.pod_hash")
 
     end = lines[-1]
-    assert end["event"] == "session_end"
-    assert end["slices_hashed"] == 6
-    assert end["output_chain_head"] == heads[-1]
-    assert end["timeline_summary"]["slices_hashed"] == 6
+    assert end["payload"]["note"] == "session_end"
+    assert end["payload"]["slices"] == 6
+    assert end["payload"]["slice_hashes"] == 3
+    assert end["payload"]["timeline_summary"]["slices"] == 6
+    assert end["payload"]["timeline_summary"]["slice_hashes"] == 3
 
 
 def test_params_actions_are_diffed_and_rate_limited(tmp_path, monkeypatch):
@@ -212,12 +227,13 @@ def test_params_actions_are_diffed_and_rate_limited(tmp_path, monkeypatch):
 
     registry.unregister("sess-params")
     lines = _read_log(tmp_path, "sess-params")
-    actions = _by_event(lines, "user_action")
-    assert [a["summary"] for a in actions] == [
+    actions = _by_type(lines, "action.param")
+    assert [a["payload"]["changed"] for a in actions] == [
         {"steer": 0.5, "flow": 0.1},
         {"steer": 0.7},
     ]
-    assert lines[-1]["timeline_summary"]["param_changes"] == 2
+    assert all(a["payload"]["source"] == "ws" for a in actions)
+    assert lines[-1]["payload"]["timeline_summary"]["param_changes"] == 2
 
 
 def test_registry_hook_is_inert_without_bus(tmp_path, monkeypatch):
@@ -233,3 +249,139 @@ def test_registry_hook_is_inert_without_bus(tmp_path, monkeypatch):
 
     assert get_tap("sess-no-bus") is None
     assert not (tmp_path / "provenance" / "sessions").exists()
+
+
+# ---------------------------------------------------------------------------
+# Batched ledger client (spec 06 §2.3): wire shape, auth, seq, receipts
+# ---------------------------------------------------------------------------
+
+
+class _CapturingLedger:
+    """A throwaway HTTP server that captures ingestion requests and
+    answers with a §2.3-shaped receipt response."""
+
+    def __init__(self):
+        self.requests: list[dict] = []
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *a):  # silence
+                pass
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length) or b"{}")
+                outer.requests.append({
+                    "path": self.path,
+                    "auth": self.headers.get("Authorization"),
+                    "content_type": self.headers.get("Content-Type"),
+                    "body": body,
+                })
+                last_seq = body["events"][-1]["seq"]
+                resp = json.dumps({
+                    "stream": "pod",
+                    "chain_head": "9c" * 32,
+                    "receipts": [{
+                        "seq": last_seq,
+                        "chain_head": "9c" * 32,
+                        "ts": 1751871234890,
+                        "receipt_kid": "rk-2026-07-07",
+                        "sig": "base64url-signature",
+                    }],
+                }).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+
+        self._server = HTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self._server.server_address[1]
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, daemon=True,
+        )
+        self._thread.start()
+
+    @property
+    def base_url(self) -> str:
+        return f"http://127.0.0.1:{self.port}/v1"
+
+    def close(self):
+        self._server.shutdown()
+        self._server.server_close()
+
+
+def test_ledger_client_noop_without_url_or_token():
+    # No config at all → disabled, no thread, no crash.
+    c = LedgerClient(base_url="", session_id="s", token="")
+    assert not c.enabled
+    c.post_event("action.prompt", {"prompt": "x"})
+    c.post_slice_hash(sha256="ab" * 32, start_sample=0, num_samples=16, channels=2)
+    c.close()
+    assert c._worker is None
+    # URL but no token is still a no-op (the pod token is mandatory).
+    c2 = LedgerClient(base_url="http://x/v1", session_id="s", token=None)
+    assert not c2.enabled
+
+
+def test_ledger_client_batches_events_with_auth_and_contiguous_seq():
+    server = _CapturingLedger()
+    try:
+        client = LedgerClient(
+            base_url=server.base_url, session_id="sess_9f2c", token="dlt_pod_abc",
+        )
+        assert client.enabled
+        client.post_event("session.config", {"model": "acestep-1.5"}, ts=1000)
+        client.post_event("action.prompt", {"prompt": "warm keys"}, ts=1001)
+        # A slice-hash report forces a prompt flush and yields a receipt.
+        client.post_slice_hash(
+            sha256="cd" * 32, start_sample=4177920, num_samples=96000,
+            channels=2, slice_seq=812, ts=1002,
+        )
+        client.close(timeout=5.0)
+    finally:
+        server.close()
+
+    assert len(server.requests) >= 1
+    req = server.requests[0]
+    # Path + auth per §2.3.
+    assert req["path"] == "/v1/sessions/sess_9f2c/events"
+    assert req["auth"] == "Bearer dlt_pod_abc"
+    assert req["content_type"] == "application/json"
+    # Batched envelope with contiguous seq from 0.
+    events = req["body"]["events"]
+    assert [e["seq"] for e in events] == list(range(len(events)))
+    types = [e["type"] for e in events]
+    assert types[:2] == ["session.config", "action.prompt"]
+    # The slice.pod_hash event carries the §2.3 payload.
+    slice_ev = [e for e in events if e["type"] == "slice.pod_hash"][-1]
+    assert slice_ev["payload"] == {
+        "start_sample": 4177920, "num_samples": 96000, "channels": 2,
+        "sha256": "cd" * 32, "slice_seq": 812,
+    }
+    # Every event uses integer epoch-ms ts.
+    assert all(isinstance(e["ts"], int) for e in events)
+
+
+def test_ledger_client_parses_receipt_field_names():
+    server = _CapturingLedger()
+    try:
+        client = LedgerClient(
+            base_url=server.base_url, session_id="s", token="dlt_pod_x",
+        )
+        client.post_slice_hash(
+            sha256="ef" * 32, start_sample=0, num_samples=16, channels=2,
+            slice_seq=0,
+        )
+        client.close(timeout=5.0)
+    finally:
+        server.close()
+
+    r = client.last_receipt
+    assert r is not None
+    # Correct wire field names (sig / receipt_kid), not the old ones.
+    assert r.sig == "base64url-signature"
+    assert r.receipt_kid == "rk-2026-07-07"
+    assert r.chain_head == "9c" * 32
+    assert r.ts == 1751871234890
+    assert client.chain_head == "9c" * 32
