@@ -188,6 +188,32 @@ def save_track_metadata(
     os.replace(tmp, p)
 
 
+def _embed_provenance(path: Path, *, ingredient_fingerprint: str | None) -> None:
+    """Best-effort C2PA manifest embed after a WAV lands on disk.
+
+    Import is lazy and the embed itself never raises (it degrades to a
+    single logged warning without the ``provenance`` extra), so asset
+    persistence is byte-identical in behaviour when provenance is off.
+
+    Every WAV these writers persist derives from seed audio (uploads,
+    fixture sources, separated stems), so the manifest is always
+    composite-with-trained-media regardless of whether the seed's
+    fingerprint was recoverable at write time.
+    """
+    try:
+        from acestep.provenance.manifest import (
+            COMPOSITE_WITH_TRAINED_ALGORITHMIC_MEDIA,
+            embed_wav_manifest,
+        )
+    except Exception:
+        return
+    embed_wav_manifest(
+        path,
+        ingredient_fingerprint=ingredient_fingerprint,
+        source_type=COMPOSITE_WITH_TRAINED_ALGORITHMIC_MEDIA,
+    )
+
+
 def write_stem_wavs(
     root: Path,
     name: str,
@@ -197,6 +223,13 @@ def write_stem_wavs(
 ) -> None:
     import soundfile as sf
 
+    # Stems are model-separated from the track's source audio; that
+    # source is the seed reference. Callers persist stems before
+    # track.json, so on the first write the fingerprint may not be on
+    # disk yet — the manifest then carries no seed hash but keeps the
+    # composite source type (seed audio always exists for stems).
+    meta = load_track_metadata(root, name)
+    seed_fp = meta.get("waveform_sha256") or None
     for mode in STEM_MODES:
         if mode not in stems:
             raise ValueError(f"missing stem: {mode}")
@@ -206,6 +239,7 @@ def write_stem_wavs(
         wav = stems[mode].detach().cpu().float()
         sf.write(str(tmp), wav.numpy().T, int(sample_rate), format="WAV", subtype="FLOAT")
         os.replace(tmp, p)
+        _embed_provenance(p, ingredient_fingerprint=seed_fp)
 
 
 def write_track_wav(
@@ -223,6 +257,10 @@ def write_track_wav(
     wav = waveform.detach().cpu().float()
     sf.write(str(tmp), wav.numpy().T, int(sample_rate), format="WAV", subtype="FLOAT")
     os.replace(tmp, p)
+    # The written track IS seed audio (user upload / fixture source), so
+    # the manifest is composite-with-trained-media and the ingredient
+    # hash is the same fingerprint track.json will advertise.
+    _embed_provenance(p, ingredient_fingerprint=waveform_fingerprint(waveform))
 
 
 def read_stem_wavs(
