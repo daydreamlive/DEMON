@@ -1366,6 +1366,19 @@ def _handle_client_body(
             # the in-flight window permanently negative so the load-bearing
             # flow-control layer stops engaging.
             _slice_flow["sent"] += len(frame)
+            # Report the pod-side slice hash over the exact float16 bytes
+            # just sent (spec 06 §2.3), for pod/client cross-checking.
+            # Fully guarded + fail-open: provenance must never wedge the
+            # downlink (spec 06 §7).
+            slice_hash = codec.last_slice_hash
+            if slice_hash is not None:
+                try:
+                    from acestep.provenance.session_log import (
+                        record_pod_slice_hash,
+                    )
+                    record_pod_slice_hash(session_id, **slice_hash)
+                except Exception:  # noqa: BLE001
+                    pass
         except ConnectionClosed:
             state.running = False
 

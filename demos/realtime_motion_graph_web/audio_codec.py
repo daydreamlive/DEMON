@@ -19,6 +19,7 @@ binary follow-ups for one logical event stay atomic.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import struct
 
@@ -49,6 +50,12 @@ class SliceCodec:
         # place on every encode.
         self._mirror = initial_mirror.copy()
         self._zctx = zstd.ZstdCompressor(level=zstd_level)
+        # Pod-side monotonic slice counter (spec 06 §3) and the last
+        # encoded frame's slice-hash report (spec 06 §2.3), consumed by
+        # the transport to emit a ``slice.pod_hash`` ledger event. ``None``
+        # until the first non-empty frame is encoded.
+        self._slice_seq = 0
+        self.last_slice_hash: dict | None = None
 
     @property
     def mirror(self) -> np.ndarray:
@@ -78,12 +85,26 @@ class SliceCodec:
         ss = int(start_sample)
         se = min(ss + len(audio), len(self._mirror))
         if se <= ss:
+            self.last_slice_hash = None
             return None
         region = audio[: se - ss]
         mirror_region = self._mirror[ss:se]
         # Delta = what server has now minus what client has
         delta = (region - mirror_region).astype(np.float16)
-        compressed = self._zctx.compress(delta.tobytes())
+        delta_bytes = delta.tobytes()
+        # Pod-side slice hash (spec 06 §2.3): SHA-256 over the uncompressed
+        # interleaved float16 payload bytes — the exact bytes the client
+        # gets back after zstd-decompressing this frame, so the pod and
+        # client hashes compare directly for cross-checking.
+        self.last_slice_hash = {
+            "sha256": hashlib.sha256(delta_bytes).hexdigest(),
+            "start_sample": ss,
+            "num_samples": se - ss,
+            "channels": int(channels),
+            "slice_seq": self._slice_seq,
+        }
+        self._slice_seq += 1
+        compressed = self._zctx.compress(delta_bytes)
         # Mirror our copy to the *reconstruction the client will hold*, not
         # the exact ``region``. The client applies ``mirror += float32(delta)``
         # with ``delta`` quantized to float16, so storing the exact region
