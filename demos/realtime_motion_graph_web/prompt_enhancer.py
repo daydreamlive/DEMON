@@ -45,28 +45,71 @@ RULES:
   options, no explanation, no line breaks, no "Prompt:" label.
 """.strip()
 
-# Stable Audio 3 policy. SA3 is the same engine theDAW documents (T5Gemma text
-# encoder + separate duration signal), so its prompting guide
+# Stable Audio 3 policies. SA3 is the same engine theDAW documents (T5Gemma
+# text encoder + separate duration signal), so its prompting guide
 # (theDAW/docs/guides/prompting.md) is the authoritative reference here. SA3
 # reads the prompt as a producer's natural-language DESCRIPTION, not a bare tag
-# list, so this system prompt asks for compact descriptive phrases.
+# list, so both policies ask for compact descriptive phrases.
 #
-# SA3 ships as the SOLO INSTRUMENT workflow ("generate a solo stem" — the
-# acestep family is the FULL MIX workflow), so this policy must describe ONE
-# instrument playing alone. The encoder conditions on meaning: a single stray
-# arrangement phrase ("rolling sub bass", a track-genre like "liquid drum &
-# bass") pulls the generation back to a full mix, and negations don't subtract
-# ("no drums" still embeds "drums") — hence the one-instrument / positive
-# "unaccompanied" rules below. BPM stays OUT of the clean output on purpose:
-# the M4L wire helper (demon::promptMeta) appends the REAL project tempo/key
-# downstream for backend=="sa3", so a genre-typical number here would ship two
-# conflicting BPMs. _sanitize's bpm-strip is shared and stays active for both
-# backends.
+# SA3 can generate either full tracks or a single instrument. Full-track is the
+# default so a backend choice never silently throws away SA3's arrangement
+# capability. Explicit solo intent in the rough idea selects the narrower
+# policy below. The encoder conditions on meaning: a single stray arrangement
+# phrase ("rolling sub bass", a track-genre like "liquid drum & bass") can pull
+# a requested solo back to a full mix, and negations don't subtract ("no drums"
+# still embeds "drums") — hence the one-instrument / positive "unaccompanied"
+# rules in _SYSTEM_SA3_SOLO.
+#
+# BPM stays OUT of clean output on purpose: the M4L wire helper
+# (demon::promptMeta) appends the REAL project tempo/key downstream for
+# backend=="sa3", so a genre-typical number here would ship two conflicting
+# BPMs. _sanitize's bpm-strip is shared and stays active for both backends.
 _SYSTEM_SA3 = """
 You expand a user's rough music idea into ONE vivid prompt for the Stable Audio 3
-generative-music model in its SOLO INSTRUMENT mode: the prompt must describe a
-SINGLE instrument playing completely alone — an isolated solo stem — never a full
-mix, band, or arrangement.
+generative-music model.
+
+SA3 reads the prompt as a producer's DESCRIPTION of a track — the way one producer
+describes a song to another — NOT a list of bare tags. Its text encoder conditions
+on MEANING, so short DESCRIPTIVE PHRASES beat isolated one-word keywords, while
+dense, compact phrasing beats long prose. Write ONE line.
+
+Draw only from the dimensions that matter for the intended sound:
+- genre / subgenre
+- instrumentation (name the hook / lead instrument especially)
+- tempo / feel — qualitative words ONLY ("uptempo", "half-time", "rolling", "driving")
+- mood / energy
+- production / mix texture
+- structure / motion
+
+Genre and the hook instrument carry the most weight, and THE FIRST PHRASES DOMINATE
+the result — lead with the genre and the key instrument.
+
+Follow this pattern: <genre>, <key instruments>, <tempo/feel>, <mood>, <production texture>
+
+Examples:
+lo-fi boom bap, dusty Rhodes chords, vinyl crackle, lazy swung drums, nostalgic
+liquid drum & bass, lush reverb pads, rolling sub bass, chopped soul vocal, uplifting
+cinematic orchestral build, low strings, taiko hits, rising tension, percussion entering at the climax
+bossa nova, nylon guitar, soft brushes, upright bass, intimate jazz club, warm
+melodic techno, hypnotic arpeggio, deep kick, analog bass, wide stereo
+
+RULES:
+- Stay faithful to the user's idea — honor any named artist, genre, era, or instrument
+  they mention (e.g. "boards of canada style" -> that hazy, nostalgic analog sound).
+- Describe the DESIRED trait directly ("clean, dry, minimal reverb") — NEVER phrase it
+  as what to avoid.
+- NEVER include a bpm/tempo NUMBER or a duration in seconds — describe tempo with words
+  only. The real tempo and key are added downstream, not by you.
+- Roughly 5-9 comma-separated phrases. Lowercase. One cohesive vibe.
+- Reply with ONLY the single comma-separated line. No preamble, no quotes, no options,
+  no explanation, no line breaks, no "Prompt:" label.
+""".strip()
+
+_SYSTEM_SA3_SOLO = """
+You expand a user's rough music idea into ONE vivid prompt for the Stable Audio 3
+generative-music model. The user explicitly requested a SOLO INSTRUMENT: the prompt
+must describe a SINGLE instrument playing completely alone — an isolated solo stem —
+never a full mix, band, or arrangement.
 
 SA3 reads the prompt as a producer's DESCRIPTION of a recording — the way one
 producer describes it to another — NOT a list of bare tags. Its text encoder
@@ -110,6 +153,22 @@ RULES:
 - Reply with ONLY the single comma-separated line. No preamble, no quotes, no options,
   no explanation, no line breaks, no "Prompt:" label.
 """.strip()
+
+# Deliberately require explicit performance/stem language. A bare mood such as
+# "alone at night" or "isolated atmosphere" must not discard a full arrangement.
+_SA3_SOLO_CUE_RE = re.compile(
+    r"\b(?:solo(?:ist)?|unaccompanied|a\s+cappella|acapella)\b"
+    r"|\b(?:single|one)[ -](?:instrument|voice|vocal|performer)\b"
+    r"|\bisolated(?:[ -][\w-]+){0,3}[ -](?:instrument|voice|vocal|vocals|stem)\b"
+    r"|\b(?:instrument|voice|vocal|vocals)\s+(?:playing\s+)?alone\b"
+    r"|\bplaying\s+(?:completely\s+)?alone\b",
+    re.IGNORECASE,
+)
+
+
+def _sa3_wants_solo(idea: str) -> bool:
+    """Return whether the rough idea explicitly asks for an isolated performer."""
+    return bool(_SA3_SOLO_CUE_RE.search(idea))
 
 
 def llm_available() -> bool:
@@ -166,12 +225,12 @@ def _ask_haiku(system: str, user: str) -> str | None:
 def enhance_prompt(idea: str, backend: str = "acestep") -> tuple[str, bool]:
     """Expand a rough idea into a rich prompt for the active backend.
 
-    ``backend`` selects the LLM policy: ``"sa3"`` uses the Stable Audio 3
-    SOLO INSTRUMENT style (a natural-language description of ONE instrument
-    playing alone — SA3 ships as the solo-stem workflow); anything else
-    (default) uses the legacy ACE-Step full-mix comma-tag style. The default
-    keeps the pre-existing no-``backend`` call path byte-identical.
-    ``_sanitize`` (incl. the bpm-strip) is shared, so both backends stay
+    ``backend`` selects the model family policy. ``"sa3"`` uses a full-track
+    Stable Audio 3 description by default and switches to its solo-instrument
+    policy only when the rough idea contains an explicit solo cue. Anything
+    else (default) uses the legacy ACE-Step full-mix comma-tag style. The
+    default keeps the pre-existing no-``backend`` call path byte-identical.
+    ``_sanitize`` (incl. the bpm-strip) is shared, so every path stays
     bpm-number-free.
 
     Returns ``(text, ok)``. ``ok=False`` means enhancement was unavailable or
@@ -182,11 +241,18 @@ def enhance_prompt(idea: str, backend: str = "acestep") -> tuple[str, bool]:
     if not idea:
         return idea, False
     if backend == "sa3":
-        system = _SYSTEM_SA3
-        user = (
-            f'Rough idea: "{idea[:300]}". Expand it into one Stable Audio 3 '
-            "solo-instrument prompt (one instrument, playing alone)."
-        )
+        if _sa3_wants_solo(idea):
+            system = _SYSTEM_SA3_SOLO
+            user = (
+                f'Rough idea: "{idea[:300]}". Expand it into one Stable Audio 3 '
+                "solo-instrument prompt (one instrument, playing alone)."
+            )
+        else:
+            system = _SYSTEM_SA3
+            user = (
+                f'Rough idea: "{idea[:300]}". Expand it into one rich '
+                "Stable Audio 3 prompt."
+            )
     else:
         system = _SYSTEM
         user = f'Rough idea: "{idea[:300]}". Expand it into one rich ACE-Step prompt.'
