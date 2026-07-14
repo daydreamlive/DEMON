@@ -215,6 +215,12 @@ COMMANDS: tuple = (
             FieldSpec("playback_pos", "float", default=0.0,
                       description="Playhead position in SECONDS (not a 0..1 "
                                   "ratio); used for time-keyed curve sampling."),
+            FieldSpec("render_anchor_s", "float", nullable=True,
+                      description="Optional stationary render placement in "
+                                  "absolute buffer/song seconds. A finite value "
+                                  "renders exactly at that position, bypassing "
+                                  "transport lead and loop-band snapping. Absent "
+                                  "retains the prior anchor; null clears it."),
             FieldSpec("client_time", "float", nullable=True,
                       description="Client monotonic send time in seconds "
                                   "(performance.now()/1000; arbitrary origin). "

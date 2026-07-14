@@ -129,6 +129,9 @@ from acestep.streaming.stems import (
 )
 
 
+_RENDER_ANCHOR_UNSET = object()
+
+
 # ---------------------------------------------------------------------------
 # Pipeline depth bounds + idle pause threshold
 # ---------------------------------------------------------------------------
@@ -1547,16 +1550,24 @@ class StreamingSession:
     def set_knobs(
         self,
         raw: dict,
-        playback_pos: float = 0.0,
+        playback_pos: float | None = None,
         *,
         origin: CommandOrigin = CommandOrigin.PRIMARY,
         client_time: float | None = None,
         slice_lead_s: float | None = None,
+        render_anchor_s=_RENDER_ANCHOR_UNSET,
     ) -> None:
         """Apply or echo a knob update. ``raw`` is the unfiltered
         wire dict; values land in ``virtual_knobs`` only on PRIMARY.
         EXTERNAL emits :class:`ParamsEcho` so the primary transport's
         UI tween owns the smoothed sequence.
+
+        ``playback_pos`` is the client's audible playhead, or ``None`` when
+        this frame carries no clock. A missing clock leaves the prior position
+        untouched.
+
+        ``render_anchor_s`` is sticky three-state placement: omitted retains
+        the current anchor, a finite float sets it, and ``None`` clears it.
 
         ``client_time`` is the client's monotonic send stamp (seconds,
         arbitrary origin) when the transport carries one. It feeds the
@@ -1586,7 +1597,9 @@ class StreamingSession:
                 logger.info(
                     "lat_knob origin={} playback_s={:.3f} changed={} "
                     "denoise={}",
-                    origin.value, float(playback_pos), _changed,
+                    origin.value,
+                    float(playback_pos) if playback_pos is not None else -1.0,
+                    _changed,
                     raw.get("denoise"),
                 )
             state.last_params_raw = dict(raw)
@@ -1613,9 +1626,12 @@ class StreamingSession:
         with state._lock:
             self.virtual_knobs.update(clean)
             try:
-                self.audio_eng.position = int(playback_pos * SAMPLE_RATE) % max(
-                    1, len(self.audio_eng.current),
-                )
+                if playback_pos is not None:
+                    self.audio_eng.position = int(playback_pos * SAMPLE_RATE) % max(
+                        1, len(self.audio_eng.current),
+                    )
+                if render_anchor_s is not _RENDER_ANCHOR_UNSET:
+                    self.audio_eng.render_anchor_s = render_anchor_s
                 self.audio_eng.position_staleness_s = staleness_s
                 if slice_lead_s is not None:
                     self.audio_eng.observed_slice_lead_s = slice_lead_s
@@ -2053,6 +2069,9 @@ class StreamingSession:
         :class:`SwapFailed` when the swap completes."""
         state = self.state
         state.last_activity_ts = time.monotonic()
+        # Placement belongs to the old source's coordinate space. Clear as
+        # soon as a swap is requested, before the runner can consume it again.
+        self.audio_eng.render_anchor_s = None
         effective_tags = tags or state.prompt_text
         with state._lock:
             state.swap_pending["waveform"] = audio.waveform
