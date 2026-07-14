@@ -87,6 +87,34 @@ def test_sa3_system_prompt_is_bpm_free_and_natural_language():
     assert "stable audio 3" in sys_l
 
 
+def test_sa3_policy_is_solo_instrument():
+    """SA3 ships as the SOLO INSTRUMENT workflow (acestep is FULL MIX), so its
+    policy must steer toward one instrument playing alone — the full-mix drift
+    this policy replaced came from arrangement-style few-shot examples."""
+    sys_l = pe._SYSTEM_SA3.lower()
+    assert "solo" in sys_l
+    assert "unaccompanied" in sys_l
+    assert "full mix" in sys_l  # the never-a-full-mix rule is stated
+    # Every few-shot example line must lead with the solo instrument.
+    lines = pe._SYSTEM_SA3.splitlines()
+    examples = lines[lines.index("Examples:") + 1:]
+    example_lines = []
+    for ln in examples:
+        if not ln.strip():
+            break
+        example_lines.append(ln)
+    assert example_lines, "SA3 policy lost its few-shot examples"
+    for ln in example_lines:
+        assert ln.startswith("solo "), f"example does not lead with solo: {ln!r}"
+
+
+def test_sa3_user_message_asks_for_solo(monkeypatch):
+    """The per-request user message reinforces the solo-stem framing too."""
+    seen = _capture_system(monkeypatch)
+    pe.enhance_prompt("dreamy synthwave", "sa3")
+    assert "solo" in seen["user"].lower()
+
+
 def test_empty_prompt_returns_unchanged_not_ok(monkeypatch):
     # Should never even reach the model.
     called = {"n": 0}
