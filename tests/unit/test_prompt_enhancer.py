@@ -66,6 +66,7 @@ def test_sa3_backend_uses_sa3_policy(monkeypatch):
     assert ok is True
     assert seen["system"] is pe._SYSTEM_SA3
     assert "Stable Audio 3" in seen["user"]
+    assert "solo" not in seen["user"].lower()
 
 
 def test_bpm_number_stripped_for_both_backends(monkeypatch):
@@ -81,22 +82,21 @@ def test_sa3_system_prompt_is_bpm_free_and_natural_language():
     """The SA3 few-shot must not seed the model with numeric bpm, and must ask
     for descriptive phrases rather than a bare tag list (guide-grounded)."""
     import re
-    sys_l = pe._SYSTEM_SA3.lower()
-    assert not re.search(r"\d+\s*bpm", sys_l)  # no numeric bpm in examples/instructions
-    assert "description" in sys_l
-    assert "stable audio 3" in sys_l
+    for system in (pe._SYSTEM_SA3, pe._SYSTEM_SA3_SOLO):
+        sys_l = system.lower()
+        assert not re.search(r"\d+\s*bpm", sys_l)
+        assert "description" in sys_l
+        assert "stable audio 3" in sys_l
 
 
-def test_sa3_policy_is_solo_instrument():
-    """SA3 ships as the SOLO INSTRUMENT workflow (acestep is FULL MIX), so its
-    policy must steer toward one instrument playing alone — the full-mix drift
-    this policy replaced came from arrangement-style few-shot examples."""
-    sys_l = pe._SYSTEM_SA3.lower()
+def test_sa3_solo_policy_is_solo_instrument():
+    """Explicit solo intent uses a policy with no arrangement-style examples."""
+    sys_l = pe._SYSTEM_SA3_SOLO.lower()
     assert "solo" in sys_l
     assert "unaccompanied" in sys_l
     assert "full mix" in sys_l  # the never-a-full-mix rule is stated
     # Every few-shot example line must lead with the solo instrument.
-    lines = pe._SYSTEM_SA3.splitlines()
+    lines = pe._SYSTEM_SA3_SOLO.splitlines()
     examples = lines[lines.index("Examples:") + 1:]
     example_lines = []
     for ln in examples:
@@ -108,11 +108,42 @@ def test_sa3_policy_is_solo_instrument():
         assert ln.startswith("solo "), f"example does not lead with solo: {ln!r}"
 
 
-def test_sa3_user_message_asks_for_solo(monkeypatch):
-    """The per-request user message reinforces the solo-stem framing too."""
+@pytest.mark.parametrize(
+    "idea",
+    [
+        "solo grand piano",
+        "unaccompanied bebop saxophone",
+        "a cappella soul vocal",
+        "single instrument ambient piece",
+        "isolated guitar stem",
+        "voice playing alone",
+        "cello playing completely alone",
+    ],
+)
+def test_sa3_explicit_solo_cues_select_solo_policy(monkeypatch, idea):
+    """Explicit performance/stem cues select and reinforce the solo policy."""
     seen = _capture_system(monkeypatch)
-    pe.enhance_prompt("dreamy synthwave", "sa3")
+    pe.enhance_prompt(idea, "sa3")
+    assert seen["system"] is pe._SYSTEM_SA3_SOLO
     assert "solo" in seen["user"].lower()
+
+
+@pytest.mark.parametrize(
+    "idea",
+    [
+        "dreamy synthwave",
+        "liquid drum and bass with chopped vocals",
+        "alone at night, cinematic and melancholy",
+        "isolated atmosphere with a huge chorus",
+        "solomon burke style soul",
+    ],
+)
+def test_sa3_without_explicit_solo_cue_keeps_full_track_policy(monkeypatch, idea):
+    """Backend selection and mood words alone must not discard arrangements."""
+    seen = _capture_system(monkeypatch)
+    pe.enhance_prompt(idea, "sa3")
+    assert seen["system"] is pe._SYSTEM_SA3
+    assert "solo-instrument" not in seen["user"].lower()
 
 
 def test_empty_prompt_returns_unchanged_not_ok(monkeypatch):
