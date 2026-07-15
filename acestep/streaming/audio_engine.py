@@ -35,6 +35,10 @@ class AudioEngine:
         # its anchor by this much so delayed reports don't drag the
         # estimate into the past. 0.0 when reports carry no send stamp.
         self.position_staleness_s = 0.0
+        # Explicit stationary render placement in absolute buffer seconds.
+        # None means normal transport-driven placement. The params command
+        # owns its sticky absent/value/null lifetime; source swaps hard-clear it.
+        self.render_anchor_s = None
         # Client-observed slice landing lead (seconds; negative = the
         # slice patched audio the listener already played) and the wall
         # time the report arrived. None until the client sends one. The

@@ -26,6 +26,7 @@ imports :func:`handle_client` directly from here.
 
 import contextlib
 import json
+import math
 import os
 import queue
 import socket
@@ -1670,10 +1671,23 @@ def _handle_client_body(
 
         try:
             if mtype == "params":
+                pp_raw = data.get("playback_pos")
                 try:
-                    pp = float(data.get("playback_pos", 0.0))
+                    pp = float(pp_raw) if pp_raw is not None else None
                 except (TypeError, ValueError):
-                    pp = 0.0
+                    pp = None
+                if pp is not None and not math.isfinite(pp):
+                    pp = None
+                anchor_kwargs = {}
+                if "render_anchor_s" in data:
+                    anchor_raw = data.get("render_anchor_s")
+                    try:
+                        anchor = float(anchor_raw) if anchor_raw is not None else None
+                    except (TypeError, ValueError):
+                        anchor = None
+                    if anchor is not None and not math.isfinite(anchor):
+                        anchor = None
+                    anchor_kwargs["render_anchor_s"] = anchor
                 ct = data.get("client_time")
                 try:
                     ct = float(ct) if ct is not None else None
@@ -1700,6 +1714,7 @@ def _handle_client_body(
                 streaming.set_knobs(
                     data.get("raw") or {}, pp, origin=origin,
                     client_time=ct, slice_lead_s=sl,
+                    **anchor_kwargs,
                 )
             elif mtype == "loop_band":
                 streaming.set_loop_band(

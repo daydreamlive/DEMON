@@ -129,6 +129,8 @@ export interface ParamsCommand {
   raw: Record<string, unknown>;
   /** Playhead position in SECONDS (not a 0..1 ratio); used for time-keyed curve sampling. */
   playback_pos?: number;
+  /** Optional stationary render placement in absolute buffer/song seconds. A finite value renders exactly at that position, bypassing transport lead and loop-band snapping. Absent retains the prior anchor; null clears it. */
+  render_anchor_s?: number | null;
   /** Client monotonic send time in seconds (performance.now()/1000; arbitrary origin). Lets the server estimate how stale a playback_pos report is when messages queue (network congestion, recv backlog) and advance its playhead estimate accordingly. Optional: absent on older clients, which get the uncompensated behavior. */
   client_time?: number | null;
   /** Flow-control ack: cumulative bytes of binary slice frames received on this connection. The server holds back slice emission while its sent-bytes minus this ack exceeds the in-flight window (DEMON_SLICE_WINDOW_BYTES, default 256 KiB) so a bandwidth-limited link receives fresh slices at link rate instead of an ever-staler buffered backlog. Optional; absent on older clients = no flow control. */
