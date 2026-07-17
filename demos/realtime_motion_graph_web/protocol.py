@@ -221,6 +221,19 @@ COMMANDS: tuple = (
                                   "renders exactly at that position, bypassing "
                                   "transport lead and loop-band snapping. Absent "
                                   "retains the prior anchor; null clears it."),
+            FieldSpec("render_anchor_queue_s", "list", nullable=True,
+                      description="Optional BATCH of stationary render anchors "
+                                  "(absolute buffer/song seconds), rendered "
+                                  "back-to-back one window per tick whenever "
+                                  "the scalar render_anchor_s is clear (the "
+                                  "scalar preempts; the queue resumes when it "
+                                  "clears). Each anchor is popped after its "
+                                  "window emits. A list REPLACES the prior "
+                                  "queue; absent retains it; null/empty clears "
+                                  "it. Gated on ready.capabilities."
+                                  "render_anchor_queue — older servers ignore "
+                                  "the field. Non-finite entries are dropped; "
+                                  "length is capped server-side (1024)."),
             FieldSpec("client_time", "float", nullable=True,
                       description="Client monotonic send time in seconds "
                                   "(performance.now()/1000; arbitrary origin). "

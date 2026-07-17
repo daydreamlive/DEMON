@@ -39,6 +39,16 @@ class AudioEngine:
         # None means normal transport-driven placement. The params command
         # owns its sticky absent/value/null lifetime; source swaps hard-clear it.
         self.render_anchor_s = None
+        # Batch stationary placement: a FIFO of anchor seconds the runner
+        # renders back-to-back (one window per tick, popped after its window
+        # is emitted) whenever no scalar ``render_anchor_s`` is set — the
+        # scalar always preempts, the queue resumes when it clears. Set
+        # cross-thread by the params command (replace semantics; empty/null
+        # clears); source swaps hard-clear it alongside the scalar anchor.
+        # Guarded by its own lock: the buffer ``_lock`` sits on the audio
+        # callback hot path and queue ops must never contend with it.
+        self._render_anchor_queue: list = []
+        self._render_anchor_queue_lock = threading.Lock()
         # Client-observed slice landing lead (seconds; negative = the
         # slice patched audio the listener already played) and the wall
         # time the report arrived. None until the client sends one. The
@@ -59,6 +69,31 @@ class AudioEngine:
         self._fading = False
         self._fade_pos = 0
         self._lock = threading.Lock()
+
+    # ---- render-anchor queue (see __init__) --------------------------------
+
+    def set_render_anchor_queue(self, anchors) -> None:
+        """Replace the queued stationary anchors (seconds). Empty clears."""
+        anchors = [float(a) for a in (anchors or [])]
+        with self._render_anchor_queue_lock:
+            self._render_anchor_queue = anchors
+
+    def peek_render_anchor(self):
+        """Head of the anchor queue, or ``None`` when empty."""
+        with self._render_anchor_queue_lock:
+            q = self._render_anchor_queue
+            return q[0] if q else None
+
+    def pop_render_anchor(self, expected) -> None:
+        """Pop the queue head iff it still equals ``expected``.
+
+        The runner peeks at tick start and pops only after the window is
+        emitted; the compare guards against the client replacing the queue
+        mid-tick (the freshly-set queue must not lose ITS head)."""
+        with self._render_anchor_queue_lock:
+            q = self._render_anchor_queue
+            if q and q[0] == expected:
+                q.pop(0)
 
     @property
     def duration(self):

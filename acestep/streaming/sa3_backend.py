@@ -398,7 +398,12 @@ class SA3Backend(DiffusionBackend):
         # swap: backend-owned in-place re-anchor (handle_swap_source) — the
         # session's _apply_swap_if_pending dispatches there instead of the
         # ACE prepare_source body, so duration/conditioning stay fixed.
-        return Capabilities(refines_audio=True, loop_band=True, swap=True)
+        # render_anchor_queue: batch pad prewarm, drained by the shared
+        # pipeline_runner exactly like the scalar stationary anchor.
+        return Capabilities(
+            refines_audio=True, loop_band=True, swap=True,
+            render_anchor_queue=True,
+        )
 
     def geometry(self) -> AudioGeometry:
         return AudioGeometry(

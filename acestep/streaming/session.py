@@ -1556,6 +1556,7 @@ class StreamingSession:
         client_time: float | None = None,
         slice_lead_s: float | None = None,
         render_anchor_s=_RENDER_ANCHOR_UNSET,
+        render_anchor_queue_s=_RENDER_ANCHOR_UNSET,
     ) -> None:
         """Apply or echo a knob update. ``raw`` is the unfiltered
         wire dict; values land in ``virtual_knobs`` only on PRIMARY.
@@ -1568,6 +1569,15 @@ class StreamingSession:
 
         ``render_anchor_s`` is sticky three-state placement: omitted retains
         the current anchor, a finite float sets it, and ``None`` clears it.
+
+        ``render_anchor_queue_s`` is the batch counterpart (list of anchor
+        seconds): omitted retains the current queue, a list REPLACES it, and
+        ``None``/empty clears it. The runner renders queued anchors
+        back-to-back whenever the scalar anchor is clear (scalar preempts,
+        queue resumes). Setting a non-empty queue bumps the activity clock so
+        an idle-paused pipeline wakes up to drain it — unlike the scalar
+        anchor, which is re-sent every tick by warming clients and must NOT
+        hold the GPU out of its idle pause.
 
         ``client_time`` is the client's monotonic send stamp (seconds,
         arbitrary origin) when the transport carries one. It feeds the
@@ -1632,6 +1642,19 @@ class StreamingSession:
                     )
                 if render_anchor_s is not _RENDER_ANCHOR_UNSET:
                     self.audio_eng.render_anchor_s = render_anchor_s
+                if render_anchor_queue_s is not _RENDER_ANCHOR_UNSET:
+                    queue = list(render_anchor_queue_s or [])
+                    self.audio_eng.set_render_anchor_queue(queue)
+                    if queue:
+                        state.last_activity_ts = time.monotonic()
+                    # Rare (one message per prewarm batch) — log for
+                    # traceability of the drain the client will confirm.
+                    logger.info(
+                        "render_anchor_queue_set n={} first={} last={}",
+                        len(queue),
+                        round(queue[0], 3) if queue else None,
+                        round(queue[-1], 3) if queue else None,
+                    )
                 self.audio_eng.position_staleness_s = staleness_s
                 if slice_lead_s is not None:
                     self.audio_eng.observed_slice_lead_s = slice_lead_s
@@ -2071,7 +2094,9 @@ class StreamingSession:
         state.last_activity_ts = time.monotonic()
         # Placement belongs to the old source's coordinate space. Clear as
         # soon as a swap is requested, before the runner can consume it again.
+        # The queued anchors reference the same stale coordinates — drop both.
         self.audio_eng.render_anchor_s = None
+        self.audio_eng.set_render_anchor_queue([])
         effective_tags = tags or state.prompt_text
         with state._lock:
             state.swap_pending["waveform"] = audio.waveform
