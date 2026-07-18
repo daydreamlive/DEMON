@@ -44,6 +44,7 @@ import type {
   ParamsCommand,
   PromptCommand,
   SetDepthCommand,
+  SetAudioEditCommand,
   SetInterpMethodCommand,
   SetPromptBlendCommand,
   SetStructureFixtureCommand,
@@ -55,6 +56,11 @@ import type {
   WireEvent,
   WriteAudioCommand,
 } from "./types/wireContract.gen";
+
+export interface AudioEditRegion {
+  start_s: number;
+  end_s: number;
+}
 
 /** Optional behaviors the host app injects into RemoteBackend. */
 export interface RemoteBackendOptions {
@@ -995,6 +1001,32 @@ export class RemoteBackend extends EventTarget {
             }`,
         );
       }
+    } catch {}
+  }
+
+  /**
+   * Change live repaint/extend/cover state. This does not launch a one-shot
+   * job: new requests enter the existing ring and emerge through ordinary
+   * windowed slices. Disable with `enabled: false` (regions may be empty).
+   */
+  sendSetAudioEdit(
+    regions: AudioEditRegion[],
+    options: {
+      enabled?: boolean;
+      sourceMode?: "waveform" | "structure";
+      strength?: number;
+    } = {},
+  ): void {
+    if (this.ws?.readyState !== this._wsOpen) return;
+    try {
+      const msg: SetAudioEditCommand = {
+        type: "set_audio_edit",
+        enabled: options.enabled ?? true,
+        regions,
+        source_mode: options.sourceMode ?? "waveform",
+        strength: Math.max(0, Math.min(1, options.strength ?? 1)),
+      };
+      this.ws.send(JSON.stringify(msg));
     } catch {}
   }
 

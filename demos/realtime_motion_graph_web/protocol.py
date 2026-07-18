@@ -290,6 +290,20 @@ COMMANDS: tuple = (
         description="Re-encode the live prompt (text-encoder pass).",
     ),
     CommandSpec(
+        "set_audio_edit",
+        fields=(
+            FieldSpec("enabled", "bool", default=True),
+            FieldSpec("regions", "list",
+                      description="Ordered {start_s,end_s} regenerate spans on the fixed session canvas."),
+            FieldSpec("source_mode", "enum", default="waveform",
+                      options=("waveform", "structure")),
+            FieldSpec("strength", "float", default=1.0,
+                      description="Regenerate strength in [0,1]; SA3 waveform repaint is binary (1 only)."),
+        ),
+        requires="audio_edit",
+        description="Live repaint/extend/cover control. New ring slots snapshot the edit; no restart or offline generation.",
+    ),
+    CommandSpec(
         "set_prompt_blend",
         fields=(FieldSpec("value", "float", required=True, default=0.0,
                           description="0.0 = A, 1.0 = B. Clamped to [0,1]."),),
@@ -677,6 +691,22 @@ EVENTS: tuple = (
         fields=(FieldSpec("value", "int", required=True,
                           description="The clamped applied depth."),),
         description="Ack for set_depth.",
+    ),
+    EventSpec(
+        "audio_edit_applied",
+        fields=(
+            FieldSpec("enabled", "bool", required=True),
+            FieldSpec("regions", "list", required=True),
+            FieldSpec("source_mode", "enum", required=True,
+                      options=("waveform", "structure")),
+            FieldSpec("strength", "float", required=True),
+        ),
+        description="Ack for a live edit state now feeding new ring-buffer requests.",
+    ),
+    EventSpec(
+        "audio_edit_failed",
+        fields=(FieldSpec("error", "str", required=True),),
+        description="The live edit request was invalid or unsupported by the active backend.",
     ),
     EventSpec(
         "manual_slot_count",

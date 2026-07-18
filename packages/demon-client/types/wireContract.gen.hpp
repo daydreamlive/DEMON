@@ -75,6 +75,21 @@ namespace command {
     inline constexpr const char* kTimeSignature = "time_signature";
   }  // namespace prompt
 
+  namespace set_audio_edit {
+    inline constexpr const char* kType = "set_audio_edit";
+    inline constexpr const char* kEnabled = "enabled";
+    /** Ordered {start_s,end_s} regenerate spans on the fixed session canvas. */
+    inline constexpr const char* kRegions = "regions";
+    inline constexpr const char* kSourceMode = "source_mode";
+    /** Regenerate strength in [0,1]; SA3 waveform repaint is binary (1 only). */
+    inline constexpr const char* kStrength = "strength";
+
+    namespace source_mode {
+      inline constexpr const char* kWaveform = "waveform";
+      inline constexpr const char* kStructure = "structure";
+    }  // namespace source_mode
+  }  // namespace set_audio_edit
+
   namespace set_prompt_blend {
     inline constexpr const char* kType = "set_prompt_blend";
     /** 0.0 = A, 1.0 = B. Clamped to [0,1]. */
@@ -344,6 +359,24 @@ namespace event {
     inline constexpr const char* kValue = "value";
   }  // namespace depth_applied
 
+  namespace audio_edit_applied {
+    inline constexpr const char* kType = "audio_edit_applied";
+    inline constexpr const char* kEnabled = "enabled";
+    inline constexpr const char* kRegions = "regions";
+    inline constexpr const char* kSourceMode = "source_mode";
+    inline constexpr const char* kStrength = "strength";
+
+    namespace source_mode {
+      inline constexpr const char* kWaveform = "waveform";
+      inline constexpr const char* kStructure = "structure";
+    }  // namespace source_mode
+  }  // namespace audio_edit_applied
+
+  namespace audio_edit_failed {
+    inline constexpr const char* kType = "audio_edit_failed";
+    inline constexpr const char* kError = "error";
+  }  // namespace audio_edit_failed
+
   namespace manual_slot_count {
     inline constexpr const char* kType = "manual_slot_count";
     /** The live manual steering slot count after the command. */
@@ -431,6 +464,7 @@ namespace config {
   inline constexpr const char* kLoraPaths = "lora_paths";
   inline constexpr const char* kClientId = "client_id";
   inline constexpr const char* kBackend = "backend";
+  inline constexpr const char* kAudioEditDurationS = "audio_edit_duration_s";
   inline constexpr const char* kSa3DurationS = "sa3_duration_s";
 }  // namespace config
 

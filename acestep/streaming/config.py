@@ -65,6 +65,9 @@ class SessionConfig:
     # create-time, never hot-swapped. When absent on the wire, the
     # server's resolved --checkpoint family is the default.
     backend: str = "acestep"
+    # Optional fixed edit canvas. A value longer than the uploaded source
+    # preallocates a zero-padded tail so extension remains a live edit.
+    audio_edit_duration_s: float | None = None
     # --- sa3_* family fields (flat + prefixed per plan §3.5) ---
     # Fixed generation duration for sa3 sessions, seconds. None derives
     # it from the uploaded source audio length (the audio-to-audio

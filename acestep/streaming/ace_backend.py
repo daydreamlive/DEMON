@@ -26,12 +26,18 @@ from collections import deque
 import torch
 
 from acestep.engine.dcw import DCWAdvanced
+from acestep.engine.masking import LatentNoiseMask
 from acestep.engine.obs import logger
 from acestep.nodes.types import ChannelGuidanceEntry, Latent
 from acestep.nodes.interpolation import INTERPOLATIONS
 from acestep.nodes.vae_nodes import EmptyLatent, LatentBlend
 
 from acestep.streaming.diffusion_backend import DiffusionBackend
+from acestep.streaming.audio_edit import (
+    DISABLED_AUDIO_EDIT,
+    composite_window,
+    regenerate_mask,
+)
 from acestep.streaming.generator_backend import (
     AudioChunk,
     AudioGeometry,
@@ -180,6 +186,7 @@ class ACEStepBackend(DiffusionBackend):
         walk_window_s=60.0,
         neg_conditioning=None,
         steering: SteeringController | None = None,
+        source_waveform=None,
     ):
         # The family codec is the engine Session: its windowed VAE
         # decode is what render_window()/render_full() drive. The
@@ -202,6 +209,9 @@ class ACEStepBackend(DiffusionBackend):
         self.k1_name = k1_name
         self.SEED = seed
         self.skip_threshold = skip_threshold
+        self._source_waveform = source_waveform
+        self._audio_edit = DISABLED_AUDIO_EDIT
+        self._emerged_audio_edit = DISABLED_AUDIO_EDIT
 
         # Walk-window mode: drive the DiT with a fixed-T window sliced
         # from a longer pre-encoded source so the 60s TRT engine can
@@ -337,7 +347,13 @@ class ACEStepBackend(DiffusionBackend):
             curves=True,
             notes_conditioning=False,
             steering=self.steering.is_loaded,
+            audio_edit=True,
+            audio_edit_extend=True,
+            audio_edit_strength=True,
         )
+
+    def handle_set_audio_edit(self, edit) -> None:
+        self._audio_edit = edit
 
     def geometry(self) -> AudioGeometry:
         dur = self.playable_duration_s()
@@ -635,6 +651,7 @@ class ACEStepBackend(DiffusionBackend):
         :meth:`_generate` consumes; the mode dispatch / caching /
         timing skeleton lives on :class:`DiffusionBackend`."""
         raw = knobs
+        audio_edit = self._audio_edit
         walk_active = self._walk_active
         full_src_T = self._full_src_T
 
@@ -787,6 +804,8 @@ class ACEStepBackend(DiffusionBackend):
         else:
             denoise = k1
             self.state.sde_curve_display = None
+        if audio_edit.enabled and audio_edit.source_mode == "structure":
+            denoise = audio_edit.strength
 
         # Source lock: x0_target_curve from client overrides the
         # scalar x0_target_strength knob. The latent is attached
@@ -875,6 +894,7 @@ class ACEStepBackend(DiffusionBackend):
             "x0_target_curve": x0_target_curve,
             "initial_noise_curve": initial_noise_curve,
             "tick_kwargs": tick_kwargs,
+            "audio_edit": audio_edit,
             "echo": {
                 "k1": k1, "seed": seed, "feedback": feedback,
                 "fb_depth": fb_depth, "shift_val": shift_val,
@@ -885,13 +905,33 @@ class ACEStepBackend(DiffusionBackend):
     def _generate(self, prep: dict):
         raw = prep["raw"]
         source_lat = prep["source_lat"]
-        return self.stream.tick(
+        edit = prep["audio_edit"]
+        source_tensor = (
+            source_lat if source_lat is not None
+            else prep["live_src_lat"].tensor
+        )
+        source = Latent(tensor=source_tensor)
+        if edit.enabled and edit.source_mode == "waveform":
+            mask = regenerate_mask(
+                edit,
+                total_frames=source_tensor.shape[1],
+                rate_hz=25.0,
+                offset_s=self._walk_chunk_start_s if self._walk_active else 0.0,
+                device=source_tensor.device,
+                dtype=source_tensor.dtype,
+            )
+            source = Latent(
+                tensor=source_tensor,
+                mask=LatentNoiseMask(
+                    mask=mask,
+                    original_latents=prep["live_src_lat"].tensor,
+                ),
+            )
+        result = self.stream.tick(
             denoise=prep["denoise"],
             seed=prep["seed"],
-            source_latent=(
-                Latent(tensor=source_lat) if source_lat is not None
-                else prep["live_src_lat"]
-            ),
+            source_latent=source,
+            audio_edit=edit,
             x0_target=prep["x0_tgt"],
             x0_target_curve=prep["x0_target_curve"],
             shift=self._current_shift,
@@ -909,6 +949,12 @@ class ACEStepBackend(DiffusionBackend):
             dcw_wavelet=str(raw.get("dcw_wavelet", "haar")),
             dcw_advanced=_build_dcw_advanced(raw),
         )
+        if result is not None:
+            request = getattr(self.stream.pipeline, "last_finished_request", None)
+            self._emerged_audio_edit = getattr(
+                request, "audio_edit", DISABLED_AUDIO_EDIT,
+            )
+        return result
 
     def _after_produce(self, prep: dict, result_latent, is_fresh: bool) -> None:
         self.last_denoise = prep["denoise"]
@@ -965,6 +1011,14 @@ class ACEStepBackend(DiffusionBackend):
         win_wav = audio_out.waveform.detach().cpu().float().squeeze(0)
         win_np = win_wav.numpy().T
         win_start = audio_out.start_sample + win_offset_samples
+        if self._source_waveform is not None:
+            win_np = composite_window(
+                win_np,
+                start_sample=win_start,
+                source=self._source_waveform(),
+                edit=self._emerged_audio_edit,
+                sample_rate=SAMPLE_RATE,
+            )
         return AudioChunk(pcm=win_np, start_sample=win_start)
 
     def render_full(self):
@@ -991,6 +1045,14 @@ class ACEStepBackend(DiffusionBackend):
         wav_np = wav.numpy().T
         if self.crop_seconds > 0:
             wav_np = wav_np[:int(self.crop_seconds * SAMPLE_RATE)]
+        if self._source_waveform is not None:
+            wav_np = composite_window(
+                wav_np,
+                start_sample=0,
+                source=self._source_waveform(),
+                edit=self._emerged_audio_edit,
+                sample_rate=SAMPLE_RATE,
+            )
         self._last_wav = wav_np
         return AudioChunk(pcm=wav_np, start_sample=0)
 

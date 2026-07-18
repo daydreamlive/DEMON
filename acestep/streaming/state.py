@@ -74,6 +74,8 @@ class SessionState:
     prompt_text: str                     # prompt A (read by runner each tick)
     prompt_text_b: str                   # prompt B (dispatcher only)
     current_depth: int                   # active pipeline_depth
+    source_content_duration_s: float | None = None
+    audio_edit: Any = None
 
     # === Slider values driving the engine ===
     prompt_blend: float = 0.0

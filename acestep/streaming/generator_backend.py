@@ -158,6 +158,12 @@ class Capabilities:
     # True only when the backend has a steering controller with a
     # reachable vector bundle for its checkpoint.
     steering: bool = False
+    # Live audio editing through the ordinary ring-buffer pipeline.
+    # audio_edit_extend means a preallocated canvas may outlive its source;
+    # audio_edit_strength means waveform repaint accepts fractional masks.
+    audio_edit: bool = False
+    audio_edit_extend: bool = False
+    audio_edit_strength: bool = False
 
 
 @dataclass(frozen=True)

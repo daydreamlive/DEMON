@@ -24,6 +24,7 @@ export type CommandName =
   | "params"
   | "loop_band"
   | "prompt"
+  | "set_audio_edit"
   | "set_prompt_blend"
   | "set_interp_method"
   | "set_depth"
@@ -45,6 +46,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "params",
   "loop_band",
   "prompt",
+  "set_audio_edit",
   "set_prompt_blend",
   "set_interp_method",
   "set_depth",
@@ -77,6 +79,8 @@ export type EventName =
   | "stem_assets"
   | "stem_failed"
   | "depth_applied"
+  | "audio_edit_applied"
+  | "audio_edit_failed"
   | "manual_slot_count"
   | "timbre_set"
   | "timbre_cleared"
@@ -102,6 +106,8 @@ export const EVENT_NAMES: readonly EventName[] = [
   "stem_assets",
   "stem_failed",
   "depth_applied",
+  "audio_edit_applied",
+  "audio_edit_failed",
   "manual_slot_count",
   "timbre_set",
   "timbre_cleared",
@@ -159,6 +165,16 @@ export interface PromptCommand {
   key?: string;
   /** Meter numerator, e.g. "3"/"4"/"6". */
   time_signature?: string;
+}
+
+export interface SetAudioEditCommand {
+  type: "set_audio_edit";
+  enabled?: boolean;
+  /** Ordered {start_s,end_s} regenerate spans on the fixed session canvas. */
+  regions?: unknown[];
+  source_mode?: "waveform" | "structure";
+  /** Regenerate strength in [0,1]; SA3 waveform repaint is binary (1 only). */
+  strength?: number;
 }
 
 export interface SetPromptBlendCommand {
@@ -392,6 +408,19 @@ export interface DepthAppliedEvent {
   value: number;
 }
 
+export interface AudioEditAppliedEvent {
+  type: "audio_edit_applied";
+  enabled: boolean;
+  regions: unknown[];
+  source_mode: "waveform" | "structure";
+  strength: number;
+}
+
+export interface AudioEditFailedEvent {
+  type: "audio_edit_failed";
+  error: string;
+}
+
 export interface ManualSlotCountEvent {
   type: "manual_slot_count";
   /** The live manual steering slot count after the command. */
@@ -477,6 +506,7 @@ export interface SessionConfigPayload {
   lora_paths?: unknown[];
   client_id?: string | null;
   backend?: string;
+  audio_edit_duration_s?: number | null;
   sa3_duration_s?: number | null;
   // SessionConfig is permissive; extras pass through.
   [k: string]: unknown;
@@ -518,6 +548,7 @@ export type WireCommand =
   | ParamsCommand
   | LoopBandCommand
   | PromptCommand
+  | SetAudioEditCommand
   | SetPromptBlendCommand
   | SetInterpMethodCommand
   | SetDepthCommand
@@ -549,6 +580,8 @@ export type WireEvent =
   | StemAssetsEvent
   | StemFailedEvent
   | DepthAppliedEvent
+  | AudioEditAppliedEvent
+  | AudioEditFailedEvent
   | ManualSlotCountEvent
   | TimbreSetEvent
   | TimbreClearedEvent

@@ -63,6 +63,11 @@ import torch
 from acestep.engine.obs import logger
 from acestep.nodes.interpolation import INTERPOLATIONS, slerp
 from acestep.streaming.diffusion_backend import DiffusionBackend
+from acestep.streaming.audio_edit import (
+    DISABLED_AUDIO_EDIT,
+    composite_window,
+    sa3_inpaint_bundle,
+)
 from acestep.streaming.generator_backend import (
     AudioChunk,
     AudioGeometry,
@@ -174,6 +179,7 @@ class SA3Backend(DiffusionBackend):
         # SA3Context); None on directly-constructed test backends, where
         # handle_swap_source fails loudly instead.
         source_encoder: Optional[Callable] = None,
+        source_waveform: Optional[torch.Tensor] = None,
     ):
         super().__init__(adapter=adapter, codec=codec)
         self._cond = cond
@@ -196,6 +202,8 @@ class SA3Backend(DiffusionBackend):
         self._prompt_rebuilder = prompt_rebuilder
         # Source re-encode hook for handle_swap_source (see ctor arg).
         self._source_encoder = source_encoder
+        self._source_waveform = source_waveform
+        self._audio_edit = DISABLED_AUDIO_EDIT
         self.knob_state = knob_state
         self.state = state
         self._steps = int(steps)
@@ -240,6 +248,8 @@ class SA3Backend(DiffusionBackend):
         # GIL-atomic reference-swap argument doesn't cover it. The runner
         # only ever holds this to snapshot, never across pipeline work.
         self._control_lock = threading.Lock()
+        self._edit_bundle_cache: dict = {}
+        self._edit_bundle_history: list[tuple[dict, dict]] = []
 
         # Rendered-audio cache: one full decode+resample per fresh
         # latent (SAME-S decodes the whole window in ~11 ms); window
@@ -273,6 +283,7 @@ class SA3Backend(DiffusionBackend):
         prompt_b: Optional[str] = None,
         cond_b=None,
         source_latent_bct=None,
+        source_waveform=None,
         dit_backend: str = "eager",
         codec_backend: str = "eager",
         **kwargs,
@@ -367,6 +378,7 @@ class SA3Backend(DiffusionBackend):
             prompt_rebuilder=_prompt_rebuilder,
             prompt_tags=prompt,
             source_encoder=_source_encoder,
+            source_waveform=source_waveform,
             **kwargs,
         )
 
@@ -398,7 +410,19 @@ class SA3Backend(DiffusionBackend):
         # swap: backend-owned in-place re-anchor (handle_swap_source) — the
         # session's _apply_swap_if_pending dispatches there instead of the
         # ACE prepare_source body, so duration/conditioning stay fixed.
-        return Capabilities(refines_audio=True, loop_band=True, swap=True)
+        return Capabilities(
+            refines_audio=True,
+            loop_band=True,
+            swap=True,
+            audio_edit=True,
+            audio_edit_extend=True,
+            audio_edit_strength=False,
+        )
+
+    def handle_set_audio_edit(self, edit) -> None:
+        with self._control_lock:
+            self._audio_edit = edit
+            self._edit_bundle_cache.clear()
 
     def geometry(self) -> AudioGeometry:
         return AudioGeometry(
@@ -478,6 +502,7 @@ class SA3Backend(DiffusionBackend):
             self._cond = cond
             self._cond_b = cond_b
             self._active_bundle = self._blend_bundles(self._blend)
+            self._edit_bundle_cache.clear()
             # Emerged-generation labeling (see __init__): the new bundle gets
             # the next cond epoch; keep a short identity history so latents
             # still in flight on the OLD bundle stay attributable.
@@ -524,7 +549,9 @@ class SA3Backend(DiffusionBackend):
         # calling this hook.
         with self._control_lock:
             self._source_latent_btc = latent_btc
+            self._source_waveform = waveform.detach().cpu().float()
             self._latent_history.clear()
+            self._edit_bundle_cache.clear()
         logger.info(
             "sa3_source_swapped samples={} sample_rate={} encode_ms={:.1f}",
             int(waveform.shape[-1]), int(sample_rate), encode_ms,
@@ -546,6 +573,7 @@ class SA3Backend(DiffusionBackend):
         with self._control_lock:
             self._blend = v
             self._active_bundle = self._blend_bundles(v)
+            self._edit_bundle_cache.clear()
 
     def _blend_bundles(self, v: float) -> dict:
         """The active cond bundle for blend value ``v``: A verbatim at
@@ -588,6 +616,8 @@ class SA3Backend(DiffusionBackend):
     # ---- produce hooks ---------------------------------------------------------
 
     def _prepare_tick(self, knobs: dict, ctx: TickContext) -> dict:
+        with self._control_lock:
+            audio_edit = self._audio_edit
         # Schedule warp: hot-applied, but cache-coupled — the pipeline
         # caches schedules per denoise value, so a changed alpha must
         # invalidate or already-seen denoise values keep the old warp.
@@ -610,8 +640,11 @@ class SA3Backend(DiffusionBackend):
             fb_depth_raw = float(knobs.get("feedback_depth", 1.0))
         except (TypeError, ValueError):
             fb_depth_raw = 1.0
+        denoise = float(knobs.get("sa3_denoise", 1.0))
+        if audio_edit.enabled and audio_edit.source_mode == "structure":
+            denoise = audio_edit.strength
         return {
-            "denoise": float(knobs.get("sa3_denoise", 1.0)),
+            "denoise": denoise,
             "seed": int(knobs.get("seed", self._default_seed)),
             "steps": int(knobs.get("steps_override", self._steps)),
             "shift": shift,
@@ -620,6 +653,7 @@ class SA3Backend(DiffusionBackend):
             "feedback_depth": max(
                 1, min(MAX_FEEDBACK_DEPTH, int(round(fb_depth_raw))),
             ),
+            "audio_edit": audio_edit,
         }
 
     def _generate(self, prep: dict):
@@ -663,6 +697,22 @@ class SA3Backend(DiffusionBackend):
         with self._control_lock:
             aux_cond = self._active_bundle
             latent_frames = self._cond.latent_frames
+            edit = prep["audio_edit"]
+            if (
+                edit.enabled
+                and edit.source_mode == "waveform"
+                and self._source_latent_btc is not None
+            ):
+                cache_key = (id(aux_cond), edit)
+                edited = self._edit_bundle_cache.get(cache_key)
+                if edited is None:
+                    edited = sa3_inpaint_bundle(
+                        aux_cond, self._source_latent_btc, edit,
+                    )
+                    self._edit_bundle_cache[cache_key] = edited
+                    self._edit_bundle_history.append((edited, aux_cond))
+                    del self._edit_bundle_history[:-16]
+                aux_cond = edited
 
         self.pipeline.submit(SlotRequest(
             seed=prep["seed"],
@@ -680,6 +730,7 @@ class SA3Backend(DiffusionBackend):
             x0_target_strength=prep["x0_target"],
             aux_cond=aux_cond,
             latent_frames=latent_frames,
+            audio_edit=edit,
             # Deterministic pingpong: identical requests must replay the
             # same trajectory or advancing windows splice different
             # realizations (incoherent audio). See SlotRequest.
@@ -700,6 +751,11 @@ class SA3Backend(DiffusionBackend):
         # non-atomic append + truncate on this list.
         with self._control_lock:
             history = tuple(self._cond_history)
+            edit_history = tuple(self._edit_bundle_history)
+        for edited, parent in edit_history:
+            if bundle is edited:
+                bundle = parent
+                break
         for b, epoch, tags in history:
             if b is bundle:
                 return epoch, tags
@@ -780,12 +836,26 @@ class SA3Backend(DiffusionBackend):
         if decode_src is None:
             return None
         if self._windowed_codec:
-            return self._render_window_via_codec(decode_src, t_start_s)
-        audio = self._rendered_audio(decode_src)
-        n = int(round(self.vae_window * DELIVERY_SAMPLE_RATE))
-        start = int(round(t_start_s * DELIVERY_SAMPLE_RATE))
-        start = max(0, min(start, max(0, audio.shape[0] - n)))
-        return AudioChunk(pcm=audio[start:start + n], start_sample=start)
+            chunk = self._render_window_via_codec(decode_src, t_start_s)
+        else:
+            audio = self._rendered_audio(decode_src)
+            n = int(round(self.vae_window * DELIVERY_SAMPLE_RATE))
+            start = int(round(t_start_s * DELIVERY_SAMPLE_RATE))
+            start = max(0, min(start, max(0, audio.shape[0] - n)))
+            chunk = AudioChunk(pcm=audio[start:start + n], start_sample=start)
+        edit = getattr(self._emerged_request, "audio_edit", DISABLED_AUDIO_EDIT)
+        if self._source_waveform is not None:
+            chunk = AudioChunk(
+                pcm=composite_window(
+                    chunk.pcm,
+                    start_sample=chunk.start_sample,
+                    source=self._source_waveform,
+                    edit=edit,
+                    sample_rate=DELIVERY_SAMPLE_RATE,
+                ),
+                start_sample=chunk.start_sample,
+            )
+        return chunk
 
     def _render_window_via_codec(self, latent_btc: torch.Tensor, t_start_s: float):
         """Windowed-codec render (SAME-L / medium): decode ONLY a small
@@ -833,9 +903,17 @@ class SA3Backend(DiffusionBackend):
     def render_full(self):
         if self._current_result is None:
             return None
-        return AudioChunk(
-            pcm=self._rendered_audio(self._current_result), start_sample=0,
-        )
+        pcm = self._rendered_audio(self._current_result)
+        edit = getattr(self._emerged_request, "audio_edit", DISABLED_AUDIO_EDIT)
+        if self._source_waveform is not None:
+            pcm = composite_window(
+                pcm,
+                start_sample=0,
+                source=self._source_waveform,
+                edit=edit,
+                sample_rate=DELIVERY_SAMPLE_RATE,
+            )
+        return AudioChunk(pcm=pcm, start_sample=0)
 
     # ---- bookkeeping -------------------------------------------------------------
 

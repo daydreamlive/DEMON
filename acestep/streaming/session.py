@@ -72,12 +72,19 @@ from acestep.paths import (
 
 from acestep.engine.canvas import SourceCanvas
 from acestep.streaming.audio_engine import AudioEngine
+from acestep.streaming.audio_edit import (
+    AudioEditError,
+    DISABLED_AUDIO_EDIT,
+    parse_live_audio_edit,
+)
 from acestep.streaming.commands import CommandOrigin
 from acestep.streaming.config import SessionConfig
 from acestep.streaming.encode import blend_for_strength, encode_cond_pair
 from acestep.steering import CapacityError, EmptyError
 from acestep.streaming.events import (
     AudioReady,
+    AudioEditApplied,
+    AudioEditFailed,
     AudioWriteFailed,
     AudioWritten,
     CommandFailed,
@@ -699,6 +706,10 @@ class StreamingSession:
             "timbre_name": state.timbre_name,
             "timbre_strength": state.timbre_strength,
             "structure_name": state.struct_name,
+            "audio_edit": (
+                state.audio_edit.to_wire()
+                if state.audio_edit is not None else DISABLED_AUDIO_EDIT.to_wire()
+            ),
             "interp_prompt": state.interp_prompt,
             "interp_timbre": state.interp_timbre,
             "interp_structure": state.interp_structure,
@@ -1006,6 +1017,16 @@ class StreamingSession:
             # take advantage of every built engine profile, not a
             # stale 60 s default.
             new_wf = new_wf[:, :int(self.max_seconds * SAMPLE_RATE)]
+            new_source_content_duration_s = new_wf.shape[-1] / SAMPLE_RATE
+            edit_duration_s = float(self.config.audio_edit_duration_s or 0.0)
+            if edit_duration_s > new_source_content_duration_s:
+                target_samples = min(
+                    int(round(edit_duration_s * SAMPLE_RATE)),
+                    int(self.max_seconds * SAMPLE_RATE),
+                )
+                new_wf = torch.nn.functional.pad(
+                    new_wf, (0, max(0, target_samples - new_wf.shape[-1])),
+                )
             rem = new_wf.shape[-1] % self.pool
             if rem:
                 new_wf = new_wf[:, :new_wf.shape[-1] - rem]
@@ -1131,11 +1152,15 @@ class StreamingSession:
                 # epoch-checks at commit and discards itself.
                 self.canvas = new_canvas
                 state.source_epoch += 1
+                state.source_content_duration_s = new_source_content_duration_s
+                state.audio_edit = DISABLED_AUDIO_EDIT
+                self.backend.handle_set_audio_edit(DISABLED_AUDIO_EDIT)
                 tl = state.timbre_latent
                 refer = tl if tl is not None else new_source.latent
                 state.cond_pair = encode_cond_pair(
                     self.session, tags, refer,
                     new_bpm, new_audio_duration_s, new_key, new_time_sig,
+                    instruction=self._audio_edit_instruction(),
                 )
                 # Carry promptB across the swap so the blend slider keeps
                 # its meaning. If B was identical to A pre-swap, keep it
@@ -1144,6 +1169,7 @@ class StreamingSession:
                     state.cond_pair_b = encode_cond_pair(
                         self.session, state.prompt_text_b, refer,
                         new_bpm, new_audio_duration_s, new_key, new_time_sig,
+                        instruction=self._audio_edit_instruction(),
                     )
                 else:
                     state.cond_pair_b = state.cond_pair
@@ -1265,6 +1291,9 @@ class StreamingSession:
                 else:
                     src_np = src_np[:n_play]
                 state.n_channels = int(src_np.shape[1])
+                state.source_content_duration_s = wf.shape[-1] / SAMPLE_RATE
+                state.audio_edit = DISABLED_AUDIO_EDIT
+                self.backend.handle_set_audio_edit(DISABLED_AUDIO_EDIT)
                 # Retire anything staged against the old source (ACE
                 # parity; inert for backends without write_audio).
                 state.source_epoch += 1
@@ -1457,6 +1486,7 @@ class StreamingSession:
                 self.session, state.prompt_text, timbre_latent,
                 state.bpm, state.duration, state.key,
                 state.time_signature,
+                instruction=self._audio_edit_instruction(),
             )
             # Re-encode B against the new timbre too.
             if state.prompt_text_b != state.prompt_text:
@@ -1464,6 +1494,7 @@ class StreamingSession:
                     self.session, state.prompt_text_b, timbre_latent,
                     state.bpm, state.duration, state.key,
                     state.time_signature,
+                    instruction=self._audio_edit_instruction(),
                 )
             else:
                 state.cond_pair_b = state.cond_pair
@@ -1660,6 +1691,85 @@ class StreamingSession:
         except (TypeError, ValueError):
             self.audio_eng.loop_band = None
 
+    def _audio_edit_instruction(self, edit=None) -> str:
+        active = edit if edit is not None else self.state.audio_edit
+        if active is not None and active.enabled and active.source_mode == "waveform":
+            return TASK_INSTRUCTIONS["repaint"]
+        return TASK_INSTRUCTIONS["cover"]
+
+    def _reencode_ace_edit_instruction(self, edit) -> None:
+        """Retarget ACE's task prefix while preserving the visible prompt."""
+        state = self.state
+        refer = self._active_refer_latent()
+        instruction = self._audio_edit_instruction(edit)
+        cond_pair = encode_cond_pair(
+            self.session, state.prompt_text, refer,
+            state.bpm, state.duration, state.key, state.time_signature,
+            instruction=instruction,
+        )
+        cond_pair_b = (
+            cond_pair if state.prompt_text_b == state.prompt_text
+            else encode_cond_pair(
+                self.session, state.prompt_text_b, refer,
+                state.bpm, state.duration, state.key, state.time_signature,
+                instruction=instruction,
+            )
+        )
+        state.cond_pair = cond_pair
+        state.cond_pair_b = cond_pair_b
+        self._refresh_conditioning()
+
+    @requires_capability("audio_edit", "set_audio_edit")
+    def set_audio_edit(
+        self,
+        regions: list | None,
+        *,
+        enabled: bool = True,
+        source_mode: str = "waveform",
+        strength: float = 1.0,
+        origin: CommandOrigin = CommandOrigin.PRIMARY,
+    ) -> None:
+        """Change the live repaint/extend/cover control without restarting.
+
+        The backend snapshots this immutable value into each new ring slot;
+        already in-flight slots finish under their previous edit.
+        """
+        self.state.last_activity_ts = time.monotonic()
+        try:
+            edit = parse_live_audio_edit(
+                regions,
+                enabled=bool(enabled),
+                source_mode=str(source_mode),
+                strength=float(strength),
+                canvas_duration_s=float(self.backend.geometry().duration_s),
+                source_duration_s=float(
+                    self.state.source_content_duration_s or self.state.duration
+                ),
+            )
+            caps = self.backend.capabilities()
+            if (
+                edit.enabled
+                and edit.source_mode == "waveform"
+                and edit.strength < 1.0 - 1e-6
+                and not caps.audio_edit_strength
+            ):
+                raise AudioEditError(
+                    f"backend {self.backend.name!r} supports only binary waveform repaint strength"
+                )
+            previous_instruction = self._audio_edit_instruction()
+            with self.state._lock:
+                if (
+                    self.backend.name == "acestep"
+                    and previous_instruction != self._audio_edit_instruction(edit)
+                ):
+                    self._reencode_ace_edit_instruction(edit)
+                self.state.audio_edit = edit
+            self.backend.handle_set_audio_edit(edit)
+        except Exception as exc:
+            self.bus.publish(AudioEditFailed(error=str(exc)))
+            return
+        self.bus.publish(AudioEditApplied(**edit.to_wire()))
+
     def set_prompt(
         self,
         tags: str,
@@ -1710,12 +1820,14 @@ class StreamingSession:
             state.cond_pair = encode_cond_pair(
                 self.session, tags, refer, state.bpm, state.duration,
                 key_used, state.time_signature,
+                instruction=self._audio_edit_instruction(),
             )
             state.prompt_text = tags
             if tags_b and tags_b != tags:
                 state.cond_pair_b = encode_cond_pair(
                     self.session, tags_b, refer, state.bpm, state.duration,
                     key_used, state.time_signature,
+                    instruction=self._audio_edit_instruction(),
                 )
                 state.prompt_text_b = tags_b
             else:
@@ -1982,12 +2094,14 @@ class StreamingSession:
                 self.session, state.prompt_text, refer,
                 state.bpm, state.duration, state.key,
                 state.time_signature,
+                instruction=self._audio_edit_instruction(),
             )
             if state.prompt_text_b != state.prompt_text:
                 state.cond_pair_b = encode_cond_pair(
                     self.session, state.prompt_text_b, refer,
                     state.bpm, state.duration, state.key,
                     state.time_signature,
+                    instruction=self._audio_edit_instruction(),
                 )
             else:
                 state.cond_pair_b = state.cond_pair
@@ -2208,9 +2322,11 @@ class StreamingSession:
                 refer = self.stream.source.latent
                 cp = encode_cond_pair(
                     self.session, prompt_a, refer, bpm, dur, key, tsig,
+                    instruction=self._audio_edit_instruction(),
                 )
                 cp_b = cp if prompt_b == prompt_a else encode_cond_pair(
                     self.session, prompt_b, refer, bpm, dur, key, tsig,
+                    instruction=self._audio_edit_instruction(),
                 )
                 with state._lock:
                     if state.source_epoch == epoch:
@@ -2299,6 +2415,16 @@ class StreamingSession:
             max_seconds = max_profile_duration_s()
 
         waveform = waveform[:, :int(max_seconds * SAMPLE_RATE)]
+        source_content_duration_s = waveform.shape[-1] / SAMPLE_RATE
+        edit_duration_s = float(config.audio_edit_duration_s or 0.0)
+        if edit_duration_s > source_content_duration_s:
+            target_samples = min(
+                int(round(edit_duration_s * SAMPLE_RATE)),
+                int(max_seconds * SAMPLE_RATE),
+            )
+            waveform = torch.nn.functional.pad(
+                waveform, (0, max(0, target_samples - waveform.shape[-1])),
+            )
         rem = waveform.shape[-1] % _POOL
         if rem:
             waveform = waveform[:, :waveform.shape[-1] - rem]
@@ -2599,6 +2725,7 @@ class StreamingSession:
                 prompt_text=prompt,
                 prompt_text_b=prompt_b,
                 current_depth=int(depth),
+                source_content_duration_s=source_content_duration_s,
             )
 
             streaming = cls(

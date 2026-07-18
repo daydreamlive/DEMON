@@ -62,6 +62,8 @@ from acestep.streaming.commands import CommandOrigin
 from acestep.streaming.config import SessionConfig
 from acestep.streaming.events import (
     AudioReady,
+    AudioEditApplied,
+    AudioEditFailed,
     AudioWriteFailed,
     AudioWritten,
     CommandFailed,
@@ -1421,6 +1423,15 @@ def _handle_client_body(
             _send_json({"type": "prompt_blend_echo", "value": event.value})
         elif isinstance(event, PromptApplied):
             _send_json({"type": "prompt_applied", "tags": event.tags})
+        elif isinstance(event, AudioEditApplied):
+            _send_json({"type": "audio_edit_applied", **{
+                "enabled": event.enabled,
+                "regions": event.regions,
+                "source_mode": event.source_mode,
+                "strength": event.strength,
+            }})
+        elif isinstance(event, AudioEditFailed):
+            _send_json({"type": "audio_edit_failed", "error": event.error})
         elif isinstance(event, LoraCatalogUpdate):
             _send_json({"type": "lora_catalog", "catalog": event.catalog})
         elif isinstance(event, DepthApplied):
@@ -1728,6 +1739,14 @@ def _handle_client_body(
                     bpm=data.get("bpm"),
                     key=data.get("key"),
                     time_signature=data.get("time_signature"),
+                    origin=origin,
+                )
+            elif mtype == "set_audio_edit":
+                streaming.set_audio_edit(
+                    data.get("regions") or [],
+                    enabled=bool(data.get("enabled", True)),
+                    source_mode=str(data.get("source_mode", "waveform")),
+                    strength=float(data.get("strength", 1.0)),
                     origin=origin,
                 )
             elif mtype == "set_prompt_blend":
