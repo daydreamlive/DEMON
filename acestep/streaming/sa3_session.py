@@ -265,7 +265,11 @@ def create_sa3_session(
                 "cond": cond,
                 "cond_b": cond_b,
                 "source_latent_bct": source_latent,
-                "source_waveform": waveform.detach().cpu().float(),
+                # Composite against the exact initial client buffer, including
+                # ordinary model/canvas padding. Without the zero-padded tail,
+                # decoded samples outside an edit mask but past the short upload
+                # were incorrectly left generated instead of preserved silence.
+                "source_waveform": torch.from_numpy(src_np.T.copy()),
                 "duration_s": duration_s,
                 "dit_backend": dit_backend,
                 "codec_backend": codec_backend,

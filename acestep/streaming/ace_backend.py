@@ -36,6 +36,7 @@ from acestep.streaming.diffusion_backend import DiffusionBackend
 from acestep.streaming.audio_edit import (
     DISABLED_AUDIO_EDIT,
     composite_window,
+    constrain_audio_edit,
     regenerate_mask,
 )
 from acestep.streaming.generator_backend import (
@@ -354,6 +355,19 @@ class ACEStepBackend(DiffusionBackend):
 
     def handle_set_audio_edit(self, edit) -> None:
         self._audio_edit = edit
+
+    def finalize_audio_edit_window(self, pcm, start_sample: int):
+        """Apply the current/request mask after runner edge crossfades."""
+        if self._source_waveform is None:
+            return pcm
+        edit = constrain_audio_edit(self._audio_edit, self._emerged_audio_edit)
+        return composite_window(
+            pcm,
+            start_sample=start_sample,
+            source=self._source_waveform(),
+            edit=edit,
+            sample_rate=SAMPLE_RATE,
+        )
 
     def geometry(self) -> AudioGeometry:
         dur = self.playable_duration_s()
@@ -1011,14 +1025,6 @@ class ACEStepBackend(DiffusionBackend):
         win_wav = audio_out.waveform.detach().cpu().float().squeeze(0)
         win_np = win_wav.numpy().T
         win_start = audio_out.start_sample + win_offset_samples
-        if self._source_waveform is not None:
-            win_np = composite_window(
-                win_np,
-                start_sample=win_start,
-                source=self._source_waveform(),
-                edit=self._emerged_audio_edit,
-                sample_rate=SAMPLE_RATE,
-            )
         return AudioChunk(pcm=win_np, start_sample=win_start)
 
     def render_full(self):
@@ -1045,14 +1051,6 @@ class ACEStepBackend(DiffusionBackend):
         wav_np = wav.numpy().T
         if self.crop_seconds > 0:
             wav_np = wav_np[:int(self.crop_seconds * SAMPLE_RATE)]
-        if self._source_waveform is not None:
-            wav_np = composite_window(
-                wav_np,
-                start_sample=0,
-                source=self._source_waveform(),
-                edit=self._emerged_audio_edit,
-                sample_rate=SAMPLE_RATE,
-            )
         self._last_wav = wav_np
         return AudioChunk(pcm=wav_np, start_sample=0)
 

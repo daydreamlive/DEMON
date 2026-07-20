@@ -51,6 +51,45 @@ class LiveAudioEdit:
 DISABLED_AUDIO_EDIT = LiveAudioEdit()
 
 
+def constrain_audio_edit(
+    current: LiveAudioEdit | None,
+    emerged: LiveAudioEdit | None,
+) -> LiveAudioEdit:
+    """Limit one decoded request to the currently armed waveform mask.
+
+    A request can finish after the user has changed or cleared the selected
+    regions.  Only spans present in both snapshots are allowed to reach the
+    playback buffer.  In particular, an enabled current edit with no regions
+    is an all-preserve mask even when the emerged request predates Edit mode.
+    """
+    if current is None or not current.enabled or current.source_mode != "waveform":
+        return emerged or DISABLED_AUDIO_EDIT
+    if emerged is None or not emerged.enabled or emerged.source_mode != "waveform":
+        return LiveAudioEdit(True, (), "waveform", current.strength)
+
+    intersections: list[EditRegion] = []
+    i = j = 0
+    current_regions = current.regions
+    emerged_regions = emerged.regions
+    while i < len(current_regions) and j < len(emerged_regions):
+        left = current_regions[i]
+        right = emerged_regions[j]
+        start = max(left.start_s, right.start_s)
+        end = min(left.end_s, right.end_s)
+        if end > start + _EPS:
+            intersections.append(EditRegion(start, end))
+        if left.end_s < right.end_s:
+            i += 1
+        else:
+            j += 1
+    return LiveAudioEdit(
+        True,
+        tuple(intersections),
+        "waveform",
+        min(current.strength, emerged.strength),
+    )
+
+
 def parse_live_audio_edit(
     regions: Iterable[dict] | None,
     *,
@@ -59,6 +98,8 @@ def parse_live_audio_edit(
     strength: float,
     canvas_duration_s: float,
     source_duration_s: float,
+    left_extension_s: float = 0.0,
+    right_extension_s: float = 0.0,
 ) -> LiveAudioEdit:
     """Validate the wire vocabulary and return an immutable tick snapshot."""
     if not enabled:
@@ -71,6 +112,14 @@ def parse_live_audio_edit(
         raise AudioEditError(f"strength must be finite and in [0, 1], got {strength!r}")
     if not math.isfinite(canvas_duration_s) or canvas_duration_s <= 0:
         raise AudioEditError("the session has no finite editable canvas")
+    if (
+        not math.isfinite(left_extension_s)
+        or not math.isfinite(right_extension_s)
+        or left_extension_s < 0.0
+        or right_extension_s < 0.0
+        or left_extension_s + right_extension_s > canvas_duration_s + _EPS
+    ):
+        raise AudioEditError("explicit extension spans are invalid for this canvas")
 
     parsed: list[EditRegion] = []
     for i, raw in enumerate(regions or ()):
@@ -95,20 +144,41 @@ def parse_live_audio_edit(
             raise AudioEditError("regions must be ordered and non-overlapping")
         parsed.append(EditRegion(max(0.0, start), min(canvas_duration_s, end)))
 
-    if not parsed:
-        raise AudioEditError("an enabled edit requires at least one regenerate region")
     if source_mode == "structure":
         if len(parsed) != 1 or parsed[0].start_s > _EPS or parsed[0].end_s < canvas_duration_s - _EPS:
             raise AudioEditError("structure mode requires one region covering the full canvas")
     else:
-        cursor = 0.0
-        for region in parsed:
-            if region.start_s > cursor + _EPS and region.start_s > source_duration_s + _EPS:
-                raise AudioEditError("a preserved span extends past the available source audio")
-            cursor = max(cursor, region.end_s)
-        if canvas_duration_s > cursor + _EPS and canvas_duration_s > source_duration_s + _EPS:
+        # The model canvas is routinely a little (and for SA3 sometimes much)
+        # longer than the uploaded content because of latent/profile padding.
+        # That is preserved silence, not a user-requested extension.  Require
+        # coverage only for explicit extension spans supplied by the serving
+        # layer; ordinary canvas/source geometry differences remain editable
+        # with any valid interior region.
+        def _covered(required_start: float, required_end: float) -> bool:
+            if required_end <= required_start + _EPS:
+                return True
+            covered_until = required_start
+            for region in parsed:
+                if region.end_s <= covered_until + _EPS:
+                    continue
+                if region.start_s > covered_until + _EPS:
+                    return False
+                covered_until = max(covered_until, region.end_s)
+                if covered_until >= required_end - _EPS:
+                    return True
+            return False
+
+        # Anchor the right span to the end of uploaded content, not the
+        # backend canvas end: latent/model padding may continue beyond the
+        # exact requested duration and is not part of the extension.
+        right_extension_end_s = min(
+            canvas_duration_s, source_duration_s + right_extension_s,
+        )
+        if not _covered(0.0, left_extension_s) or not _covered(
+            source_duration_s, right_extension_end_s,
+        ):
             raise AudioEditError(
-                "extension requires regenerate regions to cover the entire canvas tail past the source"
+                "regenerate regions must cover every explicit waveform extension tail"
             )
     return LiveAudioEdit(True, tuple(parsed), source_mode, float(strength))
 

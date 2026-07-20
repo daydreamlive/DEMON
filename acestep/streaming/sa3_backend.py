@@ -66,6 +66,7 @@ from acestep.streaming.diffusion_backend import DiffusionBackend
 from acestep.streaming.audio_edit import (
     DISABLED_AUDIO_EDIT,
     composite_window,
+    constrain_audio_edit,
     sa3_inpaint_bundle,
 )
 from acestep.streaming.generator_backend import (
@@ -424,6 +425,21 @@ class SA3Backend(DiffusionBackend):
             self._audio_edit = edit
             self._edit_bundle_cache.clear()
 
+    def finalize_audio_edit_window(self, pcm, start_sample: int):
+        """Apply the current/request mask after runner edge crossfades."""
+        if self._source_waveform is None:
+            return pcm
+        with self._control_lock:
+            current = self._audio_edit
+        emerged = getattr(self._emerged_request, "audio_edit", DISABLED_AUDIO_EDIT)
+        return composite_window(
+            pcm,
+            start_sample=start_sample,
+            source=self._source_waveform,
+            edit=constrain_audio_edit(current, emerged),
+            sample_rate=DELIVERY_SAMPLE_RATE,
+        )
+
     def geometry(self) -> AudioGeometry:
         return AudioGeometry(
             sample_rate=DELIVERY_SAMPLE_RATE,
@@ -543,13 +559,25 @@ class SA3Backend(DiffusionBackend):
         latent_bct = self._source_encoder(waveform, sample_rate, sample_size)
         encode_ms = (time.perf_counter() - t0) * 1000
         latent_btc = latent_bct.movedim(1, 2).contiguous()
+        preserve_waveform = waveform.detach().cpu().float()
+        preserve_samples = int(round(self.playable_duration_s() * DELIVERY_SAMPLE_RATE))
+        if preserve_waveform.shape[-1] < preserve_samples:
+            preserve_waveform = torch.nn.functional.pad(
+                preserve_waveform,
+                (0, preserve_samples - preserve_waveform.shape[-1]),
+            )
+        else:
+            preserve_waveform = preserve_waveform[:, :preserve_samples]
         # Publish atomically w.r.t. the command thread's conditioning
         # swaps (same lock discipline as handle_set_prompt); the runner
         # reads the anchor on its own thread, which is also the thread
         # calling this hook.
         with self._control_lock:
             self._source_latent_btc = latent_btc
-            self._source_waveform = waveform.detach().cpu().float()
+            # Match the fixed client canvas just like the create path. Ordinary
+            # SA3 geometry padding is preserved silence unless it belongs to an
+            # explicitly selected extension region.
+            self._source_waveform = preserve_waveform
             self._latent_history.clear()
             self._edit_bundle_cache.clear()
         logger.info(
@@ -843,18 +871,6 @@ class SA3Backend(DiffusionBackend):
             start = int(round(t_start_s * DELIVERY_SAMPLE_RATE))
             start = max(0, min(start, max(0, audio.shape[0] - n)))
             chunk = AudioChunk(pcm=audio[start:start + n], start_sample=start)
-        edit = getattr(self._emerged_request, "audio_edit", DISABLED_AUDIO_EDIT)
-        if self._source_waveform is not None:
-            chunk = AudioChunk(
-                pcm=composite_window(
-                    chunk.pcm,
-                    start_sample=chunk.start_sample,
-                    source=self._source_waveform,
-                    edit=edit,
-                    sample_rate=DELIVERY_SAMPLE_RATE,
-                ),
-                start_sample=chunk.start_sample,
-            )
         return chunk
 
     def _render_window_via_codec(self, latent_btc: torch.Tensor, t_start_s: float):
@@ -904,15 +920,6 @@ class SA3Backend(DiffusionBackend):
         if self._current_result is None:
             return None
         pcm = self._rendered_audio(self._current_result)
-        edit = getattr(self._emerged_request, "audio_edit", DISABLED_AUDIO_EDIT)
-        if self._source_waveform is not None:
-            pcm = composite_window(
-                pcm,
-                start_sample=0,
-                source=self._source_waveform,
-                edit=edit,
-                sample_rate=DELIVERY_SAMPLE_RATE,
-            )
         return AudioChunk(pcm=pcm, start_sample=0)
 
     # ---- bookkeeping -------------------------------------------------------------

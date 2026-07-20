@@ -499,6 +499,11 @@ class StreamingSession:
         self.stream = stream
         self.state = state
         self.audio_eng = audio_eng
+        # Serializes edit-mask activation with the last compositor + event
+        # publication boundary. A runner callback that began under the old
+        # mask must publish before the command's full-source restoration, never
+        # race past it and overwrite the restored client mirror afterwards.
+        self._audio_edit_delivery_lock = threading.RLock()
         # Staleness estimator for client playhead reports (params channel
         # ``client_time`` stamps). Only ever touched from set_knobs.
         self._report_staleness = ReportStalenessEstimator()
@@ -864,27 +869,37 @@ class StreamingSession:
         The audio array passed in the event is the same numpy array
         the runner produced; subscribers must treat it as immutable.
         """
-        state = self.state
-        if win_start is not None:
-            ss = int(win_start)
-            se = ss + len(wav_np)
-        else:
-            self.audio_eng.swap(wav_np)
-            ss = 0
-            se = len(wav_np)
+        with self._audio_edit_delivery_lock:
+            state = self.state
+            finalize = getattr(self.backend, "finalize_audio_edit_window", None)
+            if win_start is not None:
+                ss = int(win_start)
+                if finalize is not None:
+                    wav_np = finalize(wav_np, ss)
+                    # The runner writes before calling us so it can trim emitted
+                    # windows from its live buffer. Reassert the final edit mask
+                    # after its edge crossfade, immediately before publication.
+                    self.audio_eng.patch_window(wav_np, ss)
+                se = ss + len(wav_np)
+            else:
+                if finalize is not None:
+                    wav_np = finalize(wav_np, 0)
+                self.audio_eng.swap(wav_np)
+                ss = 0
+                se = len(wav_np)
 
-        params_snapshot = dict(state.params)
-        self.bus.publish(AudioReady(
-            audio=wav_np,
-            start_sample=ss,
-            num_samples=int(se - ss),
-            channels=state.n_channels,
-            tick_ms=float(params_snapshot.get("tick_ms", 0) or 0),
-            dec_ms=float(params_snapshot.get("dec_ms", 0) or 0),
-            num_gens=int(params_snapshot.get("num_gens", 0) or 0),
-            params=params_snapshot,
-            published_wall_s=time.monotonic(),
-        ))
+            params_snapshot = dict(state.params)
+            self.bus.publish(AudioReady(
+                audio=wav_np,
+                start_sample=ss,
+                num_samples=int(se - ss),
+                channels=state.n_channels,
+                tick_ms=float(params_snapshot.get("tick_ms", 0) or 0),
+                dec_ms=float(params_snapshot.get("dec_ms", 0) or 0),
+                num_gens=int(params_snapshot.get("num_gens", 0) or 0),
+                params=params_snapshot,
+                published_wall_s=time.monotonic(),
+            ))
 
     # ---- Pending drain (runs inside before_tick) -----------------------
 
@@ -1745,6 +1760,19 @@ class StreamingSession:
                 source_duration_s=float(
                     self.state.source_content_duration_s or self.state.duration
                 ),
+                # audio_edit_duration_s represents a client-requested right
+                # extension. Backend/model padding beyond source content is
+                # ordinary geometry and must never trigger tail validation.
+                right_extension_s=max(
+                    0.0,
+                    min(
+                        float(self.config.audio_edit_duration_s or 0.0),
+                        float(self.backend.geometry().duration_s),
+                    )
+                    - float(
+                        self.state.source_content_duration_s or self.state.duration
+                    ),
+                ),
             )
             caps = self.backend.capabilities()
             if (
@@ -1764,7 +1792,19 @@ class StreamingSession:
                 ):
                     self._reencode_ace_edit_instruction(edit)
                 self.state.audio_edit = edit
-            self.backend.handle_set_audio_edit(edit)
+            with self._audio_edit_delivery_lock:
+                self.backend.handle_set_audio_edit(edit)
+                # Immediately restore every currently preserved sample and
+                # publish that full buffer so the transport mirror cannot
+                # retain audio from an earlier unmasked generation while new
+                # masked slots drain. The re-entrant delivery lock makes this
+                # restoration indivisible from edit activation.
+                if edit.enabled and edit.source_mode == "waveform":
+                    finalize = getattr(
+                        self.backend, "finalize_audio_edit_window", None,
+                    )
+                    if finalize is not None:
+                        self._on_audio_ready(self.audio_eng.current.copy())
         except Exception as exc:
             self.bus.publish(AudioEditFailed(error=str(exc)))
             return
