@@ -20,6 +20,7 @@ from acestep.engine.obs import logger
 
 
 def _make_acestep(ss):
+    from acestep.paths import checkpoint_scale
     from acestep.steering import SteeringController, ensure_steering_vectors
     from acestep.streaming.ace_backend import ACEStepBackend
 
@@ -43,6 +44,9 @@ def _make_acestep(ss):
         walk_window_s=ss.walk_window_s,
         neg_conditioning=ss.cond_negative,
         steering=steering,
+        # Scale label for the lora_compatible predicate; None for
+        # checkpoints outside the scale map = "don't filter".
+        checkpoint_scale=checkpoint_scale(ss.checkpoint),
     )
 
 

@@ -58,12 +58,13 @@ from acestep.engine.trt.profile_manager import (
     TRTProfileManager,
 )
 from acestep.fixtures import KNOWN_FIXTURES, audio_fixture
-from acestep.lora_metadata import load_lora_metadata
+from acestep.lora_metadata import load_lora_metadata, lora_scale_compatible
 from acestep.nodes.interpolation import INTERP_METHOD_NAMES
 from acestep.nodes.types import Audio, Latent
 from acestep.paths import (
     EngineNotBuiltError,
     available_dreamvae_decode_engine,
+    checkpoint_scale,
     checkpoints_dir,
     dreamvae_decode_engine_name,
     max_profile_duration_s,
@@ -196,6 +197,34 @@ def _cleanup_create_resource(name: str, close_fn: Callable[[], None]) -> None:
             "streaming_create_cleanup_raised resource={} error={}",
             name, exc,
         )
+
+
+def resolve_lora_reference(requested: str, entries) -> str | None:
+    """Resolve a client LoRA reference to a canonical catalog id.
+
+    ``entries`` is an iterable of ``(lora_id, display_name, compatible)``
+    triples covering the FULL catalog. An exact id match wins outright
+    (even on an incompatible entry — exact-id clients keep today's
+    behavior, including today's engine-side failure). Otherwise the
+    reference is looked up case-insensitively against each entry's
+    filename stem (its id) and sidecar display name, restricted to the
+    COMPATIBLE subset — so a scale-agnostic reference like "Ambient",
+    shared by ``ambient-v1`` (2B) and ``ambient-xl-v1`` (5B), resolves
+    to the variant the active engine can actually load. Mirrors the
+    demo webapp's ``buildLoraAliasMap`` (last write wins on the
+    degenerate same-name collision). Returns ``None`` on a miss.
+    """
+    entries = list(entries)
+    if any(requested == lid for lid, _, _ in entries):
+        return requested
+    aliases: dict = {}
+    for lid, name, compatible in entries:
+        if not compatible:
+            continue
+        aliases[lid.lower()] = lid
+        if name:
+            aliases[str(name).lower()] = lid
+    return aliases.get(requested.lower())
 
 
 # ---------------------------------------------------------------------------
@@ -675,8 +704,39 @@ class StreamingSession:
                 "strength": d.strength,
                 "materialized_bytes": d.materialized_bytes,
                 "metadata": metadata,
+                # Backend verdict: can this engine actually load the
+                # entry? Advisory — the full catalog still ships so
+                # clients can show incompatible rows greyed instead of
+                # hidden (the demo's show_incompatible_loras toggle).
+                "compatible": bool(self.backend.lora_compatible(metadata)),
             })
         return out
+
+    def _resolve_lora_id(self, requested: str) -> str:
+        """Map a client LoRA reference (exact id, or a case-insensitive
+        stem/display-name alias) to the canonical catalog id via
+        :func:`resolve_lora_reference`. Falls through to the original
+        string on a miss so downstream behavior (engine-side
+        enable/disable failure logs) is unchanged for ids that never
+        existed."""
+        if not (self.lora_available and self.engine_obj is not None):
+            return requested
+        entries = []
+        for d in self.engine_obj.list_loras():
+            metadata = load_lora_metadata(d.path).to_wire()
+            entries.append((
+                d.id,
+                metadata.get("name") or d.name,
+                self.backend.lora_compatible(metadata),
+            ))
+        resolved = resolve_lora_reference(requested, entries)
+        if resolved is None:
+            return requested
+        if resolved != requested:
+            logger.info(
+                "lora_alias_resolved requested={} id={}", requested, resolved,
+            )
+        return resolved
 
     def snapshot(self) -> dict:
         """JSON-serialisable snapshot of the session's current state.
@@ -1823,10 +1883,16 @@ class StreamingSession:
     ) -> None:
         """Stage a LoRA enable. The atomic-strength contract holds:
         the next refit lands at ``strength`` in one shot (no
-        first-window-without-LoRA artifact)."""
+        first-window-without-LoRA artifact).
+
+        ``lora_id`` may be an exact catalog id or a case-insensitive
+        stem/display-name alias; the enable is staged (and later echoed
+        by ``lora_enabled`` and the catalog broadcast) under the
+        canonical id."""
         self.state.last_activity_ts = time.monotonic()
+        lora_id = self._resolve_lora_id(str(lora_id))
         with self.state._lock:
-            self.state.pending_enable.append((str(lora_id), strength))
+            self.state.pending_enable.append((lora_id, strength))
         logger.info(
             "enable_lora_requested origin={} id={} strength={}",
             origin.value, lora_id, strength,
@@ -1839,9 +1905,12 @@ class StreamingSession:
         *,
         origin: CommandOrigin = CommandOrigin.PRIMARY,
     ) -> None:
+        """Same alias resolution as :meth:`enable_lora` — a client that
+        enabled by alias must be able to disable by the same name."""
         self.state.last_activity_ts = time.monotonic()
+        lora_id = self._resolve_lora_id(str(lora_id))
         with self.state._lock:
-            self.state.pending_disable.append(str(lora_id))
+            self.state.pending_disable.append(lora_id)
         logger.info(
             "disable_lora_requested origin={} id={}",
             origin.value, lora_id,
@@ -2439,12 +2508,39 @@ class StreamingSession:
 
             initial_enable_ids: list[str] = []
             if use_lora:
-                catalog_ids = {d.id for d in engine_obj.list_loras()}
+                # Same reference resolution as the runtime enable_lora
+                # path, but the backend (and its lora_compatible
+                # predicate) doesn't exist until __init__ — this IS the
+                # ACE-family create path, so the scale axis is applied
+                # directly, mirroring ACEStepBackend.lora_compatible.
+                scale = checkpoint_scale(checkpoint)
+                entries = []
+                for d in engine_obj.list_loras():
+                    md = load_lora_metadata(d.path)
+                    entries.append((
+                        d.id,
+                        md.name or d.name,
+                        lora_scale_compatible(md.base_model_scale, scale),
+                    ))
                 for lid in enabled_lora_ids:
-                    if lid in catalog_ids:
-                        initial_enable_ids.append(lid)
-                    else:
+                    resolved = resolve_lora_reference(lid, entries)
+                    if resolved is None:
                         logger.warning("lora_id_not_in_catalog id={}", lid)
+                        continue
+                    if resolved != lid:
+                        logger.info(
+                            "lora_alias_resolved requested={} id={}",
+                            lid, resolved,
+                        )
+                        # Re-key any client-supplied strength so the
+                        # first-tick enable picks it up under the
+                        # canonical id.
+                        if lid in lora_strengths_init:
+                            lora_strengths_init.setdefault(
+                                resolved, lora_strengths_init[lid],
+                            )
+                    if resolved not in initial_enable_ids:
+                        initial_enable_ids.append(resolved)
                 for p in extra_lora_paths:
                     pp = Path(p)
                     if not pp.exists():

@@ -62,6 +62,13 @@ export interface LoraCatalogEntry {
   /** Full normalized metadata record. Always present from servers that
    *  speak the v2 catalog shape; older servers may omit it. */
   metadata?: LoraMetadata;
+  /** Server-computed backend verdict: can the active engine actually
+   *  load this LoRA (today: trained base_model_scale vs the session
+   *  checkpoint's scale)? Advisory — the full catalog still ships so
+   *  clients can grey instead of hide. Absent from older servers;
+   *  clients fall back to the local scale comparison
+   *  (isLoraCompatibleWithScale) when missing. */
+  compatible?: boolean;
 }
 
 /** Sent by the client at session start (config phase). Generated from the

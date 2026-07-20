@@ -322,7 +322,12 @@ COMMANDS: tuple = (
         "enable_lora",
         fields=(
             FieldSpec("id", "str", required=True,
-                      description="LoRA id/stem (see /api/loras)."),
+                      description="LoRA id/stem (see /api/loras). A value "
+                                  "matching no catalog id exactly is resolved "
+                                  "as a case-insensitive stem/display-name "
+                                  "alias over the compatible subset of the "
+                                  "catalog; the enable lands on (and the "
+                                  "catalog echo shows) the canonical id."),
             FieldSpec("strength", "float",
                       description="Target strength the refit lands at."),
         ),
@@ -331,7 +336,9 @@ COMMANDS: tuple = (
     ),
     CommandSpec(
         "disable_lora",
-        fields=(FieldSpec("id", "str", required=True),),
+        fields=(FieldSpec("id", "str", required=True,
+                          description="LoRA id/stem; same alias resolution "
+                                      "as enable_lora."),),
         requires="lora",
         description="Disable a LoRA and drop its lora_str_<id> knob.",
     ),
@@ -503,7 +510,12 @@ EVENTS: tuple = (
             FieldSpec("duration", "float", required=True),
             FieldSpec("channels", "int", required=True),
             FieldSpec("sample_rate", "int", required=True),
-            FieldSpec("lora_catalog", "list"),
+            FieldSpec("lora_catalog", "list",
+                      description="Full catalog; entries carry a server-"
+                                  "computed `compatible` bool (backend "
+                                  "predicate — can this engine load it?) so "
+                                  "clients filter/grey without re-deriving "
+                                  "scale rules."),
             FieldSpec("lora_dir", "str"),
             FieldSpec("bpm", "float", nullable=True),
             FieldSpec("key", "str", nullable=True),
@@ -618,7 +630,10 @@ EVENTS: tuple = (
     ),
     EventSpec(
         "lora_catalog",
-        fields=(FieldSpec("catalog", "list", required=True),),
+        fields=(FieldSpec("catalog", "list", required=True,
+                          description="Same entry shape as "
+                                      "ready.lora_catalog, including the "
+                                      "server-computed `compatible` bool."),),
         description="Refreshed LoRA catalog after enable/disable.",
     ),
     EventSpec(

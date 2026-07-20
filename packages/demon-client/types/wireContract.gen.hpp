@@ -109,7 +109,7 @@ namespace command {
 
   namespace enable_lora {
     inline constexpr const char* kType = "enable_lora";
-    /** LoRA id/stem (see /api/loras). */
+    /** LoRA id/stem (see /api/loras). A value matching no catalog id exactly is resolved as a case-insensitive stem/display-name alias over the compatible subset of the catalog; the enable lands on (and the catalog echo shows) the canonical id. */
     inline constexpr const char* kId = "id";
     /** Target strength the refit lands at. */
     inline constexpr const char* kStrength = "strength";
@@ -117,6 +117,7 @@ namespace command {
 
   namespace disable_lora {
     inline constexpr const char* kType = "disable_lora";
+    /** LoRA id/stem; same alias resolution as enable_lora. */
     inline constexpr const char* kId = "id";
   }  // namespace disable_lora
 
@@ -231,6 +232,7 @@ namespace event {
     inline constexpr const char* kDuration = "duration";
     inline constexpr const char* kChannels = "channels";
     inline constexpr const char* kSampleRate = "sample_rate";
+    /** Full catalog; entries carry a server-computed `compatible` bool (backend predicate — can this engine load it?) so clients filter/grey without re-deriving scale rules. */
     inline constexpr const char* kLoraCatalog = "lora_catalog";
     inline constexpr const char* kLoraDir = "lora_dir";
     inline constexpr const char* kBpm = "bpm";
@@ -292,6 +294,7 @@ namespace event {
 
   namespace lora_catalog {
     inline constexpr const char* kType = "lora_catalog";
+    /** Same entry shape as ready.lora_catalog, including the server-computed `compatible` bool. */
     inline constexpr const char* kCatalog = "catalog";
   }  // namespace lora_catalog
 

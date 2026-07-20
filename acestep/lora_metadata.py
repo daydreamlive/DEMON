@@ -93,6 +93,27 @@ class LoraMetadata:
         return asdict(self)
 
 
+def lora_scale_compatible(
+    lora_scale: Optional[str],
+    checkpoint_scale: Optional[str],
+) -> bool:
+    """True iff a LoRA trained at ``lora_scale`` can load against a
+    checkpoint of ``checkpoint_scale`` ("2B" / "5B" labels, see
+    :func:`acestep.paths.checkpoint_scale`).
+
+    Unknown on EITHER side is compatible — same permissive stance as
+    the module-level ``base_model_scale`` comment above and the demo's
+    ``isLoraCompatibleWithScale`` — so undocumented LoRAs and
+    unrecognized checkpoints are never hidden or excluded. This is the
+    scale AXIS only; the per-session predicate lives on the generator
+    backend (``GeneratorBackend.lora_compatible``) so families can add
+    axes beyond scale.
+    """
+    if not checkpoint_scale or not lora_scale:
+        return True
+    return lora_scale == checkpoint_scale
+
+
 # (sidecar_path_str, mtime_ns) -> parsed record
 _cache: dict[tuple[str, int], LoraMetadata] = {}
 

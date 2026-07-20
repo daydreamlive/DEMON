@@ -284,7 +284,7 @@ def _process_request(connection, request):
     # resolution the WebSocket pipeline uses, so everyone agrees on
     # what's in the catalog.
     if path_only == "/api/loras":
-        from acestep.lora_metadata import load_lora_metadata
+        from acestep.lora_metadata import load_lora_metadata, lora_scale_compatible
         from acestep.paths import (
             checkpoint_scale,
             discover_all_loras,
@@ -298,6 +298,7 @@ def _process_request(connection, request):
             # engine-side catalog stay in lockstep.
             entries = []
             seen_ids: set[str] = set()
+            scale = checkpoint_scale(_CHECKPOINT)
             for p in discover_all_loras():
                 # Same-stem dedup mirrors LoRAManager.register_lora's
                 # first-wins behavior so the UI can't see a phantom id
@@ -314,6 +315,13 @@ def _process_request(connection, request):
                     "strength": 0.0,
                     "materialized_bytes": 0,
                     "metadata": md,
+                    # Pre-session there is no backend to ask, so the
+                    # scale axis is applied directly — same verdict the
+                    # WS catalog's backend.lora_compatible produces for
+                    # ACE checkpoints. Advisory; the full catalog ships.
+                    "compatible": lora_scale_compatible(
+                        md.get("base_model_scale"), scale,
+                    ),
                 })
         except Exception as e:
             entries = []

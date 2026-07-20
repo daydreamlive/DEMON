@@ -183,7 +183,7 @@ export interface SetDepthCommand {
 
 export interface EnableLoraCommand {
   type: "enable_lora";
-  /** LoRA id/stem (see /api/loras). */
+  /** LoRA id/stem (see /api/loras). A value matching no catalog id exactly is resolved as a case-insensitive stem/display-name alias over the compatible subset of the catalog; the enable lands on (and the catalog echo shows) the canonical id. */
   id: string;
   /** Target strength the refit lands at. */
   strength?: number;
@@ -191,6 +191,7 @@ export interface EnableLoraCommand {
 
 export interface DisableLoraCommand {
   type: "disable_lora";
+  /** LoRA id/stem; same alias resolution as enable_lora. */
   id: string;
 }
 
@@ -285,6 +286,7 @@ export interface ReadyEvent {
   duration: number;
   channels: number;
   sample_rate: number;
+  /** Full catalog; entries carry a server-computed `compatible` bool (backend predicate — can this engine load it?) so clients filter/grey without re-deriving scale rules. */
   lora_catalog?: unknown[];
   lora_dir?: string;
   bpm?: number | null;
@@ -346,6 +348,7 @@ export interface PromptAppliedEvent {
 
 export interface LoraCatalogEvent {
   type: "lora_catalog";
+  /** Same entry shape as ready.lora_catalog, including the server-computed `compatible` bool. */
   catalog: unknown[];
 }
 
