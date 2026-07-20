@@ -48,6 +48,7 @@ class AudioEngine:
         # Guarded by its own lock: the buffer ``_lock`` sits on the audio
         # callback hot path and queue ops must never contend with it.
         self._render_anchor_queue: list = []
+        self._render_anchor_queue_gen = 0
         self._render_anchor_queue_lock = threading.Lock()
         # Client-observed slice landing lead (seconds; negative = the
         # slice patched audio the listener already played) and the wall
@@ -73,24 +74,34 @@ class AudioEngine:
     # ---- render-anchor queue (see __init__) --------------------------------
 
     def set_render_anchor_queue(self, anchors) -> None:
-        """Replace the queued stationary anchors (seconds). Empty clears."""
+        """Replace the queued stationary anchors (seconds). Empty clears.
+
+        Bumps the queue GENERATION: a tick that peeked the old queue must
+        not pop from the replacement. A same-value head is not enough to
+        detect that (ABA: replacing ``[1, 2]`` with ``[1, 3]`` while ``1``
+        renders would let the old tick pop the NEW queue's ``1``)."""
         anchors = [float(a) for a in (anchors or [])]
         with self._render_anchor_queue_lock:
             self._render_anchor_queue = anchors
+            self._render_anchor_queue_gen += 1
 
     def peek_render_anchor(self):
-        """Head of the anchor queue, or ``None`` when empty."""
+        """``(head_anchor_s, generation)`` of the queue, or ``None``."""
         with self._render_anchor_queue_lock:
             q = self._render_anchor_queue
-            return q[0] if q else None
+            if not q:
+                return None
+            return q[0], self._render_anchor_queue_gen
 
-    def pop_render_anchor(self, expected) -> None:
-        """Pop the queue head iff it still equals ``expected``.
+    def pop_render_anchor(self, expected, generation) -> None:
+        """Pop the queue head iff it still equals ``expected`` AND the queue
+        has not been replaced since the peek (``generation`` matches).
 
         The runner peeks at tick start and pops only after the window is
-        emitted; the compare guards against the client replacing the queue
-        mid-tick (the freshly-set queue must not lose ITS head)."""
+        emitted; the guards make a client replace mid-tick safe."""
         with self._render_anchor_queue_lock:
+            if self._render_anchor_queue_gen != generation:
+                return
             q = self._render_anchor_queue
             if q and q[0] == expected:
                 q.pop(0)

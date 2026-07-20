@@ -639,16 +639,19 @@ class PipelineRunner:
         Placement priority: the scalar ``render_anchor_s`` (a live pad pin)
         preempts everything; otherwise the head of the engine's anchor QUEUE
         (batch prewarm — one window per tick, back-to-back); otherwise the
-        transport chase. ``queue_anchor`` is non-None only when this tick's
-        placement came from the queue — the caller pops it AFTER the window
-        actually emits, so a failed render retries the same anchor."""
+        transport chase. ``queue_anchor`` is a ``(anchor_s, generation)``
+        pair, non-None only when this tick's placement came from the queue —
+        the caller pops it AFTER the window actually emits, so a failed
+        render retries the same anchor, and the generation guard makes a
+        client queue-replace mid-tick safe."""
         playhead_now = self._playhead_seconds_now()
         anchor = getattr(self.audio_eng, "render_anchor_s", None)
         queue_anchor = None
         if anchor is None and not position_chase_only:
             peek = getattr(self.audio_eng, "peek_render_anchor", None)
             queue_anchor = peek() if peek is not None else None
-            anchor = queue_anchor
+            if queue_anchor is not None:
+                anchor = queue_anchor[0]
         anchored = anchor is not None and not position_chase_only
         advance_s = 0.0 if anchored else self._decode_advance_s()
         decode_start = float(anchor) if anchored else playhead_now + advance_s
@@ -1002,7 +1005,7 @@ class PipelineRunner:
                         # anchor. (A ``chunk is None`` tick skips this, so a
                         # transient render failure retries the same anchor.)
                         if queue_anchor is not None:
-                            self.audio_eng.pop_render_anchor(queue_anchor)
+                            self.audio_eng.pop_render_anchor(*queue_anchor)
                         # Fold this write's wall gap into the adaptive lead
                         # state. One call per successful write — real
                         # generation OR gap-fill; the band-wrap second render

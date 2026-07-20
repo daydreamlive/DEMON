@@ -108,7 +108,8 @@ def test_queue_head_places_render_when_scalar_clear(monkeypatch):
     assert advance == 0.0
     assert start == pytest.approx(3.5)
     assert anchored is True
-    assert queue_anchor == pytest.approx(3.5)
+    assert queue_anchor is not None
+    assert queue_anchor[0] == pytest.approx(3.5)
 
 
 def test_scalar_anchor_preempts_queue(monkeypatch):
@@ -121,7 +122,7 @@ def test_scalar_anchor_preempts_queue(monkeypatch):
     assert anchored is True
     # Scalar placement must NOT consume the queue — it resumes intact.
     assert queue_anchor is None
-    assert eng.peek_render_anchor() == pytest.approx(3.5)
+    assert eng.peek_render_anchor()[0] == pytest.approx(3.5)
 
 
 def test_queue_is_ignored_by_walk_mode(monkeypatch):
@@ -138,13 +139,29 @@ def test_queue_is_ignored_by_walk_mode(monkeypatch):
 def test_queue_pop_is_guarded_by_expected_head():
     eng = _engine()
     eng.set_render_anchor_queue([3.5, 7.0])
-    # Client replaced the queue between peek and pop: the new head survives.
-    eng.pop_render_anchor(9.9)
-    assert eng.peek_render_anchor() == pytest.approx(3.5)
-    eng.pop_render_anchor(3.5)
-    assert eng.peek_render_anchor() == pytest.approx(7.0)
-    eng.pop_render_anchor(7.0)
+    head, gen = eng.peek_render_anchor()
+    # Wrong expected head: the queue is untouched.
+    eng.pop_render_anchor(9.9, gen)
+    assert eng.peek_render_anchor()[0] == pytest.approx(3.5)
+    eng.pop_render_anchor(3.5, gen)
+    assert eng.peek_render_anchor()[0] == pytest.approx(7.0)
+    eng.pop_render_anchor(7.0, gen)
     assert eng.peek_render_anchor() is None
+
+
+def test_queue_pop_is_guarded_against_aba_replacement():
+    # Replacing [1, 2] with [1, 3] while ``1`` renders must NOT let the old
+    # tick pop the NEW queue's identical head — the generation guard, not
+    # the value compare, is what makes replace-mid-tick safe.
+    eng = _engine()
+    eng.set_render_anchor_queue([1.0, 2.0])
+    head, gen = eng.peek_render_anchor()
+    eng.set_render_anchor_queue([1.0, 3.0])   # client replace mid-tick
+    eng.pop_render_anchor(head, gen)          # stale pop: same value, old gen
+    assert eng.peek_render_anchor()[0] == pytest.approx(1.0)
+    head2, gen2 = eng.peek_render_anchor()
+    eng.pop_render_anchor(head2, gen2)        # current-gen pop works
+    assert eng.peek_render_anchor()[0] == pytest.approx(3.0)
 
 
 def test_queue_wraps_cyclically_like_scalar(monkeypatch):
@@ -154,7 +171,7 @@ def test_queue_wraps_cyclically_like_scalar(monkeypatch):
     _, _, start, anchored, queue_anchor = runner._render_placement(10.0, False)
     assert start == pytest.approx(2.25)
     # The pop key is the RAW queued value, not the wrapped placement.
-    assert queue_anchor == pytest.approx(12.25)
+    assert queue_anchor[0] == pytest.approx(12.25)
     assert anchored is True
 
 
@@ -204,11 +221,11 @@ def test_queue_absent_retains_list_replaces_null_clears():
     session = _session_for_params()
     eng = session.audio_eng
     session.set_knobs({}, 1.0, render_anchor_queue_s=[3.5, 7.0])
-    assert eng.peek_render_anchor() == pytest.approx(3.5)
+    assert eng.peek_render_anchor()[0] == pytest.approx(3.5)
     session.set_knobs({}, 2.0)
-    assert eng.peek_render_anchor() == pytest.approx(3.5)
+    assert eng.peek_render_anchor()[0] == pytest.approx(3.5)
     session.set_knobs({}, 3.0, render_anchor_queue_s=[8.0])
-    assert eng.peek_render_anchor() == pytest.approx(8.0)
+    assert eng.peek_render_anchor()[0] == pytest.approx(8.0)
     session.set_knobs({}, 4.0, render_anchor_queue_s=None)
     assert eng.peek_render_anchor() is None
 

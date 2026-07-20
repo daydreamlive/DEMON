@@ -233,7 +233,12 @@ COMMANDS: tuple = (
                                   "it. Gated on ready.capabilities."
                                   "render_anchor_queue — older servers ignore "
                                   "the field. Non-finite entries are dropped; "
-                                  "length is capped server-side (1024)."),
+                                  "length is capped server-side (1024). Like "
+                                  "the scalar anchor, IGNORED in walk-window "
+                                  "mode (sources longer than walk_window_s): "
+                                  "the DiT holds one chunk and cannot render "
+                                  "outside it — clients must not queue-warm "
+                                  "walk sources."),
             FieldSpec("client_time", "float", nullable=True,
                       description="Client monotonic send time in seconds "
                                   "(performance.now()/1000; arbitrary origin). "
