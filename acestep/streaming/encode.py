@@ -17,6 +17,7 @@ def encode_cond_pair(
     duration,
     key,
     time_signature,
+    instruction=None,
 ):
     # WYSIWYG: the encoder sees exactly the text the UI sent. LoRA
     # trigger words land in `tags` via the client's visible-prepend
@@ -27,7 +28,7 @@ def encode_cond_pair(
     cs = session.encode_text(
         tags=tags,
         lyrics="[Instrumental]",
-        instruction=TASK_INSTRUCTIONS["cover"],
+        instruction=instruction or TASK_INSTRUCTIONS["cover"],
         refer_latent=None,
         bpm=bpm, duration=duration, key=key,
         time_signature=time_signature,
@@ -35,7 +36,7 @@ def encode_cond_pair(
     cf = session.encode_text(
         tags=tags,
         lyrics="[Instrumental]",
-        instruction=TASK_INSTRUCTIONS["cover"],
+        instruction=instruction or TASK_INSTRUCTIONS["cover"],
         refer_latent=refer_latent,
         bpm=bpm, duration=duration, key=key,
         time_signature=time_signature,

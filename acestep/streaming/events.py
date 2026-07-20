@@ -56,6 +56,8 @@ __all__ = [
     "ParamsUpdate",
     "ParamsEcho",
     "PromptApplied",
+    "AudioEditApplied",
+    "AudioEditFailed",
     "PromptBlendEcho",
     "LoraCatalogUpdate",
     "DepthApplied",
@@ -152,6 +154,19 @@ class PromptApplied:
     """The named prompt (A) was re-encoded and is now live."""
 
     tags: str
+
+
+@dataclass(frozen=True)
+class AudioEditApplied:
+    enabled: bool
+    regions: list
+    source_mode: str
+    strength: float
+
+
+@dataclass(frozen=True)
+class AudioEditFailed:
+    error: str
 
 
 @dataclass(frozen=True)

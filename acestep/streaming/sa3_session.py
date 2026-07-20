@@ -139,7 +139,9 @@ def create_sa3_session(
     if waveform.shape[0] == 1:
         waveform = waveform.repeat(2, 1)
     source_duration_s = waveform.shape[-1] / SAMPLE_RATE
-    duration_s = float(config.sa3_duration_s or 0.0) or source_duration_s
+    duration_s = float(
+        config.audio_edit_duration_s or config.sa3_duration_s or 0.0
+    ) or source_duration_s
     duration_s = min(duration_s, SA3_MAX_DURATION_S)
     # Land on the TRT DiT fast path when engines are built (medium):
     # a duration whose padded latent window exceeds every engine
@@ -206,6 +208,7 @@ def create_sa3_session(
         prompt_text=prompt,
         prompt_text_b=prompt_b,
         current_depth=depth,
+        source_content_duration_s=source_duration_s,
     )
 
     # Same transactional create shape as StreamingSession.create's ACE
@@ -262,6 +265,11 @@ def create_sa3_session(
                 "cond": cond,
                 "cond_b": cond_b,
                 "source_latent_bct": source_latent,
+                # Composite against the exact initial client buffer, including
+                # ordinary model/canvas padding. Without the zero-padded tail,
+                # decoded samples outside an edit mask but past the short upload
+                # were incorrectly left generated instead of preserved silence.
+                "source_waveform": torch.from_numpy(src_np.T.copy()),
                 "duration_s": duration_s,
                 "dit_backend": dit_backend,
                 "codec_backend": codec_backend,

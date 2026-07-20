@@ -5,6 +5,7 @@ var COMMAND_NAMES = [
   "params",
   "loop_band",
   "prompt",
+  "set_audio_edit",
   "set_prompt_blend",
   "set_interp_method",
   "set_depth",
@@ -36,6 +37,8 @@ var EVENT_NAMES = [
   "stem_assets",
   "stem_failed",
   "depth_applied",
+  "audio_edit_applied",
+  "audio_edit_failed",
   "manual_slot_count",
   "timbre_set",
   "timbre_cleared",
@@ -1905,6 +1908,25 @@ var RemoteBackend = class extends EventTarget {
   tags B (wire)  : ${msg.tags_b != null ? JSON.stringify(msg.tags_b) : "(none)"}`
         );
       }
+    } catch {
+    }
+  }
+  /**
+   * Change live repaint/extend/cover state. This does not launch a one-shot
+   * job: new requests enter the existing ring and emerge through ordinary
+   * windowed slices. Disable with `enabled: false` (regions may be empty).
+   */
+  sendSetAudioEdit(regions, options = {}) {
+    if (this.ws?.readyState !== this._wsOpen) return;
+    try {
+      const msg = {
+        type: "set_audio_edit",
+        enabled: options.enabled ?? true,
+        regions,
+        source_mode: options.sourceMode ?? "waveform",
+        strength: Math.max(0, Math.min(1, options.strength ?? 1))
+      };
+      this.ws.send(JSON.stringify(msg));
     } catch {
     }
   }

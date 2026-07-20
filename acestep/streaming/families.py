@@ -43,6 +43,7 @@ def _make_acestep(ss):
         walk_window_s=ss.walk_window_s,
         neg_conditioning=ss.cond_negative,
         steering=steering,
+        source_waveform=(lambda: ss.canvas.wf),
     )
 
 
@@ -74,6 +75,7 @@ def _make_sa3(ss):
         # payload predating the blend surface stays blend-neutral.
         cond_b=init.get("cond_b"),
         source_latent_bct=init["source_latent_bct"],
+        source_waveform=init.get("source_waveform"),
         # Resolved accel values (compile already normalized to eager by
         # the create path); .get so an in-process payload without them
         # stays on the eager default.

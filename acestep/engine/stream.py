@@ -15,7 +15,7 @@ from __future__ import annotations
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Callable, Dict, NamedTuple, Optional, List, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, NamedTuple, Optional, List, Tuple, TYPE_CHECKING
 
 from loguru import logger
 import torch
@@ -117,6 +117,12 @@ class SlotRequest:
     extra_conditions: List[SlotCondition] = field(default_factory=list)
     primary_temporal_weight: Optional[torch.Tensor] = None
     primary_step_range: Optional[Tuple[float, float]] = None
+    # Immutable control snapshot attached by the serving layer. The engine
+    # deliberately treats it as opaque; renderers recover it from
+    # ``last_finished_request`` so a decoded latent is composited with the
+    # edit state it was generated from, not whatever is live several ring
+    # ticks later.
+    audio_edit: Any = None
     # --- CFG (Phase 2) ---
     # Flat list of negative conditions for classifier-free guidance. When
     # set together with ``guidance_curve``, each step runs a second forward

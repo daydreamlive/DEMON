@@ -379,6 +379,7 @@ def _build_slot_request(
     x0_target_strength: float,
     x0_target_gate: float,
     guidance_curve,
+    audio_edit,
     device,
     dtype,
 ) -> SlotRequest:
@@ -441,6 +442,7 @@ def _build_slot_request(
         extra_conditions=extra_conditions,
         primary_temporal_weight=primary.temporal_weight,
         primary_step_range=primary.step_range,
+        audio_edit=audio_edit,
         neg_conditions=neg_conditions,
         guidance_curve=guidance_curve_t,
         rcfg_mode=rcfg_mode,
@@ -615,6 +617,14 @@ class StreamDenoise(BaseNode):
                         "Per-frame mix toward vt_pos's magnitude after APG. "
                         "0 / None disables; 1 fully snaps norm to vt_pos. "
                         "Scalar or per-frame curve. Fixes high-CFG saturation."
+                    ),
+                    hidden=True,
+                ),
+                NodeParam(
+                    name="audio_edit", type="any", default=None,
+                    description=(
+                        "Immutable live audio-edit snapshot injected by the "
+                        "streaming session for this ring slot."
                     ),
                     hidden=True,
                 ),
@@ -841,6 +851,7 @@ class StreamDenoise(BaseNode):
             guidance_curve=modulation.guidance_curve,
             rcfg_mode=kwargs.get("rcfg_mode"),
             cfg_rescale=kwargs.get("cfg_rescale"),
+            audio_edit=kwargs.get("audio_edit"),
             device=device,
             dtype=dtype,
         )

@@ -12,6 +12,7 @@
 
 export { RemoteBackend, float16ArrayToFloat32 } from "./protocol";
 export type {
+  AudioEditRegion,
   RemoteBackendOptions,
   WsTrace,
   WsTracePhase,
