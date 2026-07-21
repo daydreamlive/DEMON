@@ -21,6 +21,10 @@ export function isLoraCompatibleWithScale(
   entry: LoraCatalogEntry,
   sessionScale: string | null,
 ): boolean {
+  // Prefer the server's backend-owned verdict when present — it can
+  // grow axes beyond scale (SA3 LoRA lineage) without a client change.
+  // The local scale comparison below remains the old-server fallback.
+  if (typeof entry.compatible === "boolean") return entry.compatible;
   if (sessionScale === null || sessionScale === undefined) return true;
   const loraScale = entry.metadata?.base_model_scale;
   if (!loraScale) return true;

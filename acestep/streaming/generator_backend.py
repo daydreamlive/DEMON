@@ -236,6 +236,25 @@ class GeneratorBackend(Protocol):
         """
         ...
 
+    def lora_compatible(self, metadata: dict) -> bool:
+        """Whether a catalog LoRA can actually load on this backend's
+        engine. ``metadata`` is the wire-shaped sidecar record
+        (``load_lora_metadata(...).to_wire()``) already carried by every
+        catalog entry.
+
+        Backend-owned so the compatibility axes can grow per family:
+        today ACE checks the trained base-model scale against its
+        checkpoint; an SA3 LoRA lineage would add its own checks here
+        without the session or the wire changing. The session projects
+        this verdict as the ``compatible`` bool on every catalog entry
+        (clients decide whether to hide or grey incompatible rows) and
+        restricts enable-time alias resolution to the compatible
+        subset. Implementations must be permissive on unknowns —
+        a LoRA or engine the predicate can't classify is compatible,
+        never hidden.
+        """
+        ...
+
     # ---- hot loop --------------------------------------------------------
 
     def sync_source(self, ctx: TickContext) -> None:

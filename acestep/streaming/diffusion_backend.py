@@ -80,6 +80,12 @@ class DiffusionBackend:
     def has_pending_refit(self) -> bool:
         return False
 
+    def lora_compatible(self, metadata: dict) -> bool:
+        # Permissive default per the seam contract: a family that can't
+        # classify a LoRA against its engine treats it as loadable.
+        # Families with a real axis override (ACE: base-model scale).
+        return True
+
     def rebuild_imminent(self, knobs: dict) -> bool:
         return False
 
