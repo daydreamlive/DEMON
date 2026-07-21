@@ -158,6 +158,13 @@ class Capabilities:
     # True only when the backend has a steering controller with a
     # reachable vector bundle for its checkpoint.
     steering: bool = False
+    # Batch stationary render placement: the params command's optional
+    # render_anchor_queue_s list, drained by the shared pipeline_runner
+    # one window per tick (scalar render_anchor_s preempts). Runner-level
+    # like loop_band, so any backend on the windowed render path can
+    # declare it; clients use it to prewarm every sampler pad in one
+    # round trip instead of one client-confirmed anchor at a time.
+    render_anchor_queue: bool = False
 
 
 @dataclass(frozen=True)

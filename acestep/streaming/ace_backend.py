@@ -337,6 +337,7 @@ class ACEStepBackend(DiffusionBackend):
             curves=True,
             notes_conditioning=False,
             steering=self.steering.is_loaded,
+            render_anchor_queue=True,
         )
 
     def geometry(self) -> AudioGeometry:

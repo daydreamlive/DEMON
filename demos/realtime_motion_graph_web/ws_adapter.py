@@ -255,6 +255,11 @@ _ACTIVE_SESSION: list = [None]  # [_ActiveSession | None]
 # per pod).
 PREEMPTED_CLOSE_CODE = 4001
 
+# Hard cap on client-supplied render_anchor_queue_s entries: at ~0.36 s of
+# audio per queued window, 1024 windows is ~6 min of prewarm — far beyond any
+# real kit — while bounding what a hostile/buggy client can enqueue.
+_RENDER_ANCHOR_QUEUE_CAP = 1024
+
 # How long a preempting connection waits for the old session's teardown
 # to release VRAM. Generous: the old runner may be mid stem-extraction
 # (it only observes running=False between pipeline iterations).
@@ -419,6 +424,26 @@ def _coalesced_slice_lead(prev, new) -> float | None:
     loop."""
     leads = [v for v in (prev, new) if isinstance(v, (int, float))]
     return min(leads) if leads else None
+
+
+# Sticky params fields folded forward by the recv loop's newest-wins
+# coalescing. "Absent retains" (the wire contract for these fields) only
+# helps once a message is APPLIED — a superseded snapshot that carried a
+# stationary anchor (or the batch anchor queue) would otherwise silently
+# vanish whenever the recv thread drains a backlog, which is exactly when
+# GPU-heavy generation starves it. The VST re-sends the scalar anchor every
+# tick so it survived by accident; the one-shot queue does not.
+_STICKY_PARAMS_FIELDS = ("render_anchor_s", "render_anchor_queue_s")
+
+
+def _fold_sticky_params(pending: dict, newer: dict) -> dict:
+    """Carry sticky fields from a superseded params snapshot into the newer
+    one (in place) unless the newer snapshot sets its own value — including
+    an explicit ``null`` (a clear), which counts as "sets its own"."""
+    for key in _STICKY_PARAMS_FIELDS:
+        if key in pending and key not in newer:
+            newer[key] = pending[key]
+    return newer
 
 
 class _ActiveSession:
@@ -1688,6 +1713,18 @@ def _handle_client_body(
                     if anchor is not None and not math.isfinite(anchor):
                         anchor = None
                     anchor_kwargs["render_anchor_s"] = anchor
+                if "render_anchor_queue_s" in data:
+                    queue_raw = data.get("render_anchor_queue_s")
+                    queue: list = []
+                    if isinstance(queue_raw, (list, tuple)):
+                        for item in queue_raw[:_RENDER_ANCHOR_QUEUE_CAP]:
+                            try:
+                                val = float(item)
+                            except (TypeError, ValueError):
+                                continue
+                            if math.isfinite(val):
+                                queue.append(val)
+                    anchor_kwargs["render_anchor_queue_s"] = queue
                 ct = data.get("client_time")
                 try:
                     ct = float(ct) if ct is not None else None
@@ -1964,6 +2001,9 @@ def _handle_client_body(
                                 )
                                 if carried is not None:
                                     data["slice_lead_s"] = carried
+                                # Sticky placement must survive coalescing:
+                                # see _fold_sticky_params.
+                                _fold_sticky_params(pending_params, data)
                             pending_params = data  # newest wins
                         else:
                             if pending_params is not None:

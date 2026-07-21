@@ -634,15 +634,33 @@ class PipelineRunner:
         return self._playhead_clock.seconds()
 
     def _render_placement(self, eff_dur: float, position_chase_only: bool):
-        """Return ``(playhead, advance, decode_start, anchored)`` for a tick."""
+        """Return ``(playhead, advance, decode_start, anchored, queue_anchor)``.
+
+        Placement priority: the scalar ``render_anchor_s`` (a live pad pin)
+        preempts everything; otherwise the head of the engine's anchor QUEUE
+        (batch prewarm — one window per tick, back-to-back); otherwise the
+        transport chase. ``queue_anchor`` is a ``(anchor_s, generation)``
+        pair, non-None only when this tick's placement came from the queue —
+        the caller pops it AFTER the window actually emits, so a failed
+        render retries the same anchor, and the generation guard makes a
+        client queue-replace mid-tick safe."""
         playhead_now = self._playhead_seconds_now()
         anchor = getattr(self.audio_eng, "render_anchor_s", None)
+        queue_anchor = None
+        if anchor is None and not position_chase_only:
+            peek = getattr(self.audio_eng, "peek_render_anchor", None)
+            queue_anchor = peek() if peek is not None else None
+            if queue_anchor is not None:
+                anchor = queue_anchor[0]
         anchored = anchor is not None and not position_chase_only
         advance_s = 0.0 if anchored else self._decode_advance_s()
         decode_start = float(anchor) if anchored else playhead_now + advance_s
         if eff_dur > 0:
             decode_start %= eff_dur
-        return playhead_now, advance_s, decode_start, anchored
+        return (
+            playhead_now, advance_s, decode_start, anchored,
+            queue_anchor if anchored else None,
+        )
 
     # ---- the loop -------------------------------------------------------------
 
@@ -850,7 +868,7 @@ class PipelineRunner:
                     # transport lead before sizing this tick's advance.
                     self._fold_slice_lead_report()
 
-                    playhead_now, advance_s, decode_start, anchored = (
+                    playhead_now, advance_s, decode_start, anchored, queue_anchor = (
                         self._render_placement(eff_dur, position_chase_only)
                     )
                     # Predictive render start: target where the playhead
@@ -982,6 +1000,12 @@ class PipelineRunner:
                             self.on_audio_ready(patched, win_start, win_end)
                             if self._emit_trim:
                                 self._reset_emit_trim_frontier()
+                        # This tick's placement came from the anchor queue and
+                        # its window just emitted: advance to the next queued
+                        # anchor. (A ``chunk is None`` tick skips this, so a
+                        # transient render failure retries the same anchor.)
+                        if queue_anchor is not None:
+                            self.audio_eng.pop_render_anchor(*queue_anchor)
                         # Fold this write's wall gap into the adaptive lead
                         # state. One call per successful write — real
                         # generation OR gap-fill; the band-wrap second render
