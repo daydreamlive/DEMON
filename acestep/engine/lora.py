@@ -156,6 +156,7 @@ class LoRAManagerBase(abc.ABC):
 
     def register_lora(
         self, path: str, name: Optional[str] = None,
+        lora_id: Optional[str] = None,
     ) -> str:
         """Add a LoRA to the catalog without materializing deltas.
 
@@ -163,8 +164,14 @@ class LoRAManagerBase(abc.ABC):
         the existing id and leaves any in-flight prewarm / enabled
         state alone.  The existing entry's name is NOT overwritten on
         re-register; pass an explicit ``name`` only on first registration.
+
+        ``lora_id`` overrides the default filename-stem id; the library
+        scan passes pre-disambiguated ids (see
+        :func:`acestep.paths.assign_lora_ids`) so same-stem files across
+        roots don't silently shadow each other.
         """
-        lora_id = self._make_id(path)
+        if lora_id is None:
+            lora_id = self._make_id(path)
         if lora_id in self._loras:
             existing = self._loras[lora_id]
             if existing.path != str(path):
@@ -197,15 +204,15 @@ class LoRAManagerBase(abc.ABC):
         first, then each extra dir; each root sorted by filename).
         Missing directories are silently skipped.
         """
-        from acestep.paths import discover_all_loras, discover_loras
+        from acestep.paths import assign_lora_ids, discover_all_loras, discover_loras
         if directory is None:
             files = discover_all_loras()
         else:
             files = discover_loras(directory)
         ids: List[str] = []
-        for p in files:
+        for p, lora_id in assign_lora_ids(files):
             try:
-                ids.append(self.register_lora(str(p)))
+                ids.append(self.register_lora(str(p), lora_id=lora_id))
             except Exception as e:
                 logger.warning("Failed to register {}: {}", p, e)
         if files:
@@ -300,6 +307,28 @@ class LoRAManagerBase(abc.ABC):
             elif ".lora_B.weight" in parts:
                 param_name = parts.replace(".lora_B.weight", ".weight")
                 pairs.setdefault(param_name, {})["B"] = tensor
+
+        # Zero PEFT-pattern matches means this is not an ACE-Step LoRA
+        # at all. Without this check the pair map is empty, the
+        # shape-mismatch guard below never trips (it only fires on
+        # matched pairs), and enable_lora "succeeds" having applied
+        # nothing — a silent no-op. Wrong-family files must fail loudly.
+        if not pairs:
+            sa3_like = any(
+                ".parametrizations.weight." in k for k in raw
+            )
+            hint = (
+                " The key layout matches the SA3 (stable-audio-3) "
+                "parametrization format; SA3-family LoRAs cannot load "
+                "on an ACE-Step engine."
+                if sa3_like else ""
+            )
+            raise RuntimeError(
+                f"LoRA {Path(lora_path).name} is not an ACE-Step LoRA: "
+                f"none of its {len(raw)} tensors match the PEFT "
+                f"lora_A.weight/lora_B.weight key pattern, so there is "
+                f"nothing to apply.{hint}"
+            )
 
         device = self._delta_compute_device()
         deltas: Dict[str, torch.Tensor] = {}
