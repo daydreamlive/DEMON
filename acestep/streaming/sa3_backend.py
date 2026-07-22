@@ -231,6 +231,12 @@ class SA3Backend(DiffusionBackend):
         # Runtime checkpoint id ("medium"/"small-music"/…) for the
         # lineage axis of lora_compatible.
         model_id: str = "",
+        # Phase-2 TRT endgame: an SA3TRTRefitMirror over a refit-built,
+        # exclusively-owned engine. When present, LoRA mutations refit
+        # the engine in place instead of swapping to the eager DiT, and
+        # knob-driven strength changes route through the pending stash
+        # (D6b.5) so the refit stall is always announced.
+        refit_mirror=None,
     ):
         super().__init__(adapter=adapter, codec=codec)
         self._cond = cond
@@ -315,6 +321,14 @@ class SA3Backend(DiffusionBackend):
         # flips adapter.dit between them by LoRA activity.
         self._dit_accel = adapter.dit if adapter is not None else None
         self._dit_eager = eager_dit if eager_dit is not None else self._dit_accel
+        self._refit_mirror = refit_mirror
+        # Knob-driven strength changes stashed by rebuild_imminent under
+        # the refit mirror (a strength change is a full engine refit
+        # there, and must be announced via rebuild_imminent /
+        # has_pending_refit before it runs — never applied mid-tick
+        # unannounced). Empty and unused in eager mode, where a
+        # strength change is a ~5 ms buffer write applied inline.
+        self._pending_lora_strengths: dict = {}
 
         # Rendered-audio cache: one full decode+resample per fresh
         # latent (SAME-S decodes the whole window in ~11 ms); window
@@ -396,16 +410,51 @@ class SA3Backend(DiffusionBackend):
             else context.encode_source(source_audio, cond.audio_sample_size)
             if source_audio is not None else None
         )
+        # LoRA sessions prefer a refit-built engine (and avoid fp8,
+        # whose refit story is unproven) — see find_dit_engine.
+        want_lora = bool(kwargs.get("use_lora")) and (
+            kwargs.get("lora_manager") is not None
+        )
         adapter = SA3Adapter(
             context.make_dit(
                 latent_frames=cond.latent_frames,
                 seconds_total=duration_s,
                 backend=dit_backend,
+                prefer_refittable=want_lora,
             ),
             schedule_builder=context.make_schedule_builder(cond, steps),
             device=context.device,
             dtype=context.dtype,
         )
+
+        # Phase-2 refit mirror: engaged only when the selected DiT is a
+        # refit-built engine AND its validated manifest exists;
+        # otherwise the interim eager swap (D6a) covers LoRA.
+        refit_mirror = None
+        if want_lora and getattr(adapter.dit, "refittable", False):
+            from acestep.engine.sa3_trt_lora import (
+                SA3TRTRefitMirror,
+                find_refit_manifest,
+            )
+
+            manifest = find_refit_manifest(adapter.dit.engine_path)
+            if manifest is None:
+                logger.warning(
+                    "sa3_refit_manifest_missing engine={} — LoRA will use "
+                    "the eager-DiT swap; generate the manifest with "
+                    "scripts/sa3/gen_sa3_refit_manifest.py",
+                    adapter.dit.engine_path.parent.name,
+                )
+            else:
+                try:
+                    refit_mirror = SA3TRTRefitMirror(
+                        adapter.dit.engine, context.sam.model.model, manifest,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "sa3_refit_mirror_init_failed error={} — LoRA will "
+                        "use the eager-DiT swap", exc,
+                    )
 
         def _prompt_rebuilder(tags: str, steps_now: int):
             # Per-prompt re-conditioning (handle_set_prompt): same fixed
@@ -447,6 +496,7 @@ class SA3Backend(DiffusionBackend):
             # LoRA fallback swaps to it.
             eager_dit=context.dit,
             model_id=str(context.model_id),
+            refit_mirror=refit_mirror,
             **kwargs,
         )
 
@@ -508,7 +558,13 @@ class SA3Backend(DiffusionBackend):
         the same pending-queue read as ACE's implementation, so the
         runner pre-covers the enable stall (which can synchronously
         materialize + register 200+ parametrizations)."""
-        if not self._use_lora or self.state is None:
+        if not self._use_lora:
+            return False
+        # Stashed TRT strength refits count too (D6b.5): they apply at
+        # the next prepare and stall exactly like a queued enable.
+        if self._pending_lora_strengths:
+            return True
+        if self.state is None:
             return False
         try:
             with self.state._lock:
@@ -552,6 +608,8 @@ class SA3Backend(DiffusionBackend):
         with self._conditioner_lock:
             mgr.enable_lora(lora_id, strength=strength)
         self._sync_dit_for_lora()
+        if self._refit_mirror is not None:
+            self._refit_mirror.sync(reason="enable_lora")
         if mgr.touches_conditioner(lora_id):
             self._rebuild_conditioning_after_lora("enable_lora", lora_id)
 
@@ -563,6 +621,11 @@ class SA3Backend(DiffusionBackend):
         with self._conditioner_lock:
             mgr.disable_lora(lora_id)
         self._sync_dit_for_lora()
+        if self._refit_mirror is not None:
+            # The mirror's dirty-set pushes this adapter's base weights
+            # back — the engine must not keep the merged values.
+            self._refit_mirror.sync(reason="disable_lora")
+        self._pending_lora_strengths.pop(lora_id, None)
         if touched:
             self._rebuild_conditioning_after_lora("disable_lora", lora_id)
 
@@ -570,6 +633,11 @@ class SA3Backend(DiffusionBackend):
         mgr = self._require_lora_manager()
         with self._conditioner_lock:
             mgr.set_lora_strength(lora_id, strength)
+        if self._refit_mirror is not None:
+            # Direct facade calls sync immediately; the knob-driven path
+            # batches instead (_apply_pending_lora_strengths calls the
+            # manager directly and syncs once for the whole stash).
+            self._refit_mirror.sync(reason="set_lora_strength")
         # A strength change on a conditioner-targeting LoRA changes the
         # conditioner's output too — the cached cond bundle must follow.
         # (Per-tick slider sweeps on such files pay a T5Gemma capture
@@ -578,11 +646,41 @@ class SA3Backend(DiffusionBackend):
         if mgr.touches_conditioner(lora_id):
             self._rebuild_conditioning_after_lora("set_lora_strength", lora_id)
 
+    def _apply_pending_lora_strengths(self) -> None:
+        """Drain the D6b.5 stash: apply each strength through the facade
+        (manager buffer write + conditioner rebuild where the file
+        targets it), then ONE mirror sync covers the whole batch."""
+        if not self._pending_lora_strengths:
+            return
+        pending, self._pending_lora_strengths = (
+            self._pending_lora_strengths, {},
+        )
+        mgr = self._lora_mgr
+        for lora_id, strength in pending.items():
+            try:
+                with self._conditioner_lock:
+                    mgr.set_lora_strength(lora_id, strength)
+                if mgr.touches_conditioner(lora_id):
+                    self._rebuild_conditioning_after_lora(
+                        "set_lora_strength", lora_id,
+                    )
+            except Exception as exc:
+                logger.exception(
+                    "sa3_lora_pending_strength_failed id={} error={}",
+                    lora_id, exc,
+                )
+        if self._refit_mirror is not None:
+            self._refit_mirror.sync(reason="strength")
+
     def _sync_dit_for_lora(self) -> None:
         """D6a interim: LoRA weights live on the eager torch modules, so
         a TRT-DiT session swaps to the eager DiT while any LoRA is
         active and back when the last disables. Loud log both ways;
-        no-op for sessions already on the eager DiT."""
+        no-op for sessions already on the eager DiT — and for refit-
+        mirror sessions, where the engine itself carries the LoRA
+        weights (the Phase-2 endgame) and must NOT be swapped away."""
+        if self._refit_mirror is not None:
+            return
         if self.adapter is None or self._dit_eager is None:
             return
         if self._dit_accel is self._dit_eager:
@@ -642,7 +740,35 @@ class SA3Backend(DiffusionBackend):
         return self.knob_state.get_all_values()
 
     def rebuild_imminent(self, knobs: dict) -> bool:
-        return int(knobs.get("steps_override", self._steps)) != self._steps
+        steps_changed = (
+            int(knobs.get("steps_override", self._steps)) != self._steps
+        )
+        return steps_changed or self._detect_pending_lora_strengths(knobs)
+
+    def _detect_pending_lora_strengths(self, knobs: dict) -> bool:
+        """D6b.5: under the refit mirror a strength change is a full
+        engine refit, and ``rebuild_imminent`` is the sanctioned
+        announcement point for knob-driven stalls (called once per tick,
+        after the knob read, before produce). Deltas are stashed here
+        and applied by the SAME tick's ``_prepare_tick`` — after the
+        runner has pre-covered. Eager mode returns False: its strength
+        writes are ~5 ms buffer updates applied inline."""
+        if (
+            self._refit_mirror is None
+            or not self._use_lora
+            or self._lora_mgr is None
+        ):
+            return False
+        for desc in self._lora_mgr.list_loras():
+            if desc.state != "enabled":
+                continue
+            try:
+                v = float(knobs.get(f"lora_str_{desc.id}", desc.strength))
+            except (TypeError, ValueError):
+                continue
+            if abs(v - desc.strength) > 0.02:
+                self._pending_lora_strengths[desc.id] = v
+        return bool(self._pending_lora_strengths)
 
     # ---- control (universal): per-prompt re-conditioning ------------------------
 
@@ -831,21 +957,25 @@ class SA3Backend(DiffusionBackend):
         # Per-LoRA live strength (the ACE per-tick convention): iterate
         # the catalog so the active set can change at runtime; strength
         # only flows for ENABLED entries, gated by the shared 0.02
-        # slider-delta threshold. Under the parametrization engine this
-        # is a buffer write (no recompute); the gate also pre-guards the
-        # future TRT refit cost.
+        # slider-delta threshold. Eager mode applies inline (a buffer
+        # write, no recompute). Refit-mirror mode instead applies the
+        # deltas rebuild_imminent stashed THIS tick, after the runner
+        # pre-covered — the D6b.5 route: never a refit unannounced.
         if self._use_lora and self._lora_mgr is not None:
-            for desc in self._lora_mgr.list_loras():
-                if desc.state != "enabled":
-                    continue
-                try:
-                    lora_str = float(
-                        knobs.get(f"lora_str_{desc.id}", desc.strength),
-                    )
-                except (TypeError, ValueError):
-                    continue
-                if abs(lora_str - desc.strength) > 0.02:
-                    self.set_lora_strength(desc.id, lora_str)
+            if self._refit_mirror is not None:
+                self._apply_pending_lora_strengths()
+            else:
+                for desc in self._lora_mgr.list_loras():
+                    if desc.state != "enabled":
+                        continue
+                    try:
+                        lora_str = float(
+                            knobs.get(f"lora_str_{desc.id}", desc.strength),
+                        )
+                    except (TypeError, ValueError):
+                        continue
+                    if abs(lora_str - desc.strength) > 0.02:
+                        self.set_lora_strength(desc.id, lora_str)
 
         # Source-lock strength rides the shared override so a strength
         # bump engages the blend on in-flight slots submitted while it
@@ -1113,6 +1243,12 @@ class SA3Backend(DiffusionBackend):
                     self._lora_mgr.close()
             except Exception as exc:
                 logger.warning("sa3_lora_teardown_raised error={}", exc)
+        # The refit mirror holds an IRefitter over the exclusively-owned
+        # engine; dropping both with the session IS the base-weight
+        # rollback (the mutated engine can never reach another session
+        # because refittable engines are never process-cached).
+        self._refit_mirror = None
+        self._pending_lora_strengths.clear()
 
     # ---- bookkeeping -------------------------------------------------------------
 

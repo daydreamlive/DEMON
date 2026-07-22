@@ -456,3 +456,107 @@ def test_close_returns_model_to_pristine(tmp_path):
             assert not getattr(mod, "parametrizations", None)
     assert mgr.list_loras() == []
     mgr.close()  # idempotent
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: upstream-reference parity per adapter variant
+# ---------------------------------------------------------------------------
+#
+# The strongest correctness property the manager can have: applying a
+# file through SA3LoRAManager must yield exactly the weights upstream's
+# own load_and_apply_loras produces from the same file — for every
+# adapter variant, at every strength, in every enable order.
+
+
+def _write_variant_lora(tmp_path: Path, stem: str, adapter_type: str,
+                        fan=(8, 16), rank: int = 4, seed: int = 0) -> Path:
+    _, lora_utils = _vendored_or_skip()
+    g = torch.Generator().manual_seed(seed)
+    fan_out, fan_in = fan
+    prefix = "blk.lin.parametrizations.weight.0"
+    sd = {
+        f"{prefix}.lora_A": torch.randn(rank, fan_in, generator=g) * 0.5,
+        f"{prefix}.lora_B": torch.randn(fan_out, rank, generator=g) * 0.5,
+    }
+    if adapter_type in ("dora-rows",):
+        sd[f"{prefix}.magnitude"] = torch.rand(fan_out, generator=g) + 0.5
+    elif adapter_type in ("dora-cols",):
+        sd[f"{prefix}.magnitude"] = torch.rand(fan_in, generator=g) + 0.5
+    elif adapter_type == "bora":
+        sd[f"{prefix}.magnitude_r"] = torch.rand(fan_out, generator=g) + 0.5
+        sd[f"{prefix}.magnitude_c"] = torch.rand(fan_in, generator=g) + 0.5
+    p = tmp_path / f"{stem}.safetensors"
+    lora_utils.save_lora_safetensors(
+        sd, {"rank": rank, "alpha": 6.0, "adapter_type": adapter_type}, p,
+    )
+    return p
+
+
+def _upstream_model_with(paths):
+    """A twin tiny model with the same seed, loaded through the vendored
+    load_and_apply_loras (the trainer/inference reference path)."""
+    from stable_audio_3.models.lora.loader import load_and_apply_loras
+
+    torch.manual_seed(7)
+    model = nn.Module()
+    blk = nn.Module()
+    blk.lin = nn.Linear(16, 8, bias=False)
+    model.blk = blk
+    # Twin of _make_manager's model root (same torch.manual_seed(7)
+    # draw order for the first Linear).
+    load_and_apply_loras(model, [str(p) for p in paths], "diffusion_uncond")
+    return model
+
+
+@pytest.mark.parametrize(
+    "adapter_type", ["lora", "dora-rows", "dora-cols", "bora"],
+)
+def test_variant_parity_with_upstream_loader(tmp_path, adapter_type):
+    lora_model, _ = _vendored_or_skip()
+    p = _write_variant_lora(tmp_path, f"v_{adapter_type}", adapter_type)
+
+    upstream = _upstream_model_with([p])
+    mgr, ours, _cond = _make_manager()
+    mgr.enable_lora(mgr.register_lora(str(p)), strength=1.0)
+
+    assert torch.equal(
+        ours.blk.lin.weight.detach(), upstream.blk.lin.weight.detach(),
+    ), f"{adapter_type}: manager != upstream loader at strength 1"
+
+    # Strength parity away from 1 (nonlinear for DoRA/BoRA).
+    mgr.set_lora_strength(f"v_{adapter_type}", 0.7)
+    lora_model.set_lora_strength(upstream, 0.7, lora_index=0)
+    assert torch.equal(
+        ours.blk.lin.weight.detach(), upstream.blk.lin.weight.detach(),
+    ), f"{adapter_type}: manager != upstream loader at strength 0.7"
+
+
+def test_multi_lora_composition_order_matches_upstream(tmp_path):
+    """Stacked adapters compose sequentially (order-dependent for
+    DoRA); the manager's enable order must reproduce upstream's load
+    order exactly — and a different order is genuinely different."""
+    pA = _write_variant_lora(tmp_path, "stackA", "dora-rows", seed=21)
+    pB = _write_variant_lora(tmp_path, "stackB", "lora", seed=22)
+
+    upstream_ab = _upstream_model_with([pA, pB])
+    mgr, ours, _cond = _make_manager()
+    mgr.enable_lora(mgr.register_lora(str(pA)), strength=1.0)
+    mgr.enable_lora(mgr.register_lora(str(pB)), strength=1.0)
+    assert torch.equal(
+        ours.blk.lin.weight.detach(), upstream_ab.blk.lin.weight.detach(),
+    )
+
+    # The reverse enable order equals upstream's reverse load order...
+    upstream_ba = _upstream_model_with([pB, pA])
+    mgr2, ours2, _cond2 = _make_manager()
+    mgr2.enable_lora(mgr2.register_lora(str(pB)), strength=1.0)
+    mgr2.enable_lora(mgr2.register_lora(str(pA)), strength=1.0)
+    assert torch.equal(
+        ours2.blk.lin.weight.detach(), upstream_ba.blk.lin.weight.detach(),
+    )
+    # ...and DoRA-in-the-stack makes the two orders genuinely differ,
+    # which is why enable order is part of the parity contract.
+    assert not torch.equal(
+        upstream_ab.blk.lin.weight.detach(),
+        upstream_ba.blk.lin.weight.detach(),
+    )

@@ -660,3 +660,84 @@ def test_close_tears_down_lora_manager():
     b = _backend(lora_manager=mgr, use_lora=True)
     b.close()
     assert mgr.closed is True
+
+
+# ---------------------------------------------------------------------------
+# Phase-2 refit-mirror routing (fake mirror; the real one is GPU-gated)
+# ---------------------------------------------------------------------------
+
+
+class _FakeMirror:
+    def __init__(self):
+        self.syncs: list = []
+
+    def sync(self, *, reason=""):
+        self.syncs.append(reason)
+        return 1
+
+
+def test_mirror_mode_never_swaps_dit_and_syncs_on_enable_disable():
+    mgr = _FakeLoraManager(ids=["x"])
+    mirror = _FakeMirror()
+    b = _backend(
+        lora_manager=mgr, use_lora=True, eager_dit=_ZeroDit(),
+        refit_mirror=mirror,
+    )
+    accel = b._dit_accel
+    assert accel is not b._dit_eager  # distinct objects: swap WOULD fire
+
+    b.enable_lora("x", strength=1.0)
+    assert b.adapter.dit is accel          # no eager swap in mirror mode
+    assert mirror.syncs == ["enable_lora"]
+
+    b.disable_lora("x")
+    assert b.adapter.dit is accel
+    assert mirror.syncs == ["enable_lora", "disable_lora"]
+
+
+def test_mirror_strength_routes_through_pending_stash():
+    mgr = _FakeLoraManager(ids=["x"])
+    mgr.enable_lora("x", strength=1.0)
+    mirror = _FakeMirror()
+    b = _backend(lora_manager=mgr, use_lora=True, refit_mirror=mirror)
+    mirror.syncs.clear()
+
+    knobs = _knobs(b, **{"lora_str_x": 0.4})
+    # The announcement point: rebuild_imminent stashes and reports.
+    assert b.rebuild_imminent(knobs) is True
+    assert b._pending_lora_strengths == {"x": 0.4}
+    assert b.has_pending_refit() is True
+
+    # The same tick's produce applies the stash: one manager write, one
+    # batched mirror sync, stash drained.
+    b.produce(knobs, CTX, "skip")
+    assert ("strength", "x", 0.4) in mgr.calls
+    assert mirror.syncs == ["strength"]
+    assert b._pending_lora_strengths == {}
+    assert b.has_pending_refit() is False
+
+    # Within the 0.02 gate: no announcement, no stash.
+    assert b.rebuild_imminent(_knobs(b, **{"lora_str_x": 0.41})) is False
+    assert b._pending_lora_strengths == {}
+
+
+def test_eager_mode_strength_is_not_stashed():
+    mgr = _FakeLoraManager(ids=["x"])
+    mgr.enable_lora("x", strength=1.0)
+    b = _backend(lora_manager=mgr, use_lora=True)  # no mirror
+
+    knobs = _knobs(b, **{"lora_str_x": 0.4})
+    assert b.rebuild_imminent(knobs) is False  # buffer write, no stall
+    b.produce(knobs, CTX, "skip")
+    assert ("strength", "x", 0.4) in mgr.calls  # applied inline
+
+
+def test_close_drops_mirror_and_pending():
+    mgr = _FakeLoraManager(ids=["x"])
+    mirror = _FakeMirror()
+    b = _backend(lora_manager=mgr, use_lora=True, refit_mirror=mirror)
+    b._pending_lora_strengths["x"] = 0.5
+    b.close()
+    assert b._refit_mirror is None
+    assert b._pending_lora_strengths == {}
+    assert mgr.closed is True

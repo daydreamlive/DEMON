@@ -22,6 +22,11 @@ from acestep.engine.lora import (
     LoRADescriptor,      # re-exported for back-compat
     _LoRAEntry,          # re-exported for tests
 )
+from acestep.engine.trt.refit_core import (
+    commit_refit,
+    np_view_for_push,
+    set_typed_weights,
+)
 
 # numpy dtype -> torch dtype
 _NP_TO_TORCH = {
@@ -629,62 +634,31 @@ class TRTLoRAManager(LoRAManagerBase):
             if trt_name is None:
                 continue
             buf = self._refit_bufs[param_name]
-            if buf.dtype == torch.bfloat16:
-                arr = buf.view(torch.uint16).numpy()
-            else:
-                arr = buf.numpy()
-            weights = self._trt.Weights(
+            arr = np_view_for_push(buf)
+            set_typed_weights(
+                refitter, self._trt, trt_name, arr,
                 self._trt_dtype[param_name],
-                int(arr.ctypes.data),
-                int(arr.size),
-            )
-            ok = refitter.set_named_weights(trt_name, weights)
-            if not ok:
-                proto_desc = "unknown"
-                if hasattr(refitter, "get_weights_prototype"):
-                    try:
-                        proto = refitter.get_weights_prototype(trt_name)
-                        proto_desc = (
-                            f"dtype={proto.dtype}, size={proto.size}"
-                        )
-                    except Exception:
-                        pass
-                raise RuntimeError(
-                    f"TRT rejected refit weights for {trt_name}: "
-                    f"buf dtype={buf.dtype}, arr dtype={arr.dtype} "
-                    f"size={arr.size}; engine prototype {proto_desc}, "
+                context=(
+                    f"buf dtype={buf.dtype}, "
                     f"fp8={self._is_fp8.get(param_name, False)}"
-                )
+                ),
+            )
 
         for name, arr, dtype in getattr(self, "_co_refit_static", ()):
-            weights = self._trt.Weights(
-                dtype, int(arr.ctypes.data), int(arr.size),
+            set_typed_weights(
+                refitter, self._trt, name, arr, dtype,
+                context="co-refit activation scale",
             )
-            if not refitter.set_named_weights(name, weights):
-                raise RuntimeError(
-                    f"TRT rejected co-refit weight {name}: "
-                    f"dtype={dtype}, size={arr.size}"
-                )
         for param_key, (name, _scale_buf, arr, dtype) in getattr(
             self, "_weight_scale_co_refit", {}
         ).items():
-            weights = self._trt.Weights(
-                dtype, int(arr.ctypes.data), int(arr.size),
+            set_typed_weights(
+                refitter, self._trt, name, arr, dtype,
+                context=f"co-refit weight scale (param={param_key})",
             )
-            if not refitter.set_named_weights(name, weights):
-                raise RuntimeError(
-                    f"TRT rejected co-refit weight scale {name} "
-                    f"(param={param_key}): dtype={dtype}, size={arr.size}"
-                )
 
         if count > 0:
-            ok = refitter.refit_cuda_engine()
-            if not ok:
-                missing = refitter.get_missing_weights()
-                if _refit_ok_required:
-                    raise RuntimeError(
-                        f"TRT refit failed. Missing weights: {missing}"
-                    )
+            commit_refit(refitter, required=_refit_ok_required)
 
 
 # Re-export the lifecycle public symbols so existing imports
