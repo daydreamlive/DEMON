@@ -86,6 +86,12 @@ def _make_sa3(ss):
         steps=int(ss.config.steps),
         depth=int(ss.state.current_depth),
         vae_window_s=float(ss.vae_window),
+        # SA3 LoRA (plan Phase 1): the create path constructs the
+        # family manager against the process-cached model and stashes
+        # it here; .get so an in-process payload predating the LoRA
+        # surface stays LoRA-less rather than failing assembly.
+        lora_manager=init.get("lora_manager"),
+        use_lora=bool(ss.use_lora),
     )
 
 
@@ -191,7 +197,12 @@ def _acestep_knob_universe():
 def _sa3_knob_universe():
     from acestep.streaming.sa3_backend import sa3_knob_specs
 
-    return sa3_knob_specs()
+    # One representative LoRA-strength knob (the per-id specs all come
+    # from the shared lora_strength_spec factory, so one placeholder id
+    # covers the pattern — same convention as the ACE universe). The
+    # name is shared with ACE's universe deliberately: the homonym
+    # guard proves the spec shapes are identical across families.
+    return sa3_knob_specs(loras=["<lora_id>"])
 
 
 FAMILY_KNOB_UNIVERSES = {

@@ -243,16 +243,60 @@ class GeneratorBackend(Protocol):
         catalog entry.
 
         Backend-owned so the compatibility axes can grow per family:
-        today ACE checks the trained base-model scale against its
-        checkpoint; an SA3 LoRA lineage would add its own checks here
-        without the session or the wire changing. The session projects
-        this verdict as the ``compatible`` bool on every catalog entry
-        (clients decide whether to hide or grey incompatible rows) and
-        restricts enable-time alias resolution to the compatible
-        subset. Implementations must be permissive on unknowns —
-        a LoRA or engine the predicate can't classify is compatible,
-        never hidden.
+        ACE checks the weight-format family + trained base-model scale
+        against its checkpoint; SA3 checks family + training lineage.
+        The session projects this verdict as the ``compatible`` bool on
+        every catalog entry (clients decide whether to hide or grey
+        incompatible rows) and restricts enable-time alias resolution
+        to the compatible subset. Implementations must be permissive on
+        unknowns — a LoRA or engine the predicate can't classify is
+        compatible, never hidden.
         """
+        ...
+
+    # ---- LoRA facade -----------------------------------------------------
+    #
+    # The session's LoRA plumbing (pending-drain, catalog payload, alias
+    # resolution, knob-manifest rebuilds, startup enablement) speaks to
+    # the backend through these instead of reaching into the ACE
+    # engine_obj — the seam that lets SA3 (a parametrization manager
+    # over a process-cached torch model) and ACE (a delta/refit manager
+    # inside the DiffusionEngine) serve the same wire surface.
+    # DiffusionBackend provides engine_obj-delegating defaults, so ACE
+    # backends inherit their historical behavior unchanged.
+
+    def lora_available(self) -> bool:
+        """Whether this backend has a live LoRA manager to drive. The
+        capability bit (``Capabilities.lora``) gates the wire commands;
+        this gates the session-side plumbing (catalog, pending drain)."""
+        ...
+
+    def register_lora(self, path: str) -> str:
+        """Add a file to the backend's LoRA catalog (startup
+        ``config.lora_paths``); returns the catalog id."""
+        ...
+
+    def prewarm_lora(self, lora_id: str):
+        """Kick off background materialization; returns a Future."""
+        ...
+
+    def enable_lora(self, lora_id: str, strength: Optional[float] = None) -> None:
+        """Enable at ``strength`` in one shot (atomic-strength
+        contract). Runs on the runner thread inside the pending-drain
+        rendezvous. Failures raise — never a silent no-op."""
+        ...
+
+    def disable_lora(self, lora_id: str) -> None:
+        """Disable and release the adapter's GPU footprint."""
+        ...
+
+    def set_lora_strength(self, lora_id: str, strength: float) -> None:
+        """Live strength update for an ENABLED LoRA."""
+        ...
+
+    def list_loras(self) -> list:
+        """Catalog descriptors (id/path/name/state/strength/bytes);
+        empty when no manager exists."""
         ...
 
     # ---- hot loop --------------------------------------------------------

@@ -108,17 +108,15 @@ class _Desc:
         self.materialized_bytes = 0
 
 
-class _StubEngine:
+class _ScaleBackend:
+    """Backend stub carrying the catalog (the D2 facade's list_loras)
+    and the ACE scale-axis predicate for a 2B checkpoint."""
+
     def __init__(self, descs):
         self._descs = descs
 
     def list_loras(self):
         return self._descs
-
-
-class _ScaleBackend:
-    """Backend stub whose predicate is the ACE scale axis for a 2B
-    checkpoint."""
 
     def lora_compatible(self, metadata: dict) -> bool:
         return lora_scale_compatible(metadata.get("base_model_scale"), "2B")
@@ -128,8 +126,7 @@ class _StubSession:
     lora_available = True
 
     def __init__(self, descs):
-        self.engine_obj = _StubEngine(descs)
-        self.backend = _ScaleBackend()
+        self.backend = _ScaleBackend(descs)
 
     lora_catalog_payload = StreamingSession.lora_catalog_payload
     _resolve_lora_id = StreamingSession._resolve_lora_id
@@ -187,9 +184,9 @@ class TestSessionPlumbing:
         assert ss._resolve_lora_id("Metalcore") == "Metalcore"
         assert ss._resolve_lora_id("nope") == "nope"
 
-    def test_resolve_lora_id_without_engine_is_identity(self, tmp_path):
+    def test_resolve_lora_id_without_lora_available_is_identity(self, tmp_path):
         ss = _stub_session(tmp_path)
-        ss.engine_obj = None
+        ss.lora_available = False
         assert ss._resolve_lora_id("Ambient") == "Ambient"
 
 
@@ -266,7 +263,7 @@ class TestAceFamilyCompatible:
         assert ACEStepBackend.lora_compatible(_AceStub("2B"), {})
 
 
-class _FamilyBackend:
+class _FamilyBackend(_ScaleBackend):
     """Stub backend running the REAL ACE predicate (family + scale)."""
 
     checkpoint_scale = "2B"
@@ -276,11 +273,11 @@ class _FamilyBackend:
 class TestMixedFamilyCatalog:
     def test_catalog_annotates_sa3_entry_incompatible(self, tmp_path):
         clear_cache()
-        ss = _StubSession([
+        ss = _StubSession([])
+        ss.backend = _FamilyBackend([
             _Desc(_write_lora(tmp_path, "ambient-v1", "Ambient", "2B")),
             _Desc(_write_sa3_file(tmp_path, "sa3style")),
         ])
-        ss.backend = _FamilyBackend()
         verdicts = {
             e["id"]: e["compatible"] for e in ss.lora_catalog_payload()
         }
@@ -291,8 +288,8 @@ class TestMixedFamilyCatalog:
         display-name reference to an SA3-only entry misses; the exact id
         still passes through (and fails loudly at the enable boundary)."""
         clear_cache()
-        ss = _StubSession([_Desc(_write_sa3_file(tmp_path, "sa3style"))])
-        ss.backend = _FamilyBackend()
+        ss = _StubSession([])
+        ss.backend = _FamilyBackend([_Desc(_write_sa3_file(tmp_path, "sa3style"))])
         assert ss._resolve_lora_id("sa3style") == "sa3style"  # exact id
         assert ss._resolve_lora_id("SA3STYLE") == "SA3STYLE"  # alias: miss
 

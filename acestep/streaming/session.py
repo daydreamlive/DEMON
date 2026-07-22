@@ -629,9 +629,12 @@ class StreamingSession:
             )
 
     def _enabled_lora_ids(self) -> list:
-        if not (self.use_lora and self.engine_obj is not None):
+        # Backend facade (D2): the catalog lives behind the backend —
+        # ACE delegates to its engine_obj, SA3 to its parametrization
+        # manager. list_loras() is [] when no manager exists.
+        if not self.use_lora:
             return []
-        return [d.id for d in self.engine_obj.list_loras() if d.state == "enabled"]
+        return [d.id for d in self.backend.list_loras() if d.state == "enabled"]
 
     # ---- Snapshot / catalog helpers -------------------------------------
 
@@ -690,7 +693,7 @@ class StreamingSession:
         if not self.lora_available:
             return []
         out = []
-        for d in self.engine_obj.list_loras():
+        for d in self.backend.list_loras():
             # ``metadata`` is the full normalized record from the
             # LoRA's ``<stem>.metadata.json`` sidecar (falling back to
             # a synthesized record from ``.trigger.txt``, or a sparse
@@ -719,10 +722,10 @@ class StreamingSession:
         string on a miss so downstream behavior (engine-side
         enable/disable failure logs) is unchanged for ids that never
         existed."""
-        if not (self.lora_available and self.engine_obj is not None):
+        if not self.lora_available:
             return requested
         entries = []
-        for d in self.engine_obj.list_loras():
+        for d in self.backend.list_loras():
             metadata = load_lora_metadata(d.path).to_wire()
             entries.append((
                 d.id,
@@ -958,14 +961,14 @@ class StreamingSession:
             return
         for lid in local_disable:
             try:
-                self.engine_obj.disable_lora(lid)
+                self.backend.disable_lora(lid)
                 self.virtual_knobs.remove_knob(lora_strength_spec(lid).name)
                 logger.info("lora_disabled id={}", lid)
             except Exception as e:
                 logger.exception("lora_disable_failed id={} error={}", lid, e)
         for lid, strength in local_enable:
             try:
-                self.engine_obj.enable_lora(lid, strength=strength)
+                self.backend.enable_lora(lid, strength=strength)
                 logger.info(
                     "lora_enabled id={} strength={}",
                     lid, strength,

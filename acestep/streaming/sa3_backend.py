@@ -69,7 +69,11 @@ from acestep.streaming.generator_backend import (
     Capabilities,
     TickContext,
 )
-from acestep.streaming.knobs import KnobSpec, knob_specs as registry_knob_specs
+from acestep.streaming.knobs import (
+    KnobSpec,
+    knob_specs as registry_knob_specs,
+    lora_strength_spec,
+)
 
 # Delivery rate (v1): SA3's native 44.1 kHz is resampled at the decode
 # boundary so everything downstream of the backend stays at the engine
@@ -86,7 +90,38 @@ MAX_FEEDBACK_DEPTH = int(
 )
 
 
-def sa3_knob_specs() -> list:
+def sa3_lora_compatible(metadata: dict, model_id: str) -> bool:
+    """The SA3 compatibility predicate: weight-format family +
+    training lineage.
+
+    Family: a file whose sniffed ``lora_family`` names a different
+    family (e.g. "ace") can never load on the SA3 parametrization
+    engine — hard no. Unknown family stays permissive.
+
+    Lineage: the file's ``base_model`` (sidecar wins, else the
+    embedded trainer config) canonicalized to a runtime checkpoint id
+    must match the loaded model. Unknown/unrecognized lineage stays
+    permissive per the seam contract.
+
+    Module-level (not a method) because the create path
+    (:mod:`acestep.streaming.sa3_session`) needs the same verdict for
+    startup alias resolution before the backend exists — mirroring how
+    the ACE create path applies its scale axis directly.
+    """
+    from acestep.lora_metadata import canonical_sa3_lineage
+
+    family = metadata.get("lora_family")
+    if family and family != "sa3":
+        return False
+    lineage = canonical_sa3_lineage(metadata.get("base_model"))
+    if lineage is None or not model_id:
+        # Unknown on either side is compatible (the same permissive
+        # stance as the scale axis).
+        return True
+    return lineage == model_id
+
+
+def sa3_knob_specs(loras: tuple | list = ()) -> list:
     """The SA3 family knob manifest (backend-owned, plan §3.3).
 
     ``seed``, ``steps_override``, ``x0_target``, ``feedback`` and
@@ -97,6 +132,11 @@ def sa3_knob_specs() -> list:
     impossible instead). ``sa3_denoise`` / ``sa3_shift`` are
     family-prefixed because ACE's ``denoise`` and ``shift`` mean
     different things.
+
+    ``loras`` is the session's enabled-LoRA id list; each id expands to
+    the shared ``lora_str_<id>`` strength spec — the same registry
+    factory ACE uses, so the knob's shape (and therefore its wire
+    semantics) cannot fork across families.
     """
     shared = {s.name: s for s in registry_knob_specs(False)}
     return [
@@ -124,7 +164,7 @@ def sa3_knob_specs() -> list:
         shared["feedback_depth"],
         shared["seed"],
         shared["steps_override"],
-    ]
+    ] + [lora_strength_spec(lid) for lid in loras]
 
 
 class SA3Backend(DiffusionBackend):
@@ -174,6 +214,23 @@ class SA3Backend(DiffusionBackend):
         # SA3Context); None on directly-constructed test backends, where
         # handle_swap_source fails loudly instead.
         source_encoder: Optional[Callable] = None,
+        # SA3 LoRA (notes/SA3_LORA_PLAN.md Phase 1): the family's
+        # parametrization manager (acestep.engine.sa3_lora), constructed
+        # by the create path against the process-cached model. None =
+        # no LoRA surface (directly-constructed test backends).
+        lora_manager=None,
+        # Session-level LoRA toggle (config.lora); gates the capability
+        # bit, the per-tick strength reads, and has_pending_refit.
+        use_lora: bool = False,
+        # The always-resident eager DiT module, for the interim
+        # TRT→eager swap (D6a): when a LoRA enables on a TRT-DiT
+        # session the adapter's dit swaps to this; when the last
+        # disables it swaps back. None/identical when the session is
+        # already eager (swap becomes a no-op).
+        eager_dit=None,
+        # Runtime checkpoint id ("medium"/"small-music"/…) for the
+        # lineage axis of lora_compatible.
+        model_id: str = "",
     ):
         super().__init__(adapter=adapter, codec=codec)
         self._cond = cond
@@ -240,6 +297,24 @@ class SA3Backend(DiffusionBackend):
         # GIL-atomic reference-swap argument doesn't cover it. The runner
         # only ever holds this to snapshot, never across pipeline work.
         self._control_lock = threading.Lock()
+
+        # ---- LoRA (plan D4/D5/D6a) ------------------------------------
+        self._lora_mgr = lora_manager
+        self._use_lora = bool(use_lora)
+        self._model_id = str(model_id)
+        # D5 serialization point: conditioner EXECUTION (prompt-swap
+        # T5Gemma captures on the command thread) and conditioner
+        # MUTATION (LoRA parametrization changes at the runner
+        # rendezvous) are mutually exclusive under this lock. Mutating
+        # parametrizations under a concurrently executing conditioner is
+        # not safe; the create path's captures predate the backend, so
+        # they need no lock.
+        self._conditioner_lock = threading.Lock()
+        # D6a: the accelerated (possibly TRT) DiT the session was built
+        # with, and the always-resident eager module. _sync_dit_for_lora
+        # flips adapter.dit between them by LoRA activity.
+        self._dit_accel = adapter.dit if adapter is not None else None
+        self._dit_eager = eager_dit if eager_dit is not None else self._dit_accel
 
         # Rendered-audio cache: one full decode+resample per fresh
         # latent (SAME-S decodes the whole window in ~11 ms); window
@@ -367,6 +442,11 @@ class SA3Backend(DiffusionBackend):
             prompt_rebuilder=_prompt_rebuilder,
             prompt_tags=prompt,
             source_encoder=_source_encoder,
+            # D6a: the eager DiT module stays resident on the context
+            # even when make_dit returned a TRT wrapper — the interim
+            # LoRA fallback swaps to it.
+            eager_dit=context.dit,
+            model_id=str(context.model_id),
             **kwargs,
         )
 
@@ -400,9 +480,13 @@ class SA3Backend(DiffusionBackend):
         # ACE prepare_source body, so duration/conditioning stay fixed.
         # render_anchor_queue: batch pad prewarm, drained by the shared
         # pipeline_runner exactly like the scalar stationary anchor.
+        # lora: on when the session asked for it (config.lora) AND the
+        # create path built the family manager — the same gate shape as
+        # ACE's use_lora bit.
         return Capabilities(
             refines_audio=True, loop_band=True, swap=True,
             render_anchor_queue=True,
+            lora=bool(self._use_lora and self._lora_mgr is not None),
         )
 
     def geometry(self) -> AudioGeometry:
@@ -414,7 +498,142 @@ class SA3Backend(DiffusionBackend):
         )
 
     def knob_specs(self, lora_ids=()) -> list:
-        return sa3_knob_specs()
+        return sa3_knob_specs(loras=list(lora_ids or []))
+
+    def lora_compatible(self, metadata: dict) -> bool:
+        return sa3_lora_compatible(metadata, self._model_id)
+
+    def has_pending_refit(self) -> bool:
+        """True when ``before_tick`` is about to apply LoRA commands —
+        the same pending-queue read as ACE's implementation, so the
+        runner pre-covers the enable stall (which can synchronously
+        materialize + register 200+ parametrizations)."""
+        if not self._use_lora or self.state is None:
+            return False
+        try:
+            with self.state._lock:
+                return bool(
+                    self.state.pending_enable or self.state.pending_disable
+                )
+        except AttributeError:
+            return False
+
+    # ---- LoRA facade (D2 overrides; see notes/SA3_LORA_PLAN.md) ---------
+
+    def _require_lora_manager(self):
+        if self._lora_mgr is None:
+            raise RuntimeError(
+                "SA3 backend has no LoRA manager; the session's "
+                "capability gate should have rejected this command"
+            )
+        return self._lora_mgr
+
+    def lora_available(self) -> bool:
+        return self._lora_mgr is not None
+
+    def register_lora(self, path: str) -> str:
+        return self._require_lora_manager().register_lora(path)
+
+    def prewarm_lora(self, lora_id: str):
+        return self._require_lora_manager().prewarm_lora(lora_id)
+
+    def list_loras(self) -> list:
+        return self._lora_mgr.list_loras() if self._lora_mgr else []
+
+    def enable_lora(self, lora_id: str, strength=None) -> None:
+        """Transactional manager enable + the backend-side effects:
+        the D6a DiT swap and, for conditioner-targeting files, the D5
+        cond-bundle rebuild. Runs on the runner thread inside the
+        pending-drain rendezvous (session._apply_lora_pending)."""
+        mgr = self._require_lora_manager()
+        # D5: conditioner mutation is mutually exclusive with
+        # conditioner execution (prompt-swap captures on the command
+        # thread). DiT-only files pay this lock for microseconds.
+        with self._conditioner_lock:
+            mgr.enable_lora(lora_id, strength=strength)
+        self._sync_dit_for_lora()
+        if mgr.touches_conditioner(lora_id):
+            self._rebuild_conditioning_after_lora("enable_lora", lora_id)
+
+    def disable_lora(self, lora_id: str) -> None:
+        mgr = self._require_lora_manager()
+        # Read the conditioner flag BEFORE disable drops the staged
+        # payload.
+        touched = mgr.touches_conditioner(lora_id)
+        with self._conditioner_lock:
+            mgr.disable_lora(lora_id)
+        self._sync_dit_for_lora()
+        if touched:
+            self._rebuild_conditioning_after_lora("disable_lora", lora_id)
+
+    def set_lora_strength(self, lora_id: str, strength: float) -> None:
+        mgr = self._require_lora_manager()
+        with self._conditioner_lock:
+            mgr.set_lora_strength(lora_id, strength)
+        # A strength change on a conditioner-targeting LoRA changes the
+        # conditioner's output too — the cached cond bundle must follow.
+        # (Per-tick slider sweeps on such files pay a T5Gemma capture
+        # per applied step; the common DiT-only case skips this
+        # entirely.)
+        if mgr.touches_conditioner(lora_id):
+            self._rebuild_conditioning_after_lora("set_lora_strength", lora_id)
+
+    def _sync_dit_for_lora(self) -> None:
+        """D6a interim: LoRA weights live on the eager torch modules, so
+        a TRT-DiT session swaps to the eager DiT while any LoRA is
+        active and back when the last disables. Loud log both ways;
+        no-op for sessions already on the eager DiT."""
+        if self.adapter is None or self._dit_eager is None:
+            return
+        if self._dit_accel is self._dit_eager:
+            return  # eager session; nothing to swap
+        active = bool(self._lora_mgr is not None and self._lora_mgr.has_active_loras)
+        if active and self.adapter.dit is not self._dit_eager:
+            self.adapter.dit = self._dit_eager
+            logger.warning(
+                "sa3_dit_swap reason=lora_active dit=eager (TRT engine "
+                "cannot serve LoRA weights until the refit path lands)"
+            )
+        elif not active and self.adapter.dit is not self._dit_accel:
+            self.adapter.dit = self._dit_accel
+            logger.info("sa3_dit_swap reason=lora_inactive dit=accelerated")
+
+    def _rebuild_conditioning_after_lora(self, op: str, lora_id: str) -> None:
+        """D5: re-run the conditioner (through the exact prompt-swap
+        path, which takes the conditioner lock itself) after a
+        conditioner-mutating LoRA change commits, so the cached
+        cond_bundle reflects the mutated weights."""
+        if self._prompt_rebuilder is None:
+            logger.warning(
+                "sa3_lora_cond_rebuild_skipped op={} id={} "
+                "reason=no_prompt_rebuilder", op, lora_id,
+            )
+            return
+        tags = (
+            getattr(self.state, "prompt_text", None)
+            if self.state is not None else None
+        )
+        tags_b = (
+            getattr(self.state, "prompt_text_b", None)
+            if self.state is not None else None
+        )
+        if not tags:
+            # Directly-constructed backends without session state: fall
+            # back to the newest tags the cond history recorded.
+            with self._control_lock:
+                tags = self._cond_history[-1][2]
+        if not tags:
+            logger.warning(
+                "sa3_lora_cond_rebuild_skipped op={} id={} reason=no_tags",
+                op, lora_id,
+            )
+            return
+        t0 = time.perf_counter()
+        self.handle_set_prompt(tags, tags_b=tags_b)
+        logger.info(
+            "sa3_lora_cond_rebuilt op={} id={} rebuild_ms={:.1f}",
+            op, lora_id, (time.perf_counter() - t0) * 1000,
+        )
 
     def playable_duration_s(self):
         return self._cond.audio_sample_size / SA3_SAMPLE_RATE
@@ -445,7 +664,11 @@ class SA3Backend(DiffusionBackend):
                 "handle_set_prompt requires the from_context assembly"
             )
         t0 = time.perf_counter()
-        cond, sched_factory = self._prompt_rebuilder(tags, self._steps)
+        # Conditioner EXECUTION under the D5 lock: a concurrent LoRA
+        # mutation of the conditioner's parametrizations (runner
+        # rendezvous) must not interleave with this capture.
+        with self._conditioner_lock:
+            cond, sched_factory = self._prompt_rebuilder(tags, self._steps)
         rebuild_ms = (time.perf_counter() - t0) * 1000
         if int(cond.latent_frames) != int(self._cond.latent_frames):
             # Duration is fixed for the session lifetime, so the latent
@@ -457,7 +680,8 @@ class SA3Backend(DiffusionBackend):
                 f"duration is fixed per session"
             )
         if tags_b and tags_b != tags:
-            cond_b, _ = self._prompt_rebuilder(tags_b, self._steps)
+            with self._conditioner_lock:
+                cond_b, _ = self._prompt_rebuilder(tags_b, self._steps)
             if int(cond_b.latent_frames) != int(cond.latent_frames):
                 raise ValueError(
                     f"sa3 prompt-B swap changed latent_frames "
@@ -604,6 +828,25 @@ class SA3Backend(DiffusionBackend):
                 self.adapter.shift_alpha = shift
                 self.pipeline.invalidate_schedule_cache()
 
+        # Per-LoRA live strength (the ACE per-tick convention): iterate
+        # the catalog so the active set can change at runtime; strength
+        # only flows for ENABLED entries, gated by the shared 0.02
+        # slider-delta threshold. Under the parametrization engine this
+        # is a buffer write (no recompute); the gate also pre-guards the
+        # future TRT refit cost.
+        if self._use_lora and self._lora_mgr is not None:
+            for desc in self._lora_mgr.list_loras():
+                if desc.state != "enabled":
+                    continue
+                try:
+                    lora_str = float(
+                        knobs.get(f"lora_str_{desc.id}", desc.strength),
+                    )
+                except (TypeError, ValueError):
+                    continue
+                if abs(lora_str - desc.strength) > 0.02:
+                    self.set_lora_strength(desc.id, lora_str)
+
         # Source-lock strength rides the shared override so a strength
         # bump engages the blend on in-flight slots submitted while it
         # was 0 — the ACE runner's exact per-tick convention.
@@ -690,7 +933,21 @@ class SA3Backend(DiffusionBackend):
             # realizations (incoherent audio). See SlotRequest.
             sde_noise_seeded=True,
         ))
-        latent = self.pipeline.tick()  # engine-layout [1, T, 256] | None
+        # With LoRAs active, wrap the tick in parametrize.cached():
+        # without it, every weight ACCESS recomputes W + scaled delta,
+        # and the measured overhead is +49% per step at 1 LoRA / +114%
+        # at 3; under cached() each parametrized weight is computed once
+        # per tick and the 3-LoRA overhead collapses to ~+15% (Phase 0.5
+        # entry benchmark — this wrap is a requirement, not a tweak).
+        # The cache is scoped to this context and strength changes only
+        # land between ticks, so it can never serve a stale weight.
+        if self._lora_mgr is not None and self._lora_mgr.has_active_loras:
+            import torch.nn.utils.parametrize as parametrize
+
+            with parametrize.cached():
+                latent = self.pipeline.tick()
+        else:
+            latent = self.pipeline.tick()  # engine-layout [1, T, 256] | None
         if latent is not None:
             # The request this latent was generated from (valid only
             # right after a finishing tick — see StreamPipeline).
@@ -841,6 +1098,21 @@ class SA3Backend(DiffusionBackend):
         return AudioChunk(
             pcm=self._rendered_audio(self._current_result), start_sample=0,
         )
+
+    # ---- teardown ----------------------------------------------------------------
+
+    def close(self) -> None:
+        """Session teardown (called by StreamingSession.close). The SA3
+        torch model is process-cached and shared with every later
+        session, so the LoRA manager must strip every parametrization
+        this session installed — the next session gets a pristine model
+        (plan D4 teardown; bitwise-validated by Phase 0.5 check 4)."""
+        if self._lora_mgr is not None:
+            try:
+                with self._conditioner_lock:
+                    self._lora_mgr.close()
+            except Exception as exc:
+                logger.warning("sa3_lora_teardown_raised error={}", exc)
 
     # ---- bookkeeping -------------------------------------------------------------
 

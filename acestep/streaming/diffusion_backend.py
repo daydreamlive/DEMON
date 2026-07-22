@@ -86,6 +86,50 @@ class DiffusionBackend:
         # Families with a real axis override (ACE: base-model scale).
         return True
 
+    # ---- LoRA facade (D2): engine_obj-delegating defaults -------------------
+    #
+    # ACE's LoRA managers live inside its DiffusionEngine (``engine_obj``
+    # on the concrete backend); these defaults route the session's LoRA
+    # plumbing there so ACE behavior is unchanged by the facade. SA3
+    # overrides the whole block with its own manager. A family with
+    # neither (engine_obj None / absent) reports unavailable and fails
+    # loudly on mutation.
+
+    def _lora_engine(self):
+        return getattr(self, "engine_obj", None)
+
+    def _require_lora_engine(self):
+        eng = self._lora_engine()
+        if eng is None:
+            raise RuntimeError(
+                f"backend {self.name!r} has no LoRA engine; the session's "
+                "capability gate should have rejected this command"
+            )
+        return eng
+
+    def lora_available(self) -> bool:
+        eng = self._lora_engine()
+        return bool(eng is not None and getattr(eng, "lora_available", False))
+
+    def register_lora(self, path: str) -> str:
+        return self._require_lora_engine().register_lora(path)
+
+    def prewarm_lora(self, lora_id: str):
+        return self._require_lora_engine().prewarm_lora(lora_id)
+
+    def enable_lora(self, lora_id: str, strength=None) -> None:
+        self._require_lora_engine().enable_lora(lora_id, strength=strength)
+
+    def disable_lora(self, lora_id: str) -> None:
+        self._require_lora_engine().disable_lora(lora_id)
+
+    def set_lora_strength(self, lora_id: str, strength: float) -> None:
+        self._require_lora_engine().set_lora_strength(lora_id, strength)
+
+    def list_loras(self) -> list:
+        eng = self._lora_engine()
+        return eng.list_loras() if eng is not None else []
+
     def rebuild_imminent(self, knobs: dict) -> bool:
         return False
 
