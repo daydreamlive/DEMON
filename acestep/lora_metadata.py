@@ -261,6 +261,9 @@ def canonical_sa3_lineage(value: Optional[str]) -> Optional[str]:
     s = s.rsplit("/", 1)[-1]
     if s.startswith("stable-audio-3-"):
         s = s[len("stable-audio-3-"):]
+    elif s.startswith("sa3-"):
+        # underfit writes e.g. base_model="sa3-medium" (seen in the wild)
+        s = s[len("sa3-"):]
     if s.endswith("-base"):
         s = s[: -len("-base")]
     return s if s in _SA3_RUNTIME_LINEAGES else None

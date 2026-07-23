@@ -535,6 +535,9 @@ def test_to_wire_carries_family_fields(tmp_path):
         ("stabilityai/stable-audio-3-medium", "medium"),
         ("stabilityai/stable-audio-3-medium-base", "medium"),
         ("stable-audio-3-small-music-base", "small-music"),
+        # underfit's short trainer spelling (seen in the wild)
+        ("sa3-medium", "medium"),
+        ("sa3-small-music-base", "small-music"),
         # case-insensitive, whitespace-tolerant
         ("Medium-Base", "medium"),
         ("  small-music  ", "small-music"),
