@@ -1800,6 +1800,14 @@ def _handle_client_body(
                 lid = data.get("id")
                 if lid:
                     streaming.disable_lora(str(lid), origin=origin)
+            elif mtype == "add_lora":
+                lid = data.get("id")
+                url = data.get("url")
+                if lid and url:
+                    # Validation (id charset, URL scheme + host allowlist)
+                    # lives in the session, next to the code that writes
+                    # the file — this dispatch only unpacks the message.
+                    streaming.add_lora(str(url), str(lid), origin=origin)
             elif mtype == "manual_slot_add":
                 streaming.manual_slot_add(origin=origin)
             elif mtype == "manual_slot_pop":

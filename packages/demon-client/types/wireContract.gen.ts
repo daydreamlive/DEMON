@@ -29,6 +29,7 @@ export type CommandName =
   | "set_depth"
   | "enable_lora"
   | "disable_lora"
+  | "add_lora"
   | "manual_slot_add"
   | "manual_slot_pop"
   | "set_timbre_strength"
@@ -50,6 +51,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "set_depth",
   "enable_lora",
   "disable_lora",
+  "add_lora",
   "manual_slot_add",
   "manual_slot_pop",
   "set_timbre_strength",
@@ -195,6 +197,14 @@ export interface DisableLoraCommand {
   type: "disable_lora";
   /** LoRA id/stem; same alias resolution as enable_lora. */
   id: string;
+}
+
+export interface AddLoraCommand {
+  type: "add_lora";
+  /** Id to store it under; becomes the filename stem and the lora_str_<id> knob name. [A-Za-z0-9._-], <=64 chars. */
+  id: string;
+  /** https URL to fetch the .safetensors from. Host must be allow-listed on the pod (DEMON_LORA_URL_HOSTS). */
+  url: string;
 }
 
 export interface ManualSlotAddCommand {
@@ -528,6 +538,7 @@ export type WireCommand =
   | SetDepthCommand
   | EnableLoraCommand
   | DisableLoraCommand
+  | AddLoraCommand
   | ManualSlotAddCommand
   | ManualSlotPopCommand
   | SetTimbreStrengthCommand

@@ -361,6 +361,24 @@ COMMANDS: tuple = (
         description="Disable a LoRA and drop its lora_str_<id> knob.",
     ),
     CommandSpec(
+        "add_lora",
+        fields=(
+            FieldSpec("id", "str", required=True,
+                      description="Id to store it under; becomes the "
+                                  "filename stem and the lora_str_<id> "
+                                  "knob name. [A-Za-z0-9._-], <=64 chars."),
+            FieldSpec("url", "str", required=True,
+                      description="https URL to fetch the .safetensors "
+                                  "from. Host must be allow-listed on the "
+                                  "pod (DEMON_LORA_URL_HOSTS)."),
+        ),
+        requires="lora",
+        description="Fetch a LoRA into the library and register it, so one "
+                    "trained after this pod booted can be enabled. Returns "
+                    "immediately; watch lora_catalog for the id, then send "
+                    "enable_lora.",
+    ),
+    CommandSpec(
         "manual_slot_add",
         requires="steering",
         description="Allocate the next manual steering slot (LIFO); "
