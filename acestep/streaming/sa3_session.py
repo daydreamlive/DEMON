@@ -74,16 +74,59 @@ _CONTEXTS: dict = {}
 _CONTEXTS_LOCK = threading.Lock()
 
 
-def get_sa3_context(model_id: str):
-    """Load-or-reuse the process-cached SA3Context for ``model_id``."""
+def sa3_context_key(model_id: str, *, checkpoint_dir=None, extension=None) -> tuple:
+    """Cache key identifying one exact loaded SA3 model.
+
+    Includes the checkpoint's CONTENT identity, not just its path: an
+    operator-supplied directory can be rewritten in place between runs
+    (a training loop that keeps overwriting the same weights), and two
+    different models sharing a path must not share a cached context.
+
+    Also includes the installed extension's identity, version, and
+    configuration fingerprint, so two differently-configured model graphs
+    can never collide on one cached entry.
+    """
+    from acestep.engine.sa3_helpers import sa3_checkpoint_identity
+
+    checkpoint = (
+        None if checkpoint_dir is None
+        else sa3_checkpoint_identity(checkpoint_dir)
+    )
+    ext_key = None if extension is None else extension.cache_key()
+    return (model_id, checkpoint, ext_key)
+
+
+def get_sa3_context(model_id: str, *, checkpoint_dir=None, extension=None):
+    """Load-or-reuse the process-cached SA3Context for one exact model."""
     from acestep.engine.sa3_context import SA3Context
 
+    key = sa3_context_key(
+        model_id, checkpoint_dir=checkpoint_dir, extension=extension,
+    )
     with _CONTEXTS_LOCK:
-        context = _CONTEXTS.get(model_id)
+        context = _CONTEXTS.get(key)
         if context is None:
-            context = SA3Context(model_id)
-            _CONTEXTS[model_id] = context
+            context = SA3Context(
+                model_id, checkpoint_dir=checkpoint_dir, extension=extension,
+            )
+            _CONTEXTS[key] = context
         return context
+
+
+def evict_sa3_contexts() -> int:
+    """Drop and close every cached SA3 context. Returns how many.
+
+    Server shutdown path: an installed extension may have attached itself
+    to the shared model, and ``close()`` is what detaches it.
+    """
+    with _CONTEXTS_LOCK:
+        contexts = list(_CONTEXTS.values())
+        _CONTEXTS.clear()
+    for context in contexts:
+        close = getattr(context, "close", None)
+        if close is not None:
+            close()
+    return len(contexts)
 
 
 def _delivered_samples(n_44k: int) -> int:
@@ -109,6 +152,8 @@ def _resolve_accel(value: str, component: str) -> str:
 def create_sa3_session(
     cls, *, audio, config, checkpoint, session_id,
     decoder_backend: str = "tensorrt", vae_backend: str = "tensorrt",
+    sa3_base_checkpoint_dir=None,
+    model_extension=None,
     **_unused,
 ):
     """Build a ready-to-run sa3 :class:`StreamingSession` (``cls``). See
@@ -130,7 +175,27 @@ def create_sa3_session(
     dit_backend = _resolve_accel(decoder_backend, "dit")
     codec_backend = _resolve_accel(vae_backend, "codec")
     model_id = checkpoint
-    context = get_sa3_context(model_id)
+    context = get_sa3_context(
+        model_id,
+        checkpoint_dir=sa3_base_checkpoint_dir,
+        extension=model_extension,
+    )
+
+    # An installed extension may not be runnable under a prebuilt
+    # acceleration plan. Resolve that BEFORE component construction so the
+    # duration clamp below sees the backend that will actually run: a
+    # TensorRT duration cap must not be imposed on an eager graph.
+    dit_backend, dit_downgrade = context.effective_dit_backend(dit_backend)
+    codec_backend, codec_downgrade = context.effective_codec_backend(codec_backend)
+    for component, reason in (("dit", dit_downgrade), ("codec", codec_downgrade)):
+        if reason:
+            # WARNING, not INFO: the operator asked for acceleration and is
+            # not getting it. This is the only point it can be reported —
+            # the verdict needs the installed runtime, which needs weights.
+            logger.warning(
+                "sa3_backend_downgraded component={} using=eager reason={}",
+                component, reason,
+            )
 
     waveform = audio.waveform[:2].float()
     # SA3 decodes stereo and geometry() declares 2 channels, so the
@@ -190,6 +255,11 @@ def create_sa3_session(
         src_np = src_np[:n_48k]
     n_channels = src_np.shape[1] if src_np.ndim > 1 else 1
 
+    # Stock family manifest only. Extension controls are composed in ONE
+    # place — SA3Backend.knob_specs() — and StreamingSession seeds this
+    # KnobState from that manifest during construction, so naming them
+    # here too would be a second composition point that could silently
+    # drift from the one the ready frame and coerce_knob_values use.
     virtual_knobs = KnobState(sa3_knob_specs())
 
     state = SessionState(
@@ -265,6 +335,7 @@ def create_sa3_session(
                 "duration_s": duration_s,
                 "dit_backend": dit_backend,
                 "codec_backend": codec_backend,
+                "model_extension": model_extension,
             },
         )
         cleanup.pop_all()

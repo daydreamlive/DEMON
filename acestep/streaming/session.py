@@ -2337,6 +2337,8 @@ class StreamingSession:
         decoder_backend: str = "tensorrt",
         vae_backend: str = "tensorrt",
         offload_text_encoder: bool = False,
+        sa3_base_checkpoint_dir: str | None = None,
+        model_extension=None,
         session_id: str,
     ) -> "StreamingSession":
         """Build a ready-to-run session for one connection.
@@ -2368,6 +2370,8 @@ class StreamingSession:
                 decoder_backend=decoder_backend,
                 vae_backend=vae_backend,
                 offload_text_encoder=offload_text_encoder,
+                sa3_base_checkpoint_dir=sa3_base_checkpoint_dir,
+                model_extension=model_extension,
             )
 
         waveform = audio.waveform

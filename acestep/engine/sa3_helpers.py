@@ -61,6 +61,65 @@ def sa3_vendor_present() -> bool:
     return (sa3_vendor_dir() / "stable_audio_3").is_dir()
 
 
+def sa3_checkpoint_files(checkpoint_dir) -> tuple[Path, Path]:
+    """The two files that make a directory a usable SA3 checkpoint."""
+    base = Path(checkpoint_dir)
+    return base / "model_config.json", base / "model.safetensors"
+
+
+def sa3_custom_checkpoint_status(checkpoint_dir) -> tuple[bool, str]:
+    """``(ok, message)`` for an operator-supplied SA3 checkpoint directory.
+
+    The catalog path (:func:`sa3_checkpoint_status`) resolves a known
+    ``model_id`` under the managed models dir; this one validates a
+    directory the operator named explicitly, so it checks layout rather
+    than offering a download remedy."""
+    base = Path(checkpoint_dir).expanduser().resolve()
+    if not base.is_dir():
+        return False, f"SA3 checkpoint directory not found: {base}"
+    missing = [str(p) for p in sa3_checkpoint_files(base) if not p.is_file()]
+    if missing:
+        return False, (
+            f"SA3 checkpoint directory {base} is missing required files: "
+            f"{', '.join(missing)}"
+        )
+    if not sa3_vendor_present():
+        return False, (
+            f"SA3 source not found at {sa3_vendor_dir()} "
+            "(required to import stable_audio_3). Run `uv run demon-setup` "
+            "to fetch it."
+        )
+    return True, f"SA3 checkpoint ready: {base}"
+
+
+def sa3_checkpoint_identity(path) -> tuple:
+    """A cheap content-identity fingerprint for a checkpoint path.
+
+    Returns ``(resolved_path, size, mtime_ns)`` per file, so a checkpoint
+    that is REWRITTEN IN PLACE (a training run that keeps overwriting the
+    same file as it improves) does not collide with the previous one in a
+    path-keyed cache. Path identity alone is not content identity for a
+    file the producer keeps updating.
+
+    Missing files contribute ``None`` rather than raising: callers use this
+    for cache keys, and a genuinely missing file is reported by the
+    preflight with a better message than a stat error.
+    """
+    base = Path(path).expanduser().resolve()
+    targets = (
+        sorted(p for p in sa3_checkpoint_files(base)) if base.is_dir() else [base]
+    )
+    parts: list = [str(base)]
+    for target in targets:
+        try:
+            st = target.stat()
+        except OSError:
+            parts.append((str(target), None, None))
+        else:
+            parts.append((str(target), int(st.st_size), int(st.st_mtime_ns)))
+    return tuple(parts)
+
+
 def sa3_checkpoint_status(model_id: str) -> tuple[bool, str]:
     """``(ok, message)`` for an SA3 ``model_id``'s boot readiness — the SA3
     analog of ``model_downloader.ensure_dit_model``'s contract, but a

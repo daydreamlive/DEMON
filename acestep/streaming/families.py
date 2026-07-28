@@ -83,6 +83,8 @@ def _make_sa3(ss):
         # stays on the eager default.
         dit_backend=init.get("dit_backend", "eager"),
         codec_backend=init.get("codec_backend", "eager"),
+        # Startup-selected model extension, absent on stock sessions.
+        model_extension=init.get("model_extension"),
         steps=int(ss.config.steps),
         depth=int(ss.state.current_depth),
         vae_window_s=float(ss.vae_window),

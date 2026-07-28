@@ -24,6 +24,7 @@ when it is absent.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable
 
 import torch
@@ -42,6 +43,22 @@ from acestep.engine.sa3_helpers import (
 WINDOWED_DECODE_MODELS = {"medium"}
 
 
+def _read_model_config(checkpoint_dir: Path) -> dict:
+    """The checkpoint's ``model_config.json``, or ``{}`` if unreadable.
+
+    Read before the weights so an extension can be offered a veto cheaply.
+    A missing/!malformed config is not fatal on its own — the loader gives
+    a better error than a JSON traceback would.
+    """
+    import json
+
+    path = Path(checkpoint_dir) / "model_config.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
 class SA3Context:
     """Loaded SA3 model + family-private operations. See module docstring."""
 
@@ -51,13 +68,53 @@ class SA3Context:
         *,
         device: str = "cuda",
         model_half: bool = True,
+        checkpoint_dir: str | Path | None = None,
+        extension=None,
     ):
+        """``checkpoint_dir`` overrides the catalog location for
+        ``model_id`` with an operator-supplied directory in the same
+        layout (``model_config.json`` + ``model.safetensors``). It exists
+        so a non-catalog SA3 checkpoint can be evaluated without being
+        installed into the managed models tree; ``model_id`` still selects
+        the family behaviors (decode geometry, engine lookup).
+
+        ``extension`` is an optional
+        :class:`~acestep.plugins.selection.SelectedExtension` the operator
+        chose at startup. It is offered a veto BEFORE the weights load,
+        and installed onto the model AFTER they do. Installation failure
+        is fatal: the operator asked for this extension, so running the
+        stock trunk instead would silently generate with a different model
+        than the one requested."""
         require_sa3_vendor()
         loader = import_loader_helpers()
         self._helpers = import_stream_helpers()
 
         self.model_id = model_id
-        ckpt = loader.checkpoint_dir(model_id)
+        ckpt = (
+            Path(checkpoint_dir).expanduser().resolve()
+            if checkpoint_dir is not None
+            else loader.checkpoint_dir(model_id)
+        )
+        self.checkpoint_dir = Path(ckpt)
+        self.model_config = _read_model_config(self.checkpoint_dir)
+        self.extension = extension
+        self.extension_runtime = None
+
+        # Veto before the expensive load: an extension that cannot run
+        # against this base model should say so in the time it takes to
+        # read a JSON file, not after several seconds of weight loading.
+        if extension is not None:
+            from acestep.plugins.model_extensions import ModelDescriptor
+
+            extension.validate_base_model(
+                ModelDescriptor(
+                    family="sa3",
+                    model_id=model_id,
+                    checkpoint_dir=str(self.checkpoint_dir),
+                    model_config=self.model_config,
+                )
+            )
+
         logger.info("sa3_model_load_start model_id={} dir={}", model_id, ckpt)
         self.sam = loader.load_local_model(ckpt, device=device, model_half=model_half)
         self.device = torch.device(self.sam.device)
@@ -67,10 +124,27 @@ class SA3Context:
             self.sam.model.pretransform.downsampling_ratio          # 4096
         )
         self.latent_channels = int(self.sam.model.io_channels)      # 256
+        # The loaded checkpoint's training objective. Post-trained SA3
+        # releases are "rf_denoiser"; the plain rectified-flow bases are
+        # "rectified_flow". They want different samplers, so the backend
+        # reads this rather than assuming every SA3 checkpoint is
+        # post-trained (see SA3Backend.from_context).
+        self.diffusion_objective = str(self.sam.model.diffusion_objective)
         logger.info(
-            "sa3_model_loaded model_id={} latent_rate_hz={:.4f} dtype={}",
+            "sa3_model_loaded model_id={} latent_rate_hz={:.4f} dtype={} "
+            "objective={}",
             model_id, self.sample_rate / self.downsampling_ratio, self.dtype,
+            self.diffusion_objective,
         )
+
+        # Install last, so every derived attribute above describes the
+        # stock model and the extension sees a fully-formed context.
+        if extension is not None:
+            self.extension_runtime = extension.install(self.sam, self.model_config)
+            logger.info(
+                "sa3_extension_installed id={} model_id={}",
+                extension.qualified_id, model_id,
+            )
 
     @property
     def dit(self):
@@ -80,6 +154,55 @@ class SA3Context:
     @property
     def latent_rate_hz(self) -> float:
         return self.sample_rate / self.downsampling_ratio
+
+    # ---- model extension ---------------------------------------------------
+
+    def effective_dit_backend(self, requested: str) -> tuple[str, str]:
+        """``(backend, reason)`` after consulting the installed extension.
+
+        An extension that augments the transformer generally cannot run
+        under a prebuilt acceleration plan, because the plan contains only
+        the stock graph — running it would silently drop the extension.
+        SA3's established contract is to fall back to eager rather than
+        refuse to boot, so that is preserved.
+
+        The downgrade is reported at SESSION CREATE, not at boot. Boot
+        cannot report it: the verdict comes from the installed runtime,
+        and installation requires the loaded weights, which the preflight
+        deliberately does not pay for. The caller logs it at WARNING so it
+        is visible in a default-level log rather than only under debug.
+        """
+        if self.extension_runtime is None or requested != "tensorrt":
+            return requested, ""
+        verdict = self.extension_runtime.supports_dit_backend(requested)
+        if verdict.ok:
+            return requested, ""
+        return "eager", verdict.reason or "extension does not support tensorrt"
+
+    def effective_codec_backend(self, requested: str) -> tuple[str, str]:
+        """``(backend, reason)`` for the codec. See :meth:`effective_dit_backend`."""
+        if self.extension_runtime is None or requested != "tensorrt":
+            return requested, ""
+        verdict = self.extension_runtime.supports_codec_backend(requested)
+        if verdict.ok:
+            return requested, ""
+        return "eager", verdict.reason or "extension does not support tensorrt"
+
+    def close(self) -> None:
+        """Release the installed extension. Idempotent.
+
+        The loaded model is process-cached and shared, so an extension
+        that attached itself to the trunk has to detach here or every
+        later session keeps running its graph.
+        """
+        if self.extension_runtime is None:
+            return
+        runtime = self.extension_runtime
+        self.extension_runtime = None
+        try:
+            runtime.close()
+        except Exception as exc:  # noqa: BLE001 - teardown must not raise
+            logger.error("sa3_extension_close_failed error={}", exc)
 
     # ---- TRT-or-eager component selection ----------------------------------
 
