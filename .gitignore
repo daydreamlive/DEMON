@@ -281,3 +281,7 @@ PortableGit/
 # golden-harness scratch (bundles live on the HF dataset, see tests/golden)
 runs/
 refs-out/
+
+# ad-hoc script/benchmark output (audio is covered by the media rules above,
+# but the JSON/log siblings were not)
+out/
