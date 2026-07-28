@@ -150,6 +150,70 @@ def test_knob_defaults_flow_through_read_knobs():
     assert raw["feedback_depth"] == 1.0
 
 
+class _SamplerProbeContext:
+    """Minimal SA3Context stand-in for from_context sampler selection."""
+
+    device = torch.device("cpu")
+    dtype = torch.float32
+    # from_context reads both for the LoRA surface: the resident eager
+    # DiT (None => the TRT->eager swap is a no-op) and the lineage id.
+    dit = None
+    model_id = ""
+
+    def __init__(self, objective):
+        self.diffusion_objective = objective
+
+    def make_dit(self, **_kwargs):
+        return _ZeroDit()
+
+    def make_schedule_builder(self, _cond, steps):
+        return _schedule_builder_factory(steps)
+
+    def make_codec(self, **_kwargs):
+        return _FakeCodec()
+
+
+def _sampler_for(objective):
+    backend = SA3Backend.from_context(
+        _SamplerProbeContext(objective),
+        prompt="test",
+        duration_s=1.0,
+        knob_state=KnobState(sa3_knob_specs()),
+        cond=_FakeCond(),
+        source_latent_bct=torch.zeros(1, C, T),
+        steps=2,
+        depth=1,
+    )
+    return backend._sampler
+
+
+def test_from_context_selects_sampler_from_diffusion_objective():
+    # A plain rectified-flow base wants Euler ODE; the post-trained
+    # releases were trained and evaluated with deterministic ping-pong.
+    assert _sampler_for("rectified_flow") == "ode"
+    assert _sampler_for("rf_denoiser") == "pingpong"
+
+
+def test_from_context_sampler_defaults_to_pingpong_without_objective():
+    # A context predating the objective attribute must keep the historical
+    # behavior rather than silently switching samplers.
+    class _Legacy(_SamplerProbeContext):
+        def __init__(self):
+            pass
+
+    backend = SA3Backend.from_context(
+        _Legacy(),
+        prompt="test",
+        duration_s=1.0,
+        knob_state=KnobState(sa3_knob_specs()),
+        cond=_FakeCond(),
+        source_latent_bct=torch.zeros(1, C, T),
+        steps=2,
+        depth=1,
+    )
+    assert backend._sampler == "pingpong"
+
+
 def test_produce_emits_and_renders_windows():
     b = _backend()
     knobs = {"sa3_denoise": 0.7, "seed": 42, "steps_override": 3}

@@ -159,6 +159,16 @@ def _collect_repeated_arg(args: list[str], flag: str) -> list[str]:
     return values
 
 
+def _single_arg(args: list[str], flag: str) -> str | None:
+    """The last ``--flag value`` / ``--flag=value`` occurrence, or None.
+
+    Bounds-checked: a trailing flag with no value exits with the remedy
+    instead of raising IndexError out of argument parsing.
+    """
+    values = _collect_repeated_arg(args, flag)
+    return values[-1] if values else None
+
+
 def _resolve_video(name: str) -> Path | None:
     """Map a ``/videos/<name>`` request to a file inside ``VIDEOS_DIR``.
 
@@ -678,7 +688,9 @@ def _run_preflight(decoder_accel: str, vae_accel: str, checkpoint: str) -> None:
     )
 
 
-def _run_sa3_preflight(model_id: str) -> None:
+def _run_sa3_preflight(
+    model_id: str, *, base_checkpoint_dir: str | None = None,
+) -> None:
     """Boot fail-fast for the SA3 family.
 
     The ACE ``_run_preflight`` checks the wrong tree — SA3 weights and
@@ -687,10 +699,19 @@ def _run_sa3_preflight(model_id: str) -> None:
     vendored ``stable_audio_3`` source). A missing TRT engine is NOT
     fatal: SA3 degrades to the eager DiT at session create, so unlike
     the ACE path this preflight never gates on engines.
-    """
-    from acestep.engine.sa3_helpers import sa3_checkpoint_status
 
-    ok, msg = sa3_checkpoint_status(model_id)
+    ``base_checkpoint_dir`` validates an operator-supplied checkpoint
+    directory instead of the catalog location for ``model_id``.
+    """
+    from acestep.engine.sa3_helpers import (
+        sa3_checkpoint_status,
+        sa3_custom_checkpoint_status,
+    )
+
+    if base_checkpoint_dir:
+        ok, msg = sa3_custom_checkpoint_status(base_checkpoint_dir)
+    else:
+        ok, msg = sa3_checkpoint_status(model_id)
     if not ok:
         # ``msg`` carries the failure-specific remedy: a manual HF download
         # for missing weights (demon-setup does NOT fetch them), or
@@ -702,7 +723,10 @@ def _run_sa3_preflight(model_id: str) -> None:
         print(f"  {msg}")
         print("=" * 64)
         raise SystemExit(1)
-    logger.info("preflight_sa3_ok model_id={}", model_id)
+    logger.info(
+        "preflight_sa3_ok model_id={} base_dir={}",
+        model_id, base_checkpoint_dir,
+    )
 
 
 def main():
@@ -780,6 +804,23 @@ def main():
         from acestep.streaming.families import resolve_checkpoint
 
         backend_family, checkpoint = resolve_checkpoint(checkpoint)
+    # Operator-supplied SA3 base checkpoint directory: evaluates a
+    # non-catalog checkpoint without installing it into the managed
+    # models tree. Startup-only and never accepted from a client.
+    sa3_base_checkpoint_dir = _single_arg(args, "--sa3-base-checkpoint")
+    if sa3_base_checkpoint_dir and backend_family != "sa3":
+        raise SystemExit(
+            "[Server] --sa3-base-checkpoint requires an SA3 --checkpoint "
+            "alias (e.g. --checkpoint sa3-medium)"
+        )
+    # Model extension selection is startup-only and operator-controlled:
+    # a client can never name a plugin, a module, or a config path.
+    model_extension_id = _single_arg(args, "--model-extension")
+    model_extension_config = _single_arg(args, "--model-extension-config")
+    if model_extension_config and not model_extension_id:
+        raise SystemExit(
+            "[Server] --model-extension-config requires --model-extension"
+        )
     if "--control-host" in args:
         idx = args.index("--control-host")
         control_host = args[idx + 1]
@@ -817,6 +858,10 @@ def main():
             route, mount.root, mount.entry,
         )
 
+    # Bound in both branches: the shutdown path reads it, and --no-backend
+    # never reaches the selection code below.
+    model_extension = None
+
     if no_backend:
         ws_handler = _stub_handle_client
         logger.info(
@@ -837,7 +882,37 @@ def main():
                 _run_preflight(decoder_accel, vae_accel, checkpoint)
             elif backend_family == "sa3":
                 # `checkpoint` is the resolved SA3 model id here.
-                _run_sa3_preflight(checkpoint)
+                _run_sa3_preflight(
+                    checkpoint,
+                    base_checkpoint_dir=sa3_base_checkpoint_dir,
+                )
+
+        # Resolve the selected model extension at boot, before any
+        # session exists. Startup-only is a safety property AND a
+        # mechanical necessity: the knob manifest is published once on the
+        # ready frame, so an extension's controls must exist before the
+        # first client connects for them to ever be visible.
+        if model_extension_id:
+            from acestep.plugins.errors import PluginError
+            from acestep.plugins.selection import select_model_extension
+
+            try:
+                model_extension = select_model_extension(
+                    model_extension_id,
+                    family=backend_family,
+                    config_path=model_extension_config,
+                )
+            except PluginError as exc:
+                # Fail closed. Running stock after the operator explicitly
+                # asked for an extension would generate with a different
+                # model than the one requested, and sound entirely fine.
+                print()
+                print("=" * 64)
+                print("  Model extension unavailable")
+                print("=" * 64)
+                print(f"  {exc}")
+                print("=" * 64)
+                raise SystemExit(1) from exc
 
         # Defer the heavy import until we know we need it. Pulling this in
         # loads torch + acestep + TRT machinery; in --no-backend we never
@@ -858,6 +933,8 @@ def main():
                 checkpoint=checkpoint,
                 backend_family=backend_family,
                 offload_text_encoder=offload_text_encoder,
+                sa3_base_checkpoint_dir=sa3_base_checkpoint_dir,
+                model_extension=model_extension,
             )
 
         # Pay the one-time cold-start cost (TRT decoder-engine load,
@@ -1032,6 +1109,19 @@ def main():
             time.sleep(0.5)
     except KeyboardInterrupt:
         logger.info("server_shutdown reason=keyboard_interrupt")
+        if model_extension is not None:
+            # An installed extension may have attached itself to the
+            # process-cached model; close() is what detaches it. Best
+            # effort — shutdown must not hang on a misbehaving plugin.
+            try:
+                from acestep.streaming.sa3_session import evict_sa3_contexts
+
+                logger.info(
+                    "server_shutdown_evicted_contexts count={}",
+                    evict_sa3_contexts(),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("server_shutdown_evict_failed error={}", exc)
         os._exit(0)
 
 
