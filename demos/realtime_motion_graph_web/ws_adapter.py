@@ -339,6 +339,33 @@ except ValueError:
     _DEAD_CLIENT_SEND_STALL_S = 30.0
 _DEAD_CLIENT_POLL_S = 2.0
 
+# How long a JSON header may wait for the binary frame that must follow it
+# (see _recv_binary_payload). This is a LIVENESS guard — it exists so an
+# orphan header can't block the recv loop forever and wedge the session —
+# so any finite value does its job, and it must be sized against the
+# largest payload the paired verbs can legitimately carry, not against a
+# typical one. The verbs are set_timbre_source / set_structure_source /
+# swap_source / write_audio, whose frames are uncompressed interleaved
+# float32 at 48 kHz: a 60 s stereo clip is 23 MB, which needs a sustained
+# ~18 Mbit/s uplink to land inside 10 s (the old value, inherited from
+# write_audio when it was the only guarded verb — see the recv-hardening
+# half of 2bb7969). Below that the guard stopped reporting "peer is gone"
+# and started reporting "peer's uplink is ordinary", failing refs and
+# swaps on links that stream perfectly well. 120 s covers 23 MB down to
+# ~2 Mbit/s. The cost of the larger window is bounded and self-healing:
+# _recv_binary_payload runs on the recv-loop thread, so a genuinely
+# orphaned header now stalls command dispatch for that long, which trips
+# the IDLE_PAUSE_S GPU pause — by design that keeps serving audio from the
+# existing buffer and resumes on the next inbound message. Floored at the
+# old value so a bad env can only loosen it.
+try:
+    _BINARY_PAYLOAD_TIMEOUT_S = max(
+        10.0,
+        float(os.environ.get("DEMON_BINARY_PAYLOAD_TIMEOUT_S", "") or 120.0),
+    )
+except ValueError:
+    _BINARY_PAYLOAD_TIMEOUT_S = 120.0
+
 
 def _socket_send_backlog(sock) -> int | None:
     """Bytes queued in the kernel send buffer (unsent + unacked) for
@@ -1658,23 +1685,31 @@ def _handle_client_body(
         def _recv_binary_payload(fail_type: str):
             """Read the binary frame that must follow ``mtype``.
 
-            Bounded (10 s timeout) and type-checked, so an orphan
-            header can neither block the recv loop forever (wedging
-            the whole session) nor consume the next JSON command as
-            its payload. Both failure modes answer ``fail_type`` and
-            keep the session alive. Returns ``None`` on failure (the
-            caller must bail out); flips ``state.running`` if the
-            connection closed.
+            Bounded (``_BINARY_PAYLOAD_TIMEOUT_S``) and type-checked,
+            so an orphan header can neither block the recv loop forever
+            (wedging the whole session) nor consume the next JSON
+            command as its payload. Both failure modes answer
+            ``fail_type`` and keep the session alive. Returns ``None``
+            on failure (the caller must bail out); flips
+            ``state.running`` if the connection closed.
+
+            The bound is a transfer deadline for multi-MB frames, not
+            just an orphan-header guard — see the constant for why it is
+            sized the way it is.
             """
             try:
-                audio_msg = recv_audio(timeout=10)
+                audio_msg = recv_audio(timeout=_BINARY_PAYLOAD_TIMEOUT_S)
             except TimeoutError:
                 logger.error(
-                    "{}_payload_timeout origin={}", mtype, origin,
+                    "{}_payload_timeout origin={} timeout_s={:.0f}",
+                    mtype, origin, _BINARY_PAYLOAD_TIMEOUT_S,
                 )
                 _send_json({
                     "type": fail_type,
-                    "error": "binary payload not received within 10s",
+                    "error": (
+                        "binary payload not received within "
+                        f"{_BINARY_PAYLOAD_TIMEOUT_S:.0f}s"
+                    ),
                 })
                 return None
             except ConnectionClosed:
