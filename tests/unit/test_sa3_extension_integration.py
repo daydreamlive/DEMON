@@ -66,9 +66,9 @@ class _ProbeRuntime(ModelExtensionRuntime):
             return BackendVerdict(False, "no accelerated plan for this graph")
         return BackendVerdict(True)
 
-    def decorate_conditioning(self, bundle, source_latent_bct=None):
-        self.decorations.append(source_latent_bct)
-        return {**bundle, "probe_cond": source_latent_bct}
+    def decorate_conditioning(self, bundle, source=None):
+        self.decorations.append(source)
+        return {**bundle, "probe_cond": None if source is None else source.latent}
 
     def apply_controls(self, values):
         self.controls.append(dict(values))
@@ -377,3 +377,54 @@ def test_context_key_includes_extension_identity_and_config():
     assert stock != with_ext
     assert with_ext != other
     assert with_ext == sa3_context_key("medium", extension=_selected(scale=1.0))
+
+
+# ---- the source view --------------------------------------------------------
+
+
+def test_extension_receives_the_pre_encode_audio_with_the_latent():
+    # An extension whose condition derives from the audio rather than
+    # from its latent must not have to decode the latent to get it back.
+    runtime = _ProbeRuntime()
+    source = torch.randn(1, C, T)
+    waveform = torch.randn(2, N44)
+    _backend(
+        extension=_selected(), runtime=runtime, source=source,
+        source_audio=(44100, waveform),
+    )
+    view = runtime.decorations[0]
+    assert torch.equal(view.latent, source)
+    assert view.waveform is waveform
+    assert view.sample_rate == 44100
+
+
+def test_source_view_omits_audio_the_backend_was_never_given():
+    runtime = _ProbeRuntime()
+    _backend(extension=_selected(), runtime=runtime, source=torch.randn(1, C, T))
+    view = runtime.decorations[0]
+    assert view.latent is not None
+    assert view.waveform is None
+    assert view.sample_rate is None
+
+
+def test_source_swap_replaces_the_waveform_along_with_the_latent():
+    # The two halves of the view must always describe the SAME audio;
+    # keeping the old waveform beside a new anchor is silent wrongness.
+    runtime = _ProbeRuntime()
+    replacement_latent = torch.randn(1, C, T)
+    replacement_audio = torch.randn(2, N44)
+    backend = _backend(
+        extension=_selected(), runtime=runtime,
+        source=torch.randn(1, C, T),
+        source_audio=(44100, torch.randn(2, N44)),
+        source_encoder=lambda *_a: replacement_latent,
+    )
+
+    backend.handle_swap_source(replacement_audio, 48000)
+
+    view = runtime.decorations[-1]
+    assert torch.equal(view.latent, replacement_latent)
+    assert view.waveform is replacement_audio
+    assert view.sample_rate == 48000
+    # And the stored anchor agrees, so the NEXT prompt swap sees it too.
+    assert backend._source_view().waveform is replacement_audio

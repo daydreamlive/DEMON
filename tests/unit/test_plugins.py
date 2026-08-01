@@ -27,9 +27,13 @@ from acestep.plugins import (
     PluginRegistry,
     PluginRegistrationError,
     Rejection,
+    SourceView,
     validate_extension_config,
 )
-from acestep.plugins.model_extensions import ModelDescriptor
+from acestep.plugins.model_extensions import (
+    ModelDescriptor,
+    decorate_conditioning,
+)
 from acestep.plugins.selection import (
     SelectedExtension,
     load_extension_config,
@@ -91,9 +95,9 @@ class _NoopRuntime(ModelExtensionRuntime):
             return BackendVerdict(False, "no accelerated plan for this graph")
         return BackendVerdict(True)
 
-    def decorate_conditioning(self, bundle, source_latent_bct=None):
+    def decorate_conditioning(self, bundle, source=None):
         self.decorated += 1
-        return {**bundle, "extension_cond": source_latent_bct}
+        return {**bundle, "extension_cond": None if source is None else source.latent}
 
     def apply_controls(self, values):
         self.controls = dict(values)
@@ -429,7 +433,7 @@ def test_full_lifecycle_install_decorate_apply_status_close():
     assert selected.extension.installed_with == ("MODEL", {"k": 1})
 
     bundle = {"cross_attn_cond": 1}
-    decorated = runtime.decorate_conditioning(bundle, "LATENT")
+    decorated = runtime.decorate_conditioning(bundle, SourceView(latent="LATENT"))
     assert decorated["extension_cond"] == "LATENT"
     # Fresh mapping: the input may already be referenced by in-flight work.
     assert decorated is not bundle
@@ -586,3 +590,45 @@ def test_default_runtime_hooks_are_neutral():
     assert runtime.metrics() == {}
     runtime.apply_controls({})
     runtime.close()
+
+
+def test_source_view_fields_are_all_optional():
+    # A session may have no source at all, or a source whose waveform
+    # DEMON never held. Neither is an error, and an extension that reads
+    # a field it did not get must see None rather than an AttributeError.
+    empty = SourceView()
+    assert empty.latent is None
+    assert empty.waveform is None
+    assert empty.sample_rate is None
+
+    latent_only = SourceView(latent="L")
+    assert latent_only.latent == "L"
+    assert latent_only.waveform is None
+
+
+def test_source_view_carries_pre_encode_audio_alongside_the_latent():
+    view = SourceView(latent="L", waveform="W", sample_rate=44100)
+    assert (view.latent, view.waveform, view.sample_rate) == ("L", "W", 44100)
+
+
+def test_decorate_conditioning_helper_forwards_the_source_view():
+    seen = []
+
+    class _Runtime(ModelExtensionRuntime):
+        def decorate_conditioning(self, bundle, source=None):
+            seen.append(source)
+            return {**bundle, "x": 1}
+
+    view = SourceView(latent="L", waveform="W", sample_rate=48000)
+    out = decorate_conditioning(_Runtime(), {"a": 1}, view)
+    assert seen == [view]
+    assert out == {"a": 1, "x": 1}
+
+
+def test_decorate_conditioning_helper_treats_none_as_no_change():
+    class _Silent(ModelExtensionRuntime):
+        def decorate_conditioning(self, bundle, source=None):
+            return None
+
+    bundle = {"a": 1}
+    assert decorate_conditioning(_Silent(), bundle, SourceView()) is bundle

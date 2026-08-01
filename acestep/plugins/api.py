@@ -22,7 +22,12 @@ from acestep.plugins.model_extensions import (
 
 #: Shape version of the plugin API. A plugin declares the version it was
 #: built against; DEMON serves exactly one.
-PLUGIN_API_VERSION = 1
+#:
+#: 2 — ``decorate_conditioning`` receives a :class:`SourceView` instead of
+#:     the source latent alone. Breaking: a version-1 runtime's hook would
+#:     bind the view where it expected a latent, so the mismatch is
+#:     refused at load rather than surfacing as wrong conditioning.
+PLUGIN_API_VERSION = 2
 
 _PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _CAPABILITY_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
