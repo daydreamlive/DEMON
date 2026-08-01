@@ -53,6 +53,7 @@ plan Phase 5).
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections import deque
@@ -84,6 +85,34 @@ SA3_LATENT_RATE_HZ = 44100.0 / 4096.0
 MAX_FEEDBACK_DEPTH = int(
     next(s for s in registry_knob_specs(False) if s.name == "feedback_depth").max_val
 )
+
+# Operator override for the pipeline's submit queue cap (see the
+# ``queue_cap`` ctor arg). Env-var rather than a SessionConfig field
+# because this is a measurement dial for the Phase 0 queue-policy
+# baseline, not a client-facing session control — the wire contract and
+# its generated TS types stay untouched until the A/B says which policy
+# SA3 should ship.
+SA3_QUEUE_CAP_ENV = "DEMON_SA3_QUEUE_CAP"
+
+
+def _env_queue_cap() -> Optional[int]:
+    """``DEMON_SA3_QUEUE_CAP`` as an int, or None when unset/invalid.
+
+    Unset (and unparseable, which must never silently re-tune a live
+    session) means None: the pipeline keeps its historical cap of
+    ``depth``, which is the behavior every SA3 session has shipped with.
+    """
+    raw = (os.environ.get(SA3_QUEUE_CAP_ENV) or "").strip()
+    if not raw:
+        return None
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning(
+            "sa3_queue_cap_ignored env={} value={!r} reason=not_an_int",
+            SA3_QUEUE_CAP_ENV, raw,
+        )
+        return None
 
 
 def sa3_knob_specs() -> list:
@@ -152,6 +181,27 @@ class SA3Backend(DiffusionBackend):
         source_latent_bct: Optional[torch.Tensor] = None,
         steps: int = 8,
         depth: int = 4,
+        # Max queued SlotRequests before the oldest is dropped
+        # (``StreamPipeline(queue_cap=...)``). ``None`` — the default —
+        # keeps the pipeline's historical cap of ``depth``, i.e. exactly
+        # the behavior every SA3 session has shipped with.
+        #
+        # ``StreamPipeline.submit()`` documents ``queue_cap=1`` as the
+        # intended policy for callers that submit every tick, which
+        # ``_generate`` does: only the freshest request is worth running,
+        # and each extra queue position costs ~steps/depth ticks of
+        # staleness on per-slot control (denoise, seed, and the
+        # conditioning bundle a prompt swap publishes). ACE's
+        # ``StreamDenoise`` node already passes 1; SA3 has not, so a
+        # knob move can sit behind up to ``depth - 1`` stale requests.
+        # Flipping the default is a live behavior change to the shipped
+        # product, so it stays opt-in until measured: the Phase 0
+        # harness (``scripts/experiments/sweep_characterization/``) A/Bs
+        # {current default, 1} against identical control trajectories.
+        #
+        # Session-level override without a wire-contract change:
+        # ``DEMON_SA3_QUEUE_CAP`` (see :func:`_env_queue_cap`).
+        queue_cap: Optional[int] = None,
         default_seed: int = 1528,
         vae_window_s: float = 3.0,
         # SA3 checkpoints are ``diffusion_objective: rf_denoiser`` —
@@ -200,6 +250,12 @@ class SA3Backend(DiffusionBackend):
         self.state = state
         self._steps = int(steps)
         self._depth = int(depth)
+        # None = the pipeline's historical cap (= depth). An explicit
+        # kwarg wins over the env override so a caller (or a test) that
+        # states a policy is never re-tuned by the operator's shell.
+        self._queue_cap = (
+            int(queue_cap) if queue_cap is not None else _env_queue_cap()
+        )
         self._default_seed = int(default_seed)
         self.vae_window = float(vae_window_s)
         # "pingpong"/"sde" (rf_denoiser-native, deterministic via seeded
@@ -383,6 +439,9 @@ class SA3Backend(DiffusionBackend):
         )
         return StreamPipeline(
             None, config, pipeline_depth=self._depth, adapter=self.adapter,
+            # None keeps StreamPipeline's own default (cap = depth), so
+            # an unconfigured session is byte-for-byte the old behavior.
+            queue_cap=self._queue_cap,
         )
 
     # ---- contract ------------------------------------------------------------

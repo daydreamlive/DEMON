@@ -447,3 +447,53 @@ def test_decode_seed_follows_the_emerged_request_seed():
     b.produce(_knobs(b, seed=1234), CTX, "reuse")
     b.render_window(0.0)
     assert b.codec.decode_seeds[-1] == 99
+
+
+def _req(seed: int):
+    from acestep.engine.stream import SlotRequest
+
+    return SlotRequest(seed=seed, latent_frames=T, aux_cond={})
+
+
+def test_queue_cap_defaults_to_the_pipelines_historical_cap(monkeypatch):
+    """Unconfigured sessions must behave exactly as before: no ctor
+    kwarg and no env override means the pipeline keeps its own default
+    (cap = depth), not the submit-every-tick policy."""
+    monkeypatch.delenv("DEMON_SA3_QUEUE_CAP", raising=False)
+    b = _backend()
+
+    assert b._queue_cap is None
+    assert b.pipeline._queue_cap is None
+    # ... and that None really still means "cap = depth" at the submit site.
+    for seed in (1, 2, 3, 4, 5):
+        b.pipeline.submit(_req(seed))
+    assert [r.seed for r in b.pipeline._queue] == [4, 5]  # depth=2
+
+
+def test_queue_cap_kwarg_reaches_the_pipeline_and_survives_a_rebuild():
+    """queue_cap=1 is StreamPipeline.submit's documented policy for
+    callers that submit every tick (which _generate does). It must reach
+    the live pipeline AND the one a steps_override change rebuilds."""
+    b = _backend(queue_cap=1)
+
+    assert b.pipeline._queue_cap == 1
+    for seed in (1, 2, 3, 4):
+        b.pipeline.submit(_req(seed))
+    assert [r.seed for r in b.pipeline._queue] == [4]
+
+    # steps_override rebuilds the pipeline (_build_pipeline); the policy
+    # must not be lost with the old ring buffer.
+    b.produce(_knobs(b, steps_override=b._steps + 1), CTX, "generate")
+    assert b.pipeline._queue_cap == 1
+
+
+def test_queue_cap_env_override_and_kwarg_precedence(monkeypatch):
+    """The env dial is how the Phase 0 harness A/Bs the policy against a
+    live server; an explicit kwarg still wins over the operator's shell,
+    and an unparseable value is ignored rather than guessed at."""
+    monkeypatch.setenv("DEMON_SA3_QUEUE_CAP", "1")
+    assert _backend()._queue_cap == 1
+    assert _backend(queue_cap=3)._queue_cap == 3
+
+    monkeypatch.setenv("DEMON_SA3_QUEUE_CAP", "not-an-int")
+    assert _backend()._queue_cap is None
