@@ -106,6 +106,36 @@ class ModelDescriptor:
 
 
 @dataclass(frozen=True)
+class SourceView:
+    """The session's current source, in every form the core already holds.
+
+    ``latent`` is the encoded anchor in the model's own native layout —
+    for the sa3 family, ``[1, C, T]``. It is what most conditioning
+    extensions want, and it is what DEMON's own denoising path uses.
+
+    ``waveform`` and ``sample_rate`` are the audio that latent was encoded
+    FROM, carried because the core already holds it. An extension whose
+    condition derives from the audio itself rather than from its latent
+    cannot recover the audio here without a decode round-trip that costs
+    real time and cannot return what the encoder discarded. Handing over a
+    tensor the core is keeping anyway is strictly cheaper than making
+    every such extension pay for that.
+
+    Every field is optional and any of them may be ``None``: a session
+    created without a source has no latent, and a source re-anchored from
+    a latent DEMON did not encode itself has no waveform. Check before you
+    use; do not assume the shape of a session you did not create.
+
+    Treat the tensors as READ-ONLY. They are the live session anchor
+    itself, not copies, and the streaming runner reads them concurrently.
+    """
+
+    latent: Any = None
+    waveform: Any = None
+    sample_rate: int | None = None
+
+
+@dataclass(frozen=True)
 class ExtensionContext:
     """What an extension receives at construction time."""
 
@@ -130,9 +160,14 @@ class ModelExtensionRuntime:
         return BackendVerdict(True)
 
     def decorate_conditioning(
-        self, bundle: Mapping[str, Any], source_latent_bct: Any = None,
+        self, bundle: Mapping[str, Any], source: "SourceView | None" = None,
     ) -> Mapping[str, Any]:
         """Return conditioning for the extension's own use.
+
+        ``source`` is a :class:`SourceView` over the session's current
+        anchor, or ``None`` when the session has no source at all. Its
+        fields are individually optional — read
+        :class:`SourceView` before depending on any of them.
 
         MUST return a fresh mapping rather than mutating ``bundle``: the
         bundle passed in may already be referenced by in-flight requests,
@@ -256,7 +291,7 @@ class ModelExtensionSpec:
     description: str = ""
 
 
-def decorate_conditioning(runtime, bundle, source_latent_bct=None):
+def decorate_conditioning(runtime, bundle, source=None):
     """Call the runtime's conditioning hook, normalizing a ``None`` return.
 
     The one contract detail a subclass can still get wrong: returning
@@ -264,5 +299,5 @@ def decorate_conditioning(runtime, bundle, source_latent_bct=None):
     not as "the conditioning is now None". Every other hook has a total
     default on the base class, so the core calls those directly.
     """
-    decorated = runtime.decorate_conditioning(bundle, source_latent_bct)
+    decorated = runtime.decorate_conditioning(bundle, source)
     return bundle if decorated is None else decorated

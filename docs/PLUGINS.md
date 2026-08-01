@@ -61,7 +61,7 @@ lifetime of the process.
 from acestep.plugins import ConfigField, ModelExtensionSpec
 from acestep.streaming.knobs import KnobSpec
 
-PLUGIN_API = 1
+PLUGIN_API = 2
 
 def register(registry):
     registry.add_model_extension(
@@ -173,6 +173,55 @@ tick with no synchronization needed. Do not block.
 source swap). If it and `apply_controls` touch the same state, that is the
 one race DEMON does not serialize for you, and you own it. Keeping controls
 to plain scalar rebinds avoids the question entirely.
+
+### Conditioning on the session source
+
+`decorate_conditioning(bundle, source)` receives a `SourceView`, or `None`
+when the session has no source at all:
+
+```python
+from acestep.plugins import ModelExtensionRuntime
+
+class MyRuntime(ModelExtensionRuntime):
+    def decorate_conditioning(self, bundle, source=None):
+        if source is None or source.waveform is None:
+            return bundle
+        cond = my_analysis(source.waveform, source.sample_rate)
+        return {**bundle, "my_cond": cond}
+```
+
+| Field | What it is |
+|---|---|
+| `latent` | The encoded source anchor in the model's own native layout (`[1, C, T]` for `sa3`). |
+| `waveform` | The audio that latent was encoded from, or `None`. |
+| `sample_rate` | Sample rate of `waveform`, or `None`. |
+
+**Every field is optional.** A session created without a source has no
+latent; a source re-anchored from a latent DEMON did not encode itself has
+no waveform. Check before you use, and do not assume the shape of a session
+you did not create.
+
+The waveform is carried because DEMON already holds it. An extension whose
+condition derives from the audio rather than from its latent would otherwise
+have to decode the latent back to audio — real time spent per swap, to
+recover something the encoder had already discarded.
+
+**Treat both tensors as read-only.** They are the live session anchor
+itself, not copies, and the streaming runner reads them concurrently.
+
+**Size your condition from the conditioning bundle, never from a constant.**
+The latent window's length is a property of the session (its duration, the
+model's downsampling ratio, and the upstream alignment rules), and it is not
+a round number. Read it off the tensors you are handed — `source.latent`'s
+last axis, or the bundle's own geometry — and build to that. A hardcoded
+length is correct for exactly one session configuration and silently
+misaligned for every other.
+
+Note also that the generated window is slightly longer than the requested
+duration: upstream Stable Audio 3 adds a fixed span of duration **headroom**
+(`duration_padding_sec`), which the padding mask marks as valid space rather
+than masking off. It is a small fraction of a full-length window and a
+larger one of a short session.
 
 DEMON deliberately does not hold its control lock across your code: that
 lock exists to order the command thread against the tick loop, and putting

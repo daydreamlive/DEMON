@@ -247,6 +247,12 @@ class SA3Backend(DiffusionBackend):
         # knob-driven strength changes route through the pending stash
         # (D6b.5) so the refit stall is always announced.
         refit_mirror=None,
+        # ``(sample_rate, waveform)`` for the audio ``source_latent_bct``
+        # was encoded from. Retained ONLY so an extension's conditioning
+        # hook can see it (``acestep.plugins.SourceView``); nothing on the
+        # denoising path reads it. None when the caller did not supply it,
+        # which is a supported shape rather than an error.
+        source_audio=None,
         # Startup-selected model extension (a SelectedExtension) and its
         # installed runtime. Both None on stock sessions, which must
         # behave exactly as if the plugin system did not exist.
@@ -261,8 +267,19 @@ class SA3Backend(DiffusionBackend):
                 model_extension.knob_specs if model_extension is not None else ()
             )
         )
-        cond = self._decorate(cond, source_latent_bct)
-        cond_b = self._decorate(cond_b, source_latent_bct)
+        # Source anchor for audio-to-audio: engine layout [1, T, 256].
+        # Assigned BEFORE the decorate calls below, which read it back
+        # out through _source_view().
+        self._source_latent_btc = (
+            source_latent_bct.movedim(1, 2).contiguous()
+            if source_latent_bct is not None else None
+        )
+        self._source_sample_rate, self._source_waveform = (
+            (int(source_audio[0]), source_audio[1])
+            if source_audio is not None else (None, None)
+        )
+        cond = self._decorate(cond, self._source_view())
+        cond_b = self._decorate(cond_b, self._source_view())
         self._cond = cond
         self._cond_b = cond_b if cond_b is not None else cond
         # Live A↔B crossfade value and the bundle the next submit
@@ -293,11 +310,8 @@ class SA3Backend(DiffusionBackend):
         # renoise) | "ode" (euler; off-objective for SA3, debug only)
         self._sampler = sampler
 
-        # Source anchor for audio-to-audio: engine layout [1, T, 256].
-        self._source_latent_btc = (
-            source_latent_bct.movedim(1, 2).contiguous()
-            if source_latent_bct is not None else None
-        )
+        # (The source anchor is assigned near the top of __init__, ahead
+        # of the conditioning decoration that reads it.)
 
         # Emerged-generation observability. SA3 knob/prompt changes ride
         # the NEXT SlotRequest only (no shared-curve writes onto
@@ -527,6 +541,10 @@ class SA3Backend(DiffusionBackend):
             knob_state=knob_state,
             state=state,
             source_latent_bct=source_latent,
+            # Carried for the extension conditioning hook only; see the
+            # ctor arg. ``source_audio`` is already the ``(sample_rate,
+            # waveform)`` pair ``context.encode_source`` consumes.
+            source_audio=source_audio,
             prompt_rebuilder=_prompt_rebuilder,
             prompt_tags=prompt,
             source_encoder=_source_encoder,
@@ -541,17 +559,31 @@ class SA3Backend(DiffusionBackend):
             **kwargs,
         )
 
-    def _source_latent_bct(self):
-        """The source anchor in SA3-native ``[1, 256, T]`` layout, or None.
+    def _source_view(self, latent_bct=None, audio=None):
+        """The session source as an extension sees it, or None if absent.
 
-        Stored internally as engine-layout ``[1, T, 256]``; extensions are
-        handed the native layout their model actually consumes.
+        The latent is handed over in SA3-native ``[1, 256, T]``: it is
+        stored engine-layout ``[1, T, 256]``, and extensions get the
+        native layout their model actually consumes.
+
+        ``latent_bct`` / ``audio`` override the stored anchor, for a swap
+        that has already computed the new one but not yet published it.
         """
-        if self._source_latent_btc is None:
+        if latent_bct is None and self._source_latent_btc is not None:
+            latent_bct = self._source_latent_btc.movedim(1, 2)
+        sample_rate, waveform = (
+            (int(audio[0]), audio[1]) if audio is not None
+            else (self._source_sample_rate, self._source_waveform)
+        )
+        if latent_bct is None and waveform is None:
             return None
-        return self._source_latent_btc.movedim(1, 2)
+        from acestep.plugins.model_extensions import SourceView
 
-    def _decorate(self, cond, source_latent_bct):
+        return SourceView(
+            latent=latent_bct, waveform=waveform, sample_rate=sample_rate,
+        )
+
+    def _decorate(self, cond, source):
         """Apply the extension's conditioning contribution to a capture.
 
         Always builds a FRESH bundle: an in-flight SlotRequest holds a
@@ -565,7 +597,7 @@ class SA3Backend(DiffusionBackend):
         from acestep.plugins.model_extensions import decorate_conditioning
 
         decorated = decorate_conditioning(
-            self._extension_runtime, dict(cond.cond_bundle), source_latent_bct,
+            self._extension_runtime, dict(cond.cond_bundle), source,
         )
         return replace(cond, cond_bundle=dict(decorated))
 
@@ -892,7 +924,7 @@ class SA3Backend(DiffusionBackend):
         # decoration is NOT conditioner execution and stays outside it.
         with self._conditioner_lock:
             cond, sched_factory = self._prompt_rebuilder(tags, self._steps)
-        cond = self._decorate(cond, self._source_latent_bct())
+        cond = self._decorate(cond, self._source_view())
         rebuild_ms = (time.perf_counter() - t0) * 1000
         if int(cond.latent_frames) != int(self._cond.latent_frames):
             # Duration is fixed for the session lifetime, so the latent
@@ -906,7 +938,7 @@ class SA3Backend(DiffusionBackend):
         if tags_b and tags_b != tags:
             with self._conditioner_lock:
                 cond_b, _ = self._prompt_rebuilder(tags_b, self._steps)
-            cond_b = self._decorate(cond_b, self._source_latent_bct())
+            cond_b = self._decorate(cond_b, self._source_view())
             if int(cond_b.latent_frames) != int(cond.latent_frames):
                 raise ValueError(
                     f"sa3 prompt-B swap changed latent_frames "
@@ -979,17 +1011,26 @@ class SA3Backend(DiffusionBackend):
         # calling this hook.
         with self._control_lock:
             self._source_latent_btc = latent_btc
+            # The waveform is retained alongside the latent so an
+            # extension's next re-decoration sees a source view whose two
+            # halves describe the same audio. Dropping it here would leave
+            # the previous upload's waveform paired with the new anchor.
+            self._source_waveform = waveform
+            self._source_sample_rate = int(sample_rate)
             self._latent_history.clear()
             if self._extension_runtime is not None:
                 # An extension may condition on the source, so re-decorate
                 # against the new anchor. Rebuilding both captures (rather
                 # than editing their bundles) is what keeps in-flight slots
                 # finishing on the conditioning they were submitted with.
+                view = self._source_view(
+                    latent_bct=latent_bct, audio=(int(sample_rate), waveform),
+                )
                 old_a, old_b = self._cond, self._cond_b
-                self._cond = self._decorate(old_a, latent_bct)
+                self._cond = self._decorate(old_a, view)
                 self._cond_b = (
                     self._cond if old_b is old_a
-                    else self._decorate(old_b, latent_bct)
+                    else self._decorate(old_b, view)
                 )
                 self._active_bundle = self._blend_bundles(self._blend)
                 self._cond_epoch += 1

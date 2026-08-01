@@ -422,6 +422,12 @@ def create_sa3_session(
                 "cond": cond,
                 "cond_b": cond_b,
                 "source_latent_bct": source_latent,
+                # The same pair the encode above consumed. The backend
+                # keeps it only for an extension's conditioning hook; it
+                # is the truncated, stereo-normalized waveform, i.e. the
+                # audio the anchor actually represents rather than the
+                # raw upload.
+                "source_audio": (SAMPLE_RATE, waveform),
                 "duration_s": duration_s,
                 "dit_backend": dit_backend,
                 "codec_backend": codec_backend,
