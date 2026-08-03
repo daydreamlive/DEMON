@@ -87,6 +87,7 @@ from acestep.engine.sa3_trt import (
     SAMPLES_PER_LATENT,
     T5_TOKENS,
     _register_same_plugin,
+    same_l_plugin_build_tag,
     trt_engines_dir,
 )
 
@@ -218,10 +219,11 @@ class SameLWindowBuildConfig:
     max_latents: int
     workspace_gb: float = 16.0
     onnx_files: list[str] = field(default_factory=lambda: list(SAME_L_ONNX_FILES))
+    plugin_build_tag: str = field(default_factory=same_l_plugin_build_tag)
 
     def engine_name(self) -> str:
         return (
-            f"same_l_decode_window_t{self.min_latents}"
+            f"same_l_decode_window_{self.plugin_build_tag}_t{self.min_latents}"
             f"_{self.opt_latents}_{self.max_latents}"
         )
 
@@ -292,6 +294,7 @@ def _build_strongly_typed_engine(
     workspace_gb: float,
     profile_shapes: dict[str, tuple[tuple, tuple, tuple]],
     refit: bool = False,
+    python_plugin_preference: str | None = None,
 ) -> None:
     """Parse + build one STRONGLY_TYPED engine and serialize it to disk.
 
@@ -304,9 +307,16 @@ def _build_strongly_typed_engine(
 
     trt_logger = trt.Logger(trt.Logger.WARNING)
     builder = trt.Builder(trt_logger)
-    network = builder.create_network(
-        1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
-    )
+    network_flags = 1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
+    if python_plugin_preference == "aot":
+        network_flags |= 1 << int(
+            trt.NetworkDefinitionCreationFlag.PREFER_AOT_PYTHON_PLUGINS
+        )
+    elif python_plugin_preference == "jit":
+        network_flags |= 1 << int(
+            trt.NetworkDefinitionCreationFlag.PREFER_JIT_PYTHON_PLUGINS
+        )
+    network = builder.create_network(network_flags)
     parser = trt.OnnxParser(network, trt_logger)
     if not parser.parse_from_file(onnx_path):
         for i in range(parser.num_errors):
@@ -494,6 +504,9 @@ def _build_same_l_window_engine(
         profile_shapes={
             "latent": ((1, IO_CHANNELS, lo), (1, IO_CHANNELS, opt), (1, IO_CHANNELS, hi)),
         },
+        python_plugin_preference=(
+            "jit" if config.plugin_build_tag.startswith("jit_") else "aot"
+        ),
     )
     _write_metadata(engine_path=engine_path, expected=expected, env=env)
     elapsed = time.time() - t0

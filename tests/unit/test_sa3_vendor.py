@@ -148,6 +148,25 @@ def test_ensure_vendor_updates_clean_existing_tree(monkeypatch, tmp_path):
     ) in calls
 
 
+def test_ensure_vendor_accepts_git_worktree_override(monkeypatch, tmp_path):
+    vendor = tmp_path / "stable-audio-3-worktree"
+    vendor.mkdir()
+    (vendor / ".git").write_text("gitdir: ../repo/.git/worktrees/vendor\n")
+    monkeypatch.setenv(sa3_helpers.SA3_VENDOR_ENV, str(vendor))
+
+    def fake_git(args: list[str], cwd: Path | None = None) -> str:
+        assert cwd == vendor
+        if args == ["status", "--porcelain"]:
+            return ""
+        if args == ["rev-parse", "HEAD"]:
+            return sa3_helpers.SA3_VENDOR_SHA
+        raise AssertionError(f"unexpected git call: {args}")
+
+    monkeypatch.setattr(sa3_helpers, "_git", fake_git)
+
+    assert sa3_helpers.ensure_sa3_vendor() == vendor
+
+
 def test_ensure_vendor_refuses_dirty_wrong_commit(monkeypatch, tmp_path):
     monkeypatch.delenv(sa3_helpers.SA3_VENDOR_ENV, raising=False)
     monkeypatch.setenv("ACESTEP_MODELS_DIR", str(tmp_path))

@@ -48,6 +48,7 @@ TRT (engine discovery then simply reports nothing).
 from __future__ import annotations
 
 import math
+import os
 import re
 import sys
 import threading
@@ -58,7 +59,7 @@ import torch
 
 from acestep import paths
 from acestep.engine.obs import logger
-from acestep.engine.sa3_helpers import sa3_vendor_dir
+from acestep.engine.sa3_helpers import SA3_SAME_L_PLUGIN_REVISION, sa3_vendor_dir
 
 IO_CHANNELS = 256
 T5_TOKENS = 256
@@ -95,7 +96,10 @@ _DIT_FP8_DIR_RE = re.compile(
 _DIT_REFIT_DIR_RE = re.compile(
     r"^(?P<prefix>.+_dit)_refit_l(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$"
 )
-_SAME_L_DIR_RE = re.compile(r"^same_l_decode_window_t(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$")
+_SAME_L_DIR_RE = re.compile(
+    r"^same_l_decode_window_(?P<tag>[a-z0-9_]+)_t"
+    r"(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$"
+)
 
 # Deserialized-engine process cache. Engines are immutable post-load and
 # support multiple execution contexts, so sharing one deserialization
@@ -106,6 +110,23 @@ _SAME_L_DIR_RE = re.compile(r"^same_l_decode_window_t(?P<lo>\d+)_(?P<opt>\d+)_(?
 _ENGINE_CACHE: dict = {}
 _ENGINE_CACHE_LOCK = threading.Lock()
 _SAME_PLUGIN_REGISTERED = False
+
+
+def same_l_plugin_build_tag() -> str:
+    """Identity of the plugin implementation compiled into a SAME-L engine.
+
+    The upstream plugin is part of the serialized TensorRT engine, so changing
+    the vendored source revision or its selected AOT backend requires a new
+    engine even when the ONNX graph is unchanged.
+    """
+    requested_plugin = os.environ.get("SA3_SWA_PLUGIN", "aot").strip().lower()
+    plugin = "jit" if requested_plugin == "jit" else "aot"
+    if plugin == "jit":
+        implementation = "jit"
+    else:
+        requested_backend = os.environ.get("SA3_SWA_AOT", "mma").strip().lower()
+        implementation = "mma" if requested_backend == "mma" else "ptx"
+    return f"{plugin}_{implementation}_v{SA3_SAME_L_PLUGIN_REVISION[:12]}"
 
 
 def trt_engines_dir() -> Path:
@@ -286,9 +307,10 @@ def find_same_l_window_engine() -> Optional[tuple]:
     base = trt_engines_dir()
     if not base.is_dir():
         return None
+    expected_tag = same_l_plugin_build_tag()
     for sub in base.iterdir():
         m = _SAME_L_DIR_RE.match(sub.name)
-        if not m:
+        if not m or m.group("tag") != expected_tag:
             continue
         f = sub / f"{sub.name}.trt"
         if f.is_file():
