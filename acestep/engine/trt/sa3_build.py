@@ -13,7 +13,7 @@ compile Stability's OFFICIAL ONNX exports from
 ``stabilityai/stable-audio-3-optimized``, fetched via ``huggingface_hub``
 on first use.
 
-* **sa3-m DiT**: the pre-surgered FP16-mixed graph (``dit_fp16mixed.onnx``,
+* **sa3-m DiT**: the pre-surgered FP16-mixed graph (``dit_fp16.onnx``,
   FP16 trunk with FP32 islands around RMSNorm, attention softmax, and
   RoPE) compiled as a STRONGLY_TYPED network with no builder precision
   flags. This is upstream's canonical recipe. The BF16 recipe
@@ -26,8 +26,9 @@ on first use.
 * **sa3-m DiT (FP8, opt-in)**: ``dit_fp8.onnx`` (ModelOpt FP8 GEMM trunk on
   top of the fp16mixed graph) compiled to ``sa3_m_dit_fp8_l*`` engines,
   ~1.8x/step at compounded-euler cos ~0.976 vs fp16mixed. Built only with
-  ``--fp8`` (additive to the fp16mixed DiT). The ONNX is not yet on HF; pass
-  ``--fp8-onnx`` a producer-built graph until it is.
+  ``--fp8`` (additive to the fp16mixed DiT). The HF pair is not fetchable
+  yet (see :data:`DIT_FP8_ONNX_FILES`); pass ``--fp8-onnx`` a
+  producer-built graph until it is.
   :func:`acestep.engine.sa3_trt.find_dit_engine` prefers an fp8 engine when one
   covers the window, else fp16mixed.
 * **SAME-L window decoder**: ``dec_dynamic_triton_swa.onnx``,
@@ -92,14 +93,27 @@ from acestep.engine.sa3_trt import (
 HF_REPO = "stabilityai/stable-audio-3-optimized"
 # The medium DiT ONNX exceeds 2 GB, so the weights travel in an
 # external-data sidecar next to the proto.
+# Upstream renamed these `dit_fp16mixed.*` -> `dit_fp16.*` on 2026-08-02
+# (HF commits 3f29675c "Rename fp16mixed->fp16 ... (copies; deletes follow
+# after code merge)" then 48e34e2d, which deleted the old names 20 min
+# later — so every SA3 bake since 404s on the old path). The weights
+# sidecar is byte-identical across the rename; only the proto changed, and
+# only where it names its sidecar. That still moves its sha256, which the
+# engine metadata hashes, so the first build after this lands rebuilds the
+# two DiT engines once (~5 min) for a functionally identical result. The
+# SAME-L decoder ONNX is untouched and still skips.
 DIT_ONNX_FILES = (
-    "onnx/sa3-m/dit_fp16mixed.onnx",
-    "onnx/sa3-m/dit_fp16mixed.onnx.data",
+    "onnx/sa3-m/dit_fp16.onnx",
+    "onnx/sa3-m/dit_fp16.onnx.data",
 )
-# FP8-trunk DiT (opt-in, ~1.8x/step). Not yet published to HF, so the fetch
-# 404s until the upstream artifact upload; build it locally with the vendored
-# producer (optimized/tensorRT/build: make_calib.py then build_dit_fp8.py) and
-# pass --fp8-onnx. acestep.engine.sa3_trt does the runtime selection.
+# FP8-trunk DiT (opt-in, ~1.8x/step). Upstream published `dit_fp8.onnx` in
+# the 2026-08-02 sweep, but its sidecar landed as `dit_fp8lin.onnx.data`
+# (sa3-sm-* got matching `dit_fp8.onnx.data` names) — so this pair still
+# 404s on the second entry and --fp8 still needs a producer-built graph via
+# --fp8-onnx (vendored producer, optimized/tensorRT/build: make_calib.py
+# then build_dit_fp8.py). Switching the sidecar to the `fp8lin` name is a
+# one-liner once someone builds and parity-checks an engine from it.
+# acestep.engine.sa3_trt does the runtime selection.
 DIT_FP8_ONNX_FILES = (
     "onnx/sa3-m/dit_fp8.onnx",
     "onnx/sa3-m/dit_fp8.onnx.data",
@@ -202,6 +216,48 @@ def _fetch_onnx(rel_paths: list[str] | tuple[str, ...]) -> str:
     return local_paths[0]
 
 
+def _engine_survives_missing_onnx(
+    *,
+    engine_path: str,
+    component: str,
+    config,
+    env: dict,
+    force_rebuild: bool,
+) -> str | None:
+    """Reason the engine on disk stands in for an unfetchable ONNX, else None.
+
+    The ONNX is fetched on every run, including runs with nothing to
+    build, purely to hash it into the freshness check. That makes an
+    upstream artifact rename fatal to a bake that had zero engines to
+    build — which is exactly what Stability's 2026-08-02
+    ``dit_fp16mixed`` -> ``dit_fp16`` rename did to bake-warm #87. An
+    engine already built and current in every other respect doesn't need
+    the graph it came from, so a failed fetch is a reason to keep it, not
+    to fail the run.
+
+    Deliberately narrow: TRT version, compute capability and build config
+    are still compared, so a genuinely stale engine still demands the
+    ONNX and still surfaces the fetch error. What this cannot see is an
+    upstream *re-export* published under a new name — the engine would be
+    silently kept — hence the WARNING the caller logs.
+    """
+    if force_rebuild or not os.path.exists(engine_path):
+        return None
+    expected = _expected_metadata(
+        component=component, onnx_path=None, config=config, env=env,
+    )
+    matches, reason = _metadata_matches(
+        engine_path, expected, ignore=("onnx_sha256",),
+    )
+    if not matches:
+        return None
+    size_mb = os.path.getsize(engine_path) / 1e6
+    return (
+        f"{os.path.basename(engine_path)} ({size_mb:.0f} MB, {reason} "
+        "apart from the graph hash)"
+    )
+
+
 def _build_strongly_typed_engine(
     *,
     onnx_path: str,
@@ -280,6 +336,18 @@ def _build_dit_engine(
         try:
             onnx_path = _fetch_onnx(config.onnx_files)
         except Exception as exc:
+            kept = _engine_survives_missing_onnx(
+                engine_path=engine_path, component=component, config=config,
+                env=env, force_rebuild=force_rebuild,
+            )
+            if kept:
+                logger.warning(
+                    "ONNX fetch failed ({}) but nothing needed building — "
+                    "keeping {}. If upstream re-exported the graph under a "
+                    "new name, update the *_ONNX_FILES paths and rebuild.",
+                    exc, kept,
+                )
+                return (label, engine_path, 0.0, "SKIPPED")
             if precision_label == "fp8":
                 raise RuntimeError(
                     f"dit_fp8.onnx is not on HF ({HF_REPO}) yet. Build it with "
@@ -345,7 +413,22 @@ def _build_same_l_window_engine(
         f"_{config.opt_latents}_{config.max_latents}"
     )
 
-    onnx_path = _fetch_onnx(config.onnx_files)
+    try:
+        onnx_path = _fetch_onnx(config.onnx_files)
+    except Exception as exc:
+        kept = _engine_survives_missing_onnx(
+            engine_path=engine_path, component="same_l_decode_window",
+            config=config, env=env, force_rebuild=force_rebuild,
+        )
+        if not kept:
+            raise
+        logger.warning(
+            "ONNX fetch failed ({}) but nothing needed building — keeping "
+            "{}. If upstream re-exported the graph under a new name, update "
+            "the *_ONNX_FILES paths and rebuild.",
+            exc, kept,
+        )
+        return (label, engine_path, 0.0, "SKIPPED")
     expected = _expected_metadata(
         component="same_l_decode_window", onnx_path=onnx_path, config=config, env=env,
     )

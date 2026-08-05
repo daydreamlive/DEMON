@@ -64,21 +64,33 @@ def metadata_path(engine_path: str | os.PathLike[str]) -> Path:
 def expected_metadata(
     *,
     component: str,
-    onnx_path: str | os.PathLike[str],
+    onnx_path: str | os.PathLike[str] | None,
     config,
     env: dict,
 ) -> dict:
+    """Metadata an engine built right now, from ``onnx_path``, would carry.
+
+    ``onnx_path`` may be ``None`` when the graph is not obtainable — the
+    ONNX keys are then omitted, and the result is only good for asking
+    :func:`metadata_matches` whether an engine already on disk is current
+    in every respect *except* the graph hash (pass
+    ``ignore=("onnx_sha256",)``). Never hand a hash-less dict to
+    :func:`write_metadata`: a sidecar without ``onnx_sha256`` can't be
+    invalidated by a future re-export.
+    """
     gpu = env.get("active_gpu", {})
-    return {
+    meta = {
         "schema_version": _ENGINE_METADATA_SCHEMA,
         "component": component,
         "tensorrt_version": env["packages"]["tensorrt"],
         "gpu_compute_capability": gpu.get("compute_capability"),
         "gpu_name": gpu.get("name"),
         "config": _config_dict(config),
-        "onnx_path": str(Path(onnx_path).resolve()),
-        "onnx_sha256": _sha256_file(onnx_path),
     }
+    if onnx_path is not None:
+        meta["onnx_path"] = str(Path(onnx_path).resolve())
+        meta["onnx_sha256"] = _sha256_file(onnx_path)
+    return meta
 
 
 def write_metadata(
@@ -87,6 +99,11 @@ def write_metadata(
     expected: dict,
     env: dict,
 ) -> None:
+    if "onnx_sha256" not in expected:
+        raise ValueError(
+            "refusing to write an engine sidecar without onnx_sha256 — it "
+            "would never invalidate on an upstream re-export"
+        )
     payload = dict(expected)
     payload["built_at"] = datetime.now(timezone.utc).isoformat()
     payload["environment"] = env
@@ -95,9 +112,21 @@ def write_metadata(
     logger.info("Engine metadata saved to {}", path)
 
 
+_COMPATIBILITY_KEYS = (
+    "schema_version",
+    "component",
+    "tensorrt_version",
+    "gpu_compute_capability",
+    "config",
+    "onnx_sha256",
+)
+
+
 def metadata_matches(
     engine_path: str | os.PathLike[str],
     expected: dict,
+    *,
+    ignore: tuple[str, ...] = (),
 ) -> tuple[bool, str]:
     """Compare on-disk metadata sidecar against ``expected``.
 
@@ -106,6 +135,11 @@ def metadata_matches(
     sidecar is written. Compares the keys that govern engine
     compatibility (TRT version, GPU compute capability, build config,
     ONNX content hash); ignores metadata-only fields like ``built_at``.
+
+    ``ignore`` drops compatibility keys from the comparison. Only one
+    caller needs it — the ONNX-fetch fallback, which asks "is this engine
+    current apart from the graph hash I couldn't compute?" — and it
+    weakens the check, so don't reach for it elsewhere.
     """
     path = metadata_path(engine_path)
     if not path.exists():
@@ -115,14 +149,9 @@ def metadata_matches(
     except Exception as exc:
         return False, f"metadata unreadable: {exc}"
 
-    for key in (
-        "schema_version",
-        "component",
-        "tensorrt_version",
-        "gpu_compute_capability",
-        "config",
-        "onnx_sha256",
-    ):
+    for key in _COMPATIBILITY_KEYS:
+        if key in ignore:
+            continue
         if actual.get(key) != expected.get(key):
             return False, f"metadata mismatch: {key}"
     return True, "metadata match"
