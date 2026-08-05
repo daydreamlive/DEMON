@@ -142,6 +142,22 @@ def loras_dir() -> Path:
     return models_dir() / "loras"
 
 
+def user_loras_dir() -> Path:
+    """Directory for LoRAs fetched onto a running pod at a user's request.
+
+    Deliberately NOT ``loras_dir()``. A pod is handed to whoever the pool
+    allocates it to next, so anything a user fetches has to be separable
+    from the baked catalog — both to wipe it when their session ends, and
+    so a leftover file can never be mistaken for a stock LoRA. The engine
+    only scans ``loras_dir()`` at boot, so nothing here is picked up
+    except by an explicit register.
+
+    Override with ``ACESTEP_USER_LORAS_DIR``.
+    """
+    override = os.environ.get("ACESTEP_USER_LORAS_DIR", "").strip()
+    return Path(override) if override else models_dir() / "user_loras"
+
+
 def melband_roformer_dir() -> Path:
     """Directory containing the Mel-Band RoFormer stem-separation checkpoint."""
     return models_dir() / "MelBandRoFormer"

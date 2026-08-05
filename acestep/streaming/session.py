@@ -630,6 +630,9 @@ class StreamingSession:
         # Event bus: typed events the runner thread and operation
         # methods publish; transport adapters subscribe and serialize.
         self.bus = EventBus()
+        # Ids this session fetched via add_lora. close() wipes exactly
+        # these — never the baked catalog, which it must not touch.
+        self._fetched_loras: set[str] = set()
 
         # Set at the end of close(), after GPU state is released. A
         # preempting connection (ws_adapter's single-active-session
@@ -919,6 +922,30 @@ class StreamingSession:
         finally:
             self.close()
 
+    def _drop_fetched_loras(self) -> None:
+        """Remove every LoRA this session fetched, from the catalog and disk.
+
+        Never raises: this runs on the teardown path, and a session that
+        fails to clean up must still finish closing rather than leaving the
+        engine half-destroyed.
+        """
+        ids = list(getattr(self, "_fetched_loras", ()))
+        if not ids:
+            return
+        from acestep.paths import user_loras_dir
+
+        for lid in ids:
+            try:
+                self.engine_obj.remove_lora(lid)
+            except Exception as exc:
+                logger.warning("user_lora_unregister_failed id={} error={}", lid, exc)
+            try:
+                (user_loras_dir() / f"{lid}.safetensors").unlink(missing_ok=True)
+            except Exception as exc:
+                logger.warning("user_lora_unlink_failed id={} error={}", lid, exc)
+        logger.info("user_loras_dropped count={}", len(ids))
+        self._fetched_loras.clear()
+
     def close(self) -> None:
         """Tear down GPU state even when a session exits before ``run``."""
         # Order matters: stream.close() drops the StreamPipeline's
@@ -926,6 +953,12 @@ class StreamingSession:
         # actually destroys the engine + ModelContext.
         # session.close() ends with gc.collect() + cuda.empty_cache().
         self.state.running = False
+        # Drop anything this session fetched. A pool pod is handed to a
+        # stranger next: without this their catalog would list the previous
+        # user's styles by name, under "Catalog" where they read as stock,
+        # and the weights would load. Files and registrations both, because
+        # either one alone still leaks.
+        self._drop_fetched_loras()
         try:
             self.bus.close()
         except Exception as exc:
@@ -2053,9 +2086,11 @@ class StreamingSession:
         """Worker body for :meth:`add_lora`. Never raises into the thread
         runner — a failed fetch is logged and the client simply never sees
         the id appear."""
-        from acestep.paths import loras_dir
+        from acestep.paths import user_loras_dir
 
-        dest = loras_dir() / f"{lora_id}.safetensors"
+        # Isolated from the baked catalog: this pod goes to someone else
+        # next, and close() wipes exactly what this session fetched.
+        dest = user_loras_dir() / f"{lora_id}.safetensors"
         if dest.exists():
             # Already on disk from an earlier session. Re-register rather
             # than re-download: register_lora is idempotent, and this is
@@ -2063,6 +2098,7 @@ class StreamingSession:
             logger.info("lora_fetch_skipped id={} reason=already_present", lora_id)
             with self.state._lock:
                 self.state.pending_register.append(str(dest))
+                self._fetched_loras.add(lora_id)
             return
         # Download to a temp sibling and rename, so a dropped connection
         # can't leave a truncated .safetensors that the next scan would
@@ -2099,6 +2135,7 @@ class StreamingSession:
             )
             with self.state._lock:
                 self.state.pending_register.append(str(dest))
+                self._fetched_loras.add(lora_id)
         except Exception as e:
             logger.warning("lora_fetch_failed id={} error={}", lora_id, e)
             try:
