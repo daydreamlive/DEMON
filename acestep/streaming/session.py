@@ -41,8 +41,11 @@ from contextlib import ExitStack
 
 import functools
 import os
+import re
 import threading
 import time
+import urllib.parse
+import urllib.request
 from dataclasses import asdict
 from pathlib import Path
 
@@ -168,6 +171,65 @@ IDLE_PAUSE_S = float(os.environ.get("DEMON_IDLE_PAUSE_S", "20"))
 # must be trimmed to a multiple of this length or the encoder rejects.
 _SAMPLES_PER_FRAME = 1920
 _POOL = _SAMPLES_PER_FRAME * 5
+
+# --- add_lora: fetching a LoRA onto a running pod --------------------
+#
+# A LoRA id becomes a FILENAME under loras_dir() and, later, a knob name
+# (lora_str_<id>), so it is restricted to the charset both can carry.
+# This is the only sanitizer between a WS message and a path we write.
+_LORA_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+# A LoRA for this checkpoint is ~170 MB; the cap is generous enough for a
+# rank-128 adapter and small enough that a wrong URL can't fill the pod's
+# disk out from under the engine.
+_LORA_MAX_BYTES = int(os.environ.get("DEMON_LORA_MAX_BYTES", 512 * 1024 * 1024))
+_LORA_FETCH_TIMEOUT_S = float(os.environ.get("DEMON_LORA_FETCH_TIMEOUT_S", "300"))
+
+# Hosts the pod will fetch a LoRA from. The WS is reachable by whoever
+# holds a session, so an unrestricted fetch would make the pod a
+# general-purpose HTTP client sitting inside our network — the classic
+# SSRF shape. Default to the artifact hosts we actually serve LoRAs from;
+# override for a dev pod with DEMON_LORA_URL_HOSTS (comma-separated).
+_LORA_URL_HOSTS = tuple(
+    h.strip().lower()
+    for h in os.environ.get(
+        "DEMON_LORA_URL_HOSTS",
+        # The orchestrator serves LoRAs trained in the Studio; Tigris
+        # serves ones the user uploaded from their own machine (presigned
+        # PUT from the plugin, presigned GET for us).
+        "rtmg-orchestrator.fly.dev,music.daydream.live,daydream.live,"
+        "fly.storage.tigris.dev",
+    ).split(",")
+    if h.strip()
+)
+
+
+def _sanitize_lora_id(raw: str) -> str | None:
+    """The id a fetched LoRA is stored and addressed under, or None when
+    it isn't safe to use as a filename."""
+    lid = str(raw or "").strip()
+    if not _LORA_ID_RE.match(lid):
+        return None
+    return lid
+
+
+def _lora_url_allowed(url: str) -> bool:
+    """https, and a host we publish LoRAs from.
+
+    Both halves matter: plain http would let anything on the path swap the
+    weights the pod is about to load, and an unrestricted host turns
+    `add_lora` into "make this pod GET an arbitrary URL for me"."""
+    try:
+        u = urllib.parse.urlparse(str(url))
+    except Exception:
+        return False
+    if u.scheme != "https" or not u.hostname:
+        return False
+    host = u.hostname.lower()
+    return any(
+        host == allowed or host.endswith("." + allowed)
+        for allowed in _LORA_URL_HOSTS
+    )
 
 
 def _compute_max_pipeline_depth(diffusion_engine) -> int:
@@ -950,11 +1012,32 @@ class StreamingSession:
             return
         state = self.state
         with state._lock:
+            local_register = state.pending_register[:]
             local_disable = state.pending_disable[:]
             local_enable = state.pending_enable[:]
+            state.pending_register.clear()
             state.pending_disable.clear()
             state.pending_enable.clear()
+        # Registration first, and in the same drain as the enables: a
+        # client that fetches a LoRA and immediately enables it queues
+        # both before the next tick, and enable_lora on an unregistered
+        # id raises. Registering here is cheap — it records a path, and
+        # the weights are materialized inside enable_lora.
+        for path in local_register:
+            try:
+                lid = self.engine_obj.register_lora(str(path))
+                logger.info("lora_registered id={} path={}", lid, path)
+            except Exception as e:
+                logger.exception(
+                    "lora_register_failed path={} error={}", path, e,
+                )
         if not local_disable and not local_enable:
+            if local_register:
+                # Nothing to refit, but the catalog gained an entry and
+                # the client is waiting to see it before enabling.
+                self.bus.publish(
+                    LoraCatalogUpdate(catalog=self.lora_catalog_payload()),
+                )
             return
         for lid in local_disable:
             try:
@@ -1920,6 +2003,108 @@ class StreamingSession:
             "enable_lora_requested origin={} id={} strength={}",
             origin.value, lora_id, strength,
         )
+
+    @requires_capability("lora", "add_lora")
+    def add_lora(
+        self,
+        url: str,
+        lora_id: str,
+        *,
+        origin: CommandOrigin = CommandOrigin.PRIMARY,
+    ) -> None:
+        """Fetch a LoRA over HTTP into the library and register it.
+
+        The engine's catalog is built by ``register_library()`` at engine
+        init, so a LoRA that did not exist at boot can never be enabled —
+        this is the way in for one trained after the pod started.
+
+        Downloads on a worker thread: a ~170 MB fetch must not sit in the
+        dispatch path, let alone the tick. The finished file is queued
+        onto ``pending_register`` and picked up by the next
+        ``before_tick`` drain, so the catalog mutation still serializes
+        with the streaming pipeline like every other LoRA change.
+
+        Returns immediately. The client learns it worked by seeing the id
+        appear in ``lora_catalog``.
+        """
+        lid = _sanitize_lora_id(lora_id)
+        if not lid:
+            logger.warning("add_lora_rejected reason=bad_id id={!r}", lora_id)
+            return
+        if not _lora_url_allowed(url):
+            logger.warning(
+                "add_lora_rejected reason=host_not_allowed id={} url={!r}",
+                lid, url,
+            )
+            return
+        self.state.last_activity_ts = time.monotonic()
+        logger.info(
+            "add_lora_requested origin={} id={} url={}",
+            origin.value, lid, url,
+        )
+        threading.Thread(
+            target=self._fetch_lora_blocking,
+            args=(str(url), lid),
+            name=f"lora-fetch-{lid}",
+            daemon=True,
+        ).start()
+
+    def _fetch_lora_blocking(self, url: str, lora_id: str) -> None:
+        """Worker body for :meth:`add_lora`. Never raises into the thread
+        runner — a failed fetch is logged and the client simply never sees
+        the id appear."""
+        from acestep.paths import loras_dir
+
+        dest = loras_dir() / f"{lora_id}.safetensors"
+        if dest.exists():
+            # Already on disk from an earlier session. Re-register rather
+            # than re-download: register_lora is idempotent, and this is
+            # the common case for someone reloading their own LoRA.
+            logger.info("lora_fetch_skipped id={} reason=already_present", lora_id)
+            with self.state._lock:
+                self.state.pending_register.append(str(dest))
+            return
+        # Download to a temp sibling and rename, so a dropped connection
+        # can't leave a truncated .safetensors that the next scan would
+        # happily register and the engine would fail to parse.
+        tmp = dest.with_suffix(".safetensors.partial")
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            t0 = time.monotonic()
+            written = 0
+            req = urllib.request.Request(url, headers={"User-Agent": "demon-pod"})
+            with urllib.request.urlopen(req, timeout=_LORA_FETCH_TIMEOUT_S) as r:
+                declared = int(r.headers.get("Content-Length") or 0)
+                if declared > _LORA_MAX_BYTES:
+                    raise ValueError(
+                        f"LoRA is {declared} bytes; cap is {_LORA_MAX_BYTES}"
+                    )
+                with open(tmp, "wb") as f:
+                    while True:
+                        chunk = r.read(1 << 20)
+                        if not chunk:
+                            break
+                        written += len(chunk)
+                        # Enforce the cap even when the server lied about
+                        # (or omitted) Content-Length.
+                        if written > _LORA_MAX_BYTES:
+                            raise ValueError("LoRA exceeded the size cap mid-stream")
+                        f.write(chunk)
+            if written == 0:
+                raise ValueError("empty response")
+            tmp.rename(dest)
+            logger.info(
+                "lora_fetched id={} bytes={} in={:.1f}s",
+                lora_id, written, time.monotonic() - t0,
+            )
+            with self.state._lock:
+                self.state.pending_register.append(str(dest))
+        except Exception as e:
+            logger.warning("lora_fetch_failed id={} error={}", lora_id, e)
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     @requires_capability("lora", "disable_lora")
     def disable_lora(

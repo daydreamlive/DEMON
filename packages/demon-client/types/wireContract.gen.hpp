@@ -123,6 +123,14 @@ namespace command {
     inline constexpr const char* kId = "id";
   }  // namespace disable_lora
 
+  namespace add_lora {
+    inline constexpr const char* kType = "add_lora";
+    /** Id to store it under; becomes the filename stem and the lora_str_<id> knob name. [A-Za-z0-9._-], <=64 chars. */
+    inline constexpr const char* kId = "id";
+    /** https URL to fetch the .safetensors from. Host must be allow-listed on the pod (DEMON_LORA_URL_HOSTS). */
+    inline constexpr const char* kUrl = "url";
+  }  // namespace add_lora
+
   namespace manual_slot_add {
     inline constexpr const char* kType = "manual_slot_add";
   }  // namespace manual_slot_add
