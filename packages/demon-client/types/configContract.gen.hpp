@@ -9,11 +9,16 @@
 // Drift-guarded by web/tests/unit/configContractDrift.test.ts
 // (a stale copy fails CI).
 //
-// Constants-ONLY and JSON-library-agnostic: this header declares NO structs and
-// pulls in NO JSON dependency. It provides the config VOCABULARY as string
-// constants — JSON field keys, enum option values, and the schema version — so a
-// C++ client (the rtmg-vst plugin) references generated names instead of
-// hand-copied literals while keeping its own juce::var (de)serialization.
+// Constants-ONLY and JSON-library-agnostic: this header pulls in NO JSON
+// dependency and declares no serialization machinery. It provides the config
+// VOCABULARY as string constants — JSON field keys, enum option values, and the
+// schema version — so a C++ client (the rtmg-vst plugin) references generated
+// names instead of hand-copied literals while keeping its own juce::var
+// (de)serialization. It also provides the DEFAULT_CONFIG VALUES as typed
+// constexpr facts (demon::config::defaults), including two small constexpr POD
+// tables for iteration, so C++ hosts consume the defaults instead of
+// re-declaring them. The same value facts ship as machine-readable JSON in
+// types/configDefaults.gen.json for JS/TS consumers.
 //
 // The preset file IS a web DemonExport: an RtmgConfig plus an optional top-level
 // `inputs` (SerializedInputs). Field-key coverage of NESTED objects mirrors
@@ -304,5 +309,157 @@ namespace inputs {
   }  // namespace input
 
 }  // namespace inputs
+
+// ── DEFAULT_CONFIG values (defaults::*) ──
+// The VALUE facts of DEFAULT_CONFIG — control defaults, prompts, engine
+// scalars, channel-range min/max/reverse — as typed constexpr constants,
+// so a C++ host CONSUMES the defaults instead of re-declaring them.
+
+namespace defaults {
+
+  // Top-level scalar defaults.
+  inline constexpr double kSeed = 0.0;
+  inline constexpr const char* kSwapSourceMode = "instruments";
+
+  // engine.* scalar defaults (enabled_loras is [] in DEFAULT_CONFIG; an
+  // empty array has no value constant).
+  namespace engine {
+
+    inline constexpr bool kSde = false;
+    inline constexpr bool kLora = true;
+    inline constexpr double kDepth = 4.0;
+    inline constexpr double kVaeWindow = 0.36;
+    inline constexpr double kCrop = 0.0;
+    inline constexpr double kSteps = 8.0;
+    inline constexpr bool kFastVae = false;
+    inline constexpr bool kWalkWindow = false;
+    inline constexpr double kWalkWindowS = 60.0;
+    inline constexpr double kLeadFloorS = 0.25;
+    inline constexpr double kLeadCeilingS = 1.35;
+    inline constexpr double kLeadReleaseTauS = 1.5;
+    inline constexpr double kMaxSourceDurationS = 120.0;
+    inline constexpr const char* kKey = "G# minor";
+    inline constexpr const char* kTimeSignature = "4";
+    inline constexpr bool kAutoPrependLoraTriggers = true;
+    inline constexpr bool kShowIncompatibleLoras = false;
+
+  }  // namespace engine
+
+  namespace prompts {
+
+    inline constexpr const char* kA = "heavy dubstep, deathstep, afxdump, growl heavy bass distortion";
+    inline constexpr const char* kB = "daft punk style, beautiful, four to the floor, angelic";
+    inline constexpr double kBlend = 0.4;
+
+  }  // namespace prompts
+
+  namespace controls {
+
+    // DEFAULT_CONFIG.controls values, one typed constant per knob.
+    inline constexpr double kDenoise = 0.7;
+    inline constexpr double kHintStrength = 1.0;
+    inline constexpr double kFeedback = 0.0;
+    inline constexpr double kFeedbackDepth = 1.0;
+    inline constexpr double kShift = 3.5;
+    inline constexpr double kChG0 = 1.0;
+    inline constexpr double kChG1 = 1.0;
+    inline constexpr double kChG2 = 1.0;
+    inline constexpr double kChG3 = 1.0;
+    inline constexpr double kChG4 = 1.0;
+    inline constexpr double kChG5 = 1.0;
+    inline constexpr double kChG6 = 1.0;
+    inline constexpr double kChG7 = 1.0;
+    inline constexpr double kCh13 = 1.0;
+    inline constexpr double kCh14 = 1.0;
+    inline constexpr double kCh19 = 1.0;
+    inline constexpr double kCh23 = 1.0;
+    inline constexpr double kCh29 = 1.0;
+    inline constexpr double kCh56 = 1.0;
+    inline constexpr double kDcwScaler = 0.05;
+    inline constexpr double kDcwHighScaler = 0.02;
+    inline constexpr bool kDcwEnabled = true;
+    inline constexpr const char* kDcwMode = "double";
+    inline constexpr const char* kDcwWavelet = "haar";
+    inline constexpr double kLoraDefaultStrength = 1.4;
+    inline constexpr double kGuidanceScale = 7.0;
+    inline constexpr double kCfgRescale = 0.0;
+    inline constexpr const char* kRcfgMode = "off";
+
+    // The same values as one ordered table (DEFAULT_CONFIG insertion order,
+    // which is also JSON.stringify emission order), for consumers that
+    // iterate the control set instead of naming each constant.
+    enum class ValueKind { Number, Boolean, String };
+    struct ControlValue {
+      const char* key;
+      ValueKind kind;
+      double number;       // valid when kind == Number
+      bool boolean;        // valid when kind == Boolean
+      const char* string;  // valid when kind == String
+    };
+    inline constexpr ControlValue kValues[] = {
+        { "denoise", ValueKind::Number, 0.7, false, nullptr },
+        { "hint_strength", ValueKind::Number, 1.0, false, nullptr },
+        { "feedback", ValueKind::Number, 0.0, false, nullptr },
+        { "feedback_depth", ValueKind::Number, 1.0, false, nullptr },
+        { "shift", ValueKind::Number, 3.5, false, nullptr },
+        { "ch_g0", ValueKind::Number, 1.0, false, nullptr },
+        { "ch_g1", ValueKind::Number, 1.0, false, nullptr },
+        { "ch_g2", ValueKind::Number, 1.0, false, nullptr },
+        { "ch_g3", ValueKind::Number, 1.0, false, nullptr },
+        { "ch_g4", ValueKind::Number, 1.0, false, nullptr },
+        { "ch_g5", ValueKind::Number, 1.0, false, nullptr },
+        { "ch_g6", ValueKind::Number, 1.0, false, nullptr },
+        { "ch_g7", ValueKind::Number, 1.0, false, nullptr },
+        { "ch13", ValueKind::Number, 1.0, false, nullptr },
+        { "ch14", ValueKind::Number, 1.0, false, nullptr },
+        { "ch19", ValueKind::Number, 1.0, false, nullptr },
+        { "ch23", ValueKind::Number, 1.0, false, nullptr },
+        { "ch29", ValueKind::Number, 1.0, false, nullptr },
+        { "ch56", ValueKind::Number, 1.0, false, nullptr },
+        { "dcw_scaler", ValueKind::Number, 0.05, false, nullptr },
+        { "dcw_high_scaler", ValueKind::Number, 0.02, false, nullptr },
+        { "dcw_enabled", ValueKind::Boolean, 0.0, true, nullptr },
+        { "dcw_mode", ValueKind::String, 0.0, false, "double" },
+        { "dcw_wavelet", ValueKind::String, 0.0, false, "haar" },
+        { "lora_default_strength", ValueKind::Number, 1.4, false, nullptr },
+        { "guidance_scale", ValueKind::Number, 7.0, false, nullptr },
+        { "cfg_rescale", ValueKind::Number, 0.0, false, nullptr },
+        { "rcfg_mode", ValueKind::String, 0.0, false, "off" },
+    };
+    inline constexpr int kValueCount = 28;
+
+  }  // namespace controls
+
+  namespace channel_ranges {
+
+    // DEFAULT_CONFIG.channel_ranges rows ({ min, max, reverse } per channel),
+    // in DEFAULT_CONFIG insertion order.
+    struct ChannelRange {
+      const char* channel;
+      double min;
+      double max;
+      bool reverse;
+    };
+    inline constexpr ChannelRange kRanges[] = {
+        { "ch_g0", 0.0, 2.2, false },
+        { "ch_g1", 0.0, 2.0, false },
+        { "ch_g2", 0.0, 2.3, true },
+        { "ch_g3", 0.0, 2.0, false },
+        { "ch_g4", 0.0, 2.5, false },
+        { "ch_g5", 0.0, 2.0, false },
+        { "ch_g6", 0.0, 2.0, true },
+        { "ch_g7", 0.0, 2.0, true },
+        { "ch13", 0.0, 2.0, true },
+        { "ch14", 0.0, 2.3, false },
+        { "ch19", 0.0, 2.5, false },
+        { "ch23", 0.0, 2.45, false },
+        { "ch29", 0.0, 2.0, false },
+        { "ch56", 0.0, 2.0, false },
+    };
+    inline constexpr int kRangeCount = 14;
+
+  }  // namespace channel_ranges
+
+}  // namespace defaults
 
 }  // namespace demon::config

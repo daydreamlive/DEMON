@@ -29,6 +29,7 @@ import * as sdk from "@demon/client";
 // and guards main() behind an argv check, so importing it here runs no I/O.
 import {
   renderConfigContractHpp,
+  renderConfigDefaultsJson,
   renderControlsContractHpp,
 } from "../../../../../packages/demon-client/scripts/genConfigTypes.mjs";
 
@@ -51,6 +52,11 @@ describe("generated C++ config/controls contracts", () => {
   it("controlsContract.gen.hpp matches the SDK (regenerate if this fails)", () => {
     const expected = renderControlsContractHpp(sdk);
     expect(readCommitted("controlsContract.gen.hpp")).toBe(expected);
+  });
+
+  it("configDefaults.gen.json matches the SDK (regenerate if this fails)", () => {
+    const expected = renderConfigDefaultsJson(sdk);
+    expect(readCommitted("configDefaults.gen.json")).toBe(expected);
   });
 
   // ── Coverage assertions (the caveat plan 06 flags: "pick one and test it") ──
@@ -90,6 +96,44 @@ describe("generated C++ config/controls contracts", () => {
     for (const v of sdk.SWAP_SOURCE_MODES) expect(hpp).toContain(`= "${v}";`);
     for (const v of sdk.STEM_SOURCE_MODES) expect(hpp).toContain(`= "${v}";`);
     for (const v of sdk.SERIALIZED_INPUT_KINDS) expect(hpp).toContain(`= "${v}";`);
+  });
+
+  it("emits a typed defaults constant AND a table row for EVERY control", () => {
+    // The defaults:: namespace is the numeric-facts surface (plan 7.3): C++
+    // hosts consume DEFAULT_CONFIG values from it instead of re-declaring
+    // them, so a control missing from the table would silently fall back to a
+    // host-local literal again.
+    const hpp = renderConfigContractHpp(sdk);
+    for (const [key, value] of Object.entries(sdk.DEFAULT_CONFIG.controls)) {
+      expect(hpp).toContain(`{ ${JSON.stringify(key)}, ValueKind::`);
+      if (typeof value === "string") {
+        expect(hpp).toContain(`= ${JSON.stringify(value)};`);
+      }
+    }
+    expect(hpp).toContain(
+      `inline constexpr int kValueCount = ${Object.keys(sdk.DEFAULT_CONFIG.controls).length};`,
+    );
+  });
+
+  it("emits every channel_ranges row with its min/max/reverse facts", () => {
+    const hpp = renderConfigContractHpp(sdk);
+    for (const ch of Object.keys(sdk.DEFAULT_CONFIG.channel_ranges)) {
+      expect(hpp).toMatch(
+        new RegExp(`\\{ ${JSON.stringify(ch)}, [0-9.]+, [0-9.]+, (true|false) \\},`),
+      );
+    }
+    expect(hpp).toContain(
+      `inline constexpr int kRangeCount = ${Object.keys(sdk.DEFAULT_CONFIG.channel_ranges).length};`,
+    );
+  });
+
+  it("configDefaults.gen.json is exactly serializeConfig(DEFAULT_CONFIG)", () => {
+    // The JSON artifact doubles as a byte-exact serialization fixture in
+    // downstream repos (rtmg-vst pins its DemonExport capture against it), so
+    // guard the CONTENT as well as the committed bytes.
+    const artifact = renderConfigDefaultsJson(sdk);
+    expect(artifact.endsWith("\n")).toBe(true);
+    expect(JSON.parse(artifact)).toEqual(sdk.serializeConfig(sdk.DEFAULT_CONFIG));
   });
 
   it("projects the controls lexicon + display-name overrides verbatim", () => {
