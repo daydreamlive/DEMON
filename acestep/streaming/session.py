@@ -1061,7 +1061,15 @@ class StreamingSession:
         # the weights are materialized inside enable_lora.
         for path in local_register:
             try:
-                lid = self.engine_obj.register_lora(str(path))
+                # Through the backend, not engine_obj: engine_obj is ACE's
+                # diffusion engine and is None for SA3, whose LoRA library
+                # lives behind SA3Backend. The enable/disable calls below
+                # already go through the backend seam; this one was missed,
+                # so every runtime-fetched Style on an SA3 session failed to
+                # register with 'NoneType' object has no attribute
+                # 'register_lora' — and a Style that never registers can
+                # never be enabled.
+                lid = self.backend.register_lora(str(path))
                 logger.info("lora_registered id={} path={}", lid, path)
             except Exception as e:
                 logger.exception(
