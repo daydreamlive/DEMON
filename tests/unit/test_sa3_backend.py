@@ -447,3 +447,297 @@ def test_decode_seed_follows_the_emerged_request_seed():
     b.produce(_knobs(b, seed=1234), CTX, "reuse")
     b.render_window(0.0)
     assert b.codec.decode_seeds[-1] == 99
+
+
+# ---------------------------------------------------------------------------
+# LoRA surface (notes/SA3_LORA_PLAN.md phase 1) — fake manager, real wiring
+# ---------------------------------------------------------------------------
+
+from acestep.streaming.sa3_backend import sa3_lora_compatible
+
+
+class _FakeLoraDesc:
+    def __init__(self, lora_id, state="registered", strength=0.0):
+        self.id = lora_id
+        self.name = lora_id
+        self.path = f"/nonexistent/{lora_id}.safetensors"
+        self.state = state
+        self.strength = strength
+        self.materialized_bytes = 0
+
+
+class _FakeLoraManager:
+    def __init__(self, ids=(), touches=()):
+        self._descs = {i: _FakeLoraDesc(i) for i in ids}
+        self._touches = set(touches)
+        self.calls: list = []
+        self.closed = False
+
+    def list_loras(self):
+        return list(self._descs.values())
+
+    @property
+    def has_active_loras(self):
+        return any(d.state == "enabled" for d in self._descs.values())
+
+    def enable_lora(self, lora_id, strength=None):
+        self.calls.append(("enable", lora_id, strength))
+        d = self._descs.setdefault(lora_id, _FakeLoraDesc(lora_id))
+        d.state = "enabled"
+        if strength is not None:
+            d.strength = float(strength)
+
+    def disable_lora(self, lora_id):
+        self.calls.append(("disable", lora_id))
+        if lora_id in self._descs:
+            self._descs[lora_id].state = "registered"
+
+    def set_lora_strength(self, lora_id, strength):
+        self.calls.append(("strength", lora_id, strength))
+        self._descs[lora_id].strength = float(strength)
+
+    def touches_conditioner(self, lora_id):
+        return lora_id in self._touches
+
+    def close(self):
+        self.closed = True
+
+
+def test_lora_capability_bit_requires_manager_and_toggle():
+    assert _backend().capabilities().lora is False
+    assert _backend(
+        lora_manager=_FakeLoraManager(), use_lora=False,
+    ).capabilities().lora is False
+    assert _backend(use_lora=True).capabilities().lora is False  # no manager
+    assert _backend(
+        lora_manager=_FakeLoraManager(), use_lora=True,
+    ).capabilities().lora is True
+
+
+def test_lora_knob_specs_expand_per_id():
+    b = _backend(lora_manager=_FakeLoraManager(), use_lora=True)
+    names = [s.name for s in b.knob_specs(["ambient", "phonk"])]
+    assert "lora_str_ambient" in names
+    assert "lora_str_phonk" in names
+    # Base manifest unchanged and first (display order).
+    assert names[0] == "sa3_denoise"
+
+
+def test_sa3_lora_compatible_family_and_lineage():
+    assert sa3_lora_compatible({"lora_family": "ace"}, "medium") is False
+    assert sa3_lora_compatible(
+        {"lora_family": "sa3", "base_model": "medium-base"}, "medium",
+    ) is True
+    assert sa3_lora_compatible(
+        {"lora_family": "sa3", "base_model": "small-music-base"}, "medium",
+    ) is False
+    # Unknown on either side stays permissive.
+    assert sa3_lora_compatible({}, "medium") is True
+    assert sa3_lora_compatible(
+        {"lora_family": "sa3", "base_model": "mystery"}, "medium",
+    ) is True
+    assert sa3_lora_compatible(
+        {"lora_family": "sa3", "base_model": "medium-base"}, "",
+    ) is True
+
+
+def test_prepare_tick_drives_strength_from_knob():
+    mgr = _FakeLoraManager(ids=["x"])
+    mgr.enable_lora("x", strength=1.0)
+    b = _backend(lora_manager=mgr, use_lora=True)
+
+    b.produce(_knobs(b, **{"lora_str_x": 0.5}), CTX, "skip")
+    assert ("strength", "x", 0.5) in mgr.calls
+
+    # Within the 0.02 slider-delta gate: no engine call.
+    n_calls = len(mgr.calls)
+    b.produce(_knobs(b, **{"lora_str_x": 0.51}), CTX, "skip")
+    assert len(mgr.calls) == n_calls
+
+    # Non-enabled entries are ignored even if a stray knob rides in.
+    mgr.disable_lora("x")
+    n_calls = len(mgr.calls)
+    b.produce(_knobs(b, **{"lora_str_x": 1.7}), CTX, "skip")
+    assert not any(c[0] == "strength" for c in mgr.calls[n_calls:])
+
+
+def test_dit_swaps_to_eager_while_lora_active():
+    mgr = _FakeLoraManager(ids=["x"])
+    b = _backend(lora_manager=mgr, use_lora=True, eager_dit=_ZeroDit())
+    accel = b._dit_accel
+    eager = b._dit_eager
+    assert b.adapter.dit is accel
+
+    b.enable_lora("x", strength=1.0)
+    assert b.adapter.dit is eager
+
+    b.disable_lora("x")
+    assert b.adapter.dit is accel
+
+
+def test_eager_session_dit_swap_is_noop():
+    mgr = _FakeLoraManager(ids=["x"])
+    b = _backend(lora_manager=mgr, use_lora=True)  # no separate eager dit
+    dit = b.adapter.dit
+    b.enable_lora("x", strength=1.0)
+    assert b.adapter.dit is dit
+    b.disable_lora("x")
+    assert b.adapter.dit is dit
+
+
+def test_conditioner_lora_triggers_cond_rebuild(monkeypatch):
+    mgr = _FakeLoraManager(ids=["c"], touches=["c"])
+    b = _backend(lora_manager=mgr, use_lora=True)
+    rebuilds: list = []
+    monkeypatch.setattr(
+        b, "_rebuild_conditioning_after_lora",
+        lambda op, lid: rebuilds.append((op, lid)),
+    )
+
+    b.enable_lora("c", strength=1.0)
+    b.set_lora_strength("c", 0.5)
+    b.disable_lora("c")
+
+    assert rebuilds == [
+        ("enable_lora", "c"),
+        ("set_lora_strength", "c"),
+        ("disable_lora", "c"),
+    ]
+
+
+def test_dit_only_lora_skips_cond_rebuild(monkeypatch):
+    mgr = _FakeLoraManager(ids=["d"])
+    b = _backend(lora_manager=mgr, use_lora=True)
+    rebuilds: list = []
+    monkeypatch.setattr(
+        b, "_rebuild_conditioning_after_lora",
+        lambda op, lid: rebuilds.append((op, lid)),
+    )
+    b.enable_lora("d", strength=1.0)
+    b.disable_lora("d")
+    assert rebuilds == []
+
+
+def test_cond_rebuild_goes_through_prompt_swap_path(monkeypatch):
+    import types
+
+    mgr = _FakeLoraManager(ids=["c"], touches=["c"])
+    b = _backend(lora_manager=mgr, use_lora=True)
+    b._prompt_rebuilder = object()  # present: rebuild not skipped
+    b.state = types.SimpleNamespace(
+        prompt_text="warm tags", prompt_text_b="other tags",
+    )
+    swaps: list = []
+    monkeypatch.setattr(
+        b, "handle_set_prompt",
+        lambda tags, tags_b=None: swaps.append((tags, tags_b)),
+    )
+
+    b._rebuild_conditioning_after_lora("enable_lora", "c")
+    assert swaps == [("warm tags", "other tags")]
+
+
+def test_lora_pending_gates_has_pending_refit():
+    import threading
+    import types
+
+    mgr = _FakeLoraManager(ids=["x"])
+    b = _backend(lora_manager=mgr, use_lora=True)
+    b.state = types.SimpleNamespace(
+        _lock=threading.Lock(), pending_enable=[], pending_disable=[],
+        interp_feedback="slerp",
+    )
+    assert b.has_pending_refit() is False
+    b.state.pending_enable.append(("x", 1.0))
+    assert b.has_pending_refit() is True
+    b.state.pending_enable.clear()
+    b.state.pending_disable.append("x")
+    assert b.has_pending_refit() is True
+
+
+def test_close_tears_down_lora_manager():
+    mgr = _FakeLoraManager(ids=["x"])
+    b = _backend(lora_manager=mgr, use_lora=True)
+    b.close()
+    assert mgr.closed is True
+
+
+# ---------------------------------------------------------------------------
+# Phase-2 refit-mirror routing (fake mirror; the real one is GPU-gated)
+# ---------------------------------------------------------------------------
+
+
+class _FakeMirror:
+    def __init__(self):
+        self.syncs: list = []
+
+    def sync(self, *, reason=""):
+        self.syncs.append(reason)
+        return 1
+
+
+def test_mirror_mode_never_swaps_dit_and_syncs_on_enable_disable():
+    mgr = _FakeLoraManager(ids=["x"])
+    mirror = _FakeMirror()
+    b = _backend(
+        lora_manager=mgr, use_lora=True, eager_dit=_ZeroDit(),
+        refit_mirror=mirror,
+    )
+    accel = b._dit_accel
+    assert accel is not b._dit_eager  # distinct objects: swap WOULD fire
+
+    b.enable_lora("x", strength=1.0)
+    assert b.adapter.dit is accel          # no eager swap in mirror mode
+    assert mirror.syncs == ["enable_lora"]
+
+    b.disable_lora("x")
+    assert b.adapter.dit is accel
+    assert mirror.syncs == ["enable_lora", "disable_lora"]
+
+
+def test_mirror_strength_routes_through_pending_stash():
+    mgr = _FakeLoraManager(ids=["x"])
+    mgr.enable_lora("x", strength=1.0)
+    mirror = _FakeMirror()
+    b = _backend(lora_manager=mgr, use_lora=True, refit_mirror=mirror)
+    mirror.syncs.clear()
+
+    knobs = _knobs(b, **{"lora_str_x": 0.4})
+    # The announcement point: rebuild_imminent stashes and reports.
+    assert b.rebuild_imminent(knobs) is True
+    assert b._pending_lora_strengths == {"x": 0.4}
+    assert b.has_pending_refit() is True
+
+    # The same tick's produce applies the stash: one manager write, one
+    # batched mirror sync, stash drained.
+    b.produce(knobs, CTX, "skip")
+    assert ("strength", "x", 0.4) in mgr.calls
+    assert mirror.syncs == ["strength"]
+    assert b._pending_lora_strengths == {}
+    assert b.has_pending_refit() is False
+
+    # Within the 0.02 gate: no announcement, no stash.
+    assert b.rebuild_imminent(_knobs(b, **{"lora_str_x": 0.41})) is False
+    assert b._pending_lora_strengths == {}
+
+
+def test_eager_mode_strength_is_not_stashed():
+    mgr = _FakeLoraManager(ids=["x"])
+    mgr.enable_lora("x", strength=1.0)
+    b = _backend(lora_manager=mgr, use_lora=True)  # no mirror
+
+    knobs = _knobs(b, **{"lora_str_x": 0.4})
+    assert b.rebuild_imminent(knobs) is False  # buffer write, no stall
+    b.produce(knobs, CTX, "skip")
+    assert ("strength", "x", 0.4) in mgr.calls  # applied inline
+
+
+def test_close_drops_mirror_and_pending():
+    mgr = _FakeLoraManager(ids=["x"])
+    mirror = _FakeMirror()
+    b = _backend(lora_manager=mgr, use_lora=True, refit_mirror=mirror)
+    b._pending_lora_strengths["x"] = 0.5
+    b.close()
+    assert b._refit_mirror is None
+    assert b._pending_lora_strengths == {}
+    assert mgr.closed is True

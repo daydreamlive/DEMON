@@ -286,6 +286,7 @@ def _process_request(connection, request):
     if path_only == "/api/loras":
         from acestep.lora_metadata import load_lora_metadata, lora_scale_compatible
         from acestep.paths import (
+            assign_lora_ids,
             checkpoint_scale,
             discover_all_loras,
             extra_lora_dirs,
@@ -297,19 +298,15 @@ def _process_request(connection, request):
             # register_library() scan so the HTTP catalog and the
             # engine-side catalog stay in lockstep.
             entries = []
-            seen_ids: set[str] = set()
             scale = checkpoint_scale(_CHECKPOINT)
-            for p in discover_all_loras():
-                # Same-stem dedup mirrors LoRAManager.register_lora's
-                # first-wins behavior so the UI can't see a phantom id
-                # the engine refused to register.
-                if p.stem in seen_ids:
-                    continue
-                seen_ids.add(p.stem)
+            for p, lora_id in assign_lora_ids(discover_all_loras()):
+                # Same stem-collision disambiguation as the engine's
+                # register_library() scan so the UI sees exactly the
+                # ids the engine registered.
                 md = load_lora_metadata(p).to_wire()
                 entries.append({
-                    "id": p.stem,
-                    "name": md.get("name") or p.stem,
+                    "id": lora_id,
+                    "name": md.get("name") or lora_id,
                     "path": str(p),
                     "state": "registered",
                     "strength": 0.0,

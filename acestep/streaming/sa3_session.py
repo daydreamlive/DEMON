@@ -172,6 +172,80 @@ def create_sa3_session(
         (SAMPLE_RATE, waveform), cond.audio_sample_size,
     )
 
+    # ---- LoRA (notes/SA3_LORA_PLAN.md Phase 1) ------------------------
+    # The family manager is constructed here — against the
+    # process-cached context's model, BEFORE StreamingSession.__init__
+    # builds the backend — which settles the D2 construction-order item:
+    # startup catalog registration, alias resolution, and prewarm all
+    # run with a live manager, exactly like the ACE create path runs
+    # them against its engine_obj. The manager rides ``backend_init``
+    # into families._make_sa3, so SA3Backend wraps the same instance.
+    from pathlib import Path
+
+    from acestep.engine.sa3_lora import SA3LoRAManager
+    from acestep.lora_metadata import load_lora_metadata
+    from acestep.streaming.sa3_backend import sa3_lora_compatible
+
+    use_lora = bool(config.lora)
+    lora_mgr = SA3LoRAManager(
+        model_root=context.sam.model.model,
+        conditioner_root=context.sam.model.conditioner,
+        checkpoint_id=model_id,
+    )
+    lora_mgr.register_library()
+    initial_enable_ids: list[str] = []
+    lora_strengths_init: dict[str, float] = dict(config.lora_strengths)
+    if use_lora:
+        from acestep.streaming.session import resolve_lora_reference
+
+        # Same reference resolution as the runtime enable path, with
+        # the SA3 compatibility predicate applied directly (the backend
+        # doesn't exist until __init__) — mirroring how the ACE create
+        # path applies its scale axis.
+        entries = []
+        for d in lora_mgr.list_loras():
+            md = load_lora_metadata(d.path)
+            entries.append((
+                d.id,
+                md.name or d.name,
+                sa3_lora_compatible(md.to_wire(), model_id),
+            ))
+        for lid in list(config.enabled_loras):
+            resolved = resolve_lora_reference(lid, entries)
+            if resolved is None:
+                logger.warning("lora_id_not_in_catalog id={}", lid)
+                continue
+            if resolved != lid:
+                logger.info(
+                    "lora_alias_resolved requested={} id={}", lid, resolved,
+                )
+                if lid in lora_strengths_init:
+                    lora_strengths_init.setdefault(
+                        resolved, lora_strengths_init[lid],
+                    )
+            if resolved not in initial_enable_ids:
+                initial_enable_ids.append(resolved)
+        for p in list(config.lora_paths):
+            pp = Path(p)
+            if not pp.exists():
+                logger.warning("lora_path_missing path={}", p)
+                continue
+            try:
+                lid = lora_mgr.register_lora(str(pp))
+                if lid not in initial_enable_ids:
+                    initial_enable_ids.append(lid)
+            except Exception as e:
+                logger.exception(
+                    "lora_register_failed path={} error={}", p, e,
+                )
+        for lid in initial_enable_ids:
+            try:
+                lora_mgr.prewarm_lora(lid)
+            except Exception as e:
+                logger.exception("lora_prewarm_failed id={} error={}", lid, e)
+        if not initial_enable_ids:
+            logger.info("lora_startup_empty reason=catalog_only")
+
     # Playable geometry comes from the conditioning capture (duration +
     # SA3's padding, what the DiT actually generates), not the request.
     playable_s = cond.audio_sample_size / context.sample_rate
@@ -190,7 +264,9 @@ def create_sa3_session(
         src_np = src_np[:n_48k]
     n_channels = src_np.shape[1] if src_np.ndim > 1 else 1
 
-    virtual_knobs = KnobState(sa3_knob_specs())
+    virtual_knobs = KnobState(sa3_knob_specs(
+        loras=initial_enable_ids if use_lora else [],
+    ))
 
     state = SessionState(
         source=None,                 # no PreparedSource: swap/timbre/structure are capability-gated off
@@ -218,6 +294,14 @@ def create_sa3_session(
     # tensors with no close() — GC reclaims them, same as the ACE
     # path's conditioning.
     with ExitStack() as cleanup:
+        # The manager holds no GPU state before an enable, but its
+        # prewarm executor + staged CPU tensors must not outlive a
+        # failed create.
+        cleanup.callback(
+            _cleanup_create_resource,
+            "sa3_lora_manager",
+            lora_mgr.close,
+        )
         audio_eng = AudioEngine(src_np, SAMPLE_RATE)
         cleanup.callback(
             _cleanup_create_resource,
@@ -242,9 +326,14 @@ def create_sa3_session(
             initial_upload_stems=None,
             initial_stem_error=None,
             initial_stem_source_mode=None,
-            initial_enable_ids=[],
-            lora_strengths_init={},
-            lora_available=False,
+            initial_enable_ids=initial_enable_ids,
+            lora_strengths_init=lora_strengths_init,
+            # The manager exists whenever the context loaded (the eager
+            # torch model is always mutable), so the catalog surface is
+            # live even on sessions created with config.lora off —
+            # mirroring ACE, where lora_available reflects the engine
+            # and use_lora gates the commands.
+            lora_available=True,
             max_pipeline_depth=SA3_MAX_PIPELINE_DEPTH,
             max_seconds=playable_s,
             walk_window=False,
@@ -252,7 +341,7 @@ def create_sa3_session(
             vae_window=SA3_VAE_WINDOW_S,
             crop_seconds=0.0,
             use_sde=False,
-            use_lora=False,
+            use_lora=use_lora,
             k1_name="sa3_denoise",
             # Construction payload for families._make_sa3 (the registry
             # factory assembles SA3Backend.from_context from this + the
@@ -265,6 +354,7 @@ def create_sa3_session(
                 "duration_s": duration_s,
                 "dit_backend": dit_backend,
                 "codec_backend": codec_backend,
+                "lora_manager": lora_mgr,
             },
         )
         cleanup.pop_all()

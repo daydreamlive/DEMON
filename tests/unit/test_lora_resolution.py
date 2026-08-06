@@ -108,17 +108,15 @@ class _Desc:
         self.materialized_bytes = 0
 
 
-class _StubEngine:
+class _ScaleBackend:
+    """Backend stub carrying the catalog (the D2 facade's list_loras)
+    and the ACE scale-axis predicate for a 2B checkpoint."""
+
     def __init__(self, descs):
         self._descs = descs
 
     def list_loras(self):
         return self._descs
-
-
-class _ScaleBackend:
-    """Backend stub whose predicate is the ACE scale axis for a 2B
-    checkpoint."""
 
     def lora_compatible(self, metadata: dict) -> bool:
         return lora_scale_compatible(metadata.get("base_model_scale"), "2B")
@@ -128,8 +126,7 @@ class _StubSession:
     lora_available = True
 
     def __init__(self, descs):
-        self.engine_obj = _StubEngine(descs)
-        self.backend = _ScaleBackend()
+        self.backend = _ScaleBackend(descs)
 
     lora_catalog_payload = StreamingSession.lora_catalog_payload
     _resolve_lora_id = StreamingSession._resolve_lora_id
@@ -187,7 +184,219 @@ class TestSessionPlumbing:
         assert ss._resolve_lora_id("Metalcore") == "Metalcore"
         assert ss._resolve_lora_id("nope") == "nope"
 
-    def test_resolve_lora_id_without_engine_is_identity(self, tmp_path):
+    def test_resolve_lora_id_without_lora_available_is_identity(self, tmp_path):
         ss = _stub_session(tmp_path)
-        ss.engine_obj = None
+        ss.lora_available = False
         assert ss._resolve_lora_id("Ambient") == "Ambient"
+
+
+# ---------------------------------------------------------------------------
+# Family axis: ACE backend predicate + mixed-family catalog annotation
+# ---------------------------------------------------------------------------
+
+import torch
+import torch.nn as nn
+from safetensors.torch import save_file
+
+from acestep.engine.lora import EagerLoRAManager
+from acestep.streaming.ace_backend import ACEStepBackend
+
+
+def _write_sa3_file(tmp_path: Path, stem: str = "sa3style") -> Path:
+    """Tiny SA3-format LoRA file (parametrize-style keys), real bytes so
+    the metadata sniff classifies it."""
+    prefix = (
+        "model.transformer.layers.0.self_attn.to_qkv"
+        ".parametrizations.weight.0"
+    )
+    p = tmp_path / f"{stem}.safetensors"
+    save_file(
+        {
+            f"{prefix}.lora_A": torch.zeros(4, 16, dtype=torch.float16),
+            f"{prefix}.lora_B": torch.zeros(16, 4, dtype=torch.float16),
+        },
+        str(p),
+        metadata={
+            "lora_config": json.dumps(
+                {"rank": 4, "alpha": 4, "adapter_type": "lora",
+                 "base_model": "medium-base"}
+            )
+        },
+    )
+    return p
+
+
+class _AceStub:
+    """Bare-attribute stand-in so ACEStepBackend.lora_compatible can run
+    unbound without constructing the full backend."""
+
+    def __init__(self, scale="2B"):
+        self.checkpoint_scale = scale
+
+
+class TestAceFamilyCompatible:
+    def test_sa3_family_is_hard_no(self):
+        assert not ACEStepBackend.lora_compatible(
+            _AceStub(), {"lora_family": "sa3"},
+        )
+
+    def test_sa3_family_is_hard_no_even_with_matching_scale(self):
+        # The family axis is checked before scale: an SA3 file whose
+        # sidecar happens to claim a matching scale still can't load.
+        assert not ACEStepBackend.lora_compatible(
+            _AceStub("2B"),
+            {"lora_family": "sa3", "base_model_scale": "2B"},
+        )
+
+    def test_ace_family_falls_through_to_scale_axis(self):
+        assert ACEStepBackend.lora_compatible(
+            _AceStub("2B"), {"lora_family": "ace", "base_model_scale": "2B"},
+        )
+        assert not ACEStepBackend.lora_compatible(
+            _AceStub("2B"), {"lora_family": "ace", "base_model_scale": "5B"},
+        )
+
+    def test_unknown_family_stays_permissive(self):
+        assert ACEStepBackend.lora_compatible(
+            _AceStub("2B"), {"lora_family": None, "base_model_scale": None},
+        )
+        assert ACEStepBackend.lora_compatible(_AceStub("2B"), {})
+
+
+class _FamilyBackend(_ScaleBackend):
+    """Stub backend running the REAL ACE predicate (family + scale)."""
+
+    checkpoint_scale = "2B"
+    lora_compatible = ACEStepBackend.lora_compatible
+
+
+class TestMixedFamilyCatalog:
+    def test_catalog_annotates_sa3_entry_incompatible(self, tmp_path):
+        clear_cache()
+        ss = _StubSession([])
+        ss.backend = _FamilyBackend([
+            _Desc(_write_lora(tmp_path, "ambient-v1", "Ambient", "2B")),
+            _Desc(_write_sa3_file(tmp_path, "sa3style")),
+        ])
+        verdicts = {
+            e["id"]: e["compatible"] for e in ss.lora_catalog_payload()
+        }
+        assert verdicts == {"ambient-v1": True, "sa3style": False}
+
+    def test_alias_of_sa3_only_name_misses(self, tmp_path):
+        """Alias resolution is restricted to the compatible subset, so a
+        display-name reference to an SA3-only entry misses; the exact id
+        still passes through (and fails loudly at the enable boundary)."""
+        clear_cache()
+        ss = _StubSession([])
+        ss.backend = _FamilyBackend([_Desc(_write_sa3_file(tmp_path, "sa3style"))])
+        assert ss._resolve_lora_id("sa3style") == "sa3style"  # exact id
+        assert ss._resolve_lora_id("SA3STYLE") == "SA3STYLE"  # alias: miss
+
+
+# ---------------------------------------------------------------------------
+# Hard format validation at the enable boundary (ACE manager)
+# ---------------------------------------------------------------------------
+
+
+def _tiny_eager_manager() -> EagerLoRAManager:
+    decoder = nn.Module()
+    decoder.q = nn.Linear(16, 8, bias=False)
+    return EagerLoRAManager(decoder=decoder, device=torch.device("cpu"))
+
+
+class TestAceEnableRejectsWrongFamily:
+    def test_sa3_file_raises_loudly(self, tmp_path):
+        """The exact-id bypass means an SA3 file CAN reach the ACE
+        enable path; it must raise, not silently no-op (the pre-fix
+        behavior: empty pair map -> empty deltas -> 'enabled' with
+        nothing applied)."""
+        p = _write_sa3_file(tmp_path)
+        mgr = _tiny_eager_manager()
+        mgr.register_lora(str(p))
+        import pytest
+        with pytest.raises(RuntimeError, match="not an ACE-Step LoRA"):
+            mgr.enable_lora("sa3style", strength=1.0)
+
+    def test_sa3_file_error_names_the_family(self, tmp_path):
+        p = _write_sa3_file(tmp_path)
+        mgr = _tiny_eager_manager()
+        mgr.register_lora(str(p))
+        import pytest
+        with pytest.raises(RuntimeError, match="SA3"):
+            mgr.enable_lora("sa3style", strength=1.0)
+
+    def test_non_lora_file_raises_without_sa3_hint(self, tmp_path):
+        p = tmp_path / "notalora.safetensors"
+        save_file({"encoder.weight": torch.zeros(2, 2)}, str(p))
+        mgr = _tiny_eager_manager()
+        mgr.register_lora(str(p))
+        import pytest
+        with pytest.raises(RuntimeError, match="not an ACE-Step LoRA") as ei:
+            mgr.enable_lora("notalora", strength=1.0)
+        assert "SA3" not in str(ei.value)
+
+    def test_real_ace_file_still_loads(self, tmp_path):
+        """Regression guard for the new raise: a well-formed PEFT file
+        through the REAL _compute_deltas still enables."""
+        p = tmp_path / "real.safetensors"
+        save_file(
+            {
+                "base_model.model.q.lora_A.weight": torch.ones(4, 16) * 0.5,
+                "base_model.model.q.lora_B.weight": torch.ones(8, 4) * 0.5,
+            },
+            str(p),
+        )
+        mgr = _tiny_eager_manager()
+        mgr.register_lora(str(p))
+        mgr.enable_lora("real", strength=1.0)
+        assert mgr.get_lora("real").state == "enabled"
+
+
+# ---------------------------------------------------------------------------
+# Duplicate-stem collision handling in discovery
+# ---------------------------------------------------------------------------
+
+from acestep.paths import assign_lora_ids
+
+
+class TestAssignLoraIds:
+    def test_unique_stems_keep_bare_ids(self, tmp_path):
+        paths = [tmp_path / "a.safetensors", tmp_path / "b.safetensors"]
+        assert assign_lora_ids(paths) == [
+            (paths[0], "a"), (paths[1], "b"),
+        ]
+
+    def test_collision_first_keeps_stem_later_gets_parent_suffix(self, tmp_path):
+        p1 = tmp_path / "lib" / "vibes.safetensors"
+        p2 = tmp_path / "training_out" / "vibes.safetensors"
+        assert assign_lora_ids([p1, p2]) == [
+            (p1, "vibes"), (p2, "vibes--training_out"),
+        ]
+
+    def test_triple_collision_same_parent_name_gets_numeric_suffix(self, tmp_path):
+        p1 = tmp_path / "r1" / "out" / "x.safetensors"
+        p2 = tmp_path / "r2" / "out" / "x.safetensors"
+        p3 = tmp_path / "r3" / "out" / "x.safetensors"
+        ids = [lid for _, lid in assign_lora_ids([p1, p2, p3])]
+        assert ids[0] == "x"
+        assert ids[1] == "x--out"
+        assert ids[2] == "x--out-2"
+        assert len(set(ids)) == 3
+
+    def test_register_library_registers_all_collided_files(self, tmp_path, monkeypatch):
+        """End-to-end through the eager manager: a same-stem pair in two
+        subdirectories must yield TWO catalog entries (the old
+        first-wins registrar silently dropped the second)."""
+        (tmp_path / "lib").mkdir()
+        (tmp_path / "extra").mkdir()
+        (tmp_path / "lib" / "dupe.safetensors").write_bytes(b"")
+        (tmp_path / "extra" / "dupe.safetensors").write_bytes(b"")
+
+        mgr = _tiny_eager_manager()
+        ids = mgr.register_library(tmp_path)
+
+        assert sorted(ids) == ["dupe", "dupe--extra"] or sorted(ids) == [
+            "dupe", "dupe--lib",
+        ]
+        assert len(mgr.list_loras()) == 2

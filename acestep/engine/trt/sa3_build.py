@@ -183,6 +183,33 @@ class SA3DiTFp8BuildConfig:
 
 
 @dataclass
+class SA3DiTRefitBuildConfig:
+    """Build parameters for one REFITTABLE sa3-m DiT engine
+    (notes/SA3_LORA_PLAN.md D6b: the LoRA refit endgame).
+
+    A separate dataclass (same rationale as the fp8 one: the metadata
+    skip gate hashes the whole config, so folding a ``refit`` field into
+    :class:`SA3DiTBuildConfig` would change the existing engines'
+    identity and force a needless rebuild). Same fp16mixed ONNX, the
+    ``BuilderFlag.REFIT`` builder flag, and the ``_refit`` name marker
+    that :func:`acestep.engine.sa3_trt.is_refittable_engine_path` (and
+    the exclusive-ownership deserialization policy) keys on.
+    """
+
+    min_latents: int
+    opt_latents: int
+    max_latents: int
+    workspace_gb: float = 16.0
+    onnx_files: list[str] = field(default_factory=lambda: list(DIT_ONNX_FILES))
+
+    def engine_name(self) -> str:
+        return (
+            f"sa3_m_dit_refit_l{self.min_latents}"
+            f"_{self.opt_latents}_{self.max_latents}"
+        )
+
+
+@dataclass
 class SameLWindowBuildConfig:
     """Build parameters for the SAME-L window decoder engine."""
 
@@ -264,6 +291,7 @@ def _build_strongly_typed_engine(
     engine_path: str,
     workspace_gb: float,
     profile_shapes: dict[str, tuple[tuple, tuple, tuple]],
+    refit: bool = False,
 ) -> None:
     """Parse + build one STRONGLY_TYPED engine and serialize it to disk.
 
@@ -289,6 +317,8 @@ def _build_strongly_typed_engine(
     config.set_memory_pool_limit(
         trt.MemoryPoolType.WORKSPACE, int(workspace_gb * (1 << 30)),
     )
+    if refit:
+        config.set_flag(trt.BuilderFlag.REFIT)
     profile = builder.create_optimization_profile()
     for input_name, (lo, opt, hi) in profile_shapes.items():
         profile.set_shape(input_name, lo, opt, hi)
@@ -313,6 +343,7 @@ def _build_dit_engine(
     component: str = "sa3_m_dit",
     precision_label: str = "fp16mixed",
     local_onnx: str | None = None,
+    refit: bool = False,
 ) -> tuple[str, str, float, str]:
     """Build one sa3-m DiT engine. Returns (label, path, elapsed, status).
 
@@ -391,6 +422,7 @@ def _build_dit_engine(
             "seconds_total": ((1,), (1,), (1,)),
             "local_add_cond": ((1, 257, lo), (1, 257, opt), (1, 257, hi)),
         },
+        refit=refit,
     )
     _write_metadata(engine_path=engine_path, expected=expected, env=env)
     elapsed = time.time() - t0
@@ -509,6 +541,14 @@ def _matrix_jobs(args) -> list[tuple[str, str]]:
                     f" (~{hi * SAMPLES_PER_LATENT / SA3_SAMPLE_RATE:.0f}s window)",
                     cfg.engine_name(),
                 ))
+        if args.refit:
+            for lo, opt, hi in dit_profiles:
+                cfg = SA3DiTRefitBuildConfig(lo, opt, hi)
+                jobs.append((
+                    f"SA3-M DiT refit l{lo}_{opt}_{hi}"
+                    f" (~{hi * SAMPLES_PER_LATENT / SA3_SAMPLE_RATE:.0f}s window)",
+                    cfg.engine_name(),
+                ))
     if not args.dit_only:
         lo, opt, hi = CANONICAL_SAME_L_WINDOW
         cfg = SameLWindowBuildConfig(lo, opt, hi)
@@ -617,6 +657,12 @@ def main() -> int:
                              "(~1.8x/step; preferred at runtime when present, "
                              "fp16mixed fallback). Needs the published "
                              "dit_fp8.onnx or --fp8-onnx.")
+    single.add_argument("--refit", action="store_true",
+                        help="Also build the REFITTABLE fp16mixed DiT "
+                             "variant(s) (BuilderFlag.REFIT; the LoRA "
+                             "in-place-refit engines, preferred by "
+                             "LoRA-enabled sessions and exclusively owned "
+                             "at runtime — never process-cached).")
     single.add_argument("--fp8-onnx", default=None,
                         help="Path to a producer-built dit_fp8.onnx (with its "
                              ".onnx.data sidecar alongside) to compile instead "
@@ -668,6 +714,18 @@ def main() -> int:
                         precision_label="fp8",
                         local_onnx=args.fp8_onnx,
                     ))
+            if args.refit:
+                for lo, opt, hi in dit_profiles:
+                    results.append(_build_dit_engine(
+                        output_dir=args.output_dir,
+                        config=SA3DiTRefitBuildConfig(
+                            lo, opt, hi, workspace_gb=args.workspace_gb),
+                        env=env,
+                        force_rebuild=args.force_rebuild,
+                        component="sa3_m_dit_refit",
+                        precision_label="fp16mixed refit",
+                        refit=True,
+                    ))
         if not args.dit_only:
             lo, opt, hi = CANONICAL_SAME_L_WINDOW
             results.append(_build_same_l_window_engine(
@@ -713,6 +771,20 @@ def main() -> int:
                 force_rebuild=args.force_rebuild,
                 component="sa3_m_dit_fp8", precision_label="fp8",
                 local_onnx=args.fp8_onnx,
+            ))
+        if args.refit:
+            refit_cfg = SA3DiTRefitBuildConfig(
+                min_latents=config.min_latents,
+                opt_latents=config.opt_latents,
+                max_latents=config.max_latents,
+                workspace_gb=args.workspace_gb,
+            )
+            built.append(_build_dit_engine(
+                output_dir=args.output_dir, config=refit_cfg, env=env,
+                force_rebuild=args.force_rebuild,
+                component="sa3_m_dit_refit",
+                precision_label="fp16mixed refit",
+                refit=True,
             ))
     if args.same_l_window:
         d_lo, d_opt, d_hi = CANONICAL_SAME_L_WINDOW

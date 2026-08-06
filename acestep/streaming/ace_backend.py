@@ -347,9 +347,19 @@ class ACEStepBackend(DiffusionBackend):
         )
 
     def lora_compatible(self, metadata: dict) -> bool:
-        """ACE's only compatibility axis today: a 2B-trained LoRA
-        cannot refit onto the XL (5B) DiT and vice versa. Unknown
-        scale on either side is compatible per the seam contract."""
+        """ACE's compatibility axes: weight-format family and
+        base-model scale.
+
+        Family: a file whose sniffed ``lora_family`` names a different
+        family (e.g. "sa3") can never load on an ACE engine — hard no.
+        Unknown family stays permissive per the seam contract.
+
+        Scale: a 2B-trained LoRA cannot refit onto the XL (5B) DiT and
+        vice versa. Unknown scale on either side is compatible.
+        """
+        family = metadata.get("lora_family")
+        if family and family != "ace":
+            return False
         return lora_scale_compatible(
             metadata.get("base_model_scale"), self.checkpoint_scale,
         )

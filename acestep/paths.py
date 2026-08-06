@@ -257,6 +257,49 @@ def discover_all_loras() -> list[Path]:
     return out
 
 
+def assign_lora_ids(paths: list[Path]) -> list[tuple[Path, str]]:
+    """Assign a unique catalog id to each discovered LoRA path.
+
+    Ids are filename stems (the wire-stable convention the whole LoRA
+    surface is keyed on). When two files in one scan share a stem, the
+    FIRST occurrence in scan order keeps the bare stem — preserving the
+    id the first-wins registrar historically kept, so operator configs
+    referencing it don't break — and every later occurrence is
+    disambiguated with its parent directory name (``<stem>--<parent>``),
+    falling back to a numeric suffix if that still collides. Collisions
+    are logged loudly; a collision must never silently shadow a
+    loadable file.
+
+    Shared by the engine's ``register_library()`` scan and the demo
+    server's ``/api/loras`` listing so the HTTP catalog and the
+    engine-side catalog agree on ids.
+    """
+    used: set[str] = set()
+    out: list[tuple[Path, str]] = []
+    collided: list[tuple[Path, str]] = []
+    for p in paths:
+        stem = p.stem
+        if stem not in used:
+            lora_id = stem
+        else:
+            candidate = f"{stem}--{p.parent.name}" if p.parent.name else stem
+            lora_id = candidate
+            n = 2
+            while lora_id in used or lora_id == stem:
+                lora_id = f"{candidate}-{n}"
+                n += 1
+            collided.append((p, lora_id))
+        used.add(lora_id)
+        out.append((p, lora_id))
+    if collided:
+        print(
+            "[paths] LoRA filename-stem collisions detected; later files "
+            "disambiguated so none is shadowed: "
+            + ", ".join(f"{lid!r} <- {p}" for p, lid in collided)
+        )
+    return out
+
+
 def lora_sidecar(lora_path: Path | str, suffix: str) -> Path:
     """Resolve a LoRA weight file to a sibling sidecar with ``suffix``.
 
