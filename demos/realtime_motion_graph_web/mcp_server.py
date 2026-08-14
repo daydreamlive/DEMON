@@ -28,7 +28,7 @@ Run as a stdio MCP server. Example Claude Code config:
             "run", "python", "-u",
             "-m", "demos.realtime_motion_graph_web.mcp_server"
           ],
-          "cwd": "C:/_dev/projects/DEMON"
+          "cwd": "C:/path/to/DEMON"
         }
       }
     }
