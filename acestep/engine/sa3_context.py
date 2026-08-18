@@ -254,7 +254,8 @@ class SA3SAMEWindowCodec:
     Two execution paths, identical interface:
 
     * **TRT** when ``use_trt`` and the built window engine exists
-      (``same_l_decode_window_t*``): ~9-10 ms per ~1 s window, latent
+      (``same_l_decode_window_<plugin_tag>_t*``): ~9-10 ms per ~1 s
+      window, latent
       scaled by ``pretransform.scale`` before the call (spike
       ``scale_mode="pretransform"``, rel_rms ~8e-3 vs eager full).
     * **Eager** fallback: the spike's ``decode_sa3_latent_window``

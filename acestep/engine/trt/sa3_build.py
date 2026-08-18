@@ -87,6 +87,7 @@ from acestep.engine.sa3_trt import (
     SAMPLES_PER_LATENT,
     T5_TOKENS,
     _register_same_plugin,
+    same_l_plugin_build_tag,
     trt_engines_dir,
 )
 
@@ -109,10 +110,19 @@ DIT_ONNX_FILES = (
 # FP8-trunk DiT (opt-in, ~1.8x/step). Upstream published `dit_fp8.onnx` in
 # the 2026-08-02 sweep, but its sidecar landed as `dit_fp8lin.onnx.data`
 # (sa3-sm-* got matching `dit_fp8.onnx.data` names) — so this pair still
-# 404s on the second entry and --fp8 still needs a producer-built graph via
-# --fp8-onnx (vendored producer, optimized/tensorRT/build: make_calib.py
-# then build_dit_fp8.py). Switching the sidecar to the `fp8lin` name is a
-# one-liner once someone builds and parity-checks an engine from it.
+# 404s on the second entry and --fp8 still needs a graph passed via
+# --fp8-onnx. Switching the sidecar to the `fp8lin` name is a one-liner
+# once someone builds and parity-checks an engine from it, and upstream's
+# own consumer recipe (`build_from_onnx.py sa3-m-fp8`) confirms that pair
+# is what HF now serves.
+# Producing that graph locally is NOT a vendored-tree operation at the
+# pinned revision: the ModelOpt PTQ builder (`build_dit_fp8.py`) lives in
+# Stability PR #47 and is not merged into the pinned tree. What IS vendored
+# is the rest of the chain — `make_calib.py` (real-conditioning capture),
+# `build_dit_bf16.py` (shared RoPE-baker) and `transplant_scales.py` (grafts
+# #47's calibrated scales onto the baked graph) — but the transplant still
+# consumes a `dit_fp8_calib.onnx` that only #47 produces. See
+# optimized/tensorRT/build/README.md in the vendored tree for the full flow.
 # acestep.engine.sa3_trt does the runtime selection.
 DIT_FP8_ONNX_FILES = (
     "onnx/sa3-m/dit_fp8.onnx",
@@ -218,10 +228,11 @@ class SameLWindowBuildConfig:
     max_latents: int
     workspace_gb: float = 16.0
     onnx_files: list[str] = field(default_factory=lambda: list(SAME_L_ONNX_FILES))
+    plugin_build_tag: str = field(default_factory=same_l_plugin_build_tag)
 
     def engine_name(self) -> str:
         return (
-            f"same_l_decode_window_t{self.min_latents}"
+            f"same_l_decode_window_{self.plugin_build_tag}_t{self.min_latents}"
             f"_{self.opt_latents}_{self.max_latents}"
         )
 
@@ -292,6 +303,7 @@ def _build_strongly_typed_engine(
     workspace_gb: float,
     profile_shapes: dict[str, tuple[tuple, tuple, tuple]],
     refit: bool = False,
+    python_plugin_preference: str | None = None,
 ) -> None:
     """Parse + build one STRONGLY_TYPED engine and serialize it to disk.
 
@@ -304,9 +316,16 @@ def _build_strongly_typed_engine(
 
     trt_logger = trt.Logger(trt.Logger.WARNING)
     builder = trt.Builder(trt_logger)
-    network = builder.create_network(
-        1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
-    )
+    network_flags = 1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
+    if python_plugin_preference == "aot":
+        network_flags |= 1 << int(
+            trt.NetworkDefinitionCreationFlag.PREFER_AOT_PYTHON_PLUGINS
+        )
+    elif python_plugin_preference == "jit":
+        network_flags |= 1 << int(
+            trt.NetworkDefinitionCreationFlag.PREFER_JIT_PYTHON_PLUGINS
+        )
+    network = builder.create_network(network_flags)
     parser = trt.OnnxParser(network, trt_logger)
     if not parser.parse_from_file(onnx_path):
         for i in range(parser.num_errors):
@@ -381,12 +400,18 @@ def _build_dit_engine(
                 return (label, engine_path, 0.0, "SKIPPED")
             if precision_label == "fp8":
                 raise RuntimeError(
-                    f"dit_fp8.onnx is not on HF ({HF_REPO}) yet. Build it with "
-                    "the managed vendored producer "
-                    "(<MODELS_DIR>/sa3/vendor/stable-audio-3/optimized/"
-                    "tensorRT/build: make_calib.py then build_dit_fp8.py) and "
-                    "pass --fp8-onnx <dit_fp8.onnx>, or wait for the upstream "
-                    "artifact upload."
+                    f"dit_fp8.onnx is not fetchable from HF ({HF_REPO}) under "
+                    "the names this builder expects — upstream's sidecar is "
+                    "published as dit_fp8lin.onnx.data (see "
+                    "DIT_FP8_ONNX_FILES). Pass an already-built graph with "
+                    "--fp8-onnx <dit_fp8.onnx>. It cannot be produced from "
+                    "the vendored tree alone at the pinned revision: the "
+                    "ModelOpt PTQ builder (build_dit_fp8.py) lives in "
+                    "Stability PR #47, not in the pin, and the vendored "
+                    "transplant_scales.py needs that builder's "
+                    "dit_fp8_calib.onnx. See <MODELS_DIR>/sa3/vendor/"
+                    "stable-audio-3/optimized/tensorRT/build/README.md "
+                    "('Medium fp8')."
                 ) from exc
             raise
     expected = _expected_metadata(
@@ -494,6 +519,9 @@ def _build_same_l_window_engine(
         profile_shapes={
             "latent": ((1, IO_CHANNELS, lo), (1, IO_CHANNELS, opt), (1, IO_CHANNELS, hi)),
         },
+        python_plugin_preference=(
+            "jit" if config.plugin_build_tag.startswith("jit_") else "aot"
+        ),
     )
     _write_metadata(engine_path=engine_path, expected=expected, env=env)
     elapsed = time.time() - t0
