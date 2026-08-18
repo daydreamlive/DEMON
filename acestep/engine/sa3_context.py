@@ -187,9 +187,11 @@ class SA3Context:
         def _builder(denoise: float) -> torch.Tensor:
             import stable_audio_3.inference.sampling as sampling
 
+            from .sa3_denoise_mapping import map_denoise_to_entry_sigma
+
             schedule = sampling.build_schedule(
                 steps=int(steps),
-                sigma_max=float(denoise),
+                sigma_max=map_denoise_to_entry_sigma(float(denoise)),
                 dist_shift=prepared["dist_shift"],
                 effective_seq_len=prepared["effective_seq_len"],
                 fallback_seq_len=prepared["fallback_seq_len"],
