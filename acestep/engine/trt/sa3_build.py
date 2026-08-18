@@ -110,10 +110,19 @@ DIT_ONNX_FILES = (
 # FP8-trunk DiT (opt-in, ~1.8x/step). Upstream published `dit_fp8.onnx` in
 # the 2026-08-02 sweep, but its sidecar landed as `dit_fp8lin.onnx.data`
 # (sa3-sm-* got matching `dit_fp8.onnx.data` names) — so this pair still
-# 404s on the second entry and --fp8 still needs a producer-built graph via
-# --fp8-onnx (vendored producer, optimized/tensorRT/build: make_calib.py
-# then build_dit_fp8.py). Switching the sidecar to the `fp8lin` name is a
-# one-liner once someone builds and parity-checks an engine from it.
+# 404s on the second entry and --fp8 still needs a graph passed via
+# --fp8-onnx. Switching the sidecar to the `fp8lin` name is a one-liner
+# once someone builds and parity-checks an engine from it, and upstream's
+# own consumer recipe (`build_from_onnx.py sa3-m-fp8`) confirms that pair
+# is what HF now serves.
+# Producing that graph locally is NOT a vendored-tree operation at the
+# pinned revision: the ModelOpt PTQ builder (`build_dit_fp8.py`) lives in
+# Stability PR #47 and is not merged into the pinned tree. What IS vendored
+# is the rest of the chain — `make_calib.py` (real-conditioning capture),
+# `build_dit_bf16.py` (shared RoPE-baker) and `transplant_scales.py` (grafts
+# #47's calibrated scales onto the baked graph) — but the transplant still
+# consumes a `dit_fp8_calib.onnx` that only #47 produces. See
+# optimized/tensorRT/build/README.md in the vendored tree for the full flow.
 # acestep.engine.sa3_trt does the runtime selection.
 DIT_FP8_ONNX_FILES = (
     "onnx/sa3-m/dit_fp8.onnx",
@@ -391,12 +400,18 @@ def _build_dit_engine(
                 return (label, engine_path, 0.0, "SKIPPED")
             if precision_label == "fp8":
                 raise RuntimeError(
-                    f"dit_fp8.onnx is not on HF ({HF_REPO}) yet. Build it with "
-                    "the managed vendored producer "
-                    "(<MODELS_DIR>/sa3/vendor/stable-audio-3/optimized/"
-                    "tensorRT/build: make_calib.py then build_dit_fp8.py) and "
-                    "pass --fp8-onnx <dit_fp8.onnx>, or wait for the upstream "
-                    "artifact upload."
+                    f"dit_fp8.onnx is not fetchable from HF ({HF_REPO}) under "
+                    "the names this builder expects — upstream's sidecar is "
+                    "published as dit_fp8lin.onnx.data (see "
+                    "DIT_FP8_ONNX_FILES). Pass an already-built graph with "
+                    "--fp8-onnx <dit_fp8.onnx>. It cannot be produced from "
+                    "the vendored tree alone at the pinned revision: the "
+                    "ModelOpt PTQ builder (build_dit_fp8.py) lives in "
+                    "Stability PR #47, not in the pin, and the vendored "
+                    "transplant_scales.py needs that builder's "
+                    "dit_fp8_calib.onnx. See <MODELS_DIR>/sa3/vendor/"
+                    "stable-audio-3/optimized/tensorRT/build/README.md "
+                    "('Medium fp8')."
                 ) from exc
             raise
     expected = _expected_metadata(
