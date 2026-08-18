@@ -143,11 +143,10 @@ def sa3_knob_specs(loras: tuple | list = ()) -> list:
         KnobSpec(
             "sa3_denoise", default=1.0, max_val=1.0, group="sa3",
             description=(
-                "Measured SA3 audio-change amount: 1.0 generates from pure "
-                "noise, while lower values stay progressively closer to the "
-                "source. Mapped onto init_noise_level so useful change is "
-                "spread across the dial. Distinct from ACE's 'denoise' "
-                "(k1 strength), hence the prefix."
+                "SA3 init_noise_level: fresh-noise vs source-anchor mix "
+                "at slot init (1.0 = generate from pure noise, lower = "
+                "closer cover of the source). Distinct from ACE's "
+                "'denoise' (k1 strength), hence the prefix."
             ),
         ),
         KnobSpec(
