@@ -2201,6 +2201,17 @@ def _handle_client_body(
         started_at=time.time(),
         inject=inject_control,
         snapshot=snapshot_session,
+        # Carrying the session EventBus makes register() attach the local
+        # provenance session-log tap (spec 06 §2.2); everything downstream
+        # is fail-open and degrades to a no-op without the provenance
+        # extra installed. provenance_meta supplies the adapter-known
+        # identifiers the snapshot doesn't expose.
+        bus=streaming.bus,
+        provenance_meta={
+            "checkpoint": checkpoint,
+            "fixture_name": fixture_name,
+            "decoder_backend": decoder_backend,
+        },
     ))
     session_registered = True
     logger.info("session_registered")
