@@ -1,0 +1,80 @@
+---
+title: "Overview"
+description: "The DEMON demo app — a live performance surface for streaming music generation"
+icon: "wand-magic-sparkles"
+---
+
+The demo app (`demos/realtime_motion_graph_web`) is DEMON's flagship reference
+application: a Python backend plus a Next.js front-end in a single launcher.
+Feed it audio and a prompt, then twist knobs, draw automation curves, blend
+prompts, hot-swap timbre and structure references, and toggle LoRAs while the
+model generates and plays back continuously. Most of the engine surface is
+exposed as a live control.
+
+It is the same application that powers the hosted instance at
+[music.daydream.live](https://music.daydream.live).
+
+<img src="/images/hud-live.png" alt="The DEMON demo app — live HUD view" />
+
+## Launch
+
+```bash
+uv run python -u -m demos.realtime_motion_graph_web.run
+# then open http://localhost:6660
+```
+
+Backend flags go after `--` (acceleration, checkpoint, ports — see the
+[CLI reference](/reference/cli)). First run installs the web dependencies
+automatically.
+
+## What you can do
+
+<CardGroup cols={2}>
+  <Card title="Steer the generation" icon="sliders" href="/demo/controls">
+    Remix strength, structure, timbre, feedback, flow shift, channel faders,
+    guidance, and the DCW corrector — all live, all hot-mutable.
+  </Card>
+  <Card title="Blend prompts & LoRAs" icon="pen-nib" href="/demo/prompts-and-loras">
+    Two prompt fields with a live blend slider; a genre-grouped LoRA library
+    with per-LoRA strength faders and hot TRT refit.
+  </Card>
+  <Card title="Swap sources & references" icon="arrows-rotate" href="/demo/sources-and-references">
+    Change the source track mid-session (library, upload, or mic), and bias
+    the output with independent timbre and structure references.
+  </Card>
+  <Card title="Draw automation" icon="chart-line" href="/demo/automation-curves">
+    Draw curves over the timeline for strength, structure, feedback, shift,
+    and any LoRA — smooth, linear, or stepped — plus a loop band.
+  </Card>
+  <Card title="Play it like an instrument" icon="keyboard" href="/demo/midi">
+    Full keyboard control and Web MIDI with right-click MIDI learn on any
+    control. Mappings persist locally.
+  </Card>
+  <Card title="Record & export" icon="circle-dot" href="/demo/recording">
+    Capture the audio (Opus/AAC) or the live canvas as video, and snapshot the
+    full session state to JSON.
+  </Card>
+</CardGroup>
+
+## How it fits together
+
+The launcher starts two processes:
+
+| Port | Process |
+|---|---|
+| `:6660` | Next.js front-end (React + zustand) — what you open in the browser |
+| `:1318` | Python backend — HTTP API + WebSocket; one GPU `StreamingSession` per connected tab |
+| `:1319` | Control bus (localhost-only) — lets the [MCP server](/advanced/mcp) drive your session |
+
+Audio streams to the browser as zstd-compressed float16 delta slices over the
+WebSocket; an `AudioWorklet` patches a shared PCM ring buffer in place, with
+50 ms crossfades on swaps. The wire format is fully documented in the
+[WebSocket protocol reference](/reference/websocket-protocol).
+
+## Drive it from an LLM
+
+Every user-facing action in the demo is also exposed as an MCP tool — prompt
+changes, knob moves, LoRA toggles, source swaps, even sample-exact audio
+writes into the live source. Point Claude Code (or any MCP client) at the
+onboard MCP server and it controls the session you have open in the browser,
+with the UI mirroring every change. See [MCP Control](/advanced/mcp).

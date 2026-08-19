@@ -1,0 +1,95 @@
+---
+title: "MCP Control"
+description: "Drive the live demo from Claude Code or any MCP client"
+icon: "robot"
+---
+
+Every user-facing action in the demo — prompt, knobs, LoRA enable/disable,
+timbre/structure references, source swaps, even sample-exact audio writes —
+is exposed as an MCP tool by the onboard stdio MCP server
+(`demos/realtime_motion_graph_web/mcp_server.py`). Point Claude Code (or any
+MCP client) at it and the LLM plays the session you have open in your
+browser.
+
+## How it works
+
+1. You open the demo in your browser as usual. The backend registers that
+   session in a process-global registry and starts the **control bus**, a
+   small HTTP server on `127.0.0.1:1319`.
+2. The MCP server speaks HTTP to the control bus. It does **not** open its
+   own WebSocket and does **not** start a separate GPU session — running it
+   alongside a browser tab is free.
+3. Every MCP command dispatches through the same handler as the browser's own
+   WebSocket frames. Acks flow back to the browser, so **the UI mirrors
+   MCP-driven changes automatically** — you watch the knobs move.
+
+<Note>
+Open the browser tab first. The MCP server refuses to act when there is no
+live session to attach to. Tools take an optional `session_id` and default to
+the most recently started session.
+</Note>
+
+## Setup
+
+Run the backend the usual way:
+
+```bash
+uv run python -u -m demos.realtime_motion_graph_web.run
+```
+
+Then register the MCP server with your client — for Claude Code, in
+`.mcp.json` or settings:
+
+```jsonc
+{
+  "mcpServers": {
+    "demon": {
+      "command": "uv",
+      "args": [
+        "run", "python", "-u",
+        "-m", "demos.realtime_motion_graph_web.mcp_server"
+      ],
+      "cwd": "/path/to/DEMON"
+    }
+  }
+}
+```
+
+Environment overrides: `DEMON_HOST` / `DEMON_PORT` (backend, default
+`127.0.0.1:1318`) and `DEMON_CONTROL_HOST` / `DEMON_CONTROL_PORT` (control
+bus, default `127.0.0.1:1319`).
+
+## What an agent can do
+
+The complete tool list with signatures is in the
+[MCP tools reference](/reference/mcp-tools). The shape of the surface:
+
+- **Discover** — `list_sessions`, `session_state`, `list_knobs`,
+  `list_loras`, `list_fixtures`, `describe_protocol` — the same
+  self-describing manifests the HTTP API serves, so an agent can learn the
+  control surface at runtime.
+- **Steer** — `set_prompt`, `set_prompt_blend`, `set_knob(s)`,
+  `set_rcfg_mode`, `enable_lora` / `disable_lora`, manual steering slots.
+- **Re-source** — `swap_to_fixture` / `swap_to_audio`,
+  `set_timbre_*` / `set_structure_*` with local audio files (resampled
+  server-side).
+- **Write audio live** — `write_audio` places a clip into the playing source
+  sample-exactly, as a declicked replace or an overdub (`sum`), optionally
+  tiled across the track — agent-driven live looping.
+
+## Origin sensitivity
+
+Two commands behave differently when they arrive from the control bus rather
+than the browser: `params` (knob values) and `set_prompt_blend` do not apply
+directly — the server echoes them to the browser (`params_echo` /
+`prompt_blend_echo`), and the browser UI mirrors the value and re-sends it
+through its own 125 Hz parameter channel. This keeps the browser the single
+writer of the hot parameter path. All other commands apply identically from
+any origin.
+
+## Security
+
+The control bus accepts writes into live sessions, which is why it binds to
+localhost by default. The `--control-host`, `--control-port`, and
+`--no-control` server flags are documented in
+[Cloud Deployment](/cloud/deployment#control-bus-security).
