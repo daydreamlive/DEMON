@@ -39,7 +39,20 @@ dependencies = [
     "numba>=0.63.1",
     "vector-quantize-pytorch>=1.27.15",
     "torchcodec>=0.9.1",
-    "torchao",
+    # Pinned to a WINDOW, not a floor — both edges are load-bearing:
+    #
+    #   >= 0.17  peft's is_torchao_available() rejects anything <= 0.16.0,
+    #            so training dies before it writes a safetensors.
+    #   <  0.18  0.18 requires torch>=2.11 and imports ScalingType from
+    #            torch.nn.functional, which the 2.9.1 pinned above does not
+    #            export; diffusers imports torchao eagerly whenever it is
+    #            installed, so inference dies at model load.
+    #
+    # 0.17.0 is the only release that satisfies both, and is what the fleet
+    # ran for months before this was pinned at all. Unpinned, a venv rebuild
+    # resolves to newest and breaks inference; pinned too low it breaks
+    # training. Change either bound only with both paths retested.
+    "torchao==0.17.0",
     # Training dependencies
     "peft>=0.7.0",
     "lightning>=2.0.0",

@@ -29,6 +29,7 @@ export type CommandName =
   | "set_depth"
   | "enable_lora"
   | "disable_lora"
+  | "add_lora"
   | "manual_slot_add"
   | "manual_slot_pop"
   | "set_timbre_strength"
@@ -50,6 +51,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "set_depth",
   "enable_lora",
   "disable_lora",
+  "add_lora",
   "manual_slot_add",
   "manual_slot_pop",
   "set_timbre_strength",
@@ -129,6 +131,10 @@ export interface ParamsCommand {
   raw: Record<string, unknown>;
   /** Playhead position in SECONDS (not a 0..1 ratio); used for time-keyed curve sampling. */
   playback_pos?: number;
+  /** Optional stationary render placement in absolute buffer/song seconds. A finite value renders exactly at that position, bypassing transport lead and loop-band snapping. Absent retains the prior anchor; null clears it. */
+  render_anchor_s?: number | null;
+  /** Optional BATCH of stationary render anchors (absolute buffer/song seconds), rendered back-to-back one window per tick whenever the scalar render_anchor_s is clear (the scalar preempts; the queue resumes when it clears). Each anchor is popped after its window emits. A list REPLACES the prior queue; absent retains it; null/empty clears it. Gated on ready.capabilities.render_anchor_queue — older servers ignore the field. Non-finite entries are dropped; length is capped server-side (1024). Like the scalar anchor, IGNORED in walk-window mode (sources longer than walk_window_s): the DiT holds one chunk and cannot render outside it — clients must not queue-warm walk sources. */
+  render_anchor_queue_s?: unknown[] | null;
   /** Client monotonic send time in seconds (performance.now()/1000; arbitrary origin). Lets the server estimate how stale a playback_pos report is when messages queue (network congestion, recv backlog) and advance its playhead estimate accordingly. Optional: absent on older clients, which get the uncompensated behavior. */
   client_time?: number | null;
   /** Flow-control ack: cumulative bytes of binary slice frames received on this connection. The server holds back slice emission while its sent-bytes minus this ack exceeds the in-flight window (DEMON_SLICE_WINDOW_BYTES, default 256 KiB) so a bandwidth-limited link receives fresh slices at link rate instead of an ever-staler buffered backlog. Optional; absent on older clients = no flow control. */
@@ -181,7 +187,7 @@ export interface SetDepthCommand {
 
 export interface EnableLoraCommand {
   type: "enable_lora";
-  /** LoRA id/stem (see /api/loras). */
+  /** LoRA id/stem (see /api/loras). A value matching no catalog id exactly is resolved as a case-insensitive stem/display-name alias over the compatible subset of the catalog; the enable lands on (and the catalog echo shows) the canonical id. */
   id: string;
   /** Target strength the refit lands at. */
   strength?: number;
@@ -189,7 +195,16 @@ export interface EnableLoraCommand {
 
 export interface DisableLoraCommand {
   type: "disable_lora";
+  /** LoRA id/stem; same alias resolution as enable_lora. */
   id: string;
+}
+
+export interface AddLoraCommand {
+  type: "add_lora";
+  /** Id to store it under; becomes the filename stem and the lora_str_<id> knob name. [A-Za-z0-9._-], <=64 chars. */
+  id: string;
+  /** https URL to fetch the .safetensors from. Host must be allow-listed on the pod (DEMON_LORA_URL_HOSTS). */
+  url: string;
 }
 
 export interface ManualSlotAddCommand {
@@ -283,6 +298,7 @@ export interface ReadyEvent {
   duration: number;
   channels: number;
   sample_rate: number;
+  /** Full catalog; entries carry a server-computed `compatible` bool (backend predicate — can this engine load it?) so clients filter/grey without re-deriving scale rules. */
   lora_catalog?: unknown[];
   lora_dir?: string;
   bpm?: number | null;
@@ -344,6 +360,7 @@ export interface PromptAppliedEvent {
 
 export interface LoraCatalogEvent {
   type: "lora_catalog";
+  /** Same entry shape as ready.lora_catalog, including the server-computed `compatible` bool. */
   catalog: unknown[];
 }
 
@@ -521,6 +538,7 @@ export type WireCommand =
   | SetDepthCommand
   | EnableLoraCommand
   | DisableLoraCommand
+  | AddLoraCommand
   | ManualSlotAddCommand
   | ManualSlotPopCommand
   | SetTimbreStrengthCommand

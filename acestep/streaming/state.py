@@ -116,6 +116,12 @@ class SessionState:
     # runner's per-tick set_strength catch-up only kicks in after tick 1.
     pending_enable: list = field(default_factory=list)
     pending_disable: list = field(default_factory=list)
+    # Paths of LoRA files that finished downloading and are waiting to be
+    # added to the engine's catalog. Registration is metadata-only (the
+    # weights are materialized lazily by enable_lora), but the catalog
+    # dict is read by the tick thread, so the mutation is queued here and
+    # drained in before_tick like every other LoRA mutation.
+    pending_register: list = field(default_factory=list)
     pending_depth: int | None = None
     swap_pending: dict = field(default_factory=_default_swap_pending)
 

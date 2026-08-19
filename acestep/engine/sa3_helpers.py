@@ -25,7 +25,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # DEMON tracks this fork branch until the SA3 TensorRT/FP8 producer work
 # merges upstream. The hash is the reproducibility boundary for installs.
 SA3_VENDOR_URL = "https://github.com/ryanontheinside/stable-audio-3"
-SA3_VENDOR_SHA = "03992120a3e296562271f209f4dd61dcfb55afff"
+SA3_VENDOR_SHA = "960da1f8cbe205ab3b702edbfabd91113ab22473"
+# Revision that last changed the source compiled into the SAME-L TensorRT
+# engine. Keep this stable across vendor bumps that only touch other code.
+SA3_SAME_L_PLUGIN_REVISION = "c07698548567fe6f163806f692d282bbaa57aba3"
 SA3_VENDOR_ENV = "DEMON_SA3_SRC"
 SA3_VENDOR_DIRNAME = "stable-audio-3"
 
@@ -152,7 +155,9 @@ def ensure_sa3_vendor(
     reported as an error instead of being overwritten.
     """
     vendor = sa3_vendor_dir()
-    if not (vendor / ".git").is_dir():
+    # A normal clone has a .git directory; a git worktree has a .git file
+    # pointing at the parent repository. Both are valid developer overrides.
+    if not (vendor / ".git").exists():
         if check_only:
             raise FileNotFoundError(f"SA3 vendor source is missing at {vendor}")
         vendor.parent.mkdir(parents=True, exist_ok=True)

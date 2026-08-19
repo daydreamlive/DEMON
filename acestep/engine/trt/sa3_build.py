@@ -13,7 +13,7 @@ compile Stability's OFFICIAL ONNX exports from
 ``stabilityai/stable-audio-3-optimized``, fetched via ``huggingface_hub``
 on first use.
 
-* **sa3-m DiT**: the pre-surgered FP16-mixed graph (``dit_fp16mixed.onnx``,
+* **sa3-m DiT**: the pre-surgered FP16-mixed graph (``dit_fp16.onnx``,
   FP16 trunk with FP32 islands around RMSNorm, attention softmax, and
   RoPE) compiled as a STRONGLY_TYPED network with no builder precision
   flags. This is upstream's canonical recipe. The BF16 recipe
@@ -26,8 +26,9 @@ on first use.
 * **sa3-m DiT (FP8, opt-in)**: ``dit_fp8.onnx`` (ModelOpt FP8 GEMM trunk on
   top of the fp16mixed graph) compiled to ``sa3_m_dit_fp8_l*`` engines,
   ~1.8x/step at compounded-euler cos ~0.976 vs fp16mixed. Built only with
-  ``--fp8`` (additive to the fp16mixed DiT). The ONNX is not yet on HF; pass
-  ``--fp8-onnx`` a producer-built graph until it is.
+  ``--fp8`` (additive to the fp16mixed DiT). The HF pair is not fetchable
+  yet (see :data:`DIT_FP8_ONNX_FILES`); pass ``--fp8-onnx`` a
+  producer-built graph until it is.
   :func:`acestep.engine.sa3_trt.find_dit_engine` prefers an fp8 engine when one
   covers the window, else fp16mixed.
 * **SAME-L window decoder**: ``dec_dynamic_triton_swa.onnx``,
@@ -86,20 +87,43 @@ from acestep.engine.sa3_trt import (
     SAMPLES_PER_LATENT,
     T5_TOKENS,
     _register_same_plugin,
+    same_l_plugin_build_tag,
     trt_engines_dir,
 )
 
 HF_REPO = "stabilityai/stable-audio-3-optimized"
 # The medium DiT ONNX exceeds 2 GB, so the weights travel in an
 # external-data sidecar next to the proto.
+# Upstream renamed these `dit_fp16mixed.*` -> `dit_fp16.*` on 2026-08-02
+# (HF commits 3f29675c "Rename fp16mixed->fp16 ... (copies; deletes follow
+# after code merge)" then 48e34e2d, which deleted the old names 20 min
+# later — so every SA3 bake since 404s on the old path). The weights
+# sidecar is byte-identical across the rename; only the proto changed, and
+# only where it names its sidecar. That still moves its sha256, which the
+# engine metadata hashes, so the first build after this lands rebuilds the
+# two DiT engines once (~5 min) for a functionally identical result. The
+# SAME-L decoder ONNX is untouched and still skips.
 DIT_ONNX_FILES = (
-    "onnx/sa3-m/dit_fp16mixed.onnx",
-    "onnx/sa3-m/dit_fp16mixed.onnx.data",
+    "onnx/sa3-m/dit_fp16.onnx",
+    "onnx/sa3-m/dit_fp16.onnx.data",
 )
-# FP8-trunk DiT (opt-in, ~1.8x/step). Not yet published to HF, so the fetch
-# 404s until the upstream artifact upload; build it locally with the vendored
-# producer (optimized/tensorRT/build: make_calib.py then build_dit_fp8.py) and
-# pass --fp8-onnx. acestep.engine.sa3_trt does the runtime selection.
+# FP8-trunk DiT (opt-in, ~1.8x/step). Upstream published `dit_fp8.onnx` in
+# the 2026-08-02 sweep, but its sidecar landed as `dit_fp8lin.onnx.data`
+# (sa3-sm-* got matching `dit_fp8.onnx.data` names) — so this pair still
+# 404s on the second entry and --fp8 still needs a graph passed via
+# --fp8-onnx. Switching the sidecar to the `fp8lin` name is a one-liner
+# once someone builds and parity-checks an engine from it, and upstream's
+# own consumer recipe (`build_from_onnx.py sa3-m-fp8`) confirms that pair
+# is what HF now serves.
+# Producing that graph locally is NOT a vendored-tree operation at the
+# pinned revision: the ModelOpt PTQ builder (`build_dit_fp8.py`) lives in
+# Stability PR #47 and is not merged into the pinned tree. What IS vendored
+# is the rest of the chain — `make_calib.py` (real-conditioning capture),
+# `build_dit_bf16.py` (shared RoPE-baker) and `transplant_scales.py` (grafts
+# #47's calibrated scales onto the baked graph) — but the transplant still
+# consumes a `dit_fp8_calib.onnx` that only #47 produces. See
+# optimized/tensorRT/build/README.md in the vendored tree for the full flow.
+# acestep.engine.sa3_trt does the runtime selection.
 DIT_FP8_ONNX_FILES = (
     "onnx/sa3-m/dit_fp8.onnx",
     "onnx/sa3-m/dit_fp8.onnx.data",
@@ -169,6 +193,33 @@ class SA3DiTFp8BuildConfig:
 
 
 @dataclass
+class SA3DiTRefitBuildConfig:
+    """Build parameters for one REFITTABLE sa3-m DiT engine
+    (notes/SA3_LORA_PLAN.md D6b: the LoRA refit endgame).
+
+    A separate dataclass (same rationale as the fp8 one: the metadata
+    skip gate hashes the whole config, so folding a ``refit`` field into
+    :class:`SA3DiTBuildConfig` would change the existing engines'
+    identity and force a needless rebuild). Same fp16mixed ONNX, the
+    ``BuilderFlag.REFIT`` builder flag, and the ``_refit`` name marker
+    that :func:`acestep.engine.sa3_trt.is_refittable_engine_path` (and
+    the exclusive-ownership deserialization policy) keys on.
+    """
+
+    min_latents: int
+    opt_latents: int
+    max_latents: int
+    workspace_gb: float = 16.0
+    onnx_files: list[str] = field(default_factory=lambda: list(DIT_ONNX_FILES))
+
+    def engine_name(self) -> str:
+        return (
+            f"sa3_m_dit_refit_l{self.min_latents}"
+            f"_{self.opt_latents}_{self.max_latents}"
+        )
+
+
+@dataclass
 class SameLWindowBuildConfig:
     """Build parameters for the SAME-L window decoder engine."""
 
@@ -177,10 +228,11 @@ class SameLWindowBuildConfig:
     max_latents: int
     workspace_gb: float = 16.0
     onnx_files: list[str] = field(default_factory=lambda: list(SAME_L_ONNX_FILES))
+    plugin_build_tag: str = field(default_factory=same_l_plugin_build_tag)
 
     def engine_name(self) -> str:
         return (
-            f"same_l_decode_window_t{self.min_latents}"
+            f"same_l_decode_window_{self.plugin_build_tag}_t{self.min_latents}"
             f"_{self.opt_latents}_{self.max_latents}"
         )
 
@@ -202,12 +254,56 @@ def _fetch_onnx(rel_paths: list[str] | tuple[str, ...]) -> str:
     return local_paths[0]
 
 
+def _engine_survives_missing_onnx(
+    *,
+    engine_path: str,
+    component: str,
+    config,
+    env: dict,
+    force_rebuild: bool,
+) -> str | None:
+    """Reason the engine on disk stands in for an unfetchable ONNX, else None.
+
+    The ONNX is fetched on every run, including runs with nothing to
+    build, purely to hash it into the freshness check. That makes an
+    upstream artifact rename fatal to a bake that had zero engines to
+    build — which is exactly what Stability's 2026-08-02
+    ``dit_fp16mixed`` -> ``dit_fp16`` rename did to bake-warm #87. An
+    engine already built and current in every other respect doesn't need
+    the graph it came from, so a failed fetch is a reason to keep it, not
+    to fail the run.
+
+    Deliberately narrow: TRT version, compute capability and build config
+    are still compared, so a genuinely stale engine still demands the
+    ONNX and still surfaces the fetch error. What this cannot see is an
+    upstream *re-export* published under a new name — the engine would be
+    silently kept — hence the WARNING the caller logs.
+    """
+    if force_rebuild or not os.path.exists(engine_path):
+        return None
+    expected = _expected_metadata(
+        component=component, onnx_path=None, config=config, env=env,
+    )
+    matches, reason = _metadata_matches(
+        engine_path, expected, ignore=("onnx_sha256",),
+    )
+    if not matches:
+        return None
+    size_mb = os.path.getsize(engine_path) / 1e6
+    return (
+        f"{os.path.basename(engine_path)} ({size_mb:.0f} MB, {reason} "
+        "apart from the graph hash)"
+    )
+
+
 def _build_strongly_typed_engine(
     *,
     onnx_path: str,
     engine_path: str,
     workspace_gb: float,
     profile_shapes: dict[str, tuple[tuple, tuple, tuple]],
+    refit: bool = False,
+    python_plugin_preference: str | None = None,
 ) -> None:
     """Parse + build one STRONGLY_TYPED engine and serialize it to disk.
 
@@ -220,9 +316,16 @@ def _build_strongly_typed_engine(
 
     trt_logger = trt.Logger(trt.Logger.WARNING)
     builder = trt.Builder(trt_logger)
-    network = builder.create_network(
-        1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
-    )
+    network_flags = 1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
+    if python_plugin_preference == "aot":
+        network_flags |= 1 << int(
+            trt.NetworkDefinitionCreationFlag.PREFER_AOT_PYTHON_PLUGINS
+        )
+    elif python_plugin_preference == "jit":
+        network_flags |= 1 << int(
+            trt.NetworkDefinitionCreationFlag.PREFER_JIT_PYTHON_PLUGINS
+        )
+    network = builder.create_network(network_flags)
     parser = trt.OnnxParser(network, trt_logger)
     if not parser.parse_from_file(onnx_path):
         for i in range(parser.num_errors):
@@ -233,6 +336,8 @@ def _build_strongly_typed_engine(
     config.set_memory_pool_limit(
         trt.MemoryPoolType.WORKSPACE, int(workspace_gb * (1 << 30)),
     )
+    if refit:
+        config.set_flag(trt.BuilderFlag.REFIT)
     profile = builder.create_optimization_profile()
     for input_name, (lo, opt, hi) in profile_shapes.items():
         profile.set_shape(input_name, lo, opt, hi)
@@ -257,6 +362,7 @@ def _build_dit_engine(
     component: str = "sa3_m_dit",
     precision_label: str = "fp16mixed",
     local_onnx: str | None = None,
+    refit: bool = False,
 ) -> tuple[str, str, float, str]:
     """Build one sa3-m DiT engine. Returns (label, path, elapsed, status).
 
@@ -280,14 +386,32 @@ def _build_dit_engine(
         try:
             onnx_path = _fetch_onnx(config.onnx_files)
         except Exception as exc:
+            kept = _engine_survives_missing_onnx(
+                engine_path=engine_path, component=component, config=config,
+                env=env, force_rebuild=force_rebuild,
+            )
+            if kept:
+                logger.warning(
+                    "ONNX fetch failed ({}) but nothing needed building — "
+                    "keeping {}. If upstream re-exported the graph under a "
+                    "new name, update the *_ONNX_FILES paths and rebuild.",
+                    exc, kept,
+                )
+                return (label, engine_path, 0.0, "SKIPPED")
             if precision_label == "fp8":
                 raise RuntimeError(
-                    f"dit_fp8.onnx is not on HF ({HF_REPO}) yet. Build it with "
-                    "the managed vendored producer "
-                    "(<MODELS_DIR>/sa3/vendor/stable-audio-3/optimized/"
-                    "tensorRT/build: make_calib.py then build_dit_fp8.py) and "
-                    "pass --fp8-onnx <dit_fp8.onnx>, or wait for the upstream "
-                    "artifact upload."
+                    f"dit_fp8.onnx is not fetchable from HF ({HF_REPO}) under "
+                    "the names this builder expects — upstream's sidecar is "
+                    "published as dit_fp8lin.onnx.data (see "
+                    "DIT_FP8_ONNX_FILES). Pass an already-built graph with "
+                    "--fp8-onnx <dit_fp8.onnx>. It cannot be produced from "
+                    "the vendored tree alone at the pinned revision: the "
+                    "ModelOpt PTQ builder (build_dit_fp8.py) lives in "
+                    "Stability PR #47, not in the pin, and the vendored "
+                    "transplant_scales.py needs that builder's "
+                    "dit_fp8_calib.onnx. See <MODELS_DIR>/sa3/vendor/"
+                    "stable-audio-3/optimized/tensorRT/build/README.md "
+                    "('Medium fp8')."
                 ) from exc
             raise
     expected = _expected_metadata(
@@ -323,6 +447,7 @@ def _build_dit_engine(
             "seconds_total": ((1,), (1,), (1,)),
             "local_add_cond": ((1, 257, lo), (1, 257, opt), (1, 257, hi)),
         },
+        refit=refit,
     )
     _write_metadata(engine_path=engine_path, expected=expected, env=env)
     elapsed = time.time() - t0
@@ -345,7 +470,22 @@ def _build_same_l_window_engine(
         f"_{config.opt_latents}_{config.max_latents}"
     )
 
-    onnx_path = _fetch_onnx(config.onnx_files)
+    try:
+        onnx_path = _fetch_onnx(config.onnx_files)
+    except Exception as exc:
+        kept = _engine_survives_missing_onnx(
+            engine_path=engine_path, component="same_l_decode_window",
+            config=config, env=env, force_rebuild=force_rebuild,
+        )
+        if not kept:
+            raise
+        logger.warning(
+            "ONNX fetch failed ({}) but nothing needed building — keeping "
+            "{}. If upstream re-exported the graph under a new name, update "
+            "the *_ONNX_FILES paths and rebuild.",
+            exc, kept,
+        )
+        return (label, engine_path, 0.0, "SKIPPED")
     expected = _expected_metadata(
         component="same_l_decode_window", onnx_path=onnx_path, config=config, env=env,
     )
@@ -379,6 +519,9 @@ def _build_same_l_window_engine(
         profile_shapes={
             "latent": ((1, IO_CHANNELS, lo), (1, IO_CHANNELS, opt), (1, IO_CHANNELS, hi)),
         },
+        python_plugin_preference=(
+            "jit" if config.plugin_build_tag.startswith("jit_") else "aot"
+        ),
     )
     _write_metadata(engine_path=engine_path, expected=expected, env=env)
     elapsed = time.time() - t0
@@ -423,6 +566,14 @@ def _matrix_jobs(args) -> list[tuple[str, str]]:
                 cfg = SA3DiTFp8BuildConfig(lo, opt, hi)
                 jobs.append((
                     f"SA3-M DiT fp8 l{lo}_{opt}_{hi}"
+                    f" (~{hi * SAMPLES_PER_LATENT / SA3_SAMPLE_RATE:.0f}s window)",
+                    cfg.engine_name(),
+                ))
+        if args.refit:
+            for lo, opt, hi in dit_profiles:
+                cfg = SA3DiTRefitBuildConfig(lo, opt, hi)
+                jobs.append((
+                    f"SA3-M DiT refit l{lo}_{opt}_{hi}"
                     f" (~{hi * SAMPLES_PER_LATENT / SA3_SAMPLE_RATE:.0f}s window)",
                     cfg.engine_name(),
                 ))
@@ -534,6 +685,12 @@ def main() -> int:
                              "(~1.8x/step; preferred at runtime when present, "
                              "fp16mixed fallback). Needs the published "
                              "dit_fp8.onnx or --fp8-onnx.")
+    single.add_argument("--refit", action="store_true",
+                        help="Also build the REFITTABLE fp16mixed DiT "
+                             "variant(s) (BuilderFlag.REFIT; the LoRA "
+                             "in-place-refit engines, preferred by "
+                             "LoRA-enabled sessions and exclusively owned "
+                             "at runtime — never process-cached).")
     single.add_argument("--fp8-onnx", default=None,
                         help="Path to a producer-built dit_fp8.onnx (with its "
                              ".onnx.data sidecar alongside) to compile instead "
@@ -585,6 +742,18 @@ def main() -> int:
                         precision_label="fp8",
                         local_onnx=args.fp8_onnx,
                     ))
+            if args.refit:
+                for lo, opt, hi in dit_profiles:
+                    results.append(_build_dit_engine(
+                        output_dir=args.output_dir,
+                        config=SA3DiTRefitBuildConfig(
+                            lo, opt, hi, workspace_gb=args.workspace_gb),
+                        env=env,
+                        force_rebuild=args.force_rebuild,
+                        component="sa3_m_dit_refit",
+                        precision_label="fp16mixed refit",
+                        refit=True,
+                    ))
         if not args.dit_only:
             lo, opt, hi = CANONICAL_SAME_L_WINDOW
             results.append(_build_same_l_window_engine(
@@ -630,6 +799,20 @@ def main() -> int:
                 force_rebuild=args.force_rebuild,
                 component="sa3_m_dit_fp8", precision_label="fp8",
                 local_onnx=args.fp8_onnx,
+            ))
+        if args.refit:
+            refit_cfg = SA3DiTRefitBuildConfig(
+                min_latents=config.min_latents,
+                opt_latents=config.opt_latents,
+                max_latents=config.max_latents,
+                workspace_gb=args.workspace_gb,
+            )
+            built.append(_build_dit_engine(
+                output_dir=args.output_dir, config=refit_cfg, env=env,
+                force_rebuild=args.force_rebuild,
+                component="sa3_m_dit_refit",
+                precision_label="fp16mixed refit",
+                refit=True,
             ))
     if args.same_l_window:
         d_lo, d_opt, d_hi = CANONICAL_SAME_L_WINDOW

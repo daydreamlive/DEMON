@@ -35,6 +35,21 @@ class AudioEngine:
         # its anchor by this much so delayed reports don't drag the
         # estimate into the past. 0.0 when reports carry no send stamp.
         self.position_staleness_s = 0.0
+        # Explicit stationary render placement in absolute buffer seconds.
+        # None means normal transport-driven placement. The params command
+        # owns its sticky absent/value/null lifetime; source swaps hard-clear it.
+        self.render_anchor_s = None
+        # Batch stationary placement: a FIFO of anchor seconds the runner
+        # renders back-to-back (one window per tick, popped after its window
+        # is emitted) whenever no scalar ``render_anchor_s`` is set — the
+        # scalar always preempts, the queue resumes when it clears. Set
+        # cross-thread by the params command (replace semantics; empty/null
+        # clears); source swaps hard-clear it alongside the scalar anchor.
+        # Guarded by its own lock: the buffer ``_lock`` sits on the audio
+        # callback hot path and queue ops must never contend with it.
+        self._render_anchor_queue: list = []
+        self._render_anchor_queue_gen = 0
+        self._render_anchor_queue_lock = threading.Lock()
         # Client-observed slice landing lead (seconds; negative = the
         # slice patched audio the listener already played) and the wall
         # time the report arrived. None until the client sends one. The
@@ -55,6 +70,41 @@ class AudioEngine:
         self._fading = False
         self._fade_pos = 0
         self._lock = threading.Lock()
+
+    # ---- render-anchor queue (see __init__) --------------------------------
+
+    def set_render_anchor_queue(self, anchors) -> None:
+        """Replace the queued stationary anchors (seconds). Empty clears.
+
+        Bumps the queue GENERATION: a tick that peeked the old queue must
+        not pop from the replacement. A same-value head is not enough to
+        detect that (ABA: replacing ``[1, 2]`` with ``[1, 3]`` while ``1``
+        renders would let the old tick pop the NEW queue's ``1``)."""
+        anchors = [float(a) for a in (anchors or [])]
+        with self._render_anchor_queue_lock:
+            self._render_anchor_queue = anchors
+            self._render_anchor_queue_gen += 1
+
+    def peek_render_anchor(self):
+        """``(head_anchor_s, generation)`` of the queue, or ``None``."""
+        with self._render_anchor_queue_lock:
+            q = self._render_anchor_queue
+            if not q:
+                return None
+            return q[0], self._render_anchor_queue_gen
+
+    def pop_render_anchor(self, expected, generation) -> None:
+        """Pop the queue head iff it still equals ``expected`` AND the queue
+        has not been replaced since the peek (``generation`` matches).
+
+        The runner peeks at tick start and pops only after the window is
+        emitted; the guards make a client replace mid-tick safe."""
+        with self._render_anchor_queue_lock:
+            if self._render_anchor_queue_gen != generation:
+                return
+            q = self._render_anchor_queue
+            if q and q[0] == expected:
+                q.pop(0)
 
     @property
     def duration(self):

@@ -1129,6 +1129,13 @@ class StreamPipeline:
                     and slot.step_idx >= len(slot.t_schedule) - 1
                 ):
                     finished = slot.xt
+                    # Keep last_finished_request's contract ("the request
+                    # the returned latent was generated from") on THIS
+                    # path too — it's the common one; without this the
+                    # attribute lags one generation behind, so the
+                    # emerged-params echo and the decode-seed pairing
+                    # describe the PREVIOUS latent.
+                    self.last_finished_request = slot.request
                     self._slots[i] = None
                     break
 

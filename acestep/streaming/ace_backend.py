@@ -27,6 +27,7 @@ import torch
 
 from acestep.engine.dcw import DCWAdvanced
 from acestep.engine.obs import logger
+from acestep.lora_metadata import lora_scale_compatible
 from acestep.nodes.types import ChannelGuidanceEntry, Latent
 from acestep.nodes.interpolation import INTERPOLATIONS
 from acestep.nodes.vae_nodes import EmptyLatent, LatentBlend
@@ -180,6 +181,7 @@ class ACEStepBackend(DiffusionBackend):
         walk_window_s=60.0,
         neg_conditioning=None,
         steering: SteeringController | None = None,
+        checkpoint_scale: str | None = None,
     ):
         # The family codec is the engine Session: its windowed VAE
         # decode is what render_window()/render_full() drive. The
@@ -194,6 +196,10 @@ class ACEStepBackend(DiffusionBackend):
         self.use_lora = use_lora
         self.midi_knobs = midi_knobs
         self.engine_obj = engine_obj
+        # Model-scale label of the active checkpoint ("2B" / "5B",
+        # None = unknown), resolved by the factory from the session's
+        # checkpoint name. Drives lora_compatible below.
+        self.checkpoint_scale = checkpoint_scale
         # Use the effective Session value after engine-profile clamps.
         # The web config may still carry an old multi-second value, but
         # scheduling must match the slice length session.decode() emits.
@@ -337,6 +343,25 @@ class ACEStepBackend(DiffusionBackend):
             curves=True,
             notes_conditioning=False,
             steering=self.steering.is_loaded,
+            render_anchor_queue=True,
+        )
+
+    def lora_compatible(self, metadata: dict) -> bool:
+        """ACE's compatibility axes: weight-format family and
+        base-model scale.
+
+        Family: a file whose sniffed ``lora_family`` names a different
+        family (e.g. "sa3") can never load on an ACE engine — hard no.
+        Unknown family stays permissive per the seam contract.
+
+        Scale: a 2B-trained LoRA cannot refit onto the XL (5B) DiT and
+        vice versa. Unknown scale on either side is compatible.
+        """
+        family = metadata.get("lora_family")
+        if family and family != "ace":
+            return False
+        return lora_scale_compatible(
+            metadata.get("base_model_scale"), self.checkpoint_scale,
         )
 
     def geometry(self) -> AudioGeometry:

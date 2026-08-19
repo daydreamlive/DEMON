@@ -215,6 +215,30 @@ COMMANDS: tuple = (
             FieldSpec("playback_pos", "float", default=0.0,
                       description="Playhead position in SECONDS (not a 0..1 "
                                   "ratio); used for time-keyed curve sampling."),
+            FieldSpec("render_anchor_s", "float", nullable=True,
+                      description="Optional stationary render placement in "
+                                  "absolute buffer/song seconds. A finite value "
+                                  "renders exactly at that position, bypassing "
+                                  "transport lead and loop-band snapping. Absent "
+                                  "retains the prior anchor; null clears it."),
+            FieldSpec("render_anchor_queue_s", "list", nullable=True,
+                      description="Optional BATCH of stationary render anchors "
+                                  "(absolute buffer/song seconds), rendered "
+                                  "back-to-back one window per tick whenever "
+                                  "the scalar render_anchor_s is clear (the "
+                                  "scalar preempts; the queue resumes when it "
+                                  "clears). Each anchor is popped after its "
+                                  "window emits. A list REPLACES the prior "
+                                  "queue; absent retains it; null/empty clears "
+                                  "it. Gated on ready.capabilities."
+                                  "render_anchor_queue — older servers ignore "
+                                  "the field. Non-finite entries are dropped; "
+                                  "length is capped server-side (1024). Like "
+                                  "the scalar anchor, IGNORED in walk-window "
+                                  "mode (sources longer than walk_window_s): "
+                                  "the DiT holds one chunk and cannot render "
+                                  "outside it — clients must not queue-warm "
+                                  "walk sources."),
             FieldSpec("client_time", "float", nullable=True,
                       description="Client monotonic send time in seconds "
                                   "(performance.now()/1000; arbitrary origin). "
@@ -316,7 +340,12 @@ COMMANDS: tuple = (
         "enable_lora",
         fields=(
             FieldSpec("id", "str", required=True,
-                      description="LoRA id/stem (see /api/loras)."),
+                      description="LoRA id/stem (see /api/loras). A value "
+                                  "matching no catalog id exactly is resolved "
+                                  "as a case-insensitive stem/display-name "
+                                  "alias over the compatible subset of the "
+                                  "catalog; the enable lands on (and the "
+                                  "catalog echo shows) the canonical id."),
             FieldSpec("strength", "float",
                       description="Target strength the refit lands at."),
         ),
@@ -325,9 +354,29 @@ COMMANDS: tuple = (
     ),
     CommandSpec(
         "disable_lora",
-        fields=(FieldSpec("id", "str", required=True),),
+        fields=(FieldSpec("id", "str", required=True,
+                          description="LoRA id/stem; same alias resolution "
+                                      "as enable_lora."),),
         requires="lora",
         description="Disable a LoRA and drop its lora_str_<id> knob.",
+    ),
+    CommandSpec(
+        "add_lora",
+        fields=(
+            FieldSpec("id", "str", required=True,
+                      description="Id to store it under; becomes the "
+                                  "filename stem and the lora_str_<id> "
+                                  "knob name. [A-Za-z0-9._-], <=64 chars."),
+            FieldSpec("url", "str", required=True,
+                      description="https URL to fetch the .safetensors "
+                                  "from. Host must be allow-listed on the "
+                                  "pod (DEMON_LORA_URL_HOSTS)."),
+        ),
+        requires="lora",
+        description="Fetch a LoRA into the library and register it, so one "
+                    "trained after this pod booted can be enabled. Returns "
+                    "immediately; watch lora_catalog for the id, then send "
+                    "enable_lora.",
     ),
     CommandSpec(
         "manual_slot_add",
@@ -497,7 +546,12 @@ EVENTS: tuple = (
             FieldSpec("duration", "float", required=True),
             FieldSpec("channels", "int", required=True),
             FieldSpec("sample_rate", "int", required=True),
-            FieldSpec("lora_catalog", "list"),
+            FieldSpec("lora_catalog", "list",
+                      description="Full catalog; entries carry a server-"
+                                  "computed `compatible` bool (backend "
+                                  "predicate — can this engine load it?) so "
+                                  "clients filter/grey without re-deriving "
+                                  "scale rules."),
             FieldSpec("lora_dir", "str"),
             FieldSpec("bpm", "float", nullable=True),
             FieldSpec("key", "str", nullable=True),
@@ -612,7 +666,10 @@ EVENTS: tuple = (
     ),
     EventSpec(
         "lora_catalog",
-        fields=(FieldSpec("catalog", "list", required=True),),
+        fields=(FieldSpec("catalog", "list", required=True,
+                          description="Same entry shape as "
+                                      "ready.lora_catalog, including the "
+                                      "server-computed `compatible` bool."),),
         description="Refreshed LoRA catalog after enable/disable.",
     ),
     EventSpec(

@@ -48,6 +48,7 @@ TRT (engine discovery then simply reports nothing).
 from __future__ import annotations
 
 import math
+import os
 import re
 import sys
 import threading
@@ -58,7 +59,7 @@ import torch
 
 from acestep import paths
 from acestep.engine.obs import logger
-from acestep.engine.sa3_helpers import sa3_vendor_dir
+from acestep.engine.sa3_helpers import SA3_SAME_L_PLUGIN_REVISION, sa3_vendor_dir
 
 IO_CHANNELS = 256
 T5_TOKENS = 256
@@ -85,22 +86,77 @@ _DIT_DIR_RE = re.compile(r"^(?P<prefix>.+_dit)_l(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>
 _DIT_FP8_DIR_RE = re.compile(
     r"^(?P<prefix>.+_dit)_fp8_l(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$"
 )
-_SAME_L_DIR_RE = re.compile(r"^same_l_decode_window_t(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$")
+# Refittable fp16mixed DiT engines (BuilderFlag.REFIT; built by
+# ``sa3_build --refit``): ``sa3_m_dit_refit_l{min}_{opt}_{max}``. The
+# LoRA refit path (notes/SA3_LORA_PLAN.md D6b) mutates these in place,
+# so they are EXCLUDED from the shared deserialization cache below —
+# every consumer gets an exclusively-owned instance that dies with its
+# session (which is also the base-weight rollback guarantee: a mutated
+# engine can never be handed to a later session).
+_DIT_REFIT_DIR_RE = re.compile(
+    r"^(?P<prefix>.+_dit)_refit_l(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$"
+)
+_SAME_L_DIR_RE = re.compile(
+    r"^same_l_decode_window_(?P<tag>[a-z0-9_]+)_t"
+    r"(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$"
+)
 
 # Deserialized-engine process cache. Engines are immutable post-load and
 # support multiple execution contexts, so sharing one deserialization
 # across sessions is safe; the per-wrapper state is the context+buffers.
+# The IMMUTABILITY ASSUMPTION is the cache's contract: refittable
+# engines (see _DIT_REFIT_DIR_RE) must never enter it — they are
+# deserialized per-session with exclusive ownership instead.
 _ENGINE_CACHE: dict = {}
 _ENGINE_CACHE_LOCK = threading.Lock()
 _SAME_PLUGIN_REGISTERED = False
+
+
+def same_l_plugin_build_tag() -> str:
+    """Identity of the plugin implementation compiled into a SAME-L engine.
+
+    The upstream plugin is part of the serialized TensorRT engine, so changing
+    the vendored source revision or its selected AOT backend requires a new
+    engine even when the ONNX graph is unchanged.
+    """
+    requested_plugin = os.environ.get("SA3_SWA_PLUGIN", "aot").strip().lower()
+    plugin = "jit" if requested_plugin == "jit" else "aot"
+    if plugin == "jit":
+        implementation = "jit"
+    else:
+        requested_backend = os.environ.get("SA3_SWA_AOT", "mma").strip().lower()
+        implementation = "mma" if requested_backend == "mma" else "ptx"
+    return f"{plugin}_{implementation}_v{SA3_SAME_L_PLUGIN_REVISION[:12]}"
 
 
 def trt_engines_dir() -> Path:
     return paths.models_dir() / "sa3" / "trt_engines"
 
 
-def _deserialize_engine(path: Path):
+def is_refittable_engine_path(path: Path) -> bool:
+    """Whether ``path`` names a refit-built DiT engine (by the naming
+    marker ``sa3_build --refit`` stamps)."""
+    return _DIT_REFIT_DIR_RE.match(Path(path).parent.name) is not None
+
+
+def _deserialize_engine(path: Path, *, exclusive: bool = False):
     import tensorrt as trt
+
+    exclusive = exclusive or is_refittable_engine_path(path)
+    if exclusive:
+        # Refittable (or explicitly exclusive) engines bypass the cache:
+        # in-place refit would otherwise mutate every consumer and
+        # outlive the session that made it. The load cost (~seconds for
+        # the 2.8 GB DiT) is the accepted price of exclusive ownership.
+        logger.info(
+            "sa3_trt_engine_load path={} size_gb={:.1f} ownership=exclusive",
+            path, path.stat().st_size / 1e9,
+        )
+        runtime = trt.Runtime(trt.Logger(trt.Logger.WARNING))
+        engine = runtime.deserialize_cuda_engine(path.read_bytes())
+        if engine is None:
+            raise RuntimeError(f"failed to deserialize TRT engine {path}")
+        return engine
 
     with _ENGINE_CACHE_LOCK:
         engine = _ENGINE_CACHE.get(str(path))
@@ -144,18 +200,43 @@ def _register_same_plugin() -> None:
 # ---------------------------------------------------------------------------
 
 
-def find_dit_engine(model_id: str, latent_frames: int) -> Optional[Path]:
+def find_dit_engine(
+    model_id: str, latent_frames: int, *, want_refittable: bool = False,
+) -> Optional[Path]:
     """Smallest-profile built DiT engine covering ``latent_frames`` for
-    ``model_id``'s weights, or None (caller falls back to eager)."""
+    ``model_id``'s weights, or None (caller falls back to eager).
+
+    ``want_refittable`` is the LoRA-session preference (plan D6b):
+
+    * A covering refit-built engine wins when one exists — LoRA strength
+      changes then run as in-place refits instead of the eager-DiT swap.
+    * Otherwise selection prefers **fp16mixed over fp8** (D6c: FP8 refit
+      on Stability's graph is its own unproven investigation; until then
+      a LoRA session must not land on an engine the refit path can't
+      serve at higher fidelity than the fp16mixed one), logged, and the
+      interim eager swap covers actual enables.
+
+    Without it, selection is unchanged: fp8 preferred when covering,
+    else fp16mixed; refit-built engines are ignored (their refit
+    support costs a little optimization freedom, and non-LoRA sessions
+    shouldn't pay it).
+    """
     prefix = DIT_ENGINE_PREFIX.get(model_id)
     base = trt_engines_dir()
     if prefix is None or not base.is_dir():
         return None
-    best = None       # smallest-covering fp16mixed engine
-    best_fp8 = None   # smallest-covering fp8 engine (preferred when present)
+    best = None        # smallest-covering fp16mixed engine
+    best_fp8 = None    # smallest-covering fp8 engine
+    best_refit = None  # smallest-covering refit-built engine
     for sub in base.iterdir():
         f = sub / f"{sub.name}.trt"
         if not f.is_file():
+            continue
+        mr = _DIT_REFIT_DIR_RE.match(sub.name)
+        if mr and mr.group("prefix") == prefix:
+            lo, hi = int(mr.group("lo")), int(mr.group("hi"))
+            if lo <= latent_frames <= hi and (best_refit is None or hi < best_refit[0]):
+                best_refit = (hi, f)
             continue
         mf = _DIT_FP8_DIR_RE.match(sub.name)
         if mf and mf.group("prefix") == prefix:
@@ -168,6 +249,20 @@ def find_dit_engine(model_id: str, latent_frames: int) -> Optional[Path]:
             lo, hi = int(m.group("lo")), int(m.group("hi"))
             if lo <= latent_frames <= hi and (best is None or hi < best[0]):
                 best = (hi, f)
+    if want_refittable:
+        if best_refit is not None:
+            logger.info(
+                "sa3_dit_refit_selected engine={} latent_frames={}",
+                best_refit[1].parent.name, latent_frames,
+            )
+            return best_refit[1]
+        if best_fp8 is not None and best is not None:
+            logger.info(
+                "sa3_dit_fp8_skipped_for_lora engine={} using={} "
+                "reason=fp8_refit_unproven",
+                best_fp8[1].parent.name, best[1].parent.name,
+            )
+        return best[1] if best else (best_fp8[1] if best_fp8 else None)
     # fp8 is ~1.8x faster; prefer it when one covers the window.
     if best_fp8 is not None:
         logger.info(
@@ -192,7 +287,11 @@ def max_dit_engine_latents(model_id: str) -> Optional[int]:
     # install would otherwise report no cap and skip the clamp.
     his = []
     for sub in base.iterdir():
-        m = _DIT_DIR_RE.match(sub.name) or _DIT_FP8_DIR_RE.match(sub.name)
+        m = (
+            _DIT_REFIT_DIR_RE.match(sub.name)
+            or _DIT_DIR_RE.match(sub.name)
+            or _DIT_FP8_DIR_RE.match(sub.name)
+        )
         if (
             m
             and m.group("prefix") == prefix
@@ -208,9 +307,10 @@ def find_same_l_window_engine() -> Optional[tuple]:
     base = trt_engines_dir()
     if not base.is_dir():
         return None
+    expected_tag = same_l_plugin_build_tag()
     for sub in base.iterdir():
         m = _SAME_L_DIR_RE.match(sub.name)
-        if not m:
+        if not m or m.group("tag") != expected_tag:
             continue
         f = sub / f"{sub.name}.trt"
         if f.is_file():
@@ -259,6 +359,14 @@ class SA3TRTDit:
 
     def __init__(self, engine_path: Path, *, latent_frames: int, seconds_total: float):
         engine = _deserialize_engine(engine_path)
+        # Exposed for the LoRA refit mirror: on a refit-built engine
+        # (exclusively owned, never cached) the mirror attaches an
+        # IRefitter to this same instance. None of the wrapper's own
+        # state cares about refits — buffers and context stay valid
+        # across refit_cuda_engine().
+        self.engine = engine
+        self.engine_path = Path(engine_path)
+        self.refittable = is_refittable_engine_path(engine_path)
         self._ctx = engine.create_execution_context()
         self._stream = torch.cuda.Stream()
         L = int(latent_frames)

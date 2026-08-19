@@ -68,79 +68,31 @@ class _LoRAEntry:
     materialized_bytes: int = 0
 
 
-class LoRAManagerBase(abc.ABC):
-    """Catalog + lifecycle + delta math; subclasses do the engine writeback.
+class LoRACatalogBase(abc.ABC):
+    """The family-agnostic slice of a LoRA manager: catalog dict,
+    REGISTERED → MATERIALIZING → MATERIALIZED (→ ENABLED) state
+    machine, background prewarm executor, and read-only inspection.
 
-    Subclasses must:
+    Two manager families share this layer without sharing weight
+    semantics: the delta-merge managers (:class:`LoRAManagerBase` — ACE
+    eager + TRT refit, ``base + Σ strength·delta``) and the SA3
+    parametrization manager (:mod:`acestep.engine.sa3_lora`), whose
+    materialize/enable transaction is a different shape (staged state
+    dicts + torch parametrize registration). Enable/disable/strength
+    live on the subclasses — their transaction and rollback semantics
+    differ by design.
 
-    - Populate ``self._base_weights`` (dict: param_name -> CPU/GPU tensor in
-      the live weight's native dtype) and ``self._param_dtype`` (dict:
-      param_name -> torch.dtype) during __init__, then call
-      ``super().__init__()`` to set up the lifecycle bookkeeping.
-    - Implement :meth:`_apply_to_engine`, which writes
-      ``base + sum_over_enabled(strength * delta)`` to the live weights
-      for the supplied ``param_names``.
-
-    Param naming is decoder-relative (matches ``decoder.named_parameters()``).
-    The TRT subclass adds the ``decoder.`` prefix only at the refitter
-    boundary.
+    Subclasses implement :meth:`_materialize_worker` (worker-thread
+    body: fill the entry's staged payload without touching the live
+    weights; on failure restore REGISTERED state and re-raise).
     """
 
     def __init__(self) -> None:
-        # Subclasses set _base_weights, _param_dtype, and _param_numel
-        # before super().__init__. _param_numel is the element count of
-        # the base weight (orientation-independent) so _compute_deltas
-        # can sanity-check that a LoRA was trained for THIS base model
-        # rather than silently producing wrong-shape deltas (e.g. a 2B
-        # LoRA materialized against an XL engine).
-        if not hasattr(self, "_base_weights"):
-            self._base_weights: Dict[str, torch.Tensor] = {}
-        if not hasattr(self, "_param_dtype"):
-            self._param_dtype: Dict[str, torch.dtype] = {}
-        if not hasattr(self, "_param_numel"):
-            self._param_numel: Dict[str, int] = {}
-
         # Library + lifecycle state.  Insertion order is preserved so
         # ``remove_lora(-1)`` can pop the most-recently-registered entry,
         # matching the legacy stack-style API.
         self._loras: Dict[str, _LoRAEntry] = {}
-        self._ever_dirty: Set[str] = set()
         self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
-
-    # ------------------------------------------------------------------
-    # Subclass hook
-    # ------------------------------------------------------------------
-
-    @abc.abstractmethod
-    def _apply_to_engine(self, param_names: Set[str]) -> None:
-        """Write ``base + Σ strength·delta`` to the live weights.
-
-        ``param_names`` is the set of decoder-relative param names that
-        need updating. Subclasses iterate, accumulate enabled-LoRA
-        contributions in a buffer, and push to the live weights.
-        """
-
-    # ------------------------------------------------------------------
-    # Lifecycle transition hooks (default: no-ops)
-    #
-    # The base lifecycle (enable_lora / disable_lora) calls these around
-    # state transitions so subclasses can attach side effects without
-    # overriding the lifecycle proper. The motivating case is the eager
-    # backend's "promote materialized deltas to GPU on enable, drop the
-    # GPU mirror on disable" pattern: deltas live cheaply in CPU RAM
-    # while merely MATERIALIZED, but the active set lives in VRAM so
-    # slider-driven refits stay zero-copy on the device.
-    # ------------------------------------------------------------------
-
-    def _on_enabled(self, entry: "_LoRAEntry") -> None:
-        """Hook: ``entry`` just transitioned to ENABLED. Called BEFORE
-        the contributing-strength refit fires so subclasses can stage
-        runtime data the refit will read."""
-
-    def _on_disabled(self, entry: "_LoRAEntry") -> None:
-        """Hook: ``entry`` just transitioned away from ENABLED. Called
-        AFTER ``entry.deltas`` is cleared but BEFORE the rollback refit
-        fires (so subclasses can drop their mirrors first)."""
 
     # ------------------------------------------------------------------
     # Library: catalog without RAM cost
@@ -156,6 +108,7 @@ class LoRAManagerBase(abc.ABC):
 
     def register_lora(
         self, path: str, name: Optional[str] = None,
+        lora_id: Optional[str] = None,
     ) -> str:
         """Add a LoRA to the catalog without materializing deltas.
 
@@ -163,8 +116,14 @@ class LoRAManagerBase(abc.ABC):
         the existing id and leaves any in-flight prewarm / enabled
         state alone.  The existing entry's name is NOT overwritten on
         re-register; pass an explicit ``name`` only on first registration.
+
+        ``lora_id`` overrides the default filename-stem id; the library
+        scan passes pre-disambiguated ids (see
+        :func:`acestep.paths.assign_lora_ids`) so same-stem files across
+        roots don't silently shadow each other.
         """
-        lora_id = self._make_id(path)
+        if lora_id is None:
+            lora_id = self._make_id(path)
         if lora_id in self._loras:
             existing = self._loras[lora_id]
             if existing.path != str(path):
@@ -197,15 +156,15 @@ class LoRAManagerBase(abc.ABC):
         first, then each extra dir; each root sorted by filename).
         Missing directories are silently skipped.
         """
-        from acestep.paths import discover_all_loras, discover_loras
+        from acestep.paths import assign_lora_ids, discover_all_loras, discover_loras
         if directory is None:
             files = discover_all_loras()
         else:
             files = discover_loras(directory)
         ids: List[str] = []
-        for p in files:
+        for p, lora_id in assign_lora_ids(files):
             try:
-                ids.append(self.register_lora(str(p)))
+                ids.append(self.register_lora(str(p), lora_id=lora_id))
             except Exception as e:
                 logger.warning("Failed to register {}: {}", p, e)
         if files:
@@ -254,6 +213,138 @@ class LoRAManagerBase(abc.ABC):
         logger.info("Prewarming LoRA: {}", lora_id)
         return entry.future
 
+    @abc.abstractmethod
+    def _materialize_worker(self, entry: _LoRAEntry) -> None:
+        """Worker-thread body: load + stage the entry's payload without
+        touching the live weights, then flip it to MATERIALIZED. On
+        failure restore REGISTERED (when still MATERIALIZING) and
+        re-raise. If the entry was concurrently disabled (state changed
+        away from MATERIALIZING), the result must be dropped rather
+        than resurrected."""
+
+    # ------------------------------------------------------------------
+    # Inspection
+    # ------------------------------------------------------------------
+
+    def list_loras(self) -> List[LoRADescriptor]:
+        return [
+            LoRADescriptor(
+                id=e.lora_id, path=e.path, name=e.name,
+                state=e.state.value, strength=e.strength,
+                materialized_bytes=e.materialized_bytes,
+            )
+            for e in self._loras.values()
+        ]
+
+    def get_lora(self, lora_id: str) -> LoRADescriptor:
+        e = self._require_entry(lora_id)
+        return LoRADescriptor(
+            id=e.lora_id, path=e.path, name=e.name,
+            state=e.state.value, strength=e.strength,
+            materialized_bytes=e.materialized_bytes,
+        )
+
+    def _require_entry(self, lora_id: str) -> _LoRAEntry:
+        if lora_id not in self._loras:
+            raise ValueError(f"LoRA {lora_id!r} not registered")
+        return self._loras[lora_id]
+
+    @property
+    def has_active_loras(self) -> bool:
+        return any(e.state == LoRAState.ENABLED for e in self._loras.values())
+
+    @property
+    def active_lora_count(self) -> int:
+        return sum(
+            1 for e in self._loras.values() if e.state == LoRAState.ENABLED
+        )
+
+    @property
+    def active_lora_ids(self) -> List[str]:
+        return [
+            e.lora_id for e in self._loras.values()
+            if e.state == LoRAState.ENABLED
+        ]
+
+    @property
+    def total_materialized_bytes(self) -> int:
+        return sum(e.materialized_bytes for e in self._loras.values())
+
+
+class LoRAManagerBase(LoRACatalogBase):
+    """Catalog + lifecycle + delta math; subclasses do the engine writeback.
+
+    The delta-merge manager family (ACE lineage): materialization
+    computes full-rank ``B @ A`` deltas and enable/disable/strength
+    recompose ``base + Σ strength·delta`` into the live weights.
+
+    Subclasses must:
+
+    - Populate ``self._base_weights`` (dict: param_name -> CPU/GPU tensor in
+      the live weight's native dtype) and ``self._param_dtype`` (dict:
+      param_name -> torch.dtype) during __init__, then call
+      ``super().__init__()`` to set up the lifecycle bookkeeping.
+    - Implement :meth:`_apply_to_engine`, which writes
+      ``base + sum_over_enabled(strength * delta)`` to the live weights
+      for the supplied ``param_names``.
+
+    Param naming is decoder-relative (matches ``decoder.named_parameters()``).
+    The TRT subclass adds the ``decoder.`` prefix only at the refitter
+    boundary.
+    """
+
+    def __init__(self) -> None:
+        # Subclasses set _base_weights, _param_dtype, and _param_numel
+        # before super().__init__. _param_numel is the element count of
+        # the base weight (orientation-independent) so _compute_deltas
+        # can sanity-check that a LoRA was trained for THIS base model
+        # rather than silently producing wrong-shape deltas (e.g. a 2B
+        # LoRA materialized against an XL engine).
+        if not hasattr(self, "_base_weights"):
+            self._base_weights: Dict[str, torch.Tensor] = {}
+        if not hasattr(self, "_param_dtype"):
+            self._param_dtype: Dict[str, torch.dtype] = {}
+        if not hasattr(self, "_param_numel"):
+            self._param_numel: Dict[str, int] = {}
+
+        super().__init__()
+        self._ever_dirty: Set[str] = set()
+
+    # ------------------------------------------------------------------
+    # Subclass hook
+    # ------------------------------------------------------------------
+
+    @abc.abstractmethod
+    def _apply_to_engine(self, param_names: Set[str]) -> None:
+        """Write ``base + Σ strength·delta`` to the live weights.
+
+        ``param_names`` is the set of decoder-relative param names that
+        need updating. Subclasses iterate, accumulate enabled-LoRA
+        contributions in a buffer, and push to the live weights.
+        """
+
+    # ------------------------------------------------------------------
+    # Lifecycle transition hooks (default: no-ops)
+    #
+    # The base lifecycle (enable_lora / disable_lora) calls these around
+    # state transitions so subclasses can attach side effects without
+    # overriding the lifecycle proper. The motivating case is the eager
+    # backend's "promote materialized deltas to GPU on enable, drop the
+    # GPU mirror on disable" pattern: deltas live cheaply in CPU RAM
+    # while merely MATERIALIZED, but the active set lives in VRAM so
+    # slider-driven refits stay zero-copy on the device.
+    # ------------------------------------------------------------------
+
+    def _on_enabled(self, entry: "_LoRAEntry") -> None:
+        """Hook: ``entry`` just transitioned to ENABLED. Called BEFORE
+        the contributing-strength refit fires so subclasses can stage
+        runtime data the refit will read."""
+
+    def _on_disabled(self, entry: "_LoRAEntry") -> None:
+        """Hook: ``entry`` just transitioned away from ENABLED. Called
+        AFTER ``entry.deltas`` is cleared but BEFORE the rollback refit
+        fires (so subclasses can drop their mirrors first)."""
+
     def _materialize_worker(self, entry: _LoRAEntry) -> None:
         """Worker-thread body.  Loads safetensors, computes deltas,
         writes them to the entry.  Engine state untouched.
@@ -300,6 +391,28 @@ class LoRAManagerBase(abc.ABC):
             elif ".lora_B.weight" in parts:
                 param_name = parts.replace(".lora_B.weight", ".weight")
                 pairs.setdefault(param_name, {})["B"] = tensor
+
+        # Zero PEFT-pattern matches means this is not an ACE-Step LoRA
+        # at all. Without this check the pair map is empty, the
+        # shape-mismatch guard below never trips (it only fires on
+        # matched pairs), and enable_lora "succeeds" having applied
+        # nothing — a silent no-op. Wrong-family files must fail loudly.
+        if not pairs:
+            sa3_like = any(
+                ".parametrizations.weight." in k for k in raw
+            )
+            hint = (
+                " The key layout matches the SA3 (stable-audio-3) "
+                "parametrization format; SA3-family LoRAs cannot load "
+                "on an ACE-Step engine."
+                if sa3_like else ""
+            )
+            raise RuntimeError(
+                f"LoRA {Path(lora_path).name} is not an ACE-Step LoRA: "
+                f"none of its {len(raw)} tensors match the PEFT "
+                f"lora_A.weight/lora_B.weight key pattern, so there is "
+                f"nothing to apply.{hint}"
+            )
 
         device = self._delta_compute_device()
         deltas: Dict[str, torch.Tensor] = {}
@@ -641,52 +754,8 @@ class LoRAManagerBase(abc.ABC):
         return lora_id
 
     # ------------------------------------------------------------------
-    # Inspection
+    # Inspection (delta-specific; catalog inspection lives on the base)
     # ------------------------------------------------------------------
-
-    def list_loras(self) -> List[LoRADescriptor]:
-        return [
-            LoRADescriptor(
-                id=e.lora_id, path=e.path, name=e.name,
-                state=e.state.value, strength=e.strength,
-                materialized_bytes=e.materialized_bytes,
-            )
-            for e in self._loras.values()
-        ]
-
-    def get_lora(self, lora_id: str) -> LoRADescriptor:
-        e = self._require_entry(lora_id)
-        return LoRADescriptor(
-            id=e.lora_id, path=e.path, name=e.name,
-            state=e.state.value, strength=e.strength,
-            materialized_bytes=e.materialized_bytes,
-        )
-
-    def _require_entry(self, lora_id: str) -> _LoRAEntry:
-        if lora_id not in self._loras:
-            raise ValueError(f"LoRA {lora_id!r} not registered")
-        return self._loras[lora_id]
-
-    @property
-    def has_active_loras(self) -> bool:
-        return any(e.state == LoRAState.ENABLED for e in self._loras.values())
-
-    @property
-    def active_lora_count(self) -> int:
-        return sum(
-            1 for e in self._loras.values() if e.state == LoRAState.ENABLED
-        )
-
-    @property
-    def active_lora_ids(self) -> List[str]:
-        return [
-            e.lora_id for e in self._loras.values()
-            if e.state == LoRAState.ENABLED
-        ]
-
-    @property
-    def total_materialized_bytes(self) -> int:
-        return sum(e.materialized_bytes for e in self._loras.values())
 
     @property
     def refittable_param_count(self) -> int:

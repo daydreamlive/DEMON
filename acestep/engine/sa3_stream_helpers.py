@@ -270,6 +270,42 @@ def resolve_sa3_decode_window(
     )
 
 
+# Salt mixed into the generation seed before pinning the decode RNG, so
+# the decode noise stream is decoupled from the (same-seeded) slot-init
+# and SDE renoise streams.
+SA3_DECODE_SEED_SALT = 0x53A3DEC0
+
+
+@contextmanager
+def sa3_decode_rng(seed: Optional[int], device=None):
+    """Pin the RNG for one SAME decode so its noise sources are reproducible.
+
+    SAME decode draws unseeded noise at inference — SoftNormBottleneck's
+    ``noise_regularize`` renoise plus the decoder's ``mask_noise`` on its
+    upsampling new-tokens — which makes decoding the SAME latent twice
+    audibly different (small-music: rms diff ~8e-2, ~-7 dB rel signal;
+    see ``scripts/sa3/sa3_decode_determinism_gate.py``). Seeding keeps the
+    shipped sound character (it is exactly a legacy decode with the RNG
+    pinned) while making repeated decodes of the same latent bit-identical.
+
+    ``fork_rng`` scopes the reseed: outer RNG streams (slot-init noise,
+    SDE renoise, anything unseeded) see no side effects. ``seed=None``
+    is a no-op passthrough (legacy unseeded behavior). ``device`` should
+    be the decode device; only that CUDA device's generator is forked
+    (single-GPU pods — a second CUDA device's stream would not be
+    restored).
+    """
+    if seed is None:
+        yield
+        return
+    devices = []
+    if device is not None and torch.device(device).type == "cuda":
+        devices = [torch.device(device)]
+    with torch.random.fork_rng(devices=devices):
+        torch.manual_seed(int(seed) ^ SA3_DECODE_SEED_SALT)
+        yield
+
+
 @contextmanager
 def sa3_decode_noise_mode(sam, *, enabled: bool):
     """Temporarily toggle SAME decode-time noise sources.

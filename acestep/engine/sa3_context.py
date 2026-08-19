@@ -85,6 +85,7 @@ class SA3Context:
 
     def make_dit(
         self, *, latent_frames: int, seconds_total: float, backend: str = "eager",
+        prefer_refittable: bool = False,
     ):
         """The per-step velocity callable for one session: with
         ``backend="tensorrt"``, the built TRT engine when one covers
@@ -98,7 +99,10 @@ class SA3Context:
         ``backend`` is the resolved acceleration value the session
         creator threads through from the serving layer's accel param
         (compile is already normalized to eager there: SA3 has no
-        torch.compile path)."""
+        torch.compile path). ``prefer_refittable`` is the LoRA-session
+        preference (notes/SA3_LORA_PLAN.md D6b): pick a refit-built
+        engine when one covers the window, and avoid fp8 (whose refit
+        story is unproven) otherwise."""
         from acestep.engine.sa3_trt import SA3TRTDit, find_dit_engine
 
         if backend != "tensorrt":
@@ -108,7 +112,10 @@ class SA3Context:
             )
             return self.dit
 
-        engine_path = find_dit_engine(self.model_id, int(latent_frames))
+        engine_path = find_dit_engine(
+            self.model_id, int(latent_frames),
+            want_refittable=bool(prefer_refittable),
+        )
         if engine_path is None:
             logger.info(
                 "sa3_dit_eager model_id={} latent_frames={} reason=no_trt_engine",
@@ -180,9 +187,11 @@ class SA3Context:
         def _builder(denoise: float) -> torch.Tensor:
             import stable_audio_3.inference.sampling as sampling
 
+            from .sa3_denoise_mapping import map_denoise_to_entry_sigma
+
             schedule = sampling.build_schedule(
                 steps=int(steps),
-                sigma_max=float(denoise),
+                sigma_max=map_denoise_to_entry_sigma(float(denoise)),
                 dist_shift=prepared["dist_shift"],
                 effective_seq_len=prepared["effective_seq_len"],
                 fallback_seq_len=prepared["fallback_seq_len"],
@@ -221,10 +230,19 @@ class SA3SAMECodec:
         self._context = context
         self._helpers = context._helpers
 
-    def decode_full(self, latent_bct: torch.Tensor) -> torch.Tensor:
+    def decode_full(
+        self, latent_bct: torch.Tensor, *, decode_seed: int | None = None,
+    ) -> torch.Tensor:
         """Native ``[1, 256, T]`` latent -> ``[C, N]`` float audio at
-        44.1 kHz, clamped to [-1, 1]."""
-        audio = self._helpers.decode_sa3_latent(self._context.sam, latent_bct)
+        44.1 kHz, clamped to [-1, 1].
+
+        ``decode_seed`` pins the decode RNG (``sa3_decode_rng``) so the
+        SAME decoder's inference-time noise (bottleneck renoise +
+        decoder mask_noise) is reproducible: same latent + same seed →
+        bit-identical audio. ``None`` keeps the legacy unseeded draw.
+        """
+        with self._helpers.sa3_decode_rng(decode_seed, device=latent_bct.device):
+            audio = self._helpers.decode_sa3_latent(self._context.sam, latent_bct)
         return audio[0]
 
 
@@ -238,7 +256,8 @@ class SA3SAMEWindowCodec:
     Two execution paths, identical interface:
 
     * **TRT** when ``use_trt`` and the built window engine exists
-      (``same_l_decode_window_t*``): ~9-10 ms per ~1 s window, latent
+      (``same_l_decode_window_<plugin_tag>_t*``): ~9-10 ms per ~1 s
+      window, latent
       scaled by ``pretransform.scale`` before the call (spike
       ``scale_mode="pretransform"``, rel_rms ~8e-3 vs eager full).
     * **Eager** fallback: the spike's ``decode_sa3_latent_window``
@@ -326,8 +345,12 @@ class SA3SAMEWindowCodec:
             out = torch.nn.functional.pad(out, (0, int(num) - out.shape[-1]))
         return out
 
-    def decode_full(self, latent_bct: torch.Tensor) -> torch.Tensor:
+    def decode_full(
+        self, latent_bct: torch.Tensor, *, decode_seed: int | None = None,
+    ) -> torch.Tensor:
         """Eager full decode (legacy full-buffer mode only; the hot path
-        never calls this for windowed-codec families)."""
-        audio = self._helpers.decode_sa3_latent(self._context.sam, latent_bct)
+        never calls this for windowed-codec families). ``decode_seed``
+        pins the decode RNG exactly as on :class:`SA3SAMECodec`."""
+        with self._helpers.sa3_decode_rng(decode_seed, device=latent_bct.device):
+            audio = self._helpers.decode_sa3_latent(self._context.sam, latent_bct)
         return audio[0]

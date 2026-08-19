@@ -38,6 +38,12 @@ import urllib.request
 from pathlib import Path
 from typing import IO
 
+try:
+    from .local_env import load_repo_env_defaults
+except ImportError:  # direct script execution: python demos/.../run.py
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from demos.realtime_motion_graph_web.local_env import load_repo_env_defaults
+
 
 WEB_DIR = Path(__file__).parent / "web"
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -145,6 +151,7 @@ def _wait_for_backend(
 
 def main() -> int:
     _harden_stdout()
+    load_repo_env_defaults()
     parser = argparse.ArgumentParser(
         description="Run the demo backend + Next.js frontend together.",
         epilog=(

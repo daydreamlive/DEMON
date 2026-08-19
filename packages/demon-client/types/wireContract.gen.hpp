@@ -43,6 +43,10 @@ namespace command {
     inline constexpr const char* kRaw = "raw";
     /** Playhead position in SECONDS (not a 0..1 ratio); used for time-keyed curve sampling. */
     inline constexpr const char* kPlaybackPos = "playback_pos";
+    /** Optional stationary render placement in absolute buffer/song seconds. A finite value renders exactly at that position, bypassing transport lead and loop-band snapping. Absent retains the prior anchor; null clears it. */
+    inline constexpr const char* kRenderAnchorS = "render_anchor_s";
+    /** Optional BATCH of stationary render anchors (absolute buffer/song seconds), rendered back-to-back one window per tick whenever the scalar render_anchor_s is clear (the scalar preempts; the queue resumes when it clears). Each anchor is popped after its window emits. A list REPLACES the prior queue; absent retains it; null/empty clears it. Gated on ready.capabilities.render_anchor_queue — older servers ignore the field. Non-finite entries are dropped; length is capped server-side (1024). Like the scalar anchor, IGNORED in walk-window mode (sources longer than walk_window_s): the DiT holds one chunk and cannot render outside it — clients must not queue-warm walk sources. */
+    inline constexpr const char* kRenderAnchorQueueS = "render_anchor_queue_s";
     /** Client monotonic send time in seconds (performance.now()/1000; arbitrary origin). Lets the server estimate how stale a playback_pos report is when messages queue (network congestion, recv backlog) and advance its playhead estimate accordingly. Optional: absent on older clients, which get the uncompensated behavior. */
     inline constexpr const char* kClientTime = "client_time";
     /** Flow-control ack: cumulative bytes of binary slice frames received on this connection. The server holds back slice emission while its sent-bytes minus this ack exceeds the in-flight window (DEMON_SLICE_WINDOW_BYTES, default 256 KiB) so a bandwidth-limited link receives fresh slices at link rate instead of an ever-staler buffered backlog. Optional; absent on older clients = no flow control. */
@@ -107,7 +111,7 @@ namespace command {
 
   namespace enable_lora {
     inline constexpr const char* kType = "enable_lora";
-    /** LoRA id/stem (see /api/loras). */
+    /** LoRA id/stem (see /api/loras). A value matching no catalog id exactly is resolved as a case-insensitive stem/display-name alias over the compatible subset of the catalog; the enable lands on (and the catalog echo shows) the canonical id. */
     inline constexpr const char* kId = "id";
     /** Target strength the refit lands at. */
     inline constexpr const char* kStrength = "strength";
@@ -115,8 +119,17 @@ namespace command {
 
   namespace disable_lora {
     inline constexpr const char* kType = "disable_lora";
+    /** LoRA id/stem; same alias resolution as enable_lora. */
     inline constexpr const char* kId = "id";
   }  // namespace disable_lora
+
+  namespace add_lora {
+    inline constexpr const char* kType = "add_lora";
+    /** Id to store it under; becomes the filename stem and the lora_str_<id> knob name. [A-Za-z0-9._-], <=64 chars. */
+    inline constexpr const char* kId = "id";
+    /** https URL to fetch the .safetensors from. Host must be allow-listed on the pod (DEMON_LORA_URL_HOSTS). */
+    inline constexpr const char* kUrl = "url";
+  }  // namespace add_lora
 
   namespace manual_slot_add {
     inline constexpr const char* kType = "manual_slot_add";
@@ -229,6 +242,7 @@ namespace event {
     inline constexpr const char* kDuration = "duration";
     inline constexpr const char* kChannels = "channels";
     inline constexpr const char* kSampleRate = "sample_rate";
+    /** Full catalog; entries carry a server-computed `compatible` bool (backend predicate — can this engine load it?) so clients filter/grey without re-deriving scale rules. */
     inline constexpr const char* kLoraCatalog = "lora_catalog";
     inline constexpr const char* kLoraDir = "lora_dir";
     inline constexpr const char* kBpm = "bpm";
@@ -290,6 +304,7 @@ namespace event {
 
   namespace lora_catalog {
     inline constexpr const char* kType = "lora_catalog";
+    /** Same entry shape as ready.lora_catalog, including the server-computed `compatible` bool. */
     inline constexpr const char* kCatalog = "catalog";
   }  // namespace lora_catalog
 

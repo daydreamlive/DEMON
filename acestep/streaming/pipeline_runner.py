@@ -593,6 +593,29 @@ class PipelineRunner:
             if se > ss:
                 self.on_audio_ready(buf[ss:se].copy(), ss, se)
 
+    def _patch_wrapped(self, backend, current, anchor_s, wrap_start, wrap_len):
+        """Render at ``anchor_s`` and patch the requested wrapped region."""
+        chunk = backend.render_window(anchor_s)
+        if chunk is None:
+            return
+        wrap_np = chunk.pcm[:wrap_len].copy()
+        wrap_end = wrap_start + wrap_np.shape[0]
+        xfade = min(1200, wrap_np.shape[0] // 4)
+        if wrap_start > 0 and xfade > 0:
+            t_in = np.linspace(0.0, 1.0, xfade).reshape(-1, 1)
+            wrap_np[:xfade] = (
+                current[wrap_start:wrap_start + xfade] * (1 - t_in)
+                + wrap_np[:xfade] * t_in
+            )
+        if wrap_end < current.shape[0] and xfade > 0:
+            t_out = np.linspace(1.0, 0.0, xfade).reshape(-1, 1)
+            wrap_np[-xfade:] = (
+                wrap_np[-xfade:] * t_out
+                + current[wrap_end - xfade:wrap_end] * (1 - t_out)
+            )
+        self.audio_eng.patch_window(wrap_np, wrap_start)
+        self.on_audio_ready(wrap_np, wrap_start, wrap_end)
+
     def _reset_emit_trim_frontier(self) -> None:
         """Drop trim's monotonic frontier after an untrimmed emission.
 
@@ -603,8 +626,41 @@ class PipelineRunner:
         """
         self._emit_hwm = None
 
+    def _should_trim_window_emit(self, band_end_sample, anchored: bool) -> bool:
+        """Transport-only trim gate; stationary anchors require full slices."""
+        return self._emit_trim and band_end_sample is None and not anchored
+
     def _playhead_seconds_now(self) -> float:
         return self._playhead_clock.seconds()
+
+    def _render_placement(self, eff_dur: float, position_chase_only: bool):
+        """Return ``(playhead, advance, decode_start, anchored, queue_anchor)``.
+
+        Placement priority: the scalar ``render_anchor_s`` (a live pad pin)
+        preempts everything; otherwise the head of the engine's anchor QUEUE
+        (batch prewarm — one window per tick, back-to-back); otherwise the
+        transport chase. ``queue_anchor`` is a ``(anchor_s, generation)``
+        pair, non-None only when this tick's placement came from the queue —
+        the caller pops it AFTER the window actually emits, so a failed
+        render retries the same anchor, and the generation guard makes a
+        client queue-replace mid-tick safe."""
+        playhead_now = self._playhead_seconds_now()
+        anchor = getattr(self.audio_eng, "render_anchor_s", None)
+        queue_anchor = None
+        if anchor is None and not position_chase_only:
+            peek = getattr(self.audio_eng, "peek_render_anchor", None)
+            queue_anchor = peek() if peek is not None else None
+            if queue_anchor is not None:
+                anchor = queue_anchor[0]
+        anchored = anchor is not None and not position_chase_only
+        advance_s = 0.0 if anchored else self._decode_advance_s()
+        decode_start = float(anchor) if anchored else playhead_now + advance_s
+        if eff_dur > 0:
+            decode_start %= eff_dur
+        return (
+            playhead_now, advance_s, decode_start, anchored,
+            queue_anchor if anchored else None,
+        )
 
     # ---- the loop -------------------------------------------------------------
 
@@ -812,17 +868,14 @@ class PipelineRunner:
                     # transport lead before sizing this tick's advance.
                     self._fold_slice_lead_report()
 
-                    playhead_now = self._playhead_seconds_now()
+                    playhead_now, advance_s, decode_start, anchored, queue_anchor = (
+                        self._render_placement(eff_dur, position_chase_only)
+                    )
                     # Predictive render start: target where the playhead
                     # WILL be by the time this slice lands in the buffer.
                     # The lead is the adaptive interval EMA (+ stall bump),
                     # NOT the render span — see ``_decode_advance_s``. Wrap
                     # modulo ``eff_dur`` since the render supports cyclic.
-                    advance_s = self._decode_advance_s()
-                    decode_start = playhead_now + advance_s
-                    if eff_dur > 0:
-                        decode_start = decode_start % eff_dur
-
                     # Loop-band awareness. When the client arms a band
                     # [A, B] the worklet replays only that region (hard-
                     # wrapping B→A) while we keep generating. Chasing the
@@ -841,7 +894,10 @@ class PipelineRunner:
                     band_end_sample = None
                     band_wrap_start_s = None
                     band = getattr(self.audio_eng, "loop_band", None)
-                    if band is not None and eff_dur > 0 and not position_chase_only:
+                    if (
+                        band is not None and eff_dur > 0
+                        and not position_chase_only and not anchored
+                    ):
                         a_s = max(0.0, min(float(band[0]), eff_dur))
                         b_s = max(0.0, min(float(band[1]), eff_dur))
                         span = b_s - a_s
@@ -930,12 +986,26 @@ class PipelineRunner:
                         # overlapping window. Falls back to the full window
                         # while a loop band is armed (the band-wrap second
                         # render below keeps the legacy path). See __init__.
-                        if self._emit_trim and band_end_sample is None:
+                        # A stationary anchor must reach the client in full.
+                        # Emit-trim is a monotonic transport-frontier
+                        # optimization; at a repeated/retreating anchor its
+                        # high-water mark intentionally emits nothing, which
+                        # would leave the client's pad onset stale even though
+                        # the server buffer was correctly patched.
+                        if self._should_trim_window_emit(
+                            band_end_sample, anchored,
+                        ):
                             self._emit_finalized(current, win_start)
                         else:
                             self.on_audio_ready(patched, win_start, win_end)
                             if self._emit_trim:
                                 self._reset_emit_trim_frontier()
+                        # This tick's placement came from the anchor queue and
+                        # its window just emitted: advance to the next queued
+                        # anchor. (A ``chunk is None`` tick skips this, so a
+                        # transient render failure retries the same anchor.)
+                        if queue_anchor is not None:
+                            self.audio_eng.pop_render_anchor(*queue_anchor)
                         # Fold this write's wall gap into the adaptive lead
                         # state. One call per successful write — real
                         # generation OR gap-fill; the band-wrap second render
@@ -999,32 +1069,27 @@ class PipelineRunner:
                                 band_end_sample - band_start_sample,
                             )
                             if wrap_len > 0:
-                                wrap_chunk = backend.render_window(band_wrap_start_s)
-                                if wrap_chunk is not None:
-                                    wrap_np = wrap_chunk.pcm[:wrap_len].copy()
-                                    wrap_start = band_start_sample
-                                    wrap_end = wrap_start + wrap_np.shape[0]
-                                    xfade_wrap = min(1200, wrap_np.shape[0] // 4)
-                                    if wrap_start > 0 and xfade_wrap > 0:
-                                        t_in = np.linspace(
-                                            0.0, 1.0, xfade_wrap,
-                                        ).reshape(-1, 1)
-                                        wrap_np[:xfade_wrap] = (
-                                            current[wrap_start:wrap_start + xfade_wrap]
-                                            * (1 - t_in)
-                                            + wrap_np[:xfade_wrap] * t_in
-                                        )
-                                    if wrap_end < current.shape[0] and xfade_wrap > 0:
-                                        t_out = np.linspace(
-                                            1.0, 0.0, xfade_wrap,
-                                        ).reshape(-1, 1)
-                                        wrap_np[-xfade_wrap:] = (
-                                            wrap_np[-xfade_wrap:] * t_out
-                                            + current[wrap_end - xfade_wrap:wrap_end]
-                                            * (1 - t_out)
-                                        )
-                                    self.audio_eng.patch_window(wrap_np, wrap_start)
-                                    self.on_audio_ready(wrap_np, wrap_start, wrap_end)
+                                self._patch_wrapped(
+                                    backend, current, band_wrap_start_s,
+                                    band_start_sample, wrap_len,
+                                )
+                        elif (
+                            not anchored
+                            and band_end_sample is None
+                            and not position_chase_only
+                            and eff_dur > 0
+                        ):
+                            loop_len = min(
+                                current.shape[0],
+                                int(round(eff_dur * SAMPLE_RATE)),
+                            )
+                            desired_start = int(round(decode_start * SAMPLE_RATE))
+                            spill = desired_start + win_np.shape[0] - loop_len
+                            if 0 < spill and win_np.shape[0] < loop_len:
+                                self._patch_wrapped(
+                                    backend, current, 0.0, 0,
+                                    min(spill, loop_len),
+                                )
                 else:
                     # Legacy full-buffer mode. Gap-fill never reaches
                     # here (it requires vae_window > 0), so only fresh

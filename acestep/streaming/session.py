@@ -41,8 +41,11 @@ from contextlib import ExitStack
 
 import functools
 import os
+import re
 import threading
 import time
+import urllib.parse
+import urllib.request
 from dataclasses import asdict
 from pathlib import Path
 
@@ -58,12 +61,13 @@ from acestep.engine.trt.profile_manager import (
     TRTProfileManager,
 )
 from acestep.fixtures import KNOWN_FIXTURES, audio_fixture
-from acestep.lora_metadata import load_lora_metadata
+from acestep.lora_metadata import load_lora_metadata, lora_scale_compatible
 from acestep.nodes.interpolation import INTERP_METHOD_NAMES
 from acestep.nodes.types import Audio, Latent
 from acestep.paths import (
     EngineNotBuiltError,
     available_dreamvae_decode_engine,
+    checkpoint_scale,
     checkpoints_dir,
     dreamvae_decode_engine_name,
     max_profile_duration_s,
@@ -129,6 +133,9 @@ from acestep.streaming.stems import (
 )
 
 
+_RENDER_ANCHOR_UNSET = object()
+
+
 # ---------------------------------------------------------------------------
 # Pipeline depth bounds + idle pause threshold
 # ---------------------------------------------------------------------------
@@ -165,6 +172,65 @@ IDLE_PAUSE_S = float(os.environ.get("DEMON_IDLE_PAUSE_S", "20"))
 _SAMPLES_PER_FRAME = 1920
 _POOL = _SAMPLES_PER_FRAME * 5
 
+# --- add_lora: fetching a LoRA onto a running pod --------------------
+#
+# A LoRA id becomes a FILENAME under loras_dir() and, later, a knob name
+# (lora_str_<id>), so it is restricted to the charset both can carry.
+# This is the only sanitizer between a WS message and a path we write.
+_LORA_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+# A LoRA for this checkpoint is ~170 MB; the cap is generous enough for a
+# rank-128 adapter and small enough that a wrong URL can't fill the pod's
+# disk out from under the engine.
+_LORA_MAX_BYTES = int(os.environ.get("DEMON_LORA_MAX_BYTES", 512 * 1024 * 1024))
+_LORA_FETCH_TIMEOUT_S = float(os.environ.get("DEMON_LORA_FETCH_TIMEOUT_S", "300"))
+
+# Hosts the pod will fetch a LoRA from. The WS is reachable by whoever
+# holds a session, so an unrestricted fetch would make the pod a
+# general-purpose HTTP client sitting inside our network — the classic
+# SSRF shape. Default to the artifact hosts we actually serve LoRAs from;
+# override for a dev pod with DEMON_LORA_URL_HOSTS (comma-separated).
+_LORA_URL_HOSTS = tuple(
+    h.strip().lower()
+    for h in os.environ.get(
+        "DEMON_LORA_URL_HOSTS",
+        # The orchestrator serves LoRAs trained in the Studio; Tigris
+        # serves ones the user uploaded from their own machine (presigned
+        # PUT from the plugin, presigned GET for us).
+        "rtmg-orchestrator.fly.dev,music.daydream.live,daydream.live,"
+        "fly.storage.tigris.dev",
+    ).split(",")
+    if h.strip()
+)
+
+
+def _sanitize_lora_id(raw: str) -> str | None:
+    """The id a fetched LoRA is stored and addressed under, or None when
+    it isn't safe to use as a filename."""
+    lid = str(raw or "").strip()
+    if not _LORA_ID_RE.match(lid):
+        return None
+    return lid
+
+
+def _lora_url_allowed(url: str) -> bool:
+    """https, and a host we publish LoRAs from.
+
+    Both halves matter: plain http would let anything on the path swap the
+    weights the pod is about to load, and an unrestricted host turns
+    `add_lora` into "make this pod GET an arbitrary URL for me"."""
+    try:
+        u = urllib.parse.urlparse(str(url))
+    except Exception:
+        return False
+    if u.scheme != "https" or not u.hostname:
+        return False
+    host = u.hostname.lower()
+    return any(
+        host == allowed or host.endswith("." + allowed)
+        for allowed in _LORA_URL_HOSTS
+    )
+
 
 def _compute_max_pipeline_depth(diffusion_engine) -> int:
     """Largest ``pipeline_depth`` the loaded backend can serve."""
@@ -193,6 +259,34 @@ def _cleanup_create_resource(name: str, close_fn: Callable[[], None]) -> None:
             "streaming_create_cleanup_raised resource={} error={}",
             name, exc,
         )
+
+
+def resolve_lora_reference(requested: str, entries) -> str | None:
+    """Resolve a client LoRA reference to a canonical catalog id.
+
+    ``entries`` is an iterable of ``(lora_id, display_name, compatible)``
+    triples covering the FULL catalog. An exact id match wins outright
+    (even on an incompatible entry — exact-id clients keep today's
+    behavior, including today's engine-side failure). Otherwise the
+    reference is looked up case-insensitively against each entry's
+    filename stem (its id) and sidecar display name, restricted to the
+    COMPATIBLE subset — so a scale-agnostic reference like "Ambient",
+    shared by ``ambient-v1`` (2B) and ``ambient-xl-v1`` (5B), resolves
+    to the variant the active engine can actually load. Mirrors the
+    demo webapp's ``buildLoraAliasMap`` (last write wins on the
+    degenerate same-name collision). Returns ``None`` on a miss.
+    """
+    entries = list(entries)
+    if any(requested == lid for lid, _, _ in entries):
+        return requested
+    aliases: dict = {}
+    for lid, name, compatible in entries:
+        if not compatible:
+            continue
+        aliases[lid.lower()] = lid
+        if name:
+            aliases[str(name).lower()] = lid
+    return aliases.get(requested.lower())
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +630,9 @@ class StreamingSession:
         # Event bus: typed events the runner thread and operation
         # methods publish; transport adapters subscribe and serialize.
         self.bus = EventBus()
+        # Ids this session fetched via add_lora. close() wipes exactly
+        # these — never the baked catalog, which it must not touch.
+        self._fetched_loras: set[str] = set()
 
         # Set at the end of close(), after GPU state is released. A
         # preempting connection (ws_adapter's single-active-session
@@ -597,9 +694,12 @@ class StreamingSession:
             )
 
     def _enabled_lora_ids(self) -> list:
-        if not (self.use_lora and self.engine_obj is not None):
+        # Backend facade (D2): the catalog lives behind the backend —
+        # ACE delegates to its engine_obj, SA3 to its parametrization
+        # manager. list_loras() is [] when no manager exists.
+        if not self.use_lora:
             return []
-        return [d.id for d in self.engine_obj.list_loras() if d.state == "enabled"]
+        return [d.id for d in self.backend.list_loras() if d.state == "enabled"]
 
     # ---- Snapshot / catalog helpers -------------------------------------
 
@@ -658,7 +758,7 @@ class StreamingSession:
         if not self.lora_available:
             return []
         out = []
-        for d in self.engine_obj.list_loras():
+        for d in self.backend.list_loras():
             # ``metadata`` is the full normalized record from the
             # LoRA's ``<stem>.metadata.json`` sidecar (falling back to
             # a synthesized record from ``.trigger.txt``, or a sparse
@@ -672,8 +772,39 @@ class StreamingSession:
                 "strength": d.strength,
                 "materialized_bytes": d.materialized_bytes,
                 "metadata": metadata,
+                # Backend verdict: can this engine actually load the
+                # entry? Advisory — the full catalog still ships so
+                # clients can show incompatible rows greyed instead of
+                # hidden (the demo's show_incompatible_loras toggle).
+                "compatible": bool(self.backend.lora_compatible(metadata)),
             })
         return out
+
+    def _resolve_lora_id(self, requested: str) -> str:
+        """Map a client LoRA reference (exact id, or a case-insensitive
+        stem/display-name alias) to the canonical catalog id via
+        :func:`resolve_lora_reference`. Falls through to the original
+        string on a miss so downstream behavior (engine-side
+        enable/disable failure logs) is unchanged for ids that never
+        existed."""
+        if not self.lora_available:
+            return requested
+        entries = []
+        for d in self.backend.list_loras():
+            metadata = load_lora_metadata(d.path).to_wire()
+            entries.append((
+                d.id,
+                metadata.get("name") or d.name,
+                self.backend.lora_compatible(metadata),
+            ))
+        resolved = resolve_lora_reference(requested, entries)
+        if resolved is None:
+            return requested
+        if resolved != requested:
+            logger.info(
+                "lora_alias_resolved requested={} id={}", requested, resolved,
+            )
+        return resolved
 
     def snapshot(self) -> dict:
         """JSON-serialisable snapshot of the session's current state.
@@ -794,6 +925,30 @@ class StreamingSession:
         finally:
             self.close()
 
+    def _drop_fetched_loras(self) -> None:
+        """Remove every LoRA this session fetched, from the catalog and disk.
+
+        Never raises: this runs on the teardown path, and a session that
+        fails to clean up must still finish closing rather than leaving the
+        engine half-destroyed.
+        """
+        ids = list(getattr(self, "_fetched_loras", ()))
+        if not ids:
+            return
+        from acestep.paths import user_loras_dir
+
+        for lid in ids:
+            try:
+                self.engine_obj.remove_lora(lid)
+            except Exception as exc:
+                logger.warning("user_lora_unregister_failed id={} error={}", lid, exc)
+            try:
+                (user_loras_dir() / f"{lid}.safetensors").unlink(missing_ok=True)
+            except Exception as exc:
+                logger.warning("user_lora_unlink_failed id={} error={}", lid, exc)
+        logger.info("user_loras_dropped count={}", len(ids))
+        self._fetched_loras.clear()
+
     def close(self) -> None:
         """Tear down GPU state even when a session exits before ``run``."""
         # Order matters: stream.close() drops the StreamPipeline's
@@ -801,6 +956,12 @@ class StreamingSession:
         # actually destroys the engine + ModelContext.
         # session.close() ends with gc.collect() + cuda.empty_cache().
         self.state.running = False
+        # Drop anything this session fetched. A pool pod is handed to a
+        # stranger next: without this their catalog would list the previous
+        # user's styles by name, under "Catalog" where they read as stock,
+        # and the weights would load. Files and registrations both, because
+        # either one alone still leaks.
+        self._drop_fetched_loras()
         try:
             self.bus.close()
         except Exception as exc:
@@ -887,22 +1048,51 @@ class StreamingSession:
             return
         state = self.state
         with state._lock:
+            local_register = state.pending_register[:]
             local_disable = state.pending_disable[:]
             local_enable = state.pending_enable[:]
+            state.pending_register.clear()
             state.pending_disable.clear()
             state.pending_enable.clear()
+        # Registration first, and in the same drain as the enables: a
+        # client that fetches a LoRA and immediately enables it queues
+        # both before the next tick, and enable_lora on an unregistered
+        # id raises. Registering here is cheap — it records a path, and
+        # the weights are materialized inside enable_lora.
+        for path in local_register:
+            try:
+                # Through the backend, not engine_obj: engine_obj is ACE's
+                # diffusion engine and is None for SA3, whose LoRA library
+                # lives behind SA3Backend. The enable/disable calls below
+                # already go through the backend seam; this one was missed,
+                # so every runtime-fetched Style on an SA3 session failed to
+                # register with 'NoneType' object has no attribute
+                # 'register_lora' — and a Style that never registers can
+                # never be enabled.
+                lid = self.backend.register_lora(str(path))
+                logger.info("lora_registered id={} path={}", lid, path)
+            except Exception as e:
+                logger.exception(
+                    "lora_register_failed path={} error={}", path, e,
+                )
         if not local_disable and not local_enable:
+            if local_register:
+                # Nothing to refit, but the catalog gained an entry and
+                # the client is waiting to see it before enabling.
+                self.bus.publish(
+                    LoraCatalogUpdate(catalog=self.lora_catalog_payload()),
+                )
             return
         for lid in local_disable:
             try:
-                self.engine_obj.disable_lora(lid)
+                self.backend.disable_lora(lid)
                 self.virtual_knobs.remove_knob(lora_strength_spec(lid).name)
                 logger.info("lora_disabled id={}", lid)
             except Exception as e:
                 logger.exception("lora_disable_failed id={} error={}", lid, e)
         for lid, strength in local_enable:
             try:
-                self.engine_obj.enable_lora(lid, strength=strength)
+                self.backend.enable_lora(lid, strength=strength)
                 logger.info(
                     "lora_enabled id={} strength={}",
                     lid, strength,
@@ -982,6 +1172,17 @@ class StreamingSession:
             state.swap_pending["time_signature"] = None
             state.swap_pending["fixture_name"] = None
             state.swap_pending["stem_source_mode"] = None
+
+        # Backend control hook (universal op, family-specific
+        # implementation, the handle_set_prompt convention): a backend
+        # that owns its source anchor (SA3 SAME-encodes a replacement
+        # latent at fixed geometry) defines ``handle_swap_source`` and
+        # the ACE prepare_source body below never runs. The ACE backend
+        # defines no hook — byte-identical path.
+        handle = getattr(self.backend, "handle_swap_source", None)
+        if handle is not None:
+            self._apply_swap_backend_owned(handle, new_wf, new_fixture_name)
+            return
 
         # Initialized to None so the finally below can None-guard
         # cleanly in the (rare) case an exception fires between the
@@ -1203,6 +1404,83 @@ class StreamingSession:
                     _swap_ctx.__exit__(None, None, None)
                 except Exception:
                     pass
+
+    def _apply_swap_backend_owned(self, handle, new_wf, fixture_name) -> None:
+        """Fixed-geometry swap for backends that own their source anchor
+        (the ``handle_swap_source`` hook — SA3). None of the ACE body
+        applies: no TRT profile management (the render geometry is fixed
+        for the session), no BPM/key detection or conditioning re-encode
+        (the backend owns conditioning; nullable metadata per the
+        capability mask), no stem extraction or canvas (both
+        capability-gated off). The backend re-encodes its anchor at the
+        session's fixed duration; the client buffer becomes the new
+        source padded/truncated to the UNCHANGED playback geometry.
+        Publishes :class:`SwapReady` / :class:`SwapFailed` like the ACE
+        body. Runner thread (before_tick), like everything above."""
+        state = self.state
+        try:
+            wf = new_wf[:, : int(self.max_seconds * SAMPLE_RATE)].float()
+            if wf.shape[0] == 1:
+                # Stereo delivery geometry (sa3_session create parity):
+                # upmix a mono upload rather than hand the backend a
+                # 1-channel anchor against stereo patches.
+                wf = wf.repeat(2, 1)
+            logger.info(
+                "source_swap_start backend_owned={} duration_s={:.1f} "
+                "channels={} fixture_name={}",
+                self.backend.name, wf.shape[-1] / SAMPLE_RATE,
+                wf.shape[0], fixture_name,
+            )
+            handle(wf, SAMPLE_RATE)
+
+            # Fresh client buffer: the (truncated) new source at the
+            # delivery rate, zero-padded out to the session's fixed
+            # render geometry — the same shape the create path shipped,
+            # so the runner keeps patching windows into a matching
+            # buffer and the wire duration doesn't move.
+            src_np = wf.cpu().numpy().T.copy()   # [N, C] float32
+            with state._lock:
+                n_play = int(state.playback_samples)
+                if src_np.shape[0] < n_play:
+                    src_np = np.concatenate([
+                        src_np,
+                        np.zeros(
+                            (n_play - src_np.shape[0], src_np.shape[1]),
+                            dtype=src_np.dtype,
+                        ),
+                    ])
+                else:
+                    src_np = src_np[:n_play]
+                state.n_channels = int(src_np.shape[1])
+                # Retire anything staged against the old source (ACE
+                # parity; inert for backends without write_audio).
+                state.source_epoch += 1
+                self.audio_eng.swap(src_np)
+                self.audio_eng.position = 0
+                # A loop band from the previous song is meaningless
+                # against the new buffer — drop it.
+                self.audio_eng.loop_band = None
+
+            self.bus.publish(SwapReady(
+                duration=len(src_np) / SAMPLE_RATE,
+                sample_rate=SAMPLE_RATE,
+                channels=int(src_np.shape[1]),
+                bpm=state.bpm,
+                key=state.key,
+                time_signature=state.time_signature,
+                fixture_name=fixture_name,
+                initial_buffer=src_np,
+                source_epoch=state.source_epoch,
+            ))
+            logger.info(
+                "source_swap_complete backend_owned duration_s={:.1f}",
+                len(src_np) / SAMPLE_RATE,
+            )
+        except Exception as exc:
+            logger.opt(exception=True).error(
+                "source_swap_error backend_owned error={}", exc,
+            )
+            self.bus.publish(SwapFailed(error=str(exc)))
 
     # ---- Internal helpers ----------------------------------------------
 
@@ -1459,16 +1737,34 @@ class StreamingSession:
     def set_knobs(
         self,
         raw: dict,
-        playback_pos: float = 0.0,
+        playback_pos: float | None = None,
         *,
         origin: CommandOrigin = CommandOrigin.PRIMARY,
         client_time: float | None = None,
         slice_lead_s: float | None = None,
+        render_anchor_s=_RENDER_ANCHOR_UNSET,
+        render_anchor_queue_s=_RENDER_ANCHOR_UNSET,
     ) -> None:
         """Apply or echo a knob update. ``raw`` is the unfiltered
         wire dict; values land in ``virtual_knobs`` only on PRIMARY.
         EXTERNAL emits :class:`ParamsEcho` so the primary transport's
         UI tween owns the smoothed sequence.
+
+        ``playback_pos`` is the client's audible playhead, or ``None`` when
+        this frame carries no clock. A missing clock leaves the prior position
+        untouched.
+
+        ``render_anchor_s`` is sticky three-state placement: omitted retains
+        the current anchor, a finite float sets it, and ``None`` clears it.
+
+        ``render_anchor_queue_s`` is the batch counterpart (list of anchor
+        seconds): omitted retains the current queue, a list REPLACES it, and
+        ``None``/empty clears it. The runner renders queued anchors
+        back-to-back whenever the scalar anchor is clear (scalar preempts,
+        queue resumes). Setting a non-empty queue bumps the activity clock so
+        an idle-paused pipeline wakes up to drain it — unlike the scalar
+        anchor, which is re-sent every tick by warming clients and must NOT
+        hold the GPU out of its idle pause.
 
         ``client_time`` is the client's monotonic send stamp (seconds,
         arbitrary origin) when the transport carries one. It feeds the
@@ -1498,7 +1794,9 @@ class StreamingSession:
                 logger.info(
                     "lat_knob origin={} playback_s={:.3f} changed={} "
                     "denoise={}",
-                    origin.value, float(playback_pos), _changed,
+                    origin.value,
+                    float(playback_pos) if playback_pos is not None else -1.0,
+                    _changed,
                     raw.get("denoise"),
                 )
             state.last_params_raw = dict(raw)
@@ -1525,9 +1823,25 @@ class StreamingSession:
         with state._lock:
             self.virtual_knobs.update(clean)
             try:
-                self.audio_eng.position = int(playback_pos * SAMPLE_RATE) % max(
-                    1, len(self.audio_eng.current),
-                )
+                if playback_pos is not None:
+                    self.audio_eng.position = int(playback_pos * SAMPLE_RATE) % max(
+                        1, len(self.audio_eng.current),
+                    )
+                if render_anchor_s is not _RENDER_ANCHOR_UNSET:
+                    self.audio_eng.render_anchor_s = render_anchor_s
+                if render_anchor_queue_s is not _RENDER_ANCHOR_UNSET:
+                    queue = list(render_anchor_queue_s or [])
+                    self.audio_eng.set_render_anchor_queue(queue)
+                    if queue:
+                        state.last_activity_ts = time.monotonic()
+                    # Rare (one message per prewarm batch) — log for
+                    # traceability of the drain the client will confirm.
+                    logger.info(
+                        "render_anchor_queue_set n={} first={} last={}",
+                        len(queue),
+                        round(queue[0], 3) if queue else None,
+                        round(queue[-1], 3) if queue else None,
+                    )
                 self.audio_eng.position_staleness_s = staleness_s
                 if slice_lead_s is not None:
                     self.audio_eng.observed_slice_lead_s = slice_lead_s
@@ -1719,14 +2033,126 @@ class StreamingSession:
     ) -> None:
         """Stage a LoRA enable. The atomic-strength contract holds:
         the next refit lands at ``strength`` in one shot (no
-        first-window-without-LoRA artifact)."""
+        first-window-without-LoRA artifact).
+
+        ``lora_id`` may be an exact catalog id or a case-insensitive
+        stem/display-name alias; the enable is staged (and later echoed
+        by ``lora_enabled`` and the catalog broadcast) under the
+        canonical id."""
         self.state.last_activity_ts = time.monotonic()
+        lora_id = self._resolve_lora_id(str(lora_id))
         with self.state._lock:
-            self.state.pending_enable.append((str(lora_id), strength))
+            self.state.pending_enable.append((lora_id, strength))
         logger.info(
             "enable_lora_requested origin={} id={} strength={}",
             origin.value, lora_id, strength,
         )
+
+    @requires_capability("lora", "add_lora")
+    def add_lora(
+        self,
+        url: str,
+        lora_id: str,
+        *,
+        origin: CommandOrigin = CommandOrigin.PRIMARY,
+    ) -> None:
+        """Fetch a LoRA over HTTP into the library and register it.
+
+        The engine's catalog is built by ``register_library()`` at engine
+        init, so a LoRA that did not exist at boot can never be enabled —
+        this is the way in for one trained after the pod started.
+
+        Downloads on a worker thread: a ~170 MB fetch must not sit in the
+        dispatch path, let alone the tick. The finished file is queued
+        onto ``pending_register`` and picked up by the next
+        ``before_tick`` drain, so the catalog mutation still serializes
+        with the streaming pipeline like every other LoRA change.
+
+        Returns immediately. The client learns it worked by seeing the id
+        appear in ``lora_catalog``.
+        """
+        lid = _sanitize_lora_id(lora_id)
+        if not lid:
+            logger.warning("add_lora_rejected reason=bad_id id={!r}", lora_id)
+            return
+        if not _lora_url_allowed(url):
+            logger.warning(
+                "add_lora_rejected reason=host_not_allowed id={} url={!r}",
+                lid, url,
+            )
+            return
+        self.state.last_activity_ts = time.monotonic()
+        logger.info(
+            "add_lora_requested origin={} id={} url={}",
+            origin.value, lid, url,
+        )
+        threading.Thread(
+            target=self._fetch_lora_blocking,
+            args=(str(url), lid),
+            name=f"lora-fetch-{lid}",
+            daemon=True,
+        ).start()
+
+    def _fetch_lora_blocking(self, url: str, lora_id: str) -> None:
+        """Worker body for :meth:`add_lora`. Never raises into the thread
+        runner — a failed fetch is logged and the client simply never sees
+        the id appear."""
+        from acestep.paths import user_loras_dir
+
+        # Isolated from the baked catalog: this pod goes to someone else
+        # next, and close() wipes exactly what this session fetched.
+        dest = user_loras_dir() / f"{lora_id}.safetensors"
+        if dest.exists():
+            # Already on disk from an earlier session. Re-register rather
+            # than re-download: register_lora is idempotent, and this is
+            # the common case for someone reloading their own LoRA.
+            logger.info("lora_fetch_skipped id={} reason=already_present", lora_id)
+            with self.state._lock:
+                self.state.pending_register.append(str(dest))
+                self._fetched_loras.add(lora_id)
+            return
+        # Download to a temp sibling and rename, so a dropped connection
+        # can't leave a truncated .safetensors that the next scan would
+        # happily register and the engine would fail to parse.
+        tmp = dest.with_suffix(".safetensors.partial")
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            t0 = time.monotonic()
+            written = 0
+            req = urllib.request.Request(url, headers={"User-Agent": "demon-pod"})
+            with urllib.request.urlopen(req, timeout=_LORA_FETCH_TIMEOUT_S) as r:
+                declared = int(r.headers.get("Content-Length") or 0)
+                if declared > _LORA_MAX_BYTES:
+                    raise ValueError(
+                        f"LoRA is {declared} bytes; cap is {_LORA_MAX_BYTES}"
+                    )
+                with open(tmp, "wb") as f:
+                    while True:
+                        chunk = r.read(1 << 20)
+                        if not chunk:
+                            break
+                        written += len(chunk)
+                        # Enforce the cap even when the server lied about
+                        # (or omitted) Content-Length.
+                        if written > _LORA_MAX_BYTES:
+                            raise ValueError("LoRA exceeded the size cap mid-stream")
+                        f.write(chunk)
+            if written == 0:
+                raise ValueError("empty response")
+            tmp.rename(dest)
+            logger.info(
+                "lora_fetched id={} bytes={} in={:.1f}s",
+                lora_id, written, time.monotonic() - t0,
+            )
+            with self.state._lock:
+                self.state.pending_register.append(str(dest))
+                self._fetched_loras.add(lora_id)
+        except Exception as e:
+            logger.warning("lora_fetch_failed id={} error={}", lora_id, e)
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     @requires_capability("lora", "disable_lora")
     def disable_lora(
@@ -1735,9 +2161,12 @@ class StreamingSession:
         *,
         origin: CommandOrigin = CommandOrigin.PRIMARY,
     ) -> None:
+        """Same alias resolution as :meth:`enable_lora` — a client that
+        enabled by alias must be able to disable by the same name."""
         self.state.last_activity_ts = time.monotonic()
+        lora_id = self._resolve_lora_id(str(lora_id))
         with self.state._lock:
-            self.state.pending_disable.append(str(lora_id))
+            self.state.pending_disable.append(lora_id)
         logger.info(
             "disable_lora_requested origin={} id={}",
             origin.value, lora_id,
@@ -1965,6 +2394,11 @@ class StreamingSession:
         :class:`SwapFailed` when the swap completes."""
         state = self.state
         state.last_activity_ts = time.monotonic()
+        # Placement belongs to the old source's coordinate space. Clear as
+        # soon as a swap is requested, before the runner can consume it again.
+        # The queued anchors reference the same stale coordinates — drop both.
+        self.audio_eng.render_anchor_s = None
+        self.audio_eng.set_render_anchor_queue([])
         effective_tags = tags or state.prompt_text
         with state._lock:
             state.swap_pending["waveform"] = audio.waveform
@@ -2332,12 +2766,39 @@ class StreamingSession:
 
             initial_enable_ids: list[str] = []
             if use_lora:
-                catalog_ids = {d.id for d in engine_obj.list_loras()}
+                # Same reference resolution as the runtime enable_lora
+                # path, but the backend (and its lora_compatible
+                # predicate) doesn't exist until __init__ — this IS the
+                # ACE-family create path, so the scale axis is applied
+                # directly, mirroring ACEStepBackend.lora_compatible.
+                scale = checkpoint_scale(checkpoint)
+                entries = []
+                for d in engine_obj.list_loras():
+                    md = load_lora_metadata(d.path)
+                    entries.append((
+                        d.id,
+                        md.name or d.name,
+                        lora_scale_compatible(md.base_model_scale, scale),
+                    ))
                 for lid in enabled_lora_ids:
-                    if lid in catalog_ids:
-                        initial_enable_ids.append(lid)
-                    else:
+                    resolved = resolve_lora_reference(lid, entries)
+                    if resolved is None:
                         logger.warning("lora_id_not_in_catalog id={}", lid)
+                        continue
+                    if resolved != lid:
+                        logger.info(
+                            "lora_alias_resolved requested={} id={}",
+                            lid, resolved,
+                        )
+                        # Re-key any client-supplied strength so the
+                        # first-tick enable picks it up under the
+                        # canonical id.
+                        if lid in lora_strengths_init:
+                            lora_strengths_init.setdefault(
+                                resolved, lora_strengths_init[lid],
+                            )
+                    if resolved not in initial_enable_ids:
+                        initial_enable_ids.append(resolved)
                 for p in extra_lora_paths:
                     pp = Path(p)
                     if not pp.exists():

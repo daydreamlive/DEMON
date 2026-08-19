@@ -26,6 +26,7 @@ imports :func:`handle_client` directly from here.
 
 import contextlib
 import json
+import math
 import os
 import queue
 import socket
@@ -254,6 +255,11 @@ _ACTIVE_SESSION: list = [None]  # [_ActiveSession | None]
 # per pod).
 PREEMPTED_CLOSE_CODE = 4001
 
+# Hard cap on client-supplied render_anchor_queue_s entries: at ~0.36 s of
+# audio per queued window, 1024 windows is ~6 min of prewarm — far beyond any
+# real kit — while bounding what a hostile/buggy client can enqueue.
+_RENDER_ANCHOR_QUEUE_CAP = 1024
+
 # How long a preempting connection waits for the old session's teardown
 # to release VRAM. Generous: the old runner may be mid stem-extraction
 # (it only observes running=False between pipeline iterations).
@@ -332,6 +338,33 @@ try:
 except ValueError:
     _DEAD_CLIENT_SEND_STALL_S = 30.0
 _DEAD_CLIENT_POLL_S = 2.0
+
+# How long a JSON header may wait for the binary frame that must follow it
+# (see _recv_binary_payload). This is a LIVENESS guard — it exists so an
+# orphan header can't block the recv loop forever and wedge the session —
+# so any finite value does its job, and it must be sized against the
+# largest payload the paired verbs can legitimately carry, not against a
+# typical one. The verbs are set_timbre_source / set_structure_source /
+# swap_source / write_audio, whose frames are uncompressed interleaved
+# float32 at 48 kHz: a 60 s stereo clip is 23 MB, which needs a sustained
+# ~18 Mbit/s uplink to land inside 10 s (the old value, inherited from
+# write_audio when it was the only guarded verb — see the recv-hardening
+# half of 2bb7969). Below that the guard stopped reporting "peer is gone"
+# and started reporting "peer's uplink is ordinary", failing refs and
+# swaps on links that stream perfectly well. 120 s covers 23 MB down to
+# ~2 Mbit/s. The cost of the larger window is bounded and self-healing:
+# _recv_binary_payload runs on the recv-loop thread, so a genuinely
+# orphaned header now stalls command dispatch for that long, which trips
+# the IDLE_PAUSE_S GPU pause — by design that keeps serving audio from the
+# existing buffer and resumes on the next inbound message. Floored at the
+# old value so a bad env can only loosen it.
+try:
+    _BINARY_PAYLOAD_TIMEOUT_S = max(
+        10.0,
+        float(os.environ.get("DEMON_BINARY_PAYLOAD_TIMEOUT_S", "") or 120.0),
+    )
+except ValueError:
+    _BINARY_PAYLOAD_TIMEOUT_S = 120.0
 
 
 def _socket_send_backlog(sock) -> int | None:
@@ -418,6 +451,26 @@ def _coalesced_slice_lead(prev, new) -> float | None:
     loop."""
     leads = [v for v in (prev, new) if isinstance(v, (int, float))]
     return min(leads) if leads else None
+
+
+# Sticky params fields folded forward by the recv loop's newest-wins
+# coalescing. "Absent retains" (the wire contract for these fields) only
+# helps once a message is APPLIED — a superseded snapshot that carried a
+# stationary anchor (or the batch anchor queue) would otherwise silently
+# vanish whenever the recv thread drains a backlog, which is exactly when
+# GPU-heavy generation starves it. The VST re-sends the scalar anchor every
+# tick so it survived by accident; the one-shot queue does not.
+_STICKY_PARAMS_FIELDS = ("render_anchor_s", "render_anchor_queue_s")
+
+
+def _fold_sticky_params(pending: dict, newer: dict) -> dict:
+    """Carry sticky fields from a superseded params snapshot into the newer
+    one (in place) unless the newer snapshot sets its own value — including
+    an explicit ``null`` (a clear), which counts as "sets its own"."""
+    for key in _STICKY_PARAMS_FIELDS:
+        if key in pending and key not in newer:
+            newer[key] = pending[key]
+    return newer
 
 
 class _ActiveSession:
@@ -1645,23 +1698,31 @@ def _handle_client_body(
         def _recv_binary_payload(fail_type: str):
             """Read the binary frame that must follow ``mtype``.
 
-            Bounded (10 s timeout) and type-checked, so an orphan
-            header can neither block the recv loop forever (wedging
-            the whole session) nor consume the next JSON command as
-            its payload. Both failure modes answer ``fail_type`` and
-            keep the session alive. Returns ``None`` on failure (the
-            caller must bail out); flips ``state.running`` if the
-            connection closed.
+            Bounded (``_BINARY_PAYLOAD_TIMEOUT_S``) and type-checked,
+            so an orphan header can neither block the recv loop forever
+            (wedging the whole session) nor consume the next JSON
+            command as its payload. Both failure modes answer
+            ``fail_type`` and keep the session alive. Returns ``None``
+            on failure (the caller must bail out); flips
+            ``state.running`` if the connection closed.
+
+            The bound is a transfer deadline for multi-MB frames, not
+            just an orphan-header guard — see the constant for why it is
+            sized the way it is.
             """
             try:
-                audio_msg = recv_audio(timeout=10)
+                audio_msg = recv_audio(timeout=_BINARY_PAYLOAD_TIMEOUT_S)
             except TimeoutError:
                 logger.error(
-                    "{}_payload_timeout origin={}", mtype, origin,
+                    "{}_payload_timeout origin={} timeout_s={:.0f}",
+                    mtype, origin, _BINARY_PAYLOAD_TIMEOUT_S,
                 )
                 _send_json({
                     "type": fail_type,
-                    "error": "binary payload not received within 10s",
+                    "error": (
+                        "binary payload not received within "
+                        f"{_BINARY_PAYLOAD_TIMEOUT_S:.0f}s"
+                    ),
                 })
                 return None
             except ConnectionClosed:
@@ -1683,10 +1744,35 @@ def _handle_client_body(
 
         try:
             if mtype == "params":
+                pp_raw = data.get("playback_pos")
                 try:
-                    pp = float(data.get("playback_pos", 0.0))
+                    pp = float(pp_raw) if pp_raw is not None else None
                 except (TypeError, ValueError):
-                    pp = 0.0
+                    pp = None
+                if pp is not None and not math.isfinite(pp):
+                    pp = None
+                anchor_kwargs = {}
+                if "render_anchor_s" in data:
+                    anchor_raw = data.get("render_anchor_s")
+                    try:
+                        anchor = float(anchor_raw) if anchor_raw is not None else None
+                    except (TypeError, ValueError):
+                        anchor = None
+                    if anchor is not None and not math.isfinite(anchor):
+                        anchor = None
+                    anchor_kwargs["render_anchor_s"] = anchor
+                if "render_anchor_queue_s" in data:
+                    queue_raw = data.get("render_anchor_queue_s")
+                    queue: list = []
+                    if isinstance(queue_raw, (list, tuple)):
+                        for item in queue_raw[:_RENDER_ANCHOR_QUEUE_CAP]:
+                            try:
+                                val = float(item)
+                            except (TypeError, ValueError):
+                                continue
+                            if math.isfinite(val):
+                                queue.append(val)
+                    anchor_kwargs["render_anchor_queue_s"] = queue
                 ct = data.get("client_time")
                 try:
                     ct = float(ct) if ct is not None else None
@@ -1713,6 +1799,7 @@ def _handle_client_body(
                 streaming.set_knobs(
                     data.get("raw") or {}, pp, origin=origin,
                     client_time=ct, slice_lead_s=sl,
+                    **anchor_kwargs,
                 )
             elif mtype == "loop_band":
                 streaming.set_loop_band(
@@ -1761,6 +1848,14 @@ def _handle_client_body(
                 lid = data.get("id")
                 if lid:
                     streaming.disable_lora(str(lid), origin=origin)
+            elif mtype == "add_lora":
+                lid = data.get("id")
+                url = data.get("url")
+                if lid and url:
+                    # Validation (id charset, URL scheme + host allowlist)
+                    # lives in the session, next to the code that writes
+                    # the file — this dispatch only unpacks the message.
+                    streaming.add_lora(str(url), str(lid), origin=origin)
             elif mtype == "manual_slot_add":
                 streaming.manual_slot_add(origin=origin)
             elif mtype == "manual_slot_pop":
@@ -1962,6 +2057,9 @@ def _handle_client_body(
                                 )
                                 if carried is not None:
                                     data["slice_lead_s"] = carried
+                                # Sticky placement must survive coalescing:
+                                # see _fold_sticky_params.
+                                _fold_sticky_params(pending_params, data)
                             pending_params = data  # newest wins
                         else:
                             if pending_params is not None:

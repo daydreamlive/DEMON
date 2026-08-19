@@ -25,6 +25,12 @@ import time
 import urllib.parse
 from pathlib import Path
 
+try:
+    from .local_env import load_repo_env_defaults
+except ImportError:  # direct script execution: python demos/.../server.py
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from demos.realtime_motion_graph_web.local_env import load_repo_env_defaults
+
 # Opt the CUDA caching allocator into expandable segments before torch
 # initializes it (first CUDA allocation). On long-uptime pods the torch
 # pool fragments across LoRA enable/disable rotations, stem-extraction
@@ -278,8 +284,9 @@ def _process_request(connection, request):
     # resolution the WebSocket pipeline uses, so everyone agrees on
     # what's in the catalog.
     if path_only == "/api/loras":
-        from acestep.lora_metadata import load_lora_metadata
+        from acestep.lora_metadata import load_lora_metadata, lora_scale_compatible
         from acestep.paths import (
+            assign_lora_ids,
             checkpoint_scale,
             discover_all_loras,
             extra_lora_dirs,
@@ -291,23 +298,27 @@ def _process_request(connection, request):
             # register_library() scan so the HTTP catalog and the
             # engine-side catalog stay in lockstep.
             entries = []
-            seen_ids: set[str] = set()
-            for p in discover_all_loras():
-                # Same-stem dedup mirrors LoRAManager.register_lora's
-                # first-wins behavior so the UI can't see a phantom id
-                # the engine refused to register.
-                if p.stem in seen_ids:
-                    continue
-                seen_ids.add(p.stem)
+            scale = checkpoint_scale(_CHECKPOINT)
+            for p, lora_id in assign_lora_ids(discover_all_loras()):
+                # Same stem-collision disambiguation as the engine's
+                # register_library() scan so the UI sees exactly the
+                # ids the engine registered.
                 md = load_lora_metadata(p).to_wire()
                 entries.append({
-                    "id": p.stem,
-                    "name": md.get("name") or p.stem,
+                    "id": lora_id,
+                    "name": md.get("name") or lora_id,
                     "path": str(p),
                     "state": "registered",
                     "strength": 0.0,
                     "materialized_bytes": 0,
                     "metadata": md,
+                    # Pre-session there is no backend to ask, so the
+                    # scale axis is applied directly — same verdict the
+                    # WS catalog's backend.lora_compatible produces for
+                    # ACE checkpoints. Advisory; the full catalog ships.
+                    "compatible": lora_scale_compatible(
+                        md.get("base_model_scale"), scale,
+                    ),
                 })
         except Exception as e:
             entries = []
@@ -695,6 +706,8 @@ def _run_sa3_preflight(model_id: str) -> None:
 
 
 def main():
+    load_repo_env_defaults()
+
     # Wire logging FIRST so even the CLI-arg validation prints flow through
     # the configured sinks. configure() is idempotent so a duplicate call
     # in any nested entry point is a no-op.
