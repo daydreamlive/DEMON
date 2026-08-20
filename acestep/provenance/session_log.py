@@ -297,18 +297,32 @@ class SessionLogTap:
                 "extra": {
                     k: v for k, v in meta.items()
                     # fixture_path is a server filesystem path — consumed
-                    # below for the input hash, never recorded verbatim.
-                    if k not in ("checkpoint", "fixture_name", "fixture_path")
+                    # below for the input hash, never recorded verbatim;
+                    # initial_source_sha256 lands as input.chain_head.
+                    if k not in ("checkpoint", "fixture_name",
+                                 "fixture_path", "initial_source_sha256")
                 },
             },
         )
         if isinstance(snap.get("prompt"), str) and snap["prompt"]:
             self._prompts_seen.add(snap["prompt"])
 
-        # Initial input source: hash the fixture FILE off-thread (a ~10 MB
-        # read must not sit in the session-registration path) and commit it
-        # to the input chain. User-provided sources are committed via their
-        # buffer fingerprints as SessionReady/SwapReady arrive on the bus.
+        # Initial input source, two commitments: the adapter-computed
+        # fingerprint of the waveform actually consumed (covers client
+        # uploads that never exist as pod files — committed synchronously,
+        # so it is always the chain's first entry), and the source FILE's
+        # sha256 when a cached file exists (hashed off-thread; a ~10 MB
+        # read must not sit in the session-registration path). Later
+        # user-provided sources are committed via their buffer
+        # fingerprints as SessionReady/SwapReady arrive on the bus.
+        initial_fp = meta.get("initial_source_sha256")
+        if initial_fp:
+            self._extend_input_chain(
+                initial_fp, "initial_source",
+                {"algo": "sha256:buffer_fingerprint",
+                 "fixture_name": meta.get("fixture_name")
+                 or snap.get("fixture_name")},
+            )
         fixture_path = meta.get("fixture_path")
         if fixture_path:
             threading.Thread(

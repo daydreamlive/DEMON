@@ -383,6 +383,18 @@ def _known_fixture_local_path(fixture_name) -> str | None:
         return None
 
 
+def _waveform_fingerprint_or_none(waveform) -> str | None:
+    """Provenance fingerprint of the initial source as ACTUALLY consumed
+    ([C, N] torch tensor → the tap's np fingerprint). Covers the client-
+    upload path where no source file ever exists on the pod. Fail-open:
+    any error returns None and costs the session nothing."""
+    try:
+        from acestep.provenance.session_log import buffer_fingerprint
+        return buffer_fingerprint(waveform.detach().cpu().numpy().T)
+    except Exception:  # noqa: BLE001 — provenance is best-effort
+        return None
+
+
 def _socket_send_backlog(sock) -> int | None:
     """Bytes queued in the kernel send buffer (unsent + unacked) for
     ``sock``, or ``None`` if the FD can't be queried (closed / errored /
@@ -2227,11 +2239,12 @@ def _handle_client_body(
             "checkpoint": checkpoint,
             "fixture_name": fixture_name,
             "decoder_backend": decoder_backend,
-            # Local path of the initial source file so the tap can commit
-            # its sha256 to the input chain (06 §2.2). Resolved without
-            # network: by session start a served fixture is already in the
-            # local cache; anything else hashes via its buffer fingerprint
-            # instead (SessionReady/SwapReady).
+            # Input commitments for the 06 §2.2 input chain: fingerprint of
+            # the waveform actually consumed (works for client uploads that
+            # never exist as pod files), plus the source file's local path
+            # when it is already cached (never triggers a download) so the
+            # tap can commit the file sha256 too.
+            "initial_source_sha256": _waveform_fingerprint_or_none(waveform),
             "fixture_path": _known_fixture_local_path(fixture_name),
         },
     ))
