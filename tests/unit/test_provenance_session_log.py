@@ -32,6 +32,7 @@ import acestep.provenance.session_log as session_log_mod
 from acestep.provenance.ledger_client import LedgerClient
 from acestep.provenance.session_log import (
     LOCAL_STREAM,
+    buffer_fingerprint,
     get_tap,
     latest_session_summary,
     record_pod_slice_hash,
@@ -44,6 +45,7 @@ from acestep.streaming.events import (
     EventBus,
     PromptApplied,
     SwapFailed,
+    SwapReady,
 )
 
 
@@ -167,6 +169,77 @@ def test_session_log_schema_and_lifecycle(tmp_path, monkeypatch):
     assert get_tap("sess-schema") is None
     assert latest_session_summary() is None
     assert session_summary_for("sess-schema") is None
+
+
+def test_input_chain_head_commits_every_source(tmp_path, monkeypatch):
+    import hashlib
+
+    monkeypatch.setenv("ACESTEP_PROVENANCE_DIR", str(tmp_path / "provenance"))
+    src = tmp_path / "low_fi_test_fixture.wav"
+    src.write_bytes(b"RIFF" + bytes(range(256)) * 8)
+    file_sha = hashlib.sha256(src.read_bytes()).hexdigest()
+
+    bus = EventBus()
+    _register(
+        bus, "sess-input",
+        provenance_meta={
+            "checkpoint": "ace_step_v1",
+            "fixture_name": "low_fi_test_fixture.wav",
+            "fixture_path": str(src),
+        },
+    )
+
+    # The file hash is committed from a background thread — wait for it
+    # before publishing the swap so the chain order is deterministic.
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        p = tmp_path / "provenance" / "sessions" / "sess-input.jsonl"
+        if p.is_file() and any(
+            json.loads(l)["type"] == "input.chain_head"
+            for l in p.read_text(encoding="utf-8").splitlines()
+        ):
+            break
+        time.sleep(0.05)
+
+    buf = np.linspace(-1.0, 1.0, 4096, dtype=np.float32).reshape(-1, 1)
+    bus.publish(SwapReady(
+        duration=1.0, sample_rate=48_000, channels=1, bpm=120,
+        key="C minor", time_signature="4", fixture_name=None,
+        initial_buffer=buf,
+    ))
+    registry.unregister("sess-input")
+
+    lines = _read_log(tmp_path, "sess-input")
+
+    # The server filesystem path must never be recorded.
+    cfg = lines[0]["payload"]
+    assert cfg["fixture_name"] == "low_fi_test_fixture.wav"
+    assert "fixture_path" not in cfg.get("extra", {})
+
+    chain = _by_type(lines, "input.chain_head")
+    assert len(chain) == 2, "one head per input source"
+
+    first = chain[0]["payload"]
+    # Single-input head IS the input's own hash — directly comparable to
+    # `shasum -a 256 <file>` by anyone holding the original.
+    assert first["head"] == file_sha
+    assert first["input_sha256"] == file_sha
+    assert first["algo"] == "sha256:file"
+    assert first["label"] == "initial_source"
+
+    second = chain[1]["payload"]
+    fp = buffer_fingerprint(buf)
+    assert second["input_sha256"] == fp
+    assert second["algo"] == "sha256:buffer_fingerprint"
+    assert second["label"] == "source_swap"
+    # Later inputs fold in: head = sha256(prev_head || input_hash).
+    assert second["head"] == hashlib.sha256(
+        (file_sha + fp).encode("ascii")
+    ).hexdigest()
+
+    # The swap also still records its action.seed_audio fingerprint.
+    seeds = _by_type(lines, "action.seed_audio")
+    assert seeds and seeds[-1]["payload"]["sha256"] == fp
 
 
 def test_slice_counting_and_pod_slice_hash(tmp_path, monkeypatch):

@@ -367,6 +367,22 @@ except ValueError:
     _BINARY_PAYLOAD_TIMEOUT_S = 120.0
 
 
+def _known_fixture_local_path(fixture_name) -> str | None:
+    """Local path of a known fixture IF it is already cached — never
+    downloads (this feeds the provenance input hash; provenance must not
+    add network work to session registration). None for user uploads,
+    unknown names, or a cache miss."""
+    if not fixture_name or fixture_name not in KNOWN_FIXTURES:
+        return None
+    try:
+        from acestep.paths import fixtures_dir
+        from acestep.track_assets import source_audio_path
+        local = source_audio_path(fixtures_dir(), fixture_name)
+        return str(local) if local.is_file() else None
+    except Exception:  # noqa: BLE001 — fail-open, hash is best-effort
+        return None
+
+
 def _socket_send_backlog(sock) -> int | None:
     """Bytes queued in the kernel send buffer (unsent + unacked) for
     ``sock``, or ``None`` if the FD can't be queried (closed / errored /
@@ -2211,6 +2227,12 @@ def _handle_client_body(
             "checkpoint": checkpoint,
             "fixture_name": fixture_name,
             "decoder_backend": decoder_backend,
+            # Local path of the initial source file so the tap can commit
+            # its sha256 to the input chain (06 §2.2). Resolved without
+            # network: by session start a served fixture is already in the
+            # local cache; anything else hashes via its buffer fingerprint
+            # instead (SessionReady/SwapReady).
+            "fixture_path": _known_fixture_local_path(fixture_name),
         },
     ))
     session_registered = True

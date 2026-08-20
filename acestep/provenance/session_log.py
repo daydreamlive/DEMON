@@ -257,6 +257,13 @@ class SessionLogTap:
         self._last_params: dict = {}
         self._last_params_wall = 0.0
         self._closed = False
+        # Input commitment chain (06 §2.2 ``input.chain_head``): one head
+        # over every source this session consumed. First input → head is
+        # the input's own hash (so a single-input session's record head is
+        # directly comparable to ``sha256 <file>``); each further input →
+        # head = sha256(prev_head || input_hash). The seal lifts the last
+        # head into the public record's ``input_chain_head``.
+        self._input_chain_head: str | None = None
 
         snap: dict = {}
         if callable(snapshot):
@@ -289,15 +296,74 @@ class SessionLogTap:
                 "time_signature": snap.get("time_signature"),
                 "extra": {
                     k: v for k, v in meta.items()
-                    if k not in ("checkpoint", "fixture_name")
+                    # fixture_path is a server filesystem path — consumed
+                    # below for the input hash, never recorded verbatim.
+                    if k not in ("checkpoint", "fixture_name", "fixture_path")
                 },
             },
         )
         if isinstance(snap.get("prompt"), str) and snap["prompt"]:
             self._prompts_seen.add(snap["prompt"])
 
+        # Initial input source: hash the fixture FILE off-thread (a ~10 MB
+        # read must not sit in the session-registration path) and commit it
+        # to the input chain. User-provided sources are committed via their
+        # buffer fingerprints as SessionReady/SwapReady arrive on the bus.
+        fixture_path = meta.get("fixture_path")
+        if fixture_path:
+            threading.Thread(
+                target=self._hash_initial_source,
+                args=(Path(fixture_path),
+                      meta.get("fixture_name") or snap.get("fixture_name")),
+                name="provenance-input-hash",
+                daemon=True,
+            ).start()
+
         self._sub = bus.subscribe(self._on_event, name="provenance")
         self._bus = bus
+
+    # ---- input commitment chain (06 §2.2) --------------------------------
+
+    def _hash_initial_source(self, path: Path, fixture_name: str | None) -> None:
+        """SHA-256 the initial source file and commit it to the input
+        chain. Runs on its own daemon thread; fail-open like everything
+        else here — an unreadable file logs one warning and that's it."""
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as exc:
+            logger.warning(
+                "input source hash failed for session={} path={}: {}",
+                self.session_id, path, exc,
+            )
+            return
+        if self._closed:
+            return
+        self._extend_input_chain(
+            digest, "initial_source",
+            {"algo": "sha256:file", "fixture_name": fixture_name},
+        )
+
+    def _extend_input_chain(
+        self, input_sha256: str, label: str, extra: dict | None = None,
+    ) -> None:
+        """Fold one input hash into the chain and record the new head.
+        The event's ``head`` is what the ledger seal lifts into the public
+        record; ``input_sha256`` keeps the individual input verifiable."""
+        with self._lock:
+            prev = self._input_chain_head
+            head = (
+                input_sha256 if prev is None
+                else hashlib.sha256(
+                    (prev + input_sha256).encode("ascii")
+                ).hexdigest()
+            )
+            self._input_chain_head = head
+        payload: dict = {
+            "head": head, "input_sha256": input_sha256, "label": label,
+        }
+        if extra:
+            payload.update({k: v for k, v in extra.items() if v is not None})
+        self._record("input.chain_head", payload)
 
     # ---- recording -------------------------------------------------------
 
@@ -432,10 +498,11 @@ class SessionLogTap:
                 self._loras = loras
             self._record("action.lora", {"loras": loras})
         elif isinstance(event, SessionReady):
+            fp = buffer_fingerprint(event.initial_buffer)
             self._record(
                 "action.seed_audio",
                 {
-                    "sha256": buffer_fingerprint(event.initial_buffer),
+                    "sha256": fp,
                     "label": "initial_source",
                     "duration_sec": event.duration,
                     "sample_rate": event.sample_rate,
@@ -445,11 +512,15 @@ class SessionLogTap:
                     "pipeline_depth": event.pipeline_depth,
                 },
             )
+            self._extend_input_chain(
+                fp, "initial_source", {"algo": "sha256:buffer_fingerprint"},
+            )
         elif isinstance(event, SwapReady):
+            fp = buffer_fingerprint(event.initial_buffer)
             self._record(
                 "action.seed_audio",
                 {
-                    "sha256": buffer_fingerprint(event.initial_buffer),
+                    "sha256": fp,
                     "label": "source_swap",
                     "fixture_name": event.fixture_name,
                     "duration_sec": event.duration,
@@ -457,6 +528,11 @@ class SessionLogTap:
                     "key": event.key,
                     "source_epoch": event.source_epoch,
                 },
+            )
+            self._extend_input_chain(
+                fp, "source_swap",
+                {"algo": "sha256:buffer_fingerprint",
+                 "fixture_name": event.fixture_name},
             )
         elif isinstance(event, TimbreSet):
             self._record(
