@@ -30,6 +30,17 @@ constructor param. With **either** the URL or the token unset the whole
 client is a **complete no-op**: construction is free, every method
 returns immediately, and no thread is started.
 
+**Dev bootstrap (broker emulation).** Until the real queue broker calls
+``POST /internal/v1/sessions`` (spec 06 §2.8), nothing delivers a
+per-session pod token to a pod. For staging/dev E2E testing the client
+can emulate the broker itself: when the token is unset but
+``DEMON_LEDGER_INTERNAL_SECRET`` is, the worker thread mints this
+session via the internal endpoint before its first flush (user id from
+``DEMON_LEDGER_USER_ID``, default ``"dev"``). Fail-open like the rest
+of the client: a failed mint logs one WARNING and reporting stays off.
+Production pods must never hold the internal secret — the broker
+delivers the token instead.
+
 Async-safe by construction: callers (the bus drainer thread, the WS
 dispatch thread, async handlers) only ever enqueue onto a bounded
 in-memory queue; one daemon worker owns all network I/O and is the sole
@@ -61,6 +72,8 @@ from acestep.provenance.receipts import ChainMirror, ReceiptVerifier
 __all__ = [
     "LEDGER_URL_ENV",
     "LEDGER_TOKEN_ENV",
+    "LEDGER_INTERNAL_SECRET_ENV",
+    "LEDGER_USER_ENV",
     "SLICE_POD_HASH_TYPE",
     "LedgerReceipt",
     "LedgerClient",
@@ -68,6 +81,10 @@ __all__ = [
 
 LEDGER_URL_ENV = "DEMON_LEDGER_URL"
 LEDGER_TOKEN_ENV = "DEMON_LEDGER_TOKEN"
+# Dev-only broker emulation (see module docstring): with the token unset,
+# these let the worker mint the session itself via 06 §2.8.
+LEDGER_INTERNAL_SECRET_ENV = "DEMON_LEDGER_INTERNAL_SECRET"
+LEDGER_USER_ENV = "DEMON_LEDGER_USER_ID"
 
 # This client reports the pod stream (its token is dlt_pod_…, spec 06 §2.1).
 _STREAM = "pod"
@@ -149,6 +166,13 @@ class LedgerClient:
             token if token is not None
             else os.environ.get(LEDGER_TOKEN_ENV, "")
         )
+        # Dev bootstrap (module docstring): armed only when no token was
+        # delivered. The mint happens on the worker thread, never here.
+        self._bootstrap_secret = (
+            "" if self.token
+            else os.environ.get(LEDGER_INTERNAL_SECRET_ENV, "")
+        )
+        self._bootstrap_user = os.environ.get(LEDGER_USER_ENV, "dev")
         self.session_id = session_id
         self._last_receipt: Optional[LedgerReceipt] = None
         self._chain_head: Optional[str] = None
@@ -173,8 +197,11 @@ class LedgerClient:
     @property
     def enabled(self) -> bool:
         """Reporting is live only when the pod holds both the ledger URL
-        and its write-scoped pod token (spec 06 §1)."""
-        return bool(self.base_url) and bool(self.token)
+        and its write-scoped pod token (spec 06 §1) — or, in dev, the
+        internal secret with which the worker can mint one."""
+        return bool(self.base_url) and bool(
+            self.token or self._bootstrap_secret
+        )
 
     @property
     def last_receipt(self) -> Optional[LedgerReceipt]:
@@ -291,6 +318,8 @@ class LedgerClient:
 
     def _drain(self) -> None:
         assert self._queue is not None
+        if not self.token and self._bootstrap_secret:
+            self._bootstrap()
         batch: list[dict] = []
         while True:
             timeout = _FLUSH_INTERVAL_S if batch else None
@@ -312,6 +341,10 @@ class LedgerClient:
 
     def _flush(self, batch: list[dict]) -> None:
         if not batch:
+            return
+        if not self.token:
+            # Bootstrap failed (or never armed): fail-open — the local
+            # session log remains the durable record.
             return
         # Assign contiguous seq now (worker is the single seq writer).
         events = []
@@ -363,6 +396,52 @@ class LedgerClient:
                     "(further failures silenced)",
                     url, exc,
                 )
+
+    def _bootstrap(self) -> None:
+        """Dev-only broker emulation (module docstring): mint this
+        session via ``POST /internal/v1/sessions`` (spec 06 §2.8) and
+        adopt the returned pod token. Runs once, on the worker thread,
+        before the first flush. Fail-open: on any failure reporting
+        stays disabled and one WARNING is logged."""
+        # DEMON_LEDGER_URL includes the public /v1 prefix; the internal
+        # surface lives beside it at /internal/v1 (spec 06 §2.8).
+        origin = (
+            self.base_url[: -len("/v1")]
+            if self.base_url.endswith("/v1") else self.base_url
+        )
+        url = f"{origin}/internal/v1/sessions"
+        body = json.dumps({
+            "session_id": self.session_id,
+            "user_id": self._bootstrap_user,
+        }).encode("utf-8")
+        try:
+            req = urllib.request.Request(
+                url,
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self._bootstrap_secret}",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_S) as resp:
+                data = json.loads(resp.read())
+            token = data.get("pod_ledger_token") if isinstance(data, dict) else None
+            if not isinstance(token, str) or not token:
+                raise ValueError("response carried no pod_ledger_token")
+            self.token = token
+            logger.info(
+                "ledger dev bootstrap minted session={} user={} "
+                "(broker emulation, 06 §2.8)",
+                self.session_id, self._bootstrap_user,
+            )
+        except (urllib.error.URLError, OSError, ValueError,
+                json.JSONDecodeError) as exc:
+            logger.warning(
+                "ledger dev bootstrap failed url={} session={} error={} "
+                "(reporting disabled; local session log unaffected)",
+                url, self.session_id, exc,
+            )
 
     # ---- receipt verification (spec 06 §2.4) -----------------------------
 

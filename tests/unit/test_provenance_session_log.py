@@ -277,6 +277,21 @@ class _CapturingLedger:
                     "content_type": self.headers.get("Content-Type"),
                     "body": body,
                 })
+                if self.path.endswith("/internal/v1/sessions"):
+                    # Broker bootstrap surface (spec 06 §2.8), used by the
+                    # client's dev broker emulation.
+                    resp = json.dumps({
+                        "pod_ledger_token": "dlt_pod_minted",
+                        "client_ledger_token": "dlt_cli_minted",
+                        "slice_mac_key": "bWFj",
+                        "ledger_base_url": outer.base_url,
+                    }).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(resp)))
+                    self.end_headers()
+                    self.wfile.write(resp)
+                    return
                 last_seq = body["events"][-1]["seq"]
                 resp = json.dumps({
                     "stream": "pod",
@@ -361,6 +376,51 @@ def test_ledger_client_batches_events_with_auth_and_contiguous_seq():
     }
     # Every event uses integer epoch-ms ts.
     assert all(isinstance(e["ts"], int) for e in events)
+
+
+def test_ledger_client_dev_bootstrap_mints_pod_token(monkeypatch):
+    # No token delivered, but the internal secret is set: the worker mints
+    # the session itself (broker emulation, 06 §2.8) before its first flush.
+    server = _CapturingLedger()
+    try:
+        monkeypatch.delenv("DEMON_LEDGER_TOKEN", raising=False)
+        monkeypatch.setenv("DEMON_LEDGER_INTERNAL_SECRET", "int_sec_1")
+        monkeypatch.setenv("DEMON_LEDGER_USER_ID", "user_dev_1")
+        client = LedgerClient(base_url=server.base_url, session_id="sess_bs")
+        assert client.enabled, "the internal secret arms the client"
+        client.post_slice_hash(
+            sha256="ab" * 32, start_sample=0, num_samples=16, channels=2,
+            slice_seq=0,
+        )
+        client.close(timeout=5.0)
+    finally:
+        server.close()
+
+    assert len(server.requests) == 2
+    mint = server.requests[0]
+    assert mint["path"] == "/internal/v1/sessions"
+    assert mint["auth"] == "Bearer int_sec_1"
+    assert mint["body"] == {"session_id": "sess_bs", "user_id": "user_dev_1"}
+    ingest = server.requests[1]
+    assert ingest["path"] == "/v1/sessions/sess_bs/events"
+    assert ingest["auth"] == "Bearer dlt_pod_minted", (
+        "events must be reported with the minted pod token"
+    )
+
+
+def test_ledger_client_dev_bootstrap_failure_is_fail_open(monkeypatch):
+    # Secret set but no server listening: the mint fails, reporting stays
+    # off, and nothing raises into the caller.
+    monkeypatch.delenv("DEMON_LEDGER_TOKEN", raising=False)
+    monkeypatch.setenv("DEMON_LEDGER_INTERNAL_SECRET", "int_sec_1")
+    client = LedgerClient(
+        base_url="http://127.0.0.1:1/v1", session_id="sess_bs_fail",
+    )
+    assert client.enabled
+    client.post_event("action.prompt", {"prompt": "x"})
+    client.close(timeout=5.0)
+    assert client.token == "", "a failed mint must not fabricate a token"
+    assert client.last_receipt is None
 
 
 def test_ledger_client_parses_receipt_field_names():
