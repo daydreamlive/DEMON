@@ -44,11 +44,22 @@ class SliceCodec:
     buffer.
     """
 
+    @staticmethod
+    def _as_client_reconstruction(buf: np.ndarray) -> np.ndarray:
+        """Source buffers travel to the client as float16 (ws_adapter's
+        init/swap sends) and are upcast on arrival — so the client's base
+        state is the f16-quantized source, NOT the exact f32 source. The
+        mirror must track the client's reconstruction byte-for-byte (see
+        the encode() note), including this base: without the round-trip
+        every abs_sha256 differs from the client's buffer by the source's
+        quantization error, and export forensics can never match."""
+        return buf.astype(np.float16).astype(np.float32)
+
     def __init__(self, initial_mirror: np.ndarray, zstd_level: int = 1):
-        # ``copy()`` because the caller's ``initial_buffer`` may be a
-        # view into a session-owned array. The codec mutates this in
-        # place on every encode.
-        self._mirror = initial_mirror.copy()
+        # Quantized like the client's copy (see _as_client_reconstruction);
+        # also a fresh array (never a view into a session-owned buffer —
+        # the codec mutates this in place on every encode).
+        self._mirror = self._as_client_reconstruction(initial_mirror)
         self._zctx = zstd.ZstdCompressor(level=zstd_level)
         # Pod-side monotonic slice counter (spec 06 §3) and the last
         # encoded frame's slice-hash report (spec 06 §2.3), consumed by
@@ -66,8 +77,9 @@ class SliceCodec:
     def replace_mirror(self, new_mirror: np.ndarray) -> None:
         """Wholesale replace the mirror buffer. Used on swap so the
         next slice's delta is computed against the buffer the client
-        just crossfaded into."""
-        self._mirror = new_mirror.copy()
+        just crossfaded into — which arrived over the wire as float16,
+        so it is quantized here exactly like the init path."""
+        self._mirror = self._as_client_reconstruction(new_mirror)
 
     def encode(
         self,
