@@ -17,6 +17,7 @@ import {
   resolveLoraCapForSource,
 } from "@/lib/config";
 import { wirePromptTransform } from "@/lib/loraTriggers";
+import { reconcileEnabledLoraStrengths } from "@/engine/lora/dispatcher";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore, type RefSource } from "@/store/usePerformanceStore";
@@ -605,7 +606,26 @@ export function useStartSession() {
           // ghost-LoRA leak when the reconnected source's tier is
           // tighter than what was previously enabled).
           applyLoraCapWithServerSync(resolveLoraCapForSource(remote.duration));
+          // Re-sync the engine-facing LoRA strengths from the store now
+          // that the (post-cap) enabled set is final. A reconnect rebuilds
+          // the server session from buildConfig, so the materialized
+          // strengths are correct — but useParamSync ships sliderValues,
+          // which may hold a stale per-LoRA entry from before a restore.
+          // Reconciling here keeps the streamed value equal to the UI
+          // strength (no-op when they already agree). See
+          // reconcileEnabledLoraStrengths.
+          reconcileEnabledLoraStrengths();
           useSessionStore.getState().setSession(remote, player);
+          // Record what this recovered session is actually bound to. The
+          // reconnect rebinds the fixture snapshotted at session start,
+          // which can lag the user's current selection if they switched
+          // tracks while the socket was down. Set this BEFORE onSuccess
+          // flips status to "ready" so useFixtureSwap's reconnect
+          // reconcile observes the (possibly stale) bound fixture and
+          // heals the divergence by swapping to the live selection.
+          useSessionStore
+            .getState()
+            .setBoundFixture(sessionFixture.fixtureName);
           // Rebuild the network-quality monitor against the new
           // remote — the old one was bound to the dropped backend's
           // `slice` events and is dead now.
@@ -712,6 +732,18 @@ export function useStartSession() {
     // server-side after they vanish from the UI.
     applyLoraCapWithServerSync(resolveLoraCapForSource(remote.duration));
 
+    // Re-sync the engine-facing LoRA strengths from the store before the
+    // first param tick ships. On a fresh session this is a no-op (the
+    // catalog seed already wrote matching sliderValues), but on a
+    // saved-session resume the host restores the persisted strength into
+    // useLoraStore.strengths WITHOUT touching perf.sliderValues — so
+    // useParamSync would otherwise keep streaming the stale value the
+    // catalog seed left behind (the LoRA shows its restored strength but
+    // is inaudible until the fader is moved). Runs once here, gated by
+    // this hook only reaching "ready" with a live remote, so it can't
+    // fire before the engine is connected or spam per-tick dispatches.
+    reconcileEnabledLoraStrengths();
+
     // "Hear the source first" gate: when enabled in config.json, every
     // session start snaps engine denoise to 0 and plays a visual-only
     // glide from the slider's prior value down to 0 over glide_ms. The
@@ -741,6 +773,10 @@ export function useStartSession() {
     perfState.setRemixStarted(false);
 
     setSession(remote, player);
+    // The live session is now bound to this fixture. Mirrored into the
+    // session store so the reconnect path can tell whether the user
+    // switched tracks during an outage (see useFixtureSwap).
+    useSessionStore.getState().setBoundFixture(resolved.fixtureName);
     setStatus("ready", "Playing");
 
     // Start the network-quality monitor now that the WS is "ready".
