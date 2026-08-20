@@ -451,12 +451,16 @@ class SessionLogTap:
         channels: int,
         slice_seq: int | None = None,
         mac_verified: bool | None = None,
+        abs_sha256: str | None = None,
     ) -> None:
-        """Report a pod-side output-slice hash (spec 06 §2.3): SHA-256
-        over the uncompressed interleaved float16 downlink payload bytes,
-        computed in the transport codec where those exact bytes exist.
-        Emits a ``slice.pod_hash`` ledger event through this session's
-        ledger client so it shares the pod stream's contiguous seq."""
+        """Report a pod-side output-slice hash (spec 06 §2.3): ``sha256``
+        is over the uncompressed interleaved float16 downlink payload
+        bytes (the wire delta, cross-checked against the client);
+        ``abs_sha256`` is over the region's post-update float32 client
+        reconstruction — the bytes a float32 WAV export carries, so it is
+        recomputable from the exported file (export forensics). Emits a
+        ``slice.pod_hash`` ledger event through this session's ledger
+        client so it shares the pod stream's contiguous seq."""
         if self._closed:
             return
         with self._lock:
@@ -468,6 +472,7 @@ class SessionLogTap:
             channels=channels,
             slice_seq=slice_seq,
             mac_verified=mac_verified,
+            abs_sha256=abs_sha256,
         )
 
     # ---- bus tap ---------------------------------------------------------
@@ -723,6 +728,7 @@ def record_pod_slice_hash(
     channels: int,
     slice_seq: int | None = None,
     mac_verified: bool | None = None,
+    abs_sha256: str | None = None,
 ) -> None:
     """Module-level convenience for the transport codec: forward a
     pod-side slice hash (spec 06 §2.3) to the session's tap, no-op when
@@ -736,6 +742,7 @@ def record_pod_slice_hash(
             channels=channels,
             slice_seq=slice_seq,
             mac_verified=mac_verified,
+            abs_sha256=abs_sha256,
         )
 
 

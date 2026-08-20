@@ -96,8 +96,17 @@ class SliceCodec:
         # interleaved float16 payload bytes — the exact bytes the client
         # gets back after zstd-decompressing this frame, so the pod and
         # client hashes compare directly for cross-checking.
+        # The client's post-update reconstruction of this region (see the
+        # mirror note below) — hashed as raw float32 interleaved bytes for
+        # EXPORT forensics (06 §2.3): a dragged float32 WAV carries these
+        # exact bytes, so `abs_sha256` is recomputable from the file alone,
+        # whereas the delta hash above only cross-checks the wire.
+        updated = mirror_region + delta.astype(np.float32)
         self.last_slice_hash = {
             "sha256": hashlib.sha256(delta_bytes).hexdigest(),
+            "abs_sha256": hashlib.sha256(
+                np.ascontiguousarray(updated, dtype=np.float32).tobytes()
+            ).hexdigest(),
             "start_sample": ss,
             "num_samples": se - ss,
             "channels": int(channels),
@@ -116,7 +125,9 @@ class SliceCodec:
         # ghosting — multiple decoded versions stacked on top of each other.
         # Encoding against the quantized reconstruction keeps server and
         # client byte-identical, so each delta corrects toward the truth.
-        self._mirror[ss:se] = mirror_region + delta.astype(np.float32)
+        # (`updated` above is this same reconstruction — abs_sha256 hashes
+        # the bytes the client will actually hold.)
+        self._mirror[ss:se] = updated
         hdr = struct.pack(
             SLICE_HDR_FMT,
             SLICE_FLAG_DELTA,

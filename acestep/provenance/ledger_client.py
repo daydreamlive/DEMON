@@ -240,12 +240,15 @@ class LedgerClient:
         channels: int,
         slice_seq: int | None = None,
         mac_verified: bool | None = None,
+        abs_sha256: str | None = None,
         ts: int | None = None,
     ) -> None:
         """Enqueue a ``slice.pod_hash`` event (spec 06 §2.3): SHA-256 over
         the uncompressed interleaved float16 slice payload bytes, plus the
-        geometry copied from the WS slice header. Flushed promptly because
-        every slice-hash event gets a signed receipt."""
+        geometry copied from the WS slice header, plus (when supplied) the
+        ``abs_sha256`` export-forensics hash over the region's post-update
+        float32 client reconstruction. Flushed promptly because every
+        slice-hash event gets a signed receipt."""
         if not self.enabled:
             return
         payload: dict = {
@@ -254,6 +257,8 @@ class LedgerClient:
             "channels": int(channels),
             "sha256": sha256,
         }
+        if abs_sha256 is not None:
+            payload["abs_sha256"] = abs_sha256
         # slice_seq is the pod's monotonic per-session slice counter and
         # the join key for pod/client cross-checking (spec 06 §2.3 / §3).
         if slice_seq is not None:
