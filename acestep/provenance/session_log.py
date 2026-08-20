@@ -452,6 +452,8 @@ class SessionLogTap:
         slice_seq: int | None = None,
         mac_verified: bool | None = None,
         abs_sha256: str | None = None,
+        canvas_root: str | None = None,
+        canvas_chunk: int | None = None,
     ) -> None:
         """Report a pod-side output-slice hash (spec 06 §2.3): ``sha256``
         is over the uncompressed interleaved float16 downlink payload
@@ -473,6 +475,8 @@ class SessionLogTap:
             slice_seq=slice_seq,
             mac_verified=mac_verified,
             abs_sha256=abs_sha256,
+            canvas_root=canvas_root,
+            canvas_chunk=canvas_chunk,
         )
 
     # ---- bus tap ---------------------------------------------------------
@@ -729,6 +733,8 @@ def record_pod_slice_hash(
     slice_seq: int | None = None,
     mac_verified: bool | None = None,
     abs_sha256: str | None = None,
+    canvas_root: str | None = None,
+    canvas_chunk: int | None = None,
 ) -> None:
     """Module-level convenience for the transport codec: forward a
     pod-side slice hash (spec 06 §2.3) to the session's tap, no-op when
@@ -743,6 +749,8 @@ def record_pod_slice_hash(
             slice_seq=slice_seq,
             mac_verified=mac_verified,
             abs_sha256=abs_sha256,
+            canvas_root=canvas_root,
+            canvas_chunk=canvas_chunk,
         )
 
 

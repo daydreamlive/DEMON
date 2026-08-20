@@ -188,7 +188,10 @@ def _server_and_client_buffers(n_samples=48000, channels=2, seed=0):
     rng = np.random.default_rng(seed)
     initial = rng.standard_normal((n_samples, channels)).astype(np.float32)
     codec = SliceCodec(initial)
-    client_mirror = initial.copy()
+    # The client's base is the float16 WIRE copy of the source (ws_adapter
+    # sends src.astype(f16)), not the exact f32 source — and the codec's
+    # mirror deliberately tracks that reconstruction (export forensics).
+    client_mirror = initial.astype(np.float16).astype(np.float32)
     return rng, codec, client_mirror
 
 

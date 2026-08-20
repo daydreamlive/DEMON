@@ -33,6 +33,17 @@ from demos.realtime_motion_graph_web.protocol import SLICE_HDR_FMT
 HDR_SIZE = struct.calcsize(SLICE_HDR_FMT)
 
 
+def _canvas_root(buf: np.ndarray) -> str:
+    ch = SliceCodec.CANVAS_CHUNK
+    digests = b"".join(
+        hashlib.sha256(
+            np.ascontiguousarray(buf[i : i + ch], dtype="<f4").tobytes()
+        ).digest()
+        for i in range(0, len(buf), ch)
+    )
+    return hashlib.sha256(digests).hexdigest()
+
+
 def _client_apply(client: np.ndarray, frame: bytes) -> tuple[int, int]:
     """Apply one wire frame the way the plugin does; returns (start, end)."""
     flags, ss, n, ch, _tick, _dec, _gens = struct.unpack_from(
@@ -74,6 +85,11 @@ def test_abs_sha256_matches_client_reconstruction():
         assert got == report["abs_sha256"], (
             f"client reconstruction diverged at slice ss={ss}"
         )
+        # The whole-canvas root must equal a root recomputed from the
+        # client's ENTIRE buffer at this slice boundary — this is what
+        # anchors a full export with 100% coverage.
+        assert _canvas_root(client) == report["canvas_root"]
+        assert report["canvas_chunk"] == SliceCodec.CANVAS_CHUNK
         # And the wire hash still covers the payload bytes (unchanged
         # cross-check contract).
         raw = zstandard.ZstdDecompressor().decompress(

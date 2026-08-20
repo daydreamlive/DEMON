@@ -241,14 +241,15 @@ class LedgerClient:
         slice_seq: int | None = None,
         mac_verified: bool | None = None,
         abs_sha256: str | None = None,
+        canvas_root: str | None = None,
+        canvas_chunk: int | None = None,
         ts: int | None = None,
     ) -> None:
         """Enqueue a ``slice.pod_hash`` event (spec 06 §2.3): SHA-256 over
         the uncompressed interleaved float16 slice payload bytes, plus the
         geometry copied from the WS slice header, plus (when supplied) the
         ``abs_sha256`` export-forensics hash over the region's post-update
-        float32 client reconstruction. Flushed promptly because every
-        slice-hash event gets a signed receipt."""
+        float32 client reconstruction."""
         if not self.enabled:
             return
         payload: dict = {
@@ -259,6 +260,17 @@ class LedgerClient:
         }
         if abs_sha256 is not None:
             payload["abs_sha256"] = abs_sha256
+        if canvas_root is not None:
+            payload["canvas_root"] = canvas_root
+        if canvas_chunk is not None:
+            payload["canvas_chunk"] = int(canvas_chunk)
+        # Batched, not flush-per-slice: one HTTP round-trip per slice can't
+        # keep up with live slice rates over WAN (each RTT ~300 ms vs tens
+        # of slices/s), so the bounded queue dropped most slice reports —
+        # and every dropped slice is a hole export forensics can't see
+        # through. The 2 s interval flush batches dozens of slice events
+        # per POST (well under the 06 §2.3 caps of 500 events / 1 MiB);
+        # receipts stay contemporaneous to within ~2 s + RTT.
         # slice_seq is the pod's monotonic per-session slice counter and
         # the join key for pod/client cross-checking (spec 06 §2.3 / §3).
         if slice_seq is not None:
@@ -266,7 +278,7 @@ class LedgerClient:
         if mac_verified is not None:
             payload["mac_verified"] = bool(mac_verified)
         self._enqueue(
-            SLICE_POD_HASH_TYPE, payload, ts=ts, ppq=None, flush_now=True,
+            SLICE_POD_HASH_TYPE, payload, ts=ts, ppq=None, flush_now=False,
         )
 
     def close(self, timeout: float = 2.0) -> None:
