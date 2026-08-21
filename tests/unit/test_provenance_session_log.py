@@ -324,6 +324,44 @@ def test_params_actions_are_diffed_and_rate_limited(tmp_path, monkeypatch):
     assert lines[-1]["payload"]["timeline_summary"]["param_changes"] == 2
 
 
+def test_primary_params_echo_records_knob_changes(tmp_path, monkeypatch):
+    # The performer's own knob moves (ParamsEcho origin="primary") must land
+    # in the log — diffed and rate-limited — while EXTERNAL echoes keep the
+    # verbatim-raw behaviour. This is the authorship record for 02 §5.
+    from acestep.streaming.events import ParamsEcho
+
+    monkeypatch.setenv("ACESTEP_PROVENANCE_DIR", str(tmp_path / "provenance"))
+    bus = EventBus()
+    _register(bus, "sess-knobs", provenance_meta={"checkpoint": "m"})
+
+    # ParamsEcho carries the COALESCE backpressure policy (newest wins in a
+    # burst), so let the drainer consume the first primary before publishing
+    # more. The second primary then lands inside the 1 s rate-limit window
+    # and is dropped by the tap — exactly one primary record, deterministic.
+    bus.publish(ParamsEcho(raw={"denoise": 0.4, "playback_pos": 1.0},
+                           origin="primary"))
+    log_path = tmp_path / "provenance" / "sessions" / "sess-knobs.jsonl"
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        if log_path.is_file() and "action.param" in log_path.read_text():
+            break
+        time.sleep(0.02)
+    bus.publish(ParamsEcho(raw={"denoise": 0.9, "playback_pos": 2.0},
+                           origin="primary"))
+    bus.publish(ParamsEcho(raw={"denoise": 0.5}))  # external, verbatim
+    registry.unregister("sess-knobs")
+
+    lines = _read_log(tmp_path, "sess-knobs")
+    params = _by_type(lines, "action.param")
+    primary = [p for p in params if p["payload"].get("source") == "primary"]
+    assert len(primary) == 1, "diffed + rate-limited, not a firehose"
+    assert primary[0]["payload"]["changed"]["denoise"] == 0.4
+    # The playback clock is telemetry, never an authorship change.
+    assert "playback_pos" not in primary[0]["payload"]["changed"]
+    external = [p for p in params if "raw" in p["payload"]]
+    assert external and external[-1]["payload"]["raw"] == {"denoise": 0.5}
+
+
 def test_registry_hook_is_inert_without_bus(tmp_path, monkeypatch):
     monkeypatch.setenv("ACESTEP_PROVENANCE_DIR", str(tmp_path / "provenance"))
     handle = registry.SessionHandle(
@@ -489,6 +527,13 @@ def test_ledger_client_dev_bootstrap_mints_pod_token(monkeypatch):
     assert mint["path"] == "/internal/v1/sessions"
     assert mint["auth"] == "Bearer int_sec_1"
     assert mint["body"] == {"session_id": "sess_bs", "user_id": "user_dev_1"}
+    # The CLIENT half of the mint is kept for the transport to forward
+    # (dev-mode stand-in for the broker's /api/queue/* provenance block).
+    assert client.client_bootstrap == {
+        "ledger_base_url": server.base_url,
+        "client_ledger_token": "dlt_cli_minted",
+        "slice_mac_key": "bWFj",
+    }
     ingest = server.requests[1]
     assert ingest["path"] == "/v1/sessions/sess_bs/events"
     assert ingest["auth"] == "Bearer dlt_pod_minted", (

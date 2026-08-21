@@ -173,6 +173,12 @@ class LedgerClient:
             else os.environ.get(LEDGER_INTERNAL_SECRET_ENV, "")
         )
         self._bootstrap_user = os.environ.get(LEDGER_USER_ENV, "dev")
+        # Set by a successful dev bootstrap: the CLIENT half of the mint
+        # ({ledger_base_url, client_ledger_token, slice_mac_key}) so the
+        # transport can forward it to the primary client — the same block
+        # the production broker returns via /api/queue/* (06 §1). The pod
+        # never uses it itself; written once by the worker thread.
+        self.client_bootstrap: dict | None = None
         self.session_id = session_id
         self._last_receipt: Optional[LedgerReceipt] = None
         self._chain_head: Optional[str] = None
@@ -447,6 +453,17 @@ class LedgerClient:
             if not isinstance(token, str) or not token:
                 raise ValueError("response carried no pod_ledger_token")
             self.token = token
+            client_token = data.get("client_ledger_token")
+            if isinstance(client_token, str) and client_token:
+                self.client_bootstrap = {
+                    # The mint's own ledger_base_url points at the broker's
+                    # configured deployment; in dev-bootstrap mode the pod's
+                    # URL is the one known to work from here, so hand the
+                    # client the same base this pod reports to.
+                    "ledger_base_url": self.base_url,
+                    "client_ledger_token": client_token,
+                    "slice_mac_key": data.get("slice_mac_key"),
+                }
             logger.info(
                 "ledger dev bootstrap minted session={} user={} "
                 "(broker emulation, 06 §2.8)",

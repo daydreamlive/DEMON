@@ -504,9 +504,18 @@ class SessionLogTap:
                 "action.param", {"name": "prompt_blend", "value": event.value},
             )
         elif isinstance(event, ParamsEcho):
-            with self._lock:
-                self._counts["param_changes"] += 1
-            self._record("action.param", {"raw": _summarize(event.raw)})
+            if getattr(event, "origin", "external") == "external":
+                # Deliberate MCP/control-bus action: record verbatim.
+                with self._lock:
+                    self._counts["param_changes"] += 1
+                self._record("action.param", {"raw": _summarize(event.raw)})
+            else:
+                # The performer's own knob stream (up to 125 Hz during a
+                # drag): reuse the diff + rate-limit path so the log gets
+                # "what changed", not a firehose.
+                self.record_user_action(
+                    "params", dict(event.raw), source="primary",
+                )
         elif isinstance(event, DepthApplied):
             self._record(
                 "action.param", {"name": "depth", "value": event.value},

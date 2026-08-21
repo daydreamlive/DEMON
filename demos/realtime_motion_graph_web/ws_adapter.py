@@ -1509,7 +1509,12 @@ def _handle_client_body(
                 payload["build_command"] = event.build_command
             _send_json(payload)
         elif isinstance(event, ParamsEcho):
-            _send_json({"type": "params_echo", "raw": event.raw})
+            # Only EXTERNAL (MCP/control-bus) changes are echoed to the
+            # client; a "primary" echo is the client's own knob move,
+            # published for the provenance tap — bouncing it back would
+            # fight the client's UI tween.
+            if event.origin == "external":
+                _send_json({"type": "params_echo", "raw": event.raw})
         elif isinstance(event, PromptBlendEcho):
             _send_json({"type": "prompt_blend_echo", "value": event.value})
         elif isinstance(event, PromptApplied):
@@ -2250,6 +2255,40 @@ def _handle_client_body(
     ))
     session_registered = True
     logger.info("session_registered")
+
+    # Dev-bootstrap client provenance delivery (06 §1): when the pod minted
+    # this session itself (broker emulation), forward the CLIENT half of the
+    # mint — ledger base URL, client token, MAC key — as a follow-up JSON
+    # frame, exactly the block the production broker returns via
+    # /api/queue/*. Lets a direct-connected client write its witness stream.
+    # Fail-open: no bootstrap (or provenance off) → no frame, nothing else
+    # changes.
+    def _push_client_provenance() -> None:
+        try:
+            from acestep.provenance.session_log import get_tap
+            for attempt in range(40):
+                tap = get_tap(session_id)
+                if tap is None:
+                    if attempt >= 4:
+                        return  # tap never attached: provenance disabled
+                else:
+                    boot = getattr(tap.ledger, "client_bootstrap", None)
+                    if boot and boot.get("client_ledger_token"):
+                        with send_lock:
+                            ws.send(json.dumps({
+                                "type": "provenance",
+                                "session_id": session_id,
+                                **boot,
+                            }))
+                        logger.info("provenance_client_block_sent")
+                        return
+                    if not tap.ledger.enabled:
+                        return  # no ledger config: nothing to deliver
+                time.sleep(0.5)
+        except Exception:  # noqa: BLE001 — provenance must never wedge a session
+            pass
+
+    spawn_thread(_push_client_provenance, name="provenance-client-push")
 
     # Stage the initial enable set so they get applied on the runner
     # thread before the first tick. Each entry carries its target
