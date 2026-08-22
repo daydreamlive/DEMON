@@ -367,6 +367,34 @@ except ValueError:
     _BINARY_PAYLOAD_TIMEOUT_S = 120.0
 
 
+def _known_fixture_local_path(fixture_name) -> str | None:
+    """Local path of a known fixture IF it is already cached — never
+    downloads (this feeds the provenance input hash; provenance must not
+    add network work to session registration). None for user uploads,
+    unknown names, or a cache miss."""
+    if not fixture_name or fixture_name not in KNOWN_FIXTURES:
+        return None
+    try:
+        from acestep.paths import fixtures_dir
+        from acestep.track_assets import source_audio_path
+        local = source_audio_path(fixtures_dir(), fixture_name)
+        return str(local) if local.is_file() else None
+    except Exception:  # noqa: BLE001 — fail-open, hash is best-effort
+        return None
+
+
+def _waveform_fingerprint_or_none(waveform) -> str | None:
+    """Provenance fingerprint of the initial source as ACTUALLY consumed
+    ([C, N] torch tensor → the tap's np fingerprint). Covers the client-
+    upload path where no source file ever exists on the pod. Fail-open:
+    any error returns None and costs the session nothing."""
+    try:
+        from acestep.provenance.session_log import buffer_fingerprint
+        return buffer_fingerprint(waveform.detach().cpu().numpy().T)
+    except Exception:  # noqa: BLE001 — provenance is best-effort
+        return None
+
+
 def _socket_send_backlog(sock) -> int | None:
     """Bytes queued in the kernel send buffer (unsent + unacked) for
     ``sock``, or ``None`` if the FD can't be queried (closed / errored /
@@ -1419,6 +1447,19 @@ def _handle_client_body(
             # the in-flight window permanently negative so the load-bearing
             # flow-control layer stops engaging.
             _slice_flow["sent"] += len(frame)
+            # Report the pod-side slice hash over the exact float16 bytes
+            # just sent (spec 06 §2.3), for pod/client cross-checking.
+            # Fully guarded + fail-open: provenance must never wedge the
+            # downlink (spec 06 §7).
+            slice_hash = codec.last_slice_hash
+            if slice_hash is not None:
+                try:
+                    from acestep.provenance.session_log import (
+                        record_pod_slice_hash,
+                    )
+                    record_pod_slice_hash(session_id, **slice_hash)
+                except Exception:  # noqa: BLE001
+                    pass
         except ConnectionClosed:
             state.running = False
 
@@ -1468,7 +1509,12 @@ def _handle_client_body(
                 payload["build_command"] = event.build_command
             _send_json(payload)
         elif isinstance(event, ParamsEcho):
-            _send_json({"type": "params_echo", "raw": event.raw})
+            # Only EXTERNAL (MCP/control-bus) changes are echoed to the
+            # client; a "primary" echo is the client's own knob move,
+            # published for the provenance tap — bouncing it back would
+            # fight the client's UI tween.
+            if event.origin == "external":
+                _send_json({"type": "params_echo", "raw": event.raw})
         elif isinstance(event, PromptBlendEcho):
             _send_json({"type": "prompt_blend_echo", "value": event.value})
         elif isinstance(event, PromptApplied):
@@ -2188,9 +2234,61 @@ def _handle_client_body(
         started_at=time.time(),
         inject=inject_control,
         snapshot=snapshot_session,
+        # Carrying the session EventBus makes register() attach the local
+        # provenance session-log tap (spec 06 §2.2); everything downstream
+        # is fail-open and degrades to a no-op without the provenance
+        # extra installed. provenance_meta supplies the adapter-known
+        # identifiers the snapshot doesn't expose.
+        bus=streaming.bus,
+        provenance_meta={
+            "checkpoint": checkpoint,
+            "fixture_name": fixture_name,
+            "decoder_backend": decoder_backend,
+            # Input commitments for the 06 §2.2 input chain: fingerprint of
+            # the waveform actually consumed (works for client uploads that
+            # never exist as pod files), plus the source file's local path
+            # when it is already cached (never triggers a download) so the
+            # tap can commit the file sha256 too.
+            "initial_source_sha256": _waveform_fingerprint_or_none(waveform),
+            "fixture_path": _known_fixture_local_path(fixture_name),
+        },
     ))
     session_registered = True
     logger.info("session_registered")
+
+    # Dev-bootstrap client provenance delivery (06 §1): when the pod minted
+    # this session itself (broker emulation), forward the CLIENT half of the
+    # mint — ledger base URL, client token, MAC key — as a follow-up JSON
+    # frame, exactly the block the production broker returns via
+    # /api/queue/*. Lets a direct-connected client write its witness stream.
+    # Fail-open: no bootstrap (or provenance off) → no frame, nothing else
+    # changes.
+    def _push_client_provenance() -> None:
+        try:
+            from acestep.provenance.session_log import get_tap
+            for attempt in range(40):
+                tap = get_tap(session_id)
+                if tap is None:
+                    if attempt >= 4:
+                        return  # tap never attached: provenance disabled
+                else:
+                    boot = getattr(tap.ledger, "client_bootstrap", None)
+                    if boot and boot.get("client_ledger_token"):
+                        with send_lock:
+                            ws.send(json.dumps({
+                                "type": "provenance",
+                                "session_id": session_id,
+                                **boot,
+                            }))
+                        logger.info("provenance_client_block_sent")
+                        return
+                    if not tap.ledger.enabled:
+                        return  # no ledger config: nothing to deliver
+                time.sleep(0.5)
+        except Exception:  # noqa: BLE001 — provenance must never wedge a session
+            pass
+
+    spawn_thread(_push_client_provenance, name="provenance-client-push")
 
     # Stage the initial enable set so they get applied on the runner
     # thread before the first tick. Each entry carries its target

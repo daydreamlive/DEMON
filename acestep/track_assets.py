@@ -188,6 +188,33 @@ def save_track_metadata(
     os.replace(tmp, p)
 
 
+def _embed_upload_provenance(path: Path) -> None:
+    """Best-effort C2PA manifest embed after a HUMAN-ORIGIN WAV lands on
+    disk (uploaded source track / separated stems).
+
+    Import is lazy and the embed itself never raises (it degrades to a
+    single logged warning without the ``provenance`` extra), so asset
+    persistence is byte-identical in behaviour when provenance is off.
+
+    These writers are called only from the user-upload path, i.e. on the
+    user's own uploaded/seed audio BEFORE any generation. That audio is
+    the dry input, so the manifest asserts ``digitalCapture`` (human
+    origin) and NOT any trained-algorithmic / composite source type —
+    marking the dry input as synthetic would be an affirmatively false
+    claim (spec 02-architecture §4, audit G5). The CAWG do-not-train
+    default still rides along (protecting the user's own content), and no
+    session identity is bound (these writes precede any session output).
+    """
+    try:
+        from acestep.provenance.manifest import (
+            DIGITAL_CAPTURE,
+            embed_wav_manifest,
+        )
+    except Exception:
+        return
+    embed_wav_manifest(path, source_type=DIGITAL_CAPTURE)
+
+
 def write_stem_wavs(
     root: Path,
     name: str,
@@ -197,6 +224,9 @@ def write_stem_wavs(
 ) -> None:
     import soundfile as sf
 
+    # Stems are model-separated from the user's UPLOADED source track —
+    # human-origin audio, produced here before any generation. They are
+    # not synthetic, so their manifest asserts digitalCapture (audit G5).
     for mode in STEM_MODES:
         if mode not in stems:
             raise ValueError(f"missing stem: {mode}")
@@ -206,6 +236,9 @@ def write_stem_wavs(
         wav = stems[mode].detach().cpu().float()
         sf.write(str(tmp), wav.numpy().T, int(sample_rate), format="WAV", subtype="FLOAT")
         os.replace(tmp, p)
+        # Stems are separated from the user's uploaded source — human
+        # origin, not synthetic (audit G5). digitalCapture, no AI claim.
+        _embed_upload_provenance(p)
 
 
 def write_track_wav(
@@ -223,6 +256,10 @@ def write_track_wav(
     wav = waveform.detach().cpu().float()
     sf.write(str(tmp), wav.numpy().T, int(sample_rate), format="WAV", subtype="FLOAT")
     os.replace(tmp, p)
+    # The written track is the user's UPLOADED source (human origin, dry
+    # input before any generation), so the manifest asserts digitalCapture
+    # — never a trained-algorithmic / composite synthetic claim (audit G5).
+    _embed_upload_provenance(p)
 
 
 def read_stem_wavs(

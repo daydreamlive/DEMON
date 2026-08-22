@@ -1780,7 +1780,8 @@ class StreamingSession:
         # Activity gating: only bump on a real change. ``playback_pos``
         # advances every tick but is excluded from the diff because
         # it's a clock, not user input.
-        if raw != state.last_params_raw:
+        params_changed = raw != state.last_params_raw
+        if params_changed:
             state.last_activity_ts = time.monotonic()
             # Knob→ear latency marker: log the denoise value + the playhead
             # at the instant a real knob change lands, so the lat_decode
@@ -1807,6 +1808,11 @@ class StreamingSession:
         if origin is CommandOrigin.EXTERNAL:
             self.bus.publish(ParamsEcho(raw=dict(raw)))
             return
+        if params_changed:
+            # PRIMARY knob change: surface it on the bus for the provenance
+            # tap (the performer's moves ARE the authorship record, 06 §2.2).
+            # Origin-tagged so transports never echo it back to the client.
+            self.bus.publish(ParamsEcho(raw=dict(raw), origin="primary"))
         # Enforce the knob contract on the load-bearing path: clamp numerics
         # to [min,max], coerce ints, drop invalid enum/bool values. Unknown
         # keys (curve specs, the playback clock) pass through untouched.
