@@ -39,6 +39,13 @@ class SessionHandle:
     started_at: float
     inject: InjectFn
     snapshot: SnapshotFn
+    # Optional provenance surface. When ``bus`` (the session's typed
+    # EventBus) is present, register() attaches a local session-log tap
+    # (acestep.provenance.session_log) and unregister() closes it.
+    # ``provenance_meta`` carries adapter-known identifiers the snapshot
+    # doesn't expose (checkpoint, fixture name).
+    bus: Optional[Any] = None
+    provenance_meta: Optional[dict] = None
 
 
 _sessions: dict[str, SessionHandle] = {}
@@ -53,11 +60,25 @@ def new_session_id() -> str:
 def register(handle: SessionHandle) -> None:
     with _lock:
         _sessions[handle.id] = handle
+    if handle.bus is not None:
+        # Lazy + guarded: provenance logging must never block session
+        # registration, and this module stays importable (torch-free,
+        # provenance-free) under --no-backend.
+        try:
+            from acestep.provenance.session_log import attach_session
+            attach_session(handle)
+        except Exception:
+            pass
 
 
 def unregister(session_id: str) -> None:
     with _lock:
         _sessions.pop(session_id, None)
+    try:
+        from acestep.provenance.session_log import detach_session
+        detach_session(session_id)
+    except Exception:
+        pass
 
 
 def get(session_id: str) -> Optional[SessionHandle]:
