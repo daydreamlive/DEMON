@@ -367,6 +367,34 @@ except ValueError:
     _BINARY_PAYLOAD_TIMEOUT_S = 120.0
 
 
+def _known_fixture_local_path(fixture_name) -> str | None:
+    """Local path of a known fixture IF it is already cached — never
+    downloads (this feeds the provenance input hash; provenance must not
+    add network work to session registration). None for user uploads,
+    unknown names, or a cache miss."""
+    if not fixture_name or fixture_name not in KNOWN_FIXTURES:
+        return None
+    try:
+        from acestep.paths import fixtures_dir
+        from acestep.track_assets import source_audio_path
+        local = source_audio_path(fixtures_dir(), fixture_name)
+        return str(local) if local.is_file() else None
+    except Exception:  # noqa: BLE001 — fail-open, hash is best-effort
+        return None
+
+
+def _waveform_fingerprint_or_none(waveform) -> str | None:
+    """Provenance fingerprint of the initial source as ACTUALLY consumed
+    ([C, N] torch tensor → the tap's np fingerprint). Covers the client-
+    upload path where no source file ever exists on the pod. Fail-open:
+    any error returns None and costs the session nothing."""
+    try:
+        from acestep.provenance.session_log import buffer_fingerprint
+        return buffer_fingerprint(waveform.detach().cpu().numpy().T)
+    except Exception:  # noqa: BLE001 — provenance is best-effort
+        return None
+
+
 def _socket_send_backlog(sock) -> int | None:
     """Bytes queued in the kernel send buffer (unsent + unacked) for
     ``sock``, or ``None`` if the FD can't be queried (closed / errored /
@@ -1468,7 +1496,12 @@ def _handle_client_body(
                 payload["build_command"] = event.build_command
             _send_json(payload)
         elif isinstance(event, ParamsEcho):
-            _send_json({"type": "params_echo", "raw": event.raw})
+            # Only EXTERNAL (MCP/control-bus) changes are echoed to the
+            # client; a "primary" echo is the client's own knob move,
+            # published for the provenance tap — bouncing it back would
+            # fight the client's UI tween.
+            if event.origin == "external":
+                _send_json({"type": "params_echo", "raw": event.raw})
         elif isinstance(event, PromptBlendEcho):
             _send_json({"type": "prompt_blend_echo", "value": event.value})
         elif isinstance(event, PromptApplied):
@@ -2188,9 +2221,28 @@ def _handle_client_body(
         started_at=time.time(),
         inject=inject_control,
         snapshot=snapshot_session,
+        # Carrying the session EventBus makes register() attach the local
+        # provenance session-log tap (spec 06 §2.2); everything downstream
+        # is fail-open and degrades to a no-op without the provenance
+        # extra installed. provenance_meta supplies the adapter-known
+        # identifiers the snapshot doesn't expose.
+        bus=streaming.bus,
+        provenance_meta={
+            "checkpoint": checkpoint,
+            "fixture_name": fixture_name,
+            "decoder_backend": decoder_backend,
+            # Input-source commitments: fingerprint of the waveform
+            # actually consumed (works for client uploads that never exist
+            # as pod files), plus the source file's local path when it is
+            # already cached (never triggers a download) so the tap can
+            # record the file sha256 too.
+            "initial_source_sha256": _waveform_fingerprint_or_none(waveform),
+            "fixture_path": _known_fixture_local_path(fixture_name),
+        },
     ))
     session_registered = True
     logger.info("session_registered")
+
 
     # Stage the initial enable set so they get applied on the runner
     # thread before the first tick. Each entry carries its target
