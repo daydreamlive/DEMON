@@ -13,10 +13,15 @@ maintainers = [
     {name = "Daydream Live"}
 ]
 dependencies = [
-    # PyTorch with CUDA 12.8 - pinned to match ComfyUI
-    "torch==2.9.1+cu128",
-    "torchvision==0.24.1+cu128",
-    "torchaudio==2.9.1+cu128",
+    # PyTorch with CUDA 12.8 - pinned to match ComfyUI.
+    # macOS (Apple Silicon) has no CUDA builds: same versions from PyPI,
+    # which ship the MPS backend used by the SA3 eager path.
+    "torch==2.9.1+cu128; sys_platform != 'darwin'",
+    "torchvision==0.24.1+cu128; sys_platform != 'darwin'",
+    "torchaudio==2.9.1+cu128; sys_platform != 'darwin'",
+    "torch==2.9.1; sys_platform == 'darwin'",
+    "torchvision==0.24.1; sys_platform == 'darwin'",
+    "torchaudio==2.9.1; sys_platform == 'darwin'",
     # Common dependencies
     "transformers>=4.51.0,<4.58.0",
     "diffusers",
@@ -52,14 +57,16 @@ dependencies = [
     # ran for months before this was pinned at all. Unpinned, a venv rebuild
     # resolves to newest and breaks inference; pinned too low it breaks
     # training. Change either bound only with both paths retested.
-    "torchao==0.17.0",
+    # Skipped on macOS: no arm64 wheels for this pin, and diffusers only
+    # imports torchao when it is installed — absence is the safe state.
+    "torchao==0.17.0; sys_platform != 'darwin'",
     # Training dependencies
     "peft>=0.7.0",
     "lightning>=2.0.0",
     "tensorboard>=2.0.0",
     # Attention / inference dependencies
     "triton-windows>=3.0.0,<3.4; sys_platform == 'win32'",
-    "triton>=3.0.0; sys_platform != 'win32'",
+    "triton>=3.0.0; sys_platform == 'linux'",
     "flash-attn @ https://github.com/kingbri1/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu128torch2.9.0cxx11abiFALSE-cp311-cp311-win_amd64.whl ; sys_platform == 'win32' and python_version == '3.11' and platform_machine == 'AMD64'",
     "flash-attn @ https://github.com/kingbri1/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu128torch2.9.0cxx11abiFALSE-cp311-cp311-linux_x86_64.whl ; sys_platform == 'linux' and python_version == '3.11' and platform_machine == 'x86_64'",
     "websockets>=13.0",
@@ -78,10 +85,14 @@ dependencies = [
     ###
     ###
     ### 10.16
+    # TensorRT stack is CUDA-only; on macOS the SA3/ACE eager paths run
+    # without it (all acestep imports of tensorrt/polygraphy are lazy).
+    # onnx stays everywhere: portable wheels, and the onnx-staleness unit
+    # tests import it.
     "onnx>=1.20,<1.22",
-    "tensorrt>=10.16,<10.17",
-    "polygraphy>=0.49.26",
-    "cuda-python>=13.2,<13.3",
+    "tensorrt>=10.16,<10.17; sys_platform != 'darwin'",
+    "polygraphy>=0.49.26; sys_platform != 'darwin'",
+    "cuda-python>=13.2,<13.3; sys_platform != 'darwin'",
     ###
     ###
     "modelscope",
@@ -106,12 +117,53 @@ name = "pypi"
 url = "https://pypi.org/simple"
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu128" }
-torchvision = { index = "pytorch-cu128" }
-torchaudio = { index = "pytorch-cu128" }
+# The CUDA index only applies off-macOS; darwin resolves the plain
+# (MPS-enabled) builds from PyPI.
+torch = [
+    { index = "pytorch-cu128", marker = "sys_platform != 'darwin'" },
+    { index = "pypi", marker = "sys_platform == 'darwin'" },
+]
+torchvision = [
+    { index = "pytorch-cu128", marker = "sys_platform != 'darwin'" },
+    { index = "pypi", marker = "sys_platform == 'darwin'" },
+]
+torchaudio = [
+    { index = "pytorch-cu128", marker = "sys_platform != 'darwin'" },
+    { index = "pypi", marker = "sys_platform == 'darwin'" },
+]
 torchao = { index = "pypi" }
 torchcodec = { index = "pypi" }
 tensorrt = { index = "pypi" }
+
+# The tensorrt PyPI packages are wheel_stub sdists whose build downloads
+# the real wheel from pypi.nvidia.com — a build that FAILS on machines
+# without NVIDIA drivers (e.g. macOS), yet uv's universal resolution must
+# build it just to read its metadata even though the darwin install never
+# uses it. Declaring the (verified, from PyPI) metadata statically lets
+# resolution skip those sdist builds everywhere; actual installs on
+# CUDA machines still build/download the real wheels as before.
+[[tool.uv.dependency-metadata]]
+name = "tensorrt"
+version = "10.16.1.11"
+requires-dist = ["tensorrt_cu13==10.16.1.11"]
+
+[[tool.uv.dependency-metadata]]
+name = "tensorrt-cu13"
+version = "10.16.1.11"
+requires-dist = [
+    "tensorrt_cu13_libs==10.16.1.11",
+    "tensorrt_cu13_bindings==10.16.1.11",
+]
+
+[[tool.uv.dependency-metadata]]
+name = "tensorrt-cu13-libs"
+version = "10.16.1.11"
+requires-dist = []
+
+[[tool.uv.dependency-metadata]]
+name = "tensorrt-cu13-bindings"
+version = "10.16.1.11"
+requires-dist = []
 
 [project.scripts]
 acestep-download = "acestep.model_downloader:main"

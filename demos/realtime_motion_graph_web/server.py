@@ -743,6 +743,12 @@ def main():
     if "--accel" in args:
         idx = args.index("--accel")
         accel = args[idx + 1]
+    elif sys.platform == "darwin":
+        # No TensorRT on macOS: default to the eager path (SA3 runs it on
+        # MPS) instead of exiting at the engine preflight. An explicit
+        # --accel still wins.
+        accel = "eager"
+        print("[Server] macOS: defaulting --accel to eager (no TensorRT)")
     _VALID_ACCEL = ("tensorrt", "compile", "eager")
     if accel not in _VALID_ACCEL:
         raise SystemExit(

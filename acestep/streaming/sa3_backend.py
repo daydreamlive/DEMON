@@ -1160,6 +1160,8 @@ class SA3Backend(DiffusionBackend):
         )
         if torch.cuda.is_available():
             torch.cuda.synchronize()
+        elif torch.backends.mps.is_available():
+            torch.mps.synchronize()
         self.last_dec_ms += (time.perf_counter() - t0) * 1000
         self._rendered_48k = audio_48.clamp(-1, 1).cpu().numpy().T  # [N, C]
         self._rendered_for = latent_btc
@@ -1214,6 +1216,8 @@ class SA3Backend(DiffusionBackend):
         )
         if torch.cuda.is_available():
             torch.cuda.synchronize()
+        elif torch.backends.mps.is_available():
+            torch.mps.synchronize()
         self.last_dec_ms += (time.perf_counter() - t0) * 1000
 
         lead48 = (lead44 * DELIVERY_SAMPLE_RATE) // SA3_SAMPLE_RATE

@@ -24,6 +24,7 @@ when it is absent.
 
 from __future__ import annotations
 
+import os
 from typing import Callable
 
 import torch
@@ -34,6 +35,32 @@ from acestep.engine.sa3_helpers import (
     import_stream_helpers,
     require_sa3_vendor,
 )
+
+
+def resolve_sa3_device() -> str:
+    """Best available torch device for the SA3 eager path: cuda > mps >
+    cpu, the same order upstream ``StableAudioModel.from_pretrained``
+    uses. ``DEMON_SA3_DEVICE`` overrides for debugging (e.g. forcing
+    ``cpu`` on an Apple Silicon machine to bisect an MPS kernel issue)."""
+    override = os.environ.get("DEMON_SA3_DEVICE", "").strip()
+    if override:
+        return override
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def _resolve_model_half(device: str) -> bool:
+    """fp16 on CUDA, fp32 elsewhere — upstream forces fp32 off-CUDA
+    (``model.py`` sets ``model_half = False`` without CUDA), and MPS
+    fp16 is unproven for this stack. ``DEMON_SA3_HALF=1|0`` overrides
+    to experiment (e.g. fp16 on MPS for the ~2x memory/throughput win)."""
+    override = os.environ.get("DEMON_SA3_HALF", "").strip()
+    if override:
+        return override not in ("0", "false", "no")
+    return device == "cuda"
 
 # Models whose SAME decoder is too slow to full-decode per render tick
 # (SAME-L: ~80 ms eager full at 60 s) and therefore use the windowed
@@ -49,16 +76,24 @@ class SA3Context:
         self,
         model_id: str = "small-music",
         *,
-        device: str = "cuda",
-        model_half: bool = True,
+        device: str | None = None,
+        model_half: bool | None = None,
     ):
         require_sa3_vendor()
         loader = import_loader_helpers()
         self._helpers = import_stream_helpers()
 
+        if device is None:
+            device = resolve_sa3_device()
+        if model_half is None:
+            model_half = _resolve_model_half(device)
+
         self.model_id = model_id
         ckpt = loader.checkpoint_dir(model_id)
-        logger.info("sa3_model_load_start model_id={} dir={}", model_id, ckpt)
+        logger.info(
+            "sa3_model_load_start model_id={} dir={} device={} model_half={}",
+            model_id, ckpt, device, model_half,
+        )
         self.sam = loader.load_local_model(ckpt, device=device, model_half=model_half)
         self.device = torch.device(self.sam.device)
         self.dtype = next(self.sam.model.model.parameters()).dtype

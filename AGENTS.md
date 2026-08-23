@@ -31,6 +31,9 @@ Hard rules:
 - The demo's default `--accel tensorrt` requires built engines; the
   server preflight at boot prints the exact fix when they're missing.
   The no-engines fallback is `-- --accel compile`, not eager hacks.
+- **macOS (Apple Silicon) runs the SA3 small model only**, eager on
+  MPS (`--accel` defaults to eager there; skip `demon-setup`). Setup:
+  "Running on macOS" in [docs/INSTALL.md](docs/INSTALL.md).
 - Full walkthrough + troubleshooting table: [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Where to go by task

@@ -151,6 +151,8 @@ class DiffusionBackend:
 
         if torch.cuda.is_available():
             torch.cuda.synchronize()
+        elif torch.backends.mps.is_available():
+            torch.mps.synchronize()
         t0 = time.perf_counter()
 
         if mode == "reuse":
@@ -167,6 +169,8 @@ class DiffusionBackend:
 
         if torch.cuda.is_available():
             torch.cuda.synchronize()
+        elif torch.backends.mps.is_available():
+            torch.mps.synchronize()
         self.last_tick_ms = (time.perf_counter() - t0) * 1000
         self.last_dec_ms = 0.0
 
