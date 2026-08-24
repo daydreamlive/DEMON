@@ -53,6 +53,7 @@ plan Phase 5).
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 from collections import deque
@@ -238,8 +239,18 @@ class SA3Backend(DiffusionBackend):
         # knob-driven strength changes route through the pending stash
         # (D6b.5) so the refit stall is always announced.
         refit_mirror=None,
+        # Serializes GPU submissions between the runner thread (tick /
+        # render) and the command thread (prompt swap / blend / source
+        # re-anchor). Required on MPS, whose single Metal command queue
+        # aborts the process when two threads encode at once; a no-op
+        # nullcontext on CUDA. Supplied by :meth:`from_context`; a
+        # directly-constructed test backend defaults to no-op.
+        device_lock=None,
     ):
         super().__init__(adapter=adapter, codec=codec)
+        self._device_lock = (
+            device_lock if device_lock is not None else contextlib.nullcontext()
+        )
         self._cond = cond
         self._cond_b = cond_b if cond_b is not None else cond
         # Live A↔B crossfade value and the bundle the next submit
@@ -498,6 +509,7 @@ class SA3Backend(DiffusionBackend):
             eager_dit=context.dit,
             model_id=str(context.model_id),
             refit_mirror=refit_mirror,
+            device_lock=getattr(context, "device_lock", None),
             **kwargs,
         )
 
@@ -774,6 +786,17 @@ class SA3Backend(DiffusionBackend):
     # ---- control (universal): per-prompt re-conditioning ------------------------
 
     def handle_set_prompt(self, tags: str, *, tags_b: Optional[str] = None) -> None:
+        # Device lock OUTSIDE _control_lock (the invariant every
+        # wrapped entry point keeps, so the two locks can never be
+        # taken in opposite orders): the T5Gemma capture below runs on
+        # the command thread and would otherwise encode Metal work
+        # concurrently with the runner's DiT.
+        with self._device_lock:
+            self._handle_set_prompt_locked(tags, tags_b=tags_b)
+
+    def _handle_set_prompt_locked(
+        self, tags: str, *, tags_b: Optional[str] = None,
+    ) -> None:
         """Re-run ``prepare_cond`` for ``tags`` (and ``tags_b`` when it
         differs) and swap the conditioning captures (the session's
         backend control hook — plan §2: prompt is the universal
@@ -847,6 +870,13 @@ class SA3Backend(DiffusionBackend):
         )
 
     def handle_swap_source(self, waveform, sample_rate) -> None:
+        # Runner-thread dispatched today (via _apply_swap_if_pending),
+        # so this is defense in depth — the SAME-encode is GPU work and
+        # must serialize if the dispatch ever moves off that thread.
+        with self._device_lock:
+            self._handle_swap_source_locked(waveform, sample_rate)
+
+    def _handle_swap_source_locked(self, waveform, sample_rate) -> None:
         """Re-anchor the session on a new source (the session's
         backend-owned ``swap_source`` hook, dispatched from
         ``_apply_swap_if_pending`` on the runner thread). SAME-encodes
@@ -887,6 +917,13 @@ class SA3Backend(DiffusionBackend):
         )
 
     def handle_set_prompt_blend(self, value: float) -> None:
+        # Device lock OUTSIDE _control_lock: the per-token slerp below
+        # is real tensor math on the command thread (see
+        # :func:`~acestep.engine.sa3_context.make_device_lock`).
+        with self._device_lock:
+            self._handle_set_prompt_blend_locked(value)
+
+    def _handle_set_prompt_blend_locked(self, value: float) -> None:
         """Crossfade the live conditioning between the A and B captures
         (the session's ``set_prompt_blend`` backend hook). Per-token
         slerp of the T5Gemma cross-attn conditioning — cheap tensor
@@ -1140,6 +1177,17 @@ class SA3Backend(DiffusionBackend):
                 p["gen_sa3_denoise"], epoch, tags,
             )
 
+    # ---- runner-thread GPU entry points ----------------------------------------
+
+    def produce(self, knobs: dict, ctx, mode) -> bool:
+        """The runner's tick. Held under the device lock so a prompt
+        swap / blend arriving on the command thread waits for the DiT
+        rather than encoding Metal work beside it (the lock is a no-op
+        on CUDA — see
+        :func:`~acestep.engine.sa3_context.make_device_lock`)."""
+        with self._device_lock:
+            return super().produce(knobs, ctx, mode)
+
     # ---- rendering -------------------------------------------------------------
 
     def _rendered_audio(self, latent_btc: torch.Tensor):
@@ -1160,12 +1208,20 @@ class SA3Backend(DiffusionBackend):
         )
         if torch.cuda.is_available():
             torch.cuda.synchronize()
+        elif torch.backends.mps.is_available():
+            torch.mps.synchronize()
         self.last_dec_ms += (time.perf_counter() - t0) * 1000
         self._rendered_48k = audio_48.clamp(-1, 1).cpu().numpy().T  # [N, C]
         self._rendered_for = latent_btc
         return self._rendered_48k
 
     def render_window(self, t_start_s: float):
+        # Decode is GPU work on the runner thread; same serialization
+        # requirement as produce().
+        with self._device_lock:
+            return self._render_window_locked(t_start_s)
+
+    def _render_window_locked(self, t_start_s: float):
         decode_src = (
             self._current_result if self._current_result is not None
             else self._last_result_latent
@@ -1214,6 +1270,8 @@ class SA3Backend(DiffusionBackend):
         )
         if torch.cuda.is_available():
             torch.cuda.synchronize()
+        elif torch.backends.mps.is_available():
+            torch.mps.synchronize()
         self.last_dec_ms += (time.perf_counter() - t0) * 1000
 
         lead48 = (lead44 * DELIVERY_SAMPLE_RATE) // SA3_SAMPLE_RATE
@@ -1224,11 +1282,12 @@ class SA3Backend(DiffusionBackend):
         return AudioChunk(pcm=pcm, start_sample=start48)
 
     def render_full(self):
-        if self._current_result is None:
-            return None
-        return AudioChunk(
-            pcm=self._rendered_audio(self._current_result), start_sample=0,
-        )
+        with self._device_lock:
+            if self._current_result is None:
+                return None
+            return AudioChunk(
+                pcm=self._rendered_audio(self._current_result), start_sample=0,
+            )
 
     # ---- teardown ----------------------------------------------------------------
 

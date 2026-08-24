@@ -145,12 +145,25 @@ def create_sa3_session(
     # a duration whose padded latent window exceeds every engine
     # profile would silently fall back to the ~5x-slower eager DiT.
     duration_s = context.clamp_duration_for_trt(duration_s, backend=dit_backend)
+    # On MPS/CPU, additionally cap the window so eager ticks stay
+    # interactive (see SA3Context.clamp_duration_for_device).
+    duration_s = context.clamp_duration_for_device(duration_s)
     waveform = waveform[:, : int(duration_s * SAMPLE_RATE)]
 
     prompt = config.prompt
     prompt_b = config.prompt_b if config.prompt_b not in (None, "") else prompt
     steps = int(config.steps)
     depth = max(1, min(int(config.depth), SA3_MAX_PIPELINE_DEPTH))
+    # Non-CUDA: batched tick cost is linear in depth, so extra slots
+    # only multiply knob-to-audio latency (SA3Context.max_depth_for_device).
+    device_depth_cap = context.max_depth_for_device()
+    if device_depth_cap is not None and depth > device_depth_cap:
+        logger.warning(
+            "sa3_depth_clamped_for_device device={} requested={} cap={} "
+            "(override: DEMON_SA3_MAX_DEPTH)",
+            context.device.type, depth, device_depth_cap,
+        )
+        depth = device_depth_cap
 
     logger.info(
         "sa3_session_create model_id={} duration_s={:.1f} "

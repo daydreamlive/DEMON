@@ -124,7 +124,7 @@ def main() -> int:
     ap.add_argument("--steps", type=int, default=8)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--cfg-scale", type=float, default=1.0)
-    ap.add_argument("--device", default=None, help="cuda|cpu (auto if omitted)")
+    ap.add_argument("--device", default=None, help="cuda|mps|cpu (auto if omitted)")
     ap.add_argument(
         "--out",
         default=None,
@@ -143,7 +143,11 @@ def main() -> int:
         os.environ["HF_HUB_OFFLINE"] = "1"
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
-    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    device = args.device or (
+        "cuda" if torch.cuda.is_available()
+        else "mps" if torch.backends.mps.is_available()
+        else "cpu"
+    )
     model_half = device == "cuda"
 
     dest = checkpoint_dir()

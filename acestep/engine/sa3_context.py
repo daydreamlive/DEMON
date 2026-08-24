@@ -24,6 +24,9 @@ when it is absent.
 
 from __future__ import annotations
 
+import contextlib
+import os
+import threading
 from typing import Callable
 
 import torch
@@ -35,11 +38,65 @@ from acestep.engine.sa3_helpers import (
     require_sa3_vendor,
 )
 
+
+def resolve_sa3_device() -> str:
+    """Best available torch device for the SA3 eager path: cuda > mps >
+    cpu, the same order upstream ``StableAudioModel.from_pretrained``
+    uses. ``DEMON_SA3_DEVICE`` overrides for debugging (e.g. forcing
+    ``cpu`` on an Apple Silicon machine to bisect an MPS kernel issue)."""
+    override = os.environ.get("DEMON_SA3_DEVICE", "").strip()
+    if override:
+        return override
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def make_device_lock(device) -> "contextlib.AbstractContextManager":
+    """Serializer for GPU submissions from more than one thread.
+
+    PyTorch's **MPS** backend drives a single shared Metal command
+    queue that is NOT thread-safe: two threads encoding at once abort
+    the whole process inside Metal ("failed assertion
+    `_status < MTLCommandBufferStatusCommitted`" /
+    "Scheduled handler provided after commit call"). DEMON hits this
+    because conditioning runs on the COMMAND thread (``set_prompt``
+    -> T5Gemma) while the runner thread is mid-DiT.
+
+    CUDA is thread-safe (per-thread default streams), so there the
+    lock is a no-op context manager and the fleet path is untouched.
+    Reentrant so a wrapped entry point may nest inside another on the
+    same thread without deadlocking.
+    """
+    if torch.device(device).type == "cuda":
+        return contextlib.nullcontext()
+    return threading.RLock()
+
+
+def _resolve_model_half(device: str) -> bool:
+    """fp16 on CUDA, fp32 elsewhere — upstream forces fp32 off-CUDA
+    (``model.py`` sets ``model_half = False`` without CUDA), and MPS
+    fp16 is unproven for this stack. ``DEMON_SA3_HALF=1|0`` overrides
+    to experiment (e.g. fp16 on MPS for the ~2x memory/throughput win)."""
+    override = os.environ.get("DEMON_SA3_HALF", "").strip()
+    if override:
+        return override not in ("0", "false", "no")
+    return device == "cuda"
+
 # Models whose SAME decoder is too slow to full-decode per render tick
 # (SAME-L: ~80 ms eager full at 60 s) and therefore use the windowed
 # codec. SAME-S (small-music) full-decodes in ~11 ms flat — windowing
 # would only add seam surface there.
 WINDOWED_DECODE_MODELS = {"medium"}
+
+# Session-geometry ceilings applied on non-CUDA devices (MPS / CPU),
+# where the eager path runs ~20-50x slower than the fleet GPUs. See
+# clamp_duration_for_device / max_depth_for_device for the measured
+# numbers behind these values; both have env overrides.
+NONCUDA_MAX_DURATION_S = 24.0
+NONCUDA_MAX_DEPTH = 1
 
 
 class SA3Context:
@@ -49,18 +106,30 @@ class SA3Context:
         self,
         model_id: str = "small-music",
         *,
-        device: str = "cuda",
-        model_half: bool = True,
+        device: str | None = None,
+        model_half: bool | None = None,
     ):
         require_sa3_vendor()
         loader = import_loader_helpers()
         self._helpers = import_stream_helpers()
 
+        if device is None:
+            device = resolve_sa3_device()
+        if model_half is None:
+            model_half = _resolve_model_half(device)
+
         self.model_id = model_id
         ckpt = loader.checkpoint_dir(model_id)
-        logger.info("sa3_model_load_start model_id={} dir={}", model_id, ckpt)
+        logger.info(
+            "sa3_model_load_start model_id={} dir={} device={} model_half={}",
+            model_id, ckpt, device, model_half,
+        )
         self.sam = loader.load_local_model(ckpt, device=device, model_half=model_half)
         self.device = torch.device(self.sam.device)
+        #: Held across every GPU submission that can race another
+        #: thread — see :func:`make_device_lock`. Threaded into the
+        #: backend by ``SA3Backend.from_context``.
+        self.device_lock = make_device_lock(self.device)
         self.dtype = next(self.sam.model.model.parameters()).dtype
         self.sample_rate = int(self.sam.model.sample_rate)          # 44100
         self.downsampling_ratio = int(
@@ -162,6 +231,44 @@ class SA3Context:
             self.model_id, duration_s, cap,
         )
         return cap
+
+    def clamp_duration_for_device(self, duration_s: float) -> float:
+        """Cap the diffusion window on non-CUDA devices so ticks stay
+        interactive. The eager DiT tick scales linearly with the latent
+        window; measured on an M1 Pro (fp32/MPS, depth 1): 57.6 s window
+        = 416 ms/tick + 1.05 s per full decode (a fresh generation lands
+        every ~14 s — the playhead outruns it and the client keeps
+        playing the raw source), 24 s = 227 ms/tick + 0.6 s decode
+        (~2.5 s knob-to-new-audio at 8 steps). No-op on CUDA.
+        ``DEMON_SA3_MAX_DURATION_S`` overrides; 0 disables the cap."""
+        if self.device.type == "cuda":
+            return duration_s
+        cap = float(
+            os.environ.get("DEMON_SA3_MAX_DURATION_S", "")
+            or NONCUDA_MAX_DURATION_S
+        )
+        if cap <= 0 or duration_s <= cap:
+            return duration_s
+        logger.warning(
+            "sa3_duration_clamped_for_device device={} requested_s={:.1f} "
+            "cap_s={:.1f} (override: DEMON_SA3_MAX_DURATION_S)",
+            self.device.type, duration_s, cap,
+        )
+        return cap
+
+    def max_depth_for_device(self) -> int | None:
+        """Pipeline-depth ceiling for this device, or None for no extra
+        cap (CUDA). On a saturated MPS/CPU device the batched tick cost
+        is LINEAR in depth (measured M1 Pro: depth 4 = 4.2x depth 1 at
+        57.6 s), so extra slots buy no throughput and multiply the
+        knob-to-audio latency — depth 1 is strictly better there.
+        ``DEMON_SA3_MAX_DEPTH`` overrides."""
+        if self.device.type == "cuda":
+            return None
+        return max(1, int(
+            os.environ.get("DEMON_SA3_MAX_DEPTH", "")
+            or NONCUDA_MAX_DEPTH
+        ))
 
     # ---- per-prompt (outside the hot loop) ---------------------------------
 

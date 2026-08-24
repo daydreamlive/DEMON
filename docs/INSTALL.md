@@ -14,7 +14,7 @@ to fix the failures you might hit along the way.
 | [uv](https://docs.astral.sh/uv/) | Manages Python 3.11 and all dependencies; you do not need a system Python. |
 | Node.js 20+ | Only for the bundled web demo. [nodejs.org](https://nodejs.org). |
 | Disk | ~40 GB free: ~18 GB checkpoints, ~10 GB ONNX + engines, headroom. |
-| OS | Windows 11 and Linux are exercised regularly. |
+| OS | Windows 11 and Linux are exercised regularly. macOS (Apple Silicon) runs the SA3 small model on the eager/MPS path — see [Running on macOS](#running-on-macos-apple-silicon). |
 
 ## The quick path
 
@@ -43,6 +43,54 @@ uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint sa3-medi
 
 The `/sa3/` UI sends `backend: "sa3"`, but it does not switch the
 server's loaded model after boot.
+
+## Running on macOS (Apple Silicon)
+
+DEMON's **SA3 small-music** path runs locally on Apple Silicon — no
+NVIDIA GPU, no TensorRT. The DiT + SAME codec + T5Gemma conditioner run
+eager on PyTorch **MPS** in fp32 (measured on an M1 Pro / 32 GB: model
+load ~10 s warm, ~275 ms per DiT tick and ~300 ms per full decode for a
+10 s window at 8 steps; the reference generator does 10 s of audio in
+~7.6 s end-to-end). ACE-Step checkpoints and `sa3-medium` are NOT
+supported on macOS — the ACE stack and the SAME-L windowed decoder are
+CUDA-sized; only `sa3-small` is practical.
+
+Setup (no `demon-setup` — that flow is CUDA/TensorRT-shaped):
+
+```bash
+uv sync                      # resolves the macOS (MPS) torch build automatically
+# SA3 weights are a manual, license-gated download (~3.5 GB):
+huggingface-cli download stabilityai/stable-audio-3-small-music \
+  --local-dir ~/.daydream-scope/models/demon/sa3/checkpoints/stable-audio-3-small-music
+```
+
+The pinned Stable Audio 3 source checkout is fetched automatically on
+first model load (or run `uv run python scripts/sa3/vendor_sa3.py`).
+
+Launch (on macOS `--accel` defaults to `eager`, so no extra flags):
+
+```bash
+uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint sa3-small
+# open http://localhost:6660/sa3/  (or http://localhost:1318/sa3/)
+```
+
+Practical notes:
+
+- Session geometry is auto-capped off-CUDA: the diffusion window
+  clamps to 24 s (`DEMON_SA3_MAX_DURATION_S`, 0 disables) and pipeline
+  depth to 1 (`DEMON_SA3_MAX_DEPTH`). Measured on an M1 Pro, the eager
+  tick is linear in both, so the fleet defaults (60 s+, depth 4-8)
+  make generation lag the playhead by design — the caps keep
+  knob-to-new-audio at ~2.5 s (8 steps; fewer steps respond faster).
+- Device/precision overrides for debugging: `DEMON_SA3_DEVICE=cpu|mps`
+  and `DEMON_SA3_HALF=1` (fp16 on MPS is unproven upstream; fp32 is
+  the default off-CUDA, matching the upstream loader).
+- Smoke test without the server:
+  `uv run python scripts/sa3/sa3_reference_generate.py --duration 10`
+  (auto-selects MPS, writes a wav under the models dir).
+- The VST / DreamSampler connects to a local Mac backend exactly like
+  a pod: put `ws://localhost:1318` in the SERVER box, pick the SOLO
+  INSTRUMENT (sa3) workflow, press CONNECT.
 
 ### What `demon-setup` does
 
