@@ -24,7 +24,9 @@ when it is absent.
 
 from __future__ import annotations
 
+import contextlib
 import os
+import threading
 from typing import Callable
 
 import torch
@@ -50,6 +52,27 @@ def resolve_sa3_device() -> str:
     if torch.backends.mps.is_available():
         return "mps"
     return "cpu"
+
+
+def make_device_lock(device) -> "contextlib.AbstractContextManager":
+    """Serializer for GPU submissions from more than one thread.
+
+    PyTorch's **MPS** backend drives a single shared Metal command
+    queue that is NOT thread-safe: two threads encoding at once abort
+    the whole process inside Metal ("failed assertion
+    `_status < MTLCommandBufferStatusCommitted`" /
+    "Scheduled handler provided after commit call"). DEMON hits this
+    because conditioning runs on the COMMAND thread (``set_prompt``
+    -> T5Gemma) while the runner thread is mid-DiT.
+
+    CUDA is thread-safe (per-thread default streams), so there the
+    lock is a no-op context manager and the fleet path is untouched.
+    Reentrant so a wrapped entry point may nest inside another on the
+    same thread without deadlocking.
+    """
+    if torch.device(device).type == "cuda":
+        return contextlib.nullcontext()
+    return threading.RLock()
 
 
 def _resolve_model_half(device: str) -> bool:
@@ -103,6 +126,10 @@ class SA3Context:
         )
         self.sam = loader.load_local_model(ckpt, device=device, model_half=model_half)
         self.device = torch.device(self.sam.device)
+        #: Held across every GPU submission that can race another
+        #: thread — see :func:`make_device_lock`. Threaded into the
+        #: backend by ``SA3Backend.from_context``.
+        self.device_lock = make_device_lock(self.device)
         self.dtype = next(self.sam.model.model.parameters()).dtype
         self.sample_rate = int(self.sam.model.sample_rate)          # 44100
         self.downsampling_ratio = int(
