@@ -76,9 +76,12 @@ uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint sa3-smal
 
 Practical notes:
 
-- Keep sessions short (`duration` ≤ ~30 s) and pipeline depth low
-  (1–2): the eager DiT tick scales with the latent window, and an M1
-  is ~20-50x slower than the 5090 the defaults were tuned on.
+- Session geometry is auto-capped off-CUDA: the diffusion window
+  clamps to 24 s (`DEMON_SA3_MAX_DURATION_S`, 0 disables) and pipeline
+  depth to 1 (`DEMON_SA3_MAX_DEPTH`). Measured on an M1 Pro, the eager
+  tick is linear in both, so the fleet defaults (60 s+, depth 4-8)
+  make generation lag the playhead by design — the caps keep
+  knob-to-new-audio at ~2.5 s (8 steps; fewer steps respond faster).
 - Device/precision overrides for debugging: `DEMON_SA3_DEVICE=cpu|mps`
   and `DEMON_SA3_HALF=1` (fp16 on MPS is unproven upstream; fp32 is
   the default off-CUDA, matching the upstream loader).

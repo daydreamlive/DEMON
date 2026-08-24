@@ -68,6 +68,13 @@ def _resolve_model_half(device: str) -> bool:
 # would only add seam surface there.
 WINDOWED_DECODE_MODELS = {"medium"}
 
+# Session-geometry ceilings applied on non-CUDA devices (MPS / CPU),
+# where the eager path runs ~20-50x slower than the fleet GPUs. See
+# clamp_duration_for_device / max_depth_for_device for the measured
+# numbers behind these values; both have env overrides.
+NONCUDA_MAX_DURATION_S = 24.0
+NONCUDA_MAX_DEPTH = 1
+
 
 class SA3Context:
     """Loaded SA3 model + family-private operations. See module docstring."""
@@ -197,6 +204,44 @@ class SA3Context:
             self.model_id, duration_s, cap,
         )
         return cap
+
+    def clamp_duration_for_device(self, duration_s: float) -> float:
+        """Cap the diffusion window on non-CUDA devices so ticks stay
+        interactive. The eager DiT tick scales linearly with the latent
+        window; measured on an M1 Pro (fp32/MPS, depth 1): 57.6 s window
+        = 416 ms/tick + 1.05 s per full decode (a fresh generation lands
+        every ~14 s — the playhead outruns it and the client keeps
+        playing the raw source), 24 s = 227 ms/tick + 0.6 s decode
+        (~2.5 s knob-to-new-audio at 8 steps). No-op on CUDA.
+        ``DEMON_SA3_MAX_DURATION_S`` overrides; 0 disables the cap."""
+        if self.device.type == "cuda":
+            return duration_s
+        cap = float(
+            os.environ.get("DEMON_SA3_MAX_DURATION_S", "")
+            or NONCUDA_MAX_DURATION_S
+        )
+        if cap <= 0 or duration_s <= cap:
+            return duration_s
+        logger.warning(
+            "sa3_duration_clamped_for_device device={} requested_s={:.1f} "
+            "cap_s={:.1f} (override: DEMON_SA3_MAX_DURATION_S)",
+            self.device.type, duration_s, cap,
+        )
+        return cap
+
+    def max_depth_for_device(self) -> int | None:
+        """Pipeline-depth ceiling for this device, or None for no extra
+        cap (CUDA). On a saturated MPS/CPU device the batched tick cost
+        is LINEAR in depth (measured M1 Pro: depth 4 = 4.2x depth 1 at
+        57.6 s), so extra slots buy no throughput and multiply the
+        knob-to-audio latency — depth 1 is strictly better there.
+        ``DEMON_SA3_MAX_DEPTH`` overrides."""
+        if self.device.type == "cuda":
+            return None
+        return max(1, int(
+            os.environ.get("DEMON_SA3_MAX_DEPTH", "")
+            or NONCUDA_MAX_DEPTH
+        ))
 
     # ---- per-prompt (outside the hot loop) ---------------------------------
 
