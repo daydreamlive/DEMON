@@ -56,6 +56,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
+from dataclasses import replace
 from typing import Callable, Optional
 
 import torch
@@ -121,7 +122,7 @@ def sa3_lora_compatible(metadata: dict, model_id: str) -> bool:
     return lineage == model_id
 
 
-def sa3_knob_specs(loras: tuple | list = ()) -> list:
+def sa3_knob_specs(loras: tuple | list = (), *, extension_specs=()) -> list:
     """The SA3 family knob manifest (backend-owned, plan §3.3).
 
     ``seed``, ``steps_override``, ``x0_target``, ``feedback`` and
@@ -137,6 +138,14 @@ def sa3_knob_specs(loras: tuple | list = ()) -> list:
     the shared ``lora_str_<id>`` strength spec — the same registry
     factory ACE uses, so the knob's shape (and therefore its wire
     semantics) cannot fork across families.
+
+    ``extension_specs`` appends the controls contributed by a
+    startup-selected model extension. They are already namespaced and
+    validated at plugin-registration time, and they join the manifest
+    HERE so they reach the session's spec map — and therefore
+    ``coerce_knob_values`` — by the same route as every core knob. A knob
+    that reached the client but not that map would be accepted from the
+    wire unvalidated and unclamped, with no error.
     """
     shared = {s.name: s for s in registry_knob_specs(False)}
     return [
@@ -165,7 +174,7 @@ def sa3_knob_specs(loras: tuple | list = ()) -> list:
         shared["feedback_depth"],
         shared["seed"],
         shared["steps_override"],
-    ] + [lora_strength_spec(lid) for lid in loras]
+    ] + [lora_strength_spec(lid) for lid in loras] + list(extension_specs or ())
 
 
 class SA3Backend(DiffusionBackend):
@@ -238,8 +247,39 @@ class SA3Backend(DiffusionBackend):
         # knob-driven strength changes route through the pending stash
         # (D6b.5) so the refit stall is always announced.
         refit_mirror=None,
+        # ``(sample_rate, waveform)`` for the audio ``source_latent_bct``
+        # was encoded from. Retained ONLY so an extension's conditioning
+        # hook can see it (``acestep.plugins.SourceView``); nothing on the
+        # denoising path reads it. None when the caller did not supply it,
+        # which is a supported shape rather than an error.
+        source_audio=None,
+        # Startup-selected model extension (a SelectedExtension) and its
+        # installed runtime. Both None on stock sessions, which must
+        # behave exactly as if the plugin system did not exist.
+        model_extension=None,
+        extension_runtime=None,
     ):
         super().__init__(adapter=adapter, codec=codec)
+        self._extension = model_extension
+        self._extension_runtime = extension_runtime
+        self._extension_knob_names = tuple(
+            spec.name for spec in (
+                model_extension.knob_specs if model_extension is not None else ()
+            )
+        )
+        # Source anchor for audio-to-audio: engine layout [1, T, 256].
+        # Assigned BEFORE the decorate calls below, which read it back
+        # out through _source_view().
+        self._source_latent_btc = (
+            source_latent_bct.movedim(1, 2).contiguous()
+            if source_latent_bct is not None else None
+        )
+        self._source_sample_rate, self._source_waveform = (
+            (int(source_audio[0]), source_audio[1])
+            if source_audio is not None else (None, None)
+        )
+        cond = self._decorate(cond, self._source_view())
+        cond_b = self._decorate(cond_b, self._source_view())
         self._cond = cond
         self._cond_b = cond_b if cond_b is not None else cond
         # Live A↔B crossfade value and the bundle the next submit
@@ -270,11 +310,8 @@ class SA3Backend(DiffusionBackend):
         # renoise) | "ode" (euler; off-objective for SA3, debug only)
         self._sampler = sampler
 
-        # Source anchor for audio-to-audio: engine layout [1, T, 256].
-        self._source_latent_btc = (
-            source_latent_bct.movedim(1, 2).contiguous()
-            if source_latent_bct is not None else None
-        )
+        # (The source anchor is assigned near the top of __init__, ahead
+        # of the conditioning decoration that reads it.)
 
         # Emerged-generation observability. SA3 knob/prompt changes ride
         # the NEXT SlotRequest only (no shared-curve writes onto
@@ -290,6 +327,7 @@ class SA3Backend(DiffusionBackend):
         # request's ``aux_cond`` can be mapped back to the prompt it
         # carried even after a handle_set_prompt swap.
         self._cond_epoch = 0
+        self._prompt_tags = prompt_tags
         self._cond_history: list = [(cond.cond_bundle, 0, prompt_tags)]
         self._emerged_request = None
         self._emerged_marker = None  # (denoise, epoch) of the last log
@@ -365,6 +403,7 @@ class SA3Backend(DiffusionBackend):
         source_latent_bct=None,
         dit_backend: str = "eager",
         codec_backend: str = "eager",
+        model_extension=None,
         **kwargs,
     ) -> "SA3Backend":
         """Production assembly over a loaded
@@ -478,6 +517,19 @@ class SA3Backend(DiffusionBackend):
                 (int(sample_rate), waveform), int(sample_size),
             )
 
+        # Sampler follows the loaded checkpoint's training objective.
+        # Post-trained SA3 releases ("rf_denoiser") were trained and
+        # evaluated with deterministic ping-pong; a plain rectified-flow
+        # base wants Euler ODE. Assuming the post-trained objective for
+        # every SA3 checkpoint silently mis-samples the other family.
+        # An explicit caller-supplied ``sampler`` still wins.
+        kwargs.setdefault(
+            "sampler",
+            "ode"
+            if getattr(context, "diffusion_objective", None) == "rectified_flow"
+            else "pingpong",
+        )
+
         return cls(
             adapter=adapter,
             codec=context.make_codec(backend=codec_backend),
@@ -489,6 +541,10 @@ class SA3Backend(DiffusionBackend):
             knob_state=knob_state,
             state=state,
             source_latent_bct=source_latent,
+            # Carried for the extension conditioning hook only; see the
+            # ctor arg. ``source_audio`` is already the ``(sample_rate,
+            # waveform)`` pair ``context.encode_source`` consumes.
+            source_audio=source_audio,
             prompt_rebuilder=_prompt_rebuilder,
             prompt_tags=prompt,
             source_encoder=_source_encoder,
@@ -498,8 +554,74 @@ class SA3Backend(DiffusionBackend):
             eager_dit=context.dit,
             model_id=str(context.model_id),
             refit_mirror=refit_mirror,
+            model_extension=model_extension,
+            extension_runtime=getattr(context, "extension_runtime", None),
             **kwargs,
         )
+
+    def _source_view(self, latent_bct=None, audio=None):
+        """The session source as an extension sees it, or None if absent.
+
+        The latent is handed over in SA3-native ``[1, 256, T]``: it is
+        stored engine-layout ``[1, T, 256]``, and extensions get the
+        native layout their model actually consumes.
+
+        ``latent_bct`` / ``audio`` override the stored anchor, for a swap
+        that has already computed the new one but not yet published it.
+        """
+        if latent_bct is None and self._source_latent_btc is not None:
+            latent_bct = self._source_latent_btc.movedim(1, 2)
+        sample_rate, waveform = (
+            (int(audio[0]), audio[1]) if audio is not None
+            else (self._source_sample_rate, self._source_waveform)
+        )
+        if latent_bct is None and waveform is None:
+            return None
+        from acestep.plugins.model_extensions import SourceView
+
+        return SourceView(
+            latent=latent_bct, waveform=waveform, sample_rate=sample_rate,
+        )
+
+    def _decorate(self, cond, source):
+        """Apply the extension's conditioning contribution to a capture.
+
+        Always builds a FRESH bundle: an in-flight SlotRequest holds a
+        reference to the bundle it was submitted with, and must keep
+        seeing that one across a prompt or source swap. The extension is
+        handed a copy, so even one that mutates its argument in place
+        cannot reach a bundle anyone else is holding.
+        """
+        if cond is None or self._extension_runtime is None:
+            return cond
+        from acestep.plugins.model_extensions import decorate_conditioning
+
+        decorated = decorate_conditioning(
+            self._extension_runtime, dict(cond.cond_bundle), source,
+        )
+        return replace(cond, cond_bundle=dict(decorated))
+
+    def _apply_extension_controls(self, knobs: dict) -> None:
+        """Hand the extension its own namespaced knob values.
+
+        Runs unlocked, on the streaming runner — the same thread the
+        extension's model code runs on. ``_control_lock`` exists to order
+        the COMMAND thread's prompt/source swaps against the tick loop,
+        and holding it here would only put arbitrary plugin code, every
+        tick, in the path of a swap. An extension that keeps state its
+        ``decorate_conditioning`` also touches (which the command thread
+        does call) owns that synchronization itself; the contract is
+        documented on ``ModelExtensionRuntime.apply_controls``.
+        """
+        if self._extension_runtime is None or not self._extension_knob_names:
+            return
+        values = {
+            name: knobs[name]
+            for name in self._extension_knob_names
+            if name in knobs
+        }
+        if values:
+            self._extension_runtime.apply_controls(values)
 
     def _build_pipeline(self, steps: int):
         from acestep.engine.diffusion import DiffusionConfig
@@ -549,7 +671,12 @@ class SA3Backend(DiffusionBackend):
         )
 
     def knob_specs(self, lora_ids=()) -> list:
-        return sa3_knob_specs(loras=list(lora_ids or []))
+        return sa3_knob_specs(
+            loras=list(lora_ids or []),
+            extension_specs=(
+                self._extension.knob_specs if self._extension is not None else ()
+            ),
+        )
 
     def lora_compatible(self, metadata: dict) -> bool:
         return sa3_lora_compatible(metadata, self._model_id)
@@ -793,9 +920,11 @@ class SA3Backend(DiffusionBackend):
         t0 = time.perf_counter()
         # Conditioner EXECUTION under the D5 lock: a concurrent LoRA
         # mutation of the conditioner's parametrizations (runner
-        # rendezvous) must not interleave with this capture.
+        # rendezvous) must not interleave with this capture. Extension
+        # decoration is NOT conditioner execution and stays outside it.
         with self._conditioner_lock:
             cond, sched_factory = self._prompt_rebuilder(tags, self._steps)
+        cond = self._decorate(cond, self._source_view())
         rebuild_ms = (time.perf_counter() - t0) * 1000
         if int(cond.latent_frames) != int(self._cond.latent_frames):
             # Duration is fixed for the session lifetime, so the latent
@@ -809,6 +938,7 @@ class SA3Backend(DiffusionBackend):
         if tags_b and tags_b != tags:
             with self._conditioner_lock:
                 cond_b, _ = self._prompt_rebuilder(tags_b, self._steps)
+            cond_b = self._decorate(cond_b, self._source_view())
             if int(cond_b.latent_frames) != int(cond.latent_frames):
                 raise ValueError(
                     f"sa3 prompt-B swap changed latent_frames "
@@ -838,6 +968,7 @@ class SA3Backend(DiffusionBackend):
             # the next cond epoch; keep a short identity history so latents
             # still in flight on the OLD bundle stay attributable.
             self._cond_epoch += 1
+            self._prompt_tags = tags
             self._cond_history.append((cond.cond_bundle, self._cond_epoch, tags))
             del self._cond_history[:-4]
         logger.info(
@@ -880,7 +1011,33 @@ class SA3Backend(DiffusionBackend):
         # calling this hook.
         with self._control_lock:
             self._source_latent_btc = latent_btc
+            # The waveform is retained alongside the latent so an
+            # extension's next re-decoration sees a source view whose two
+            # halves describe the same audio. Dropping it here would leave
+            # the previous upload's waveform paired with the new anchor.
+            self._source_waveform = waveform
+            self._source_sample_rate = int(sample_rate)
             self._latent_history.clear()
+            if self._extension_runtime is not None:
+                # An extension may condition on the source, so re-decorate
+                # against the new anchor. Rebuilding both captures (rather
+                # than editing their bundles) is what keeps in-flight slots
+                # finishing on the conditioning they were submitted with.
+                view = self._source_view(
+                    latent_bct=latent_bct, audio=(int(sample_rate), waveform),
+                )
+                old_a, old_b = self._cond, self._cond_b
+                self._cond = self._decorate(old_a, view)
+                self._cond_b = (
+                    self._cond if old_b is old_a
+                    else self._decorate(old_b, view)
+                )
+                self._active_bundle = self._blend_bundles(self._blend)
+                self._cond_epoch += 1
+                self._cond_history.append(
+                    (self._cond.cond_bundle, self._cond_epoch, self._prompt_tags),
+                )
+                del self._cond_history[:-4]
         logger.info(
             "sa3_source_swapped samples={} sample_rate={} encode_ms={:.1f}",
             int(waveform.shape[-1]), int(sample_rate), encode_ms,
@@ -977,6 +1134,8 @@ class SA3Backend(DiffusionBackend):
                         continue
                     if abs(lora_str - desc.strength) > 0.02:
                         self.set_lora_strength(desc.id, lora_str)
+
+        self._apply_extension_controls(knobs)
 
         # Source-lock strength rides the shared override so a strength
         # bump engages the blend on in-flight slots submitted while it

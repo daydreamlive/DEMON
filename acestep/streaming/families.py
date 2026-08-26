@@ -78,11 +78,18 @@ def _make_sa3(ss):
         # payload predating the blend surface stays blend-neutral.
         cond_b=init.get("cond_b"),
         source_latent_bct=init["source_latent_bct"],
+        # The pre-encode audio behind that anchor, for the extension
+        # conditioning hook. .get so an in-process payload predating it
+        # still assembles, with the waveform half of the source view
+        # simply absent.
+        source_audio=init.get("source_audio"),
         # Resolved accel values (compile already normalized to eager by
         # the create path); .get so an in-process payload without them
         # stays on the eager default.
         dit_backend=init.get("dit_backend", "eager"),
         codec_backend=init.get("codec_backend", "eager"),
+        # Startup-selected model extension, absent on stock sessions.
+        model_extension=init.get("model_extension"),
         steps=int(ss.config.steps),
         depth=int(ss.state.current_depth),
         vae_window_s=float(ss.vae_window),
