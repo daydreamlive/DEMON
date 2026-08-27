@@ -62,6 +62,15 @@ class SlotCondition:
         return self.step_range[0] <= progress < self.step_range[1]
 
 
+# Stand-in negative condition for Tier-2 families, whose conditioning
+# lives entirely in ``SlotRequest.neg_aux_cond``. It exists only so the
+# negative pass has a row to schedule; every field an adapter would read
+# off it is None, and the ACE path never sees it.
+_AUX_NEG_PLACEHOLDER = SlotCondition(
+    encoder_hidden_states=None, encoder_attention_mask=None,
+)
+
+
 @dataclass
 class SlotRequest:
     """A generation request to be fed into the pipeline.
@@ -130,6 +139,20 @@ class SlotRequest:
     # MomentumBuffer update sees a uniform tensor. Hot-mutable via
     # set_shared_curve("apg_momentum", value) on the pipeline.
     apg_momentum: "float | torch.Tensor" = -0.75
+    # APG's two shape parameters, per request so a family can select the
+    # guidance operator its model was actually trained with. The defaults
+    # are the historical hardcoded values, so ACE and SA3 are unchanged.
+    #
+    # ``apg_eta=1.0`` + ``apg_norm_threshold<=0`` + ``apg_momentum=0.0``
+    # reduces APG exactly to textbook CFG (``v_u + w*(v_c - v_u)``):
+    # nothing is clamped, and recombining the parallel and orthogonal
+    # components at unit weight reassembles the raw delta. Families whose
+    # reference sampler uses plain CFG want that, and the difference is
+    # not cosmetic — MiniMax-Music3 measures ~4x worse under stock APG,
+    # because a norm cap tuned for ACE's latent scale throttles a
+    # 689-frame guidance delta nearly to nothing.
+    apg_eta: float = 0.0
+    apg_norm_threshold: float = 2.5
     # --- RCFG (Residual CFG, after StreamDiffusion §3.2) ---
     # Cuts the per-step uncond forward pass that standard CFG requires.
     # Modes:
@@ -160,6 +183,13 @@ class SlotRequest:
     # bundle per request — single-condition v1, per the canonical SA3
     # plan §5). ACE requests leave it None.
     aux_cond: Optional[dict] = None
+    # The negative branch of the same bundle. ``neg_conditions`` is the
+    # ACE-shaped path and cannot express a Tier-2 family's conditioning,
+    # so without this a family that carries everything in ``aux_cond``
+    # has no way to run CFG at all: the negative pass would re-send the
+    # positive bundle and APG would collapse to a no-op. Setting it (plus
+    # ``guidance_curve``) is what turns guidance on for such a family.
+    neg_aux_cond: Optional[dict] = None
     # Latent frame count T for families without ``context_latents``
     # (the historical T source). Ignored when ``context_latents`` is
     # present — the adapter's ``request_frames`` decides.
@@ -188,12 +218,16 @@ class SlotRequest:
           the uncond pass only runs at step 0).
         - RCFG-self: ``guidance_curve`` + ``rcfg_mode == 'self'`` (no
           ``neg_conditions`` needed — uncond is the slot's initial noise).
+
+        Tier-2 families satisfy the first two through ``neg_aux_cond``
+        instead of ``neg_conditions``; the negative pass is otherwise
+        identical.
         """
         if self.guidance_curve is None:
             return False
         if self.rcfg_mode == "self":
             return True
-        return bool(self.neg_conditions)
+        return bool(self.neg_conditions) or self.neg_aux_cond is not None
 
     def needs_neg_forward(self, step_idx: int) -> bool:
         """True when this step requires running the uncond forward pass.
@@ -1166,11 +1200,18 @@ class StreamPipeline:
         Falls back to ``neg_conditions[0]`` when none match — mirrors the
         pre-refactor behavior of ``negative_condition_set``. Returns an
         empty list when CFG is not enabled on the slot.
+
+        A Tier-2 family carries its negative branch in ``neg_aux_cond``
+        and leaves ``neg_conditions`` empty, so it gets one placeholder
+        entry: the row still has to exist for the negative pass to be
+        scheduled, and the adapter reads the bundle, not the condition.
         """
         if not slot.request.has_cfg:
             return []
-        total_steps = len(slot.t_schedule) - 1
         negs = slot.request.neg_conditions
+        if not negs:
+            return [_AUX_NEG_PLACEHOLDER]
+        total_steps = len(slot.t_schedule) - 1
         active = [c for c in negs if c.is_active_at_step(slot.step_idx, total_steps)]
         return active if active else [negs[0]]
 
@@ -1248,10 +1289,26 @@ class StreamPipeline:
         # the CFG path mirrors the pre-refactor two-forward-pass behavior.
         def _forward_pairs(
             pair_slot_idx: List[int], pair_cond: List[SlotCondition],
+            negative: bool = False,
         ) -> torch.Tensor:
             xt_b = torch.cat(
                 [xt_decoder_list[si] for si in pair_slot_idx], dim=0,
             )
+            # A Tier-2 family's whole conditioning is the aux bundle, so
+            # the negative pass has to swap the bundle too — sending the
+            # positive one would make v_neg == v_pos and silently turn
+            # guidance into a no-op that still costs a forward.
+            if negative:
+                aux_list = [
+                    slots[si].request.neg_aux_cond
+                    if slots[si].request.neg_aux_cond is not None
+                    else slots[si].request.aux_cond
+                    for si in pair_slot_idx
+                ]
+            else:
+                aux_list = [
+                    slots[si].request.aux_cond for si in pair_slot_idx
+                ]
             return self.adapter.batched_forward(
                 xt_batch=xt_b,
                 timestep_list=[
@@ -1263,9 +1320,7 @@ class StreamPipeline:
                 ctx_list=[
                     slots[si].request.context_latents for si in pair_slot_idx
                 ],
-                aux_list=[
-                    slots[si].request.aux_cond for si in pair_slot_idx
-                ],
+                aux_list=aux_list,
             )
 
         # --- Positive pass: one call across all slots' pos conditions ---
@@ -1293,7 +1348,9 @@ class StreamPipeline:
         if neg_pair_si:
             self._current_step_per_row = [slots[si].step_idx for si in neg_pair_si]
             try:
-                vt_neg_all = _forward_pairs(neg_pair_si, neg_pair_cond)
+                vt_neg_all = _forward_pairs(
+                    neg_pair_si, neg_pair_cond, negative=True,
+                )
             finally:
                 self._current_step_per_row = []
         else:
@@ -1354,6 +1411,8 @@ class StreamPipeline:
                     guidance_scale=gc,
                     momentum_buffer=slot.momentum_buffer,
                     momentum=mom if mom is not None else -0.75,
+                    eta=slot.request.apg_eta,
+                    norm_threshold=slot.request.apg_norm_threshold,
                 )
                 rescale = self._eff_shared(slot, "cfg_rescale_curve")
                 if rescale is not None:
