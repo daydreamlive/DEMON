@@ -176,6 +176,10 @@ class MiniMaxContext:
 
         data = load_file(str(path))
         cond = data["encoder_hidden_states"]
+        # Captures are stored without the batch dim (L, 2048); the DiT
+        # wants (1, L, 2048).
+        if cond.ndim == 2:
+            cond = cond.unsqueeze(0)
         if cond.ndim != 3 or cond.shape[-1] != COND_DIM:
             raise ValueError(
                 f"capture {path} has encoder_hidden_states "
