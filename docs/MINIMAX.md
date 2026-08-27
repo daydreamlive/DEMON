@@ -14,8 +14,9 @@ whole song and the families' songs differ in length by 7.5x):
 | | gens/s | 60 s-gens/s | realtime |
 |---|---|---|---|
 | minimax, 8.0 s song, eager bf16 | 1.19 | 0.158 | 9.5x |
-| minimax, 8.0 s song, TRT fp16 | 1.90 | **0.253** | 15.2x |
+| minimax, 8.0 s song, TRT fp16 | 1.90 | 0.253 | 15.2x |
 | minimax, 14.4 s song, eager bf16 | 0.80 | 0.192 | 11.5x |
+| minimax, 14.4 s song, TRT fp16 | 1.16 | **0.278** | **16.7x** |
 | *sa3 medium, 54 s song, TRT* | *~6.0* | *~5.4* | *~324x* |
 | *acestep turbo, 60 s song, TRT* | *11.3* | *11.3* | *~678x* |
 
@@ -502,8 +503,27 @@ usable parity reference on this model** — it only reaches cos
 
 ### Engines
 
-fp16 4.88 GB / 44 s build / 5.08 GB VRAM / 2.0 s load; fp32 9.73 GB /
-51 s. ONNX export 76-78 s each. Built with
+fp16 4.88 GB / 33-44 s build / 5.08 GB VRAM / 2.0 s load; fp32 9.73 GB /
+51 s. ONNX export 76-78 s each.
+
+**The profile is ranged, not pinned.** Sessions run at whatever length
+the autoregressive stage produces, and an engine serves only the range
+its profile declares — a 689-max engine silently drops every other
+duration to eager and costs ~1.7x. The canonical build is now
+`l2_689_1400` (2 to ~16.3 s, tuned at 689). It measured **identical** to
+the pinned engine in build time (33 s) and size (4.88 GB), and still
+clears the parity bar at the top of its range:
+
+| t | TRT fp16 vs eager fp32, L=1240 | rel RMS | eager bf16 |
+|---|---|---|---|
+| 0.05 | 0.999992 | 3.9e-3 | 0.999766 |
+| 0.30 | 0.999969 | 7.9e-3 | 0.998022 |
+| 0.60 | 0.999982 | 6.1e-3 | 0.999142 |
+| 0.95 | 0.999990 | 4.5e-3 | 0.999731 |
+
+Selection is automatic and prefers the tightest covering profile, so a
+689-frame session still gets the pinned engine if both are built. At
+L=1240 TensorRT is 26.1 ms/forward against eager bf16's 44.6. Built with
 `acestep/engine/trt/minimax_build.py`, reusing
 `sa3_build.py::_build_strongly_typed_engine` unchanged. No plugins.
 
@@ -618,10 +638,6 @@ normalizes both fields rather than inserting them verbatim, and
   TRT tick, of which roughly 3.5 ms is launch overhead an engine would
   cut. The fixed 58-frame window is exactly the shape to build at. Note
   fp16 is not an option — it produces all-NaN on this vocoder.
-- **The DiT engine is length-pinned.** `l2_689_689` serves only the
-  default song, so any other duration silently drops to eager. The
-  builder already takes `--min-latents/--max-latents`, so a ranged
-  engine is a build-flag change, not a code change.
 - **Stereo width is one observation short of a conclusion.** Our takes
   average left/right correlation 0.43 (sd 0.15 over 8 draws) against a
   single reference take at 0.096 — which we reproduce exactly on that

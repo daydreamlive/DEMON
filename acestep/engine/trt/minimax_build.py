@@ -149,8 +149,18 @@ from acestep.engine.minimax_trt import (
 )
 
 #: One 7.999 s session window: 200 AR frames at 25 Hz -> 689 latent
-#: frames at 44100/512 Hz. The canonical profile.
+#: frames at 44100/512 Hz. The shape the profile is TUNED for.
 CANONICAL_LATENT_FRAMES = 689
+
+#: ...and the longest it SERVES. Sessions run at whatever length the
+#: autoregressive stage produces, and an engine only covers the range
+#: its profile declares -- a 689-max engine silently drops every other
+#: duration to eager, which costs ~1.7x. A ranged profile measured
+#: identical in build time (33 s) and engine size (4.88 GB) to the
+#: pinned one, and still passes the parity bar at the top of its range
+#: (cos 0.999969 vs eager fp32 at 1240 frames), so there is no reason
+#: to pin it. 1400 frames is ~16.3 s; widen it if sessions run longer.
+CANONICAL_MAX_LATENT_FRAMES = 1400
 
 COMPONENT = "minimax_dit"
 
@@ -618,7 +628,9 @@ def main() -> int:
         max_batch=args.max_batch,
         min_latents=args.min_latents,
         opt_latents=opt_latents,
-        max_latents=args.max_latents or opt_latents,
+        max_latents=args.max_latents or max(
+            opt_latents, CANONICAL_MAX_LATENT_FRAMES,
+        ),
         workspace_gb=args.workspace_gb,
     )
     try:
