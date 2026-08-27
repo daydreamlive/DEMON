@@ -42,6 +42,9 @@ from acestep.streaming.knobs import KnobState  # noqa: E402
 from acestep.streaming.generator_backend import TickContext  # noqa: E402
 from acestep.streaming.minimax_backend import (  # noqa: E402
     DELIVERY_SAMPLE_RATE,
+    MINIMAX_DEFAULT_GUIDANCE,
+    MINIMAX_DEFAULT_SHIFT,
+    MINIMAX_DEFAULT_STEPS,
     MiniMaxBackend,
     minimax_knob_specs,
     minimax_latent_frames,
@@ -82,14 +85,18 @@ def main() -> int:
                     help="stream the model's unconditional branch (zeros)")
     ap.add_argument("--seconds", type=float, default=20.0,
                     help="wall-clock seconds of streaming to simulate")
-    ap.add_argument("--steps", type=int, default=8)
+    ap.add_argument("--steps", type=int, default=MINIMAX_DEFAULT_STEPS)
     ap.add_argument("--depth", type=int, default=4)
     ap.add_argument("--denoise", type=float, default=0.6,
                     help="cover strength once the anchor exists")
     ap.add_argument("--dtype", default="bfloat16", choices=("bfloat16", "float32"))
+    ap.add_argument("--guidance", type=float, default=MINIMAX_DEFAULT_GUIDANCE,
+                    help="classifier-free guidance scale; 1.0 disables it")
+    ap.add_argument("--shift", type=float, default=MINIMAX_DEFAULT_SHIFT,
+                    help="schedule warp; matched to --steps")
     ap.add_argument("--sweep", default=None,
                     choices=("minimax_denoise", "minimax_cond_strength",
-                             "minimax_shift", "feedback"),
+                             "minimax_shift", "minimax_guidance", "feedback"),
                     help="ramp this knob across the run to prove live steering")
     ap.add_argument("--sweep-from", type=float, default=0.15)
     ap.add_argument("--sweep-to", type=float, default=0.95)
@@ -133,7 +140,11 @@ def main() -> int:
         vae_window_s=MINIMAX_VAE_WINDOW_S,
         dit_backend=args.accel,
     )
-    backend.knob_state.update({"minimax_denoise": args.denoise})
+    backend.knob_state.update({
+        "minimax_denoise": args.denoise,
+        "minimax_guidance": args.guidance,
+        "minimax_shift": args.shift,
+    })
 
     total = int(round(duration_s * DELIVERY_SAMPLE_RATE))
     buf = np.zeros((total, 2), dtype=np.float32)
@@ -149,7 +160,8 @@ def main() -> int:
     sweep_trace: list = []
 
     print(f"[stream] simulating {args.seconds}s at depth={args.depth} "
-          f"steps={args.steps} denoise={args.denoise} accel={args.accel}")
+          f"steps={args.steps} denoise={args.denoise} "
+          f"guidance={args.guidance} shift={args.shift} accel={args.accel}")
     wall0 = time.perf_counter()
     while playhead < args.seconds:
         if args.sweep:

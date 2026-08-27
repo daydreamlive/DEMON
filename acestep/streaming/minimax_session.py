@@ -35,6 +35,7 @@ from acestep.streaming.knobs import KnobState
 from acestep.streaming.minimax_backend import (
     MINIMAX_AR_FRAME_RATE_HZ,
     MINIMAX_CHUNK_AR_FRAMES,
+    MINIMAX_DEFAULT_STEPS,
     minimax_knob_specs,
     minimax_latent_frames,
 )
@@ -96,6 +97,14 @@ def create_minimax_session(
     depth = int(getattr(config, "pipeline_depth", 4) or 4)
     depth = max(1, min(depth, MINIMAX_MAX_PIPELINE_DEPTH))
 
+    # ``SessionConfig.steps`` defaults to 8, which is ACE's number. On
+    # this model 8 unwarped steps is not a cheaper render, it is an
+    # audibly broken one: log-mel 0.24 from the reference against 0.03
+    # at the family default, with the leftover noise showing up as
+    # anti-correlated stereo. Take the family floor, and let an operator
+    # who explicitly asks for more keep it.
+    steps = max(int(getattr(config, "steps", 0) or 0), MINIMAX_DEFAULT_STEPS)
+
     capture = os.environ.get("DEMON_MINIMAX_CAPTURE") or None
     # Without the AR stage the family is still usable from a capture,
     # but not from a free-text prompt. Say so at create rather than
@@ -123,8 +132,8 @@ def create_minimax_session(
         else None
     )
     logger.info(
-        "minimax_session_cond frames={} capture={} depth={}",
-        got, capture or "<generated>", depth,
+        "minimax_session_cond frames={} capture={} depth={} steps={}",
+        got, capture or "<generated>", depth, steps,
     )
 
     # The audio ring is seeded with silence at the render geometry: the
@@ -190,6 +199,7 @@ def create_minimax_session(
                 "cond_b": cond_b,
                 "source_latent_bct": None,  # adopted from the first render
                 "duration_s": duration_s,
+                "steps": steps,
                 "dit_backend": dit_backend,
                 "codec_backend": codec_backend,
             },

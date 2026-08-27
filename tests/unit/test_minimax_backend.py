@@ -20,6 +20,9 @@ from acestep.streaming.generator_backend import TickContext
 from acestep.streaming.knobs import KnobState
 from acestep.streaming.minimax_backend import (
     DELIVERY_SAMPLE_RATE,
+    MINIMAX_DEFAULT_GUIDANCE,
+    MINIMAX_DEFAULT_SHIFT,
+    MINIMAX_DEFAULT_STEPS,
     MINIMAX_LATENT_RATE_HZ,
     MiniMaxBackend,
     minimax_knob_specs,
@@ -138,9 +141,38 @@ def test_vae_window_attribute_is_present():
 def test_knob_defaults_round_trip_through_read_knobs():
     knobs = _backend().read_knobs()
     assert knobs["minimax_denoise"] == pytest.approx(1.0)
-    assert knobs["minimax_shift"] == pytest.approx(1.0)
+    assert knobs["minimax_shift"] == pytest.approx(MINIMAX_DEFAULT_SHIFT)
     assert knobs["minimax_cond_strength"] == pytest.approx(1.0)
+    assert knobs["minimax_guidance"] == pytest.approx(MINIMAX_DEFAULT_GUIDANCE)
     assert "seed" in knobs and "x0_target" in knobs
+
+
+def test_sampler_defaults_stay_in_the_measured_regime():
+    """The three sampler defaults are a measured operating point, not
+    taste, and they move together.
+
+    ``scripts/minimax/minimax_quality_ablation.py`` grids them against a
+    reference trajectory. Guidance is the single largest lever -- an
+    unguided run plateaus around 0.11 log-mel from the reference and
+    stays there through 40 steps, while 8 guided steps beat it -- and
+    step count trades against the schedule warp roughly one for one, so
+    lowering steps without raising shift silently gives up most of what
+    the steps were buying. This test is here so that anyone retuning
+    them re-runs the grid rather than nudging a constant.
+    """
+    assert MINIMAX_DEFAULT_GUIDANCE > 1.0, (
+        "guidance 1.0 disables CFG; measured at ~0.19 log-mel against "
+        "~0.03 guided, which is not a speed/quality trade worth taking"
+    )
+    assert MINIMAX_DEFAULT_STEPS >= 12
+    # The measured pairing: 30 steps want shift 1.0, 16 want 2.0, 12
+    # want 3.0. Anything far off that line is untested territory.
+    assert 1.0 <= MINIMAX_DEFAULT_SHIFT <= 3.0
+    if MINIMAX_DEFAULT_STEPS <= 16:
+        assert MINIMAX_DEFAULT_SHIFT >= 1.5, (
+            "few steps need the schedule warped toward the noise end; "
+            "re-run the ablation grid before decoupling these"
+        )
 
 
 # ---- produce --------------------------------------------------------------
@@ -375,3 +407,92 @@ def test_prompt_swap_rejects_a_geometry_change():
     }
     with pytest.raises(ValueError, match="latent geometry"):
         b.handle_set_prompt("wrong length")
+
+
+# ---- guidance -------------------------------------------------------------
+#
+# The bug these guard against shipped once and was silent: the backend
+# ran with no CFG at all while the reference pipeline runs guidance 1.7.
+# Nothing raised, no gate moved -- latent-domain parity is measured on
+# single forwards, and the streamed output was merely worse. So the
+# tests here assert the *observable* consequences: that a second forward
+# happens, that it carries zeros rather than the capture, and that the
+# combine reduces to the operator the reference uses.
+
+
+class _CondSensitiveDit(torch.nn.Module):
+    """Records the conditioning of every forward and depends on it.
+
+    ``_FakeDit`` ignores its cond, which makes it blind to exactly the
+    failure being tested: a negative pass that re-sends the positive
+    bundle produces v_neg == v_pos, so guidance silently becomes a
+    no-op that still costs a forward.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.seen: list = []
+
+    def forward(self, x, t, cond):
+        self.seen.append(float(cond.abs().mean()))
+        return -0.5 * x + 0.01 * float(cond.abs().mean())
+
+
+def _guided_backend(**kw):
+    dit = _CondSensitiveDit()
+    return dit, _backend(dit=dit, **kw)
+
+
+def test_guidance_runs_a_negative_pass_carrying_zeros():
+    dit, b = _guided_backend(steps=4, depth=1)
+    b.knob_state.update({"minimax_guidance": 1.7})
+    _run(b, 6)
+
+    assert dit.seen, "no forward ran"
+    positive = [v for v in dit.seen if v > 0.0]
+    negative = [v for v in dit.seen if v == 0.0]
+    assert positive, "the capture never reached the DiT"
+    assert negative, (
+        "no forward saw the all-zeros bundle, so guidance ran against "
+        "the positive conditioning and was a no-op"
+    )
+    # Full CFG: one negative forward per positive forward.
+    assert len(negative) == len(positive)
+
+
+def test_guidance_of_one_skips_the_negative_pass_entirely():
+    dit, b = _guided_backend(steps=4, depth=1)
+    b.knob_state.update({"minimax_guidance": 1.0})
+    _run(b, 6)
+    assert dit.seen
+    assert all(v > 0.0 for v in dit.seen), (
+        "guidance 1.0 must cost one forward per step, not two"
+    )
+
+
+def test_request_asks_for_textbook_cfg_not_stock_apg():
+    """The combine operator is part of the fix, not a detail.
+
+    Stock APG clamps the guidance delta with a norm threshold tuned for
+    ACE's latent scale; on a 689-frame MiniMax latent that throttles it
+    almost to nothing and measures ~4x worse than plain CFG. These three
+    values are what reduce APG to the reference's own operator.
+    """
+    _, b = _guided_backend(steps=4, depth=1)
+    _run(b, 6)
+    req = b._last_request
+    assert req.apg_eta == pytest.approx(1.0)
+    assert req.apg_norm_threshold <= 0.0
+    assert req.apg_momentum == pytest.approx(0.0)
+    assert req.has_cfg, "guidance_curve + neg_aux_cond must enable CFG"
+
+
+def test_uncond_bundle_is_zeros_and_stable_across_ticks():
+    """Identity matters: an accelerated wrapper keys its staging cache
+    on the tensor object, so a fresh zeros_like per tick would miss it
+    every time."""
+    _, b = _guided_backend(steps=4, depth=1)
+    first = b._uncond_bundle()["encoder_hidden_states"]
+    assert torch.count_nonzero(first) == 0
+    assert first.shape == b._active_cond["encoder_hidden_states"].shape
+    assert b._uncond_bundle()["encoder_hidden_states"] is first

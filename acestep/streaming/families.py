@@ -120,7 +120,11 @@ def _make_minimax(ss):
         duration_s=float(init["duration_s"]),
         dit_backend=init.get("dit_backend", "eager"),
         codec_backend=init.get("codec_backend", "eager"),
-        steps=int(ss.config.steps),
+        # The family's own step floor, resolved at create (see
+        # minimax_session). SessionConfig.steps defaults to ACE's 8,
+        # which on this model is not a speed/quality trade-off so much
+        # as a broken render.
+        steps=int(init.get("steps") or ss.config.steps),
         depth=int(ss.state.current_depth),
         vae_window_s=float(ss.vae_window),
     )

@@ -77,6 +77,29 @@ MINIMAX_LATENT_RATE_HZ = float(MINIMAX_SAMPLE_RATE) / float(MINIMAX_UPSAMPLE)
 MINIMAX_AR_FRAME_RATE_HZ = 25.0
 MINIMAX_CHUNK_AR_FRAMES = 200
 
+# Sampler defaults, measured rather than inherited. The reference
+# pipeline runs 30 unwarped steps at guidance 1.7; that is 60 forwards
+# per generation, more than a real-time ring wants to spend. The grid in
+# ``scripts/minimax/minimax_quality_ablation.py`` says where the cost can
+# come off and where it cannot:
+#
+#   * Guidance is not optional. Unguided sampling plateaus at ~0.11
+#     log-mel from the reference and stays there through 40 steps; eight
+#     guided steps beat forty unguided ones. Dropping CFG is the single
+#     largest quality loss available on this model.
+#   * Step count trades against schedule warp almost one for one. The
+#     unwarped schedule needs 30 steps; warping toward the noise end
+#     buys back most of it, and (16 steps, shift 2.0) lands at log-mel
+#     0.032 / latent cosine 0.9993 against the reference for 32
+#     forwards -- close enough that the residual is bf16 rounding.
+#
+# Hence: 16 steps, shift 2.0, guidance 1.7. Raising steps toward 30 is
+# only worth it alongside lowering shift back toward 1.0; the two are a
+# matched pair, not independent quality dials.
+MINIMAX_DEFAULT_STEPS = 16
+MINIMAX_DEFAULT_SHIFT = 2.0
+MINIMAX_DEFAULT_GUIDANCE = 1.7
+
 
 def minimax_latent_frames(duration_s: float) -> int:
     """Latent frame count for ``duration_s`` of audio."""
@@ -107,13 +130,15 @@ def minimax_knob_specs(loras=()) -> list:
         ),
         KnobSpec(
             name="minimax_shift",
-            default=1.0,
+            default=MINIMAX_DEFAULT_SHIFT,
             min_val=0.25,
             max_val=4.0,
             group="minimax",
             description=(
                 "Schedule warp. >1 spends more steps near noise "
-                "(structure), <1 near the data (refinement)."
+                "(structure), <1 near the data (refinement). Matched to "
+                "the step count: the default 16 steps want 2.0, and 30 "
+                "steps want 1.0."
             ),
         ),
         KnobSpec(
@@ -126,6 +151,20 @@ def minimax_knob_specs(loras=()) -> list:
                 "How strongly the captured composition asserts itself. "
                 "Interpolates the AR conditioning toward zeros, which is "
                 "the model's own unconditional branch."
+            ),
+        ),
+        KnobSpec(
+            name="minimax_guidance",
+            default=MINIMAX_DEFAULT_GUIDANCE,
+            min_val=1.0,
+            max_val=3.0,
+            group="minimax",
+            description=(
+                "Classifier-free guidance scale, the reference "
+                "pipeline's own parameter. 1.0 turns guidance off and "
+                "halves the compute, but this model needs guidance more "
+                "than it needs steps -- unguided output plateaus well "
+                "short of the reference no matter how many steps it gets."
             ),
         ),
     ]
@@ -158,7 +197,7 @@ class MiniMaxBackend(DiffusionBackend):
         context=None,
         source_latent_bct: Optional[torch.Tensor] = None,
         duration_s: float = 8.0,
-        steps: int = 8,
+        steps: int = MINIMAX_DEFAULT_STEPS,
         depth: int = 4,
         vae_window_s: float = 0.36,
         seed: int = 1528,
@@ -187,6 +226,7 @@ class MiniMaxBackend(DiffusionBackend):
         self._cond_b = cond_b
         self._blend = 0.0
         self._active_cond = self._compose_cond(cond, cond_b, 0.0)
+        self._uncond_cache: Optional[torch.Tensor] = None
 
         self._schedule_builder_factory = schedule_builder_factory
 
@@ -237,7 +277,7 @@ class MiniMaxBackend(DiffusionBackend):
         state=None,
         source_latent_bct=None,
         duration_s: float = 8.0,
-        steps: int = 8,
+        steps: int = MINIMAX_DEFAULT_STEPS,
         depth: int = 4,
         vae_window_s: float = 0.36,
         dit_backend: str = "eager",
@@ -337,6 +377,32 @@ class MiniMaxBackend(DiffusionBackend):
         out["encoder_hidden_states"] = active["encoder_hidden_states"] * strength
         return out
 
+    def _uncond_bundle(self) -> dict:
+        """The model's unconditional branch: an all-zeros capture.
+
+        Cached on the instance because it is 689x2048 and identical
+        every tick, and because an accelerated wrapper's staging cache
+        is keyed by tensor identity -- a fresh ``zeros_like`` each tick
+        would miss it every time.
+
+        Note that ``minimax_cond_strength`` at 0.0 makes the positive
+        bundle equal to this one, at which point guidance is a no-op
+        rather than an error: the guidance direction around a point is
+        zero. That is a coherent operating point, not a trap.
+        """
+        zeros = self._uncond_cache
+        with self._control_lock:
+            cond = self._active_cond["encoder_hidden_states"]
+        if (
+            zeros is None
+            or zeros.shape != cond.shape
+            or zeros.dtype != cond.dtype
+            or zeros.device != cond.device
+        ):
+            zeros = torch.zeros_like(cond)
+            self._uncond_cache = zeros
+        return {"encoder_hidden_states": zeros}
+
     def handle_set_prompt(self, tags, *, tags_b=None) -> None:
         """Re-run the AR stage and swap the capture in.
 
@@ -424,7 +490,10 @@ class MiniMaxBackend(DiffusionBackend):
     # ---- produce -------------------------------------------------------------
 
     def _prepare_tick(self, knobs: dict, ctx: TickContext) -> dict:
-        shift = float(knobs.get("minimax_shift", 1.0) or 1.0)
+        shift = float(
+            knobs.get("minimax_shift", MINIMAX_DEFAULT_SHIFT)
+            or MINIMAX_DEFAULT_SHIFT
+        )
         if abs(shift - self.adapter.shift_alpha) > 1e-6:
             self.adapter.shift_alpha = shift
             self.pipeline.invalidate_schedule_cache()
@@ -438,6 +507,10 @@ class MiniMaxBackend(DiffusionBackend):
         return {
             "denoise": float(knobs.get("minimax_denoise", 1.0) or 1.0),
             "cond_strength": float(knobs.get("minimax_cond_strength", 1.0) or 1.0),
+            "guidance": float(
+                knobs.get("minimax_guidance", MINIMAX_DEFAULT_GUIDANCE)
+                or MINIMAX_DEFAULT_GUIDANCE
+            ),
             "x0_target": x0_strength,
             "seed": int(knobs.get("seed", self._seed) or self._seed),
             "feedback": float(knobs.get("feedback", 0.0) or 0.0),
@@ -483,11 +556,26 @@ class MiniMaxBackend(DiffusionBackend):
         if self._source_latent is None:
             denoise = 1.0
 
+        guidance = prep["guidance"]
         request = SlotRequest(
             seed=prep["seed"],
             denoise=denoise,
             source_latents=self._tapped_source(prep),
             aux_cond=self._cond_for_tick(prep["cond_strength"]),
+            # Guidance, the reference pipeline's way. Its negative branch
+            # is literally zeros, so the uncond bundle is free to build
+            # and exactly the one the model was trained against.
+            #
+            # apg_eta/apg_norm_threshold/apg_momentum reduce DEMON's APG
+            # to textbook CFG. That is not a stylistic preference: stock
+            # APG measures ~4x worse against the reference here, because
+            # its norm cap is calibrated for ACE's latent scale and
+            # throttles a 689-frame guidance delta almost to nothing.
+            neg_aux_cond=self._uncond_bundle() if guidance != 1.0 else None,
+            guidance_curve=guidance if guidance != 1.0 else None,
+            apg_momentum=0.0,
+            apg_eta=1.0,
+            apg_norm_threshold=0.0,
             latent_frames=self._latent_frames,
             # The morph target stays the CLEAN anchor, not the
             # feedback-blended source: x0_target is a source lock,

@@ -1,10 +1,19 @@
 # MiniMax-Music3 in DEMON
 
-**Verdict: it works, in real time, on a single 5090 — 38x realtime headroom in
-eager bf16, 61x with the TensorRT fp16 engine.** What is
-integrated is the model's *renderer*, not the whole model, and that
-distinction is the entire design. This document says why, what the
-numbers are, and what is not done yet.
+**Verdict: it works, in real time, on a single 5090 — 9.4x realtime
+headroom in eager bf16, 15.1x with the TensorRT fp16 engine, at output
+that matches the reference model's own trajectory to latent cosine
+0.9993.** What is integrated is the model's *renderer*, not the whole
+model, and that distinction is the entire design. This document says
+why, what the numbers are, and what is not done yet.
+
+> **Revised 2026-08-27.** The first version of this document claimed
+> 38x/61x. Those numbers were real but they were measured on a sampler
+> configuration that rendered badly: 8 steps with classifier-free
+> guidance switched off entirely, against a reference that runs 30
+> steps at guidance 1.7. Section 3a is the diagnosis and the corrected
+> operating point. The headroom figures throughout are now the ones
+> that come with reference-grade output.
 
 ---
 
@@ -46,7 +55,8 @@ whole model is not possible.
 The renderer is a different animal. One DiT forward at L=689 is
 **35.3 ms** in bf16. DEMON's loop does one batched forward per tick
 over `depth` slots and finishes a whole generation every `steps/depth`
-ticks — so the entire 8-second song is regenerated every ~0.21 s.
+ticks — so at the shipped 16 steps and depth 4 the entire 8-second song
+is regenerated every ~0.85 s eager, ~0.53 s on TensorRT.
 
 So: **run the AR stage once to fix a musical idea, then stream the
 renderer over it forever.** The conditioning becomes a captured
@@ -60,25 +70,99 @@ found arbitrary-WAV continuation losing to a trivial baseline, while
 
 ### Streaming (`scripts/minimax/minimax_stream_smoke.py`)
 
-Real backend, real `StreamPipeline`, real weights, depth 4 / steps 8:
+Real backend, real `StreamPipeline`, real weights, depth 4 / steps 16 /
+shift 2.0 / guidance 1.7, covering at denoise 0.6:
 
 ```
-ticks              188  (92 fresh generations)
-tick   median      104.4 ms   (p90 105.9)
-render median      0.1 ms
-peak / rms         0.6097 / 0.07551 (-22.4 dBFS)
-full generation every ~0.21s of compute for 8.0s of audio
-                                          = 38.3x realtime headroom
+                        eager bf16      TensorRT fp16
+tick median             212.1 ms        132.2 ms
+render median             0.0 ms          0.0 ms
+rms                     -18.4 dBFS      -18.2 dBFS
+full generation every     0.85 s          0.53 s
+realtime headroom          9.4x           15.1x
 ```
 
-Spectrally the output matches the reference model, and is nothing like
-noise:
+Guidance is what costs the headroom: it doubles the forwards per step.
+It is worth every one of them (§3a).
 
-| | centroid | flatness |
+## 3a. Sampler settings: the measurement that fixed the output
+
+The first version of this integration streamed at 8 steps with no
+guidance, and the result was the same song as the reference at
+noticeably worse quality. Nothing in the parity suite moved, because
+every gate there measures a single forward or a single trajectory
+against a stored latent — none of them measure the settings the ring
+buffer actually runs.
+
+`scripts/minimax/minimax_quality_ablation.py` is the instrument that
+does. It walks one variable at a time from ground truth outward (decode
+-> sampler -> step count -> guidance -> pipeline -> ring buffer) and
+scores each rung in both the latent and audio domains.
+
+**The A/B, at matched conditioning and matched noise:**
+
+| | latent cos | log-mel | left/right corr | RMS | >8 kHz energy |
+|---|---|---|---|---|---|
+| reference (diffusers) | 1.0 | 0 | +0.096 | -21.2 dB | 0.0041 |
+| 8 steps, no guidance | 0.744 | 0.244 | **-0.128** | **-30.7 dB** | **0.0193** |
+| **16 steps, shift 2.0, guidance 1.7** | **0.9993** | **0.032** | +0.101 | -21.1 dB | 0.0040 |
+
+The mechanism is legible in the last column: 4.7x the reference's
+above-8 kHz energy is undenoised residual, still sitting on the latent
+when the schedule runs out of steps. Because that residual is
+uncorrelated between channels it also inverts left/right correlation,
+which is why it read as phasey and hollow rather than simply quiet.
+
+**What the grid says, in order of size:**
+
+1. **Guidance is not optional, and it is worth more than steps.**
+   Unguided sampling plateaus at ~0.11 log-mel from the reference and
+   *stays there* — 40 unguided steps score worse than 8 guided ones.
+2. **Step count trades against schedule warp nearly one for one.** The
+   unwarped schedule needs the reference's 30 steps; warping toward the
+   noise end buys most of that back. The measured pairing is 30/1.0,
+   20/1.5, 16/2.0, 12/3.0. Lowering steps without raising shift gives
+   up most of what the steps were buying.
+3. **RCFG is unusable on this model.** Both StreamDiffusion modes were
+   measured: `initialize` (cache the uncond velocity from step 0)
+   scores 0.45-0.70 log-mel and `self` (uncond ~ initial noise) scores
+   0.52-0.92, against 0.03-0.12 for a real uncond pass. The uncond
+   velocity moves too much along the trajectory here to be approximated
+   away.
+4. **Stock APG is the wrong combine operator here** — ~4x worse than
+   textbook CFG (0.125 vs 0.032 log-mel at 16/2.0). Its `norm_threshold`
+   is calibrated for ACE's latent scale and throttles a 689-frame
+   guidance delta nearly to nothing. The backend therefore asks for
+   `apg_eta=1.0`, `apg_norm_threshold=0.0`, `apg_momentum=0.0`, which
+   reduces APG exactly to `v_u + w*(v_c - v_u)`.
+
+**16 steps / shift 2.0 / guidance 1.7 is statistically indistinguishable
+from the reference's own 30 / 1.0 / 1.7.** Over 8 independent noise
+draws, log-mel distance to the reference is 0.1631 for both (sd 0.005),
+as are RMS, high-frequency ratio and stereo width. The shipped setting
+costs nothing but 32 forwards instead of 60.
+
+### What was ruled out, with numbers
+
+Worth recording, because each was a plausible suspect:
+
+| suspect | measurement | verdict |
 |---|---|---|
-| reference (diffusers) | 4061 Hz | 0.305 |
-| **DEMON streamed** | **4249 Hz** | **0.281** |
-| white noise | 11989 Hz | 0.843 |
+| TensorRT engine | the degraded files were eager | not involved |
+| DAV decode / 44.1->48 kHz resample | decoding the reference's own final latent reproduces it exactly | clean |
+| ring buffer, crossfade, window placement | ring vs the same backend's whole-song render: rel RMS **0.0093**, log-mel 0.0011, and 0.000 in every second after the first | clean |
+| generations drifting apart across the ring | consecutive-generation cosine median **1.0000**, min 0.9824 over 43 covers | stable |
+| `StreamPipeline` solver vs a hand-written Euler loop | same noise, same settings: cos **0.9962** | equivalent |
+| the noise source | the reference's own `initial_noise` is iid N(0,1) to within a fresh `randn` control | correct |
+| the partial-denoise cover path | at denoise 0.6 a cover holds the anchor's balance to +0.24 dB RMS and 1.05x HF | clean |
+
+The one honest open observation: our takes average left/right
+correlation 0.43 (sd 0.15) while the single reference take sits at
+0.096. On the reference's *own* noise we reproduce its width exactly
+(0.098), so this is either take-to-take variance on a high-variance
+statistic or an upstream difference invisible from one reference
+sample. It needs more than one upstream render to call, and it is not
+the degradation that was being chased.
 
 ### Parity
 
@@ -142,13 +226,53 @@ because it re-runs the 8.58B LM (measured **14.8 s** for an 8 s span,
 
 **What survives:** everything DEMON steers solver-side lands in one
 tick via the shared-curve override — denoise, seed, the source lock,
-the feedback delay tap. Two knobs fall out of the architecture rather
+the feedback delay tap. Three knobs fall out of the architecture rather
 than being invented for it:
 
+- `minimax_guidance` is the reference pipeline's own CFG scale. 1.0
+  disables the negative pass and halves the compute; §3a says why that
+  is a bad trade on this model.
 - `minimax_cond_strength` interpolates the capture toward zeros, which
   is literally the model's own unconditional CFG branch, so 0.0 is a
-  defined operating point rather than an extrapolation.
-- Prompt blending slerps between two captures per frame.
+  defined operating point rather than an extrapolation. At 0.0 the
+  positive and negative bundles coincide and guidance becomes a no-op —
+  coherent, since the guidance direction around a point is zero.
+- `minimax_shift` warps the schedule. It is **not** an independent
+  quality dial: it is matched to the step count (30/1.0, 20/1.5,
+  16/2.0, 12/3.0), and moving one without the other gives up most of
+  what the other was buying.
+
+Prompt blending slerps between two captures per frame.
+
+### The seam change guidance needed
+
+`SlotRequest.neg_conditions` is ACE-shaped — a list of `SlotCondition`
+carrying `encoder_hidden_states` and a mask. A Tier-2 family keeps all
+of its conditioning in the opaque `aux_cond` bundle and so could not
+populate it, which meant **no `aux_cond` family could run CFG at all**,
+silently: `has_cfg` returned False, no negative pass was scheduled,
+nothing raised. That is how the first version shipped unguided.
+
+Two additions to the shared pipeline fix it, both defaulted so ACE and
+SA3 are byte-identical:
+
+- `SlotRequest.neg_aux_cond` — the negative branch of the bundle. The
+  negative forward pass now swaps it in. Sending `aux_cond` on both
+  passes would be the worse bug: `v_neg == v_pos`, APG returns `v_pos`,
+  and guidance costs a full extra forward per step while doing nothing.
+- `SlotRequest.apg_eta` / `apg_norm_threshold` — APG's two shape
+  parameters, per request, so a family can select the guidance operator
+  its model was actually trained with.
+
+`tests/unit/test_stream_aux_cfg.py` covers both, including the near
+miss and the "ACE is untouched" direction.
+
+SA3 is the other `aux_cond` family and also streams with no negative
+bundle, but that is deliberate rather than the same bug: its
+post-trained checkpoints are guidance-distilled and run `cfg_scale=1.0`
+by design (see the note in `sa3_adapter.py`). The distinction is worth
+keeping straight — the seam was missing a capability, and only one of
+the two families needed it.
 
 ## 5. TensorRT — built and measured
 
@@ -165,8 +289,15 @@ Built, gated, and streaming. **2.25x over eager bf16 at B=1.**
 | **TRT fp16** | **15.7** | **54.4** batched / 63.3 looped |
 
 Real depth-4 tick through the adapter: **64.0 ms vs 103.0 ms** eager
-bf16. End-to-end streaming with `--accel tensorrt`: **65.2 ms median
-tick, 61.4x realtime headroom** (eager bf16 is 104.3 ms / 38.3x).
+bf16. End-to-end streaming at the shipped settings (guidance on, so two
+passes per step): **132.2 ms median tick, 15.1x realtime headroom**
+against eager bf16's 212.1 ms / 9.4x.
+
+Known lever, not taken: `find_dit_engine` pins `batch=1` and the
+adapter loops the ring, so the b2-4 engine that is already built never
+gets used. Batched is 54.4 ms at B=4 against 63.3 looped, so this is
+worth roughly 15% of a tick. It needs `make_dit` to know the tick batch
+size, which is a seam change, and 15.1x realtime did not justify one.
 
 ### Parity — real fixture conditioning, never random
 
@@ -299,17 +430,34 @@ normalizes both fields rather than inserting them verbatim, and
 - Upstream has an open **long-horizon coherence bug** (coherent for
   ~15 s, then genre/timbre drift) and unreliable instrumental control.
   Neither affects the 8 s window this integration uses.
+- **Stereo width is one observation short of a conclusion.** Our takes
+  average left/right correlation 0.43 (sd 0.15 over 8 draws) against a
+  single reference take at 0.096 — which we reproduce exactly on that
+  take's own noise. Settling it needs several upstream renders, which
+  means the AR stage and a diffusers install, not just the renderer.
+- **The b2-4 TensorRT engine is built but never selected** (§5). Worth
+  ~15% of a tick; needs `make_dit` to learn the tick batch size.
 
 ## 8. Running it
 
 ```bash
-# Streaming proof from a saved capture
+# Streaming proof from a saved capture. The step / shift / guidance
+# defaults are the measured ones; add --accel tensorrt for the engine.
 .venv/Scripts/python.exe scripts/minimax/minimax_stream_smoke.py \
     --capture <models>/minimax/fixtures/minimax_music3_8s_seed7.safetensors \
-    --seconds 24 --steps 8 --depth 4 --out out/minimax_stream.wav
+    --seconds 24 --depth 4 --out out/v2_stream_eager.wav
+
+# Where the quality is and what it costs: the ablation ladder, the grid
+# that picked the defaults, then the cover path the ring actually runs
+.venv/Scripts/python.exe scripts/minimax/minimax_quality_ablation.py \
+    --fixture <models>/minimax/fixtures/minimax_music3_8s_seed7.safetensors \
+    --out-dir out/ablation
+... --out-dir out/ablation --sweep
+... --out-dir out/cover --cover-sweep
 
 # Prove a knob steers the stream live
 ... --sweep minimax_denoise --sweep-from 0.15 --sweep-to 0.95
+... --sweep minimax_guidance --sweep-from 1.0 --sweep-to 2.5
 
 # No capture needed: the model's own unconditional branch
 ... --uncond
