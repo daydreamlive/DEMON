@@ -85,6 +85,49 @@ realtime headroom          9.4x           15.1x
 Guidance is what costs the headroom: it doubles the forwards per step.
 It is worth every one of them (§3a).
 
+### Throughput, and what a 60 s generation would cost
+
+The family's unit is the 8.011 s song, so "generations per second" here
+counts 8 s of audio each. `scripts/minimax/minimax_length_bench.py`
+times one DiT forward across lengths and normalizes, so the number is
+comparable against a family with a different fixed duration.
+
+Eager bf16, 16 steps, guidance on (32 forwards per generation):
+
+| song | frames | B | ms/forward | ms/sample | vs linear | gen/s | 60 s-gen/s | xRT |
+|---|---|---|---|---|---|---|---|---|
+| 8 s | 689 | 1 | 36.1 | 36.1 | 1.00 | 0.86 | 0.115 | 6.9x |
+| 8 s | 689 | 4 | 103.6 | 25.9 | 0.72 | 1.21 | 0.161 | 9.7x |
+| 16 s | 1378 | 4 | 198.2 | 49.5 | 0.69 | 0.63 | 0.168 | 10.1x |
+| 30 s | 2583 | 4 | 353.3 | 88.3 | 0.65 | 0.35 | 0.177 | 10.6x |
+| 60 s | 5167 | 4 | 862.8 | 215.7 | 0.80 | 0.14 | 0.145 | 8.7x |
+
+**Sequence length is close to free.** `vs linear` is cost per frame
+normalized to the 8 s B=1 point; it stays at or *below* 1.0 out to 5167
+frames, so the attention term never takes over in this range — the
+short case is dispatch-bound and gets *more* efficient per frame as it
+grows. Normalized throughput is therefore roughly flat at **0.14-0.18
+sixty-second generations per second** across an 7.5x span of lengths,
+which makes it a compute roof rather than a length effect.
+
+The B=4 column is the one that matters: it is the ring at depth 4, and
+103.6 ms x 2 passes reproduces the measured 212.1 ms tick almost
+exactly, which says the tick is essentially pure DiT with no streaming
+overhead worth naming.
+
+Two things that number does **not** say:
+
+- **It is affordability, not quality.** The DiT is trained at 689
+  frames. Everything past that is out of distribution, and upstream has
+  an open long-horizon coherence bug (drift after ~15 s) on top.
+- **There is no TensorRT engine past 689.** Engines are built per length
+  profile and the shipped one is `l2_689_689`, so every row above 8 s is
+  eager. TRT is worth 1.6x at 8 s; whether it holds at 5167 frames is
+  unmeasured, because no such engine exists yet.
+
+A 60 s *composition* also costs an AR capture of 1500 frames at 0.54x
+realtime — about 111 s, once, before any of this runs.
+
 ## 3a. Sampler settings: the measurement that fixed the output
 
 The first version of this integration streamed at 8 steps with no
