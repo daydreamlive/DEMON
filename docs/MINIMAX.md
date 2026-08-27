@@ -136,9 +136,9 @@ control run produces output *uncorrelated* with the reference
 numeric gate for it rather than a listening test.
 
 **What you give up:** `set_prompt` is seconds, not one pipeline flush,
-because it re-runs the 8.58B LM (measured **14.7 s** for an 8 s span,
-23.7 GB peak). Duration is fixed per session at 8.011 s (689 latent
-frames), the span the DiT was trained on.
+because it re-runs the 8.58B LM (measured **14.8 s** for an 8 s span,
+17.3 GB peak, 0.54x realtime). Duration is fixed per session at
+8.011 s (689 latent frames), the span the DiT was trained on.
 
 **What survives:** everything DEMON steers solver-side lands in one
 tick via the shared-curve override — denoise, seed, the source lock,
@@ -194,12 +194,47 @@ FLOP-bound (CUDA graphs bought 3.3-4.1x upstream), so graph capture is
 the lever there, not quantization. Note a measured negative result:
 torchao fp8 weight-only was **2.1x slower** on Windows.
 
-## 6. Not done
+## 6. The capture stage
 
-- **The autoregressive capture stage** (`acestep/engine/minimax_ar.py`)
-  is in progress. Until it lands, sessions stream from a saved capture
-  (`DEMON_MINIMAX_CAPTURE`) or unconditioned. Free-text `set_prompt`
-  needs it.
+`acestep/engine/minimax_ar.py` turns a prompt into the only thing the
+DiT accepts. Qwen3 global LM through `transformers`, plus the RVQ depth
+decoder reimplemented in pure torch from its 47 safetensors keys
+(**bit-exact** against the reference at fp32 and bf16). Paged
+CPU<->CUDA around each capture so 17 GB does not sit on the card
+between compositions.
+
+Measured, 200 frames (8.0 s), seed 7: **14.8 s wall, 13.5 LM tok/s,
+0.54x realtime, 17.3 GB peak**, bit-identical across runs at a fixed
+seed. Profiled: LM decode 48.5 ms/frame (67%), depth decoder 21.1 ms
+(29%). The `lm_head` GEMV already runs near peak bandwidth, so the
+remaining ~37 ms is per-kernel dispatch across 36 layers of small ops.
+It is **dispatch-bound, not FLOP-bound** — CUDA graphs are the lever
+(worth roughly 2-3x upstream), not quantization.
+
+### The transformers trap
+
+`AutoConfig.from_pretrained` **succeeds** on this checkpoint under the
+pinned 4.57.6. That is the problem. The v5-style `rope_parameters` dict
+falls into `**kwargs`, is stashed as an inert attribute, and
+`rope_theta` silently keeps the 4.x default of **10000 instead of the
+checkpoint's 1000000**. Every position encoding in a 36-layer model
+would be wrong, with nothing raised — the model loads, runs, and
+produces confidently wrong audio.
+
+`load_qwen3_config` reads the JSON directly, remaps, and then *asserts*
+the value took. Each remap is gated on the installed signature so the
+shim retires itself when the pin moves.
+`tests/unit/test_minimax_ar_config.py` guards it, including a test that
+demonstrates the naive loader getting it wrong.
+
+    .venv/Scripts/python.exe scripts/minimax/minimax_capture.py         --prompt "driving instrumental darkwave, analog synth bass,                   tight gated drums, minor key, 124 bpm"         --lyrics "[instrumental]" --seconds 8 --seed 7         --out <models>/minimax/captures/darkwave_8s.safetensors
+
+Lyrics may not be empty; use `[instrumental]`. Note the reference
+normalizes both fields rather than inserting them verbatim, and
+**silently drops any lyric sharing a line with a leading `[tag]`**.
+
+## 7. Not done
+
 - **No TensorRT engine built** — the plan above is validated as far as
   ONNX export, not compiled.
 - **Not driven through `PipelineRunner` or the WS server.** The proof is
@@ -217,7 +252,7 @@ torchao fp8 weight-only was **2.1x slower** on Windows.
   ~15 s, then genre/timbre drift) and unreliable instrumental control.
   Neither affects the 8 s window this integration uses.
 
-## 7. Running it
+## 8. Running it
 
 ```bash
 # Streaming proof from a saved capture
@@ -241,7 +276,7 @@ copies (57.35 GB); only the diffusers layout is needed (**28.52 GB**).
 Skip `qwen_7B/`, `flowmatching_vae.pth`, `dav.pth` unless you are doing
 encoder work. Set `HF_HUB_DISABLE_SYMLINKS=1` on Windows.
 
-## 8. Licence
+## 9. Licence
 
 **MiniMax-Music3 Community License** — custom, not OSI. Commercial use
 is permitted with two conditions: display "MiniMax-Music3" prominently
