@@ -218,7 +218,10 @@ class MiniMaxContext:
         if capture is not None:
             return self.load_capture(capture)
         frame_hiddens = self._run_ar(
-            prompt=prompt, lyrics=lyrics, duration_s=duration_s,
+            # The tokenizer rejects an empty lyric outright; upstream's
+            # own convention for "no singing" is the tag, not "".
+            prompt=prompt, lyrics=lyrics or "[instrumental]",
+            duration_s=duration_s,
         )
         with torch.no_grad():
             cond = self._cond_encoder(

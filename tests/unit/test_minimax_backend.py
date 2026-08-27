@@ -309,3 +309,69 @@ def test_feedback_history_is_bounded():
     b = _backend(steps=2, depth=2)
     _run(b, 40)
     assert len(b._latent_history) <= b._max_feedback_depth
+
+
+# ---- construction ---------------------------------------------------------
+
+
+class _FakeContext:
+    """Minimal stand-in for MiniMaxContext's construction surface."""
+
+    device = "cpu"
+    dtype = torch.float32
+
+    def __init__(self):
+        self.prepared: list = []
+
+    def make_dit(self, *, latent_frames, backend="eager"):
+        return _FakeDit()
+
+    def make_codec(self, *, backend="eager"):
+        return _RampCodec()
+
+    def make_schedule_builder(self, cond, steps):
+        return lambda d: torch.linspace(float(d), 0.0, int(steps) + 1)
+
+    def prepare_cond(self, *, prompt, duration_s, lyrics="", capture=None):
+        self.prepared.append(prompt)
+        return _cond()
+
+
+def test_from_context_threads_the_context_through():
+    """handle_set_prompt has to re-run the AR stage, so it needs the
+    context. Losing it here fails only on the first prompt change,
+    which is a long way from where the mistake would be."""
+    ctx = _FakeContext()
+    b = MiniMaxBackend.from_context(
+        ctx,
+        cond=_cond(),
+        knob_state=KnobState(minimax_knob_specs()),
+        duration_s=DURATION_S,
+        steps=4,
+        depth=2,
+        vae_window_s=0.1,
+    )
+    assert b._context is ctx
+
+    b.handle_set_prompt("a different idea")
+    assert ctx.prepared == ["a different idea"]
+
+
+def test_prompt_swap_rejects_a_geometry_change():
+    """Duration is fixed for the session lifetime; a capture made at a
+    different length would silently break the ring buffer's T-coherence."""
+    ctx = _FakeContext()
+    b = MiniMaxBackend.from_context(
+        ctx,
+        cond=_cond(),
+        knob_state=KnobState(minimax_knob_specs()),
+        duration_s=DURATION_S,
+        steps=4,
+        depth=2,
+        vae_window_s=0.1,
+    )
+    ctx.prepare_cond = lambda **kw: {
+        "encoder_hidden_states": torch.zeros(1, T + 5, MINIMAX_COND_DIM)
+    }
+    with pytest.raises(ValueError, match="latent geometry"):
+        b.handle_set_prompt("wrong length")

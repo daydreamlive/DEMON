@@ -268,6 +268,7 @@ class MiniMaxBackend(DiffusionBackend):
             schedule_builder_factory=_factory,
             knob_state=knob_state,
             state=state,
+            context=context,
             source_latent_bct=source_latent_bct,
             duration_s=duration_s,
             steps=steps,
