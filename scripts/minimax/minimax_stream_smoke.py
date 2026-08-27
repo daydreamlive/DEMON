@@ -87,6 +87,12 @@ def main() -> int:
     ap.add_argument("--denoise", type=float, default=0.6,
                     help="cover strength once the anchor exists")
     ap.add_argument("--dtype", default="bfloat16", choices=("bfloat16", "float32"))
+    ap.add_argument("--sweep", default=None,
+                    choices=("minimax_denoise", "minimax_cond_strength",
+                             "minimax_shift", "feedback"),
+                    help="ramp this knob across the run to prove live steering")
+    ap.add_argument("--sweep-from", type=float, default=0.15)
+    ap.add_argument("--sweep-to", type=float, default=0.95)
     ap.add_argument("--out", default="out/minimax_stream.wav")
     args = ap.parse_args()
 
@@ -136,11 +142,17 @@ def main() -> int:
     render_ms: list = []
     fresh = 0
     written = 0
+    sweep_trace: list = []
 
     print(f"[stream] simulating {args.seconds}s at depth={args.depth} "
           f"steps={args.steps} denoise={args.denoise}")
     wall0 = time.perf_counter()
     while playhead < args.seconds:
+        if args.sweep:
+            frac = min(1.0, playhead / max(args.seconds, 1e-9))
+            val = args.sweep_from + frac * (args.sweep_to - args.sweep_from)
+            backend.knob_state.update({args.sweep: val})
+            sweep_trace.append((playhead, val))
         knobs = backend.read_knobs()
         ctx_t = TickContext(playhead_s=playhead % duration_s,
                             buffer_duration_s=duration_s)
@@ -190,6 +202,10 @@ def main() -> int:
           f"over {wall:.1f}s wall")
     print(f"  peak / rms         {peak:.4f} / {rms:.5f} "
           f"({20 * np.log10(max(rms, 1e-12)):.1f} dBFS)")
+    if sweep_trace:
+        lo, hi = sweep_trace[0], sweep_trace[-1]
+        print(f"  swept {args.sweep:22s} {lo[1]:.2f} -> {hi[1]:.2f} "
+              f"over {len(sweep_trace)} ticks")
     print(f"  wrote              {args.out}")
 
     if peak < 1e-4:
