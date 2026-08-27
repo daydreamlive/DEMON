@@ -147,10 +147,16 @@ class MiniMaxContext:
         return self._dit
 
     def make_codec(self, *, backend: str = "eager") -> MiniMaxCodec:
-        # The decoder is ~2% of the render budget on a 5090; there is no
-        # headroom worth an engine here yet.
+        # No TensorRT decoder engine exists yet. The earlier note here
+        # claimed the decoder was ~2% of the render budget, which was
+        # measured against a whole-song decode hidden behind a 0.0 ms
+        # median and was wrong by an order of magnitude. Windowed, it is
+        # ~6 ms of a 132 ms TensorRT tick -- 4.5%, of which roughly 3.5 ms
+        # is launch overhead an engine would cut. Worth building at the
+        # fixed 58-frame window shape; not worth blocking on. Note fp16
+        # is not an option: it produces all-NaN on this vocoder.
         if backend == "tensorrt":
-            logger.info("minimax_codec_eager reason=no_engine_needed")
+            logger.info("minimax_codec_eager reason=no_engine_built")
         return MiniMaxCodec(self._dav, device=self.device, dtype=self.dtype)
 
     # ---- conditioning --------------------------------------------------------

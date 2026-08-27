@@ -1,19 +1,37 @@
 # MiniMax-Music3 in DEMON
 
-**Verdict: it works, in real time, on a single 5090 — 9.4x realtime
-headroom in eager bf16, 15.1x with the TensorRT fp16 engine, at output
+**Verdict: it works, in real time, on a single 5090 — 9.5x realtime
+headroom in eager bf16, 15.2x with the TensorRT fp16 engine, at output
 that matches the reference model's own trajectory to latent cosine
 0.9993.** What is integrated is the model's *renderer*, not the whole
 model, and that distinction is the entire design. This document says
 why, what the numbers are, and what is not done yet.
 
-> **Revised 2026-08-27.** The first version of this document claimed
-> 38x/61x. Those numbers were real but they were measured on a sampler
-> configuration that rendered badly: 8 steps with classifier-free
-> guidance switched off entirely, against a reference that runs 30
-> steps at guidance 1.7. Section 3a is the diagnosis and the corrected
-> operating point. The headroom figures throughout are now the ones
-> that come with reference-grade output.
+Throughput, stated the way this project states it (`depth/(steps*tick)`,
+with the 60 s-normalized figure beside it because a "generation" is one
+whole song and the families' songs differ in length by 7.5x):
+
+| | gens/s | 60 s-gens/s | realtime |
+|---|---|---|---|
+| minimax, 8.0 s song, eager bf16 | 1.19 | 0.158 | 9.5x |
+| minimax, 8.0 s song, TRT fp16 | 1.90 | **0.253** | 15.2x |
+| minimax, 14.4 s song, eager bf16 | 0.80 | 0.192 | 11.5x |
+| *sa3 medium, 54 s song, TRT* | *~6.0* | *~5.4* | *~324x* |
+| *acestep turbo, 60 s song, TRT* | *11.3* | *11.3* | *~678x* |
+
+**This family is roughly 20-70x slower than its siblings in normalized
+terms, and that is structural rather than a missing optimization.** It
+spends 32 forwards per generation (16 steps x guidance) where ACE-Step
+turbo spends 8 and needs none, and its DiT is 2.43B undistilled. §3a is
+why the 32 cannot come down much without the output visibly degrading.
+
+> **Revised twice on 2026-08-27.** The first version claimed 38x/61x —
+> real measurements of a sampler configuration that rendered badly (8
+> steps, guidance off, against a reference running 30 steps at guidance
+> 1.7); §3a is that diagnosis. The second revision fixed a decode path
+> that was O(song length) rather than O(window), a duration that was
+> hard-coded on a false premise, and instrumentation that reported a
+> flat 0.0 ms for the cost it was hiding; §3b is that one.
 
 ---
 
@@ -74,21 +92,137 @@ Real backend, real `StreamPipeline`, real weights, depth 4 / steps 16 /
 shift 2.0 / guidance 1.7, covering at denoise 0.6:
 
 ```
-                        eager bf16      TensorRT fp16
-tick median             212.1 ms        132.2 ms
-render median             0.0 ms          0.0 ms
-rms                     -18.4 dBFS      -18.2 dBFS
-full generation every     0.85 s          0.53 s
-realtime headroom          9.4x           15.1x
+                     eager bf16   TRT fp16    eager, 14.4 s song
+tick median            210.9 ms   131.6 ms              312.7 ms
+render median            6.1 ms     6.2 ms                6.1 ms
+rms                  -18.4 dBFS -18.2 dBFS            -20.0 dBFS
+gens/s                   1.186      1.900                 0.799
+60 s-gens/s              0.158      0.253                 0.192
+realtime                  9.5x      15.2x                 11.5x
 ```
+
+Two things to read off the third column. Render cost is **identical at
+14.4 s and at 8 s**, which is the whole point of §3b — decode is now
+O(window), not O(song). And normalized throughput goes *up* slightly
+with length, consistent with the length sweep below: the short case is
+dispatch-bound.
 
 Guidance is what costs the headroom: it doubles the forwards per step.
 It is worth every one of them (§3a).
 
+## 3b. Song length, and the decode that assumed it was fixed
+
+Three claims in the first version of this file were wrong. All three
+came from treating 8 s as a property of the model.
+
+**"The DiT is trained on 200-AR-frame windows" — unsupported.** The
+number 200 is upstream's `_CHUNK_FRAMES`, an *inference* constant: it
+renders in 200-AR-frame windows on a 100-frame hop, splicing 172 latent
+frames of conditioning and carrying 172 latent frames between windows.
+`transformer/config.json` carries no `max_position_embeddings` (the RVQ
+depth decoder and the LM both do, so the absence is meaningful), RoPE is
+computed for whatever `seq_len` arrives, and there are no length
+assertions in either the diffusers or the reference implementation. No
+upstream source states a trained span.
+
+Measured here instead: a real 1240-frame capture renders in **one** DiT
+pass at 9.0x realtime, with RMS, high-frequency ratio and spectral
+centroid consistent across the song's first, middle and last thirds. It
+does not fall apart. Whether it is *as good* as chunk-and-carry at much
+longer spans is still unmeasured — that is an honest open question, not
+a limit.
+
+**"8.011 s" — arithmetic error.** 689 latent frames x 512 / 44100 =
+**7.99927 s**.
+
+**"The decoder is ~2% of the render budget" — wrong by an order of
+magnitude, and self-concealing.** It was a *whole-song* decode on every
+fresh latent: 44.5 ms at 8 s, and linear, so 346 ms at 60 s. Against a
+212 ms tick that is 21% on the tick it lands on and ~11 ms amortized —
+but it reported as `render median 0.0 ms`, because it fires on one tick
+in four and the median hides it. The backend also never assigned
+`last_dec_ms`, so the latency trace read a flat zero for the one cost
+that was growing.
+
+### What duration actually is
+
+**The autoregressive stage decides it.** `audio_duration` is a frame
+budget for the LM, which stops early on an end-of-audio token: asking
+this integration for 30 s returned a 14.4 s piece. So duration is
+requested (`SessionConfig.minimax_duration_s`) and then *adopted* from
+whatever the conditioning turns out to be. The previous code raised
+unless the capture was exactly 689 frames, which made every length but
+one unreachable.
+
+Bounds that are real: `MAX_AUDIO_FRAMES = 9000` (360 s) upstream, and
+the AR stage's 0.54x realtime — a 60 s composition costs ~111 s of
+one-time capture before any streaming starts.
+
+### Windowed decode
+
+Each `render_window` now decodes a fixed **58 latent frames** around the
+requested slice and keeps the middle. Two measurements size it, both in
+`scripts/minimax/minimax_decode_profile.py`:
+
+| guard (latent frames) | ms | mean rel err | peak rel err |
+|---|---|---|---|
+| 0 | 0 | 1.1e-2 | 1.8e0 |
+| 4 | 46 | 1.7e-3 | 2.0e-1 |
+| 8 | 93 | 5.6e-4 | 1.5e-2 |
+| **9** | **105** | **5.5e-4** | **4.4e-3** |
+| 16 | 186 | 5.5e-4 | 4.4e-3 |
+| 32 | 372 | 5.4e-4 | 3.9e-3 |
+
+Peak error reaches the fp32 floor at **9 frames** and is flat after. An
+analytic walk of the conv stack puts the one-sided field at 10. The
+shipped guard is **12**. (The control — decoding the full 689 frames and
+comparing against itself — is 0.0e0 everywhere, so the probe is sound.)
+
+The second measurement is a trap rather than a size. **44100:48000
+reduces to 147:160, and a latent frame is 512 native samples with
+gcd(512, 147) = 1** — so a frame boundary is *not* an integer delivery
+sample. Resampling a block that starts on one lands on a different
+sample phase than resampling the whole song does, and the window
+disagrees with the full decode by **1.8e-1 relative RMS**. Not a
+rounding detail; a misalignment. The block is trimmed forward to a
+multiple of 147 native samples before resampling, which makes the
+offset back into it exact integer arithmetic. SA3 hit this too and
+solves it identically with a 588-sample (4 x 147) guard.
+
+The decode span is 58 and not 56 because the kept span converts with
+floor on one end and ceil on the other: 0.36 s is 31.008 latent frames
+of audio but touches **33** of them at some start positions. Spot checks
+passed. A dense positional sweep did not, and is now a test.
+
+Result, verified across 59 windows spanning the song against a
+whole-song decode:
+
+| | before | after |
+|---|---|---|
+| per render | 0 ms (cached) + 44.5 ms spike per generation | **6.0 ms**, every render |
+| at 14.4 s | ~80 ms per generation | **6.1 ms** — identical |
+| at 60 s | ~346 ms per generation | 6 ms (unchanged) |
+| agreement with full decode | n/a | worst 1.4e-2 (-37 dB), bf16 decode noise |
+
+The guard wraps cyclically: at the song head the leading context comes
+from the tail, which is not an approximation because the ring loops and
+the tail is literally what plays into the head.
+
+### Two other defects the same audit turned up
+
+- **Depth was silently ignored.** `minimax_session` read
+  `pipeline_depth` off `SessionConfig`, which names the field `depth`.
+  `getattr` returned its literal default forever, so a client asking for
+  depth 8 got 4. SA3 reads the right field.
+- **The ring buffer was 34 samples too long.** It was sized
+  `round(duration * 48000)` while the resampler yields
+  `ceil(n * 160/147)`, so the last ~0.7 ms of every song was never
+  written. Both now come from `minimax_delivery_samples`.
+
 ### Throughput, and what a 60 s generation would cost
 
-The family's unit is the 8.011 s song, so "generations per second" here
-counts 8 s of audio each. `scripts/minimax/minimax_length_bench.py`
+The family's unit is one whole song, and the default is 7.999 s, so
+"generations per second" here counts 8 s of audio each. `scripts/minimax/minimax_length_bench.py`
 times one DiT forward across lengths and normalizes, so the number is
 comparable against a family with a different fixed duration.
 
@@ -264,8 +398,10 @@ numeric gate for it rather than a listening test.
 
 **What you give up:** `set_prompt` is seconds, not one pipeline flush,
 because it re-runs the 8.58B LM (measured **14.8 s** for an 8 s span,
-17.3 GB peak, 0.54x realtime). Duration is fixed per session at
-8.011 s (689 latent frames), the span the DiT was trained on.
+17.3 GB peak, 0.54x realtime). Duration is fixed for the session's
+lifetime — requested via `minimax_duration_s`, decided by the AR stage,
+adopted at create. It is not fixed at 8 s and never was a model limit
+(§3b).
 
 **What survives:** everything DEMON steers solver-side lands in one
 tick via the shared-curve override — denoise, seed, the source lock,
@@ -473,6 +609,19 @@ normalizes both fields rather than inserting them verbatim, and
 - Upstream has an open **long-horizon coherence bug** (coherent for
   ~15 s, then genre/timbre drift) and unreliable instrumental control.
   Neither affects the 8 s window this integration uses.
+- **Longer single-pass windows are unmeasured, not unavailable.** One
+  1240-frame render came out clean; upstream would have rendered the
+  same span as two 689-frame windows with a 172-frame carried overlap.
+  Which sounds better past ~15 s is an open question, and porting
+  upstream's chunk-and-carry is the fallback if single-pass degrades.
+- **No TensorRT decoder engine.** Windowed decode is ~6 ms of a 132 ms
+  TRT tick, of which roughly 3.5 ms is launch overhead an engine would
+  cut. The fixed 58-frame window is exactly the shape to build at. Note
+  fp16 is not an option — it produces all-NaN on this vocoder.
+- **The DiT engine is length-pinned.** `l2_689_689` serves only the
+  default song, so any other duration silently drops to eager. The
+  builder already takes `--min-latents/--max-latents`, so a ranged
+  engine is a build-flag change, not a code change.
 - **Stereo width is one observation short of a conclusion.** Our takes
   average left/right correlation 0.43 (sd 0.15 over 8 draws) against a
   single reference take at 0.096 — which we reproduce exactly on that

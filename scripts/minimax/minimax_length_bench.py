@@ -1,11 +1,13 @@
 """How the MiniMax-Music3 renderer scales with song length.
 
-The family ships a fixed 8.011 s song because that is the span the DiT
-was trained on (200 AR frames, 689 latent frames) and the span all
-three upstream implementations render. So "generations per second"
-quoted for this backend is always 8 s of audio per generation, and
-comparing it to a family whose unit is a minute needs either a
-normalization or an actual measurement at that length.
+The family's default song is 7.999 s (200 AR frames, 689 latent
+frames) because that is upstream's inference chunk size -- NOT a
+trained span; nothing upstream states one, and the DiT config carries
+no length bound. Sessions may run any length the autoregressive stage
+produces. So "generations per second" here counts one whole song of
+whatever that length is, and comparing it against a family whose unit
+is a minute needs either a normalization or an actual measurement at
+that length.
 
 This script is the measurement. It times one DiT forward across latent
 lengths, reports the throughput three ways -- forwards/s, 8 s
@@ -14,8 +16,11 @@ attention term stops being free.
 
 Two caveats it cannot measure and will not pretend to:
 
-* Beyond L=689 the model is out of its training distribution. A number
-  here says the arithmetic is affordable, NOT that the audio is good.
+* A number here says the arithmetic is affordable, NOT that the audio
+  is good. Upstream renders everything in 689-frame windows, so longer
+  single-pass spans are simply untested rather than known-bad -- one
+  1240-frame render measured clean, which is a data point and not a
+  result.
 * TensorRT engines are built per length profile. The shipped engine is
   ``l2_689_689``; anything longer runs eager here.
 
@@ -44,7 +49,9 @@ from acestep.engine.minimax_adapter import (  # noqa: E402
 from acestep.engine.minimax_context import get_minimax_context  # noqa: E402
 
 LATENT_RATE_HZ = float(MINIMAX_SAMPLE_RATE) / float(MINIMAX_UPSAMPLE)
-TRAINED_FRAMES = 689
+#: Upstream's inference window. Not a trained span -- see the module
+#: docstring and docs/MINIMAX.md section 3b.
+UPSTREAM_WINDOW_FRAMES = 689
 
 
 def frames_for(seconds: float) -> int:

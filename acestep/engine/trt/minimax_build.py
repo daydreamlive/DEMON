@@ -148,7 +148,7 @@ from acestep.engine.minimax_trt import (
     trt_engines_dir,
 )
 
-#: One 8.011 s session window: 200 AR frames at 25 Hz -> 689 latent
+#: One 7.999 s session window: 200 AR frames at 25 Hz -> 689 latent
 #: frames at 44100/512 Hz. The canonical profile.
 CANONICAL_LATENT_FRAMES = 689
 
@@ -590,7 +590,7 @@ def main() -> int:
                              "(default: the usual resolution order)")
     parser.add_argument("--latent-frames", type=int, default=CANONICAL_LATENT_FRAMES,
                         help=f"Session window in latent frames "
-                             f"(default: {CANONICAL_LATENT_FRAMES} = 8.011 s)")
+                             f"(default: {CANONICAL_LATENT_FRAMES} = 7.999 s). Sessions may now run any length, and an engine only serves the range its profile covers -- widen --max-latents to keep TensorRT on longer songs.")
     parser.add_argument("--min-latents", type=int, default=2,
                         help="Smallest latent length the profile covers "
                              "(must be >= 2; see export_dit_onnx)")
