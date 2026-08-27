@@ -45,12 +45,13 @@ from acestep.streaming.minimax_backend import (  # noqa: E402
     MINIMAX_DEFAULT_GUIDANCE,
     MINIMAX_DEFAULT_SHIFT,
     MINIMAX_DEFAULT_STEPS,
+    MINIMAX_LATENT_RATE_HZ,
     MiniMaxBackend,
+    minimax_delivery_samples,
     minimax_knob_specs,
     minimax_latent_frames,
 )
 from acestep.streaming.minimax_session import (  # noqa: E402
-    MINIMAX_DURATION_S,
     MINIMAX_VAE_WINDOW_S,
 )
 
@@ -85,6 +86,8 @@ def main() -> int:
                     help="stream the model's unconditional branch (zeros)")
     ap.add_argument("--seconds", type=float, default=20.0,
                     help="wall-clock seconds of streaming to simulate")
+    ap.add_argument("--duration", type=float, default=8.0,
+                    help="song length for --uncond; a capture brings its own")
     ap.add_argument("--steps", type=int, default=MINIMAX_DEFAULT_STEPS)
     ap.add_argument("--depth", type=int, default=4)
     ap.add_argument("--denoise", type=float, default=0.6,
@@ -110,8 +113,6 @@ def main() -> int:
         ap.error("pass --capture <path> or --uncond")
 
     dtype = torch.bfloat16 if args.dtype == "bfloat16" else torch.float32
-    duration_s = MINIMAX_DURATION_S
-    frames = minimax_latent_frames(duration_s)
 
     print(f"[load] context dtype={args.dtype}")
     t0 = time.perf_counter()
@@ -119,6 +120,7 @@ def main() -> int:
     print(f"[load] done in {time.perf_counter() - t0:.1f}s")
 
     if args.uncond:
+        frames = minimax_latent_frames(args.duration)
         cond = {
             "encoder_hidden_states": torch.zeros(
                 1, frames, 2048, device=ctx.device, dtype=ctx.dtype,
@@ -127,8 +129,13 @@ def main() -> int:
         print(f"[cond] unconditional zeros, {frames} frames")
     else:
         cond = ctx.load_capture(args.capture)
-        print(f"[cond] capture {args.capture}, "
-              f"{cond['encoder_hidden_states'].shape[1]} frames")
+        frames = int(cond["encoder_hidden_states"].shape[1])
+        print(f"[cond] capture {args.capture}, {frames} frames")
+
+    # Duration is whatever the conditioning turned out to be, not a
+    # constant: the autoregressive stage ends a piece when it ends it.
+    duration_s = frames / MINIMAX_LATENT_RATE_HZ
+    print(f"[song] {frames} latent frames = {duration_s:.3f}s")
 
     backend = MiniMaxBackend.from_context(
         ctx,
@@ -146,7 +153,7 @@ def main() -> int:
         "minimax_shift": args.shift,
     })
 
-    total = int(round(duration_s * DELIVERY_SAMPLE_RATE))
+    total = minimax_delivery_samples(frames)
     buf = np.zeros((total, 2), dtype=np.float32)
 
     # The runner's shape: a playhead advancing in real time, and a
@@ -211,6 +218,9 @@ def main() -> int:
 
     print()
     print(f"  ticks              {len(tick_ms)}  ({fresh} fresh generations)")
+    print(f"  song               {frames} frames / {duration_s:.3f}s  "
+          f"depth {args.depth} / steps {args.steps} / "
+          f"guidance {args.guidance} / {args.accel}")
     print(f"  tick   median      {med_tick:.1f} ms   "
           f"(p90 {np.percentile(tick_ms, 90):.1f})")
     print(f"  render median      {med_render:.1f} ms")
@@ -227,12 +237,20 @@ def main() -> int:
     if peak < 1e-4:
         print("\n  FAIL: output is silence")
         return 1
-    # A full generation lands every steps/depth ticks; that cadence is
-    # what has to outrun the playhead, not a single tick.
-    gen_s = med_tick * (args.steps / args.depth) / 1000.0
-    print(f"\n  full generation every ~{gen_s:.2f}s of compute for "
-          f"{duration_s:.1f}s of audio "
-          f"= {duration_s / max(gen_s, 1e-9):.1f}x realtime headroom")
+    # The project's throughput metric, taken from the ring's own
+    # identity: finished latents stream out at depth/steps generations
+    # per tick. A "generation" is one whole song, so the raw rate is not
+    # comparable across families whose songs differ in length -- publish
+    # the 60 s-normalized figure and the realtime factor beside it.
+    tick_s = med_tick / 1000.0
+    gens_per_s = args.depth / (args.steps * max(tick_s, 1e-9))
+    measured = fresh / max(wall, 1e-9)
+    print(f"\n  gens/s             {gens_per_s:.3f}   "
+          f"= depth/(steps*tick); measured {measured:.3f}")
+    print(f"  60s-gens/s         {gens_per_s * duration_s / 60.0:.3f}   "
+          f"<- the cross-family number; the raw rate is not comparable")
+    print(f"  realtime           {gens_per_s * duration_s:.1f}x   "
+          f"(a full generation every {1.0 / gens_per_s:.2f}s)")
     return 0
 
 

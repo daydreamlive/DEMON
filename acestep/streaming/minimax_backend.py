@@ -26,16 +26,27 @@ CFG branch, so 0.0 is a defined operating point, not an extrapolation),
 and prompt blending slerps between two captures per frame.
 
 Delivery is 48 kHz because ``pipeline_runner`` hardcodes it and never
-calls ``geometry()``. MiniMax is native 44.1 kHz. Unlike SA3 this
-backend can resample without a guard margin: its decoder is
-deterministic and cheap enough to decode the whole song at once, so the
-full 44.1 kHz render is resampled once and window rendering is pure
-indexing into the cached 48 kHz buffer. No window seams exist to fix.
+calls ``geometry()``. MiniMax is native 44.1 kHz, so every render
+crosses a resampler as well as a decoder, and both want a guard.
+
+Rendering is WINDOWED: each call decodes a fixed 56-frame span around
+the requested slice and keeps the middle. An earlier version decoded the
+whole song on every fresh latent and indexed into the result, which is
+O(song length) per generation where this is O(window) -- 44.5 ms against
+~5 ms at 8 s, and 346 ms against the same ~5 ms at 60 s. It also arrived
+as a spike on one tick in four, which the runner's lead controller reads
+as a longer inter-write interval and answers by inflating playback lead,
+coupling knob-to-ear latency to song duration. The decoder is
+deterministic (no inference-time noise to seed) and purely
+convolutional, so a guarded window is exact rather than approximate.
 """
 
 from __future__ import annotations
 
+import math
 import threading
+import time
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
@@ -69,13 +80,54 @@ DELIVERY_SAMPLE_RATE = 48000
 MINIMAX_LATENT_RATE_HZ = float(MINIMAX_SAMPLE_RATE) / float(MINIMAX_UPSAMPLE)
 
 # The AR stage emits 25 frames/s; the DiT latent runs at 86.133 Hz, so
-# each AR frame covers 3.4453 latent frames. Upstream renders in
-# 200-AR-frame windows (8.0 s = 689 latent frames) in all three of its
-# implementations, and the DiT is trained at that span — so it is the
-# natural song length for a session even though shorter spans are
-# mechanically legal.
+# each AR frame covers 3.4453 latent frames (441/128 exactly).
+#
+# Upstream renders in 200-AR-frame windows on a 100-frame hop, carrying
+# 172 latent frames of overlap between windows. That is an INFERENCE
+# CONTRACT, not a training span: the transformer config carries no
+# max_position_embeddings, its RoPE is computed for whatever length
+# arrives, and nothing upstream states a trained window. Treating 200 as
+# a model limit was an error this file used to make. It is the default
+# request only.
 MINIMAX_AR_FRAME_RATE_HZ = 25.0
 MINIMAX_CHUNK_AR_FRAMES = 200
+
+# --- windowed decode -------------------------------------------------------
+#
+# 44100 and 48000 reduce to 147:160. The consequence is load-bearing: a
+# latent frame is 512 native samples and gcd(512, 147) == 1, so a frame
+# boundary is NOT an integer delivery sample. Resampling a block that
+# starts on a frame boundary therefore lands on a different sample phase
+# than resampling the whole song does, and the window disagrees with the
+# full decode by up to half a sample -- which on broadband material is a
+# ~17% relative error, not a rounding detail. The fix is to trim the
+# decoded block forward to a multiple of 147 native samples so the
+# resampled block starts on an exact delivery sample. SA3 solves the same
+# problem the same way with its 588-sample (4 x 147) guard.
+_RESAMPLE_NUM = 160   # 48000 / gcd(44100, 48000)
+_RESAMPLE_DEN = 147   # 44100 / gcd(44100, 48000)
+
+# Measured, not guessed: scripts/minimax/minimax_decode_profile.py decodes
+# a slice, compares it against the same span of a full decode, and
+# profiles the error inward from the edge. Peak error reaches the fp32
+# floor (4.4e-3) at 9 latent frames and is flat thereafter; an analytic
+# walk of the conv stack puts the one-sided field at 10. 12 buys margin
+# over both, plus the sub-frame slack the 147-alignment trim needs, for
+# a few frames of decode nobody will notice.
+MINIMAX_VAE_GUARD_FRAMES = 12
+
+# Fixed decode span, the ACE pattern. A constant shape means a live
+# vae_window change can never shrink the guard below its converged floor,
+# and it is the shape a TensorRT decoder engine would be built at.
+#
+# 58 = 34 keep + 24 guard. The keep number is not the window's frame
+# count but its worst case: the span is converted with floor on one end
+# and ceil on the other, so a 0.36 s window (31.008 frames of native
+# audio) covers 33 frames when it starts just inside a frame boundary.
+# Sizing this to the average instead of the worst case fails on roughly
+# one start position in three, which is exactly the sort of thing that
+# survives a spot check and dies in a stream.
+MINIMAX_VAE_DECODE_FRAMES = 58
 
 # Sampler defaults, measured rather than inherited. The reference
 # pipeline runs 30 unwarped steps at guidance 1.7; that is 60 forwards
@@ -104,6 +156,107 @@ MINIMAX_DEFAULT_GUIDANCE = 1.7
 def minimax_latent_frames(duration_s: float) -> int:
     """Latent frame count for ``duration_s`` of audio."""
     return int(duration_s * MINIMAX_LATENT_RATE_HZ)
+
+
+def minimax_delivery_samples(latent_frames: int) -> int:
+    """Delivery-rate length of ``latent_frames``, the resampler's answer.
+
+    The single source of this number. It was previously derived twice --
+    once as ``round(duration_s * 48000)`` for the ring buffer and once
+    implicitly by the resampler -- which left the ring 34 samples longer
+    than any decode produced, so the song's last ~0.7 ms was never
+    written. ``torchaudio.functional.resample`` returns
+    ``ceil(n * new / orig)``; match it exactly rather than approximately.
+    """
+    native = int(latent_frames) * MINIMAX_UPSAMPLE
+    return -(-native * _RESAMPLE_NUM // _RESAMPLE_DEN)
+
+
+# One render window plus a full guard on each side. Below this a song
+# cannot fill a window without reading its own guard twice, and the
+# cyclic wrap stops being a margin and becomes the signal.
+MINIMAX_MIN_LATENT_FRAMES = MINIMAX_VAE_DECODE_FRAMES
+
+
+def minimax_max_vae_window_s(
+    decode_frames: int = MINIMAX_VAE_DECODE_FRAMES,
+    guard: int = MINIMAX_VAE_GUARD_FRAMES,
+) -> float:
+    """Widest wire slice the fixed decode span can serve with full guard.
+
+    Two frames of headroom rather than none: the kept span is converted
+    to frames with floor on one end and ceil on the other, so a window
+    whose native length is 31.008 frames can still touch 33 of them
+    depending on where it starts.
+    """
+    return (decode_frames - 2 * guard - 2) / MINIMAX_LATENT_RATE_HZ
+
+
+@dataclass(frozen=True)
+class DecodePlan:
+    """Where a windowed decode reads from and what it keeps.
+
+    Pure arithmetic, deliberately separated from the decode so it can be
+    tested exhaustively without weights -- the off-by-one that matters
+    here is a sample-phase error, which is invisible in a listening test
+    and expensive in a GPU one.
+
+    ``frame_start`` may be negative or run past the end of the song: the
+    guard wraps cyclically, because the ring buffer loops and the song's
+    tail genuinely is what plays into its head. Only the guard wraps --
+    the kept span is clamped to the song, and the runner asks for the
+    wrapped remainder in a separate call.
+    """
+    frame_start: int      # first latent frame to decode; wraps
+    frames: int           # always the fixed decode span
+    trim_native: int      # native samples dropped for 147-alignment
+    offset: int           # index into the resampled block where the keep starts
+    length: int           # delivery samples to keep
+
+
+def plan_decode_window(
+    start_48k: int,
+    length_48k: int,
+    total_frames: int,
+    *,
+    guard: int = MINIMAX_VAE_GUARD_FRAMES,
+    decode_frames: int = MINIMAX_VAE_DECODE_FRAMES,
+) -> DecodePlan:
+    """Plan a decode that serves ``[start_48k, start_48k + length_48k)``.
+
+    The kept span is converted to latent frames, padded to the fixed
+    decode span, trimmed forward to a 147-sample boundary so the
+    resample lands on the same phase grid a whole-song resample would,
+    and the offset back into the block is then exact integer arithmetic.
+    """
+    span = min(decode_frames, total_frames)
+    p0 = start_48k * _RESAMPLE_DEN / _RESAMPLE_NUM
+    p1 = (start_48k + length_48k) * _RESAMPLE_DEN / _RESAMPLE_NUM
+    keep0 = int(math.floor(p0 / MINIMAX_UPSAMPLE))
+    keep1 = int(math.ceil(p1 / MINIMAX_UPSAMPLE))
+    keep = keep1 - keep0
+    if keep + 2 * guard > span and total_frames > span:
+        raise ValueError(
+            f"window of {length_48k} delivery samples needs {keep} latent "
+            f"frames, which leaves less than {guard} frames of guard inside "
+            f"a {span}-frame decode; lower vae_window (max "
+            f"{minimax_max_vae_window_s(span, guard):.4f}s) or widen "
+            "MINIMAX_VAE_DECODE_FRAMES"
+        )
+
+    # The whole song fits inside one decode: no windowing to do, and
+    # anchoring at 0 keeps the offset arithmetic trivially exact.
+    f0 = 0 if total_frames <= span else keep0 - (span - keep) // 2
+
+    n0 = f0 * MINIMAX_UPSAMPLE
+    trim = (-n0) % _RESAMPLE_DEN
+    n0 += trim
+    # n0 is now a multiple of 147, so this is exact rather than rounded.
+    offset = start_48k - (n0 // _RESAMPLE_DEN) * _RESAMPLE_NUM
+    return DecodePlan(
+        frame_start=f0, frames=span, trim_native=trim,
+        offset=offset, length=length_48k,
+    )
 
 
 def minimax_knob_specs(loras=()) -> list:
@@ -261,6 +414,7 @@ class MiniMaxBackend(DiffusionBackend):
 
         self._pending_steps: Optional[int] = None
         self._last_request = None
+        self._last_prep: Optional[dict] = None
 
         self.pipeline = self._build_pipeline(self._steps)
 
@@ -504,7 +658,7 @@ class MiniMaxBackend(DiffusionBackend):
         # immediately even at depth 4.
         self.pipeline.set_shared_curve("x0_target_strength", x0_strength)
 
-        return {
+        prep = {
             "denoise": float(knobs.get("minimax_denoise", 1.0) or 1.0),
             "cond_strength": float(knobs.get("minimax_cond_strength", 1.0) or 1.0),
             "guidance": float(
@@ -516,6 +670,8 @@ class MiniMaxBackend(DiffusionBackend):
             "feedback": float(knobs.get("feedback", 0.0) or 0.0),
             "feedback_depth": int(knobs.get("feedback_depth", 1) or 1),
         }
+        self._last_prep = prep
+        return prep
 
     def _tapped_source(self, prep: dict) -> Optional[torch.Tensor]:
         """Anchor with the feedback delay tap applied.
@@ -610,9 +766,28 @@ class MiniMaxBackend(DiffusionBackend):
             self._latent_history.pop(0)
 
     def on_fresh_generation(self, knobs: dict) -> None:
-        # Per-generation params echo. Nothing family-specific to mirror
-        # yet; the runner calls this only on a fresh produce+render.
-        pass
+        """Mirror per-generation telemetry into session params.
+
+        ``num_gens`` and ``tick_ms`` ride the binary slice header, and
+        ``num_gens`` divided by wall time IS the throughput metric this
+        project reports. Not writing them left the family invisible to
+        every existing instrument -- and ``dec_ms`` in particular read a
+        flat 0.0, which is exactly how a whole-song decode stayed hidden
+        behind a 0.0 ms median render.
+        """
+        if self.state is None:
+            return
+        p = self.state.params
+        p["num_gens"] = p.get("num_gens", 0) + 1
+        p["tick_ms"] = self.last_tick_ms
+        p["dec_ms"] = self.last_dec_ms
+        prep = self._last_prep
+        if prep:
+            p["minimax_denoise"] = round(prep["denoise"], 2)
+            p["minimax_guidance"] = round(prep["guidance"], 2)
+            p["minimax_cond_strength"] = round(prep["cond_strength"], 2)
+            p["seed"] = prep["seed"]
+            p["steps_override"] = self._steps
 
     # ---- render --------------------------------------------------------------
 
@@ -639,13 +814,21 @@ class MiniMaxBackend(DiffusionBackend):
         return pcm
 
     @staticmethod
-    def _to_delivery(audio: torch.Tensor) -> np.ndarray:
-        """MiniMax-native 44.1 kHz ``[C, N]`` -> 48 kHz ``[N, C]`` float32."""
+    def _to_delivery(audio: torch.Tensor, *, trim_native: int = 0) -> np.ndarray:
+        """MiniMax-native 44.1 kHz ``[C, N]`` -> 48 kHz ``[N, C]`` float32.
+
+        ``trim_native`` drops samples from the head BEFORE resampling, so
+        the block starts on a 147-sample boundary and the resampler lands
+        on the same phase grid as a whole-song resample. See the note on
+        ``_RESAMPLE_DEN``.
+        """
         import torchaudio
 
         if audio.ndim == 3:
             audio = audio[0]
         audio = audio.detach().float().cpu()
+        if trim_native:
+            audio = audio[:, trim_native:]
         if audio.shape[0] == 1:
             audio = audio.repeat(2, 1)
         resampled = torchaudio.functional.resample(
@@ -653,18 +836,57 @@ class MiniMaxBackend(DiffusionBackend):
         )
         return resampled.transpose(0, 1).contiguous().numpy().astype(np.float32)
 
+    def delivery_samples(self) -> int:
+        """Length of the song in delivery samples."""
+        return minimax_delivery_samples(self._latent_frames)
+
     def render_window(self, t_start_s: float) -> Optional[AudioChunk]:
-        pcm = self._decoded()
-        if pcm is None:
+        """Decode ONLY this window, with a cyclic guard on each side.
+
+        The previous implementation decoded the whole song on every fresh
+        latent and indexed into the result. That is O(song length) per
+        generation where this is O(window): measured 44.5 ms against
+        ~5 ms at 8 s, and 346 ms against the same ~5 ms at 60 s. The
+        whole-song version also arrived as a spike on one tick in four,
+        which the runner's lead controller reads as a longer inter-write
+        interval and answers by inflating playback lead -- coupling
+        knob-to-ear latency to song duration, which is precisely what
+        the windowed contract exists to prevent.
+        """
+        latent = self._last_result_latent
+        if latent is None:
             return None
-        total = pcm.shape[0]
+        total_frames = int(latent.shape[1])
+        total = self.delivery_samples()
         start = int(round(float(t_start_s) * DELIVERY_SAMPLE_RATE))
         start = max(0, min(start, max(0, total - 1)))
-        length = int(round(self.vae_window * DELIVERY_SAMPLE_RATE))
-        end = min(total, start + max(1, length))
-        # .copy() is mandatory: the runner crossfades INTO the array we
-        # return, in place, and this one is our decode cache.
-        return AudioChunk(pcm=pcm[start:end].copy(), start_sample=start)
+        length = max(1, int(round(self.vae_window * DELIVERY_SAMPLE_RATE)))
+        # Only the guard wraps. The kept span stops at the song's end and
+        # the runner asks for the wrapped remainder in its own call.
+        length = min(length, total - start)
+
+        t0 = time.perf_counter()
+        plan = plan_decode_window(start, length, total_frames)
+        with torch.no_grad():
+            idx = torch.arange(
+                plan.frame_start, plan.frame_start + plan.frames,
+                device=latent.device,
+            ) % total_frames
+            # Engine layout [1, T, C] -> MiniMax-native [1, C, T].
+            sl = latent.index_select(1, idx).movedim(1, 2)
+            audio = self.codec.decode_full(sl)
+        pcm = self._to_delivery(audio, trim_native=plan.trim_native)
+        self.last_dec_ms = (time.perf_counter() - t0) * 1000.0
+
+        lo = max(0, min(plan.offset, pcm.shape[0]))
+        out = pcm[lo:lo + plan.length]
+        if out.shape[0] < plan.length:
+            # Only reachable at the tail of a song shorter than one decode
+            # span. Pad rather than short-return: the runner sizes its
+            # underrun arithmetic against vae_window.
+            out = np.pad(out, ((0, plan.length - out.shape[0]), (0, 0)))
+        # Owned array, always: the runner crossfades INTO what we return.
+        return AudioChunk(pcm=np.ascontiguousarray(out), start_sample=start)
 
     def render_full(self) -> Optional[AudioChunk]:
         pcm = self._decoded()

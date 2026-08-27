@@ -20,6 +20,8 @@ from acestep.streaming.generator_backend import TickContext
 from acestep.streaming.knobs import KnobState
 from acestep.streaming.minimax_backend import (
     DELIVERY_SAMPLE_RATE,
+    MINIMAX_VAE_DECODE_FRAMES,
+    plan_decode_window,
     MINIMAX_DEFAULT_GUIDANCE,
     MINIMAX_DEFAULT_SHIFT,
     MINIMAX_DEFAULT_STEPS,
@@ -47,11 +49,34 @@ class _FakeDit(torch.nn.Module):
 
 
 class _RampCodec:
-    """Deterministic decoder: a linear ramp over the whole song.
+    """Deterministic decoder over exactly the frames it is handed.
 
-    A ramp makes the resample-and-slice arithmetic checkable by eye —
-    the sample at song position p is p / total, so a window's first
-    value tells you exactly where it was cut from.
+    Length-aware on purpose: a decoder that ignored its input length
+    would hide the whole point of a windowed render, which is that the
+    backend asks for a slice and gets a slice.
+    """
+
+    def __init__(self):
+        self.decodes = 0
+        self.frames_seen: list = []
+
+    def decode_full(self, latent_bct):
+        self.decodes += 1
+        frames = int(latent_bct.shape[-1])
+        self.frames_seen.append(frames)
+        ramp = torch.linspace(0.0, 1.0, frames * 512)
+        return torch.stack([ramp, ramp], dim=0)
+
+
+class _PositionCodec:
+    """Stamps every output sample with the latent frame it came from.
+
+    Audio value at a sample IS the value of latent channel 0 at the
+    frame that produced it, so a caller can set the latent to a ramp of
+    frame indices and read straight off the returned audio which frames
+    the backend actually decoded. That is the property a windowed decode
+    has to get right and the one a whole-song decode gets right by
+    accident.
     """
 
     def __init__(self):
@@ -59,9 +84,9 @@ class _RampCodec:
 
     def decode_full(self, latent_bct):
         self.decodes += 1
-        n = int(round(DURATION_S * 44100))
-        ramp = torch.linspace(0.0, 1.0, n)
-        return torch.stack([ramp, ramp], dim=0)
+        v = latent_bct[0, 0].float()            # [frames]
+        aud = v.repeat_interleave(512)
+        return torch.stack([aud, aud], dim=0)
 
 
 def _cond(fill: float = 1.0) -> dict:
@@ -225,15 +250,57 @@ def test_step_change_signals_a_rebuild():
 
 
 def test_render_window_lands_at_the_requested_position():
+    """Reads the frames the request names, not merely some frames.
+
+    With ``_PositionCodec`` and a latent stamped with frame indices, the
+    returned audio says out loud which latent frames were decoded. This
+    is the assertion that catches a sample-phase error in the windowed
+    plan, which is otherwise inaudible in isolation and only shows up as
+    a seam after the runner has crossfaded over it.
+    """
+    b = _backend(steps=4, depth=2, vae_window_s=0.1, codec=_PositionCodec())
+    _run(b, 12)
+    stamp = torch.arange(T, dtype=torch.float32)
+    b._last_result_latent = stamp.view(1, T, 1).expand(1, T, C).contiguous()
+
+    for t in (0.0, 0.25, 0.5, 0.8):
+        chunk = b.render_window(t)
+        assert chunk is not None
+        assert chunk.start_sample == int(round(t * DELIVERY_SAMPLE_RATE))
+        assert chunk.pcm.shape[1] == 2
+        assert chunk.pcm.dtype == np.float32
+        want = t * MINIMAX_LATENT_RATE_HZ
+        assert float(chunk.pcm[0, 0]) == pytest.approx(want, abs=1.0), (
+            f"window at {t}s decoded frame {chunk.pcm[0, 0]:.1f}, "
+            f"expected ~{want:.1f}"
+        )
+
+
+def test_render_window_decodes_only_a_window():
+    """O(window), not O(song). The whole point of the change."""
+    codec = _RampCodec()
+    b = _backend(steps=4, depth=2, vae_window_s=0.1, codec=codec)
+    _run(b, 12)
+    codec.frames_seen.clear()
+    for t in (0.1, 0.4, 0.7):
+        b.render_window(t)
+    assert codec.frames_seen, "no decode happened"
+    assert set(codec.frames_seen) == {MINIMAX_VAE_DECODE_FRAMES}, (
+        f"decoded {codec.frames_seen} frames per render; a windowed "
+        f"backend decodes exactly {MINIMAX_VAE_DECODE_FRAMES} every time, "
+        f"and the song here is {T}"
+    )
+    assert MINIMAX_VAE_DECODE_FRAMES < T
+
+
+def test_render_window_publishes_its_decode_cost():
+    """Without this the latency trace reads a flat 0.0 ms and a decode
+    problem is invisible to every instrument in the project."""
     b = _backend(steps=4, depth=2, vae_window_s=0.1)
     _run(b, 12)
-    chunk = b.render_window(0.5)
-    assert chunk is not None
-    assert chunk.start_sample == int(round(0.5 * DELIVERY_SAMPLE_RATE))
-    assert chunk.pcm.shape[1] == 2
-    assert chunk.pcm.dtype == np.float32
-    # A ramp decoded and resampled: halfway through the song is ~0.5.
-    assert float(chunk.pcm[0, 0]) == pytest.approx(0.5, abs=2e-2)
+    b.last_dec_ms = 0.0
+    b.render_window(0.3)
+    assert b.last_dec_ms > 0.0
 
 
 def test_render_window_returns_a_copy_not_a_view():
@@ -247,19 +314,21 @@ def test_render_window_returns_a_copy_not_a_view():
     assert not np.allclose(second.pcm, -7.0)
 
 
-def test_decode_is_cached_per_latent():
-    codec = _RampCodec()
-    b = _backend(steps=4, depth=2, codec=codec)
+def test_guard_wraps_at_the_song_head():
+    """The leading guard at t=0 has to come from the song's tail.
+
+    The ring loops, so that is not an approximation — the tail is
+    literally what plays into the head. Zero-padding there instead would
+    put a decoder edge transient at the loop point, once per lap.
+    """
+    b = _backend(steps=4, depth=2, vae_window_s=0.1, codec=_PositionCodec())
     _run(b, 12)
-    b.render_window(0.05)          # first render pays for the decode
-    before = codec.decodes
-    assert before > 0
-    b.render_window(0.1)
-    b.render_window(0.2)
-    b.render_window(0.3)
-    # render_window is called up to twice per tick; a full decode per
-    # call would dominate the tick budget.
-    assert codec.decodes == before
+    stamp = torch.arange(T, dtype=torch.float32)
+    b._last_result_latent = stamp.view(1, T, 1).expand(1, T, C).contiguous()
+    plan = plan_decode_window(0, int(round(0.1 * DELIVERY_SAMPLE_RATE)), T)
+    assert plan.frame_start < 0, "head window did not reach back into the tail"
+    # And it still renders, rather than tripping an index error.
+    assert b.render_window(0.0) is not None
 
 
 def test_render_window_clamps_at_the_song_end():

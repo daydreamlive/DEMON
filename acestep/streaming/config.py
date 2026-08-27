@@ -71,6 +71,13 @@ class SessionConfig:
     # anchor); SA3 conditioning is captured per (prompt, duration), so
     # this is fixed for the session lifetime.
     sa3_duration_s: float | None = None
+    # --- minimax_* family fields ---
+    # Requested generation duration for minimax sessions, seconds. Only a
+    # REQUEST: MiniMax's autoregressive stage decides the real length by
+    # emitting an end-of-audio token, so asking for 30 s can legitimately
+    # yield 14 s. The session adopts whatever the conditioning turns out
+    # to be, and that becomes the song for its lifetime.
+    minimax_duration_s: float | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "SessionConfig":

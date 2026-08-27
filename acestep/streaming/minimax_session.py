@@ -36,16 +36,25 @@ from acestep.streaming.minimax_backend import (
     MINIMAX_AR_FRAME_RATE_HZ,
     MINIMAX_CHUNK_AR_FRAMES,
     MINIMAX_DEFAULT_STEPS,
+    MINIMAX_LATENT_RATE_HZ,
+    MINIMAX_MIN_LATENT_FRAMES,
+    minimax_delivery_samples,
     minimax_knob_specs,
-    minimax_latent_frames,
 )
 from acestep.streaming.source import SAMPLE_RATE
 from acestep.streaming.state import SessionState
 
-# The DiT is trained on 200-AR-frame windows; all three upstream
-# implementations render at exactly this span. Shorter is mechanically
-# legal but out of distribution, so it is the session length until
-# somebody measures otherwise.
+# The DEFAULT REQUEST, not a limit. Upstream renders in 200-AR-frame
+# windows, but that is its inference chunking contract -- the DiT config
+# carries no length bound, its RoPE is built for whatever arrives, and
+# nothing upstream states a trained span. Longer single-pass windows do
+# work (measured: 1240 frames renders coherently at 9x realtime with no
+# drift across the song).
+#
+# Duration is ultimately decided by the autoregressive stage, which
+# emits an end-of-audio token when the piece is done; ``config
+# .minimax_duration_s`` overrides this request, and the session adopts
+# whatever length actually comes back.
 MINIMAX_DURATION_S = MINIMAX_CHUNK_AR_FRAMES / MINIMAX_AR_FRAME_RATE_HZ  # 8.0
 
 MINIMAX_MAX_PIPELINE_DEPTH = 8
@@ -92,10 +101,10 @@ def create_minimax_session(
     dit_backend = _resolve_accel(decoder_backend, "dit")
     codec_backend = _resolve_accel(vae_backend, "codec")
 
-    duration_s = MINIMAX_DURATION_S
-    latent_frames = minimax_latent_frames(duration_s)
-    depth = int(getattr(config, "pipeline_depth", 4) or 4)
-    depth = max(1, min(depth, MINIMAX_MAX_PIPELINE_DEPTH))
+    # ``SessionConfig`` names this ``depth``; reading ``pipeline_depth``
+    # off it silently returned the literal default forever, so a client
+    # asking for depth 8 got 4. SA3 reads the right field.
+    depth = max(1, min(int(config.depth or 4), MINIMAX_MAX_PIPELINE_DEPTH))
 
     # ``SessionConfig.steps`` defaults to 8, which is ACE's number. On
     # this model 8 unwarped steps is not a cheaper render, it is an
@@ -116,30 +125,56 @@ def create_minimax_session(
     prompt = getattr(config, "prompt", "") or ""
     prompt_b = getattr(config, "prompt_b", None) or None
 
+    # Duration is REQUESTED here and DECIDED by the autoregressive stage.
+    # The LM emits an end-of-audio token when the piece is done, so asking
+    # for 30 s can legitimately return 14.4 s, and a saved capture is
+    # whatever length it was captured at. The session therefore adopts the
+    # conditioning's own length instead of asserting a constant -- the
+    # previous code raised on any capture that was not exactly 689 frames,
+    # which made every duration but one unreachable.
+    requested_s = float(getattr(config, "minimax_duration_s", 0.0) or 0.0)
+    requested_s = requested_s or MINIMAX_DURATION_S
     cond = context.prepare_cond(
-        prompt=prompt, duration_s=duration_s, capture=capture,
+        prompt=prompt, duration_s=requested_s, capture=capture,
     )
-    got = cond["encoder_hidden_states"].shape[1]
-    if got != latent_frames:
+    latent_frames = int(cond["encoder_hidden_states"].shape[1])
+    if latent_frames < MINIMAX_MIN_LATENT_FRAMES:
         raise ValueError(
-            f"minimax conditioning has {got} latent frames, session expects "
-            f"{latent_frames} ({duration_s}s). A capture must be made at the "
-            "session duration."
+            f"minimax conditioning is only {latent_frames} latent frames "
+            f"({latent_frames / MINIMAX_LATENT_RATE_HZ:.2f}s); the decoder "
+            f"needs at least {MINIMAX_MIN_LATENT_FRAMES} to fill one render "
+            "window with its guard margin"
         )
+    duration_s = latent_frames / MINIMAX_LATENT_RATE_HZ
+
     cond_b = (
         context.prepare_cond(prompt=prompt_b, duration_s=duration_s)
         if prompt_b and not capture
         else None
     )
+    if cond_b is not None and cond_b["encoder_hidden_states"].shape[1] != latent_frames:
+        # Both captures ride the same ring, so they must agree on T. The
+        # AR stage decides length independently per prompt, so this is a
+        # real possibility rather than a defensive check.
+        logger.warning(
+            "minimax_prompt_b_length_mismatch dropping b: {} != {}",
+            cond_b["encoder_hidden_states"].shape[1], latent_frames,
+        )
+        cond_b = None
     logger.info(
-        "minimax_session_cond frames={} capture={} depth={} steps={}",
-        got, capture or "<generated>", depth, steps,
+        "minimax_session_cond frames={} seconds={:.3f} requested={:.1f} "
+        "capture={} depth={} steps={}",
+        latent_frames, duration_s, requested_s,
+        capture or "<generated>", depth, steps,
     )
 
     # The audio ring is seeded with silence at the render geometry: the
     # upload cannot condition this model, so pretending it seeds the
     # song would be a lie the first generation immediately contradicts.
-    n_48k = int(round(duration_s * SAMPLE_RATE))
+    # Derived from the same function the backend renders against. Sizing
+    # this independently left the ring 34 samples longer than a decode
+    # ever produces, so the song's last ~0.7 ms was never written.
+    n_48k = minimax_delivery_samples(latent_frames)
     src_np = np.zeros((n_48k, 2), dtype=np.float32)
 
     virtual_knobs = KnobState(minimax_knob_specs())

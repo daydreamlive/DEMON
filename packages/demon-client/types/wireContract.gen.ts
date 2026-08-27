@@ -493,6 +493,7 @@ export interface SessionConfigPayload {
   client_id?: string | null;
   backend?: string;
   sa3_duration_s?: number | null;
+  minimax_duration_s?: number | null;
   // SessionConfig is permissive; extras pass through.
   [k: string]: unknown;
 }
