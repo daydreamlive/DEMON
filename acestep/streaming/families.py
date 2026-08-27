@@ -95,9 +95,41 @@ def _make_sa3(ss):
     )
 
 
+def _make_minimax(ss):
+    # Same contract as _make_sa3: the per-family create path
+    # (acestep.streaming.minimax_session) stashes the process-cached
+    # context plus the captured AR conditioning on the session, because
+    # neither can be rebuilt inside a tick — MiniMax's conditioning is
+    # an 8.58B LM pass, not an encoder call.
+    from acestep.streaming.minimax_backend import MiniMaxBackend
+
+    init = getattr(ss, "backend_init", None)
+    if not init or "context" not in init:
+        raise ValueError(
+            "backend 'minimax' requires the per-family create path "
+            "(acestep.streaming.minimax_session.create_minimax_session) "
+            "to stash its construction payload"
+        )
+    return MiniMaxBackend.from_context(
+        init["context"],
+        cond=init["cond"],
+        cond_b=init.get("cond_b"),
+        knob_state=ss.virtual_knobs,
+        state=ss.state,
+        source_latent_bct=init.get("source_latent_bct"),
+        duration_s=float(init["duration_s"]),
+        dit_backend=init.get("dit_backend", "eager"),
+        codec_backend=init.get("codec_backend", "eager"),
+        steps=int(ss.config.steps),
+        depth=int(ss.state.current_depth),
+        vae_window_s=float(ss.vae_window),
+    )
+
+
 FAMILIES = {
     "acestep": _make_acestep,
     "sa3": _make_sa3,
+    "minimax": _make_minimax,
 }
 
 # ---------------------------------------------------------------------------
@@ -111,6 +143,7 @@ CHECKPOINT_ALIASES = {
     "xl": ("acestep", "acestep-v15-xl-turbo"),
     "sa3-small": ("sa3", "small-music"),
     "sa3-medium": ("sa3", "medium"),
+    "minimax-music3": ("minimax", "MiniMaxAI/MiniMax-Music3"),
 }
 
 
@@ -132,6 +165,9 @@ def resolve_checkpoint(name: str) -> tuple:
 WARMUP_POLICIES = {
     "acestep": "ace_trt",
     "sa3": "none",
+    # Like SA3: the one-time cost is the model load, which the
+    # per-family create path process-caches.
+    "minimax": "none",
 }
 
 
@@ -205,10 +241,23 @@ def _sa3_knob_universe():
     return sa3_knob_specs(loras=["<lora_id>"])
 
 
+def _minimax_knob_universe():
+    from acestep.streaming.minimax_backend import minimax_knob_specs
+
+    return minimax_knob_specs(loras=["<lora_id>"])
+
+
 FAMILY_KNOB_UNIVERSES = {
     "acestep": _acestep_knob_universe,
     "sa3": _sa3_knob_universe,
+    "minimax": _minimax_knob_universe,
 }
+
+
+def _create_minimax_session(cls, **kwargs):
+    from acestep.streaming.minimax_session import create_minimax_session
+
+    return create_minimax_session(cls, **kwargs)
 
 
 def _create_sa3_session(cls, **kwargs):
@@ -224,6 +273,7 @@ def _create_sa3_session(cls, **kwargs):
 # session_id, **rest) -> StreamingSession``.
 SESSION_CREATORS = {
     "sa3": _create_sa3_session,
+    "minimax": _create_minimax_session,
 }
 
 
