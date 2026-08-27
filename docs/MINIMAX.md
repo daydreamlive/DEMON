@@ -1,7 +1,7 @@
 # MiniMax-Music3 in DEMON
 
-**Verdict: it works, in real time, on a single 5090, in eager bf16 —
-without TensorRT.** The measured headroom is ~38x realtime. What is
+**Verdict: it works, in real time, on a single 5090 — 38x realtime headroom in
+eager bf16, 61x with the TensorRT fp16 engine.** What is
 integrated is the model's *renderer*, not the whole model, and that
 distinction is the entire design. This document says why, what the
 numbers are, and what is not done yet.
@@ -150,49 +150,100 @@ than being invented for it:
   defined operating point rather than an extrapolation.
 - Prompt blending slerps between two captures per frame.
 
-## 5. TensorRT
+## 5. TensorRT — built and measured
 
-The renderer is unusually well-shaped for it, and none of the SA3
-plugin machinery is needed.
+Built, gated, and streaming. **2.25x over eager bf16 at B=1.**
 
-- **Export is already proven.** All three modules export via
-  `torch.onnx.export(dynamo=True)` with dynamic batch *and* dynamic
-  length.
-- **Static shapes.** A session is one 689-frame window, so a single
-  profile `{"hidden_states": (1,128,689), "timestep": (1,),
-  "encoder_hidden_states": (1,689,2048)}` covers it. No bank system, no
-  duration matrix.
-- **Reuse the generic builder verbatim.**
-  `acestep/engine/trt/sa3_build.py::_build_strongly_typed_engine`
-  has zero model knowledge — it needs only that profile dict.
-- **No plugins.** Self-attention only, no exotic ops, nothing like
-  SA3's `samel::diff_attn_swa`.
+### Latency, L=689, RTX 5090 (median ms/forward)
 
-**Precision — and this is a genuine correction to the SA3 lesson.**
-Measured per Euler step at L=689:
+| | B=1 | B=4 |
+|---|---|---|
+| eager fp32 (TF32 off) | 89.3 | 314.7 |
+| eager bf16 | 35.6 | 103.0 |
+| eager fp16 | 30.4 | 90.5 |
+| TRT fp32 | 45.1 | 182.1 (looped) |
+| **TRT fp16** | **15.7** | **54.4** batched / 63.3 looped |
 
-| | ms/step | SNR vs fp32 | Pearson r |
-|---|---|---|---|
-| fp32 | 178.7 | — | — |
-| bf16 | 70.4 | 29.3 dB | 0.999476 |
-| **fp16** | **60.7** | **48.7 dB** | **0.999993** |
+Real depth-4 tick through the adapter: **64.0 ms vs 103.0 ms** eager
+bf16. End-to-end streaming with `--accel tensorrt`: **65.2 ms median
+tick, 61.4x realtime headroom** (eager bf16 is 104.3 ms / 38.3x).
 
-fp16 is both faster *and* more accurate than bf16 here, so the
-fp16-mixed STRONGLY_TYPED recipe applies directly. **But the DAV
-vocoder in fp16 produces all-NaN output** — the decoder must stay
-fp32/bf16. Scope the "no fp16" rule to the decoder, not the DiT.
+### Parity — real fixture conditioning, never random
 
-Expected gain is ~1.5-2x on the DiT, taking the tick from ~105 ms to
-roughly 55-70 ms. Build it against a parity harness first, modelled on
-`scripts/sa3/sa3_trt_dit_cond_parity.py`, with the same bar
-(cos >= 0.9998/step on *real* conditioning — random-input cosine is a
-known false positive).
+Per-step vs eager fp32, bar cos >= 0.9998:
 
-The AR stage is not this toolchain's problem: it is a Qwen3 decode loop
-and belongs to TensorRT-LLM. It is also dispatch-bound rather than
-FLOP-bound (CUDA graphs bought 3.3-4.1x upstream), so graph capture is
-the lever there, not quantization. Note a measured negative result:
-torchao fp8 weight-only was **2.1x slower** on Windows.
+| t | TRT fp16 | rel RMS | TRT fp32 | rel RMS |
+|---|---|---|---|---|
+| 0.05 | 0.999988 | 4.81e-3 | 0.999999 | 1.64e-3 |
+| 0.30 | 0.999981 | 6.14e-3 | 0.999999 | 1.73e-3 |
+| 0.60 | 0.999981 | 6.19e-3 | 0.999998 | 1.77e-3 |
+| 0.95 | 0.999988 | 4.83e-3 | 0.999999 | 1.71e-3 |
+
+Both pass. Full 30-step CFG-1.7 trajectory vs the fixture's
+`final_latent`: TRT fp16 **0.999677**, TRT fp32 0.999641, eager fp32
+0.999642, eager bf16 0.999867.
+
+That bf16 number is a trap worth naming: the fixture is *itself* a bf16
+reference run, so eager bf16 scoring highest is agreement with its own
+quantization, not with ground truth. The gate grades against eager
+fp32 and prints bf16 for context only. Relatedly, **eager bf16 is not a
+usable parity reference on this model** — it only reaches cos
+0.998-0.9997/step against fp32, worst at t=0.30.
+
+### Engines
+
+fp16 4.88 GB / 44 s build / 5.08 GB VRAM / 2.0 s load; fp32 9.73 GB /
+51 s. ONNX export 76-78 s each. Built with
+`acestep/engine/trt/minimax_build.py`, reusing
+`sa3_build.py::_build_strongly_typed_engine` unchanged. No plugins.
+
+```bash
+.venv/Scripts/python.exe -m acestep.engine.trt.minimax_build --precision fp16
+.venv/Scripts/python.exe scripts/minimax/minimax_trt_parity.py
+```
+
+**Build on an idle GPU.** Engines built under contention succeed and
+then segfault on load; nothing in the codebase enforces this.
+
+### Things that cost a build attempt each
+
+- **Batch cannot be dynamic from 1.** `torch.export` 0/1-specializes,
+  and the `matmul` decomposition emits a `batch != 1` guard at
+  `proj_out`. A batch-dynamic export is only legal with `min_batch >=
+  2`, so production engines are batch-1 like SA3's and the adapter's
+  `trt_batch1` branch loops slots. The `b2_4` engine exists only to
+  measure the B=4 line and is excluded from discovery.
+- **Same trap on length**; profile min is 2.
+- **The "fp32" engine is really TF32** — TRT sets `BuilderFlag.TF32` by
+  default. Proven rather than assumed: eager TF32 vs strict eager fp32
+  deviates by exactly the amount the engine does (1.64-1.77e-3 across
+  the four t values). So its apparent 2x over eager fp32 is 1.23x over
+  an eager TF32 baseline. It is a control, not a candidate.
+
+### Precision, and the RoPE question
+
+fp16 is both faster *and* more accurate than bf16 on this DiT in eager
+(60.7 ms/step at 48.7 dB SNR vs 70.4 at 29.3), so fp16-mixed
+STRONGLY_TYPED was the target and it cleared the bar.
+
+The SA3 failure mode — bf16 RoPE rotation angles reaching thousands of
+radians where the spacing is ~32 rad — does not occur here.
+`_rope_tables` already pins `arange`/`inv_freq` to fp32 regardless of
+module dtype, and the TRT path keeps the **rotation itself** in fp32
+rather than casting the table down. The exported graph confirms it:
+fp32 `Range`/`Cos`/`Sin`, 147 fp32 `Mul` + 72 fp32 `Neg` (the rotation
+island), 72 fp32 `LayerNormalization`, fp32 time-embed `Gemm`s, 290
+fp16 trunk `MatMul`, fp32 IO. The builder asserts the fp32 tables so an
+edit that drops the `.float()` fails the build rather than shipping
+half-radian rotations.
+
+The fp16 error is **flat in t** (4.8e-3 at the ends, 6.2e-3 mid), which
+is trunk quantization rather than an angle problem. Attention softmax
+was left in fp16 and cleared the bar, so no island was added there —
+forcing it fp32 cost SA3 4.3x for nothing.
+
+**Do not try fp16 on the DAV vocoder** — measured all-NaN. The decoder
+stays fp32/bf16.
 
 ## 6. The capture stage
 
@@ -234,9 +285,6 @@ normalizes both fields rather than inserting them verbatim, and
 **silently drops any lyric sharing a line with a leading `[tag]`**.
 
 ## 7. Not done
-
-- **No TensorRT engine built** — the plan above is validated as far as
-  ONNX export, not compiled.
 - **Not driven through `PipelineRunner` or the WS server.** The proof is
   at the backend level: the real `StreamPipeline`, the real produce /
   render loop, the real crossfade. Session creation, `families.py`

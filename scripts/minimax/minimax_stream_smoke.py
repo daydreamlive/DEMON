@@ -93,6 +93,9 @@ def main() -> int:
                     help="ramp this knob across the run to prove live steering")
     ap.add_argument("--sweep-from", type=float, default=0.15)
     ap.add_argument("--sweep-to", type=float, default=0.95)
+    ap.add_argument("--accel", default="eager",
+                    choices=("eager", "tensorrt"),
+                    help="renderer backend; tensorrt needs a built engine")
     ap.add_argument("--out", default="out/minimax_stream.wav")
     args = ap.parse_args()
 
@@ -128,6 +131,7 @@ def main() -> int:
         steps=args.steps,
         depth=args.depth,
         vae_window_s=MINIMAX_VAE_WINDOW_S,
+        dit_backend=args.accel,
     )
     backend.knob_state.update({"minimax_denoise": args.denoise})
 
@@ -145,7 +149,7 @@ def main() -> int:
     sweep_trace: list = []
 
     print(f"[stream] simulating {args.seconds}s at depth={args.depth} "
-          f"steps={args.steps} denoise={args.denoise}")
+          f"steps={args.steps} denoise={args.denoise} accel={args.accel}")
     wall0 = time.perf_counter()
     while playhead < args.seconds:
         if args.sweep:
