@@ -1,21 +1,26 @@
 # MiniMax-Music3 in DEMON
 
 **Verdict: MiniMax-Music3 is an autoregressive model that already
-streams natively, and DEMON now drives its own loop rather than
-converting it into a one-shot model. On a 5090 the combined pipeline
-runs at 0.54x realtime, so it does not sustain live playback — the
-bottleneck is the 8.58B language model at 0.75x realtime, not the
-renderer at 7.8x. Live steering works, at a knob-to-ear of seconds
+streams natively, and DEMON drives its own loop, as one CUDA graph per
+frame over a static KV cache. On a 5090 the combined pipeline runs
+above realtime: the 8.58B language model at 1.54x in-session, the
+renderer at 7.8x, steady state ~1.3x at the default hop, first audio
+~6 s after create. Live steering works, at a knob-to-ear of seconds
 rather than the ~60-230 ms the diffusion families reach.**
 
 This document replaces an earlier one that reported 9.5-16.7x realtime
 and a 20-70x deficit against the other families. Both were wrong, in
 opposite directions, and for the same reason: they measured the
-*renderer* and never the *model*. §5 is the accounting.
+*renderer* and never the *model*. A second version then measured the
+model through a plain torch loop and reported 0.54x, called it "flat in
+context length", and attributed a co-residency penalty to cache
+eviction; §3 corrects all three. §5 is the accounting.
 
 > **Scope.** This family is a backend-generality demonstration. Stable
-> Audio 3 is the model that matters. Nothing here is optimized for
-> speed, and no distillation is proposed.
+> Audio 3 is the model that matters. No distillation and no quantization
+> is proposed. The one speed change made (§3, the AR loop as a CUDA
+> graph) is what the model's own serving stack does and is what it takes
+> for the family to keep up with a playhead at all.
 
 ---
 
@@ -151,39 +156,66 @@ Measured on an RTX 5090, TensorRT fp16 renderer, bf16 AR stage.
 
 | stage | rate | realtime | script |
 |---|---|---|---|
-| **AR emission** | **53.6 ms/frame** | **0.75x** | `minimax_ar_bench.py` |
+| **AR emission, graphed session** (the backend's path) | **25.7 ms/frame** at the full 9600-slot cache, 23.2 ms at 820 | **1.56x** (1.72x) | `minimax_ar_bench.py --graph` |
+| AR emission, plain loop | 52.1 ms/frame at the start of a piece | 0.77x, falling with length | `minimax_ar_bench.py` |
 | chunk render, TRT fp16 | 513 ms / 4.0 s commit | 7.8x | `minimax_stream_bench.py` |
 | chunk render, eager bf16 | 841 ms / 4.0 s commit | 4.8x | `minimax_stream_bench.py` |
 | guarded decode | ~6 ms/window | — | `minimax_decode_profile.py` |
 
-AR cost is **flat in context length** — 56.4 ms over frames 0-50 and
-52.7 ms over frames 250-300, across a 300-frame run. Attention over the
-growing KV cache is not a factor at these lengths; the cost is 36 layers
-of small ops at batch 2 plus seven depth-decoder forwards, per frame.
+The plain loop is **not flat in context length**, which an earlier
+version of this document claimed from a 300-frame run. Its single-token
+LM forward alone measures **36.7 / 40.0 / 58.6 / 77.7 ms** at 0 / 3000 /
+6000 / 9000 frames of history (`minimax_graph_spike.py --long-context`),
+so a piece that starts at 0.77x is near 0.43x by its sixth minute. The
+graphed session attends its whole preallocated cache on every frame, so
+its cost is the same at frame 1 and frame 9000 by construction: 25.7 ms
+with 9600 slots, 22.7 ms with 1024.
 
 ### Both together, which is not what the parts predict
 
-Session means over 70-100 s runs, TensorRT:
+Session means, TensorRT, graphed AR, eager DiT parked, `--lead 1000` so
+pacing never throttles the worker:
 
-| | hop=100 (default) | hop=25 |
+| | hop=100 (default) | hop=50 |
 |---|---|---|
-| **end-to-end** | **0.54x realtime** | **0.48x realtime** |
-| audio committed / wall | 53.8 s / 100 s | 33.8 s / 70 s |
-| AR, co-resident | 57-61 ms/frame (0.65-0.70x) | 54.2 ms/frame (0.74x) |
-| chunk render, co-resident | 855-1030 ms per 4.0 s | 518 ms per 1.0 s |
-| first audio | 11.7 s | 11.6 s |
+| **end-to-end, steady state** (from the means below) | **1.29x realtime** | **1.10x realtime** |
+| end-to-end over the run, first-window fill included | 1.23x (41.8 s in 34.0 s; 73.8 s in 60.0 s) | 1.03x (41.8 s in 40.5 s) |
+| AR, co-resident | 25.9-26.0 ms/frame (**1.54x**) | 26.0 ms/frame (1.54x) |
+| chunk render, co-resident | 510-515 ms per 4.0 s | 514 ms per 2.0 s |
+| first audio | 5.9-6.0 s | 6.0 s |
+| VRAM in use, whole session | 28.7 GB of 32.6 | 28.4 GB |
 
-**Co-residency lands on the render, and it scales with how long the AR
-runs between renders.** At the default hop the worker writes 100 AR
-frames — about 6 s of language model — between DiT turns, and the chunk
-render roughly doubles (513 → ~1030 ms) because the DiT's weights are
-gone from cache by the time it runs again. At hop=25 the renders are
-frequent enough to stay warm and come in at 518 ms, which is their
-isolated speed.
+The AR stage runs at its isolated speed and so does the render: with the
+memory headroom restored there is no co-residency penalty left to
+report. The run-level figures are below steady state because a piece
+starts with a 200-frame fill (~5 s) before anything renders, and the
+bench's default prompt and seed end their piece at frame 1174, 47 s of
+audio, so the fill is a large share of a short run. Under the old
+default `--lead 8.0` the worker idles once the frontier is 8 s ahead of
+the playhead, which it now reaches; the pacing, not the model, then
+sets the rate.
 
-So benchmarking either stage alone overstates the pipeline, and
-benchmarking with a hop that does not match production overstates it
-again. That is the same trap the previous document fell into, at a
+Earlier versions of this table (0.54x at hop 100, 0.48x at hop 25) were
+the plain loop with the eager DiT resident: paging, described below.
+
+**The co-residency penalty was VRAM paging, and an earlier version of
+this document misattributed it.** It said the DiT's weights were "gone
+from cache" between renders; a 5090's L2 is 96 MB and the DiT is 4.9 GB,
+so that was never a mechanism. What was happening: the context loaded
+the eager bf16 DiT onto the card and *kept it there* while the TensorRT
+engine did the rendering, so the LM (17.2 GB), the KV cache, both copies
+of the DiT (4.9 GB each), the codec and the desktop sat at **32.1 GB of
+32.6** for the whole session (`nvidia-smi`, polled every 4 s), and WDDM
+paged weights across PCIe under both stages with nothing in the logs to
+say so. With the graphed AR's 2.8 GB static cache on top it got worse,
+not better: 69 ms per AR frame in-session against 23 ms alone, 1106 ms
+per chunk against 513, first audio at 27.9 s. Shrinking the cache to
+2000 frames alone brought first audio to 5.5 s. The eager DiT is now
+parked on the host whenever the engine serves.
+
+So benchmarking either stage alone overstates the pipeline, and a
+co-residency number is meaningless without the card's memory headroom
+next to it. That is the same trap the previous document fell into, at a
 larger scale.
 
 These are session means. The per-sample values wander by ~15% run to
@@ -220,47 +252,100 @@ halves of that say different things:
   sequence length of one, ~460 GEMMs, plus seven depth-decoder forwards
   and eight sampled codes, all per 40 ms of audio.
 
-**0.75x is a property of this dependency-free reimplementation, not a
-measurement of the model's ceiling.** Upstream serves this checkpoint
-through SGLang-Omni; the checkpoint ships only an HTTP client for it.
+**0.77x is a property of the plain torch loop, not of the model.**
+Upstream serves this checkpoint through SGLang-Omni, which replays the
+decode step as a CUDA graph; the checkpoint ships only an HTTP client
+for it.
 
-### Would a bigger card fix it? Probably not.
+### Would a bigger card have fixed the plain loop? No.
 
 A faster GPU scales only the busy 22 ms; the dispatch gap is CPU-side
-and does not move. Scaling by memory bandwidth alone:
+and does not move. Scaling by memory bandwidth alone: H100 PCIe
+(2.0 TB/s) 0.73-0.79x, H100 SXM (3.35 TB/s) 0.86-0.95x for the AR stage
+alone, before the renderer's share and before co-residency, so still
+short end to end — and generous, since the projection assumes 86% of
+peak holds on HBM3 and ignores that H100 SXM clocks lower than a 5090.
+Removing the gap instead was worth 1.79x on the card in hand. So that is
+what was done.
 
-| | AR stage alone |
-|---|---|
-| RTX 5090 (1.79 TB/s), measured | 0.75x realtime |
-| H100 PCIe (2.0 TB/s), projected | 0.73-0.79x |
-| H100 SXM (3.35 TB/s), projected | **0.86-0.95x** |
-| **5090 with the gap removed (CUDA graphs)** | **1.79x** |
+### The lever, taken: one CUDA graph per frame
 
-An H100 SXM lands the AR stage just under realtime *before* the renderer
-takes its ~12% and before co-residency takes its share, so end to end it
-would sit around **0.8-0.9x** — closer, still short. Two caveats in the
-same direction: the projection assumes the kernels hold ~86% of peak on
-HBM3, and H100 SXM clocks lower than a 5090 (~1.76 GHz vs ~2.4 GHz), so
-the dispatch gap would if anything widen.
+`acestep/engine/minimax_ar_graph.py` captures the whole frame — feedback
+embedding, LM step, head, guided sampling, seven depth-decoder forwards,
+seven more samples, next feedback — as one graph and replays it. The
+frame's ~3900 launches become one. Two things had to be true for that to
+pay, and both were measured rather than assumed
+(`scripts/minimax/minimax_graph_spike.py`):
 
-**The lever is CUDA graphs on the AR decode loop, not the GPU** — and it
-works on hardware already in hand. Deliberately not taken here: this
-family is a backend-generality demonstration, and the brief was not to
-optimize for speed.
+**The static cache must not cost what the graph saves.** A graph needs
+fixed addresses, so the KV cache is preallocated to the session's length
+(`StaticCache`, 9600 slots for the 9000-frame ceiling). Through HF's
+own attention that cache is ruinous:
+
+| static cache slots | HF sdpa, graphed | grouped-query `bmm`, graphed |
+|---|---|---|
+| 512 | 24.0 ms | — |
+| 1024 | 26.0 ms | **22.7 ms** |
+| 2048 | 29.9 ms | — |
+| 4096 | 36.8 ms | 32.4 ms (efficient kernel) |
+| 9600 | 55.6 ms | **25.7 ms** |
+
+HF's sdpa path spends ~3.7 ms per 1024 padded slots per frame: with a
+mask present it cannot use SDPA's native GQA, so `repeat_kv` materialises
+the padded K/V four times over in every layer, then a mask-bearing kernel
+reads all of it. SDPA's memory-efficient kernel on the un-expanded K/V is
+no better at a query length of one (0.64 ms per layer at 9600 slots
+against a 0.044 ms bandwidth floor): one CTA per (batch, head) walks
+every slot. The decode attention that ships folds the four query heads
+sharing a KV head into the query's row axis and does the two matmuls as
+`bmm` with an fp32 result — 0.072 ms per layer, so the whole 9600-slot
+cache costs ~3 ms per frame rather than ~23.
+
+**The result must match the plain path.** Teacher-forcing the graphed
+session's codes back through the dynamic cache and comparing LM hidden
+states frame by frame: worst cos **0.99983** over 48 frames. HF's own
+eager attention against its sdpa, on the same dynamic path: 0.99967. The
+graphed path is inside the noise of a kernel swap.
+
+What changes for an operator: nothing in the interface. Sampling
+controls become device scalars, so a knob move is a buffer write and
+never a recapture; `top_k` derives its threshold from a sort for the
+same reason. What is not preserved is the exact random draws — a captured
+`multinomial` runs on graph-owned philox offsets, so a seed reproduces a
+graphed session against another graphed session, not against the plain
+loop. Captures and parity fixtures come from `generate_frame_hiddens`,
+which does not use the graph, so they stay valid. The plain loop remains
+reachable (`minimax_ar_graph: false`, `--no-ar-graph`) for parity work.
+
+Two measurement traps, handled in the scripts because both give
+confident wrong answers: `key_averages()` reports device time on both an
+`aten::` op and the kernel it launched, so summing everything double-
+counts and turns a 42%-busy frame into 84%; and the profiler costs more
+than the work here (a 53 ms frame became 265 ms under it), so wall clock
+is taken with profiling off. Also: a graph replay past the end of a
+static cache is an out-of-bounds `index_copy_` that surfaces as an
+access violation, not an exception.
 
 ### VRAM
 
 | | |
 |---|---|
-| renderer only (DiT + DAV + condition encoder), bf16 | 5.03 GB |
 | AR stage, resident | 17.4 GB |
+| static KV cache, batch 2, 9520 slots | 2.8 GB |
 | TRT fp16 engine | 4.88 GB |
+| eager DiT, bf16 | 4.9 GB — **parked on the host while the engine serves** |
+| DAV + condition encoder | ~0.2 GB |
+| **whole streaming session, `nvidia-smi`** | **28.7 GB** (32.1 with the eager DiT resident, which pages) |
 
 Streaming requires the AR stage **resident**, not paged: it runs
 continuously rather than once per composition, and moving 18 GB across
 PCIe between chunks would cost more than the chunks do. That is the real
 deployment cost this architecture adds — the renderer alone fits
-comfortably on a 24 GB card and the pair does not.
+comfortably on a 24 GB card and the pair does not. On a 32 GB card the
+pair fits with ~3 GB to spare *only* because the eager DiT leaves;
+anything else on the card (a desktop was 1.7-4.6 GB during these runs)
+eats into that, and once the card is full nothing reports it — the
+frame times simply triple.
 
 ## 4. Knob-to-ear, measured
 
@@ -268,30 +353,33 @@ Measured knob-to-**frontier** (the wall time until audio produced under
 the new setting reaches the delivery frontier). Add the playback lead
 for knob-to-ear.
 
-| knob | stage | hop=100 | hop=25 |
-|---|---|---|---|
-| `minimax_guidance` | renderer | **6.7-7.1 s** | **1.65 s** |
-| `minimax_temperature` | AR | **8.6-9.8 s** | 10.8 s |
-| `set_prompt` (re-prefill) | AR | 7.9 s | — |
-| end-to-end throughput | | 0.54x | 0.48x |
+Graphed AR, eager DiT parked, probe at 12 s into the piece:
 
-Two different floors, for two different reasons.
+| knob | stage | hop=100 | hop=50 | plain loop, hop=100 (old) |
+|---|---|---|---|---|
+| `minimax_guidance` | renderer | **3.30 s** | **1.21 s** | 6.7-7.1 s |
+| `minimax_temperature` | AR | **3.33 s** | — | 8.6-9.8 s |
+| `set_prompt` (re-prefill, 0.28 s over 400 frames) | AR | **3.57 s** | — | 7.9 s |
+| end-to-end throughput, steady state | | 1.29x | 1.10x | 0.54x |
+
+Two different floors, for two different reasons, and both halved with
+the AR stage because both are paid in AR frames.
 
 **A renderer knob waits for the next chunk render to begin**, which
 means waiting for the AR stage to fill the next hop. `minimax_hop` is
-the lever and it trades directly against throughput: a smaller hop
-commits less audio per render, so more of the same audio is re-rendered.
-7.1 s down to 1.6 s costs 0.54x down to 0.46x.
+the lever and it trades against throughput: a smaller hop commits less
+audio per render, so more of the same audio is re-rendered. 3.3 s down
+to 1.2 s costs 1.29x down to 1.10x, both still above realtime.
 
-**An AR knob does not benefit from the hop at all**, and the reason is
+**An AR knob does not benefit from the hop**, and the reason is
 geometric rather than budgetary. A frame written now sits inside a
 200-frame conditioning window whose commit region ends 150 frames before
 the window does, so it cannot be committed until the LM has written up
-to 150 more frames — 6 s of audio, ~8 s of wall clock, whatever the hop
-is. (At hop=25 it gets slightly *worse*, because the extra render load
-slows the AR stage.) Shrinking that floor means shrinking the chunk or
-the lookahead, which is a quality question — the committed region would
-then sit at the edge of the model's window — and it is unmeasured.
+to 150 more frames. That is 6 s of audio whatever the hop is; in wall
+clock it is 150 frame times, ~4 s at 26 ms and ~8 s at the plain loop's
+53. Shrinking it further means shrinking the chunk or the lookahead,
+which is a quality question — the committed region would then sit at
+the edge of the model's window — and it is unmeasured.
 
 ### What live steering actually buys here
 
@@ -324,16 +412,27 @@ draft PR #332, as superseded.
 
 | claimed | actual |
 |---|---|
-| "9.5x realtime eager, 15.2x TRT" | Renderer only, with the AR stage excluded. End to end is **0.54x**. |
+| "9.5x realtime eager, 15.2x TRT" | Renderer only, with the AR stage excluded. End to end is **1.29x** steady state with the graphed AR stage (§3), and was 0.54x through the plain loop. |
 | "16.7x realtime at a 14.4 s song" — the headline | Same omission, and the best case of it. |
 | "roughly 20-70x slower than its siblings in normalized terms" | Also renderer-only, in a `60 s-gens/s` unit that has no meaning for a model with no fixed song length. The real gap is different in size and in kind: **the AR stage is under realtime and the renderer is not the problem**. |
 | `gens/s` and `60 s-gens/s` tables | A "generation" was one cover of a frozen composition. There is no such object now: audio is committed once and never re-rendered. Both units are withdrawn. |
 | `chunk_rate_hz` = 86.133 Hz beside ACE-Step's 25 Hz | Different quantities (§1). The backend now declares **25 Hz**, the AR acoustic rate, with the distinction pinned by a test. |
-| "the AR stage's 0.54x realtime" (§6, in passing) | Directionally right, and never connected to the architecture. Measured cleanly it is **0.746x**; the earlier figure was taken under per-stage profiling. Either way it is below realtime, which is the fact the design should have turned on. |
-| "a 60 s composition costs ~111 s of one-time capture before any streaming starts" | True of the capture architecture, and no longer how the family works: the stream starts after 200 AR frames plus one render, **11.7 s**, and extends indefinitely. |
+| "the AR stage's 0.54x realtime" (§6, in passing) | Directionally right, and never connected to the architecture. Measured cleanly through the plain loop it is **0.77x** at the start of a piece and falls with length; the earlier figure was taken under per-stage profiling. Below realtime either way, which is the fact the design should have turned on — and which the graphed session (**1.54x**) then removed. |
+| "a 60 s composition costs ~111 s of one-time capture before any streaming starts" | True of the capture architecture, and no longer how the family works: the stream starts after 200 AR frames plus one render, **6 s**, and extends until the model ends the piece. |
 | "Treating 200 as a model limit was an error" | Correct, and still correct — but the conclusion drawn from it (render the whole song in one pass) was the wrong one. 200/100/172 is upstream's *streaming* contract, and it is what the backend now implements. |
 | "8.011 s" | 689 x 512 / 44100 = **7.99927 s**. Carried over; it was already corrected once. |
 | "render cost is identical at 14.4 s and 8 s" | True of the windowed decode, and now moot: there is no whole-song render to compare against. |
+
+The second version of this document, which introduced the native
+streaming architecture, carried three claims of its own that §3 has
+since corrected:
+
+| claimed (second version) | what is true |
+|---|---|
+| "0.54x realtime end to end; it does not keep up" | The plain torch loop, measured with the eager DiT resident beside the TensorRT engine, i.e. under VRAM paging. Graphed and with the DiT parked: **1.29x** steady state at the default hop. |
+| "AR cost is flat in context length" | Measured over 300 frames. The plain loop's LM forward is 36.7 ms at frame 0 and **77.7 ms at frame 9000**. The graphed session is flat, by construction. |
+| "the chunk render doubles because the DiT's weights are gone from cache" | A 96 MB L2 cannot hold a 4.9 GB model; nothing was evicted. The card was at 32.1 of 32.6 GB and WDDM was paging. |
+| "an H100 would not fix it; CUDA graphs would reach 1.79x" | Half right: the projection for a bigger card stands, and the graph reached **1.56-1.72x** for the AR stage once the static cache's attention was made to cost what it should. |
 
 Two earlier claims **survive** and are unchanged:
 
@@ -508,9 +607,19 @@ leading `[tag]`**.
   through the loop the runner runs, with the real crossfade. What has
   not been run is the runner and a browser session. **No web panel**, no
   boot preflight in `server.py`.
-* **It does not keep up.** 0.54x realtime is the headline limitation.
-  CUDA graphs on the AR decode loop are the identified lever and are out
-  of scope here.
+* **Headroom is thin on a 32 GB card.** 28.7 GB in use for a session,
+  with the desktop's share on top. The next 1.1 GB is the LM head: it
+  scores all 151,936 tokens every frame and the sampler admits 16,385
+  of them, so a sliced head would save that memory and ~0.6 ms of
+  bandwidth per frame. Not done; the plain loop shares the weight.
+* **A piece ends when the model says so**, and the window then repeats.
+  For one prompt: 47 s in the stream bench (seed 1528), 29 s through the
+  plain loop and 115 s through the graphed one in `minimax_ar_bench.py`
+  with the same seed (the two draw different random streams), 22 s at
+  temperature 2.0. Masking the end token out of the vocabulary would
+  make the stream endless; what the model does past its trained horizon
+  is unmeasured, so that is a knob to measure before shipping, not a
+  default.
 * **The AR knob-to-ear floor (~8 s) is geometric and unexplored.** It
   comes from the 150-frame lookahead in a 200-frame conditioning window.
   Shrinking the window or the lookahead would shrink it, at an unknown
