@@ -41,6 +41,7 @@ from __future__ import annotations
 import contextlib
 import os
 import threading
+import time
 
 #: Sampler freedom at the two ends of the travel. Both ramp with distance: near
 #: the anchor the sampler is nearly greedy, far from it it is free to leave.
@@ -109,6 +110,15 @@ def _resolve_device(torch) -> str:
 
 _loaded = None
 _load_failed = False
+#: When a failed load may be retried. A failure that can resolve on its own -- a
+#: half-staged checkpoint, a volume not mounted yet -- must not latch, or "auto"
+#: becomes a one-shot decision taken by whoever sent the first request. But
+#: retrying freely is worse: _load holds a BLOCKING lock across from_pretrained,
+#: so N requests against a corrupt checkpoint serialise into N x load-time, in
+#: front of the audio thread. Measured: 20 requests, 30s wall, 26s worst case,
+#: repeating on every later burst. So it backs off instead of choosing.
+_retry_after = 0.0
+_RETRY_COOLDOWN_S = 60.0
 
 
 def _load():
@@ -121,9 +131,11 @@ def _load():
     concurrent misses, so the first N simultaneous requests to a cold process
     each load the checkpoint. It also would not let a failure be retried.
     """
-    global _loaded, _load_failed
+    global _loaded, _load_failed, _retry_after
     if _loaded is not None or _load_failed:
         return _loaded
+    if time.monotonic() < _retry_after:
+        return None
     # CHEAP AND LOCK-FREE when there is no checkpoint. Otherwise every request
     # on a pod configured local-with-no-model queued on a blocking mutex around
     # a stat() -- the unbounded queue in front of the audio thread that the
@@ -133,6 +145,8 @@ def _load():
     with _load_lock:
         if _loaded is not None or _load_failed:
             return _loaded
+        if time.monotonic() < _retry_after:
+            return None   # another thread just failed; do not pile on
         try:
             # INSIDE the try. These used to sit above it, so a deployment
             # without torch/transformers raised ImportError out of the endpoint
@@ -156,14 +170,16 @@ def _load():
             _loaded = (tok, model, device)
             return _loaded
         except ImportError:
-            # The only permanent failure: torch/transformers are not installed
-            # and will not appear. Everything else -- a half-staged checkpoint,
-            # a volume not mounted yet, a corrupt file being re-downloaded --
-            # can resolve on its own, and latching made "auto" a one-shot
-            # decision taken by whoever happened to send the first request.
+            # Permanent: the packages are absent and will not appear.
             _load_failed = True
             return None
         except Exception:
+            # Recoverable in principle, so no latch -- but backed off, because
+            # every retry costs a full load attempt under the lock. Note this
+            # catches ValueError/OSError/JSONDecodeError, which is what a
+            # corrupt or half-written checkpoint actually raises; ImportError
+            # above is the only failure that is genuinely permanent.
+            _retry_after = time.monotonic() + _RETRY_COOLDOWN_S
             return None
 
 
@@ -301,6 +317,38 @@ def _anchor(tok, model, enc):
     ids = [int(i) for i in out[0]
            if int(i) not in (tok.pad_token_id, tok.eos_token_id)]
     return ids, tok.decode(out[0], skip_special_tokens=True).strip()
+
+
+def route_query(params: dict) -> tuple[str, int, int]:
+    """Turn a parsed query string into ("grid"|"point"|"reject", stop, lane).
+
+    A pure function so it can be tested: this lived inside the request handler,
+    where it was wrong in both directions at once. `?lane=5` with no stop ran
+    the full grid -- roughly ten times the work, for a request that plainly
+    names one coordinate -- and `?lane=abc` refused a grid, which never reads
+    lane at all.
+
+    Blank and absent mean the same thing (no coordinate asked for). Garbage
+    does not: it is a client bug, and answering it with the most expensive
+    thing on the endpoint is how a typo becomes a denial of service.
+    """
+    def read(name):
+        raw = (params.get(name, [""])[0] or "").strip()
+        if not raw:
+            return None, False
+        try:
+            return int(raw), True
+        except ValueError:
+            return None, True
+
+    stop, stop_given = read("stop")
+    lane, lane_given = read("lane")
+    if (stop_given and stop is None) or (lane_given and lane is None):
+        return ("reject", 0, 0)
+    if not stop_given and not lane_given:
+        return ("grid", 0, 0)
+    stop, lane = clamp_coord(stop or 0, lane or 0)
+    return ("point", stop, lane)
 
 
 def clamp_coord(stop: int, lane: int, stops: int = STOPS,

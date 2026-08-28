@@ -284,7 +284,7 @@ def _process_request(connection, request):
         from urllib.parse import parse_qs
 
         from .prompt_enhancer import _resolve_provider
-        from .prompt_variations import Busy, clamp_coord, neighbourhood, point
+        from .prompt_variations import Busy, neighbourhood, point, route_query
 
         query = url.split("?", 1)[1] if "?" in url else ""
         params = parse_qs(query)
@@ -298,46 +298,12 @@ def _process_request(connection, request):
         if _resolve_provider() == "hosted":
             return _json_response(remote, "/api/variations", {"ok": False})
 
-        def _parsed(name: str) -> bool:
-            raw = (params.get(name, [""])[0] or "").strip()
-            if not raw:
-                return True
-            try:
-                int(raw)
-                return True
-            except ValueError:
-                return False
-
-        def _int(name: str):
-            """(value, was_present). A blank/absent param and an unparseable
-            one must NOT be the same answer: `?stop=abc` used to fall through
-            to the sentinel and silently escalate a cheap point request into a
-            full grid."""
-            raw = (params.get(name, [""])[0] or "").strip()
-            if not raw:
-                return 0, False
-            try:
-                return int(raw), True
-            except ValueError:
-                return 0, True
-
-        stop, has_stop = _int("stop")
-        lane, has_lane = _int("lane")
-        # Unparseable is a client bug, not a coordinate. `?stop=abc` used to
-        # clamp to 0 and run a full greedy enhance under the busy lock -- the
-        # escalation the parse guard was added to stop, one branch over.
-        # `lane` is only meaningful with a `stop`. Refusing a grid because an
-        # unused parameter was garbage, and -- worse -- serving a full grid for
-        # `?lane=5` with no stop, were the same mistake from both directions:
-        # the cheap point request must not escalate, and the grid must not be
-        # refused for a field it never reads.
-        if has_stop and not _parsed("stop"):
+        route, stop, lane = route_query(params)
+        if route == "reject":
             return _json_response(remote, "/api/variations", {"ok": False})
-        if has_stop and has_lane and not _parsed("lane"):
-            return _json_response(remote, "/api/variations", {"ok": False})
+
         try:
-            if has_stop:
-                stop, lane = clamp_coord(stop, lane)
+            if route == "point":
                 txt = point(anchor, deck, lane=lane, stop=stop)
                 # `anchor` is NOT the variation. It named the greedy anchor on
                 # the grid path and the variation here, so a client showing

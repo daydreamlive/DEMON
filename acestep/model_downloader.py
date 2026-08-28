@@ -299,7 +299,10 @@ def download_prompt_enhancer_model(
         # Remove a directory we created and did not fill. Left behind, it makes
         # os.path.isdir true, so the loader tries it, fails, and (before this
         # commit) latched local enhancement off for the process lifetime.
-        if created:
+        # Only if we made it AND nothing arrived in it. Removing it
+        # unconditionally would delete a checkpoint another worker finished
+        # while ours was failing -- a 250 MB loss to spare an empty directory.
+        if created and model_dir.is_dir() and not any(model_dir.iterdir()):
             shutil.rmtree(model_dir, ignore_errors=True)
         error_msg = f"Prompt enhancer download failed: {exc}"
         logger.error(error_msg)

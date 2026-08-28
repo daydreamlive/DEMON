@@ -134,3 +134,58 @@ class TestDegradation:
         monkeypatch.setattr(pv, "_load", lambda: ("tok", "model", "cpu"))
         assert pv.neighbourhood("   ", "sa3") == {}
         assert pv.enhance("", "sa3") == ""
+
+
+class TestRouteQuery:
+    """How a query string becomes a decision.
+
+    This lived inline in `_process_request`, where it could not be tested, and
+    it was wrong in both directions at once: `?lane=5` with no stop served a
+    full grid (the expensive path, for a request that named a coordinate), and
+    `?lane=abc` refused one (for a field the grid never reads).
+    """
+
+    def test_no_params_is_a_grid(self):
+        assert pv.route_query({}) == ("grid", 0, 0)
+
+    def test_stop_selects_a_point(self):
+        assert pv.route_query({"stop": ["3"]}) == ("point", 3, 0)
+        assert pv.route_query({"stop": ["3"], "lane": ["5"]}) == ("point", 3, 5)
+
+    def test_lane_alone_names_a_coordinate_not_a_grid(self):
+        # It was a grid: ~10x the work, for a request that clearly wants one.
+        assert pv.route_query({"lane": ["5"]}) == ("point", 0, 5)
+
+    def test_garbage_is_refused_not_escalated(self):
+        assert pv.route_query({"stop": ["abc"]})[0] == "reject"
+        assert pv.route_query({"lane": ["abc"]})[0] == "reject"
+        assert pv.route_query({"stop": ["3"], "lane": ["abc"]})[0] == "reject"
+    def test_absurd_numbers_clamp_rather_than_overflow(self):
+        # A 400-digit stop is a valid integer. It used to reach
+        # `amount = stop / (stops - 1)` and raise OverflowError -- an
+        # unauthenticated 500. Clamping first makes it merely pointless.
+        assert pv.route_query({"stop": ["9" * 400]}) == ("point", pv.STOPS - 1, 0)
+
+    def test_blank_is_absent_not_garbage(self):
+        assert pv.route_query({"stop": [""], "lane": [""]}) == ("grid", 0, 0)
+
+    def test_coordinates_are_clamped(self):
+        assert pv.route_query({"stop": ["999"], "lane": ["999"]}) == (
+            "point", pv.STOPS - 1, pv.LANES - 1)
+        assert pv.route_query({"stop": ["-5"], "lane": ["-5"]}) == ("point", 0, 0)
+
+
+class TestDownloadResidue:
+    """A failed download must not leave something that reads as a checkpoint."""
+
+    def test_import_failure_does_not_crash(self, monkeypatch, tmp_path):
+        # `created` was assigned AFTER the lazy huggingface_hub import that the
+        # same `except` catches, so a lean image got UnboundLocalError from the
+        # function whose whole contract is to degrade.
+        import acestep.model_downloader as md
+
+        monkeypatch.setattr(md, "get_prompt_enhancer_repo", lambda: "x/y")
+        target = tmp_path / "PromptEnhancer"
+        ok, msg = md.download_prompt_enhancer_model(target)
+        assert ok is False and isinstance(msg, str)
+        assert not target.exists(), "an empty dir reads as a staged checkpoint"
