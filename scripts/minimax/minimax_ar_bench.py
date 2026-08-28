@@ -30,10 +30,33 @@ What the script reports:
     number that decides whether ``set_prompt`` is a live control on this
     family or a session restart.
 
+``--profile``
+    Splits the frame into GPU kernel time and CPU dispatch gap, and
+    reports the bandwidth the GEMMs actually achieve. This is what
+    decides whether a faster card would help: if the kernels are already
+    near the memory roof and the GPU still idles most of the frame, more
+    bandwidth buys only the busy part.
+
+    Two traps it avoids, both of which a naive reading walks into.
+    ``key_averages()`` reports device time on BOTH the ``aten::`` op and
+    the kernel it launched, so summing everything double-counts by
+    roughly 2x; only ``device_type == CUDA`` events are real kernels.
+    And the profiler costs more than the work here (~3900 kernels per
+    frame, each with CPU-side hooks), so the wall-clock baseline is
+    taken with profiling OFF and only kernel durations come from the
+    profiled pass.
+
 Run::
 
     .venv/Scripts/python.exe scripts/minimax/minimax_ar_bench.py \
         --frames 400 --reprompt --json out/ar_bench.json
+    .venv/Scripts/python.exe scripts/minimax/minimax_ar_bench.py \
+        --frames 40 --profile
+
+Run it on an otherwise idle card. A leftover process holding a few GB
+inflated the wall clock here from 52.6 to 82 ms/frame while leaving
+kernel time untouched, which reads exactly like a much worse dispatch
+gap.
 """
 
 from __future__ import annotations
@@ -107,6 +130,9 @@ def main() -> int:
     ap.add_argument("--top-k", type=int, default=50)
     ap.add_argument("--ar-guidance", type=float, default=1.5)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--profile", action="store_true",
+                    help="split the frame into GPU kernel time and CPU "
+                         "dispatch gap, and report achieved bandwidth")
     ap.add_argument("--json", default=None, help="write the report here")
     args = ap.parse_args()
 
@@ -216,12 +242,112 @@ def main() -> int:
     for label, ms in report["blocks_ms"].items():
         print(f"  {label:>12}  {ms:6.1f}")
 
+    if args.profile:
+        report["profile"] = _profile_frames(ar, args, device, report)
+
     if args.json:
         path = Path(args.json)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(f"wrote {path}")
     return 0
+
+
+# The LM reads ~17.2 GB of bf16 weights per frame and the depth decoder
+# ~1.29 GB on each of its seven forwards. Rough, but it is the quantity
+# that decides whether more bandwidth is the lever.
+AR_WEIGHT_TRAFFIC_GB = 17.2 + 7 * 1.29
+
+# Memory bandwidth, for the "would a bigger card help" arithmetic.
+PEAK_TB_S = {"RTX 5090": 1.79, "H100 SXM": 3.35, "H100 PCIe": 2.0}
+
+
+def _profile_frames(ar, args, device, report: dict) -> dict:
+    """GPU kernel time vs CPU dispatch gap. See the module docstring."""
+    from torch.autograd import DeviceType
+    from torch.profiler import ProfilerActivity, profile
+
+    frames = min(args.frames, 40)
+    stream = ar.stream(
+        prompt=args.prompt, lyrics=args.lyrics, seed=args.seed,
+        max_frames=frames * 2 + 20,
+    )
+    for _ in range(20):          # warm up before either measurement
+        stream.advance(1)
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+    # Wall clock with profiling OFF: the profiler costs more than the
+    # work, so a profiled wall time would report a fictional gap.
+    started = time.perf_counter()
+    for _ in range(frames):
+        stream.advance(1)
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    wall_ms = (time.perf_counter() - started) * 1000 / frames
+
+    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+        for _ in range(frames):
+            stream.advance(1)
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+
+    # CUDA events only: an aten:: op and the kernel it launched both
+    # report device time, so summing everything double-counts.
+    kernels = [
+        e for e in prof.key_averages()
+        if e.device_type == DeviceType.CUDA and e.self_device_time_total > 0
+    ]
+    gpu_ms = sum(e.self_device_time_total for e in kernels) / 1000 / frames
+    gemm_ms = sum(
+        e.self_device_time_total for e in kernels
+        if "gemm" in e.key.lower() or "cutlass" in e.key.lower()
+    ) / 1000 / frames
+    launches = sum(e.count for e in kernels) / frames
+    stream.close()
+
+    achieved = AR_WEIGHT_TRAFFIC_GB / (gemm_ms / 1000) / 1000
+    out = {
+        "wall_ms": round(wall_ms, 2),
+        "gpu_kernel_ms": round(gpu_ms, 2),
+        "gpu_busy_pct": round(gpu_ms / wall_ms * 100, 1),
+        "gemm_ms": round(gemm_ms, 2),
+        "dispatch_gap_ms": round(wall_ms - gpu_ms, 2),
+        "kernels_per_frame": round(launches),
+        "achieved_tb_s": round(achieved, 2),
+        "peak_tb_s": PEAK_TB_S,
+    }
+
+    print()
+    print(f"wall (profiler off) : {wall_ms:.2f} ms/frame")
+    print(f"GPU kernel time     : {gpu_ms:.2f} ms/frame ({launches:.0f} kernels)")
+    print(f"GPU BUSY FRACTION   : {out['gpu_busy_pct']:.1f}%")
+    print(f"  of which GEMM     : {gemm_ms:.2f} ms "
+          f"({gemm_ms / gpu_ms * 100:.0f}% of GPU time)")
+    print(f"dispatch gap        : {wall_ms - gpu_ms:.2f} ms/frame idle")
+    print(f"GEMM bandwidth      : {achieved:.2f} TB/s of "
+          f"{PEAK_TB_S['RTX 5090']} peak "
+          f"({achieved / PEAK_TB_S['RTX 5090'] * 100:.0f}%)")
+    print()
+    # Only the busy part scales with a faster card; the gap is CPU-side.
+    for name, peak in PEAK_TB_S.items():
+        if name == "RTX 5090":
+            continue
+        scaled = gpu_ms * PEAK_TB_S["RTX 5090"] / peak
+        frame = (wall_ms - gpu_ms) + scaled
+        out[f"projected_{name.replace(' ', '_').lower()}_realtime"] = round(
+            (1000.0 / AR_FRAME_RATE_HZ) / frame, 2,
+        )
+        print(f"  {name}: bandwidth-scaling ONLY the busy part -> "
+              f"{frame:.1f} ms/frame = "
+              f"{(1000.0 / AR_FRAME_RATE_HZ) / frame:.2f}x realtime")
+    out["projected_no_dispatch_gap_realtime"] = round(
+        (1000.0 / AR_FRAME_RATE_HZ) / gpu_ms, 2,
+    )
+    print(f"  this card with the gap removed (CUDA graphs) -> "
+          f"{gpu_ms:.1f} ms/frame = "
+          f"{(1000.0 / AR_FRAME_RATE_HZ) / gpu_ms:.2f}x realtime")
+    return out
 
 
 if __name__ == "__main__":

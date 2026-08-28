@@ -72,12 +72,21 @@ reported, not hidden -- ``frontier_lead_s`` and ``ar_realtime`` ride the
 params echo on every generation, and both are session means rather than
 last-sample values (a single sample moves the figure by 15%).
 
-Worth being precise about whose limitation that is. The AR stage is
-launch-bound rather than bandwidth-bound at batch 2 (36 layers over one
-token, plus seven depth-decoder forwards per frame), and upstream serves
-this checkpoint through SGLang rather than a plain torch loop. 0.75x is
-a property of this dependency-free reimplementation, not a measurement
-of the model's ceiling.
+Worth being precise about whose limitation that is, because it is
+measurable and was measured (``minimax_ar_bench.py --profile``). Of a
+52.6 ms frame, only 22.3 ms is GPU kernel time: the GPU **idles ~60% of
+every frame** waiting on Python to launch the next of ~3900 kernels,
+while the GEMMs that do run already reach **86% of the card's memory
+bandwidth**. The stage is dispatch-bound, not bandwidth-bound, and
+upstream serves this checkpoint through SGLang rather than a plain torch
+loop. 0.75x is a property of this dependency-free reimplementation, not
+a measurement of the model's ceiling.
+
+The consequence for hardware: a faster card scales only the busy 22 ms,
+so an H100 SXM projects to ~0.9x realtime for this stage alone and still
+short end to end, while removing the dispatch gap with CUDA graphs would
+reach 1.79x on the 5090. Deliberately not taken -- this family is a
+backend-generality demonstration, not a speed target.
 
 ## What DEMON's value proposition buys here
 

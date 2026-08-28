@@ -196,14 +196,57 @@ rolling window laps and the listener hears earlier material repeat; a
 than hidden: `frontier_lead_s`, `ar_realtime`, `chunk_render_ms` and
 `ar_finished` ride the params echo on every generation.
 
-### Whose limitation this is
+### Whose limitation this is, measured
 
-The AR stage is **launch-bound, not bandwidth-bound**, at batch 2 with a
-sequence length of one. Upstream serves this checkpoint through
-SGLang-Omni, not a plain torch decode loop; the checkpoint ships only an
-HTTP client for it. **0.75x is a property of this dependency-free
-reimplementation, not a measurement of the model's ceiling.** CUDA
-graphs are the obvious lever and are deliberately not taken here.
+`minimax_ar_bench.py --profile` splits the frame. On the 5090, stable
+across three runs:
+
+| | |
+|---|---|
+| wall clock | 52.6-57.0 ms/frame |
+| GPU kernel time | **22.2-22.4 ms/frame** (3895 kernels) |
+| **GPU busy fraction** | **39-42%** |
+| of which GEMM | 17.0 ms (76% of GPU time) |
+| dispatch gap (GPU idle) | 30-35 ms/frame |
+| **bandwidth achieved during GEMM** | **1.55 TB/s of 1.79 peak — 86%** |
+
+So the stage is **dispatch-bound, not bandwidth-bound**, and the two
+halves of that say different things:
+
+* The kernels are already at **86% of the card's memory roof.** There is
+  nothing left to win inside them on this hardware.
+* The GPU nevertheless **idles ~60% of every frame**, waiting on Python
+  to launch the next of ~3900 kernels — one LM forward at batch 2 with a
+  sequence length of one, ~460 GEMMs, plus seven depth-decoder forwards
+  and eight sampled codes, all per 40 ms of audio.
+
+**0.75x is a property of this dependency-free reimplementation, not a
+measurement of the model's ceiling.** Upstream serves this checkpoint
+through SGLang-Omni; the checkpoint ships only an HTTP client for it.
+
+### Would a bigger card fix it? Probably not.
+
+A faster GPU scales only the busy 22 ms; the dispatch gap is CPU-side
+and does not move. Scaling by memory bandwidth alone:
+
+| | AR stage alone |
+|---|---|
+| RTX 5090 (1.79 TB/s), measured | 0.75x realtime |
+| H100 PCIe (2.0 TB/s), projected | 0.73-0.79x |
+| H100 SXM (3.35 TB/s), projected | **0.86-0.95x** |
+| **5090 with the gap removed (CUDA graphs)** | **1.79x** |
+
+An H100 SXM lands the AR stage just under realtime *before* the renderer
+takes its ~12% and before co-residency takes its share, so end to end it
+would sit around **0.8-0.9x** — closer, still short. Two caveats in the
+same direction: the projection assumes the kernels hold ~86% of peak on
+HBM3, and H100 SXM clocks lower than a 5090 (~1.76 GHz vs ~2.4 GHz), so
+the dispatch gap would if anything widen.
+
+**The lever is CUDA graphs on the AR decode loop, not the GPU** — and it
+works on hardware already in hand. Deliberately not taken here: this
+family is a backend-generality demonstration, and the brief was not to
+optimize for speed.
 
 ### VRAM
 
