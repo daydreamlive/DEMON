@@ -228,6 +228,9 @@ def main() -> int:
     ap.add_argument("--dtype", default="bfloat16",
                     choices=("bfloat16", "float32"))
     ap.add_argument("--cfg", type=float, default=1.7)
+    ap.add_argument("--frames-capture", default=None,
+                    help="capture carrying raw frame_hiddens, for the "
+                         "L5 chunked-vs-single-pass assembly gate")
     ap.add_argument("--stream-steps", type=int, default=16)
     ap.add_argument("--stream-depth", type=int, default=4)
     ap.add_argument("--stream-denoise", type=float, default=0.6)
@@ -342,7 +345,7 @@ def main() -> int:
           f"rms={rows[-1]['rms_db']:.1f}dB")
 
     if not args.skip_stream:
-        run_stream(args, ctx, codec, cond, ref_pcm, out_dir, rows, record)
+        run_stream(args, ctx, codec, cond, noise, ref_pcm, out_dir, rows, record)
 
     print()
     hdr = ["name", "cos", "rel_rms", "logmel_l1", "lr_corr", "side_mid_db",
@@ -505,188 +508,185 @@ def cover_sweep(args, adapter, codec, cond, noise, sr, out_dir):
     return 0
 
 
-def run_stream(args, ctx, codec, cond, ref_pcm, out_dir, rows, record):
-    """L4/L5: the real backend and the real ring buffer."""
-    from acestep.streaming.knobs import KnobState
-    from acestep.streaming.generator_backend import TickContext
-    from acestep.streaming.minimax_backend import (
-        DELIVERY_SAMPLE_RATE, MiniMaxBackend, minimax_knob_specs,
+def run_stream(args, ctx, codec, cond, noise, ref_pcm, out_dir, rows, record):
+    """L4/L5: the shipping streaming renderer, not a sampler nobody runs.
+
+    These two rungs used to measure the ring buffer and the cover path.
+    Neither exists any more: MiniMax is autoregressive and the backend
+    drives its own chunked render loop (docs/MINIMAX.md section 2), so
+    what has to be gated is different.
+
+    **L4 is the equivalence gate.** Every rung above is measured with
+    this file's own four-line Euler loop. L4 drives
+    ``MiniMaxChunkRenderer.render_cond`` -- the code a session actually
+    runs -- from the SAME noise and requires the two to land on the same
+    latent. Without it every number above describes a sampler that does
+    not ship.
+
+    **L5 is the assembly gate.** It renders one span two ways: as the
+    stream does, in overlapping chunks with a locked carry, and in a
+    single pass. Any difference is assembly (carry, commit placement,
+    decode guard) rather than sampling. It needs a capture carrying at
+    least chunk + hop AR frames, so it is skipped with a note when
+    ``--frames-capture`` is absent.
+    """
+    from acestep.engine.minimax_render import (
+        CARRY_LATENT_FRAMES,
+        CHUNK_AR_FRAMES,
+        HOP_AR_FRAMES,
+        MINIMAX_UPSAMPLE,
+        MiniMaxChunkRenderer,
+        MiniMaxLatentStream,
+        RenderControls,
+        latent_origin,
     )
-    from acestep.streaming.minimax_session import (
-        MINIMAX_DURATION_S, MINIMAX_VAE_WINDOW_S,
+
+    renderer = MiniMaxChunkRenderer(
+        ctx.make_dit(latent_frames=cond.shape[1], backend="eager"),
+        ctx.condition_encoder,
+        device=ctx.device, dtype=ctx.dtype,
+        chunk_ar_frames=CHUNK_AR_FRAMES,
+        carry_latent_frames=CARRY_LATENT_FRAMES,
+        latent_channels=ctx.latent_channels,
+    )
+    controls = RenderControls(
+        steps=args.stream_steps, shift=args.stream_shift,
+        guidance=args.cfg, cond_strength=1.0, seed=0,
     )
 
-    # -- L4: ONE generation through the real StreamPipeline ---------------
-    # depth 1 and denoise 1.0 so the only difference from L3 is the
-    # solver plumbing itself, not the cover path or the ring.
-    backend = MiniMaxBackend.from_context(
-        ctx, cond={"encoder_hidden_states": cond},
-        knob_state=KnobState(minimax_knob_specs()),
-        duration_s=MINIMAX_DURATION_S, steps=args.stream_steps, depth=1,
-        vae_window_s=MINIMAX_VAE_WINDOW_S,
+    # -- L4: the shipping sampler, on this file's own noise ---------------
+    # The reference loop works in DEMON convention over [B, T, C]; the
+    # renderer works in MiniMax's own over [B, C, T]. Same trajectory, so
+    # the noise is handed over transposed and the result transposed back,
+    # and nothing else may differ.
+    # The reference run's OWN initial noise, the same draw L1-L3 use, so
+    # this rung is directly comparable to them rather than a fresh take.
+    noise_btc = noise
+    shipped = renderer.render_cond(
+        cond, carry=None, controls=controls, chunk_index=0,
+        noise=noise_btc.movedim(1, 2),
     )
-    backend.knob_state.update({
-        "minimax_denoise": 1.0,
-        "minimax_shift": args.stream_shift,
-    })
-    # Capture the noise the pipeline draws, so L4b can re-run the same
-    # trajectory by hand. Comparing L4 to a DIFFERENT noise draw only
-    # ever measures take-to-take variation; comparing it to the same one
-    # measures the solver.
-    drawn: list = []
-    orig_make_noise = backend.pipeline._make_noise
+    shipped_btc = shipped.movedim(1, 2)
+    record("L4_shipping_sampler", shipped_btc,
+           codec.decode_full(shipped), ref_pcm)
+    print(f"  L4_shipping_sampler: cos={rows[-1]['cos']:.5f} "
+          f"logmel={rows[-1]['logmel_l1']:.4f} "
+          f"rms={rows[-1]['rms_db']:.1f}dB "
+          f"({renderer.last_forwards} forwards)")
 
-    def _spy(request):
-        out = orig_make_noise(request)
-        drawn.append(out.detach().clone())
-        return out
-
-    backend.pipeline._make_noise = _spy
-    lat = None
-    for _ in range(args.stream_steps + 2):
-        backend.produce(backend.read_knobs(),
-                        TickContext(playhead_s=0.0,
-                                    buffer_duration_s=MINIMAX_DURATION_S),
-                        "generate")
-        if backend._last_result_latent is not None:
-            lat = backend._last_result_latent
-            break
-    backend.pipeline._make_noise = orig_make_noise
-    if lat is not None:
-        record("L4_pipeline_1gen", lat,
-               codec.decode_full(lat.movedim(1, 2).float()), ref_pcm)
-        print(f"  L4_pipeline_1gen: cos={rows[-1]['cos']:.5f} "
-              f"logmel={rows[-1]['logmel_l1']:.4f} "
-              f"lr={rows[-1].get('lr_corr', float('nan')):.3f} "
-              f"rms={rows[-1]['rms_db']:.1f}dB")
-
-    # -- L4b: the same noise, sampled by hand -----------------------------
-    # The equivalence gate. StreamPipeline reaches the velocity through
-    # SlotConditions, an APG combine and a compiled Euler kernel; this
-    # script reaches it with four lines of Python. On identical noise the
-    # two must land on the same latent, or something in the streaming
-    # solver is not the sampler anyone measured.
-    if lat is not None and drawn:
-        by_hand = sample(
-            backend.adapter, drawn[0].to(lat.device, lat.dtype), cond,
-            steps=args.stream_steps, cfg=args.cfg, shift=args.stream_shift,
-        )
-        record("L4b_same_noise_by_hand", by_hand,
-               codec.decode_full(by_hand.movedim(1, 2).float()), ref_pcm)
-        agree = float(torch.nn.functional.cosine_similarity(
-            by_hand.float().flatten(), lat.float().flatten(), dim=0))
-        rel = float((by_hand.float() - lat.float()).pow(2).mean().sqrt()
-                    / lat.float().pow(2).mean().sqrt())
-        rows[-1]["pipeline_agreement_cos"] = agree
-        print(f"  L4b_same_noise_by_hand: pipeline agreement cos={agree:.6f} "
-              f"rel_rms={rel:.2e}  "
-              f"lr={rows[-1].get('lr_corr', float('nan')):.3f}")
-    backend.close()
-
-    # -- L5: the full ring, exactly as the smoke script drives it ---------
-    backend = MiniMaxBackend.from_context(
-        ctx, cond={"encoder_hidden_states": cond},
-        knob_state=KnobState(minimax_knob_specs()),
-        duration_s=MINIMAX_DURATION_S, steps=args.stream_steps,
-        depth=args.stream_depth, vae_window_s=MINIMAX_VAE_WINDOW_S,
+    by_hand = sample(
+        _demon_convention_adapter(renderer, ctx), noise_btc, cond,
+        steps=args.stream_steps, cfg=args.cfg, shift=args.stream_shift,
     )
-    backend.knob_state.update({
-        "minimax_denoise": args.stream_denoise,
-        "minimax_shift": args.stream_shift,
-    })
-    total = int(round(MINIMAX_DURATION_S * DELIVERY_SAMPLE_RATE))
-    buf = np.zeros((total, 2), dtype=np.float32)
-    gens: list = []
-    playhead, lead = 0.0, 0.35
-    while playhead < 20.0:
-        fresh = backend.produce(
-            backend.read_knobs(),
-            TickContext(playhead_s=playhead % MINIMAX_DURATION_S,
-                        buffer_duration_s=MINIMAX_DURATION_S),
-            "generate",
-        )
-        if fresh and backend._last_result_latent is not None:
-            gens.append(backend._last_result_latent.detach().float().cpu())
-        chunk = backend.render_window((playhead + lead) % MINIMAX_DURATION_S)
-        if chunk is not None:
-            _crossfade(buf, chunk.pcm, chunk.start_sample)
-        playhead += 0.105
+    agree = float(torch.nn.functional.cosine_similarity(
+        by_hand.float().flatten(), shipped_btc.float().flatten(), dim=0))
+    rel = float((by_hand.float() - shipped_btc.float()).pow(2).mean().sqrt()
+                / shipped_btc.float().pow(2).mean().sqrt())
+    rows[-1]["sampler_agreement_cos"] = agree
+    rows[-1]["sampler_agreement_rel_rms"] = rel
+    print(f"  L4b_vs_reference_loop: cos={agree:.6f} rel_rms={rel:.2e}")
+
+    # -- L5: chunked assembly vs a single pass over the same span ---------
+    if not args.frames_capture:
+        print("  L5_chunked_stream: skipped (pass --frames-capture to a "
+              f"capture with at least {CHUNK_AR_FRAMES + HOP_AR_FRAMES} "
+              "AR frames)")
+        return
+
+    from safetensors.torch import load_file
+
+    frames = load_file(str(args.frames_capture)).get("frame_hiddens")
+    if frames is None:
+        print("  L5_chunked_stream: skipped (capture has no frame_hiddens)")
+        return
+    have = int(frames.shape[1])
+    if have < CHUNK_AR_FRAMES + HOP_AR_FRAMES:
+        print(f"  L5_chunked_stream: skipped ({have} AR frames, need "
+              f"{CHUNK_AR_FRAMES + HOP_AR_FRAMES})")
+        return
+
+    stream = MiniMaxLatentStream(renderer, hop_ar_frames=HOP_AR_FRAMES)
+    stream.push_frames(frames.to(ctx.device))
+    while stream.render_next(controls) is not None:
+        pass
+    committed = stream.latent_slice(0, stream.committed_frames)
+
+    # The same span in one pass. The renderer is length-agnostic (RoPE is
+    # built for whatever sequence arrives), so this is a real comparison
+    # rather than a differently-shaped one.
+    whole_cond = renderer.cond_encoder(
+        frames.to(ctx.device, ctx.dtype)
+    )[:, :stream.committed_frames]
+    single = renderer.render_cond(
+        whole_cond, carry=None, controls=controls, chunk_index=0,
+    )
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    import soundfile as sf
-    sf.write(str(out_dir / "L5_ring_buffer.wav"), buf, DELIVERY_SAMPLE_RATE)
-    row = {"name": "L5_ring_buffer"}
-    row.update(audio_metrics(buf, DELIVERY_SAMPLE_RATE, ref_pcm,
-                             ref_sr=ctx.sample_rate))
-    rows.append(row)
-    print(f"  L5_ring_buffer: logmel={row['logmel_l1']:.4f} "
-          f"lr={row.get('lr_corr', float('nan')):.3f} "
-          f"rms={row['rms_db']:.1f}dB  ({len(gens)} generations)")
+    a = write_wav(out_dir / "L5_chunked_stream.wav",
+                  codec.decode_full(committed), ctx.sample_rate)
+    b = write_wav(out_dir / "L5b_single_pass.wav",
+                  codec.decode_full(single), ctx.sample_rate)
+    # NO ref_pcm here: the capture is a different composition from the
+    # parity fixture, so a distance to the fixture's reference would be
+    # a distance between two different songs. What L5 measures is the
+    # chunked assembly against ITS OWN single-pass render, below.
+    for name, pcm in (("L5_chunked_stream", a), ("L5b_single_pass", b)):
+        row = {"name": name}
+        row.update(audio_metrics(pcm, ctx.sample_rate))
+        rows.append(row)
+        print(f"  {name}: lr={row.get('lr_corr', float('nan')):.3f} "
+              f"rms={row['rms_db']:.1f}dB "
+              f"centroid={row['centroid_hz']:.0f}Hz")
 
-    # The ring against what it should have become: the same backend's
-    # own whole-song render. Anything here is assembly damage -- window
-    # placement, crossfade, coverage -- and nothing to do with the
-    # sampler. Reported per second so a localized hole is visible as a
-    # hole rather than averaged into a mediocre global score.
-    ideal = backend.render_full()
-    if ideal is not None:
-        sf.write(str(out_dir / "L5c_ideal_whole_render.wav"),
-                 ideal.pcm, DELIVERY_SAMPLE_RATE)
-        n = min(len(buf), len(ideal.pcm))
-        a, b = buf[:n], ideal.pcm[:n]
-        err = float(np.sqrt(((a - b) ** 2).mean())
-                    / max(np.sqrt((b ** 2).mean()), 1e-12))
-        vs_ideal = audio_metrics(a, DELIVERY_SAMPLE_RATE, b)
-        print(f"  L5 vs its own whole render: rel_rms={err:.4f} "
-              f"logmel={vs_ideal['logmel_l1']:.4f}")
-        sec = DELIVERY_SAMPLE_RATE
-        prof = [
-            float(np.sqrt(((a[i:i + sec] - b[i:i + sec]) ** 2).mean())
-                  / max(np.sqrt((b[i:i + sec] ** 2).mean()), 1e-12))
-            for i in range(0, n - sec + 1, sec)
-        ]
-        print("  per-second rel_rms vs ideal: "
-              + " ".join(f"{v:.3f}" for v in prof))
+    # The two are DIFFERENT takes -- different noise, different windows --
+    # so they cannot be compared sample for sample. What must match is
+    # the character, and what must not appear is a seam. Reported per
+    # second so a localized defect shows as a defect rather than being
+    # averaged into a mediocre global score.
+    sec = ctx.sample_rate
+    n = min(len(a), len(b))
+    prof = [
+        float(np.sqrt((a[i:i + sec] ** 2).mean())
+              / max(np.sqrt((b[i:i + sec] ** 2).mean()), 1e-12))
+        for i in range(0, n - sec + 1, sec)
+    ]
+    print("  per-second RMS ratio, chunked / single pass: "
+          + " ".join(f"{v:.2f}" for v in prof))
 
-    # A generation the ring never crossfades: the same latent decoded
-    # whole. Separates "the cover latents are bad" from "overlap-add
-    # destroyed them".
-    if gens:
-        last = gens[-1].to(ctx.device)
-        record("L5b_last_gen_whole", last,
-               codec.decode_full(last.movedim(1, 2).float()), ref_pcm)
-        print(f"  L5b_last_gen_whole: cos={rows[-1]['cos']:.5f} "
-              f"logmel={rows[-1]['logmel_l1']:.4f} "
-              f"lr={rows[-1].get('lr_corr', float('nan')):.3f} "
-              f"rms={rows[-1]['rms_db']:.1f}dB")
-        # Do consecutive covers agree? If they do not, the ring is
-        # overlap-adding decorrelated audio and the level drop is
-        # explained by that alone.
-        pair = [
-            float(torch.nn.functional.cosine_similarity(
-                a.flatten(), b.flatten(), dim=0))
-            for a, b in zip(gens[:-1], gens[1:])
-        ]
-        if pair:
-            print(f"  consecutive-generation cosine: n={len(pair)} "
-                  f"min={min(pair):.4f} median={float(np.median(pair)):.4f} "
-                  f"max={max(pair):.4f}")
-    backend.close()
+    # Seam check: the sample-to-sample delta at each commit boundary
+    # against the same statistic over the whole signal. A carry that is
+    # not locked shows up here and nowhere else.
+    d = np.abs(np.diff(a, axis=0)).max(axis=1)
+    p999 = float(np.quantile(d, 0.999))
+    seams = []
+    for k in range(1, stream.chunks_rendered):
+        idx = (
+            latent_origin(k * HOP_AR_FRAMES) + CARRY_LATENT_FRAMES
+        ) * MINIMAX_UPSAMPLE
+        if 1 <= idx < len(d) - 1:
+            seams.append(float(d[idx - 1:idx + 2].max()))
+    if seams:
+        verdict = "OK" if max(seams) <= 4 * p999 else "DISCONTINUITY"
+        print(f"  seam |diff| max={max(seams):.5f} vs signal "
+              f"p99.9={p999:.5f} -> {verdict}")
 
 
-def _crossfade(buf, chunk, start):
-    n, total = chunk.shape[0], buf.shape[0]
-    if n <= 0:
-        return
-    xf = min(1200, n // 4)
-    patch = chunk.copy()
-    if xf > 0:
-        ramp = np.linspace(0.0, 1.0, xf, dtype=np.float32)[:, None]
-        head = np.arange(start, start + xf) % total
-        tail = np.arange(start + n - xf, start + n) % total
-        patch[:xf] = buf[head] * (1.0 - ramp) + patch[:xf] * ramp
-        patch[n - xf:] = buf[tail] * ramp[::-1] + patch[n - xf:] * (1.0 - ramp[::-1])
-    buf[np.arange(start, start + n) % total] = patch
+def _demon_convention_adapter(renderer, ctx):
+    """A DEMON-convention shim over the streaming renderer's DiT.
+
+    ``sample()`` above speaks ``batched_forward`` in DEMON's descending
+    ``s`` over [B, T, C]; the renderer's DiT speaks MiniMax's ascending
+    ``t`` over [B, C, T], with the opposite velocity sign. Bridging here
+    rather than inside the renderer is deliberate: the shipping path
+    works in the model's own convention and needs no conversion at all,
+    which is one of the things the streaming rewrite bought.
+    """
+    from acestep.engine.minimax_adapter import MiniMaxAdapter
+
+    return MiniMaxAdapter(
+        renderer.dit, schedule_builder=None,
+        device=ctx.device, dtype=ctx.dtype,
+    )
 
 
 if __name__ == "__main__":

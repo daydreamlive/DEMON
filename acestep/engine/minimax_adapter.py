@@ -1,22 +1,30 @@
-"""MiniMaxAdapter: the MiniMax-Music3 renderer behind the Tier-2 seam.
+"""MiniMaxAdapter: the DEMON-convention bridge to MiniMax's DiT.
+
+**Not the production path.** A MiniMax session runs
+:class:`~acestep.engine.minimax_render.MiniMaxChunkRenderer`, which
+samples in the model's own convention and needs no conversion at all.
+This adapter exists so the measurement harnesses
+(``scripts/minimax/minimax_chain_parity.py`` and
+``minimax_quality_ablation.py``) can drive the same DiT through DEMON's
+solver and compare the two — the ablation's L4 rung is exactly that
+comparison, and it is what proves the shipping sampler is the sampler
+the operating point was measured on.
+
+Keeping it in the tree rather than inlining it into a script is also the
+cheapest way to keep the conversion below written down: it is easy to
+get half-right and expensive to debug.
 
 MiniMax-Music3 is a three-stage model: an 8.58B Qwen3 autoregressive LM
-emits one RVQ frame per 40 ms, a depth decoder fills the 7 residual
-codebooks, and the fused per-frame hidden states drive a 2.43B
-flow-matching DiT over a continuous 128-channel latent at 86.133 Hz. A
-deterministic DAC-style decoder ("DAV") takes that latent to 44.1 kHz
-stereo.
+emits one acoustic frame per 40 ms (25 Hz), a depth decoder fills the 7
+residual codebooks, and the fused per-frame hidden states drive a 2.43B
+flow-matching DiT over a continuous 128-channel latent at 86.133 Hz —
+two different rates, related by exactly 441/128. A deterministic
+DAC-style decoder ("DAV") takes that latent to 44.1 kHz stereo.
 
-Only the last two stages live behind this seam. The DiT's sole
-conditioning input is ``encoder_hidden_states`` ``[B, T, 2048]`` — there
-is no cross-attention and no text tensor anywhere in it, so a prompt
-reaches the renderer only after an 8.58B LM has metabolized it into
-per-frame hidden states. That makes the conditioning a *captured*
-artifact rather than something recomputed per tick: the AR stage runs
-once per composition (see :class:`~acestep.engine.minimax_context.
-MiniMaxContext`), and the stream then covers that fixed idea forever.
-The bundle rides ``SlotRequest.aux_cond``; the ACE-shaped enc/mask/ctx
-lists are ignored.
+The DiT's sole conditioning input is ``encoder_hidden_states``
+``[B, T, 2048]``: no cross-attention, no text tensor anywhere in it.
+Here it rides ``SlotRequest.aux_cond``, and the ACE-shaped
+enc/mask/ctx lists are ignored.
 
 This adapter is TWO boundaries at once, and both matter:
 

@@ -1,464 +1,376 @@
 # MiniMax-Music3 in DEMON
 
-**Verdict: it works, in real time, on a single 5090 — 9.5x realtime
-headroom in eager bf16, 15.2x with the TensorRT fp16 engine, at output
-that matches the reference model's own trajectory to latent cosine
-0.9993.** What is integrated is the model's *renderer*, not the whole
-model, and that distinction is the entire design. This document says
-why, what the numbers are, and what is not done yet.
+**Verdict: MiniMax-Music3 is an autoregressive model that already
+streams natively, and DEMON now drives its own loop rather than
+converting it into a one-shot model. On a 5090 the combined pipeline
+runs at 0.54x realtime, so it does not sustain live playback — the
+bottleneck is the 8.58B language model at 0.75x realtime, not the
+renderer at 7.8x. Live steering works, at a knob-to-ear of seconds
+rather than the ~60-230 ms the diffusion families reach.**
 
-Throughput, stated the way this project states it (`depth/(steps*tick)`,
-with the 60 s-normalized figure beside it because a "generation" is one
-whole song and the families' songs differ in length by 7.5x):
+This document replaces an earlier one that reported 9.5-16.7x realtime
+and a 20-70x deficit against the other families. Both were wrong, in
+opposite directions, and for the same reason: they measured the
+*renderer* and never the *model*. §5 is the accounting.
 
-| | gens/s | 60 s-gens/s | realtime |
-|---|---|---|---|
-| minimax, 8.0 s song, eager bf16 | 1.19 | 0.158 | 9.5x |
-| minimax, 8.0 s song, TRT fp16 | 1.90 | 0.253 | 15.2x |
-| minimax, 14.4 s song, eager bf16 | 0.80 | 0.192 | 11.5x |
-| minimax, 14.4 s song, TRT fp16 | 1.16 | **0.278** | **16.7x** |
-| *sa3 medium, 54 s song, TRT* | *~6.0* | *~5.4* | *~324x* |
-| *acestep turbo, 60 s song, TRT* | *11.3* | *11.3* | *~678x* |
-
-**This family is roughly 20-70x slower than its siblings in normalized
-terms, and that is structural rather than a missing optimization.** It
-spends 32 forwards per generation (16 steps x guidance) where ACE-Step
-turbo spends 8 and needs none, and its DiT is 2.43B undistilled. §3a is
-why the 32 cannot come down much without the output visibly degrading.
-
-> **Revised twice on 2026-08-27.** The first version claimed 38x/61x —
-> real measurements of a sampler configuration that rendered badly (8
-> steps, guidance off, against a reference running 30 steps at guidance
-> 1.7); §3a is that diagnosis. The second revision fixed a decode path
-> that was O(song length) rather than O(window), a duration that was
-> hard-coded on a false premise, and instrumentation that reported a
-> flat 0.0 ms for the cost it was hiding; §3b is that one.
+> **Scope.** This family is a backend-generality demonstration. Stable
+> Audio 3 is the model that matters. Nothing here is optimized for
+> speed, and no distillation is proposed.
 
 ---
 
 ## 1. What MiniMax-Music3 actually is
 
-Three stages, ~11.8B parameters total:
+Three stages, ~11.8B parameters, and the first stage is the whole story:
 
 | Stage | Params | Role |
 |---|---|---|
-| Global LLM (Qwen3-derived) | 8.58B | autoregressive, 25 frames/s, emits semantic RVQ code `c0` |
+| **Global LM** (Qwen3-derived) | **8.58B** | **autoregressive, emits one acoustic frame at 25 Hz over a KV cache until an end-of-audio token** |
 | RVQ depth decoder | 646M | the 7 residual codebooks within each frame |
-| **Flow-matching DiT** | **2.43B** | **renders a continuous 128-ch latent at 86.133 Hz** |
+| Flow-matching DiT | 2.43B | renders a continuous 128-ch latent at 86.133 Hz |
 | DAV decoder | 54M | 512x upsample to 44.1 kHz stereo, deterministic |
 
-The AR stage's fused per-frame hidden states (8 x 4096 = 32768 per
-frame) pass through a 25M condition encoder to become the DiT's
-`encoder_hidden_states` `[B, T, 2048]`.
-
 **The DiT has no cross-attention and no text input.** Its only
-conditioning is that tensor. There is no path from a prompt to a
-denoise step that does not traverse the full 8.58B LM. This is the
-fact that shapes everything below.
+conditioning is `encoder_hidden_states [B, T, 2048]`, which a 25M
+condition encoder produces from the LM's fused per-frame hidden states
+(8 x 4096 = 32768 per frame). There is no path from a prompt to a
+denoise step that does not traverse the LM.
 
-## 2. Why only the renderer is streamed
+### Two frame rates, and they are not the same number
 
-Measured on this machine (RTX 5090, Windows), end to end for 25.9 s of
-audio: **RTF 0.436x** — slower than realtime. The breakdown says why:
+This is the error that produced every wrong figure in the previous
+version of this document, so it gets its own heading:
 
-| stage | share | s of GPU per s of audio |
-|---|---|---|
-| AR loop | **79.3%** | 0.330 (**0.55x realtime**) |
-| denoise loop | 20.2% | — |
-| vocoder | 0.4% | 0.018 |
-
-The autoregressive stage alone cannot keep up with a listener, and it
-is append-only: a committed frame can never be revised. Streaming the
-whole model is not possible.
-
-The renderer is a different animal. One DiT forward at L=689 is
-**35.3 ms** in bf16. DEMON's loop does one batched forward per tick
-over `depth` slots and finishes a whole generation every `steps/depth`
-ticks — so at the shipped 16 steps and depth 4 the entire 8-second song
-is regenerated every ~0.85 s eager, ~0.53 s on TensorRT.
-
-So: **run the AR stage once to fix a musical idea, then stream the
-renderer over it forever.** The conditioning becomes a captured
-artifact rather than a per-tick computation. This is also the only
-audio-conditioning path this checkpoint actually supports — upstream
-ships no converted audio encoder, and the community's measurements
-found arbitrary-WAV continuation losing to a trivial baseline, while
-"continue from your own generation" works.
-
-## 3. Measured results
-
-### Streaming (`scripts/minimax/minimax_stream_smoke.py`)
-
-Real backend, real `StreamPipeline`, real weights, depth 4 / steps 16 /
-shift 2.0 / guidance 1.7, covering at denoise 0.6:
-
-```
-                     eager bf16   TRT fp16    eager, 14.4 s song
-tick median            210.9 ms   131.6 ms              312.7 ms
-render median            6.1 ms     6.2 ms                6.1 ms
-rms                  -18.4 dBFS -18.2 dBFS            -20.0 dBFS
-gens/s                   1.186      1.900                 0.799
-60 s-gens/s              0.158      0.253                 0.192
-realtime                  9.5x      15.2x                 11.5x
-```
-
-Two things to read off the third column. Render cost is **identical at
-14.4 s and at 8 s**, which is the whole point of §3b — decode is now
-O(window), not O(song). And normalized throughput goes *up* slightly
-with length, consistent with the length sweep below: the short case is
-dispatch-bound.
-
-Guidance is what costs the headroom: it doubles the forwards per step.
-It is worth every one of them (§3a).
-
-## 3b. Song length, and the decode that assumed it was fixed
-
-Three claims in the first version of this file were wrong. All three
-came from treating 8 s as a property of the model.
-
-**"The DiT is trained on 200-AR-frame windows" — unsupported.** The
-number 200 is upstream's `_CHUNK_FRAMES`, an *inference* constant: it
-renders in 200-AR-frame windows on a 100-frame hop, splicing 172 latent
-frames of conditioning and carrying 172 latent frames between windows.
-`transformer/config.json` carries no `max_position_embeddings` (the RVQ
-depth decoder and the LM both do, so the absence is meaningful), RoPE is
-computed for whatever `seq_len` arrives, and there are no length
-assertions in either the diffusers or the reference implementation. No
-upstream source states a trained span.
-
-Measured here instead: a real 1240-frame capture renders in **one** DiT
-pass at 9.0x realtime, with RMS, high-frequency ratio and spectral
-centroid consistent across the song's first, middle and last thirds. It
-does not fall apart. Whether it is *as good* as chunk-and-carry at much
-longer spans is still unmeasured — that is an honest open question, not
-a limit.
-
-**"8.011 s" — arithmetic error.** 689 latent frames x 512 / 44100 =
-**7.99927 s**.
-
-**"The decoder is ~2% of the render budget" — wrong by an order of
-magnitude, and self-concealing.** It was a *whole-song* decode on every
-fresh latent: 44.5 ms at 8 s, and linear, so 346 ms at 60 s. Against a
-212 ms tick that is 21% on the tick it lands on and ~11 ms amortized —
-but it reported as `render median 0.0 ms`, because it fires on one tick
-in four and the median hides it. The backend also never assigned
-`last_dec_ms`, so the latency trace read a flat zero for the one cost
-that was growing.
-
-### What duration actually is
-
-**The autoregressive stage decides it.** `audio_duration` is a frame
-budget for the LM, which stops early on an end-of-audio token: asking
-this integration for 30 s returned a 14.4 s piece. So duration is
-requested (`SessionConfig.minimax_duration_s`) and then *adopted* from
-whatever the conditioning turns out to be. The previous code raised
-unless the capture was exactly 689 frames, which made every length but
-one unreachable.
-
-Bounds that are real: `MAX_AUDIO_FRAMES = 9000` (360 s) upstream, and
-the AR stage's 0.54x realtime — a 60 s composition costs ~111 s of
-one-time capture before any streaming starts.
-
-### Windowed decode
-
-Each `render_window` now decodes a fixed **58 latent frames** around the
-requested slice and keeps the middle. Two measurements size it, both in
-`scripts/minimax/minimax_decode_profile.py`:
-
-| guard (latent frames) | ms | mean rel err | peak rel err |
+| | rate | one frame is | what counts it |
 |---|---|---|---|
-| 0 | 0 | 1.1e-2 | 1.8e0 |
-| 4 | 46 | 1.7e-3 | 2.0e-1 |
-| 8 | 93 | 5.6e-4 | 1.5e-2 |
-| **9** | **105** | **5.5e-4** | **4.4e-3** |
-| 16 | 186 | 5.5e-4 | 4.4e-3 |
-| 32 | 372 | 5.4e-4 | 3.9e-3 |
+| **AR acoustic frame** | **25 Hz** | 40 ms | the LM's emission; `MAX_AUDIO_FRAMES = 9000` = **360 s** |
+| **DiT latent frame** | **86.133 Hz** | 11.6 ms | 44100/512; the renderer's sequence length |
 
-Peak error reaches the fp32 floor at **9 frames** and is flat after. An
-analytic walk of the conv stack puts the one-sided field at 10. The
-shipped guard is **12**. (The control — decoding the full 689 frames and
-comparing against itself — is 0.0e0 everywhere, so the probe is sound.)
+They differ by exactly 441/128. A 200-AR-frame conditioning window is
+689 latent frames. **Neither is comparable to another model family's
+frame rate as a throughput figure**, and the earlier document's
+`MINIMAX_LATENT_RATE_HZ` (86.13 Hz) was put next to ACE-Step's 25 Hz in
+a table as though it were.
 
-The second measurement is a trap rather than a size. **44100:48000
-reduces to 147:160, and a latent frame is 512 native samples with
-gcd(512, 147) = 1** — so a frame boundary is *not* an integer delivery
-sample. Resampling a block that starts on one lands on a different
-sample phase than resampling the whole song does, and the window
-disagrees with the full decode by **1.8e-1 relative RMS**. Not a
-rounding detail; a misalignment. The block is trimmed forward to a
-multiple of 147 native samples before resampling, which makes the
-offset back into it exact integer arithmetic. SA3 hit this too and
-solves it identically with a 588-sample (4 x 147) guard.
+Both constants now live in one place
+(`acestep/engine/minimax_render.py`) with the ratio stated as an exact
+integer, and `tests/unit/test_minimax_backend.py` pins the geometry the
+backend declares to the AR rate specifically.
 
-The decode span is 58 and not 56 because the kept span converts with
-floor on one end and ceil on the other: 0.36 s is 31.008 latent frames
-of audio but touches **33** of them at some start positions. Spot checks
-passed. A dense positional sweep did not, and is now a test.
+## 2. The architecture, and why it changed
 
-Result, verified across 59 windows spanning the song against a
-whole-song decode:
+### What was there
 
-| | before | after |
+The previous integration ran the AR stage **once** at session create,
+froze its output into a static conditioning tensor, and then streamed
+that tensor through DEMON's ring buffer: every tick submitted a
+partial-denoise "cover" of the same frozen composition, on the batch-axis
+staircase, at pipeline depth 4.
+
+The ring buffer and the staircase exist to make a **one-shot, whole-song
+diffusion model** behave like a stream. Applying them here converted a
+streaming model into a one-shot model in order to have something for the
+streaming machinery to do. It also made `set_prompt` cost a full 8.58B
+regeneration (tens of seconds), fixed the song length at session create,
+and made the only live controls re-renders of a composition that could
+never change.
+
+### What is there now
+
+The backend drives the model's own loop.
+
+```
+MiniMaxARStream          25 Hz frames, one at a time, over a live KV cache
+        |                (steerable per frame; re-promptable without losing the music)
+        v
+MiniMaxLatentStream      200-frame conditioning window -> 689 latent frames,
+        |                172 frames of committed carry locked at every sampler
+        |                step, 344 frames committed, 173 discarded as lookahead
+        v
+MiniMaxLatentDecoder     guarded windowed decode, 12 latent frames each side
+        v
+_DeliveryResampler       44.1 -> 48 kHz, phase-exact across block boundaries
+        v
+MiniMaxBackend           append-only frontier behind GeneratorBackend
+```
+
+`MiniMaxBackend` is the **second append-only family** behind the Tier-1
+seam, after MRT2, and it takes MRT2's shape: `render_window` ignores the
+runner's position hint and returns the next frontier chunk, the song is
+a rolling window the frontier overwrites and the player loops, and each
+emission re-issues the previous one's last 1200 samples so the runner's
+leading-edge crossfade blends identical audio.
+
+`Capabilities` is all-False, and honestly so: an autoregressive stage
+cannot revise a frame it has emitted, so `refines_audio` is not a
+missing feature.
+
+### Why the ring is gone rather than optional
+
+Chunk *k*'s left context is chunk *k-1*'s committed output. Consecutive
+renders are strictly dependent, so there is nothing to put on a batch
+axis and nothing to pipeline. A staircase over this model would be a
+staircase of one.
+
+### The chunk geometry
+
+Upstream's inference constants, read as a streaming loop:
+
+```
+|<-- carry 172 -->|<---- commit 344 ---->|<-- lookahead 173 -->|
+|<--------------------- chunk 689 ----------------------------->|
+   already committed    the only part      rendered and thrown
+   audio, locked at     that is kept       away
+   every sampler step
+```
+
+* **Carry.** At every sampler step the first 172 latent frames are
+  overwritten with the noised committed latent at that step's `t`
+  (MiniMax's own forward interpolant, `x_t = (1-t)*noise + t*data`), and
+  restored exactly at `t = 1`. This is what makes the stream continuous
+  rather than a sequence of independent 8-second renders. Measured at a
+  chunk seam: sample-to-sample delta 0.006 against a p99.9 of 0.18 for
+  the signal as a whole — the seam is quieter than the music.
+* **Commit.** Exactly the region the next chunk's carry will need, so
+  consecutive commits abut and nothing is written twice.
+* **Lookahead.** Discarded so the committed region is never generated at
+  the edge of the model's window. It is not waste, it is **latency** —
+  see §4.
+* **No drift.** Each chunk's latent origin is derived from its absolute
+  AR index (`ar_index * 441 // 128`), not from a constant hop. A
+  constant 344-frame hop would slip half a latent frame per chunk, which
+  is 0.6 s of conditioning-to-latent skew over a six-minute piece. The
+  hop alternates 344/345 instead. `tests/unit/test_minimax_render.py`
+  pins this over 400 chunks.
+
+## 3. What it costs
+
+Measured on an RTX 5090, TensorRT fp16 renderer, bf16 AR stage.
+
+### Each stage alone
+
+| stage | rate | realtime | script |
+|---|---|---|---|
+| **AR emission** | **53.6 ms/frame** | **0.75x** | `minimax_ar_bench.py` |
+| chunk render, TRT fp16 | 513 ms / 4.0 s commit | 7.8x | `minimax_stream_bench.py` |
+| chunk render, eager bf16 | 841 ms / 4.0 s commit | 4.8x | `minimax_stream_bench.py` |
+| guarded decode | ~6 ms/window | — | `minimax_decode_profile.py` |
+
+AR cost is **flat in context length** — 56.4 ms over frames 0-50 and
+52.7 ms over frames 250-300, across a 300-frame run. Attention over the
+growing KV cache is not a factor at these lengths; the cost is 36 layers
+of small ops at batch 2 plus seven depth-decoder forwards, per frame.
+
+### Both together, which is not what the parts predict
+
+Session means over 70-100 s runs, TensorRT:
+
+| | hop=100 (default) | hop=25 |
 |---|---|---|
-| per render | 0 ms (cached) + 44.5 ms spike per generation | **6.0 ms**, every render |
-| at 14.4 s | ~80 ms per generation | **6.1 ms** — identical |
-| at 60 s | ~346 ms per generation | 6 ms (unchanged) |
-| agreement with full decode | n/a | worst 1.4e-2 (-37 dB), bf16 decode noise |
+| **end-to-end** | **0.54x realtime** | **0.48x realtime** |
+| audio committed / wall | 53.8 s / 100 s | 33.8 s / 70 s |
+| AR, co-resident | 57-61 ms/frame (0.65-0.70x) | 54.2 ms/frame (0.74x) |
+| chunk render, co-resident | 855-1030 ms per 4.0 s | 518 ms per 1.0 s |
+| first audio | 11.7 s | 11.6 s |
 
-The guard wraps cyclically: at the song head the leading context comes
-from the tail, which is not an approximation because the ring loops and
-the tail is literally what plays into the head.
+**Co-residency lands on the render, and it scales with how long the AR
+runs between renders.** At the default hop the worker writes 100 AR
+frames — about 6 s of language model — between DiT turns, and the chunk
+render roughly doubles (513 → ~1030 ms) because the DiT's weights are
+gone from cache by the time it runs again. At hop=25 the renders are
+frequent enough to stay warm and come in at 518 ms, which is their
+isolated speed.
 
-### Two other defects the same audit turned up
+So benchmarking either stage alone overstates the pipeline, and
+benchmarking with a hop that does not match production overstates it
+again. That is the same trap the previous document fell into, at a
+larger scale.
 
-- **Depth was silently ignored.** `minimax_session` read
-  `pipeline_depth` off `SessionConfig`, which names the field `depth`.
-  `getattr` returned its literal default forever, so a client asking for
-  depth 8 got 4. SA3 reads the right field.
-- **The ring buffer was 34 samples too long.** It was sized
-  `round(duration * 48000)` while the resampler yields
-  `ceil(n * 160/147)`, so the last ~0.7 ms of every song was never
-  written. Both now come from `minimax_delivery_samples`.
+These are session means. The per-sample values wander by ~15% run to
+run, which is enough to move an end-to-end figure — the backend's params
+echo reports means for that reason.
 
-### Throughput, and what a 60 s generation would cost
+**Below 1.0 means the frontier cannot keep ahead of a playhead.** The
+rolling window laps and the listener hears earlier material repeat; a
+60 s window is ~90% freshly written after 100 s. This is reported rather
+than hidden: `frontier_lead_s`, `ar_realtime`, `chunk_render_ms` and
+`ar_finished` ride the params echo on every generation.
 
-The family's unit is one whole song, and the default is 7.999 s, so
-"generations per second" here counts 8 s of audio each. `scripts/minimax/minimax_length_bench.py`
-times one DiT forward across lengths and normalizes, so the number is
-comparable against a family with a different fixed duration.
+### Whose limitation this is
 
-Eager bf16, 16 steps, guidance on (32 forwards per generation):
+The AR stage is **launch-bound, not bandwidth-bound**, at batch 2 with a
+sequence length of one. Upstream serves this checkpoint through
+SGLang-Omni, not a plain torch decode loop; the checkpoint ships only an
+HTTP client for it. **0.75x is a property of this dependency-free
+reimplementation, not a measurement of the model's ceiling.** CUDA
+graphs are the obvious lever and are deliberately not taken here.
 
-| song | frames | B | ms/forward | ms/sample | vs linear | gen/s | 60 s-gen/s | xRT |
-|---|---|---|---|---|---|---|---|---|
-| 8 s | 689 | 1 | 36.1 | 36.1 | 1.00 | 0.86 | 0.115 | 6.9x |
-| 8 s | 689 | 4 | 103.6 | 25.9 | 0.72 | 1.21 | 0.161 | 9.7x |
-| 16 s | 1378 | 4 | 198.2 | 49.5 | 0.69 | 0.63 | 0.168 | 10.1x |
-| 30 s | 2583 | 4 | 353.3 | 88.3 | 0.65 | 0.35 | 0.177 | 10.6x |
-| 60 s | 5167 | 4 | 862.8 | 215.7 | 0.80 | 0.14 | 0.145 | 8.7x |
+### VRAM
 
-**Sequence length is close to free.** `vs linear` is cost per frame
-normalized to the 8 s B=1 point; it stays at or *below* 1.0 out to 5167
-frames, so the attention term never takes over in this range — the
-short case is dispatch-bound and gets *more* efficient per frame as it
-grows. Normalized throughput is therefore roughly flat at **0.14-0.18
-sixty-second generations per second** across an 7.5x span of lengths,
-which makes it a compute roof rather than a length effect.
+| | |
+|---|---|
+| renderer only (DiT + DAV + condition encoder), bf16 | 5.03 GB |
+| AR stage, resident | 17.4 GB |
+| TRT fp16 engine | 4.88 GB |
 
-The B=4 column is the one that matters: it is the ring at depth 4, and
-103.6 ms x 2 passes reproduces the measured 212.1 ms tick almost
-exactly, which says the tick is essentially pure DiT with no streaming
-overhead worth naming.
+Streaming requires the AR stage **resident**, not paged: it runs
+continuously rather than once per composition, and moving 18 GB across
+PCIe between chunks would cost more than the chunks do. That is the real
+deployment cost this architecture adds — the renderer alone fits
+comfortably on a 24 GB card and the pair does not.
 
-Two things that number does **not** say:
+## 4. Knob-to-ear, measured
 
-- **It is affordability, not quality.** The DiT is trained at 689
-  frames. Everything past that is out of distribution, and upstream has
-  an open long-horizon coherence bug (drift after ~15 s) on top.
-- **There is no TensorRT engine past 689.** Engines are built per length
-  profile and the shipped one is `l2_689_689`, so every row above 8 s is
-  eager. TRT is worth 1.6x at 8 s; whether it holds at 5167 frames is
-  unmeasured, because no such engine exists yet.
+Measured knob-to-**frontier** (the wall time until audio produced under
+the new setting reaches the delivery frontier). Add the playback lead
+for knob-to-ear.
 
-A 60 s *composition* also costs an AR capture of 1500 frames at 0.54x
-realtime — about 111 s, once, before any of this runs.
+| knob | stage | hop=100 | hop=25 |
+|---|---|---|---|
+| `minimax_guidance` | renderer | **6.7-7.1 s** | **1.65 s** |
+| `minimax_temperature` | AR | **8.6-9.8 s** | 10.8 s |
+| `set_prompt` (re-prefill) | AR | 7.9 s | — |
+| end-to-end throughput | | 0.54x | 0.48x |
 
-## 3a. Sampler settings: the measurement that fixed the output
+Two different floors, for two different reasons.
 
-The first version of this integration streamed at 8 steps with no
-guidance, and the result was the same song as the reference at
-noticeably worse quality. Nothing in the parity suite moved, because
-every gate there measures a single forward or a single trajectory
-against a stored latent — none of them measure the settings the ring
-buffer actually runs.
+**A renderer knob waits for the next chunk render to begin**, which
+means waiting for the AR stage to fill the next hop. `minimax_hop` is
+the lever and it trades directly against throughput: a smaller hop
+commits less audio per render, so more of the same audio is re-rendered.
+7.1 s down to 1.6 s costs 0.54x down to 0.46x.
 
-`scripts/minimax/minimax_quality_ablation.py` is the instrument that
-does. It walks one variable at a time from ground truth outward (decode
--> sampler -> step count -> guidance -> pipeline -> ring buffer) and
-scores each rung in both the latent and audio domains.
+**An AR knob does not benefit from the hop at all**, and the reason is
+geometric rather than budgetary. A frame written now sits inside a
+200-frame conditioning window whose commit region ends 150 frames before
+the window does, so it cannot be committed until the LM has written up
+to 150 more frames — 6 s of audio, ~8 s of wall clock, whatever the hop
+is. (At hop=25 it gets slightly *worse*, because the extra render load
+slows the AR stage.) Shrinking that floor means shrinking the chunk or
+the lookahead, which is a quality question — the committed region would
+then sit at the edge of the model's window — and it is unmeasured.
+
+### What live steering actually buys here
+
+Weaker than the diffusion families on latency, and stronger on kind:
+
+* **AR sampling steers the composition as it is being written.**
+  `minimax_temperature`, `minimax_top_k` and `minimax_ar_guidance` are
+  read fresh at every 40 ms frame the LM emits. The cover architecture
+  could only re-render a composition that was already fixed.
+* **`set_prompt` is live.** `MiniMaxARStream.reprompt` swaps the text
+  prefix and rebuilds the KV cache against the audio history rather than
+  regenerating it: the frames are already decided, so they replay as one
+  batched prefill. **Measured 127 ms over 150 frames (6 s) of history,
+  and 270 ms over 600 frames (24 s) mid-stream**, against tens of
+  seconds to regenerate the same span. The piece keeps its history and
+  its phase, and the new caption steers what comes next; the swap itself
+  is far below the ~8 s it then takes to reach the frontier, so the AR
+  geometry is the cost, not the re-prefill.
+* **`set_prompt_blend` is refused, loudly.** The other families
+  interpolate two conditioning tensors. MiniMax's conditioning is a KV
+  prefix inside an 8.58B LM; there is no second one to interpolate
+  toward without running a second LM. The backend raises
+  `UnsupportedOperation` rather than accepting a knob that does nothing.
+
+## 5. What was published before, and what is true
+
+Every row below was in `docs/MINIMAX.md` or `out/README.md` and is
+wrong. Treat the git history of those files, and the current body of
+draft PR #332, as superseded.
+
+| claimed | actual |
+|---|---|
+| "9.5x realtime eager, 15.2x TRT" | Renderer only, with the AR stage excluded. End to end is **0.54x**. |
+| "16.7x realtime at a 14.4 s song" — the headline | Same omission, and the best case of it. |
+| "roughly 20-70x slower than its siblings in normalized terms" | Also renderer-only, in a `60 s-gens/s` unit that has no meaning for a model with no fixed song length. The real gap is different in size and in kind: **the AR stage is under realtime and the renderer is not the problem**. |
+| `gens/s` and `60 s-gens/s` tables | A "generation" was one cover of a frozen composition. There is no such object now: audio is committed once and never re-rendered. Both units are withdrawn. |
+| `chunk_rate_hz` = 86.133 Hz beside ACE-Step's 25 Hz | Different quantities (§1). The backend now declares **25 Hz**, the AR acoustic rate, with the distinction pinned by a test. |
+| "the AR stage's 0.54x realtime" (§6, in passing) | Directionally right, and never connected to the architecture. Measured cleanly it is **0.746x**; the earlier figure was taken under per-stage profiling. Either way it is below realtime, which is the fact the design should have turned on. |
+| "a 60 s composition costs ~111 s of one-time capture before any streaming starts" | True of the capture architecture, and no longer how the family works: the stream starts after 200 AR frames plus one render, **11.7 s**, and extends indefinitely. |
+| "Treating 200 as a model limit was an error" | Correct, and still correct — but the conclusion drawn from it (render the whole song in one pass) was the wrong one. 200/100/172 is upstream's *streaming* contract, and it is what the backend now implements. |
+| "8.011 s" | 689 x 512 / 44100 = **7.99927 s**. Carried over; it was already corrected once. |
+| "render cost is identical at 14.4 s and 8 s" | True of the windowed decode, and now moot: there is no whole-song render to compare against. |
+
+Two earlier claims **survive** and are unchanged:
+
+* **The sampler operating point** (§6 below): 16 steps / shift 2.0 /
+  guidance 1.7, at latent cosine 0.9993 and log-mel 0.032 against the
+  reference. Re-derived nothing; the measurement was sound and the
+  shipping sampler uses it.
+* **The TensorRT recipe** (§7): fp16 trunk with fp32 islands,
+  STRONGLY_TYPED, 15.7 ms/forward at L=689 against eager bf16's 35.3.
+  The engine is built at exactly the chunk shape the streaming renderer
+  uses, so it transferred without a rebuild.
+
+## 6. Sampler settings
+
+Unchanged from the previous measurement, and reproduced here because it
+is the one part of the earlier work that the audit confirmed rather than
+contradicted. `scripts/minimax/minimax_quality_ablation.py` walks one
+variable at a time from ground truth outward and scores each rung in
+both the latent and audio domains.
 
 **The A/B, at matched conditioning and matched noise:**
 
-| | latent cos | log-mel | left/right corr | RMS | >8 kHz energy |
+| | latent cos | log-mel | L/R corr | RMS | >8 kHz energy |
 |---|---|---|---|---|---|
 | reference (diffusers) | 1.0 | 0 | +0.096 | -21.2 dB | 0.0041 |
 | 8 steps, no guidance | 0.744 | 0.244 | **-0.128** | **-30.7 dB** | **0.0193** |
 | **16 steps, shift 2.0, guidance 1.7** | **0.9993** | **0.032** | +0.101 | -21.1 dB | 0.0040 |
 
-The mechanism is legible in the last column: 4.7x the reference's
-above-8 kHz energy is undenoised residual, still sitting on the latent
-when the schedule runs out of steps. Because that residual is
+4.7x the reference's above-8 kHz energy is undenoised residual still
+sitting on the latent when the schedule runs out of steps; being
 uncorrelated between channels it also inverts left/right correlation,
-which is why it read as phasey and hollow rather than simply quiet.
+which is why it read as phasey rather than merely quiet.
 
-**What the grid says, in order of size:**
+1. **Guidance is not optional and is worth more than steps.** Unguided
+   sampling plateaus at ~0.11 log-mel and stays there — 40 unguided
+   steps score worse than 8 guided ones.
+2. **Step count trades against schedule warp nearly one for one.**
+   Measured pairing: 30/1.0, 20/1.5, 16/2.0, 12/3.0.
+3. **RCFG is unusable here.** `initialize` scores 0.45-0.70 log-mel and
+   `self` 0.52-0.92, against 0.03-0.12 for a real uncond pass.
+4. **Stock APG is the wrong combine operator** — ~4x worse than textbook
+   CFG (0.125 vs 0.032 at 16/2.0); its norm cap is calibrated for ACE's
+   latent scale. The streaming renderer therefore computes CFG directly
+   (`v_neg + (v_pos - v_neg) * w`) rather than routing through the
+   shared solver's guidance path.
 
-1. **Guidance is not optional, and it is worth more than steps.**
-   Unguided sampling plateaus at ~0.11 log-mel from the reference and
-   *stays there* — 40 unguided steps score worse than 8 guided ones.
-2. **Step count trades against schedule warp nearly one for one.** The
-   unwarped schedule needs the reference's 30 steps; warping toward the
-   noise end buys most of that back. The measured pairing is 30/1.0,
-   20/1.5, 16/2.0, 12/3.0. Lowering steps without raising shift gives
-   up most of what the steps were buying.
-3. **RCFG is unusable on this model.** Both StreamDiffusion modes were
-   measured: `initialize` (cache the uncond velocity from step 0)
-   scores 0.45-0.70 log-mel and `self` (uncond ~ initial noise) scores
-   0.52-0.92, against 0.03-0.12 for a real uncond pass. The uncond
-   velocity moves too much along the trajectory here to be approximated
-   away.
-4. **Stock APG is the wrong combine operator here** — ~4x worse than
-   textbook CFG (0.125 vs 0.032 log-mel at 16/2.0). Its `norm_threshold`
-   is calibrated for ACE's latent scale and throttles a 689-frame
-   guidance delta nearly to nothing. The backend therefore asks for
-   `apg_eta=1.0`, `apg_norm_threshold=0.0`, `apg_momentum=0.0`, which
-   reduces APG exactly to `v_u + w*(v_c - v_u)`.
+16/2.0/1.7 is statistically indistinguishable from the reference's own
+30/1.0/1.7: over 8 independent noise draws, log-mel distance to the
+reference is 0.1631 for both (sd 0.005), as are RMS, HF ratio and stereo
+width. It costs 32 forwards instead of 60.
 
-**16 steps / shift 2.0 / guidance 1.7 is statistically indistinguishable
-from the reference's own 30 / 1.0 / 1.7.** Over 8 independent noise
-draws, log-mel distance to the reference is 0.1631 for both (sd 0.005),
-as are RMS, high-frequency ratio and stereo width. The shipped setting
-costs nothing but 32 forwards instead of 60.
+The ablation now runs this rung on **the code a session executes**
+(`MiniMaxChunkRenderer.render_cond`), not on the harness's own Euler
+loop: `L4_shipping_sampler` scores cos **0.99931** / log-mel **0.0322**
+on the fixture, reproducing the row above, and agrees with the reference
+loop to cos 0.999878 (rel RMS 1.6e-2, bf16 accumulation). Before the
+rewrite that rung measured a sampler nobody shipped.
 
-### What was ruled out, with numbers
+### The step count needed its own knob
 
-Worth recording, because each was a plausible suspect:
+`SessionConfig.steps` defaults to ACE's 8, so the create path takes the
+family floor of 16. That was not enough on its own: the shared
+`steps_override` knob **also** defaults to 8 and caps at 16, so the
+first tick read it back and reset every session to the broken setting —
+found by instrumenting a real session create, which rendered 16 forwards
+where it should have run 32. The family now declares `minimax_steps`
+(default 16, range 8-40) instead, and the create path publishes the
+resolved value into the bank. `seed` is still taken from the shared
+registry, because it means exactly the same thing everywhere.
 
-| suspect | measurement | verdict |
-|---|---|---|
-| TensorRT engine | the degraded files were eager | not involved |
-| DAV decode / 44.1->48 kHz resample | decoding the reference's own final latent reproduces it exactly | clean |
-| ring buffer, crossfade, window placement | ring vs the same backend's whole-song render: rel RMS **0.0093**, log-mel 0.0011, and 0.000 in every second after the first | clean |
-| generations drifting apart across the ring | consecutive-generation cosine median **1.0000**, min 0.9824 over 43 covers | stable |
-| `StreamPipeline` solver vs a hand-written Euler loop | same noise, same settings: cos **0.9962** | equivalent |
-| the noise source | the reference's own `initial_noise` is iid N(0,1) to within a fresh `randn` control | correct |
-| the partial-denoise cover path | at denoise 0.6 a cover holds the anchor's balance to +0.24 dB RMS and 1.05x HF | clean |
+**Parity** (fp32, against the diffusers reference on real inputs):
+DiT B=1 bit-identical; DiT B=4 with per-row `t` cos 0.999999999998; DAV
+1.000000000000; condition encoder 1.000000000000. Chain level
+(`minimax_chain_parity.py`) cos 0.999868, rel RMS 1.7e-2 (bf16).
 
-The one honest open observation: our takes average left/right
-correlation 0.43 (sd 0.15) while the single reference take sits at
-0.096. On the reference's *own* noise we reproduce its width exactly
-(0.098), so this is either take-to-take variance on a high-variance
-statistic or an upstream difference invisible from one reference
-sample. It needs more than one upstream render to call, and it is not
-the degradation that was being chased.
-
-### Parity
-
-Module level, fp32, against the diffusers reference on real inputs
-(real AR hiddens -> real conditioning, not random tensors):
-
-| | cosine |
-|---|---|
-| DiT, B=1, four timesteps | **bit-identical** (rel_rms 0.0) |
-| DiT, B=4 with per-row `t` | 0.999999999998 |
-| DAV on a real latent | 1.000000000000 |
-| condition encoder | 1.000000000000 |
-
-Chain level (`scripts/minimax/minimax_chain_parity.py`) drives the
-adapter from a reference run's `initial_noise` and lands on its
-`final_latent`: **cos 0.999868**, rel RMS 1.7e-2 (bf16).
-
-### DiT latency, L=689, this GPU
-
-| B | bf16 | ms/sample | fp32 |
-|---|---|---|---|
-| 1 | 35.3 ms | 35.3 | 90.2 ms |
-| 2 | 56.0 | 28.0 | 167.1 |
-| 4 | **103.1** | 25.8 | 319.9 |
-| 8 | 183.6 | 23.0 | 596.0 |
-
-Batching is a weak lever (B=8 is only 1.54x the per-sample throughput
-of B=1) but nearly free in memory: 5.03 -> 5.47 GB.
-
-### VRAM
-
-Renderer only (DiT + DAV + condition encoder), no LM: **5.03 GB** bf16,
-7.18 GB peak during a 20 s decode. The full pipeline including the AR
-stage peaks at 24.5 GB.
-
-## 4. The design, and what it costs
-
-Implemented as a **Tier-2 `ModelAdapter` plus a thin `DiffusionBackend`
-subclass**, the SA3 shape — the DiT refines a whole fixed-length latent
-and can answer "give me the audio at song second X", so `refines_audio`
-is true and the append-only path does not apply.
-
-The adapter is **two conversions, not one**:
-
-- **Layout.** MiniMax is native `[B, C, T]`; the pipeline is `[B, T, C]`.
-- **Time direction.** MiniMax runs `t` from 0 (noise) to 1 (data) and
-  steps Euler *forward*. DEMON runs `s` from 1 down to 0 with
-  `x0 = xt - v*s`. Substituting `s = 1-t` makes the interpolants
-  identical, so only two scalars convert: `t = 1 - s`, and the velocity
-  **negates**.
-
-That negation is load-bearing and silent when wrong — a sign-flipped
-control run produces output *uncorrelated* with the reference
-(r ~ 0.08) rather than an obvious error, which is why there is a
-numeric gate for it rather than a listening test.
-
-**What you give up:** `set_prompt` is seconds, not one pipeline flush,
-because it re-runs the 8.58B LM (measured **14.8 s** for an 8 s span,
-17.3 GB peak, 0.54x realtime). Duration is fixed for the session's
-lifetime — requested via `minimax_duration_s`, decided by the AR stage,
-adopted at create. It is not fixed at 8 s and never was a model limit
-(§3b).
-
-**What survives:** everything DEMON steers solver-side lands in one
-tick via the shared-curve override — denoise, seed, the source lock,
-the feedback delay tap. Three knobs fall out of the architecture rather
-than being invented for it:
-
-- `minimax_guidance` is the reference pipeline's own CFG scale. 1.0
-  disables the negative pass and halves the compute; §3a says why that
-  is a bad trade on this model.
-- `minimax_cond_strength` interpolates the capture toward zeros, which
-  is literally the model's own unconditional CFG branch, so 0.0 is a
-  defined operating point rather than an extrapolation. At 0.0 the
-  positive and negative bundles coincide and guidance becomes a no-op —
-  coherent, since the guidance direction around a point is zero.
-- `minimax_shift` warps the schedule. It is **not** an independent
-  quality dial: it is matched to the step count (30/1.0, 20/1.5,
-  16/2.0, 12/3.0), and moving one without the other gives up most of
-  what the other was buying.
-
-Prompt blending slerps between two captures per frame.
-
-### The seam change guidance needed
-
-`SlotRequest.neg_conditions` is ACE-shaped — a list of `SlotCondition`
-carrying `encoder_hidden_states` and a mask. A Tier-2 family keeps all
-of its conditioning in the opaque `aux_cond` bundle and so could not
-populate it, which meant **no `aux_cond` family could run CFG at all**,
-silently: `has_cfg` returned False, no negative pass was scheduled,
-nothing raised. That is how the first version shipped unguided.
-
-Two additions to the shared pipeline fix it, both defaulted so ACE and
-SA3 are byte-identical:
-
-- `SlotRequest.neg_aux_cond` — the negative branch of the bundle. The
-  negative forward pass now swaps it in. Sending `aux_cond` on both
-  passes would be the worse bug: `v_neg == v_pos`, APG returns `v_pos`,
-  and guidance costs a full extra forward per step while doing nothing.
-- `SlotRequest.apg_eta` / `apg_norm_threshold` — APG's two shape
-  parameters, per request, so a family can select the guidance operator
-  its model was actually trained with.
-
-`tests/unit/test_stream_aux_cfg.py` covers both, including the near
-miss and the "ACE is untouched" direction.
-
-SA3 is the other `aux_cond` family and also streams with no negative
-bundle, but that is deliberate rather than the same bug: its
-post-trained checkpoints are guidance-distilled and run `cfg_scale=1.0`
-by design (see the note in `sa3_adapter.py`). The distinction is worth
-keeping straight — the seam was missing a capability, and only one of
-the two families needed it.
-
-## 5. TensorRT — built and measured
+## 7. TensorRT
 
 Built, gated, and streaming. **2.25x over eager bf16 at B=1.**
 
-### Latency, L=689, RTX 5090 (median ms/forward)
+Median ms/forward at L=689, RTX 5090:
 
 | | B=1 | B=4 |
 |---|---|---|
@@ -466,228 +378,174 @@ Built, gated, and streaming. **2.25x over eager bf16 at B=1.**
 | eager bf16 | 35.6 | 103.0 |
 | eager fp16 | 30.4 | 90.5 |
 | TRT fp32 | 45.1 | 182.1 (looped) |
-| **TRT fp16** | **15.7** | **54.4** batched / 63.3 looped |
+| **TRT fp16** | **15.7** | 54.4 batched / 63.3 looped |
 
-Real depth-4 tick through the adapter: **64.0 ms vs 103.0 ms** eager
-bf16. End-to-end streaming at the shipped settings (guidance on, so two
-passes per step): **132.2 ms median tick, 15.1x realtime headroom**
-against eager bf16's 212.1 ms / 9.4x.
+Per-step parity vs eager fp32, bar cos >= 0.9998: 0.999981-0.999988
+across t, rel RMS 4.8-6.2e-3, flat in t (trunk quantization, not an
+angle problem). Full 30-step CFG trajectory vs the fixture's
+`final_latent`: TRT fp16 0.999677.
 
-Known lever, not taken: `find_dit_engine` pins `batch=1` and the
-adapter loops the ring, so the b2-4 engine that is already built never
-gets used. Batched is 54.4 ms at B=4 against 63.3 looped, so this is
-worth roughly 15% of a tick. It needs `make_dit` to know the tick batch
-size, which is a seam change, and 15.1x realtime did not justify one.
+> Eager **bf16 is not a usable parity reference** on this model — it
+> only reaches 0.998-0.9997/step against fp32. The fixture is itself a
+> bf16 run, so bf16 scoring highest is agreement with its own
+> quantization.
 
-### Parity — real fixture conditioning, never random
+The canonical engine is `l2_689_1400` (ranged, tuned at 689). The
+streaming renderer always asks for exactly 689, so the pinned engine is
+selected when both are built; the range exists for the parity harness.
+fp16 is 4.88 GB / 33-44 s build / 2.0 s load.
 
-Per-step vs eager fp32, bar cos >= 0.9998:
+Notes that each cost a build attempt: batch cannot be dynamic from 1
+(`torch.export` 0/1-specializes; production engines are batch-1 and the
+renderer issues cond and uncond as two forwards); same trap on length,
+profile min 2; the "fp32" engine is really TF32. **Build on an idle
+GPU** — engines built under contention succeed and then segfault on
+load. **Do not try fp16 on the DAV vocoder**: measured all-NaN.
 
-| t | TRT fp16 | rel RMS | TRT fp32 | rel RMS |
-|---|---|---|---|---|
-| 0.05 | 0.999988 | 4.81e-3 | 0.999999 | 1.64e-3 |
-| 0.30 | 0.999981 | 6.14e-3 | 0.999999 | 1.73e-3 |
-| 0.60 | 0.999981 | 6.19e-3 | 0.999998 | 1.77e-3 |
-| 0.95 | 0.999988 | 4.83e-3 | 0.999999 | 1.71e-3 |
-
-Both pass. Full 30-step CFG-1.7 trajectory vs the fixture's
-`final_latent`: TRT fp16 **0.999677**, TRT fp32 0.999641, eager fp32
-0.999642, eager bf16 0.999867.
-
-That bf16 number is a trap worth naming: the fixture is *itself* a bf16
-reference run, so eager bf16 scoring highest is agreement with its own
-quantization, not with ground truth. The gate grades against eager
-fp32 and prints bf16 for context only. Relatedly, **eager bf16 is not a
-usable parity reference on this model** — it only reaches cos
-0.998-0.9997/step against fp32, worst at t=0.30.
-
-### Engines
-
-fp16 4.88 GB / 33-44 s build / 5.08 GB VRAM / 2.0 s load; fp32 9.73 GB /
-51 s. ONNX export 76-78 s each.
-
-**The profile is ranged, not pinned.** Sessions run at whatever length
-the autoregressive stage produces, and an engine serves only the range
-its profile declares — a 689-max engine silently drops every other
-duration to eager and costs ~1.7x. The canonical build is now
-`l2_689_1400` (2 to ~16.3 s, tuned at 689). It measured **identical** to
-the pinned engine in build time (33 s) and size (4.88 GB), and still
-clears the parity bar at the top of its range:
-
-| t | TRT fp16 vs eager fp32, L=1240 | rel RMS | eager bf16 |
-|---|---|---|---|
-| 0.05 | 0.999992 | 3.9e-3 | 0.999766 |
-| 0.30 | 0.999969 | 7.9e-3 | 0.998022 |
-| 0.60 | 0.999982 | 6.1e-3 | 0.999142 |
-| 0.95 | 0.999990 | 4.5e-3 | 0.999731 |
-
-Selection is automatic and prefers the tightest covering profile, so a
-689-frame session still gets the pinned engine if both are built. At
-L=1240 TensorRT is 26.1 ms/forward against eager bf16's 44.6. Built with
-`acestep/engine/trt/minimax_build.py`, reusing
-`sa3_build.py::_build_strongly_typed_engine` unchanged. No plugins.
+fp16 is both faster and more accurate than bf16 on this DiT in eager
+(60.7 ms/step at 48.7 dB SNR vs 70.4 at 29.3). The SA3 RoPE failure mode
+does not occur: `_rope_tables` pins `arange`/`inv_freq` to fp32 and the
+TRT path keeps the rotation itself in fp32; the builder asserts it, so
+an edit that drops the `.float()` fails the build rather than shipping
+half-radian rotations.
 
 ```bash
 .venv/Scripts/python.exe -m acestep.engine.trt.minimax_build --precision fp16
 .venv/Scripts/python.exe scripts/minimax/minimax_trt_parity.py
 ```
 
-**Build on an idle GPU.** Engines built under contention succeed and
-then segfault on load; nothing in the codebase enforces this.
+## 8. The capture stage, now a development path
 
-### Things that cost a build attempt each
+`scripts/minimax/minimax_capture.py` still runs the AR stage to
+completion and saves the fused per-frame hidden states. It is no longer
+how a session is conditioned — a session opens a live `MiniMaxARStream`
+— but the artifact is more useful than before:
+`ReplayARStream` serves a saved capture through the same interface, so
+the renderer, the chunk geometry and the whole frontier path can be
+exercised **without 21 GB of language model resident**. That is how the
+streaming gates run on a machine that cannot hold the LM, and it is what
+`DEMON_MINIMAX_CAPTURE` selects.
 
-- **Batch cannot be dynamic from 1.** `torch.export` 0/1-specializes,
-  and the `matmul` decomposition emits a `batch != 1` guard at
-  `proj_out`. A batch-dynamic export is only legal with `min_batch >=
-  2`, so production engines are batch-1 like SA3's and the adapter's
-  `trt_batch1` branch loops slots. The `b2_4` engine exists only to
-  measure the B=4 line and is excluded from discovery.
-- **Same trap on length**; profile min is 2.
-- **The "fp32" engine is really TF32** — TRT sets `BuilderFlag.TF32` by
-  default. Proven rather than assumed: eager TF32 vs strict eager fp32
-  deviates by exactly the amount the engine does (1.64-1.77e-3 across
-  the four t values). So its apparent 2x over eager fp32 is 1.23x over
-  an eager TF32 baseline. It is a control, not a candidate.
+A capture must carry `frame_hiddens` (the raw 25 Hz output). One holding
+only `encoder_hidden_states` has already been projected to the latent
+rate at one fixed window length and cannot be re-chunked; `load_replay_stream`
+refuses it rather than mis-windowing it silently.
 
-### Precision, and the RoPE question
-
-fp16 is both faster *and* more accurate than bf16 on this DiT in eager
-(60.7 ms/step at 48.7 dB SNR vs 70.4 at 29.3), so fp16-mixed
-STRONGLY_TYPED was the target and it cleared the bar.
-
-The SA3 failure mode — bf16 RoPE rotation angles reaching thousands of
-radians where the spacing is ~32 rad — does not occur here.
-`_rope_tables` already pins `arange`/`inv_freq` to fp32 regardless of
-module dtype, and the TRT path keeps the **rotation itself** in fp32
-rather than casting the table down. The exported graph confirms it:
-fp32 `Range`/`Cos`/`Sin`, 147 fp32 `Mul` + 72 fp32 `Neg` (the rotation
-island), 72 fp32 `LayerNormalization`, fp32 time-embed `Gemm`s, 290
-fp16 trunk `MatMul`, fp32 IO. The builder asserts the fp32 tables so an
-edit that drops the `.float()` fails the build rather than shipping
-half-radian rotations.
-
-The fp16 error is **flat in t** (4.8e-3 at the ends, 6.2e-3 mid), which
-is trunk quantization rather than an angle problem. Attention softmax
-was left in fp16 and cleared the bar, so no island was added there —
-forcing it fp32 cost SA3 4.3x for nothing.
-
-**Do not try fp16 on the DAV vocoder** — measured all-NaN. The decoder
-stays fp32/bf16.
-
-## 6. The capture stage
-
-`acestep/engine/minimax_ar.py` turns a prompt into the only thing the
-DiT accepts. Qwen3 global LM through `transformers`, plus the RVQ depth
-decoder reimplemented in pure torch from its 47 safetensors keys
-(**bit-exact** against the reference at fp32 and bf16). Paged
-CPU<->CUDA around each capture so 17 GB does not sit on the card
-between compositions.
-
-Measured, 200 frames (8.0 s), seed 7: **14.8 s wall, 13.5 LM tok/s,
-0.54x realtime, 17.3 GB peak**, bit-identical across runs at a fixed
-seed. Profiled: LM decode 48.5 ms/frame (67%), depth decoder 21.1 ms
-(29%). The `lm_head` GEMV already runs near peak bandwidth, so the
-remaining ~37 ms is per-kernel dispatch across 36 layers of small ops.
-It is **dispatch-bound, not FLOP-bound** — CUDA graphs are the lever
-(worth roughly 2-3x upstream), not quantization.
+`MiniMaxAR.generate_frame_hiddens` is now a thin wrapper over
+`MiniMaxARStream` and is **bit-identical** to the version that predated
+it (verified against the pre-refactor implementation on shared weights),
+so existing captures and the parity fixtures remain valid.
 
 ### The transformers trap
 
 `AutoConfig.from_pretrained` **succeeds** on this checkpoint under the
-pinned 4.57.6. That is the problem. The v5-style `rope_parameters` dict
-falls into `**kwargs`, is stashed as an inert attribute, and
-`rope_theta` silently keeps the 4.x default of **10000 instead of the
-checkpoint's 1000000**. Every position encoding in a 36-layer model
-would be wrong, with nothing raised — the model loads, runs, and
-produces confidently wrong audio.
-
-`load_qwen3_config` reads the JSON directly, remaps, and then *asserts*
-the value took. Each remap is gated on the installed signature so the
-shim retires itself when the pin moves.
+pinned 4.57.6, which is the problem. The v5-style `rope_parameters` dict
+falls into `**kwargs`, is stashed as an inert attribute, and `rope_theta`
+silently keeps the 4.x default of **10000 instead of the checkpoint's
+1000000**. Every position encoding in a 36-layer model would be wrong,
+with nothing raised. `load_qwen3_config` reads the JSON directly, remaps,
+and then *asserts* the value took; each remap is gated on the installed
+signature so the shim retires itself when the pin moves.
 `tests/unit/test_minimax_ar_config.py` guards it, including a test that
 demonstrates the naive loader getting it wrong.
 
-    .venv/Scripts/python.exe scripts/minimax/minimax_capture.py         --prompt "driving instrumental darkwave, analog synth bass,                   tight gated drums, minor key, 124 bpm"         --lyrics "[instrumental]" --seconds 8 --seed 7         --out <models>/minimax/captures/darkwave_8s.safetensors
+Lyrics may not be empty; upstream's convention for "no singing" is the
+`[instrumental]` tag, which is `SessionConfig.minimax_lyrics`'s default.
+The reference normalizes both prompt and lyrics rather than inserting
+them verbatim, and **silently drops any lyric sharing a line with a
+leading `[tag]`**.
 
-Lyrics may not be empty; use `[instrumental]`. Note the reference
-normalizes both fields rather than inserting them verbatim, and
-**silently drops any lyric sharing a line with a leading `[tag]`**.
+## 9. Not done
 
-## 7. Not done
-- **Not driven through `PipelineRunner` or the WS server.** The proof is
-  at the backend level: the real `StreamPipeline`, the real produce /
-  render loop, the real crossfade. Session creation, `families.py`
-  registration and the knob manifest are wired, but a browser session
-  has not been run.
-- **No web panel**, no boot preflight in `server.py`.
-- `swap`, `write_audio`, `timbre`, `structure` and LoRA are
-  capability-gated **off**. Most need an audio encoder this checkpoint
-  does not ship converted. (One exists unconverted inside `dav.pth` —
-  186 `encoder.*` keys plus `mean_proj`/`logs_proj` — so audio-to-audio
-  is a real follow-up, not a dead end.)
-- Upstream has an open **long-horizon coherence bug** (coherent for
-  ~15 s, then genre/timbre drift) and unreliable instrumental control.
-  Neither affects the 8 s window this integration uses.
-- **Longer single-pass windows are unmeasured, not unavailable.** One
-  1240-frame render came out clean; upstream would have rendered the
-  same span as two 689-frame windows with a 172-frame carried overlap.
-  Which sounds better past ~15 s is an open question, and porting
-  upstream's chunk-and-carry is the fallback if single-pass degrades.
-- **No TensorRT decoder engine.** Windowed decode is ~6 ms of a 132 ms
-  TRT tick, of which roughly 3.5 ms is launch overhead an engine would
-  cut. The fixed 58-frame window is exactly the shape to build at. Note
-  fp16 is not an option — it produces all-NaN on this vocoder.
-- **Stereo width is one observation short of a conclusion.** Our takes
-  average left/right correlation 0.43 (sd 0.15 over 8 draws) against a
-  single reference take at 0.096 — which we reproduce exactly on that
-  take's own noise. Settling it needs several upstream renders, which
-  means the AR stage and a diffusers install, not just the renderer.
-- **The b2-4 TensorRT engine is built but never selected** (§5). Worth
-  ~15% of a tick; needs `make_dit` to learn the tick batch size.
+* **Not driven through `PipelineRunner` or the WS server.**
+  `StreamingSession.create(backend="minimax")` is verified end to end —
+  family dispatch, create path, backend assembly, geometry/capability/
+  knob payloads, produce and render ticks, params echo, clean close —
+  and `scripts/minimax/minimax_stream_bench.py` runs the real backend
+  through the loop the runner runs, with the real crossfade. What has
+  not been run is the runner and a browser session. **No web panel**, no
+  boot preflight in `server.py`.
+* **It does not keep up.** 0.54x realtime is the headline limitation.
+  CUDA graphs on the AR decode loop are the identified lever and are out
+  of scope here.
+* **The AR knob-to-ear floor (~8 s) is geometric and unexplored.** It
+  comes from the 150-frame lookahead in a 200-frame conditioning window.
+  Shrinking the window or the lookahead would shrink it, at an unknown
+  quality cost — the committed region would sit nearer the edge of the
+  model's context. Worth one ablation if this family ever matters.
+* **`swap`, `write_audio`, `timbre`, `structure` and LoRA are gated
+  off.** Most need an audio encoder this checkpoint does not ship
+  converted. One exists unconverted inside `dav.pth` (186 `encoder.*`
+  keys plus `mean_proj`/`logs_proj`), so audio-to-audio is a real
+  follow-up rather than a dead end — but note the AR stage has no
+  audio-prefix path either, so an encoder would condition the renderer
+  only.
+* **Long-horizon coherence is upstream's open bug**, not ours: coherent
+  for ~15 s, then genre/timbre drift. The streaming architecture makes
+  this *more* exposed than the old 8 s cover did, and it is unmeasured
+  past ~60 s here.
+* **No TensorRT decoder engine.** Guarded decode is ~6 ms against a
+  ~880 ms chunk render — 0.7%, and not worth building.
+* **The b2-4 TensorRT engine is built but never selected.** It would
+  take cond and uncond in one forward instead of two; worth measuring
+  now that the renderer issues exactly that pair, which it did not when
+  the engine was excluded from discovery.
+* **Stereo width is one observation short of a conclusion.** Our takes
+  average L/R correlation 0.43 (sd 0.15 over 8 draws) against a single
+  reference take at 0.096 — which we reproduce exactly on that take's
+  own noise. Settling it needs several upstream renders.
 
-## 8. Running it
+## 10. Running it
 
 ```bash
-# Streaming proof from a saved capture. The step / shift / guidance
-# defaults are the measured ones; add --accel tensorrt for the engine.
-.venv/Scripts/python.exe scripts/minimax/minimax_stream_smoke.py \
-    --capture <models>/minimax/fixtures/minimax_music3_8s_seed7.safetensors \
-    --seconds 24 --depth 4 --out out/v2_stream_eager.wav
+# End-to-end stream with the live language model. Writes audio and a
+# JSON report: AR rate, render rate, end-to-end realtime, and a
+# measured knob-to-frontier latency.
+.venv/Scripts/python.exe scripts/minimax/minimax_stream_bench.py \
+    --seconds 100 --accel tensorrt --window 60 \
+    --sweep minimax_temperature --sweep-at 30 \
+    --out out/native_stream.wav --json out/stream.json
 
-# Where the quality is and what it costs: the ablation ladder, the grid
-# that picked the defaults, then the cover path the ring actually runs
+# The same, replaying a saved capture: exercises the renderer, the
+# chunk geometry and the frontier without 21 GB of LM resident.
+.venv/Scripts/python.exe scripts/minimax/minimax_stream_bench.py \
+    --capture <models>/minimax/captures/darkwave_30s.safetensors \
+    --seconds 14 --accel tensorrt
+
+# The bottleneck on its own, including a live re-prompt measurement.
+.venv/Scripts/python.exe scripts/minimax/minimax_ar_bench.py \
+    --frames 300 --reprompt --json out/ar_bench.json
+
+# Where the quality is and what it costs.
 .venv/Scripts/python.exe scripts/minimax/minimax_quality_ablation.py \
     --fixture <models>/minimax/fixtures/minimax_music3_8s_seed7.safetensors \
     --out-dir out/ablation
-... --out-dir out/ablation --sweep
-... --out-dir out/cover --cover-sweep
 
-# Prove a knob steers the stream live
-... --sweep minimax_denoise --sweep-from 0.15 --sweep-to 0.95
-... --sweep minimax_guidance --sweep-from 1.0 --sweep-to 2.5
-
-# No capture needed: the model's own unconditional branch
-... --uncond
-
-# Parity gate
+# Parity gates.
 .venv/Scripts/python.exe scripts/minimax/minimax_chain_parity.py \
     --fixture <models>/minimax/fixtures/minimax_music3_8s_seed7.safetensors
+.venv/Scripts/python.exe scripts/minimax/minimax_trt_parity.py
+
+# Save a capture (the development path; a session no longer needs one).
+.venv/Scripts/python.exe scripts/minimax/minimax_capture.py \
+    --prompt "driving instrumental darkwave, analog synth bass, 124 bpm" \
+    --lyrics "[instrumental]" --seconds 30 --seed 7 \
+    --out <models>/minimax/captures/darkwave_30s.safetensors
 ```
 
 Weights: `MiniMaxAI/MiniMax-Music3`. The repo ships **two** complete
 copies (57.35 GB); only the diffusers layout is needed (**28.52 GB**).
-Skip `qwen_7B/`, `flowmatching_vae.pth`, `dav.pth` unless you are doing
-encoder work. Set `HF_HUB_DISABLE_SYMLINKS=1` on Windows.
+Skip `qwen_7B/`, `flowmatching_vae.pth`, `dav.pth` unless doing encoder
+work. Set `HF_HUB_DISABLE_SYMLINKS=1` on Windows.
 
-## 9. Licence
+## 11. Licence
 
 **MiniMax-Music3 Community License** — custom, not OSI. Commercial use
 is permitted with two conditions: display "MiniMax-Music3" prominently
 in the product UI, and obtain written authorisation if aggregate yearly
 revenue exceeds **US$20M**. There is no territorial carve-out. Third
-party lineage per the licence: Qwen3-8B (Apache-2.0), Stable Audio
-tools (MIT) for the DiT, DAC (MIT) for the VAE.
+party lineage per the licence: Qwen3-8B (Apache-2.0), Stable Audio tools
+(MIT) for the DiT, DAC (MIT) for the VAE.
 
 Widely repeated claims that this is CC BY-SA 4.0 are **wrong** — that
 comes from a Creative Commons *logo* in the GitHub README badge, which
