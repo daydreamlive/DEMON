@@ -170,6 +170,16 @@ def melband_roformer_model_path(
     return melband_roformer_dir() / filename
 
 
+def prompt_enhancer_dir() -> Path:
+    """Directory containing the local prompt-enhancer checkpoint.
+
+    Override with ``DEMON_ENHANCER_DIR`` when pointing at a checkpoint outside
+    the models tree (bring-up, or an image that stages it elsewhere).
+    """
+    override = os.environ.get("DEMON_ENHANCER_DIR", "").strip()
+    return Path(override) if override else models_dir() / "PromptEnhancer"
+
+
 def fixtures_dir() -> Path:
     """Directory containing test fixture audio and precomputed sidecars."""
     return models_dir() / "fixtures"

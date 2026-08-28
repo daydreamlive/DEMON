@@ -193,6 +193,104 @@ MAIN_MODEL_COMPONENTS = [
 DEFAULT_LM_MODEL = "acestep-5Hz-lm-1.7B"
 
 # Auxiliary models stored directly under ACESTEP_MODELS_DIR.
+#: Local prompt enhancer. The source repo is CONFIGURABLE rather than a
+#: constant: deployments that build their own images point this at their own
+#: mirror, and a private repo needs a token the public path never wants.
+#:   DEMON_ENHANCER_REPO   HuggingFace repo id (default below)
+#:   HF_TOKEN              read token, when that repo is private
+PROMPT_ENHANCER_MODEL_NAME = "prompt-enhancer"
+PROMPT_ENHANCER_DEFAULT_REPO = "daydreamlive/t5-small-enhancer"
+#: The files transformers needs to load it; anything else in the repo is
+#: ignored so a card or extra format does not bloat every pod.
+PROMPT_ENHANCER_ALLOW = [
+    "config.json",
+    "generation_config.json",
+    "model.safetensors",
+    "special_tokens_map.json",
+    "spiece.model",
+    "tokenizer.json",
+    "tokenizer_config.json",
+]
+
+
+def get_prompt_enhancer_repo() -> str:
+    """The repo to pull the prompt enhancer from."""
+    return (os.environ.get("DEMON_ENHANCER_REPO", "").strip()
+            or PROMPT_ENHANCER_DEFAULT_REPO)
+
+
+def get_prompt_enhancer_dir(custom_dir: Optional[str] = None) -> Path:
+    """Where the prompt-enhancer checkpoint lives."""
+    if custom_dir:
+        return Path(custom_dir)
+    from acestep.paths import prompt_enhancer_dir
+    return prompt_enhancer_dir()
+
+
+def check_prompt_enhancer_model_exists(model_dir: Optional[Path] = None) -> bool:
+    """True when the weights and tokenizer are both present."""
+    if model_dir is None:
+        model_dir = get_prompt_enhancer_dir()
+    model_dir = Path(model_dir)
+    return ((model_dir / "model.safetensors").exists()
+            and (model_dir / "spiece.model").exists())
+
+
+def download_prompt_enhancer_model(
+    model_dir: Optional[Path] = None,
+    force: bool = False,
+    token: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """Download the prompt-enhancer checkpoint from HuggingFace.
+
+    OPTIONAL, and its absence is not an error: the enhancer falls back to the
+    hosted backend when this checkpoint is missing, so a failed or skipped
+    download degrades a feature rather than breaking a pod.
+    """
+    if model_dir is None:
+        model_dir = get_prompt_enhancer_dir()
+    model_dir = Path(model_dir)
+    model_dir.mkdir(parents=True, exist_ok=True)
+
+    if not force and check_prompt_enhancer_model_exists(model_dir):
+        return True, f"Prompt enhancer already exists at {model_dir}"
+
+    repo = get_prompt_enhancer_repo()
+    if token is None:
+        token = os.environ.get("HF_TOKEN", "").strip() or None
+    print(f"Downloading prompt enhancer from {repo}...")
+    print(f"Destination: {model_dir}")
+
+    try:
+        from huggingface_hub import snapshot_download
+
+        snapshot_download(
+            repo_id=repo,
+            local_dir=str(model_dir),
+            allow_patterns=PROMPT_ENHANCER_ALLOW,
+            token=token,
+            force_download=force,
+        )
+    except Exception as exc:
+        error_msg = f"Prompt enhancer download failed: {exc}"
+        logger.error(error_msg)
+        return False, error_msg
+
+    return True, f"Prompt enhancer downloaded to {model_dir}"
+
+
+def ensure_prompt_enhancer_model(
+    model_dir: Optional[Path] = None,
+    token: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """Ensure the prompt-enhancer checkpoint is available, downloading if needed."""
+    if model_dir is None:
+        model_dir = get_prompt_enhancer_dir()
+    if check_prompt_enhancer_model_exists(model_dir):
+        return True, "Prompt enhancer is available"
+    return download_prompt_enhancer_model(model_dir, token=token)
+
+
 MELBAND_ROFORMER_MODEL_NAME = "melband-roformer"
 MELBAND_ROFORMER_REPO = "daydreamlive/MelBandRoFormer"
 MELBAND_ROFORMER_MODEL_FILE = "MelBandRoformer_fp16.safetensors"

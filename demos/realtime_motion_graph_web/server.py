@@ -254,6 +254,36 @@ def _process_request(connection, request):
     # unchanged with ok=false, so every frontend treats enhance as best-effort
     # and never blocks. The prompt rides the query string to stay on this
     # all-GET probe surface; it's redacted from the access log.
+    # The VARIATIONS pad, answered WHOLE rather than per position. The pad is a
+    # gesture -- the plugin re-fires the moment a reply lands and the pointer
+    # has moved -- so a request per position would be a round trip per pixel of
+    # drag. The reachable set is small and deterministic (an integer prefix
+    # length x LANES sampling streams), so one call returns the entire grid and
+    # dragging becomes a local array lookup. Same all-GET probe surface as
+    # /api/enhance; prompt redacted from the access log. Absent checkpoint ->
+    # ok=false and the client simply does not offer the pad.
+    if path_only == "/api/variations":
+        from urllib.parse import parse_qs
+
+        from .prompt_variations import neighbourhood
+
+        query = url.split("?", 1)[1] if "?" in url else ""
+        params = parse_qs(query)
+        anchor = (params.get("prompt", [""])[0] or "").strip()
+        deck = _resolve_enhance_backend(params.get("backend", [""])[0])
+        grid = neighbourhood(anchor, deck)
+        body = json.dumps({**grid, "ok": bool(grid)}).encode()
+        _log_http(remote, 200, "GET", "/api/variations")  # redact prompt
+        return Response(
+            200, "OK",
+            Headers([
+                ("Content-Type", "application/json; charset=utf-8"),
+                ("Content-Length", str(len(body))),
+                *_PUBLIC_HTTP_HEADERS,
+            ]),
+            body,
+        )
+
     if path_only == "/api/enhance":
         from urllib.parse import parse_qs
 
@@ -265,7 +295,11 @@ def _process_request(connection, request):
         # Pod infers the backend from its own checkpoint family; the client's
         # optional backend= hint only overrides when it names a known policy.
         backend = _resolve_enhance_backend(params.get("backend", [""])[0])
-        enhanced, ok = enhance_prompt(idea, backend)
+        # `provider` picks WHO answers (hosted LLM vs the local checkpoint);
+        # `backend` picks WHICH prompt policy. Orthogonal, hence two params.
+        # Blank means "whatever this pod is configured for".
+        provider = params.get("provider", [""])[0]
+        enhanced, ok = enhance_prompt(idea, backend, provider)
         body = json.dumps({"enhanced": enhanced, "ok": ok}).encode()
         _log_http(remote, 200, "GET", "/api/enhance")  # redact prompt
         return Response(
