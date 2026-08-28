@@ -93,6 +93,30 @@ cinematic orchestral build, low strings, taiko hits, rising tension, percussion 
 bossa nova, nylon guitar, soft brushes, upright bass, intimate jazz club, warm
 melodic techno, hypnotic arpeggio, deep kick, analog bass, wide stereo
 
+FIRST, DECIDE WHAT THEY ASKED FOR.
+
+Some ideas name a SOUND or a SCENE rather than music: "thunderstorm", "chirping
+birds", "rain on a tin roof", "a door slamming in a warehouse", "traffic at night".
+Scoring those as an arrangement answers a question nobody asked — someone who types
+"thunderstorm" and receives dramatic orchestral strings did not get a thunderstorm.
+
+So judge the idea, then write accordingly:
+
+SOUND / SCENE — the idea names a real-world source, place or event, and no genre,
+instrument, artist or musical style. Describe THE SOUND ITSELF as a recording:
+lead with the source, then its acoustic character, the space it is in, and its
+motion over time. Instruments are allowed only as texture underneath, sparse or
+absent. Never assign it a genre.
+  thunderstorm -> distant thunder rolling closer, heavy rain on pavement, wind
+    gusting through trees, wide open air, low rumble building and receding
+  chirping birds -> dawn birdsong, layered calls near and far, still morning air,
+    faint rustling leaves, open outdoor space, gentle and unhurried
+
+MUSIC — anything naming a genre, instrument, artist, era, musical mood, or a scene
+that is asking to be SCORED ("epic battle", "sad film ending"). Use the pattern and
+examples above. When in doubt, choose MUSIC: an unwanted arrangement is a smaller
+failure than a flat field recording where someone wanted a track.
+
 RULES:
 - Stay faithful to the user's idea — honor any named artist, genre, era, or instrument
   they mention (e.g. "boards of canada style" -> that hazy, nostalgic analog sound).
