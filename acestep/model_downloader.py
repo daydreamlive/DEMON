@@ -7,6 +7,7 @@ with intelligent fallback between download sources.
 """
 
 import os
+import shutil
 import sys
 import argparse
 from typing import Optional, List, Dict, Tuple
@@ -246,7 +247,14 @@ def check_prompt_enhancer_model_exists(model_dir: Optional[Path] = None) -> bool
     # present and the tokenizer missing). Requiring ALL SEVEN was the other
     # error: a mirror that ships a slow tokenizer has no tokenizer.json, so the
     # check could never pass and every boot re-downloaded 250 MB forever.
-    return all((model_dir / f).exists() for f in PROMPT_ENHANCER_REQUIRED)
+    if not all((model_dir / f).exists() for f in PROMPT_ENHANCER_REQUIRED):
+        return False
+    # ...and a tokenizer of SOME kind. A t5 fine-tune ships a fast one
+    # (tokenizer.json) or a slow one (spiece.model); requiring both meant a
+    # legitimate mirror could never pass, and requiring neither -- which is
+    # what this did -- let a directory report complete and then fail to load.
+    return any((model_dir / f).exists()
+               for f in ("tokenizer.json", "spiece.model"))
 
 
 def download_prompt_enhancer_model(
@@ -278,6 +286,7 @@ def download_prompt_enhancer_model(
         # Created only once the download is actually about to run, so a
         # failure does not leave an empty directory that later reads as a
         # staged checkpoint.
+        created = not model_dir.exists()
         model_dir.mkdir(parents=True, exist_ok=True)
         snapshot_download(
             repo_id=repo,
@@ -287,6 +296,11 @@ def download_prompt_enhancer_model(
             force_download=force,
         )
     except Exception as exc:
+        # Remove a directory we created and did not fill. Left behind, it makes
+        # os.path.isdir true, so the loader tries it, fails, and (before this
+        # commit) latched local enhancement off for the process lifetime.
+        if created:
+            shutil.rmtree(model_dir, ignore_errors=True)
         error_msg = f"Prompt enhancer download failed: {exc}"
         logger.error(error_msg)
         return False, error_msg

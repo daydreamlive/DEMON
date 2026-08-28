@@ -124,6 +124,12 @@ def _load():
     global _loaded, _load_failed
     if _loaded is not None or _load_failed:
         return _loaded
+    # CHEAP AND LOCK-FREE when there is no checkpoint. Otherwise every request
+    # on a pod configured local-with-no-model queued on a blocking mutex around
+    # a stat() -- the unbounded queue in front of the audio thread that the
+    # non-blocking gate below exists to prevent, one function earlier.
+    if not os.path.isdir(_model_dir()):
+        return None
     with _load_lock:
         if _loaded is not None or _load_failed:
             return _loaded
@@ -149,8 +155,15 @@ def _load():
             model.to(device).eval()
             _loaded = (tok, model, device)
             return _loaded
-        except Exception:
+        except ImportError:
+            # The only permanent failure: torch/transformers are not installed
+            # and will not appear. Everything else -- a half-staged checkpoint,
+            # a volume not mounted yet, a corrupt file being re-downloaded --
+            # can resolve on its own, and latching made "auto" a one-shot
+            # decision taken by whoever happened to send the first request.
             _load_failed = True
+            return None
+        except Exception:
             return None
 
 

@@ -326,7 +326,14 @@ def _process_request(connection, request):
         # Unparseable is a client bug, not a coordinate. `?stop=abc` used to
         # clamp to 0 and run a full greedy enhance under the busy lock -- the
         # escalation the parse guard was added to stop, one branch over.
-        if (has_stop and not _parsed("stop")) or (has_lane and not _parsed("lane")):
+        # `lane` is only meaningful with a `stop`. Refusing a grid because an
+        # unused parameter was garbage, and -- worse -- serving a full grid for
+        # `?lane=5` with no stop, were the same mistake from both directions:
+        # the cheap point request must not escalate, and the grid must not be
+        # refused for a field it never reads.
+        if has_stop and not _parsed("stop"):
+            return _json_response(remote, "/api/variations", {"ok": False})
+        if has_stop and has_lane and not _parsed("lane"):
             return _json_response(remote, "/api/variations", {"ok": False})
         try:
             if has_stop:
@@ -346,6 +353,9 @@ def _process_request(connection, request):
             # as a 500, while every docstring in prompt_variations promises the
             # caller falls back to the hosted backend instead.
             if not isinstance(exc, Busy):
+                # Degrading silently makes "no checkpoint", "client sent
+                # nonsense" and "the model crashed" the same 200 on the wire.
+                logger.warning("variations_failed error={}", repr(exc))
                 return _json_response(remote, "/api/variations", {"ok": False})
             body = json.dumps({"ok": False, "busy": True}).encode()
             _log_http(remote, 503, "GET", "/api/variations")
