@@ -165,6 +165,7 @@ def _build(args):
         max_ar_frames=args.max_ar_frames,
         dit_backend=args.accel,
         codec_backend=args.accel,
+        ar_graph=not args.no_ar_graph,
     )
 
 
@@ -190,6 +191,9 @@ def main() -> int:
                     help="generation lead target; high enough not to bind "
                          "on hardware slower than realtime")
     ap.add_argument("--max-ar-frames", type=int, default=9000)
+    ap.add_argument("--no-ar-graph", action="store_true",
+                    help="drive the plain torch AR loop instead of the "
+                         "CUDA-graphed session")
     ap.add_argument("--sweep", default=None, choices=sorted(SWEEPABLE))
     ap.add_argument("--sweep-at", type=float, default=None,
                     help="wall seconds at which to move --sweep "

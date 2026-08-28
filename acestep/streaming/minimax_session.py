@@ -25,9 +25,9 @@ emits an end-of-audio token, at most 9000 frames (360 s) later.
 **Create is fast and generation is slow.** There is no capture stage to
 wait for: the AR session's prefill is well under a second, and the first
 audio arrives once 200 AR frames plus one chunk render have happened
-(~11 s at the measured 0.75x AR rate). The old create path ran the whole
-composition through the 8.58B LM before returning, which meant a 30 s
-request cost ~55 s of connect time.
+(~6 s with the graphed AR stage at 1.54x realtime). The old create path
+ran the whole composition through the 8.58B LM before returning, which
+meant a 30 s request cost ~55 s of connect time.
 """
 
 from __future__ import annotations
@@ -108,6 +108,8 @@ def create_minimax_session(
 
     prompt = getattr(config, "prompt", "") or ""
     lyrics = getattr(config, "minimax_lyrics", None) or "[instrumental]"
+    ar_graph = getattr(config, "minimax_ar_graph", None)
+    ar_graph = True if ar_graph is None else bool(ar_graph)
     if getattr(config, "prompt_b", None):
         logger.warning(
             "minimax_prompt_b_ignored reason=no_ab_blend_on_ar_prefix",
@@ -197,6 +199,7 @@ def create_minimax_session(
                 "capture": capture,
                 "dit_backend": dit_backend,
                 "codec_backend": codec_backend,
+                "ar_graph": ar_graph,
             },
         )
         cleanup.pop_all()
@@ -267,4 +270,5 @@ def make_minimax_backend(ss) -> MiniMaxBackend:
         max_ar_frames=MINIMAX_MAX_AR_FRAMES,
         dit_backend=init.get("dit_backend", "eager"),
         codec_backend=init.get("codec_backend", "eager"),
+        ar_graph=bool(init.get("ar_graph", True)),
     )

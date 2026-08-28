@@ -130,6 +130,9 @@ def main() -> int:
     ap.add_argument("--top-k", type=int, default=50)
     ap.add_argument("--ar-guidance", type=float, default=1.5)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--graph", action="store_true",
+                    help="open the CUDA-graphed session (the backend's "
+                         "path) instead of the plain loop")
     ap.add_argument("--profile", action="store_true",
                     help="split the frame into GPU kernel time and CPU "
                          "dispatch gap, and report achieved bandwidth")
@@ -166,8 +169,9 @@ def main() -> int:
     )
     stream = ar.stream(
         prompt=args.prompt, lyrics=args.lyrics, seed=args.seed,
-        max_frames=args.frames, controls=controls,
+        max_frames=args.frames, controls=controls, graph=args.graph,
     )
+    print(f"session        : {'CUDA graph, static cache' if args.graph else 'plain loop, dynamic cache'}")
     print(f"prompt tokens  : {stream.prompt_tokens}")
     print(f"prefill        : {stream.last_prefill_s * 1000:.0f} ms")
 

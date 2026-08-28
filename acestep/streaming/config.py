@@ -86,6 +86,11 @@ class SessionConfig:
     # the default here. This is a real conditioning input on a model
     # that sings, not a formality.
     minimax_lyrics: str | None = None
+    # Drive the autoregressive stage as a CUDA graph over a static KV
+    # cache (the default; 1.56x realtime and flat in context length)
+    # rather than the plain torch loop (0.77x and slowing with length).
+    # The plain loop exists for parity work against saved captures.
+    minimax_ar_graph: bool | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "SessionConfig":

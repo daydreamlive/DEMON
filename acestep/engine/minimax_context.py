@@ -143,8 +143,14 @@ class MiniMaxContext:
         lyrics: str = "",
         seed: int = 0,
         max_frames: Optional[int] = None,
+        graph: bool = True,
     ):
         """Open a resumable AR session, with the stage RESIDENT.
+
+        ``graph`` selects the CUDA-graphed session, the one that keeps
+        up (1.56x realtime against the plain loop's 0.77x, and flat in
+        context length where the plain loop is not). The plain loop
+        stays reachable for parity work.
 
         The offload policy exists for the capture path, where the stage
         runs once and can be paged back out. A stream runs it
@@ -172,6 +178,7 @@ class MiniMaxContext:
             lyrics=lyrics or "[instrumental]",
             seed=seed,
             max_frames=int(max_frames or MAX_AUDIO_FRAMES),
+            graph=graph,
         )
 
     # ---- accel seams ---------------------------------------------------------
@@ -179,7 +186,16 @@ class MiniMaxContext:
     def make_dit(self, *, latent_frames: int, backend: str = "eager"):
         """Return the renderer, TRT-accelerated when an engine covers
         this shape. Degrades to eager LOUDLY rather than silently, so a
-        five-times-slower session is never a surprise."""
+        five-times-slower session is never a surprise.
+
+        When the engine serves, the eager DiT's 4.9 GB of bf16 weights
+        are parked on the host. A streaming session holds the LM
+        (17.2 GB), its static KV cache (2.8 GB at the 9000-frame
+        ceiling) and the 4.9 GB engine, which with the eager copy also
+        resident put a 32 GB card at 32.1 GB in use -- and WDDM then
+        pages silently: the AR frame went from 23 to 69 ms and the chunk
+        render from 513 to 1106 ms, with nothing in the logs to say why.
+        """
         if backend == "tensorrt":
             try:
                 from acestep.engine.minimax_trt import find_dit_engine
@@ -190,6 +206,7 @@ class MiniMaxContext:
                         "minimax_dit_trt engine={} frames={}",
                         engine, latent_frames,
                     )
+                    self._place_eager_dit(torch.device("cpu"))
                     return engine
                 logger.warning(
                     "minimax_dit_eager reason=no_engine_for_frames frames={}",
@@ -199,7 +216,17 @@ class MiniMaxContext:
                 logger.warning("minimax_dit_eager reason=trt_module_absent")
         elif backend == "compile":
             logger.warning("minimax_dit_eager reason=compile_unsupported")
+        self._place_eager_dit(self.device)
         return self._dit
+
+    def _place_eager_dit(self, device: torch.device) -> None:
+        current = next(self._dit.parameters()).device
+        if current.type == device.type:
+            return
+        self._dit.to(device)
+        if device.type == "cpu" and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        logger.info("minimax_dit_eager_placed device={}", device.type)
 
     def make_codec(self, *, backend: str = "eager") -> MiniMaxCodec:
         # No TensorRT decoder engine exists yet. The earlier note here

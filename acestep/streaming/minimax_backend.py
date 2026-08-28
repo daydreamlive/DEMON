@@ -44,49 +44,43 @@ produced this integration's first round of throughput claims:
 Against those, each stage measured alone
 (``scripts/minimax/minimax_ar_bench.py``, ``minimax_stream_bench.py``):
 
-    AR emission          53.6 ms/frame  = 0.75x realtime, flat in context
-    chunk render, TRT    513 ms per 4.0 s commit = 7.8x realtime
-    chunk render, eager  835 ms per 4.0 s commit = 4.8x realtime
-    guarded decode       ~6 ms/window, negligible
+    AR emission, graphed   25.7 ms/frame at the 9600-slot cache = 1.56x
+    AR emission, plain     52.1 ms/frame at frame 0 = 0.77x, and slower
+                           with length (LM forward alone 77.7 ms at 9000)
+    chunk render, TRT      513 ms per 4.0 s commit = 7.8x realtime
+    chunk render, eager    835 ms per 4.0 s commit = 4.8x realtime
+    guarded decode         ~6 ms/window, negligible
 
-And the two together, session means over 70-100 s runs, which is the
-number that matters and is NOT the one the parts predict:
+And the two together, session means, TensorRT, eager DiT parked:
 
-    hop=100    AR 57-61 ms/frame   render 855-1030 ms   end to end 0.54x
-    hop=25     AR 54.2 ms/frame    render 518 ms        end to end 0.48x
+    hop=100    AR 25.9-26.0 ms/frame (1.54x)   render 510-514 ms
+               steady state 1.29x; 1.23x over a 42 s piece including
+               the 5 s first-window fill; first audio 5.9-6.0 s;
+               28.7 GB of 32.6 in use for the whole session
 
-**Co-residency lands on the render, and it scales with how long the AR
-runs between renders.** With the AR stage's 17.4 GB pinned alongside the
-renderer, a hop of 100 frames means ~6 s of language model between DiT
-turns, and the chunk render roughly doubles (513 -> ~1030 ms) because
-the DiT's weights are gone from cache by the time it runs again. At
-hop=25 the renders are frequent enough to stay warm and the chunk render
-comes in at 518 ms -- its isolated speed. Benchmarking either stage
-alone, or benchmarking with a hop that does not match production,
-overstates the pipeline.
+The AR stage is the plain loop captured as one CUDA graph per frame over
+a static KV cache (``acestep.engine.minimax_ar_graph``). The plain loop
+was dispatch-bound -- 22 ms of kernels inside a 52 ms frame, the GPU
+idle 60% of the time on ~3900 Python launches -- and the graph removes
+that; what it took to make the static cache affordable, and the gate
+that shows the result matches the plain loop, are in the module doc.
 
-The AR stage is the bottleneck and it is **under realtime**, so this
-backend cannot sustain a live stream on this hardware: the playhead laps
-the frontier and the listener hears the rolling window repeat. That is
-reported, not hidden -- ``frontier_lead_s`` and ``ar_realtime`` ride the
-params echo on every generation, and both are session means rather than
-last-sample values (a single sample moves the figure by 15%).
+**The co-residency penalty this docstring used to describe was VRAM
+paging.** With the eager bf16 DiT left resident beside the TensorRT
+engine, a session sat at 32.1 GB of a 32.6 GB card and WDDM paged both
+stages: the graphed AR frame read 69 ms in-session against 23 alone and
+the chunk render 1106 ms against 513, with nothing in the logs to say
+why. The eager DiT is now parked on the host when the engine serves
+(``MiniMaxContext.make_dit``). A co-residency figure means nothing
+without the card's memory headroom next to it.
 
-Worth being precise about whose limitation that is, because it is
-measurable and was measured (``minimax_ar_bench.py --profile``). Of a
-52.6 ms frame, only 22.3 ms is GPU kernel time: the GPU **idles ~60% of
-every frame** waiting on Python to launch the next of ~3900 kernels,
-while the GEMMs that do run already reach **86% of the card's memory
-bandwidth**. The stage is dispatch-bound, not bandwidth-bound, and
-upstream serves this checkpoint through SGLang rather than a plain torch
-loop. 0.75x is a property of this dependency-free reimplementation, not
-a measurement of the model's ceiling.
-
-The consequence for hardware: a faster card scales only the busy 22 ms,
-so an H100 SXM projects to ~0.9x realtime for this stage alone and still
-short end to end, while removing the dispatch gap with CUDA graphs would
-reach 1.79x on the 5090. Deliberately not taken -- this family is a
-backend-generality demonstration, not a speed target.
+Above realtime the worker is throttled by credit pacing against the
+playhead, so ``frontier_lead_s`` holds near the lead target;
+``ar_realtime`` and ``chunk_render_ms`` ride the params echo as session
+means rather than last-sample values (a single sample moves the figure
+by 15%). A piece ends when the LM emits its end-of-audio token -- 47 s
+for the bench's default prompt and seed -- after which the window keeps
+playing what was written; ``ar_finished`` says so.
 
 ## What DEMON's value proposition buys here
 
@@ -94,24 +88,26 @@ Knob-to-ear on this family is **seconds, not milliseconds**, and the two
 stages have different floors for different reasons. Measured
 knob-to-frontier (add the playback lead for knob-to-ear):
 
-    knob                        hop=100    hop=25
-    minimax_guidance (render)   6.7-7.1 s   1.65 s
-    minimax_temperature (AR)    8.6-9.8 s   10.8 s
-    end-to-end throughput          0.54x     0.48x
+    knob                        hop=100    hop=50
+    minimax_guidance (render)    3.30 s     1.21 s
+    minimax_temperature (AR)     3.33 s       --
+    set_prompt (AR, re-prefill)  3.57 s       --
+    end-to-end, steady state     1.29x      1.10x
 
 A **renderer** knob waits for the next chunk render to start, which
 means waiting for the AR stage to fill the next hop. ``minimax_hop`` is
-the lever for it and trades directly against throughput, because a
-smaller hop re-renders more of the same audio per second committed.
+the lever for it and trades against throughput, because a smaller hop
+re-renders more of the same audio per second committed.
 
 An **AR** knob does not benefit, and the reason is geometric rather than
 budgetary. A frame written now sits inside a 200-frame conditioning
 window whose commit region ends 150 frames before the window does, so
 that frame cannot be committed until the LM has written up to 150 more
-of them -- 6 s of audio, ~8 s of wall clock, no matter what the hop is.
-Shrinking it means shrinking the chunk or the lookahead, which is a
-quality question (the committed region would sit at the edge of the
-model's window) rather than a scheduling one, and it is unmeasured.
+of them -- 6 s of audio no matter what the hop is, which is 150 frame
+times of wall clock: ~4 s now, ~8 s under the plain loop. Shrinking it
+means shrinking the chunk or the lookahead, which is a quality question
+(the committed region would sit at the edge of the model's window)
+rather than a scheduling one, and it is unmeasured.
 
 So the *live steering* half of DEMON's proposition applies, at a
 timescale of seconds rather than the ~60-230 ms the diffusion families
@@ -313,9 +309,9 @@ def minimax_knob_specs(loras=()) -> list:
             description=(
                 "AR frames committed per render, at 25 Hz. The "
                 "latency lever for the RENDERER knobs only: measured "
-                "guidance-to-frontier is 7.1 s at the default 100 "
-                "(4.0 s of audio) and 1.6 s at 25, for a drop from "
-                "0.54x to 0.46x realtime. It does NOT help the AR "
+                "guidance-to-frontier is 3.3 s at the default 100 "
+                "(4.0 s of audio) and 1.2 s at 50, for a drop from "
+                "1.29x to 1.10x realtime. It does NOT help the AR "
                 "knobs -- their floor is the conditioning window's "
                 "150-frame lookahead, which the hop does not move."
             ),
@@ -1022,6 +1018,7 @@ class MiniMaxBackend:
         max_ar_frames: Optional[int] = None,
         dit_backend: str = "eager",
         codec_backend: str = "eager",
+        ar_graph: bool = True,
     ) -> "MiniMaxBackend":
         """Open the AR session and the renderer against a loaded stack.
 
@@ -1045,6 +1042,7 @@ class MiniMaxBackend:
         )
         ar_stream = context.open_ar_stream(
             prompt=prompt, lyrics=lyrics, seed=seed, max_frames=max_ar_frames,
+            graph=ar_graph,
         )
         return cls(
             ar_stream=ar_stream,

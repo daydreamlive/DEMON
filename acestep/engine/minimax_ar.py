@@ -765,12 +765,27 @@ class MiniMaxAR:
         seed: Optional[int] = None,
         max_frames: int = MAX_AUDIO_FRAMES,
         controls: Optional[ARControls] = None,
+        graph: bool = False,
     ) -> "MiniMaxARStream":
         """Open a resumable emission session. See :class:`MiniMaxARStream`.
 
         This is the model's own shape; :meth:`generate_frame_hiddens` is
-        the batch wrapper over it.
+        the batch wrapper over it. ``graph=True`` returns the CUDA-graphed
+        session (:mod:`acestep.engine.minimax_ar_graph`): the same loop
+        over a static cache at 2x the frame rate, which is what the
+        streaming backend opens.
         """
+        if graph:
+            from acestep.engine.minimax_ar_graph import GraphedARStream
+
+            return GraphedARStream(
+                self,
+                prompt=prompt,
+                lyrics=lyrics,
+                seed=self.seed if seed is None else int(seed),
+                max_frames=max_frames,
+                controls=controls,
+            )
         return MiniMaxARStream(
             self,
             prompt=prompt,
@@ -912,14 +927,17 @@ class MiniMaxARStream:
     * **The prompt can change without losing the music.** See
       :meth:`reprompt`.
 
-    What it does *not* do is make the stage fast. Measured on a 5090 in
-    bf16 (``scripts/minimax/minimax_ar_bench.py``): 53.6 ms per frame,
-    flat in context length, which is 0.75x realtime. The stage is
-    launch-bound rather than bandwidth-bound at batch 2 -- upstream
-    serves this model through SGLang, not through a plain torch loop --
-    but as implemented here the AR stage cannot keep ahead of a playhead
-    on its own. Consumers must treat frame arrival as a rate to be
-    measured, never as something that keeps up.
+    This class is the plain torch loop, and it does not keep up: 52 ms
+    per frame at the start of a piece (0.77x realtime) and slower as the
+    KV cache grows -- the LM forward alone is 77 ms at 9000 frames of
+    history. It is dispatch-bound, not bandwidth-bound: 22 ms of GPU
+    work per frame under 30 ms of Python launching ~3900 kernels.
+    :class:`~acestep.engine.minimax_ar_graph.GraphedARStream` runs the
+    same loop as one CUDA graph per frame over a static cache, at
+    25.7 ms per frame (1.56x) flat in length, and is what the streaming
+    backend opens (``stream(graph=True)``). This loop stays as the
+    reference for parity work and as the capture path's engine.
+    Consumers must still treat frame arrival as a rate to be measured.
 
     Threading: not internally locked, and every method except
     :meth:`set_controls` must be called from one thread. ``set_controls``
