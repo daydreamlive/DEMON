@@ -81,6 +81,27 @@ def _model_dir() -> str:
         return os.path.join(base, "PromptEnhancer")
 
 
+def _resolve_device(torch) -> str:
+    """CPU BY DEFAULT, even when a GPU is present.
+
+    This model is small, but a pod's GPU is running a realtime audio pipeline
+    and a few hundred milliseconds of contention there is audible. The work
+    here is never on a latency path a listener can hear -- it happens while
+    generated audio is already playing -- so it belongs on the idle CPU rather
+    than in front of the thing that must not stutter.
+
+    ``DEMON_ENHANCER_DEVICE=cuda`` opts in where that trade is worth making
+    (a dedicated pod, or once contention has actually been measured);
+    ``auto`` restores the usual take-the-GPU-if-present behaviour.
+    """
+    want = os.environ.get("DEMON_ENHANCER_DEVICE", "cpu").strip().lower()
+    if want == "cpu":
+        return "cpu"
+    if want in ("cuda", "auto"):
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    return "cpu"
+
+
 @functools.lru_cache(maxsize=1)
 def _load():
     """Tokenizer + model, once.
@@ -97,7 +118,7 @@ def _load():
     try:
         tok = AutoTokenizer.from_pretrained(path, legacy=False)
         model = T5ForConditionalGeneration.from_pretrained(path)
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = _resolve_device(torch)
         model.to(device).eval()
         return tok, model, device
     except Exception:
@@ -159,6 +180,74 @@ def enhance(text: str, deck: str = "sa3") -> str:
     return tok.decode(out[0], skip_special_tokens=True).strip()
 
 
+def point(text: str, deck: str = "sa3", lane: int = 0, stop: int = 0,
+          stops: int = STOPS, lanes: int = LANES) -> str:
+    """ONE coordinate of the neighbourhood, for callers that cannot wait.
+
+    ``neighbourhood`` is the efficient shape, but it answers in seconds. A
+    client that starts exploring before its grid has arrived would otherwise
+    have nothing to show, so this answers a single coordinate in roughly the
+    time of one decode and the grid takes over silently once it lands.
+
+    Consistent with ``neighbourhood``: same anchor, same lane, same stop gives
+    the same string from either call, so the handover is invisible.
+    """
+    loaded = _load()
+    if loaded is None or not text.strip():
+        return ""
+    if stop <= 0:
+        return enhance(text, deck)
+    tok, model, device = loaded
+    import torch
+
+    with _lock, torch.inference_mode():
+        enc = tok(_task(deck) + text, return_tensors="pt", max_length=160,
+                  truncation=True).to(device)
+        anchor_ids, anchor_text = _anchor(tok, model, enc)
+        if not anchor_ids:
+            return ""
+        # THE FULL LANE BATCH, then index it -- not `lane + 1` rows.
+        #
+        # Sampling consumes the random stream per batch, so a narrower batch
+        # gives a row a different draw than the same row inside the grid: two
+        # of five test coordinates disagreed that way, which would make the pad
+        # jump under the pointer the instant the grid replaced this answer.
+        # Computing the whole stop costs one batch instead of a fraction of one
+        # (~700 ms against ~300 ms here) and is exactly the work the grid does
+        # for that stop, so the two cannot diverge.
+        enc_b = {k: v.repeat(lanes, 1) for k, v in enc.items()}
+        out = _sample(torch, model, enc_b, anchor_ids, stop, stops,
+                      _seed_for(text), device, lanes)
+        txt = tok.decode(out[lane], skip_special_tokens=True).strip()
+    return txt or anchor_text
+
+
+def _anchor(tok, model, enc):
+    """The greedy decode: ids without specials, and the readable string."""
+    out = model.generate(**enc, max_new_tokens=128, num_beams=1,
+                         do_sample=False, no_repeat_ngram_size=3)
+    ids = [int(i) for i in out[0]
+           if int(i) not in (tok.pad_token_id, tok.eos_token_id)]
+    return ids, tok.decode(out[0], skip_special_tokens=True).strip()
+
+
+def _sample(torch, model, enc_b, anchor_ids, stop, stops, seed, device, rows):
+    """One batched sampling pass at distance `stop`. Shared by both entry
+    points so a coordinate cannot mean two different things."""
+    amount = stop / (stops - 1)
+    prefix = _prefix_for(anchor_ids, amount)
+    dec = torch.tensor([[model.config.decoder_start_token_id] + prefix],
+                       device=device).repeat(rows, 1)
+    torch.manual_seed(seed)
+    return model.generate(
+        **enc_b, decoder_input_ids=dec, max_new_tokens=128, num_beams=1,
+        do_sample=True,
+        top_k=TOPK_MIN + round(amount * (TOPK_MAX - TOPK_MIN)),
+        temperature=TEMP_MIN + amount * (TEMP_MAX - TEMP_MIN),
+        no_repeat_ngram_size=3,
+    )
+
+
 def neighbourhood(text: str, deck: str = "sa3", lanes: int = LANES,
                   stops: int = STOPS) -> dict:
     """Every prompt reachable near `text`, in one batched pass.
@@ -194,36 +283,17 @@ def neighbourhood(text: str, deck: str = "sa3", lanes: int = LANES,
     with _lock, torch.inference_mode():
         enc = tok(_task(deck) + text, return_tensors="pt", max_length=160,
                   truncation=True).to(device)
-        anchor_out = model.generate(**enc, max_new_tokens=128, num_beams=1,
-                                    do_sample=False, no_repeat_ngram_size=3)
-        anchor_ids = [int(i) for i in anchor_out[0]
-                      if int(i) not in (tok.pad_token_id, tok.eos_token_id)]
-        anchor_text = tok.decode(anchor_out[0], skip_special_tokens=True).strip()
+        anchor_ids, anchor_text = _anchor(tok, model, enc)
         if not anchor_ids:
             return {}
 
-        anchor_seed = _seed_for(text)
+        seed = _seed_for(text)
         grid = [[anchor_text] for _ in range(lanes)]
         enc_b = {k: v.repeat(lanes, 1) for k, v in enc.items()}
 
         for s in range(1, stops):
-            amount = s / (stops - 1)
-            prefix = _prefix_for(anchor_ids, amount)
-            dec = torch.tensor([[model.config.decoder_start_token_id] + prefix],
-                               device=device).repeat(lanes, 1)
-            topk = TOPK_MIN + round(amount * (TOPK_MAX - TOPK_MIN))
-            temp = TEMP_MIN + amount * (TEMP_MAX - TEMP_MIN)
-            torch.manual_seed(anchor_seed)
-            out = model.generate(
-                **enc_b,
-                decoder_input_ids=dec,
-                max_new_tokens=128,
-                num_beams=1,
-                do_sample=True,
-                top_k=topk,
-                temperature=temp,
-                no_repeat_ngram_size=3,
-            )
+            out = _sample(torch, model, enc_b, anchor_ids, s, stops, seed,
+                          device, lanes)
             for lane in range(lanes):
                 txt = tok.decode(out[lane], skip_special_tokens=True).strip()
                 grid[lane].append(txt or anchor_text)

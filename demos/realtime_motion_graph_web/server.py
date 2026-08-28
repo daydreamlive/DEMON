@@ -265,14 +265,34 @@ def _process_request(connection, request):
     if path_only == "/api/variations":
         from urllib.parse import parse_qs
 
-        from .prompt_variations import neighbourhood
+        from .prompt_variations import neighbourhood, point
 
         query = url.split("?", 1)[1] if "?" in url else ""
         params = parse_qs(query)
         anchor = (params.get("prompt", [""])[0] or "").strip()
         deck = _resolve_enhance_backend(params.get("backend", [""])[0])
-        grid = neighbourhood(anchor, deck)
-        body = json.dumps({**grid, "ok": bool(grid)}).encode()
+
+        # ?stop= asks for ONE coordinate instead of the grid, for a client that
+        # has started exploring before its grid arrived: ~0.4s against several
+        # seconds. Identical strings either way, so the grid can replace these
+        # answers silently as soon as it lands.
+        def _int(name: str) -> int | None:
+            raw = (params.get(name, [""])[0] or "").strip()
+            try:
+                return int(raw)
+            except ValueError:
+                return None
+
+        stop = _int("stop")
+        if stop is not None:
+            lane = _int("lane") or 0
+            txt = point(anchor, deck, lane=lane, stop=stop)
+            payload = {"anchor": txt, "lane": lane, "stop": stop,
+                       "text": txt, "ok": bool(txt)}
+        else:
+            grid = neighbourhood(anchor, deck)
+            payload = {**grid, "ok": bool(grid)}
+        body = json.dumps(payload).encode()
         _log_http(remote, 200, "GET", "/api/variations")  # redact prompt
         return Response(
             200, "OK",
