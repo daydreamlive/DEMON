@@ -1,4 +1,4 @@
-"""A local prompt enhancer, and a neighbourhood of variations around a prompt.
+"""A local prompt enhancer, and prompts near a given one.
 
 `/api/enhance` has always expanded a rough idea into a rich prompt by asking a
 hosted LLM. That costs an API key, a network round trip, and a per-call fee for
@@ -16,19 +16,17 @@ TWO ENTRY POINTS.
 ``enhance`` is the one-shot: a prompt in, a richer one out, greedy so the same
 input always yields the same output.
 
-``neighbourhood`` answers a different question -- "what else is near this
-prompt?" -- and answers it for the WHOLE neighbourhood at once rather than one
-point at a time. A client exploring nearby prompts interactively would
-otherwise issue a request per interaction, which is a round trip per gesture.
+``point`` answers a different question -- "what else is near this prompt?" --
+one coordinate at a time. Distance from the anchor collapses to an integer
+(how many of the anchor's leading tokens are held fixed, bounded to MAX_FREE
+of the line) and variety at a given distance is LANES discrete sampling
+streams, so a client can walk the space by asking for coordinates.
 
-It can answer wholesale because the reachable set is small and finite:
-
-  * distance from the anchor collapses to an integer -- how many of the
-    anchor's leading tokens are held fixed, bounded to MAX_FREE of the line;
-  * variety at a given distance is LANES discrete sampling streams.
-
-So one anchor has a few hundred reachable strings, all deterministic. Generate
-them in one batched pass and the client can index the result locally.
+Answering the WHOLE neighbourhood in one call was tried and withdrawn. The
+reachable set is small enough to precompute, which sounds like the better
+shape -- but a generation holds the lock below for its whole duration, and a
+grid is fifteen of them. One coordinate is ~0.14s on a 5090; a grid was
+seconds, during which nothing else here could answer at all.
 
 WHY A FORCED PREFIX RATHER THAN A SEED. Seeds have no notion of "nearby": two
 seeds are unrelated draws, so a seed cannot express distance. Prefix length
@@ -269,15 +267,14 @@ def enhance(text: str, deck: str = "sa3") -> str:
 
 def point(text: str, deck: str = "sa3", lane: int = 0, stop: int = 0,
           stops: int = STOPS, lanes: int = LANES) -> str:
-    """ONE coordinate of the neighbourhood, for callers that cannot wait.
+    """ONE coordinate near `text`: `stop` is distance, `lane` picks which
+    neighbour at that distance.
 
-    ``neighbourhood`` is the efficient shape, but it answers in seconds. A
-    client that starts exploring before its grid has arrived would otherwise
-    have nothing to show, so this answers a single coordinate in roughly the
-    time of one decode and the grid takes over silently once it lands.
+    Deterministic in both: the same anchor and coordinate always give the same
+    string, so travelling out and back is lossless. That is the whole contract
+    a client needs to treat this as navigation rather than a dice roll.
 
-    Consistent with ``neighbourhood``: same anchor, same lane, same stop gives
-    the same string from either call, so the handover is invisible.
+    Stop 0 is the anchor itself.
     """
     loaded = _load()
     if loaded is None or not text.strip():
@@ -320,7 +317,7 @@ def _anchor(tok, model, enc):
 
 
 def route_query(params: dict) -> tuple[str, int, int]:
-    """Turn a parsed query string into ("grid"|"point"|"reject", stop, lane).
+    """Turn a parsed query string into ("point"|"reject", stop, lane).
 
     A pure function so it can be tested: this lived inside the request handler,
     where it was wrong in both directions at once. `?lane=5` with no stop ran
@@ -328,9 +325,9 @@ def route_query(params: dict) -> tuple[str, int, int]:
     names one coordinate -- and `?lane=abc` refused a grid, which never reads
     lane at all.
 
-    Blank and absent mean the same thing (no coordinate asked for). Garbage
-    does not: it is a client bug, and answering it with the most expensive
-    thing on the endpoint is how a typo becomes a denial of service.
+    Blank and absent mean the same thing: the origin, which is the anchor.
+    Garbage does not -- it is a client bug, and answering it at all is how a
+    typo becomes work the pod did not need to do.
     """
     def read(name):
         raw = (params.get(name, [""])[0] or "").strip()
@@ -345,8 +342,6 @@ def route_query(params: dict) -> tuple[str, int, int]:
     lane, lane_given = read("lane")
     if (stop_given and stop is None) or (lane_given and lane is None):
         return ("reject", 0, 0)
-    if not stop_given and not lane_given:
-        return ("grid", 0, 0)
     stop, lane = clamp_coord(stop or 0, lane or 0)
     return ("point", stop, lane)
 
@@ -404,56 +399,3 @@ def _generate(torch, model, enc_b, dec, amount):
         temperature=TEMP_MIN + amount * (TEMP_MAX - TEMP_MIN),
         no_repeat_ngram_size=3,
     )
-
-
-def neighbourhood(text: str, deck: str = "sa3", lanes: int = LANES,
-                  stops: int = STOPS) -> dict:
-    """Every prompt reachable near `text`, in one batched pass.
-
-    Returns ``{"anchor": str, "lanes": int, "stops": int, "grid": [[str]]}``
-    where ``grid[lane][stop]`` is the prompt at that coordinate, stop 0 being
-    the anchor itself and higher stops progressively further from it. Empty
-    dict when the local checkpoint is unavailable.
-
-    STOP 0 IS THE ANCHOR, EXACTLY, in every lane. Travelling away and back has
-    to return precisely where you were, or the control is lossy and no client
-    can offer it as navigation.
-
-    BATCHED ALONG THE LANE AXIS. Every lane shares one distance, so the forced
-    prefix is identical across the batch and needs no ragged decoder padding --
-    and one sampling call over `lanes` identical rows draws `lanes` independent
-    variants, which is what a lane is. Batching the other way (one lane, every
-    distance) would need variable-length decoder inputs for no gain.
-
-    ONE SEED FOR THE WHOLE TRAVEL, reset before each stop. Every distance then
-    starts from an identical RNG state and differs only in how much of the line
-    was freed, so moving outward DIVERGES from where you were instead of
-    teleporting. Seeding per stop instead is still reproducible, but makes
-    every distance an independent draw: measured, that roughly doubled the edit
-    distance between adjacent steps, turning travel into a shuffle.
-    """
-    loaded = _load()
-    if loaded is None or not text.strip():
-        return {}
-    tok, model, device = loaded
-    import torch
-
-    with _generating(), torch.inference_mode():
-        enc = tok(_task(deck) + text, return_tensors="pt", max_length=160,
-                  truncation=True).to(device)
-        anchor_ids, anchor_text = _anchor(tok, model, enc)
-        if not anchor_ids:
-            return {}
-
-        seed = _seed_for(text)
-        grid = [[anchor_text] for _ in range(lanes)]
-        enc_b = {k: v.repeat(lanes, 1) for k, v in enc.items()}
-
-        for s in range(1, stops):
-            out = _sample(torch, model, enc_b, anchor_ids, s, stops, seed,
-                          device, lanes)
-            for lane in range(lanes):
-                txt = tok.decode(out[lane], skip_special_tokens=True).strip()
-                grid[lane].append(txt or anchor_text)
-
-    return {"anchor": anchor_text, "lanes": lanes, "stops": stops, "grid": grid}

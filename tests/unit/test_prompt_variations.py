@@ -126,13 +126,12 @@ class TestDegradation:
         # Every docstring promises callers fall back to the hosted backend
         # rather than seeing a 500.
         monkeypatch.setattr(pv, "_load", lambda: None)
-        assert pv.neighbourhood("techno", "sa3") == {}
         assert pv.point("techno", "sa3", lane=0, stop=3) == ""
         assert pv.enhance("techno", "sa3") == ""
 
     def test_empty_prompt_is_not_work(self, monkeypatch):
         monkeypatch.setattr(pv, "_load", lambda: ("tok", "model", "cpu"))
-        assert pv.neighbourhood("   ", "sa3") == {}
+        assert pv.point("   ", "sa3", lane=0, stop=3) == ""
         assert pv.enhance("", "sa3") == ""
 
 
@@ -141,19 +140,22 @@ class TestRouteQuery:
 
     This lived inline in `_process_request`, where it could not be tested, and
     it was wrong in both directions at once: `?lane=5` with no stop served a
-    full grid (the expensive path, for a request that named a coordinate), and
-    `?lane=abc` refused one (for a field the grid never reads).
+    full neighbourhood -- the expensive path, for a request that named a
+    coordinate -- while `?lane=abc` refused one, for a field that path never
+    read. Every shape now resolves to a coordinate or a refusal.
     """
 
-    def test_no_params_is_a_grid(self):
-        assert pv.route_query({}) == ("grid", 0, 0)
+    def test_no_params_is_the_origin(self):
+        # Which is the anchor -- the cheapest possible answer, and the right
+        # one. It used to be a full neighbourhood: the most expensive thing on
+        # the endpoint, for a request that asked for nothing in particular.
+        assert pv.route_query({}) == ("point", 0, 0)
 
     def test_stop_selects_a_point(self):
         assert pv.route_query({"stop": ["3"]}) == ("point", 3, 0)
         assert pv.route_query({"stop": ["3"], "lane": ["5"]}) == ("point", 3, 5)
 
-    def test_lane_alone_names_a_coordinate_not_a_grid(self):
-        # It was a grid: ~10x the work, for a request that clearly wants one.
+    def test_lane_alone_names_a_coordinate(self):
         assert pv.route_query({"lane": ["5"]}) == ("point", 0, 5)
 
     def test_garbage_is_refused_not_escalated(self):
@@ -167,7 +169,7 @@ class TestRouteQuery:
         assert pv.route_query({"stop": ["9" * 400]}) == ("point", pv.STOPS - 1, 0)
 
     def test_blank_is_absent_not_garbage(self):
-        assert pv.route_query({"stop": [""], "lane": [""]}) == ("grid", 0, 0)
+        assert pv.route_query({"stop": [""], "lane": [""]}) == ("point", 0, 0)
 
     def test_coordinates_are_clamped(self):
         assert pv.route_query({"stop": ["999"], "lane": ["999"]}) == (

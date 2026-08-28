@@ -284,7 +284,7 @@ def _process_request(connection, request):
         from urllib.parse import parse_qs
 
         from .prompt_enhancer import _resolve_provider
-        from .prompt_variations import Busy, neighbourhood, point, route_query
+        from .prompt_variations import Busy, point, route_query
 
         query = url.split("?", 1)[1] if "?" in url else ""
         params = parse_qs(query)
@@ -303,16 +303,8 @@ def _process_request(connection, request):
             return _json_response(remote, "/api/variations", {"ok": False})
 
         try:
-            if route == "point":
-                txt = point(anchor, deck, lane=lane, stop=stop)
-                # `anchor` is NOT the variation. It named the greedy anchor on
-                # the grid path and the variation here, so a client showing
-                # "your base prompt" showed the wrong string on this branch.
-                payload = {"text": txt, "lane": lane, "stop": stop,
-                           "ok": bool(txt)}
-            else:
-                grid = neighbourhood(anchor, deck)
-                payload = {**grid, "ok": bool(grid)}
+            txt = point(anchor, deck, lane=lane, stop=stop)
+            payload = {"text": txt, "lane": lane, "stop": stop, "ok": bool(txt)}
         except Exception as exc:   # noqa: BLE001 -- see below
             # EVERY failure degrades, not just Busy. A CUDA OOM, a tokenizer
             # error or an IndexError used to propagate out of _process_request
