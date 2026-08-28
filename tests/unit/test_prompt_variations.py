@@ -12,9 +12,16 @@ rather than something that only runs on a pod.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from demos.realtime_motion_graph_web import prompt_variations as pv
+
+
+def _enter_ok() -> bool:
+    with pv._generating():
+        return True
 
 
 class TestClampCoord:
@@ -73,18 +80,45 @@ class TestSeed:
 
 
 class TestBusyGate:
-    """One generation at a time, and a refusal rather than a queue."""
+    """One generation at a time, and a refusal rather than a queue.
+
+    These must run under a TIMEOUT. The first version of `_generating`
+    returned the Lock itself, so `with _generating():` re-acquired a
+    non-reentrant lock on the same thread and deadlocked -- and a hanging test
+    is not a failing test, which is exactly why it shipped. Every case here
+    runs on a worker thread and asserts it finished.
+    """
+
+    @staticmethod
+    def _run(fn, seconds=5.0):
+        out = []
+        t = threading.Thread(target=lambda: out.append(fn()), daemon=True)
+        t.start()
+        t.join(timeout=seconds)
+        assert not t.is_alive(), "deadlocked -- _generating must not block"
+        return out[0]
+
+    def test_the_body_actually_runs(self):
+        assert self._run(lambda: [1 for _ in [0] if _enter_ok()][0]) == 1
 
     def test_second_caller_is_refused_not_queued(self):
-        with pv._generating():
-            with pytest.raises(pv.Busy):
-                pv._generating()
+        def go():
+            with pv._generating():
+                try:
+                    with pv._generating():
+                        return "admitted"
+                except pv.Busy:
+                    return "refused"
+        assert self._run(go) == "refused"
 
     def test_lock_is_released_for_the_next_caller(self):
-        with pv._generating():
-            pass
-        with pv._generating():
-            pass   # would raise Busy if the first had not released
+        def go():
+            with pv._generating():
+                pass
+            with pv._generating():
+                pass
+            return not pv._lock.locked()
+        assert self._run(go) is True
 
 
 class TestDegradation:

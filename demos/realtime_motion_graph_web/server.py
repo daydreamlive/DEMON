@@ -298,6 +298,16 @@ def _process_request(connection, request):
         if _resolve_provider() == "hosted":
             return _json_response(remote, "/api/variations", {"ok": False})
 
+        def _parsed(name: str) -> bool:
+            raw = (params.get(name, [""])[0] or "").strip()
+            if not raw:
+                return True
+            try:
+                int(raw)
+                return True
+            except ValueError:
+                return False
+
         def _int(name: str):
             """(value, was_present). A blank/absent param and an unparseable
             one must NOT be the same answer: `?stop=abc` used to fall through
@@ -312,7 +322,12 @@ def _process_request(connection, request):
                 return 0, True
 
         stop, has_stop = _int("stop")
-        lane, _ = _int("lane")
+        lane, has_lane = _int("lane")
+        # Unparseable is a client bug, not a coordinate. `?stop=abc` used to
+        # clamp to 0 and run a full greedy enhance under the busy lock -- the
+        # escalation the parse guard was added to stop, one branch over.
+        if (has_stop and not _parsed("stop")) or (has_lane and not _parsed("lane")):
+            return _json_response(remote, "/api/variations", {"ok": False})
         try:
             if has_stop:
                 stop, lane = clamp_coord(stop, lane)
@@ -325,7 +340,13 @@ def _process_request(connection, request):
             else:
                 grid = neighbourhood(anchor, deck)
                 payload = {**grid, "ok": bool(grid)}
-        except Busy:
+        except Exception as exc:   # noqa: BLE001 -- see below
+            # EVERY failure degrades, not just Busy. A CUDA OOM, a tokenizer
+            # error or an IndexError used to propagate out of _process_request
+            # as a 500, while every docstring in prompt_variations promises the
+            # caller falls back to the hosted backend instead.
+            if not isinstance(exc, Busy):
+                return _json_response(remote, "/api/variations", {"ok": False})
             body = json.dumps({"ok": False, "busy": True}).encode()
             _log_http(remote, 503, "GET", "/api/variations")
             return Response(
@@ -343,7 +364,7 @@ def _process_request(connection, request):
     if path_only == "/api/enhance":
         from urllib.parse import parse_qs
 
-        from .prompt_enhancer import enhance_prompt
+        from .prompt_enhancer import _resolve_provider, enhance_prompt
 
         query = url.split("?", 1)[1] if "?" in url else ""
         params = parse_qs(query)
@@ -354,7 +375,14 @@ def _process_request(connection, request):
         # `provider` picks WHO answers (hosted LLM vs the local checkpoint);
         # `backend` picks WHICH prompt policy. Orthogonal, hence two params.
         # Blank means "whatever this pod is configured for".
+        # The client may ask for a provider, but it may not ARM one the
+        # deployment opted out of: _resolve_provider lets a valid override beat
+        # the env, so ?provider=local forced local inference on a pod
+        # configured hosted -- the exact thing /api/variations' gate exists to
+        # prevent, reachable one endpoint over. An override may only narrow.
         provider = params.get("provider", [""])[0]
+        if _resolve_provider() == "hosted":
+            provider = "hosted"
         enhanced, ok = enhance_prompt(idea, backend, provider)
         body = json.dumps({"enhanced": enhanced, "ok": ok}).encode()
         _log_http(remote, 200, "GET", "/api/enhance")  # redact prompt

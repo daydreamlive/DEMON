@@ -38,7 +38,7 @@ change the model can make, and it grows monotonically as the prefix shortens.
 
 from __future__ import annotations
 
-import functools
+import contextlib
 import os
 import threading
 
@@ -137,7 +137,11 @@ def _load():
 
             path = _model_dir()
             if not os.path.isdir(path):
-                _load_failed = True
+                # NOT latched. A checkpoint staged after the first request --
+                # a slow download, a volume mounted late -- must be picked up,
+                # and "auto" is documented as "local when a checkpoint is
+                # installed". Latching made that a one-shot decision taken by
+                # whoever happened to send the first request.
                 return None
             tok = AutoTokenizer.from_pretrained(path, legacy=False)
             model = T5ForConditionalGeneration.from_pretrained(path)
@@ -189,6 +193,7 @@ class Busy(Exception):
     """Raised instead of queueing. See `_generating`."""
 
 
+@contextlib.contextmanager
 def _generating():
     """Admit one generation, or refuse.
 
@@ -197,10 +202,20 @@ def _generating():
     session -- the server already documents that starving that thread closes
     sessions with a keepalive timeout. Refusing immediately bounds the damage
     an unauthenticated caller can do to one in-flight generation.
+
+    A CONTEXT MANAGER, not the Lock. This returned `_lock` itself, so
+    `with _generating():` called Lock.__enter__ -- which IS acquire() -- on a
+    non-reentrant lock the same thread had just taken. It deadlocked on the
+    FIRST call, wedging that connection thread forever while holding the lock,
+    so every later request got Busy for the life of the process. A gate meant
+    to bound the damage instead guaranteed it.
     """
     if not _lock.acquire(blocking=False):
         raise Busy()
-    return _lock
+    try:
+        yield
+    finally:
+        _lock.release()
 
 
 def enhance(text: str, deck: str = "sa3") -> str:
@@ -308,7 +323,14 @@ def _sample(torch, model, enc_b, anchor_ids, stop, stops, seed, device, rows):
     prefix = _prefix_for(anchor_ids, amount)
     dec = torch.tensor([[model.config.decoder_start_token_id] + prefix],
                        device=device).repeat(rows, 1)
-    with torch.random.fork_rng(devices=[]):
+    # devices=[] restores the CPU generator ONLY, and torch.manual_seed is not
+    # CPU-only -- _manual_seed_impl calls torch.cuda.manual_seed_all first. So
+    # the empty list left the CUDA generator seeded from a prompt hash, which
+    # is exactly the audio-seed corruption this was written to prevent, and
+    # the fleet now defaults this model onto CUDA. Fork whatever devices exist.
+    _devices = (list(range(torch.cuda.device_count()))
+                if torch.cuda.is_available() else [])
+    with torch.random.fork_rng(devices=_devices):
         torch.manual_seed(seed)
         return _generate(torch, model, enc_b, dec, amount)
 

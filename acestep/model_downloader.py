@@ -202,6 +202,14 @@ PROMPT_ENHANCER_MODEL_NAME = "prompt-enhancer"
 PROMPT_ENHANCER_DEFAULT_REPO = "daydreamlive/t5-small-enhancer"
 #: The files transformers needs to load it; anything else in the repo is
 #: ignored so a card or extra format does not bloat every pod.
+#: What must be present for the checkpoint to load at all. A t5 fine-tune may
+#: legitimately ship either a fast tokenizer (tokenizer.json) or a slow one
+#: (spiece.model), so neither is required on its own -- see the check below.
+PROMPT_ENHANCER_REQUIRED = [
+    "config.json",
+    "model.safetensors",
+    "tokenizer_config.json",
+]
 PROMPT_ENHANCER_ALLOW = [
     "config.json",
     "generation_config.json",
@@ -232,12 +240,13 @@ def check_prompt_enhancer_model_exists(model_dir: Optional[Path] = None) -> bool
     if model_dir is None:
         model_dir = get_prompt_enhancer_dir()
     model_dir = Path(model_dir)
-    # EVERY file, not just the weights. Checking two of seven meant a
-    # half-finished transfer -- rsync walks alphabetically, so an interrupt
-    # after spiece.model leaves both sentinels present and the tokenizer
-    # missing -- reported as complete, was never re-downloaded, and failed to
-    # load forever.
-    return all((model_dir / f).exists() for f in PROMPT_ENHANCER_ALLOW)
+    # The files transformers genuinely cannot start without. Checking only the
+    # weights let a half-finished transfer report complete (rsync walks
+    # alphabetically, so an interrupt after spiece.model left both sentinels
+    # present and the tokenizer missing). Requiring ALL SEVEN was the other
+    # error: a mirror that ships a slow tokenizer has no tokenizer.json, so the
+    # check could never pass and every boot re-downloaded 250 MB forever.
+    return all((model_dir / f).exists() for f in PROMPT_ENHANCER_REQUIRED)
 
 
 def download_prompt_enhancer_model(
@@ -735,6 +744,9 @@ def print_model_list():
     print("\n[Stem Separation Models]")
     print(f"  {MELBAND_ROFORMER_MODEL_NAME} -> {MELBAND_ROFORMER_REPO}")
 
+    print("\n[Prompt Enhancer] (optional)")
+    print(f"  {PROMPT_ENHANCER_MODEL_NAME} -> {get_prompt_enhancer_repo()}")
+
     print("\n" + "=" * 60)
 
 
@@ -829,6 +841,14 @@ Alternative using huggingface-cli (substitute your checkpoints dir):
         elif args.model == MELBAND_ROFORMER_MODEL_NAME:
             model_dir = get_melband_roformer_dir(args.dir) if args.dir else get_melband_roformer_dir()
             success, msg = download_melband_roformer_model(
+                model_dir,
+                args.force,
+                args.token,
+            )
+        elif args.model == PROMPT_ENHANCER_MODEL_NAME:
+            model_dir = (get_prompt_enhancer_dir(args.dir) if args.dir
+                         else get_prompt_enhancer_dir())
+            success, msg = download_prompt_enhancer_model(
                 model_dir,
                 args.force,
                 args.token,
