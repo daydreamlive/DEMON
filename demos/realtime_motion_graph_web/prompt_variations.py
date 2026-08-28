@@ -58,7 +58,12 @@ LANES = 12
 STOPS = 16
 
 _MODEL_ENV = "DEMON_ENHANCER_DIR"
+#: Serialises generation. Held only while a model is actually decoding.
 _lock = threading.Lock()
+#: Serialises LOADING, which _lock cannot: every caller does _load() before
+#: taking _lock, and functools.lru_cache does NOT hold a lock across the wrapped
+#: call -- N concurrent first requests run N full checkpoint loads.
+_load_lock = threading.Lock()
 
 
 def _model_dir() -> str:
@@ -102,27 +107,47 @@ def _resolve_device(torch) -> str:
     return "cpu"
 
 
-@functools.lru_cache(maxsize=1)
+_loaded = None
+_load_failed = False
+
+
 def _load():
     """Tokenizer + model, once.
 
     Returns None when the checkpoint is absent or unloadable, so every caller
     degrades to the hosted backend instead of failing the request.
-    """
-    import torch
-    from transformers import AutoTokenizer, T5ForConditionalGeneration
 
-    path = _model_dir()
-    if not os.path.isdir(path):
-        return None
-    try:
-        tok = AutoTokenizer.from_pretrained(path, legacy=False)
-        model = T5ForConditionalGeneration.from_pretrained(path)
-        device = _resolve_device(torch)
-        model.to(device).eval()
-        return tok, model, device
-    except Exception:
-        return None
+    NOT lru_cache: that memoises the return value but does not serialise
+    concurrent misses, so the first N simultaneous requests to a cold process
+    each load the checkpoint. It also would not let a failure be retried.
+    """
+    global _loaded, _load_failed
+    if _loaded is not None or _load_failed:
+        return _loaded
+    with _load_lock:
+        if _loaded is not None or _load_failed:
+            return _loaded
+        try:
+            # INSIDE the try. These used to sit above it, so a deployment
+            # without torch/transformers raised ImportError out of the endpoint
+            # as a 500 rather than degrading to the hosted backend, which is
+            # the opposite of what every docstring here promises.
+            import torch
+            from transformers import AutoTokenizer, T5ForConditionalGeneration
+
+            path = _model_dir()
+            if not os.path.isdir(path):
+                _load_failed = True
+                return None
+            tok = AutoTokenizer.from_pretrained(path, legacy=False)
+            model = T5ForConditionalGeneration.from_pretrained(path)
+            device = _resolve_device(torch)
+            model.to(device).eval()
+            _loaded = (tok, model, device)
+            return _loaded
+        except Exception:
+            _load_failed = True
+            return None
 
 
 def available() -> bool:
@@ -160,6 +185,24 @@ def _seed_for(text: str) -> int:
     return zlib.crc32(text.encode("utf-8")) & 0x7FFFFFFF
 
 
+class Busy(Exception):
+    """Raised instead of queueing. See `_generating`."""
+
+
+def _generating():
+    """Admit one generation, or refuse.
+
+    A blocking lock turns concurrent callers into an unbounded queue in front
+    of multi-second work, in the same process (and GIL) as a live audio
+    session -- the server already documents that starving that thread closes
+    sessions with a keepalive timeout. Refusing immediately bounds the damage
+    an unauthenticated caller can do to one in-flight generation.
+    """
+    if not _lock.acquire(blocking=False):
+        raise Busy()
+    return _lock
+
+
 def enhance(text: str, deck: str = "sa3") -> str:
     """Expand `text` into a richer prompt. Greedy, so it is reproducible.
 
@@ -172,7 +215,7 @@ def enhance(text: str, deck: str = "sa3") -> str:
     tok, model, device = loaded
     import torch
 
-    with _lock, torch.inference_mode():
+    with _generating(), torch.inference_mode():
         enc = tok(_task(deck) + text, return_tensors="pt", max_length=160,
                   truncation=True).to(device)
         out = model.generate(**enc, max_new_tokens=128, num_beams=1,
@@ -195,12 +238,13 @@ def point(text: str, deck: str = "sa3", lane: int = 0, stop: int = 0,
     loaded = _load()
     if loaded is None or not text.strip():
         return ""
+    stop, lane = clamp_coord(stop, lane, stops, lanes)
     if stop <= 0:
         return enhance(text, deck)
     tok, model, device = loaded
     import torch
 
-    with _lock, torch.inference_mode():
+    with _generating(), torch.inference_mode():
         enc = tok(_task(deck) + text, return_tensors="pt", max_length=160,
                   truncation=True).to(device)
         anchor_ids, anchor_text = _anchor(tok, model, enc)
@@ -231,14 +275,45 @@ def _anchor(tok, model, enc):
     return ids, tok.decode(out[0], skip_special_tokens=True).strip()
 
 
+def clamp_coord(stop: int, lane: int, stops: int = STOPS,
+                lanes: int = LANES) -> tuple[int, int]:
+    """Force a caller-supplied coordinate into the grid.
+
+    Both arrive from a query string. Unclamped, `lane` indexes a tensor row
+    (IndexError -> 500, raised AFTER the whole batch has been generated) and
+    `stop` scales top_k/temperature without bound, so a large value asks for
+    near-uniform sampling that never draws EOS -- a knob for making every
+    request maximally expensive.
+    """
+    return (max(0, min(stops - 1, stop)), max(0, min(lanes - 1, lane)))
+
+
 def _sample(torch, model, enc_b, anchor_ids, stop, stops, seed, device, rows):
     """One batched sampling pass at distance `stop`. Shared by both entry
-    points so a coordinate cannot mean two different things."""
+    points so a coordinate cannot mean two different things.
+
+    FORKS THE GLOBAL RNG. torch.manual_seed is process-wide and the audio
+    engine draws from the same generator -- acestep/engine/stream.py seeds it
+    and then immediately calls torch.randn for its noise. Seeding here without
+    restoring would hand that slot noise derived from a prompt hash instead of
+    the user's seed, silently breaking audio reproducibility. fork_rng puts the
+    state back, so nothing outside this function can observe our seeding.
+
+    The converse -- a stream reseeding mid-grid and perturbing OUR sampling --
+    is not fixable from this side without a process-wide RNG lock. It costs
+    determinism of the grid under concurrent load, which is the far smaller
+    harm, and the 503 gate above makes it rare.
+    """
     amount = stop / (stops - 1)
     prefix = _prefix_for(anchor_ids, amount)
     dec = torch.tensor([[model.config.decoder_start_token_id] + prefix],
                        device=device).repeat(rows, 1)
-    torch.manual_seed(seed)
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(seed)
+        return _generate(torch, model, enc_b, dec, amount)
+
+
+def _generate(torch, model, enc_b, dec, amount):
     return model.generate(
         **enc_b, decoder_input_ids=dec, max_new_tokens=128, num_beams=1,
         do_sample=True,
@@ -280,7 +355,7 @@ def neighbourhood(text: str, deck: str = "sa3", lanes: int = LANES,
     tok, model, device = loaded
     import torch
 
-    with _lock, torch.inference_mode():
+    with _generating(), torch.inference_mode():
         enc = tok(_task(deck) + text, return_tensors="pt", max_length=160,
                   truncation=True).to(device)
         anchor_ids, anchor_text = _anchor(tok, model, enc)

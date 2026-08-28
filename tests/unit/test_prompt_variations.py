@@ -1,0 +1,102 @@
+"""Checks for the variations grid that do not need the checkpoint.
+
+The module is index arithmetic, RNG seeding and a batch/point equivalence, and
+the equivalence has already been broken once: `point` built a narrower batch to
+save work, sampling consumes the random stream per batch, and two of five
+coordinates came back different from the grid's. A client indexing a cached
+grid would have seen the answer change under it the moment the grid landed.
+
+Everything here runs without torch or the weights, so it is a real gate in CI
+rather than something that only runs on a pod.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from demos.realtime_motion_graph_web import prompt_variations as pv
+
+
+class TestClampCoord:
+    """`stop` and `lane` arrive from a query string."""
+
+    def test_lane_cannot_index_off_the_batch(self):
+        # Unclamped this reached `out[lane]` on a 12-row tensor: IndexError,
+        # 500, and raised only AFTER the whole batch had been generated.
+        assert pv.clamp_coord(0, 999)[1] == pv.LANES - 1
+        assert pv.clamp_coord(0, -5)[1] == 0
+
+    def test_stop_cannot_run_the_sampler_off_its_range(self):
+        # amount = stop/(stops-1) feeds top_k and temperature unbounded, so a
+        # large stop asks for near-uniform sampling that rarely draws EOS --
+        # every row then runs the full token budget.
+        assert pv.clamp_coord(10**6, 0)[0] == pv.STOPS - 1
+        assert pv.clamp_coord(-5, 0)[0] == 0
+
+    def test_in_range_is_untouched(self):
+        assert pv.clamp_coord(7, 3) == (7, 3)
+
+
+class TestPrefix:
+    """Distance is a count of anchor tokens held fixed."""
+
+    def test_zero_distance_keeps_the_whole_anchor(self):
+        ids = list(range(31))
+        assert pv._prefix_for(ids, 0.0) == ids
+
+    def test_travel_is_monotonic_and_bounded(self):
+        ids = list(range(31))
+        lengths = [len(pv._prefix_for(ids, s / (pv.STOPS - 1)))
+                   for s in range(pv.STOPS)]
+        assert lengths == sorted(lengths, reverse=True)
+        # MAX_FREE is the point past which the model answers the brief again
+        # instead of varying it, so the head must always survive.
+        assert lengths[-1] >= len(ids) * (1 - pv.MAX_FREE) - 1
+
+    def test_anchor_shorter_than_the_stop_count(self):
+        for n in (1, 2, 3):
+            ids = list(range(n))
+            for s in range(pv.STOPS):
+                got = pv._prefix_for(ids, s / (pv.STOPS - 1))
+                assert 0 <= len(got) <= n
+                assert got == ids[: len(got)]
+
+
+class TestSeed:
+    def test_stable_across_processes(self):
+        # Python's hash() is salted per interpreter, so using it would give a
+        # different neighbourhood after every pod restart -- and the pad's
+        # whole contract is that a variation you liked is still there.
+        assert pv._seed_for("techno") == pv._seed_for("techno")
+        assert pv._seed_for("techno") != pv._seed_for("house")
+        assert 0 <= pv._seed_for("x" * 500) <= 0x7FFFFFFF
+
+
+class TestBusyGate:
+    """One generation at a time, and a refusal rather than a queue."""
+
+    def test_second_caller_is_refused_not_queued(self):
+        with pv._generating():
+            with pytest.raises(pv.Busy):
+                pv._generating()
+
+    def test_lock_is_released_for_the_next_caller(self):
+        with pv._generating():
+            pass
+        with pv._generating():
+            pass   # would raise Busy if the first had not released
+
+
+class TestDegradation:
+    def test_absent_checkpoint_returns_empty_not_an_exception(self, monkeypatch):
+        # Every docstring promises callers fall back to the hosted backend
+        # rather than seeing a 500.
+        monkeypatch.setattr(pv, "_load", lambda: None)
+        assert pv.neighbourhood("techno", "sa3") == {}
+        assert pv.point("techno", "sa3", lane=0, stop=3) == ""
+        assert pv.enhance("techno", "sa3") == ""
+
+    def test_empty_prompt_is_not_work(self, monkeypatch):
+        monkeypatch.setattr(pv, "_load", lambda: ("tok", "model", "cpu"))
+        assert pv.neighbourhood("   ", "sa3") == {}
+        assert pv.enhance("", "sa3") == ""

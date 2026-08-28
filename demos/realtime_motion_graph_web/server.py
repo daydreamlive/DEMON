@@ -183,6 +183,24 @@ def _log_http(remote: str, status: int, method: str, url: str):
     )
 
 
+def _json_response(remote, path: str, payload: dict) -> "Response":
+    """A JSON reply for the variations endpoint. Deliberately NOT carrying
+    _PUBLIC_HTTP_HEADERS: those include `Access-Control-Allow-Origin: *`,
+    which is right for a cheap read-only probe and wrong for something that
+    costs seconds of model time per call."""
+    body = json.dumps(payload).encode()
+    _log_http(remote, 200, "GET", path)   # redact prompt
+    return Response(
+        200, "OK",
+        Headers([
+            ("Content-Type", "application/json; charset=utf-8"),
+            ("Content-Length", str(len(body))),
+            *_NO_CACHE_HEADERS,
+        ]),
+        body,
+    )
+
+
 def _process_request(connection, request):
     """Return a :class:`Response` for plain HTTP; return ``None`` to let
     the websockets library finish the WebSocket upgrade.
@@ -265,44 +283,62 @@ def _process_request(connection, request):
     if path_only == "/api/variations":
         from urllib.parse import parse_qs
 
-        from .prompt_variations import neighbourhood, point
+        from .prompt_enhancer import _resolve_provider
+        from .prompt_variations import Busy, clamp_coord, neighbourhood, point
 
         query = url.split("?", 1)[1] if "?" in url else ""
         params = parse_qs(query)
         anchor = (params.get("prompt", [""])[0] or "").strip()
         deck = _resolve_enhance_backend(params.get("backend", [""])[0])
 
-        # ?stop= asks for ONE coordinate instead of the grid, for a client that
-        # has started exploring before its grid arrived: ~0.4s against several
-        # seconds. Identical strings either way, so the grid can replace these
-        # answers silently as soon as it lands.
-        def _int(name: str) -> int | None:
-            raw = (params.get(name, [""])[0] or "").strip()
-            try:
-                return int(raw)
-            except ValueError:
-                return None
+        # GATED ON THE SAME SETTING AS /api/enhance. Without this the endpoint
+        # is armed by the checkpoint merely being on disk, which a deployment
+        # cannot control once an image has been baked from a pod that had one
+        # -- so "opt in per deployment" would quietly become a fleet default.
+        if _resolve_provider() == "hosted":
+            return _json_response(remote, "/api/variations", {"ok": False})
 
-        stop = _int("stop")
-        if stop is not None:
-            lane = _int("lane") or 0
-            txt = point(anchor, deck, lane=lane, stop=stop)
-            payload = {"anchor": txt, "lane": lane, "stop": stop,
-                       "text": txt, "ok": bool(txt)}
-        else:
-            grid = neighbourhood(anchor, deck)
-            payload = {**grid, "ok": bool(grid)}
-        body = json.dumps(payload).encode()
-        _log_http(remote, 200, "GET", "/api/variations")  # redact prompt
-        return Response(
-            200, "OK",
-            Headers([
-                ("Content-Type", "application/json; charset=utf-8"),
-                ("Content-Length", str(len(body))),
-                *_PUBLIC_HTTP_HEADERS,
-            ]),
-            body,
-        )
+        def _int(name: str):
+            """(value, was_present). A blank/absent param and an unparseable
+            one must NOT be the same answer: `?stop=abc` used to fall through
+            to the sentinel and silently escalate a cheap point request into a
+            full grid."""
+            raw = (params.get(name, [""])[0] or "").strip()
+            if not raw:
+                return 0, False
+            try:
+                return int(raw), True
+            except ValueError:
+                return 0, True
+
+        stop, has_stop = _int("stop")
+        lane, _ = _int("lane")
+        try:
+            if has_stop:
+                stop, lane = clamp_coord(stop, lane)
+                txt = point(anchor, deck, lane=lane, stop=stop)
+                # `anchor` is NOT the variation. It named the greedy anchor on
+                # the grid path and the variation here, so a client showing
+                # "your base prompt" showed the wrong string on this branch.
+                payload = {"text": txt, "lane": lane, "stop": stop,
+                           "ok": bool(txt)}
+            else:
+                grid = neighbourhood(anchor, deck)
+                payload = {**grid, "ok": bool(grid)}
+        except Busy:
+            body = json.dumps({"ok": False, "busy": True}).encode()
+            _log_http(remote, 503, "GET", "/api/variations")
+            return Response(
+                503, "Service Unavailable",
+                Headers([
+                    ("Content-Type", "application/json; charset=utf-8"),
+                    ("Content-Length", str(len(body))),
+                    ("Retry-After", "5"),
+                    *_NO_CACHE_HEADERS,
+                ]),
+                body,
+            )
+        return _json_response(remote, "/api/variations", payload)
 
     if path_only == "/api/enhance":
         from urllib.parse import parse_qs

@@ -232,8 +232,12 @@ def check_prompt_enhancer_model_exists(model_dir: Optional[Path] = None) -> bool
     if model_dir is None:
         model_dir = get_prompt_enhancer_dir()
     model_dir = Path(model_dir)
-    return ((model_dir / "model.safetensors").exists()
-            and (model_dir / "spiece.model").exists())
+    # EVERY file, not just the weights. Checking two of seven meant a
+    # half-finished transfer -- rsync walks alphabetically, so an interrupt
+    # after spiece.model leaves both sentinels present and the tokenizer
+    # missing -- reported as complete, was never re-downloaded, and failed to
+    # load forever.
+    return all((model_dir / f).exists() for f in PROMPT_ENHANCER_ALLOW)
 
 
 def download_prompt_enhancer_model(
@@ -250,8 +254,6 @@ def download_prompt_enhancer_model(
     if model_dir is None:
         model_dir = get_prompt_enhancer_dir()
     model_dir = Path(model_dir)
-    model_dir.mkdir(parents=True, exist_ok=True)
-
     if not force and check_prompt_enhancer_model_exists(model_dir):
         return True, f"Prompt enhancer already exists at {model_dir}"
 
@@ -264,6 +266,10 @@ def download_prompt_enhancer_model(
     try:
         from huggingface_hub import snapshot_download
 
+        # Created only once the download is actually about to run, so a
+        # failure does not leave an empty directory that later reads as a
+        # staged checkpoint.
+        model_dir.mkdir(parents=True, exist_ok=True)
         snapshot_download(
             repo_id=repo,
             local_dir=str(model_dir),
