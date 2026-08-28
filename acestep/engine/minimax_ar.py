@@ -1,11 +1,20 @@
-"""MiniMaxAR: the composition-capture stage of MiniMax-Music3.
+"""MiniMaxAR: the autoregressive composition stage of MiniMax-Music3.
 
 MiniMax-Music3's flow-matching renderer has no text input. Its only
 conditioning is ``encoder_hidden_states``, derived from the per-frame
-hidden states of an 8.58B Qwen3 autoregressive LM. DEMON never streams
-that LM: it runs it *once* per composition, keeps the tensor, and covers
-it forever. This module is that one run — prompt + lyrics + frame count
-in, fused per-frame hidden states out.
+hidden states of an 8.58B Qwen3 autoregressive LM. That LM emits one
+25 Hz audio frame at a time over a KV cache until it decides the piece
+is finished, which makes it a *streaming* model rather than a one-shot
+one, and this module exposes it as both:
+
+* :class:`MiniMaxARStream` is the model's own shape — a resumable
+  session you advance a frame at a time, steer while it runs, and
+  re-prompt without discarding what it has already written. It is what
+  the streaming backend drives.
+* :meth:`MiniMaxAR.generate_frame_hiddens` is the batch convenience
+  wrapper over that session: prompt + lyrics + frame count in, fused
+  per-frame hidden states out. It is what the capture CLI uses, and it
+  is bit-identical to the version that predated the session.
 
 The stage is two nested language models:
 
@@ -48,8 +57,9 @@ import inspect
 import json
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -453,20 +463,51 @@ def _resolve_device(device) -> torch.device:
 
 
 def _sample_top_k(
-    logits: torch.Tensor, generator: Optional[torch.Generator]
+    logits: torch.Tensor,
+    generator: Optional[torch.Generator],
+    *,
+    top_k: int = AR_SAMPLING_TOP_K,
+    temperature: float = 1.0,
 ) -> torch.Tensor:
     """Top-k multinomial, reproducing the reference's numerics exactly —
     including its choice to map ``-inf`` to ``-1e9`` before the top-k so a
-    fully masked row degrades to a uniform pick instead of a NaN."""
+    fully masked row degrades to a uniform pick instead of a NaN.
+
+    ``top_k`` and ``temperature`` default to the reference recipe, so a
+    call that passes neither is bit-identical to the version that had no
+    parameters. They exist because a streaming session steers them live.
+    Temperature divides AFTER the top-k cut, so it reweights the
+    surviving candidates instead of changing which ones survive — the
+    alternative silently couples two controls an operator moves
+    independently.
+    """
     values = torch.nan_to_num(logits.float(), nan=-1e9, posinf=1e9, neginf=-1e9)
-    top_k = min(AR_SAMPLING_TOP_K, values.shape[-1])
+    top_k = min(max(1, int(top_k)), values.shape[-1])
     threshold = torch.topk(values, top_k, dim=-1).values[..., -1, None]
     values = values.masked_fill(values < threshold, -float("inf"))
+    if abs(float(temperature) - 1.0) > 1e-6:
+        values = values / max(float(temperature), 1e-3)
     probs = torch.nan_to_num(F.softmax(values, dim=-1), nan=0.0)
     probs = probs / probs.sum(dim=-1, keepdim=True).clamp_min(1e-12)
     sample_device = generator.device if generator is not None else probs.device
     drawn = torch.multinomial(probs.to(sample_device), 1, generator=generator)
     return drawn.squeeze(-1).to(probs.device)
+
+
+@dataclass(frozen=True)
+class ARControls:
+    """The AR stage's live sampling controls, read fresh every frame.
+
+    Defaults are the reference recipe exactly. ``guidance`` is upstream's
+    fixed ``AR_CFG_SCALE``, exposed rather than frozen because on this
+    model it is the dial that decides how literally the caption is
+    obeyed, and it is one of the few things a listener can hear move
+    inside a single frame.
+    """
+
+    temperature: float = 1.0
+    top_k: int = AR_SAMPLING_TOP_K
+    guidance: float = AR_CFG_SCALE
 
 
 # ---------------------------------------------------------------------------
@@ -672,6 +713,7 @@ class MiniMaxAR:
         last_hidden: torch.Tensor,
         semantic_code: torch.Tensor,
         generator: Optional[torch.Generator],
+        controls: "ARControls" = ARControls(),
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Sample ``c1..c7`` for one frame; return ``(codes, hidden_parts)``.
 
@@ -696,10 +738,15 @@ class MiniMaxAR:
             hidden_parts.append(hidden[:1])
             logits = depth.audio_heads[index - 1](hidden)
             conditional, unconditional = logits[:1].float(), logits[1:2].float()
-            logits = unconditional + (conditional - unconditional) * AR_CFG_SCALE
+            logits = unconditional + (conditional - unconditional) * controls.guidance
             # Repeat the sampled code across both rows: the CFG twin must see
             # the same audio history, only a different text prefix.
-            code = _sample_top_k(logits, generator).repeat(2)
+            code = _sample_top_k(
+                logits,
+                generator,
+                top_k=controls.top_k,
+                temperature=controls.temperature,
+            ).repeat(2)
             codes.append(code)
             if index < num_codebooks - 1:
                 embed = depth.audio_embeddings(
@@ -707,6 +754,31 @@ class MiniMaxAR:
                 )
                 sequence.append(depth.projection(embed).unsqueeze(1))
         return torch.stack(codes, dim=1), torch.cat(hidden_parts, dim=-1)
+
+    # ---- streaming ----------------------------------------------------------
+
+    def stream(
+        self,
+        *,
+        prompt: str,
+        lyrics: str,
+        seed: Optional[int] = None,
+        max_frames: int = MAX_AUDIO_FRAMES,
+        controls: Optional[ARControls] = None,
+    ) -> "MiniMaxARStream":
+        """Open a resumable emission session. See :class:`MiniMaxARStream`.
+
+        This is the model's own shape; :meth:`generate_frame_hiddens` is
+        the batch wrapper over it.
+        """
+        return MiniMaxARStream(
+            self,
+            prompt=prompt,
+            lyrics=lyrics,
+            seed=self.seed if seed is None else int(seed),
+            max_frames=max_frames,
+            controls=controls,
+        )
 
     # ---- capture ------------------------------------------------------------
 
@@ -737,80 +809,27 @@ class MiniMaxAR:
                 "minimax_ar_frames_capped requested={} cap={}", frames, MAX_AUDIO_FRAMES
             )
 
-        language_model = self.language_model
         depth = self.depth_decoder
-        device = self.device
         seed = self.seed if seed is None else int(seed)
 
-        text_ids = self.tokenize(prompt, lyrics)
-        prompt_tokens = int(text_ids.shape[1])
-
-        # RoPE does not clip, it extrapolates — running past the trained
-        # window degrades quality without failing, so say so out loud.
-        window = int(getattr(language_model.config, "max_position_embeddings", 0) or 0)
-        if window and prompt_tokens + max_frames > window:
-            logger.warning(
-                "minimax_ar_over_window prompt={} frames={} window={}",
-                prompt_tokens,
-                max_frames,
-                window,
-            )
-
-        gen_device = torch.device("cpu") if self.sample_on_cpu else device
-        generator = torch.Generator(device=gen_device).manual_seed(seed)
-
         started = time.perf_counter()
+        stream = self.stream(
+            prompt=prompt, lyrics=lyrics, seed=seed, max_frames=max_frames,
+        )
+        prompt_tokens = stream.prompt_tokens
 
-        # Prefill. The reference embeds by hand rather than passing input_ids
-        # so the prefill and the per-frame feedback take the identical path.
-        text_embeds = language_model.model.embed_tokens(text_ids)
-        output = language_model.model(inputs_embeds=text_embeds, use_cache=True)
-        past_key_values = output.past_key_values
-        last_hidden = output.last_hidden_state[:, -1]
-
-        vocab_mask = self._vocab_mask_for(device)
         frame_hiddens = []
-        stopped_early = False
-
-        # The first decode step only advances past <|audio_start|>; its
-        # hidden state describes the prompt, not a frame, so it is consumed
-        # for feedback and thrown away. Hence max_frames + 1 iterations.
-        for frame_index in range(max_frames + 1):
-            logits = language_model.lm_head(last_hidden).float()
-            logits = logits.masked_fill(vocab_mask, -float("inf"))
-            conditional, unconditional = logits[0:1], logits[1:2]
-            guided = unconditional + (conditional - unconditional) * AR_CFG_SCALE
-            # Guidance on two -inf logits is NaN, so restrict to the
-            # conditional branch's top candidates and then re-mask.
-            threshold = torch.topk(conditional, AR_CFG_TOP_K, dim=-1).values[..., -1, None]
-            guided = guided.masked_fill(conditional < threshold, -float("inf"))
-            guided = guided.masked_fill(vocab_mask.unsqueeze(0), -float("inf"))
-            sampled = _sample_top_k(guided, generator)
-            if int(sampled.item()) == AUDIO_END_TOKEN_ID:
-                stopped_early = True
-                break
-
-            semantic_code = sampled - AUDIO_CODE_OFFSET
-            frame_codes, depth_hidden = self._generate_depth_codes(
-                last_hidden, semantic_code.repeat(2), generator
-            )
-            if frame_index > 0:
-                frame_hiddens.append(
-                    torch.cat((last_hidden[:1], depth_hidden), dim=-1)
-                )
+        try:
+            while not stream.finished:
+                emitted = stream.advance(1)
+                if emitted is None:
+                    continue
+                frame_hiddens.append(emitted[:, 0])
                 if progress is not None:
                     progress(len(frame_hiddens), max_frames)
-                if len(frame_hiddens) >= max_frames:
-                    break
-
-            feedback = self._embed_audio_frame(frame_codes)
-            output = language_model.model(
-                inputs_embeds=feedback,
-                past_key_values=past_key_values,
-                use_cache=True,
-            )
-            past_key_values = output.past_key_values
-            last_hidden = output.last_hidden_state[:, -1]
+        finally:
+            stopped_early = stream.stopped_early
+            stream.close()
 
         if not frame_hiddens:
             raise ValueError(
@@ -869,3 +888,374 @@ class MiniMaxAR:
         return self.generate_frame_hiddens(
             prompt=prompt, lyrics=lyrics, frames=frames, **kwargs
         )
+
+
+# ---------------------------------------------------------------------------
+# MiniMaxARStream
+# ---------------------------------------------------------------------------
+
+
+class MiniMaxARStream:
+    """A resumable run of the AR stage: the model as it actually behaves.
+
+    The Global LM emits one 25 Hz frame at a time over a KV cache and
+    stops when it decides the piece is over, so a "capture" is nothing
+    but this session run to completion and stacked. Exposing the session
+    itself buys three things the stacked tensor cannot:
+
+    * **Frames arrive as they are written.** The renderer can start on
+      frame 200 instead of waiting for frame 9000, which is the whole
+      difference between streaming this model and batching it.
+    * **Sampling steers live.** :attr:`controls` is re-read at every
+      frame, so temperature / top-k / AR guidance land on the next 40 ms
+      the LM writes rather than on the next composition.
+    * **The prompt can change without losing the music.** See
+      :meth:`reprompt`.
+
+    What it does *not* do is make the stage fast. Measured on a 5090 in
+    bf16 (``scripts/minimax/minimax_ar_bench.py``): 53.6 ms per frame,
+    flat in context length, which is 0.75x realtime. The stage is
+    launch-bound rather than bandwidth-bound at batch 2 -- upstream
+    serves this model through SGLang, not through a plain torch loop --
+    but as implemented here the AR stage cannot keep ahead of a playhead
+    on its own. Consumers must treat frame arrival as a rate to be
+    measured, never as something that keeps up.
+
+    Threading: not internally locked, and every method except
+    :meth:`set_controls` must be called from one thread. ``set_controls``
+    publishes an immutable :class:`ARControls`, so a control thread can
+    call it while the generation thread is mid-frame.
+    """
+
+    # Replay after a re-prompt is one prefill over the whole audio
+    # history. Chunked so peak activation memory is bounded by the block
+    # rather than by how long the session has been running -- at the
+    # 9000-frame ceiling an unchunked replay allocates ~150 MB of
+    # embeddings alone, before attention.
+    _REPLAY_BLOCK = 512
+
+    def __init__(
+        self,
+        ar: "MiniMaxAR",
+        *,
+        prompt: str,
+        lyrics: str,
+        seed: int = DEFAULT_SEED,
+        max_frames: int = MAX_AUDIO_FRAMES,
+        controls: Optional[ARControls] = None,
+    ):
+        self._ar = ar
+        self.seed = int(seed)
+        self.max_frames = min(int(max_frames), MAX_AUDIO_FRAMES)
+        if self.max_frames < 1:
+            raise ValueError(f"`max_frames` must be at least 1, got {max_frames}")
+        self._controls = controls or ARControls()
+
+        self.prompt = prompt
+        self.lyrics = lyrics
+        self.prompt_tokens = 0
+        self.frames_emitted = 0
+        self.finished = False
+        self.stopped_early = False
+        self.last_prefill_s = 0.0
+        self.last_frame_s = 0.0
+
+        # Per-frame RVQ codes, kept so a re-prompt can replay the audio
+        # history against a different text prefix. [2, 8] int64 each --
+        # 128 bytes a frame, 1.2 MB at the 9000-frame ceiling.
+        self._code_history: List[torch.Tensor] = []
+        # Set after a frame is sampled, consumed as the LM's feedback
+        # input at the START of the next step. Deferring it is what
+        # makes the session's numerics identical to the batch loop's:
+        # that loop breaks out before feeding back its final frame.
+        self._pending_codes: Optional[torch.Tensor] = None
+        self._past = None
+        self._last_hidden: Optional[torch.Tensor] = None
+        # Iterations, not frames. The first decode step only advances
+        # past <|audio_start|>; its hidden state describes the prompt,
+        # not a frame, so it is consumed for feedback and thrown away.
+        self._iteration = 0
+
+        gen_device = torch.device("cpu") if ar.sample_on_cpu else ar.device
+        self._generator = torch.Generator(device=gen_device).manual_seed(self.seed)
+
+        self._prefill(prompt, lyrics)
+
+    # ---- controls -----------------------------------------------------------
+
+    @property
+    def controls(self) -> ARControls:
+        return self._controls
+
+    def set_controls(self, controls: ARControls) -> None:
+        """Publish new sampling controls. Safe from another thread: the
+        dataclass is frozen, so the generation thread either sees the
+        whole old value or the whole new one."""
+        self._controls = controls
+
+    # ---- prompt -------------------------------------------------------------
+
+    @torch.no_grad()
+    def _prefill(self, prompt: str, lyrics: str, *, replay: bool = False) -> None:
+        ar = self._ar
+        lm = ar.language_model
+        started = time.perf_counter()
+
+        text_ids = ar.tokenize(prompt, lyrics)
+        self.prompt_tokens = int(text_ids.shape[1])
+
+        # RoPE does not clip, it extrapolates -- running past the trained
+        # window degrades quality without failing, so say so out loud.
+        window = int(getattr(lm.config, "max_position_embeddings", 0) or 0)
+        if window and self.prompt_tokens + self.max_frames > window:
+            logger.warning(
+                "minimax_ar_over_window prompt={} frames={} window={}",
+                self.prompt_tokens, self.max_frames, window,
+            )
+
+        # The reference embeds by hand rather than passing input_ids so
+        # the prefill and the per-frame feedback take the identical path.
+        output = lm.model(
+            inputs_embeds=lm.model.embed_tokens(text_ids), use_cache=True,
+        )
+        past = output.past_key_values
+        last_hidden = output.last_hidden_state[:, -1]
+
+        if replay and self._code_history:
+            for lo in range(0, len(self._code_history), self._REPLAY_BLOCK):
+                block = self._code_history[lo:lo + self._REPLAY_BLOCK]
+                embeds = torch.cat(
+                    [ar._embed_audio_frame(codes) for codes in block], dim=1,
+                )
+                output = lm.model(
+                    inputs_embeds=embeds, past_key_values=past, use_cache=True,
+                )
+                past = output.past_key_values
+                last_hidden = output.last_hidden_state[:, -1]
+
+        self._past = past
+        self._last_hidden = last_hidden
+        self.last_prefill_s = time.perf_counter() - started
+
+    @torch.no_grad()
+    def reprompt(self, prompt: str, lyrics: Optional[str] = None) -> float:
+        """Swap the text prefix without discarding the music. Returns the
+        wall seconds it cost.
+
+        The KV cache is ``[text prefix][audio frames]``. Only the prefix
+        changes, but every audio key/value was computed with the old
+        prefix attended, so the cache cannot be spliced -- it has to be
+        rebuilt. Rebuilding it is a *prefill*, though, not a
+        regeneration: the frames themselves are already decided, so they
+        replay as one batched forward over their stored embeddings
+        rather than 53 ms apiece.
+
+        The musical consequence is the point: the piece keeps its
+        history and its phase, and the new caption steers what comes
+        next. That is a live prompt change on an autoregressive model.
+        """
+        if self.finished:
+            raise RuntimeError("cannot re-prompt a finished AR stream")
+        lyrics = self.lyrics if lyrics is None else lyrics
+        # The pending frame's codes are already in the history; replaying
+        # them AND feeding them back would double the frame.
+        self._pending_codes = None
+        self._prefill(prompt, lyrics, replay=True)
+        self.prompt = prompt
+        self.lyrics = lyrics
+        logger.info(
+            "minimax_ar_reprompt frames={} tokens={} seconds={:.2f}",
+            len(self._code_history), self.prompt_tokens, self.last_prefill_s,
+        )
+        return self.last_prefill_s
+
+    # ---- emission -----------------------------------------------------------
+
+    @torch.no_grad()
+    def _step(self) -> Optional[torch.Tensor]:
+        """One decode iteration. Returns this iteration's fused hidden
+        state ``[1, 32768]``, or None for the warm-up iteration and for
+        the iteration that saw the end-of-audio token."""
+        ar = self._ar
+        lm = ar.language_model
+        controls = self._controls
+
+        if self._pending_codes is not None:
+            feedback = ar._embed_audio_frame(self._pending_codes)
+            self._pending_codes = None
+            output = lm.model(
+                inputs_embeds=feedback,
+                past_key_values=self._past,
+                use_cache=True,
+            )
+            self._past = output.past_key_values
+            self._last_hidden = output.last_hidden_state[:, -1]
+
+        last_hidden = self._last_hidden
+        vocab_mask = ar._vocab_mask_for(last_hidden.device)
+
+        logits = lm.lm_head(last_hidden).float()
+        logits = logits.masked_fill(vocab_mask, -float("inf"))
+        conditional, unconditional = logits[0:1], logits[1:2]
+        guided = unconditional + (conditional - unconditional) * controls.guidance
+        # Guidance on two -inf logits is NaN, so restrict to the
+        # conditional branch's top candidates and then re-mask.
+        threshold = torch.topk(conditional, AR_CFG_TOP_K, dim=-1).values[..., -1, None]
+        guided = guided.masked_fill(conditional < threshold, -float("inf"))
+        guided = guided.masked_fill(vocab_mask.unsqueeze(0), -float("inf"))
+        sampled = _sample_top_k(
+            guided,
+            self._generator,
+            top_k=controls.top_k,
+            temperature=controls.temperature,
+        )
+        if int(sampled.item()) == AUDIO_END_TOKEN_ID:
+            self.finished = True
+            self.stopped_early = True
+            return None
+
+        semantic_code = sampled - AUDIO_CODE_OFFSET
+        frame_codes, depth_hidden = ar._generate_depth_codes(
+            last_hidden, semantic_code.repeat(2), self._generator, controls,
+        )
+        self._pending_codes = frame_codes
+        self._code_history.append(frame_codes)
+        self._iteration += 1
+
+        if self._iteration == 1:
+            return None
+
+        self.frames_emitted += 1
+        if self.frames_emitted >= self.max_frames:
+            self.finished = True
+        return torch.cat((last_hidden[:1], depth_hidden), dim=-1)
+
+    @torch.no_grad()
+    def advance(self, frames: int = 1) -> Optional[torch.Tensor]:
+        """Emit up to ``frames`` more frames: ``[1, k, 8 * 4096]``.
+
+        Returns None when the session produced nothing -- it had already
+        finished, or this call consumed only the warm-up iteration. A
+        short return is normal at the end of a piece and is not an
+        error: ``finished`` is the authority on whether more will come.
+        """
+        if self.finished:
+            return None
+        want = max(1, int(frames))
+        started = time.perf_counter()
+        out: List[torch.Tensor] = []
+        while len(out) < want and not self.finished:
+            hidden = self._step()
+            if hidden is not None:
+                out.append(hidden)
+        if out:
+            self.last_frame_s = (time.perf_counter() - started) / len(out)
+            return torch.stack(out, dim=1)
+        return None
+
+    # ---- teardown -----------------------------------------------------------
+
+    def close(self) -> None:
+        """Release the KV cache and the replay history."""
+        self._past = None
+        self._last_hidden = None
+        self._pending_codes = None
+        self._code_history = []
+
+
+class ReplayARStream:
+    """A saved capture served through the :class:`MiniMaxARStream`
+    interface.
+
+    A capture written by ``scripts/minimax/minimax_capture.py`` holds
+    the raw ``frame_hiddens`` the AR stage produced. Replaying them is
+    not a shortcut for production -- the frames are fixed, so nothing an
+    operator does can steer the composition -- but it makes two things
+    possible that are otherwise expensive:
+
+    * the renderer, the chunk geometry, and the whole streaming backend
+      can be exercised without 18 GB of language model resident, which
+      is what the streaming smoke test and the chunk-continuity gate
+      do, and
+    * a deployment without the AR weights (they need a newer
+      ``transformers`` than this repo pins for ACE-Step) can still run
+      the family end to end.
+
+    Emission is paced to a configurable multiple of realtime rather than
+    served instantly, because a backend that receives its entire input
+    on the first tick exercises none of the frontier bookkeeping that
+    matters. ``rate = 0`` disables the pacing.
+    """
+
+    def __init__(
+        self,
+        frame_hiddens: torch.Tensor,
+        *,
+        rate_x_realtime: float = 0.0,
+        max_frames: int = MAX_AUDIO_FRAMES,
+    ):
+        if frame_hiddens.ndim != 3 or frame_hiddens.shape[0] != 1:
+            raise ValueError(
+                f"frame_hiddens must be [1, F, D], got {tuple(frame_hiddens.shape)}"
+            )
+        self._frames = frame_hiddens
+        self.max_frames = min(int(max_frames), int(frame_hiddens.shape[1]))
+        self.rate_x_realtime = float(rate_x_realtime)
+        self.frames_emitted = 0
+        self.finished = self.max_frames == 0
+        self.stopped_early = False
+        self.prompt_tokens = 0
+        self.last_prefill_s = 0.0
+        self.last_frame_s = 0.0
+        self._controls = ARControls()
+
+    @property
+    def controls(self) -> ARControls:
+        return self._controls
+
+    def set_controls(self, controls: ARControls) -> None:
+        """Accepted and ignored: the frames are already written. Kept so
+        a replay is a drop-in for the live session rather than a
+        different shape the backend has to branch on."""
+        self._controls = controls
+
+    def reprompt(self, prompt: str, lyrics: Optional[str] = None) -> float:
+        raise RuntimeError(
+            "a replayed capture has no language model to re-prefill; open a "
+            "live MiniMaxARStream to change the prompt mid-stream"
+        )
+
+    def advance(self, frames: int = 1) -> Optional[torch.Tensor]:
+        if self.finished:
+            return None
+        want = max(1, int(frames))
+        lo = self.frames_emitted
+        hi = min(lo + want, self.max_frames)
+        if self.rate_x_realtime > 0:
+            time.sleep((hi - lo) / AR_FRAME_RATE_HZ / self.rate_x_realtime)
+        self.frames_emitted = hi
+        self.finished = hi >= self.max_frames
+        self.last_frame_s = 1.0 / AR_FRAME_RATE_HZ / max(self.rate_x_realtime, 1e-6)
+        return self._frames[:, lo:hi]
+
+    def close(self) -> None:
+        self._frames = None
+
+
+def load_replay_stream(path, **kwargs) -> ReplayARStream:
+    """Open a capture file as a :class:`ReplayARStream`.
+
+    Requires the ``frame_hiddens`` key. A capture holding only
+    ``encoder_hidden_states`` has already been through the
+    ConditionEncoder at one fixed window length and cannot be re-chunked,
+    so it is refused rather than silently mis-windowed.
+    """
+    data = load_file(str(path))
+    frames = data.get("frame_hiddens")
+    if frames is None:
+        raise ValueError(
+            f"capture {path} has no `frame_hiddens`; the streaming renderer "
+            "re-runs the ConditionEncoder per chunk and cannot use a capture "
+            "that was already projected to the latent rate"
+        )
+    return ReplayARStream(frames, **kwargs)

@@ -1,27 +1,33 @@
 """Per-family session create path for MiniMax-Music3.
 
-Registered in :mod:`acestep.streaming.families` as ``SESSION_CREATORS
-["minimax"]``. Its job is everything that must happen once per connect
-and cannot happen inside a tick: load (or reuse) the process-cached
-model stack, and capture the composition the stream will spend the rest
-of its life covering.
+Registered in :mod:`acestep.streaming.families` as
+``SESSION_CREATORS["minimax"]``. Its job is everything that must happen
+once per connect and cannot happen inside a tick: load (or reuse) the
+process-cached model stack, pin the autoregressive stage to the device,
+and open the AR session the stream will spend its life extending.
 
-Two things differ from the SA3 path in ways worth stating.
+Three things differ from the SA3 path in ways worth stating.
 
-First, the uploaded audio is not a source. MiniMax ships no converted
-audio encoder, so there is no way to turn a user's file into a latent
-this renderer understands. The upload is used only to give the audio
-ring something to play before the first generation lands, and the real
-anchor is the stream's own first render — "continue from your own
-generation", which is the audio-conditioning path that actually works
-on this checkpoint. Swap and write_audio are capability-gated off.
+**The uploaded audio is not a source.** MiniMax ships no converted audio
+encoder, so there is no way to turn a user's file into a latent this
+renderer understands, and the AR stage has no audio-prefix path in this
+checkpoint either. The upload is ignored and the ring starts silent,
+which is honest: the frontier overwrites it from t=0. Swap, write_audio,
+timbre and structure are capability-gated off.
 
-Second, the composition can come off disk. ``prepare_cond`` runs an
-8.58B LM when it has to, but a saved capture is a plain tensor load,
-and ``DEMON_MINIMAX_CAPTURE`` selects one. That is what makes the
-family usable without the autoregressive stage resident — and it is why
-the session degrades to a warning rather than a failure when the AR
-weights are absent.
+**The song shape is a rolling window, not a fixed song.** This is an
+append-only family (see :mod:`acestep.streaming.minimax_backend`); the
+declared duration is the tape length the frontier overwrites and the
+player loops, and ``SessionConfig.minimax_duration_s`` sets it. The
+piece's own length is the AR stage's business -- it ends when the LM
+emits an end-of-audio token, at most 9000 frames (360 s) later.
+
+**Create is fast and generation is slow.** There is no capture stage to
+wait for: the AR session's prefill is well under a second, and the first
+audio arrives once 200 AR frames plus one chunk render have happened
+(~11 s at the measured 0.75x AR rate). The old create path ran the whole
+composition through the 8.58B LM before returning, which meant a 30 s
+request cost ~55 s of connect time.
 """
 
 from __future__ import annotations
@@ -33,36 +39,25 @@ import numpy as np
 from acestep.engine.obs import logger
 from acestep.streaming.knobs import KnobState
 from acestep.streaming.minimax_backend import (
-    MINIMAX_AR_FRAME_RATE_HZ,
-    MINIMAX_CHUNK_AR_FRAMES,
-    MINIMAX_DEFAULT_STEPS,
-    MINIMAX_LATENT_RATE_HZ,
-    MINIMAX_MIN_LATENT_FRAMES,
-    minimax_delivery_samples,
+    AR_RESIDENT_VRAM_GB,
+    DEFAULT_WINDOW_S,
+    DELIVERY_SAMPLE_RATE,
+    MiniMaxBackend,
     minimax_knob_specs,
 )
 from acestep.streaming.source import SAMPLE_RATE
 from acestep.streaming.state import SessionState
 
-# The DEFAULT REQUEST, not a limit. Upstream renders in 200-AR-frame
-# windows, but that is its inference chunking contract -- the DiT config
-# carries no length bound, its RoPE is built for whatever arrives, and
-# nothing upstream states a trained span. Longer single-pass windows do
-# work (measured: 1240 frames renders coherently at 9x realtime with no
-# drift across the song).
-#
-# Duration is ultimately decided by the autoregressive stage, which
-# emits an end-of-audio token when the piece is done; ``config
-# .minimax_duration_s`` overrides this request, and the session adopts
-# whatever length actually comes back.
-MINIMAX_DURATION_S = MINIMAX_CHUNK_AR_FRAMES / MINIMAX_AR_FRAME_RATE_HZ  # 8.0
+# The family's step floor. ``SessionConfig.steps`` defaults to 8, which
+# is ACE's number; on this model 8 unwarped steps is not a cheaper
+# render but an audibly broken one (log-mel 0.24 from the reference
+# against 0.03 at 16/2.0, with the leftover noise showing up as
+# anti-correlated stereo). Take the floor, and let an operator who
+# explicitly asks for more keep it.
+from acestep.engine.minimax_render import DEFAULT_STEPS  # noqa: E402
 
-MINIMAX_MAX_PIPELINE_DEPTH = 8
-
-# Window rendering is pure indexing into a cached full decode here (the
-# decoder is deterministic and the song is short), so this is a chunk
-# size rather than a decode cost, and it can sit near the ACE value.
-MINIMAX_VAE_WINDOW_S = 0.36
+# 25 Hz, the AR stage's ceiling. Not the DiT latent rate.
+MINIMAX_MAX_AR_FRAMES = 9000
 
 
 def _resolve_accel(name: str, what: str) -> str:
@@ -101,97 +96,62 @@ def create_minimax_session(
     dit_backend = _resolve_accel(decoder_backend, "dit")
     codec_backend = _resolve_accel(vae_backend, "codec")
 
-    # ``SessionConfig`` names this ``depth``; reading ``pipeline_depth``
-    # off it silently returned the literal default forever, so a client
-    # asking for depth 8 got 4. SA3 reads the right field.
-    depth = max(1, min(int(config.depth or 4), MINIMAX_MAX_PIPELINE_DEPTH))
+    if audio is not None and getattr(audio, "waveform", None) is not None:
+        logger.info(
+            "minimax_create_ignoring_source reason=append_only_family "
+            "detail=no_audio_encoder_in_checkpoint",
+        )
 
-    # ``SessionConfig.steps`` defaults to 8, which is ACE's number. On
-    # this model 8 unwarped steps is not a cheaper render, it is an
-    # audibly broken one: log-mel 0.24 from the reference against 0.03
-    # at the family default, with the leftover noise showing up as
-    # anti-correlated stereo. Take the family floor, and let an operator
-    # who explicitly asks for more keep it.
-    steps = max(int(getattr(config, "steps", 0) or 0), MINIMAX_DEFAULT_STEPS)
-
-    capture = os.environ.get("DEMON_MINIMAX_CAPTURE") or None
-    # Without the AR stage the family is still usable from a capture,
-    # but not from a free-text prompt. Say so at create rather than
-    # failing on the first set_prompt.
-    ar_policy = "absent" if capture else "offload"
-
-    context = get_minimax_context(ar_policy=ar_policy)
+    window_s = float(getattr(config, "minimax_duration_s", 0.0) or 0.0)
+    window_s = window_s or DEFAULT_WINDOW_S
+    steps = max(int(getattr(config, "steps", 0) or 0), DEFAULT_STEPS)
 
     prompt = getattr(config, "prompt", "") or ""
-    prompt_b = getattr(config, "prompt_b", None) or None
-
-    # Duration is REQUESTED here and DECIDED by the autoregressive stage.
-    # The LM emits an end-of-audio token when the piece is done, so asking
-    # for 30 s can legitimately return 14.4 s, and a saved capture is
-    # whatever length it was captured at. The session therefore adopts the
-    # conditioning's own length instead of asserting a constant -- the
-    # previous code raised on any capture that was not exactly 689 frames,
-    # which made every duration but one unreachable.
-    requested_s = float(getattr(config, "minimax_duration_s", 0.0) or 0.0)
-    requested_s = requested_s or MINIMAX_DURATION_S
-    cond = context.prepare_cond(
-        prompt=prompt, duration_s=requested_s, capture=capture,
-    )
-    latent_frames = int(cond["encoder_hidden_states"].shape[1])
-    if latent_frames < MINIMAX_MIN_LATENT_FRAMES:
-        raise ValueError(
-            f"minimax conditioning is only {latent_frames} latent frames "
-            f"({latent_frames / MINIMAX_LATENT_RATE_HZ:.2f}s); the decoder "
-            f"needs at least {MINIMAX_MIN_LATENT_FRAMES} to fill one render "
-            "window with its guard margin"
-        )
-    duration_s = latent_frames / MINIMAX_LATENT_RATE_HZ
-
-    cond_b = (
-        context.prepare_cond(prompt=prompt_b, duration_s=duration_s)
-        if prompt_b and not capture
-        else None
-    )
-    if cond_b is not None and cond_b["encoder_hidden_states"].shape[1] != latent_frames:
-        # Both captures ride the same ring, so they must agree on T. The
-        # AR stage decides length independently per prompt, so this is a
-        # real possibility rather than a defensive check.
+    lyrics = getattr(config, "minimax_lyrics", None) or "[instrumental]"
+    if getattr(config, "prompt_b", None):
         logger.warning(
-            "minimax_prompt_b_length_mismatch dropping b: {} != {}",
-            cond_b["encoder_hidden_states"].shape[1], latent_frames,
+            "minimax_prompt_b_ignored reason=no_ab_blend_on_ar_prefix",
         )
-        cond_b = None
+
+    # The AR stage runs continuously here, so it stays resident rather
+    # than paging per capture. That is ~21 GB on top of the renderer;
+    # say so at create, because the failure mode otherwise is an OOM
+    # several seconds into a session.
+    context = get_minimax_context(ar_policy="resident")
+
+    # A saved capture replaces the language model entirely: the frames
+    # are already written, so nothing steers the composition, but the
+    # renderer, the chunk geometry and the whole frontier path run for
+    # real without 21 GB resident. That is how the streaming gates run
+    # on a machine that cannot hold the LM.
+    capture = os.environ.get("DEMON_MINIMAX_CAPTURE") or None
+
     logger.info(
-        "minimax_session_cond frames={} seconds={:.3f} requested={:.1f} "
-        "capture={} depth={} steps={}",
-        latent_frames, duration_s, requested_s,
-        capture or "<generated>", depth, steps,
+        "minimax_session_create window_s={:.1f} steps={} dit={} codec={} "
+        "capture={} ar_vram_gb={:.0f}",
+        window_s, steps, dit_backend, codec_backend,
+        capture or "<live AR>", 0.0 if capture else AR_RESIDENT_VRAM_GB,
     )
 
-    # The audio ring is seeded with silence at the render geometry: the
-    # upload cannot condition this model, so pretending it seeds the
-    # song would be a lie the first generation immediately contradicts.
-    # Derived from the same function the backend renders against. Sizing
-    # this independently left the ring 34 samples longer than a decode
-    # ever produces, so the song's last ~0.7 ms was never written.
-    n_48k = minimax_delivery_samples(latent_frames)
-    src_np = np.zeros((n_48k, 2), dtype=np.float32)
-
-    virtual_knobs = KnobState(minimax_knob_specs())
+    # The audio ring starts silent at the delivery geometry. The upload
+    # cannot condition this model, so seeding the ring with it would be
+    # a lie the first emission immediately contradicts.
+    window_samples = int(round(window_s * DELIVERY_SAMPLE_RATE))
+    src_np = np.zeros((window_samples, 2), dtype=np.float32)
 
     state = SessionState(
         source=None,        # no PreparedSource: swap/timbre/structure gated off
         bpm=None,
         key=None,
         time_signature=None,
-        duration=duration_s,
+        duration=window_s,
         n_channels=2,
-        playback_samples=int(src_np.shape[0]),
+        playback_samples=window_samples,
         cond_pair=None,     # ACE conditioning cache: absent, backend owns cond
         cond_pair_b=None,
         prompt_text=prompt,
-        prompt_text_b=prompt_b,
-        current_depth=depth,
+        prompt_text_b=None,
+        current_depth=1,    # no ring: there is nothing to pipeline
     )
 
     with ExitStack() as cleanup:
@@ -208,7 +168,7 @@ def create_minimax_session(
             state=state,
             audio_eng=audio_eng,
             canvas=None,              # write_audio/swap gated off
-            virtual_knobs=virtual_knobs,
+            virtual_knobs=KnobState(minimax_knob_specs()),
             engine_obj=None,
             profile_mgr=None,
             cond_negative=None,
@@ -219,25 +179,92 @@ def create_minimax_session(
             initial_enable_ids=[],
             lora_strengths_init={},
             lora_available=False,
-            max_pipeline_depth=MINIMAX_MAX_PIPELINE_DEPTH,
-            max_seconds=duration_s,
+            max_pipeline_depth=1,
+            max_seconds=window_s,
             walk_window=False,
             walk_window_s=0.0,
-            vae_window=MINIMAX_VAE_WINDOW_S,
+            vae_window=1.0,
             crop_seconds=0.0,
             use_sde=False,
             use_lora=False,
-            k1_name="minimax_denoise",
+            k1_name="minimax_temperature",
             backend_init={
                 "context": context,
-                "cond": cond,
-                "cond_b": cond_b,
-                "source_latent_bct": None,  # adopted from the first render
-                "duration_s": duration_s,
+                "prompt": prompt,
+                "lyrics": lyrics,
+                "window_s": window_s,
                 "steps": steps,
+                "capture": capture,
                 "dit_backend": dit_backend,
                 "codec_backend": codec_backend,
             },
         )
         cleanup.pop_all()
         return streaming
+
+
+def make_minimax_backend(ss) -> MiniMaxBackend:
+    """``families.FAMILIES["minimax"]``: assemble the backend from the
+    payload :func:`create_minimax_session` stashed on the session."""
+    init = getattr(ss, "backend_init", None)
+    if not init or "context" not in init:
+        raise ValueError(
+            "backend 'minimax' requires the per-family create path "
+            "(acestep.streaming.minimax_session.create_minimax_session) "
+            "to stash its construction payload"
+        )
+    context = init["context"]
+    capture = init.get("capture")
+
+    if capture:
+        from acestep.engine.minimax_ar import load_replay_stream
+        from acestep.engine.minimax_render import (
+            CARRY_LATENT_FRAMES,
+            CHUNK_AR_FRAMES,
+            MiniMaxChunkRenderer,
+        )
+
+        renderer = MiniMaxChunkRenderer(
+            context.make_dit(
+                latent_frames=context.chunk_latent_frames,
+                backend=init.get("dit_backend", "eager"),
+            ),
+            context.condition_encoder,
+            device=context.device,
+            dtype=context.dtype,
+            chunk_ar_frames=CHUNK_AR_FRAMES,
+            carry_latent_frames=CARRY_LATENT_FRAMES,
+            latent_channels=context.latent_channels,
+        )
+        # Paced at the live stage's measured rate so the frontier
+        # bookkeeping sees the same arrival pattern it will in
+        # production. A replay that dumps every frame on the first tick
+        # exercises none of it.
+        stream = load_replay_stream(capture, rate_x_realtime=0.75)
+        logger.info(
+            "minimax_replay_capture path={} frames={}",
+            capture, stream.max_frames,
+        )
+        return MiniMaxBackend(
+            ar_stream=stream,
+            renderer=renderer,
+            codec=context.make_codec(backend=init.get("codec_backend", "eager")),
+            knob_state=ss.virtual_knobs,
+            state=ss.state,
+            context=context,
+            window_s=float(init["window_s"]),
+            steps=int(init["steps"]),
+        )
+
+    return MiniMaxBackend.from_context(
+        context,
+        prompt=init["prompt"],
+        lyrics=init.get("lyrics", ""),
+        knob_state=ss.virtual_knobs,
+        state=ss.state,
+        window_s=float(init["window_s"]),
+        steps=int(init["steps"]),
+        max_ar_frames=MINIMAX_MAX_AR_FRAMES,
+        dit_backend=init.get("dit_backend", "eager"),
+        codec_backend=init.get("codec_backend", "eager"),
+    )

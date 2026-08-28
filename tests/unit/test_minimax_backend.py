@@ -1,12 +1,19 @@
 """MiniMaxBackend against the Tier-1 GeneratorBackend contract.
 
-Fakes for the DiT and the decoder, so this runs on CPU with no weights.
-What is under test is the contract the runner actually relies on:
-delivery geometry at 48 kHz, the knob manifest, the produce modes, the
-anchor-adoption that gives this family its source to cover, and the
-render-window slicing — including the one that bites hardest, that
-``render_window`` must not hand back a view of the decode cache,
-because the runner crossfades into that array in place.
+Fakes for the AR stage, the DiT and the decoder, so this runs on CPU
+with no weights. What is under test is what the runner actually relies
+on from an APPEND-ONLY family, which is a different contract from the
+diffusion backends':
+
+* the declarations (capabilities, geometry, knob manifest) a client
+  gates its panels on;
+* ``render_window`` ignoring its position hint, wrapping at the rolling
+  window, and never handing back a view the runner would crossfade in
+  place;
+* the 44.1 -> 48 kHz conversion staying phase-exact across block
+  boundaries, which is the one piece of arithmetic here that fails
+  silently and sounds like aliasing;
+* the generation worker's own loop advancing the frontier.
 """
 
 from __future__ import annotations
@@ -15,553 +22,388 @@ import numpy as np
 import pytest
 import torch
 
-from acestep.engine.minimax_adapter import MINIMAX_COND_DIM, MiniMaxAdapter
-from acestep.streaming.generator_backend import TickContext
+from acestep.engine.minimax_ar import ARControls, ReplayARStream
+from acestep.engine.minimax_render import (
+    CARRY_LATENT_FRAMES,
+    CHUNK_AR_FRAMES,
+    DEFAULT_GUIDANCE,
+    DEFAULT_SHIFT,
+    DEFAULT_STEPS,
+    HOP_AR_FRAMES,
+    LATENT_PER_AR_DEN,
+    LATENT_PER_AR_NUM,
+    MINIMAX_SAMPLE_RATE,
+    MINIMAX_UPSAMPLE,
+    MiniMaxChunkRenderer,
+)
+from acestep.streaming.generator_backend import (
+    TickContext,
+    UnsupportedOperation,
+)
 from acestep.streaming.knobs import KnobState
 from acestep.streaming.minimax_backend import (
     DELIVERY_SAMPLE_RATE,
-    MINIMAX_VAE_DECODE_FRAMES,
-    plan_decode_window,
-    MINIMAX_DEFAULT_GUIDANCE,
-    MINIMAX_DEFAULT_SHIFT,
-    MINIMAX_DEFAULT_STEPS,
-    MINIMAX_LATENT_RATE_HZ,
+    XFADE,
     MiniMaxBackend,
+    _DeliveryResampler,
     minimax_knob_specs,
-    minimax_latent_frames,
 )
 
-DURATION_S = 1.0
-T = minimax_latent_frames(DURATION_S)
-C = 128
+FUSED = 32
+COND = 8
+CH = 4
+WINDOW_S = 4.0
 
 
-class _FakeDit(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.calls = 0
-
-    def forward(self, x, t, cond):
-        self.calls += 1
-        # A mild contraction: converges instead of exploding over steps,
-        # so a drained pipeline yields a finite, checkable latent.
-        return -0.5 * x
+class _FakeCondEncoder:
+    def __call__(self, frame_hiddens):
+        frames = int(frame_hiddens.shape[1])
+        out = frames * LATENT_PER_AR_NUM // LATENT_PER_AR_DEN
+        x = frame_hiddens.transpose(1, 2)[:, :COND]
+        return torch.nn.functional.interpolate(
+            x, size=out, mode="nearest",
+        ).transpose(1, 2)
 
 
-class _RampCodec:
-    """Deterministic decoder over exactly the frames it is handed.
+class _ZeroDit:
+    in_channels = CH
 
-    Length-aware on purpose: a decoder that ignored its input length
-    would hide the whole point of a windowed render, which is that the
-    backend asks for a slice and gets a slice.
-    """
+    def __call__(self, x, t, cond):
+        return torch.zeros_like(x)
 
-    def __init__(self):
-        self.decodes = 0
-        self.frames_seen: list = []
+
+class _ToneCodec:
+    """A decoder whose output depends only on absolute position, so a
+    block-wise resample can be checked against a whole-buffer one."""
 
     def decode_full(self, latent_bct):
-        self.decodes += 1
         frames = int(latent_bct.shape[-1])
-        self.frames_seen.append(frames)
-        ramp = torch.linspace(0.0, 1.0, frames * 512)
-        return torch.stack([ramp, ramp], dim=0)
+        base = float(latent_bct[0, 0, 0])
+        n = frames * MINIMAX_UPSAMPLE
+        idx = torch.arange(n, dtype=torch.float32) + base * MINIMAX_UPSAMPLE
+        wave = torch.sin(idx * 0.017) * 0.5
+        return torch.stack([wave, wave * 0.5], dim=0)
 
 
-class _PositionCodec:
-    """Stamps every output sample with the latent frame it came from.
-
-    Audio value at a sample IS the value of latent channel 0 at the
-    frame that produced it, so a caller can set the latent to a ramp of
-    frame indices and read straight off the returned audio which frames
-    the backend actually decoded. That is the property a windowed decode
-    has to get right and the one a whole-song decode gets right by
-    accident.
-    """
-
-    def __init__(self):
-        self.decodes = 0
-
-    def decode_full(self, latent_bct):
-        self.decodes += 1
-        v = latent_bct[0, 0].float()            # [frames]
-        aud = v.repeat_interleave(512)
-        return torch.stack([aud, aud], dim=0)
+def _frames(n, base=0):
+    idx = torch.arange(base, base + n, dtype=torch.float32)
+    return idx.view(1, n, 1).repeat(1, 1, FUSED)
 
 
-def _cond(fill: float = 1.0) -> dict:
-    return {"encoder_hidden_states": torch.full((1, T, MINIMAX_COND_DIM), fill)}
-
-
-def _backend(**kw) -> MiniMaxBackend:
-    dit = kw.pop("dit", None) or _FakeDit()
-    codec = kw.pop("codec", None) or _RampCodec()
-    steps = kw.pop("steps", 4)
-    adapter = MiniMaxAdapter(
-        dit,
-        schedule_builder=lambda d: torch.linspace(float(d), 0.0, steps + 1),
-        device="cpu",
-        dtype=torch.float32,
+def _backend(*, ar_frames=800, window_s=WINDOW_S, start_worker=False):
+    renderer = MiniMaxChunkRenderer(
+        _ZeroDit(), _FakeCondEncoder(), device="cpu", dtype=torch.float32,
+        chunk_ar_frames=CHUNK_AR_FRAMES,
+        carry_latent_frames=CARRY_LATENT_FRAMES,
+        latent_channels=CH,
     )
-    params = dict(
-        adapter=adapter,
-        codec=codec,
-        cond=_cond(),
-        schedule_builder_factory=lambda c, n: (
-            lambda d: torch.linspace(float(d), 0.0, n + 1)
-        ),
+    return MiniMaxBackend(
+        ar_stream=ReplayARStream(_frames(ar_frames)),
+        renderer=renderer,
+        codec=_ToneCodec(),
         knob_state=KnobState(minimax_knob_specs()),
-        duration_s=DURATION_S,
-        steps=steps,
-        depth=kw.pop("depth", 2),
-        vae_window_s=kw.pop("vae_window_s", 0.1),
+        window_s=window_s,
+        steps=2,
+        start_worker=start_worker,
     )
-    params.update(kw)
-    return MiniMaxBackend(**params)
 
 
-def _ctx(playhead=0.0) -> TickContext:
-    return TickContext(playhead_s=playhead, buffer_duration_s=DURATION_S)
+# ---------------------------------------------------------------------------
+# Declarations
+# ---------------------------------------------------------------------------
 
 
-def _run(backend, ticks: int) -> int:
-    fresh = 0
-    for _ in range(ticks):
-        knobs = backend.read_knobs()
-        if backend.produce(knobs, _ctx(), "generate"):
-            fresh += 1
-    return fresh
+def test_capabilities_are_all_off():
+    caps = _backend().capabilities()
+    on = [k for k, v in vars(caps).items() if v]
+    assert on == [], f"append-only family must claim nothing: {on}"
 
 
-# ---- contract surface -----------------------------------------------------
-
-
-def test_geometry_delivers_at_48k():
-    """The runner hardcodes 48 kHz and never calls geometry(); a family
-    that reports its native 44.1 kHz here would still be resampled, but
-    a family that DELIVERS 44.1 kHz would play at the wrong speed."""
+def test_geometry_declares_delivery_rate_and_the_AR_frame_rate():
     geo = _backend().geometry()
     assert geo.sample_rate == DELIVERY_SAMPLE_RATE
     assert geo.channels == 2
-    assert geo.chunk_rate_hz == pytest.approx(MINIMAX_LATENT_RATE_HZ)
-    assert geo.duration_s == pytest.approx(DURATION_S)
-
-
-def test_capabilities_start_minimal():
-    caps = _backend().capabilities()
-    assert caps.refines_audio is True
-    # No converted audio encoder ships with this checkpoint, so anything
-    # that needs one must stay off until it does.
-    assert caps.swap is False
-    assert caps.write_audio is False
-    assert caps.timbre is False
-    assert caps.lora is False
-
-
-def test_vae_window_attribute_is_present():
-    # session.py reads this unguarded when it builds the runner.
-    assert _backend(vae_window_s=0.25).vae_window == pytest.approx(0.25)
-
-
-def test_knob_defaults_round_trip_through_read_knobs():
-    knobs = _backend().read_knobs()
-    assert knobs["minimax_denoise"] == pytest.approx(1.0)
-    assert knobs["minimax_shift"] == pytest.approx(MINIMAX_DEFAULT_SHIFT)
-    assert knobs["minimax_cond_strength"] == pytest.approx(1.0)
-    assert knobs["minimax_guidance"] == pytest.approx(MINIMAX_DEFAULT_GUIDANCE)
-    assert "seed" in knobs and "x0_target" in knobs
-
-
-def test_sampler_defaults_stay_in_the_measured_regime():
-    """The three sampler defaults are a measured operating point, not
-    taste, and they move together.
-
-    ``scripts/minimax/minimax_quality_ablation.py`` grids them against a
-    reference trajectory. Guidance is the single largest lever -- an
-    unguided run plateaus around 0.11 log-mel from the reference and
-    stays there through 40 steps, while 8 guided steps beat it -- and
-    step count trades against the schedule warp roughly one for one, so
-    lowering steps without raising shift silently gives up most of what
-    the steps were buying. This test is here so that anyone retuning
-    them re-runs the grid rather than nudging a constant.
-    """
-    assert MINIMAX_DEFAULT_GUIDANCE > 1.0, (
-        "guidance 1.0 disables CFG; measured at ~0.19 log-mel against "
-        "~0.03 guided, which is not a speed/quality trade worth taking"
+    assert geo.duration_s == pytest.approx(WINDOW_S)
+    # The AR ACOUSTIC frame rate, 25 Hz -- not the 86.133 Hz DiT latent
+    # rate. Conflating the two is what produced this integration's first
+    # round of throughput claims, so pin it.
+    assert geo.chunk_rate_hz == pytest.approx(25.0)
+    assert geo.chunk_rate_hz != pytest.approx(
+        MINIMAX_SAMPLE_RATE / MINIMAX_UPSAMPLE
     )
-    assert MINIMAX_DEFAULT_STEPS >= 12
-    # The measured pairing: 30 steps want shift 1.0, 16 want 2.0, 12
-    # want 3.0. Anything far off that line is untested territory.
-    assert 1.0 <= MINIMAX_DEFAULT_SHIFT <= 3.0
-    if MINIMAX_DEFAULT_STEPS <= 16:
-        assert MINIMAX_DEFAULT_SHIFT >= 1.5, (
-            "few steps need the schedule warped toward the noise end; "
-            "re-run the ablation grid before decoupling these"
-        )
 
 
-# ---- produce --------------------------------------------------------------
+def test_knob_manifest_splits_ar_from_renderer_and_reuses_shared_specs():
+    from acestep.streaming.knobs import knob_specs as registry_knob_specs
+
+    specs = {s.name: s for s in minimax_knob_specs()}
+    ar = {"minimax_temperature", "minimax_top_k", "minimax_ar_guidance"}
+    render = {
+        "minimax_guidance", "minimax_shift", "minimax_cond_strength",
+        "minimax_hop", "minimax_lead", "minimax_steps",
+    }
+    assert ar | render | {"seed"} == set(specs)
+    assert all(specs[n].group == "minimax" for n in ar | render)
+
+    # Shared knobs come out of the registry rather than being
+    # re-declared here, so a semantic fork is impossible rather than
+    # merely detected by the homonym guard.
+    shared = {s.name: s for s in registry_knob_specs(False)}
+    assert specs["seed"] == shared["seed"]
+    # steps_override is deliberately NOT reused: it means ACE's turbo
+    # step count, defaults to 8 and caps at 16, and inheriting it reset
+    # every minimax session to a measurably broken render.
+    assert "steps_override" not in specs
+    assert specs["minimax_steps"].default == DEFAULT_STEPS
+    assert specs["minimax_steps"].max_val > shared["steps_override"].max_val
+
+    # The ring-only knobs are gone: there is no cover, no source anchor
+    # and no batch axis to feed back into.
+    for gone in ("minimax_denoise", "x0_target", "feedback", "feedback_depth"):
+        assert gone not in specs
 
 
-def test_produce_eventually_yields_a_fresh_generation():
-    b = _backend(steps=4, depth=2)
-    assert _run(b, 12) > 0
-    assert b.has_renderable_state()
+def test_defaults_match_the_measured_operating_point():
+    specs = {s.name: s for s in minimax_knob_specs()}
+    assert specs["minimax_shift"].default == DEFAULT_SHIFT
+    assert specs["minimax_guidance"].default == DEFAULT_GUIDANCE
+    assert specs["minimax_hop"].default == HOP_AR_FRAMES
+    assert DEFAULT_STEPS >= 12, "8 unwarped steps is a broken render here"
 
 
-def test_skip_mode_produces_nothing_and_reuse_readopts():
-    b = _backend(steps=4, depth=2)
-    _run(b, 12)
-    assert b.produce(b.read_knobs(), _ctx(), "skip") is False
-    assert b.produce(b.read_knobs(), _ctx(), "reuse") is True
+def test_prompt_blend_is_refused_rather_than_ignored():
+    with pytest.raises(UnsupportedOperation) as exc:
+        _backend().handle_set_prompt_blend(0.5)
+    assert exc.value.capability == "prompt_blend"
 
 
-def test_prepare_runs_even_when_the_step_is_skipped():
-    """Live control changes must keep landing on in-flight work; the
-    prepare half runs in every mode."""
+def test_set_prompt_is_queued_for_the_worker():
     b = _backend()
-    b.knob_state.update({"minimax_shift": 2.0})
-    b.produce(b.read_knobs(), _ctx(), "skip")
-    assert b.adapter.shift_alpha == pytest.approx(2.0)
+    b.handle_set_prompt("darkwave, 120 bpm")
+    assert b._reprompt_request == ("darkwave, 120 bpm", None)
 
 
-def test_anchor_is_adopted_from_the_first_generation():
-    """The family's whole continuity story: with no audio encoder, the
-    song it covers is its own first render."""
-    b = _backend(steps=4, depth=2)
-    assert b._source_latent is None
-    _run(b, 12)
-    assert b._source_latent is not None
-    assert b._source_latent.shape == (1, T, C)
+# ---------------------------------------------------------------------------
+# 44.1 kHz -> 48 kHz, append-only
+# ---------------------------------------------------------------------------
 
 
-def test_step_change_signals_a_rebuild():
-    b = _backend(steps=4)
-    knobs = b.read_knobs()
-    knobs["steps_override"] = 9
-    assert b.rebuild_imminent(knobs) is True
-    b.produce(knobs, _ctx(), "generate")
-    assert b._steps == 9
-    # Settled: no further rebuild for the same value.
-    assert b.rebuild_imminent(knobs) is False
+def _sig(n):
+    idx = torch.arange(n, dtype=torch.float32)
+    return torch.stack([
+        torch.sin(idx * 0.013) + 0.3 * torch.sin(idx * 0.31),
+        torch.cos(idx * 0.021),
+    ], dim=0)
 
 
-# ---- render ---------------------------------------------------------------
+@pytest.mark.parametrize("block", [512, 1024, 4096, 8192])
+def test_blockwise_resample_matches_a_whole_buffer_resample(block):
+    """The failure this guards is silent: 44100/48000 reduces to
+    147/160 and a latent frame is 512 native samples, so a block that
+    starts on a frame boundary resamples onto a DIFFERENT sample phase
+    than the whole buffer does. On broadband material that is a ~17%
+    relative error, not a rounding detail."""
+    import torchaudio
+
+    total = 200_000
+    src = _sig(total)
+    reference = torchaudio.functional.resample(
+        src, MINIMAX_SAMPLE_RATE, DELIVERY_SAMPLE_RATE,
+    ).transpose(0, 1).numpy()
+
+    r = _DeliveryResampler()
+    out = []
+    for lo in range(0, total, block):
+        r.push(lo, src[:, lo:lo + block].numpy())
+        while True:
+            got = r.pop()
+            if got is None:
+                break
+            out.append(got)
+    got = np.concatenate(out)
+
+    assert got.shape[0] > 0
+    # Everything emitted must match the reference sample for sample.
+    ref = reference[:got.shape[0]]
+    assert np.max(np.abs(got - ref)) < 2e-5, "phase or filter-edge error"
+    # And it must not lag the input by more than the filter pad plus one
+    # ratio unit, or the conversion is quietly buffering seconds.
+    lag_native = total - r.emitted_native
+    assert lag_native <= _DeliveryResampler.PAD + 147
 
 
-def test_render_window_lands_at_the_requested_position():
-    """Reads the frames the request names, not merely some frames.
-
-    With ``_PositionCodec`` and a latent stamped with frame indices, the
-    returned audio says out loud which latent frames were decoded. This
-    is the assertion that catches a sample-phase error in the windowed
-    plan, which is otherwise inaudible in isolation and only shows up as
-    a seam after the runner has crossfaded over it.
-    """
-    b = _backend(steps=4, depth=2, vae_window_s=0.1, codec=_PositionCodec())
-    _run(b, 12)
-    stamp = torch.arange(T, dtype=torch.float32)
-    b._last_result_latent = stamp.view(1, T, 1).expand(1, T, C).contiguous()
-
-    for t in (0.0, 0.25, 0.5, 0.8):
-        chunk = b.render_window(t)
-        assert chunk is not None
-        assert chunk.start_sample == int(round(t * DELIVERY_SAMPLE_RATE))
-        assert chunk.pcm.shape[1] == 2
-        assert chunk.pcm.dtype == np.float32
-        want = t * MINIMAX_LATENT_RATE_HZ
-        assert float(chunk.pcm[0, 0]) == pytest.approx(want, abs=1.0), (
-            f"window at {t}s decoded frame {chunk.pcm[0, 0]:.1f}, "
-            f"expected ~{want:.1f}"
-        )
+def test_resampler_refuses_a_gap():
+    r = _DeliveryResampler()
+    r.push(0, _sig(1000).numpy())
+    with pytest.raises(ValueError, match="frontier is at"):
+        r.push(2000, _sig(1000).numpy())
 
 
-def test_render_window_decodes_only_a_window():
-    """O(window), not O(song). The whole point of the change."""
-    codec = _RampCodec()
-    b = _backend(steps=4, depth=2, vae_window_s=0.1, codec=codec)
-    _run(b, 12)
-    codec.frames_seen.clear()
-    for t in (0.1, 0.4, 0.7):
-        b.render_window(t)
-    assert codec.frames_seen, "no decode happened"
-    assert set(codec.frames_seen) == {MINIMAX_VAE_DECODE_FRAMES}, (
-        f"decoded {codec.frames_seen} frames per render; a windowed "
-        f"backend decodes exactly {MINIMAX_VAE_DECODE_FRAMES} every time, "
-        f"and the song here is {T}"
+def test_resampler_emits_exact_ratio_lengths():
+    r = _DeliveryResampler()
+    r.push(0, _sig(147 * 100 + _DeliveryResampler.PAD + 13).numpy())
+    block = r.pop()
+    assert block is not None
+    assert block.shape[0] % 160 == 0
+    assert r.emitted_native % 147 == 0
+
+
+# ---------------------------------------------------------------------------
+# Append-only emission
+# ---------------------------------------------------------------------------
+
+
+def _feed(backend, samples):
+    """Hand the backend delivery-rate audio as if the worker made it."""
+    idx = np.arange(samples, dtype=np.float32).reshape(-1, 1)
+    backend._out.append(np.repeat(idx, 2, axis=1))
+    backend._out_samples += samples
+
+
+def test_render_window_ignores_the_position_hint():
+    b = _backend()
+    _feed(b, 4800)
+    b.produce(b.read_knobs(), TickContext(0.0, 0.0), "generate")
+    first = b.render_window(t_start_s=3.7)
+    assert first is not None
+    assert first.start_sample == 0, "append-only: audio goes at the frontier"
+
+
+def test_emission_is_contiguous_and_wraps_at_the_window():
+    b = _backend(window_s=1.0)      # 48000 delivery samples
+    total = 0
+    seen = []
+    for _ in range(8):
+        _feed(b, 20000)
+        b.produce(b.read_knobs(), TickContext(0.0, 0.0), "generate")
+        while True:
+            chunk = b.render_window(0.0)
+            if chunk is None:
+                break
+            seen.append((chunk.start_sample, int(chunk.pcm.shape[0])))
+            total += 1
+    assert total >= 3
+    for start, length in seen:
+        assert 0 <= start < b.window_samples
+        assert start + length <= b.window_samples, "a chunk must not span the seam"
+
+
+def test_each_emission_reissues_the_previous_tail_for_the_crossfade():
+    b = _backend()
+    _feed(b, 30000)
+    b.produce(b.read_knobs(), TickContext(0.0, 0.0), "generate")
+    first = b.render_window(0.0)
+    _feed(b, 30000)
+    b.produce(b.read_knobs(), TickContext(0.0, 0.0), "generate")
+    second = b.render_window(0.0)
+
+    assert first is not None and second is not None
+    assert second.start_sample == first.start_sample + first.pcm.shape[0] - XFADE
+    # The runner crossfades the head of `second` against what is already
+    # in the ring; those samples must be identical, or every emission
+    # start smears.
+    np.testing.assert_allclose(
+        second.pcm[:XFADE], first.pcm[-XFADE:], rtol=0, atol=0,
     )
-    assert MINIMAX_VAE_DECODE_FRAMES < T
 
 
-def test_render_window_publishes_its_decode_cost():
-    """Without this the latency trace reads a flat 0.0 ms and a decode
-    problem is invisible to every instrument in the project."""
-    b = _backend(steps=4, depth=2, vae_window_s=0.1)
-    _run(b, 12)
-    b.last_dec_ms = 0.0
-    b.render_window(0.3)
-    assert b.last_dec_ms > 0.0
+def test_emitted_pcm_is_owned_not_a_view():
+    """The runner crossfades into the array it is handed, in place."""
+    b = _backend()
+    _feed(b, 5000)
+    b.produce(b.read_knobs(), TickContext(0.0, 0.0), "generate")
+    chunk = b.render_window(0.0)
+    before = chunk.pcm.copy()
+    chunk.pcm[:100] = -12345.0
+    _feed(b, 5000)
+    b.produce(b.read_knobs(), TickContext(0.0, 0.0), "generate")
+    nxt = b.render_window(0.0)
+    assert not np.array_equal(nxt.pcm[:XFADE], np.full((XFADE, 2), -12345.0))
+    assert np.array_equal(b._tail, before[-XFADE:])
 
 
-def test_render_window_returns_a_copy_not_a_view():
-    """The runner crossfades INTO this array in place. If it were a view
-    of the decode cache, every later render would be contaminated."""
-    b = _backend(steps=4, depth=2)
-    _run(b, 12)
-    first = b.render_window(0.2)
-    first.pcm[:] = -7.0
-    second = b.render_window(0.2)
-    assert not np.allclose(second.pcm, -7.0)
-
-
-def test_guard_wraps_at_the_song_head():
-    """The leading guard at t=0 has to come from the song's tail.
-
-    The ring loops, so that is not an approximation — the tail is
-    literally what plays into the head. Zero-padding there instead would
-    put a decoder edge transient at the loop point, once per lap.
-    """
-    b = _backend(steps=4, depth=2, vae_window_s=0.1, codec=_PositionCodec())
-    _run(b, 12)
-    stamp = torch.arange(T, dtype=torch.float32)
-    b._last_result_latent = stamp.view(1, T, 1).expand(1, T, C).contiguous()
-    plan = plan_decode_window(0, int(round(0.1 * DELIVERY_SAMPLE_RATE)), T)
-    assert plan.frame_start < 0, "head window did not reach back into the tail"
-    # And it still renders, rather than tripping an index error.
-    assert b.render_window(0.0) is not None
-
-
-def test_render_window_clamps_at_the_song_end():
-    b = _backend(steps=4, depth=2, vae_window_s=0.1)
-    _run(b, 12)
-    chunk = b.render_window(DURATION_S - 0.01)
-    assert chunk is not None
-    assert chunk.start_sample + chunk.pcm.shape[0] <= int(
-        round(DURATION_S * DELIVERY_SAMPLE_RATE)
-    ) + 1
-
-
-def test_no_render_before_first_generation():
+def test_render_window_is_none_when_nothing_is_pending():
     b = _backend()
     assert b.render_window(0.0) is None
-    assert b.render_full() is None
     assert b.has_renderable_state() is False
 
 
-# ---- conditioning ---------------------------------------------------------
+# ---------------------------------------------------------------------------
+# The generation worker's own loop
+# ---------------------------------------------------------------------------
 
 
-def test_cond_strength_scales_toward_the_unconditional_branch():
+def test_worker_steps_advance_the_frontier():
+    b = _backend(ar_frames=600)
+    controls = b._render_controls
+    # Drive the worker body by hand: no thread, so the assertions are
+    # about the loop's arithmetic rather than about timing.
+    for _ in range(200):
+        if not b._advance_ar():
+            break
+    assert b.ar_frames >= CHUNK_AR_FRAMES
+    assert b._render_chunk(controls) is True
+    assert b.chunks == 1
+    assert b.frontier_s() > 0.0
+
+    frontier = b.frontier_s()
+    for _ in range(200):
+        if not b._advance_ar():
+            break
+    assert b._render_chunk(controls) is True
+    assert b.frontier_s() > frontier, "the second chunk must extend the song"
+
+
+def test_produce_publishes_controls_to_the_worker():
     b = _backend()
-    full = b._cond_for_tick(1.0)["encoder_hidden_states"]
-    half = b._cond_for_tick(0.5)["encoder_hidden_states"]
-    zero = b._cond_for_tick(0.0)["encoder_hidden_states"]
-    torch.testing.assert_close(half, full * 0.5)
-    # 0.0 is the model's own uncond input, not an extrapolation.
-    assert torch.count_nonzero(zero) == 0
+    knobs = dict(b.read_knobs())
+    knobs.update({
+        "minimax_shift": 1.25,
+        "minimax_guidance": 2.5,
+        "minimax_cond_strength": 0.4,
+        "minimax_hop": 25,
+        "minimax_lead": 2.0,
+        "minimax_steps": 24,
+        "seed": 99,
+    })
+    b.produce(knobs, TickContext(0.0, 0.0), "generate")
+    got, hop, lead = b._snapshot()
+    assert (got.shift, got.guidance, got.cond_strength) == (1.25, 2.5, 0.4)
+    assert (got.steps, got.seed) == (24, 99)
+    assert (hop, lead) == (25, 2.0)
 
 
-def test_prompt_blend_endpoints_return_the_verbatim_bundles():
-    a, bb = _cond(1.0), _cond(2.0)
-    b = _backend(cond=a, cond_b=bb)
-    b.handle_set_prompt_blend(0.0)
-    assert b._active_cond is a
-    b.handle_set_prompt_blend(1.0)
-    assert b._active_cond is bb
+def test_ar_controls_come_off_the_knob_bank():
+    b = _backend()
+    b.knob_state.update({
+        "minimax_temperature": 1.4,
+        "minimax_top_k": 12,
+        "minimax_ar_guidance": 2.0,
+    })
+    got = b._ar_controls()
+    assert got == ARControls(temperature=1.4, top_k=12, guidance=2.0)
 
 
-def test_prompt_blend_midpoint_preserves_norm():
-    """Slerp, not lerp: a linear midpoint collapses the conditioning
-    norm and sounds washed out."""
-    torch.manual_seed(0)
-    a = {"encoder_hidden_states": torch.randn(1, T, MINIMAX_COND_DIM)}
-    bb = {"encoder_hidden_states": torch.randn(1, T, MINIMAX_COND_DIM)}
-    b = _backend(cond=a, cond_b=bb)
-    b.handle_set_prompt_blend(0.5)
-    mid = b._active_cond["encoder_hidden_states"]
+def test_telemetry_reports_the_rates_a_listener_can_hear():
+    class _State:
+        params: dict = {}
 
-    n_a = a["encoder_hidden_states"].norm(dim=-1)
-    n_mid = mid.norm(dim=-1)
-    n_lerp = (
-        0.5 * a["encoder_hidden_states"] + 0.5 * bb["encoder_hidden_states"]
-    ).norm(dim=-1)
-    assert float(n_mid.mean()) > float(n_lerp.mean())
-    assert float(n_mid.mean()) == pytest.approx(float(n_a.mean()), rel=0.15)
-
-
-# ---- feedback -------------------------------------------------------------
-
-
-def test_feedback_tap_blends_a_past_latent_into_the_anchor():
-    b = _backend(steps=4, depth=2)
-    _run(b, 16)
-    anchor = b._source_latent.clone()
-    prep = {"feedback": 0.0, "feedback_depth": 1}
-    torch.testing.assert_close(b._tapped_source(prep), anchor)
-
-    prep = {"feedback": 1.0, "feedback_depth": 1}
-    tapped = b._tapped_source(prep)
-    assert tapped is not None
-    # Fully tapped is the past latent, not the anchor.
-    torch.testing.assert_close(tapped, b._latent_history[-1])
-
-
-def test_feedback_history_is_bounded():
-    b = _backend(steps=2, depth=2)
-    _run(b, 40)
-    assert len(b._latent_history) <= b._max_feedback_depth
-
-
-# ---- construction ---------------------------------------------------------
-
-
-class _FakeContext:
-    """Minimal stand-in for MiniMaxContext's construction surface."""
-
-    device = "cpu"
-    dtype = torch.float32
-
-    def __init__(self):
-        self.prepared: list = []
-
-    def make_dit(self, *, latent_frames, backend="eager"):
-        return _FakeDit()
-
-    def make_codec(self, *, backend="eager"):
-        return _RampCodec()
-
-    def make_schedule_builder(self, cond, steps):
-        return lambda d: torch.linspace(float(d), 0.0, int(steps) + 1)
-
-    def prepare_cond(self, *, prompt, duration_s, lyrics="", capture=None):
-        self.prepared.append(prompt)
-        return _cond()
-
-
-def test_from_context_threads_the_context_through():
-    """handle_set_prompt has to re-run the AR stage, so it needs the
-    context. Losing it here fails only on the first prompt change,
-    which is a long way from where the mistake would be."""
-    ctx = _FakeContext()
-    b = MiniMaxBackend.from_context(
-        ctx,
-        cond=_cond(),
-        knob_state=KnobState(minimax_knob_specs()),
-        duration_s=DURATION_S,
-        steps=4,
-        depth=2,
-        vae_window_s=0.1,
-    )
-    assert b._context is ctx
-
-    b.handle_set_prompt("a different idea")
-    assert ctx.prepared == ["a different idea"]
-
-
-def test_prompt_swap_rejects_a_geometry_change():
-    """Duration is fixed for the session lifetime; a capture made at a
-    different length would silently break the ring buffer's T-coherence."""
-    ctx = _FakeContext()
-    b = MiniMaxBackend.from_context(
-        ctx,
-        cond=_cond(),
-        knob_state=KnobState(minimax_knob_specs()),
-        duration_s=DURATION_S,
-        steps=4,
-        depth=2,
-        vae_window_s=0.1,
-    )
-    ctx.prepare_cond = lambda **kw: {
-        "encoder_hidden_states": torch.zeros(1, T + 5, MINIMAX_COND_DIM)
-    }
-    with pytest.raises(ValueError, match="latent geometry"):
-        b.handle_set_prompt("wrong length")
-
-
-# ---- guidance -------------------------------------------------------------
-#
-# The bug these guard against shipped once and was silent: the backend
-# ran with no CFG at all while the reference pipeline runs guidance 1.7.
-# Nothing raised, no gate moved -- latent-domain parity is measured on
-# single forwards, and the streamed output was merely worse. So the
-# tests here assert the *observable* consequences: that a second forward
-# happens, that it carries zeros rather than the capture, and that the
-# combine reduces to the operator the reference uses.
-
-
-class _CondSensitiveDit(torch.nn.Module):
-    """Records the conditioning of every forward and depends on it.
-
-    ``_FakeDit`` ignores its cond, which makes it blind to exactly the
-    failure being tested: a negative pass that re-sends the positive
-    bundle produces v_neg == v_pos, so guidance silently becomes a
-    no-op that still costs a forward.
-    """
-
-    def __init__(self):
-        super().__init__()
-        self.seen: list = []
-
-    def forward(self, x, t, cond):
-        self.seen.append(float(cond.abs().mean()))
-        return -0.5 * x + 0.01 * float(cond.abs().mean())
-
-
-def _guided_backend(**kw):
-    dit = _CondSensitiveDit()
-    return dit, _backend(dit=dit, **kw)
-
-
-def test_guidance_runs_a_negative_pass_carrying_zeros():
-    dit, b = _guided_backend(steps=4, depth=1)
-    b.knob_state.update({"minimax_guidance": 1.7})
-    _run(b, 6)
-
-    assert dit.seen, "no forward ran"
-    positive = [v for v in dit.seen if v > 0.0]
-    negative = [v for v in dit.seen if v == 0.0]
-    assert positive, "the capture never reached the DiT"
-    assert negative, (
-        "no forward saw the all-zeros bundle, so guidance ran against "
-        "the positive conditioning and was a no-op"
-    )
-    # Full CFG: one negative forward per positive forward.
-    assert len(negative) == len(positive)
-
-
-def test_guidance_of_one_skips_the_negative_pass_entirely():
-    dit, b = _guided_backend(steps=4, depth=1)
-    b.knob_state.update({"minimax_guidance": 1.0})
-    _run(b, 6)
-    assert dit.seen
-    assert all(v > 0.0 for v in dit.seen), (
-        "guidance 1.0 must cost one forward per step, not two"
-    )
-
-
-def test_request_asks_for_textbook_cfg_not_stock_apg():
-    """The combine operator is part of the fix, not a detail.
-
-    Stock APG clamps the guidance delta with a norm threshold tuned for
-    ACE's latent scale; on a 689-frame MiniMax latent that throttles it
-    almost to nothing and measures ~4x worse than plain CFG. These three
-    values are what reduce APG to the reference's own operator.
-    """
-    _, b = _guided_backend(steps=4, depth=1)
-    _run(b, 6)
-    req = b._last_request
-    assert req.apg_eta == pytest.approx(1.0)
-    assert req.apg_norm_threshold <= 0.0
-    assert req.apg_momentum == pytest.approx(0.0)
-    assert req.has_cfg, "guidance_curve + neg_aux_cond must enable CFG"
-
-
-def test_uncond_bundle_is_zeros_and_stable_across_ticks():
-    """Identity matters: an accelerated wrapper keys its staging cache
-    on the tensor object, so a fresh zeros_like per tick would miss it
-    every time."""
-    _, b = _guided_backend(steps=4, depth=1)
-    first = b._uncond_bundle()["encoder_hidden_states"]
-    assert torch.count_nonzero(first) == 0
-    assert first.shape == b._active_cond["encoder_hidden_states"].shape
-    assert b._uncond_bundle()["encoder_hidden_states"] is first
+    b = _backend()
+    b.state = _State()
+    # Cumulative, the way the worker accumulates it: 300 frames in
+    # 16.08 s is 53.6 ms each. The per-sample attributes are the last
+    # batch only and must NOT be what the echo reports.
+    b.ar_frames, b.ar_wall_s = 300, 16.08
+    b.ar_ms_per_frame = 999.0
+    b.chunks, b.render_wall_s = 4, 2.0
+    b.chunk_render_ms = 999.0
+    b.produce(b.read_knobs(), TickContext(0.0, 0.0), "generate")
+    b.on_fresh_generation(b.read_knobs())
+    p = b.state.params
+    assert p["num_gens"] == 1
+    # 40 ms of audio per frame against 53.6 ms of wall clock.
+    assert p["ar_ms_per_frame"] == pytest.approx(53.6, abs=0.05)
+    assert p["ar_realtime"] == pytest.approx(0.746, abs=1e-3)
+    assert p["chunk_render_ms"] == pytest.approx(500.0, abs=0.1)
+    for key in ("frontier_lead_s", "ar_frames", "chunks"):
+        assert key in p

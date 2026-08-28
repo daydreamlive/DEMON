@@ -96,38 +96,16 @@ def _make_sa3(ss):
 
 
 def _make_minimax(ss):
-    # Same contract as _make_sa3: the per-family create path
+    # Same contract as _make_sa3 — the per-family create path
     # (acestep.streaming.minimax_session) stashes the process-cached
-    # context plus the captured AR conditioning on the session, because
-    # neither can be rebuilt inside a tick — MiniMax's conditioning is
-    # an 8.58B LM pass, not an encoder call.
-    from acestep.streaming.minimax_backend import MiniMaxBackend
+    # context on the session — but with no captured conditioning to
+    # carry. MiniMax is autoregressive and the backend drives the LM
+    # itself, so the payload holds the prompt and the window geometry
+    # instead, and the assembly (live AR session vs replayed capture)
+    # lives next to the create path that produced it.
+    from acestep.streaming.minimax_session import make_minimax_backend
 
-    init = getattr(ss, "backend_init", None)
-    if not init or "context" not in init:
-        raise ValueError(
-            "backend 'minimax' requires the per-family create path "
-            "(acestep.streaming.minimax_session.create_minimax_session) "
-            "to stash its construction payload"
-        )
-    return MiniMaxBackend.from_context(
-        init["context"],
-        cond=init["cond"],
-        cond_b=init.get("cond_b"),
-        knob_state=ss.virtual_knobs,
-        state=ss.state,
-        source_latent_bct=init.get("source_latent_bct"),
-        duration_s=float(init["duration_s"]),
-        dit_backend=init.get("dit_backend", "eager"),
-        codec_backend=init.get("codec_backend", "eager"),
-        # The family's own step floor, resolved at create (see
-        # minimax_session). SessionConfig.steps defaults to ACE's 8,
-        # which on this model is not a speed/quality trade-off so much
-        # as a broken render.
-        steps=int(init.get("steps") or ss.config.steps),
-        depth=int(ss.state.current_depth),
-        vae_window_s=float(ss.vae_window),
-    )
+    return make_minimax_backend(ss)
 
 
 FAMILIES = {

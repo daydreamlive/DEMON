@@ -1,262 +1,204 @@
 """MiniMaxBackend: MiniMax-Music3 behind the Tier-1 GeneratorBackend seam.
 
-The streaming shape here is the SA3 one — every emit is a
-partial-denoise cover of the SAME source latent at the SAME seed, so
-advancing playback windows reconstruct one evolving song — but the
-conditioning story is different enough to be worth stating plainly.
+MiniMax-Music3 is autoregressive. Its 8.58B Global LM writes one 25 Hz
+acoustic frame at a time over a KV cache and stops when the piece is
+done; the flow-matching DiT renders those frames into audio in
+overlapping windows, carrying latent context between them. It is a
+*producer*, not a one-shot sampler, and this backend drives it as one:
+the AR stage and the chunked renderer run on a generation worker, and
+the frontier they advance is handed to the runner as append-only audio.
 
-MiniMax's DiT has no cross-attention and no text input. Its only
-conditioning is ``encoder_hidden_states`` ``[B, T, 2048]``, produced by
-running an 8.58B autoregressive LM over the prompt and fusing its
-per-frame hidden states. That stage costs seconds and cannot be put in
-a tick. So this backend treats conditioning as a *captured composition*:
-:class:`~acestep.engine.minimax_context.MiniMaxContext` runs the AR
-stage once at session create, and the stream then covers that fixed
-musical idea indefinitely. A prompt change re-runs the AR stage on the
-dispatcher thread and swaps the capture in, exactly as SA3 swaps a
-re-encoded T5Gemma bundle.
+That makes this the second append-only family behind the seam, after
+MRT2, and it inherits that family's shape:
 
-What that costs: ``set_prompt`` is seconds, not one pipeline flush.
-What survives: everything DEMON steers solver-side lands in one tick —
-denoise, seed, the source lock, the feedback delay tap, and the shared
-curves. Two extra family knobs fall out of the architecture rather than
-being invented for it: ``minimax_cond_strength`` interpolates the
-capture toward zeros (which is literally the model's own unconditional
-CFG branch, so 0.0 is a defined operating point, not an extrapolation),
-and prompt blending slerps between two captures per frame.
+* ``render_window`` IGNORES the runner's position hint and returns the
+  next frontier chunk. Committed audio is never re-rendered --
+  ``Capabilities.refines_audio`` is False, and it is false all the way
+  down: the AR stage cannot revise a frame it has emitted.
+* Song shape is a rolling window. The frontier writes advance modulo
+  ``window_s`` and the player loops it, so the "song" is a tape being
+  overwritten just behind the playhead.
+* Each emission re-emits the previous one's last ``XFADE`` samples at
+  its head, so the runner's unconditional leading-edge crossfade blends
+  identical samples instead of smearing new audio against last lap's.
 
-Delivery is 48 kHz because ``pipeline_runner`` hardcodes it and never
-calls ``geometry()``. MiniMax is native 44.1 kHz, so every render
-crosses a resampler as well as a decoder, and both want a guard.
+What this backend deliberately does NOT do is run the ring buffer and
+the batch-axis staircase. Those exist to make a one-shot, whole-song
+diffusion model behave like a stream by keeping several partial
+generations of the SAME song in flight on the batch axis. None of it
+applies here, and one fact settles it: chunk k's carry is chunk k-1's
+committed output, so consecutive renders are strictly dependent and
+there is nothing to pipeline. An earlier version of this file froze the
+AR output into a static conditioning tensor and ran the ring over it,
+which is a streaming model converted into a one-shot model so that
+streaming machinery could be applied to it.
 
-Rendering is WINDOWED: each call decodes a fixed 56-frame span around
-the requested slice and keeps the middle. An earlier version decoded the
-whole song on every fresh latent and indexed into the result, which is
-O(song length) per generation where this is O(window) -- 44.5 ms against
-~5 ms at 8 s, and 346 ms against the same ~5 ms at 60 s. It also arrived
-as a spike on one tick in four, which the runner's lead controller reads
-as a longer inter-write interval and answers by inflating playback lead,
-coupling knob-to-ear latency to song duration. The decoder is
-deterministic (no inference-time noise to seed) and purely
-convolutional, so a guarded window is exact rather than approximate.
+## What it costs, measured on a 5090
+
+Two rates, and they are NOT the same number -- conflating them is what
+produced this integration's first round of throughput claims:
+
+* **25 Hz** is the AR acoustic frame rate (40 ms per frame).
+* **86.133 Hz** (44100/512) is the DiT latent frame rate (11.6 ms).
+
+Against those, each stage measured alone
+(``scripts/minimax/minimax_ar_bench.py``, ``minimax_stream_bench.py``):
+
+    AR emission          53.6 ms/frame  = 0.75x realtime, flat in context
+    chunk render, TRT    513 ms per 4.0 s commit = 7.8x realtime
+    chunk render, eager  835 ms per 4.0 s commit = 4.8x realtime
+    guarded decode       ~6 ms/window, negligible
+
+And the two together, session means over 70-100 s runs, which is the
+number that matters and is NOT the one the parts predict:
+
+    hop=100    AR 57-61 ms/frame   render 855-1030 ms   end to end 0.54x
+    hop=25     AR 54.2 ms/frame    render 518 ms        end to end 0.48x
+
+**Co-residency lands on the render, and it scales with how long the AR
+runs between renders.** With the AR stage's 17.4 GB pinned alongside the
+renderer, a hop of 100 frames means ~6 s of language model between DiT
+turns, and the chunk render roughly doubles (513 -> ~1030 ms) because
+the DiT's weights are gone from cache by the time it runs again. At
+hop=25 the renders are frequent enough to stay warm and the chunk render
+comes in at 518 ms -- its isolated speed. Benchmarking either stage
+alone, or benchmarking with a hop that does not match production,
+overstates the pipeline.
+
+The AR stage is the bottleneck and it is **under realtime**, so this
+backend cannot sustain a live stream on this hardware: the playhead laps
+the frontier and the listener hears the rolling window repeat. That is
+reported, not hidden -- ``frontier_lead_s`` and ``ar_realtime`` ride the
+params echo on every generation, and both are session means rather than
+last-sample values (a single sample moves the figure by 15%).
+
+Worth being precise about whose limitation that is. The AR stage is
+launch-bound rather than bandwidth-bound at batch 2 (36 layers over one
+token, plus seven depth-decoder forwards per frame), and upstream serves
+this checkpoint through SGLang rather than a plain torch loop. 0.75x is
+a property of this dependency-free reimplementation, not a measurement
+of the model's ceiling.
+
+## What DEMON's value proposition buys here
+
+Knob-to-ear on this family is **seconds, not milliseconds**, and the two
+stages have different floors for different reasons. Measured
+knob-to-frontier (add the playback lead for knob-to-ear):
+
+    knob                        hop=100    hop=25
+    minimax_guidance (render)   6.7-7.1 s   1.65 s
+    minimax_temperature (AR)    8.6-9.8 s   10.8 s
+    end-to-end throughput          0.54x     0.48x
+
+A **renderer** knob waits for the next chunk render to start, which
+means waiting for the AR stage to fill the next hop. ``minimax_hop`` is
+the lever for it and trades directly against throughput, because a
+smaller hop re-renders more of the same audio per second committed.
+
+An **AR** knob does not benefit, and the reason is geometric rather than
+budgetary. A frame written now sits inside a 200-frame conditioning
+window whose commit region ends 150 frames before the window does, so
+that frame cannot be committed until the LM has written up to 150 more
+of them -- 6 s of audio, ~8 s of wall clock, no matter what the hop is.
+Shrinking it means shrinking the chunk or the lookahead, which is a
+quality question (the committed region would sit at the edge of the
+model's window) rather than a scheduling one, and it is unmeasured.
+
+So the *live steering* half of DEMON's proposition applies, at a
+timescale of seconds rather than the ~60-230 ms the diffusion families
+reach. What genuinely lands:
+
+* AR sampling (``minimax_temperature`` / ``_top_k`` / ``_ar_guidance``)
+  steers the composition **as it is being written**, at 40 ms
+  granularity on the emission frontier. That is a stronger control than
+  the cover architecture had, which could only re-render a frozen
+  composition.
+* ``set_prompt`` re-prefills the LM against the existing audio history
+  instead of restarting the piece -- see
+  :meth:`~acestep.engine.minimax_ar.MiniMaxARStream.reprompt`. A live
+  prompt change on an autoregressive model, for the cost of a prefill.
+* Renderer controls (steps / shift / guidance / cond strength) apply at
+  the next chunk boundary.
+
+## Delivery
+
+MiniMax is native 44.1 kHz; ``pipeline_runner`` is 48 kHz and never
+calls ``geometry()``. The conversion is append-only and has to stay
+phase-exact across block boundaries, which is what
+:class:`_DeliveryResampler` is for.
 """
 
 from __future__ import annotations
 
-import math
 import threading
 import time
-from dataclasses import dataclass
+from collections import deque
 from typing import Optional
 
 import numpy as np
 import torch
 
-from acestep.engine.minimax_adapter import (
-    MINIMAX_COND_DIM,
-    MINIMAX_LATENT_CHANNELS,
+from acestep.engine.minimax_ar import ARControls
+from acestep.engine.minimax_render import (
+    AR_FRAME_RATE_HZ,
+    CARRY_LATENT_FRAMES,
+    CHUNK_AR_FRAMES,
+    DECODE_GUARD_FRAMES,
+    DEFAULT_GUIDANCE,
+    DEFAULT_SHIFT,
+    DEFAULT_STEPS,
+    HOP_AR_FRAMES,
     MINIMAX_SAMPLE_RATE,
-    MINIMAX_UPSAMPLE,
+    MiniMaxChunkRenderer,
+    MiniMaxLatentDecoder,
+    MiniMaxLatentStream,
+    RenderControls,
+    latent_origin,
 )
 from acestep.engine.obs import logger
-from acestep.engine.stream import SlotRequest, StreamPipeline
-from acestep.streaming.diffusion_backend import DiffusionBackend
 from acestep.streaming.generator_backend import (
     AudioChunk,
     AudioGeometry,
     Capabilities,
+    LeadProfile,
+    ProduceMode,
     TickContext,
+    UnsupportedOperation,
 )
-from acestep.streaming.knobs import (
-    KnobSpec,
-    lora_strength_spec,
-)
+from acestep.streaming.knobs import KnobSpec
 from acestep.streaming.knobs import knob_specs as registry_knob_specs
 
 # The runner's world is 48 kHz (pipeline_runner.SAMPLE_RATE); it never
-# reads geometry(). Resample at the decode boundary or nothing works.
+# reads geometry(). Resample at the emission boundary or nothing works.
 DELIVERY_SAMPLE_RATE = 48000
 
-MINIMAX_LATENT_RATE_HZ = float(MINIMAX_SAMPLE_RATE) / float(MINIMAX_UPSAMPLE)
+# 44100 and 48000 reduce to 147:160.
+_RESAMPLE_DEN = 147   # native samples per ratio unit
+_RESAMPLE_NUM = 160   # delivery samples per ratio unit
 
-# The AR stage emits 25 frames/s; the DiT latent runs at 86.133 Hz, so
-# each AR frame covers 3.4453 latent frames (441/128 exactly).
-#
-# Upstream renders in 200-AR-frame windows on a 100-frame hop, carrying
-# 172 latent frames of overlap between windows. That is an INFERENCE
-# CONTRACT, not a training span: the transformer config carries no
-# max_position_embeddings, its RoPE is computed for whatever length
-# arrives, and nothing upstream states a trained window. Treating 200 as
-# a model limit was an error this file used to make. It is the default
-# request only.
-MINIMAX_AR_FRAME_RATE_HZ = 25.0
-MINIMAX_CHUNK_AR_FRAMES = 200
+# Rolling-window song shape: the synthetic duration the session declares
+# and the player loops.
+DEFAULT_WINDOW_S = 60.0
 
-# --- windowed decode -------------------------------------------------------
-#
-# 44100 and 48000 reduce to 147:160. The consequence is load-bearing: a
-# latent frame is 512 native samples and gcd(512, 147) == 1, so a frame
-# boundary is NOT an integer delivery sample. Resampling a block that
-# starts on a frame boundary therefore lands on a different sample phase
-# than resampling the whole song does, and the window disagrees with the
-# full decode by up to half a sample -- which on broadband material is a
-# ~17% relative error, not a rounding detail. The fix is to trim the
-# decoded block forward to a multiple of 147 native samples so the
-# resampled block starts on an exact delivery sample. SA3 solves the same
-# problem the same way with its 588-sample (4 x 147) guard.
-_RESAMPLE_NUM = 160   # 48000 / gcd(44100, 48000)
-_RESAMPLE_DEN = 147   # 44100 / gcd(44100, 48000)
+# Overlap re-emitted at each chunk head so the runner's leading-edge
+# crossfade blends against identical samples. Matches the runner's own
+# fade length (min(1200, len // 4) at 48 kHz = 25 ms).
+XFADE = 1200
 
-# Measured, not guessed: scripts/minimax/minimax_decode_profile.py decodes
-# a slice, compares it against the same span of a full decode, and
-# profiles the error inward from the edge. Peak error reaches the fp32
-# floor (4.4e-3) at 9 latent frames and is flat thereafter; an analytic
-# walk of the conv stack puts the one-sided field at 10. 12 buys margin
-# over both, plus the sub-frame slack the 147-alignment trim needs, for
-# a few frames of decode nobody will notice.
-MINIMAX_VAE_GUARD_FRAMES = 12
+# Cap on one emission. Keeps a post-stall burst from writing a
+# multi-second slab in one tick.
+MAX_EMIT_S = 1.5
 
-# Fixed decode span, the ACE pattern. A constant shape means a live
-# vae_window change can never shrink the guard below its converged floor,
-# and it is the shape a TensorRT decoder engine would be built at.
-#
-# 58 = 34 keep + 24 guard. The keep number is not the window's frame
-# count but its worst case: the span is converted with floor on one end
-# and ceil on the other, so a 0.36 s window (31.008 frames of native
-# audio) covers 33 frames when it starts just inside a frame boundary.
-# Sizing this to the average instead of the worst case fails on roughly
-# one start position in three, which is exactly the sort of thing that
-# survives a spot check and dies in a stream.
-MINIMAX_VAE_DECODE_FRAMES = 58
+# AR frames per worker step. Small enough that a stop request is honored
+# promptly; large enough that per-call overhead is noise against
+# 53 ms/frame. Control changes do not wait on it -- ARControls is read
+# per frame inside the session.
+AR_BATCH_FRAMES = 25
 
-# Sampler defaults, measured rather than inherited. The reference
-# pipeline runs 30 unwarped steps at guidance 1.7; that is 60 forwards
-# per generation, more than a real-time ring wants to spend. The grid in
-# ``scripts/minimax/minimax_quality_ablation.py`` says where the cost can
-# come off and where it cannot:
-#
-#   * Guidance is not optional. Unguided sampling plateaus at ~0.11
-#     log-mel from the reference and stays there through 40 steps; eight
-#     guided steps beat forty unguided ones. Dropping CFG is the single
-#     largest quality loss available on this model.
-#   * Step count trades against schedule warp almost one for one. The
-#     unwarped schedule needs 30 steps; warping toward the noise end
-#     buys back most of it, and (16 steps, shift 2.0) lands at log-mel
-#     0.032 / latent cosine 0.9993 against the reference for 32
-#     forwards -- close enough that the residual is bf16 rounding.
-#
-# Hence: 16 steps, shift 2.0, guidance 1.7. Raising steps toward 30 is
-# only worth it alongside lowering shift back toward 1.0; the two are a
-# matched pair, not independent quality dials.
-MINIMAX_DEFAULT_STEPS = 16
-MINIMAX_DEFAULT_SHIFT = 2.0
-MINIMAX_DEFAULT_GUIDANCE = 1.7
-
-
-def minimax_latent_frames(duration_s: float) -> int:
-    """Latent frame count for ``duration_s`` of audio."""
-    return int(duration_s * MINIMAX_LATENT_RATE_HZ)
-
-
-def minimax_delivery_samples(latent_frames: int) -> int:
-    """Delivery-rate length of ``latent_frames``, the resampler's answer.
-
-    The single source of this number. It was previously derived twice --
-    once as ``round(duration_s * 48000)`` for the ring buffer and once
-    implicitly by the resampler -- which left the ring 34 samples longer
-    than any decode produced, so the song's last ~0.7 ms was never
-    written. ``torchaudio.functional.resample`` returns
-    ``ceil(n * new / orig)``; match it exactly rather than approximately.
-    """
-    native = int(latent_frames) * MINIMAX_UPSAMPLE
-    return -(-native * _RESAMPLE_NUM // _RESAMPLE_DEN)
-
-
-# One render window plus a full guard on each side. Below this a song
-# cannot fill a window without reading its own guard twice, and the
-# cyclic wrap stops being a margin and becomes the signal.
-MINIMAX_MIN_LATENT_FRAMES = MINIMAX_VAE_DECODE_FRAMES
-
-
-def minimax_max_vae_window_s(
-    decode_frames: int = MINIMAX_VAE_DECODE_FRAMES,
-    guard: int = MINIMAX_VAE_GUARD_FRAMES,
-) -> float:
-    """Widest wire slice the fixed decode span can serve with full guard.
-
-    Two frames of headroom rather than none: the kept span is converted
-    to frames with floor on one end and ceil on the other, so a window
-    whose native length is 31.008 frames can still touch 33 of them
-    depending on where it starts.
-    """
-    return (decode_frames - 2 * guard - 2) / MINIMAX_LATENT_RATE_HZ
-
-
-@dataclass(frozen=True)
-class DecodePlan:
-    """Where a windowed decode reads from and what it keeps.
-
-    Pure arithmetic, deliberately separated from the decode so it can be
-    tested exhaustively without weights -- the off-by-one that matters
-    here is a sample-phase error, which is invisible in a listening test
-    and expensive in a GPU one.
-
-    ``frame_start`` may be negative or run past the end of the song: the
-    guard wraps cyclically, because the ring buffer loops and the song's
-    tail genuinely is what plays into its head. Only the guard wraps --
-    the kept span is clamped to the song, and the runner asks for the
-    wrapped remainder in a separate call.
-    """
-    frame_start: int      # first latent frame to decode; wraps
-    frames: int           # always the fixed decode span
-    trim_native: int      # native samples dropped for 147-alignment
-    offset: int           # index into the resampled block where the keep starts
-    length: int           # delivery samples to keep
-
-
-def plan_decode_window(
-    start_48k: int,
-    length_48k: int,
-    total_frames: int,
-    *,
-    guard: int = MINIMAX_VAE_GUARD_FRAMES,
-    decode_frames: int = MINIMAX_VAE_DECODE_FRAMES,
-) -> DecodePlan:
-    """Plan a decode that serves ``[start_48k, start_48k + length_48k)``.
-
-    The kept span is converted to latent frames, padded to the fixed
-    decode span, trimmed forward to a 147-sample boundary so the
-    resample lands on the same phase grid a whole-song resample would,
-    and the offset back into the block is then exact integer arithmetic.
-    """
-    span = min(decode_frames, total_frames)
-    p0 = start_48k * _RESAMPLE_DEN / _RESAMPLE_NUM
-    p1 = (start_48k + length_48k) * _RESAMPLE_DEN / _RESAMPLE_NUM
-    keep0 = int(math.floor(p0 / MINIMAX_UPSAMPLE))
-    keep1 = int(math.ceil(p1 / MINIMAX_UPSAMPLE))
-    keep = keep1 - keep0
-    if keep + 2 * guard > span and total_frames > span:
-        raise ValueError(
-            f"window of {length_48k} delivery samples needs {keep} latent "
-            f"frames, which leaves less than {guard} frames of guard inside "
-            f"a {span}-frame decode; lower vae_window (max "
-            f"{minimax_max_vae_window_s(span, guard):.4f}s) or widen "
-            "MINIMAX_VAE_DECODE_FRAMES"
-        )
-
-    # The whole song fits inside one decode: no windowing to do, and
-    # anchoring at 0 keeps the offset arithmetic trivially exact.
-    f0 = 0 if total_frames <= span else keep0 - (span - keep) // 2
-
-    n0 = f0 * MINIMAX_UPSAMPLE
-    trim = (-n0) % _RESAMPLE_DEN
-    n0 += trim
-    # n0 is now a multiple of 147, so this is exact rather than rounded.
-    offset = start_48k - (n0 // _RESAMPLE_DEN) * _RESAMPLE_NUM
-    return DecodePlan(
-        frame_start=f0, frames=span, trim_native=trim,
-        offset=offset, length=length_48k,
-    )
+# The AR stage's resident footprint (17.9 GB of weights plus its KV
+# cache). Stated so a deployment that cannot afford it picks a different
+# checkpoint rather than discovering this at session create.
+AR_RESIDENT_VRAM_GB = 21.0
 
 
 def minimax_knob_specs(loras=()) -> list:
@@ -264,34 +206,79 @@ def minimax_knob_specs(loras=()) -> list:
 
     Shared knobs are taken BY OBJECT out of the registry rather than
     re-declared, so a semantic fork is impossible rather than merely
-    detected by the homonym guard.
+    detected by the homonym guard. The family-prefixed ones split by
+    which stage they steer, because the two stages have very different
+    latencies and an operator should be able to tell which is which:
+    ``minimax_temperature`` / ``_top_k`` / ``_ar_guidance`` change what
+    the LM writes next; the rest change how the DiT renders it.
     """
     shared = {s.name: s for s in registry_knob_specs(False)}
     specs = [
         KnobSpec(
-            name="minimax_denoise",
+            name="minimax_temperature",
             default=1.0,
-            min_val=0.0,
-            max_val=1.0,
+            min_val=0.1,
+            max_val=2.0,
             group="minimax",
             description=(
-                "Cover strength. 1.0 regenerates from noise; lower values "
-                "start each generation as a partially noised copy of the "
-                "source anchor, which is what keeps consecutive emissions "
-                "coherent."
+                "AR sampling temperature, applied after the top-k cut. "
+                "Steers the composition as the LM writes it: higher "
+                "wanders, lower commits to the caption. Lands on the "
+                "next 40 ms frame the LM emits, which reaches the ear "
+                "one chunk hop later."
+            ),
+        ),
+        KnobSpec(
+            name="minimax_top_k",
+            default=50,
+            min_val=1,
+            max_val=200,
+            type="int",
+            group="minimax",
+            description=(
+                "AR top-k. 50 is the reference recipe. Narrowing it "
+                "tightens the piece toward the model's confident "
+                "continuations."
+            ),
+        ),
+        KnobSpec(
+            name="minimax_ar_guidance",
+            default=1.5,
+            min_val=1.0,
+            max_val=3.0,
+            group="minimax",
+            description=(
+                "Classifier-free guidance inside the AR stage, against "
+                "a twin whose caption tokens are masked out. 1.5 is "
+                "upstream's fixed value; it decides how literally the "
+                "caption is obeyed."
+            ),
+        ),
+        KnobSpec(
+            name="minimax_guidance",
+            default=DEFAULT_GUIDANCE,
+            min_val=1.0,
+            max_val=3.0,
+            group="minimax",
+            description=(
+                "Renderer classifier-free guidance, the reference "
+                "pipeline's own parameter. 1.0 turns it off and halves "
+                "the render cost, but this model needs guidance more "
+                "than it needs steps -- unguided output plateaus well "
+                "short of the reference no matter how many steps it "
+                "gets."
             ),
         ),
         KnobSpec(
             name="minimax_shift",
-            default=MINIMAX_DEFAULT_SHIFT,
+            default=DEFAULT_SHIFT,
             min_val=0.25,
             max_val=4.0,
             group="minimax",
             description=(
                 "Schedule warp. >1 spends more steps near noise "
                 "(structure), <1 near the data (refinement). Matched to "
-                "the step count: the default 16 steps want 2.0, and 30 "
-                "steps want 1.0."
+                "the step count: 16 steps want 2.0, 30 steps want 1.0."
             ),
         ),
         KnobSpec(
@@ -301,122 +288,713 @@ def minimax_knob_specs(loras=()) -> list:
             max_val=1.5,
             group="minimax",
             description=(
-                "How strongly the captured composition asserts itself. "
-                "Interpolates the AR conditioning toward zeros, which is "
-                "the model's own unconditional branch."
+                "How strongly the AR stage's conditioning asserts "
+                "itself in the render. Interpolates toward zeros, which "
+                "is the model's own unconditional branch, so 0.0 is a "
+                "defined operating point rather than an extrapolation."
             ),
         ),
         KnobSpec(
-            name="minimax_guidance",
-            default=MINIMAX_DEFAULT_GUIDANCE,
-            min_val=1.0,
-            max_val=3.0,
+            name="minimax_hop",
+            default=HOP_AR_FRAMES,
+            min_val=10,
+            max_val=150,
+            type="int",
             group="minimax",
             description=(
-                "Classifier-free guidance scale, the reference "
-                "pipeline's own parameter. 1.0 turns guidance off and "
-                "halves the compute, but this model needs guidance more "
-                "than it needs steps -- unguided output plateaus well "
-                "short of the reference no matter how many steps it gets."
+                "AR frames committed per render, at 25 Hz. The "
+                "latency lever for the RENDERER knobs only: measured "
+                "guidance-to-frontier is 7.1 s at the default 100 "
+                "(4.0 s of audio) and 1.6 s at 25, for a drop from "
+                "0.54x to 0.46x realtime. It does NOT help the AR "
+                "knobs -- their floor is the conditioning window's "
+                "150-frame lookahead, which the hop does not move."
+            ),
+        ),
+        KnobSpec(
+            name="minimax_steps",
+            default=DEFAULT_STEPS,
+            min_val=8,
+            max_val=40,
+            type="int",
+            group="minimax",
+            description=(
+                "Sampler steps. NOT the shared steps_override, which "
+                "means ACE's turbo step count: its default of 8 is an "
+                "audibly broken render here (log-mel 0.24 from the "
+                "reference against 0.03) and its ceiling of 16 excludes "
+                "the reference's own 30. Matched to minimax_shift -- "
+                "30/1.0, 20/1.5, 16/2.0, 12/3.0 are the measured pairs, "
+                "and lowering steps without raising shift gives up most "
+                "of what the steps were buying."
+            ),
+        ),
+        KnobSpec(
+            name="minimax_lead",
+            default=1.0,
+            min_val=0.3,
+            max_val=8.0,
+            group="minimax",
+            description=(
+                "Target generation lead over the playhead in seconds. "
+                "Append-only audio cannot be revised, so this IS the "
+                "knob-to-ear floor once generation is fast enough to "
+                "choose. On hardware where it is not, it never binds."
             ),
         ),
     ]
-    specs += [
-        shared["seed"],
-        shared["steps_override"],
-        shared["x0_target"],
-        shared["feedback"],
-        shared["feedback_depth"],
-    ]
-    specs += [lora_strength_spec(lid) for lid in (loras or ())]
+    # ``seed`` is taken from the shared registry by name so a semantic
+    # fork is impossible; ``steps_override`` deliberately is NOT (see
+    # minimax_steps above).
+    specs += [shared["seed"]]
     return specs
 
 
-class MiniMaxBackend(DiffusionBackend):
-    """See module docstring."""
+# ---------------------------------------------------------------------------
+# 44.1 kHz -> 48 kHz, append-only
+# ---------------------------------------------------------------------------
+
+
+class _DeliveryResampler:
+    """Seamless append-only 44100 -> 48000.
+
+    A whole-song resample and a block-wise one agree only if every block
+    starts on the same sample phase. 44100/48000 reduces to 147/160 and
+    ``gcd(512, 147) == 1``, so a latent-frame boundary is NOT a delivery
+    sample: resampling from one lands up to half a sample off the grid a
+    whole-song resample would use, which on broadband material is a ~17%
+    relative error rather than a rounding detail. SA3 solves the same
+    problem with the same 147 alignment.
+
+    So block boundaries are pinned to multiples of 147 native samples,
+    where the two grids coincide exactly, and each block is resampled
+    with ``PAD`` native samples of filter context on both sides that are
+    then discarded. torchaudio's kernel spans 6 input samples at this
+    ratio; 588 is four ratio units of margin over it.
+    """
+
+    PAD = 4 * _RESAMPLE_DEN  # 588 native samples
+
+    def __init__(self, channels: int = 2):
+        self.channels = int(channels)
+        self._buf: Optional[np.ndarray] = None   # [C, N] native
+        self._base = 0        # absolute native index of _buf[:, 0]
+        self._emitted = 0     # native samples converted; multiple of 147
+
+    @property
+    def native_available(self) -> int:
+        if self._buf is None:
+            return self._base
+        return self._base + int(self._buf.shape[1])
+
+    @property
+    def emitted_native(self) -> int:
+        return self._emitted
+
+    def push(self, start_native: int, pcm: np.ndarray) -> None:
+        """Append decoded native audio ``[C, N]`` starting at
+        ``start_native`` (absolute). Must abut what is already held."""
+        block = np.ascontiguousarray(pcm, dtype=np.float32)
+        if self._buf is None:
+            self._base = int(start_native)
+            self._buf = block
+            return
+        if start_native != self.native_available:
+            raise ValueError(
+                f"native audio starts at {start_native}, frontier is at "
+                f"{self.native_available}"
+            )
+        self._buf = np.concatenate((self._buf, block), axis=1)
+
+    def pop(self) -> Optional[np.ndarray]:
+        """Next delivery-rate block ``[N, C]`` float32, or None."""
+        import torchaudio
+
+        usable = self.native_available - self.PAD
+        end = (usable // _RESAMPLE_DEN) * _RESAMPLE_DEN
+        if end <= self._emitted:
+            return None
+
+        lo = max(self._base, self._emitted - self.PAD)
+        hi = min(self.native_available, end + self.PAD)
+        block = torch.from_numpy(
+            self._buf[:, lo - self._base:hi - self._base]
+        )
+        resampled = torchaudio.functional.resample(
+            block, MINIMAX_SAMPLE_RATE, DELIVERY_SAMPLE_RATE,
+        )
+        head = (self._emitted - lo) // _RESAMPLE_DEN * _RESAMPLE_NUM
+        length = (end - self._emitted) // _RESAMPLE_DEN * _RESAMPLE_NUM
+        out = resampled[:, head:head + length]
+
+        self._emitted = end
+        # Nothing behind this is ever re-read; the left pad is all the
+        # history the next block needs.
+        self._trim(self._emitted - self.PAD)
+        return np.ascontiguousarray(
+            out.transpose(0, 1).numpy(), dtype=np.float32,
+        )
+
+    def _trim(self, keep_from: int) -> None:
+        if self._buf is None:
+            return
+        drop = int(keep_from) - self._base
+        if drop <= 0:
+            return
+        self._buf = np.ascontiguousarray(self._buf[:, drop:])
+        self._base = int(keep_from)
+
+    def close(self) -> None:
+        self._buf = None
+
+
+# ---------------------------------------------------------------------------
+# Backend
+# ---------------------------------------------------------------------------
+
+
+class MiniMaxBackend:
+    """See module docstring. Append-only, in-process, rolling window."""
 
     name = "minimax"
 
     def __init__(
         self,
         *,
-        adapter,
+        ar_stream,
+        renderer: MiniMaxChunkRenderer,
         codec,
-        cond,
-        cond_b=None,
-        schedule_builder_factory,
         knob_state,
         state=None,
         context=None,
-        source_latent_bct: Optional[torch.Tensor] = None,
-        duration_s: float = 8.0,
-        steps: int = MINIMAX_DEFAULT_STEPS,
-        depth: int = 4,
-        vae_window_s: float = 0.36,
+        window_s: float = DEFAULT_WINDOW_S,
+        steps: int = DEFAULT_STEPS,
         seed: int = 1528,
+        start_worker: bool = True,
     ):
-        super().__init__(adapter=adapter, codec=codec)
-
-        # Held for handle_set_prompt, which has to re-run the AR stage.
         self._context = context
-
-        # Read unguarded by session.py when it builds the runner.
-        self.vae_window = float(vae_window_s)
-
         self.knob_state = knob_state
         self.state = state
-        self._duration_s = float(duration_s)
-        self._latent_frames = minimax_latent_frames(duration_s)
+        # The create path resolves the step count (family floor vs an
+        # explicit SessionConfig.steps); publish it into the bank so the
+        # first produce() reads back what was resolved instead of the
+        # spec default silently undoing it. This is exactly how the
+        # shared steps_override used to reset every session to ACE's 8.
+        knob_state.update({"minimax_steps": int(steps)})
+        self.window_s = float(window_s)
+        self.window_samples = int(round(self.window_s * DELIVERY_SAMPLE_RATE))
         self._steps = int(steps)
-        self._depth = int(depth)
         self._seed = int(seed)
 
-        # Conditioning captures. Guarded because handle_set_prompt runs
-        # on the dispatcher thread while produce() runs on the runner
-        # thread, and a multi-field publish is not GIL-atomic.
-        self._control_lock = threading.Lock()
-        self._cond = cond
-        self._cond_b = cond_b
-        self._blend = 0.0
-        self._active_cond = self._compose_cond(cond, cond_b, 0.0)
-        self._uncond_cache: Optional[torch.Tensor] = None
+        # Runner slice-width bookkeeping. PipelineRunner reads vae_window
+        # for its stall/shortfall math and its windowed-mode switch; the
+        # emission itself is frontier-driven and variable-length.
+        self.vae_window = 1.0
+        self.decode_span_s = 0.0
+        self.last_tick_ms = 0.0
+        self.last_dec_ms = 0.0
 
-        self._schedule_builder_factory = schedule_builder_factory
+        self.ar = ar_stream
+        self.renderer = renderer
+        self.latents = MiniMaxLatentStream(renderer, hop_ar_frames=HOP_AR_FRAMES)
+        self.decoder = MiniMaxLatentDecoder(codec, guard=DECODE_GUARD_FRAMES)
+        self.resampler = _DeliveryResampler(channels=2)
 
-        # The song this stream is covering. None until the first
-        # generation lands, at which point we adopt it — the model has
-        # no shipped audio encoder, so "continue from your own
-        # generation" is the anchor path that actually works.
-        self._source_latent = source_latent_bct
+        # ---- frontier state (runner thread only) ----
+        self._abs_written = 0
+        self._pending: deque = deque()
+        self._pending_samples = 0
+        self._tail: Optional[np.ndarray] = None
+        self._playhead_wrapped_prev = 0.0
+        self._playhead_laps = 0
+        self._echo: dict = {}
 
-        # Decoded-audio cache, keyed by the identity of the latent it
-        # came from. render_window is called up to twice per tick and a
-        # full decode is ~10^2 ms, so this is load-bearing, not an
-        # optimization.
-        # Keyed by the latent OBJECT, held by strong reference. An
-        # id()-keyed cache can stale-hit once the old tensor is freed and
-        # a new one is allocated at the same address, which would serve
-        # the previous generation's audio forever.
-        self._decode_src: Optional[torch.Tensor] = None
-        self._decode_pcm: Optional[np.ndarray] = None
-
-        # Feedback delay tap: a ring of recent finished latents, blended
-        # back into the anchor before the next submit. Depth is bounded
-        # by the shared registry spec so the ring size and the knob's
-        # range can never drift apart.
-        self._max_feedback_depth = int(
-            next(
-                s.max_val for s in registry_knob_specs(False)
-                if s.name == "feedback_depth"
-            )
+        # ---- shared with the worker ----
+        self._lock = threading.Lock()
+        self._out: deque = deque()          # delivery-rate blocks [N, 2]
+        self._out_samples = 0
+        self._render_controls = RenderControls(
+            steps=self._steps, shift=DEFAULT_SHIFT,
+            guidance=DEFAULT_GUIDANCE, cond_strength=1.0, seed=self._seed,
         )
-        self._latent_history: list = []
+        self._hop = HOP_AR_FRAMES
+        self._lead_target_s = 1.0
+        self._playhead_abs_s = 0.0
+        self._reprompt_request: Optional[tuple] = None
+        self._stop = threading.Event()
 
-        self._pending_steps: Optional[int] = None
-        self._last_request = None
-        self._last_prep: Optional[dict] = None
+        # ---- telemetry (worker writes, runner reads) ----
+        self.ar_frames = 0
+        self.chunks = 0
+        self.ar_ms_per_frame = 0.0
+        self.chunk_render_ms = 0.0
+        # Cumulative, because the per-sample values above are the LAST
+        # frame batch and the LAST chunk. Both are noisy enough that a
+        # single sample moves an end-to-end realtime figure by 15%, which
+        # is how a throughput claim ends up depending on which tick it
+        # was read at.
+        self.ar_wall_s = 0.0
+        self.render_wall_s = 0.0
+        self.ar_finished = False
+        self._exhausted_logged = False
+        self.last_reprompt_s = 0.0
+        # Controls the most recently COMMITTED chunk was rendered under.
+        # A knob moved while a render is in flight lands on the chunk
+        # after it, so "the frontier advanced" is not the same event as
+        # "the frontier advanced under the new setting"; anything
+        # measuring renderer knob-to-ear has to read this, not the
+        # frontier alone.
+        self.last_commit_controls = self._render_controls
 
-        self.pipeline = self._build_pipeline(self._steps)
+        self._worker: Optional[threading.Thread] = None
+        if start_worker:
+            self._worker = threading.Thread(
+                target=self._run, name="minimax-generate", daemon=True,
+            )
+            self._worker.start()
+
+    # ---- generation worker --------------------------------------------------
+
+    def _snapshot(self):
+        with self._lock:
+            return self._render_controls, self._hop, self._lead_target_s
+
+    @property
+    def mean_ar_ms_per_frame(self) -> float:
+        """Session-mean AR cost. The value a throughput claim should
+        quote; ar_ms_per_frame is the last batch only."""
+        if not self.ar_frames:
+            return 0.0
+        return self.ar_wall_s * 1000.0 / self.ar_frames
+
+    @property
+    def mean_chunk_render_ms(self) -> float:
+        """Session-mean chunk render cost."""
+        if not self.chunks:
+            return 0.0
+        return self.render_wall_s * 1000.0 / self.chunks
+
+    def frontier_s(self) -> float:
+        """Seconds of audio committed to the delivery frontier so far."""
+        return self.resampler.emitted_native / MINIMAX_SAMPLE_RATE
+
+    def _run(self) -> None:
+        try:
+            self._generate_loop()
+        except Exception as exc:  # pragma: no cover - worker guard
+            logger.error("minimax_worker_died error={}", exc)
+            raise
+
+    def _generate_loop(self) -> None:
+        while not self._stop.is_set():
+            controls, hop, lead_s = self._snapshot()
+            if hop != self.latents.hop_ar_frames:
+                # Chunk geometry is fixed; only the commit advance moves,
+                # and it may move between chunks but never inside one.
+                try:
+                    self.latents.hop_ar_frames = self._validated_hop(hop)
+                except ValueError as exc:
+                    logger.warning("minimax_hop_rejected {}", exc)
+
+            with self._lock:
+                pending, self._reprompt_request = self._reprompt_request, None
+            if pending is not None:
+                self._apply_reprompt(*pending)
+
+            # Credit pacing. Only binds on hardware fast enough to
+            # choose; at 0.68x realtime the frontier never gets ahead.
+            if self.frontier_s() - self._playhead_abs_s > lead_s:
+                self._stop.wait(0.02)
+                continue
+
+            if self._advance_ar():
+                continue
+            if self._render_chunk(controls):
+                continue
+
+            # Nothing left to write. The AR stage has finished and the
+            # frames it wrote since the last chunk are fewer than a
+            # conditioning window, so they can never be rendered: up to
+            # chunk-minus-hop frames of composition are dropped at the
+            # end of a piece. Said once, loudly, because the alternative
+            # is a stream that quietly stops extending.
+            if not self._exhausted_logged:
+                self._exhausted_logged = True
+                unrendered = (
+                    self.latents.frames_available
+                    - self.latents._next_ar
+                )
+                logger.info(
+                    "minimax_ar_exhausted frames={} chunks={} committed_s={:.1f} "
+                    "unrendered_frames={}",
+                    self.ar_frames, self.chunks, self.frontier_s(),
+                    max(0, unrendered),
+                )
+            self._stop.wait(0.1 if self.ar_finished else 0.01)
+
+    def _validated_hop(self, hop: int) -> int:
+        renderer = self.renderer
+        max_commit = renderer.latent_frames - renderer.carry_latent_frames
+        hop = max(1, min(int(hop), renderer.chunk_ar_frames))
+        if latent_origin(hop) + 1 > max_commit:
+            raise ValueError(
+                f"hop {hop} commits past the chunk after a "
+                f"{renderer.carry_latent_frames}-frame carry"
+            )
+        return hop
+
+    def _advance_ar(self) -> bool:
+        """Emit AR frames if the next chunk's window is short. Returns
+        True when work was done."""
+        if self.ar.finished:
+            self.ar_finished = True
+            return False
+        need = (
+            self.latents._next_ar
+            + self.renderer.chunk_ar_frames
+            - self.latents.frames_available
+        )
+        if need <= 0:
+            return False
+
+        self.ar.set_controls(self._ar_controls())
+        started = time.perf_counter()
+        emitted = self.ar.advance(min(need, AR_BATCH_FRAMES))
+        if emitted is None:
+            self.ar_finished = self.ar.finished
+            return False
+        self.latents.push_frames(emitted)
+        n = int(emitted.shape[1])
+        self.ar_frames += n
+        spent = time.perf_counter() - started
+        self.ar_wall_s += spent
+        self.ar_ms_per_frame = spent * 1000.0 / n
+        return True
+
+    def _ar_controls(self) -> ARControls:
+        values = self.knob_state.get_all_values()
+        return ARControls(
+            temperature=float(values.get("minimax_temperature", 1.0) or 1.0),
+            top_k=int(values.get("minimax_top_k", 50) or 50),
+            guidance=float(values.get("minimax_ar_guidance", 1.5) or 1.5),
+        )
+
+    def _render_chunk(self, controls: RenderControls) -> bool:
+        if not self.latents.can_render():
+            return False
+        out = self.latents.render_next(controls)
+        if out is None:
+            return False
+        self.chunks += 1
+        self.chunk_render_ms = self.renderer.last_render_ms
+        self.render_wall_s += self.renderer.last_render_ms / 1000.0
+        self.last_commit_controls = controls
+
+        # Decode everything the new commit made exactly decodable, then
+        # convert. Both are cheap next to the render, and capping them
+        # would only defer the same work to the next iteration while the
+        # audio ring waits for it.
+        while True:
+            decoded = self.decoder.decode_next(self.latents)
+            if decoded is None:
+                break
+            start_native, audio = decoded
+            self.resampler.push(start_native, audio.float().cpu().numpy())
+            self.last_dec_ms = self.decoder.last_decode_ms
+
+        while True:
+            block = self.resampler.pop()
+            if block is None:
+                break
+            with self._lock:
+                self._out.append(block)
+                self._out_samples += int(block.shape[0])
+
+        # Release latent that no future carry and no future decode guard
+        # can reach.
+        keep = min(
+            latent_origin(self.latents._next_ar),
+            self.decoder.decoded_frames,
+        ) - DECODE_GUARD_FRAMES
+        self.latents.trim_latent(max(0, keep))
+        return True
+
+    def _apply_reprompt(self, tags: str, tags_b) -> None:
+        try:
+            self.last_reprompt_s = self.ar.reprompt(tags)
+            logger.info(
+                "minimax_prompt_swapped seconds={:.2f} frames={}",
+                self.last_reprompt_s, self.ar.frames_emitted,
+            )
+        except Exception as exc:
+            logger.error("minimax_reprompt_failed error={}", exc)
+
+    # ---- session control hooks ----------------------------------------------
+
+    def handle_set_prompt(self, tags: str, *, tags_b=None) -> None:
+        """Queue a live prompt change onto the generation worker.
+
+        Not applied inline: the KV cache belongs to the worker thread and
+        rebuilding it under the runner would block the tick. The worker
+        picks it up at its next loop iteration, at most one AR batch
+        (~1 s of wall clock) away, and the change costs a prefill rather
+        than a regeneration -- the music already written is kept.
+        """
+        if tags_b:
+            logger.warning(
+                "minimax_prompt_b_ignored reason=no_ab_blend_on_ar_prefix",
+            )
+        with self._lock:
+            self._reprompt_request = (tags, tags_b)
+
+    def handle_set_prompt_blend(self, value: float) -> None:
+        """Not available on this family, and loudly so.
+
+        The other families blend two conditioning TENSORS. MiniMax's
+        conditioning is a KV prefix inside an 8.58B LM: there is no
+        second one to interpolate toward without running a second LM,
+        and interpolating hidden states across two prefixes is not a
+        defined operation on this checkpoint. A silent no-op would read
+        as "the blend knob does nothing on this model", which is the
+        same symptom as a bug.
+        """
+        raise UnsupportedOperation(
+            "prompt_blend",
+            "minimax conditioning is an autoregressive KV prefix, not a "
+            "tensor pair; use set_prompt, which re-prefills against the "
+            "audio already written",
+        )
+
+    def close(self) -> None:
+        self._stop.set()
+        worker = getattr(self, "_worker", None)
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=5.0)
+        self.ar.close()
+        self.latents.close()
+        self.resampler.close()
+        self._pending.clear()
+        self._out.clear()
+
+    # ---- Tier-1 contract: declarations ---------------------------------------
+
+    def capabilities(self) -> Capabilities:
+        # Everything defaults False. No refinement (append-only, and the
+        # AR stage cannot revise an emitted frame), no positional source
+        # so no swap/timbre/structure/stems/write_audio, no LoRA refit
+        # story on this checkpoint, no ring so no depth/curves/loop_band.
+        return Capabilities()
+
+    def geometry(self) -> AudioGeometry:
+        # chunk_rate_hz is "the generation cadence". For this family that
+        # is the AR ACOUSTIC frame rate, 25 Hz -- NOT the 86.133 Hz DiT
+        # latent rate, and not comparable to another family's frame rate
+        # as a throughput figure. The two were conflated once already.
+        return AudioGeometry(
+            sample_rate=DELIVERY_SAMPLE_RATE,
+            channels=2,
+            chunk_rate_hz=AR_FRAME_RATE_HZ,
+            duration_s=self.window_s,
+        )
+
+    def lead_profile(self) -> LeadProfile:
+        # No opinion: emission is frontier-driven, so the runner's
+        # adaptive lead positions nothing. The lead that matters is the
+        # minimax_lead knob, which paces the worker.
+        return LeadProfile()
+
+    def knob_specs(self, lora_ids=()) -> list:
+        return minimax_knob_specs()
+
+    def lora_available(self) -> bool:
+        return False
+
+    def lora_compatible(self, metadata: dict) -> bool:
+        return False
+
+    def list_loras(self) -> list:
+        return []
+
+    # ---- Tier-1 contract: hot loop -------------------------------------------
+
+    def sync_source(self, ctx: TickContext) -> None:
+        # No positional source. Unwrap the playhead here, once per tick
+        # and before produce, so the worker's credit pacing sees a
+        # monotonic clock across window laps.
+        pos = ctx.playhead_s
+        if pos < self._playhead_wrapped_prev - self.window_s * 0.5:
+            self._playhead_laps += 1
+        self._playhead_wrapped_prev = pos
+        with self._lock:
+            self._playhead_abs_s = self._playhead_laps * self.window_s + pos
+
+    def read_knobs(self) -> dict:
+        return self.knob_state.get_all_values()
+
+    def has_pending_refit(self) -> bool:
+        return False
+
+    def rebuild_imminent(self, knobs: dict) -> bool:
+        # Nothing here blocks on a rebuild: there is no pipeline to
+        # reconstruct, and a step-count change is picked up by the next
+        # chunk's control snapshot.
+        return False
+
+    def has_renderable_state(self) -> bool:
+        return self._abs_written > 0 or self._pending_samples > 0
+
+    def playable_duration_s(self) -> Optional[float]:
+        return self.window_s
+
+    def produce(self, knobs: dict, ctx: TickContext, mode: ProduceMode) -> bool:
+        """Publish controls to the worker and drain what it produced.
+
+        The mode distinction is a no-op here, as it is for every
+        append-only family: there is no expensive local generate step to
+        skip, and music must keep flowing through DiT-pause idle.
+        """
+        started = time.perf_counter()
+
+        controls = RenderControls(
+            steps=max(
+                1, int(knobs.get("minimax_steps", self._steps) or self._steps)
+            ),
+            shift=float(knobs.get("minimax_shift", DEFAULT_SHIFT) or DEFAULT_SHIFT),
+            guidance=float(
+                knobs.get("minimax_guidance", DEFAULT_GUIDANCE) or DEFAULT_GUIDANCE
+            ),
+            cond_strength=float(knobs.get("minimax_cond_strength", 1.0) or 1.0),
+            seed=int(knobs.get("seed", self._seed) or self._seed),
+        )
+        hop = int(knobs.get("minimax_hop", HOP_AR_FRAMES) or HOP_AR_FRAMES)
+        lead = float(knobs.get("minimax_lead", 1.0) or 1.0)
+
+        with self._lock:
+            self._render_controls = controls
+            self._hop = hop
+            self._lead_target_s = lead
+            blocks = list(self._out)
+            self._out.clear()
+            self._out_samples = 0
+
+        for block in blocks:
+            self._pending.append(block)
+            self._pending_samples += int(block.shape[0])
+
+        self._echo = {
+            "minimax_shift": controls.shift,
+            "minimax_guidance": controls.guidance,
+            "minimax_cond_strength": controls.cond_strength,
+            "minimax_hop": hop,
+            "minimax_lead": lead,
+            "minimax_temperature": knobs.get("minimax_temperature"),
+            "minimax_top_k": knobs.get("minimax_top_k"),
+            "minimax_ar_guidance": knobs.get("minimax_ar_guidance"),
+            "seed": controls.seed,
+            "minimax_steps": controls.steps,
+        }
+        self.last_tick_ms = (time.perf_counter() - started) * 1000.0
+
+        if self._pending_samples == 0:
+            # The ACE backend's GPU step paces the runner loop; here the
+            # generation worker does, so nap instead of spinning the
+            # runner at CPU speed.
+            time.sleep(0.01)
+            return False
+        return True
+
+    def render_window(self, t_start_s: float) -> Optional[AudioChunk]:
+        """Emit the next frontier chunk. The position hint is ignored:
+        append-only means there is exactly one place new audio can go.
+
+        Returns None when nothing new is pending, which is correct rather
+        than a stall -- committed audio is already in the ring and never
+        changes.
+        """
+        if self._pending_samples == 0:
+            return None
+
+        wrapped_start = self._abs_written % self.window_samples
+        room = self.window_samples - wrapped_start
+        budget = min(int(MAX_EMIT_S * DELIVERY_SAMPLE_RATE), room)
+
+        parts = []
+        taken = 0
+        while self._pending and taken < budget:
+            arr = self._pending.popleft()
+            if taken + arr.shape[0] > budget:
+                cut = budget - taken
+                parts.append(arr[:cut])
+                self._pending.appendleft(arr[cut:])
+                taken = budget
+            else:
+                parts.append(arr)
+                taken += int(arr.shape[0])
+        self._pending_samples -= taken
+        new_pcm = parts[0] if len(parts) == 1 else np.concatenate(parts)
+
+        # Overlap head: re-emit the tail of the previous emission so the
+        # runner's leading-edge crossfade blends identical samples.
+        # Skipped across the wrap seam (once per lap) and on the first
+        # chunk.
+        head = None
+        if self._tail is not None and 0 < XFADE <= wrapped_start:
+            head = self._tail[-XFADE:]
+
+        if head is not None:
+            pcm = np.concatenate([head, new_pcm])
+            start_sample = wrapped_start - head.shape[0]
+        else:
+            pcm = np.array(new_pcm, copy=True)  # runner mutates in place
+            start_sample = wrapped_start
+
+        # Update the tail from pristine data BEFORE handing the chunk out
+        # (the runner crossfades the array it is given, in place).
+        if self._tail is None:
+            self._tail = np.array(new_pcm[-XFADE:], copy=True)
+        else:
+            self._tail = np.concatenate([self._tail, new_pcm])[-XFADE:].copy()
+
+        self._abs_written += taken
+        return AudioChunk(pcm=pcm, start_sample=int(start_sample))
+
+    def render_full(self) -> Optional[AudioChunk]:
+        # Legacy full-buffer mode (vae_window <= 0) never applies: this
+        # backend always declares a positive window.
+        return None
+
+    # ---- bookkeeping ---------------------------------------------------------
+
+    def on_fresh_generation(self, knobs: dict) -> None:
+        """Mirror per-generation telemetry into session params.
+
+        The two MiniMax-specific numbers here are the ones a listener can
+        actually hear: ``frontier_lead_s`` is how far generation is ahead
+        of the playhead (negative means the playhead has lapped the
+        frontier and the rolling window is repeating), and
+        ``ar_realtime`` is the AR stage's rate against the 40 ms of audio
+        each frame represents.
+        """
+        if self.state is None:
+            return
+        p = self.state.params
+        p["num_gens"] = p.get("num_gens", 0) + 1
+        p["tick_ms"] = self.last_tick_ms
+        p["dec_ms"] = self.last_dec_ms
+        for name, val in self._echo.items():
+            if val is None:
+                continue
+            p[name] = round(float(val), 3)
+        p["_prompt"] = getattr(self.state, "prompt_text", "")
+        p["ar_frames"] = self.ar_frames
+        p["ar_ms_per_frame"] = round(self.mean_ar_ms_per_frame, 1)
+        p["ar_realtime"] = round(
+            (1000.0 / AR_FRAME_RATE_HZ) / max(self.mean_ar_ms_per_frame, 1e-6), 3,
+        )
+        p["chunks"] = self.chunks
+        p["chunk_render_ms"] = round(self.mean_chunk_render_ms, 1)
+        p["frontier_lead_s"] = round(self.frontier_s() - self._playhead_abs_s, 2)
+        p["ar_finished"] = self.ar_finished
 
     # ---- construction --------------------------------------------------------
 
@@ -425,480 +1003,48 @@ class MiniMaxBackend(DiffusionBackend):
         cls,
         context,
         *,
-        cond,
-        cond_b=None,
+        prompt: str,
+        lyrics: str = "",
         knob_state,
         state=None,
-        source_latent_bct=None,
-        duration_s: float = 8.0,
-        steps: int = MINIMAX_DEFAULT_STEPS,
-        depth: int = 4,
-        vae_window_s: float = 0.36,
+        window_s: float = DEFAULT_WINDOW_S,
+        steps: int = DEFAULT_STEPS,
+        seed: int = 1528,
+        max_ar_frames: Optional[int] = None,
         dit_backend: str = "eager",
         codec_backend: str = "eager",
-    ):
-        from acestep.engine.minimax_adapter import MiniMaxAdapter
+    ) -> "MiniMaxBackend":
+        """Open the AR session and the renderer against a loaded stack.
 
-        latent_frames = minimax_latent_frames(duration_s)
-        dit = context.make_dit(
-            latent_frames=latent_frames, backend=dit_backend,
-        )
-        codec = context.make_codec(backend=codec_backend)
-
-        def _factory(active_cond, step_count):
-            return context.make_schedule_builder(active_cond, step_count)
-
-        adapter = MiniMaxAdapter(
-            dit,
-            schedule_builder=_factory(cond, steps),
+        The AR stage must be RESIDENT for this backend, not paged: it
+        runs continuously rather than once per composition, and moving
+        18 GB across PCIe between chunks would cost more than the chunks
+        do. That is the real deployment constraint this architecture
+        adds -- the renderer alone fits comfortably on a 24 GB card and
+        the pair does not.
+        """
+        renderer = MiniMaxChunkRenderer(
+            context.make_dit(
+                latent_frames=context.chunk_latent_frames, backend=dit_backend,
+            ),
+            context.condition_encoder,
             device=context.device,
             dtype=context.dtype,
+            chunk_ar_frames=CHUNK_AR_FRAMES,
+            carry_latent_frames=CARRY_LATENT_FRAMES,
+            latent_channels=context.latent_channels,
+        )
+        ar_stream = context.open_ar_stream(
+            prompt=prompt, lyrics=lyrics, seed=seed, max_frames=max_ar_frames,
         )
         return cls(
-            adapter=adapter,
-            codec=codec,
-            cond=cond,
-            cond_b=cond_b,
-            schedule_builder_factory=_factory,
+            ar_stream=ar_stream,
+            renderer=renderer,
+            codec=context.make_codec(backend=codec_backend),
             knob_state=knob_state,
             state=state,
             context=context,
-            source_latent_bct=source_latent_bct,
-            duration_s=duration_s,
+            window_s=window_s,
             steps=steps,
-            depth=depth,
-            vae_window_s=vae_window_s,
+            seed=seed,
         )
-
-    def _build_pipeline(self, steps: int) -> StreamPipeline:
-        from acestep.engine.diffusion import DiffusionConfig
-
-        config = DiffusionConfig(
-            infer_steps=int(steps),
-            # MiniMax's reference sampler is plain forward Euler on a
-            # uniform schedule; the ODE path is the faithful one.
-            infer_method="ode",
-            noise_on_cpu=True,
-            # ACE wavelet-corrector semantics; not MiniMax's.
-            dcw_enabled=False,
-        )
-        return StreamPipeline(
-            None, config, pipeline_depth=self._depth, adapter=self.adapter,
-        )
-
-    # ---- conditioning --------------------------------------------------------
-
-    @staticmethod
-    def _compose_cond(cond, cond_b, blend: float) -> dict:
-        """Active conditioning bundle for the A/B blend position.
-
-        Endpoints return the verbatim bundle object so an accelerated
-        wrapper's identity-keyed staging cache stays warm. Interior
-        points slerp per token: a linear midpoint collapses the norm of
-        the conditioning and sounds washed out, the same failure SA3
-        and ACE both hit.
-        """
-        if cond_b is None or blend <= 1e-6:
-            return cond
-        if blend >= 1.0 - 1e-6:
-            return cond_b
-
-        a = cond["encoder_hidden_states"].float()
-        b = cond_b["encoder_hidden_states"].float()
-        a_n = a / a.norm(dim=-1, keepdim=True).clamp_min(1e-8)
-        b_n = b / b.norm(dim=-1, keepdim=True).clamp_min(1e-8)
-        omega = (a_n * b_n).sum(-1, keepdim=True).clamp(-1.0, 1.0).acos()
-        sin_omega = omega.sin().clamp_min(1e-6)
-        w_a = ((1.0 - blend) * omega).sin() / sin_omega
-        w_b = (blend * omega).sin() / sin_omega
-        merged = dict(cond)
-        merged["encoder_hidden_states"] = (w_a * a + w_b * b).to(a.dtype)
-        return merged
-
-    def _cond_for_tick(self, strength: float) -> dict:
-        """Apply ``minimax_cond_strength`` to the active capture.
-
-        Scaling toward zero walks toward the model's own unconditional
-        branch (the reference pipeline's negative CFG input is literally
-        ``torch.zeros_like(condition)``), so the whole 0..1 range is a
-        defined operating point.
-        """
-        with self._control_lock:
-            active = self._active_cond
-        if abs(strength - 1.0) < 1e-6:
-            return active
-        out = dict(active)
-        out["encoder_hidden_states"] = active["encoder_hidden_states"] * strength
-        return out
-
-    def _uncond_bundle(self) -> dict:
-        """The model's unconditional branch: an all-zeros capture.
-
-        Cached on the instance because it is 689x2048 and identical
-        every tick, and because an accelerated wrapper's staging cache
-        is keyed by tensor identity -- a fresh ``zeros_like`` each tick
-        would miss it every time.
-
-        Note that ``minimax_cond_strength`` at 0.0 makes the positive
-        bundle equal to this one, at which point guidance is a no-op
-        rather than an error: the guidance direction around a point is
-        zero. That is a coherent operating point, not a trap.
-        """
-        zeros = self._uncond_cache
-        with self._control_lock:
-            cond = self._active_cond["encoder_hidden_states"]
-        if (
-            zeros is None
-            or zeros.shape != cond.shape
-            or zeros.dtype != cond.dtype
-            or zeros.device != cond.device
-        ):
-            zeros = torch.zeros_like(cond)
-            self._uncond_cache = zeros
-        return {"encoder_hidden_states": zeros}
-
-    def handle_set_prompt(self, tags, *, tags_b=None) -> None:
-        """Re-run the AR stage and swap the capture in.
-
-        Runs on the dispatcher thread. Seconds, not milliseconds — the
-        cost is an 8.58B LM pass, which is the price of MiniMax having
-        no text path into its DiT.
-        """
-        context = getattr(self, "_context", None)
-        if context is None:
-            raise RuntimeError("minimax backend has no context to recompose with")
-
-        cond = context.prepare_cond(prompt=tags, duration_s=self._duration_s)
-        cond_b = (
-            context.prepare_cond(prompt=tags_b, duration_s=self._duration_s)
-            if tags_b else None
-        )
-        got = cond["encoder_hidden_states"].shape[1]
-        if got != self._latent_frames:
-            raise ValueError(
-                "minimax prompt swap changed latent geometry "
-                f"({self._latent_frames} -> {got}); duration is fixed for "
-                "the session lifetime"
-            )
-
-        with self._control_lock:
-            self._cond = cond
-            self._cond_b = cond_b
-            self._active_cond = self._compose_cond(cond, cond_b, self._blend)
-            self.adapter.schedule_builder = self._schedule_builder_factory(
-                self._active_cond, self._steps
-            )
-        # The schedule cache is keyed by denoise alone, so a builder
-        # swap is invisible to it without this.
-        self.pipeline.invalidate_schedule_cache()
-        logger.info("minimax_prompt_swapped frames={}", got)
-
-    def handle_set_prompt_blend(self, value: float) -> None:
-        blend = max(0.0, min(1.0, float(value)))
-        with self._control_lock:
-            self._blend = blend
-            self._active_cond = self._compose_cond(
-                self._cond, self._cond_b, blend,
-            )
-
-    # ---- Tier-1 contract -----------------------------------------------------
-
-    def capabilities(self) -> Capabilities:
-        # Deliberately minimal, the way SA3 started. swap/write_audio
-        # need an audio encoder this checkpoint does not ship converted;
-        # LoRA needs a refit story. Each earns its flag on evidence.
-        return Capabilities(
-            refines_audio=True,
-            loop_band=True,
-            render_anchor_queue=True,
-            depth=True,
-            curves=True,
-        )
-
-    def geometry(self) -> AudioGeometry:
-        return AudioGeometry(
-            sample_rate=DELIVERY_SAMPLE_RATE,
-            channels=2,
-            chunk_rate_hz=MINIMAX_LATENT_RATE_HZ,
-            duration_s=self.playable_duration_s(),
-        )
-
-    def knob_specs(self, lora_ids=()) -> list:
-        return minimax_knob_specs(loras=list(lora_ids or ()))
-
-    def read_knobs(self) -> dict:
-        return self.knob_state.get_all_values()
-
-    def playable_duration_s(self) -> Optional[float]:
-        return self._duration_s
-
-    def rebuild_imminent(self, knobs: dict) -> bool:
-        want = int(knobs.get("steps_override", self._steps) or self._steps)
-        want = max(1, want)
-        if want != self._steps:
-            self._pending_steps = want
-            return True
-        self._pending_steps = None
-        return False
-
-    # ---- produce -------------------------------------------------------------
-
-    def _prepare_tick(self, knobs: dict, ctx: TickContext) -> dict:
-        shift = float(
-            knobs.get("minimax_shift", MINIMAX_DEFAULT_SHIFT)
-            or MINIMAX_DEFAULT_SHIFT
-        )
-        if abs(shift - self.adapter.shift_alpha) > 1e-6:
-            self.adapter.shift_alpha = shift
-            self.pipeline.invalidate_schedule_cache()
-
-        x0_strength = float(knobs.get("x0_target", 0.0) or 0.0)
-        # Shared curves land on IN-FLIGHT slots on the very next tick,
-        # bypassing the ring drain — this is why a knob move is felt
-        # immediately even at depth 4.
-        self.pipeline.set_shared_curve("x0_target_strength", x0_strength)
-
-        prep = {
-            "denoise": float(knobs.get("minimax_denoise", 1.0) or 1.0),
-            "cond_strength": float(knobs.get("minimax_cond_strength", 1.0) or 1.0),
-            "guidance": float(
-                knobs.get("minimax_guidance", MINIMAX_DEFAULT_GUIDANCE)
-                or MINIMAX_DEFAULT_GUIDANCE
-            ),
-            "x0_target": x0_strength,
-            "seed": int(knobs.get("seed", self._seed) or self._seed),
-            "feedback": float(knobs.get("feedback", 0.0) or 0.0),
-            "feedback_depth": int(knobs.get("feedback_depth", 1) or 1),
-        }
-        self._last_prep = prep
-        return prep
-
-    def _tapped_source(self, prep: dict) -> Optional[torch.Tensor]:
-        """Anchor with the feedback delay tap applied.
-
-        Blends a past output latent back into the source so the stream
-        drifts rather than orbiting one fixed idea. Deliberately
-        UPSTREAM of x0_target, which stays locked to the clean anchor —
-        feedback moves the song, the source lock pulls it home.
-        """
-        anchor = self._source_latent
-        if anchor is None:
-            return None
-        amount = prep["feedback"]
-        if amount <= 1e-6 or not self._latent_history:
-            return anchor
-        depth = max(1, min(prep["feedback_depth"], len(self._latent_history)))
-        past = self._latent_history[-depth]
-        if past.shape != anchor.shape:
-            return anchor
-        return (1.0 - amount) * anchor + amount * past
-
-    def _generate(self, prep: dict):
-        if self._pending_steps is not None:
-            self._steps = self._pending_steps
-            self._pending_steps = None
-            # The schedule builder is parameterized by the step count, so
-            # it has to be rebuilt alongside the pipeline or the adapter
-            # keeps handing back a schedule of the previous length.
-            with self._control_lock:
-                self.adapter.schedule_builder = self._schedule_builder_factory(
-                    self._active_cond, self._steps
-                )
-            self.pipeline = self._build_pipeline(self._steps)
-
-        denoise = prep["denoise"]
-        # Without an anchor the first generation must run from pure
-        # noise; a partial denoise of nothing is not defined.
-        if self._source_latent is None:
-            denoise = 1.0
-
-        guidance = prep["guidance"]
-        request = SlotRequest(
-            seed=prep["seed"],
-            denoise=denoise,
-            source_latents=self._tapped_source(prep),
-            aux_cond=self._cond_for_tick(prep["cond_strength"]),
-            # Guidance, the reference pipeline's way. Its negative branch
-            # is literally zeros, so the uncond bundle is free to build
-            # and exactly the one the model was trained against.
-            #
-            # apg_eta/apg_norm_threshold/apg_momentum reduce DEMON's APG
-            # to textbook CFG. That is not a stylistic preference: stock
-            # APG measures ~4x worse against the reference here, because
-            # its norm cap is calibrated for ACE's latent scale and
-            # throttles a 689-frame guidance delta almost to nothing.
-            neg_aux_cond=self._uncond_bundle() if guidance != 1.0 else None,
-            guidance_curve=guidance if guidance != 1.0 else None,
-            apg_momentum=0.0,
-            apg_eta=1.0,
-            apg_norm_threshold=0.0,
-            latent_frames=self._latent_frames,
-            # The morph target stays the CLEAN anchor, not the
-            # feedback-blended source: x0_target is a source lock,
-            # feedback is deliberately upstream of it. Attached whenever
-            # an anchor exists so a strength bump via the shared curve
-            # engages on in-flight slots too.
-            x0_target=self._source_latent,
-            x0_target_strength=prep["x0_target"],
-            # Deterministic per-slot renoise. Without it, consecutive
-            # covers are different realizations of the same latent and
-            # advancing playback windows splice incoherently.
-            sde_noise_seeded=True,
-        )
-        self.pipeline.submit(request)
-        self._last_request = request
-        return self.pipeline.tick()
-
-    def _after_produce(self, prep: dict, result_latent, is_fresh: bool) -> None:
-        if not is_fresh or result_latent is None:
-            return
-        # Adopt the first completed generation as the song this stream
-        # covers from here on. MiniMax ships no converted audio encoder,
-        # so "continue from your own generation" is the anchor path that
-        # actually exists.
-        if self._source_latent is None:
-            self._source_latent = result_latent.detach().clone()
-            logger.info(
-                "minimax_anchor_adopted frames={}", result_latent.shape[1],
-            )
-        self._latent_history.append(result_latent.detach())
-        if len(self._latent_history) > self._max_feedback_depth:
-            self._latent_history.pop(0)
-
-    def on_fresh_generation(self, knobs: dict) -> None:
-        """Mirror per-generation telemetry into session params.
-
-        ``num_gens`` and ``tick_ms`` ride the binary slice header, and
-        ``num_gens`` divided by wall time IS the throughput metric this
-        project reports. Not writing them left the family invisible to
-        every existing instrument -- and ``dec_ms`` in particular read a
-        flat 0.0, which is exactly how a whole-song decode stayed hidden
-        behind a 0.0 ms median render.
-        """
-        if self.state is None:
-            return
-        p = self.state.params
-        p["num_gens"] = p.get("num_gens", 0) + 1
-        p["tick_ms"] = self.last_tick_ms
-        p["dec_ms"] = self.last_dec_ms
-        prep = self._last_prep
-        if prep:
-            p["minimax_denoise"] = round(prep["denoise"], 2)
-            p["minimax_guidance"] = round(prep["guidance"], 2)
-            p["minimax_cond_strength"] = round(prep["cond_strength"], 2)
-            p["seed"] = prep["seed"]
-            p["steps_override"] = self._steps
-
-    # ---- render --------------------------------------------------------------
-
-    def _decoded(self) -> Optional[np.ndarray]:
-        """Full song at 48 kHz, ``[frames, channels]``, cached.
-
-        Decoding the whole 8 s at once and resampling it in one piece
-        means window rendering never crosses a decode or resampler
-        boundary, so there are no seams to crossfade and no guard
-        margins to get wrong.
-        """
-        latent = self._last_result_latent
-        if latent is None:
-            return None
-        if latent is self._decode_src and self._decode_pcm is not None:
-            return self._decode_pcm
-
-        with torch.no_grad():
-            # Engine layout [1, T, C] -> MiniMax-native [1, C, T].
-            audio = self.codec.decode_full(latent.movedim(1, 2))
-        pcm = self._to_delivery(audio)
-        self._decode_src = latent
-        self._decode_pcm = pcm
-        return pcm
-
-    @staticmethod
-    def _to_delivery(audio: torch.Tensor, *, trim_native: int = 0) -> np.ndarray:
-        """MiniMax-native 44.1 kHz ``[C, N]`` -> 48 kHz ``[N, C]`` float32.
-
-        ``trim_native`` drops samples from the head BEFORE resampling, so
-        the block starts on a 147-sample boundary and the resampler lands
-        on the same phase grid as a whole-song resample. See the note on
-        ``_RESAMPLE_DEN``.
-        """
-        import torchaudio
-
-        if audio.ndim == 3:
-            audio = audio[0]
-        audio = audio.detach().float().cpu()
-        if trim_native:
-            audio = audio[:, trim_native:]
-        if audio.shape[0] == 1:
-            audio = audio.repeat(2, 1)
-        resampled = torchaudio.functional.resample(
-            audio, MINIMAX_SAMPLE_RATE, DELIVERY_SAMPLE_RATE,
-        )
-        return resampled.transpose(0, 1).contiguous().numpy().astype(np.float32)
-
-    def delivery_samples(self) -> int:
-        """Length of the song in delivery samples."""
-        return minimax_delivery_samples(self._latent_frames)
-
-    def render_window(self, t_start_s: float) -> Optional[AudioChunk]:
-        """Decode ONLY this window, with a cyclic guard on each side.
-
-        The previous implementation decoded the whole song on every fresh
-        latent and indexed into the result. That is O(song length) per
-        generation where this is O(window): measured 44.5 ms against
-        ~5 ms at 8 s, and 346 ms against the same ~5 ms at 60 s. The
-        whole-song version also arrived as a spike on one tick in four,
-        which the runner's lead controller reads as a longer inter-write
-        interval and answers by inflating playback lead -- coupling
-        knob-to-ear latency to song duration, which is precisely what
-        the windowed contract exists to prevent.
-        """
-        latent = self._last_result_latent
-        if latent is None:
-            return None
-        total_frames = int(latent.shape[1])
-        total = self.delivery_samples()
-        start = int(round(float(t_start_s) * DELIVERY_SAMPLE_RATE))
-        start = max(0, min(start, max(0, total - 1)))
-        length = max(1, int(round(self.vae_window * DELIVERY_SAMPLE_RATE)))
-        # Only the guard wraps. The kept span stops at the song's end and
-        # the runner asks for the wrapped remainder in its own call.
-        length = min(length, total - start)
-
-        t0 = time.perf_counter()
-        plan = plan_decode_window(start, length, total_frames)
-        with torch.no_grad():
-            idx = torch.arange(
-                plan.frame_start, plan.frame_start + plan.frames,
-                device=latent.device,
-            ) % total_frames
-            # Engine layout [1, T, C] -> MiniMax-native [1, C, T].
-            sl = latent.index_select(1, idx).movedim(1, 2)
-            audio = self.codec.decode_full(sl)
-        pcm = self._to_delivery(audio, trim_native=plan.trim_native)
-        self.last_dec_ms = (time.perf_counter() - t0) * 1000.0
-
-        lo = max(0, min(plan.offset, pcm.shape[0]))
-        out = pcm[lo:lo + plan.length]
-        if out.shape[0] < plan.length:
-            # Only reachable at the tail of a song shorter than one decode
-            # span. Pad rather than short-return: the runner sizes its
-            # underrun arithmetic against vae_window.
-            out = np.pad(out, ((0, plan.length - out.shape[0]), (0, 0)))
-        # Owned array, always: the runner crossfades INTO what we return.
-        return AudioChunk(pcm=np.ascontiguousarray(out), start_sample=start)
-
-    def render_full(self) -> Optional[AudioChunk]:
-        pcm = self._decoded()
-        if pcm is None:
-            return None
-        return AudioChunk(pcm=pcm.copy(), start_sample=0)
-
-    # ---- teardown ------------------------------------------------------------
-
-    def close(self) -> None:
-        self._decode_pcm = None
-        self._decode_src = None
-        self._source_latent = None
-        self._last_result_latent = None
-        self._current_result = None

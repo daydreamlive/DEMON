@@ -72,12 +72,20 @@ class SessionConfig:
     # this is fixed for the session lifetime.
     sa3_duration_s: float | None = None
     # --- minimax_* family fields ---
-    # Requested generation duration for minimax sessions, seconds. Only a
-    # REQUEST: MiniMax's autoregressive stage decides the real length by
-    # emitting an end-of-audio token, so asking for 30 s can legitimately
-    # yield 14 s. The session adopts whatever the conditioning turns out
-    # to be, and that becomes the song for its lifetime.
+    # Rolling-window length for minimax sessions, seconds. MiniMax is an
+    # append-only autoregressive family, so this is the size of the tape
+    # the frontier overwrites and the player loops -- NOT a song length.
+    # The piece's real length is decided by the autoregressive stage,
+    # which emits an end-of-audio token when it is done (ceiling 9000
+    # frames at 25 Hz = 360 s); when it stops, the window keeps playing
+    # what has been written.
     minimax_duration_s: float | None = None
+    # Lyrics for the minimax autoregressive stage. The checkpoint's
+    # tokenizer refuses an empty lyric outright, and upstream's own
+    # convention for "no singing" is the "[instrumental]" tag, which is
+    # the default here. This is a real conditioning input on a model
+    # that sings, not a formality.
+    minimax_lyrics: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "SessionConfig":

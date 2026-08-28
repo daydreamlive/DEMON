@@ -119,6 +119,61 @@ class MiniMaxContext:
     def latent_rate_hz(self) -> float:
         return float(self.sample_rate) / float(self.downsampling_ratio)
 
+    @property
+    def condition_encoder(self):
+        """The 25 Hz -> 86.133 Hz projection. Exposed because the
+        streaming renderer runs it per chunk rather than once per
+        composition."""
+        return self._cond_encoder
+
+    @property
+    def chunk_latent_frames(self) -> int:
+        """Latent length of one render chunk (689 for a 200-AR-frame
+        window). The shape a TensorRT engine is built at."""
+        from acestep.engine.minimax_render import chunk_latent_frames
+
+        return chunk_latent_frames()
+
+    # ---- streaming -----------------------------------------------------------
+
+    def open_ar_stream(
+        self,
+        *,
+        prompt: str,
+        lyrics: str = "",
+        seed: int = 0,
+        max_frames: Optional[int] = None,
+    ):
+        """Open a resumable AR session, with the stage RESIDENT.
+
+        The offload policy exists for the capture path, where the stage
+        runs once and can be paged back out. A stream runs it
+        continuously, so paging would dominate: ~18 GB each way between
+        chunks against ~5 s of generation. This method therefore pins
+        the stage to the device and leaves it there for the session's
+        life, which is the deployment cost of *streaming* this model
+        rather than capturing it.
+
+        There is no ``capture=`` shortcut here. Replay a saved capture
+        with :class:`~acestep.engine.minimax_ar.ReplayARStream` instead:
+        it serves the same interface from disk, which is what makes the
+        renderer testable without 18 GB of LM resident.
+        """
+        from acestep.engine.minimax_ar import MAX_AUDIO_FRAMES
+
+        with self._ar_lock:
+            self._ensure_ar()
+            self._ar.to(self.device)
+            self.ar_policy = "resident"
+        return self._ar.stream(
+            # The tokenizer rejects an empty lyric outright; upstream's
+            # own convention for "no singing" is the tag, not "".
+            prompt=prompt,
+            lyrics=lyrics or "[instrumental]",
+            seed=seed,
+            max_frames=int(max_frames or MAX_AUDIO_FRAMES),
+        )
+
     # ---- accel seams ---------------------------------------------------------
 
     def make_dit(self, *, latent_frames: int, backend: str = "eager"):

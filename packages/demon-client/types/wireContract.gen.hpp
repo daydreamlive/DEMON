@@ -446,6 +446,7 @@ namespace config {
   inline constexpr const char* kBackend = "backend";
   inline constexpr const char* kSa3DurationS = "sa3_duration_s";
   inline constexpr const char* kMinimaxDurationS = "minimax_duration_s";
+  inline constexpr const char* kMinimaxLyrics = "minimax_lyrics";
 }  // namespace config
 
 // ── Init-phase upload handshake ──
