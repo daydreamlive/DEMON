@@ -857,11 +857,17 @@ class SA3Backend(DiffusionBackend):
         taps are covers of the OLD source; blending them into the new
         anchor would smear the previous song across the swap).
 
-        In-flight pipeline slots finish on the old anchor — the swap
-        emerges within pipeline depth, exactly the handle_set_prompt
-        convention. At ``sa3_denoise`` = 1.0 slot init is pure noise and
-        the anchor only re-enters when denoise drops below 1 (or via
-        x0_target), matching create-time semantics.
+        In-flight pipeline slots were initialised from the old anchor
+        and finish on it; what emerges from them is a cover of the
+        PREVIOUS source. Unlike a prompt swap (where the old bundle
+        emerging for a few ticks is a soft transition) that audio does
+        not belong in the new buffer at all, so ``_generate`` discards
+        those latents as they emerge and the cached latent is dropped
+        here: the runner then has nothing to render until the first
+        new-anchor slot completes, and the client keeps playing the
+        source it was just handed. At ``sa3_denoise`` = 1.0 slot init is
+        pure noise and the anchor only re-enters when denoise drops
+        below 1 (or via x0_target), matching create-time semantics.
         """
         if self._source_encoder is None:
             raise RuntimeError(
@@ -881,6 +887,13 @@ class SA3Backend(DiffusionBackend):
         with self._control_lock:
             self._source_latent_btc = latent_btc
             self._latent_history.clear()
+            # The cached latent is a cover of the old source. Rendering it
+            # at the new source's playhead (gap-fill, DiT-pause reuse)
+            # would play the previous song over the new one until the
+            # first new-anchor slot emerges; without it the runner writes
+            # nothing and the client plays the swapped-in source instead.
+            self._last_result_latent = None
+            self._current_result = None
         logger.info(
             "sa3_source_swapped samples={} sample_rate={} encode_ms={:.1f}",
             int(waveform.shape[-1]), int(sample_rate), encode_ms,
@@ -1082,9 +1095,17 @@ class SA3Backend(DiffusionBackend):
         if latent is not None:
             # The request this latent was generated from (valid only
             # right after a finishing tick — see StreamPipeline).
-            self._emerged_request = getattr(
-                self.pipeline, "last_finished_request", None,
-            )
+            req = getattr(self.pipeline, "last_finished_request", None)
+            # A slot submitted before a source swap was initialised from
+            # the old anchor and its latent is a cover of the previous
+            # source; it must not be rendered into the new one. Every
+            # request carries the anchor object it was built against as
+            # x0_target, so identity against the live anchor is the test
+            # (handle_swap_source replaces the object).
+            if req is not None and req.x0_target is not self._source_latent_btc:
+                logger.info("sa3_gen_discarded reason=source_swapped")
+                return None
+            self._emerged_request = req
         return latent
 
     def _cond_meta_for(self, bundle) -> tuple:
