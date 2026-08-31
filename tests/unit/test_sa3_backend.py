@@ -414,6 +414,40 @@ def test_handle_swap_source_reanchors_and_clears_history():
     )
 
 
+def test_handle_swap_source_discards_covers_of_the_old_source():
+    """Slots submitted before the swap were initialised from the old
+    anchor, so what emerges from them is the previous source. Neither
+    those latents nor the cached one may be rendered into the new
+    buffer; the first adopted latent after a swap is a new-anchor one."""
+    old_src = torch.randn(1, C, T)
+    new_latent_bct = torch.randn(1, C, T)
+    b = _backend(
+        source_latent_bct=old_src,
+        source_encoder=lambda waveform, sample_rate, sample_size: new_latent_bct,
+    )
+    knobs = _knobs(b)
+    for _ in range(10):
+        b.produce(knobs, CTX, "generate")
+    assert b.has_renderable_state()
+
+    b.handle_swap_source(torch.zeros(2, 48000), 48000)
+    # Nothing to render until a new-anchor slot completes.
+    assert not b.has_renderable_state()
+    assert b.render_window(0.0) is None
+
+    fresh = []
+    for _ in range(10):
+        fresh.append(b.produce(knobs, CTX, "generate"))
+        if fresh[-1]:
+            break
+    # The in-flight old-anchor slots emerged first and were discarded...
+    assert fresh[:-1] and not any(fresh[:-1])
+    assert fresh[-1] is True
+    # ...and the adopted latent came from a request built on the new anchor.
+    assert b._emerged_request.x0_target is b._source_latent_btc
+    assert b.has_renderable_state()
+
+
 def test_handle_swap_source_without_encoder_fails_loudly():
     b = _backend()  # direct construction: no source_encoder
     try:
