@@ -109,7 +109,7 @@ def _resolve_device(torch) -> str:
 _loaded = None
 _load_failed = False
 #: When a failed load may be retried. A failure that can resolve on its own -- a
-#: half-staged checkpoint, a volume not mounted yet -- must not latch, or "auto"
+#: half-staged checkpoint, a volume not mounted yet -- must not latch, or "local"
 #: becomes a one-shot decision taken by whoever sent the first request. But
 #: retrying freely is worse: _load holds a BLOCKING lock across from_pretrained,
 #: so N requests against a corrupt checkpoint serialise into N x load-time, in
