@@ -178,6 +178,30 @@ def test_produce_emits_and_renders_windows():
     assert full.start_sample == 0
 
 
+def test_playable_duration_excludes_duration_padding():
+    # prepare_sa3_conditioning pads the render window
+    # (cond.audio_sample_size) past seconds_total by duration_padding_sec
+    # of outro headroom, which the model fades to silence — upstream
+    # generate() trims it off (truncate_output_to_duration). The playable
+    # surface must stop at the conditioned duration, or every loop ends
+    # in the padded fade/silence (the "silence from 9:30 to midnight"
+    # DreamSampler report).
+    window_s = N44 / SA3_SAMPLE_RATE
+    song_s = window_s / 2
+    b = _backend(playable_duration_s=song_s)
+    assert abs(b.playable_duration_s() - song_s) < 1e-9
+    assert abs(b.geometry().duration_s - song_s) < 1e-9
+
+    # A caller value past the window clamps back inside it.
+    b2 = _backend(playable_duration_s=window_s + 10.0)
+    assert abs(b2.playable_duration_s() - window_s) < 1e-9
+
+    # Direct construction without the arg keeps the full window
+    # (pre-existing test-backend behavior).
+    b3 = _backend()
+    assert abs(b3.playable_duration_s() - window_s) < 1e-9
+
+
 def test_render_window_clamps_to_song_end():
     b = _backend()
     knobs = b.read_knobs()
