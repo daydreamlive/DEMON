@@ -183,6 +183,27 @@ def _log_http(remote: str, status: int, method: str, url: str):
     )
 
 
+def _json_response(remote, path: str, payload: dict) -> "Response":
+    """A JSON reply for the variations endpoint. Deliberately NOT carrying
+    _PUBLIC_HTTP_HEADERS: those include `Access-Control-Allow-Origin: *`,
+    which is right for a cheap read-only probe and wrong for something that
+    costs seconds of model time per call. This intentionally excludes
+    cross-origin BROWSER clients (the web demo frontend included) -- the
+    consumer is the plugin, which talks to this port directly and is not
+    CORS-bound. Add the header only if the web UI ever grows the pad."""
+    body = json.dumps(payload).encode()
+    _log_http(remote, 200, "GET", path)   # redact prompt
+    return Response(
+        200, "OK",
+        Headers([
+            ("Content-Type", "application/json; charset=utf-8"),
+            ("Content-Length", str(len(body))),
+            *_NO_CACHE_HEADERS,
+        ]),
+        body,
+    )
+
+
 def _process_request(connection, request):
     """Return a :class:`Response` for plain HTTP; return ``None`` to let
     the websockets library finish the WebSocket upgrade.
@@ -254,10 +275,67 @@ def _process_request(connection, request):
     # unchanged with ok=false, so every frontend treats enhance as best-effort
     # and never blocks. The prompt rides the query string to stay on this
     # all-GET probe surface; it's redacted from the access log.
+    # The VARIATIONS pad, answered ONE COORDINATE per call: `stop` is distance
+    # from the anchor, `lane` picks which neighbour at that distance, and both
+    # are deterministic so the client can cache what it has seen. (Answering
+    # the whole grid in one call was tried and withdrawn -- a grid holds the
+    # generation lock for seconds, during which nothing else here can answer;
+    # see the prompt_variations module docstring.) Same all-GET probe surface
+    # as /api/enhance; prompt redacted from the access log. Absent checkpoint
+    # -> ok=false and the client simply does not offer the pad.
+    if path_only == "/api/variations":
+        from urllib.parse import parse_qs
+
+        from .prompt_enhancer import resolve_provider
+        from .prompt_variations import Busy, point, route_query
+
+        query = url.split("?", 1)[1] if "?" in url else ""
+        params = parse_qs(query)
+        anchor = (params.get("prompt", [""])[0] or "").strip()
+        deck = _resolve_enhance_backend(params.get("backend", [""])[0])
+
+        # GATED ON THE SAME SETTING AS /api/enhance. Without this the endpoint
+        # is armed by the checkpoint merely being on disk, which a deployment
+        # cannot control once an image has been baked from a pod that had one
+        # -- so "opt in per deployment" would quietly become a fleet default.
+        if resolve_provider() == "hosted":
+            return _json_response(remote, "/api/variations", {"ok": False})
+
+        route, stop, lane = route_query(params)
+        if route == "reject":
+            return _json_response(remote, "/api/variations", {"ok": False})
+
+        try:
+            txt = point(anchor, deck, lane=lane, stop=stop)
+            payload = {"text": txt, "lane": lane, "stop": stop, "ok": bool(txt)}
+        except Exception as exc:   # noqa: BLE001 -- see below
+            # EVERY failure degrades, not just Busy. A CUDA OOM, a tokenizer
+            # error or an IndexError used to propagate out of _process_request
+            # as a 500, while every docstring in prompt_variations promises the
+            # caller falls back to the hosted backend instead.
+            if not isinstance(exc, Busy):
+                # Degrading silently makes "no checkpoint", "client sent
+                # nonsense" and "the model crashed" the same 200 on the wire.
+                logger.warning("variations_failed error={}", repr(exc))
+                return _json_response(remote, "/api/variations", {"ok": False})
+            body = json.dumps({"ok": False, "busy": True}).encode()
+            _log_http(remote, 503, "GET", "/api/variations")
+            return Response(
+                503, "Service Unavailable",
+                Headers([
+                    ("Content-Type", "application/json; charset=utf-8"),
+                    ("Content-Length", str(len(body))),
+                    ("Retry-After", "5"),
+                    *_NO_CACHE_HEADERS,
+                ]),
+                body,
+            )
+        return _json_response(remote, "/api/variations", payload)
+
     if path_only == "/api/enhance":
         from urllib.parse import parse_qs
 
-        from .prompt_enhancer import enhance_prompt
+        from .prompt_enhancer import resolve_provider, enhance_prompt
 
         query = url.split("?", 1)[1] if "?" in url else ""
         params = parse_qs(query)
@@ -265,7 +343,18 @@ def _process_request(connection, request):
         # Pod infers the backend from its own checkpoint family; the client's
         # optional backend= hint only overrides when it names a known policy.
         backend = _resolve_enhance_backend(params.get("backend", [""])[0])
-        enhanced, ok = enhance_prompt(idea, backend)
+        # `provider` picks WHO answers (hosted LLM vs the local checkpoint);
+        # `backend` picks WHICH prompt policy. Orthogonal, hence two params.
+        # Blank means "whatever this pod is configured for".
+        # The client may ask for a provider, but it may not ARM one the
+        # deployment opted out of: resolve_provider lets a valid override beat
+        # the env, so ?provider=local forced local inference on a pod
+        # configured hosted -- the exact thing /api/variations' gate exists to
+        # prevent, reachable one endpoint over. An override may only narrow.
+        provider = params.get("provider", [""])[0]
+        if resolve_provider() == "hosted":
+            provider = "hosted"
+        enhanced, ok = enhance_prompt(idea, backend, provider)
         body = json.dumps({"enhanced": enhanced, "ok": ok}).encode()
         _log_http(remote, 200, "GET", "/api/enhance")  # redact prompt
         return Response(

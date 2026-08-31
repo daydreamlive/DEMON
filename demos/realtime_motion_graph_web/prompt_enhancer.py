@@ -246,7 +246,41 @@ def _ask_haiku(system: str, user: str) -> str | None:
     return None
 
 
-def enhance_prompt(idea: str, backend: str = "acestep") -> tuple[str, bool]:
+#: Which provider answers /api/enhance.
+#:
+#:   "hosted"  the hosted LLM, as always. THE DEFAULT -- an existing
+#:             deployment behaves exactly as it did before this existed.
+#:   "local"   the fine-tuned local checkpoint, falling back to hosted when it
+#:             is absent or declines. There is deliberately no "auto": local
+#:             ALWAYS degrades to hosted when the checkpoint is missing, so an
+#:             auto mode would have nothing extra to decide.
+#:
+#: Set with DEMON_ENHANCER_PROVIDER. An unknown value is treated as "hosted"
+#: rather than erroring: a typo in a deployment env should cost the faster
+#: path, not the endpoint.
+_PROVIDERS = ("hosted", "local")
+
+
+def resolve_provider(override: str = "") -> str:
+    o = (override or "").strip().lower()
+    if o in _PROVIDERS:
+        return o
+    env = os.environ.get("DEMON_ENHANCER_PROVIDER", "").strip().lower()
+    return env if env in _PROVIDERS else "hosted"
+
+
+def _local_enhance(idea: str, backend: str) -> str:
+    """The local checkpoint's answer, or "" if it has none."""
+    try:
+        from .prompt_variations import enhance as _enhance
+
+        return _enhance(idea, backend)
+    except Exception:
+        return ""
+
+
+def enhance_prompt(idea: str, backend: str = "acestep",
+                   provider: str = "") -> tuple[str, bool]:
     """Expand a rough idea into a rich prompt for the active backend.
 
     ``backend`` selects the model family policy. ``"sa3"`` uses a full-track
@@ -264,6 +298,16 @@ def enhance_prompt(idea: str, backend: str = "acestep") -> tuple[str, bool]:
     idea = (idea or "").strip()
     if not idea:
         return idea, False
+
+    # The local checkpoint first when asked for. It is trained on structured
+    # prompt text and returns "" on anything it cannot handle, so an empty
+    # answer is a routing signal rather than a failure -- fall through to the
+    # hosted policy below exactly as if it had not been configured.
+    if resolve_provider(provider) == "local":
+        local = _sanitize(_local_enhance(idea, backend))
+        if local:
+            return local, True
+
     if backend == "sa3":
         if _sa3_wants_solo(idea):
             system = _SYSTEM_SA3_SOLO
