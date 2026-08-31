@@ -251,17 +251,14 @@ def _ask_haiku(system: str, user: str) -> str | None:
 #:   "hosted"  the hosted LLM, as always. THE DEFAULT -- an existing
 #:             deployment behaves exactly as it did before this existed.
 #:   "local"   the fine-tuned local checkpoint, falling back to hosted when it
-#:             is absent or declines.
-#:   "auto"    accepted as a synonym for "local". The fallback design makes the
-#:             documented distinction ("local when a checkpoint is installed")
-#:             unobservable: local ALWAYS degrades to hosted when the
-#:             checkpoint is missing, so there is nothing extra for "auto" to
-#:             decide. Kept so a deployment stating intent does not error.
+#:             is absent or declines. There is deliberately no "auto": local
+#:             ALWAYS degrades to hosted when the checkpoint is missing, so an
+#:             auto mode would have nothing extra to decide.
 #:
 #: Set with DEMON_ENHANCER_PROVIDER. An unknown value is treated as "hosted"
 #: rather than erroring: a typo in a deployment env should cost the faster
 #: path, not the endpoint.
-_PROVIDERS = ("hosted", "local", "auto")
+_PROVIDERS = ("hosted", "local")
 
 
 def resolve_provider(override: str = "") -> str:
@@ -306,7 +303,7 @@ def enhance_prompt(idea: str, backend: str = "acestep",
     # prompt text and returns "" on anything it cannot handle, so an empty
     # answer is a routing signal rather than a failure -- fall through to the
     # hosted policy below exactly as if it had not been configured.
-    if resolve_provider(provider) in ("local", "auto"):
+    if resolve_provider(provider) == "local":
         local = _sanitize(_local_enhance(idea, backend))
         if local:
             return local, True
