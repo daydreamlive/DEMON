@@ -201,8 +201,6 @@ DEFAULT_LM_MODEL = "acestep-5Hz-lm-1.7B"
 #:   HF_TOKEN              read token, when that repo is private
 PROMPT_ENHANCER_MODEL_NAME = "prompt-enhancer"
 PROMPT_ENHANCER_DEFAULT_REPO = "daydreamlive/t5-small-enhancer"
-#: The files transformers needs to load it; anything else in the repo is
-#: ignored so a card or extra format does not bloat every pod.
 #: What must be present for the checkpoint to load at all. A t5 fine-tune may
 #: legitimately ship either a fast tokenizer (tokenizer.json) or a slow one
 #: (spiece.model), so neither is required on its own -- see the check below.
@@ -211,6 +209,8 @@ PROMPT_ENHANCER_REQUIRED = [
     "model.safetensors",
     "tokenizer_config.json",
 ]
+#: The files transformers needs to load it; anything else in the repo is
+#: ignored so a card or extra format does not bloat every pod.
 PROMPT_ENHANCER_ALLOW = [
     "config.json",
     "generation_config.json",
@@ -280,13 +280,13 @@ def download_prompt_enhancer_model(
     print(f"Downloading prompt enhancer from {repo}...")
     print(f"Destination: {model_dir}")
 
+    # Read before the try: the except below consults it, and it must be bound
+    # even when the very first statement inside (the lazy huggingface_hub
+    # import) is what raised.
+    created = not model_dir.exists()
     try:
         from huggingface_hub import snapshot_download
 
-        # Created only once the download is actually about to run, so a
-        # failure does not leave an empty directory that later reads as a
-        # staged checkpoint.
-        created = not model_dir.exists()
         model_dir.mkdir(parents=True, exist_ok=True)
         snapshot_download(
             repo_id=repo,
@@ -863,8 +863,7 @@ Alternative using huggingface-cli (substitute your checkpoints dir):
                 args.token,
             )
         elif args.model == PROMPT_ENHANCER_MODEL_NAME:
-            model_dir = (get_prompt_enhancer_dir(args.dir) if args.dir
-                         else get_prompt_enhancer_dir())
+            model_dir = get_prompt_enhancer_dir(args.dir)
             success, msg = download_prompt_enhancer_model(
                 model_dir,
                 args.force,

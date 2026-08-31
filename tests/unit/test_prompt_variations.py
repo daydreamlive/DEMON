@@ -162,6 +162,7 @@ class TestRouteQuery:
         assert pv.route_query({"stop": ["abc"]})[0] == "reject"
         assert pv.route_query({"lane": ["abc"]})[0] == "reject"
         assert pv.route_query({"stop": ["3"], "lane": ["abc"]})[0] == "reject"
+
     def test_absurd_numbers_clamp_rather_than_overflow(self):
         # A 400-digit stop is a valid integer. It used to reach
         # `amount = stop / (stops - 1)` and raise OverflowError -- an
@@ -183,11 +184,38 @@ class TestDownloadResidue:
     def test_import_failure_does_not_crash(self, monkeypatch, tmp_path):
         # `created` was assigned AFTER the lazy huggingface_hub import that the
         # same `except` catches, so a lean image got UnboundLocalError from the
-        # function whose whole contract is to degrade.
+        # function whose whole contract is to degrade. Forcing the ImportError
+        # (a None entry in sys.modules makes the in-function import raise) is
+        # what actually exercises that path -- letting snapshot_download fail
+        # against a bogus repo only covered the download-error branch, and did
+        # it with real network I/O from a unit test.
+        import sys
+
         import acestep.model_downloader as md
 
         monkeypatch.setattr(md, "get_prompt_enhancer_repo", lambda: "x/y")
+        monkeypatch.setitem(sys.modules, "huggingface_hub", None)
         target = tmp_path / "PromptEnhancer"
         ok, msg = md.download_prompt_enhancer_model(target)
         assert ok is False and isinstance(msg, str)
+        assert not target.exists(), "an empty dir reads as a staged checkpoint"
+
+    def test_download_failure_removes_only_a_dir_we_created(self, monkeypatch, tmp_path):
+        # The download-error branch, without network: snapshot_download raises,
+        # and the empty directory the function just made must not survive to
+        # read as a staged checkpoint.
+        import sys
+        import types
+
+        import acestep.model_downloader as md
+
+        def boom(**kwargs):
+            raise RuntimeError("no network in unit tests")
+
+        fake = types.SimpleNamespace(snapshot_download=boom)
+        monkeypatch.setattr(md, "get_prompt_enhancer_repo", lambda: "x/y")
+        monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
+        target = tmp_path / "PromptEnhancer"
+        ok, msg = md.download_prompt_enhancer_model(target)
+        assert ok is False and "no network" in msg
         assert not target.exists(), "an empty dir reads as a staged checkpoint"

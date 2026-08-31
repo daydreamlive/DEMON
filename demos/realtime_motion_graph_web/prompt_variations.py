@@ -181,11 +181,6 @@ def _load():
             return None
 
 
-def available() -> bool:
-    """True when the local checkpoint is present and loadable."""
-    return _load() is not None
-
-
 def _prefix_for(anchor_ids: list[int], amount: float) -> list[int]:
     """How much of the anchor survives at `amount`.
 

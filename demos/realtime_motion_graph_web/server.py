@@ -187,7 +187,10 @@ def _json_response(remote, path: str, payload: dict) -> "Response":
     """A JSON reply for the variations endpoint. Deliberately NOT carrying
     _PUBLIC_HTTP_HEADERS: those include `Access-Control-Allow-Origin: *`,
     which is right for a cheap read-only probe and wrong for something that
-    costs seconds of model time per call."""
+    costs seconds of model time per call. This intentionally excludes
+    cross-origin BROWSER clients (the web demo frontend included) -- the
+    consumer is the plugin, which talks to this port directly and is not
+    CORS-bound. Add the header only if the web UI ever grows the pad."""
     body = json.dumps(payload).encode()
     _log_http(remote, 200, "GET", path)   # redact prompt
     return Response(
@@ -272,18 +275,18 @@ def _process_request(connection, request):
     # unchanged with ok=false, so every frontend treats enhance as best-effort
     # and never blocks. The prompt rides the query string to stay on this
     # all-GET probe surface; it's redacted from the access log.
-    # The VARIATIONS pad, answered WHOLE rather than per position. The pad is a
-    # gesture -- the plugin re-fires the moment a reply lands and the pointer
-    # has moved -- so a request per position would be a round trip per pixel of
-    # drag. The reachable set is small and deterministic (an integer prefix
-    # length x LANES sampling streams), so one call returns the entire grid and
-    # dragging becomes a local array lookup. Same all-GET probe surface as
-    # /api/enhance; prompt redacted from the access log. Absent checkpoint ->
-    # ok=false and the client simply does not offer the pad.
+    # The VARIATIONS pad, answered ONE COORDINATE per call: `stop` is distance
+    # from the anchor, `lane` picks which neighbour at that distance, and both
+    # are deterministic so the client can cache what it has seen. (Answering
+    # the whole grid in one call was tried and withdrawn -- a grid holds the
+    # generation lock for seconds, during which nothing else here can answer;
+    # see the prompt_variations module docstring.) Same all-GET probe surface
+    # as /api/enhance; prompt redacted from the access log. Absent checkpoint
+    # -> ok=false and the client simply does not offer the pad.
     if path_only == "/api/variations":
         from urllib.parse import parse_qs
 
-        from .prompt_enhancer import _resolve_provider
+        from .prompt_enhancer import resolve_provider
         from .prompt_variations import Busy, point, route_query
 
         query = url.split("?", 1)[1] if "?" in url else ""
@@ -295,7 +298,7 @@ def _process_request(connection, request):
         # is armed by the checkpoint merely being on disk, which a deployment
         # cannot control once an image has been baked from a pod that had one
         # -- so "opt in per deployment" would quietly become a fleet default.
-        if _resolve_provider() == "hosted":
+        if resolve_provider() == "hosted":
             return _json_response(remote, "/api/variations", {"ok": False})
 
         route, stop, lane = route_query(params)
@@ -332,7 +335,7 @@ def _process_request(connection, request):
     if path_only == "/api/enhance":
         from urllib.parse import parse_qs
 
-        from .prompt_enhancer import _resolve_provider, enhance_prompt
+        from .prompt_enhancer import resolve_provider, enhance_prompt
 
         query = url.split("?", 1)[1] if "?" in url else ""
         params = parse_qs(query)
@@ -344,12 +347,12 @@ def _process_request(connection, request):
         # `backend` picks WHICH prompt policy. Orthogonal, hence two params.
         # Blank means "whatever this pod is configured for".
         # The client may ask for a provider, but it may not ARM one the
-        # deployment opted out of: _resolve_provider lets a valid override beat
+        # deployment opted out of: resolve_provider lets a valid override beat
         # the env, so ?provider=local forced local inference on a pod
         # configured hosted -- the exact thing /api/variations' gate exists to
         # prevent, reachable one endpoint over. An override may only narrow.
         provider = params.get("provider", [""])[0]
-        if _resolve_provider() == "hosted":
+        if resolve_provider() == "hosted":
             provider = "hosted"
         enhanced, ok = enhance_prompt(idea, backend, provider)
         body = json.dumps({"enhanced": enhanced, "ok": ok}).encode()
