@@ -203,6 +203,15 @@ class SA3Backend(DiffusionBackend):
         # stream (SlotRequest.sde_noise_seeded), the spike pipeline's
         # per-slot generator semantics.
         sampler: str = "pingpong",
+        # The conditioned song length in seconds — what seconds_total told
+        # the model to fill with music. The render window
+        # (cond.audio_sample_size) is LONGER: prepare_sa3_conditioning pads
+        # it by duration_padding_sec (6 s) of outro headroom, which the
+        # model deliberately fades to silence past seconds_total (upstream
+        # generate() trims it back off via truncate_output_to_duration).
+        # None (directly-constructed test backends) falls back to the full
+        # window, the pre-fix behavior.
+        playable_duration_s: Optional[float] = None,
         prompt_rebuilder: Optional[Callable] = None,
         prompt_tags: Optional[str] = None,
         # Prompt-B conditioning capture for the A/B crossfade. None
@@ -266,6 +275,14 @@ class SA3Backend(DiffusionBackend):
         self._depth = int(depth)
         self._default_seed = int(default_seed)
         self.vae_window = float(vae_window_s)
+        # Playable region: the conditioned song, never the padded outro
+        # headroom (see the ctor arg comment). Clamped into the window so
+        # a caller mistake can't declare more audio than the render holds.
+        window_s = cond.audio_sample_size / SA3_SAMPLE_RATE
+        self._playable_s = (
+            min(float(playable_duration_s), window_s)
+            if playable_duration_s else window_s
+        )
         # "pingpong"/"sde" (rf_denoiser-native, deterministic via seeded
         # renoise) | "ode" (euler; off-objective for SA3, debug only)
         self._sampler = sampler
@@ -483,6 +500,7 @@ class SA3Backend(DiffusionBackend):
             codec=context.make_codec(backend=codec_backend),
             cond=cond,
             cond_b=cond_b,
+            playable_duration_s=duration_s,
             schedule_builder_factory=(
                 lambda s: context.make_schedule_builder(cond, s)
             ),
@@ -735,7 +753,13 @@ class SA3Backend(DiffusionBackend):
         )
 
     def playable_duration_s(self):
-        return self._cond.audio_sample_size / SA3_SAMPLE_RATE
+        # The conditioned song length, NOT cond.audio_sample_size /
+        # SA3_SAMPLE_RATE: the render window carries duration_padding_sec
+        # of outro headroom past seconds_total, where the model fades to
+        # silence by design. Serving that padding as playable audio put a
+        # fade-out + silent tail at the end of every SA3 loop (the
+        # "silence from 9:30 to midnight" bug).
+        return self._playable_s
 
     def read_knobs(self) -> dict:
         return self.knob_state.get_all_values()

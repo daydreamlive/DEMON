@@ -246,10 +246,21 @@ def create_sa3_session(
         if not initial_enable_ids:
             logger.info("lora_startup_empty reason=catalog_only")
 
-    # Playable geometry comes from the conditioning capture (duration +
-    # SA3's padding, what the DiT actually generates), not the request.
-    playable_s = cond.audio_sample_size / context.sample_rate
-    n_48k = _delivered_samples(int(cond.audio_sample_size))
+    # Playable geometry is the CONDITIONED duration, not the render
+    # window. prepare_cond pads ``audio_sample_size`` out to duration +
+    # duration_padding_sec (6 s) of outro headroom, and the model fills
+    # that headroom with the fade-out/silence it generates past
+    # seconds_total — upstream ``generate()`` trims it back off
+    # (truncate_output_to_duration). Exposing the padded window as the
+    # playable buffer put ~6 s of fade + silence at the end of every SA3
+    # loop; the DiT still generates the full padded latent, we just never
+    # play or ship the padding.
+    playable_44k = min(
+        int(round(duration_s * context.sample_rate)),
+        int(cond.audio_sample_size),
+    )
+    playable_s = playable_44k / context.sample_rate
+    n_48k = _delivered_samples(playable_44k)
 
     # Initial client buffer: the (truncated) source at the delivery
     # rate, zero-padded out to the rendered length so the buffer the
