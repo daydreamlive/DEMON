@@ -156,10 +156,10 @@ def _load():
             path = _model_dir()
             if not os.path.isdir(path):
                 # NOT latched. A checkpoint staged after the first request --
-                # a slow download, a volume mounted late -- must be picked up,
-                # and "auto" is documented as "local when a checkpoint is
-                # installed". Latching made that a one-shot decision taken by
-                # whoever happened to send the first request.
+                # a slow download, a volume mounted late -- must be picked up:
+                # the provider contract is that local starts answering
+                # whenever the checkpoint appears. Latching made that a
+                # one-shot decision taken by whoever sent the first request.
                 return None
             tok = AutoTokenizer.from_pretrained(path, legacy=False)
             model = T5ForConditionalGeneration.from_pretrained(path)
