@@ -111,8 +111,52 @@ from acestep.user_uploads import (
     unique_user_upload_name,
 )
 
+from . import artist_filter
 from .audio_codec import SliceCodec, chunked_ws_send, send_stem_payload
 from .protocol import COMMAND_NAMES, SAMPLE_RATE, coerce_command_payload
+
+
+def scan_prompt_slots(tags, tags_b, *, surface: str) -> dict | None:
+    """Policy scan for a prompt pair -> ``prompt_rejected`` payload or None.
+
+    None means "apply the prompt": clean text, filter off, or log mode
+    (which logs the hit — match metadata only, NEVER the prompt text, same
+    redaction rule as the /api/enhance access log — and lets it through).
+    The artist_filter map loads once per process; after that this is
+    microseconds and safe upstream of ``StreamingSession.set_prompt``.
+    """
+    mode = artist_filter.filter_mode()
+    if mode == "off":
+        return None
+    hits = [
+        (slot, m)
+        for slot, text in (("a", tags), ("b", tags_b))
+        if text and (m := artist_filter.scan(str(text))) is not None
+    ]
+    if not hits:
+        return None
+    slot = hits[0][0] if len(hits) == 1 else "both"
+    match = hits[0][1]
+    if mode == "log":
+        logger.info(
+            "artist_filter_hit surface={} slot={} matched={} cls={} "
+            "evidence={} mode=log",
+            surface, slot, match.display, match.cls, match.evidence,
+        )
+        return None
+    logger.info(
+        "artist_filter_reject surface={} slot={} matched={} cls={} evidence={}",
+        surface, slot, match.display, match.cls, match.evidence,
+    )
+    return {
+        "type": "prompt_rejected",
+        "slot": slot,
+        "reason": "artist_name",
+        "matched": match.display,
+        "detail": f'Prompts can\'t reference artists ("{match.display}"). '
+                  "Describe the sound instead.",
+        "filter_version": artist_filter.filter_version(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1173,6 +1217,18 @@ def _handle_client_body(
     ))
 
     cfg = SessionConfig.from_dict(config_dict)
+    # Policy gate on the create-time prompt pair: substitute the default
+    # rather than refusing the session (a refusal would punish every
+    # reconnect that restores saved state), and queue a prompt_rejected
+    # for right after the init handshake so the client can explain why
+    # its saved prompt didn't take.
+    init_prompt_rejection = scan_prompt_slots(
+        cfg.prompt, cfg.prompt_b, surface="init",
+    )
+    if init_prompt_rejection is not None:
+        init_prompt_rejection["slot"] = "init"
+        cfg.prompt = SessionConfig.prompt
+        cfg.prompt_b = None
     # The server's resolved checkpoint family is the default; an
     # explicit client-config "backend" key still wins.
     if "backend" not in config_dict:
@@ -1794,14 +1850,26 @@ def _handle_client_body(
                     origin=origin,
                 )
             elif mtype == "prompt":
-                streaming.set_prompt(
-                    data["tags"],
-                    tags_b=data.get("tags_b"),
-                    bpm=data.get("bpm"),
-                    key=data.get("key"),
-                    time_signature=data.get("time_signature"),
-                    origin=origin,
+                # Policy gate (artist_filter/SPEC.md). BEFORE set_prompt so a
+                # rejected prompt never reaches the encoder: the previous
+                # prompt keeps playing and prompt_rejected (never
+                # prompt_applied) answers. One chokepoint covers both
+                # transports — the MCP set_prompt tool funnels through this
+                # same dispatch via the control bus.
+                rejection = scan_prompt_slots(
+                    data.get("tags"), data.get("tags_b"), surface=source,
                 )
+                if rejection is not None:
+                    _send_json(rejection)
+                else:
+                    streaming.set_prompt(
+                        data["tags"],
+                        tags_b=data.get("tags_b"),
+                        bpm=data.get("bpm"),
+                        key=data.get("key"),
+                        time_signature=data.get("time_signature"),
+                        origin=origin,
+                    )
             elif mtype == "set_prompt_blend":
                 try:
                     v = float(data.get("value", 0.0))

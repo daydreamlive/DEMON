@@ -665,6 +665,36 @@ EVENTS: tuple = (
         description="Ack that a prompt re-encode completed.",
     ),
     EventSpec(
+        "prompt_rejected",
+        fields=(
+            FieldSpec("slot", "str", required=True,
+                      options=("a", "b", "both", "init"),
+                      description="Which prompt slot the rejection is about. "
+                                  "'init' = the session-config prompt, which "
+                                  "the server replaced with its default."),
+            FieldSpec("reason", "str", required=True,
+                      options=("artist_name",),
+                      description="Machine reason code. Only artist_name "
+                                  "today (the deterministic artist-name "
+                                  "filter; see artist_filter/SPEC.md)."),
+            FieldSpec("matched", "str", required=True,
+                      description="Canonical display name of the artist the "
+                                  "filter matched, for the client's message. "
+                                  "Never echoes the user's own text."),
+            FieldSpec("detail", "str",
+                      description="Short human-readable explanation a client "
+                                  "may show verbatim."),
+            FieldSpec("filter_version", "str",
+                      description="Version of the filter list that decided, "
+                                  "e.g. 'artists.v1' — for logs/analytics."),
+        ),
+        description="The server REFUSED to apply a prompt (policy filter): "
+                    "no prompt_applied follows and the previous prompt keeps "
+                    "playing. Sent instead of, not alongside, an error — the "
+                    "session stays healthy. Older clients safely ignore the "
+                    "unknown type (the prompt silently doesn't take).",
+    ),
+    EventSpec(
         "lora_catalog",
         fields=(FieldSpec("catalog", "list", required=True,
                           description="Same entry shape as "

@@ -221,3 +221,46 @@ def test_family_matches_resolve_checkpoint_for_sa3():
     assert fam2 == "acestep"
     server._BACKEND_FAMILY = fam2
     assert server._resolve_enhance_backend("") == "acestep"
+
+
+# ── artist-name policy (Isbell v. Suno hardening) ───────────────────────────
+#
+# The deterministic filter guards the enhance surface in server.py
+# (_scan_enhance_io); these tests pin the POLICY text so an edit that
+# re-introduces "honor any named artist" fails loudly, and pin the server
+# gate's short-circuit + output-backstop behavior.
+
+def test_no_policy_asks_the_llm_to_honor_artists():
+    for policy in (pe._SYSTEM, pe._SYSTEM_SA3, pe._SYSTEM_SA3_SOLO):
+        assert "honor any named artist" not in policy
+        assert "NEVER name, quote, or imitate a specific artist" in policy
+
+
+def test_enhance_input_rejection_short_circuits_the_llm(monkeypatch):
+    monkeypatch.delenv("DEMON_ARTIST_FILTER", raising=False)
+    called = []
+    monkeypatch.setattr(pe, "_ask_haiku", lambda s, u: called.append(u) or "x")
+    rej = server._scan_enhance_io("taylor swift style pop", "input")
+    assert rej is not None
+    assert rej["rejected"] is True and rej["reason"] == "artist_name"
+    assert rej["matched"] == "Taylor Swift"
+    assert not called  # the gate answers before any LLM spend
+
+
+def test_enhance_output_backstop_catches_llm_named_artists(monkeypatch):
+    monkeypatch.delenv("DEMON_ARTIST_FILTER", raising=False)
+    # Provider-agnostic: works even for the local checkpoint, which cannot
+    # be instructed — whatever text comes back is scanned the same way.
+    rej = server._scan_enhance_io("taylor swift style pop synths", "output")
+    assert rej is not None and rej["matched"] == "Taylor Swift"
+    assert server._scan_enhance_io(
+        "dreamy synthwave, analog warmth", "output") is None
+
+
+def test_enhance_gate_modes(monkeypatch):
+    monkeypatch.setenv("DEMON_ARTIST_FILTER", "log")
+    assert server._scan_enhance_io("taylor swift style", "input") is None
+    monkeypatch.setenv("DEMON_ARTIST_FILTER", "off")
+    assert server._scan_enhance_io("taylor swift style", "input") is None
+    monkeypatch.setenv("DEMON_ARTIST_FILTER", "on")
+    assert server._scan_enhance_io("taylor swift style", "input") is not None
