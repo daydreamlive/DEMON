@@ -398,6 +398,17 @@ Weaker than the diffusion families on latency, and stronger on kind:
   its phase, and the new caption steers what comes next; the swap itself
   is far below the ~8 s it then takes to reach the frontier, so the AR
   geometry is the cost, not the re-prefill.
+  How hard the swap steers is a balance-of-context question: a minute of
+  the model's own frames outweighs a 30-token caption, so with the full
+  history kept a new caption lands as a gradual morph (~20 s to fully
+  arrive, measured over a lo-fi -> drum-and-bass swap).
+  `minimax_reprompt_history_s` crops the replayed history at the swap to
+  the last N seconds, inverting the balance for a fast pivot while the
+  kept frames carry tempo and phase across it. 0 keeps everything.
+  Measured on the same swap pair: 10 s pivots up in energy in ~1-6 s but
+  a pivot *down* never lands (10 s of aggressive material outweighs a
+  mellow caption for at least 38 s); 2.5 s pivots both directions in
+  ~1-4 s.
 * **`set_prompt_blend` is refused, loudly.** The other families
   interpolate two conditioning tensors. MiniMax's conditioning is a KV
   prefix inside an 8.58B LM; there is no second one to interpolate
@@ -616,10 +627,10 @@ leading `[tag]`**.
   For one prompt: 47 s in the stream bench (seed 1528), 29 s through the
   plain loop and 115 s through the graphed one in `minimax_ar_bench.py`
   with the same seed (the two draw different random streams), 22 s at
-  temperature 2.0. Masking the end token out of the vocabulary would
-  make the stream endless; what the model does past its trained horizon
-  is unmeasured, so that is a knob to measure before shipping, not a
-  default.
+  temperature 2.0. `minimax_endless` (default off) masks the end token
+  out of the vocabulary so the stream runs to the frame cap instead;
+  what the model composes past its trained horizon is a matter for the
+  ear, which is why it is a knob and not the default.
 * **The AR knob-to-ear floor (~8 s) is geometric and unexplored.** It
   comes from the 150-frame lookahead in a 200-frame conditioning window.
   Shrinking the window or the lookahead would shrink it, at an unknown

@@ -508,6 +508,11 @@ class ARControls:
     temperature: float = 1.0
     top_k: int = AR_SAMPLING_TOP_K
     guidance: float = AR_CFG_SCALE
+    # Forbid <|audio_end|> so the piece cannot cadence out from under a
+    # live session; the stream then runs to its frame cap. Off by
+    # default: composition quality past the point where the model WANTED
+    # to end is the listener's judgment call, not a measured property.
+    mask_end: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -1056,7 +1061,12 @@ class MiniMaxARStream:
         self.last_prefill_s = time.perf_counter() - started
 
     @torch.no_grad()
-    def reprompt(self, prompt: str, lyrics: Optional[str] = None) -> float:
+    def reprompt(
+        self,
+        prompt: str,
+        lyrics: Optional[str] = None,
+        history_s: Optional[float] = None,
+    ) -> float:
         """Swap the text prefix without discarding the music. Returns the
         wall seconds it cost.
 
@@ -1071,10 +1081,22 @@ class MiniMaxARStream:
         The musical consequence is the point: the piece keeps its
         history and its phase, and the new caption steers what comes
         next. That is a live prompt change on an autoregressive model.
+
+        ``history_s`` decides how much of that history the rebuilt cache
+        keeps. A minute of the model's own frames outweighs a 30-token
+        caption, so with everything kept a new caption lands as a
+        gradual morph while the piece finishes its phrase. Keeping only
+        the last few bars inverts the balance: the caption dominates and
+        the pivot is fast, while the kept frames still carry tempo and
+        phase across the swap. None keeps everything.
         """
         if self.finished:
             raise RuntimeError("cannot re-prompt a finished AR stream")
         lyrics = self.lyrics if lyrics is None else lyrics
+        if history_s is not None:
+            keep = int(round(history_s * AR_FRAME_RATE_HZ))
+            if keep < len(self._code_history):
+                self._code_history = self._code_history[-keep:] if keep else []
         # The pending frame's codes are already in the history; replaying
         # them AND feeding them back would double the frame.
         self._pending_codes = None
@@ -1121,6 +1143,8 @@ class MiniMaxARStream:
         threshold = torch.topk(conditional, AR_CFG_TOP_K, dim=-1).values[..., -1, None]
         guided = guided.masked_fill(conditional < threshold, -float("inf"))
         guided = guided.masked_fill(vocab_mask.unsqueeze(0), -float("inf"))
+        if controls.mask_end:
+            guided[..., AUDIO_END_TOKEN_ID] = -float("inf")
         sampled = _sample_top_k(
             guided,
             self._generator,
@@ -1237,7 +1261,12 @@ class ReplayARStream:
         different shape the backend has to branch on."""
         self._controls = controls
 
-    def reprompt(self, prompt: str, lyrics: Optional[str] = None) -> float:
+    def reprompt(
+        self,
+        prompt: str,
+        lyrics: Optional[str] = None,
+        history_s: Optional[float] = None,
+    ) -> float:
         raise RuntimeError(
             "a replayed capture has no language model to re-prefill; open a "
             "live MiniMaxARStream to change the prompt mid-stream"

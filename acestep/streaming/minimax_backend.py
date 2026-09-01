@@ -335,6 +335,34 @@ def minimax_knob_specs(loras=()) -> list:
             ),
         ),
         KnobSpec(
+            name="minimax_reprompt_history_s",
+            default=0.0,
+            min_val=0.0,
+            max_val=60.0,
+            group="minimax",
+            description=(
+                "Seconds of the piece's own audio history a prompt swap "
+                "keeps in the rebuilt cache. 0 keeps all of it: the "
+                "piece holds its identity and the new caption lands as "
+                "a gradual morph over ~20 s. A few bars (8-15) lets the "
+                "caption outweigh the history for a fast pivot while "
+                "the kept frames preserve tempo and phase."
+            ),
+        ),
+        KnobSpec(
+            name="minimax_endless",
+            default=False,
+            type="bool",
+            group="minimax",
+            description=(
+                "Forbid the LM's end-of-audio token so the piece cannot "
+                "cadence out from under a live session; the stream then "
+                "runs to the 9000-frame (6 min) cap. Off by default "
+                "because composition quality past the model's own chosen "
+                "ending is unmeasured -- judge it by ear."
+            ),
+        ),
+        KnobSpec(
             name="minimax_lead",
             default=1.0,
             min_val=0.3,
@@ -531,6 +559,7 @@ class MiniMaxBackend:
         # ---- telemetry (worker writes, runner reads) ----
         self.ar_frames = 0
         self.chunks = 0
+        self._last_commit_wall = 0.0
         self.ar_ms_per_frame = 0.0
         self.chunk_render_ms = 0.0
         # Cumulative, because the per-sample values above are the LAST
@@ -607,8 +636,20 @@ class MiniMaxBackend:
                 self._apply_reprompt(*pending)
 
             # Credit pacing. Only binds on hardware fast enough to
-            # choose; at 0.68x realtime the frontier never gets ahead.
-            if self.frontier_s() - self._playhead_abs_s > lead_s:
+            # choose; below realtime the frontier never gets ahead.
+            #
+            # The gate must open one full commit EARLY: producing the
+            # next commit costs ~commit_s / realtime_factor of wall
+            # clock (a hop of AR frames plus a render), and the playhead
+            # keeps moving the whole time. Gating on lead_s alone spends
+            # the entire lead mid-production and the playhead overruns
+            # the frontier by (production - lead) every cycle -- heard
+            # as chunks of music interleaved with silence on the first
+            # lap. Production < commit_s exactly when the pipeline runs
+            # above realtime, so lead_s + commit_s keeps the audible
+            # lead >= lead_s wherever pacing binds at all.
+            commit_s = self.latents.hop_ar_frames / AR_FRAME_RATE_HZ
+            if self.frontier_s() - self._playhead_abs_s > lead_s + commit_s:
                 self._stop.wait(0.02)
                 continue
 
@@ -682,6 +723,7 @@ class MiniMaxBackend:
             temperature=float(values.get("minimax_temperature", 1.0) or 1.0),
             top_k=int(values.get("minimax_top_k", 50) or 50),
             guidance=float(values.get("minimax_ar_guidance", 1.5) or 1.5),
+            mask_end=bool(values.get("minimax_endless", False)),
         )
 
     def _render_chunk(self, controls: RenderControls) -> bool:
@@ -722,14 +764,40 @@ class MiniMaxBackend:
             self.decoder.decoded_frames,
         ) - DECODE_GUARD_FRAMES
         self.latents.trim_latent(max(0, keep))
+
+        # One line per commit (every 2-4 s), because the underrun modes
+        # of this pipeline -- GPU contention, VRAM paging, a hop set too
+        # tight -- are invisible in aggregate stats. cycle_s is wall
+        # clock since the previous commit; commit_s of audio was added,
+        # so cycle_s > commit_s sustained means the frontier is losing
+        # to the playhead and the listener will hear gaps. lead_s is the
+        # frontier's distance ahead of the reported playhead AFTER this
+        # commit; negative means the gap is already audible.
+        now = time.monotonic()
+        cycle_s = now - self._last_commit_wall if self._last_commit_wall else 0.0
+        self._last_commit_wall = now
+        logger.info(
+            "minimax_chunk_committed chunk={} cycle_s={:.2f} commit_s={:.2f} "
+            "render_ms={:.0f} lead_s={:.2f} frontier_s={:.1f}",
+            self.chunks, cycle_s,
+            self.latents.hop_ar_frames / AR_FRAME_RATE_HZ,
+            self.chunk_render_ms,
+            self.frontier_s() - self._playhead_abs_s,
+            self.frontier_s(),
+        )
         return True
 
     def _apply_reprompt(self, tags: str, tags_b) -> None:
         try:
-            self.last_reprompt_s = self.ar.reprompt(tags)
+            values = self.knob_state.get_all_values()
+            hist = float(values.get("minimax_reprompt_history_s", 0.0) or 0.0)
+            self.last_reprompt_s = self.ar.reprompt(
+                tags, history_s=hist if hist > 0.0 else None,
+            )
             logger.info(
-                "minimax_prompt_swapped seconds={:.2f} frames={}",
+                "minimax_prompt_swapped seconds={:.2f} frames={} history_s={}",
                 self.last_reprompt_s, self.ar.frames_emitted,
+                hist if hist > 0.0 else "all",
             )
         except Exception as exc:
             logger.error("minimax_reprompt_failed error={}", exc)

@@ -217,6 +217,7 @@ class GraphedARStream(MiniMaxARStream):
         self._guidance = torch.tensor(float(initial.guidance), device=device)
         self._temperature = torch.tensor(float(initial.temperature), device=device)
         self._top_k = torch.tensor([int(initial.top_k)], dtype=torch.long, device=device)
+        self._mask_end = torch.tensor([bool(initial.mask_end)], device=device)
         self._codes_out = torch.zeros(2, codebooks, dtype=torch.long, device=device)
         self._hidden_out = torch.zeros(1, codebooks * hidden, dtype=ar.dtype, device=device)
         self._end = torch.zeros(1, dtype=torch.bool, device=device)
@@ -243,6 +244,7 @@ class GraphedARStream(MiniMaxARStream):
         self._guidance.fill_(float(controls.guidance))
         self._temperature.fill_(float(controls.temperature))
         self._top_k.fill_(int(controls.top_k))
+        self._mask_end.fill_(bool(controls.mask_end))
 
     # ---- pieces -------------------------------------------------------------
 
@@ -294,6 +296,11 @@ class GraphedARStream(MiniMaxARStream):
         threshold = torch.topk(conditional, AR_CFG_TOP_K, dim=-1).values[..., -1, None]
         guided = guided.masked_fill(conditional < threshold, -float("inf"))
         guided = guided.masked_fill(vocab_mask.unsqueeze(0), -float("inf"))
+        # Static-shape column fill, so the mask can toggle per frame
+        # without a recapture, like the other control scalars.
+        guided[:, AUDIO_END_TOKEN_ID] = guided[:, AUDIO_END_TOKEN_ID].masked_fill(
+            self._mask_end, -float("inf")
+        )
         sampled = self._sample(guided)
         self._end.copy_(sampled == AUDIO_END_TOKEN_ID)
         # The end token sits below the code offset. Clamp so a frame that

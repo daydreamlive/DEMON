@@ -137,7 +137,11 @@ def test_knob_manifest_splits_ar_from_renderer_and_reuses_shared_specs():
     from acestep.streaming.knobs import knob_specs as registry_knob_specs
 
     specs = {s.name: s for s in minimax_knob_specs()}
-    ar = {"minimax_temperature", "minimax_top_k", "minimax_ar_guidance"}
+    ar = {
+        "minimax_temperature", "minimax_top_k", "minimax_ar_guidance",
+        "minimax_endless",
+        "minimax_reprompt_history_s",
+    }
     render = {
         "minimax_guidance", "minimax_shift", "minimax_cond_strength",
         "minimax_hop", "minimax_lead", "minimax_steps",
