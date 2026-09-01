@@ -73,6 +73,7 @@ export type EventName =
   | "params_echo"
   | "prompt_blend_echo"
   | "prompt_applied"
+  | "prompt_rejected"
   | "lora_catalog"
   | "swap_ready"
   | "swap_failed"
@@ -98,6 +99,7 @@ export const EVENT_NAMES: readonly EventName[] = [
   "params_echo",
   "prompt_blend_echo",
   "prompt_applied",
+  "prompt_rejected",
   "lora_catalog",
   "swap_ready",
   "swap_failed",
@@ -358,6 +360,20 @@ export interface PromptAppliedEvent {
   tags?: string;
 }
 
+export interface PromptRejectedEvent {
+  type: "prompt_rejected";
+  /** Which prompt slot the rejection is about. 'init' = the session-config prompt, which the server replaced with its default. */
+  slot: string;
+  /** Machine reason code. Only artist_name today (the deterministic artist-name filter; see artist_filter/SPEC.md). */
+  reason: string;
+  /** Canonical display name of the artist the filter matched, for the client's message. Never echoes the user's own text. */
+  matched: string;
+  /** Short human-readable explanation a client may show verbatim. */
+  detail?: string;
+  /** Version of the filter list that decided, e.g. 'artists.v1' — for logs/analytics. */
+  filter_version?: string;
+}
+
 export interface LoraCatalogEvent {
   type: "lora_catalog";
   /** Same entry shape as ready.lora_catalog, including the server-computed `compatible` bool. */
@@ -559,6 +575,7 @@ export type WireEvent =
   | ParamsEchoEvent
   | PromptBlendEchoEvent
   | PromptAppliedEvent
+  | PromptRejectedEvent
   | LoraCatalogEvent
   | SwapReadyEvent
   | SwapFailedEvent

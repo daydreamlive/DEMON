@@ -302,6 +302,20 @@ namespace event {
     inline constexpr const char* kTags = "tags";
   }  // namespace prompt_applied
 
+  namespace prompt_rejected {
+    inline constexpr const char* kType = "prompt_rejected";
+    /** Which prompt slot the rejection is about. 'init' = the session-config prompt, which the server replaced with its default. */
+    inline constexpr const char* kSlot = "slot";
+    /** Machine reason code. Only artist_name today (the deterministic artist-name filter; see artist_filter/SPEC.md). */
+    inline constexpr const char* kReason = "reason";
+    /** Canonical display name of the artist the filter matched, for the client's message. Never echoes the user's own text. */
+    inline constexpr const char* kMatched = "matched";
+    /** Short human-readable explanation a client may show verbatim. */
+    inline constexpr const char* kDetail = "detail";
+    /** Version of the filter list that decided, e.g. 'artists.v1' — for logs/analytics. */
+    inline constexpr const char* kFilterVersion = "filter_version";
+  }  // namespace prompt_rejected
+
   namespace lora_catalog {
     inline constexpr const char* kType = "lora_catalog";
     /** Same entry shape as ready.lora_catalog, including the server-computed `compatible` bool. */

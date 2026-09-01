@@ -37,8 +37,11 @@ prompt covers several dimensions:
 - production / texture ("tape saturation", "cavernous reverb", "high-fidelity production")
 
 RULES:
-- Stay faithful to the user's idea — honor any named artist, genre, era, or instrument
-  they mention (e.g. "hancock style" -> reference Herbie Hancock's sound).
+- Stay faithful to the user's idea — honor any named genre, era, or instrument.
+- NEVER name, quote, or imitate a specific artist, band, or performer. If the idea
+  references one, translate the reference into genre, era, instrumentation, mood, and
+  production descriptors WITHOUT the name (e.g. "hancock style" -> "1970s jazz-funk
+  keys, Fender Rhodes and clavinet, syncopated grooves").
 - 8-16 tags. Lowercase. Concrete and evocative. Keep it coherent (one cohesive vibe).
 - NEVER include a bpm or tempo number — describe feel with words instead.
 - Reply with ONLY the single comma-separated tag line. No preamble, no quotes, no
@@ -118,8 +121,11 @@ examples above. When in doubt, choose MUSIC: an unwanted arrangement is a smalle
 failure than a flat field recording where someone wanted a track.
 
 RULES:
-- Stay faithful to the user's idea — honor any named artist, genre, era, or instrument
-  they mention (e.g. "boards of canada style" -> that hazy, nostalgic analog sound).
+- Stay faithful to the user's idea — honor any named genre, era, or instrument.
+- NEVER name, quote, or imitate a specific artist, band, or performer. If the idea
+  references one, translate the reference into genre, era, instrumentation, mood, and
+  production descriptors WITHOUT the name (e.g. a 90s IDM act -> "hazy nostalgic
+  analog electronica, warped tape textures, mellow broken beats").
 - Describe the DESIRED trait directly ("clean, dry, minimal reverb") — NEVER phrase it
   as what to avoid.
 - NEVER include a bpm/tempo NUMBER or a duration in seconds — describe tempo with words
@@ -167,8 +173,11 @@ RULES:
   "melodic techno") — track genres summon the whole arrangement.
 - Reinforce aloneness with positive words: "solo", "unaccompanied", "single take".
 - Stay faithful to the user's idea — if they name an instrument, that IS the
-  instrument; honor any named artist, era, or style. If they only give a vibe or
+  instrument; honor any named era or style. If they only give a vibe or
   genre, pick its most iconic solo instrument.
+- NEVER name, quote, or imitate a specific artist, band, or performer. If the idea
+  references one, translate the reference into the era, playing style, and tone of
+  that tradition WITHOUT the name.
 - Describe the DESIRED trait directly ("clean, dry, minimal reverb") — NEVER phrase it
   as what to avoid.
 - NEVER include a bpm/tempo NUMBER or a duration in seconds — describe tempo with words
