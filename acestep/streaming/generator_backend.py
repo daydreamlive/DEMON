@@ -365,6 +365,14 @@ class GeneratorBackend(Protocol):
         mode does this). Tracks crop and source swaps."""
         ...
 
+    def max_duration_s(self) -> Optional[float]:
+        """Longest render window this backend can ever hold, or None
+        when it has no fixed ceiling. Read by the session's swap path to
+        cap a ``swap_resize`` request before the source is truncated for
+        the backend, so the ceiling stays backend-owned rather than
+        hardcoded family-by-family in the session layer."""
+        ...
+
     # ---- stall signaling --------------------------------------------------
 
     def has_pending_refit(self) -> bool:

@@ -19,6 +19,7 @@ from acestep.streaming.generator_backend import TickContext
 from acestep.streaming.knobs import KnobState
 from acestep.streaming.sa3_backend import (
     DELIVERY_SAMPLE_RATE,
+    SA3_MAX_DURATION_S,
     SA3_SAMPLE_RATE,
     SA3Backend,
     delivered_samples,
@@ -380,8 +381,8 @@ def test_prompt_blend_without_b_is_a_noop():
 def test_set_prompt_recaptures_b_and_invalidates_schedules():
     captures = []
 
-    def rebuilder(tags, steps):
-        captures.append(tags)
+    def rebuilder(tags, steps, duration_s):
+        captures.append((tags, duration_s))
         cond = _FakeCond()
         return cond, lambda s: _schedule_builder_factory(s)
 
@@ -390,7 +391,9 @@ def test_set_prompt_recaptures_b_and_invalidates_schedules():
     assert b.pipeline._schedule_cache
 
     b.handle_set_prompt("tags a", tags_b="tags b")
-    assert captures == ["tags a", "tags b"]
+    # Both captures ran at the backend's LIVE duration, not a value
+    # closed over at assembly time.
+    assert captures == [("tags a", b._duration_s), ("tags b", b._duration_s)]
     # The builder swap changes what the same denoise key would build —
     # stale schedules must not survive the prompt change.
     assert not b.pipeline._schedule_cache
@@ -599,6 +602,106 @@ def test_handle_swap_source_resize_without_resizer_fails_loudly():
         assert "resizer" in str(exc)
     else:
         raise AssertionError("expected RuntimeError without a resizer")
+
+
+def test_resize_failure_after_captures_leaves_prompt_control_working():
+    """A resize that dies AFTER its captures — the encode OOMs on the
+    geometry that was just grown — must leave the session whole. The
+    part that is easy to get wrong is the LIVE duration: if the captures
+    had already retargeted it, every later prompt swap would re-capture
+    at a geometry the session never adopted and trip its own
+    latent_frames guard, permanently. The resizer is pure and the
+    duration is committed with the cond, so nothing is left behind."""
+    def encoder(waveform, sample_rate, sample_size):
+        raise RuntimeError("cuda oom on the resized window")
+
+    def resizer(new_duration_s, tags_a, tags_b, steps):
+        cond = _FakeCondSized(2 * T)
+        return (
+            cond.audio_sample_size / SA3_SAMPLE_RATE, cond, None,
+            _ZeroDit(), _schedule_builder_factory,
+        )
+
+    captures: list = []
+
+    def rebuilder(tags, steps, duration_s):
+        captures.append((tags, duration_s))
+        return _FakeCond(), _schedule_builder_factory
+
+    b = _backend(
+        source_latent_bct=torch.randn(1, C, T),
+        source_encoder=encoder,
+        resizer=resizer,
+        prompt_rebuilder=rebuilder,
+        prompt_tags="warm tags",
+    )
+    old_cond, old_pipeline = b._cond, b.pipeline
+    old_duration, old_playable = b._duration_s, b._playable_s
+
+    try:
+        b.handle_swap_source(torch.zeros(2, 96000), 48000, duration_s=60.0)
+    except RuntimeError as exc:
+        assert "cuda oom" in str(exc)
+    else:
+        raise AssertionError("expected the encode failure to propagate")
+
+    # Nothing of the new geometry landed.
+    assert b._cond is old_cond
+    assert b.pipeline is old_pipeline
+    assert b._duration_s == old_duration
+    assert b._playable_s == old_playable
+    assert b._source_latent_btc.shape == (1, T, C)
+
+    # The regression: the next prompt swap still captures at the OLD
+    # duration, so its latent_frames guard passes.
+    b.handle_set_prompt("cooler tags")
+    assert captures == [("cooler tags", old_duration)]
+    assert b._cond is not old_cond
+    assert b._tags_a == "cooler tags"
+
+
+def test_resize_noop_does_not_move_the_live_duration():
+    """A request that clamps back onto the current window leaves the
+    session untouched — including the duration later prompt rebuilds
+    capture at."""
+    b, _encodes, _resizes = _resize_backend(T)
+    old_duration = b._duration_s
+
+    b.handle_swap_source(
+        torch.zeros(2, 48000), 48000, duration_s=N44 / SA3_SAMPLE_RATE,
+    )
+
+    assert b._duration_s == old_duration
+
+
+def test_prompt_rebuilds_follow_a_committed_resize():
+    """After a resize lands, handle_set_prompt captures at the NEW
+    duration (otherwise it would re-capture at the create-time length
+    and trip its own geometry guard)."""
+    new_frames = 2 * T
+    captures: list = []
+
+    def rebuilder(tags, steps, duration_s):
+        captures.append((tags, duration_s))
+        return _FakeCondSized(new_frames), _schedule_builder_factory
+
+    b, _encodes, _resizes = _resize_backend(
+        new_frames, prompt_rebuilder=rebuilder,
+    )
+    requested_s = new_frames * 4096 / SA3_SAMPLE_RATE
+    b.handle_swap_source(torch.zeros(2, 96000), 48000, duration_s=requested_s)
+    assert abs(b._duration_s - requested_s) < 1e-6
+
+    b.handle_set_prompt("after the resize")
+
+    assert captures == [("after the resize", b._duration_s)]
+    assert int(b._cond.latent_frames) == new_frames
+
+
+def test_max_duration_s_is_backend_owned():
+    """The session's swap path reads the family ceiling off the backend
+    instead of importing an SA3 constant."""
+    assert _backend().max_duration_s() == SA3_MAX_DURATION_S
 
 
 def test_plain_swap_with_resizer_keeps_geometry():

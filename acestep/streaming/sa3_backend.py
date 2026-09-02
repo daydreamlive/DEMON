@@ -57,6 +57,7 @@ import math
 import threading
 import time
 from collections import deque
+from contextlib import ExitStack
 from typing import Callable, Optional
 
 import torch
@@ -229,17 +230,25 @@ class SA3Backend(DiffusionBackend):
         # None (directly-constructed test backends) falls back to the full
         # window, the pre-fix behavior.
         playable_duration_s: Optional[float] = None,
+        # ``(tags, steps, duration_s) -> (cond, schedule_builder_factory)``
+        # — the per-prompt re-conditioning hook behind
+        # :meth:`handle_set_prompt`. The backend passes its LIVE
+        # duration (``_duration_s``) so a post-resize prompt swap
+        # re-captures at the new geometry.
         prompt_rebuilder: Optional[Callable] = None,
         prompt_tags: Optional[str] = None,
         prompt_tags_b: Optional[str] = None,
         # ``(new_duration_s, tags_a, tags_b, steps) -> (duration_s, cond,
         # cond_b | None, dit, schedule_builder_factory)`` — the render-
         # geometry rebuild behind the swap-resize path
-        # (:meth:`handle_swap_source` with ``duration_s``). Supplied by
-        # :meth:`from_context` (a closure over the SA3Context + the
-        # session's accel/LoRA preferences); None on directly-constructed
-        # test backends, where a resize request fails loudly and the
-        # ``swap_resize`` capability bit stays off.
+        # (:meth:`handle_swap_source` with ``duration_s``). Must be PURE:
+        # it builds the new geometry and returns it, mutating nothing, so
+        # a resize that fails downstream (the anchor encode) leaves the
+        # session exactly as it was. Supplied by :meth:`from_context` (a
+        # closure over the SA3Context + the session's accel/LoRA
+        # preferences); None on directly-constructed test backends, where
+        # a resize request fails loudly and the ``swap_resize``
+        # capability bit stays off.
         resizer: Optional[Callable] = None,
         # Prompt-B conditioning capture for the A/B crossfade. None
         # (or identical to ``cond``) means no B prompt: the blend is a
@@ -318,10 +327,18 @@ class SA3Backend(DiffusionBackend):
         # headroom (see the ctor arg comment). Clamped into the window so
         # a caller mistake can't declare more audio than the render holds.
         window_s = cond.audio_sample_size / SA3_SAMPLE_RATE
-        self._playable_s = (
-            min(float(playable_duration_s), window_s)
-            if playable_duration_s else window_s
+        # The LIVE conditioning duration — what seconds_total was told,
+        # BEFORE the playable clamp. The single owner of the session's
+        # render geometry: prompt rebuilds capture at it, and the
+        # swap-resize path commits a new value here (under
+        # ``_control_lock``, atomically with the cond it belongs to)
+        # only once the whole resize has landed. Keeping it on the
+        # backend rather than in a from_context closure is what makes a
+        # resize that fails downstream of its captures a clean no-op.
+        self._duration_s = (
+            float(playable_duration_s) if playable_duration_s else window_s
         )
+        self._playable_s = min(self._duration_s, window_s)
         # "pingpong"/"sde" (rf_denoiser-native, deterministic via seeded
         # renoise) | "ode" (euler; off-objective for SA3, debug only)
         self._sampler = sampler
@@ -513,19 +530,17 @@ class SA3Backend(DiffusionBackend):
                         "use the eager-DiT swap", exc,
                     )
 
-        # The session's LIVE duration. A box (not the create-time float)
-        # so a swap-resize retargets every later prompt rebuild too —
-        # otherwise handle_set_prompt would re-capture at the create-time
-        # length and trip its own latent_frames guard.
-        duration_box = [float(duration_s)]
-
-        def _prompt_rebuilder(tags: str, steps_now: int):
-            # Per-prompt re-conditioning (handle_set_prompt): the
-            # session's current duration, fresh T5Gemma capture + a
+        def _prompt_rebuilder(tags: str, steps_now: int, duration_now: float):
+            # Per-prompt re-conditioning (handle_set_prompt): a fresh
+            # T5Gemma capture at the duration the BACKEND says is live
+            # (create-time, or whatever a swap-resize committed) + a
             # schedule-builder factory closed over the NEW cond's
-            # sched_args.
+            # sched_args. The duration is passed in rather than closed
+            # over so the backend stays the single owner of the live
+            # geometry — a resize that fails downstream of its captures
+            # can then leave nothing behind to retarget later rebuilds.
             new_cond = context.prepare_cond(
-                prompt=tags, duration=duration_box[0], steps=steps_now,
+                prompt=tags, duration=float(duration_now), steps=steps_now,
             )
             return new_cond, (
                 lambda s, _c=new_cond: context.make_schedule_builder(_c, s)
@@ -535,9 +550,11 @@ class SA3Backend(DiffusionBackend):
                      tags_b: Optional[str], steps_now: int):
             # Render-geometry rebuild (handle_swap_source's resize path):
             # the same clamp + capture + DiT-selection recipe the create
-            # path runs (sa3_session), against the live prompt pair. The
-            # box is updated only after every capture succeeded, so a
-            # failed resize leaves prompt rebuilds on the old geometry.
+            # path runs (sa3_session), against the live prompt pair.
+            # PURE: nothing here mutates session state, so a failure
+            # anywhere in (or after) it leaves the old geometry whole —
+            # the backend commits the new duration only once the resize
+            # has fully landed.
             d = min(float(new_duration_s), SA3_MAX_DURATION_S)
             d = context.clamp_duration_for_trt(d, backend=dit_backend)
             new_cond = context.prepare_cond(
@@ -553,7 +570,6 @@ class SA3Backend(DiffusionBackend):
                 backend=dit_backend,
                 prefer_refittable=want_lora,
             )
-            duration_box[0] = d
             return d, new_cond, new_cond_b, new_dit, (
                 lambda s, _c=new_cond: context.make_schedule_builder(_c, s)
             )
@@ -835,6 +851,13 @@ class SA3Backend(DiffusionBackend):
             op, lora_id, (time.perf_counter() - t0) * 1000,
         )
 
+    def max_duration_s(self):
+        """The family's render ceiling — small-music generates at most a
+        120 s window. Read by the session's swap-resize path so the
+        clamp stays backend-owned (the resizer applies the same bound
+        to the request it conditions at)."""
+        return SA3_MAX_DURATION_S
+
     def playable_duration_s(self):
         # The conditioned song length, NOT cond.audio_sample_size /
         # SA3_SAMPLE_RATE: the render window carries duration_padding_sec
@@ -902,25 +925,36 @@ class SA3Backend(DiffusionBackend):
         # mutation of the conditioner's parametrizations (runner
         # rendezvous) must not interleave with this capture.
         with self._conditioner_lock:
-            cond, sched_factory = self._prompt_rebuilder(tags, self._steps)
+            # ``_duration_s`` is read under the same lock the resize
+            # path holds across its whole publish, so this capture can
+            # never straddle a geometry change.
+            cond, sched_factory = self._prompt_rebuilder(
+                tags, self._steps, self._duration_s,
+            )
         rebuild_ms = (time.perf_counter() - t0) * 1000
         if int(cond.latent_frames) != int(self._cond.latent_frames):
-            # Duration is fixed for the session lifetime, so the latent
-            # geometry must hold: a mismatch would desync the ring
-            # buffer, the source anchor, and the cond bundle.
+            # A prompt swap never changes geometry — it captures at the
+            # live ``_duration_s``, which only ``handle_swap_source``'s
+            # resize path moves (and only atomically with ``_cond``). A
+            # mismatch here means those two drifted apart, which would
+            # desync the ring buffer, the source anchor, and the cond
+            # bundle.
             raise ValueError(
                 f"sa3 prompt swap changed latent_frames "
-                f"({self._cond.latent_frames} -> {cond.latent_frames}); "
-                f"duration is fixed per session"
+                f"({self._cond.latent_frames} -> {cond.latent_frames}) at "
+                f"duration_s={self._duration_s:.1f}; geometry only moves "
+                f"through a swap-resize"
             )
         if tags_b and tags_b != tags:
             with self._conditioner_lock:
-                cond_b, _ = self._prompt_rebuilder(tags_b, self._steps)
+                cond_b, _ = self._prompt_rebuilder(
+                    tags_b, self._steps, self._duration_s,
+                )
             if int(cond_b.latent_frames) != int(cond.latent_frames):
                 raise ValueError(
                     f"sa3 prompt-B swap changed latent_frames "
                     f"({cond.latent_frames} -> {cond_b.latent_frames}); "
-                    f"duration is fixed per session"
+                    f"the A/B pair must share one geometry"
                 )
         else:
             cond_b = cond
@@ -997,119 +1031,166 @@ class SA3Backend(DiffusionBackend):
                 "SA3Backend was constructed without a source_encoder; "
                 "handle_swap_source requires the from_context assembly"
             )
+        if duration_s is not None and self._resizer is None:
+            raise RuntimeError(
+                "SA3Backend was constructed without a resizer; "
+                "swap-resize requires the from_context assembly"
+            )
         new_geom = None
-        if duration_s is not None:
-            if self._resizer is None:
-                raise RuntimeError(
-                    "SA3Backend was constructed without a resizer; "
-                    "swap-resize requires the from_context assembly"
-                )
-            t0 = time.perf_counter()
-            # Conditioner EXECUTION under the D5 lock, exactly like
-            # handle_set_prompt: a concurrent LoRA mutation of the
-            # conditioner's parametrizations must not interleave with
-            # these captures.
-            with self._conditioner_lock:
+        dropped_mirror = False
+        degraded_to_eager = False
+        # A RESIZE holds the D5 conditioner lock across its whole span —
+        # captures, encode AND publish — where handle_set_prompt holds it
+        # for the captures alone. Both extra reasons are about a
+        # handle_set_prompt racing this on the command thread:
+        #   * its capture must not read _duration_s and _cond from
+        #     opposite sides of the change, which would trip its own
+        #     latent_frames guard on a perfectly ordinary prompt swap;
+        #   * a prompt swap that published INTO the gap would be silently
+        #     reverted by the captures this resize already took against
+        #     the pre-swap _tags_a.
+        # Lock order is conditioner -> control, the only nesting in this
+        # class (handle_set_prompt takes them strictly one after the
+        # other). A PLAIN swap enters neither and stays byte-identical to
+        # the pre-resize path.
+        with ExitStack() as resize_guard:
+            if duration_s is not None:
+                resize_guard.enter_context(self._conditioner_lock)
+                t0 = time.perf_counter()
                 d, cond, cond_b, dit, sched_factory = self._resizer(
                     float(duration_s), self._tags_a or "",
                     self._tags_b, self._steps,
                 )
-            resize_ms = (time.perf_counter() - t0) * 1000
-            if int(cond.latent_frames) == int(self._cond.latent_frames):
-                # The request lands on the geometry we already have
-                # (clamped to the same window, or within one latent
-                # frame): keep the session exactly as-is and take the
-                # cheap re-anchor path below. The fresh captures are
-                # dropped — publishing them would only churn the cond
-                # epoch for a no-op.
-                logger.info(
-                    "sa3_swap_resize_noop requested_s={:.1f} playable_s={:.1f}",
-                    float(duration_s), self._playable_s,
-                )
-            else:
-                new_geom = {
-                    "duration_s": d, "cond": cond, "cond_b": cond_b,
-                    "dit": dit, "sched_factory": sched_factory,
-                }
-                logger.info(
-                    "sa3_swap_resize requested_s={:.1f} duration_s={:.1f} "
-                    "latent_frames={}->{} rebuild_ms={:.1f}",
-                    float(duration_s), d, int(self._cond.latent_frames),
-                    int(cond.latent_frames), resize_ms,
-                )
+                resize_ms = (time.perf_counter() - t0) * 1000
+                if int(cond.latent_frames) == int(self._cond.latent_frames):
+                    # The request lands on the geometry we already have
+                    # (clamped to the same window, or within one latent
+                    # frame): keep the session exactly as-is — including
+                    # _duration_s — and take the cheap re-anchor path
+                    # below. The fresh captures are dropped; publishing
+                    # them would only churn the cond epoch for a no-op.
+                    logger.info(
+                        "sa3_swap_resize_noop requested_s={:.1f} "
+                        "playable_s={:.1f}",
+                        float(duration_s), self._playable_s,
+                    )
+                else:
+                    new_geom = {
+                        "duration_s": d, "cond": cond, "cond_b": cond_b,
+                        "dit": dit, "sched_factory": sched_factory,
+                    }
+                    logger.info(
+                        "sa3_swap_resize requested_s={:.1f} duration_s={:.1f} "
+                        "latent_frames={}->{} rebuild_ms={:.1f}",
+                        float(duration_s), d, int(self._cond.latent_frames),
+                        int(cond.latent_frames), resize_ms,
+                    )
 
-        sample_size = int(
-            (new_geom["cond"] if new_geom else self._cond).audio_sample_size
-        )
-        t0 = time.perf_counter()
-        # Encode BEFORE publishing any geometry: if this raises, the
-        # session keeps its previous consistent state end to end (the
-        # session layer publishes SwapFailed and nothing moved).
-        latent_bct = self._source_encoder(waveform, sample_rate, sample_size)
-        encode_ms = (time.perf_counter() - t0) * 1000
-        latent_btc = latent_bct.movedim(1, 2).contiguous()
-        dropped_mirror = False
-        # Publish atomically w.r.t. the command thread's conditioning
-        # swaps (same lock discipline as handle_set_prompt); the runner
-        # reads the anchor on its own thread, which is also the thread
-        # calling this hook.
-        with self._control_lock:
+            # Read unlocked: audio_sample_size is invariant for a given
+            # geometry (handle_set_prompt's guard enforces exactly that),
+            # and a resize can't be racing us — either we hold the
+            # conditioner lock above, or no geometry change is in play.
+            sample_size = int(
+                (new_geom["cond"] if new_geom else self._cond).audio_sample_size
+            )
+            t0 = time.perf_counter()
+            # Encode BEFORE publishing any geometry: if this raises, the
+            # session keeps its previous consistent state end to end (the
+            # session layer publishes SwapFailed and nothing moved). The
+            # resizer is pure, so there is nothing of the new geometry to
+            # roll back here.
+            latent_bct = self._source_encoder(waveform, sample_rate, sample_size)
+            encode_ms = (time.perf_counter() - t0) * 1000
+            latent_btc = latent_bct.movedim(1, 2).contiguous()
+            # Publish atomically w.r.t. the command thread's conditioning
+            # swaps (same lock discipline as handle_set_prompt); the runner
+            # reads the anchor on its own thread, which is also the thread
+            # calling this hook.
+            with self._control_lock:
+                if new_geom is not None:
+                    self._cond = new_geom["cond"]
+                    self._cond_b = (
+                        new_geom["cond_b"] if new_geom["cond_b"] is not None
+                        else new_geom["cond"]
+                    )
+                    self._active_bundle = self._blend_bundles(self._blend)
+                    self._schedule_builder_factory = new_geom["sched_factory"]
+                    # New window, new (possibly eager-fallback) DiT: publish
+                    # both the accelerated reference and the live one, then
+                    # let the D6a sync below re-assert the LoRA-active eager
+                    # preference. The refit mirror wrapped the OLD engine —
+                    # it cannot survive a geometry change; dropping it
+                    # degrades LoRA to the eager-DiT swap (weights still
+                    # live on the shared torch modules via the manager).
+                    # The outgoing wrapper is released by refcount: nothing
+                    # else holds it once the pipeline below is rebuilt, and
+                    # its TRT execution context + device buffers go with it.
+                    degraded_to_eager = (
+                        self._dit_eager is not None
+                        and new_geom["dit"] is self._dit_eager
+                        and self._dit_accel is not self._dit_eager
+                    )
+                    self._dit_accel = new_geom["dit"]
+                    self.adapter.dit = new_geom["dit"]
+                    if self._refit_mirror is not None:
+                        self._refit_mirror = None
+                        dropped_mirror = True
+                    window_s = self._cond.audio_sample_size / SA3_SAMPLE_RATE
+                    # Commit the new geometry LAST-ish, and only here:
+                    # _duration_s and _cond move together under one lock,
+                    # so a prompt rebuild can never capture at a duration
+                    # the live cond doesn't match.
+                    self._duration_s = new_geom["duration_s"]
+                    self._playable_s = min(self._duration_s, window_s)
+                    # Emerged-generation labeling, as in handle_set_prompt:
+                    # the resized bundle gets the next cond epoch.
+                    self._cond_epoch += 1
+                    self._cond_history.append(
+                        (self._cond.cond_bundle, self._cond_epoch, self._tags_a),
+                    )
+                    del self._cond_history[:-4]
+                    # Old-geometry render cache cannot be sliced into the
+                    # new window.
+                    self._rendered_for = None
+                    self._rendered_48k = None
+                    # Rebuild the ring at the new schedule/geometry — this
+                    # also structurally drops every in-flight old-geometry
+                    # slot (their latents have the wrong shape for the new
+                    # window and must never emerge).
+                    self.pipeline = self._build_pipeline(self._steps)
+                self._source_latent_btc = latent_btc
+                self._latent_history.clear()
+                # The cached latent is a cover of the old source. Rendering it
+                # at the new source's playhead (gap-fill, DiT-pause reuse)
+                # would play the previous song over the new one until the
+                # first new-anchor slot emerges; without it the runner writes
+                # nothing and the client plays the swapped-in source instead.
+                self._last_result_latent = None
+                self._current_result = None
             if new_geom is not None:
-                self._cond = new_geom["cond"]
-                self._cond_b = (
-                    new_geom["cond_b"] if new_geom["cond_b"] is not None
-                    else new_geom["cond"]
-                )
-                self._active_bundle = self._blend_bundles(self._blend)
-                self._schedule_builder_factory = new_geom["sched_factory"]
-                # New window, new (possibly eager-fallback) DiT: publish
-                # both the accelerated reference and the live one, then
-                # let the D6a sync below re-assert the LoRA-active eager
-                # preference. The refit mirror wrapped the OLD engine —
-                # it cannot survive a geometry change; dropping it
-                # degrades LoRA to the eager-DiT swap (weights still
-                # live on the shared torch modules via the manager).
-                self._dit_accel = new_geom["dit"]
-                self.adapter.dit = new_geom["dit"]
-                if self._refit_mirror is not None:
-                    self._refit_mirror = None
-                    dropped_mirror = True
-                window_s = self._cond.audio_sample_size / SA3_SAMPLE_RATE
-                self._playable_s = min(new_geom["duration_s"], window_s)
-                # Emerged-generation labeling, as in handle_set_prompt:
-                # the resized bundle gets the next cond epoch.
-                self._cond_epoch += 1
-                self._cond_history.append(
-                    (self._cond.cond_bundle, self._cond_epoch, self._tags_a),
-                )
-                del self._cond_history[:-4]
-                # Old-geometry render cache cannot be sliced into the
-                # new window.
-                self._rendered_for = None
-                self._rendered_48k = None
-                # Rebuild the ring at the new schedule/geometry — this
-                # also structurally drops every in-flight old-geometry
-                # slot (their latents have the wrong shape for the new
-                # window and must never emerge).
-                self.pipeline = self._build_pipeline(self._steps)
-            self._source_latent_btc = latent_btc
-            self._latent_history.clear()
-            # The cached latent is a cover of the old source. Rendering it
-            # at the new source's playhead (gap-fill, DiT-pause reuse)
-            # would play the previous song over the new one until the
-            # first new-anchor slot emerges; without it the runner writes
-            # nothing and the client plays the swapped-in source instead.
-            self._last_result_latent = None
-            self._current_result = None
+                # Re-assert the D6a preference against the NEW accelerated
+                # DiT (LoRA active -> eager module, which is size-agnostic).
+                # Still under the conditioner lock, so the adapter's DiT
+                # can't be read half-swapped by a LoRA rendezvous.
+                self._sync_dit_for_lora()
+
         if dropped_mirror:
             logger.warning(
                 "sa3_refit_mirror_dropped reason=swap_resize (LoRA falls "
                 "back to the eager-DiT swap for the rest of the session)"
             )
-        if new_geom is not None:
-            # Re-assert the D6a preference against the NEW accelerated
-            # DiT (LoRA active -> eager module, which is size-agnostic).
-            self._sync_dit_for_lora()
+        if degraded_to_eager:
+            # No built engine covers the new latent window, so make_dit
+            # handed back the eager module (~5x slower per step). The
+            # session runs degraded from here; without this line the only
+            # trace is an INFO deep inside make_dit, and "the pod got slow
+            # after a swap" is unanswerable from the logs.
+            logger.warning(
+                "sa3_dit_deaccelerated reason=swap_resize duration_s={:.1f} "
+                "latent_frames={} (no TRT engine covers the resized window; "
+                "the session falls back to the eager DiT)",
+                self._duration_s, int(self._cond.latent_frames),
+            )
         logger.info(
             "sa3_source_swapped samples={} sample_rate={} encode_ms={:.1f}"
             " resized={}",

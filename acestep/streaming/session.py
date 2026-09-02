@@ -1187,6 +1187,16 @@ class StreamingSession:
                 handle, new_wf, new_fixture_name, new_duration_s,
             )
             return
+        if new_duration_s:
+            # The ACE body below re-derives its geometry from the new
+            # source unconditionally, so a resize request has nothing to
+            # ask for — but say so rather than dropping the field on the
+            # floor (the backend-owned path logs the same way when the
+            # capability is off).
+            logger.info(
+                "swap_duration_ignored backend={} reason=geometry_follows_source",
+                self.backend.name,
+            )
 
         # Initialized to None so the finally below can None-guard
         # cleanly in the (rare) case an exception fires between the
@@ -1445,11 +1455,16 @@ class StreamingSession:
             # new source isn't pre-cut back to the old geometry before
             # the backend ever sees it (the backend clamps the request
             # to its own caps; the buffer pad/truncate below re-aligns).
+            # The ceiling itself is backend-owned (``max_duration_s``,
+            # optional like every other family hook here) — this body
+            # stays free of family constants.
             cap_s = self.max_seconds
             if resize_s is not None:
-                from acestep.streaming.sa3_backend import SA3_MAX_DURATION_S
-
-                cap_s = max(cap_s, min(resize_s, SA3_MAX_DURATION_S))
+                read_cap = getattr(self.backend, "max_duration_s", None)
+                ceiling = read_cap() if read_cap is not None else None
+                cap_s = max(
+                    cap_s, min(resize_s, ceiling) if ceiling else resize_s,
+                )
             wf = new_wf[:, : int(cap_s * SAMPLE_RATE)].float()
             if wf.shape[0] == 1:
                 # Stereo delivery geometry (sa3_session create parity):
