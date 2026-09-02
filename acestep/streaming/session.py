@@ -1163,6 +1163,7 @@ class StreamingSession:
                 state.swap_pending.get("stem_source_mode"),
                 known_fixtures=KNOWN_FIXTURES,
             )
+            new_duration_s = state.swap_pending.get("duration_s")
             if new_wf is None:
                 return
             state.swap_pending["waveform"] = None
@@ -1172,6 +1173,7 @@ class StreamingSession:
             state.swap_pending["time_signature"] = None
             state.swap_pending["fixture_name"] = None
             state.swap_pending["stem_source_mode"] = None
+            state.swap_pending["duration_s"] = None
 
         # Backend control hook (universal op, family-specific
         # implementation, the handle_set_prompt convention): a backend
@@ -1181,7 +1183,9 @@ class StreamingSession:
         # defines no hook — byte-identical path.
         handle = getattr(self.backend, "handle_swap_source", None)
         if handle is not None:
-            self._apply_swap_backend_owned(handle, new_wf, new_fixture_name)
+            self._apply_swap_backend_owned(
+                handle, new_wf, new_fixture_name, new_duration_s,
+            )
             return
 
         # Initialized to None so the finally below can None-guard
@@ -1405,21 +1409,48 @@ class StreamingSession:
                 except Exception:
                     pass
 
-    def _apply_swap_backend_owned(self, handle, new_wf, fixture_name) -> None:
-        """Fixed-geometry swap for backends that own their source anchor
-        (the ``handle_swap_source`` hook — SA3). None of the ACE body
-        applies: no TRT profile management (the render geometry is fixed
-        for the session), no BPM/key detection or conditioning re-encode
-        (the backend owns conditioning; nullable metadata per the
-        capability mask), no stem extraction or canvas (both
-        capability-gated off). The backend re-encodes its anchor at the
-        session's fixed duration; the client buffer becomes the new
-        source padded/truncated to the UNCHANGED playback geometry.
+    def _apply_swap_backend_owned(
+        self, handle, new_wf, fixture_name, duration_s=None,
+    ) -> None:
+        """Swap for backends that own their source anchor (the
+        ``handle_swap_source`` hook — SA3). None of the ACE body
+        applies: no TRT profile management, no BPM/key detection or
+        conditioning re-encode (the backend owns conditioning; nullable
+        metadata per the capability mask), no stem extraction or canvas
+        (both capability-gated off). The backend re-encodes its anchor;
+        by default at the session's fixed create-time geometry, with the
+        client buffer padded/truncated to the UNCHANGED playback length.
+
+        ``duration_s`` — honored only when the backend declares
+        ``swap_resize`` — asks the backend to re-derive its render
+        geometry for the new source instead (fresh conditioning + DiT +
+        pipeline at the new window); the hook then returns the new
+        playback length and the session's duration/buffer follow it, so
+        ``SwapReady`` carries the RESIZED geometry to the client.
         Publishes :class:`SwapReady` / :class:`SwapFailed` like the ACE
         body. Runner thread (before_tick), like everything above."""
         state = self.state
         try:
-            wf = new_wf[:, : int(self.max_seconds * SAMPLE_RATE)].float()
+            resize_s = None
+            if duration_s:
+                if getattr(self.backend.capabilities(), "swap_resize", False):
+                    resize_s = float(duration_s)
+                else:
+                    logger.info(
+                        "swap_duration_ignored backend={} reason=no_swap_resize",
+                        self.backend.name,
+                    )
+            # The truncation ceiling: the session's playable length —
+            # lifted to the requested window on a resize, so a LONGER
+            # new source isn't pre-cut back to the old geometry before
+            # the backend ever sees it (the backend clamps the request
+            # to its own caps; the buffer pad/truncate below re-aligns).
+            cap_s = self.max_seconds
+            if resize_s is not None:
+                from acestep.streaming.sa3_backend import SA3_MAX_DURATION_S
+
+                cap_s = max(cap_s, min(resize_s, SA3_MAX_DURATION_S))
+            wf = new_wf[:, : int(cap_s * SAMPLE_RATE)].float()
             if wf.shape[0] == 1:
                 # Stereo delivery geometry (sa3_session create parity):
                 # upmix a mono upload rather than hand the backend a
@@ -1427,19 +1458,31 @@ class StreamingSession:
                 wf = wf.repeat(2, 1)
             logger.info(
                 "source_swap_start backend_owned={} duration_s={:.1f} "
-                "channels={} fixture_name={}",
+                "channels={} fixture_name={} resize_s={}",
                 self.backend.name, wf.shape[-1] / SAMPLE_RATE,
-                wf.shape[0], fixture_name,
+                wf.shape[0], fixture_name, resize_s,
             )
-            handle(wf, SAMPLE_RATE)
+            new_playback = (
+                handle(wf, SAMPLE_RATE, duration_s=resize_s)
+                if resize_s is not None else handle(wf, SAMPLE_RATE)
+            )
 
             # Fresh client buffer: the (truncated) new source at the
-            # delivery rate, zero-padded out to the session's fixed
-            # render geometry — the same shape the create path shipped,
-            # so the runner keeps patching windows into a matching
-            # buffer and the wire duration doesn't move.
+            # delivery rate, zero-padded out to the session's render
+            # geometry — unchanged for a plain swap (the create-time
+            # shape, so the wire duration doesn't move), the backend's
+            # returned length after a resize.
             src_np = wf.cpu().numpy().T.copy()   # [N, C] float32
             with state._lock:
+                if new_playback:
+                    state.playback_samples = int(new_playback)
+                    state.duration = new_playback / SAMPLE_RATE
+                    # Later swap truncation follows the new window
+                    # (the same role max_seconds plays from create).
+                    self.max_seconds = float(
+                        self.backend.playable_duration_s()
+                        or state.duration,
+                    )
                 n_play = int(state.playback_samples)
                 if src_np.shape[0] < n_play:
                     src_np = np.concatenate([
@@ -2387,11 +2430,20 @@ class StreamingSession:
         time_signature: str | None = None,
         fixture_name: str | None = None,
         stem_source_mode: str | None = None,
+        duration_s: float | int | None = None,
         origin: CommandOrigin = CommandOrigin.PRIMARY,
     ) -> None:
         """Stage a source swap. The runner applies it inside
         ``before_tick``; publishes :class:`SwapReady` or
-        :class:`SwapFailed` when the swap completes."""
+        :class:`SwapFailed` when the swap completes.
+
+        ``duration_s`` is the opt-in swap-resize request (wire field of
+        the same name): a backend declaring ``swap_resize`` re-derives
+        its render geometry for the new source instead of
+        padding/truncating it into the session-create window. Ignored —
+        loudly — when the backend doesn't declare the capability, so a
+        legacy pod and a new client stay compatible in both directions.
+        """
         state = self.state
         state.last_activity_ts = time.monotonic()
         # Placement belongs to the old source's coordinate space. Clear as
@@ -2412,6 +2464,11 @@ class StreamingSession:
             state.swap_pending["stem_source_mode"] = normalize_stem_source_mode(
                 stem_source_mode,
             )
+            try:
+                dur = float(duration_s) if duration_s is not None else None
+            except (TypeError, ValueError):
+                dur = None
+            state.swap_pending["duration_s"] = dur if dur and dur > 0 else None
 
     @requires_capability("write_audio", "write_audio")
     def write_audio(

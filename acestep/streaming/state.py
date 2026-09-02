@@ -39,6 +39,9 @@ def _default_swap_pending() -> dict:
         "time_signature": None,
         "fixture_name": None,
         "stem_source_mode": None,
+        # Opt-in swap-resize request (wire ``duration_s``): the render
+        # window to re-derive for the new source, None = keep geometry.
+        "duration_s": None,
     }
 
 

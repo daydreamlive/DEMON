@@ -144,6 +144,15 @@ class Capabilities:
 
     refines_audio: bool = False
     swap: bool = False
+    # ``swap_source`` accepts an optional ``duration_s``: the backend
+    # re-derives its render geometry for the new source instead of
+    # padding/truncating it into the window frozen at session create.
+    # Meaningful only alongside ``swap``; backends whose swap already
+    # follows the source length (ACE) leave it False — there the resize
+    # is implicit and the field would promise nothing new. Clients use
+    # this bit to skip the disconnect→reconnect they otherwise need for
+    # a different-length source (the DreamSampler resize-reconnect).
+    swap_resize: bool = False
     timbre: bool = False
     structure: bool = False
     write_audio: bool = False

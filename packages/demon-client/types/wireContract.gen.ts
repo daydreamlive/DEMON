@@ -267,6 +267,8 @@ export interface SwapSourceCommand {
   stem_source_mode?: "full" | "vocals" | "instruments";
   /** When true, the server loads the named source off its own disk and NO binary frame is sent. */
   use_server_source?: boolean;
+  /** Opt-in swap-resize: the render window (s) to re-derive for the new source, on backends whose geometry is otherwise frozen at session create (SA3). Honored only when ready's capabilities declare swap_resize — the session then re-conditions at the new duration and swap_ready carries the RESIZED duration + buffer. Absent/ignored = the legacy fixed-geometry swap (source padded/truncated into the old window). */
+  duration_s?: number | null;
 }
 
 export interface WriteAudioCommand {

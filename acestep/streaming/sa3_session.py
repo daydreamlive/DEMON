@@ -37,7 +37,6 @@ consumes the construction payload this module stashes via
 
 from __future__ import annotations
 
-import math
 import threading
 
 import numpy as np
@@ -46,15 +45,13 @@ from acestep.engine.obs import logger
 from acestep.streaming.knobs import KnobState
 from acestep.streaming.sa3_backend import (
     DELIVERY_SAMPLE_RATE,
+    SA3_MAX_DURATION_S,
     SA3_SAMPLE_RATE,
+    delivered_samples as _delivered_samples,
     sa3_knob_specs,
 )
 from acestep.streaming.source import SAMPLE_RATE
 from acestep.streaming.state import SessionState
-
-# small-music generates at most a 120 s window (sample_size 5292032 at
-# 44.1 kHz); longer sources are anchored by their first 120 s.
-SA3_MAX_DURATION_S = 120.0
 
 # Ring-buffer depth ceiling. The eager SA3 pipeline has no TRT batch
 # profile to read a cap from; depth 8 is what the spike stress demo
@@ -84,16 +81,6 @@ def get_sa3_context(model_id: str):
             context = SA3Context(model_id)
             _CONTEXTS[model_id] = context
         return context
-
-
-def _delivered_samples(n_44k: int) -> int:
-    """48 kHz sample count of the backend's delivery resample for an
-    ``n_44k``-sample native decode — mirrors torchaudio's
-    ``ceil(new * n / orig)`` (gcd-reduced) so the audio engine buffer
-    and the rendered windows agree on geometry to the sample."""
-    g = math.gcd(DELIVERY_SAMPLE_RATE, SA3_SAMPLE_RATE)
-    new, orig = DELIVERY_SAMPLE_RATE // g, SA3_SAMPLE_RATE // g
-    return -(-new * n_44k // orig)
 
 
 def _resolve_accel(value: str, component: str) -> str:
