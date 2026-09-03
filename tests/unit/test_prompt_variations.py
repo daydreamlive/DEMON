@@ -219,3 +219,90 @@ class TestDownloadResidue:
         ok, msg = md.download_prompt_enhancer_model(target)
         assert ok is False and "no network" in msg
         assert not target.exists(), "an empty dir reads as a staged checkpoint"
+
+
+class TestPrefixAlwaysFreesSomething:
+    """Away from home is away from home."""
+
+    def test_any_positive_distance_frees_at_least_one_token(self):
+        # On a short line round(amount * MAX_FREE * n) was 0 for the first few
+        # stops: the whole anchor forced, the sampler never consulted, a dead
+        # ring around home that widened as prompts got shorter.
+        ids = list(range(6))
+        assert pv._prefix_for(ids, 1 / (pv.STOPS - 1)) == ids[:-1]
+        assert pv._prefix_for(ids, 0.0) == ids
+
+    def test_cut_snaps_back_to_a_word_start(self):
+        # Tokens 3 and 4 are pieces of one word (only 3 starts it). A cut that
+        # would free from token 4 must free from token 3 instead, so the fork
+        # replaces the whole word rather than gluing a new piece onto half of
+        # it -- "phras" + "al".
+        ids = list(range(6))
+        starts = [True, True, True, True, False, True]
+        # amount chosen so free == 2 -> keep == 4 -> not a word start -> 3
+        got = pv._prefix_for(ids, 0.6, starts)
+        assert got == ids[:3]
+        # A cut already on a word start is untouched.
+        assert pv._prefix_for(ids, 0.6, [True] * 6) == ids[:4]
+
+    def test_snap_never_runs_past_the_head(self):
+        ids = list(range(4))
+        assert pv._prefix_for(ids, 0.6, [False] * 4) == []
+
+
+class TestFork:
+    """The first free token: never the greedy one, distinct per lane."""
+
+    torch = pytest.importorskip("torch")
+
+    def test_allowed_mask_shorter_than_the_logits_is_padded(self):
+        # The checkpoint's embedding table is 32128 wide, its tokenizer 32100:
+        # the first run indexed a 32100 mask into 32128 logits and raised.
+        t = self.torch
+        allowed = t.ones(40, dtype=t.bool)
+        toks = pv._fork_tokens(t, self._logits(n=50), rows=4, amount=0.5, allowed=allowed)
+        assert len(set(toks)) == 4 and max(toks) < 40
+
+    def _logits(self, n=50, peak=7):
+        t = self.torch
+        x = t.linspace(-3.0, 3.0, n)
+        x[peak] = 20.0            # an overwhelmingly confident greedy token
+        return x
+
+    def test_greedy_is_never_chosen_and_lanes_are_distinct(self):
+        toks = pv._fork_tokens(self.torch, self._logits(), rows=12, amount=0.1)
+        assert 7 not in toks
+        assert len(set(toks)) == 12
+
+    def test_banned_ids_are_never_chosen(self):
+        toks = pv._fork_tokens(self.torch, self._logits(), rows=12, amount=0.5,
+                               banned=(0, 1, 49, None))
+        assert not {0, 1, 49} & set(toks)
+
+    def test_allowed_mask_restricts_to_word_starts(self):
+        t = self.torch
+        allowed = t.zeros(50, dtype=t.bool)
+        allowed[[10, 11, 12, 13]] = True
+        toks = pv._fork_tokens(t, self._logits(), rows=3, amount=0.5, allowed=allowed)
+        assert set(toks) <= {10, 11, 12, 13}
+        assert len(set(toks)) == 3
+
+    def test_deterministic_under_the_same_seed(self):
+        t = self.torch
+        t.manual_seed(123)
+        a = pv._fork_tokens(t, self._logits(), rows=12, amount=0.9)
+        t.manual_seed(123)
+        b = pv._fork_tokens(t, self._logits(), rows=12, amount=0.9)
+        assert a == b
+
+    def test_more_lanes_than_candidates_keeps_the_shape(self):
+        t = self.torch
+        toks = pv._fork_tokens(t, self._logits(n=5, peak=2), rows=12, amount=0.5)
+        assert len(toks) == 12
+        assert 2 not in toks
+
+    def test_all_banned_falls_back_rather_than_raising(self):
+        t = self.torch
+        toks = pv._fork_tokens(t, self._logits(n=3, peak=1), rows=2, amount=0.5,
+                               banned=(0, 1, 2))
+        assert len(toks) == 2
