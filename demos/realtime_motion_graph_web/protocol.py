@@ -469,6 +469,17 @@ COMMANDS: tuple = (
                       description="When true, the server loads the named source "
                                   "off its own disk and NO binary frame is "
                                   "sent."),
+            FieldSpec("duration_s", "float", nullable=True,
+                      description="Opt-in swap-resize: the render window (s) to "
+                                  "re-derive for the new source, on backends "
+                                  "whose geometry is otherwise frozen at session "
+                                  "create (SA3). Honored only when ready's "
+                                  "capabilities declare swap_resize — the "
+                                  "session then re-conditions at the new "
+                                  "duration and swap_ready carries the RESIZED "
+                                  "duration + buffer. Absent/ignored = the "
+                                  "legacy fixed-geometry swap (source padded/"
+                                  "truncated into the old window)."),
         ),
         binary=True,
         binary_optional=True,

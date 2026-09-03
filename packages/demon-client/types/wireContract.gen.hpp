@@ -191,6 +191,8 @@ namespace command {
     inline constexpr const char* kStemSourceMode = "stem_source_mode";
     /** When true, the server loads the named source off its own disk and NO binary frame is sent. */
     inline constexpr const char* kUseServerSource = "use_server_source";
+    /** Opt-in swap-resize: the render window (s) to re-derive for the new source, on backends whose geometry is otherwise frozen at session create (SA3). Honored only when ready's capabilities declare swap_resize — the session then re-conditions at the new duration and swap_ready carries the RESIZED duration + buffer. Absent/ignored = the legacy fixed-geometry swap (source padded/truncated into the old window). */
+    inline constexpr const char* kDurationS = "duration_s";
 
     namespace stem_source_mode {
       inline constexpr const char* kFull = "full";

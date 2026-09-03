@@ -1959,6 +1959,7 @@ def _handle_client_body(
                     time_signature=data.get("time_signature"),
                     fixture_name=data.get("fixture_name"),
                     stem_source_mode=data.get("stem_source_mode"),
+                    duration_s=data.get("duration_s"),
                     origin=origin,
                 )
             elif mtype == "write_audio":
