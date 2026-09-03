@@ -70,6 +70,10 @@ def _make_sa3(ss):
     return SA3Backend.from_context(
         init["context"],
         prompt=ss.state.prompt_text,
+        # The live B prompt seeds the backend's tag pair: a swap-resize
+        # re-captures conditioning for BOTH prompts, and without this a
+        # resize before any set_prompt would collapse the A/B blend to A.
+        prompt_b=ss.state.prompt_text_b,
         duration_s=float(init["duration_s"]),
         knob_state=ss.virtual_knobs,
         state=ss.state,
