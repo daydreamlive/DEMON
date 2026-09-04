@@ -293,6 +293,8 @@ export interface InitAckEvent {
   session_id?: string;
   /** The config client_id echoed back, or null when the client sent none. */
   client_id?: string | null;
+  /** This server understands config.text_only (pure text-to-audio, no source upload). Absent on servers that predate it. This is the ONLY pre-upload capability signal: it lands after config parse but before the audio recv, which is exactly when a client must decide whether to send a PCM frame. */
+  supports_text_only?: boolean;
 }
 
 export interface ReadyEvent {
@@ -495,6 +497,8 @@ export interface SessionConfigPayload {
   client_id?: string | null;
   backend?: string;
   sa3_duration_s?: number | null;
+  text_only?: boolean;
+  telemetry_version?: number | null;
   // SessionConfig is permissive; extras pass through.
   [k: string]: unknown;
 }

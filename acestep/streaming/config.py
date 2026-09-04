@@ -72,6 +72,25 @@ class SessionConfig:
     # this is fixed for the session lifetime.
     sa3_duration_s: float | None = None
 
+    # Pure text-to-audio: generate from the prompt alone, with NO source
+    # audio uploaded. The client sends no binary PCM frame, so the adapter
+    # must not block waiting for one — it synthesises a silent anchor at
+    # ``sa3_duration_s`` instead.
+    #
+    # Only honoured alongside ``telemetry_version``. A client that did not
+    # opt into ``init_ack`` never saw this server advertise
+    # ``supports_text_only``, so it cannot know the frame is optional and
+    # must still be sending one; consuming that frame is the only safe
+    # reading. See the adapter's session_init for the full handshake.
+    text_only: bool = False
+
+    # Opt-in to the ``init_ack`` telemetry/capability ack (any truthy value).
+    # Read straight off the raw config dict by the adapter; declared here so
+    # it reaches the generated wire contract that the C++ and TS clients
+    # build their key constants from, rather than being spelled by hand at
+    # each call site.
+    telemetry_version: int | None = None
+
     @classmethod
     def from_dict(cls, data: dict) -> "SessionConfig":
         """Parse a raw config dict (as the WS adapter received it from

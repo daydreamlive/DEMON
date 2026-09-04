@@ -237,6 +237,8 @@ namespace event {
     inline constexpr const char* kSessionId = "session_id";
     /** The config client_id echoed back, or null when the client sent none. */
     inline constexpr const char* kClientId = "client_id";
+    /** This server understands config.text_only (pure text-to-audio, no source upload). Absent on servers that predate it. This is the ONLY pre-upload capability signal: it lands after config parse but before the audio recv, which is exactly when a client must decide whether to send a PCM frame. */
+    inline constexpr const char* kSupportsTextOnly = "supports_text_only";
   }  // namespace init_ack
 
   namespace ready {
@@ -447,6 +449,8 @@ namespace config {
   inline constexpr const char* kClientId = "client_id";
   inline constexpr const char* kBackend = "backend";
   inline constexpr const char* kSa3DurationS = "sa3_duration_s";
+  inline constexpr const char* kTextOnly = "text_only";
+  inline constexpr const char* kTelemetryVersion = "telemetry_version";
 }  // namespace config
 
 // ── Init-phase upload handshake ──
