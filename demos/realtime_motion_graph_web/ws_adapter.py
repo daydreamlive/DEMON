@@ -1359,6 +1359,16 @@ def _handle_client_body(
         "sent": 0, "acked": None, "drops": 0, "log_wall": 0.0,
     }
 
+    # Shedding is only safe when the writer re-covers every region each
+    # lap, which is exactly what capabilities.refines_audio declares. An
+    # append-only family (minimax) writes each region ONCE: a dropped
+    # slice there is a permanent hole in the client's tape, not a
+    # delayed update, so both shedding layers are bypassed and a slow
+    # link degrades to growing transport lag instead of gaps.
+    _slice_drop_safe = bool(
+        streaming.capabilities_payload().get("refines_audio", True)
+    )
+
     def _note_slice_drop(reason: str, detail: float) -> None:
         _slice_flow["drops"] += 1
         now = time.monotonic()
@@ -1377,7 +1387,7 @@ def _handle_client_body(
             event.published_wall_s > 0.0
             and event.num_samples < len(codec.mirror)
         )
-        if is_windowed:
+        if is_windowed and _slice_drop_safe:
             drop = _windowed_slice_drop_reason(
                 acked=_slice_flow["acked"],
                 sent=_slice_flow["sent"],

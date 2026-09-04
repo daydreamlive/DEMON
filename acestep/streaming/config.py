@@ -71,6 +71,26 @@ class SessionConfig:
     # anchor); SA3 conditioning is captured per (prompt, duration), so
     # this is fixed for the session lifetime.
     sa3_duration_s: float | None = None
+    # --- minimax_* family fields ---
+    # Rolling-window length for minimax sessions, seconds. MiniMax is an
+    # append-only autoregressive family, so this is the size of the tape
+    # the frontier overwrites and the player loops -- NOT a song length.
+    # The piece's real length is decided by the autoregressive stage,
+    # which emits an end-of-audio token when it is done (ceiling 9000
+    # frames at 25 Hz = 360 s); when it stops, the window keeps playing
+    # what has been written.
+    minimax_duration_s: float | None = None
+    # Lyrics for the minimax autoregressive stage. The checkpoint's
+    # tokenizer refuses an empty lyric outright, and upstream's own
+    # convention for "no singing" is the "[instrumental]" tag, which is
+    # the default here. This is a real conditioning input on a model
+    # that sings, not a formality.
+    minimax_lyrics: str | None = None
+    # Drive the autoregressive stage as a CUDA graph over a static KV
+    # cache (the default; 1.56x realtime and flat in context length)
+    # rather than the plain torch loop (0.77x and slowing with length).
+    # The plain loop exists for parity work against saved captures.
+    minimax_ar_graph: bool | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "SessionConfig":

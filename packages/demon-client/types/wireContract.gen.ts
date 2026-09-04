@@ -495,6 +495,9 @@ export interface SessionConfigPayload {
   client_id?: string | null;
   backend?: string;
   sa3_duration_s?: number | null;
+  minimax_duration_s?: number | null;
+  minimax_lyrics?: string | null;
+  minimax_ar_graph?: boolean | null;
   // SessionConfig is permissive; extras pass through.
   [k: string]: unknown;
 }
