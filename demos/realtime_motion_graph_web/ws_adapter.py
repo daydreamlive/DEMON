@@ -90,6 +90,7 @@ from acestep.streaming.session import (
     UnsupportedTrtCheckpointError,
 )
 from acestep.streaming import registry as session_registry
+from acestep.streaming.sa3_backend import SA3_MAX_DURATION_S
 from acestep.streaming.source import (
     _decode_audio_msg,
     _load_clip_waveform,
@@ -612,6 +613,50 @@ def _truncate_upload_waveform(waveform: torch.Tensor) -> torch.Tensor:
     return truncate_to_pool(waveform[:2, :max_samples])
 
 
+# Fallback window for a text-only session that declares no duration. Matches
+# the client's own default ask rather than the old 6 s carrier: the carrier's
+# length was the upload, never the render.
+TEXT_ONLY_DEFAULT_DURATION_S = 60.0
+
+
+def _text_only_requested(config_dict: dict) -> bool:
+    """Is this a pure text-to-audio session with no source upload coming?
+
+    Both keys are required, and the second one is the load-bearing half.
+    ``supports_text_only`` rides on ``init_ack``, which is emitted ONLY when
+    the config carries ``telemetry_version``. So a client without it never
+    saw the advert, cannot know the PCM frame is optional, and is therefore
+    still sending one — and a frame nobody reads desynchronises every
+    control message after it. When in doubt, read the frame.
+    """
+    return bool(config_dict.get("text_only")) and bool(
+        config_dict.get("telemetry_version"))
+
+
+def _silent_source_waveform(config_dict: dict) -> torch.Tensor:
+    """The null source anchor for a text-only session.
+
+    SA3 still needs a source to hang geometry off (sample rate, channels,
+    render window) even when nothing in it can reach the output: at
+    ``sa3_denoise`` 1.0 slot init is pure noise and ``source_latents`` never
+    enters. Synthesised at the REQUESTED render length so
+    ``source_duration_s`` and ``duration_s`` agree in sa3_session and the
+    session needs no render-beyond-source allowance.
+
+    Exact zeros, not the dithered near-silence the client used to upload:
+    there is no encoder that can hear this, and a client-side floor was only
+    ever hedging against a divide-by-peak we could not see from over there.
+    """
+    try:
+        dur = float(config_dict.get("sa3_duration_s") or 0.0)
+    except (TypeError, ValueError):
+        dur = 0.0
+    if dur <= 0.0:
+        dur = TEXT_ONLY_DEFAULT_DURATION_S
+    dur = max(1.0, min(dur, SA3_MAX_DURATION_S))
+    return torch.zeros(2, int(dur * SAMPLE_RATE), dtype=torch.float32)
+
+
 # BPM/key are global track properties; a centered window this long
 # estimates them as well as the full signal (measured identical on
 # 120 s material) at a fraction of the beat-tracker cost, and it caps
@@ -1122,11 +1167,15 @@ def _handle_client_body(
             logger.warning("user_uploads_wipe_at_session_end_failed error={}", exc)
 
     ctx_stack.callback(_wipe_on_session_end)
+    # Emitted BEFORE the audio recv below, which is the whole point:
+    # ``supports_text_only`` is how a client learns it may withhold the PCM
+    # frame, and that decision has to be made before it sends one.
     if config_dict.get("telemetry_version"):
         ws.send(json.dumps({
             "type": "init_ack",
             "session_id": session_id,
             "client_id": _client_id,
+            "supports_text_only": True,
         }))
 
     _t0 = time.monotonic()
@@ -1143,7 +1192,20 @@ def _handle_client_body(
     # download→decode→re-upload round-trip and read the waveform
     # straight from the pod's fixture cache.
     fixture_name = config_dict.get("fixture_name")
-    if config_dict.get("use_server_fixture") and fixture_name in KNOWN_FIXTURES:
+    # Pure text-to-audio: no PCM frame is coming, so recv'ing one would hang
+    # the session forever. Gated on telemetry_version because that is what
+    # made us send ``supports_text_only`` above: a client that never saw that
+    # advert cannot know the frame is optional, so it must still be sending
+    # one and we must still consume it. Old clients set neither key and take
+    # the unchanged path below.
+    if _text_only_requested(config_dict):
+        waveform = _silent_source_waveform(config_dict)
+        logger.info(
+            "text_only_session duration_s={:.1f} (no source upload)",
+            waveform.shape[1] / SAMPLE_RATE,
+        )
+        _ms("audio_text_only_synthesized")
+    elif config_dict.get("use_server_fixture") and fixture_name in KNOWN_FIXTURES:
         try:
             waveform = _load_known_fixture_waveform(fixture_name)
             _ms("audio_serverside_loaded")

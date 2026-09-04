@@ -546,6 +546,14 @@ EVENTS: tuple = (
             FieldSpec("client_id", "str", nullable=True,
                       description="The config client_id echoed back, or null "
                                   "when the client sent none."),
+            FieldSpec("supports_text_only", "bool",
+                      description="This server understands config.text_only "
+                                  "(pure text-to-audio, no source upload). "
+                                  "Absent on servers that predate it. This is "
+                                  "the ONLY pre-upload capability signal: it "
+                                  "lands after config parse but before the "
+                                  "audio recv, which is exactly when a client "
+                                  "must decide whether to send a PCM frame."),
         ),
         description="Optional telemetry ack emitted after config parse but "
                     "before audio/model init. Sent ONLY when the config opts "
