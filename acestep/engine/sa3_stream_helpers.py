@@ -73,6 +73,11 @@ def stack_sa3_cond_bundles(bundles: list[dict]) -> dict:
     return out
 
 
+# Upstream ``generate()``'s default render ceiling (120 s @ 44.1 kHz);
+# ``_adapt_sample_size`` shrinks the window to the requested duration.
+SA3_DEFAULT_SAMPLE_SIZE = 5292032
+
+
 @dataclass
 class SA3Conditioning:
     """Precomputed SA3 conditioning and schedule metadata for one prompt."""
@@ -81,6 +86,11 @@ class SA3Conditioning:
     sched_args: dict
     latent_frames: int
     audio_sample_size: int
+    # The ``seconds_total`` the conditioner was fed (the song-length
+    # LABEL, see prepare_sa3_conditioning). A TRT DiT rebuilds its
+    # seconds token from this scalar, so it must be handed the same
+    # value the eager cond bundle embeds. None on legacy constructions.
+    seconds_total: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -113,17 +123,44 @@ def prepare_sa3_conditioning(
     prompt: str,
     duration: float,
     steps: int,
-    sample_size: int = 5292032,
+    sample_size: int = SA3_DEFAULT_SAMPLE_SIZE,
     duration_padding_sec: float = 6.0,
     cfg_scale: float = 1.0,
     apg_scale: float = 1.0,
     dist_shift=None,
+    song_seconds_total: Optional[float] = None,
+    schedule_from_window: bool = False,
 ) -> SA3Conditioning:
     """Build SA3 conditioning without running the sampler.
 
     This mirrors ``StableAudioModel.generate`` up to the call into
     ``sample_diffusion`` and returns the exact DiT kwargs plus the schedule
     inputs needed by the streaming pipeline.
+
+    ``duration`` is the RENDER length: it sizes the latent window
+    (``audio_sample_size`` = duration + ``duration_padding_sec``, aligned).
+
+    ``song_seconds_total`` is what the model is TOLD the song is. Upstream
+    training (``PadCrop`` in ``stable_audio_3/data/utils.py``) labels every
+    example with the FULL file length, whatever the crop: a window cut from
+    a 200 s track is conditioned with ``seconds_total=200``, while a file
+    shorter than the window is zero-padded and conditioned with its own
+    length — so ``seconds_total == duration`` means "this is the whole
+    song, it ends here", and the model writes an outro (then silence; the
+    training config even extends examples with silence past the end).
+    Passing a song length LONGER than the window puts the render in the
+    other training regime — "a slice from the middle of a longer track"
+    — so no ending (and no intro) is composed at the loop boundary; the
+    attention padding mask then covers the whole window (a long-file crop
+    is fully valid in training too). None / ``<= duration`` keeps the
+    upstream ``generate()`` semantics (the label is the render duration).
+
+    ``schedule_from_window`` keeps the dist-shift timestep schedule
+    derived from the render length even when the label is longer.
+    Training shifted by the label-derived length (``diffusion.py``,
+    ``use_effective_length_for_schedule``), so False is the
+    training-consistent default; True is the A/B fallback if the longer
+    label moves the denoise dial's feel.
     """
     from stable_audio_3.data.utils import (
         compute_effective_seq_len_from_conditioning,
@@ -131,11 +168,18 @@ def prepare_sa3_conditioning(
     )
 
     device = str(sam.device)
+    duration = float(duration)
+    label_seconds = duration
+    if song_seconds_total is not None and float(song_seconds_total) > duration:
+        label_seconds = float(song_seconds_total)
     conditioning, _negative = sam._build_conditioning_dicts(
-        prompt, None, duration, batch_size=1,
+        prompt, None, label_seconds, batch_size=1,
     )
+    # The render window follows the REQUESTED duration, never the label:
+    # a 180 s label on a 30 s loop must not grow the latent to 186 s.
+    window_conditioning = [{"seconds_total": duration}]
     audio_sample_size = sam._adapt_sample_size(
-        conditioning, sample_size, duration_padding_sec,
+        window_conditioning, sample_size, duration_padding_sec,
     )
     downsampling_ratio = sam.model.pretransform.downsampling_ratio
     latent_frames = audio_sample_size // downsampling_ratio
@@ -156,6 +200,10 @@ def prepare_sa3_conditioning(
         for k, v in conditioning_inputs.items()
     }
 
+    # Label-derived latent length: drives the attention padding mask and
+    # (by default) the dist-shift schedule, exactly as upstream sampling
+    # derives both from the conditioning's seconds_total. With a label
+    # longer than the window this clamps to the full window = all valid.
     effective_seq_len = compute_effective_seq_len_from_conditioning(
         conditioning, sam.model.sample_rate, downsampling_ratio, device,
     )
@@ -164,6 +212,11 @@ def prepare_sa3_conditioning(
         max=latent_frames,
     ).long()
     padding_mask = create_padding_mask_from_lengths(valid_lengths, latent_frames)
+    sched_seq_len = effective_seq_len
+    if schedule_from_window and label_seconds != duration:
+        sched_seq_len = compute_effective_seq_len_from_conditioning(
+            window_conditioning, sam.model.sample_rate, downsampling_ratio, device,
+        )
 
     cond_bundle = {
         **conditioning_inputs,
@@ -177,8 +230,8 @@ def prepare_sa3_conditioning(
     sched_args = {
         "steps": steps,
         "dist_shift": dist_shift if dist_shift is not None else sam.model.sampling_dist_shift,
-        "effective_seq_len": effective_seq_len.detach().cpu()
-        if torch.is_tensor(effective_seq_len) else effective_seq_len,
+        "effective_seq_len": sched_seq_len.detach().cpu()
+        if torch.is_tensor(sched_seq_len) else sched_seq_len,
         "fallback_seq_len": latent_frames,
     }
     return SA3Conditioning(
@@ -186,6 +239,7 @@ def prepare_sa3_conditioning(
         sched_args=sched_args,
         latent_frames=latent_frames,
         audio_sample_size=audio_sample_size,
+        seconds_total=label_seconds,
     )
 
 
