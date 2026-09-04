@@ -29,6 +29,14 @@ Control surface (everything else off, capability-gated):
 * ``sa3_shift`` — relative schedule warp on top of the checkpoint's
   dist_shift (``SA3Adapter.shift_alpha``); changes invalidate the
   pipeline's per-denoise schedule cache.
+* ``sa3_sigmas`` — an EXPLICIT per-step schedule, the streaming analogue
+  of StreamDiffusion's ``t_index_list``: a list of noise levels in
+  (0, 1], strictly decreasing, 1.0 meaning "start from ``sa3_denoise``"
+  and the final 0 implied. Its length IS the step count, so it overrides
+  ``steps_override`` while set. Not a :class:`KnobSpec` on purpose —
+  the registry only types scalars and would coerce a list to NaN — so
+  it rides the params channel as a pass-through key, validated here by
+  :func:`parse_sigmas`; anything invalid is ignored rather than applied.
 * ``x0_target`` / ``feedback`` / ``feedback_depth`` — taken FROM the
   shared registry (identical semantics to ACE, solver-level latent
   mechanics that are family-agnostic): the source-lock morph toward
@@ -184,6 +192,43 @@ def sa3_knob_specs(loras: tuple | list = ()) -> list:
         shared["seed"],
         shared["steps_override"],
     ] + [lora_strength_spec(lid) for lid in loras]
+
+
+#: Matches ``steps_override``'s registry ceiling.
+SIGMAS_MAX_STEPS = 16
+
+
+def parse_sigmas(value) -> Optional[list]:
+    """Validate a ``sa3_sigmas`` wire value into a schedule, or ``None``.
+
+    Accepts a list/tuple of numbers or a comma/space-separated string (what
+    a person types into the plugin). Valid means 1..16 entries, every one
+    finite and in (0, 1], strictly decreasing. ``None`` for anything else —
+    including empty — so a half-typed list never reaches the solver and the
+    stock schedule stays in force until the text makes sense.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        parts = [p for p in value.replace(",", " ").split() if p]
+    elif isinstance(value, (list, tuple)):
+        parts = list(value)
+    else:
+        return None
+    if not 1 <= len(parts) <= SIGMAS_MAX_STEPS:
+        return None
+    out: list = []
+    for p in parts:
+        try:
+            f = float(p)
+        except (TypeError, ValueError):
+            return None
+        if not (f == f) or f <= 0.0 or f > 1.0:   # NaN, non-positive, >1
+            return None
+        if out and f >= out[-1]:
+            return None
+        out.append(f)
+    return out
 
 
 class SA3Backend(DiffusionBackend):
@@ -1274,6 +1319,14 @@ class SA3Backend(DiffusionBackend):
                 self.adapter.shift_alpha = shift
                 self.pipeline.invalidate_schedule_cache()
 
+        # Explicit schedule: same hot-apply + cache-invalidate contract as
+        # the warp. Compared as lists so an unchanged list is a no-op tick.
+        sigmas = parse_sigmas(knobs.get("sa3_sigmas"))
+        if sigmas != self.adapter.sigmas_override:
+            with self._control_lock:
+                self.adapter.sigmas_override = sigmas
+                self.pipeline.invalidate_schedule_cache()
+
         # Per-LoRA live strength (the ACE per-tick convention): iterate
         # the catalog so the active set can change at runtime; strength
         # only flows for ENABLED entries, gated by the shared 0.02
@@ -1311,7 +1364,12 @@ class SA3Backend(DiffusionBackend):
         return {
             "denoise": float(knobs.get("sa3_denoise", 1.0)),
             "seed": int(knobs.get("seed", self._default_seed)),
-            "steps": int(knobs.get("steps_override", self._steps)),
+            # The list's length is the step count while it is set; the
+            # (steps+1,)-shaped schedule cache makes any other value wrong.
+            "steps": (
+                len(sigmas) if sigmas
+                else int(knobs.get("steps_override", self._steps))
+            ),
             "shift": shift,
             "x0_target": x0_str,
             "feedback": float(knobs.get("feedback", 0.0)),

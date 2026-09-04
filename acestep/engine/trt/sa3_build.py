@@ -31,7 +31,8 @@ on first use.
   producer-built graph until it is.
   :func:`acestep.engine.sa3_trt.find_dit_engine` prefers an fp8 engine when one
   covers the window, else fp16mixed.
-* **SAME-L window decoder**: ``dec_dynamic_triton_swa.onnx``,
+* **SAME-L window decoder**: ``dec_fp16.onnx`` (upstream renamed it from
+  ``dec_dynamic_triton_swa.onnx`` on 2026-08-28, same bytes),
   STRONGLY_TYPED; needs the ``samel::diff_attn_swa`` plugin registered
   before the ONNX parse (vendored tree, via
   :func:`acestep.engine.sa3_trt._register_same_plugin`).
@@ -128,7 +129,11 @@ DIT_FP8_ONNX_FILES = (
     "onnx/sa3-m/dit_fp8.onnx",
     "onnx/sa3-m/dit_fp8.onnx.data",
 )
-SAME_L_ONNX_FILES = ("onnx/same-l/dec_dynamic_triton_swa.onnx",)
+# Upstream renamed this on 2026-08-28 ("Rename the autoencoder ONNX to match
+# the engine naming scheme"); the bytes are unchanged (same LFS object as
+# the old dec_dynamic_triton_swa.onnx), so engines keyed on the ONNX hash
+# still match.
+SAME_L_ONNX_FILES = ("onnx/same-l/dec_fp16.onnx",)
 
 # Canonical DiT latent profiles for --all. min=1 keeps short windows
 # on-engine; the names must keep the sa3_m_dit_l{min}_{opt}_{max} shape
