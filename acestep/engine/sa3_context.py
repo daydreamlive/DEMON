@@ -24,8 +24,11 @@ when it is absent.
 
 from __future__ import annotations
 
-from typing import Callable
+import math
+import os
+from typing import Callable, Mapping
 
+import numpy as np
 import torch
 
 from acestep.engine.obs import logger
@@ -40,6 +43,108 @@ from acestep.engine.sa3_helpers import (
 # codec. SAME-S (small-music) full-decodes in ~11 ms flat — windowing
 # would only add seam surface there.
 WINDOWED_DECODE_MODELS = {"medium"}
+
+# ---- Song-length conditioning -------------------------------------------
+# What ``seconds_total`` tells the SA3 DiT (see
+# ``prepare_sa3_conditioning``): upstream training labels every example
+# with the FULL file length, so a label equal to the render window means
+# "the whole song, ending here" and the model composes an outro into the
+# last seconds of every loop (the DreamSampler "song ending" report).
+# A label longer than the window is the training regime for "a slice of
+# a longer track" — no ending at the loop boundary. Measured with
+# ``scripts/sa3/tail_probe.py`` on sa3-medium (5090): under the legacy
+# label every probed loop ended in a 17-24 dB fade over its last 2 s
+# (30 s cuts and the full 57.6 s default track alike, sa3_denoise 0.9
+# and 1.0); under a 180 s label the same loops stay flat. 120 s is NOT
+# enough — it equals the model's training window, so it still reads as
+# "the whole file", and the fade came back in every run.
+SONG_SECONDS_ENV = "DEMON_SA3_SONG_SECONDS"
+SONG_SCHEDULE_ENV = "DEMON_SA3_SONG_SCHEDULE"
+OUTRO_PAD_ENV = "DEMON_SA3_OUTRO_PAD_S"
+# Default song-length label, seconds. ``0`` in the env var disables the
+# label (legacy: label = render duration + 6 s outro pad).
+DEFAULT_SONG_SECONDS: float = 180.0
+# The conditioner's ``max_val`` (model_config ``seconds_total`` number
+# conditioner); labels above it saturate the Fourier features.
+SONG_SECONDS_MAX = 384.0
+# Upstream ``generate()`` pads the render window by 6 s of outro headroom
+# because the model fades past the label; the pad is silence. Under the
+# song-length label there is no outro to make room for, but the render
+# still gets a few seconds past the loop: the source anchor is TILED
+# (the loop wrapped around onto its own start) into that extra window
+# instead of zero-padded, so the anchor never hard-stops inside the
+# render. Measured (tail_probe, sa3_denoise 0.9): with the anchor ending
+# at the window's last frame the model still resolved some full-length
+# loops into a fade, label or not; wrapped, the tail stays flat. Only
+# the loop itself is playable (``playable_duration_s``). The wrap is
+# also what the TRT clamp now costs a 60 s loop on the 646-latent
+# engine (~57 s, was ~54 s under the 6 s pad); ``DEMON_SA3_OUTRO_PAD_S=0``
+# trades the wrap for the full 60 s.
+LEGACY_OUTRO_PAD_S = 6.0
+DEFAULT_LOOP_WRAP_S = 3.0
+
+
+def song_seconds_setting(env: Mapping[str, str] | None = None) -> float | None:
+    """The configured song-length label, or None when disabled."""
+    env = os.environ if env is None else env
+    raw = env.get(SONG_SECONDS_ENV)
+    if raw is None or raw.strip() == "":
+        value = DEFAULT_SONG_SECONDS
+    else:
+        try:
+            value = float(raw)
+        except ValueError as exc:
+            raise ValueError(
+                f"{SONG_SECONDS_ENV} must be a number of seconds (0 disables), "
+                f"got {raw!r}"
+            ) from exc
+    if value <= 0:
+        return None
+    return min(value, SONG_SECONDS_MAX)
+
+
+def song_schedule_from_window(env: Mapping[str, str] | None = None) -> bool:
+    """``DEMON_SA3_SONG_SCHEDULE``: ``song`` (default, training-consistent:
+    the dist-shift schedule follows the label) or ``window`` (the
+    schedule follows the render length)."""
+    env = os.environ if env is None else env
+    mode = env.get(SONG_SCHEDULE_ENV, "song").strip().lower()
+    if mode not in ("song", "window"):
+        raise ValueError(
+            f"{SONG_SCHEDULE_ENV} must be song|window, got {mode!r}"
+        )
+    return mode == "window"
+
+
+def outro_pad_setting(
+    song_seconds: float | None, env: Mapping[str, str] | None = None,
+) -> float:
+    """Extra render window past the loop, seconds: the wrapped-loop
+    headroom (:data:`DEFAULT_LOOP_WRAP_S`) under a song-length label,
+    the upstream 6 s silent outro pad otherwise; ``DEMON_SA3_OUTRO_PAD_S``
+    overrides either (``0`` = window exactly the loop)."""
+    env = os.environ if env is None else env
+    raw = env.get(OUTRO_PAD_ENV)
+    if raw is not None and raw.strip() != "":
+        try:
+            pad = float(raw)
+        except ValueError as exc:
+            raise ValueError(
+                f"{OUTRO_PAD_ENV} must be a number of seconds, got {raw!r}"
+            ) from exc
+        return max(0.0, pad)
+    return DEFAULT_LOOP_WRAP_S if song_seconds is not None else LEGACY_OUTRO_PAD_S
+
+
+def label_seconds_for(duration_s: float, song_seconds: float | None) -> float:
+    """The ``seconds_total`` label for a render of ``duration_s``: the song
+    length when it is longer than the render, else the render itself
+    (legacy semantics — a loop longer than the label is still "the whole
+    song")."""
+    duration_s = float(duration_s)
+    if song_seconds is None or float(song_seconds) <= duration_s:
+        return duration_s
+    return float(song_seconds)
 
 
 class SA3Context:
@@ -67,9 +172,17 @@ class SA3Context:
             self.sam.model.pretransform.downsampling_ratio          # 4096
         )
         self.latent_channels = int(self.sam.model.io_channels)      # 256
+        # Song-length conditioning, resolved once per process (env-driven
+        # so a pod can A/B it without a code change).
+        self.song_seconds = song_seconds_setting()
+        self.schedule_from_window = song_schedule_from_window()
+        self.outro_pad_s = outro_pad_setting(self.song_seconds)
         logger.info(
-            "sa3_model_loaded model_id={} latent_rate_hz={:.4f} dtype={}",
+            "sa3_model_loaded model_id={} latent_rate_hz={:.4f} dtype={} "
+            "song_seconds={} schedule={} outro_pad_s={:.1f}",
             model_id, self.sample_rate / self.downsampling_ratio, self.dtype,
+            self.song_seconds, "window" if self.schedule_from_window else "song",
+            self.outro_pad_s,
         )
 
     @property
@@ -140,23 +253,48 @@ class SA3Context:
             return SA3SAMEWindowCodec(self, use_trt=(backend == "tensorrt"))
         return SA3SAMECodec(self)
 
+    def cond_seconds_total(self, duration_s: float) -> float:
+        """The ``seconds_total`` label a render of ``duration_s`` is
+        conditioned with (see :func:`label_seconds_for`). Every consumer
+        of the label — the eager cond capture and the TRT DiT's seconds
+        scalar — must go through here so they can't disagree."""
+        return label_seconds_for(duration_s, self.song_seconds)
+
+    def window_latent_frames(self, duration_s: float) -> int:
+        """Latent frames of the render window for ``duration_s`` (the
+        requested length + :attr:`outro_pad_s`, aligned the way
+        ``prepare_sa3_conditioning`` sizes it). Pure arithmetic on the
+        model config — no model call."""
+        audio_samples = self.sam._adapt_sample_size(
+            [{"seconds_total": float(duration_s)}],
+            self._helpers.SA3_DEFAULT_SAMPLE_SIZE,
+            self.outro_pad_s,
+        )
+        return int(audio_samples) // self.downsampling_ratio
+
     def clamp_duration_for_trt(
-        self, duration_s: float, *, padding_s: float = 6.0, backend: str = "eager",
+        self, duration_s: float, *, backend: str = "eager",
     ) -> float:
-        """Clamp a requested duration so its padded latent window fits a
-        built TRT DiT engine — landing on the fast path instead of
-        silently falling back to the ~5x-slower eager DiT. No-op for
-        models without engines (small) or durations already inside.
-        No-op unless ``backend="tensorrt"`` (see :meth:`make_dit`) —
-        the eager DiT has no length cap worth truncating the source
-        for."""
-        from acestep.engine.sa3_trt import trt_duration_cap_s
+        """Clamp a requested duration so its (padded, aligned) latent
+        window fits a built TRT DiT engine — landing on the fast path
+        instead of silently falling back to the ~5x-slower eager DiT.
+        No-op for models without engines (small) or durations already
+        inside. No-op unless ``backend="tensorrt"`` (see
+        :meth:`make_dit`) — the eager DiT has no length cap worth
+        truncating the source for."""
+        from acestep.engine.sa3_trt import max_dit_engine_latents
 
         if backend != "tensorrt":
             return duration_s
-        cap = trt_duration_cap_s(self.model_id, padding_s=padding_s)
-        if cap is None or duration_s <= cap:
+        max_l = max_dit_engine_latents(self.model_id)
+        if max_l is None or self.window_latent_frames(duration_s) <= max_l:
             return duration_s
+        # Walk down in 0.1 s steps against the SAME window arithmetic the
+        # capture uses, so alignment rounding can't push the clamped
+        # window one frame past the engine.
+        cap = math.floor(duration_s * 10.0) / 10.0
+        while cap > 0 and self.window_latent_frames(cap) > max_l:
+            cap = round(cap - 0.1, 1)
         logger.warning(
             "sa3_duration_clamped_for_trt model_id={} requested_s={:.1f} cap_s={:.1f}",
             self.model_id, duration_s, cap,
@@ -167,9 +305,13 @@ class SA3Context:
 
     def prepare_cond(self, *, prompt: str, duration: float, steps: int):
         """Capture the DiT kwargs + schedule inputs for one prompt and
-        fixed duration (the spike's ``SA3Conditioning``)."""
+        fixed render duration (the spike's ``SA3Conditioning``), labelled
+        with :meth:`cond_seconds_total` and padded by :attr:`outro_pad_s`."""
         return self._helpers.prepare_sa3_conditioning(
             self.sam, prompt=prompt, duration=duration, steps=steps,
+            duration_padding_sec=self.outro_pad_s,
+            song_seconds_total=self.song_seconds,
+            schedule_from_window=self.schedule_from_window,
         )
 
     def make_schedule_builder(
@@ -206,10 +348,34 @@ class SA3Context:
 
     def encode_source(self, audio_input, audio_sample_size: int) -> torch.Tensor:
         """SAME-encode an audio source for audio-to-audio streaming.
-        Returns the native ``[1, 256, T]`` latent."""
+        Returns the native ``[1, 256, T]`` latent. Under the song-length
+        label the source is tiled to fill the render window (see
+        :meth:`tile_loop`); otherwise upstream's ``prepare_audio``
+        zero-pads it."""
+        if self.song_seconds is not None:
+            audio_input = self.tile_loop(audio_input, audio_sample_size)
         return self._helpers.encode_sa3_source(
             self.sam, audio_input, audio_sample_size,
         )
+
+    def tile_loop(self, audio_input, audio_sample_size: int):
+        """Wrap a ``(sample_rate, waveform[C, N])`` loop around onto its
+        own start until it covers ``audio_sample_size`` model-rate
+        samples (plus one, so the resample can't leave a zero frame).
+        The anchor then continues past the playable loop end the way
+        the loop itself does when it cycles — no hard stop for the
+        model to read as a song ending. A source already covering the
+        window is returned untouched (``prepare_audio`` crops it)."""
+        sr, wav = audio_input
+        if isinstance(wav, np.ndarray):
+            wav = torch.from_numpy(wav)
+        n = int(wav.shape[-1])
+        target = math.ceil(int(audio_sample_size) * float(sr) / self.sample_rate) + 1
+        if n <= 0 or n >= target:
+            return audio_input
+        reps = math.ceil(target / n)
+        tiled = wav.repeat(*([1] * (wav.dim() - 1)), reps)[..., :target]
+        return sr, tiled
 
 
 class SA3SAMECodec:

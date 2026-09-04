@@ -221,14 +221,14 @@ class SA3Backend(DiffusionBackend):
         # stream (SlotRequest.sde_noise_seeded), the spike pipeline's
         # per-slot generator semantics.
         sampler: str = "pingpong",
-        # The conditioned song length in seconds — what seconds_total told
-        # the model to fill with music. The render window
-        # (cond.audio_sample_size) is LONGER: prepare_sa3_conditioning pads
-        # it by duration_padding_sec (6 s) of outro headroom, which the
-        # model deliberately fades to silence past seconds_total (upstream
-        # generate() trims it back off via truncate_output_to_duration).
-        # None (directly-constructed test backends) falls back to the full
-        # window, the pre-fix behavior.
+        # The requested loop length in seconds — the audio we play. The
+        # render window (cond.audio_sample_size) can be LONGER:
+        # prepare_sa3_conditioning pads it by the context's outro_pad_s
+        # (6 s under the legacy whole-song label, where the model fades
+        # to silence past seconds_total and upstream generate() trims it
+        # via truncate_output_to_duration; 0 under the song-length label)
+        # plus alignment rounding. None (directly-constructed test
+        # backends) falls back to the full window, the pre-fix behavior.
         playable_duration_s: Optional[float] = None,
         # ``(tags, steps, duration_s) -> (cond, schedule_builder_factory)``
         # — the per-prompt re-conditioning hook behind
@@ -492,7 +492,10 @@ class SA3Backend(DiffusionBackend):
         adapter = SA3Adapter(
             context.make_dit(
                 latent_frames=cond.latent_frames,
-                seconds_total=duration_s,
+                # The song-length LABEL (not the render length): the
+                # TRT DiT rebuilds its seconds token from this scalar
+                # and must embed what the eager cond bundle embeds.
+                seconds_total=context.cond_seconds_total(duration_s),
                 backend=dit_backend,
                 prefer_refittable=want_lora,
             ),
@@ -566,7 +569,7 @@ class SA3Backend(DiffusionBackend):
             )
             new_dit = context.make_dit(
                 latent_frames=new_cond.latent_frames,
-                seconds_total=d,
+                seconds_total=context.cond_seconds_total(d),
                 backend=dit_backend,
                 prefer_refittable=want_lora,
             )
@@ -859,12 +862,13 @@ class SA3Backend(DiffusionBackend):
         return SA3_MAX_DURATION_S
 
     def playable_duration_s(self):
-        # The conditioned song length, NOT cond.audio_sample_size /
-        # SA3_SAMPLE_RATE: the render window carries duration_padding_sec
-        # of outro headroom past seconds_total, where the model fades to
-        # silence by design. Serving that padding as playable audio put a
-        # fade-out + silent tail at the end of every SA3 loop (the
-        # "silence from 9:30 to midnight" bug).
+        # The requested loop length, NOT cond.audio_sample_size /
+        # SA3_SAMPLE_RATE: the render window can carry outro headroom
+        # (and alignment rounding) past the loop. Under the legacy
+        # whole-song label the model fades that headroom to silence by
+        # design, and serving it as playable audio put a fade-out +
+        # silent tail at the end of every SA3 loop (the "silence from
+        # 9:30 to midnight" bug, #336).
         return self._playable_s
 
     def read_knobs(self) -> dict:

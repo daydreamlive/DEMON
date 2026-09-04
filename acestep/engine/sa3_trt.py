@@ -528,13 +528,3 @@ class SameLWindowTRTDecoder:
             # PCM-baked engine flavor: (1, N, 2) int scaled to int16 range.
             return (out[0].to(torch.float32).T / 32767.0).clamp(-1, 1)
         return out[0].float().clamp(-1, 1)
-
-
-def trt_duration_cap_s(model_id: str, *, padding_s: float) -> Optional[float]:
-    """Largest requested duration whose padded latent window still fits
-    a built DiT engine for ``model_id`` (None = no engine)."""
-    max_l = max_dit_engine_latents(model_id)
-    if max_l is None:
-        return None
-    total_s = max_l * SAMPLES_PER_LATENT / SA3_SAMPLE_RATE
-    return math.floor((total_s - padding_s) * 10.0) / 10.0
