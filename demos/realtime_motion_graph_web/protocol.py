@@ -215,6 +215,17 @@ COMMANDS: tuple = (
             FieldSpec("playback_pos", "float", default=0.0,
                       description="Playhead position in SECONDS (not a 0..1 "
                                   "ratio); used for time-keyed curve sampling."),
+            FieldSpec("sa3_preservation_curve", "list", nullable=True,
+                      description="Circular source-preservation envelope: 2..256 "
+                                  "finite numbers in [0,1], equally spaced over "
+                                  "the playable source (endpoint excluded). "
+                                  "Last sample interpolates back to first. Adds "
+                                  "a per-position X0 floor above scalar x0_target "
+                                  "during late denoising; does not change denoise. "
+                                  "Absent retains; null/empty clears; invalid "
+                                  "updates retain the previous curve. Requires "
+                                  "ready.capabilities.source_preservation. "
+                                  "This is latent preservation, not exact PCM masking."),
             FieldSpec("render_anchor_s", "float", nullable=True,
                       description="Optional stationary render placement in "
                                   "absolute buffer/song seconds. A finite value "
