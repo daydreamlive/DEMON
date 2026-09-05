@@ -1037,3 +1037,51 @@ def test_close_drops_mirror_and_pending():
     assert b._refit_mirror is None
     assert b._pending_lora_strengths == {}
     assert mgr.closed is True
+
+# Source-time preservation uses the real SA3 adapter / streaming solver, with
+# a zero DiT. These tests check generated latents, not merely payload shapes.
+def test_preservation_region_changes_only_selected_latent_frames():
+    src = torch.ones(1, C, T)
+    free = _backend(source_latent_bct=src)
+    preserve = _backend(source_latent_bct=src)
+    assert preserve.capabilities().source_preservation
+    curve = [0.0] * (T // 2) + [1.0] * (T // 2)
+    for _ in range(10):
+        free.produce(_knobs(free, seed=9), CTX, 'generate')
+        preserve.produce(_knobs(preserve, seed=9, sa3_preservation_curve=curve), CTX, 'generate')
+    a, b = free._last_result_latent, preserve._last_result_latent
+    torch.testing.assert_close(a[:, :T // 2], b[:, :T // 2])
+    torch.testing.assert_close(b[:, T // 2:], src.movedim(1, 2)[:, T // 2:])
+    assert not torch.equal(a[:, T // 2:], b[:, T // 2:])
+
+
+def test_preservation_wraps_over_playable_time_excluding_padding_and_resizes():
+    b = _backend(source_latent_bct=torch.ones(1, C, T), playable_duration_s=(N44 / SA3_SAMPLE_RATE) / 2)
+    curve = [0, 1, 0, 0.5]
+    result = b._preservation_strength(curve, 0.0).flatten()
+    torch.testing.assert_close(result[:8], torch.tensor([0., .5, 1., .5, 0., .25, .5, .25]))
+    assert result[8:].count_nonzero() == 0  # never paint the padded tail
+    cached = b._preservation_strength(list(curve), 0.0)
+    assert cached is b._preservation_strength(curve, 0.0)
+    b._playable_s *= 2
+    resized = b._preservation_strength(curve, 0.0)
+    assert resized is not cached
+    assert resized.flatten()[4] == 1.0
+
+
+def test_preservation_floor_clear_invalid_and_rebuild():
+    b = _backend(source_latent_bct=torch.ones(1, C, T))
+    curve = [0., 1.]
+    b.produce(_knobs(b, x0_target=.25, sa3_preservation_curve=curve), CTX, 'generate')
+    strength = b.pipeline._shared_curves['x0_target_strength']
+    assert strength.min() == .25
+    assert strength.max() == 1.0
+    # Malformed direct-backend callers cannot clear a valid envelope either.
+    assert b._preservation_strength([float('nan'), 0.], .25) is b._preservation_cache
+    b.produce(_knobs(b, steps_override=5, sa3_preservation_curve=curve), CTX, 'generate')
+    # First request after a pipeline rebuild must carry the curve itself.
+    requests = [s.request for s in b.pipeline._slots if s is not None]
+    requests += list(b.pipeline._queue)
+    assert requests and all(isinstance(r.x0_target_strength, torch.Tensor) for r in requests)
+    b.produce(_knobs(b, x0_target=.25, sa3_preservation_curve=None), CTX, 'generate')
+    assert b.pipeline._shared_curves['x0_target_strength'].flatten().tolist() == [.25]

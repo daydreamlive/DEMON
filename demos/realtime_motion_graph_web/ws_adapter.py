@@ -461,7 +461,7 @@ def _coalesced_slice_lead(prev, new) -> float | None:
 # vanish whenever the recv thread drains a backlog, which is exactly when
 # GPU-heavy generation starves it. The VST re-sends the scalar anchor every
 # tick so it survived by accident; the one-shot queue does not.
-_STICKY_PARAMS_FIELDS = ("render_anchor_s", "render_anchor_queue_s")
+_STICKY_PARAMS_FIELDS = ("render_anchor_s", "render_anchor_queue_s", "sa3_preservation_curve")
 
 
 def _fold_sticky_params(pending: dict, newer: dict) -> dict:
@@ -1801,6 +1801,8 @@ def _handle_client_body(
                 if pp is not None and not math.isfinite(pp):
                     pp = None
                 anchor_kwargs = {}
+                if "sa3_preservation_curve" in data:
+                    anchor_kwargs["sa3_preservation_curve"] = data["sa3_preservation_curve"]
                 if "render_anchor_s" in data:
                     anchor_raw = data.get("render_anchor_s")
                     try:
