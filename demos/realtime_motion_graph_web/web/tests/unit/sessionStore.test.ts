@@ -51,6 +51,7 @@ describe("useSessionStore", () => {
     const s = useSessionStore.getState();
     s.setMonitor({ stop } as never);
     s.setReconnector({ cancel } as never);
+    s.setBoundFixture("track.wav");
     s.setStatus("ready", "Playing");
     s.reset();
     expect(stop).toHaveBeenCalledTimes(1);
@@ -61,6 +62,7 @@ describe("useSessionStore", () => {
     expect(after.reconnector).toBeNull();
     expect(after.remote).toBeNull();
     expect(after.player).toBeNull();
+    expect(after.boundFixture).toBeNull();
     expect(after.pipelineDepth).toBeNull();
     expect(after.maxPipelineDepth).toBeNull();
     expect(after.lastWsTrace).toBeNull();
