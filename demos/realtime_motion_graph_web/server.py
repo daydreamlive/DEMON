@@ -183,6 +183,43 @@ def _log_http(remote: str, status: int, method: str, url: str):
     )
 
 
+def _scan_enhance_io(text: str, direction: str) -> dict | None:
+    """Artist-name policy scan for the enhance/variations text surfaces.
+
+    Returns the extra response fields for a rejection, or None to proceed.
+    ``direction`` is "input" (the caller's own text) or "output" (LLM text)
+    — logged for tuning, never alongside the text itself (these endpoints
+    redact prompts from the access log; the filter follows the same rule).
+    In ``log`` mode hits are logged and allowed; ``off`` disables entirely.
+    """
+    from . import artist_filter
+
+    mode = artist_filter.filter_mode()
+    if mode == "off" or not text:
+        return None
+    match = artist_filter.scan(text)
+    if match is None:
+        return None
+    if mode == "log":
+        logger.info(
+            "artist_filter_hit surface=enhance direction={} matched={} "
+            "cls={} evidence={} mode=log",
+            direction, match.display, match.cls, match.evidence,
+        )
+        return None
+    logger.info(
+        "artist_filter_reject surface=enhance direction={} matched={} "
+        "cls={} evidence={}",
+        direction, match.display, match.cls, match.evidence,
+    )
+    return {
+        "rejected": True,
+        "reason": "artist_name",
+        "matched": match.display,
+        "filter_version": artist_filter.filter_version(),
+    }
+
+
 def _json_response(remote, path: str, payload: dict) -> "Response":
     """A JSON reply for the variations endpoint. Deliberately NOT carrying
     _PUBLIC_HTTP_HEADERS: those include `Access-Control-Allow-Origin: *`,
@@ -305,9 +342,20 @@ def _process_request(connection, request):
         if route == "reject":
             return _json_response(remote, "/api/variations", {"ok": False})
 
+        # Policy gate, same shape as /api/enhance: anchor in, variant out.
+        rejection = _scan_enhance_io(anchor, "input")
+        if rejection is not None:
+            return _json_response(
+                remote, "/api/variations", {"ok": False, **rejection})
+
         try:
             txt = point(anchor, deck, lane=lane, stop=stop)
-            payload = {"text": txt, "lane": lane, "stop": stop, "ok": bool(txt)}
+            out_rejection = _scan_enhance_io(txt, "output")
+            if out_rejection is not None:
+                payload = {"ok": False, **out_rejection}
+            else:
+                payload = {"text": txt, "lane": lane, "stop": stop,
+                           "ok": bool(txt)}
         except Exception as exc:   # noqa: BLE001 -- see below
             # EVERY failure degrades, not just Busy. A CUDA OOM, a tokenizer
             # error or an IndexError used to propagate out of _process_request
@@ -354,8 +402,23 @@ def _process_request(connection, request):
         provider = params.get("provider", [""])[0]
         if resolve_provider() == "hosted":
             provider = "hosted"
-        enhanced, ok = enhance_prompt(idea, backend, provider)
-        body = json.dumps({"enhanced": enhanced, "ok": ok}).encode()
+        # Policy gate (artist_filter/SPEC.md), both directions. INPUT: an
+        # artist-name idea is refused before any LLM spend. OUTPUT: whatever
+        # provider answered (hosted LLM or the local checkpoint, which can't
+        # be instructed) gets the same deterministic scan, and a tainted
+        # answer is never returned — the caller keeps its own text.
+        # `ok:false` is deliberate on rejection: legacy clients treat it as
+        # "enhance unavailable, keep what you typed", the safe fallback;
+        # new clients read `rejected` and explain.
+        rejection = _scan_enhance_io(idea, "input")
+        if rejection is None:
+            enhanced, ok = enhance_prompt(idea, backend, provider)
+            rejection = _scan_enhance_io(enhanced, "output") if ok else None
+        if rejection is not None:
+            payload = {"enhanced": idea, "ok": False, **rejection}
+        else:
+            payload = {"enhanced": enhanced, "ok": ok}
+        body = json.dumps(payload).encode()
         _log_http(remote, 200, "GET", "/api/enhance")  # redact prompt
         return Response(
             200, "OK",
@@ -895,6 +958,17 @@ def main():
     _DEFAULT_MODE = default_mode
     _CHECKPOINT = checkpoint
     _BACKEND_FAMILY = backend_family
+
+    # Pre-warm the artist-name filter (loads the ~300k-entry map, <1 s) so
+    # the first prompt never pays the load and a corrupt/missing artifact
+    # fails HERE at boot, visibly, instead of inside a live session.
+    from . import artist_filter
+    if artist_filter.filter_mode() != "off":
+        artist_filter.scan("")
+        logger.info(
+            "artist_filter_ready version={} mode={}",
+            artist_filter.filter_version(), artist_filter.filter_mode(),
+        )
 
     try:
         _STATIC_MOUNTS = build_static_mounts(static_demo_paths)

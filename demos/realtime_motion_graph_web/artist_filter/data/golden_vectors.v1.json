@@ -1,0 +1,281 @@
+{
+  "version": "vectors.v1",
+  "comment": "Cross-repo conformance suite. Run against the SHIPPED artifact + config by both the Python impl (DEMON tests/unit/test_artist_filter.py) and the TS impl (demon-public-demo artistFilter.test.ts). expect: reject|pass; display pins WHICH artist fired when stable.",
+  "cases": [
+    {
+      "text": "taylor swift style pop",
+      "expect": "reject",
+      "display": "Taylor Swift",
+      "note": "plain multi-token name"
+    },
+    {
+      "text": "t a y l o r s w i f t",
+      "expect": "reject",
+      "display": "Taylor Swift",
+      "note": "the Suno-suit bypass: one space per letter"
+    },
+    {
+      "text": "t.a.y.l.o.r s.w.i.f.t breakup song",
+      "expect": "reject",
+      "display": "Taylor Swift",
+      "note": "dotted letters"
+    },
+    {
+      "text": "t-a-y-l-o-r_s-w-i-f-t",
+      "expect": "reject",
+      "display": "Taylor Swift",
+      "note": "dashes and underscores"
+    },
+    {
+      "text": "T@Yl0r $wift",
+      "expect": "reject",
+      "display": "Taylor Swift",
+      "note": "symbol + digit leet"
+    },
+    {
+      "text": "tay​lor swift",
+      "expect": "reject",
+      "display": "Taylor Swift",
+      "note": "zero-width space inside the name"
+    },
+    {
+      "text": "taylorswift4ever type beat",
+      "expect": "reject",
+      "display": "Taylor Swift",
+      "note": "glued name inside a longer token (prefix)"
+    },
+    {
+      "text": "m i c h a e l j a c k s o n",
+      "expect": "reject",
+      "display": "Michael Jackson",
+      "note": "second Suno-suit example"
+    },
+    {
+      "text": "b a d b u n n y reggaeton urbano",
+      "expect": "reject",
+      "display": "Bad Bunny",
+      "note": "third Suno-suit example"
+    },
+    {
+      "text": "jason isbell americana",
+      "expect": "reject",
+      "display": "Jason Isbell",
+      "note": "the lead plaintiff"
+    },
+    {
+      "text": "daft punk style, beautiful, four to the floor",
+      "expect": "reject",
+      "display": "Daft Punk",
+      "note": "our own former default prompt B"
+    },
+    {
+      "text": "daftpunk energy",
+      "expect": "reject",
+      "display": "Daft Punk",
+      "note": "glued multi-token name"
+    },
+    {
+      "text": "in the style of herbie hancock",
+      "expect": "reject",
+      "display": "Herbie Hancock",
+      "note": "style-of phrasing"
+    },
+    {
+      "text": "kanye west drums",
+      "expect": "reject",
+      "display": "Kanye West",
+      "note": "multi fires without any cue"
+    },
+    {
+      "text": "Beyoncé vocal runs",
+      "expect": "reject",
+      "display": "Beyoncé",
+      "note": "diacritic composed"
+    },
+    {
+      "text": "beyoncé vocal runs",
+      "expect": "reject",
+      "display": "Beyoncé",
+      "note": "diacritic decomposed (combining acute)"
+    },
+    {
+      "text": "beyonce vocal runs",
+      "expect": "reject",
+      "display": "Beyoncé",
+      "note": "diacritic stripped by the user"
+    },
+    {
+      "text": "b e y o n c e",
+      "expect": "reject",
+      "display": "Beyoncé",
+      "note": "fragmented single_rare"
+    },
+    {
+      "text": "eminem flow",
+      "expect": "reject",
+      "display": "Eminem",
+      "note": "single_rare fires bare"
+    },
+    {
+      "text": "e m i n e m",
+      "expect": "reject",
+      "display": "Eminem",
+      "note": "fragmented single_rare"
+    },
+    {
+      "text": "motörhead energy",
+      "expect": "reject",
+      "display": "Motörhead",
+      "note": "NFKD folds the umlaut both directions"
+    },
+    {
+      "text": "queen style",
+      "expect": "reject",
+      "display": "Queen",
+      "note": "single_common + cue"
+    },
+    {
+      "text": "like prince",
+      "expect": "reject",
+      "display": "Prince",
+      "note": "single_common + cue"
+    },
+    {
+      "text": "madonna-esque hooks",
+      "expect": "reject",
+      "display": "Madonna",
+      "note": "esque tokenizes into the cue window"
+    },
+    {
+      "text": "prince's falsetto",
+      "expect": "reject",
+      "display": "Prince",
+      "note": "possessive is a cue"
+    },
+    {
+      "text": "q u e e n",
+      "expect": "reject",
+      "display": "Queen",
+      "note": "fragmentation is evasion evidence for single_common"
+    },
+    {
+      "text": "Qu33n harmonies",
+      "expect": "reject",
+      "display": "Queen",
+      "note": "digit leet is obfuscation evidence for single_common"
+    },
+    {
+      "text": "аir synth arps",
+      "expect": "reject",
+      "display": "Air",
+      "note": "Cyrillic а homoglyph is obfuscation evidence"
+    },
+    {
+      "text": "drake type beat",
+      "expect": "reject",
+      "display": "Drake",
+      "note": "single_common + type/beat cues"
+    },
+    {
+      "text": "",
+      "expect": "pass",
+      "note": "empty prompt (pre-warm path)"
+    },
+    {
+      "text": "queen of the night vocals",
+      "expect": "pass",
+      "note": "common word, no cue in radius"
+    },
+    {
+      "text": "prince of darkness synths",
+      "expect": "pass",
+      "note": "common word, no cue"
+    },
+    {
+      "text": "air pads, low rumble, deep house",
+      "expect": "pass",
+      "note": "three common-word artist names used as words"
+    },
+    {
+      "text": "madonna",
+      "expect": "pass",
+      "note": "bare common-word name, no cue, no evasion"
+    },
+    {
+      "text": "frequency modulated bass",
+      "expect": "pass",
+      "note": "queen inside one token never matches (token alignment)"
+    },
+    {
+      "text": "sequencer arpeggios and airy pads",
+      "expect": "pass",
+      "note": "substrings inside longer tokens"
+    },
+    {
+      "text": "warm airy pads and heart-pounding kick",
+      "expect": "pass",
+      "note": "heart (band) inside airy/heart-pounding context, no cue"
+    },
+    {
+      "text": "princely fanfare brass",
+      "expect": "pass",
+      "note": "princely is one token, not prince"
+    },
+    {
+      "text": "808 bass, 303 acid line, 140 bpm feel",
+      "expect": "pass",
+      "note": "pure-digit tokens never leet-fold"
+    },
+    {
+      "text": "french house style, four to the floor, angelic",
+      "expect": "pass",
+      "note": "the shipped default prompt B — genre terms are stoplisted"
+    },
+    {
+      "text": "trap type beat with cavernous reverb",
+      "expect": "pass",
+      "note": "genre word next to cues stays a genre word"
+    },
+    {
+      "text": "unaccompanied solo saxophone, single instrument, expressive jazz solo, intimate recording",
+      "expect": "pass",
+      "note": "shipped default prompt A"
+    },
+    {
+      "text": "solo acoustic guitar, fingerpicked, warm intimate recording",
+      "expect": "pass",
+      "note": "shipped default prompt"
+    },
+    {
+      "text": "taylor made groove",
+      "expect": "pass",
+      "note": "common first name without the surname or a cue"
+    },
+    {
+      "text": "swift arpeggio runs",
+      "expect": "pass",
+      "note": "swift as an adjective"
+    },
+    {
+      "text": "instrumental music",
+      "expect": "pass",
+      "note": "the session-init fallback prompt must never reject"
+    },
+    {
+      "text": "the band swells into the chorus",
+      "expect": "pass",
+      "note": "a two-token name written normally is not fragmentation"
+    },
+    {
+      "text": "berlin techno warehouse pulse",
+      "expect": "pass",
+      "note": "place-name artist next to a genre word"
+    },
+    {
+      "text": "madonna inspired vocals",
+      "expect": "reject",
+      "display": "Madonna",
+      "note": "trailing -inspired is a cue"
+    }
+  ]
+}
