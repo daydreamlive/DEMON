@@ -9,7 +9,9 @@ MIDI store (``web/store/useMidiStore.ts``) owns its own CC mapping for
 the operator's hardware controller.
 """
 
+import math
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -18,7 +20,24 @@ from typing import Any, Optional
 # way a frontend/re-skin/agent must notice (knob added/removed/retyped,
 # bounds semantics changed). Served alongside the catalog at /api/knobs and
 # by the MCP list_knobs tool so a consumer can detect a stale build.
-KNOB_SCHEMA_VERSION = 1
+#
+# v2: added per-knob ``slew_max_per_s`` to the catalog (the server-side
+# slew/rate-limit ceiling applied to continuous knobs; see ``KnobSpec.
+# slew_max_per_s`` / :class:`KnobSlewLimiter`).
+KNOB_SCHEMA_VERSION = 2
+
+
+# Default continuous-knob slew ceiling, expressed as a fraction of the
+# knob's full ``[min, max]`` range traversable per second. A float knob
+# without an explicit ``slew_max_per_s`` is rate-limited to this many
+# range-widths/second when its target jumps; discrete knobs (int / enum /
+# bool) are never slewed. 3.0 == a full-range sweep ramps over ~0.33 s:
+# below any deliberate human knob turn (so normal adjustments are NOT
+# delayed — a slew limiter only caps the *rate*, it adds zero lag below
+# the ceiling), but fast/erratic sweeps are broken into bounded per-tick
+# deltas so the diffusion stream never sees a control discontinuity that
+# drives the audio into distortion/clipping.
+DEFAULT_SLEW_FRACTION_PER_S = 3.0
 
 
 # Channel groups / keystones used by the server-side pipeline for
@@ -62,6 +81,14 @@ class KnobSpec:
     options: tuple = ()             # allowed values for enum / bool
     description: str = ""
     bank: bool = True
+    # Per-knob server-side slew ceiling, in knob units per second. Caps how
+    # fast the value applied to the stream may move toward a freshly-set
+    # target so a fast/erratic sweep ramps instead of jumping (see
+    # :class:`KnobSlewLimiter`). Only meaningful for ``float`` knobs;
+    # ``int`` / ``enum`` / ``bool`` are always applied verbatim. ``None``
+    # selects the range-relative default (:data:`DEFAULT_SLEW_FRACTION_PER_S`);
+    # ``0.0`` (or negative) opts a continuous knob OUT of slewing entirely.
+    slew_max_per_s: Optional[float] = None
 
 
 def knob_specs(sde: bool, loras=None) -> list:
@@ -323,6 +350,33 @@ def knob_catalog(sde: bool, loras=None) -> dict:
     return catalog_from_specs(knob_specs(sde, loras))
 
 
+def effective_slew_max_per_s(
+    spec, fraction_per_s: float = DEFAULT_SLEW_FRACTION_PER_S,
+) -> Optional[float]:
+    """Resolve the slew ceiling (knob units / second) for one spec, or
+    ``None`` when the knob must NOT be slewed.
+
+    Only ``float`` knobs are continuous; ``int`` / ``enum`` / ``bool``
+    return ``None`` so discrete controls (seed, step count, modes,
+    toggles) pass through untouched. For a float knob:
+
+    * an explicit positive ``spec.slew_max_per_s`` is honored verbatim;
+    * an explicit ``0.0`` / negative value opts the knob OUT (``None``);
+    * ``None`` falls back to ``fraction_per_s`` range-widths/second over
+      the knob's ``[min, max]`` span (a zero-width span yields ``None``).
+    """
+    if spec.type != "float":
+        return None
+    explicit = spec.slew_max_per_s
+    if explicit is not None:
+        return float(explicit) if explicit > 0.0 else None
+    lo = spec.min_val if spec.min_val is not None else 0.0
+    span = float(spec.max_val) - float(lo)
+    if span <= 0.0:
+        return None
+    return fraction_per_s * span
+
+
 def catalog_from_specs(specs) -> dict:
     """Project an arbitrary :class:`KnobSpec` list into the catalog
     shape (the same projection :func:`knob_catalog` serves). Used by
@@ -348,6 +402,13 @@ def catalog_from_specs(specs) -> dict:
             entry["min"] = spec.min_val if spec.min_val is not None else 0.0
         if spec.options:
             entry["options"] = list(spec.options)
+        # Continuous knobs publish their server-side slew ceiling so a
+        # contract-built client can mirror the ramp in its own UI tween
+        # (and so the behavior is discoverable, not hidden in the engine).
+        # Discrete knobs omit it entirely — they are never slewed.
+        slew = effective_slew_max_per_s(spec)
+        if slew is not None:
+            entry["slew_max_per_s"] = slew
         if spec.description:
             entry["description"] = spec.description
         out[spec.name] = entry
@@ -467,3 +528,126 @@ class KnobState:
     def get_all_values(self) -> dict:
         with self._lock:
             return dict(self._values)
+
+
+class KnobSlewLimiter:
+    """Per-knob slew-rate limiter for continuous control changes.
+
+    The streaming runner reads the knob target once per tick and the
+    backend turns it into the per-inference-step values the diffusion
+    stream consumes. A raw target dict carries whatever the operator last
+    set, so a fast / erratic knob sweep lands as a step discontinuity on
+    consecutive generations — the source of the "single fast sweep ->
+    chaotic, unusable audio" distortion. This limiter sits at that
+    once-per-tick boundary and rate-limits the *applied* value toward the
+    target so a large jump ramps over a few ticks instead of snapping.
+
+    Key properties:
+
+    * **Transport-agnostic.** Applied engine-side (in the backend's
+      per-tick knob read), so every client — web, VST, MCP, headless —
+      is protected by one implementation rather than each UI's own tween.
+    * **Zero added lag below the ceiling.** A slew limiter only caps the
+      rate of change; any adjustment slower than the per-knob ceiling
+      passes through verbatim, so normal/slow knob turns are untouched.
+    * **Discrete knobs pass through.** Only knobs with a positive
+      :func:`effective_slew_max_per_s` are limited; int / enum / bool
+      knobs (seed, step count, modes, toggles) and any non-registry keys
+      (curve specs, the playback clock) ride through unchanged.
+    * **Wall-clock paced.** The per-call delta is ``ceiling * dt`` using
+      the real elapsed time between ticks, so the ramp duration is
+      independent of the loop's tick rate. ``dt`` is capped
+      (``max_dt_s``) so resuming after an idle pause can't release one
+      giant un-ramped jump.
+
+    Not thread-safe: call :meth:`apply` from a single thread (the runner
+    thread, where the backend's ``read_knobs`` already runs).
+    """
+
+    def __init__(
+        self,
+        *,
+        fraction_per_s: float = DEFAULT_SLEW_FRACTION_PER_S,
+        max_dt_s: float = 0.2,
+        clock=time.monotonic,
+    ):
+        self._fraction = float(fraction_per_s)
+        self._max_dt_s = float(max_dt_s)
+        self._clock = clock
+        self._last_t: Optional[float] = None
+        # name -> current applied (slewed) value.
+        self._cur: dict = {}
+        # name -> slew ceiling (units/s), rebuilt only when the spec map
+        # identity changes (the session swaps it wholesale on LoRA /
+        # steering knob add/remove), so the steady path is allocation-free.
+        self._limit: dict = {}
+        self._limit_src = None
+
+    def reset(self) -> None:
+        """Forget all accumulated state so the next :meth:`apply` snaps
+        every knob straight to its target (used on session re-seed)."""
+        self._cur.clear()
+        self._last_t = None
+
+    def _ensure_limits(self, specs_by_name: dict) -> None:
+        # Identity compare: the session reassigns ``_knob_specs_by_name``
+        # to a fresh dict whenever the knob set changes, so this rebuilds
+        # exactly when (and only when) the universe shifts.
+        if specs_by_name is self._limit_src:
+            return
+        limits: dict = {}
+        for name, spec in specs_by_name.items():
+            lim = effective_slew_max_per_s(spec, self._fraction)
+            if lim is not None:
+                limits[name] = lim
+        self._limit = limits
+        self._limit_src = specs_by_name
+        # Drop carried state for knobs that no longer slew so a future
+        # re-add starts cleanly from the (then-current) target.
+        for name in [n for n in self._cur if n not in limits]:
+            self._cur.pop(name, None)
+
+    def apply(self, target: dict, specs_by_name: dict) -> dict:
+        """Return a copy of ``target`` with every continuous knob moved
+        toward its target by at most its per-knob ceiling for the elapsed
+        tick. ``specs_by_name`` is the live ``{name: KnobSpec}`` map
+        (the session's per-session manifest); keys absent from it, and
+        keys whose spec is discrete, pass through unchanged.
+        """
+        self._ensure_limits(specs_by_name)
+        now = self._clock()
+        if self._last_t is None:
+            dt = 0.0
+        else:
+            dt = now - self._last_t
+            if dt < 0.0:
+                dt = 0.0
+            elif dt > self._max_dt_s:
+                dt = self._max_dt_s
+        self._last_t = now
+
+        out = dict(target)
+        for name, lim in self._limit.items():
+            if name not in target:
+                continue
+            raw_val = target[name]
+            try:
+                tgt = float(raw_val)
+            except (TypeError, ValueError):
+                continue  # not a number this tick (shouldn't happen): skip
+            cur = self._cur.get(name)
+            # First sighting, or no measurable time passed: adopt the
+            # target as-is (no startup ramp from a stale/zero baseline).
+            if cur is None or dt <= 0.0:
+                self._cur[name] = tgt
+                out[name] = tgt
+                continue
+            max_delta = lim * dt
+            diff = tgt - cur
+            if -max_delta <= diff <= max_delta:
+                cur = tgt
+            else:
+                cur += math.copysign(max_delta, diff)
+            self._cur[name] = cur
+            out[name] = cur
+        return out

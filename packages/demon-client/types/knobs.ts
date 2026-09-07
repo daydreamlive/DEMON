@@ -25,6 +25,13 @@ export interface KnobManifestEntry {
   max?: number;
   /** Allowed values for enum/bool knobs. */
   options?: Array<string | boolean>;
+  /** Server-side slew ceiling in knob units per second (continuous knobs
+   *  only). The backend rate-limits the applied value toward a freshly
+   *  set target at this rate so a fast sweep ramps instead of jumping;
+   *  a contract-built UI can mirror the same ramp in its own tween.
+   *  Absent for discrete (int/enum/bool) knobs — they are never slewed —
+   *  and for backends predating KNOB_SCHEMA_VERSION 2. */
+  slew_max_per_s?: number;
   /** Agent/human-facing one-liner. */
   description?: string;
 }
