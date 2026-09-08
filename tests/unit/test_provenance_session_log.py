@@ -30,6 +30,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import acestep.provenance.session_log as session_log_mod
+from acestep.provenance import lora_identity
 from acestep.provenance.ledger_client import LedgerClient
 from acestep.provenance.session_log import (
     LOCAL_STREAM,
@@ -41,6 +42,7 @@ from acestep.streaming import registry
 from acestep.streaming.events import (
     AudioReady,
     EventBus,
+    LoraCatalogUpdate,
     PromptApplied,
     SwapFailed,
     SwapReady,
@@ -126,7 +128,10 @@ def test_session_log_schema_and_lifecycle(tmp_path, monkeypatch):
     assert start["type"] == "session.config"
     cfg = start["payload"]
     assert cfg["model"] == "ace_step_v1"
-    assert cfg["loras"] == ["lead-guitar"]
+    # Only enabled styles, as identity objects. These entries carry no
+    # path, so there is nothing to hash and sha256 stays None.
+    assert [l["id"] for l in cfg["loras"]] == ["lead-guitar"]
+    assert cfg["loras"][0]["sha256"] is None
     assert cfg["fixture_name"] == "loop60"
     assert cfg["prompt"] == "warm analog dub"
     assert cfg["bpm"] == 120
@@ -243,6 +248,162 @@ def test_input_sources_are_recorded(tmp_path, monkeypatch):
     # The seal's summary counts distinct input sources.
     end = lines[-1]
     assert end["payload"]["timeline_summary"]["distinct_input_sources"] == 3
+
+
+def _wait_for(predicate, timeout: float = 5.0) -> bool:
+    """Poll until ``predicate`` holds. The style events are published
+    from the LoRA hashing thread, which no public API joins."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def _lora_entry(path: Path, **over) -> dict:
+    """Wire-shaped catalog entry, as session.lora_catalog_payload builds
+    it."""
+    entry = {
+        "id": path.stem,
+        "name": "Moody Piano",
+        "path": str(path),
+        "state": "enabled",
+        "strength": 0.8,
+        "materialized_bytes": path.stat().st_size,
+        "metadata": {
+            "name": "Moody Piano",
+            "lora_family": "ace",
+            "base_model": "acestep",
+            "primary_trigger_word": "moody piano",
+        },
+    }
+    entry.update(over)
+    return entry
+
+
+def test_style_usage_carries_the_weight_hash(tmp_path, monkeypatch):
+    """The enabled style set is reported as action.lora, identified by
+    the weight sha256 — the key the cloud rollup joins to the LoRA
+    registry to find the style's owner."""
+    monkeypatch.setenv("ACESTEP_PROVENANCE_DIR", str(tmp_path / "provenance"))
+    weights = tmp_path / "moody-piano.safetensors"
+    weights.write_bytes(b"safetensors-ish" * 4096)
+    expected_sha = hashlib.sha256(weights.read_bytes()).hexdigest()
+
+    bus = EventBus()
+    snapshot = lambda: {"lora_catalog": [_lora_entry(weights)]}  # noqa: E731
+    _register(bus, "sess-lora", snapshot=snapshot)
+
+    # Hashing a cold adapter is deferred off the handshake thread, so the
+    # event lands a beat after registration.
+    assert _wait_for(
+        lambda: bool(_by_type(_read_log(tmp_path, "sess-lora"), "action.lora")),
+    ), "no action.lora was recorded for the session's initial style set"
+
+    lines = _read_log(tmp_path, "sess-lora")
+    start = _by_type(lines, "action.lora")
+    assert len(start) == 1
+    assert start[0]["payload"]["reason"] == "session_start"
+    (style,) = start[0]["payload"]["loras"]
+    assert style["sha256"] == expected_sha
+    assert style["id"] == "moody-piano"
+    assert style["name"] == "Moody Piano"
+    assert style["strength"] == 0.8
+    assert style["family"] == "ace"
+    assert style["trigger_word"] == "moody piano"
+    assert style["size_bytes"] == weights.stat().st_size
+    # The pod's filesystem layout is not part of the record.
+    assert "path" not in style
+    assert str(tmp_path) not in json.dumps(lines)
+
+    registry.unregister("sess-lora")
+
+
+def test_style_changes_mid_session_are_each_recorded(tmp_path, monkeypatch):
+    """Enabling a second style emits another action.lora with the whole
+    enabled set, so the rollup can measure per-style intervals rather
+    than only what was loaded at the start."""
+    monkeypatch.setenv("ACESTEP_PROVENANCE_DIR", str(tmp_path / "provenance"))
+    first = tmp_path / "moody-piano.safetensors"
+    first.write_bytes(b"one" * 1024)
+    second = tmp_path / "hard-drums.safetensors"
+    second.write_bytes(b"two" * 2048)
+    unused = tmp_path / "unused.safetensors"
+    unused.write_bytes(b"three" * 512)
+
+    bus = EventBus()
+    snapshot = lambda: {"lora_catalog": [_lora_entry(first)]}  # noqa: E731
+    _register(bus, "sess-lora-2", snapshot=snapshot)
+    assert _wait_for(
+        lambda: bool(_by_type(_read_log(tmp_path, "sess-lora-2"), "action.lora")),
+    )
+
+    bus.publish(
+        LoraCatalogUpdate(
+            catalog=[
+                _lora_entry(first),
+                _lora_entry(second, id="hard-drums", name="Hard Drums"),
+                _lora_entry(tmp_path / "unused.safetensors", state="disabled",
+                            materialized_bytes=0),
+            ],
+        ),
+    )
+    assert _wait_for(
+        lambda: len(
+            _by_type(_read_log(tmp_path, "sess-lora-2"), "action.lora"),
+        ) == 2,
+    ), "the catalog update did not produce a second action.lora"
+    registry.unregister("sess-lora-2")
+
+    events = _by_type(_read_log(tmp_path, "sess-lora-2"), "action.lora")
+    assert [e["payload"]["reason"] for e in events] == [
+        "session_start", "catalog_update",
+    ]
+    assert [s["id"] for s in events[0]["payload"]["loras"]] == ["moody-piano"]
+    # Disabled entries never appear: an enabled set is what was running.
+    assert sorted(s["id"] for s in events[1]["payload"]["loras"]) == [
+        "hard-drums", "moody-piano",
+    ]
+    assert all(
+        s["sha256"] == hashlib.sha256(
+            (first if s["id"] == "moody-piano" else second).read_bytes(),
+        ).hexdigest()
+        for s in events[1]["payload"]["loras"]
+    )
+    # Timestamps are the moment of the change, not of the deferred write,
+    # so intervals reconstruct correctly even when a hash made us wait.
+    assert events[0]["ts"] <= events[1]["ts"]
+
+
+def test_weight_hash_is_memoized_on_stat_identity(tmp_path):
+    """A style toggled repeatedly hashes once; rewriting the file
+    invalidates the entry (the key carries size and mtime)."""
+    weights = tmp_path / "style.safetensors"
+    weights.write_bytes(b"first" * 512)
+    first = lora_identity.weight_sha256(weights)
+    assert first == hashlib.sha256(b"first" * 512).hexdigest()
+
+    # Cached: a lookup that is not allowed to read the file still answers,
+    # and so does one whose file has since vanished.
+    assert lora_identity.weight_sha256(weights, compute=False) == first
+    assert not lora_identity.pending([_lora_entry(weights)])
+
+    time.sleep(0.01)
+    weights.write_bytes(b"second" * 512)
+    assert lora_identity.weight_sha256(weights) == hashlib.sha256(
+        b"second" * 512,
+    ).hexdigest()
+
+    # Unreadable weights fail open: no hash, no exception.
+    assert lora_identity.weight_sha256(tmp_path / "gone.safetensors") is None
+    assert lora_identity.identities(
+        [{"id": "ghost", "state": "enabled", "path": str(tmp_path / "gone")}],
+    ) == [{
+        "id": "ghost", "name": None, "sha256": None, "size_bytes": None,
+        "family": None, "base_model": None, "trigger_word": None,
+        "strength": None,
+    }]
 
 
 def test_slices_are_counted_never_hashed(tmp_path, monkeypatch):

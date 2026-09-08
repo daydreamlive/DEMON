@@ -22,6 +22,13 @@ This is the Level-1 "recipe log" tier: decoded slices are **counted**
 for the summary but never hashed — audio-slice hashing and its
 cross-checking belong to the follow-up cryptographic tier.
 
+``action.lora`` is the exception to "counts only": it carries each
+enabled style's weight SHA-256 (see
+:mod:`acestep.provenance.lora_identity`), because that hash is what
+lets the cloud rollup attribute a style to the artist who published it.
+It is the single owner of style state — every change to the enabled set
+emits one, starting with the set the session opened with.
+
 Wiring: :func:`attach_session` subscribes a :class:`SessionLogTap` to
 the session's typed event bus (:mod:`acestep.streaming.events`). The
 session registry (:mod:`acestep.streaming.registry`) calls attach/detach
@@ -41,7 +48,7 @@ from typing import Any, Optional
 import numpy as np
 from loguru import logger
 
-from acestep.provenance import session_logs_dir
+from acestep.provenance import lora_identity, session_logs_dir
 from acestep.provenance.ledger_client import LedgerClient
 from acestep.streaming.events import (
     AudioReady,
@@ -260,15 +267,17 @@ class SessionLogTap:
                     "session snapshot failed for provenance log: {}", exc,
                 )
         meta = dict(meta or {})
-        loras = [
-            e.get("id")
-            for e in snap.get("lora_catalog") or []
-            if isinstance(e, dict) and e.get("state") == "enabled"
-        ]
+        catalog = snap.get("lora_catalog")
+        # Cache-only identities here: the handshake path must not stop to
+        # read a few hundred MB of weights. The authoritative set, weight
+        # hashes included, follows as the first action.lora below.
+        loras = lora_identity.identities(catalog)
         self._model = meta.get("checkpoint") or snap.get("checkpoint")
         self._loras = loras
         # session.config: model + LoRA identifiers + initial config,
-        # mirroring the WS config handshake.
+        # mirroring the WS config handshake. Its ``loras`` are a mirror
+        # of that handshake, NOT the style-usage source — action.lora
+        # owns that, and carries the weight hashes this list may lack.
         self._record(
             "session.config",
             {
@@ -292,6 +301,13 @@ class SessionLogTap:
         )
         if isinstance(snap.get("prompt"), str) and snap["prompt"]:
             self._prompts_seen.add(snap["prompt"])
+
+        # The style set the session opened with, as an action.lora — the
+        # one event type that owns style state. Emitted even when empty,
+        # so the seal can tell "started with no style" (an interval it
+        # can measure from) apart from "this pod never reported styles"
+        # (the legacy shape, where it falls back to session.config).
+        self._record_loras(catalog or [], "session_start")
 
         # Initial input source, two commitments: the adapter-computed
         # fingerprint of the waveform actually consumed (covers client
@@ -356,10 +372,62 @@ class SessionLogTap:
             payload.update({k: v for k, v in extra.items() if v is not None})
         self._record("input.source", payload)
 
+    # ---- style (LoRA) state ----------------------------------------------
+
+    def _record_loras(self, catalog: Any, reason: str) -> None:
+        """Record the enabled-style set as one ``action.lora`` event.
+
+        The weight hash is the payout join key, so the event is worth
+        waiting for: when a hash is not memoized yet, the whole event is
+        deferred to a daemon thread rather than published without one (a
+        hashless style is a style nobody can be paid for). The event
+        timestamp is captured here, before the wait, so a deferred event
+        still says when the change actually happened.
+        """
+        ts = _now_ms()
+        if lora_identity.pending(catalog):
+            threading.Thread(
+                target=self._record_loras_hashed,
+                args=(catalog, reason, ts),
+                name="provenance-lora-hash",
+                daemon=True,
+            ).start()
+            return
+        self._publish_loras(lora_identity.identities(catalog), reason, ts)
+
+    def _record_loras_hashed(
+        self, catalog: Any, reason: str, ts: int,
+    ) -> None:
+        """Hash the enabled weights, then publish. Off-thread: a cold
+        adapter is a 10–400 MB read that must not block the bus drainer
+        or the session handshake."""
+        loras = lora_identity.identities(catalog, compute=True)
+        if self._closed:
+            return
+        self._publish_loras(loras, reason, ts)
+
+    def _publish_loras(
+        self, loras: list[dict], reason: str, ts: int,
+    ) -> None:
+        with self._lock:
+            self._loras = loras
+        self._record("action.lora", {"loras": loras, "reason": reason}, ts=ts)
+
     # ---- recording -------------------------------------------------------
 
-    def _record(self, type: str, payload: dict, *, ppq: float | None = None) -> None:
-        ts = _now_ms()
+    def _record(
+        self,
+        type: str,
+        payload: dict,
+        *,
+        ppq: float | None = None,
+        ts: int | None = None,
+    ) -> None:
+        # ``ts`` overrides the record time for events published later than
+        # they happened (the deferred LoRA hash): the seal reconstructs
+        # style intervals from these timestamps, so they must be the
+        # moment of the action, not the moment of the write.
+        ts = _now_ms() if ts is None else int(ts)
         with self._lock:
             self._counts["events"] += 1
         self.writer.record(type, payload, ts=ts, ppq=ppq)
@@ -463,14 +531,7 @@ class SessionLogTap:
                 "action.param", {"name": "depth", "value": event.value},
             )
         elif isinstance(event, LoraCatalogUpdate):
-            loras = [
-                e.get("id")
-                for e in event.catalog or []
-                if isinstance(e, dict) and e.get("state") == "enabled"
-            ]
-            with self._lock:
-                self._loras = loras
-            self._record("action.lora", {"loras": loras})
+            self._record_loras(event.catalog, "catalog_update")
         elif isinstance(event, SessionReady):
             fp = buffer_fingerprint(event.initial_buffer)
             self._record(
