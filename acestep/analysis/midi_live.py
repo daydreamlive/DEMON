@@ -154,9 +154,14 @@ class LiveMidiTranscriber:
         guard_s: float = 0.3,
         midi_port: str | None = None,
         on_note=None,
+        playhead_fn=None,
         log=print,
     ):
         self._session = session
+        # Canvas-seconds playhead source for ear-sync scheduling. Defaults
+        # to the session's audio engine; an injected fn lets headless runs
+        # drive a virtual playhead with no audio device open.
+        self._playhead_fn = playhead_fn
         self._stride = int(stride_s * SAMPLE_RATE)
         # Onsets within ``guard_s`` of the frontier have no right-context
         # yet; they are deferred to the next window (where they are
@@ -228,6 +233,11 @@ class LiveMidiTranscriber:
     def _run(self) -> None:
         window_n = int(WINDOW_S * SAMPLE_RATE)
         next_at = self._mirror.frontier_total() + self._stride
+        # Emit-region continuity: when a window runs slower than the
+        # stride the frontier jumps by more than one stride between
+        # windows; anchoring emit_lo to the previous emit_hi (not to
+        # ``end_total - stride``) keeps coverage gapless.
+        last_emit_hi: int | None = None
         import torch
 
         while self._running:
@@ -237,8 +247,15 @@ class LiveMidiTranscriber:
                 continue
             end_total = ft
             mono, canvas_start_s = self._mirror.read_window(end_total, window_n)
-            emit_lo = end_total - self._stride - self._guard  # unwrapped samples
             emit_hi = end_total - self._guard
+            emit_lo = (
+                last_emit_hi if last_emit_hi is not None
+                else emit_hi - self._stride
+            )
+            # A window only sees WINDOW_S back; a stall longer than the
+            # window leaves an uncoverable gap — clamp and move on.
+            emit_lo = max(emit_lo, end_total - window_n)
+            last_emit_hi = emit_hi
             next_at = end_total + self._stride
 
             t0 = time.perf_counter()
@@ -284,7 +301,10 @@ class LiveMidiTranscriber:
         # Ear-sync: schedule against the live playhead. Lead is circular;
         # a "lead" in the back half of the canvas means the playhead
         # already passed this note -> late, drop, count.
-        playhead_s = self._session.audio_eng.position / SAMPLE_RATE
+        playhead_s = (
+            self._playhead_fn() if self._playhead_fn is not None
+            else self._session.audio_eng.position / SAMPLE_RATE
+        )
         dur = self._mirror.duration_s
         lead = (onset_canvas_s - playhead_s) % dur
         if lead > dur / 2:

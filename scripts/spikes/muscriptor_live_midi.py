@@ -40,6 +40,8 @@ def main() -> int:
                    help="seconds of frontier advance per transcribe window")
     p.add_argument("--guard", type=float, default=0.3,
                    help="right-context guard before emitting an onset")
+    p.add_argument("--play", action="store_true",
+                   help="open local speaker output (OFF by default; makes noise)")
     p.add_argument("--midi-port", default=None,
                    help="mido output port name (see --list-ports)")
     p.add_argument("--list-ports", action="store_true")
@@ -54,6 +56,9 @@ def main() -> int:
     p.add_argument("--baseline-s", type=float, default=20.0,
                    help="run this long WITHOUT the transcriber first, for a "
                         "tick_ms baseline in the same process")
+    p.add_argument("--run-for", type=float, default=0.0,
+                   help="stop after this many seconds of transcribing "
+                        "(0 = until Ctrl+C); for unattended measurement runs")
     args = p.parse_args()
 
     if args.list_ports:
@@ -79,7 +84,7 @@ def main() -> int:
         "prompt": args.prompt, "steps": args.steps, "depth": args.depth,
     })
     checkpoint = args.checkpoint or os.environ.get(
-        "ACESTEP_CHECKPOINT", "ACE-Step-v1-3.5B"
+        "ACESTEP_CHECKPOINT", "acestep-v15-xl-turbo"
     )
     print(f"[spike] creating session checkpoint={checkpoint} "
           f"decoder={args.decoder_accel} vae={args.vae_accel}", flush=True)
@@ -92,12 +97,15 @@ def main() -> int:
         session_id=registry.new_session_id(),
     )
 
-    # Local playback so the feel test is audible without a browser.
-    try:
-        streaming.audio_eng.start()
-    except Exception as exc:
-        print(f"[spike] local playback unavailable ({exc}); continuing "
-              f"headless (late-note metric needs a moving playhead!)")
+    # Audio playback is OFF unless explicitly requested. When off the
+    # session ticks silently; the late-note metric needs a moving
+    # playhead, so with audio off pass --virtual-playhead in the caller.
+    if args.play:
+        try:
+            streaming.audio_eng.start()
+            print("[spike] LOCAL AUDIO PLAYBACK ON")
+        except Exception as exc:
+            print(f"[spike] --play requested but playback unavailable ({exc})")
 
     # ---- tick loop on a thread, spike logic on main ------------------
     import threading
@@ -132,8 +140,9 @@ def main() -> int:
     trans.attach()
     print("[spike] transcriber attached — Ctrl+C to stop", flush=True)
 
+    t_end = time.monotonic() + args.run_for if args.run_for > 0 else None
     try:
-        while True:
+        while t_end is None or time.monotonic() < t_end:
             time.sleep(10.0)
             print(f"[spike] {trans.stats.summary()}", flush=True)
     except KeyboardInterrupt:
