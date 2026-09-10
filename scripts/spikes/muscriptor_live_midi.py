@@ -46,8 +46,13 @@ def main() -> int:
                    help="mido output port name (see --list-ports)")
     p.add_argument("--list-ports", action="store_true")
     p.add_argument("--fixture", default="inside_confusion_loop_60s_gsm.wav")
+    p.add_argument("--backend", default="sa3", choices=("sa3", "acestep"),
+                   help="DEMON generation backend under test (default sa3)")
+    p.add_argument("--sa3-duration", type=float, default=30.0,
+                   help="sa3 session generation window seconds")
     p.add_argument("--checkpoint", default=None,
-                   help="default: server default checkpoint resolution")
+                   help="override; default per --backend "
+                        "(sa3->medium, acestep->xl-turbo)")
     p.add_argument("--decoder-accel", default="tensorrt")
     p.add_argument("--vae-accel", default="tensorrt")
     p.add_argument("--steps", type=int, default=8)
@@ -80,11 +85,16 @@ def main() -> int:
 
     # ---- session -----------------------------------------------------
     waveform = _load_known_fixture_waveform(args.fixture)
-    cfg = SessionConfig.from_dict({
-        "prompt": args.prompt, "steps": args.steps, "depth": args.depth,
-    })
-    checkpoint = args.checkpoint or os.environ.get(
-        "ACESTEP_CHECKPOINT", "acestep-v15-xl-turbo"
+    cfg_dict = {"prompt": args.prompt, "steps": args.steps, "depth": args.depth}
+    if args.backend == "sa3":
+        cfg_dict["backend"] = "sa3"
+        cfg_dict["sa3_duration_s"] = args.sa3_duration
+        default_ckpt = "medium"          # only SA3 medium has TRT engines built
+    else:
+        default_ckpt = "acestep-v15-xl-turbo"
+    cfg = SessionConfig.from_dict(cfg_dict)
+    checkpoint = (
+        args.checkpoint or os.environ.get("ACESTEP_CHECKPOINT") or default_ckpt
     )
     print(f"[spike] creating session checkpoint={checkpoint} "
           f"decoder={args.decoder_accel} vae={args.vae_accel}", flush=True)
