@@ -13,6 +13,7 @@ rather than something that only runs on a pod.
 from __future__ import annotations
 
 import threading
+import time
 
 import pytest
 
@@ -306,3 +307,143 @@ class TestFork:
         toks = pv._fork_tokens(t, self._logits(n=3, peak=1), rows=2, amount=0.5,
                                banned=(0, 1, 2))
         assert len(toks) == 2
+
+
+class TestBoundedWait:
+    """`enhance` may wait a little for the lock; `point` still never does."""
+
+    @staticmethod
+    def _run(fn, seconds=5.0):
+        out = []
+        t = threading.Thread(target=lambda: out.append(fn()), daemon=True)
+        t.start()
+        t.join(timeout=seconds)
+        assert not t.is_alive(), "hung -- the wait must be bounded"
+        return out[0]
+
+    def test_refused_after_the_wait_when_still_held(self):
+        assert pv._lock.acquire(blocking=False)
+        try:
+            def attempt():
+                try:
+                    with pv._generating(0.05):
+                        return "entered"
+                except pv.Busy:
+                    return "busy"
+            t0 = time.monotonic()
+            assert self._run(attempt) == "busy"
+            assert time.monotonic() - t0 >= 0.05
+        finally:
+            pv._lock.release()
+
+    def test_admitted_once_released_within_the_wait(self):
+        assert pv._lock.acquire(blocking=False)
+        threading.Timer(0.05, pv._lock.release).start()
+
+        def attempt():
+            with pv._generating(1.0):
+                return "entered"
+        assert self._run(attempt) == "entered"
+
+    def test_default_is_still_no_wait(self):
+        assert pv._lock.acquire(blocking=False)
+        try:
+            def attempt():
+                try:
+                    with pv._generating():
+                        return "entered"
+                except pv.Busy:
+                    return "busy"
+            t0 = time.monotonic()
+            assert self._run(attempt) == "busy"
+            assert time.monotonic() - t0 < 0.5
+        finally:
+            pv._lock.release()
+
+
+class TestPrivateRng:
+    """The sampler must neither read nor write the process-global RNG.
+
+    The audio engine in this process calls torch.manual_seed(seed) + randn on
+    every slot init, from its own thread. The first version of `_sample`
+    seeded the global RNG and let model.generate draw from it, so a reseed
+    landing mid-decode rewrote the tail: on a 5090, 0/8 calls for one
+    coordinate matched the idle answer. These run on a tiny random T5 so they
+    need transformers but no checkpoint.
+    """
+
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+
+    def _model(self):
+        from transformers import T5Config, T5ForConditionalGeneration
+        t = self.torch
+        with t.random.fork_rng():
+            t.manual_seed(0)
+            cfg = T5Config(vocab_size=64, d_model=16, d_kv=4, d_ff=32,
+                           num_layers=2, num_decoder_layers=2, num_heads=2,
+                           decoder_start_token_id=0, pad_token_id=0, eos_token_id=1)
+            return T5ForConditionalGeneration(cfg).eval()
+
+    def _enc(self, rows):
+        t = self.torch
+        ids = t.arange(2, 9)[None].repeat(rows, 1)
+        return {"input_ids": ids, "attention_mask": t.ones_like(ids)}
+
+    def _sample(self, model, rows=4, seed=99, stop=7):
+        t = self.torch
+        with t.inference_mode():
+            return pv._sample(t, model, self._enc(rows), list(range(10, 22)),
+                              stop=stop, stops=16, seed=seed, device="cpu", rows=rows)
+
+    def test_a_global_reseed_between_calls_changes_nothing(self):
+        t = self.torch
+        m = self._model()
+        a = self._sample(m)
+        t.manual_seed(12345)
+        t.randn(3)                      # what _make_noise does, elsewhere
+        b = self._sample(m)
+        assert t.equal(a, b)
+
+    def test_a_global_reseed_during_the_call_changes_nothing(self):
+        t = self.torch
+        m = self._model()
+        idle = self._sample(m)
+        stop = threading.Event()
+
+        def hammer():
+            while not stop.is_set():
+                t.manual_seed(1234)
+                t.randn(64)
+        th = threading.Thread(target=hammer, daemon=True)
+        th.start()
+        try:
+            busy = [self._sample(m) for _ in range(3)]
+        finally:
+            stop.set()
+            th.join(timeout=5.0)
+        assert all(t.equal(idle, b) for b in busy)
+
+    def test_the_global_rng_is_left_untouched(self):
+        t = self.torch
+        m = self._model()
+        t.manual_seed(7)
+        before = t.get_rng_state().clone()
+        self._sample(m, rows=2)
+        assert t.equal(t.get_rng_state(), before)
+
+    def test_the_seed_still_matters(self):
+        t = self.torch
+        m = self._model()
+        a = self._sample(m, seed=1, stop=15)
+        b = self._sample(m, seed=2, stop=15)
+        assert not (a.shape == b.shape and t.equal(a, b))
+
+    def test_fork_tokens_draw_from_the_generator(self):
+        t = self.torch
+        x = t.linspace(-3.0, 3.0, 50)
+        x[7] = 20.0
+        a = pv._fork_tokens(t, x, rows=12, amount=0.9, generator=t.Generator().manual_seed(5))
+        t.manual_seed(999)
+        b = pv._fork_tokens(t, x, rows=12, amount=0.9, generator=t.Generator().manual_seed(5))
+        assert a == b and 7 not in a
