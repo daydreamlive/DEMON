@@ -62,6 +62,14 @@ LANES = 12
 #: Distance steps returned. More than this is wasted: the prefix length is an
 #: integer token count, so adjacent steps start colliding on a short line.
 STOPS = 16
+#: How long a one-shot `enhance` may wait for the generation lock before it is
+#: refused. `point` never waits -- the pad self-paces and a refusal there costs
+#: one reading -- but a refused enhance costs the CHARACTER menus their
+#: refinement, and the caller used to answer that by asking the hosted LLM
+#: instead, which is where "same menus, different prompt" came from. A greedy
+#: enhance is ~0.1 s and a variation ~0.3-0.7 s, so a short bounded wait
+#: almost always admits it; N callers each wait at most this long.
+ENHANCE_WAIT_S = 2.0
 
 _MODEL_ENV = "DEMON_ENHANCER_DIR"
 #: Serialises generation. Held only while a model is actually decoding.
@@ -239,8 +247,8 @@ class Busy(Exception):
 
 
 @contextlib.contextmanager
-def _generating():
-    """Admit one generation, or refuse.
+def _generating(wait_s: float = 0.0):
+    """Admit one generation, or refuse. `wait_s` > 0 waits that long first.
 
     A blocking lock turns concurrent callers into an unbounded queue in front
     of multi-second work, in the same process (and GIL) as a live audio
@@ -255,7 +263,8 @@ def _generating():
     so every later request got Busy for the life of the process. A gate meant
     to bound the damage instead guaranteed it.
     """
-    if not _lock.acquire(blocking=False):
+    got = _lock.acquire(timeout=wait_s) if wait_s > 0 else _lock.acquire(blocking=False)
+    if not got:
         raise Busy()
     try:
         yield
@@ -275,7 +284,7 @@ def enhance(text: str, deck: str = "sa3") -> str:
     tok, model, device = loaded
     import torch
 
-    with _generating(), torch.inference_mode():
+    with _generating(ENHANCE_WAIT_S), torch.inference_mode():
         enc = tok(_task(deck) + text, return_tensors="pt", max_length=160,
                   truncation=True).to(device)
         out = model.generate(**enc, max_new_tokens=128, num_beams=1,
@@ -385,48 +394,50 @@ def _sample(torch, model, enc_b, anchor_ids, stop, stops, seed, device, rows,
     """One batched sampling pass at distance `stop`. Shared by both entry
     points so a coordinate cannot mean two different things.
 
-    FORKS THE GLOBAL RNG. torch.manual_seed is process-wide and the audio
-    engine draws from the same generator -- acestep/engine/stream.py seeds it
-    and then immediately calls torch.randn for its noise. Seeding here without
-    restoring would hand that slot noise derived from a prompt hash instead of
-    the user's seed, silently breaking audio reproducibility. fork_rng puts the
-    state back, so nothing outside this function can observe our seeding.
+    A PRIVATE GENERATOR, NOT torch.manual_seed. This used to seed the global
+    RNG inside fork_rng and let model.generate draw from it, on the theory
+    that fork_rng put the state back so nothing outside could observe the
+    seeding. Neither half held. The audio engine runs in this process and
+    calls torch.manual_seed(user_seed) + randn on EVERY slot init
+    (acestep/engine/stream.py::_make_noise) -- once per params message, so
+    continuously while a listener is streaming -- from another thread. A
+    reseed landing inside our ~128 decode steps handed the rest of the tail
+    to the audio seed's stream: measured on a 5090, 0/8 calls matched the
+    idle answer and 5 of 8 were distinct, for one anchor and one coordinate,
+    which is exactly the "same menus, different prompt" users reported. And
+    the converse: our manual_seed landing between the engine's seed and its
+    randn gave one slice noise derived from a prompt hash. fork_rng scopes
+    neither, because it restores state at exit and both collisions happen
+    in the middle.
 
-    The converse -- a stream reseeding mid-grid and perturbing OUR sampling --
-    is not fixable from this side without a process-wide RNG lock. It costs
-    determinism of the grid under concurrent load, which is the far smaller
-    harm, and the 503 gate above makes it rare.
+    So every draw here comes from `gen`, a generator this function owns and
+    nothing else can see or perturb. The global RNG is neither read nor
+    written. The draws are made on the CPU whatever device the model is on
+    (see `_generate`), so a CPU pod and a CUDA pod agree on which token a
+    coordinate picks, up to the logits themselves.
     """
     amount = stop / (stops - 1)
     prefix = _prefix_for(anchor_ids, amount, word_start)
     start = model.config.decoder_start_token_id
     head = torch.tensor([[start] + prefix], device=device)
-    # devices=[] restores the CPU generator ONLY, and torch.manual_seed is not
-    # CPU-only -- _manual_seed_impl calls torch.cuda.manual_seed_all first. So
-    # the empty list left the CUDA generator seeded from a prompt hash, which
-    # is exactly the audio-seed corruption this was written to prevent, and
-    # the fleet now defaults this model onto CUDA. Fork whatever devices exist.
-    _devices = (list(range(torch.cuda.device_count()))
-                if torch.cuda.is_available() else [])
-    with torch.random.fork_rng(devices=_devices):
-        torch.manual_seed(seed)
-        # THE FORK. One decoder step on the held prefix gives the model's
-        # next-token distribution; each lane is handed a DIFFERENT first free
-        # token from it, and never the greedy one. See _fork_tokens for why
-        # sampling alone could not do this.
-        enc_1 = {k: v[:1] for k, v in enc_b.items()}
-        logits = model(**enc_1, decoder_input_ids=head).logits[0, -1]
-        forks = _fork_tokens(
-            torch, logits, rows, amount,
-            banned=(model.config.eos_token_id, model.config.pad_token_id, start),
-            allowed=allowed,
-        )
-        dec = torch.tensor([[start] + prefix + [t] for t in forks], device=device)
-        return _generate(torch, model, enc_b, dec, amount)
+    gen = torch.Generator().manual_seed(int(seed))
+    # THE FORK. One decoder step on the held prefix gives the model's
+    # next-token distribution; each lane is handed a DIFFERENT first free
+    # token from it, and never the greedy one. See _fork_tokens for why
+    # sampling alone could not do this.
+    enc_1 = {k: v[:1] for k, v in enc_b.items()}
+    logits = model(**enc_1, decoder_input_ids=head).logits[0, -1]
+    forks = _fork_tokens(
+        torch, logits, rows, amount,
+        banned=(model.config.eos_token_id, model.config.pad_token_id, start),
+        allowed=allowed, generator=gen,
+    )
+    dec = torch.tensor([[start] + prefix + [t] for t in forks], device=device)
+    return _generate(torch, model, enc_b, dec, amount, gen)
 
 
 def _fork_tokens(torch, logits, rows: int, amount: float, banned=(),
-                 allowed=None) -> list[int]:
+                 allowed=None, generator=None) -> list[int]:
     """A distinct first free token for each of `rows` lanes, never the greedy
     one.
 
@@ -449,9 +460,10 @@ def _fork_tokens(torch, logits, rows: int, amount: float, banned=(),
     continues, at the same top_k/temperature ramp as before, so a small move
     still reads as a small move: one word forks and the line re-converges.
 
-    Deterministic under the caller's seeding (a CPU multinomial on a CPU
+    Deterministic under the caller's `generator` (a CPU multinomial on a CPU
     copy of the logits, so the result does not depend on the device the model
-    happens to run on).
+    happens to run on). Without one it draws from the global RNG, which
+    nothing in this module does any more -- see `_sample`.
     """
     scores = logits.detach().float().cpu().clone()
     scores[int(torch.argmax(scores))] = float("-inf")
@@ -482,7 +494,7 @@ def _fork_tokens(torch, logits, rows: int, amount: float, banned=(),
     top = torch.topk(scores, k)
     probs = torch.softmax(top.values / temp, dim=0)
     n = min(rows, k)
-    pick = torch.multinomial(probs, n, replacement=False)
+    pick = torch.multinomial(probs, n, replacement=False, generator=generator)
     toks = [int(t) for t in top.indices[pick]]
     # Fewer live candidates than lanes (a tiny vocabulary): repeat rather than
     # fail -- the distinctness contract is best-effort past the vocab's size.
@@ -519,11 +531,55 @@ def _word_start_mask(torch, tok):
     return m
 
 
-def _generate(torch, model, enc_b, dec, amount):
-    return model.generate(
-        **enc_b, decoder_input_ids=dec, max_new_tokens=128, num_beams=1,
-        do_sample=True,
-        top_k=TOPK_MIN + round(amount * (TOPK_MAX - TOPK_MIN)),
-        temperature=TEMP_MIN + amount * (TEMP_MAX - TEMP_MIN),
-        no_repeat_ngram_size=3,
+def _generate(torch, model, enc_b, dec, amount, generator):
+    """Sample the tail of every row of `dec`, drawing only from `generator`.
+
+    A hand-rolled decode loop rather than model.generate(do_sample=True):
+    transformers' sampler calls torch.multinomial with no generator, so it
+    draws from the process-global RNG and there is no way to hand it a
+    private one. The loop reproduces what generate did -- the same three
+    logits processors in the same order (no-repeat-3-gram, temperature,
+    top-k), a KV cache, EOS per row then padding, 128 new tokens at most --
+    with the one difference that the draw is ours.
+
+    The draw runs on the CPU from a CPU generator whatever device the model
+    is on: the CUDA and CPU generators produce different streams for the
+    same seed, so sampling on the model's device made the same coordinate
+    read differently on a pod with DEMON_ENHANCER_DEVICE=cuda and one left
+    on the cpu default.
+    """
+    from transformers.generation.logits_process import (
+        NoRepeatNGramLogitsProcessor, TemperatureLogitsWarper, TopKLogitsWarper,
     )
+
+    processors = (
+        NoRepeatNGramLogitsProcessor(3),
+        TemperatureLogitsWarper(TEMP_MIN + amount * (TEMP_MAX - TEMP_MIN)),
+        TopKLogitsWarper(TOPK_MIN + round(amount * (TOPK_MAX - TOPK_MIN))),
+    )
+    eos = model.config.eos_token_id
+    pad = model.config.pad_token_id
+    attn = enc_b.get("attention_mask")
+    encoded = model.get_encoder()(**enc_b)
+    ids = dec
+    step = dec
+    past = None
+    done = torch.zeros(dec.shape[0], dtype=torch.bool, device=dec.device)
+    for _ in range(128):
+        out = model(encoder_outputs=encoded, attention_mask=attn,
+                    decoder_input_ids=step, past_key_values=past, use_cache=True)
+        past = out.past_key_values
+        scores = out.logits[:, -1, :].float()
+        for p in processors:
+            scores = p(ids, scores)
+        probs = torch.softmax(scores, dim=-1).cpu()
+        nxt = torch.multinomial(probs, 1, generator=generator).squeeze(1).to(dec.device)
+        # A finished row keeps padding, exactly as generate does, so
+        # tok.decode(..., skip_special_tokens=True) reads the same string.
+        nxt = torch.where(done, torch.full_like(nxt, pad), nxt)
+        ids = torch.cat([ids, nxt[:, None]], dim=1)
+        done |= nxt == eos
+        if bool(done.all()):
+            break
+        step = nxt[:, None]
+    return ids

@@ -221,3 +221,27 @@ def test_family_matches_resolve_checkpoint_for_sa3():
     assert fam2 == "acestep"
     server._BACKEND_FAMILY = fam2
     assert server._resolve_enhance_backend("") == "acestep"
+
+
+def test_local_busy_answers_not_ok_instead_of_asking_hosted(monkeypatch):
+    """Busy is not absent: the checkpoint is there, another generation holds
+    it. Falling through to Haiku here made the same CHARACTER menus produce a
+    different line whenever the variations pad was mid-request."""
+    from demos.realtime_motion_graph_web import prompt_variations as pv
+
+    def busy(idea, backend):
+        raise pv.Busy()
+    monkeypatch.setattr(pv, "enhance", busy)
+    called = {"n": 0}
+    monkeypatch.setattr(pe, "_ask_haiku",
+                        lambda s, u: called.__setitem__("n", called["n"] + 1) or "hosted line")
+    assert pe.enhance_prompt("solo piano", "sa3", "local") == ("solo piano", False)
+    assert called["n"] == 0
+
+
+def test_local_absent_still_falls_through_to_hosted(monkeypatch):
+    from demos.realtime_motion_graph_web import prompt_variations as pv
+
+    monkeypatch.setattr(pv, "enhance", lambda idea, backend: "")
+    monkeypatch.setattr(pe, "_ask_haiku", lambda s, u: "hosted line")
+    assert pe.enhance_prompt("solo piano", "sa3", "local") == ("hosted line", True)

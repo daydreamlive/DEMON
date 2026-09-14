@@ -269,12 +269,26 @@ def resolve_provider(override: str = "") -> str:
     return env if env in _PROVIDERS else "hosted"
 
 
-def _local_enhance(idea: str, backend: str) -> str:
-    """The local checkpoint's answer, or "" if it has none."""
-    try:
-        from .prompt_variations import enhance as _enhance
+def _local_enhance(idea: str, backend: str) -> str | None:
+    """The local checkpoint's answer; "" if it has none; None if it is BUSY.
 
+    Busy is not absent. The checkpoint is present and would answer the way it
+    always does -- another generation just holds it for a moment. Treating
+    that like a missing checkpoint sent the request to the hosted LLM, which
+    samples at its default temperature, so the same CHARACTER menus produced
+    a different line whenever the variations pad happened to be mid-request
+    (and the variations around that line, seeded from its hash, moved with
+    it). The caller answers ok=false instead and the client keeps its
+    deterministic template.
+    """
+    try:
+        from .prompt_variations import Busy, enhance as _enhance
+    except Exception:
+        return ""
+    try:
         return _enhance(idea, backend)
+    except Busy:
+        return None
     except Exception:
         return ""
 
@@ -304,7 +318,10 @@ def enhance_prompt(idea: str, backend: str = "acestep",
     # answer is a routing signal rather than a failure -- fall through to the
     # hosted policy below exactly as if it had not been configured.
     if resolve_provider(provider) == "local":
-        local = _sanitize(_local_enhance(idea, backend))
+        raw_local = _local_enhance(idea, backend)
+        if raw_local is None:
+            return idea, False   # busy, not absent -- see _local_enhance
+        local = _sanitize(raw_local)
         if local:
             return local, True
 
