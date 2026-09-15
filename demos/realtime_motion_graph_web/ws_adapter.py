@@ -690,6 +690,52 @@ _UPLOAD_ANALYSIS_POOL = ThreadPoolExecutor(
 )
 
 
+# midi_transcribe runs off the recv loop: a 30 s clip costs a few seconds
+# of GPU, and the recv thread must keep draining params meanwhile. One
+# worker — the transcriber itself is a single shared model behind a lock,
+# so more workers would only queue on that lock.
+_MIDI_TRANSCRIBE_POOL = ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="midi-transcribe",
+)
+
+
+def _capabilities_with_midi(caps: dict) -> dict:
+    """Overlay the server-level midi_transcribe bit onto the backend mask
+    (see Capabilities.midi_transcribe)."""
+    try:
+        from acestep.analysis.midi_transcribe import transcriber_available
+        caps["midi_transcribe"] = bool(transcriber_available())
+    except Exception:  # probe must never break the handshake
+        caps["midi_transcribe"] = False
+    return caps
+
+
+def _run_midi_transcribe(waveform, request_id: str, send_json) -> None:
+    """Worker-thread body for one midi_transcribe request."""
+    try:
+        from acestep.analysis.midi_transcribe import MidiTranscriber
+
+        result = MidiTranscriber.get().transcribe(waveform)
+    except Exception as exc:
+        logger.opt(exception=True).error(
+            "midi_transcribe_failed request_id={} error={}", request_id, exc,
+        )
+        send_json({
+            "type": "midi_failed",
+            "request_id": request_id,
+            "error": f"{type(exc).__name__}: {exc}",
+        })
+        return
+    send_json({
+        "type": "midi_notes",
+        "request_id": request_id,
+        "notes": [n.to_wire() for n in result.notes],
+        "model": result.model,
+        "duration_s": round(result.duration_s, 3),
+        "wall_s": round(result.wall_s, 3),
+    })
+
+
 def _read_files_into_page_cache(paths) -> int:
     """Sequentially read ``paths`` and discard, pulling them into the OS
     page cache. Returns total bytes read."""
@@ -1651,7 +1697,7 @@ def _handle_client_body(
         # fields above stay as-is for old clients; geometry is the
         # backend-declared truth new clients read instead of constants.
         "geometry": streaming.geometry_payload(),
-        "capabilities": streaming.capabilities_payload(),
+        "capabilities": _capabilities_with_midi(streaming.capabilities_payload()),
         "knob_manifest": streaming.knob_manifest_payload(),
         # Activation-steering surface (manual_slot_count /
         # manual_slot_cap / steering_available).
@@ -2058,6 +2104,38 @@ def _handle_client_body(
                     source_epoch=int(epoch) if epoch is not None else None,
                     refresh_timbre=bool(data.get("refresh_timbre", False)),
                     origin=origin,
+                )
+            elif mtype == "midi_transcribe":
+                # "Drag MIDI out": the binary PCM frame is the clip the
+                # client is about to export. Stateless — decode here on
+                # the recv thread (cheap), transcribe on the pool.
+                request_id = str(data.get("request_id") or "")
+                audio_msg = _recv_binary_payload("midi_failed")
+                if audio_msg is None:
+                    return
+                try:
+                    wf = _decode_audio_msg(audio_msg)
+                except Exception as exc:
+                    logger.opt(exception=True).error(
+                        "midi_transcribe_decode_failed origin={} error={}",
+                        origin, exc,
+                    )
+                    _send_json({
+                        "type": "midi_failed",
+                        "request_id": request_id,
+                        "error": str(exc),
+                    })
+                    return
+                from acestep.analysis.midi_transcribe import transcriber_available
+                if not transcriber_available():
+                    _send_json({
+                        "type": "midi_failed",
+                        "request_id": request_id,
+                        "error": "this pod has no MIDI transcriber installed",
+                    })
+                    return
+                _MIDI_TRANSCRIBE_POOL.submit(
+                    _run_midi_transcribe, wf, request_id, _send_json,
                 )
         except ConnectionClosed:
             state.running = False

@@ -225,6 +225,12 @@ namespace command {
     }  // namespace repeat
   }  // namespace write_audio
 
+  namespace midi_transcribe {
+    inline constexpr const char* kType = "midi_transcribe";
+    /** Client-chosen token echoed on midi_notes / midi_failed so the answer can be matched to the clip it was asked for. */
+    inline constexpr const char* kRequestId = "request_id";
+  }  // namespace midi_transcribe
+
 }  // namespace command
 
 // ── Event payloads (server → client) ──
@@ -419,6 +425,27 @@ namespace event {
     /** Human-readable reason. */
     inline constexpr const char* kError = "error";
   }  // namespace command_failed
+
+  namespace midi_notes {
+    inline constexpr const char* kType = "midi_notes";
+    /** Echo of the midi_transcribe request_id. */
+    inline constexpr const char* kRequestId = "request_id";
+    /** Note events, sorted by start: {start_s, end_s, pitch, instrument}. Times are seconds from the start of the uploaded clip; pitch is MIDI 0-127; instrument is MuScriptor's label (e.g. 'drums', 'electric_bass'). No velocity — the model does not predict it. */
+    inline constexpr const char* kNotes = "notes";
+    /** Transcriber size that ran (small|medium|large). */
+    inline constexpr const char* kModel = "model";
+    /** Length of the transcribed clip. */
+    inline constexpr const char* kDurationS = "duration_s";
+    /** Transcription wall time, for telemetry. */
+    inline constexpr const char* kWallS = "wall_s";
+  }  // namespace midi_notes
+
+  namespace midi_failed {
+    inline constexpr const char* kType = "midi_failed";
+    /** Echo of the midi_transcribe request_id (empty when the header itself was bad). */
+    inline constexpr const char* kRequestId = "request_id";
+    inline constexpr const char* kError = "error";
+  }  // namespace midi_failed
 
 }  // namespace event
 
