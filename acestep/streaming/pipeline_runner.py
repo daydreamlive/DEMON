@@ -206,7 +206,7 @@ class PipelineRunner:
         # is a no-op there — callers that only want a side-effect (delta
         # send, monitoring) override this and skip the swap themselves.
         if on_audio_ready is None:
-            def on_audio_ready(wav, win_start=None, win_end=None):
+            def on_audio_ready(wav, win_start=None, win_end=None, *, anchored=False):
                 if win_start is None:
                     audio_eng.swap(wav)
         self.on_audio_ready = on_audio_ready
@@ -997,7 +997,15 @@ class PipelineRunner:
                         ):
                             self._emit_finalized(current, win_start)
                         else:
-                            self.on_audio_ready(patched, win_start, win_end)
+                            # ``anchored`` rides to the wire: a stationary
+                            # render is the only write its region gets
+                            # until the pad is re-warmed, so the serializer
+                            # must not shed it under backpressure (the
+                            # transport chase re-covers its regions every
+                            # lap; a pad prewarm does not).
+                            self.on_audio_ready(
+                                patched, win_start, win_end, anchored=anchored,
+                            )
                             if self._emit_trim:
                                 self._reset_emit_trim_frontier()
                         # This tick's placement came from the anchor queue and
