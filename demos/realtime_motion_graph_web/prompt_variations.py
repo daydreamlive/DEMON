@@ -160,6 +160,17 @@ def _load():
             import torch
             from transformers import AutoTokenizer, T5ForConditionalGeneration
 
+            class ThreadLocalT5(T5ForConditionalGeneration):
+                @classmethod
+                def get_init_context(cls, is_quantized, _is_ds_init_called):
+                    # Transformers' init_empty_weights patches Module.register_parameter
+                    # process-wide. Concurrent SA3 LoRA registration then moves real
+                    # base weights to meta. The torch device context is thread-local
+                    # and still lets from_pretrained materialize this model's weights.
+                    if is_quantized or _is_ds_init_called:
+                        raise ValueError("The local prompt enhancer requires unquantized T5")
+                    return [torch.device("meta")]
+
             path = _model_dir()
             if not os.path.isdir(path):
                 # NOT latched. A checkpoint staged after the first request --
@@ -169,7 +180,7 @@ def _load():
                 # one-shot decision taken by whoever sent the first request.
                 return None
             tok = AutoTokenizer.from_pretrained(path, legacy=False)
-            model = T5ForConditionalGeneration.from_pretrained(path)
+            model = ThreadLocalT5.from_pretrained(path)
             device = _resolve_device(torch)
             model.to(device).eval()
             _loaded = (tok, model, device)
