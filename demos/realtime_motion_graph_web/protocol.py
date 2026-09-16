@@ -522,6 +522,25 @@ COMMANDS: tuple = (
                     + _PCM_FRAME + " Acked by audio_written / "
                     "audio_write_failed.",
     ),
+    CommandSpec(
+        "midi_transcribe",
+        fields=(
+            FieldSpec("request_id", "str", required=True,
+                      description="Client-chosen token echoed on midi_notes / "
+                                  "midi_failed so the answer can be matched "
+                                  "to the clip it was asked for."),
+        ),
+        binary=True,
+        description="Transcribe the uploaded audio to MIDI notes (MuScriptor) "
+                    "— the plugin's 'drag MIDI out'. The binary PCM frame is "
+                    "the exact clip the client is about to export, so note "
+                    "times are relative to ITS start, not the session canvas. "
+                    "One-shot and stateless: nothing restarts, no session "
+                    "state changes. Available only when ready.capabilities."
+                    "midi_transcribe is true (the pod has the transcriber "
+                    "installed); otherwise answered with midi_failed. "
+                    + _PCM_FRAME + " Acked by midi_notes / midi_failed.",
+    ),
 )
 
 EVENTS: tuple = (
@@ -799,6 +818,40 @@ EVENTS: tuple = (
                     "never a silent no-op). The command was NOT applied. "
                     "With only the acestep backend registered this fires "
                     "solely for LoRA commands on a lora-disabled session.",
+    ),
+    EventSpec(
+        "midi_notes",
+        fields=(
+            FieldSpec("request_id", "str", required=True,
+                      description="Echo of the midi_transcribe request_id."),
+            FieldSpec("notes", "list", required=True,
+                      description="Note events, sorted by start: "
+                                  "{start_s, end_s, pitch, instrument}. Times "
+                                  "are seconds from the start of the uploaded "
+                                  "clip; pitch is MIDI 0-127; instrument is "
+                                  "MuScriptor's label (e.g. 'drums', "
+                                  "'electric_bass'). No velocity — the model "
+                                  "does not predict it."),
+            FieldSpec("model", "str",
+                      description="Transcriber size that ran (small|medium|large)."),
+            FieldSpec("duration_s", "float",
+                      description="Length of the transcribed clip."),
+            FieldSpec("wall_s", "float",
+                      description="Transcription wall time, for telemetry."),
+        ),
+        description="Answer to midi_transcribe: the clip's MIDI notes.",
+    ),
+    EventSpec(
+        "midi_failed",
+        fields=(
+            FieldSpec("request_id", "str",
+                      description="Echo of the midi_transcribe request_id "
+                                  "(empty when the header itself was bad)."),
+            FieldSpec("error", "str"),
+        ),
+        description="midi_transcribe rejected or failed (transcriber not "
+                    "installed / weights unavailable / decode error). The "
+                    "session is unaffected.",
     ),
 )
 
