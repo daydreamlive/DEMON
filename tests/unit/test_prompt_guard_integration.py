@@ -38,6 +38,16 @@ def test_enhancement_rejects_extra_instrument(decoder):
     assert pv.enhance("solo piano") == "solo piano"
 
 
+def test_enhancement_and_variations_reject_invented_rhythm(decoder, monkeypatch):
+    source = "solo electric guitar, single instrument, stratvema, classic 70s rock"
+    tok, _ = decoder
+    tok.decoded = "unaccompanied solo electric guitar, driving syncopated rhythm"
+    assert pv.enhance(source, deck="sa3") == source
+    monkeypatch.setattr(pv, "_anchor", lambda *a: ([5, 6], source))
+    monkeypatch.setattr(pv, "_sample", lambda *a, **kw: torch.ones((pv.LANES, 2), dtype=torch.long))
+    assert pv.point(source, stop=8, lane=5, deck="sa3") == source
+
+
 def test_invalid_greedy_anchor_cannot_become_forced_prefix(decoder, monkeypatch):
     tok, _ = decoder
     monkeypatch.setattr(pv, "_anchor", lambda *a: ([5, 6], "solo guitar"))
