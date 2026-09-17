@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-GUARD_VERSION = "lineup-2"
+GUARD_VERSION = "lineup-3"
 
 # Common instrument names, synonyms and component sounds. Longest matches win,
 # so "electric piano" is not reduced to "piano", or "drum machine" to "drum".
@@ -117,6 +117,7 @@ _LINEUPS = {
     "ensemble": r"\b(?:ensemble|group)\b",
 }
 _ACCOMPANIMENT = re.compile(r"\b(?:accompanied by|accompaniment|backing|backbeat|arrangement|band|orchestra|ensemble|rhythm section)\b")
+_RHYTHM = re.compile(r"\b(?:grooves?|beats?|rhythms?)\b")
 # Radio-frequency bands describe filtering, not additional performers.
 _RADIO_BAND = re.compile(r"\b(?:(?:am|fm) radio|radio frequency) band\b")
 _NEGATED = re.compile(r"\b(?:no|without) (?:any )?(?:vocals?|singing|accompaniment|backing band|drums?)\b")
@@ -185,10 +186,12 @@ class PromptConstraint:
                 allowed.update(_FAMILIES.get(subject, set()))
             if mentioned - allowed or len(self.instruments) > 1:
                 reasons.append("other_source")
-            # Genre + "groove" can imply a backing arrangement. Preserve it
-            # only when requested or when the selected source is percussion.
-            if not set(self.instruments) & _PERCUSSION and "groove" not in _normal(self.source):
-                if re.search(r"\b(?:groove|beat|beats|rhythm track)\b", normal):
+            # A separate rhythm clause can imply backing even without naming
+            # another instrument (e.g. "driving syncopated rhythm"). Preserve
+            # explicit rhythm requests and percussion, but don't invent them
+            # from a genre or mood. "Syncopated guitar phrasing" stays valid.
+            if not set(self.instruments) & _PERCUSSION and not _RHYTHM.search(_normal(self.source)):
+                if _RHYTHM.search(normal):
                     reasons.append("added_rhythm")
         elif self.lineups:
             if _SOLO.search(normal) or not self.lineups <= _lineups(normal):

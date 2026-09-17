@@ -71,3 +71,34 @@ def test_radio_filtering_is_not_accompaniment(band):
     assert not contract.violations(source)
     assert contract.accept(source + ", soft notes", source) == source + ", soft notes"
     assert contract.accept(source + ", with a rock band", source) == source
+
+
+@pytest.mark.parametrize("rhythm", [
+    "driving syncopated rhythm", "driving rhythms", "a shuffling groove",
+    "syncopated grooves", "a steady beat", "driving beats", "a rhythm track",
+])
+def test_solo_guitar_does_not_gain_an_unrequested_rhythm_clause(rhythm):
+    source = (
+        "solo electric guitar, expressive lead lines, single instrument, stratvema, "
+        "classic 70s rock, uplifting, euphoric, soaring, clean, polished studio recording"
+    )
+    candidate = (
+        f"unaccompanied solo electric guitar, expressive lead lines, {rhythm}, "
+        "uplifting and euphoric, soaring melodic lines, polished studio recording"
+    )
+    contract = PromptConstraint.infer(source, "sa3")
+    assert "added_rhythm" in contract.violations(candidate)
+    assert contract.accept(candidate, source) == source
+
+
+@pytest.mark.parametrize("source,candidate", [
+    ("solo electric guitar", "solo electric guitar, syncopated guitar phrasing"),
+    ("solo electric guitar", "solo electric guitar, rhythmic picking and expressive bends"),
+    ("solo electric guitar, syncopated rhythm", "solo electric guitar, driving syncopated rhythm"),
+    ("solo electric guitar, steady beat", "solo electric guitar, steady beat, clean articulation"),
+    ("solo electric guitar, shuffling groove", "solo electric guitar, shuffling grooves"),
+    ("solo drum kit", "solo drums, driving syncopated rhythm"),
+    ("electric guitar leading a full band", "electric guitar leading a full band, driving syncopated rhythm"),
+])
+def test_instrument_phrasing_and_requested_rhythm_remain_valid(source, candidate):
+    assert not PromptConstraint.infer(source, "sa3").violations(candidate)
