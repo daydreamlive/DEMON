@@ -62,3 +62,12 @@ def test_instrument_components_do_not_invalidate_the_anchor(source, good):
     contract = PromptConstraint.infer(source, "sa3")
     assert not contract.violations(source)
     assert contract.accept(good, source) == good
+
+
+@pytest.mark.parametrize("band", ["AM radio band", "FM radio band", "radio-frequency band"])
+def test_radio_filtering_is_not_accompaniment(band):
+    source = f"solo piano, filtered through a narrow {band}"
+    contract = PromptConstraint.infer(source, "sa3")
+    assert not contract.violations(source)
+    assert contract.accept(source + ", soft notes", source) == source + ", soft notes"
+    assert contract.accept(source + ", with a rock band", source) == source

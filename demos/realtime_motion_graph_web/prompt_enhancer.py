@@ -300,8 +300,14 @@ def enhance_prompt(idea: str, backend: str = "acestep",
     # Local is an explicit provider contract: do not turn missing weights,
     # Busy, or a rejected rewrite into a nondeterministic hosted response.
     if resolve_provider(provider) == "local":
+        from .prompt_constraints import PromptConstraint
+
         local = _sanitize(_local_enhance(idea, backend))
-        return (local, True) if local else (idea, False)
+        # Cleanup can discard later lines or truncate the subject at 400
+        # characters. Validate the final text, not only the raw model result.
+        if local and not PromptConstraint.infer(idea, backend).violations(local):
+            return local, True
+        return idea, False
 
     if backend == "sa3":
         if _sa3_wants_solo(idea):

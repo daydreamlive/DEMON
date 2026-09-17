@@ -59,3 +59,22 @@ def test_revision_changes_for_weights_tokenizer_decoder_and_guard(tmp_path):
     assert baseline != revision_for(first, "decoder2", "guard1", {"torch": "a"})
     assert baseline != revision_for(first, "decoder1", "guard2", {"torch": "a"})
     assert baseline != revision_for(first, "decoder1", "guard1", {"torch": "b"})
+
+
+@pytest.mark.parametrize("idea", [
+    "Warm and intimate.\nSolo waterphone.",
+    "Warm resonance, " * 28 + "an unaccompanied solo piano.",
+])
+def test_final_cleanup_cannot_discard_guarded_subject(monkeypatch, idea):
+    from demos.realtime_motion_graph_web.prompt_constraints import PromptConstraint
+    contract = PromptConstraint.infer(idea, "sa3")
+    assert not contract.violations(idea)
+    assert contract.violations(pe._sanitize(idea))
+    monkeypatch.setattr(pe, "_local_enhance", lambda *a: idea)
+    monkeypatch.setattr(pe, "_ask_haiku", lambda *a: pytest.fail("Must not change provider"))
+    assert pe.enhance_prompt(idea, "sa3", "local") == (idea, False)
+
+
+def test_safe_final_cleanup_still_succeeds(monkeypatch):
+    monkeypatch.setattr(pe, "_local_enhance", lambda *a: '\"solo piano, delicate notes.\"')
+    assert pe.enhance_prompt("solo piano", "sa3", "local") == ("solo piano, delicate notes", True)

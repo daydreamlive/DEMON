@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-GUARD_VERSION = "lineup-1"
+GUARD_VERSION = "lineup-2"
 
 # Common instrument names, synonyms and component sounds. Longest matches win,
 # so "electric piano" is not reduced to "piano", or "drum machine" to "drum".
@@ -117,6 +117,8 @@ _LINEUPS = {
     "ensemble": r"\b(?:ensemble|group)\b",
 }
 _ACCOMPANIMENT = re.compile(r"\b(?:accompanied by|accompaniment|backing|backbeat|arrangement|band|orchestra|ensemble|rhythm section)\b")
+# Radio-frequency bands describe filtering, not additional performers.
+_RADIO_BAND = re.compile(r"\b(?:(?:am|fm) radio|radio frequency) band\b")
 _NEGATED = re.compile(r"\b(?:no|without) (?:any )?(?:vocals?|singing|accompaniment|backing band|drums?)\b")
 _COMPONENTS = re.compile(r"\b(?:singing (?:vibrato|tone|sustain)|(?:single )?bowed voice|(?:struck|plucked|bowed|nylon|steel) strings|struck bells)\b")
 
@@ -176,7 +178,7 @@ class PromptConstraint:
         if self.solo:
             if not _SOLO.search(normal):
                 reasons.append("missing_solo")
-            if self.lineups or _lineups(normal) or _ACCOMPANIMENT.search(_NEGATED.sub("", normal)):
+            if self.lineups or _lineups(normal) or _ACCOMPANIMENT.search(_RADIO_BAND.sub("", _NEGATED.sub("", normal))):
                 reasons.append("accompaniment")
             allowed = set(self.instruments)
             for subject in self.instruments:
