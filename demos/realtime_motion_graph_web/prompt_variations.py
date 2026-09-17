@@ -37,8 +37,10 @@ AND A FORCED FORK AT THE FIRST FREE TOKEN. Holding the head and sampling the
 tail is only a variation if the sampler actually leaves the greedy line, and
 on the model's own output it did not (see `_fork_tokens`). So the first free
 token is chosen for each lane -- distinct across lanes, never the greedy one --
-and only then does sampling take over. Every coordinate away from home is a
-different string from the anchor, by construction rather than by luck.
+and only then does sampling take over. Instrument and lineup checks may reject
+that candidate and return a valid anchor. Preserving the brief takes priority
+over distinctness. Reproducibility applies to a fixed checkpoint and inference
+runtime; the HTTP revision identifies that combination for client caches.
 """
 
 from __future__ import annotations
@@ -47,6 +49,11 @@ import contextlib
 import os
 import threading
 import time
+
+from .prompt_constraints import GUARD_VERSION, PromptConstraint
+from .prompt_identity import checkpoint_digest, revision_for
+
+SAMPLER_VERSION = "private-rng-guarded-1"
 
 #: Sampler freedom at the two ends of the travel. Both ramp with distance: near
 #: the anchor the sampler is nearly greedy, far from it it is free to leave.
@@ -114,6 +121,7 @@ def _resolve_device(torch) -> str:
 
 
 _loaded = None
+_identity: dict = {}
 _load_failed = False
 #: When a failed load may be retried. A failure that can resolve on its own -- a
 #: half-staged checkpoint, a volume not mounted yet -- must not latch, or "local"
@@ -129,14 +137,14 @@ _RETRY_COOLDOWN_S = 60.0
 def _load():
     """Tokenizer + model, once.
 
-    Returns None when the checkpoint is absent or unloadable, so every caller
-    degrades to the hosted backend instead of failing the request.
+    Returns None when the checkpoint is absent or unloadable, so callers keep
+    the input text without changing the selected inference provider.
 
     NOT lru_cache: that memoises the return value but does not serialise
     concurrent misses, so the first N simultaneous requests to a cold process
     each load the checkpoint. It also would not let a failure be retried.
     """
-    global _loaded, _load_failed, _retry_after
+    global _loaded, _load_failed, _retry_after, _identity
     if _loaded is not None or _load_failed:
         return _loaded
     if time.monotonic() < _retry_after:
@@ -155,8 +163,7 @@ def _load():
         try:
             # INSIDE the try. These used to sit above it, so a deployment
             # without torch/transformers raised ImportError out of the endpoint
-            # as a 500 rather than degrading to the hosted backend, which is
-            # the opposite of what every docstring here promises.
+            # as a 500 rather than letting the caller retain its input.
             import torch
             from transformers import AutoTokenizer, T5ForConditionalGeneration
 
@@ -179,10 +186,28 @@ def _load():
                 # whenever the checkpoint appears. Latching made that a
                 # one-shot decision taken by whoever sent the first request.
                 return None
+            digest = checkpoint_digest(path)
             tok = AutoTokenizer.from_pretrained(path, legacy=False)
             model = ThreadLocalT5.from_pretrained(path)
             device = _resolve_device(torch)
             model.to(device).eval()
+            if checkpoint_digest(path) != digest:
+                raise RuntimeError("Prompt checkpoint changed while loading; use an immutable directory")
+            import platform
+            import transformers
+            runtime = {"torch": torch.__version__, "transformers": transformers.__version__,
+                       "device": device, "machine": platform.machine(),
+                       "dtype": str(next(model.parameters()).dtype), "threads": torch.get_num_threads(),
+                       "cpu_capability": torch.backends.cpu.get_cpu_capability(),
+                       "matmul_precision": torch.get_float32_matmul_precision(),
+                       "deterministic_algorithms": torch.are_deterministic_algorithms_enabled()}
+            if device == "cuda":
+                runtime.update(gpu=torch.cuda.get_device_name(),
+                               capability=list(torch.cuda.get_device_capability()),
+                               cuda=torch.version.cuda)
+            _identity = {"revision": revision_for(digest, SAMPLER_VERSION, GUARD_VERSION, runtime),
+                         "checkpoint": digest, "sampler": SAMPLER_VERSION,
+                         "guard": GUARD_VERSION, "runtime": runtime}
             _loaded = (tok, model, device)
             return _loaded
         except ImportError:
@@ -197,6 +222,13 @@ def _load():
             # above is the only failure that is genuinely permanent.
             _retry_after = time.monotonic() + _RETRY_COOLDOWN_S
             return None
+
+
+def identity() -> dict:
+    """Identity of the in-memory model, captured at load, not a later disk edit."""
+    if _load() is None:
+        return {"ok": False, "revision": ""}
+    return {**_identity, "ok": bool(_identity.get("revision"))}
 
 
 def _prefix_for(anchor_ids: list[int], amount: float,
@@ -277,8 +309,8 @@ def _generating():
 def enhance(text: str, deck: str = "sa3") -> str:
     """Expand `text` into a richer prompt. Greedy, so it is reproducible.
 
-    Returns "" when the local checkpoint is unavailable or produced nothing,
-    which the caller should treat as "fall back to the hosted backend".
+    Returns "" when the checkpoint is unavailable. Contradictory rewrites
+    retain the valid input; they must not trigger a different text provider.
     """
     loaded = _load()
     if loaded is None or not text.strip():
@@ -291,7 +323,8 @@ def enhance(text: str, deck: str = "sa3") -> str:
                   truncation=True).to(device)
         out = model.generate(**enc, max_new_tokens=128, num_beams=1,
                              do_sample=False, no_repeat_ngram_size=3)
-    return tok.decode(out[0], skip_special_tokens=True).strip()
+    return PromptConstraint.infer(text, deck).accept(
+        tok.decode(out[0], skip_special_tokens=True).strip(), text)
 
 
 def point(text: str, deck: str = "sa3", lane: int = 0, stop: int = 0,
@@ -303,15 +336,16 @@ def point(text: str, deck: str = "sa3", lane: int = 0, stop: int = 0,
     string, so travelling out and back is lossless. That is the whole contract
     a client needs to treat this as navigation rather than a dice roll.
 
-    Stop 0 is the anchor itself. Every other stop differs from it, and no two
-    lanes at a stop start their rewrite the same way (`_fork_tokens`).
+    Stop 0 is exactly the supplied anchor. Invalid candidates retain a valid
+    anchor, so distinctness is subordinate to instrument/lineup preservation.
     """
     loaded = _load()
     if loaded is None or not text.strip():
         return ""
     stop, lane = clamp_coord(stop, lane, stops, lanes)
+    constraint = PromptConstraint.infer(text, deck)
     if stop <= 0:
-        return enhance(text, deck)
+        return constraint.accept(text)
     tok, model, device = loaded
     import torch
 
@@ -319,6 +353,12 @@ def point(text: str, deck: str = "sa3", lane: int = 0, stop: int = 0,
         enc = tok(_task(deck) + text, return_tensors="pt", max_length=160,
                   truncation=True).to(device)
         anchor_ids, anchor_text = _anchor(tok, model, enc)
+        anchor_text = constraint.accept(anchor_text, text)
+        if not anchor_text:
+            return ""
+        # Validate the second enhancement pass too. Otherwise an invalid
+        # greedy anchor becomes a forced prefix in every lane.
+        anchor_ids = tok(anchor_text, add_special_tokens=False).input_ids
         if not anchor_ids:
             return ""
         # THE FULL LANE BATCH, then index it -- not `lane + 1` rows.
@@ -336,7 +376,7 @@ def point(text: str, deck: str = "sa3", lane: int = 0, stop: int = 0,
                       word_start=_word_starts(tok, anchor_ids),
                       allowed=_word_start_mask(torch, tok))
         txt = tok.decode(out[lane], skip_special_tokens=True).strip()
-    return txt or anchor_text
+    return constraint.accept(txt, anchor_text)
 
 
 def _anchor(tok, model, enc):
@@ -393,51 +433,30 @@ def clamp_coord(stop: int, lane: int, stops: int = STOPS,
 
 def _sample(torch, model, enc_b, anchor_ids, stop, stops, seed, device, rows,
             word_start=None, allowed=None):
-    """One batched sampling pass at distance `stop`. Shared by both entry
-    points so a coordinate cannot mean two different things.
+    """Sample with a request-owned generator, isolated from audio generation.
 
-    FORKS THE GLOBAL RNG. torch.manual_seed is process-wide and the audio
-    engine draws from the same generator -- acestep/engine/stream.py seeds it
-    and then immediately calls torch.randn for its noise. Seeding here without
-    restoring would hand that slot noise derived from a prompt hash instead of
-    the user's seed, silently breaking audio reproducibility. fork_rng puts the
-    state back, so nothing outside this function can observe our seeding.
-
-    The converse -- a stream reseeding mid-grid and perturbing OUR sampling --
-    is not fixable from this side without a process-wide RNG lock. It costs
-    determinism of the grid under concurrent load, which is the far smaller
-    harm, and the 503 gate above makes it rare.
+    Forking/restoring the global RNG is not thread isolation: another thread
+    can consume it or reseed it inside that scope. Neither direction is safe.
+    A private CPU generator owns every random draw in this request instead.
     """
     amount = stop / (stops - 1)
     prefix = _prefix_for(anchor_ids, amount, word_start)
     start = model.config.decoder_start_token_id
     head = torch.tensor([[start] + prefix], device=device)
-    # devices=[] restores the CPU generator ONLY, and torch.manual_seed is not
-    # CPU-only -- _manual_seed_impl calls torch.cuda.manual_seed_all first. So
-    # the empty list left the CUDA generator seeded from a prompt hash, which
-    # is exactly the audio-seed corruption this was written to prevent, and
-    # the fleet now defaults this model onto CUDA. Fork whatever devices exist.
-    _devices = (list(range(torch.cuda.device_count()))
-                if torch.cuda.is_available() else [])
-    with torch.random.fork_rng(devices=_devices):
-        torch.manual_seed(seed)
-        # THE FORK. One decoder step on the held prefix gives the model's
-        # next-token distribution; each lane is handed a DIFFERENT first free
-        # token from it, and never the greedy one. See _fork_tokens for why
-        # sampling alone could not do this.
-        enc_1 = {k: v[:1] for k, v in enc_b.items()}
-        logits = model(**enc_1, decoder_input_ids=head).logits[0, -1]
-        forks = _fork_tokens(
-            torch, logits, rows, amount,
-            banned=(model.config.eos_token_id, model.config.pad_token_id, start),
-            allowed=allowed,
-        )
-        dec = torch.tensor([[start] + prefix + [t] for t in forks], device=device)
-        return _generate(torch, model, enc_b, dec, amount)
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    enc_1 = {k: v[:1] for k, v in enc_b.items()}
+    logits = model(**enc_1, decoder_input_ids=head).logits[0, -1]
+    forks = _fork_tokens(
+        torch, logits, rows, amount,
+        banned=(model.config.eos_token_id, model.config.pad_token_id, start),
+        allowed=allowed, generator=generator,
+    )
+    dec = torch.tensor([[start] + prefix + [t] for t in forks], device=device)
+    return _generate(torch, model, enc_b, dec, amount, generator)
 
 
 def _fork_tokens(torch, logits, rows: int, amount: float, banned=(),
-                 allowed=None) -> list[int]:
+                 allowed=None, generator=None) -> list[int]:
     """A distinct first free token for each of `rows` lanes, never the greedy
     one.
 
@@ -453,17 +472,18 @@ def _fork_tokens(torch, logits, rows: int, amount: float, banned=(),
     and a prompt that did not.
 
     So the divergence is FORCED rather than hoped for. The greedy token is
-    banned at the first free position -- every coordinate away from home
-    therefore differs from the anchor -- and the lanes draw their first token
+    banned at the first free position in the raw candidate; the guard may
+    still return the anchor. The lanes draw their first token
     WITHOUT replacement from the top of what remains, so no two lanes at a
     distance begin the same way. After that one token the ordinary sampler
     continues, at the same top_k/temperature ramp as before, so a small move
     still reads as a small move: one word forks and the line re-converges.
 
-    Deterministic under the caller's seeding (a CPU multinomial on a CPU
-    copy of the logits, so the result does not depend on the device the model
-    happens to run on).
+    Deterministic for identical logits and private generator state. CPU draws
+    isolate randomness; model logits can still vary across inference runtimes.
     """
+    if generator is None:
+        generator = torch.Generator(device="cpu").manual_seed(0)
     scores = logits.detach().float().cpu().clone()
     scores[int(torch.argmax(scores))] = float("-inf")
     for b in banned:
@@ -490,11 +510,11 @@ def _fork_tokens(torch, logits, rows: int, amount: float, banned=(),
     # than a near one.
     k = min(live, max(rows, TOPK_MIN + round(amount * (TOPK_MAX - TOPK_MIN))))
     temp = TEMP_MIN + amount * (TEMP_MAX - TEMP_MIN)
-    top = torch.topk(scores, k)
-    probs = torch.softmax(top.values / temp, dim=0)
+    indices = torch.argsort(scores, descending=True, stable=True)[:k]
+    probs = torch.softmax(scores[indices] / temp, dim=0)
     n = min(rows, k)
-    pick = torch.multinomial(probs, n, replacement=False)
-    toks = [int(t) for t in top.indices[pick]]
+    pick = torch.multinomial(probs, n, replacement=False, generator=generator)
+    toks = [int(t) for t in indices[pick]]
     # Fewer live candidates than lanes (a tiny vocabulary): repeat rather than
     # fail -- the distinctness contract is best-effort past the vocab's size.
     while len(toks) < rows:
@@ -530,11 +550,31 @@ def _word_start_mask(torch, tok):
     return m
 
 
-def _generate(torch, model, enc_b, dec, amount):
+def _generate(torch, model, enc_b, dec, amount, generator):
+    from transformers import LogitsProcessor, LogitsProcessorList
+
+    class RequestSampler(LogitsProcessor):
+        """Sample through a request-owned CPU generator, then force that token.
+
+        Transformers' text generate API does not accept a private generator.
+        Greedy generation with this final processor avoids its global RNG
+        while retaining its KV cache, stopping rules, and repetition handling.
+        This isolates randomness; it does not prove cross-hardware numerics.
+        """
+        def __call__(self, input_ids, scores):
+            cpu = scores.detach().float().cpu()
+            k = min(cpu.shape[-1], TOPK_MIN + round(amount * (TOPK_MAX - TOPK_MIN)))
+            temp = TEMP_MIN + amount * (TEMP_MAX - TEMP_MIN)
+            indices = torch.argsort(cpu, dim=-1, descending=True, stable=True)[:, :k]
+            values = cpu.gather(-1, indices)
+            probs = torch.softmax(values / temp, dim=-1)
+            draws = torch.multinomial(probs, 1, generator=generator)
+            chosen = indices.gather(-1, draws).to(scores.device)
+            forced = torch.full_like(scores, float('-inf'))
+            return forced.scatter_(-1, chosen, 0.0)
+
     return model.generate(
         **enc_b, decoder_input_ids=dec, max_new_tokens=128, num_beams=1,
-        do_sample=True,
-        top_k=TOPK_MIN + round(amount * (TOPK_MAX - TOPK_MIN)),
-        temperature=TEMP_MIN + amount * (TEMP_MAX - TEMP_MIN),
+        do_sample=False, logits_processor=LogitsProcessorList([RequestSampler()]),
         no_repeat_ngram_size=3,
     )

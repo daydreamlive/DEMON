@@ -250,10 +250,8 @@ def _ask_haiku(system: str, user: str) -> str | None:
 #:
 #:   "hosted"  the hosted LLM, as always. THE DEFAULT -- an existing
 #:             deployment behaves exactly as it did before this existed.
-#:   "local"   the fine-tuned local checkpoint, falling back to hosted when it
-#:             is absent or declines. There is deliberately no "auto": local
-#:             ALWAYS degrades to hosted when the checkpoint is missing, so an
-#:             auto mode would have nothing extra to decide.
+#:   "local"   the fine-tuned checkpoint. A failure retains the input rather
+#:             than silently changing providers and losing repeatability.
 #:
 #: Set with DEMON_ENHANCER_PROVIDER. An unknown value is treated as "hosted"
 #: rather than erroring: a typo in a deployment env should cost the faster
@@ -299,14 +297,17 @@ def enhance_prompt(idea: str, backend: str = "acestep",
     if not idea:
         return idea, False
 
-    # The local checkpoint first when asked for. It is trained on structured
-    # prompt text and returns "" on anything it cannot handle, so an empty
-    # answer is a routing signal rather than a failure -- fall through to the
-    # hosted policy below exactly as if it had not been configured.
+    # Local is an explicit provider contract: do not turn missing weights,
+    # Busy, or a rejected rewrite into a nondeterministic hosted response.
     if resolve_provider(provider) == "local":
+        from .prompt_constraints import PromptConstraint
+
         local = _sanitize(_local_enhance(idea, backend))
-        if local:
+        # Cleanup can discard later lines or truncate the subject at 400
+        # characters. Validate the final text, not only the raw model result.
+        if local and not PromptConstraint.infer(idea, backend).violations(local):
             return local, True
+        return idea, False
 
     if backend == "sa3":
         if _sa3_wants_solo(idea):

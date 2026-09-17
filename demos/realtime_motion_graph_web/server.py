@@ -283,11 +283,18 @@ def _process_request(connection, request):
     # see the prompt_variations module docstring.) Same all-GET probe surface
     # as /api/enhance; prompt redacted from the access log. Absent checkpoint
     # -> ok=false and the client simply does not offer the pad.
+    if path_only == "/api/prompt-model":
+        from .prompt_enhancer import resolve_provider
+        from .prompt_variations import identity
+
+        info = identity() if resolve_provider() == "local" else {"ok": False, "revision": ""}
+        return _json_response(remote, path_only, {**info, "provider": resolve_provider()})
+
     if path_only == "/api/variations":
         from urllib.parse import parse_qs
 
         from .prompt_enhancer import resolve_provider
-        from .prompt_variations import Busy, point, route_query
+        from .prompt_variations import Busy, identity, point, route_query
 
         query = url.split("?", 1)[1] if "?" in url else ""
         params = parse_qs(query)
@@ -305,14 +312,18 @@ def _process_request(connection, request):
         if route == "reject":
             return _json_response(remote, "/api/variations", {"ok": False})
 
+        revision = identity().get("revision", "")
+        expected = params.get("revision", [""])[0]
+        if expected and expected != revision:
+            return _json_response(remote, path_only, {"ok": False, "revision": revision, "stale": True})
+
         try:
             txt = point(anchor, deck, lane=lane, stop=stop)
-            payload = {"text": txt, "lane": lane, "stop": stop, "ok": bool(txt)}
+            payload = {"text": txt, "lane": lane, "stop": stop, "ok": bool(txt), "revision": revision}
         except Exception as exc:   # noqa: BLE001 -- see below
             # EVERY failure degrades, not just Busy. A CUDA OOM, a tokenizer
             # error or an IndexError used to propagate out of _process_request
-            # as a 500, while every docstring in prompt_variations promises the
-            # caller falls back to the hosted backend instead.
+            # as a 500 instead of allowing the client to keep its current text.
             if not isinstance(exc, Busy):
                 # Degrading silently makes "no checkpoint", "client sent
                 # nonsense" and "the model crashed" the same 200 on the wire.
@@ -351,11 +362,17 @@ def _process_request(connection, request):
         # the env, so ?provider=local forced local inference on a pod
         # configured hosted -- the exact thing /api/variations' gate exists to
         # prevent, reachable one endpoint over. An override may only narrow.
-        provider = params.get("provider", [""])[0]
-        if resolve_provider() == "hosted":
-            provider = "hosted"
+        provider = params.get("provider", [""])[0].strip().lower()
+        if resolve_provider() == "hosted" and provider == "local":
+            return _json_response(remote, path_only, {"enhanced": idea, "ok": False, "revision": "", "provider": "local"})
+        provider = resolve_provider(provider)
+        from .prompt_variations import identity
+        revision = identity().get("revision", "") if provider == "local" else ""
+        expected = params.get("revision", [""])[0]
+        if expected and expected != revision:
+            return _json_response(remote, path_only, {"enhanced": idea, "ok": False, "revision": revision, "stale": True})
         enhanced, ok = enhance_prompt(idea, backend, provider)
-        body = json.dumps({"enhanced": enhanced, "ok": ok}).encode()
+        body = json.dumps({"enhanced": enhanced, "ok": ok, "revision": revision, "provider": provider}).encode()
         _log_http(remote, 200, "GET", "/api/enhance")  # redact prompt
         return Response(
             200, "OK",
