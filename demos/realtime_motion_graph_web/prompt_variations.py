@@ -312,6 +312,7 @@ def enhance(text: str, deck: str = "sa3") -> str:
     Returns "" when the checkpoint is unavailable. Contradictory rewrites
     retain the valid input; they must not trigger a different text provider.
     """
+    text = PromptConstraint.infer(text, deck).source
     loaded = _load()
     if loaded is None or not text.strip():
         return ""
@@ -336,9 +337,11 @@ def point(text: str, deck: str = "sa3", lane: int = 0, stop: int = 0,
     string, so travelling out and back is lossless. That is the whole contract
     a client needs to treat this as navigation rather than a dice roll.
 
-    Stop 0 is exactly the supplied anchor. Invalid candidates retain a valid
+    Stop 0 preserves the anchor after known stale solo cues are repaired.
+    Invalid candidates retain a valid
     anchor, so distinctness is subordinate to instrument/lineup preservation.
     """
+    text = PromptConstraint.infer(text, deck).source
     loaded = _load()
     if loaded is None or not text.strip():
         return ""

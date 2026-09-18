@@ -12,7 +12,7 @@ For SA3, both greedy enhancement and sampled variations retain known instrument
 and lineup constraints from their input text. The checks run before a greedy
 anchor becomes a forced prefix and again after sampling. A rejected candidate
 uses a valid anchor; if neither text is valid, no replacement is returned.
-Stop zero returns the exact supplied anchor after validation. Different pad
+Known comma-separated solo cues are normalized before enhancement and variation generation: incompatible technique clauses are removed and recognized track genres are scoped to the selected instrument. Stop zero returns that normalized anchor after validation. Unaffected anchors remain unchanged. Saved prompts receive these repairs when submitted to enhancement or variations; direct audio generation is not rewritten. Different pad
 positions may therefore return identical text.
 
 The checks recognize common instrument names, solo cues, lineup sizes, known
