@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-GUARD_VERSION = "lineup-3"
+GUARD_VERSION = "lineup-4"
 
 # Common instrument names, synonyms and component sounds. Longest matches win,
 # so "electric piano" is not reduced to "piano", or "drum machine" to "drum".
@@ -103,7 +103,24 @@ _FAMILIES = {
     "glockenspiel": {"bells"}, "music box": {"bells"},
 }
 _PERCUSSION = {"drums", "percussion", "drum machine", "hand drums", "tabla", "timpani", "steel drum"}
-_SOLO = re.compile(r"\b(?:solo|unaccompanied|single (?:unaccompanied )?instrument|single (?:evolving )?layer|playing alone)\b")
+# Solo cues, shared with the hosted enhancer, which imports wants_solo. The
+# instruction the hosted model is given and the constraint that validates
+# its answer have to agree on whether a solo was asked for; they did not,
+# and a rewrite of "isolated piano stem" was checked with this disarmed.
+#
+# Deliberately requires explicit performance/stem language. A bare mood such
+# as "alone at night" or "isolated atmosphere" must not discard a full
+# arrangement.
+#
+# Matched against _normal() output, so no IGNORECASE and no hyphen branches.
+_SOLO = re.compile(
+    r"\b(?:solo(?:ist)?|unaccompanied|a cappella|acapella)\b"
+    r"|\b(?:single|one) (?:instrument|voice|vocal|performer)\b"
+    r"|\bsingle (?:evolving )?layer\b"
+    r"|\bisolated(?: \w+){0,3} (?:instrument|voice|vocals?|stem)\b"
+    r"|\b(?:instrument|voice|vocals?) (?:playing )?alone\b"
+    r"|\bplaying (?:completely )?alone\b"
+)
 _LINEUPS = {
     "band": r"\b(?:full (?:band|arrangement|production|mix)|backing band|rhythm section|with (?:a )?band)\b",
     "duo": r"\b(?:duo|duet)\b", "trio": r"\btrio\b", "quartet": r"\bquartet\b",
@@ -117,7 +134,9 @@ _LINEUPS = {
     "ensemble": r"\b(?:ensemble|group)\b",
 }
 _ACCOMPANIMENT = re.compile(r"\b(?:accompanied by|accompaniment|backing|backbeat|arrangement|band|orchestra|ensemble|rhythm section)\b")
-_RHYTHM = re.compile(r"\b(?:grooves?|beats?|rhythms?)\b")
+# "four on the floor" names a kick-drum pattern, not a way of playing the
+# selected instrument, so it implies a drummer the user did not ask for.
+_RHYTHM = re.compile(r"\b(?:grooves?|beats?|rhythms?|four on the floor)\b")
 # Radio-frequency bands describe filtering, not additional performers.
 _RADIO_BAND = re.compile(r"\b(?:(?:am|fm) radio|radio frequency) band\b")
 _NEGATED = re.compile(r"\b(?:no|without) (?:any )?(?:vocals?|singing|accompaniment|backing band|drums?)\b")
@@ -126,6 +145,11 @@ _COMPONENTS = re.compile(r"\b(?:singing (?:vibrato|tone|sustain)|(?:single )?bow
 
 def _normal(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower().replace("-", " ")).strip()
+
+
+def wants_solo(text: str) -> bool:
+    """True when the text explicitly asks for a single, isolated performer."""
+    return bool(_SOLO.search(_normal(text)))
 
 
 def subjects(text: str) -> tuple[str, ...]:

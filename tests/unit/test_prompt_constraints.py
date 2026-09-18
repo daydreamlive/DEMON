@@ -102,3 +102,57 @@ def test_solo_guitar_does_not_gain_an_unrequested_rhythm_clause(rhythm):
 ])
 def test_instrument_phrasing_and_requested_rhythm_remain_valid(source, candidate):
     assert not PromptConstraint.infer(source, "sa3").violations(candidate)
+
+
+# Every phrasing the hosted enhancer already answers with its solo policy must
+# also arm the guard. Until it did, "isolated piano stem" was rewritten under
+# the solo instruction and then validated as though a band were permitted.
+@pytest.mark.parametrize("source", [
+    "soloist on piano",
+    "a cappella vocal",
+    "acapella vocal",
+    "one instrument, piano",
+    "single voice",
+    "one performer, piano",
+    "isolated piano stem",
+    "isolated electric guitar stem",
+])
+def test_hosted_solo_cues_also_arm_the_guard(source):
+    from demos.realtime_motion_graph_web.prompt_enhancer import _sa3_wants_solo
+
+    assert _sa3_wants_solo(source)
+    assert PromptConstraint.infer(source, "sa3").solo
+
+
+@pytest.mark.parametrize("source,bad", [
+    ("solo piano", "solo piano, four on the floor"),
+    ("solo acoustic guitar", "solo acoustic guitar, four on the floor"),
+])
+def test_four_on_the_floor_is_an_invented_drum_part(source, bad):
+    c = PromptConstraint.infer(source, "sa3")
+    assert "added_rhythm" in c.violations(bad)
+    assert c.accept(bad) == ""
+
+
+@pytest.mark.parametrize("source,good", [
+    ("solo piano", "solo piano, swung feel"),
+    ("solo piano", "solo piano, driving pulse"),
+    ("solo drum kit", "unaccompanied solo drums, four on the floor"),
+])
+def test_playing_style_and_real_percussion_still_survive(source, good):
+    assert PromptConstraint.infer(source, "sa3").accept(good) == good
+
+
+# Mood language is not a performance request. Broadening the cue set must not
+# let "alone at night" or "isolated atmosphere" discard a full arrangement.
+@pytest.mark.parametrize("source", [
+    "alone at night",
+    "isolated atmosphere",
+    "lonely isolated pads, full band",
+    "a solitary feeling",
+])
+def test_mood_language_does_not_arm_the_guard(source):
+    from demos.realtime_motion_graph_web.prompt_constraints import wants_solo
+
+    assert not wants_solo(source)
+    assert not PromptConstraint.infer(source, "sa3").solo

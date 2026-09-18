@@ -178,21 +178,16 @@ RULES:
   no explanation, no line breaks, no "Prompt:" label.
 """.strip()
 
-# Deliberately require explicit performance/stem language. A bare mood such as
-# "alone at night" or "isolated atmosphere" must not discard a full arrangement.
-_SA3_SOLO_CUE_RE = re.compile(
-    r"\b(?:solo(?:ist)?|unaccompanied|a\s+cappella|acapella)\b"
-    r"|\b(?:single|one)[ -](?:instrument|voice|vocal|performer)\b"
-    r"|\bisolated(?:[ -][\w-]+){0,3}[ -](?:instrument|voice|vocal|vocals|stem)\b"
-    r"|\b(?:instrument|voice|vocal|vocals)\s+(?:playing\s+)?alone\b"
-    r"|\bplaying\s+(?:completely\s+)?alone\b",
-    re.IGNORECASE,
-)
-
-
 def _sa3_wants_solo(idea: str) -> bool:
-    """Return whether the rough idea explicitly asks for an isolated performer."""
-    return bool(_SA3_SOLO_CUE_RE.search(idea))
+    """Return whether the rough idea explicitly asks for an isolated performer.
+
+    Delegates to the guard so the policy chosen here and the constraint that
+    later validates the rewrite read one vocabulary. They did not: "isolated
+    piano stem" selected the solo policy with the guard left disarmed.
+    """
+    from .prompt_constraints import wants_solo
+
+    return wants_solo(idea)
 
 
 def llm_available() -> bool:
