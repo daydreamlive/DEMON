@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-GUARD_VERSION = "lineup-3"
+GUARD_VERSION = "lineup-4"
 
 # Common instrument names, synonyms and component sounds. Longest matches win,
 # so "electric piano" is not reduced to "piano", or "drum machine" to "drum".
@@ -144,6 +144,52 @@ def _lineups(text: str) -> frozenset[str]:
     return frozenset(key for key, pattern in _LINEUPS.items() if re.search(pattern, text))
 
 
+# Only rewrite known, comma-delimited genre clauses for an unambiguous solo
+# subject. Unknown instruments and explicit multi-source ideas stay untouched.
+_TRACK_GENRE = re.compile(
+    r"\b(?:hip hop|boom bap|house|techno|rock|jazz|funk|disco|reggae|"
+    r"dubstep|trance|drum (?:and|&) bass)\b"
+)
+_PLAYING_STYLE = re.compile(r"\b(?:phrasing|playing|pattern|picking|strumming|articulation)\b")
+_UNPITCHED = {"drums", "percussion", "drum machine", "hand drums", "tabla"}
+_WIND_TECHNIQUE = re.compile(r"\b(?:breathy attacks?|breath driven|tonguing|embouchure)\b")
+_DRUM_MISMATCH = re.compile(
+    r"\b(?:breathy|register changes?|legato|melodic lines?|strumming|fingerpick(?:ed|ing)|embouchure|tonguing)\b"
+)
+_NON_WIND = {"piano", "electric piano", "guitar", "acoustic guitar", "electric guitar",
+             "nylon guitar", "violin", "viola", "cello", "ukulele", "marimba", "vibraphone"}
+
+
+def normalize_solo_cues(text: str, deck: str) -> str:
+    """Repair known stale solo cues without guessing an instrument or arrangement."""
+    if deck != "sa3" or not _SOLO.search(_normal(text)):
+        return text
+    instruments = subjects(text)
+    families = set().union(*(_FAMILIES.get(x, set()) for x in instruments)) if instruments else set()
+    instruments = tuple(x for x in instruments if x not in families)
+    if len(instruments) != 1:
+        return text
+    subject = instruments[0]
+    clauses = re.split(r",\s*", text)
+    result = []
+    changed = False
+    for clause in clauses:
+        normal = _normal(clause)
+        incompatible = (subject in _UNPITCHED and _DRUM_MISMATCH.search(normal)) or (
+            subject in _NON_WIND and _WIND_TECHNIQUE.search(normal))
+        # Never remove the clause that establishes the instrument/solo intent.
+        if incompatible and not subjects(clause) and not _SOLO.search(normal):
+            changed = True
+            continue
+        if (_TRACK_GENRE.search(normal) and not subjects(clause)
+                and not _PLAYING_STYLE.search(normal) and not _SOLO.search(normal)):
+            suffix = "drum pattern" if subject in _UNPITCHED else f"{subject} phrasing"
+            clause = f"{clause.strip()} {suffix}"
+            changed = True
+        result.append(clause)
+    return ", ".join(result) if changed else text
+
+
 @dataclass(frozen=True)
 class PromptConstraint:
     source: str
@@ -154,6 +200,7 @@ class PromptConstraint:
 
     @classmethod
     def infer(cls, source: str, deck: str) -> "PromptConstraint":
+        source = normalize_solo_cues(source, deck)
         normal = _normal(source)
         instruments = subjects(source)
         # Drop generic family mentions already explained by a specific source.
@@ -177,6 +224,8 @@ class PromptConstraint:
         if any(x not in mentioned for x in self.instruments):
             reasons.append("missing_subject")
         if self.solo:
+            if set(self.instruments) & _UNPITCHED and _DRUM_MISMATCH.search(normal):
+                reasons.append("incompatible_technique")
             if not _SOLO.search(normal):
                 reasons.append("missing_solo")
             if self.lineups or _lineups(normal) or _ACCOMPANIMENT.search(_RADIO_BAND.sub("", _NEGATED.sub("", normal))):
@@ -204,7 +253,10 @@ class PromptConstraint:
         return tuple(reasons)
 
     def accept(self, candidate: str, fallback: str = "") -> str:
-        """Choose a valid result, or a validated fallback. Never splice text."""
+        """Normalize known solo cues, then choose a validated result or fallback."""
+        deck = "sa3" if self.active else "acestep"
+        candidate = normalize_solo_cues(candidate, deck)
+        fallback = normalize_solo_cues(fallback, deck)
         if not self.violations(candidate):
             return candidate.strip()
         if fallback and not self.violations(fallback):

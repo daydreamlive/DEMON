@@ -88,7 +88,7 @@ def test_solo_guitar_does_not_gain_an_unrequested_rhythm_clause(rhythm):
     )
     contract = PromptConstraint.infer(source, "sa3")
     assert "added_rhythm" in contract.violations(candidate)
-    assert contract.accept(candidate, source) == source
+    assert contract.accept(candidate, source) == source.replace("classic 70s rock", "classic 70s rock electric guitar phrasing")
 
 
 @pytest.mark.parametrize("source,candidate", [
@@ -102,3 +102,33 @@ def test_solo_guitar_does_not_gain_an_unrequested_rhythm_clause(rhythm):
 ])
 def test_instrument_phrasing_and_requested_rhythm_remain_valid(source, candidate):
     assert not PromptConstraint.infer(source, "sa3").violations(candidate)
+
+
+@pytest.mark.parametrize("source,expected", [
+    ("unaccompanied solo drums, rounded breathy attacks and smooth register changes, dusty 90s boom bap hip hop, laid-back, vintage analog warmth",
+     "unaccompanied solo drums, dusty 90s boom bap hip hop drum pattern, laid-back, vintage analog warmth"),
+    ("solo flute, breathy attacks, jazz", "solo flute, breathy attacks, jazz flute phrasing"),
+    ("solo marimba, breathy attacks, warm tone", "solo marimba, warm tone"),
+    ("solo steel drum, melodic lines", "solo steel drum, melodic lines"),
+    ("solo electric guitar, rhythmic picking", "solo electric guitar, rhythmic picking"),
+    ("solo drums, boom bap drum pattern", "solo drums, boom bap drum pattern"),
+    ("solo waterphone, jazz", "solo waterphone, jazz"),
+    ("drums leading a full band, hip hop", "drums leading a full band, hip hop"),
+    ("solo piano and drums, jazz", "solo piano and drums, jazz"),
+])
+def test_solo_cue_repairs_are_narrow_and_idempotent(source, expected):
+    from demos.realtime_motion_graph_web.prompt_constraints import normalize_solo_cues
+    assert normalize_solo_cues(source, "sa3") == expected
+    assert normalize_solo_cues(expected, "sa3") == expected
+    assert normalize_solo_cues(source, "acestep") == source
+
+
+def test_incompatible_technique_in_subject_clause_is_rejected_not_cut():
+    contract = PromptConstraint.infer("solo drums", "sa3")
+    assert contract.accept("solo drums with breathy attacks", contract.source) == "solo drums"
+
+
+def test_unaffected_prompt_formatting_is_preserved():
+    from demos.realtime_motion_graph_web.prompt_constraints import normalize_solo_cues
+    text = "solo flute,  breathy attacks,soft tone"
+    assert normalize_solo_cues(text, "sa3") == text

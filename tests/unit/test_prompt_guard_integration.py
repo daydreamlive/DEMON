@@ -40,12 +40,13 @@ def test_enhancement_rejects_extra_instrument(decoder):
 
 def test_enhancement_and_variations_reject_invented_rhythm(decoder, monkeypatch):
     source = "solo electric guitar, single instrument, stratvema, classic 70s rock"
+    expected = source + " electric guitar phrasing"
     tok, _ = decoder
     tok.decoded = "unaccompanied solo electric guitar, driving syncopated rhythm"
-    assert pv.enhance(source, deck="sa3") == source
+    assert pv.enhance(source, deck="sa3") == expected
     monkeypatch.setattr(pv, "_anchor", lambda *a: ([5, 6], source))
     monkeypatch.setattr(pv, "_sample", lambda *a, **kw: torch.ones((pv.LANES, 2), dtype=torch.long))
-    assert pv.point(source, stop=8, lane=5, deck="sa3") == source
+    assert pv.point(source, stop=8, lane=5, deck="sa3") == expected
 
 
 def test_invalid_greedy_anchor_cannot_become_forced_prefix(decoder, monkeypatch):
@@ -66,3 +67,17 @@ def test_conflicting_anchor_does_not_sample_an_invalid_fallback(decoder, monkeyp
     monkeypatch.setattr(pv, "_anchor", lambda *a: ([5, 6], "solo guitar"))
     monkeypatch.setattr(pv, "_sample", lambda *a, **kw: pytest.fail("Invalid anchor sampled"))
     assert pv.point("solo piano and drums", stop=8) == ""
+
+
+def test_stale_drum_cues_are_repaired_for_enhancement_and_grid(decoder, monkeypatch):
+    source = "unaccompanied solo drums, rounded breathy attacks and smooth register changes, dusty 90s boom bap hip hop, warm recording"
+    expected = "unaccompanied solo drums, dusty 90s boom bap hip hop drum pattern, warm recording"
+    tok, _ = decoder
+    tok.decoded = source
+    assert pv.enhance(source) == expected
+    assert pv.point(source, stop=0) == expected
+    monkeypatch.setattr(pv, "_anchor", lambda *a: ([5, 6], source))
+    monkeypatch.setattr(pv, "_sample", lambda *a, **kw: torch.ones((pv.LANES, 2), dtype=torch.long))
+    for lane in range(pv.LANES):
+        assert pv.point(source, stop=8, lane=lane) == expected
+    assert pv.point(source, stop=8, lane=3) == expected
