@@ -174,6 +174,12 @@ class Capabilities:
     # declare it; clients use it to prewarm every sampler pad in one
     # round trip instead of one client-confirmed anchor at a time.
     render_anchor_queue: bool = False
+    # Server-level, not a backend trait: the pod can answer the
+    # ``midi_transcribe`` command (MuScriptor installed). Backends leave it
+    # False; the WS adapter fills the wire bit from the transcriber probe
+    # when it builds ``ready.capabilities``, so clients gate the "drag MIDI
+    # out" affordance on what THIS pod can actually do.
+    midi_transcribe: bool = False
 
 
 @dataclass(frozen=True)
