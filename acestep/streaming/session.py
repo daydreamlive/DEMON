@@ -992,7 +992,9 @@ class StreamingSession:
         # session's GPU state is gone.
         self.closed.set()
 
-    def _on_audio_ready(self, wav_np, win_start=None, win_end=None):
+    def _on_audio_ready(
+        self, wav_np, win_start=None, win_end=None, *, anchored=False,
+    ):
         """Runner callback. Mutates ``audio_eng`` for full-buffer
         decodes (mirroring the pre-refactor on_audio_ready), then
         publishes a single :class:`AudioReady` event.
@@ -1010,6 +1012,10 @@ class StreamingSession:
 
         The audio array passed in the event is the same numpy array
         the runner produced; subscribers must treat it as immutable.
+
+        ``anchored`` marks a stationary-anchor render (pad pin / prewarm
+        queue) so the wire serializer exempts it from backpressure
+        shedding — see :class:`AudioReady`.
         """
         state = self.state
         if win_start is not None:
@@ -1031,6 +1037,7 @@ class StreamingSession:
             num_gens=int(params_snapshot.get("num_gens", 0) or 0),
             params=params_snapshot,
             published_wall_s=time.monotonic(),
+            anchored=bool(anchored),
         ))
 
     # ---- Pending drain (runs inside before_tick) -----------------------
