@@ -1037,3 +1037,70 @@ def test_close_drops_mirror_and_pending():
     assert b._refit_mirror is None
     assert b._pending_lora_strengths == {}
     assert mgr.closed is True
+
+
+# ---- sa3_sigmas: an explicit schedule -------------------------------------
+
+
+def test_parse_sigmas_accepts_lists_and_typed_text_only_when_sane():
+    from acestep.streaming.sa3_backend import parse_sigmas
+    assert parse_sigmas([1.0, 0.85, 0.65, 0.3]) == [1.0, 0.85, 0.65, 0.3]
+    assert parse_sigmas("1.0, 0.85, 0.65, 0.3") == [1.0, 0.85, 0.65, 0.3]
+    assert parse_sigmas("1 .5 .1") == [1.0, 0.5, 0.1]
+    assert parse_sigmas([0.9]) == [0.9]                # first < 1 is allowed
+    # Everything below must be ignored, not applied.
+    assert parse_sigmas(None) is None
+    assert parse_sigmas("") is None
+    assert parse_sigmas([]) is None
+    assert parse_sigmas("1.0, 0.5, 0.5") is None       # not strictly decreasing
+    assert parse_sigmas("0.5, 1.0") is None            # increasing
+    assert parse_sigmas("1.0, 0.0") is None            # the final 0 is implied
+    assert parse_sigmas("1.2, 0.5") is None            # above 1
+    assert parse_sigmas("1.0, abc") is None
+    assert parse_sigmas("1.0, nan") is None
+    assert parse_sigmas([1.0] + [1.0 - i * 0.05 for i in range(1, 17)]) is None  # 17 entries
+    assert parse_sigmas(3.0) is None
+
+
+def test_sa3_sigmas_replaces_schedule_and_drives_step_count():
+    b = _backend()                                   # 3 steps
+    knobs = _knobs(b)
+    b.produce(knobs, CTX, "generate")
+    stock = b.pipeline._schedule_cache[1.0].clone()
+
+    # Same length as the pipeline: applied in place, cache invalidated.
+    b.produce({**knobs, "sa3_sigmas": "1.0, 0.6, 0.2"}, CTX, "generate")
+    assert b.adapter.sigmas_override == [1.0, 0.6, 0.2]
+    got = b.pipeline._schedule_cache[1.0]
+    assert torch.allclose(got, torch.tensor([1.0, 0.6, 0.2, 0.0]))
+    assert not torch.allclose(got, stock)
+
+    # A longer list IS a step-count change: the pipeline rebuilds, and the
+    # override survives the rebuild (it lives on the adapter).
+    before = b.pipeline
+    b.produce({**knobs, "sa3_sigmas": [1.0, 0.7, 0.4, 0.15]}, CTX, "generate")
+    assert b._steps == 4 and b.pipeline is not before
+    assert torch.allclose(
+        b.pipeline._schedule_cache[1.0],
+        torch.tensor([1.0, 0.7, 0.4, 0.15, 0.0]),
+    )
+
+    # Unchanged list: no cache churn.
+    cache_id = id(b.pipeline._schedule_cache)
+    b.produce({**knobs, "sa3_sigmas": [1.0, 0.7, 0.4, 0.15]}, CTX, "generate")
+    assert id(b.pipeline._schedule_cache) == cache_id and 1.0 in b.pipeline._schedule_cache
+
+
+def test_sa3_sigmas_invalid_or_cleared_falls_back_to_steps_override():
+    b = _backend()
+    knobs = _knobs(b)
+    b.produce({**knobs, "sa3_sigmas": [1.0, 0.6, 0.2]}, CTX, "generate")
+    assert b.adapter.sigmas_override == [1.0, 0.6, 0.2]
+
+    # Half-typed text: ignored, stock schedule back, steps from the knob.
+    b.produce({**knobs, "sa3_sigmas": "1.0, 0."}, CTX, "generate")
+    assert b.adapter.sigmas_override is None
+    assert b._steps == knobs["steps_override"]
+    assert torch.allclose(
+        b.pipeline._schedule_cache[1.0], _schedule_builder_factory(b._steps)(1.0),
+    )

@@ -286,3 +286,43 @@ def test_shift_alpha_invalid_fails_loudly():
     adapter.shift_alpha = 0.0
     with pytest.raises(ValueError, match="shift_alpha"):
         adapter.build_schedule(config, 1.0, "cpu", torch.float32)
+
+
+def test_sigmas_override_replaces_the_stock_schedule():
+    # The streaming t_index_list: hand-placed levels, scaled by the strength
+    # knob, final 0 implied. The builder must not be consulted at all.
+    adapter = _adapter(steps=4)
+    config = DiffusionConfig(
+        infer_steps=4, infer_method="ode", noise_on_cpu=True, dcw_enabled=False,
+    )
+    adapter.sigmas_override = [1.0, 0.5, 0.25, 0.1]
+    got = adapter.build_schedule(config, 0.8, "cpu", torch.float32)
+    assert torch.allclose(got, torch.tensor([0.8, 0.4, 0.2, 0.08, 0.0]))
+
+    # SHIFT still composes as a macro over the explicit list: endpoints
+    # pinned, still strictly decreasing.
+    adapter.shift_alpha = 2.0
+    warped = adapter.build_schedule(config, 0.8, "cpu", torch.float32)
+    assert warped[0].item() == got[0].item() and warped[-1].item() == 0.0
+    assert torch.all(warped[:-1] > warped[1:])
+
+    # Clearing it returns the builder's schedule exactly.
+    adapter.shift_alpha = 1.0
+    adapter.sigmas_override = None
+    assert torch.equal(
+        adapter.build_schedule(config, 0.8, "cpu", torch.float32),
+        _schedule_builder(4)(0.8),
+    )
+
+
+def test_sigmas_override_length_must_match_steps():
+    # A 3-entry list on a 4-step pipeline is the backend's bug to prevent
+    # (it rebuilds on length change); the adapter refuses loudly rather
+    # than silently truncating a schedule someone placed by hand.
+    adapter = _adapter(steps=4)
+    config = DiffusionConfig(
+        infer_steps=4, infer_method="ode", noise_on_cpu=True, dcw_enabled=False,
+    )
+    adapter.sigmas_override = [1.0, 0.5, 0.1]
+    with pytest.raises(ValueError, match="length mismatch"):
+        adapter.build_schedule(config, 1.0, "cpu", torch.float32)
