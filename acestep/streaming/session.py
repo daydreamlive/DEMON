@@ -1802,6 +1802,7 @@ class StreamingSession:
         slice_lead_s: float | None = None,
         render_anchor_s=_RENDER_ANCHOR_UNSET,
         render_anchor_queue_s=_RENDER_ANCHOR_UNSET,
+        sa3_preservation_curve=_RENDER_ANCHOR_UNSET,
     ) -> None:
         """Apply or echo a knob update. ``raw`` is the unfiltered
         wire dict; values land in ``virtual_knobs`` only on PRIMARY.
@@ -1834,7 +1835,22 @@ class StreamingSession:
         lead since its previous report (see the wire contract); the
         runner widens its playback lead until these stay positive."""
         state = self.state
-        raw = raw or {}
+        raw = dict(raw or {})
+        # The list is a protocol sidecar, not a scalar knob. Keep validation
+        # here so WS and direct session callers share the same behavior.
+        # Also sanitize the internal key on raw/MCP calls (unknown knobs
+        # normally pass through), preventing malformed arrays from entering
+        # the render loop or unsupported backends.
+        from acestep.streaming.preservation import parse_preservation_curve
+        if sa3_preservation_curve is not _RENDER_ANCHOR_UNSET:
+            raw["sa3_preservation_curve"] = sa3_preservation_curve
+        if "sa3_preservation_curve" in raw:
+            value = raw.pop("sa3_preservation_curve")
+            if self.backend.capabilities().source_preservation:
+                try:
+                    raw["sa3_preservation_curve"] = parse_preservation_curve(value)
+                except ValueError:
+                    pass  # retain the last valid KnobState value
         # Activity gating: only bump on a real change. ``playback_pos``
         # advances every tick but is excluded from the diff because
         # it's a clock, not user input.

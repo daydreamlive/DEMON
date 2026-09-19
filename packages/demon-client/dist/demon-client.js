@@ -10,6 +10,7 @@ var COMMAND_NAMES = [
   "set_depth",
   "enable_lora",
   "disable_lora",
+  "add_lora",
   "manual_slot_add",
   "manual_slot_pop",
   "set_timbre_strength",

@@ -32,9 +32,14 @@ Control surface (everything else off, capability-gated):
 * ``x0_target`` / ``feedback`` / ``feedback_depth`` — taken FROM the
   shared registry (identical semantics to ACE, solver-level latent
   mechanics that are family-agnostic): the source-lock morph toward
-  the anchor latent and the past-latent delay-tap blend. Both are only
-  audible at ``sa3_denoise`` < 1, where slot init actually reads
-  ``source_latents`` — at 1.0 every slot starts from pure noise.
+  the anchor latent and the past-latent delay-tap blend. Feedback needs
+  ``sa3_denoise`` < 1, where slot init reads ``source_latents``. X0
+  preservation also works at full denoise, since it acts later.
+* ``sa3_preservation_curve`` — a params sidecar declared in protocol.py,
+  gated by ``source_preservation``. Circular samples over playable source
+  time add a per-frame floor above scalar ``x0_target`` during late
+  denoising. Null clears the envelope; global X0 still applies. Requires
+  a source anchor. This preserves latents, not exact waveform samples.
 * ``seed`` / ``steps_override`` — shared registry, as before.
 
 Continuity comes the same way the spike demo proved
@@ -76,6 +81,7 @@ from acestep.streaming.knobs import (
     knob_specs as registry_knob_specs,
     lora_strength_spec,
 )
+from acestep.streaming.preservation import parse_preservation_curve
 
 # Delivery rate (v1): SA3's native 44.1 kHz is resampled at the decode
 # boundary so everything downstream of the backend stays at the engine
@@ -653,6 +659,7 @@ class SA3Backend(DiffusionBackend):
         # can trust the bit instead of probing.
         return Capabilities(
             refines_audio=True, loop_band=True, swap=True,
+            source_preservation=True,
             swap_resize=bool(
                 self._resizer is not None and self._source_encoder is not None
             ),
@@ -1266,6 +1273,36 @@ class SA3Backend(DiffusionBackend):
 
     # ---- produce hooks ---------------------------------------------------------
 
+    def _preservation_strength(self, raw, scalar):
+        """Cached CPU [1,T,1] envelope, aligned to playable time, not padding.
+
+        The shared pipeline uploads only on a real change. Keeping validation
+        and interpolation on CPU avoids a GPU sync on every params tick.
+        """
+        try:
+            curve = parse_preservation_curve(raw)
+        except ValueError:
+            curve = getattr(self, "_preservation_valid", None)
+        self._preservation_valid = curve
+        if curve is None or self._source_latent_btc is None:
+            return scalar
+        frames = self._source_latent_btc.shape[1]
+        duration = self.playable_duration_s()
+        key = (curve, scalar, frames, duration)
+        if key != getattr(self, "_preservation_cache_key", None):
+            positions = torch.arange(frames, dtype=torch.float32) / SA3_LATENT_RATE_HZ
+            phase = positions / duration * len(curve)
+            lo = phase.floor().long()
+            weight = phase - lo
+            samples = torch.tensor(curve, dtype=torch.float32)
+            envelope = samples[lo % len(curve)] * (1 - weight) + samples[(lo + 1) % len(curve)] * weight
+            # Duration conditioning adds a model-only tail. Do not stretch
+            # the drawn curve into it or wrap source edits through it.
+            envelope = torch.where(positions < duration, envelope, 0.0)
+            self._preservation_cache = envelope.clamp_min(scalar).view(1, frames, 1)
+            self._preservation_cache_key = key
+        return self._preservation_cache
+
     def _prepare_tick(self, knobs: dict, ctx: TickContext) -> dict:
         # Schedule warp: hot-applied, but cache-coupled — the pipeline
         # caches schedules per denoise value, so a changed alpha must
@@ -1305,8 +1342,9 @@ class SA3Backend(DiffusionBackend):
         # bump engages the blend on in-flight slots submitted while it
         # was 0 — the ACE runner's exact per-tick convention.
         x0_str = float(knobs.get("x0_target", 0.0))
+        preservation = self._preservation_strength(knobs.get("sa3_preservation_curve"), x0_str)
         if self._source_latent_btc is not None:
-            self.pipeline.set_shared_curve("x0_target_strength", x0_str)
+            self.pipeline.set_shared_curve("x0_target_strength", preservation)
 
         try:
             fb_depth_raw = float(knobs.get("feedback_depth", 1.0))
@@ -1318,6 +1356,7 @@ class SA3Backend(DiffusionBackend):
             "steps": int(knobs.get("steps_override", self._steps)),
             "shift": shift,
             "x0_target": x0_str,
+            "preservation_strength": preservation,
             "feedback": float(knobs.get("feedback", 0.0)),
             "feedback_depth": max(
                 1, min(MAX_FEEDBACK_DEPTH, int(round(fb_depth_raw))),
@@ -1379,7 +1418,7 @@ class SA3Backend(DiffusionBackend):
             # (steps rebuild) is correct before the next prepare
             # re-establishes the shared override.
             x0_target=self._source_latent_btc,
-            x0_target_strength=prep["x0_target"],
+            x0_target_strength=prep["preservation_strength"],
             aux_cond=aux_cond,
             latent_frames=latent_frames,
             # Deterministic pingpong: identical requests must replay the
