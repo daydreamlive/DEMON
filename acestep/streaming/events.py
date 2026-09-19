@@ -134,17 +134,24 @@ class ParamsUpdate:
 
 @dataclass(frozen=True)
 class ParamsEcho:
-    """Echo of a knob update that came from a non-primary origin.
+    """Echo of a knob update, tagged with where it came from.
 
-    Emitted ONLY when ``set_knobs(origin=CommandOrigin.EXTERNAL)``.
-    The primary transport's UI layer (today: the browser's smoothing
+    ``origin == "external"`` (``set_knobs(origin=CommandOrigin.EXTERNAL)``):
+    the primary transport's UI layer (today: the browser's smoothing
     tween) listens for this so it can ease toward the target and
     re-send the tweened sequence as a ``PRIMARY`` ``set_knobs``.
+    Transports forward ONLY these to the client.
+
+    ``origin == "primary"``: the player's own knob change (published only
+    when the raw dict actually changed). Consumed by the provenance tap —
+    the authorship record must capture the performer's moves — and NEVER
+    echoed back to the client, which would fight its own UI.
 
     Carries the raw dict as posted, NOT the per-knob clamped value.
     """
 
     raw: dict
+    origin: str = "external"
 
 
 @dataclass(frozen=True)
