@@ -40,7 +40,8 @@ export type CommandName =
   | "set_structure_fixture"
   | "clear_structure_source"
   | "swap_source"
-  | "write_audio";
+  | "write_audio"
+  | "midi_transcribe";
 
 export const COMMAND_NAMES: readonly CommandName[] = [
   "params",
@@ -63,6 +64,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "clear_structure_source",
   "swap_source",
   "write_audio",
+  "midi_transcribe",
 ] as const;
 
 export type EventName =
@@ -88,7 +90,9 @@ export type EventName =
   | "structure_failed"
   | "audio_written"
   | "audio_write_failed"
-  | "command_failed";
+  | "command_failed"
+  | "midi_notes"
+  | "midi_failed";
 
 export const EVENT_NAMES: readonly EventName[] = [
   "init_ack",
@@ -114,6 +118,8 @@ export const EVENT_NAMES: readonly EventName[] = [
   "audio_written",
   "audio_write_failed",
   "command_failed",
+  "midi_notes",
+  "midi_failed",
 ] as const;
 
 export type HandshakeCommandName =
@@ -283,6 +289,12 @@ export interface WriteAudioCommand {
   source_epoch?: number | null;
   /** Re-encode the self-timbre conditioning against the updated source (~+50 ms). Ignored when a timbre override is active. Default false. */
   refresh_timbre?: boolean;
+}
+
+export interface MidiTranscribeCommand {
+  type: "midi_transcribe";
+  /** Client-chosen token echoed on midi_notes / midi_failed so the answer can be matched to the clip it was asked for. */
+  request_id: string;
 }
 
 // ── Event payloads (server → client) ──
@@ -470,6 +482,27 @@ export interface CommandFailedEvent {
   error?: string;
 }
 
+export interface MidiNotesEvent {
+  type: "midi_notes";
+  /** Echo of the midi_transcribe request_id. */
+  request_id: string;
+  /** Note events, sorted by start: {start_s, end_s, pitch, instrument}. Times are seconds from the start of the uploaded clip; pitch is MIDI 0-127; instrument is MuScriptor's label (e.g. 'drums', 'electric_bass'). No velocity — the model does not predict it. */
+  notes: unknown[];
+  /** Transcriber size that ran (small|medium|large). */
+  model?: string;
+  /** Length of the transcribed clip. */
+  duration_s?: number;
+  /** Transcription wall time, for telemetry. */
+  wall_s?: number;
+}
+
+export interface MidiFailedEvent {
+  type: "midi_failed";
+  /** Echo of the midi_transcribe request_id (empty when the header itself was bad). */
+  request_id?: string;
+  error?: string;
+}
+
 // ── Session-init config (client → server, sent at handshake) ──
 
 export interface SessionConfigPayload {
@@ -555,7 +588,8 @@ export type WireCommand =
   | SetStructureFixtureCommand
   | ClearStructureSourceCommand
   | SwapSourceCommand
-  | WriteAudioCommand;
+  | WriteAudioCommand
+  | MidiTranscribeCommand;
 
 export type WireEvent =
   | InitAckEvent
@@ -580,7 +614,9 @@ export type WireEvent =
   | StructureFailedEvent
   | AudioWrittenEvent
   | AudioWriteFailedEvent
-  | CommandFailedEvent;
+  | CommandFailedEvent
+  | MidiNotesEvent
+  | MidiFailedEvent;
 
 export type HandshakeCommand =
   | UploadTrackCommand;
