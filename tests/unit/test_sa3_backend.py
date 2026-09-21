@@ -165,6 +165,12 @@ class _SamplerProbeContext:
     def __init__(self, objective):
         self.diffusion_objective = objective
 
+    def cond_seconds_total(self, duration_s):
+        # Song-length conditioning labels a render with the song it is a
+        # slice of; this probe only cares about sampler selection, so the
+        # window IS the label.
+        return float(duration_s)
+
     def make_dit(self, **_kwargs):
         return _ZeroDit()
 

@@ -134,6 +134,11 @@ class _Context:
     def make_codec(self, **_kw):
         return _FakeCodec()
 
+    def cond_seconds_total(self, duration_s):
+        # The real context labels a loop as a slice of a longer song
+        # (song-length conditioning); the window is all this double needs.
+        return float(duration_s)
+
 
 def _backend(extension=None, runtime=None, source=None, cond=None, **kw):
     """Direct construction, mirroring test_sa3_backend's harness.
@@ -319,7 +324,7 @@ def test_prompt_swap_decorates_the_new_conditioning():
     source = torch.randn(1, C, T)
     backend = _backend(
         extension=_selected(), runtime=runtime, source=source,
-        prompt_rebuilder=lambda tags, steps: (
+        prompt_rebuilder=lambda tags, steps, duration_s: (
             _cond(), _schedule_builder_factory,
         ),
     )
