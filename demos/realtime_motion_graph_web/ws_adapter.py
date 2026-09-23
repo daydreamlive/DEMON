@@ -414,6 +414,7 @@ def _windowed_slice_drop_reason(
     window_bytes: int,
     age_s: float,
     max_age_s: float,
+    anchored: bool = False,
 ) -> tuple[str, float] | None:
     """Decide whether a windowed slice should be shed for backpressure.
 
@@ -428,7 +429,20 @@ def _windowed_slice_drop_reason(
     The window is checked first so an unbounded backlog sheds before the
     age backstop ever trips. Returns ``(reason, detail)`` for the drop
     log, or ``None`` to send the slice. ``acked is None`` (no ack yet,
-    e.g. an old client) disables only the window layer."""
+    e.g. an old client) disables only the window layer.
+
+    ``anchored`` slices are never shed. Shedding is safe for the transport
+    chase because the frontier re-covers every region each lap, so a
+    dropped slice is replaced by the next one over the same samples. A
+    stationary-anchor render (pad pin / pad-prewarm queue) has no next
+    lap: it is the only write that region receives until the pad is
+    re-warmed, and the runner pops the queued anchor as soon as it emits.
+    Drop it and the client's pad keeps whatever was there before — on a
+    fresh source that is the raw source audio, heard as bleed-through on
+    the pad hit. Measured 2026-09-15: healthy 5090 pods shed 10–15
+    slices/s into a 20 Mbit/s client, pad prewarms included."""
+    if anchored:
+        return None
     if acked is not None:
         in_flight = sent - acked
         if in_flight > window_bytes:
@@ -1451,8 +1465,10 @@ def _handle_client_body(
     #      dropped. Catches the case where TCP itself pushes back.
     #
     # Healthy links keep in-flight at a few slices and queue age at
-    # milliseconds — neither layer engages. Full-buffer renders and
-    # unstamped events are never dropped.
+    # milliseconds — neither layer engages. Full-buffer renders, unstamped
+    # events and stationary-anchor renders (``AudioReady.anchored``) are
+    # never dropped — see _windowed_slice_drop_reason for why the last one
+    # is not a superseded slice.
     _SLICE_MAX_QUEUE_AGE_S = 2.0
     # 256 KiB default: covers bandwidth-delay products up to ~2.5 MB/s at
     # 100 ms RTT (full slice-stream rate on healthy remote links) while
@@ -1500,6 +1516,7 @@ def _handle_client_body(
                 window_bytes=_SLICE_WINDOW_BYTES,
                 age_s=time.monotonic() - event.published_wall_s,
                 max_age_s=_SLICE_MAX_QUEUE_AGE_S,
+                anchored=bool(getattr(event, "anchored", False)),
             )
             if drop is not None:
                 _note_slice_drop(*drop)

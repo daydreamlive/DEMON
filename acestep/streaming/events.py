@@ -121,6 +121,15 @@ class AudioReady:
     # actually encoded+sent). 0.0 = unstamped (older publishers); never
     # dropped.
     published_wall_s: float = 0.0
+    # True when the runner rendered this slice at a stationary anchor (a
+    # pad pin or the pad-prewarm queue) rather than at the transport
+    # chase. A chase slice is superseded by the next lap over the same
+    # region, so shedding it under backpressure costs nothing audible; an
+    # anchored slice is the ONLY write that region will get until the pad
+    # is re-warmed, so shedding it leaves the client's pad holding whatever
+    # was there before — the source audio — which is heard as bleed-through
+    # on the pad hit. The wire serializer never drops anchored slices.
+    anchored: bool = False
 
 
 @dataclass(frozen=True)
