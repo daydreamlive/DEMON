@@ -1063,7 +1063,6 @@ class SA3Backend(DiffusionBackend):
             cond, sched_factory = self._prompt_rebuilder(
                 tags, self._steps, self._duration_s,
             )
-        cond = self._decorate(cond, self._source_view())
         rebuild_ms = (time.perf_counter() - t0) * 1000
         if int(cond.latent_frames) != int(self._cond.latent_frames):
             # A prompt swap never changes geometry — it captures at the
@@ -1083,7 +1082,6 @@ class SA3Backend(DiffusionBackend):
                 cond_b, _ = self._prompt_rebuilder(
                     tags_b, self._steps, self._duration_s,
                 )
-            cond_b = self._decorate(cond_b, self._source_view())
             if int(cond_b.latent_frames) != int(cond.latent_frames):
                 raise ValueError(
                     f"sa3 prompt-B swap changed latent_frames "
@@ -1106,6 +1104,13 @@ class SA3Backend(DiffusionBackend):
             # this is currently belt-and-braces — but the cache key carries
             # no prompt identity, so correctness must not depend on that.)
             self.pipeline.invalidate_schedule_cache()
+            # Decorate under the lock: the source view must be the anchor
+            # the runner's swap path has already published. Read outside
+            # it, a prompt overlapping a swap would republish conditioning
+            # derived from the OLD source, after the swap re-decorated.
+            view = self._source_view()
+            cond = self._decorate(cond, view)
+            cond_b = cond if cond_b is cond else self._decorate(cond_b, view)
             self._cond = cond
             self._cond_b = cond_b
             self._active_bundle = self._blend_bundles(self._blend)
