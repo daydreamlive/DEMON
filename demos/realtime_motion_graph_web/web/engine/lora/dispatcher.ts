@@ -103,3 +103,37 @@ export function seedLoraSliderValue(id: string, strength: number): void {
   const value = clamp(strength);
   usePerformanceStore.getState().setSliderDirect(param, value);
 }
+
+/** Reconcile the engine-facing slider value of EVERY enabled LoRA with
+ *  the store's current ``lora.strengths``. Unlike the per-enable seed
+ *  (``seedLoraSliderValue`` fired once when a LoRA flips on), this runs
+ *  for ALREADY-enabled LoRAs too.
+ *
+ *  Why it exists — the session-restore desync: a saved-session resume
+ *  writes the persisted strength into ``useLoraStore.strengths`` (which
+ *  the fader UI reads, so it shows 1.0) but NOT into
+ *  ``perf.sliderValues``, the value ``useParamSync`` actually ships each
+ *  tick. ``useParamSync`` prefers ``sliderValues`` and only falls back
+ *  to ``lora.strengths`` when the ``lora_str_<id>`` key is ABSENT. The
+ *  boot-time catalog seed already wrote a ``sliderValues`` entry for the
+ *  default-on LoRAs, so on restore the key is present-but-stale: the
+ *  engine stays pinned to the old strength while the slider reads the
+ *  restored one. The LoRA is inaudible until a fader drag finally writes
+ *  ``sliderValues`` through the dispatcher — exactly the reported bug
+ *  ("shows 1.0 but you only hear it once I wiggle the fader").
+ *
+ *  Idempotent: on a fresh (non-restored) session ``sliderValues`` and
+ *  ``lora.strengths`` already agree (both seeded from the same defaults
+ *  / config), so every write lands the same value — the server only
+ *  refits on a > 0.02 delta, so re-seeding the matching value triggers
+ *  no extra refit. Call exactly once per session-ready edge (initial
+ *  connect + reconnect), never mid-drag — the dispatcher owns
+ *  ``sliderValues`` while a fader is in flight, and ready edges can't
+ *  overlap a pointer gesture. */
+export function reconcileEnabledLoraStrengths(): void {
+  const { enabled, strengths } = useLoraStore.getState();
+  for (const id of enabled) {
+    const value = strengths[id];
+    if (typeof value === "number") seedLoraSliderValue(id, value);
+  }
+}
