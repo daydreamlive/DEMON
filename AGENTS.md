@@ -43,6 +43,7 @@ Hard rules:
 | Drive a live session from an agent (no browser) | The MCP server (`demos/realtime_motion_graph_web/mcp_server.py`): `describe_protocol` / `list_knobs` return the same manifests the HTTP API serves; `set_knob(s)` / `set_prompt` / `swap_to_fixture` / etc. control a running session. |
 | Reproduce frontend/realtime bugs headlessly (e.g. generation lagging the playhead) | `headless_start` on the same MCP server spawns a full PRIMARY client (`demos/realtime_motion_graph_web/headless_client.py`) with a simulated audio clock — no browser needed. `headless_lag_report` (and the snapshot in `headless_status`) measure slice lead vs the playhead and audio staleness. Preempts any live browser session (one session per pod). |
 | Engine / pipeline / nodes work | [README.md](./README.md) — Session API (`acestep/engine/session.py`), StreamPipeline (`acestep/engine/stream.py`), typed node graph (`acestep/nodes/`). |
+| Extend DEMON from an out-of-tree package | [`docs/PLUGINS.md`](docs/PLUGINS.md) — the `acestep.plugins` Tier-1 API: entry-point discovery, model-extension lifecycle, namespaced knobs, and the operator flags (`--model-extension`). Extensions that must reach model internals use the Tier-2 `acestep/engine/sa3_internals.py` contract, never the vendored package directly. |
 
 ## Repo-wide rules
 
@@ -52,7 +53,12 @@ Hard rules:
   (WS commands/events/config, served at `GET /api/protocol`). Never
   hand-declare a knob, command shape, or enum option list anywhere else
   — clients build from the manifests, and adding a control is an edit to
-  exactly one registry.
+  exactly one registry. Out-of-tree plugins contribute knobs through the
+  same machinery (`KnobSpec` → the backend's `knob_specs()` → the session
+  manifest), namespaced and validated at registration; see
+  [`docs/PLUGINS.md`](docs/PLUGINS.md). Note that `GET /api/knobs` is the
+  static pre-session catalog — the live truth is the per-session
+  `knob_manifest` on the WS `ready` frame.
 - **After any registry change, regenerate the TS types:**
   `python demos/realtime_motion_graph_web/scripts/gen_wire_types.py`
   (output: `packages/demon-client/types/wireContract.gen.ts`). A stale

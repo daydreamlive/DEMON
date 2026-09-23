@@ -1098,6 +1098,8 @@ def handle_client(
     checkpoint: str = "acestep-v15-turbo",
     backend_family: str = "acestep",
     offload_text_encoder: bool = False,
+    sa3_base_checkpoint_dir: str | None = None,
+    model_extension=None,
 ):
     """Connection entrypoint. The body lives in ``_handle_client_body``;
     this wrapper exists only to own a single ``ExitStack`` so the
@@ -1112,6 +1114,8 @@ def handle_client(
                 checkpoint=checkpoint,
                 backend_family=backend_family,
                 offload_text_encoder=offload_text_encoder,
+                sa3_base_checkpoint_dir=sa3_base_checkpoint_dir,
+                model_extension=model_extension,
             )
     finally:
         # Final allocator trim, AFTER the body frame (the last holder of
@@ -1142,6 +1146,8 @@ def _handle_client_body(
     checkpoint: str,
     backend_family: str,
     offload_text_encoder: bool,
+    sa3_base_checkpoint_dir: str | None,
+    model_extension,
 ):
     logger.info(
         "client_connected decoder={} vae={} checkpoint={} family={} text_encoder={}",
@@ -1327,6 +1333,8 @@ def _handle_client_body(
                 decoder_backend=decoder_backend,
                 vae_backend=vae_backend,
                 offload_text_encoder=offload_text_encoder,
+                sa3_base_checkpoint_dir=sa3_base_checkpoint_dir,
+                model_extension=model_extension,
                 session_id=session_id,
             )
             with _ACTIVE_SLOT_LOCK:
