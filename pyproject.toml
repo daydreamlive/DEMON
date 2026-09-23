@@ -94,6 +94,15 @@ dependencies = [
     "mcp>=1.0",
 ]
 
+[project.optional-dependencies]
+# Local C2PA provenance (acestep/provenance): signed Content Credentials
+# on written WAVs + self-signed local signing material. Everything in
+# acestep.provenance degrades to a logged no-op without this extra.
+provenance = [
+    "c2pa-python>=0.36",
+    "cryptography>=42",
+]
+
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
