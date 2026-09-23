@@ -43,6 +43,8 @@ namespace command {
     inline constexpr const char* kRaw = "raw";
     /** Playhead position in SECONDS (not a 0..1 ratio); used for time-keyed curve sampling. */
     inline constexpr const char* kPlaybackPos = "playback_pos";
+    /** Circular source-preservation envelope: 2..256 finite numbers in [0,1], equally spaced over the playable source (endpoint excluded). Last sample interpolates back to first. Adds a per-position X0 floor above scalar x0_target during late denoising; does not change denoise. Absent retains; null/empty clears; invalid updates retain the previous curve. Requires ready.capabilities.source_preservation. This is latent preservation, not exact PCM masking. */
+    inline constexpr const char* kSa3PreservationCurve = "sa3_preservation_curve";
     /** Optional stationary render placement in absolute buffer/song seconds. A finite value renders exactly at that position, bypassing transport lead and loop-band snapping. Absent retains the prior anchor; null clears it. */
     inline constexpr const char* kRenderAnchorS = "render_anchor_s";
     /** Optional BATCH of stationary render anchors (absolute buffer/song seconds), rendered back-to-back one window per tick whenever the scalar render_anchor_s is clear (the scalar preempts; the queue resumes when it clears). Each anchor is popped after its window emits. A list REPLACES the prior queue; absent retains it; null/empty clears it. Gated on ready.capabilities.render_anchor_queue — older servers ignore the field. Non-finite entries are dropped; length is capped server-side (1024). Like the scalar anchor, IGNORED in walk-window mode (sources longer than walk_window_s): the DiT holds one chunk and cannot render outside it — clients must not queue-warm walk sources. */

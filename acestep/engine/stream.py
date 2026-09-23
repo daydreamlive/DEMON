@@ -1397,13 +1397,8 @@ class StreamPipeline:
             # materialized when the blend actually fires.
             if "x0_target_strength" in self._shared_curves:
                 strength_active = self._shared_x0_active
-                eff_strength = self._shared_curves["x0_target_strength"]
             else:
                 strength_active = slot.x0_strength_active
-                eff_strength = (
-                    ode_steps.normalize_curve(req.x0_target_strength)
-                    if strength_active else None
-                )
             scalar_x0_target = (
                 req.x0_target is not None
                 and strength_active
@@ -1476,7 +1471,9 @@ class StreamPipeline:
                         x0_pred, req.x0_target, curve * blend_gate,
                     )
             elif scalar_x0_target:
-                alpha = eff_strength.to(device=x0_pred.device, dtype=x0_pred.dtype)
+                alpha = self._shared_curve_dev(
+                    slot, "x0_target_strength", x0_pred.device, x0_pred.dtype,
+                )
                 x0_pred = (1.0 - alpha) * x0_pred + alpha * req.x0_target
 
             if t_next <= 0:
