@@ -1,0 +1,137 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "almond",
+  "name": "DEMON",
+  "description": "Streaming diffusion engine for real-time music generation",
+  "fonts": {
+    "family": "Manrope"
+  },
+  "colors": {
+    "primary": "#1C1C1C",
+    "light": "#FF6369",
+    "dark": "#E5484D"
+  },
+  "favicon": "/favicon.svg",
+  "logo": {
+    "light": "/logo/light.svg",
+    "dark": "/logo/dark.svg"
+  },
+  "appearance": {
+    "default": "dark"
+  },
+  "background": {
+    "color": {
+      "light": "#FFFFFF",
+      "dark": "#0B0B0D"
+    }
+  },
+  "contextual": {
+    "options": ["copy", "view", "chatgpt", "claude"]
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "icon": "book-open",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "index",
+              "getting-started/requirements",
+              "getting-started/quickstart",
+              "getting-started/tensorrt"
+            ]
+          },
+          {
+            "group": "The Demo App",
+            "pages": [
+              "demo/overview",
+              "demo/interface",
+              "demo/controls",
+              "demo/prompts-and-loras",
+              "demo/sources-and-references",
+              "demo/automation-curves",
+              "demo/midi",
+              "demo/recording",
+              "demo/configuration"
+            ]
+          },
+          {
+            "group": "Cloud & Daydream",
+            "pages": [
+              "cloud/hosted-demo",
+              "cloud/deployment"
+            ]
+          },
+          {
+            "group": "The Engine",
+            "pages": [
+              "engine/architecture",
+              "engine/session-api",
+              "engine/streaming",
+              "engine/examples"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/mcp",
+              "advanced/benchmarking",
+              "advanced/development"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "icon": "code",
+        "groups": [
+          {
+            "group": "Controls",
+            "pages": [
+              "reference/knobs",
+              "reference/keyboard-shortcuts"
+            ]
+          },
+          {
+            "group": "Interfaces",
+            "pages": [
+              "reference/cli",
+              "reference/http-api",
+              "reference/websocket-protocol",
+              "reference/mcp-tools"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "reference/environment-variables",
+              "reference/troubleshooting"
+            ]
+          }
+        ]
+      }
+    ],
+    "global": {
+      "anchors": [
+        {
+          "anchor": "Hosted Demo",
+          "icon": "music",
+          "href": "https://music.daydream.live"
+        },
+        {
+          "anchor": "GitHub",
+          "icon": "github",
+          "href": "https://github.com/daydreamlive/DEMON"
+        }
+      ]
+    }
+  },
+  "footer": {
+    "socials": {
+      "x": "https://twitter.com/DaydreamLiveAI",
+      "github": "https://github.com/daydreamlive/DEMON"
+    }
+  }
+}
