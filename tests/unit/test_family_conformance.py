@@ -65,6 +65,7 @@ def test_spec_declares_boot_policy(spec: FamilySpec):
     assert callable(spec.preflight), f"{spec.name} has no preflight"
     assert spec.prompt_policy in PROMPT_POLICIES
     assert spec.text_only is None or isinstance(spec.text_only, TextOnlySpec)
+    assert spec.shutdown is None or callable(spec.shutdown)
 
 
 @pytest.mark.parametrize("spec", SPECS, ids=IDS)
@@ -183,6 +184,10 @@ def test_in_tree_families_declare_what_the_pods_rely_on():
     # headless probe, 2026-09-24); SA3 lets the client size the render.
     assert get_family("acestep").text_only.duration_field is None
     assert get_family("sa3").text_only.duration_field == "sa3_duration_s"
+    # SA3 process-caches its model and may host an extension attached to
+    # it; the server's shutdown path detaches through this hook.
+    assert get_family("sa3").shutdown is not None
+    assert get_family("acestep").shutdown is None
 
 
 def test_sa3_text_only_cap_matches_the_backend():

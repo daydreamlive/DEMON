@@ -1,0 +1,127 @@
+"""The platform boundary: the shared core never names a model family.
+
+``pipeline_runner``, ``session``, ``ws_adapter``, ``server``, ``protocol``,
+``knobs`` and ``config`` are the platform. They change for platform
+features and never for a family; a family lives in its own modules and
+declares itself through ``FamilySpec`` (docs/FAMILIES.md). This test
+walks the AST of each frozen file and fails on a family name used as a
+string literal, an identifier or an import — outside a short allow-list
+of what phase 1 has not moved yet. The allow-list must stay in use: an
+entry the code no longer needs fails too, so the list only shrinks.
+"""
+
+from __future__ import annotations
+
+import ast
+import re
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[2]
+
+FROZEN = (
+    "acestep/streaming/pipeline_runner.py",
+    "acestep/streaming/session.py",
+    "acestep/streaming/generator_backend.py",
+    "acestep/streaming/diffusion_backend.py",
+    "acestep/streaming/knobs.py",
+    "acestep/streaming/config.py",
+    "demos/realtime_motion_graph_web/ws_adapter.py",
+    "demos/realtime_motion_graph_web/server.py",
+    "demos/realtime_motion_graph_web/protocol.py",
+)
+
+#: (file, kind, value) -> why it is still there. Remove an entry when the
+#: code moves; the test fails if an entry is unused.
+ALLOW = {
+    ("acestep/streaming/config.py", "literal", "acestep"):
+        "DEFAULT_FAMILY is spelled exactly once, here",
+    ("acestep/streaming/config.py", "name", "sa3_duration_s"):
+        "family config field on SessionConfig; moves to FamilySpec.config_fields",
+}
+
+# A family name standing alone inside a string: "sa3", "acestep", but not
+# a checkpoint directory like "acestep-v15-turbo" or a CLI flag.
+_LITERAL = re.compile(r"(?<![a-z0-9_.-])(sa3|acestep)(?![a-z0-9_.-])")
+# An identifier built on a family name: sa3_duration_s, evict_sa3_contexts,
+# _run_sa3_preflight. The bare package name ``acestep`` is not a family
+# reference and is excluded.
+_IDENT = re.compile(r"(^|_)(sa3|ace)(_|$)")
+# A family module imported into the core.
+_MODULE = re.compile(r"\.(sa3_[a-z_]+|ace_backend|mrt2|minimax[a-z_]*)(\.|$)")
+
+
+def _docstring_nodes(tree: ast.AST) -> set:
+    out = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = getattr(node, "body", [])
+            if body and isinstance(body[0], ast.Expr) and isinstance(
+                getattr(body[0], "value", None), ast.Constant
+            ) and isinstance(body[0].value.value, str):
+                out.add(id(body[0].value))
+    return out
+
+
+def _scan(rel: str) -> list:
+    src = (REPO / rel).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    docstrings = _docstring_nodes(tree)
+    hits = []
+
+    def hit(kind, value, node):
+        hits.append((rel, kind, value, getattr(node, "lineno", 0)))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if id(node) in docstrings:
+                continue
+            for m in _LITERAL.finditer(node.value):
+                hit("literal", m.group(1), node)
+        elif isinstance(node, ast.Name):
+            if _IDENT.search(node.id):
+                hit("name", node.id, node)
+        elif isinstance(node, ast.Attribute):
+            if _IDENT.search(node.attr):
+                hit("name", node.attr, node)
+        elif isinstance(node, ast.arg):
+            if _IDENT.search(node.arg):
+                hit("name", node.arg, node)
+        elif isinstance(node, ast.keyword) and node.arg:
+            if _IDENT.search(node.arg):
+                hit("name", node.arg, node)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if _IDENT.search(node.name):
+                hit("name", node.name, node)
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if _MODULE.search("." + mod) or _MODULE.search("." + mod + "."):
+                hit("import", mod, node)
+            for alias in node.names:
+                if _IDENT.search(alias.name):
+                    hit("import", f"{mod}.{alias.name}", node)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if _MODULE.search("." + alias.name + "."):
+                    hit("import", alias.name, node)
+    return hits
+
+
+@pytest.mark.parametrize("rel", FROZEN)
+def test_core_file_names_no_family(rel: str):
+    hits = _scan(rel)
+    unexpected = [h for h in hits if (h[0], h[1], h[2]) not in ALLOW]
+    assert not unexpected, (
+        "family reference in a frozen core file; declare it on FamilySpec "
+        "instead:\n" + "\n".join(f"  {f}:{ln} {k} {v!r}" for f, k, v, ln in unexpected)
+    )
+
+
+def test_allow_list_entries_are_still_needed():
+    used = set()
+    for rel in FROZEN:
+        for f, k, v, _ln in _scan(rel):
+            used.add((f, k, v))
+    stale = sorted(set(ALLOW) - used)
+    assert not stale, "remove from ALLOW, the code no longer needs it:\n" + "\n".join(map(str, stale))
