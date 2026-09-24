@@ -20,7 +20,7 @@ against it by `tests/unit/test_family_conformance.py`.
 | `make_backend(session)` | builds the family's `GeneratorBackend` from a constructed `StreamingSession` | `StreamingSession.__init__` |
 | `knob_universe()` | every `KnobSpec` the family can ever expose, without a GPU | the homonym guard, the conformance test |
 | `checkpoint_aliases` | `--checkpoint` alias → model id (unique across families) | `server.py` at CLI parse |
-| `create_session` | the per-connect create path when the default body does not fit | `StreamingSession.create` |
+| `create_session` | the family's per-connect create path (`acestep/streaming/ace_session.py`, `sa3_session.py`); `StreamingSession.create` only dispatches to it | `StreamingSession.create` |
 | `warmup_policy` | `"ace_trt"` or `"none"` | `server.py` boot |
 | `preflight(request)` | the family's boot check, a pure verdict (`acestep/streaming/preflight.py`); the server prints and exits on failure | `server.py` boot |
 | `prompt_policy` | which prompt-tooling policy `/api/enhance` infers (`"acestep"` or `"sa3"`; a policy name, not a family name) | `server.py` |
@@ -57,10 +57,10 @@ template.
 1. Write the backend module (Tier 1, plus a Tier 2 adapter if the model is
    rectified-flow). Declare only the `Capabilities` bits you honour; the
    session turns every other command into a `command_failed`.
-2. Write the create path if the default body does not fit. SA3's
-   `acestep/streaming/sa3_session.py` is the reference: load or reuse a
-   process-cached context, encode the source, stash the construction payload
-   on `backend_init` for `make_backend`.
+2. Write the create path. `acestep/streaming/ace_session.py` and
+   `sa3_session.py` are the two references: load or reuse a process-cached
+   context, encode the source, stash the construction payload on
+   `backend_init` for `make_backend`, return `cls(...)`.
 3. Write `knob_universe()`. Knob names shared with another family must have
    byte-identical semantics or be renamed with a family prefix
    (`tests/unit/test_knob_homonyms.py`).
@@ -82,7 +82,6 @@ phase 1 of the platform plan; a third family today would have to edit each.
 | --- | --- | --- |
 | `acestep/streaming/config.py` | `sa3_duration_s` and friends on the shared `SessionConfig` | `FamilySpec.config_fields` |
 | `acestep/lora_metadata.py`, `acestep/engine/lora.py` | weight-format sniff returns `"sa3"` / `"ace"` | `FamilySpec.lora_format` |
-| `StreamingSession.create` default body | ACE-only (no family name in it, but ACE-shaped setup) | `families/acestep/session.py` |
 
 `tests/unit/test_family_boundary.py` walks the AST of the frozen core files
 (`pipeline_runner.py`, `session.py`, `generator_backend.py`,

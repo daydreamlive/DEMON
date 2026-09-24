@@ -55,7 +55,10 @@ def _audio():
 
 
 def _patch_lightweight_create(monkeypatch, tracker):
-    import acestep.streaming.session as session_mod
+    # The ACE create body lives in the family's own module; patch the
+    # names where that body reads them. StreamingSession.create only
+    # dispatches (FamilySpec.create_session).
+    import acestep.streaming.ace_session as session_mod
 
     monkeypatch.setattr(session_mod, "max_profile_duration_s", lambda **_kwargs: 1.0)
     monkeypatch.setattr(

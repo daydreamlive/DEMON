@@ -63,6 +63,7 @@ def test_spec_declares_boot_policy(spec: FamilySpec):
     # cannot serve what it was asked for must stop at boot, not at the
     # first session.
     assert callable(spec.preflight), f"{spec.name} has no preflight"
+    assert callable(spec.create_session), f"{spec.name} has no create_session"
     assert spec.prompt_policy in PROMPT_POLICIES
     assert spec.text_only is None or isinstance(spec.text_only, TextOnlySpec)
     assert spec.shutdown is None or callable(spec.shutdown)
@@ -171,9 +172,10 @@ def test_in_tree_families_declare_what_the_pods_rely_on():
     assert get_family("acestep").supports_extensions is False
     # The ACE server warmup path keys on this exact policy name.
     assert get_family("acestep").warmup_policy == "ace_trt"
-    # SA3 owns its create path; ACE rides the default body.
+    # Every family owns its create path; StreamingSession.create only
+    # dispatches (ace_session.py / sa3_session.py).
     assert get_family("sa3").create_session is not None
-    assert get_family("acestep").create_session is None
+    assert get_family("acestep").create_session is not None
     # /api/enhance infers its policy from the family.
     assert get_family("sa3").prompt_policy == "sa3"
     assert get_family("acestep").prompt_policy == "acestep"
