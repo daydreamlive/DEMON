@@ -62,6 +62,40 @@ _FAMILY_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 
 
 @dataclass(frozen=True)
+class TextOnlySpec:
+    """How a family serves a pure text-to-audio session (no source upload).
+
+    The WS adapter synthesises a silent source anchor so the family still
+    has geometry to hang the render off. ``duration_field`` names the
+    config key that sets its length (``None`` = the client cannot choose;
+    the default is used), clamped to ``[1, max_duration_s]``.
+    """
+
+    default_duration_s: float = 60.0
+    max_duration_s: float = 60.0
+    duration_field: Optional[str] = None
+
+    def __post_init__(self):
+        if not (1.0 <= self.default_duration_s <= self.max_duration_s):
+            raise ValueError(
+                f"text-only default {self.default_duration_s} must lie in "
+                f"[1, max_duration_s={self.max_duration_s}]"
+            )
+
+    def duration_s(self, config_dict: Mapping[str, Any]) -> float:
+        """The anchor length a config asks for, defaulted and clamped."""
+        dur = 0.0
+        if self.duration_field:
+            try:
+                dur = float(config_dict.get(self.duration_field) or 0.0)
+            except (TypeError, ValueError):
+                dur = 0.0
+        if dur <= 0.0:
+            dur = self.default_duration_s
+        return max(1.0, min(dur, self.max_duration_s))
+
+
+@dataclass(frozen=True)
 class FamilySpec:
     """Everything one model family declares to the platform.
 
@@ -85,6 +119,10 @@ class FamilySpec:
     operator-supplied checkpoint directory in place of its catalog
     location (``--sa3-base-checkpoint``).
 
+    ``text_only`` describes how the family serves a session with no
+    source upload (:class:`TextOnlySpec`), or ``None`` when it cannot;
+    the adapter advertises ``supports_text_only`` from it.
+
     ``supports_extensions`` says whether ``--model-extension`` may
     target this family: the family's context must offer the install /
     decorate / controls hooks (see ``docs/PLUGINS.md``). Selection
@@ -103,6 +141,7 @@ class FamilySpec:
     preflight: Optional[Callable[[PreflightRequest], PreflightResult]] = None
     prompt_policy: str = "acestep"
     accepts_checkpoint_dir: bool = False
+    text_only: Optional[TextOnlySpec] = None
     supports_extensions: bool = False
 
     def __post_init__(self):
@@ -159,6 +198,12 @@ def _make_acestep(ss):
         # checkpoints outside the scale map = "don't filter".
         checkpoint_scale=checkpoint_scale(ss.checkpoint),
     )
+
+
+#: SA3Backend's longest render window (its SA3_MAX_DURATION_S). Mirrored
+#: here so the registry does not import the backend module at import
+#: time; the conformance test pins the two values together.
+SA3_TEXT_ONLY_MAX_DURATION_S = 120.0
 
 
 def _make_sa3(ss):
@@ -316,6 +361,10 @@ ACESTEP = FamilySpec(
     warmup_policy="ace_trt",
     preflight=acestep_preflight,
     prompt_policy="acestep",
+    # A silent 60 s anchor: the length the client always got here, and the
+    # 60 s TRT profile every pod builds. ACE has no per-session duration
+    # field, so the client cannot choose another length.
+    text_only=TextOnlySpec(default_duration_s=60.0, max_duration_s=60.0),
 )
 
 SA3 = FamilySpec(
@@ -332,6 +381,13 @@ SA3 = FamilySpec(
     prompt_policy="sa3",
     # --sa3-base-checkpoint: evaluate a non-catalog checkpoint directory.
     accepts_checkpoint_dir=True,
+    # The anchor is synthesised at the REQUESTED render length so the
+    # source and the render agree in sa3_session; capped at the family's
+    # longest render window.
+    text_only=TextOnlySpec(
+        default_duration_s=60.0, max_duration_s=SA3_TEXT_ONLY_MAX_DURATION_S,
+        duration_field="sa3_duration_s",
+    ),
     # SA3Context offers the model-extension veto/install/close hooks.
     supports_extensions=True,
 )

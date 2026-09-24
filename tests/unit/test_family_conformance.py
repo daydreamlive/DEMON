@@ -15,6 +15,8 @@ import pytest
 from acestep.streaming import families
 from acestep.streaming.families import (
     CHECKPOINT_ALIASES,
+    SA3_TEXT_ONLY_MAX_DURATION_S,
+    TextOnlySpec,
     DEFAULT_FAMILY,
     FAMILIES,
     FAMILY_KNOB_UNIVERSES,
@@ -62,6 +64,7 @@ def test_spec_declares_boot_policy(spec: FamilySpec):
     # first session.
     assert callable(spec.preflight), f"{spec.name} has no preflight"
     assert spec.prompt_policy in PROMPT_POLICIES
+    assert spec.text_only is None or isinstance(spec.text_only, TextOnlySpec)
 
 
 @pytest.mark.parametrize("spec", SPECS, ids=IDS)
@@ -176,6 +179,19 @@ def test_in_tree_families_declare_what_the_pods_rely_on():
     # Only SA3 serves an operator-supplied checkpoint directory today.
     assert get_family("sa3").accepts_checkpoint_dir is True
     assert get_family("acestep").accepts_checkpoint_dir is False
+    # Both families run text-only sessions (verified on a 5090 with the
+    # headless probe, 2026-09-24); SA3 lets the client size the render.
+    assert get_family("acestep").text_only.duration_field is None
+    assert get_family("sa3").text_only.duration_field == "sa3_duration_s"
+
+
+def test_sa3_text_only_cap_matches_the_backend():
+    # The registry mirrors the backend's constant so it never imports the
+    # backend module; this pins the two together.
+    from acestep.streaming.sa3_backend import SA3_MAX_DURATION_S
+
+    assert SA3_TEXT_ONLY_MAX_DURATION_S == SA3_MAX_DURATION_S
+    assert get_family("sa3").text_only.max_duration_s == SA3_MAX_DURATION_S
 
 
 def test_extension_selection_refuses_a_family_without_hooks(tmp_path):
