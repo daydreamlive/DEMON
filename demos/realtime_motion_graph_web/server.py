@@ -105,24 +105,28 @@ _BACKEND_FAMILY: str = "acestep"
 # (backend family, model id) pair, e.g. "xl" -> acestep, "sa3-small"
 # -> the sa3 family. Resolved in main() at CLI parse.
 
-# Prompt-enhancer backends: which LLM policy /api/enhance selects. The pod
-# already knows its own family via _BACKEND_FAMILY, so it INFERS the backend and
-# a client `backend=` query param is only an optional override.
-_ENHANCE_BACKENDS = ("acestep", "sa3")
+# Prompt-enhancer policy: which prompt style /api/enhance selects. The pod
+# already knows its own family via _BACKEND_FAMILY, so it INFERS the policy
+# from the family's spec and a client `backend=` query param is only an
+# optional override naming a policy directly.
 
 
 def _resolve_enhance_backend(override: str) -> str:
-    """Pick the enhancer backend: a valid client override wins, else infer.
+    """Pick the enhancer policy: a valid client override wins, else infer.
 
-    Inference reads the pod's resolved backend family (``_BACKEND_FAMILY``): the
-    ``sa3`` family selects the Stable Audio 3 natural-language policy, everything
-    else keeps ACE-Step tags. An unknown/blank override never errors — it falls
-    back to the inferred backend, so a stale client can't break enhancement.
+    Inference reads the pod's resolved backend family (``_BACKEND_FAMILY``)
+    and takes its ``FamilySpec.prompt_policy``. An unknown/blank override
+    never errors — it falls back to the inferred policy — and an unknown
+    family falls back to the ACE-Step policy, so a stale client or a
+    --no-backend pod can't break enhancement.
     """
+    from acestep.streaming.families import FAMILY_SPECS, PROMPT_POLICIES
+
     o = (override or "").strip().lower()
-    if o in _ENHANCE_BACKENDS:
+    if o in PROMPT_POLICIES:
         return o
-    return _BACKEND_FAMILY if _BACKEND_FAMILY in _ENHANCE_BACKENDS else "acestep"
+    spec = FAMILY_SPECS.get(_BACKEND_FAMILY)
+    return spec.prompt_policy if spec is not None else "acestep"
 
 _NO_CACHE_HEADERS = [
     ("Cache-Control", "no-store, must-revalidate"),
@@ -718,121 +722,31 @@ def _stub_handle_client(ws):
         pass
 
 
-def _run_preflight(decoder_accel: str, vae_accel: str, checkpoint: str) -> None:
+def _run_family_preflight(spec, req) -> None:
     """Fail fast (and loudly) at boot instead of on the first browser
     connection.
 
-    Two checks, mirroring what the first WebSocket session would hit:
-
-    1. Checkpoints — downloads the ACE-Step weights NOW, in the
-       terminal where the operator can see progress, rather than
-       stalling the first silent WS connect for 5-15 minutes.
-    2. TRT engines — when either component runs TensorRT, verify a 60 s
-       profile is built (decoder and/or VAE engines, matching the
-       backends in use). On failure, print the fix and exit non-zero.
-
-    ``--skip-preflight`` bypasses both checks (e.g. exotic mixed setups,
-    or testing the error paths themselves).
+    The check itself is the family's (``FamilySpec.preflight``, see
+    ``acestep.streaming.preflight``): each family resolves its own model
+    tree and decides whether missing engines are fatal. This only prints
+    the banner a failing verdict carries and exits non-zero.
+    ``--skip-preflight`` bypasses it (e.g. exotic mixed setups, or
+    testing the error paths themselves).
     """
-    from acestep.model_downloader import ensure_main_model, ensure_dit_model
-    from acestep.paths import (
-        EngineNotBuiltError,
-        available_trt_engines,
-        checkpoints_dir,
-    )
-    from acestep.setup import DEMO_COMMAND, SETUP_COMMAND
-
-    ok, msg = ensure_main_model()
-    if ok and checkpoint != "acestep-v15-turbo":
-        ok, msg = ensure_dit_model(checkpoint)
-    if not ok:
-        print()
-        print("=" * 64)
-        print("  Model checkpoints unavailable")
-        print("=" * 64)
-        print(f"  {msg}")
-        print(f"  expected location: {checkpoints_dir()}")
-        print(f"  fix: run `{SETUP_COMMAND}` (or `uv run acestep-download`)")
-        print("=" * 64)
-        raise SystemExit(1)
-    logger.info("preflight_checkpoints_ok checkpoint={}", checkpoint)
-
-    needs: tuple[str, ...] = ()
-    if decoder_accel == "tensorrt":
-        needs += ("decoder",)
-    if vae_accel == "tensorrt":
-        needs += ("vae_encode", "vae_decode")
-    if not needs:
+    if spec.preflight is None:
+        logger.warning("preflight_absent family={}", spec.name)
         return
-    trt_profile_checkpoint = (
-        checkpoint if decoder_accel == "tensorrt" else "acestep-v15-turbo"
-    )
-    try:
-        available_trt_engines(
-            duration_s=60.0,
-            needs=needs,
-            checkpoint=trt_profile_checkpoint,
-        )
-    except EngineNotBuiltError as exc:
-        print()
-        print("=" * 64)
-        print("  TensorRT engines not built")
-        print("=" * 64)
-        print(f"  {exc}")
-        print()
-        print(f"  fix (recommended): {SETUP_COMMAND}")
-        if exc.build_command:
-            print(f"  fix (manual):      {exc.build_command}")
-        print()
-        print("  Or run without TensorRT (slower, long first-tick warmup):")
-        print(f"    {DEMO_COMMAND} -- --accel compile")
-        print("=" * 64)
-        raise SystemExit(1)
-    logger.info(
-        "preflight_engines_ok needs={} checkpoint={}",
-        ",".join(needs), trt_profile_checkpoint,
-    )
-
-
-def _run_sa3_preflight(
-    model_id: str, *, base_checkpoint_dir: str | None = None,
-) -> None:
-    """Boot fail-fast for the SA3 family.
-
-    The ACE ``_run_preflight`` checks the wrong tree — SA3 weights and
-    engines live under ``<models>/sa3/`` — so SA3 gets its own check.
-    Light path-existence only (the SA3 model id's safetensors + the
-    vendored ``stable_audio_3`` source). A missing TRT engine is NOT
-    fatal: SA3 degrades to the eager DiT at session create, so unlike
-    the ACE path this preflight never gates on engines.
-
-    ``base_checkpoint_dir`` validates an operator-supplied checkpoint
-    directory instead of the catalog location for ``model_id``.
-    """
-    from acestep.engine.sa3_helpers import (
-        sa3_checkpoint_status,
-        sa3_custom_checkpoint_status,
-    )
-
-    if base_checkpoint_dir:
-        ok, msg = sa3_custom_checkpoint_status(base_checkpoint_dir)
-    else:
-        ok, msg = sa3_checkpoint_status(model_id)
-    if not ok:
-        # ``msg`` carries the failure-specific remedy: a manual HF download
-        # for missing weights (demon-setup does NOT fetch them), or
-        # `demon-setup` for the missing vendored source.
-        print()
-        print("=" * 64)
-        print("  SA3 model unavailable")
-        print("=" * 64)
-        print(f"  {msg}")
-        print("=" * 64)
-        raise SystemExit(1)
-    logger.info(
-        "preflight_sa3_ok model_id={} base_dir={}",
-        model_id, base_checkpoint_dir,
-    )
+    result = spec.preflight(req)
+    if result.ok:
+        return
+    print()
+    print("=" * 64)
+    print(f"  {result.title}")
+    print("=" * 64)
+    for line in result.lines:
+        print(f"  {line}" if line else "")
+    print("=" * 64)
+    raise SystemExit(1)
 
 
 def main():
@@ -914,11 +828,15 @@ def main():
     # non-catalog checkpoint without installing it into the managed
     # models tree. Startup-only and never accepted from a client.
     sa3_base_checkpoint_dir = _single_arg(args, "--sa3-base-checkpoint")
-    if sa3_base_checkpoint_dir and backend_family != "sa3":
-        raise SystemExit(
-            "[Server] --sa3-base-checkpoint requires an SA3 --checkpoint "
-            "alias (e.g. --checkpoint sa3-medium)"
-        )
+    if sa3_base_checkpoint_dir:
+        from acestep.streaming.families import get_family
+
+        if not get_family(backend_family).accepts_checkpoint_dir:
+            raise SystemExit(
+                "[Server] --sa3-base-checkpoint requires a --checkpoint alias "
+                f"of a family that accepts one; {backend_family!r} does not "
+                "(e.g. --checkpoint sa3-medium)"
+            )
     # Model extension selection is startup-only and operator-controlled:
     # a client can never name a plugin, a module, or a config path.
     model_extension_id = _single_arg(args, "--model-extension")
@@ -974,24 +892,28 @@ def main():
             "ui_only_mode skipped=gpu_and_model_imports",
         )
     else:
+        # The family's declaration: preflight, warmup, extension hosting.
+        from acestep.streaming.families import get_family
+        from acestep.streaming.preflight import PreflightRequest
+
+        family_spec = get_family(backend_family)
+
         # Fail fast at boot on missing checkpoints / engines instead of
         # on the first browser connection (where the failure used to
         # surface as a silent stall or a WS error frame). Also performs
-        # the checkpoint download here, visibly, when needed.
-        # The preflight is family-specific: each family resolves its own
-        # model tree (acestep -> <models>/checkpoints + acestep TRT
-        # profiles; sa3 -> <models>/sa3/checkpoints + <models>/sa3/
-        # trt_engines). Running the ACE check for a non-ACE family would
-        # false-fail at boot against the wrong directory.
+        # the checkpoint download here, visibly, when needed. The check
+        # is the family's own: each resolves its own model tree, so a
+        # third family boots with ITS preflight rather than none.
         if "--skip-preflight" not in args:
-            if backend_family == "acestep":
-                _run_preflight(decoder_accel, vae_accel, checkpoint)
-            elif backend_family == "sa3":
-                # `checkpoint` is the resolved SA3 model id here.
-                _run_sa3_preflight(
-                    checkpoint,
-                    base_checkpoint_dir=sa3_base_checkpoint_dir,
-                )
+            _run_family_preflight(
+                family_spec,
+                PreflightRequest(
+                    model_id=checkpoint,
+                    decoder_accel=decoder_accel,
+                    vae_accel=vae_accel,
+                    checkpoint_dir=sa3_base_checkpoint_dir,
+                ),
+            )
 
         # Resolve the selected model extension at boot, before any
         # session exists. Startup-only is a safety property AND a
@@ -1058,9 +980,7 @@ def main():
         # cost is the process-cached SA3Context load, paid by the first
         # real session.
         if os.environ.get("DEMON_STARTUP_WARMUP", "0") != "0":
-            from acestep.streaming.families import warmup_policy
-
-            if warmup_policy(backend_family) == "ace_trt":
+            if family_spec.warmup_policy == "ace_trt":
                 from acestep.streaming.warmup import run_startup_warmup
 
                 run_startup_warmup(
@@ -1072,7 +992,7 @@ def main():
             else:
                 logger.info(
                     "startup_warmup_skipped family={} policy={}",
-                    backend_family, warmup_policy(backend_family),
+                    backend_family, family_spec.warmup_policy,
                 )
 
     # Start the MCP control bus FIRST so registry registrations from the

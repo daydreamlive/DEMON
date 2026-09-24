@@ -32,6 +32,12 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Optional
 
 from acestep.engine.obs import logger
+from acestep.streaming.preflight import (
+    PreflightRequest,
+    PreflightResult,
+    acestep_preflight,
+    sa3_preflight,
+)
 
 #: Family whose checkpoint names need no alias: an unrecognised
 #: ``--checkpoint`` value is taken as one of its checkpoint directory
@@ -45,6 +51,12 @@ DEFAULT_FAMILY = "acestep"
 #: one-time cost is a process-cached model load pays it on the first
 #: real session and the rest are warm.
 WARMUP_POLICY_NAMES = ("ace_trt", "none")
+
+#: Prompt-tooling policies a family may select (the enhancer, the
+#: variations grid and the constraint checker each branch on one of
+#: these). They are policy names, not family names: a new family picks
+#: the policy whose prompt style its model was trained on.
+PROMPT_POLICIES = ("acestep", "sa3")
 
 _FAMILY_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 
@@ -65,6 +77,14 @@ class FamilySpec:
     supplies a creator, contract ``creator(cls, *, audio, config,
     checkpoint, session_id, **rest) -> StreamingSession``).
 
+    ``preflight`` is the family's boot check
+    (:mod:`acestep.streaming.preflight`): pure, returns a verdict, and
+    the server prints and exits on failure. ``prompt_policy`` selects
+    which prompt-tooling policy the pod's ``/api/enhance`` infers.
+    ``accepts_checkpoint_dir`` says whether the family can serve an
+    operator-supplied checkpoint directory in place of its catalog
+    location (``--sa3-base-checkpoint``).
+
     ``supports_extensions`` says whether ``--model-extension`` may
     target this family: the family's context must offer the install /
     decorate / controls hooks (see ``docs/PLUGINS.md``). Selection
@@ -80,9 +100,17 @@ class FamilySpec:
     checkpoint_aliases: Mapping[str, str] = field(default_factory=dict)
     create_session: Optional[Callable[..., Any]] = None
     warmup_policy: str = "none"
+    preflight: Optional[Callable[[PreflightRequest], PreflightResult]] = None
+    prompt_policy: str = "acestep"
+    accepts_checkpoint_dir: bool = False
     supports_extensions: bool = False
 
     def __post_init__(self):
+        if self.prompt_policy not in PROMPT_POLICIES:
+            raise ValueError(
+                f"family {self.name!r} prompt_policy {self.prompt_policy!r} "
+                f"not in {PROMPT_POLICIES}"
+            )
         if not _FAMILY_NAME_RE.match(self.name):
             raise ValueError(
                 f"family name {self.name!r} must match {_FAMILY_NAME_RE.pattern}"
@@ -286,6 +314,8 @@ ACESTEP = FamilySpec(
     checkpoint_aliases={"xl": "acestep-v15-xl-turbo"},
     # No create_session: ACE rides StreamingSession.create's default body.
     warmup_policy="ace_trt",
+    preflight=acestep_preflight,
+    prompt_policy="acestep",
 )
 
 SA3 = FamilySpec(
@@ -298,6 +328,10 @@ SA3 = FamilySpec(
     # model load, demucs, conditioning encode), so SA3 owns its creator.
     create_session=_create_sa3_session,
     warmup_policy="none",
+    preflight=sa3_preflight,
+    prompt_policy="sa3",
+    # --sa3-base-checkpoint: evaluate a non-catalog checkpoint directory.
+    accepts_checkpoint_dir=True,
     # SA3Context offers the model-extension veto/install/close hooks.
     supports_extensions=True,
 )
