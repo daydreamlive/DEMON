@@ -106,10 +106,9 @@ class FamilySpec:
 
     ``checkpoint_aliases`` maps a ``--checkpoint`` alias to this
     family's model id; aliases are unique across families. A family
-    without ``create_session`` rides ``StreamingSession.create``'s
-    default body (today that body is ACE-shaped; a non-ACE family
-    supplies a creator, contract ``creator(cls, *, audio, config,
-    checkpoint, session_id, **rest) -> StreamingSession``).
+    owns its create path through ``create_session`` (contract
+    ``creator(cls, *, audio, config, checkpoint, session_id, **rest) ->
+    StreamingSession``); ``StreamingSession.create`` only dispatches.
 
     ``preflight`` is the family's boot check
     (:mod:`acestep.streaming.preflight`): pure, returns a verdict, and
@@ -353,6 +352,12 @@ def _shutdown_sa3() -> int:
     return evict_sa3_contexts()
 
 
+def _create_acestep_session(cls, **kwargs):
+    from acestep.streaming.ace_session import create_acestep_session
+
+    return create_acestep_session(cls, **kwargs)
+
+
 def _create_sa3_session(cls, **kwargs):
     from acestep.streaming.sa3_session import create_sa3_session
 
@@ -369,7 +374,7 @@ ACESTEP = FamilySpec(
     make_backend=_make_acestep,
     knob_universe=_acestep_knob_universe,
     checkpoint_aliases={"xl": "acestep-v15-xl-turbo"},
-    # No create_session: ACE rides StreamingSession.create's default body.
+    create_session=_create_acestep_session,
     warmup_policy="ace_trt",
     preflight=acestep_preflight,
     prompt_policy="acestep",
