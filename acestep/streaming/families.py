@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Optional
 
 from acestep.engine.obs import logger
-from acestep.streaming.config import DEFAULT_FAMILY
+from acestep.streaming.config import DEFAULT_FAMILY, SessionConfig
 from acestep.streaming.preflight import (
     PreflightRequest,
     PreflightResult,
@@ -59,6 +59,52 @@ WARMUP_POLICY_NAMES = ("ace_trt", "none")
 PROMPT_POLICIES = ("acestep", "sa3")
 
 _FAMILY_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+
+
+#: Wire types a family config field may have. Every family field is
+#: optional and nullable on the wire: absent or null means "the family's
+#: own default", exactly like the platform's Optional fields.
+CONFIG_FIELD_TYPES = ("float", "int", "bool", "str")
+
+
+@dataclass(frozen=True)
+class FamilyConfigField:
+    """One session-config key a family adds to the handshake payload.
+
+    Declared on :attr:`FamilySpec.config_fields`, parsed by
+    ``SessionConfig.from_dict`` into ``SessionConfig.family_config`` and
+    projected into the wire contract (``/api/protocol`` ``config``, the
+    generated TS/C++ types) next to the platform fields. Names are unique
+    across families and may not shadow a platform field.
+    """
+
+    name: str
+    type: str = "float"
+    description: str = ""
+
+    def __post_init__(self):
+        if not re.match(r"^[a-z][a-z0-9_]{0,47}$", self.name):
+            raise ValueError(f"config field name {self.name!r} is not a wire key")
+        if self.type not in CONFIG_FIELD_TYPES:
+            raise ValueError(
+                f"config field {self.name!r} type {self.type!r} not in "
+                f"{CONFIG_FIELD_TYPES}"
+            )
+
+    def coerce(self, value):
+        """Parse a raw wire value; ``None`` for absent, null or junk."""
+        if value is None:
+            return None
+        try:
+            if self.type == "bool":
+                return bool(value)
+            if self.type == "int":
+                return int(value)
+            if self.type == "float":
+                return float(value)
+            return str(value)
+        except (TypeError, ValueError):
+            return None
 
 
 @dataclass(frozen=True)
@@ -122,6 +168,10 @@ class FamilySpec:
     source upload (:class:`TextOnlySpec`), or ``None`` when it cannot;
     the adapter advertises ``supports_text_only`` from it.
 
+    ``config_fields`` are the session-config keys the family adds to the
+    handshake (:class:`FamilyConfigField`); they reach the family as
+    ``config.family_config[name]``.
+
     ``shutdown`` releases process-wide state the family holds (a
     process-cached model, an installed extension) when the server exits.
 
@@ -144,6 +194,7 @@ class FamilySpec:
     prompt_policy: str = "acestep"
     accepts_checkpoint_dir: bool = False
     text_only: Optional[TextOnlySpec] = None
+    config_fields: tuple = ()
     shutdown: Optional[Callable[[], Any]] = None
     supports_extensions: bool = False
 
@@ -169,6 +220,14 @@ class FamilySpec:
                 raise ValueError(
                     f"family {self.name!r} alias {alias!r} -> {model_id!r} "
                     "must be non-empty strings"
+                )
+        names = [f.name for f in self.config_fields]
+        if len(set(names)) != len(names):
+            raise ValueError(f"family {self.name!r} repeats a config field: {names}")
+        for f in self.config_fields:
+            if not isinstance(f, FamilyConfigField):
+                raise ValueError(
+                    f"family {self.name!r} config_fields must be FamilyConfigField"
                 )
 
 
@@ -398,6 +457,15 @@ SA3 = FamilySpec(
     prompt_policy="sa3",
     # --sa3-base-checkpoint: evaluate a non-catalog checkpoint directory.
     accepts_checkpoint_dir=True,
+    config_fields=(
+        FamilyConfigField(
+            "sa3_duration_s", "float",
+            "Fixed generation duration for sa3 sessions, seconds. Absent or "
+            "null derives it from the uploaded source audio length (the "
+            "audio-to-audio anchor); SA3 conditioning is captured per "
+            "(prompt, duration), so this is fixed for the session lifetime.",
+        ),
+    ),
     # The anchor is synthesised at the REQUESTED render length so the
     # source and the render agree in sa3_session; capped at the family's
     # longest render window.
@@ -412,11 +480,27 @@ SA3 = FamilySpec(
 
 
 def _register(*specs: FamilySpec) -> dict:
+    from dataclasses import fields as _dc_fields
+
+    platform_fields = {f.name for f in _dc_fields(SessionConfig)}
     out: dict = {}
     aliases: dict = {}
+    config_keys: dict = {}
     for spec in specs:
         if spec.name in out:
             raise ValueError(f"family {spec.name!r} registered twice")
+        for cf in spec.config_fields:
+            if cf.name in platform_fields:
+                raise ValueError(
+                    f"family {spec.name!r} config field {cf.name!r} shadows a "
+                    "SessionConfig platform field"
+                )
+            if cf.name in config_keys:
+                raise ValueError(
+                    f"config field {cf.name!r} declared by both "
+                    f"{config_keys[cf.name]!r} and {spec.name!r}"
+                )
+            config_keys[cf.name] = spec.name
         for alias in spec.checkpoint_aliases:
             if alias in aliases:
                 raise ValueError(
@@ -432,6 +516,14 @@ def _register(*specs: FamilySpec) -> dict:
 
 #: ``family name -> FamilySpec``. The source of truth.
 FAMILY_SPECS: dict = _register(ACESTEP, SA3)
+
+
+def family_config_fields() -> tuple:
+    """Every family's config fields, in registration order. The wire
+    contract and ``SessionConfig.from_dict`` both read this, so the
+    payload a client can send and the keys the server parses cannot
+    drift."""
+    return tuple(cf for spec in FAMILY_SPECS.values() for cf in spec.config_fields)
 
 
 def get_family(name: str) -> FamilySpec:

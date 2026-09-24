@@ -37,8 +37,6 @@ FROZEN = (
 ALLOW = {
     ("acestep/streaming/config.py", "literal", "acestep"):
         "DEFAULT_FAMILY is spelled exactly once, here",
-    ("acestep/streaming/config.py", "name", "sa3_duration_s"):
-        "family config field on SessionConfig; moves to FamilySpec.config_fields",
 }
 
 # A family name standing alone inside a string: "sa3", "acestep", but not
