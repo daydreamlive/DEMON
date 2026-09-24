@@ -1,22 +1,105 @@
 """Backend family registry.
 
-Maps a ``SessionConfig.backend`` family name to a factory that builds
-the session's :class:`~acestep.streaming.generator_backend.GeneratorBackend`.
-Adding a model family is an entry here plus a backend module — the
-session, runner, wire protocol, and UI do not change (see
-``round_3_BACKEND_PLAN_FINAL.md``).
+One :class:`FamilySpec` per model family is the source of truth for
+everything the platform needs to know about it: how to build its
+:class:`~acestep.streaming.generator_backend.GeneratorBackend`, how to
+create its session, which ``--checkpoint`` aliases select it, its knob
+universe, its warmup policy, and whether it hosts model extensions.
+The session, runner, wire protocol and UI read the spec (or one of the
+views derived from it below) and never branch on a family name.
 
-Factory contract: ``factory(streaming_session) -> GeneratorBackend``.
+Adding a family is one spec plus a backend module; register the spec in
+:data:`FAMILY_SPECS`. ``tests/unit/test_family_conformance.py`` runs
+against every registered spec on CPU, and ``docs/FAMILIES.md`` is the
+walkthrough.
+
+Factory contract: ``make_backend(streaming_session) -> GeneratorBackend``.
 The factory pulls whatever it needs off the (fully constructed)
 StreamingSession; that keeps this registry free of per-family argument
 plumbing.
 
-A registration dict is deliberate (vs entry points / import scanning):
-with a handful of in-tree families, an explicit dict is greppable and
-import-cheap. Revisit only if out-of-tree families become real.
+An in-tree registry is deliberate (vs entry points / import scanning):
+with a handful of in-tree families, an explicit tuple is greppable and
+import-cheap. Out-of-tree families would ride the same
+``acestep.plugins.discovery`` machinery the model extensions use;
+revisit when one exists.
 """
 
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Any, Callable, Mapping, Optional
+
 from acestep.engine.obs import logger
+
+#: Family whose checkpoint names need no alias: an unrecognised
+#: ``--checkpoint`` value is taken as one of its checkpoint directory
+#: names, exactly as before the alias map existed.
+DEFAULT_FAMILY = "acestep"
+
+#: Startup-warmup policies a family may declare. "ace_trt" drives the
+#: synthetic ACE warmup session (acestep.streaming.warmup: TRT decoder-
+#: engine load, LoRA-refit manager, first-tick pipeline build — ~30s of
+#: one-time engine-resident state). "none" skips it: a family whose
+#: one-time cost is a process-cached model load pays it on the first
+#: real session and the rest are warm.
+WARMUP_POLICY_NAMES = ("ace_trt", "none")
+
+_FAMILY_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+
+
+@dataclass(frozen=True)
+class FamilySpec:
+    """Everything one model family declares to the platform.
+
+    ``name`` is the ``SessionConfig.backend`` value and the pool
+    identity's family half. ``make_backend`` and ``knob_universe`` are
+    callables so a spec imports nothing GPU-heavy at registry import;
+    each does its own lazy import when called.
+
+    ``checkpoint_aliases`` maps a ``--checkpoint`` alias to this
+    family's model id; aliases are unique across families. A family
+    without ``create_session`` rides ``StreamingSession.create``'s
+    default body (today that body is ACE-shaped; a non-ACE family
+    supplies a creator, contract ``creator(cls, *, audio, config,
+    checkpoint, session_id, **rest) -> StreamingSession``).
+
+    ``supports_extensions`` says whether ``--model-extension`` may
+    target this family: the family's context must offer the install /
+    decorate / controls hooks (see ``docs/PLUGINS.md``). Selection
+    refuses a family that does not, because a selected extension that
+    is never installed would generate with the stock model and sound
+    entirely plausible.
+    """
+
+    name: str
+    display_name: str
+    make_backend: Callable[[Any], Any]
+    knob_universe: Callable[[], list]
+    checkpoint_aliases: Mapping[str, str] = field(default_factory=dict)
+    create_session: Optional[Callable[..., Any]] = None
+    warmup_policy: str = "none"
+    supports_extensions: bool = False
+
+    def __post_init__(self):
+        if not _FAMILY_NAME_RE.match(self.name):
+            raise ValueError(
+                f"family name {self.name!r} must match {_FAMILY_NAME_RE.pattern}"
+            )
+        if not self.display_name:
+            raise ValueError(f"family {self.name!r} needs a display_name")
+        if self.warmup_policy not in WARMUP_POLICY_NAMES:
+            raise ValueError(
+                f"family {self.name!r} warmup_policy {self.warmup_policy!r} "
+                f"not in {WARMUP_POLICY_NAMES}"
+            )
+        for alias, model_id in self.checkpoint_aliases.items():
+            if not isinstance(alias, str) or not alias or not isinstance(model_id, str) or not model_id:
+                raise ValueError(
+                    f"family {self.name!r} alias {alias!r} -> {model_id!r} "
+                    "must be non-empty strings"
+                )
 
 
 def _make_acestep(ss):
@@ -106,48 +189,17 @@ def _make_sa3(ss):
     )
 
 
-FAMILIES = {
-    "acestep": _make_acestep,
-    "sa3": _make_sa3,
-}
-
-# ---------------------------------------------------------------------------
-# Checkpoint aliases (plan §3.5): a server --checkpoint name resolves to
-# (backend family, model id). Names absent from the map are ACE
-# checkpoint directory names, exactly as before — so plain "xl" and the
-# canonical directory names keep working.
-# ---------------------------------------------------------------------------
-
-CHECKPOINT_ALIASES = {
-    "xl": ("acestep", "acestep-v15-xl-turbo"),
-    "sa3-small": ("sa3", "small-music"),
-    "sa3-medium": ("sa3", "medium"),
-}
-
-
 def resolve_checkpoint(name: str) -> tuple:
-    """``--checkpoint`` name -> ``(backend_family, model_id)``."""
-    return CHECKPOINT_ALIASES.get(name, ("acestep", name))
+    """``--checkpoint`` name -> ``(backend_family, model_id)``.
 
-
-# ---------------------------------------------------------------------------
-# Startup-warmup policy (plan §3.5: warmup is backend policy, replacing
-# checkpoint-name sniffing in server.py). "ace_trt" drives the synthetic
-# ACE warmup session (acestep.streaming.warmup: TRT decoder-engine load,
-# LoRA-refit manager, first-tick pipeline build — ~30s of one-time
-# engine-resident state). "none" skips it: SA3's one-time cost is the
-# SA3Context load, which the per-family create path process-caches, so
-# the first real session pays it once and the rest are warm.
-# ---------------------------------------------------------------------------
-
-WARMUP_POLICIES = {
-    "acestep": "ace_trt",
-    "sa3": "none",
-}
+    Aliases come from every registered spec's ``checkpoint_aliases``;
+    an unaliased name is a :data:`DEFAULT_FAMILY` checkpoint directory.
+    """
+    return CHECKPOINT_ALIASES.get(name, (DEFAULT_FAMILY, name))
 
 
 def warmup_policy(family: str) -> str:
-    """Startup-warmup policy for ``family`` ("ace_trt" | "none")."""
+    """Startup-warmup policy for ``family`` (one of :data:`WARMUP_POLICY_NAMES`)."""
     return WARMUP_POLICIES.get(family, "none")
 
 
@@ -216,25 +268,102 @@ def _sa3_knob_universe():
     return sa3_knob_specs(loras=["<lora_id>"])
 
 
-FAMILY_KNOB_UNIVERSES = {
-    "acestep": _acestep_knob_universe,
-    "sa3": _sa3_knob_universe,
-}
-
-
 def _create_sa3_session(cls, **kwargs):
     from acestep.streaming.sa3_session import create_sa3_session
 
     return create_sa3_session(cls, **kwargs)
 
 
-# Families whose per-connect setup doesn't fit the ACE create path
-# (TRT profiles, model load, demucs, conditioning encode). Keyed like
-# FAMILIES; absent = the family rides StreamingSession.create's default
-# body. Contract: ``creator(cls, *, audio, config, checkpoint,
-# session_id, **rest) -> StreamingSession``.
+# ---------------------------------------------------------------------------
+# The registered families. One spec each; everything below is derived.
+# ---------------------------------------------------------------------------
+
+ACESTEP = FamilySpec(
+    name="acestep",
+    display_name="ACE-Step 1.5",
+    make_backend=_make_acestep,
+    knob_universe=_acestep_knob_universe,
+    checkpoint_aliases={"xl": "acestep-v15-xl-turbo"},
+    # No create_session: ACE rides StreamingSession.create's default body.
+    warmup_policy="ace_trt",
+)
+
+SA3 = FamilySpec(
+    name="sa3",
+    display_name="Stable Audio 3",
+    make_backend=_make_sa3,
+    knob_universe=_sa3_knob_universe,
+    checkpoint_aliases={"sa3-small": "small-music", "sa3-medium": "medium"},
+    # Per-connect setup doesn't fit the ACE create path (TRT profiles,
+    # model load, demucs, conditioning encode), so SA3 owns its creator.
+    create_session=_create_sa3_session,
+    warmup_policy="none",
+    # SA3Context offers the model-extension veto/install/close hooks.
+    supports_extensions=True,
+)
+
+
+def _register(*specs: FamilySpec) -> dict:
+    out: dict = {}
+    aliases: dict = {}
+    for spec in specs:
+        if spec.name in out:
+            raise ValueError(f"family {spec.name!r} registered twice")
+        for alias in spec.checkpoint_aliases:
+            if alias in aliases:
+                raise ValueError(
+                    f"checkpoint alias {alias!r} claimed by both "
+                    f"{aliases[alias]!r} and {spec.name!r}"
+                )
+            aliases[alias] = spec.name
+        out[spec.name] = spec
+    if DEFAULT_FAMILY not in out:
+        raise ValueError(f"DEFAULT_FAMILY {DEFAULT_FAMILY!r} is not registered")
+    return out
+
+
+#: ``family name -> FamilySpec``. The source of truth.
+FAMILY_SPECS: dict = _register(ACESTEP, SA3)
+
+
+def get_family(name: str) -> FamilySpec:
+    """The spec for ``name``; unknown families fail loudly."""
+    try:
+        return FAMILY_SPECS[name]
+    except KeyError:
+        known = ", ".join(sorted(FAMILY_SPECS))
+        raise ValueError(
+            f"unknown backend family {name!r} (registered: {known})"
+        ) from None
+
+
+# ---------------------------------------------------------------------------
+# Views derived from the specs, kept for existing importers. Never edit
+# these by hand: change the spec, and the conformance test checks that
+# each view still equals what the specs declare.
+# ---------------------------------------------------------------------------
+
+#: ``family -> make_backend`` factory.
+FAMILIES = {n: s.make_backend for n, s in FAMILY_SPECS.items()}
+
+#: ``--checkpoint`` alias -> ``(family, model_id)``.
+CHECKPOINT_ALIASES = {
+    alias: (n, model_id)
+    for n, s in FAMILY_SPECS.items()
+    for alias, model_id in s.checkpoint_aliases.items()
+}
+
+#: ``family -> warmup policy name``.
+WARMUP_POLICIES = {n: s.warmup_policy for n, s in FAMILY_SPECS.items()}
+
+#: ``family -> knob universe callable`` (the homonym guard's input).
+FAMILY_KNOB_UNIVERSES = {n: s.knob_universe for n, s in FAMILY_SPECS.items()}
+
+#: ``family -> session creator`` for families that own their create path.
 SESSION_CREATORS = {
-    "sa3": _create_sa3_session,
+    n: s.create_session
+    for n, s in FAMILY_SPECS.items()
+    if s.create_session is not None
 }
 
 
