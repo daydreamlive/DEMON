@@ -14,6 +14,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field, fields
 
 
+#: The family whose checkpoint names need no alias and that a session
+#: config selects when it names none. Lives here, torch-free, so the
+#: demo server can read it before it decides whether to import the
+#: engine; ``acestep.streaming.families`` re-exports it.
+DEFAULT_FAMILY = "acestep"
+
+
 @dataclass
 class SessionConfig:
     """Session-init configuration. All fields are wire-side optional;
@@ -64,7 +71,7 @@ class SessionConfig:
     # acestep/streaming/families.py). Selected per-session at
     # create-time, never hot-swapped. When absent on the wire, the
     # server's resolved --checkpoint family is the default.
-    backend: str = "acestep"
+    backend: str = DEFAULT_FAMILY
     # --- sa3_* family fields (flat + prefixed per plan §3.5) ---
     # Fixed generation duration for sa3 sessions, seconds. None derives
     # it from the uploaded source audio length (the audio-to-audio

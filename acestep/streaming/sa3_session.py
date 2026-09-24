@@ -139,7 +139,7 @@ def _resolve_accel(value: str, component: str) -> str:
 def create_sa3_session(
     cls, *, audio, config, checkpoint, session_id,
     decoder_backend: str = "tensorrt", vae_backend: str = "tensorrt",
-    sa3_base_checkpoint_dir=None,
+    checkpoint_dir=None,
     model_extension=None,
     **_unused,
 ):
@@ -164,7 +164,7 @@ def create_sa3_session(
     model_id = checkpoint
     context = get_sa3_context(
         model_id,
-        checkpoint_dir=sa3_base_checkpoint_dir,
+        checkpoint_dir=checkpoint_dir,
         extension=model_extension,
     )
 
