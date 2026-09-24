@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Optional
 
 from acestep.engine.obs import logger
+from acestep.streaming.config import DEFAULT_FAMILY
 from acestep.streaming.preflight import (
     PreflightRequest,
     PreflightResult,
@@ -39,10 +40,9 @@ from acestep.streaming.preflight import (
     sa3_preflight,
 )
 
-#: Family whose checkpoint names need no alias: an unrecognised
-#: ``--checkpoint`` value is taken as one of its checkpoint directory
-#: names, exactly as before the alias map existed.
-DEFAULT_FAMILY = "acestep"
+# DEFAULT_FAMILY (re-exported from acestep.streaming.config): the family
+# whose checkpoint names need no alias — an unrecognised ``--checkpoint``
+# value is taken as one of its checkpoint directory names.
 
 #: Startup-warmup policies a family may declare. "ace_trt" drives the
 #: synthetic ACE warmup session (acestep.streaming.warmup: TRT decoder-
@@ -123,6 +123,9 @@ class FamilySpec:
     source upload (:class:`TextOnlySpec`), or ``None`` when it cannot;
     the adapter advertises ``supports_text_only`` from it.
 
+    ``shutdown`` releases process-wide state the family holds (a
+    process-cached model, an installed extension) when the server exits.
+
     ``supports_extensions`` says whether ``--model-extension`` may
     target this family: the family's context must offer the install /
     decorate / controls hooks (see ``docs/PLUGINS.md``). Selection
@@ -142,6 +145,7 @@ class FamilySpec:
     prompt_policy: str = "acestep"
     accepts_checkpoint_dir: bool = False
     text_only: Optional[TextOnlySpec] = None
+    shutdown: Optional[Callable[[], Any]] = None
     supports_extensions: bool = False
 
     def __post_init__(self):
@@ -341,6 +345,14 @@ def _sa3_knob_universe():
     return sa3_knob_specs(loras=["<lora_id>"])
 
 
+def _shutdown_sa3() -> int:
+    """Close every process-cached SA3 context (detaches an installed
+    extension from the shared model). Returns how many were evicted."""
+    from acestep.streaming.sa3_session import evict_sa3_contexts
+
+    return evict_sa3_contexts()
+
+
 def _create_sa3_session(cls, **kwargs):
     from acestep.streaming.sa3_session import create_sa3_session
 
@@ -388,6 +400,7 @@ SA3 = FamilySpec(
         default_duration_s=60.0, max_duration_s=SA3_TEXT_ONLY_MAX_DURATION_S,
         duration_field="sa3_duration_s",
     ),
+    shutdown=_shutdown_sa3,
     # SA3Context offers the model-extension veto/install/close hooks.
     supports_extensions=True,
 )
