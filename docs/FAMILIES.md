@@ -22,6 +22,9 @@ against it by `tests/unit/test_family_conformance.py`.
 | `checkpoint_aliases` | `--checkpoint` alias → model id (unique across families) | `server.py` at CLI parse |
 | `create_session` | the per-connect create path when the default body does not fit | `StreamingSession.create` |
 | `warmup_policy` | `"ace_trt"` or `"none"` | `server.py` boot |
+| `preflight(request)` | the family's boot check, a pure verdict (`acestep/streaming/preflight.py`); the server prints and exits on failure | `server.py` boot |
+| `prompt_policy` | which prompt-tooling policy `/api/enhance` infers (`"acestep"` or `"sa3"`; a policy name, not a family name) | `server.py` |
+| `accepts_checkpoint_dir` | whether `--sa3-base-checkpoint` may point the family at a non-catalog directory | `server.py` CLI |
 | `supports_extensions` | whether `--model-extension` may target the family | `acestep.plugins.selection` |
 
 Both callables do their own lazy imports, so registering a family adds no
@@ -66,14 +69,15 @@ template.
 
 ## What still branches on a family name
 
-The spec removes the registry's five hand-written dicts. These places still
-branch on `"acestep"` / `"sa3"` and are the remaining work of phase 1 of the
-platform plan; a third family today would have to edit each of them.
+The spec removes the registry's five hand-written dicts and every family
+branch in `server.py` (preflight, warmup, enhancer policy, the base-checkpoint
+flag). The prompt tooling under `demos/realtime_motion_graph_web/prompt_*.py`
+branches on the *policy* name a spec selects, which is legitimate. These
+places still branch on `"acestep"` / `"sa3"` and are the remaining work of
+phase 1 of the platform plan; a third family today would have to edit each.
 
 | Where | Branch | Planned home |
 | --- | --- | --- |
-| `demos/realtime_motion_graph_web/server.py` preflight | `if acestep … elif sa3`; a third family boots with no preflight | `FamilySpec.preflight` |
-| `server.py` `_ENHANCE_BACKENDS`, `acestep/streaming/prompt_*.py` | prompt policy keyed on `"sa3"`, falls back to ACE | `FamilySpec.prompt_policy` |
 | `ws_adapter.py` text-only path | silent source sized by `sa3_duration_s`; `supports_text_only` always true | `FamilySpec.text_only` |
 | `acestep/streaming/config.py` | `sa3_duration_s` and friends on the shared `SessionConfig` | `FamilySpec.config_fields` |
 | `acestep/lora_metadata.py`, `acestep/engine/lora.py` | weight-format sniff returns `"sa3"` / `"ace"` | `FamilySpec.lora_format` |

@@ -19,6 +19,7 @@ from acestep.streaming.families import (
     FAMILIES,
     FAMILY_KNOB_UNIVERSES,
     FAMILY_SPECS,
+    PROMPT_POLICIES,
     SESSION_CREATORS,
     WARMUP_POLICIES,
     WARMUP_POLICY_NAMES,
@@ -52,6 +53,15 @@ def test_spec_callables(spec: FamilySpec):
 @pytest.mark.parametrize("spec", SPECS, ids=IDS)
 def test_spec_warmup_policy_is_known(spec: FamilySpec):
     assert spec.warmup_policy in WARMUP_POLICY_NAMES
+
+
+@pytest.mark.parametrize("spec", SPECS, ids=IDS)
+def test_spec_declares_boot_policy(spec: FamilySpec):
+    # Every registered family boots through its own check; a pod that
+    # cannot serve what it was asked for must stop at boot, not at the
+    # first session.
+    assert callable(spec.preflight), f"{spec.name} has no preflight"
+    assert spec.prompt_policy in PROMPT_POLICIES
 
 
 @pytest.mark.parametrize("spec", SPECS, ids=IDS)
@@ -111,6 +121,8 @@ def test_spec_validation_rejects_bad_declarations():
         FamilySpec(**{**good, "display_name": ""})
     with pytest.raises(ValueError, match="warmup_policy"):
         FamilySpec(**{**good, "warmup_policy": "sometimes"})
+    with pytest.raises(ValueError, match="prompt_policy"):
+        FamilySpec(**{**good, "prompt_policy": "poetry"})
     with pytest.raises(ValueError, match="non-empty strings"):
         FamilySpec(**{**good, "checkpoint_aliases": {"": "x"}})
 
@@ -158,6 +170,12 @@ def test_in_tree_families_declare_what_the_pods_rely_on():
     # SA3 owns its create path; ACE rides the default body.
     assert get_family("sa3").create_session is not None
     assert get_family("acestep").create_session is None
+    # /api/enhance infers its policy from the family.
+    assert get_family("sa3").prompt_policy == "sa3"
+    assert get_family("acestep").prompt_policy == "acestep"
+    # Only SA3 serves an operator-supplied checkpoint directory today.
+    assert get_family("sa3").accepts_checkpoint_dir is True
+    assert get_family("acestep").accepts_checkpoint_dir is False
 
 
 def test_extension_selection_refuses_a_family_without_hooks(tmp_path):
