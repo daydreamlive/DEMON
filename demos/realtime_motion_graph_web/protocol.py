@@ -1050,8 +1050,9 @@ def config_catalog() -> dict:
     session start can't drift from what the server actually parses
     (``SessionConfig.from_dict``), and ``X | None`` fields project to
     ``nullable`` for free. Every field is wire-optional (the dataclass
-    supplies defaults). The import is local so this module's top-level import
-    stays torch-free / acestep-free; SessionConfig itself is both.
+    supplies defaults). Family-declared fields (``FamilySpec.config_fields``)
+    are appended from the registry. The imports are local so this module's
+    top-level import stays torch-free / acestep-free.
     """
     from dataclasses import MISSING
     from dataclasses import fields as _dc_fields
@@ -1059,9 +1060,15 @@ def config_catalog() -> dict:
 
     from acestep.streaming.config import SessionConfig
 
+    from acestep.streaming.families import family_config_fields
+
     hints = get_type_hints(SessionConfig)
     out: dict = {}
     for f in _dc_fields(SessionConfig):
+        if f.name == "family_config":
+            # Not a wire key: the container the family-declared keys below
+            # are parsed into.
+            continue
         wire_type, nullable = _project_config_type(hints[f.name])
         entry: dict = {"type": wire_type, "required": False}
         if nullable:
@@ -1074,6 +1081,14 @@ def config_catalog() -> dict:
             # contract shows their empty-container defaults too.
             entry["default"] = f.default_factory()
         out[f.name] = entry
+    # Family-declared keys (FamilySpec.config_fields), flat next to the
+    # platform fields so a client assembles one payload. Always optional
+    # and nullable: absent or null means the family's own default.
+    for cf in family_config_fields():
+        entry = {"type": cf.type, "required": False, "nullable": True}
+        if cf.description:
+            entry["description"] = cf.description
+        out[cf.name] = entry
     return out
 
 
