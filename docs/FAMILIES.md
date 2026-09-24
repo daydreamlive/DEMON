@@ -24,6 +24,7 @@ against it by `tests/unit/test_family_conformance.py`.
 | `warmup_policy` | `"ace_trt"` or `"none"` | `server.py` boot |
 | `preflight(request)` | the family's boot check, a pure verdict (`acestep/streaming/preflight.py`); the server prints and exits on failure | `server.py` boot |
 | `prompt_policy` | which prompt-tooling policy `/api/enhance` infers (`"acestep"` or `"sa3"`; a policy name, not a family name) | `server.py` |
+| `text_only` | a `TextOnlySpec` (default and max anchor length, and the config key that sets it) or `None` when the family cannot run without a source; the adapter advertises `supports_text_only` from it | `ws_adapter.py` handshake |
 | `accepts_checkpoint_dir` | whether `--sa3-base-checkpoint` may point the family at a non-catalog directory | `server.py` CLI |
 | `supports_extensions` | whether `--model-extension` may target the family | `acestep.plugins.selection` |
 
@@ -69,16 +70,15 @@ template.
 
 ## What still branches on a family name
 
-The spec removes the registry's five hand-written dicts and every family
+The spec removes the registry's five hand-written dicts, every family
 branch in `server.py` (preflight, warmup, enhancer policy, the base-checkpoint
-flag). The prompt tooling under `demos/realtime_motion_graph_web/prompt_*.py`
+flag) and the text-only path in `ws_adapter.py`. The prompt tooling under `demos/realtime_motion_graph_web/prompt_*.py`
 branches on the *policy* name a spec selects, which is legitimate. These
 places still branch on `"acestep"` / `"sa3"` and are the remaining work of
 phase 1 of the platform plan; a third family today would have to edit each.
 
 | Where | Branch | Planned home |
 | --- | --- | --- |
-| `ws_adapter.py` text-only path | silent source sized by `sa3_duration_s`; `supports_text_only` always true | `FamilySpec.text_only` |
 | `acestep/streaming/config.py` | `sa3_duration_s` and friends on the shared `SessionConfig` | `FamilySpec.config_fields` |
 | `acestep/lora_metadata.py`, `acestep/engine/lora.py` | weight-format sniff returns `"sa3"` / `"ace"` | `FamilySpec.lora_format` |
 | `StreamingSession.create` default body | ACE-only | `families/acestep/session.py` |
