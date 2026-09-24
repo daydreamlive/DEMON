@@ -44,6 +44,7 @@ Hard rules:
 | Reproduce frontend/realtime bugs headlessly (e.g. generation lagging the playhead) | `headless_start` on the same MCP server spawns a full PRIMARY client (`demos/realtime_motion_graph_web/headless_client.py`) with a simulated audio clock — no browser needed. `headless_lag_report` (and the snapshot in `headless_status`) measure slice lead vs the playhead and audio staleness. Preempts any live browser session (one session per pod). |
 | Engine / pipeline / nodes work | [README.md](./README.md) — Session API (`acestep/engine/session.py`), StreamPipeline (`acestep/engine/stream.py`), typed node graph (`acestep/nodes/`). |
 | Extend DEMON from an out-of-tree package | [`docs/PLUGINS.md`](docs/PLUGINS.md) — the `acestep.plugins` Tier-1 API: entry-point discovery, model-extension lifecycle, namespaced knobs, and the operator flags (`--model-extension`). Extensions that must reach model internals use the Tier-2 `acestep/engine/sa3_internals.py` contract, never the vendored package directly. |
+| Add a model family (a new generative model behind the runner) | [`docs/FAMILIES.md`](docs/FAMILIES.md) — the `FamilySpec` contract in `acestep/streaming/families.py`, the two seams (`GeneratorBackend`, `ModelAdapter`), the conformance test, and the table of places that still branch on a family name. |
 
 ## Repo-wide rules
 
