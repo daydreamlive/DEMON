@@ -24,8 +24,9 @@ against it by `tests/unit/test_family_conformance.py`.
 | `warmup_policy` | `"ace_trt"` or `"none"` | `server.py` boot |
 | `supports_extensions` | whether `--model-extension` may target the family | `acestep.plugins.selection` |
 
-Both callables do their own lazy imports, so importing the registry never
-pulls torch.
+Both callables do their own lazy imports, so registering a family adds no
+model import to the registry. (The registry itself still imports the
+engine logger, which pulls torch; that predates the spec.)
 
 ## The two seams a family implements
 
