@@ -15,9 +15,10 @@ from dataclasses import dataclass, field, fields
 
 
 #: The family whose checkpoint names need no alias and that a session
-#: config selects when it names none. Lives here, torch-free, so the
-#: demo server can read it before it decides whether to import the
-#: engine; ``acestep.streaming.families`` re-exports it.
+#: config selects when it names none. Lives here so importing this module
+#: for the constant costs nothing; ``acestep.streaming.families``
+#: re-exports it. (``SessionConfig.from_dict`` does import the registry,
+#: and with it the engine logger and torch.)
 DEFAULT_FAMILY = "acestep"
 
 
@@ -72,17 +73,17 @@ class SessionConfig:
     # create-time, never hot-swapped. When absent on the wire, the
     # server's resolved --checkpoint family is the default.
     backend: str = DEFAULT_FAMILY
-    # --- sa3_* family fields (flat + prefixed per plan §3.5) ---
-    # Fixed generation duration for sa3 sessions, seconds. None derives
-    # it from the uploaded source audio length (the audio-to-audio
-    # anchor); SA3 conditioning is captured per (prompt, duration), so
-    # this is fixed for the session lifetime.
-    sa3_duration_s: float | None = None
+    # Family-declared keys (FamilySpec.config_fields), parsed off the raw
+    # dict by name and coerced to the declared type: ``{name: value or
+    # None}`` for every field of every registered family. Not a wire
+    # field itself; the wire contract projects the family fields flat,
+    # next to the platform ones, from the same declarations.
+    family_config: dict = field(default_factory=dict)
 
     # Pure text-to-audio: generate from the prompt alone, with NO source
     # audio uploaded. The client sends no binary PCM frame, so the adapter
-    # must not block waiting for one — it synthesises a silent anchor at
-    # ``sa3_duration_s`` instead.
+    # must not block waiting for one — it synthesises a silent anchor
+    # sized by the family's TextOnlySpec instead.
     #
     # Only honoured alongside ``telemetry_version``. A client that did not
     # opt into ``init_ack`` never saw this server advertise
@@ -133,5 +134,13 @@ class SessionConfig:
         # Coerce lora_paths to list of str.
         if "lora_paths" in kwargs:
             kwargs["lora_paths"] = list(kwargs["lora_paths"] or [])
+
+        # Family-declared keys. Imported lazily: the registry imports this
+        # module for DEFAULT_FAMILY.
+        from acestep.streaming.families import family_config_fields
+
+        kwargs["family_config"] = {
+            cf.name: cf.coerce(d.get(cf.name)) for cf in family_config_fields()
+        }
 
         return cls(**kwargs)

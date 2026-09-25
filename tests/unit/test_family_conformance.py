@@ -16,6 +16,7 @@ from acestep.streaming import families
 from acestep.streaming.families import (
     CHECKPOINT_ALIASES,
     SA3_TEXT_ONLY_MAX_DURATION_S,
+    FamilyConfigField,
     TextOnlySpec,
     DEFAULT_FAMILY,
     FAMILIES,
@@ -67,6 +68,8 @@ def test_spec_declares_boot_policy(spec: FamilySpec):
     assert spec.prompt_policy in PROMPT_POLICIES
     assert spec.text_only is None or isinstance(spec.text_only, TextOnlySpec)
     assert spec.shutdown is None or callable(spec.shutdown)
+    for cf in spec.config_fields:
+        assert isinstance(cf, FamilyConfigField)
 
 
 @pytest.mark.parametrize("spec", SPECS, ids=IDS)
@@ -190,6 +193,47 @@ def test_in_tree_families_declare_what_the_pods_rely_on():
     # it; the server's shutdown path detaches through this hook.
     assert get_family("sa3").shutdown is not None
     assert get_family("acestep").shutdown is None
+
+
+def test_family_config_fields_parse_into_session_config():
+    from acestep.streaming.config import SessionConfig
+
+    cfg = SessionConfig.from_dict({"sa3_duration_s": "30"})
+    assert cfg.family_config["sa3_duration_s"] == 30.0
+    assert SessionConfig.from_dict({}).family_config["sa3_duration_s"] is None
+    assert SessionConfig.from_dict({"sa3_duration_s": "junk"}).family_config["sa3_duration_s"] is None
+    # The wire contract carries the same key, flat, optional and nullable.
+    from demos.realtime_motion_graph_web.protocol import config_catalog
+
+    cat = config_catalog()
+    assert cat["sa3_duration_s"] == {
+        "type": "float", "required": False, "nullable": True,
+        "description": get_family("sa3").config_fields[0].description,
+    }
+
+
+def test_config_field_validation():
+    with pytest.raises(ValueError, match="not a wire key"):
+        FamilyConfigField("Bad-Name")
+    with pytest.raises(ValueError, match="type"):
+        FamilyConfigField("x", "list")
+    assert FamilyConfigField("x", "int").coerce("7") == 7
+    assert FamilyConfigField("x", "int").coerce("seven") is None
+    good = dict(name="demo", display_name="Demo", make_backend=lambda ss: None, knob_universe=lambda: [])
+    with pytest.raises(ValueError, match="repeats a config field"):
+        FamilySpec(**good, config_fields=(FamilyConfigField("a"), FamilyConfigField("a")))
+    # A family field may not shadow a platform field, and two families may
+    # not claim one key.
+    a = FamilySpec(name="acestep", display_name="A", make_backend=lambda ss: None,
+                   knob_universe=lambda: [], config_fields=(FamilyConfigField("prompt"),))
+    with pytest.raises(ValueError, match="shadows"):
+        families._register(a)
+    b = FamilySpec(name="acestep", display_name="A", make_backend=lambda ss: None,
+                   knob_universe=lambda: [], config_fields=(FamilyConfigField("dur"),))
+    c = FamilySpec(name="other", display_name="B", make_backend=lambda ss: None,
+                   knob_universe=lambda: [], config_fields=(FamilyConfigField("dur"),))
+    with pytest.raises(ValueError, match="declared by both"):
+        families._register(b, c)
 
 
 def test_sa3_text_only_cap_matches_the_backend():
