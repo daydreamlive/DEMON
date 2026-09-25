@@ -37,17 +37,28 @@ FROZEN = (
 ALLOW = {
     ("acestep/streaming/config.py", "literal", "acestep"):
         "DEFAULT_FAMILY is spelled exactly once, here",
+    ("demos/realtime_motion_graph_web/server.py", "literal", "ace"):
+        "the warmup policy name 'ace_trt' the server compares against; "
+        "becomes a callable hook when a family needs a different warmup",
 }
 
-# A family name standing alone inside a string: "sa3", "acestep", but not
-# a checkpoint directory like "acestep-v15-turbo" or a CLI flag.
-_LITERAL = re.compile(r"(?<![a-z0-9_.-])(sa3|acestep)(?![a-z0-9_.-])")
-# An identifier built on a family name: sa3_duration_s, evict_sa3_contexts,
-# _run_sa3_preflight. The bare package name ``acestep`` is not a family
-# reference and is excluded.
-_IDENT = re.compile(r"(^|_)(sa3|ace)(_|$)")
+# Family names come from the registry, so a third family is guarded the
+# day it is registered. "ace" is the short form the ACE code uses.
+from acestep.streaming.families import FAMILY_SPECS  # noqa: E402
+
+_NAMES = sorted(set(FAMILY_SPECS) | {"ace"}, key=len, reverse=True)
+_ALT = "|".join(re.escape(n) for n in _NAMES)
+# A family name inside a string: "sa3", "sa3_duration_s", "acestep", but
+# not a checkpoint directory like "acestep-v15-turbo", a CLI flag
+# (--sa3-base-checkpoint) or a module path (acestep.streaming.warmup).
+_LITERAL = re.compile(rf"(?<![a-z0-9_.-])({_ALT})(?![a-z0-9.-])", re.I)
+# An identifier built on a family name, any case: sa3_duration_s,
+# SA3_MAX_DURATION_S, evict_sa3_contexts, ACEStepBackend. The bare package
+# name ``acestep`` is not a family reference and is excluded by the
+# leading-underscore-or-start rule.
+_IDENT = re.compile(rf"(^|_)({_ALT})(_|$|(?<=[a-z])[A-Z])", re.I)
 # A family module imported into the core.
-_MODULE = re.compile(r"\.(sa3_[a-z_]+|ace_backend|ace_session|mrt2|minimax[a-z_]*)(\.|$)")
+_MODULE = re.compile(rf"\.(({_ALT})_[a-z_]+|ace_backend|ace_session)(\.|$)", re.I)
 
 
 def _docstring_nodes(tree: ast.AST) -> set:
@@ -62,10 +73,23 @@ def _docstring_nodes(tree: ast.AST) -> set:
     return out
 
 
+def _prose_nodes(tree: ast.AST) -> set:
+    """String constants that are documentation, not code: docstrings and
+    the ``description=`` arguments of the wire registries. A family named
+    in prose is not a branch."""
+    out = _docstring_nodes(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.keyword) and node.arg == "description":
+            for sub in ast.walk(node.value):
+                if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                    out.add(id(sub))
+    return out
+
+
 def _scan(rel: str) -> list:
     src = (REPO / rel).read_text(encoding="utf-8")
     tree = ast.parse(src)
-    docstrings = _docstring_nodes(tree)
+    docstrings = _prose_nodes(tree)
     hits = []
 
     def hit(kind, value, node):

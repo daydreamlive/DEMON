@@ -97,6 +97,13 @@ class FamilyConfigField:
             return None
         try:
             if self.type == "bool":
+                if isinstance(value, str):
+                    v = value.strip().lower()
+                    if v in ("true", "1", "yes", "on"):
+                        return True
+                    if v in ("false", "0", "no", "off", ""):
+                        return False
+                    return None
                 return bool(value)
             if self.type == "int":
                 return int(value)
