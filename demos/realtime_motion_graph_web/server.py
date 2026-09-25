@@ -1136,11 +1136,10 @@ def main():
             time.sleep(0.5)
     except KeyboardInterrupt:
         logger.info("server_shutdown reason=keyboard_interrupt")
-        if model_extension is not None and family_spec.shutdown is not None:
-            # An installed extension may have attached itself to the
-            # process-cached model; the family's shutdown hook is what
-            # detaches it. Best effort — shutdown must not hang on a
-            # misbehaving plugin.
+        if not no_backend and family_spec.shutdown is not None:
+            # The family releases what it holds process-wide (a cached
+            # model, an installed extension attached to it, a sidecar).
+            # Best effort — shutdown must not hang on a misbehaving hook.
             try:
                 logger.info(
                     "server_shutdown_evicted_contexts count={}",

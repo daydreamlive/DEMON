@@ -15,9 +15,10 @@ from dataclasses import dataclass, field, fields
 
 
 #: The family whose checkpoint names need no alias and that a session
-#: config selects when it names none. Lives here, torch-free, so the
-#: demo server can read it before it decides whether to import the
-#: engine; ``acestep.streaming.families`` re-exports it.
+#: config selects when it names none. Lives here so importing this module
+#: for the constant costs nothing; ``acestep.streaming.families``
+#: re-exports it. (``SessionConfig.from_dict`` does import the registry,
+#: and with it the engine logger and torch.)
 DEFAULT_FAMILY = "acestep"
 
 
