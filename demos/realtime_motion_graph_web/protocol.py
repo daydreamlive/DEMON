@@ -835,8 +835,9 @@ EVENTS: tuple = (
         description="A `requires`-tagged command was rejected because the "
                     "session's backend lacks the capability (loud failure, "
                     "never a silent no-op). The command was NOT applied. "
-                    "With only the acestep backend registered this fires "
-                    "solely for LoRA commands on a lora-disabled session.",
+                    "Which commands fire it depends on the session's backend "
+                    "family (ready.capabilities); e.g. LoRA commands on a "
+                    "lora-disabled session.",
     ),
     EventSpec(
         "midi_notes",

@@ -51,6 +51,7 @@ from websockets.http11 import Response
 from websockets.datastructures import Headers
 from websockets.sync.server import serve as ws_serve
 
+from acestep.streaming.config import DEFAULT_FAMILY
 from acestep.engine.obs import configure as configure_logging, logger
 from acestep.fixtures import KNOWN_FIXTURES, audio_fixture
 from acestep.user_uploads import enumerate_user_uploads, user_upload_audio
@@ -98,7 +99,7 @@ _VALID_MODES = ("graph", "video")
 # because _CHECKPOINT holds the resolved MODEL ID (e.g. "medium"), which no
 # longer carries the family — so the prompt enhancer must read the family here,
 # not sniff the checkpoint string. Defaults to acestep for --no-backend.
-_BACKEND_FAMILY: str = "acestep"
+_BACKEND_FAMILY: str = DEFAULT_FAMILY
 
 # --checkpoint aliases live in acestep.streaming.families
 # (CHECKPOINT_ALIASES / resolve_checkpoint): each alias names a
@@ -125,8 +126,8 @@ def _resolve_enhance_backend(override: str) -> str:
     o = (override or "").strip().lower()
     if o in PROMPT_POLICIES:
         return o
-    spec = FAMILY_SPECS.get(_BACKEND_FAMILY)
-    return spec.prompt_policy if spec is not None else "acestep"
+    spec = FAMILY_SPECS.get(_BACKEND_FAMILY) or FAMILY_SPECS[DEFAULT_FAMILY]
+    return spec.prompt_policy
 
 _NO_CACHE_HEADERS = [
     ("Cache-Control", "no-store, must-revalidate"),
@@ -812,7 +813,7 @@ def main():
         raise SystemExit(
             f"[Server] --vae-accel must be one of {_VALID_ACCEL}, got {vae_accel!r}"
         )
-    backend_family = "acestep"
+    backend_family = DEFAULT_FAMILY
     if "--checkpoint" in args:
         idx = args.index("--checkpoint")
         checkpoint = args[idx + 1]
@@ -827,8 +828,8 @@ def main():
     # Operator-supplied SA3 base checkpoint directory: evaluates a
     # non-catalog checkpoint without installing it into the managed
     # models tree. Startup-only and never accepted from a client.
-    sa3_base_checkpoint_dir = _single_arg(args, "--sa3-base-checkpoint")
-    if sa3_base_checkpoint_dir:
+    base_checkpoint_dir = _single_arg(args, "--sa3-base-checkpoint")
+    if base_checkpoint_dir:
         from acestep.streaming.families import get_family
 
         if not get_family(backend_family).accepts_checkpoint_dir:
@@ -911,7 +912,7 @@ def main():
                     model_id=checkpoint,
                     decoder_accel=decoder_accel,
                     vae_accel=vae_accel,
-                    checkpoint_dir=sa3_base_checkpoint_dir,
+                    checkpoint_dir=base_checkpoint_dir,
                 ),
             )
 
@@ -961,7 +962,7 @@ def main():
                 checkpoint=checkpoint,
                 backend_family=backend_family,
                 offload_text_encoder=offload_text_encoder,
-                sa3_base_checkpoint_dir=sa3_base_checkpoint_dir,
+                checkpoint_dir=base_checkpoint_dir,
                 model_extension=model_extension,
             )
 
@@ -1135,16 +1136,15 @@ def main():
             time.sleep(0.5)
     except KeyboardInterrupt:
         logger.info("server_shutdown reason=keyboard_interrupt")
-        if model_extension is not None:
+        if model_extension is not None and family_spec.shutdown is not None:
             # An installed extension may have attached itself to the
-            # process-cached model; close() is what detaches it. Best
-            # effort — shutdown must not hang on a misbehaving plugin.
+            # process-cached model; the family's shutdown hook is what
+            # detaches it. Best effort — shutdown must not hang on a
+            # misbehaving plugin.
             try:
-                from acestep.streaming.sa3_session import evict_sa3_contexts
-
                 logger.info(
                     "server_shutdown_evicted_contexts count={}",
-                    evict_sa3_contexts(),
+                    family_spec.shutdown(),
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("server_shutdown_evict_failed error={}", exc)

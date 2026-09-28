@@ -110,7 +110,7 @@ from acestep.streaming.knobs import (
     knob_specs,
     lora_strength_spec,
 )
-from acestep.streaming.families import SESSION_CREATORS, make_backend
+from acestep.streaming.families import DEFAULT_FAMILY, SESSION_CREATORS, make_backend
 from acestep.streaming.generator_backend import UnsupportedOperation
 from acestep.streaming.pipeline_runner import (
     PipelineRunner,
@@ -655,7 +655,7 @@ class StreamingSession:
         # before the runner starts, and so an unknown family fails at
         # session create (config-time, per families.make_backend).
         self.backend = make_backend(
-            getattr(config, "backend", "acestep") or "acestep", self,
+            getattr(config, "backend", DEFAULT_FAMILY) or DEFAULT_FAMILY, self,
         )
 
         # Cached {name: KnobSpec} map for hot-path validation in set_knobs.
@@ -2642,7 +2642,7 @@ class StreamingSession:
         decoder_backend: str = "tensorrt",
         vae_backend: str = "tensorrt",
         offload_text_encoder: bool = False,
-        sa3_base_checkpoint_dir: str | None = None,
+        checkpoint_dir: str | None = None,
         model_extension=None,
         session_id: str,
     ) -> "StreamingSession":
@@ -2663,7 +2663,7 @@ class StreamingSession:
         # the acestep creator. Families without a creator entry that
         # aren't acestep still fail loudly later in __init__ via
         # families.make_backend.
-        family = getattr(config, "backend", "acestep") or "acestep"
+        family = getattr(config, "backend", DEFAULT_FAMILY) or DEFAULT_FAMILY
         creator = SESSION_CREATORS.get(family)
         if creator is not None:
             return creator(
@@ -2675,7 +2675,9 @@ class StreamingSession:
                 decoder_backend=decoder_backend,
                 vae_backend=vae_backend,
                 offload_text_encoder=offload_text_encoder,
-                sa3_base_checkpoint_dir=sa3_base_checkpoint_dir,
+                # Operator-supplied checkpoint directory overriding the
+                # family's catalog location (FamilySpec.accepts_checkpoint_dir).
+                checkpoint_dir=checkpoint_dir,
                 model_extension=model_extension,
             )
 

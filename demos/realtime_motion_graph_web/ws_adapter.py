@@ -90,6 +90,7 @@ from acestep.streaming.session import (
     UnsupportedTrtCheckpointError,
 )
 from acestep.streaming import registry as session_registry
+from acestep.streaming.config import DEFAULT_FAMILY
 from acestep.streaming.source import (
     _decode_audio_msg,
     _load_clip_waveform,
@@ -1102,9 +1103,9 @@ def handle_client(
     decoder_backend: str = "tensorrt",
     vae_backend: str = "tensorrt",
     checkpoint: str = "acestep-v15-turbo",
-    backend_family: str = "acestep",
+    backend_family: str = DEFAULT_FAMILY,
     offload_text_encoder: bool = False,
-    sa3_base_checkpoint_dir: str | None = None,
+    checkpoint_dir: str | None = None,
     model_extension=None,
 ):
     """Connection entrypoint. The body lives in ``_handle_client_body``;
@@ -1120,7 +1121,7 @@ def handle_client(
                 checkpoint=checkpoint,
                 backend_family=backend_family,
                 offload_text_encoder=offload_text_encoder,
-                sa3_base_checkpoint_dir=sa3_base_checkpoint_dir,
+                checkpoint_dir=checkpoint_dir,
                 model_extension=model_extension,
             )
     finally:
@@ -1152,7 +1153,7 @@ def _handle_client_body(
     checkpoint: str,
     backend_family: str,
     offload_text_encoder: bool,
-    sa3_base_checkpoint_dir: str | None,
+    checkpoint_dir: str | None,
     model_extension,
 ):
     logger.info(
@@ -1361,7 +1362,7 @@ def _handle_client_body(
                 decoder_backend=decoder_backend,
                 vae_backend=vae_backend,
                 offload_text_encoder=offload_text_encoder,
-                sa3_base_checkpoint_dir=sa3_base_checkpoint_dir,
+                checkpoint_dir=checkpoint_dir,
                 model_extension=model_extension,
                 session_id=session_id,
             )
