@@ -49,7 +49,7 @@ _LITERAL = re.compile(r"(?<![a-z0-9_.-])(sa3|acestep)(?![a-z0-9_.-])")
 # reference and is excluded.
 _IDENT = re.compile(r"(^|_)(sa3|ace)(_|$)")
 # A family module imported into the core.
-_MODULE = re.compile(r"\.(sa3_[a-z_]+|ace_backend|mrt2|minimax[a-z_]*)(\.|$)")
+_MODULE = re.compile(r"\.(sa3_[a-z_]+|ace_backend|ace_session|mrt2|minimax[a-z_]*)(\.|$)")
 
 
 def _docstring_nodes(tree: ast.AST) -> set:
