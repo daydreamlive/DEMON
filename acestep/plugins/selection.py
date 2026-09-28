@@ -218,6 +218,18 @@ def select_model_extension(
             f"{qualified_id} extends the {spec.family!r} backend family, but "
             f"this server is running {family!r}"
         )
+    # The family itself must host extensions: only a family whose context
+    # offers the install / decorate / controls hooks can honour a selection.
+    # Without this, a plugin declaring family="acestep" would be selected,
+    # logged, threaded to the create path and silently never installed —
+    # the stock model serving under an extension's name.
+    from acestep.streaming.families import get_family
+
+    if not get_family(family).supports_extensions:
+        raise ExtensionConfigError(
+            f"{qualified_id}: the {family!r} backend family does not host "
+            "model extensions (FamilySpec.supports_extensions is False)"
+        )
 
     raw_config = load_extension_config(config_path, qualified_id)
     config = validate_extension_config(qualified_id, spec.config_schema, raw_config)
