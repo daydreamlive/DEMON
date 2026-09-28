@@ -90,7 +90,6 @@ from acestep.streaming.session import (
     UnsupportedTrtCheckpointError,
 )
 from acestep.streaming import registry as session_registry
-from acestep.streaming.sa3_backend import SA3_MAX_DURATION_S
 from acestep.streaming.source import (
     _decode_audio_msg,
     _load_clip_waveform,
@@ -613,10 +612,22 @@ def _truncate_upload_waveform(waveform: torch.Tensor) -> torch.Tensor:
     return truncate_to_pool(waveform[:2, :max_samples])
 
 
-# Fallback window for a text-only session that declares no duration. Matches
-# the client's own default ask rather than the old 6 s carrier: the carrier's
-# length was the upload, never the render.
-TEXT_ONLY_DEFAULT_DURATION_S = 60.0
+def _effective_family(config_dict: dict, backend_family: str) -> str:
+    """The family this session will run on: the client's explicit
+    ``backend`` key wins, else the server's resolved checkpoint family
+    (the same rule ``SessionConfig`` applies below)."""
+    requested = config_dict.get("backend")
+    return str(requested) if requested else backend_family
+
+
+def _text_only_spec(config_dict: dict, backend_family: str):
+    """The family's :class:`TextOnlySpec`, or ``None`` when the family
+    cannot serve a session without a source. An unknown family also yields
+    None here; session create fails loudly on it a moment later."""
+    from acestep.streaming.families import FAMILY_SPECS
+
+    spec = FAMILY_SPECS.get(_effective_family(config_dict, backend_family))
+    return spec.text_only if spec is not None else None
 
 
 def _text_only_requested(config_dict: dict) -> bool:
@@ -633,27 +644,22 @@ def _text_only_requested(config_dict: dict) -> bool:
         config_dict.get("telemetry_version"))
 
 
-def _silent_source_waveform(config_dict: dict) -> torch.Tensor:
+def _silent_source_waveform(config_dict: dict, text_only) -> torch.Tensor:
     """The null source anchor for a text-only session.
 
-    SA3 still needs a source to hang geometry off (sample rate, channels,
-    render window) even when nothing in it can reach the output: at
-    ``sa3_denoise`` 1.0 slot init is pure noise and ``source_latents`` never
-    enters. Synthesised at the REQUESTED render length so
-    ``source_duration_s`` and ``duration_s`` agree in sa3_session and the
-    session needs no render-beyond-source allowance.
+    A family still needs a source to hang geometry off (sample rate,
+    channels, render window) even when nothing in it can reach the output:
+    at full denoise slot init is pure noise and the source latent never
+    enters. The length comes from the family's :class:`TextOnlySpec` —
+    the requested render length where the family lets the client choose
+    (SA3, so ``source_duration_s`` and ``duration_s`` agree in
+    sa3_session), else the family's default — clamped to its cap.
 
     Exact zeros, not the dithered near-silence the client used to upload:
     there is no encoder that can hear this, and a client-side floor was only
     ever hedging against a divide-by-peak we could not see from over there.
     """
-    try:
-        dur = float(config_dict.get("sa3_duration_s") or 0.0)
-    except (TypeError, ValueError):
-        dur = 0.0
-    if dur <= 0.0:
-        dur = TEXT_ONLY_DEFAULT_DURATION_S
-    dur = max(1.0, min(dur, SA3_MAX_DURATION_S))
+    dur = text_only.duration_s(config_dict)
     return torch.zeros(2, int(dur * SAMPLE_RATE), dtype=torch.float32)
 
 
@@ -1222,12 +1228,15 @@ def _handle_client_body(
     # Emitted BEFORE the audio recv below, which is the whole point:
     # ``supports_text_only`` is how a client learns it may withhold the PCM
     # frame, and that decision has to be made before it sends one.
+    text_only_spec = _text_only_spec(config_dict, backend_family)
     if config_dict.get("telemetry_version"):
         ws.send(json.dumps({
             "type": "init_ack",
             "session_id": session_id,
             "client_id": _client_id,
-            "supports_text_only": True,
+            # Family policy: a family without a TextOnlySpec cannot run
+            # from a silent anchor, so the client keeps uploading a source.
+            "supports_text_only": text_only_spec is not None,
         }))
 
     _t0 = time.monotonic()
@@ -1250,8 +1259,27 @@ def _handle_client_body(
     # advert cannot know the frame is optional, so it must still be sending
     # one and we must still consume it. Old clients set neither key and take
     # the unchanged path below.
+    if _text_only_requested(config_dict) and text_only_spec is None:
+        # The client asked for what this family cannot do. It was told so
+        # on init_ack, so this is a stale or non-conforming client; fail
+        # loudly rather than recv a PCM frame that is not coming.
+        family = _effective_family(config_dict, backend_family)
+        logger.warning("text_only_unsupported family={}", family)
+        try:
+            ws.send(json.dumps({
+                "type": "error",
+                "code": "text_only_unsupported",
+                "message": (
+                    f"backend family {family!r} cannot run a text-only "
+                    "session; upload a source"
+                ),
+            }))
+        except Exception:
+            pass
+        ws.close(1008, "text-only unsupported by family")
+        return
     if _text_only_requested(config_dict):
-        waveform = _silent_source_waveform(config_dict)
+        waveform = _silent_source_waveform(config_dict, text_only_spec)
         logger.info(
             "text_only_session duration_s={:.1f} (no source upload)",
             waveform.shape[1] / SAMPLE_RATE,
