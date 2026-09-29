@@ -475,9 +475,10 @@ namespace config {
   inline constexpr const char* kLoraPaths = "lora_paths";
   inline constexpr const char* kClientId = "client_id";
   inline constexpr const char* kBackend = "backend";
-  inline constexpr const char* kSa3DurationS = "sa3_duration_s";
   inline constexpr const char* kTextOnly = "text_only";
   inline constexpr const char* kTelemetryVersion = "telemetry_version";
+  /** Fixed generation duration for sa3 sessions, seconds. Absent or null derives it from the uploaded source audio length (the audio-to-audio anchor); SA3 conditioning is captured per (prompt, duration), so this is fixed for the session lifetime. */
+  inline constexpr const char* kSa3DurationS = "sa3_duration_s";
 }  // namespace config
 
 // ── Init-phase upload handshake ──

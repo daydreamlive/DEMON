@@ -529,9 +529,10 @@ export interface SessionConfigPayload {
   lora_paths?: unknown[];
   client_id?: string | null;
   backend?: string;
-  sa3_duration_s?: number | null;
   text_only?: boolean;
   telemetry_version?: number | null;
+  /** Fixed generation duration for sa3 sessions, seconds. Absent or null derives it from the uploaded source audio length (the audio-to-audio anchor); SA3 conditioning is captured per (prompt, duration), so this is fixed for the session lifetime. */
+  sa3_duration_s?: number | null;
   // SessionConfig is permissive; extras pass through.
   [k: string]: unknown;
 }

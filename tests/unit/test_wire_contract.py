@@ -456,12 +456,23 @@ def test_config_payload_matches_dataclass():
     from acestep.streaming.config import SessionConfig
     from demos.realtime_motion_graph_web.protocol import _project_config_type
 
+    from acestep.streaming.families import family_config_fields
+
     cat = config_catalog()
-    assert set(cat) == {f.name for f in dc_fields(SessionConfig)}
+    platform = {f.name for f in dc_fields(SessionConfig)} - {"family_config"}
+    family = {cf.name for cf in family_config_fields()}
+    assert set(cat) == platform | family
+    assert not (platform & family), "a family field shadows a platform field"
 
     wire_vocab = {"bool", "int", "float", "str", "list", "dict"}
     hints = get_type_hints(SessionConfig)
+    for name in family:
+        # Family-declared keys are always optional and nullable on the wire.
+        assert cat[name]["nullable"] is True and cat[name]["required"] is False
+        assert cat[name]["type"] in wire_vocab
     for name, entry in cat.items():
+        if name in family:
+            continue
         assert entry["type"] in wire_vocab, (name, entry)
         # Optional fields project to nullable; plain fields must not.
         is_optional = hints[name] != type(None) and type(None) in getattr(

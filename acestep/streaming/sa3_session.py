@@ -22,7 +22,7 @@ catalog), :func:`create_sa3_session` builds the SA3 one:
   crossfade pair behind ``SA3Backend.handle_set_prompt_blend``);
   per-prompt re-captures afterwards go through
   ``SA3Backend.handle_set_prompt`` (the session dispatches there).
-* **Duration.** ``config.sa3_duration_s`` when set, else the uploaded
+* **Duration.** ``config.family_config["sa3_duration_s"]`` when set, else the uploaded
   source length; capped at the small-music 120 s window.
 * **ACE-only fields neutral.** ``StreamingSession`` is constructed with
   no engine session / stream / TRT profile manager / LoRA state; every
@@ -191,7 +191,7 @@ def create_sa3_session(
     if waveform.shape[0] == 1:
         waveform = waveform.repeat(2, 1)
     source_duration_s = waveform.shape[-1] / SAMPLE_RATE
-    duration_s = float(config.sa3_duration_s or 0.0) or source_duration_s
+    duration_s = float(config.family_config.get("sa3_duration_s") or 0.0) or source_duration_s
     duration_s = min(duration_s, SA3_MAX_DURATION_S)
     # Land on the TRT DiT fast path when engines are built (medium):
     # a duration whose padded latent window exceeds every engine
