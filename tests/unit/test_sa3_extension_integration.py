@@ -433,3 +433,40 @@ def test_source_swap_replaces_the_waveform_along_with_the_latent():
     assert view.sample_rate == 48000
     # And the stored anchor agrees, so the NEXT prompt swap sees it too.
     assert backend._source_view().waveform is replacement_audio
+
+
+def test_preload_loads_the_session_context_and_its_codec_engine(monkeypatch):
+    """Boot preload must hit the exact cached context a session will look
+    up, honour the extension's backend veto, and warm the codec engine."""
+    from acestep.engine import sa3_trt
+    from acestep.streaming import sa3_session
+
+    calls = {}
+
+    class _Ctx:
+        def effective_dit_backend(self, requested):
+            return "eager", "vetoed"
+
+        def effective_codec_backend(self, requested):
+            return requested, ""
+
+        def make_codec(self, *, backend):
+            calls["codec"] = backend
+
+    def _get(model_id, *, checkpoint_dir=None, extension=None):
+        calls["context"] = (model_id, checkpoint_dir, extension)
+        return _Ctx()
+
+    monkeypatch.setattr(sa3_session, "get_sa3_context", _get)
+    monkeypatch.setattr(
+        sa3_trt, "_deserialize_engine",
+        lambda path: calls.setdefault("dit_engine", path),
+    )
+    ext = object()
+    sa3_session.preload_sa3(
+        "medium", decoder_backend="tensorrt", vae_backend="tensorrt",
+        checkpoint_dir="/ckpt", model_extension=ext,
+    )
+    assert calls["context"] == ("medium", "/ckpt", ext)
+    assert calls["codec"] == "tensorrt"
+    assert "dit_engine" not in calls  # extension forced the DiT eager
