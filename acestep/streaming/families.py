@@ -182,6 +182,10 @@ class FamilySpec:
     ``shutdown`` releases process-wide state the family holds (a
     process-cached model, an installed extension) when the server exits.
 
+    ``preload(model_id, **kwargs)`` pays the family's one-time
+    first-session cost (model load, extension install, TRT engine
+    deserialization) at server boot, before the pod accepts traffic.
+
     ``supports_extensions`` says whether ``--model-extension`` may
     target this family: the family's context must offer the install /
     decorate / controls hooks (see ``docs/PLUGINS.md``). Selection
@@ -203,6 +207,7 @@ class FamilySpec:
     text_only: Optional[TextOnlySpec] = None
     config_fields: tuple = ()
     shutdown: Optional[Callable[[], Any]] = None
+    preload: Optional[Callable[..., Any]] = None
     supports_extensions: bool = False
 
     def __post_init__(self):
@@ -418,6 +423,12 @@ def _shutdown_sa3() -> int:
     return evict_sa3_contexts()
 
 
+def _preload_sa3(model_id, **kwargs):
+    from acestep.streaming.sa3_session import preload_sa3
+
+    return preload_sa3(model_id, **kwargs)
+
+
 def _create_acestep_session(cls, **kwargs):
     from acestep.streaming.ace_session import create_acestep_session
 
@@ -481,6 +492,7 @@ SA3 = FamilySpec(
         duration_field="sa3_duration_s",
     ),
     shutdown=_shutdown_sa3,
+    preload=_preload_sa3,
     # SA3Context offers the model-extension veto/install/close hooks.
     supports_extensions=True,
 )
