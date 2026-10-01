@@ -175,6 +175,8 @@ def test_in_tree_families_declare_what_the_pods_rely_on():
     assert get_family("acestep").supports_extensions is False
     # The ACE server warmup path keys on this exact policy name.
     assert get_family("acestep").warmup_policy == "ace_trt"
+    # Controlnet pods preload the model + extension at boot through this.
+    assert get_family("sa3").preload is not None
     # Every family owns its create path; StreamingSession.create only
     # dispatches (ace_session.py / sa3_session.py).
     assert get_family("sa3").create_session is not None

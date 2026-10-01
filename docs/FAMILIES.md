@@ -26,6 +26,7 @@ against it by `tests/unit/test_family_conformance.py`.
 | `prompt_policy` | which prompt-tooling policy `/api/enhance` infers (`"acestep"` or `"sa3"`; a policy name, not a family name) | `server.py` |
 | `text_only` | a `TextOnlySpec` (default and max anchor length, and the config key that sets it) or `None` when the family cannot run without a source; the adapter advertises `supports_text_only` from it | `ws_adapter.py` handshake |
 | `config_fields` | session-config keys the family adds to the handshake (`FamilyConfigField`: name, wire type, description); parsed into `config.family_config[name]` and projected flat into `/api/protocol` `config` and the generated TS/C++ types | `SessionConfig.from_dict`, `protocol.config_catalog` |
+| `preload(model_id, …)` | pays the first session's one-time cost (model load, extension install, TRT engine deserialization) at boot; runs when `DEMON_STARTUP_WARMUP=1`, and always when `--model-extension` is set | `server.py` boot |
 | `shutdown()` | releases process-wide state the family holds (a cached model, an installed extension) when the server exits | `server.py` shutdown |
 | `accepts_checkpoint_dir` | whether `--sa3-base-checkpoint` may point the family at a non-catalog directory | `server.py` CLI |
 | `supports_extensions` | whether `--model-extension` may target the family | `acestep.plugins.selection` |

@@ -9,8 +9,9 @@ catalog), :func:`create_sa3_session` builds the SA3 one:
 * **SA3Context, process-cached.** One loaded model (DiT + SAME +
   conditioner) per ``model_id`` for the process lifetime, shared across
   sessions — the SA3 analog of the engine-state reuse the ACE startup
-  warmup exists to exploit. First session pays the load; the rest get
-  it warm.
+  warmup exists to exploit. :func:`preload_sa3` pays the load (and the
+  TRT engine deserialization) at server boot when the server opts in;
+  otherwise the first session pays it and the rest get it warm.
 * **Source anchor.** The uploaded 48 kHz source is SAME-encoded once as
   the audio-to-audio anchor (the spike-proven continuity mechanism:
   every emit is a partial-denoise cover of this latent). The 48 → 44.1
@@ -134,6 +135,54 @@ def _resolve_accel(value: str, component: str) -> str:
         logger.info("sa3_accel_compile_ignored component={} using=eager", component)
         return "eager"
     return value
+
+
+def preload_sa3(
+    model_id: str, *, decoder_backend: str = "tensorrt",
+    vae_backend: str = "tensorrt", checkpoint_dir=None, model_extension=None,
+) -> None:
+    """Pay the first session's one-time cost at server boot.
+
+    Loads the process-cached SA3Context (weights + installed extension)
+    under the exact key :func:`create_sa3_session` will look up, then
+    deserializes the TensorRT engines that session would use into the
+    shared engine cache, so the first real session starts as fast as
+    every later one. Refittable DiT engines are per-session by contract
+    and are not touched.
+    """
+    import time
+
+    from acestep.engine.sa3_trt import (
+        _deserialize_engine, find_dit_engine, max_dit_engine_latents,
+    )
+
+    t0 = time.monotonic()
+    context = get_sa3_context(
+        model_id, checkpoint_dir=checkpoint_dir, extension=model_extension,
+    )
+    dit_backend, _ = context.effective_dit_backend(
+        _resolve_accel(decoder_backend, "dit"),
+    )
+    codec_backend, _ = context.effective_codec_backend(
+        _resolve_accel(vae_backend, "codec"),
+    )
+    # Construct-and-drop: the codec deserializes its engine into the
+    # shared cache; the per-session execution context is discarded.
+    context.make_codec(backend=codec_backend)
+    if dit_backend == "tensorrt":
+        # ponytail: warms only the engine covering the longest window;
+        # a shorter session may pick a smaller profile and load it then.
+        max_l = max_dit_engine_latents(model_id)
+        path = find_dit_engine(model_id, max_l) if max_l else None
+        if path is not None:
+            _deserialize_engine(path)
+    logger.info(
+        "sa3_preload_done model_id={} dit_backend={} codec_backend={} "
+        "extension={} duration_s={:.1f}",
+        model_id, dit_backend, codec_backend,
+        getattr(model_extension, "qualified_id", None),
+        time.monotonic() - t0,
+    )
 
 
 def create_sa3_session(
