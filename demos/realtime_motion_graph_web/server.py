@@ -1091,6 +1091,11 @@ def main():
         # the pong deadline to 90s. Trade-off: slower detection of genuinely
         # dead clients — pair with an app-level idle-session reaper.
         ping_timeout=90,
+        # No permessage-deflate: the traffic is audio (zstd deltas, float PCM)
+        # that barely compresses, so deflate only costs CPU on both ends. It
+        # also keeps large fragmented binary messages (chunked_ws_send) on the
+        # plain path, which some WebKit clients reject once compressed.
+        compression=None,
     )
     ws_thread = threading.Thread(target=srv.serve_forever, daemon=True)
     ws_thread.start()
