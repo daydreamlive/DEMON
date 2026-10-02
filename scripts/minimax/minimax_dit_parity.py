@@ -45,6 +45,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import torch
@@ -71,10 +72,7 @@ def default_scratch() -> Path:
     root = os.environ.get("MINIMAX_PARITY_SCRATCH")
     if root:
         return Path(root)
-    return Path(
-        r"C:\Users\ryanf\AppData\Local\Temp\claude\C---dev-projects-DEMON"
-        r"\1cfc013b-c5f5-47d6-a49b-071d5ca255b9\scratchpad\minimax_dit"
-    )
+    return Path(tempfile.gettempdir()) / "minimax_dit"
 
 
 def resolve_model_dir(explicit: str | None) -> Path:
