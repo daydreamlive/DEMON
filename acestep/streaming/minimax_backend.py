@@ -891,6 +891,21 @@ class MiniMaxBackend:
     def list_loras(self) -> list:
         return []
 
+    def register_lora(self, path: str) -> str:
+        raise UnsupportedOperation("lora")
+
+    def prewarm_lora(self, lora_id: str):
+        raise UnsupportedOperation("lora")
+
+    def enable_lora(self, lora_id: str, strength: Optional[float] = None) -> None:
+        raise UnsupportedOperation("lora")
+
+    def disable_lora(self, lora_id: str) -> None:
+        raise UnsupportedOperation("lora")
+
+    def set_lora_strength(self, lora_id: str, strength: float) -> None:
+        raise UnsupportedOperation("lora")
+
     # ---- Tier-1 contract: hot loop -------------------------------------------
 
     def sync_source(self, ctx: TickContext) -> None:

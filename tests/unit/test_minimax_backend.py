@@ -495,3 +495,19 @@ def test_shutdown_evicts_cached_contexts(monkeypatch):
     monkeypatch.setitem(mc._CONTEXTS, ("k",), _Ctx())
     assert FAMILY_SPECS["minimax"].shutdown() == 1
     assert closed and not mc._CONTEXTS
+
+
+def test_backend_satisfies_the_generator_backend_protocol():
+    from acestep.streaming.generator_backend import GeneratorBackend
+
+    be = _backend()
+    assert isinstance(be, GeneratorBackend)
+    for call in (
+        lambda: be.register_lora("x.safetensors"),
+        lambda: be.prewarm_lora("x"),
+        lambda: be.enable_lora("x", 1.0),
+        lambda: be.disable_lora("x"),
+        lambda: be.set_lora_strength("x", 0.5),
+    ):
+        with pytest.raises(UnsupportedOperation):
+            call()
