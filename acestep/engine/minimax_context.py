@@ -383,3 +383,23 @@ def get_minimax_context(
             )
             _CONTEXTS[key] = ctx
         return ctx
+
+
+def evict_minimax_contexts() -> int:
+    """Close and drop every process-cached context (server shutdown).
+
+    Returns how many were evicted. Backends free their own CUDA graphs
+    and static KV caches in ``MiniMaxBackend.close``; this releases the
+    shared weights behind them.
+    """
+    with _CONTEXTS_LOCK:
+        contexts = list(_CONTEXTS.values())
+        _CONTEXTS.clear()
+    for ctx in contexts:
+        try:
+            ctx.close()
+        except Exception as exc:  # shutdown must not raise
+            logger.warning("minimax_context_close_failed err={}", exc)
+    if contexts and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return len(contexts)

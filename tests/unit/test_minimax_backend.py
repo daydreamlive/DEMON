@@ -411,3 +411,87 @@ def test_telemetry_reports_the_rates_a_listener_can_hear():
     assert p["chunk_render_ms"] == pytest.approx(500.0, abs=0.1)
     for key in ("frontier_lead_s", "ar_frames", "chunks"):
         assert key in p
+
+
+# ---- family registration (FamilySpec seam) --------------------------------
+
+
+def test_family_is_registered_with_the_spec_seam():
+    from acestep.streaming.families import (
+        CHECKPOINT_ALIASES,
+        FAMILY_SPECS,
+        MINIMAX_TEXT_ONLY_DEFAULT_S,
+        MINIMAX_TEXT_ONLY_MAX_DURATION_S,
+        family_config_fields,
+    )
+    from acestep.streaming.minimax_backend import DEFAULT_WINDOW_S, MAX_WINDOW_S
+
+    spec = FAMILY_SPECS["minimax"]
+    assert spec.warmup_policy == "none"
+    assert spec.prompt_policy == "acestep"
+    assert CHECKPOINT_ALIASES["minimax-music3"] == (
+        "minimax", "MiniMaxAI/MiniMax-Music3",
+    )
+    assert callable(spec.preflight) and callable(spec.shutdown)
+    # The registry mirrors the backend's window constants without
+    # importing torch; pin the two together.
+    assert MINIMAX_TEXT_ONLY_DEFAULT_S == DEFAULT_WINDOW_S
+    assert MINIMAX_TEXT_ONLY_MAX_DURATION_S == MAX_WINDOW_S
+    assert spec.text_only.duration_field == "minimax_duration_s"
+    names = {cf.name: cf.type for cf in family_config_fields()}
+    assert names["minimax_duration_s"] == "float"
+    assert names["minimax_lyrics"] == "str"
+    assert names["minimax_ar_graph"] == "bool"
+
+
+def test_family_config_fields_parse_into_family_config():
+    from acestep.streaming.config import SessionConfig
+
+    cfg = SessionConfig.from_dict({
+        "minimax_duration_s": "45", "minimax_lyrics": "la", "minimax_ar_graph": "false",
+    })
+    assert cfg.family_config["minimax_duration_s"] == 45.0
+    assert cfg.family_config["minimax_lyrics"] == "la"
+    assert cfg.family_config["minimax_ar_graph"] is False
+
+
+def test_max_duration_is_the_ar_ceiling():
+    from acestep.streaming.minimax_backend import MAX_WINDOW_S
+
+    assert _backend().max_duration_s() == MAX_WINDOW_S == 360.0
+
+
+def test_preflight_fails_cleanly_without_weights(monkeypatch, tmp_path):
+    from acestep.streaming import preflight as pf
+
+    monkeypatch.setattr(
+        "acestep.engine.minimax_helpers.minimax_checkpoint_status",
+        lambda explicit=None: (False, "not found"),
+    )
+    res = pf.minimax_preflight(pf.PreflightRequest(model_id="MiniMaxAI/MiniMax-Music3"))
+    assert not res.ok and "not found" in res.lines[0]
+
+    monkeypatch.setattr(
+        "acestep.engine.minimax_helpers.minimax_checkpoint_status",
+        lambda explicit=None: (True, "ready"),
+    )
+    monkeypatch.setenv("DEMON_MINIMAX_TRT_DIR", str(tmp_path / "nope"))
+    res = pf.minimax_preflight(pf.PreflightRequest(model_id="x"))
+    assert not res.ok
+    monkeypatch.setenv("DEMON_MINIMAX_TRT_DIR", str(tmp_path))
+    assert pf.minimax_preflight(pf.PreflightRequest(model_id="x")).ok
+
+
+def test_shutdown_evicts_cached_contexts(monkeypatch):
+    from acestep.engine import minimax_context as mc
+    from acestep.streaming.families import FAMILY_SPECS
+
+    closed = []
+
+    class _Ctx:
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setitem(mc._CONTEXTS, ("k",), _Ctx())
+    assert FAMILY_SPECS["minimax"].shutdown() == 1
+    assert closed and not mc._CONTEXTS

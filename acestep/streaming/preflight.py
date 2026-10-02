@@ -169,3 +169,34 @@ def mrt2_preflight(req: PreflightRequest) -> PreflightResult:
         )
     logger.info("preflight_mrt2_ok sidecar={}:{}", host, port)
     return PreflightResult.passed()
+
+
+def minimax_preflight(req: PreflightRequest) -> PreflightResult:
+    """The MiniMax-Music3 family's boot check.
+
+    Offline path-existence only (never downloads, never imports torch):
+    the diffusers-layout checkpoint under ``DEMON_MINIMAX_DIR``, the
+    models directory, or the local Hugging Face cache, with the renderer
+    components present. An absent autoregressive stage is not fatal (a
+    saved capture still streams), and neither is a missing DiT engine
+    (the renderer degrades to eager). An explicitly set
+    ``DEMON_MINIMAX_TRT_DIR`` that does not exist IS fatal: the operator
+    asked for engines in a place that is not there.
+    """
+    import os
+
+    from acestep.engine.minimax_helpers import minimax_checkpoint_status
+
+    ok, msg = minimax_checkpoint_status()
+    if not ok:
+        return PreflightResult.failed("MiniMax-Music3 weights unavailable", str(msg))
+    trt_dir = os.environ.get("DEMON_MINIMAX_TRT_DIR")
+    if trt_dir and not os.path.isdir(trt_dir):
+        return PreflightResult.failed(
+            "MiniMax-Music3 TRT engine directory missing",
+            f"DEMON_MINIMAX_TRT_DIR={trt_dir} is not a directory.",
+            "Unset it to run the eager renderer, or point it at the engines "
+            "built by acestep/engine/trt/minimax_build.py.",
+        )
+    logger.info("preflight_minimax_ok model_id={} detail={}", req.model_id, msg)
+    return PreflightResult.passed()

@@ -533,6 +533,12 @@ export interface SessionConfigPayload {
   telemetry_version?: number | null;
   /** Fixed generation duration for sa3 sessions, seconds. Absent or null derives it from the uploaded source audio length (the audio-to-audio anchor); SA3 conditioning is captured per (prompt, duration), so this is fixed for the session lifetime. */
   sa3_duration_s?: number | null;
+  /** Rolling-window length for minimax sessions, seconds: the tape the append-only frontier overwrites and the player loops, NOT a song length. The piece ends when the autoregressive stage emits end-of-audio (ceiling 9000 frames at 25 Hz = 360 s). Absent or null = 60 s. */
+  minimax_duration_s?: number | null;
+  /** Lyrics for the minimax autoregressive stage. Absent or null = "[instrumental]", upstream's no-singing convention (the tokenizer refuses an empty lyric). */
+  minimax_lyrics?: string | null;
+  /** Drive the minimax autoregressive stage as one CUDA graph per frame over a static KV cache (default true). False selects the plain torch loop, kept for parity work against saved captures. */
+  minimax_ar_graph?: boolean | null;
   // SessionConfig is permissive; extras pass through.
   [k: string]: unknown;
 }

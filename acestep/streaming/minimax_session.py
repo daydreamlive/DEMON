@@ -1,7 +1,7 @@
 """Per-family session create path for MiniMax-Music3.
 
-Registered in :mod:`acestep.streaming.families` as
-``SESSION_CREATORS["minimax"]``. Its job is everything that must happen
+Registered in :mod:`acestep.streaming.families` as the ``MINIMAX``
+spec's ``create_session``. Its job is everything that must happen
 once per connect and cannot happen inside a tick: load (or reuse) the
 process-cached model stack, pin the autoregressive stage to the device,
 and open the AR session the stream will spend its life extending.
@@ -18,7 +18,8 @@ timbre and structure are capability-gated off.
 **The song shape is a rolling window, not a fixed song.** This is an
 append-only family (see :mod:`acestep.streaming.minimax_backend`); the
 declared duration is the tape length the frontier overwrites and the
-player loops, and ``SessionConfig.minimax_duration_s`` sets it. The
+player loops, and ``config.family_config["minimax_duration_s"]`` sets it
+(capped at ``MAX_WINDOW_S``). The
 piece's own length is the AR stage's business -- it ends when the LM
 emits an end-of-audio token, at most 9000 frames (360 s) later.
 
@@ -42,6 +43,7 @@ from acestep.streaming.minimax_backend import (
     AR_RESIDENT_VRAM_GB,
     DEFAULT_WINDOW_S,
     DELIVERY_SAMPLE_RATE,
+    MAX_WINDOW_S,
     MiniMaxBackend,
     minimax_knob_specs,
 )
@@ -102,13 +104,14 @@ def create_minimax_session(
             "detail=no_audio_encoder_in_checkpoint",
         )
 
-    window_s = float(getattr(config, "minimax_duration_s", 0.0) or 0.0)
-    window_s = window_s or DEFAULT_WINDOW_S
+    family_config = getattr(config, "family_config", None) or {}
+    window_s = float(family_config.get("minimax_duration_s") or 0.0)
+    window_s = min(window_s or DEFAULT_WINDOW_S, MAX_WINDOW_S)
     steps = max(int(getattr(config, "steps", 0) or 0), DEFAULT_STEPS)
 
     prompt = getattr(config, "prompt", "") or ""
-    lyrics = getattr(config, "minimax_lyrics", None) or "[instrumental]"
-    ar_graph = getattr(config, "minimax_ar_graph", None)
+    lyrics = family_config.get("minimax_lyrics") or "[instrumental]"
+    ar_graph = family_config.get("minimax_ar_graph")
     ar_graph = True if ar_graph is None else bool(ar_graph)
     if getattr(config, "prompt_b", None):
         logger.warning(
@@ -207,7 +210,7 @@ def create_minimax_session(
 
 
 def make_minimax_backend(ss) -> MiniMaxBackend:
-    """``families.FAMILIES["minimax"]``: assemble the backend from the
+    """The ``MINIMAX`` spec's ``make_backend``: assemble the backend from the
     payload :func:`create_minimax_session` stashed on the session."""
     init = getattr(ss, "backend_init", None)
     if not init or "context" not in init:

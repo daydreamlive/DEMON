@@ -184,6 +184,9 @@ _RESAMPLE_NUM = 160   # delivery samples per ratio unit
 # Rolling-window song shape: the synthetic duration the session declares
 # and the player loops.
 DEFAULT_WINDOW_S = 60.0
+# Longest rolling window: the AR stage's ceiling (9000 frames at 25 Hz).
+# A tape longer than the piece can ever be would only loop silence.
+MAX_WINDOW_S = 360.0
 
 # Overlap re-emitted at each chunk head so the runner's leading-edge
 # crossfade blends against identical samples. Matches the runner's own
@@ -918,6 +921,9 @@ class MiniMaxBackend:
 
     def playable_duration_s(self) -> Optional[float]:
         return self.window_s
+
+    def max_duration_s(self) -> Optional[float]:
+        return MAX_WINDOW_S
 
     def produce(self, knobs: dict, ctx: TickContext, mode: ProduceMode) -> bool:
         """Publish controls to the worker and drain what it produced.
