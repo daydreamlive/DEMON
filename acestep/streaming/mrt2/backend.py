@@ -276,7 +276,10 @@ class MRT2Backend:
 
         owns_client = client is None
         if client is None:
-            host, port = sidecar_address()
+            try:
+                host, port = sidecar_address()
+            except ValueError as exc:
+                raise RuntimeError(f"mrt2 sidecar address invalid: {exc}") from None
             try:
                 client = SidecarClient(host, port)
             except (ConnectionError, OSError, ValueError) as exc:

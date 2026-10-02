@@ -155,10 +155,7 @@ def mrt2_preflight(req: PreflightRequest) -> PreflightResult:
     try:
         host, port = sidecar_address()
     except ValueError as exc:
-        return PreflightResult.failed(
-            "MRT2 sidecar address invalid",
-            f"DEMON_MRT2_SIDECAR must be host:port ({exc})",
-        )
+        return PreflightResult.failed("MRT2 sidecar address invalid", str(exc))
     try:
         with socket.create_connection((host, port), timeout=1.0):
             pass

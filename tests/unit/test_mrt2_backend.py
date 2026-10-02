@@ -433,3 +433,21 @@ def test_create_session_through_the_family_seam(monkeypatch):
         assert close_open_clients() == 0
     finally:
         side.close()
+
+
+@pytest.mark.parametrize("raw", ["foo", "localhost:", "host:notaport", "h:70000"])
+def test_malformed_sidecar_address_is_named_not_raised_bare(monkeypatch, raw):
+    from acestep.streaming.families import get_family
+    from acestep.streaming.preflight import PreflightRequest
+
+    monkeypatch.setenv("DEMON_MRT2_SIDECAR", raw)
+    res = get_family("mrt2").preflight(PreflightRequest(model_id="mrt2"))
+    assert not res.ok and res.title == "MRT2 sidecar address invalid"
+    assert "DEMON_MRT2_SIDECAR" in res.lines[0] and "host:port" in res.lines[0]
+    with pytest.raises(RuntimeError, match="DEMON_MRT2_SIDECAR.*host:port"):
+        MRT2Backend(config=None, state=_State(), midi_knobs=KnobState(mrt2_knob_specs()))
+
+
+def test_sidecar_address_parses_host_and_port():
+    assert mp.parse_sidecar_address("10.0.0.5:9000") == ("10.0.0.5", 9000)
+    assert mp.parse_sidecar_address(":9000") == (mp.DEFAULT_HOST, 9000)

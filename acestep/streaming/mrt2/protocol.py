@@ -78,15 +78,37 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 7531
 
 
+def parse_sidecar_address(raw: str) -> tuple:
+    """Parse a ``host:port`` sidecar address (empty host = DEFAULT_HOST).
+
+    Raises ``ValueError`` with a message naming ``DEMON_MRT2_SIDECAR`` and
+    the expected form, so the boot preflight and the session create path
+    report the same thing.
+    """
+    host, sep, port = raw.rpartition(":")
+    try:
+        if not sep:
+            raise ValueError
+        port_n = int(port)
+        if not 0 < port_n < 65536:
+            raise ValueError
+    except ValueError:
+        raise ValueError(
+            f"DEMON_MRT2_SIDECAR={raw!r} is not a valid address; expected "
+            f"host:port, e.g. {DEFAULT_HOST}:{DEFAULT_PORT}"
+        ) from None
+    return host or DEFAULT_HOST, port_n
+
+
 def sidecar_address() -> tuple:
     """Resolve the sidecar address from ``DEMON_MRT2_SIDECAR``
     (``host:port``), defaulting to the localhost port above. Lives here
     (stdlib only) so the boot preflight can resolve it without importing
-    the backend."""
+    the backend. Raises ``ValueError`` (see :func:`parse_sidecar_address`)
+    on a malformed value."""
     raw = os.environ.get("DEMON_MRT2_SIDECAR", "")
     if raw:
-        host, _, port = raw.rpartition(":")
-        return host or DEFAULT_HOST, int(port)
+        return parse_sidecar_address(raw)
     return DEFAULT_HOST, DEFAULT_PORT
 
 # Hard ceiling on one message's payload (1 MiB covers ~34 frames of
