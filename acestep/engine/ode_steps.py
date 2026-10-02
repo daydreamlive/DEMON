@@ -343,6 +343,10 @@ def apg_forward(
     ``[B, T, D]`` velocities.  The ``momentum_buffer`` accumulates the
     cond/uncond delta across steps and must belong to the generation
     the call is part of.
+
+    ``eta=1.0`` with ``norm_threshold<=0`` and ``momentum=0`` is
+    textbook CFG, which is what a family whose reference sampler is
+    plain CFG should ask for.
     """
     momentum_t = normalize_curve(momentum).to(
         device=pred_cond.device, dtype=pred_cond.dtype,
@@ -350,6 +354,13 @@ def apg_forward(
     diff = pred_cond - pred_uncond
     momentum_buffer.update(diff, momentum_t)
     diff = momentum_buffer.running_average
+
+    if eta == 1.0 and norm_threshold <= 0:
+        # Splitting the delta into parallel and orthogonal parts only to
+        # re-add them at unit weight is an identity with an fp64 round
+        # trip attached. Take the shortcut and stay exact:
+        # ``pred_cond + (w-1)*diff == pred_uncond + w*(cond - uncond)``.
+        return pred_cond + (guidance_scale - 1) * diff
 
     if norm_threshold > 0:
         ones = torch.ones_like(diff)
