@@ -269,14 +269,167 @@ def test_prompt_hooks_forward_to_sidecar():
 
 
 def test_family_is_registered():
-    from acestep.streaming.families import (
-        FAMILIES,
-        FAMILY_KNOB_UNIVERSES,
-        SESSION_CREATORS,
-    )
+    from acestep.streaming.families import FAMILY_SPECS, get_family
 
-    assert "mrt2" in FAMILIES
-    assert "mrt2" in FAMILY_KNOB_UNIVERSES
-    assert "mrt2" in SESSION_CREATORS
-    universe = FAMILY_KNOB_UNIVERSES["mrt2"]()
+    spec = FAMILY_SPECS["mrt2"]
+    assert get_family("mrt2") is spec
+    assert callable(spec.create_session) and callable(spec.preflight)
+    assert spec.warmup_policy == "none"
+    assert spec.prompt_policy == "acestep"
+    assert spec.text_only.default_duration_s == WINDOW_S
+    assert spec.text_only.max_duration_s == WINDOW_S
+    assert spec.text_only.duration_field is None
+    assert spec.shutdown is not None
+    assert spec.supports_extensions is False
+    universe = spec.knob_universe()
     assert {s.name for s in universe} == {s.name for s in mrt2_knob_specs()}
+
+
+def test_checkpoint_alias_boots_the_family():
+    from acestep.streaming.families import resolve_checkpoint
+
+    assert resolve_checkpoint("mrt2-sidecar") == ("mrt2", "mrt2")
+
+
+# ---------------------------------------------------------------------------
+# Seam conformance (no sidecar process, no GPU)
+# ---------------------------------------------------------------------------
+
+
+def test_backend_satisfies_the_generator_backend_protocol():
+    from acestep.streaming.generator_backend import GeneratorBackend
+
+    backend, _ = make_backend()
+    assert isinstance(backend, GeneratorBackend)
+    assert backend.max_duration_s() == WINDOW_S
+    assert backend.has_pending_refit() is False
+    assert backend.rebuild_imminent({}) is False
+
+
+def test_lora_facade_is_off():
+    from acestep.streaming.generator_backend import UnsupportedOperation
+
+    backend, _ = make_backend()
+    assert backend.capabilities().lora is False
+    assert backend.lora_available() is False
+    assert backend.list_loras() == []
+    assert backend.lora_compatible({}) is False
+    for call in (
+        lambda: backend.register_lora("x.safetensors"),
+        lambda: backend.prewarm_lora("x"),
+        lambda: backend.enable_lora("x", 1.0),
+        lambda: backend.disable_lora("x"),
+        lambda: backend.set_lora_strength("x", 0.5),
+    ):
+        with pytest.raises(UnsupportedOperation):
+            call()
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def test_preflight_reports_a_missing_sidecar(monkeypatch):
+    from acestep.streaming.families import get_family
+    from acestep.streaming.preflight import PreflightRequest
+
+    monkeypatch.setenv("DEMON_MRT2_SIDECAR", f"127.0.0.1:{_free_port()}")
+    res = get_family("mrt2").preflight(PreflightRequest(model_id="mrt2"))
+    assert not res.ok
+    assert "not running" in res.title
+
+
+def test_preflight_passes_when_the_sidecar_listens(monkeypatch):
+    from acestep.streaming.families import get_family
+    from acestep.streaming.preflight import PreflightRequest
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    try:
+        monkeypatch.setenv("DEMON_MRT2_SIDECAR", f"127.0.0.1:{srv.getsockname()[1]}")
+        res = get_family("mrt2").preflight(PreflightRequest(model_id="mrt2"))
+        assert res.ok, res
+    finally:
+        srv.close()
+
+
+class _FakeSidecar:
+    """A one-connection TCP server speaking the real protocol: answers
+    hello with meta and records every control message."""
+
+    def __init__(self):
+        import threading
+
+        self.srv = socket.socket()
+        self.srv.bind(("127.0.0.1", 0))
+        self.srv.listen(1)
+        self.port = self.srv.getsockname()[1]
+        self.received: list = []
+        self.conn = None
+        self._t = threading.Thread(target=self._serve, daemon=True)
+        self._t.start()
+
+    def _serve(self):
+        try:
+            self.conn, _ = self.srv.accept()
+            while True:
+                kind, payload = mp.recv_msg(self.conn)
+                msg = mp.unpack_json(payload)
+                self.received.append(msg)
+                if msg.get("type") == "hello":
+                    self.conn.sendall(mp.pack_json({
+                        "type": "meta", "sample_rate": mp.SAMPLE_RATE,
+                        "channels": mp.CHANNELS,
+                        "frame_samples": mp.FRAME_SAMPLES,
+                    }))
+        except (ConnectionError, OSError):
+            pass
+
+    def close(self):
+        for s in (self.conn, self.srv):
+            try:
+                if s is not None:
+                    s.close()
+            except OSError:
+                pass
+
+
+def test_create_session_through_the_family_seam(monkeypatch):
+    """The family create path builds a StreamingSession with canvas=None
+    and an MRT2Backend connected over TCP; close() closes the link."""
+    from acestep.streaming.config import SessionConfig
+    from acestep.streaming.families import get_family
+    from acestep.streaming.mrt2.backend import close_open_clients
+    from acestep.streaming.session import StreamingSession
+
+    side = _FakeSidecar()
+    monkeypatch.setenv("DEMON_MRT2_SIDECAR", f"127.0.0.1:{side.port}")
+    try:
+        cfg = SessionConfig.from_dict({"backend": "mrt2", "prompt": "lofi"})
+        ss = get_family("mrt2").create_session(
+            StreamingSession, audio=None, config=cfg, checkpoint="mrt2",
+            session_id="t-mrt2", decoder_backend="eager", vae_backend="eager",
+            offload_text_encoder=False, checkpoint_dir=None,
+            model_extension=None,
+        )
+        try:
+            assert ss.canvas is None
+            assert ss.session is None and ss.stream is None
+            assert isinstance(ss.backend, MRT2Backend)
+            assert ss.lora_available is False
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline and not any(
+                m.get("type") == "prompt" for m in side.received
+            ):
+                time.sleep(0.01)
+            prompts = [m for m in side.received if m.get("type") == "prompt"]
+            assert prompts and prompts[0]["tags"] == "lofi"
+        finally:
+            ss.close()
+        assert ss.backend.client.lost
+        assert close_open_clients() == 0
+    finally:
+        side.close()
