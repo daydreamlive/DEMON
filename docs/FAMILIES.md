@@ -112,7 +112,6 @@ in `scripts/mrt2_sidecar.py`, because JAX has no CUDA on native Windows.
 - **Gotcha:** flag forms differ. `server.py` reads `--checkpoint` by
   position, so pass `--checkpoint mrt2-sidecar` (space form);
   `--checkpoint=mrt2-sidecar` is silently ignored and the pod boots ACE.
-  Launchers that forward a `--model` flag have needed the `--model=X` form.
 - **Protocol:** `acestep/streaming/mrt2/protocol.py` (stdlib only, loaded by
   file path in the sidecar venv): `u32 len | u8 kind | payload`, JSON control
   (hello/meta, prompt, blend, knobs, credit, ping) and 48 kHz stereo f32 audio
