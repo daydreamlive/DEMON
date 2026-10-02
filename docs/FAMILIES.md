@@ -1,7 +1,7 @@
 # Adding a model family
 
-A *family* is one generative model behind DEMON's streaming runner: ACE-Step
-and Stable Audio 3 today. This document is the contract for adding one and
+A *family* is one generative model behind DEMON's streaming runner: ACE-Step,
+Stable Audio 3 and Magenta RealTime 2 today. This document is the contract for adding one and
 the map of what still branches on a family name in the core. Read it before
 `acestep/streaming/families.py`.
 
@@ -92,6 +92,44 @@ the wire contract from there; `SessionConfig` carries it in `family_config`.
 `protocol.py`) and fails on a family name used as a literal, an identifier or
 an import. The rows above are its allow-list; an entry the code no longer
 needs fails the test too, so the list only shrinks.
+
+## Magenta RealTime 2 (`mrt2`)
+
+The first token/autoregressive family and the first sidecar-hosted one, and
+the reference for both. `acestep/streaming/mrt2/backend.py` is a Tier 1
+`GeneratorBackend` implemented directly (no `ModelAdapter`); generation runs
+in `scripts/mrt2_sidecar.py`, because JAX has no CUDA on native Windows.
+
+- **Boot:** `--checkpoint mrt2-sidecar`. The alias only selects the family;
+  the sidecar picks the model variant at its own launch.
+- **Prerequisite:** a running sidecar in a Linux/WSL venv with `magenta_rt`,
+  JAX (CUDA) and numpy (no torch):
+  `python scripts/mrt2_sidecar.py --model mrt2_small`. It listens on
+  `127.0.0.1:7531` once its JIT warmup (~30 s) is done; WSL2 forwards
+  localhost to the Windows-side server. Override with
+  `DEMON_MRT2_SIDECAR=host:port`. Preflight is a TCP connect and fails the
+  boot with "MRT2 sidecar not running" when nothing listens.
+- **Gotcha:** flag forms differ. `server.py` reads `--checkpoint` by
+  position, so pass `--checkpoint mrt2-sidecar` (space form);
+  `--checkpoint=mrt2-sidecar` is silently ignored and the pod boots ACE.
+  Launchers that forward a `--model` flag have needed the `--model=X` form.
+- **Protocol:** `acestep/streaming/mrt2/protocol.py` (stdlib only, loaded by
+  file path in the sidecar venv): `u32 len | u8 kind | payload`, JSON control
+  (hello/meta, prompt, blend, knobs, credit, ping) and 48 kHz stereo f32 audio
+  in 40 ms frames. The backend grants credit so the frontier stays `mrt2_lead`
+  seconds ahead of the playhead; that lead is the knob-to-ear latency.
+- **Shape:** append-only on a 60 s rolling window the player loops;
+  `render_window` ignores the position hint and returns the next frontier
+  chunk. Uploaded audio is ignored, so the family is text-only
+  (`text_only` 60 s, no duration field). Capabilities all False; LoRA off.
+- **Knobs:** `mrt2_temperature`, `mrt2_top_k`, `mrt2_cfg_musiccoca`,
+  `mrt2_cfg_notes`, `mrt2_cfg_drums` (forwarded to the sidecar),
+  `mrt2_lead` (backend-local). `set_prompt` / `set_prompt_blend` go to the
+  sidecar, which embeds tags with MusicCoCa and lerps A/B.
+- **Speed (RTX 5090):** `mrt2_small` ~1.7x real time, `mrt2_base` ~0.93x
+  (below real time; expect underruns).
+- **Frontend:** `demos/realtime_motion_graph_web/web/app/magenta` (route
+  `/magenta`) sends `backend: "mrt2"`.
 
 ## Runtime
 
