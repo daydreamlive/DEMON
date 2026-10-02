@@ -41,6 +41,7 @@ import os
 import socket
 import threading
 import time
+import weakref
 from collections import deque
 
 import numpy as np
@@ -53,6 +54,7 @@ from acestep.streaming.generator_backend import (
     LeadProfile,
     ProduceMode,
     TickContext,
+    UnsupportedOperation,
 )
 from acestep.streaming.knobs import KnobSpec
 from acestep.streaming.mrt2 import protocol as mp
@@ -133,16 +135,23 @@ _SIDECAR_KNOBS = {
 }
 
 
-def sidecar_address() -> tuple:
-    """Resolve the sidecar address from ``DEMON_MRT2_SIDECAR``
-    (``host:port``), defaulting to the protocol module's localhost
-    port. WSL2 forwards localhost, so the default reaches a sidecar
-    inside WSL from the Windows-side server."""
-    raw = os.environ.get("DEMON_MRT2_SIDECAR", "")
-    if raw:
-        host, _, port = raw.rpartition(":")
-        return host or mp.DEFAULT_HOST, int(port)
-    return mp.DEFAULT_HOST, mp.DEFAULT_PORT
+# Re-exported for existing importers; the resolver lives in protocol.py
+# so the boot preflight can use it without importing this module.
+sidecar_address = mp.sidecar_address
+
+# Sidecar links currently open in this process (a session's backend
+# closes its own on stop; the family shutdown hook sweeps any left over).
+_OPEN_CLIENTS: "weakref.WeakSet" = weakref.WeakSet()
+
+
+def close_open_clients() -> int:
+    """Close every sidecar link still open; returns how many were."""
+    n = 0
+    for client in list(_OPEN_CLIENTS):
+        if not client.lost:
+            n += 1
+        client.close()
+    return n
 
 
 class SidecarClient:
@@ -187,6 +196,7 @@ class SidecarClient:
             target=self._read_loop, name="mrt2-sidecar-reader", daemon=True,
         )
         self._reader.start()
+        _OPEN_CLIENTS.add(self)
 
     # ---- reader thread ----------------------------------------------------
 
@@ -356,6 +366,35 @@ class MRT2Backend:
     def knob_specs(self, lora_ids=()) -> list:
         return mrt2_knob_specs()
 
+    # ---- LoRA facade: no LoRA surface on this family ------------------------
+    # Capabilities.lora is False, so the session rejects the wire commands
+    # before they get here and never consults the catalog; these exist for
+    # protocol conformance and raise rather than silently no-op.
+
+    def lora_compatible(self, metadata: dict) -> bool:
+        return False
+
+    def lora_available(self) -> bool:
+        return False
+
+    def register_lora(self, path: str) -> str:
+        raise UnsupportedOperation("lora")
+
+    def prewarm_lora(self, lora_id: str):
+        raise UnsupportedOperation("lora")
+
+    def enable_lora(self, lora_id: str, strength=None) -> None:
+        raise UnsupportedOperation("lora")
+
+    def disable_lora(self, lora_id: str) -> None:
+        raise UnsupportedOperation("lora")
+
+    def set_lora_strength(self, lora_id: str, strength: float) -> None:
+        raise UnsupportedOperation("lora")
+
+    def list_loras(self) -> list:
+        return []
+
     # ---- session control hooks ----------------------------------------------
 
     def handle_set_prompt(self, tags: str, *, tags_b: str | None = None) -> None:
@@ -398,6 +437,11 @@ class MRT2Backend:
         return self._abs_written > 0 or self._pending_samples > 0
 
     def playable_duration_s(self):
+        return WINDOW_S
+
+    def max_duration_s(self):
+        # The rolling window is the only song shape; swap_resize is not
+        # declared, so this is informational.
         return WINDOW_S
 
     def _playhead_abs_samples(self) -> int:
@@ -556,7 +600,7 @@ class MRT2Backend:
 
 
 # ---------------------------------------------------------------------------
-# Session creation (families.SESSION_CREATORS["mrt2"])
+# Session creation (families.MRT2.create_session)
 # ---------------------------------------------------------------------------
 
 
@@ -632,6 +676,7 @@ def create_mrt2_session(cls, *, audio, config, checkpoint, session_id, **_unused
             stream=None,
             state=state,
             audio_eng=audio_eng,
+            canvas=None,  # no positional source: write_audio/swap gated off
             virtual_knobs=KnobState(mrt2_knob_specs()),
             engine_obj=None,
             profile_mgr=None,

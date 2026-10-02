@@ -137,3 +137,38 @@ def sa3_preflight(req: PreflightRequest) -> PreflightResult:
         "preflight_sa3_ok model_id={} base_dir={}", req.model_id, req.checkpoint_dir,
     )
     return PreflightResult.passed()
+
+
+def mrt2_preflight(req: PreflightRequest) -> PreflightResult:
+    """The Magenta RealTime 2 family's boot check.
+
+    The model runs in an out-of-process sidecar (``scripts/mrt2_sidecar.py``
+    in a Linux/WSL venv with magenta_rt + JAX). The sidecar only listens
+    once its JIT warmup is done, so a plain TCP connect proves it is up
+    and warm. Nothing is sent; the sidecar treats a bare connect/close as
+    a dropped connection and keeps serving.
+    """
+    import socket
+
+    from acestep.streaming.mrt2.protocol import sidecar_address
+
+    try:
+        host, port = sidecar_address()
+    except ValueError as exc:
+        return PreflightResult.failed(
+            "MRT2 sidecar address invalid",
+            f"DEMON_MRT2_SIDECAR must be host:port ({exc})",
+        )
+    try:
+        with socket.create_connection((host, port), timeout=1.0):
+            pass
+    except OSError as exc:
+        return PreflightResult.failed(
+            "MRT2 sidecar not running",
+            f"nothing is listening at {host}:{port} ({exc})",
+            "fix: in the MRT2 Linux/WSL venv (magenta_rt + JAX) run",
+            "  python scripts/mrt2_sidecar.py --model mrt2_small",
+            "and wait for 'serving on'; or point DEMON_MRT2_SIDECAR=host:port at it",
+        )
+    logger.info("preflight_mrt2_ok sidecar={}:{}", host, port)
+    return PreflightResult.passed()

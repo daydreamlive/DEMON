@@ -54,6 +54,7 @@ the buffered lead IS the knob-to-ear latency.
 """
 
 import json
+import os
 import struct
 
 # Audio shape (matches Magenta RT 2's SpectroStream output and,
@@ -75,6 +76,18 @@ AUDIO_HDR = struct.Struct("<QH")  # frame_index, num_frames
 # server reaches a sidecar bound inside WSL at the same address.
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 7531
+
+
+def sidecar_address() -> tuple:
+    """Resolve the sidecar address from ``DEMON_MRT2_SIDECAR``
+    (``host:port``), defaulting to the localhost port above. Lives here
+    (stdlib only) so the boot preflight can resolve it without importing
+    the backend."""
+    raw = os.environ.get("DEMON_MRT2_SIDECAR", "")
+    if raw:
+        host, _, port = raw.rpartition(":")
+        return host or DEFAULT_HOST, int(port)
+    return DEFAULT_HOST, DEFAULT_PORT
 
 # Hard ceiling on one message's payload (1 MiB covers ~34 frames of
 # f32 stereo; chunks are a handful of frames). Protects both ends from
