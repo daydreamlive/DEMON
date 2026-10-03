@@ -1,0 +1,1640 @@
+{
+ "source": {
+  "repo": "https://github.com/luk-st/steer-audio",
+  "commit": "3516910bd32f946445bd2312737d3fb45e7a24d7",
+  "license": "MIT, Copyright (c) 2026 Lukasz Staniszewski"
+ },
+ "note": "Counterfactual-prompt construction (src/preprocess/features.py, paper Table 5), per-concept patching data and eval prompts (configs/patch_data/musiccaps), patching settings (configs/patch_config), experiment overrides, and the similarity prompt templates (configs/eval_audio.yaml). Prompt pairs themselves: HF dataset lukasz-staniszewski/patching-music-musiccaps-prompts.",
+ "original_features": {
+  "female": [
+   "female",
+   "woman",
+   "girlish"
+  ],
+  "male": [
+   "male",
+   "man"
+  ],
+  "fast": [
+   "fast",
+   "rapid",
+   "dynamic",
+   "quick",
+   "quickly",
+   "fastly",
+   "energetic",
+   "tireless",
+   "sprightly",
+   "energetic",
+   "groovy",
+   "lively",
+   "fast-paced",
+   "vigorous"
+  ],
+  "slow": [
+   "slow",
+   "slowed",
+   "slower",
+   "slowly",
+   "slow-paced",
+   "leisurely",
+   "sedate",
+   "plodding",
+   "slow-moving"
+  ],
+  "happy": [
+   "happy",
+   "joyful",
+   "upbeat",
+   "uplifting",
+   "cheerful"
+  ],
+  "sad": [
+   "sad",
+   "depressing",
+   "dejected",
+   "depressing",
+   "dejected"
+  ],
+  "reggae": [
+   "reggae",
+   "jamaican",
+   "tropical",
+   "summer",
+   "vacation",
+   "beach"
+  ],
+  "metal": [
+   "metal",
+   "heavy",
+   "rock"
+  ],
+  "jazz": [
+   "jazz",
+   "blues"
+  ],
+  "opera": [
+   "opera",
+   "choir",
+   "orchestra"
+  ],
+  "violin": [
+   "violin",
+   "fiddle"
+  ],
+  "trumpet": [
+   "trumpet",
+   "trumpets"
+  ],
+  "saxophone": [
+   "saxophone",
+   "sax",
+   "saxophones"
+  ],
+  "drums": [
+   "drums",
+   "drum",
+   "percussion"
+  ],
+  "cello": [
+   "cello",
+   "cellos"
+  ],
+  "bongos": [
+   "bongos",
+   "bongo"
+  ],
+  "flute": [
+   "flute",
+   "flutes"
+  ],
+  "maracas": [
+   "maracas",
+   "maraca"
+  ],
+  "harmonica": [
+   "harmonica",
+   "harmonicas"
+  ],
+  "trombone": [
+   "trombone",
+   "trombones"
+  ],
+  "xylophone": [
+   "xylophone",
+   "xylophones"
+  ]
+ },
+ "counterfactual_features": {
+  "female": [
+   "male",
+   "man"
+  ],
+  "male": [
+   "female",
+   "woman",
+   "girl",
+   "lady",
+   "her",
+   "she"
+  ],
+  "fast": [
+   "slow",
+   "slowed",
+   "slower",
+   "slowly"
+  ],
+  "slow": [
+   "fast",
+   "rapidly",
+   "quickly",
+   "fastly",
+   "energetic",
+   "tireless",
+   "sprightly",
+   "groovy",
+   "lively",
+   "fast-paced",
+   "vigorous"
+  ],
+  "happy": [
+   "sad",
+   "depressing",
+   "dejected",
+   "depressing",
+   "dejected"
+  ],
+  "sad": [
+   "passionate",
+   "joyful",
+   "fun",
+   "cheerful",
+   "warm",
+   "high-spirited",
+   "lively",
+   "enthusiastic",
+   "energetic",
+   "engaging",
+   "vivacious",
+   "happy",
+   "enthusiastically",
+   "danceable",
+   "light",
+   "positive",
+   "upbeat",
+   "uplifting",
+   "pulsating",
+   "loud",
+   "punchy",
+   "buoyant",
+   "youthful",
+   "vibrant"
+  ],
+  "reggae": [
+   "metal",
+   "heavy",
+   "rock",
+   "opera",
+   "choir",
+   "orchestra",
+   "classical"
+  ],
+  "metal": [
+   "reggae",
+   "rock",
+   "opera",
+   "choir",
+   "orchestra",
+   "classical"
+  ],
+  "jazz": [
+   "reggae",
+   "rock",
+   "opera",
+   "choir",
+   "orchestra",
+   "classical"
+  ],
+  "opera": [
+   "reggae",
+   "rock",
+   "metal",
+   "heavy",
+   "jazz"
+  ],
+  "violin": [
+   "trumpet"
+  ],
+  "trumpet": [
+   "violin",
+   "violins",
+   "fiddle",
+   "fiddles"
+  ],
+  "saxophone": [
+   "drum",
+   "drums",
+   "percussion"
+  ],
+  "drums": [
+   "saxophone",
+   "sax",
+   "saxophones"
+  ],
+  "cello": [
+   "bongo",
+   "bongos"
+  ],
+  "bongos": [
+   "cello",
+   "cellos"
+  ],
+  "flute": [
+   "maracas",
+   "maraca"
+  ],
+  "maracas": [
+   "flute",
+   "flutes"
+  ],
+  "harmonica": [
+   "harp",
+   "harps",
+   "harpist",
+   "harpists"
+  ],
+  "trombone": [
+   "xylophone",
+   "xylophones",
+   "xylophonist",
+   "xylophonists"
+  ],
+  "xylophone": [
+   "trombone",
+   "trombones"
+  ]
+ },
+ "swap_features": {
+  "female": {
+   "female": "male",
+   "woman": "man",
+   "her": "his",
+   "girlish": "boyish",
+   "she": "he"
+  },
+  "male": {
+   "male": "female",
+   "man": "woman",
+   "boy": "girl",
+   "his": "her",
+   "him": "her",
+   "himself": "herself",
+   "he": "she"
+  },
+  "fast": {
+   "fast": "slow",
+   "rapid": "slow",
+   "dynamic": "slow",
+   "quick": "slow",
+   "quickly": "slowly",
+   "fastly": "slowly",
+   "energetic": "slow",
+   "tireless": "slow",
+   "sprightly": "slowly",
+   "groovy": "slowly",
+   "lively": "slowly",
+   "fast-paced": "slow-paced",
+   "vigorous": "slow"
+  },
+  "slow": {
+   "slow": "fast",
+   "slowed": "fasted",
+   "slower": "faster",
+   "slowly": "fastly",
+   "slow-paced": "fast-paced",
+   "leisurely": "hastily",
+   "sedate": "agitated",
+   "romantic": "action",
+   "plodding": "quick",
+   "slow-moving": "fast-moving"
+  },
+  "happy": {
+   "passionate": "apathetic",
+   "joyful": "sorrowful",
+   "fun": "dreary",
+   "cheerful": "gloomy",
+   "warm": "cold",
+   "high-spirited": "downcast",
+   "lively": "lifeless",
+   "enthusiastic": "disheartened",
+   "energetic": "weary",
+   "engaging": "detached",
+   "vivacious": "melancholic",
+   "happy": "sad",
+   "enthusiastically": "reluctantly",
+   "danceable": "plodding",
+   "light": "heavy",
+   "positive": "negative",
+   "vibrant": "dull",
+   "upbeat": "downbeat",
+   "pulsating": "flat",
+   "loud": "quiet",
+   "punchy": "muted",
+   "buoyant": "heavy-hearted",
+   "youthful": "world-weary",
+   "uplifting": "depressing"
+  },
+  "sad": {
+   "sad": "happy",
+   "depressing": "cheerful",
+   "dejected": "joyful",
+   "haunting": "uplifting",
+   "melancholic": "cheerful",
+   "emotional": "lighthearted",
+   "pensive": "carefree",
+   "regretful": "content",
+   "contemplative": "playful",
+   "wistful": "hopeful",
+   "meditative": "breezy",
+   "crying": "laughing",
+   "soulful": "spirited",
+   "lonely": "connected",
+   "poignant": "joyous",
+   "mellow": "vibrant"
+  },
+  "reggae": {
+   "reggae": "metal",
+   "jamaican": "metal",
+   "tropical": "metal",
+   "chill": "heavy",
+   "summer": "concert",
+   "vacation": "concert",
+   "paradise": "concert",
+   "beach": "concert"
+  },
+  "metal": {
+   "metal": "reggae",
+   "heavy": "chill"
+  },
+  "jazz": {
+   "jazz": "opera",
+   "blues": "opera",
+   "band": "choir"
+  },
+  "opera": {
+   "opera": "jazz",
+   "choir": "blues",
+   "orchestra": "band",
+   "classical": "jazz"
+  },
+  "violin": {
+   "violin": "trumpet",
+   "fiddle": "trumpet",
+   "string": "",
+   "strings": "",
+   "violins": "trumpet",
+   "violinist": "trumpeter"
+  },
+  "trumpet": {
+   "trumpet": "violin",
+   "trumpeter": "violinist",
+   "trumpets": "violins"
+  },
+  "saxophone": {
+   "saxophone": "drum",
+   "sax": "drum",
+   "saxophones": "drums",
+   "saxophonist": "drummer",
+   "saxophonists": "drummers"
+  },
+  "drums": {
+   "drums": "saxophone",
+   "drum": "saxophone",
+   "percussion": "saxophone",
+   "percussionist": "saxophonist",
+   "percussionists": "saxophonists",
+   "drummer": "saxophonist"
+  },
+  "cello": {
+   "cello": "bongo",
+   "cellos": "bongos",
+   "cellist": "bongomaster",
+   "cellists": "bongomasters",
+   "celloist": "bongomaster",
+   "celloists": "bongomasters"
+  },
+  "bongos": {
+   "bongos": "cello",
+   "bongo": "cello",
+   "bongomaster": "cellist",
+   "bongomasters": "cellists"
+  },
+  "flute": {
+   "flute": "maracas",
+   "flutes": "maracas",
+   "flutist": "maracast",
+   "flutists": "maracasts",
+   "fluteist": "maracast",
+   "fluteists": "maracasts"
+  },
+  "maracas": {
+   "maracas": "flute",
+   "maraca": "flute",
+   "maracast": "flutist",
+   "maracasts": "flutists"
+  },
+  "harmonica": {
+   "harmonica": "harp",
+   "harmonicas": "harps",
+   "harpist": "harpist",
+   "harpists": "harpists",
+   "harmonicaist": "harpist",
+   "harmonicaists": "harpists"
+  },
+  "trombone": {
+   "trombone": "xylophone",
+   "trombones": "xylophones",
+   "trombonist": "xylophonist",
+   "trombonists": "xylophonists",
+   "tromboneist": "xylophonist",
+   "tromboneists": "xylophonists"
+  },
+  "xylophone": {
+   "xylophone": "trombone",
+   "xylophones": "trombones",
+   "xylophonist": "trombonist",
+   "xylophonists": "trombonists",
+   "xylophoneist": "trombonist",
+   "xylophoneists": "trombonists"
+  }
+ },
+ "patch_data": {
+  "bongos": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "bongos",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "bongos music"
+   ],
+   "eval_muqt_prompts": [
+    "bongos music"
+   ]
+  },
+  "cello": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "cello",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "cello music"
+   ],
+   "eval_muqt_prompts": [
+    "cello music"
+   ]
+  },
+  "drums": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "drums",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "drums music"
+   ],
+   "eval_muqt_prompts": [
+    "drums-based"
+   ]
+  },
+  "drums_ace": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "drums",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "drums music"
+   ],
+   "eval_muqt_prompts": [
+    "drums-based"
+   ]
+  },
+  "drums_small": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "drums",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "drums music"
+   ],
+   "eval_muqt_prompts": [
+    "drums-based"
+   ]
+  },
+  "fast": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "fast",
+   "prefix_clean": "Very fast song. ",
+   "suffix_clean": ". Fast song.",
+   "prefix_corrupted": "Very slow song. ",
+   "suffix_corrupted": ". Slow song.",
+   "eval_clap_prompts": [
+    "fast song",
+    "slow song"
+   ],
+   "eval_muqt_prompts": [
+    "fast song",
+    "slow song"
+   ]
+  },
+  "fast_ace": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "fast",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "fast song",
+    "slow song"
+   ],
+   "eval_muqt_prompts": [
+    "fast",
+    "slow"
+   ]
+  },
+  "fast_small": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "fast",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "fast song",
+    "slow song"
+   ],
+   "eval_muqt_prompts": [
+    "fast",
+    "slow"
+   ]
+  },
+  "female": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "female",
+   "prefix_clean": "Female vocal singing. ",
+   "suffix_clean": " Woman voice.",
+   "prefix_corrupted": "Male vocal singing. ",
+   "suffix_corrupted": " Man voice.",
+   "eval_clap_prompts": [
+    "A female woman singing",
+    "A male man singing"
+   ],
+   "eval_muqt_prompts": [
+    "A female woman singing",
+    "A male man singing"
+   ]
+  },
+  "female_ace": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "female",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "A female vocal singing",
+    "A male vocal singing"
+   ],
+   "eval_muqt_prompts": [
+    "female singer",
+    "male singer"
+   ]
+  },
+  "female_small": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "female",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "A female vocal singing",
+    "A male vocal singing"
+   ],
+   "eval_muqt_prompts": [
+    "female singer",
+    "male singer"
+   ]
+  },
+  "flute": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "flute",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "flute music"
+   ],
+   "eval_muqt_prompts": [
+    "flute music"
+   ]
+  },
+  "happy": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "happy",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "happy song",
+    "sad song"
+   ],
+   "eval_muqt_prompts": [
+    "happy song",
+    "sad song"
+   ]
+  },
+  "happy_ace": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "happy",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "cheerful song",
+    "sad song"
+   ],
+   "eval_muqt_prompts": [
+    "cheerful",
+    "sad"
+   ]
+  },
+  "happy_small": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "happy",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "cheerful song",
+    "sad song"
+   ],
+   "eval_muqt_prompts": [
+    "cheerful",
+    "sad"
+   ]
+  },
+  "harmonica": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "harmonica",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "harmonica music"
+   ],
+   "eval_muqt_prompts": [
+    "harmonica music"
+   ]
+  },
+  "jazz_ace": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "jazz",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "a jazz song"
+   ],
+   "eval_muqt_prompts": [
+    "jazz"
+   ]
+  },
+  "male": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "male",
+   "prefix_clean": "Male vocal singing. ",
+   "suffix_clean": " Man voice.",
+   "prefix_corrupted": "Female vocal singing. ",
+   "suffix_corrupted": " Woman voice.",
+   "eval_clap_prompts": [
+    "A male man singing",
+    "A female woman singing"
+   ],
+   "eval_muqt_prompts": [
+    "A male man singing",
+    "A female woman singing"
+   ]
+  },
+  "male_ace": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "male",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "A male vocal singing",
+    "A female vocal singing"
+   ],
+   "eval_muqt_prompts": [
+    "male singer",
+    "female singer"
+   ]
+  },
+  "male_small": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "male",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "A male vocal singing",
+    "A female vocal singing"
+   ],
+   "eval_muqt_prompts": [
+    "male singer",
+    "female singer"
+   ]
+  },
+  "maracas": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "maracas",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "maracas music"
+   ],
+   "eval_muqt_prompts": [
+    "maracas music"
+   ]
+  },
+  "musiccaps_1280": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": null,
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "good-sounding music",
+    "high quality song",
+    "high quality music"
+   ],
+   "eval_muqt_prompts": [
+    "good-sounding music",
+    "high quality song",
+    "high quality music"
+   ]
+  },
+  "reggae": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "reggae",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "a reggae song"
+   ],
+   "eval_muqt_prompts": [
+    "reggae"
+   ]
+  },
+  "reggae_ace": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "reggae",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "a reggae song"
+   ],
+   "eval_muqt_prompts": [
+    "reggae"
+   ]
+  },
+  "sad": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "sad",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "happy song",
+    "sad song"
+   ],
+   "eval_muqt_prompts": [
+    "happy song",
+    "sad song"
+   ]
+  },
+  "sad_ace": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "sad",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "cheerful song",
+    "sad song"
+   ],
+   "eval_muqt_prompts": [
+    "cheerful",
+    "sad"
+   ]
+  },
+  "sad_small": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "sad",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "cheerful song",
+    "sad song"
+   ],
+   "eval_muqt_prompts": [
+    "cheerful",
+    "sad"
+   ]
+  },
+  "saxophone": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "saxophone",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "saxophone music"
+   ],
+   "eval_muqt_prompts": [
+    "saxophone music"
+   ]
+  },
+  "slow": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "slow",
+   "prefix_clean": "Very slow song. ",
+   "suffix_clean": ". slow song.",
+   "prefix_corrupted": "Very fast song. ",
+   "suffix_corrupted": ". Fast song.",
+   "eval_clap_prompts": [
+    "slow song",
+    "fast song"
+   ],
+   "eval_muqt_prompts": [
+    "slow song",
+    "fast song"
+   ]
+  },
+  "slow_ace": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "slow",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "fast song",
+    "slow song"
+   ],
+   "eval_muqt_prompts": [
+    "fast",
+    "slow"
+   ]
+  },
+  "slow_small": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "slow",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "fast song",
+    "slow song"
+   ],
+   "eval_muqt_prompts": [
+    "fast",
+    "slow"
+   ]
+  },
+  "trombone": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "trombone",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "trombone music"
+   ],
+   "eval_muqt_prompts": [
+    "trombone music"
+   ]
+  },
+  "trumpet": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "trumpet",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "Trumpet music"
+   ],
+   "eval_muqt_prompts": [
+    "Trumpet music"
+   ]
+  },
+  "violin": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "violin",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "Violin music"
+   ],
+   "eval_muqt_prompts": [
+    "Violin music"
+   ]
+  },
+  "violin_ace": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "violin",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "Violin music"
+   ],
+   "eval_muqt_prompts": [
+    "violin-based"
+   ]
+  },
+  "violin_small": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "violin",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "Violin music"
+   ],
+   "eval_muqt_prompts": [
+    "violin-based"
+   ]
+  },
+  "xylophone": {
+   "type": "csv",
+   "csv_path": "lukasz-staniszewski/patching-music-musiccaps-prompts",
+   "feature": "xylophone",
+   "prefix_clean": "",
+   "suffix_clean": "",
+   "prefix_corrupted": "",
+   "suffix_corrupted": "",
+   "eval_clap_prompts": [
+    "xylophone music"
+   ],
+   "eval_muqt_prompts": [
+    "xylophone music"
+   ]
+  }
+ },
+ "patch_config": {
+  "ace": {
+   "n_latents_per_prompt": 8,
+   "seed": 222,
+   "batch_size": 32,
+   "num_inference_steps": 50,
+   "guidance_scale": 7.0,
+   "audio_dirname": "audios",
+   "path_with_results": null,
+   "save_per_gpu": true,
+   "method": "patch",
+   "audio_duration": 30.0,
+   "lyrics": "",
+   "guidance_scale_lyric": 1.0,
+   "guidance_scale_text": 6.0,
+   "guidance_interval": 1.0,
+   "scheduler_type": "euler",
+   "cfg_type": "apg",
+   "omega_scale": 7.0,
+   "save_clean_audio": false,
+   "save_mono": true,
+   "pad_to_max_len": 128
+  },
+  "stableaudio": {
+   "negative_prompt": "Low quality, average quality.",
+   "n_latents_per_prompt": 8,
+   "seed": 222,
+   "audio_length_in_s": 9,
+   "batch_size": 16,
+   "n_waveforms_per_prompt": 1,
+   "num_inference_steps": 100,
+   "guidance_scale": 7.0,
+   "audio_dirname": "audios",
+   "path_with_results": null,
+   "save_per_gpu": false,
+   "method": "patch",
+   "save_clean_audio": false
+  }
+ },
+ "experiments": {
+  "patch_ace/ace_1280": {
+   "defaults": [
+    {
+     "override /patch_config": "ace"
+    },
+    {
+     "override /patch_layers": "ace/self_attn/none"
+    },
+    {
+     "override /patch_data": "musiccaps/musiccaps_1280"
+    },
+    {
+     "override /patch_model": "ace_patch"
+    }
+   ]
+  },
+  "patch_ace/ace_drums": {
+   "defaults": [
+    {
+     "override /patch_config": "ace"
+    },
+    {
+     "override /patch_layers": "ace/self_attn/none"
+    },
+    {
+     "override /patch_data": "musiccaps/drums_ace"
+    },
+    {
+     "override /patch_model": "ace_patch"
+    }
+   ]
+  },
+  "patch_ace/ace_fast": {
+   "defaults": [
+    {
+     "override /patch_config": "ace"
+    },
+    {
+     "override /patch_layers": "ace/self_attn/none"
+    },
+    {
+     "override /patch_data": "musiccaps/fast_ace"
+    },
+    {
+     "override /patch_model": "ace_patch"
+    }
+   ],
+   "patch_config.lyrics": "[inst]"
+  },
+  "patch_ace/ace_female": {
+   "defaults": [
+    {
+     "override /patch_config": "ace"
+    },
+    {
+     "override /patch_layers": "ace/self_attn/none"
+    },
+    {
+     "override /patch_data": "musiccaps/female_ace"
+    },
+    {
+     "override /patch_model": "ace_patch"
+    }
+   ]
+  },
+  "patch_ace/ace_happy": {
+   "defaults": [
+    {
+     "override /patch_config": "ace"
+    },
+    {
+     "override /patch_layers": "ace/self_attn/none"
+    },
+    {
+     "override /patch_data": "musiccaps/happy_ace"
+    },
+    {
+     "override /patch_model": "ace_patch"
+    }
+   ]
+  },
+  "patch_ace/ace_jazz": {
+   "defaults": [
+    {
+     "override /patch_config": "ace"
+    },
+    {
+     "override /patch_layers": "ace/self_attn/none"
+    },
+    {
+     "override /patch_data": "musiccaps/jazz_ace"
+    },
+    {
+     "override /patch_model": "ace_patch"
+    }
+   ]
+  },
+  "patch_ace/ace_male": {
+   "defaults": [
+    {
+     "override /patch_config": "ace"
+    },
+    {
+     "override /patch_layers": "ace/self_attn/none"
+    },
+    {
+     "override /patch_data": "musiccaps/male_ace"
+    },
+    {
+     "override /patch_model": "ace_patch"
+    }
+   ]
+  },
+  "patch_ace/ace_medley_genre": {
+   "defaults": [
+    {
+     "override /patch_config": "ace"
+    },
+    {
+     "override /patch_layers": "ace/self_attn/none"
+    },
+    {
+     "override /patch_data": "medley_loc_genre"
+    },
+    {
+     "override /patch_model": "ace_patch"
+    }
+   ]
+  },
+  "patch_ace/ace_medley_instr": {
+   "defaults": [
+    {
+     "override /patch_config": "ace"
+    },
+    {
+     "override /patch_layers": "ace/self_attn/none"
+    },
+    {
+     "override /patch_data": "medley_loc_instr"
+    },
+    {
+     "override /patch_model": "ace_patch"
+    }
+   ]
+  },
+  "patch_ace/ace_reggae": {
+   "defaults": [
+    {
+     "override /patch_config": "ace"
+    },
+    {
+     "override /patch_layers": "ace/self_attn/none"
+    },
+    {
+     "override /patch_data": "musiccaps/reggae_ace"
+    },
+    {
+     "override /patch_model": "ace_patch"
+    }
+   ]
+  },
+  "patch_ace/ace_sad": {
+   "defaults": [
+    {
+     "override /patch_config": "ace"
+    },
+    {
+     "override /patch_layers": "ace/self_attn/none"
+    },
+    {
+     "override /patch_data": "musiccaps/sad_ace"
+    },
+    {
+     "override /patch_model": "ace_patch"
+    }
+   ],
+   "patch_config.lyrics": "[inst]"
+  },
+  "patch_ace/ace_slow": {
+   "defaults": [
+    {
+     "override /patch_config": "ace"
+    },
+    {
+     "override /patch_layers": "ace/self_attn/none"
+    },
+    {
+     "override /patch_data": "musiccaps/slow_ace"
+    },
+    {
+     "override /patch_model": "ace_patch"
+    }
+   ],
+   "patch_config.lyrics": "[inst]"
+  },
+  "patch_ace/ace_violin": {
+   "defaults": [
+    {
+     "override /patch_config": "ace"
+    },
+    {
+     "override /patch_layers": "ace/self_attn/none"
+    },
+    {
+     "override /patch_data": "musiccaps/violin_ace"
+    },
+    {
+     "override /patch_model": "ace_patch"
+    }
+   ],
+   "patch_config.lyrics": "[inst]"
+  },
+  "patch_stableaudio/stableaudio_bongos": {
+   "defaults": [
+    {
+     "override /patch_config": "stableaudio"
+    },
+    {
+     "override /patch_layers": "stableaudio/none"
+    },
+    {
+     "override /patch_data": "musiccaps/bongos"
+    },
+    {
+     "override /patch_model": "stableaudio_patch"
+    }
+   ]
+  },
+  "patch_stableaudio/stableaudio_cello": {
+   "defaults": [
+    {
+     "override /patch_config": "stableaudio"
+    },
+    {
+     "override /patch_layers": "stableaudio/none"
+    },
+    {
+     "override /patch_data": "musiccaps/cello"
+    },
+    {
+     "override /patch_model": "stableaudio_patch"
+    }
+   ]
+  },
+  "patch_stableaudio/stableaudio_drums": {
+   "defaults": [
+    {
+     "override /patch_config": "stableaudio"
+    },
+    {
+     "override /patch_layers": "stableaudio/none"
+    },
+    {
+     "override /patch_data": "musiccaps/drums"
+    },
+    {
+     "override /patch_model": "stableaudio_patch"
+    }
+   ]
+  },
+  "patch_stableaudio/stableaudio_fast": {
+   "defaults": [
+    {
+     "override /patch_config": "stableaudio"
+    },
+    {
+     "override /patch_layers": "stableaudio/none"
+    },
+    {
+     "override /patch_data": "musiccaps/fast"
+    },
+    {
+     "override /patch_model": "stableaudio_patch"
+    }
+   ]
+  },
+  "patch_stableaudio/stableaudio_female": {
+   "defaults": [
+    {
+     "override /patch_config": "stableaudio"
+    },
+    {
+     "override /patch_layers": "stableaudio/none"
+    },
+    {
+     "override /patch_data": "musiccaps/female"
+    },
+    {
+     "override /patch_model": "stableaudio_patch"
+    }
+   ]
+  },
+  "patch_stableaudio/stableaudio_flute": {
+   "defaults": [
+    {
+     "override /patch_config": "stableaudio"
+    },
+    {
+     "override /patch_layers": "stableaudio/none"
+    },
+    {
+     "override /patch_data": "musiccaps/flute"
+    },
+    {
+     "override /patch_model": "stableaudio_patch"
+    }
+   ]
+  },
+  "patch_stableaudio/stableaudio_happy": {
+   "defaults": [
+    {
+     "override /patch_config": "stableaudio"
+    },
+    {
+     "override /patch_layers": "stableaudio/none"
+    },
+    {
+     "override /patch_data": "musiccaps/happy"
+    },
+    {
+     "override /patch_model": "stableaudio_patch"
+    }
+   ]
+  },
+  "patch_stableaudio/stableaudio_harmonica": {
+   "defaults": [
+    {
+     "override /patch_config": "stableaudio"
+    },
+    {
+     "override /patch_layers": "stableaudio/none"
+    },
+    {
+     "override /patch_data": "musiccaps/harmonica"
+    },
+    {
+     "override /patch_model": "stableaudio_patch"
+    }
+   ]
+  },
+  "patch_stableaudio/stableaudio_male": {
+   "defaults": [
+    {
+     "override /patch_config": "stableaudio"
+    },
+    {
+     "override /patch_layers": "stableaudio/none"
+    },
+    {
+     "override /patch_data": "musiccaps/male"
+    },
+    {
+     "override /patch_model": "stableaudio_patch"
+    }
+   ]
+  },
+  "patch_stableaudio/stableaudio_maracas": {
+   "defaults": [
+    {
+     "override /patch_config": "stableaudio"
+    },
+    {
+     "override /patch_layers": "stableaudio/none"
+    },
+    {
+     "override /patch_data": "musiccaps/maracas"
+    },
+    {
+     "override /patch_model": "stableaudio_patch"
+    }
+   ]
+  },
+  "patch_stableaudio/stableaudio_reggae": {
+   "defaults": [
+    {
+     "override /patch_config": "stableaudio"
+    },
+    {
+     "override /patch_layers": "stableaudio/none"
+    },
+    {
+     "override /patch_data": "musiccaps/reggae"
+    },
+    {
+     "override /patch_model": "stableaudio_patch"
+    }
+   ]
+  },
+  "patch_stableaudio/stableaudio_sad": {
+   "defaults": [
+    {
+     "override /patch_config": "stableaudio"
+    },
+    {
+     "override /patch_layers": "stableaudio/none"
+    },
+    {
+     "override /patch_data": "musiccaps/sad"
+    },
+    {
+     "override /patch_model": "stableaudio_patch"
+    }
+   ]
+  },
+  "patch_stableaudio/stableaudio_saxophone": {
+   "defaults": [
+    {
+     "override /patch_config": "stableaudio"
+    },
+    {
+     "override /patch_layers": "stableaudio/none"
+    },
+    {
+     "override /patch_data": "musiccaps/saxophone"
+    },
+    {
+     "override /patch_model": "stableaudio_patch"
+    }
+   ]
+  },
+  "patch_stableaudio/stableaudio_slow": {
+   "defaults": [
+    {
+     "override /patch_config": "stableaudio"
+    },
+    {
+     "override /patch_layers": "stableaudio/none"
+    },
+    {
+     "override /patch_data": "musiccaps/slow"
+    },
+    {
+     "override /patch_model": "stableaudio_patch"
+    }
+   ]
+  },
+  "patch_stableaudio/stableaudio_trombone": {
+   "defaults": [
+    {
+     "override /patch_config": "stableaudio"
+    },
+    {
+     "override /patch_layers": "stableaudio/none"
+    },
+    {
+     "override /patch_data": "musiccaps/trombone"
+    },
+    {
+     "override /patch_model": "stableaudio_patch"
+    }
+   ]
+  },
+  "patch_stableaudio/stableaudio_trumpet": {
+   "defaults": [
+    {
+     "override /patch_config": "stableaudio"
+    },
+    {
+     "override /patch_layers": "stableaudio/none"
+    },
+    {
+     "override /patch_data": "musiccaps/trumpet"
+    },
+    {
+     "override /patch_model": "stableaudio_patch"
+    }
+   ]
+  },
+  "patch_stableaudio/stableaudio_violin": {
+   "defaults": [
+    {
+     "override /patch_config": "stableaudio"
+    },
+    {
+     "override /patch_layers": "stableaudio/none"
+    },
+    {
+     "override /patch_data": "musiccaps/violin"
+    },
+    {
+     "override /patch_model": "stableaudio_patch"
+    }
+   ]
+  },
+  "patch_stableaudio/stableaudio_xylophone": {
+   "defaults": [
+    {
+     "override /patch_config": "stableaudio"
+    },
+    {
+     "override /patch_layers": "stableaudio/none"
+    },
+    {
+     "override /patch_data": "musiccaps/xylophone"
+    },
+    {
+     "override /patch_model": "stableaudio_patch"
+    }
+   ]
+  }
+ },
+ "clap_prompt_template": "This is a music of {p}",
+ "muqt_prompt_template": "A {p} track",
+ "concepts_by_model": {
+  "ace": [
+   "female",
+   "male",
+   "fast",
+   "slow",
+   "happy",
+   "sad",
+   "drums",
+   "violin",
+   "reggae",
+   "jazz"
+  ],
+  "stableaudio": [
+   "female",
+   "male",
+   "fast",
+   "slow",
+   "happy",
+   "sad",
+   "violin",
+   "flute",
+   "maracas",
+   "guitar",
+   "techno",
+   "reggae"
+  ]
+ },
+ "tau": 0.1
+}
