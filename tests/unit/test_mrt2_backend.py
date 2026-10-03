@@ -605,3 +605,51 @@ def test_sidecar_drops_a_backend_that_goes_silent(monkeypatch):
     finally:
         a.close()
         b.close()
+
+
+def test_produce_raises_once_the_link_is_lost():
+    backend, client = make_backend()
+    client.lost = True
+    client.lost_reason = "reader error=EOF"
+    with pytest.raises(RuntimeError, match="reader error=EOF"):
+        backend.produce(backend.read_knobs(), _ctx(0.0), "generate")
+
+
+def test_sidecar_loss_ends_the_session_with_an_error(monkeypatch):
+    """A sidecar that goes away mid-session must reach the client as a
+    SessionError and stop the session, not loop stale audio forever."""
+    import threading
+
+    from acestep.streaming.config import SessionConfig
+    from acestep.streaming.events import SessionError
+    from acestep.streaming.families import get_family
+    from acestep.streaming.session import StreamingSession
+
+    side = _FakeSidecar()
+    monkeypatch.setenv("DEMON_MRT2_SIDECAR", f"127.0.0.1:{side.port}")
+    try:
+        cfg = SessionConfig.from_dict({"backend": "mrt2", "prompt": "lofi"})
+        ss = get_family("mrt2").create_session(
+            StreamingSession, audio=None, config=cfg, checkpoint="mrt2",
+            session_id="t-mrt2-loss", decoder_backend="eager",
+            vae_backend="eager", offload_text_encoder=False,
+            checkpoint_dir=None, model_extension=None,
+        )
+        errors = []
+        ss.bus.subscribe(
+            lambda ev: errors.append(ev) if isinstance(ev, SessionError) else None,
+        )
+        ss.state.running = True
+        t = threading.Thread(target=ss.run, daemon=True)
+        t.start()
+        time.sleep(0.2)
+        side.close()  # the sidecar process dies: EOF on the client link
+        t.join(5.0)
+        assert not t.is_alive(), "session kept running after the link died"
+        assert ss.closed.is_set()
+        deadline = time.monotonic() + 2.0
+        while not errors and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert errors and "mrt2 sidecar link lost" in errors[0].message
+    finally:
+        side.close()

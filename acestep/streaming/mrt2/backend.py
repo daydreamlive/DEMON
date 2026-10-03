@@ -508,28 +508,35 @@ class MRT2Backend:
         t0 = time.perf_counter()
 
         client = self.client
-        if not client.lost:
-            # Heartbeat + liveness live on the client's own thread.
-            self._forward_knobs(knobs)
+        if client.lost:
+            # Nothing reconnects a lost link; looping the stale tape
+            # with a healthy-looking UI would hide that. Raising ends the
+            # session through the runner's error path, which publishes a
+            # SessionError("pipeline_error") to the client.
+            reason = getattr(client, "lost_reason", None) or "link closed"
+            raise RuntimeError(f"mrt2 sidecar link lost: {reason}")
 
-            # Credit pacing: keep (emitted + pending + outstanding)
-            # ``mrt2_lead`` seconds ahead of the unwrapped playhead.
-            lead_s = float(knobs.get("mrt2_lead", 0.75))
-            outstanding = self._granted - client.frames_received
-            covered = (
-                self._abs_written
-                + self._pending_samples
-                + max(0, outstanding) * mp.FRAME_SAMPLES
+        # Heartbeat + liveness live on the client's own thread.
+        self._forward_knobs(knobs)
+
+        # Credit pacing: keep (emitted + pending + outstanding)
+        # ``mrt2_lead`` seconds ahead of the unwrapped playhead.
+        lead_s = float(knobs.get("mrt2_lead", 0.75))
+        outstanding = self._granted - client.frames_received
+        covered = (
+            self._abs_written
+            + self._pending_samples
+            + max(0, outstanding) * mp.FRAME_SAMPLES
+        )
+        target = self._playhead_abs_samples() + int(lead_s * mp.SAMPLE_RATE)
+        deficit = target - covered
+        if deficit > 0:
+            grant = min(
+                MAX_GRANT_FRAMES,
+                -(-deficit // mp.FRAME_SAMPLES),  # ceil div
             )
-            target = self._playhead_abs_samples() + int(lead_s * mp.SAMPLE_RATE)
-            deficit = target - covered
-            if deficit > 0:
-                grant = min(
-                    MAX_GRANT_FRAMES,
-                    -(-deficit // mp.FRAME_SAMPLES),  # ceil div
-                )
-                self._granted += grant
-                client.send_json({"type": "credit", "frames": int(grant)})
+            self._granted += grant
+            client.send_json({"type": "credit", "frames": int(grant)})
 
         for arr in client.pop_audio():
             self._pending.append(arr)
