@@ -644,7 +644,7 @@ def main() -> int:
     onnx_path = onnx_root / onnx_file_name(config)
 
     if args.dry_run:
-        print(f"\nMiniMax build plan")
+        print("\nMiniMax build plan")
         print(f"  engine     {name}")
         print(f"  label      {config.label()}")
         print(f"  engine at  {engine_path}"

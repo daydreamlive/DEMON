@@ -32,7 +32,6 @@ from pathlib import Path
 # A sibling ACE-Step checkout shadows `acestep` otherwise.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
 from acestep.engine.minimax_adapter import (  # noqa: E402

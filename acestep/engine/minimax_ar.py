@@ -68,7 +68,7 @@ from safetensors.torch import load_file
 
 try:  # pragma: no cover - the CLI runs this module outside the server
     from acestep.engine.obs import logger
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     import logging as _logging
 
     class _Shim:

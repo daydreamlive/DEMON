@@ -56,7 +56,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import torch  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
-from torch.nn.attention import SDPBackend, sdpa_kernel  # noqa: E402
 from transformers import AttentionInterface, StaticCache  # noqa: E402
 from transformers.cache_utils import StaticLayer  # noqa: E402
 from transformers.masking_utils import AttentionMaskInterface  # noqa: E402

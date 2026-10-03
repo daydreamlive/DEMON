@@ -41,14 +41,12 @@ exactly against throughput --- see
 
 from __future__ import annotations
 
-import math
 import time
 from dataclasses import dataclass
 from typing import Optional
 
 import torch
 
-from acestep.engine.obs import logger
 
 # ---------------------------------------------------------------------------
 # Geometry. Two rates; see the module docstring.
