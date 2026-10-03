@@ -72,6 +72,9 @@ DECODE_TAIL_SAMPLES = 64
 #: Decoded windows kept per latent (0.4 s stereo float32 each, ~150 KB).
 WINDOW_CACHE_MAX = 512
 
+#: Runner pacing while settled (also the worst-case extra knob latency).
+SETTLED_NAP_S = 0.02
+
 MAX_FEEDBACK_DEPTH = int(
     next(s for s in registry_knob_specs(False) if s.name == "feedback_depth").max_val
 )
@@ -138,6 +141,7 @@ class YuE2Backend(DiffusionBackend):
         depth: int = 1,
         vae_window_s: float = 0.4,
         gpu_gate=None,
+        settled_nap_s: float = SETTLED_NAP_S,
     ):
         super().__init__(adapter=adapter, codec=codec)
         # Excludes a conditioning-worker CUDA graph capture while the ring
@@ -186,6 +190,8 @@ class YuE2Backend(DiffusionBackend):
         self._emerged_marker = None
         self._rendered_for = None
         self._rendered_pcm = None
+        self._settled_last = False
+        self._settled_nap_s = float(settled_nap_s)
         self._window_cache: OrderedDict = OrderedDict()
         self._window_cache_src = None
         self._last_prep = None
@@ -327,7 +333,13 @@ class YuE2Backend(DiffusionBackend):
 
     def produce(self, knobs: dict, ctx: TickContext, mode) -> bool:
         with self._gpu_gate:
-            return super().produce(knobs, ctx, mode)
+            fresh = super().produce(knobs, ctx, mode)
+        if not fresh and self._settled_last and self._settled_nap_s > 0:
+            # Nothing to generate: pace the runner, which would otherwise
+            # spin re-rendering cached windows and starve the conditioning
+            # worker's Python AR loop of the GIL.
+            time.sleep(self._settled_nap_s)
+        return fresh
 
     def _prepare_tick(self, knobs: dict, ctx: TickContext) -> dict:
         x0_str = float(knobs.get("x0_target", 0.0))
@@ -394,7 +406,8 @@ class YuE2Backend(DiffusionBackend):
         )
 
     def _generate(self, prep: dict):
-        if self.is_settled(prep):
+        self._settled_last = self.is_settled(prep)
+        if self._settled_last:
             return None
         with self._control_lock:
             song = self._active

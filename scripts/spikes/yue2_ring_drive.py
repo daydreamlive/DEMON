@@ -138,8 +138,9 @@ def play_watching(client, playhead, schedule, seconds, snapshot):
         while first_changed is None and seen < len(client.slices):
             sl = client.slices[seen]
             seen += 1
-            ref = snapshot[sl.start_sample:sl.start_sample + sl.num_samples]
-            if ref.shape == sl.audio.shape and np.abs(sl.audio - ref).max() > 1e-5:
+            # Compare the mirrored buffer (DELTA slices carry differences).
+            region = slice(sl.start_sample, sl.start_sample + sl.num_samples)
+            if np.abs(client.buffer[region] - snapshot[region]).max() > 1e-5:
                 first_changed = time.monotonic() - t0
     return first_changed
 
@@ -166,6 +167,49 @@ def run_recompose(client, ready, defaults, out: Path) -> dict:
     return report
 
 
+def summarize_server_log(path: Path) -> dict:
+    """Runner write leads (DEMON_LAT_TRACE=1) split at the re-compose
+    events: lead < 0 means the write landed behind the playhead (an
+    underrun). Also the yue2 event timeline (s since the first event)."""
+    import re
+    from datetime import datetime
+
+    ansi = re.compile(r"\[[0-9;]*m")
+    rows, events = [], []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = ansi.sub("", line)
+        stamp = re.match(r"(\d\d:\d\d:\d\d\.\d+)", line)
+        if not stamp:
+            continue
+        t = datetime.strptime(stamp.group(1), "%H:%M:%S.%f")
+        t = t.hour * 3600 + t.minute * 60 + t.second + t.microsecond / 1e6
+        if "lat_decode" in line:
+            fields = dict(re.findall(r"(\w+)=(-?[\d.]+)", line))
+            rows.append((t, float(fields["lead_s"]), float(fields["tick_ms"]), float(fields["dec_ms"])))
+        for name in ("yue2_recompose_requested", "yue2_recompose_published", "yue2_song_anchored",
+                     "yue2_gen_emerged", "yue2_recompose_failed", "pipeline_error"):
+            if name in line:
+                events.append((t, name, line.split(" - ", 1)[-1][:160]))
+    t0 = events[0][0] if events else 0.0
+    marks = [t for t, name, _ in events if name in ("yue2_recompose_requested", "yue2_recompose_published")]
+    spans = {"all": (0, 1e9)}
+    for i in range(0, len(marks) - 1, 2):
+        spans[f"recompose_{i // 2}"] = (marks[i], marks[i + 1])
+
+    def stats(lo, hi):
+        sel = [r for r in rows if lo <= r[0] <= hi]
+        if not sel:
+            return None
+        leads = [r[1] for r in sel]
+        return {"writes": len(sel), "underruns": sum(v < 0 for v in leads), "min_lead_s": min(leads),
+                "tick_ms_p95": percentile([r[2] for r in sel], 95),
+                "dec_ms_p95": percentile([r[3] for r in sel if r[3] > 0], 95)}
+
+    return {"spans": {k: stats(*v) for k, v in spans.items()},
+            "underrun_times_s": [round(r[0] - t0, 2) for r in rows if r[1] < 0][:20],
+            "events": [(round(t - t0, 2), name, text) for t, name, text in events]}
+
+
 def phase_report(slices, audio, anchor):
     # Settled slices re-decode the cached latent and carry a ~0 ms tick;
     # only ticks that ran the ring count.
@@ -188,7 +232,13 @@ def main():
     parser.add_argument("--loops", type=float, default=1.15)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--scenario", choices=["knobs", "recompose"], default="knobs")
+    parser.add_argument("--server-log", type=Path, help="summarize this server log and exit")
     args = parser.parse_args()
+    if args.server_log is not None:
+        summary = summarize_server_log(args.server_log)
+        (args.out / "server_log_summary.json").write_text(json.dumps(summary, indent=2))
+        print(json.dumps(summary, indent=1))
+        return
     args.out.mkdir(parents=True, exist_ok=True)
 
     gpu = GpuSampler()

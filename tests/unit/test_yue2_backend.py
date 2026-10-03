@@ -71,6 +71,7 @@ class _Codec:
 
 def _backend(*, depth=1, recompose=None, song=None, song_b=None, codec=None, submit=None, **kw):
     extra = {"submit": submit} if submit is not None else {}
+    kw.setdefault("settled_nap_s", 0.0)
     return YuE2Backend(
         adapter=YuE2Adapter(_velocity, steps=STEPS),
         codec=codec or _Codec(),
@@ -410,7 +411,7 @@ def test_settles_at_the_released_step_count(depth, denoise):
     still recognise the emerged latent and stop ticking."""
     backend = YuE2Backend(
         adapter=YuE2Adapter(_velocity, steps=32), codec=_Codec(), song=_song(),
-        knob_state=KnobState(yue2_knob_specs()), steps=32, depth=depth,
+        knob_state=KnobState(yue2_knob_specs()), steps=32, depth=depth, settled_nap_s=0.0,
     )
     knobs = _knobs(yue2_denoise=denoise)
     for _ in range(4 * 32):
@@ -501,3 +502,14 @@ def test_a_published_song_wakes_the_idle_runner():
     backend = _backend(state=state, recompose=_recompose_to(1.0))
     backend.handle_set_prompt("rock")
     assert state.last_activity_ts > 0.0
+
+
+def test_a_settled_ring_paces_the_runner():
+    import time as _time
+
+    backend = _backend(settled_nap_s=0.05)
+    knobs = _knobs()
+    _produce_until_fresh(backend, knobs)
+    t0 = _time.perf_counter()
+    assert backend.produce(knobs, CTX, "generate") is False
+    assert _time.perf_counter() - t0 >= 0.05
