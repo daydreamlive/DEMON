@@ -21,7 +21,9 @@ codec). Shaped like the SA3 backend:
 
 Control surface: ``yue2_denoise`` (prefixed; ACE's ``denoise`` means
 something else) plus the shared ``x0_target`` / ``feedback`` /
-``feedback_depth`` / ``seed`` / ``steps_override``. ``prompt`` is a fast
+``feedback_depth`` / ``seed``. The step count stays at the released
+32-step grid: the shared ``steps_override`` knob (default 8, at most 16)
+cannot express it, and ``yue2_denoise`` already shortens the work. ``prompt`` is a fast
 restyle (same score and semantic tokens, new ``[Tags]`` prefix);
 ``set_prompt_blend`` is a hard A/B switch at 0.5 (two prefixes of
 different lengths have no KV to interpolate). Lyrics and song length
@@ -77,10 +79,11 @@ def playable_seconds(frames: int) -> float:
 def yue2_knob_specs() -> list:
     """The YuE2 knob manifest (also the homonym-guard universe).
 
-    ``seed``, ``steps_override``, ``x0_target``, ``feedback`` and
-    ``feedback_depth`` come FROM the shared registry by name, so their
-    semantics cannot fork from ACE's. ``yue2_denoise`` is prefixed: it
-    truncates the released step grid, not ACE's k1 strength."""
+    ``seed``, ``x0_target``, ``feedback`` and ``feedback_depth`` come
+    FROM the shared registry by name, so their semantics cannot fork
+    from ACE's. ``yue2_denoise`` is prefixed: it truncates the released
+    step grid, not ACE's k1 strength. No ``steps_override``: the shared
+    spec (default 8, max 16) cannot express the released 32 steps."""
     shared = {s.name: s for s in registry_knob_specs(False)}
     return [
         KnobSpec(
@@ -97,7 +100,6 @@ def yue2_knob_specs() -> list:
         shared["feedback"],
         shared["feedback_depth"],
         shared["seed"],
-        shared["steps_override"],
     ]
 
 
@@ -236,9 +238,6 @@ class YuE2Backend(DiffusionBackend):
     def read_knobs(self) -> dict:
         return self.knob_state.get_all_values()
 
-    def rebuild_imminent(self, knobs: dict) -> bool:
-        return int(knobs.get("steps_override", self._steps)) != self._steps
-
     # ---- control: prompt ------------------------------------------------------
 
     def handle_set_prompt(self, tags: str, *, tags_b: Optional[str] = None) -> None:
@@ -305,7 +304,6 @@ class YuE2Backend(DiffusionBackend):
         return {
             "denoise": float(knobs.get("yue2_denoise", 1.0)),
             "seed": int(knobs.get("seed", self._default_seed)),
-            "steps": int(knobs.get("steps_override", self._steps)),
             "x0_target": x0_str,
             "feedback": float(knobs.get("feedback", 0.0)),
             "feedback_depth": max(1, min(MAX_FEEDBACK_DEPTH, int(round(fb_depth_raw)))),
@@ -317,7 +315,7 @@ class YuE2Backend(DiffusionBackend):
         if prep["feedback"] > 0.0:
             return None
         return (id(bundle), id(self._anchor), round(prep["denoise"], 4), prep["seed"],
-                prep["steps"], round(prep["x0_target"], 4))
+                round(prep["x0_target"], 4))
 
     def is_settled(self, prep: dict) -> bool:
         """True when the latest emerged latent is exactly what the ring
@@ -340,12 +338,6 @@ class YuE2Backend(DiffusionBackend):
     def _generate(self, prep: dict):
         from acestep.engine.stream import SlotRequest
 
-        if prep["steps"] != self._steps:
-            # The truncated grid's h = 1/steps: adapter and pipeline
-            # rebuild together (pre-covered via rebuild_imminent).
-            self._steps = prep["steps"]
-            self.pipeline = self._build_pipeline(self._steps)
-            self._emerged_signature = None
         if self.is_settled(prep):
             return None
 
@@ -470,7 +462,6 @@ class YuE2Backend(DiffusionBackend):
         if prep:
             p["yue2_denoise"] = round(prep["denoise"], 2)
             p["seed"] = prep["seed"]
-            p["steps_override"] = prep["steps"]
             p["x0_target"] = round(prep["x0_target"], 2)
             p["feedback"] = round(prep["feedback"], 2)
             p["feedback_depth"] = prep["feedback_depth"]

@@ -81,8 +81,8 @@ def _backend(*, depth=1, restyler=None, bundle=None, codec=None, **kw):
 
 
 def _knobs(**over):
-    knobs = {"yue2_denoise": 1.0, "seed": 1, "steps_override": STEPS,
-             "x0_target": 0.0, "feedback": 0.0, "feedback_depth": 1}
+    knobs = {"yue2_denoise": 1.0, "seed": 1, "x0_target": 0.0, "feedback": 0.0,
+             "feedback_depth": 1}
     knobs.update(over)
     return knobs
 
@@ -105,8 +105,8 @@ def test_contract_surface():
     assert geo.duration_s == pytest.approx((T * 1920 - 64) / 48000)
     assert backend.max_duration_s() == YUE2_MAX_SONG_S
     names = [s.name for s in backend.knob_specs()]
-    assert names == ["yue2_denoise", "x0_target", "feedback", "feedback_depth", "seed",
-                     "steps_override"]
+    assert names == ["yue2_denoise", "x0_target", "feedback", "feedback_depth", "seed"]
+    assert backend.rebuild_imminent({"steps_override": 8}) is False
     assert backend.lora_available() is False and backend.list_loras() == []
     with pytest.raises(RuntimeError):
         backend.register_lora("x.safetensors")
@@ -178,14 +178,10 @@ def test_prompt_blend_is_a_hard_switch_at_half():
     assert backend._active_bundle is a
 
 
-def test_steps_override_rebuilds_pipeline_and_adapter_together():
+def test_steps_stay_on_the_released_grid_whatever_the_knobs_say():
     backend = _backend()
-    assert backend.rebuild_imminent(_knobs(steps_override=8))
-    assert not backend.rebuild_imminent(_knobs())
-    old_pipe = backend.pipeline
     backend.produce(_knobs(steps_override=8), CTX, "generate")
-    assert backend.pipeline is not old_pipe
-    assert backend.adapter.steps == 8 and backend.pipeline.config.infer_steps == 8
+    assert backend.adapter.steps == STEPS and backend.pipeline.config.infer_steps == STEPS
 
 
 def test_render_window_clamps_at_the_song_edges():
