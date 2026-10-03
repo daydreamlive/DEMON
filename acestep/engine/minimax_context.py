@@ -237,9 +237,15 @@ class MiniMaxContext:
         # is launch overhead an engine would cut. Worth building at the
         # fixed 58-frame window shape; not worth blocking on. Note fp16
         # is not an option: it produces all-NaN on this vocoder.
+        self.codec_backend_in_use(backend)
+        return MiniMaxCodec(self._dav, device=self.device, dtype=self.dtype)
+
+    def codec_backend_in_use(self, backend: str) -> str:
+        """The decoder path :meth:`make_codec` actually runs for a request
+        of ``backend``. Always ``"eager"`` until a decoder engine exists."""
         if backend == "tensorrt":
             logger.info("minimax_codec_eager reason=no_engine_built")
-        return MiniMaxCodec(self._dav, device=self.device, dtype=self.dtype)
+        return "eager"
 
     # ---- conditioning --------------------------------------------------------
 

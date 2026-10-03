@@ -123,6 +123,8 @@ def create_minimax_session(
     # say so at create, because the failure mode otherwise is an OOM
     # several seconds into a session.
     context = get_minimax_context(ar_policy="resident")
+    # Log the decoder path that will run, not the one requested.
+    codec_backend = context.codec_backend_in_use(codec_backend)
 
     # A saved capture replaces the language model entirely: the frames
     # are already written, so nothing steers the composition, but the
