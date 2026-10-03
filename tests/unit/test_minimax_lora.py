@@ -87,7 +87,7 @@ def test_qkv_splits_contiguously_not_interleaved(tmp_path):
     """Pins the empirically verified packing.
 
     Both hypotheses produce correctly shaped tensors, so shape checks
-    cannot tell them apart — only the values can.
+    cannot tell them apart; only the values can.
     """
     p = _lora(tmp_path)
     from safetensors.torch import load_file

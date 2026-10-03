@@ -1,8 +1,8 @@
 """MiniMaxContext: the loaded MiniMax-Music3 stack, once per process.
 
 The peer of :class:`~acestep.engine.sa3_context.SA3Context`. Owns the
-renderer (DiT), the decoder (DAV), the condition encoder, and — only
-when it is actually needed — the 8.58B autoregressive stage.
+renderer (DiT), the decoder (DAV), the condition encoder, and (only
+when it is actually needed) the 8.58B autoregressive stage.
 
 The AR stage is treated differently from every other model in this
 repo, and deliberately. It is 17 GB, it is needed only when *capturing*
@@ -14,7 +14,7 @@ between a session that fits and one that does not.
 
 A capture is a first-class artifact here: ``prepare_cond`` will happily
 load one off disk instead of computing it. That matters for more than
-convenience — the AR stage needs a newer ``transformers`` than the rest
+convenience: the AR stage needs a newer ``transformers`` than the rest
 of this repo pins, so being able to stream from a saved capture keeps
 the renderer usable on the version DEMON actually ships.
 """
@@ -41,8 +41,8 @@ COND_DIM = 2048
 class MiniMaxCodec:
     """DAV decoder behind the codec contract.
 
-    The decoder is deterministic — no sampling, no injected noise
-    anywhere in its forward — which spares this family the whole
+    The decoder is deterministic (no sampling, no injected noise
+    anywhere in its forward), which spares this family the whole
     decode-reproducibility problem SA3 had to solve with seeded RNG
     forks. Repeated decodes of one latent are bit-identical, so
     overlapping renders simply agree.
@@ -306,7 +306,7 @@ class MiniMaxContext:
         """The composition for this session.
 
         With ``capture`` this is a disk read. Without it, this runs the
-        autoregressive stage — seconds of an 8.58B LM — and is why
+        autoregressive stage (seconds of an 8.58B LM), and is why
         ``set_prompt`` on this family is not a per-tick operation.
         """
         if capture is not None:

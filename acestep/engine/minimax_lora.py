@@ -1,7 +1,7 @@
 """Map a ComfyUI-layout MiniMax-Music3 LoRA onto our DiT.
 
-Community LoRAs for this model — step-distillation "turbo" adapters
-included — ship in the ComfyUI/native weight layout, which differs from
+Community LoRAs for this model (step-distillation "turbo" adapters
+included) ship in the ComfyUI/native weight layout, which differs from
 the diffusers layout this tree reimplements in one structural way: the
 native checkpoint fuses attention projections into a single
 ``self_attn.to_qkv`` of shape ``[3*dim, dim]``, where we keep separate

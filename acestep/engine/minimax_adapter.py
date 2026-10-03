@@ -6,7 +6,7 @@ samples in the model's own convention and needs no conversion at all.
 This adapter exists so the measurement harnesses
 (``scripts/minimax/minimax_chain_parity.py`` and
 ``minimax_quality_ablation.py``) can drive the same DiT through DEMON's
-solver and compare the two — the ablation's L4 rung is exactly that
+solver and compare the two. The ablation's L4 rung is exactly that
 comparison, and it is what proves the shipping sampler is the sampler
 the operating point was measured on.
 
@@ -17,7 +17,7 @@ get half-right and expensive to debug.
 MiniMax-Music3 is a three-stage model: an 8.58B Qwen3 autoregressive LM
 emits one acoustic frame per 40 ms (25 Hz), a depth decoder fills the 7
 residual codebooks, and the fused per-frame hidden states drive a 2.43B
-flow-matching DiT over a continuous 128-channel latent at 86.133 Hz —
+flow-matching DiT over a continuous 128-channel latent at 86.133 Hz:
 two different rates, related by exactly 441/128. A deterministic
 DAC-style decoder ("DAV") takes that latent to 44.1 kHz stereo.
 
@@ -28,11 +28,11 @@ enc/mask/ctx lists are ignored.
 
 This adapter is TWO boundaries at once, and both matter:
 
-Layout — the shared pipeline is engine-layout ``[B, T, C]``; MiniMax is
+Layout: the shared pipeline is engine-layout ``[B, T, C]``; MiniMax is
 native ``[B, C, T]``. ``xt`` is transposed on the way in and the
 velocity on the way back out, exactly as :class:`SA3Adapter` does.
 
-Time direction — MiniMax runs flow matching the OTHER WAY ROUND from
+Time direction: MiniMax runs flow matching the OTHER WAY ROUND from
 every other family in this tree. Its ``t`` goes 0 (noise) to 1 (data),
 its interpolant is ``x_t = (1-t)*noise + t*data``, and its Euler step
 is ``x += (+1/N) * v``. DEMON's solver (``acestep.engine.ode_steps``)
@@ -40,7 +40,7 @@ assumes the rectified-flow convention: ``s`` from 1 (noise) down to 0
 (data), ``x_s = s*noise + (1-s)*x0``, and ``x0 = xt - v*s``.
 
 Substituting ``s = 1 - t`` makes the two interpolants identical, so the
-latents themselves need no conversion — only the two scalars around
+latents themselves need no conversion; only the two scalars around
 them do:
 
     t_minimax = 1 - s_demon
@@ -71,7 +71,7 @@ def stack_minimax_cond_bundles(bundles: List[dict]) -> dict:
 
     Every slot in a tick shares T (``StreamPipeline`` drops slots whose
     frame count disagrees with the newest request), so unlike SA3's
-    cross-attention stacker there is nothing to pad — the tensors are
+    cross-attention stacker there is nothing to pad: the tensors are
     already the same shape. They are not the same *object*, though:
     after a prompt swap, in-flight slots legitimately carry the old
     composition while fresh submissions carry the new one, which is
@@ -118,7 +118,7 @@ class MiniMaxAdapter:
         # Flux/SD3 map SA3 uses. 1.0 is the untouched schedule; >1
         # pushes steps toward noise (more structure work), <1 toward
         # refinement. The backend mutates this and MUST invalidate the
-        # pipeline's schedule cache — that cache is keyed by denoise
+        # pipeline's schedule cache. That cache is keyed by denoise
         # alone, so a warp change is invisible to it otherwise.
         self.shift_alpha: float = 1.0
         self._device = torch.device(device)
@@ -135,14 +135,14 @@ class MiniMaxAdapter:
         if schedule.numel() != config.infer_steps + 1:
             raise ValueError(
                 "minimax schedule length mismatch: expected "
-                f"{config.infer_steps + 1}, got {schedule.numel()} — "
+                f"{config.infer_steps + 1}, got {schedule.numel()}; "
                 "rebuild the pipeline when the step count changes"
             )
         alpha = float(self.shift_alpha)
         if alpha <= 0.0:
             raise ValueError(f"minimax shift_alpha must be > 0, got {alpha}")
         if abs(alpha - 1.0) > 1e-6:
-            # Normalize, warp, rescale — see the long note in
+            # Normalize, warp, rescale; see the long note in
             # SA3Adapter.build_schedule. The map is a monotone [0,1]
             # bijection with fixed points 0 and 1, so it has to act on
             # the schedule normalized to [0,1]; warping already-scaled

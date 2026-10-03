@@ -135,11 +135,11 @@ Upstream's inference constants, read as a streaming loop:
   restored exactly at `t = 1`. This is what makes the stream continuous
   rather than a sequence of independent 8-second renders. Measured at a
   chunk seam: sample-to-sample delta 0.006 against a p99.9 of 0.18 for
-  the signal as a whole — the seam is quieter than the music.
+  the signal as a whole. The seam is quieter than the music.
 * **Commit.** Exactly the region the next chunk's carry will need, so
   consecutive commits abut and nothing is written twice.
 * **Lookahead.** Discarded so the committed region is never generated at
-  the edge of the model's window. It is not waste, it is **latency** —
+  the edge of the model's window. It is not waste, it is **latency**;
   see §4.
 * **No drift.** Each chunk's latent origin is derived from its absolute
   AR index (`ar_index * 441 // 128`), not from a constant hop. A
@@ -160,7 +160,7 @@ Measured on an RTX 5090, TensorRT fp16 renderer, bf16 AR stage.
 | AR emission, plain loop | 52.1 ms/frame at the start of a piece | 0.77x, falling with length | `minimax_ar_bench.py` |
 | chunk render, TRT fp16 | 513 ms / 4.0 s commit | 7.8x | `minimax_stream_bench.py` |
 | chunk render, eager bf16 | 841 ms / 4.0 s commit | 4.8x | `minimax_stream_bench.py` |
-| guarded decode | ~6 ms/window | — | `minimax_decode_profile.py` |
+| guarded decode | ~6 ms/window | n/a | `minimax_decode_profile.py` |
 
 The plain loop is **not flat in context length**, which an earlier
 version of this document claimed from a 300-frame run. Its single-token
@@ -219,7 +219,7 @@ next to it. That is the same trap the previous document fell into, at a
 larger scale.
 
 These are session means. The per-sample values wander by ~15% run to
-run, which is enough to move an end-to-end figure — the backend's params
+run, which is enough to move an end-to-end figure; the backend's params
 echo reports means for that reason.
 
 **Below 1.0 means the frontier cannot keep ahead of a playhead.** The
@@ -240,7 +240,7 @@ across three runs:
 | **GPU busy fraction** | **39-42%** |
 | of which GEMM | 17.0 ms (76% of GPU time) |
 | dispatch gap (GPU idle) | 30-35 ms/frame |
-| **bandwidth achieved during GEMM** | **1.55 TB/s of 1.79 peak — 86%** |
+| **bandwidth achieved during GEMM** | **1.55 TB/s of 1.79 peak (86%)** |
 
 So the stage is **dispatch-bound, not bandwidth-bound**, and the two
 halves of that say different things:
@@ -248,7 +248,7 @@ halves of that say different things:
 * The kernels are already at **86% of the card's memory roof.** There is
   nothing left to win inside them on this hardware.
 * The GPU nevertheless **idles ~60% of every frame**, waiting on Python
-  to launch the next of ~3900 kernels — one LM forward at batch 2 with a
+  to launch the next of ~3900 kernels: one LM forward at batch 2 with a
   sequence length of one, ~460 GEMMs, plus seven depth-decoder forwards
   and eight sampled codes, all per 40 ms of audio.
 
@@ -263,16 +263,16 @@ A faster GPU scales only the busy 22 ms; the dispatch gap is CPU-side
 and does not move. Scaling by memory bandwidth alone: H100 PCIe
 (2.0 TB/s) 0.73-0.79x, H100 SXM (3.35 TB/s) 0.86-0.95x for the AR stage
 alone, before the renderer's share and before co-residency, so still
-short end to end — and generous, since the projection assumes 86% of
+short end to end, and generous, since the projection assumes 86% of
 peak holds on HBM3 and ignores that H100 SXM clocks lower than a 5090.
 Removing the gap instead was worth 1.79x on the card in hand. So that is
 what was done.
 
 ### The lever, taken: one CUDA graph per frame
 
-`acestep/engine/minimax_ar_graph.py` captures the whole frame — feedback
+`acestep/engine/minimax_ar_graph.py` captures the whole frame (feedback
 embedding, LM step, head, guided sampling, seven depth-decoder forwards,
-seven more samples, next feedback — as one graph and replays it. The
+seven more samples, next feedback) as one graph and replays it. The
 frame's ~3900 launches become one. Two things had to be true for that to
 pay, and both were measured rather than assumed
 (`scripts/minimax/minimax_graph_spike.py`):
@@ -284,9 +284,9 @@ own attention that cache is ruinous:
 
 | static cache slots | HF sdpa, graphed | grouped-query `bmm`, graphed |
 |---|---|---|
-| 512 | 24.0 ms | — |
+| 512 | 24.0 ms | n/a |
 | 1024 | 26.0 ms | **22.7 ms** |
-| 2048 | 29.9 ms | — |
+| 2048 | 29.9 ms | n/a |
 | 4096 | 36.8 ms | 32.4 ms (efficient kernel) |
 | 9600 | 55.6 ms | **25.7 ms** |
 
@@ -298,7 +298,7 @@ no better at a query length of one (0.64 ms per layer at 9600 slots
 against a 0.044 ms bandwidth floor): one CTA per (batch, head) walks
 every slot. The decode attention that ships folds the four query heads
 sharing a KV head into the query's row axis and does the two matmuls as
-`bmm` with an fp32 result — 0.072 ms per layer, so the whole 9600-slot
+`bmm` with an fp32 result: 0.072 ms per layer, so the whole 9600-slot
 cache costs ~3 ms per frame rather than ~23.
 
 **The result must match the plain path.** Teacher-forcing the graphed
@@ -310,7 +310,7 @@ graphed path is inside the noise of a kernel swap.
 What changes for an operator: nothing in the interface. Sampling
 controls become device scalars, so a knob move is a buffer write and
 never a recapture; `top_k` derives its threshold from a sort for the
-same reason. What is not preserved is the exact random draws — a captured
+same reason. What is not preserved is the exact random draws: a captured
 `multinomial` runs on graph-owned philox offsets, so a seed reproduces a
 graphed session against another graphed session, not against the plain
 loop. Captures and parity fixtures come from `generate_frame_hiddens`,
@@ -333,18 +333,18 @@ access violation, not an exception.
 | AR stage, resident | 17.4 GB |
 | static KV cache, batch 2, 9520 slots | 2.8 GB |
 | TRT fp16 engine | 4.88 GB |
-| eager DiT, bf16 | 4.9 GB — **parked on the host while the engine serves** |
+| eager DiT, bf16 | 4.9 GB (**parked on the host while the engine serves**) |
 | DAV + condition encoder | ~0.2 GB |
 | **whole streaming session, `nvidia-smi`** | **28.7 GB** (32.1 with the eager DiT resident, which pages) |
 
 Streaming requires the AR stage **resident**, not paged: it runs
 continuously rather than once per composition, and moving 18 GB across
 PCIe between chunks would cost more than the chunks do. That is the real
-deployment cost this architecture adds — the renderer alone fits
+deployment cost this architecture adds: the renderer alone fits
 comfortably on a 24 GB card and the pair does not. On a 32 GB card the
 pair fits with ~3 GB to spare *only* because the eager DiT leaves;
 anything else on the card (a desktop was 1.7-4.6 GB during these runs)
-eats into that, and once the card is full nothing reports it — the
+eats into that, and once the card is full nothing reports it; the
 frame times simply triple.
 
 ## 4. Knob-to-ear, measured
@@ -358,8 +358,8 @@ Graphed AR, eager DiT parked, probe at 12 s into the piece:
 | knob | stage | hop=100 | hop=50 | plain loop, hop=100 (old) |
 |---|---|---|---|---|
 | `minimax_guidance` | renderer | **3.30 s** | **1.21 s** | 6.7-7.1 s |
-| `minimax_temperature` | AR | **3.33 s** | — | 8.6-9.8 s |
-| `set_prompt` (re-prefill, 0.28 s over 400 frames) | AR | **3.57 s** | — | 7.9 s |
+| `minimax_temperature` | AR | **3.33 s** | n/a | 8.6-9.8 s |
+| `set_prompt` (re-prefill, 0.28 s over 400 frames) | AR | **3.57 s** | n/a | 7.9 s |
 | end-to-end throughput, steady state | | 1.29x | 1.10x | 0.54x |
 
 Two different floors, for two different reasons, and both halved with
@@ -378,8 +378,8 @@ the window does, so it cannot be committed until the LM has written up
 to 150 more frames. That is 6 s of audio whatever the hop is; in wall
 clock it is 150 frame times, ~4 s at 26 ms and ~8 s at the plain loop's
 53. Shrinking it further means shrinking the chunk or the lookahead,
-which is a quality question — the committed region would then sit at
-the edge of the model's window — and it is unmeasured.
+which is a quality question (the committed region would then sit at
+the edge of the model's window), and it is unmeasured.
 
 ### What live steering actually buys here
 
@@ -424,13 +424,13 @@ draft PR #332, as superseded.
 | claimed | actual |
 |---|---|
 | "9.5x realtime eager, 15.2x TRT" | Renderer only, with the AR stage excluded. End to end is **1.29x** steady state with the graphed AR stage (§3), and was 0.54x through the plain loop. |
-| "16.7x realtime at a 14.4 s song" — the headline | Same omission, and the best case of it. |
+| "16.7x realtime at a 14.4 s song" (the headline) | Same omission, and the best case of it. |
 | "roughly 20-70x slower than its siblings in normalized terms" | Also renderer-only, in a `60 s-gens/s` unit that has no meaning for a model with no fixed song length. The real gap is different in size and in kind: **the AR stage is under realtime and the renderer is not the problem**. |
 | `gens/s` and `60 s-gens/s` tables | A "generation" was one cover of a frozen composition. There is no such object now: audio is committed once and never re-rendered. Both units are withdrawn. |
 | `chunk_rate_hz` = 86.133 Hz beside ACE-Step's 25 Hz | Different quantities (§1). The backend now declares **25 Hz**, the AR acoustic rate, with the distinction pinned by a test. |
-| "the AR stage's 0.54x realtime" (§6, in passing) | Directionally right, and never connected to the architecture. Measured cleanly through the plain loop it is **0.77x** at the start of a piece and falls with length; the earlier figure was taken under per-stage profiling. Below realtime either way, which is the fact the design should have turned on — and which the graphed session (**1.54x**) then removed. |
+| "the AR stage's 0.54x realtime" (§6, in passing) | Directionally right, and never connected to the architecture. Measured cleanly through the plain loop it is **0.77x** at the start of a piece and falls with length; the earlier figure was taken under per-stage profiling. Below realtime either way, which is the fact the design should have turned on, and which the graphed session (**1.54x**) then removed. |
 | "a 60 s composition costs ~111 s of one-time capture before any streaming starts" | True of the capture architecture, and no longer how the family works: the stream starts after 200 AR frames plus one render, **6 s**, and extends until the model ends the piece. |
-| "Treating 200 as a model limit was an error" | Correct, and still correct — but the conclusion drawn from it (render the whole song in one pass) was the wrong one. 200/100/172 is upstream's *streaming* contract, and it is what the backend now implements. |
+| "Treating 200 as a model limit was an error" | Correct, and still correct, but the conclusion drawn from it (render the whole song in one pass) was the wrong one. 200/100/172 is upstream's *streaming* contract, and it is what the backend now implements. |
 | "8.011 s" | 689 x 512 / 44100 = **7.99927 s**. Carried over; it was already corrected once. |
 | "render cost is identical at 14.4 s and 8 s" | True of the windowed decode, and now moot: there is no whole-song render to compare against. |
 
@@ -478,13 +478,13 @@ uncorrelated between channels it also inverts left/right correlation,
 which is why it read as phasey rather than merely quiet.
 
 1. **Guidance is not optional and is worth more than steps.** Unguided
-   sampling plateaus at ~0.11 log-mel and stays there — 40 unguided
+   sampling plateaus at ~0.11 log-mel and stays there: 40 unguided
    steps score worse than 8 guided ones.
 2. **Step count trades against schedule warp nearly one for one.**
    Measured pairing: 30/1.0, 20/1.5, 16/2.0, 12/3.0.
 3. **RCFG is unusable here.** `initialize` scores 0.45-0.70 log-mel and
    `self` 0.52-0.92, against 0.03-0.12 for a real uncond pass.
-4. **Stock APG is the wrong combine operator** — ~4x worse than textbook
+4. **Stock APG is the wrong combine operator**: ~4x worse than textbook
    CFG (0.125 vs 0.032 at 16/2.0); its norm cap is calibrated for ACE's
    latent scale. The streaming renderer therefore computes CFG directly
    (`v_neg + (v_pos - v_neg) * w`) rather than routing through the
@@ -507,7 +507,7 @@ rewrite that rung measured a sampler nobody shipped.
 `SessionConfig.steps` defaults to ACE's 8, so the create path takes the
 family floor of 16. That was not enough on its own: the shared
 `steps_override` knob **also** defaults to 8 and caps at 16, so the
-first tick read it back and reset every session to the broken setting —
+first tick read it back and reset every session to the broken setting,
 found by instrumenting a real session create, which rendered 16 forwards
 where it should have run 32. The family now declares `minimax_steps`
 (default 16, range 8-40) instead, and the create path publishes the
@@ -538,7 +538,7 @@ across t, rel RMS 4.8-6.2e-3, flat in t (trunk quantization, not an
 angle problem). Full 30-step CFG trajectory vs the fixture's
 `final_latent`: TRT fp16 0.999677.
 
-> Eager **bf16 is not a usable parity reference** on this model — it
+> Eager **bf16 is not a usable parity reference** on this model: it
 > only reaches 0.998-0.9997/step against fp32. The fixture is itself a
 > bf16 run, so bf16 scoring highest is agreement with its own
 > quantization.
@@ -552,7 +552,7 @@ Notes that each cost a build attempt: batch cannot be dynamic from 1
 (`torch.export` 0/1-specializes; production engines are batch-1 and the
 renderer issues cond and uncond as two forwards); same trap on length,
 profile min 2; the "fp32" engine is really TF32. **Build on an idle
-GPU** — engines built under contention succeed and then segfault on
+GPU**: engines built under contention succeed and then segfault on
 load. **Do not try fp16 on the DAV vocoder**: measured all-NaN.
 
 fp16 is both faster and more accurate than bf16 on this DiT in eager
@@ -571,8 +571,8 @@ half-radian rotations.
 
 `scripts/minimax/minimax_capture.py` still runs the AR stage to
 completion and saves the fused per-frame hidden states. It is no longer
-how a session is conditioned — a session opens a live `MiniMaxARStream`
-— but the artifact is more useful than before:
+how a session is conditioned (a session opens a live `MiniMaxARStream`),
+but the artifact is more useful than before:
 `ReplayARStream` serves a saved capture through the same interface, so
 the renderer, the chunk geometry and the whole frontier path can be
 exercised **without 21 GB of language model resident**. That is how the
@@ -611,9 +611,9 @@ leading `[tag]`**.
 ## 9. Not done
 
 * **Not driven through `PipelineRunner` or the WS server.**
-  `StreamingSession.create(backend="minimax")` is verified end to end —
+  `StreamingSession.create(backend="minimax")` is verified end to end:
   family dispatch, create path, backend assembly, geometry/capability/
-  knob payloads, produce and render ticks, params echo, clean close —
+  knob payloads, produce and render ticks, params echo, clean close;
   and `scripts/minimax/minimax_stream_bench.py` runs the real backend
   through the loop the runner runs, with the real crossfade. What has
   not been run is the runner and a browser session. **No web panel**, no
@@ -634,13 +634,13 @@ leading `[tag]`**.
 * **The AR knob-to-ear floor (~8 s) is geometric and unexplored.** It
   comes from the 150-frame lookahead in a 200-frame conditioning window.
   Shrinking the window or the lookahead would shrink it, at an unknown
-  quality cost — the committed region would sit nearer the edge of the
+  quality cost: the committed region would sit nearer the edge of the
   model's context. Worth one ablation if this family ever matters.
 * **`swap`, `write_audio`, `timbre`, `structure` and LoRA are gated
   off.** Most need an audio encoder this checkpoint does not ship
   converted. One exists unconverted inside `dav.pth` (186 `encoder.*`
   keys plus `mean_proj`/`logs_proj`), so audio-to-audio is a real
-  follow-up rather than a dead end — but note the AR stage has no
+  follow-up rather than a dead end. Note, though, that the AR stage has no
   audio-prefix path either, so an encoder would condition the renderer
   only.
 * **Long-horizon coherence is upstream's open bug**, not ours: coherent
@@ -648,14 +648,14 @@ leading `[tag]`**.
   this *more* exposed than the old 8 s cover did, and it is unmeasured
   past ~60 s here.
 * **No TensorRT decoder engine.** Guarded decode is ~6 ms against a
-  ~880 ms chunk render — 0.7%, and not worth building.
+  ~880 ms chunk render (0.7%), and not worth building.
 * **The b2-4 TensorRT engine is built but never selected.** It would
   take cond and uncond in one forward instead of two; worth measuring
   now that the renderer issues exactly that pair, which it did not when
   the engine was excluded from discovery.
 * **Stereo width is one observation short of a conclusion.** Our takes
   average L/R correlation 0.43 (sd 0.15 over 8 draws) against a single
-  reference take at 0.096 — which we reproduce exactly on that take's
+  reference take at 0.096, which we reproduce exactly on that take's
   own noise. Settling it needs several upstream renders.
 
 ## 10. Running it
@@ -703,13 +703,13 @@ work. Set `HF_HUB_DISABLE_SYMLINKS=1` on Windows.
 
 ## 11. Licence
 
-**MiniMax-Music3 Community License** — custom, not OSI. Commercial use
+**MiniMax-Music3 Community License**: custom, not OSI. Commercial use
 is permitted with two conditions: display "MiniMax-Music3" prominently
 in the product UI, and obtain written authorisation if aggregate yearly
 revenue exceeds **US$20M**. There is no territorial carve-out. Third
 party lineage per the licence: Qwen3-8B (Apache-2.0), Stable Audio tools
 (MIT) for the DiT, DAC (MIT) for the VAE.
 
-Widely repeated claims that this is CC BY-SA 4.0 are **wrong** — that
+Widely repeated claims that this is CC BY-SA 4.0 are **wrong**: that
 comes from a Creative Commons *logo* in the GitHub README badge, which
 links to the custom licence.

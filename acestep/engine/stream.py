@@ -148,7 +148,7 @@ class SlotRequest:
     # nothing is clamped, and recombining the parallel and orthogonal
     # components at unit weight reassembles the raw delta. Families whose
     # reference sampler uses plain CFG want that, and the difference is
-    # not cosmetic — MiniMax-Music3 measures ~4x worse under stock APG,
+    # not cosmetic: MiniMax-Music3 measures ~4x worse under stock APG,
     # because a norm cap tuned for ACE's latent scale throttles a
     # 689-frame guidance delta nearly to nothing.
     apg_eta: float = 0.0
@@ -1295,7 +1295,7 @@ class StreamPipeline:
                 [xt_decoder_list[si] for si in pair_slot_idx], dim=0,
             )
             # A Tier-2 family's whole conditioning is the aux bundle, so
-            # the negative pass has to swap the bundle too — sending the
+            # the negative pass has to swap the bundle too. Sending the
             # positive one would make v_neg == v_pos and silently turn
             # guidance into a no-op that still costs a forward.
             if negative:

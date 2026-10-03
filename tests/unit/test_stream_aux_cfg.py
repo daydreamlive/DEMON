@@ -4,7 +4,7 @@
 ``encoder_hidden_states`` and a mask. A family that puts all of its
 conditioning in the opaque ``aux_cond`` bundle cannot populate it, so
 before ``neg_aux_cond`` existed such a family had no way to run CFG at
-all — and the failure was silent in the worst way. ``has_cfg`` returned
+all, and the failure was silent in the worst way. ``has_cfg`` returned
 False, no negative pass was scheduled, nothing raised, and the only
 symptom was that the audio was worse than the reference model's.
 

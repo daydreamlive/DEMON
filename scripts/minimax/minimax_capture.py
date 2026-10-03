@@ -1,18 +1,18 @@
 """Capture a MiniMax-Music3 composition: run the AR stage once, keep the tensor.
 
 DEMON never streams MiniMax's 8.58B autoregressive LM. It runs it once per
-composition and covers the result forever, which makes the capture — not the
-prompt — the reusable artifact. This CLI produces one.
+composition and covers the result forever, which makes the capture (not the
+prompt) the reusable artifact. This CLI produces one.
 
 Output is a ``.safetensors`` file with two keys:
 
 ``frame_hiddens``
-    ``[1, frames, 8*4096]`` bf16 — the RAW fused per-frame hidden states
+    ``[1, frames, 8*4096]`` bf16: the RAW fused per-frame hidden states
     straight off the AR stage. This is the durable form: it survives any
     change to the ConditionEncoder and can be re-projected later.
 
 ``encoder_hidden_states``
-    ``[1, latent_frames, 2048]`` — ``frame_hiddens`` pushed through the
+    ``[1, latent_frames, 2048]``: ``frame_hiddens`` pushed through the
     ConditionEncoder, i.e. exactly what the renderer wants. Written only when
     :mod:`acestep.engine.minimax_dit` is importable; the raw key is always
     written, so a capture taken before that module exists is not wasted.
@@ -146,7 +146,7 @@ def main() -> int:
         print(f"free VRAM      : {free:.1f} GB (need ~{STACK_VRAM_GB:.0f} GB)")
         torch.cuda.reset_peak_memory_stats(index)
 
-    # Load on the CPU, then page across in one move — the same path
+    # Load on the CPU, then page across in one move: the same path
     # MiniMaxContext takes under ar_policy="offload".
     load_started = time.perf_counter()
     ar = MiniMaxAR.from_pretrained(

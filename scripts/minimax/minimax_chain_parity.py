@@ -1,15 +1,15 @@
 """Chain-level parity gate for the MiniMax-Music3 backend.
 
 Proves the whole DEMON-side chain against ground truth in one shot: the
-reimplemented DiT, the ``[B,T,C]`` transpose boundary, and — the part
-most likely to be silently wrong — the time/sign conversion between
+reimplemented DiT, the ``[B,T,C]`` transpose boundary, and (the part
+most likely to be silently wrong) the time/sign conversion between
 MiniMax's flow-matching convention and DEMON's.
 
 MiniMax runs ``t`` from 0 (noise) to 1 (data) and steps Euler forward.
 DEMON runs ``s`` from 1 down to 0 with ``x0 = xt - v*s``. Substituting
 ``s = 1-t`` makes the interpolants identical, so the adapter converts
 only the two scalars: ``t = 1-s`` and ``v_demon = -v_minimax``. Get
-either backwards and the model denoises away from the data manifold —
+either backwards and the model denoises away from the data manifold,
 which sounds like plausible audio, not like an error, so it needs a
 numeric gate rather than a listen.
 

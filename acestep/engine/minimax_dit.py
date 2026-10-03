@@ -9,7 +9,7 @@ decoder shipped under ``vocoder/``) and :class:`MiniMaxConditionEncoder`
 Why reimplement rather than import: upstream's reference lives in
 ``diffusers >= 0.40``. DEMON pins ``diffusers==0.37.1`` because ACE-Step
 needs it, and bumping the pin repo-wide is not on the table. The second
-reason is TensorRT — these modules are written to be ONNX-exportable by
+reason is TensorRT: these modules are written to be ONNX-exportable by
 construction: no Python branching on tensor shapes, no ``.item()``, no
 data-dependent control flow, positional tensor args only, a bare tensor
 back. RoPE tables are built from the running sequence length rather than
@@ -19,7 +19,7 @@ The parity gate against the reference implementation is
 ``scripts/minimax/minimax_dit_parity.py``.
 
 Supported dtypes are fp32 and bf16. The acoustic stage does not survive
-fp16 — there is deliberately no fp16 path here.
+fp16, so there is deliberately no fp16 path here.
 """
 
 from __future__ import annotations
@@ -141,7 +141,7 @@ def _apply_partial_rope(
 
 
 class MiniMaxAttention(nn.Module):
-    """Self-attention only — no cross-attention, no KV cache, no q/k norm, no
+    """Self-attention only: no cross-attention, no KV cache, no q/k norm, no
     biases anywhere, and no attention mask."""
 
     def __init__(self, dim: int, heads: int, head_dim: int, rotary_dim: int):
@@ -198,7 +198,7 @@ class MiniMaxDiT(nn.Module):
 
     Denoises 128-channel Flow-VAE latents ``(B, in_channels, L)`` against
     frame-aligned conditioning ``(B, L, condition_dim)``. ``timestep`` is
-    ``(B,)`` — one flow-matching time per batch row, and rows may carry
+    ``(B,)``: one flow-matching time per batch row, and rows may carry
     different times. Returns the predicted velocity, same shape as the input
     latent.
 
@@ -349,7 +349,7 @@ class MiniMaxDAV(nn.Module):
     """The Flow-VAE waveform decoder (upstream ships it as ``vocoder/``).
 
     DAC-style and fully deterministic: there is no sampling anywhere in this
-    path. Stereo is folded through the channel axis — a ``(B, 128, L)`` latent
+    path. Stereo is folded through the channel axis: a ``(B, 128, L)`` latent
     is decoded as ``2B`` mono streams of 64 channels and unfolded again, so the
     two sides never see each other.
     """
@@ -424,7 +424,7 @@ class MiniMaxDAV(nn.Module):
         """Upstream wraps most convs in the legacy ``torch.nn.utils.weight_norm``,
         which stores ``weight_g``/``weight_v`` and recomputes the product in a
         pre-forward hook. Inference only ever needs the product, so fold it once
-        at load time and keep the forward a plain convolution — which is also
+        at load time and keep the forward a plain convolution, which is also
         what ONNX export needs."""
         folded: Dict[str, torch.Tensor] = {}
         for key, value in state.items():

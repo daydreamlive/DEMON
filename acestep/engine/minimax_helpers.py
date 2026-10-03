@@ -3,8 +3,8 @@
 The weights live outside the repo like every other model here, under
 ``<models dir>/minimax/`` (``ACESTEP_MODELS_DIR`` overrides), or in the
 ordinary Hugging Face cache when the operator already has one. The
-upstream repo ships TWO complete copies of the model — a diffusers
-layout and an sglang-omni native layout — totalling ~57 GB. We use the
+upstream repo ships TWO complete copies of the model (a diffusers
+layout and an sglang-omni native layout), totalling ~57 GB. We use the
 diffusers layout only; ``MINIMAX_DIFFUSERS_COMPONENTS`` is what a
 complete install must contain, and the status helper reports which
 piece is missing rather than failing on the first absent file.

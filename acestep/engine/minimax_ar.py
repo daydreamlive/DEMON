@@ -7,7 +7,7 @@ hidden states of an 8.58B Qwen3 autoregressive LM. That LM emits one
 is finished, which makes it a *streaming* model rather than a one-shot
 one, and this module exposes it as both:
 
-* :class:`MiniMaxARStream` is the model's own shape — a resumable
+* :class:`MiniMaxARStream` is the model's own shape: a resumable
   session you advance a frame at a time, steer while it runs, and
   re-prompt without discarding what it has already written. It is what
   the streaming backend drives.
@@ -32,7 +32,7 @@ The frame's contribution to the capture is the Global LM's hidden state
 concatenated with the seven depth hidden states: ``8 * 4096 = 32768``
 values per frame, which the ConditionEncoder later mixes down with
 learned softmax weights. That is the *only* reason the depth decoder is
-run at inference — its codes are never decoded to audio here; DEMON's
+run at inference. Its codes are never decoded to audio here; DEMON's
 renderer consumes the hidden states, not the tokens.
 
 Two things about this file are deliberate and load-bearing:
@@ -45,7 +45,7 @@ it here costs less than a dependency.
 
 **It normalizes the Qwen3 config.** ``language_model/config.json`` was
 written by ``transformers`` 5.13.0.dev0 and the repo pins 4.57.x for
-ACE-Step. See :func:`load_qwen3_config` — the failure mode this guards
+ACE-Step. See :func:`load_qwen3_config`: the failure mode this guards
 against is silent, not loud.
 
 Pure torch + transformers. No diffusers import.
@@ -113,7 +113,7 @@ AR_CFG_SCALE = 1.5
 AR_CFG_TOP_K = 50
 AR_SAMPLING_TOP_K = 50
 
-# Upstream's reference server exposes `seed` with a default of 0 — omitting
+# Upstream's reference server exposes `seed` with a default of 0, so omitting
 # it there means zero, not "random". Match that: a capture is an artifact and
 # an artifact that cannot be reproduced is a liability.
 DEFAULT_SEED = 0
@@ -166,7 +166,7 @@ def normalize_lyrics(lyrics: str) -> str:
     """Put every structure tag on its own line and prepend ``[start]``.
 
     Text sharing a line with a leading ``[verse]``-style tag is DROPPED,
-    not moved — that is the checkpoint's contract, and it is a good way to
+    not moved. That is the checkpoint's contract, and it is a good way to
     lose a whole line of lyrics without noticing.
     """
     output = []
@@ -199,7 +199,7 @@ _V5_CONFIG_REMAPS = {
     "rope_parameters": (
         "rope_theta / rope_scaling",
         "v5 folded RoPE settings into a nested dict; 4.57 reads flat keys, "
-        "and — the dangerous part — silently falls back to rope_theta=10000 "
+        "and (the dangerous part) silently falls back to rope_theta=10000 "
         "instead of the checkpoint's 1000000, which changes every position "
         "encoding in the model without raising anything.",
     ),
@@ -324,7 +324,7 @@ class _DepthRMSNorm(nn.Module):
 
 class _DepthAttention(nn.Module):
     """Causal self-attention over at most 8 positions. No RoPE, no q/k norm,
-    no bias — position comes from a learned table on the way in."""
+    no bias. Position comes from a learned table on the way in."""
 
     def __init__(self, dim: int, heads: int):
         super().__init__()
@@ -469,7 +469,7 @@ def _sample_top_k(
     top_k: int = AR_SAMPLING_TOP_K,
     temperature: float = 1.0,
 ) -> torch.Tensor:
-    """Top-k multinomial, reproducing the reference's numerics exactly —
+    """Top-k multinomial, reproducing the reference's numerics exactly,
     including its choice to map ``-inf`` to ``-1e9`` before the top-k so a
     fully masked row degrades to a uniform pick instead of a NaN.
 
@@ -477,7 +477,7 @@ def _sample_top_k(
     call that passes neither is bit-identical to the version that had no
     parameters. They exist because a streaming session steers them live.
     Temperature divides AFTER the top-k cut, so it reweights the
-    surviving candidates instead of changing which ones survive — the
+    surviving candidates instead of changing which ones survive; the
     alternative silently couples two controls an operator moves
     independently.
     """
@@ -549,7 +549,7 @@ class MiniMaxAR:
         self.seed = int(seed)
         # A CPU generator makes a capture reproducible across devices (the
         # diffusers convention) at the cost of a device sync per sampled
-        # code — eight per frame. Off by default; the capture is an
+        # code (eight per frame). Off by default; the capture is an
         # artifact on disk, so cross-device determinism is not what makes
         # it reusable.
         self.sample_on_cpu = bool(sample_on_cpu)
@@ -625,7 +625,7 @@ class MiniMaxAR:
         return next(self.language_model.parameters()).device
 
     def to(self, device) -> "MiniMaxAR":
-        """Page the whole stack. Both models must land together — every frame
+        """Page the whole stack. Both models must land together: every frame
         touches both, so a split placement would thrash across PCIe 400 times
         a second."""
         # torch.device("cuda") carries no index but parameters always report
@@ -724,7 +724,7 @@ class MiniMaxAR:
 
         No KV cache here on purpose. The sequence is at most eight steps, so
         caching would save a handful of tiny GEMMs while the seven forwards
-        still have to stream all 1.1 GB of depth weights either way — this
+        still have to stream all 1.1 GB of depth weights either way. This
         loop is bandwidth- and launch-bound, not attention-bound.
         """
         depth = self.depth_decoder

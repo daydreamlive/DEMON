@@ -6,7 +6,7 @@ forward), so :class:`~acestep.engine.minimax_adapter.MiniMaxAdapter` has
 to flip both the timestep and the sign of the velocity on top of the
 usual native-layout transpose. Those three conversions are the whole
 risk surface of the adapter, and a sign error there denoises *away* from
-the data manifold — which is why the headline test here is an exact
+the data manifold, which is why the headline test here is an exact
 round trip rather than a shape assertion.
 
 CPU + mock DiT throughout; no weights, no GPU.
