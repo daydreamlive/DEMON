@@ -127,8 +127,9 @@ in `scripts/mrt2_sidecar.py`, because JAX has no CUDA on native Windows.
   sidecar, which embeds tags with MusicCoCa and lerps A/B.
 - **Speed (RTX 5090):** `mrt2_small` ~1.7x real time, `mrt2_base` ~0.93x
   (below real time; expect underruns).
-- **Frontend:** `demos/realtime_motion_graph_web/web/app/magenta` (route
-  `/magenta`) sends `backend: "mrt2"`.
+- **Frontend:** `demos/mrt2/` (static three.js page, route `/mrt2` on the
+  backend port) and `demos/realtime_motion_graph_web/web/app/magenta` (route
+  `/magenta`); both send `backend: "mrt2"`.
 
 ## Runtime
 
