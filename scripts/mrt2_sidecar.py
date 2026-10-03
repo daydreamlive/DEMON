@@ -226,7 +226,10 @@ def serve_one(conn, mrt, cond_defaults: dict, chunk_frames: int) -> None:
             )
         except Exception as exc:  # surface, don't die mid-connection
             log(f"generate failed: {exc!r}")
-            _send(mp.pack_json({"type": "err", "message": str(exc)}))
+            # Report the discarded credit so the backend refunds it.
+            _send(mp.pack_json({
+                "type": "err", "message": str(exc), "dropped_credit": credit,
+            }))
             credit = 0
             continue
         gen_s = time.monotonic() - t0

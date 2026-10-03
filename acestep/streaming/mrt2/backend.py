@@ -175,6 +175,9 @@ class SidecarClient:
         self._audio: deque = deque()
         self._audio_lock = threading.Lock()
         self.frames_received = 0
+        # Credit the sidecar discarded on a generate error (reported in
+        # its ``err``); the backend refunds it from its grant ledger.
+        self.credit_dropped = 0
         self.last_rx_ts = time.monotonic()
         self.lost = False
         self.lost_reason: str | None = None
@@ -234,7 +237,13 @@ class SidecarClient:
                 else:
                     msg = mp.unpack_json(payload)
                     if msg.get("type") == "err":
-                        logger.error("mrt2_sidecar_err message={}", msg.get("message"))
+                        dropped = int(msg.get("dropped_credit", 0) or 0)
+                        with self._audio_lock:
+                            self.credit_dropped += dropped
+                        logger.error(
+                            "mrt2_sidecar_err message={} dropped_credit={}",
+                            msg.get("message"), dropped,
+                        )
                     # pong and anything else: last_rx_ts update is enough.
         except (ConnectionError, OSError) as exc:
             self._mark_lost(f"reader error={exc}")
@@ -264,6 +273,11 @@ class SidecarClient:
             self._mark_lost(f"send error={exc}")
 
     # ---- runner-thread drains ----------------------------------------------
+
+    def pop_credit_dropped(self) -> int:
+        with self._audio_lock:
+            n, self.credit_dropped = self.credit_dropped, 0
+        return n
 
     def pop_audio(self) -> list:
         with self._audio_lock:
@@ -353,6 +367,8 @@ class MRT2Backend:
 
             # Credit accounting (frames granted vs received).
             self._granted = 0
+            # Frontier re-anchors after falling behind the playhead.
+            self.underruns = 0
 
             # Last knob values forwarded to the sidecar.
             self._sent_knobs: dict = {}
@@ -519,16 +535,42 @@ class MRT2Backend:
         # Heartbeat + liveness live on the client's own thread.
         self._forward_knobs(knobs)
 
+        # Credit the sidecar dropped on a generate error will never
+        # arrive; without the refund it would count as covered forever
+        # and the lead would shrink by that much for the session.
+        pop_dropped = getattr(client, "pop_credit_dropped", None)
+        if pop_dropped is not None:
+            self._granted -= pop_dropped()
+
+        lead_s = float(knobs.get("mrt2_lead", 0.75))
+        lead_samples = int(lead_s * mp.SAMPLE_RATE)
+        playhead_abs = self._playhead_abs_samples()
+
+        # Underrun: everything emitted and pending lies behind the
+        # listener, so continuing from the frontier would write fresh
+        # audio a lap late. Drop the pending audio and restart the
+        # frontier one lead ahead of the playhead (a hard seam there).
+        if self._abs_written + self._pending_samples < playhead_abs:
+            logger.warning(
+                "mrt2_underrun_reanchor behind_s={:.2f}",
+                (playhead_abs - self._abs_written - self._pending_samples)
+                / mp.SAMPLE_RATE,
+            )
+            self._pending.clear()
+            self._pending_samples = 0
+            self._abs_written = playhead_abs + lead_samples
+            self._tail = None
+            self.underruns += 1
+
         # Credit pacing: keep (emitted + pending + outstanding)
         # ``mrt2_lead`` seconds ahead of the unwrapped playhead.
-        lead_s = float(knobs.get("mrt2_lead", 0.75))
         outstanding = self._granted - client.frames_received
         covered = (
             self._abs_written
             + self._pending_samples
             + max(0, outstanding) * mp.FRAME_SAMPLES
         )
-        target = self._playhead_abs_samples() + int(lead_s * mp.SAMPLE_RATE)
+        target = playhead_abs + lead_samples
         deficit = target - covered
         if deficit > 0:
             grant = min(

@@ -93,6 +93,7 @@ class FakeClient:
         self.frames_received = 0
         self.meta = {"type": "meta", "model": "fake"}
         self.closed = False
+        self.credit_dropped = 0
         self._audio: list = []
 
     def send_json(self, obj):
@@ -101,6 +102,10 @@ class FakeClient:
     def pop_audio(self):
         out, self._audio = self._audio, []
         return out
+
+    def pop_credit_dropped(self):
+        n, self.credit_dropped = self.credit_dropped, 0
+        return n
 
     def close(self):
         self.closed = True
@@ -478,6 +483,10 @@ def test_runner_writes_append_only_chunks_verbatim(monkeypatch, playhead_s):
     backend, client = make_backend()
     state = _RunnerState()
     backend.state = state
+    # Frontier one full lap in (wrapped position 0): ahead of either
+    # playhead, so the underrun re-anchor stays out of the picture.
+    backend._abs_written = WINDOW_SAMPLES
+    total_start = WINDOW_SAMPLES
     stale = np.full((WINDOW_SAMPLES, mp.CHANNELS), -0.5, np.float32)
     eng = AudioEngine(stale.copy(), mp.SAMPLE_RATE)
 
@@ -496,13 +505,16 @@ def test_runner_writes_append_only_chunks_verbatim(monkeypatch, playhead_s):
     t = threading.Thread(target=runner.run, daemon=True)
     t.start()
     deadline = time.monotonic() + 10.0
-    while backend._abs_written < total and time.monotonic() < deadline:
+    while (
+        backend._abs_written < total_start + total
+        and time.monotonic() < deadline
+    ):
         time.sleep(0.01)
     state.running = False
     t.join(5.0)
     eng.stop()
 
-    assert backend._abs_written == total
+    assert backend._abs_written == total_start + total
     np.testing.assert_array_equal(eng.current[:total], ramp)
     np.testing.assert_array_equal(eng.current[total:], stale[total:])
 
@@ -653,3 +665,50 @@ def test_sidecar_loss_ends_the_session_with_an_error(monkeypatch):
         assert errors and "mrt2 sidecar link lost" in errors[0].message
     finally:
         side.close()
+
+
+def test_credit_dropped_by_a_sidecar_error_is_refunded():
+    backend, client = make_backend()
+    knobs = backend.read_knobs()
+    backend.produce(knobs, _ctx(0.0), "generate")
+    credits = [m for m in client.sent if m["type"] == "credit"]
+    assert [c["frames"] for c in credits] == [19]
+    # The sidecar's generate failed and discarded all 19 frames.
+    client.credit_dropped = 19
+    backend.produce(knobs, _ctx(0.0), "generate")
+    credits = [m for m in client.sent if m["type"] == "credit"]
+    assert [c["frames"] for c in credits] == [19, 19]
+
+
+def test_client_records_credit_dropped_from_the_sidecar_err():
+    from acestep.streaming.mrt2.backend import SidecarClient
+
+    side = _FakeSidecar()
+    try:
+        client = SidecarClient("127.0.0.1", side.port)
+        side.conn.sendall(mp.pack_json({
+            "type": "err", "message": "oom", "dropped_credit": 7,
+        }))
+        deadline = time.monotonic() + 2.0
+        while client.credit_dropped == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert client.pop_credit_dropped() == 7
+        assert client.credit_dropped == 0
+        client.close()
+    finally:
+        side.close()
+
+
+def test_frontier_reanchors_ahead_of_the_playhead_after_an_underrun():
+    backend, client = make_backend()
+    knobs = backend.read_knobs()
+    backend._abs_written = 1 * mp.SAMPLE_RATE  # frontier at 1 s
+    backend._tail = np.full((XFADE, mp.CHANNELS), 0.1, np.float32)
+    backend.sync_source(_ctx(5.0))  # the listener is already at 5 s
+    client.feed_frames(2, value=0.3)
+    backend.produce(knobs, _ctx(5.0), "generate")
+    chunk = backend.render_window(0.0)
+    lead = int(0.75 * mp.SAMPLE_RATE)
+    assert chunk.start_sample == 5 * mp.SAMPLE_RATE + lead
+    assert chunk.pcm.shape[0] == 2 * mp.FRAME_SAMPLES  # no stale head
+    assert backend.underruns == 1

@@ -32,7 +32,8 @@ field. Control plane:
     sidecar -> backend: {"type": "meta", "sample_rate": int, "channels": int,
                          "frame_samples": int, "model": str}
                         {"type": "pong", "t": float}
-                        {"type": "err", "message": str}
+                        {"type": "err", "message": str,
+                         "dropped_credit"?: int}               # credit discarded on a generate error
 
 ``kind == MSG_AUDIO`` (sidecar -> backend only): payload is
 
