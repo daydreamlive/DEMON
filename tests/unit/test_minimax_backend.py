@@ -511,3 +511,21 @@ def test_backend_satisfies_the_generator_backend_protocol():
     ):
         with pytest.raises(UnsupportedOperation):
             call()
+
+
+# ---- failure surfacing -------------------------------------------------------
+
+
+def test_a_dead_worker_raises_out_of_produce():
+    """An exception in the generation worker (an OOM mid-session) must
+    reach the runner, whose error path ends the session with a
+    SessionError, instead of leaving produce() returning False forever."""
+    b = _backend()
+
+    def _boom(n):
+        raise RuntimeError("CUDA out of memory")
+
+    b.ar.advance = _boom
+    b._run()  # the worker body, on this thread
+    with pytest.raises(RuntimeError, match="worker died.*CUDA out of memory"):
+        b.produce(b.read_knobs(), TickContext(0.0, 0.0), "generate")

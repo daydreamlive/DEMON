@@ -583,6 +583,9 @@ class MiniMaxBackend:
         # frontier alone.
         self.last_commit_controls = self._render_controls
 
+        # Set by the worker when it dies; produce() raises it into the
+        # runner so the session ends with an error instead of looping.
+        self._worker_error: Optional[BaseException] = None
         self._worker: Optional[threading.Thread] = None
         if start_worker:
             self._worker = threading.Thread(
@@ -618,9 +621,9 @@ class MiniMaxBackend:
     def _run(self) -> None:
         try:
             self._generate_loop()
-        except Exception as exc:  # pragma: no cover - worker guard
-            logger.error("minimax_worker_died error={}", exc)
-            raise
+        except Exception as exc:
+            self._worker_error = exc
+            logger.opt(exception=True).error("minimax_worker_died error={}", exc)
 
     def _generate_loop(self) -> None:
         while not self._stop.is_set():
@@ -947,6 +950,14 @@ class MiniMaxBackend:
         append-only family: there is no expensive local generate step to
         skip, and music must keep flowing through DiT-pause idle.
         """
+        err = self._worker_error
+        if err is not None:
+            # The runner's error path publishes this as a SessionError
+            # and closes the session; nothing else would ever produce.
+            raise RuntimeError(
+                f"minimax generation worker died: {type(err).__name__}: {err}"
+            ) from err
+
         started = time.perf_counter()
 
         controls = RenderControls(
