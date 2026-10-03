@@ -180,8 +180,12 @@ function renderKnobs(knobs) {
 
 function knobControl(name, entry) {
   const label = document.createElement("label");
+  label.className = "knob-control";
   if (entry.description) label.title = entry.description;
-  const value = document.createElement("span");
+  const heading = document.createElement("span"); heading.className = "knob-heading";
+  const caption = document.createElement("span");
+  caption.className = "knob-label"; caption.textContent = name.slice(KNOB_PREFIX.length).replace(/_/g, " ");
+  const value = document.createElement("span"); value.className = "knob-value";
   const show = (v) => { value.textContent = ` ${typeof v === "number" ? +v.toFixed(2) : v}`; };
   const commit = (v) => { state.values = { ...state.values, [name]: v }; show(v); sendParams(); };
   let input;
@@ -205,7 +209,8 @@ function knobControl(name, entry) {
     input.addEventListener("input", () => commit(Number(input.value)));
   }
   show(state.values[name]);
-  label.append(name.slice(KNOB_PREFIX.length).replace(/_/g, " "), value, input);
+  heading.append(caption, value);
+  label.append(heading, input);
   return label;
 }
 
@@ -247,21 +252,26 @@ function resize() {
 
 function drawRing(t) {
   const { width, height } = els.canvas;
-  ctx2d.fillStyle = "#07070b";
-  ctx2d.fillRect(0, 0, width, height);
-  const low = bandEnergy(1, 12);
-  const mid = bandEnergy(12, 90);
-  const high = bandEnergy(90, 400);
-  const base = Math.min(width, height) * 0.28 * (1 + low * 0.45);
-  const dot = Math.max(1.5, Math.min(width, height) * 0.004 * (1 + high * 2));
-  ctx2d.fillStyle = `hsl(${225 - high * 180} 70% ${60 + high * 25}%)`;
+  ctx2d.clearRect(0, 0, width, height);
+  const low = bandEnergy(1, 12), mid = bandEnergy(12, 90), high = bandEnergy(90, 400);
+  const base = Math.min(width, height) * 0.27 * (1 + low * 0.24);
+  const cx = width > 760 ? width * 0.72 : width * 0.5, cy = height * 0.5;
+  ctx2d.beginPath(); ctx2d.arc(cx, cy, base * 0.88, 0, Math.PI * 2);
+  ctx2d.strokeStyle = "rgb(130 177 197 / 12%)"; ctx2d.lineWidth = 1; ctx2d.stroke();
+  const glow = ctx2d.createLinearGradient(cx - base, cy, cx + base, cy);
+  for (const [stop, color] of [[0, "#588fa9"], [0.58, "#a7cbd5"], [1, "#ae805e"]]) glow.addColorStop(stop, color);
+  ctx2d.beginPath();
   for (let i = 0; i < POINT_COUNT; i++) {
     const angle = (i / POINT_COUNT) * Math.PI * 2 + t * 0.12;
-    const r = base * (1 + Math.sin(t * 3 + angle * 6) * mid * 0.15);
-    ctx2d.fillRect(width / 2 + Math.cos(angle) * r, height / 2 + Math.sin(angle) * r, dot, dot);
+    const r = base * (1 + Math.sin(t * 3 + angle * 6) * mid * 0.1);
+    const length = Math.max(2, base * (0.016 + low * 0.12 + high * 0.06));
+    ctx2d.moveTo(cx + Math.cos(angle) * r, cy + Math.sin(angle) * r);
+    ctx2d.lineTo(cx + Math.cos(angle) * (r + length), cy + Math.sin(angle) * (r + length));
   }
+  ctx2d.strokeStyle = glow; ctx2d.lineWidth = Math.max(1.5, base * 0.008);
+  ctx2d.shadowColor = "rgb(107 180 210 / 65%)"; ctx2d.shadowBlur = Math.min(18, base * 0.055);
+  ctx2d.stroke(); ctx2d.shadowBlur = 0;
 }
-
 // render loop
 function frame(ms) {
   readAnalyser();
