@@ -272,10 +272,16 @@ the ring stops after one generation and the renderer keeps playing that latent
 Slots still in flight when it settles (depth >= 2) are dropped, so the next
 change does not first finish a stale one.
 
-**Knobs.** `yue2_denoise` (prefixed: it is not ACE's `denoise`), `x0_target`,
-`feedback`, `feedback_depth`, `seed` (new acoustic noise, same composition).
-No `steps_override` (the shared spec cannot express 32 steps), no LoRA, no
-CFG, no per-frame curves.
+**Knobs.** `yue2_denoise` (prefixed: it is not ACE's `denoise`), `yue2_steps`,
+`x0_target`, `feedback`, `feedback_depth`, `seed` (new acoustic noise, same
+composition). No `steps_override` (its shared default of 8 would change the
+released behaviour), no LoRA, no CFG, no per-frame curves.
+
+**`yue2_steps`.** Midpoint steps per acoustic solve: 32 (the default) is
+upstream's released grid; 24, 16, 12, 8, 6 or 4 answer faster (one step per
+tick, so update latency scales with the step count) at lower quality. Other
+values snap to the nearest choice; a change restarts the ring on the new grid,
+and `yue2_denoise` truncates whichever grid is active.
 
 **Caps.** `yue2_duration_s` is the longest song YuE2 may compose: 2-100 s,
 clamped (absent or null = 100 s). The ceiling is the flexible NAR engine's
