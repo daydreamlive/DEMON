@@ -81,12 +81,12 @@ Before production integration, measure live modulation with fixed semantics, the
 
 **Reproduction and artifacts**
 
-The runtime, model/weight revisions, and external checkpoint locations match [the first GPU report](YUE2_GPU_RESULTS.md). The round-two output directory is [`out/yue2/20260914/round2`](../../out/yue2/20260914/round2); source/semantic requests, complete plans, raw unclipped audio arrays, and latents are retained. Acoustic ONNX external weights, TensorRT engines, profiles, and layer inspection are under `D:/codex-yue2-runtime-20260914/nar_trt/{case}/`.
+The runtime, model/weight revisions, and external checkpoint locations match [the first GPU report](YUE2_GPU_RESULTS.md). The round-two output directory is [`out/yue2/20260914/round2`](../../out/yue2/20260914/round2); source/semantic requests, complete plans, raw unclipped audio arrays, and latents are retained. Acoustic ONNX external weights, TensorRT engines, profiles, and layer inspection are under `$DEMON_YUE2_TRT_DIR/nar_trt/{case}/`.
 
 [`yue2_worker.py`](../../scripts/spikes/yue2_worker.py) provides a reusable resident-weight worker. Set `PYTHONPATH` to the pinned upstream source plus the external tiktoken directory, then run:
 
 ```powershell
-.venv/Scripts/python.exe -u scripts/spikes/yue2_worker.py --model-root Z:/codex-yue2-research/models/demon/yue2/checkpoints --runtime D:/codex-yue2-runtime-20260914 --output out/yue2/20260914/round2
+.venv/Scripts/python.exe -u scripts/spikes/yue2_worker.py --model-root $DEMON_YUE2_ROOT --runtime $DEMON_YUE2_TRT_DIR --output out/yue2/20260914/round2
 ```
 
 Write commands to `<runtime>/round2-command.json`, waiting for `round2-status.json` to report `ready` between dependent phases. Example: `{"action":"run","phase":"trt_ring_staggered","case":"concise_4bar_s381","depths":[4],"stagger_start":true}`. `{"action":"stop"}` releases the weights. Other implemented phases are `duration`, `duration_concise` (with a `cases` filter), `export`, and `ring_graph`. Use unique phase suffixes for ring runs to retain separate result files. Build exported engines serially with [`yue2_nar_trt_build.py`](../../scripts/spikes/yue2_nar_trt_build.py) and `--artifacts <runtime>/nar_trt/<case>`.

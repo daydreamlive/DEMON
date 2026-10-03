@@ -25,7 +25,7 @@ Runtime: DEMON's Python 3.11.13, Torch 2.9.1+cu128, Transformers 4.57.6, and Ten
 
 Windows Torch exposes the native FlashAttention operator schema but raises `USE_FLASH_ATTENTION was not enabled for build` when upstream's AR graph auto-selector chooses it. The benchmark explicitly selects upstream's cuDNN attention path. A tiny GPU model passed both cuDNN and SDPA AR graph execution; the batched acoustic wrapper matched four independent tiny GPU forwards exactly with different timesteps. A production runtime needs a real backend capability probe or an explicit setting, rather than checking the operator schema alone.
 
-Models remain outside the repository under `Z:/codex-yue2-research/models/demon/yue2/checkpoints/`. This is a network drive: checkpoint read/verification/loading is measured separately and should not be interpreted as inference latency. Small generated WAVs, latents, semantic tokens, timing JSON, and request/revision fingerprints are in [`out/yue2/20260914/demon_torch_2_9`](../../out/yue2/20260914/demon_torch_2_9).
+Models remain outside the repository under `$DEMON_YUE2_ROOT/`. This is a network drive: checkpoint read/verification/loading is measured separately and should not be interpreted as inference latency. Small generated WAVs, latents, semantic tokens, timing JSON, and request/revision fingerprints are in [`out/yue2/20260914/demon_torch_2_9`](../../out/yue2/20260914/demon_torch_2_9).
 
 Benchmarks use synchronized wall time and CUDA events, normally two warmups and five samples. Full solves are single bounded observations; five samples are too few to characterize sustained tail latency. NAR remains BF16; the VAE remains FP32 with TF32 disabled. These are short probes, without an endurance run or a live DEMON session.
 
@@ -82,11 +82,11 @@ The source/model license distinction from the original plan remains: source Apac
 The scripts do not download checkpoints or start DEMON. Supply the pinned upstream package through its environment or `PYTHONPATH`, plus the external checkpoint root. On this machine:
 
 ```powershell
-$env:PYTHONPATH='D:/codex-yue2-runtime-20260914/extra-deps;D:/codex-yue2-runtime-20260914/vendor/YuE-0edaf2f4053ef4731334b8329834b107977f9637/src'
-.venv/Scripts/python.exe -u scripts/spikes/yue2_feasibility.py --phase all --ar-attention cudnn --model-root Z:/codex-yue2-research/models/demon/yue2/checkpoints --output out/yue2/20260914/demon_torch_2_9
+$env:PYTHONPATH='$DEMON_YUE2_EXTRA_PATH;$DEMON_YUE2_YUE_SRC'
+.venv/Scripts/python.exe -u scripts/spikes/yue2_feasibility.py --phase all --ar-attention cudnn --model-root $DEMON_YUE2_ROOT --output out/yue2/20260914/demon_torch_2_9
 
-.venv/Scripts/python.exe -u scripts/spikes/yue2_vae_trt.py --stage export --checkpoint Z:/codex-yue2-research/models/demon/yue2/checkpoints/YuE2-Vae --artifacts Z:/codex-yue2-research/models/demon/yue2/trt_engines/rtx5090_fp32_t37 --output out/yue2/20260914/demon_torch_2_9/vae_trt.json
-.venv/Scripts/python.exe -u scripts/spikes/yue2_vae_trt.py --stage benchmark --checkpoint Z:/codex-yue2-research/models/demon/yue2/checkpoints/YuE2-Vae --artifacts Z:/codex-yue2-research/models/demon/yue2/trt_engines/rtx5090_fp32_t37 --output out/yue2/20260914/demon_torch_2_9/vae_trt.json
+.venv/Scripts/python.exe -u scripts/spikes/yue2_vae_trt.py --stage export --checkpoint $DEMON_YUE2_ROOT/YuE2-Vae --artifacts $DEMON_YUE2_TRT_DIR --output out/yue2/20260914/demon_torch_2_9/vae_trt.json
+.venv/Scripts/python.exe -u scripts/spikes/yue2_vae_trt.py --stage benchmark --checkpoint $DEMON_YUE2_ROOT/YuE2-Vae --artifacts $DEMON_YUE2_TRT_DIR --output out/yue2/20260914/demon_torch_2_9/vae_trt.json
 ```
 
 [`yue2_feasibility.py`](../../scripts/spikes/yue2_feasibility.py) saves semantic results so subsequent runs reuse them. [`yue2_vae_trt.py`](../../scripts/spikes/yue2_vae_trt.py) separates CPU ONNX export from a single-profile GPU build and benchmark. Run GPU benchmarks serially; overlapping builds or other GPU work invalidate comparisons. Scripts and documentation are research artifacts, ready for review; production DEMON code and the git index are unchanged by this work.
