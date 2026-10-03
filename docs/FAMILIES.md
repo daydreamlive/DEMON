@@ -93,6 +93,13 @@ the wire contract from there; `SessionConfig` carries it in `family_config`.
 an import. The rows above are its allow-list; an entry the code no longer
 needs fails the test too, so the list only shrinks.
 
+## Runtime
+
+One family per pod. The pod's engine family is `DEMON_MODEL`; its routing
+identity is `RTMG_POOL_MODEL`, which defaults to the family and may carry a
+variant (`sa3-controlnet`). Warmup and preflight are family policy, read from
+the spec by the server at boot.
+
 ## Magenta RealTime 2 (`mrt2`)
 
 The first token/autoregressive family and the first sidecar-hosted one, and
@@ -130,10 +137,3 @@ in `scripts/mrt2_sidecar.py`, because JAX has no CUDA on native Windows.
 - **Frontend:** `demos/mrt2/` (static three.js page, route `/mrt2` on the
   backend port) and `demos/realtime_motion_graph_web/web/app/magenta` (route
   `/magenta`); both send `backend: "mrt2"`.
-
-## Runtime
-
-One family per pod. The pod's engine family is `DEMON_MODEL`; its routing
-identity is `RTMG_POOL_MODEL`, which defaults to the family and may carry a
-variant (`sa3-controlnet`). Warmup and preflight are family policy, read from
-the spec by the server at boot.
