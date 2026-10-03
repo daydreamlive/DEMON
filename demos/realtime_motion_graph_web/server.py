@@ -174,6 +174,12 @@ def _single_arg(args: list[str], flag: str) -> str | None:
     return values[-1] if values else None
 
 
+def checkpoint_arg(args: list[str]) -> str | None:
+    """The ``--checkpoint`` value, as ``--checkpoint X`` or
+    ``--checkpoint=X`` (last one wins), or None when absent."""
+    return _single_arg(args, "--checkpoint")
+
+
 def _resolve_video(name: str) -> Path | None:
     """Map a ``/videos/<name>`` request to a file inside ``VIDEOS_DIR``.
 
@@ -814,9 +820,9 @@ def main():
             f"[Server] --vae-accel must be one of {_VALID_ACCEL}, got {vae_accel!r}"
         )
     backend_family = DEFAULT_FAMILY
-    if "--checkpoint" in args:
-        idx = args.index("--checkpoint")
-        checkpoint = args[idx + 1]
+    checkpoint_alias = checkpoint_arg(args)
+    if checkpoint_alias is not None:
+        checkpoint = checkpoint_alias
         # Aliases resolve to (backend family, model id) pairs (plan
         # §3.5): "xl" stays an ACE checkpoint name, "sa3-small" selects
         # the sa3 family with model id "small-music". Plain directory
