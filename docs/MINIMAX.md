@@ -5,7 +5,9 @@ streams natively, and DEMON drives its own loop, as one CUDA graph per
 frame over a static KV cache. On a 5090 the combined pipeline runs
 above realtime: the 8.58B language model at 1.54x in-session, the
 renderer at 7.8x, steady state ~1.3x at the default hop, first audio
-~6 s after create. Live steering works, at a knob-to-ear of seconds
+~6 s after generation starts with the model already loaded (roughly half
+a minute after Start for the first session in a fresh server, which loads
+the model). Live steering works, at a knob-to-ear of seconds
 rather than the ~60-230 ms the diffusion families reach.**
 
 This document replaces an earlier one that reported 9.5-16.7x realtime
@@ -429,7 +431,7 @@ draft PR #332, as superseded.
 | `gens/s` and `60 s-gens/s` tables | A "generation" was one cover of a frozen composition. There is no such object now: audio is committed once and never re-rendered. Both units are withdrawn. |
 | `chunk_rate_hz` = 86.133 Hz beside ACE-Step's 25 Hz | Different quantities (§1). The backend now declares **25 Hz**, the AR acoustic rate, with the distinction pinned by a test. |
 | "the AR stage's 0.54x realtime" (§6, in passing) | Directionally right, and never connected to the architecture. Measured cleanly through the plain loop it is **0.77x** at the start of a piece and falls with length; the earlier figure was taken under per-stage profiling. Below realtime either way, which is the fact the design should have turned on, and which the graphed session (**1.54x**) then removed. |
-| "a 60 s composition costs ~111 s of one-time capture before any streaming starts" | True of the capture architecture, and no longer how the family works: the stream starts after 200 AR frames plus one render, **6 s**, and extends until the model ends the piece. |
+| "a 60 s composition costs ~111 s of one-time capture before any streaming starts" | True of the capture architecture, and no longer how the family works: the stream starts after 200 AR frames plus one render, **6 s** once the model is loaded, and extends until the model ends the piece. |
 | "Treating 200 as a model limit was an error" | Correct, and still correct, but the conclusion drawn from it (render the whole song in one pass) was the wrong one. 200/100/172 is upstream's *streaming* contract, and it is what the backend now implements. |
 | "8.011 s" | 689 x 512 / 44100 = **7.99927 s**. Carried over; it was already corrected once. |
 | "render cost is identical at 14.4 s and 8 s" | True of the windowed decode, and now moot: there is no whole-song render to compare against. |

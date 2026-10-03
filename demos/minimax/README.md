@@ -19,6 +19,9 @@ Open http://localhost:1318/minimax and press Start.
   guidance, shift, cond strength, hop, steps, reprompt history s, endless, lead). The page
   turns `endless` on and sets `reprompt history s` to 2.5 so prompt changes pivot quickly.
 
-First seconds: the status reads "waiting for first audio" for about 10 s (the LM writes
-its first frames and the renderer commits one chunk), then "playing" with the seconds of
-audio buffered ahead of the playhead.
+First audio: expect roughly half a minute after Start for the first session in a freshly
+started server. Session create loads the language model and captures its CUDA graphs
+(~27-28 s on a cold pod), then the LM writes its first frames and the renderer commits one
+chunk (~6 s); measured first audio was 21-34 s after Start. Later sessions in the same
+server skip the load. The status reads "waiting for first audio" until then, then
+"playing" with the seconds of audio buffered ahead of the playhead.

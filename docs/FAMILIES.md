@@ -200,7 +200,12 @@ end-of-audio. Shutdown evicts the cached contexts; each backend frees its
 CUDA graphs and static cache on close.
 
 **Measured (RTX 5090).** Steady ~1.3x realtime (AR stage 1.54x in session,
-renderer 7.8x), first audio ~6 s after connect.
+renderer 7.8x). With the model already loaded, first audio comes ~6 s after
+generation starts (200 AR frames plus one render). The first session in a
+freshly started server also loads the language model and captures its CUDA
+graphs: session create takes ~27-28 s on a cold pod and first audio arrives
+21-34 s after Start, so expect roughly half a minute. Later sessions in the
+same server reuse the process-cached context and skip the load.
 
 **Hot-loop note.** This branch also adds an aux-cond CFG path to
 `acestep/engine/stream.py` and an exact-CFG shortcut to
