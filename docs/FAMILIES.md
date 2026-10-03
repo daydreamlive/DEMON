@@ -202,6 +202,8 @@ CUDA graphs and static cache on close.
 **Measured (RTX 5090).** Steady ~1.3x realtime (AR stage 1.54x in session,
 renderer 7.8x), first audio ~6 s after connect.
 
-**Hot-loop note.** The family's DiT adapter uses an extra aux-cond CFG path
-in `acestep/engine/stream.py` and an exact-CFG shortcut in
-`acestep/engine/ode_steps.py`; ACE/SA3 defaults are unchanged.
+**Hot-loop note.** This branch also adds an aux-cond CFG path to
+`acestep/engine/stream.py` and an exact-CFG shortcut to
+`acestep/engine/ode_steps.py` (ACE/SA3 defaults unchanged). The live family
+does not use them: `MiniMaxChunkRenderer` runs its own CFG, and only
+`tests/unit/test_stream_aux_cfg.py` exercises the new path.

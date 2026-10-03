@@ -133,9 +133,10 @@ def create_minimax_session(
 
     logger.info(
         "minimax_session_create window_s={:.1f} steps={} dit={} codec={} "
-        "capture={} ar_vram_gb={:.0f}",
+        "capture={} ar_vram_gb={:.0f} lyrics_chars={}",
         window_s, steps, dit_backend, codec_backend,
         capture or "<live AR>", 0.0 if capture else AR_RESIDENT_VRAM_GB,
+        len(lyrics),
     )
 
     # The audio ring starts silent at the delivery geometry. The upload
