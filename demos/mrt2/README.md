@@ -8,7 +8,7 @@ Prerequisites: the MRT2 sidecar running in a Linux/WSL venv with `magenta_rt` + 
 (`python scripts/mrt2_sidecar.py --model mrt2_small`, listens on 127.0.0.1:7531 after a
 ~30 s JIT warmup; override with `DEMON_MRT2_SIDECAR=host:port`). See docs/FAMILIES.md.
 
-Server (space form; `--checkpoint=...` is silently ignored):
+Server:
 
     python -u -m demos.realtime_motion_graph_web.server --port 1318 --checkpoint mrt2-sidecar
 

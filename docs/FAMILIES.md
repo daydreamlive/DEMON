@@ -116,9 +116,6 @@ in `scripts/mrt2_sidecar.py`, because JAX has no CUDA on native Windows.
   localhost to the Windows-side server. Override with
   `DEMON_MRT2_SIDECAR=host:port`. Preflight is a TCP connect and fails the
   boot with "MRT2 sidecar not running" when nothing listens.
-- **Gotcha:** flag forms differ. `server.py` reads `--checkpoint` by
-  position, so pass `--checkpoint mrt2-sidecar` (space form);
-  `--checkpoint=mrt2-sidecar` is silently ignored and the pod boots ACE.
 - **Protocol:** `acestep/streaming/mrt2/protocol.py` (stdlib only, loaded by
   file path in the sidecar venv): `u32 len | u8 kind | payload`, JSON control
   (hello/meta, prompt, blend, knobs, credit, ping) and 48 kHz stereo f32 audio
@@ -134,6 +131,6 @@ in `scripts/mrt2_sidecar.py`, because JAX has no CUDA on native Windows.
   sidecar, which embeds tags with MusicCoCa and lerps A/B.
 - **Speed (RTX 5090):** `mrt2_small` ~1.7x real time, `mrt2_base` ~0.93x
   (below real time; expect underruns).
-- **Frontend:** `demos/mrt2/` (static three.js page, route `/mrt2` on the
+- **Frontend:** `demos/mrt2/` (static plain-canvas page, route `/mrt2` on the
   backend port) and `demos/realtime_motion_graph_web/web/app/magenta` (route
   `/magenta`); both send `backend: "mrt2"`.
