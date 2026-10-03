@@ -553,6 +553,13 @@ class StreamPipeline:
         historical ``context_latents.shape[-1] // 2`` is the ACE
         ``src ++ chunk_mask`` convention, now ``adapter.latent_channels``.
         """
+        # A family whose released sampler draws its noise in a specific
+        # arrangement (YuE2: frame-major per-seed CPU draw) supplies it
+        # whole; every other adapter takes the historical path below.
+        make_noise = getattr(self.adapter, "make_noise", None)
+        if make_noise is not None:
+            return make_noise(request)
+
         T = self.adapter.request_frames(request)
         D = self.adapter.latent_channels
         seed = request.seed

@@ -203,3 +203,48 @@ def minimax_preflight(req: PreflightRequest) -> PreflightResult:
     log = logger.warning if os.environ.get("DEMON_MINIMAX_CAPTURE") else logger.info
     log("preflight_minimax_ok model_id={} detail={}", req.model_id, msg)
     return PreflightResult.passed()
+
+
+def yue2_preflight(req: PreflightRequest) -> PreflightResult:
+    """The YuE2 family's boot check.
+
+    Offline and cheap: both checkpoint dirs under ``DEMON_YUE2_ROOT`` with
+    manifest-matching sizes (the SHA256 check runs at model load), the
+    upstream ``yue2`` package and ``tiktoken`` importable from
+    ``DEMON_YUE2_YUE_SRC`` / ``DEMON_YUE2_EXTRA_PATH``, and, when
+    ``DEMON_YUE2_TRT_DIR`` is set, both engines present in it (a set but
+    incomplete engine dir is an operator mistake; an unset one means the
+    eager NAR, which is several times slower per tick).
+    """
+    from acestep.engine import yue2_runtime as rt
+    from acestep.engine.yue2_trt import find_flexible_engine, find_vae_window_engine
+
+    ok, msg = rt.weights_status(rt.weights_root())
+    if not ok:
+        return PreflightResult.failed(
+            "YuE2 weights unavailable", msg,
+            f"set {rt.ROOT_ENV} to a directory holding {rt.MODEL_DIR}/ and {rt.VAE_DIR}/ "
+            f"(m-a-p/YuE2-3B @ {rt.MODEL_REVISION[:8]}, m-a-p/YuE2-Vae @ {rt.VAE_REVISION[:8]})",
+        )
+    missing = rt.missing_modules()
+    if missing:
+        return PreflightResult.failed(
+            "YuE2 runtime not importable", f"cannot import: {', '.join(missing)}",
+            f"set {rt.YUE_SRC_ENV} to upstream YuE @ {rt.CODE_REVISION[:8]} src/ "
+            f"and {rt.EXTRA_PATH_ENV} to a directory holding tiktoken",
+        )
+    trt_dir = rt.trt_dir()
+    if trt_dir is not None:
+        absent = [name for name, found in (
+            ("flexible_song/velocity.trt", find_flexible_engine(trt_dir)),
+            ("vae_fp32_t37.trt", find_vae_window_engine(trt_dir)),
+        ) if found is None]
+        if absent:
+            return PreflightResult.failed(
+                "YuE2 TensorRT engines missing", f"{rt.TRT_DIR_ENV}={trt_dir} lacks {', '.join(absent)}",
+                f"build: python -m acestep.engine.trt.yue2_build nar --out {trt_dir}",
+                f"       python -m acestep.engine.trt.yue2_build vae --out {trt_dir}",
+                f"or unset {rt.TRT_DIR_ENV} to run the eager NAR",
+            )
+    logger.info("preflight_yue2_ok {} trt_dir={}", msg, trt_dir)
+    return PreflightResult.passed()

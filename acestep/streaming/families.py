@@ -40,6 +40,7 @@ from acestep.streaming.preflight import (
     mrt2_preflight,
     minimax_preflight,
     sa3_preflight,
+    yue2_preflight,
 )
 
 # DEFAULT_FAMILY (re-exported from acestep.streaming.config): the family
@@ -635,6 +636,99 @@ MINIMAX = FamilySpec(
 )
 
 
+#: YuE2Backend's longest song (its YUE2_MAX_SONG_S: the flexible NAR TRT
+#: profile's 2500 frames). Mirrored so the registry does not import the
+#: backend at import time; the family's unit test pins the two together.
+YUE2_TEXT_ONLY_MAX_DURATION_S = 100.0
+
+
+def _make_yue2(ss):
+    # Assembles YuE2Backend from the create path's payload
+    # (acestep.streaming.yue2_session): the process-cached YuE2Context,
+    # the composition and its song(s) (KV bundle + anchor).
+    init = getattr(ss, "backend_init", None)
+    if not init or "context" not in init:
+        raise ValueError(
+            "backend 'yue2' requires the per-family create path "
+            "(acestep.streaming.yue2_session.create_yue2_session)"
+        )
+    from acestep.streaming.events import SessionError
+    from acestep.streaming.yue2_backend import YuE2Backend
+
+    def on_error(code: str, message: str) -> None:
+        # A failed background re-compose does not stop the session: the
+        # runtime-error event (wire ``error``, the SDK's server_error).
+        ss.bus.publish(SessionError(code=code, message=message))
+
+    return YuE2Backend.from_context(
+        init["context"],
+        composition=init["composition"],
+        song=init["song"],
+        song_b=init.get("song_b"),
+        knob_state=ss.virtual_knobs,
+        state=ss.state,
+        depth=int(ss.state.current_depth),
+        vae_window_s=float(ss.vae_window),
+        on_error=on_error,
+    )
+
+
+def _yue2_knob_universe():
+    from acestep.streaming.yue2_backend import yue2_knob_specs
+
+    return yue2_knob_specs()
+
+
+def _create_yue2_session(cls, **kwargs):
+    from acestep.streaming.yue2_session import create_yue2_session
+
+    return create_yue2_session(cls, **kwargs)
+
+
+def _shutdown_yue2() -> int:
+    from acestep.streaming.yue2_session import evict_yue2_contexts
+
+    return evict_yue2_contexts()
+
+
+YUE2 = FamilySpec(
+    name="yue2",
+    display_name="YuE2",
+    make_backend=_make_yue2,
+    knob_universe=_yue2_knob_universe,
+    # An alias may not equal a family name (conformance test).
+    checkpoint_aliases={"yue2-3b": "YuE2-3B"},
+    create_session=_create_yue2_session,
+    warmup_policy="none",
+    preflight=yue2_preflight,
+    # YuE2 style text is a comma-separated tag list (genre, voice,
+    # instruments, BPM), the shape the ACE prompt tooling writes.
+    prompt_policy="acestep",
+    config_fields=(
+        FamilyConfigField(
+            "yue2_lyrics", "str",
+            "Lyrics for yue2 sessions in YuE section format ([Verse], [Chorus], "
+            "[Outro] headers, one lyric line per line). Absent or null renders "
+            "an instrumental song. Fixed for the session lifetime.",
+        ),
+        FamilyConfigField(
+            "yue2_duration_s", "float",
+            "Longest song yue2 may compose, seconds (2 to 100, clamped). The "
+            "model decides the actual length within it. Absent or null allows 100 s. "
+            "Fixed for the session lifetime.",
+        ),
+    ),
+    # Text-to-song only: an upload is ignored and create composes the
+    # song (seconds of AR) before ready.
+    text_only=TextOnlySpec(
+        default_duration_s=60.0, max_duration_s=YUE2_TEXT_ONLY_MAX_DURATION_S,
+        duration_field="yue2_duration_s",
+    ),
+    # Closes the process-cached model, engines and conditioning worker.
+    shutdown=_shutdown_yue2,
+)
+
+
 def _register(*specs: FamilySpec) -> dict:
     from dataclasses import fields as _dc_fields
 
@@ -671,7 +765,7 @@ def _register(*specs: FamilySpec) -> dict:
 
 
 #: ``family name -> FamilySpec``. The source of truth.
-FAMILY_SPECS: dict = _register(ACESTEP, SA3, MRT2, MINIMAX)
+FAMILY_SPECS: dict = _register(ACESTEP, SA3, MRT2, MINIMAX, YUE2)
 
 
 def family_config_fields() -> tuple:
