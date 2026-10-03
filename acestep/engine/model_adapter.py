@@ -32,6 +32,11 @@ the doc can be updated from working code):
   pipeline needs T and device/dtype before the first forward, and the
   historical source for both (``context_latents`` /
   ``encoder_hidden_states``) is ACE-shaped.
+* ``make_noise(request) -> [1, T, C]`` is an OPTIONAL hook (not part
+  of the protocol): a family whose sampler draws its initial noise in a
+  specific arrangement supplies it whole (YuE2's frame-major per-seed
+  draw). Adapters without it (ACE, SA3) take the pipeline's historical
+  draw unchanged.
 * :class:`ACEAdapter` holds a back-reference to its pipeline: the ACE
   TRT dispatch state (engine snapshot, shape-keyed I/O buffer cache)
   is pipeline-owned and stays there — relocating it is Phase-4
