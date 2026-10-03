@@ -529,3 +529,15 @@ def test_a_dead_worker_raises_out_of_produce():
     b._run()  # the worker body, on this thread
     with pytest.raises(RuntimeError, match="worker died.*CUDA out of memory"):
         b.produce(b.read_knobs(), TickContext(0.0, 0.0), "generate")
+
+
+def test_zero_valued_knobs_are_honoured_not_defaulted():
+    """cond_strength 0.0 is a defined operating point and seed 0 a valid
+    seed; an ``x or default`` read turned both into the defaults."""
+    b = _backend()
+    knobs = dict(b.read_knobs())
+    knobs.update({"minimax_cond_strength": 0.0, "seed": 0})
+    b.produce(knobs, TickContext(0.0, 0.0), "generate")
+    got, _, _ = b._snapshot()
+    assert got.cond_strength == 0.0
+    assert got.seed == 0

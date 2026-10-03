@@ -209,6 +209,16 @@ AR_BATCH_FRAMES = 25
 AR_RESIDENT_VRAM_GB = 21.0
 
 
+def _knob(knobs: dict, name: str, default):
+    """``knobs[name]``, or ``default`` only when the knob is absent.
+
+    Not ``knobs.get(name) or default``: zero is a real setting for some
+    of these (``minimax_cond_strength`` 0.0, ``seed`` 0).
+    """
+    value = knobs.get(name)
+    return default if value is None else value
+
+
 def minimax_knob_specs(loras=()) -> list:
     """The MiniMax knob manifest.
 
@@ -726,9 +736,9 @@ class MiniMaxBackend:
     def _ar_controls(self) -> ARControls:
         values = self.knob_state.get_all_values()
         return ARControls(
-            temperature=float(values.get("minimax_temperature", 1.0) or 1.0),
-            top_k=int(values.get("minimax_top_k", 50) or 50),
-            guidance=float(values.get("minimax_ar_guidance", 1.5) or 1.5),
+            temperature=float(_knob(values, "minimax_temperature", 1.0)),
+            top_k=int(_knob(values, "minimax_top_k", 50)),
+            guidance=float(_knob(values, "minimax_ar_guidance", 1.5)),
             mask_end=bool(values.get("minimax_endless", False)),
         )
 
@@ -961,18 +971,14 @@ class MiniMaxBackend:
         started = time.perf_counter()
 
         controls = RenderControls(
-            steps=max(
-                1, int(knobs.get("minimax_steps", self._steps) or self._steps)
-            ),
-            shift=float(knobs.get("minimax_shift", DEFAULT_SHIFT) or DEFAULT_SHIFT),
-            guidance=float(
-                knobs.get("minimax_guidance", DEFAULT_GUIDANCE) or DEFAULT_GUIDANCE
-            ),
-            cond_strength=float(knobs.get("minimax_cond_strength", 1.0) or 1.0),
-            seed=int(knobs.get("seed", self._seed) or self._seed),
+            steps=max(1, int(_knob(knobs, "minimax_steps", self._steps))),
+            shift=float(_knob(knobs, "minimax_shift", DEFAULT_SHIFT)),
+            guidance=float(_knob(knobs, "minimax_guidance", DEFAULT_GUIDANCE)),
+            cond_strength=float(_knob(knobs, "minimax_cond_strength", 1.0)),
+            seed=int(_knob(knobs, "seed", self._seed)),
         )
-        hop = int(knobs.get("minimax_hop", HOP_AR_FRAMES) or HOP_AR_FRAMES)
-        lead = float(knobs.get("minimax_lead", 1.0) or 1.0)
+        hop = int(_knob(knobs, "minimax_hop", HOP_AR_FRAMES))
+        lead = float(_knob(knobs, "minimax_lead", 1.0))
 
         with self._lock:
             self._render_controls = controls
