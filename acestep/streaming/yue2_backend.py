@@ -168,8 +168,11 @@ class YuE2Backend(DiffusionBackend):
         self._latent_history: deque = deque(maxlen=MAX_FEEDBACK_DEPTH)
         # Settled short-circuit bookkeeping: the signature each submitted
         # request was built under, and the signature of the last latent
-        # that emerged.
-        self._submitted: deque = deque(maxlen=16)
+        # that emerged. A request can finish up to ``steps + depth`` ticks
+        # after it was submitted (one per tick at queue_cap 1), so the
+        # bookkeeping must outlive a full solve: 4x the step count covers
+        # every depth the ring allows with room to spare.
+        self._submitted: deque = deque(maxlen=4 * self._steps)
         self._emerged_signature = None
         self._emerged_request = None
         self._emerged_marker = None

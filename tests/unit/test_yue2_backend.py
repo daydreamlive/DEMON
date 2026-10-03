@@ -333,3 +333,22 @@ def test_preflight_verdicts(tmp_path, monkeypatch):
     assert not res.ok and "vae_fp32_t37.trt" in res.lines[0]
     (trt / "vae_fp32_t37.trt").write_bytes(b"")
     assert _preflight().ok
+
+
+@pytest.mark.parametrize("depth", [1, 2])
+@pytest.mark.parametrize("denoise", [1.0, 0.5])
+def test_settles_at_the_released_step_count(depth, denoise):
+    """A 32-step solve outlives a short submission history; the ring must
+    still recognise the emerged latent and stop ticking."""
+    backend = YuE2Backend(
+        adapter=YuE2Adapter(_velocity, steps=32), codec=_Codec(), bundle=_Bundle(0.0),
+        anchor_latent=torch.zeros(1, T, 64), knob_state=KnobState(yue2_knob_specs()),
+        restyler=None, steps=32, depth=depth, prompt_tags="pop",
+    )
+    knobs = _knobs(yue2_denoise=denoise)
+    for _ in range(4 * 32):
+        backend.produce(knobs, CTX, "generate")
+    ticks = backend.pipeline.ticks
+    assert ticks < 4 * 32
+    assert backend.produce(knobs, CTX, "generate") is False
+    assert backend.pipeline.ticks == ticks
