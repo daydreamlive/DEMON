@@ -10,10 +10,12 @@ The conditioning path turns (style, lyrics, seed) into a song:
 1. :meth:`compose`: score plan (ABC, AR) then semantic tokens (AR), the
    expensive part (seconds), upstream's ``plan`` / ``generate_semantic``
    with CUDA-graph AR on cuDNN attention as the spike ran it;
-2. :meth:`bundle`: the token prefix for a style, the AR-prefix KV
-   prefill (``CachedNAR``) and the stacked KV for TRT
-   (:class:`~acestep.engine.yue2_velocity.YuE2Bundle`); a style change
-   on a fixed composition is only this step (fast restyle);
+2. :meth:`bundle`: the token prefix, the AR-prefix KV prefill
+   (``CachedNAR``) and the stacked KV for TRT
+   (:class:`~acestep.engine.yue2_velocity.YuE2Bundle`). Its ``style``
+   argument (same score, new ``[Tags]``) is experiment-only: with frozen
+   semantics a tag change is nearly inaudible (E3), so ``set_prompt``
+   re-composes instead (:mod:`acestep.streaming.yue2_recompose`);
 3. :meth:`solve`: one full 32-step midpoint solve (the song anchor);
 4. :meth:`decode_full` / :meth:`decode_window`: FP32 VAE decode.
 
@@ -26,13 +28,11 @@ from __future__ import annotations
 import dataclasses
 import threading
 import time
-from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
-from unittest.mock import patch
 
 import torch
 
@@ -70,6 +70,61 @@ ABC_MAX_TOKENS = 4096
 #: Upstream reserves its CUDA memory fraction from this budget at
 #: pipeline construction; 30 GiB is what the spike ran under on a 5090.
 MEMORY_BUDGET_GIB = 30
+
+
+@contextmanager
+def swapped_attr(owner, name: str, value):
+    """Set ``owner.name`` to ``value`` for the block, then restore it.
+
+    Used for the two upstream module attributes YuE2 cannot be told about
+    through an argument: ``yue2.cuda_graph.GraphAR`` (``sampling`` looks
+    it up at call time) and ``yue2.pipeline.model_identity``. The swap is
+    process-wide, so callers hold :attr:`YuE2Context._model_lock` (or
+    run at construction) and nothing else imports those names meanwhile.
+    """
+    original = getattr(owner, name)
+    setattr(owner, name, value)
+    try:
+        yield
+    finally:
+        setattr(owner, name, original)
+
+
+def gated_graph_ar(gate: threading.Lock):
+    """Upstream ``GraphAR`` on cuDNN attention (Windows torch has no
+    FlashAttention) whose capture runs in thread-local error mode AND
+    under ``gate``. Thread-local mode alone did not stop the ring's CUDA
+    work on the runner thread from failing a capture on the worker
+    ("operation not permitted when stream is capturing", M4), so the
+    ring holds the same gate around its GPU work and a capture (warmup +
+    record, tens of ms) briefly excludes it. ``_capture`` is upstream's
+    (``yue2/cuda_graph.py`` @ CODE_REVISION) with only the capture mode
+    added."""
+    from yue2.cuda_graph import GraphAR
+
+    class GatedGraphAR(GraphAR):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **dict(kwargs, attention_backend="cudnn"))
+
+        @torch.inference_mode()
+        def _capture(self):
+            with gate, torch.cuda.device(self.device):
+                current = torch.cuda.current_stream(self.device)
+                warmup = torch.cuda.Stream(device=self.device)
+                warmup.wait_stream(current)
+                with torch.cuda.stream(warmup):
+                    for _ in range(3):
+                        self.positions.copy_(self.initial_positions)
+                        self._decode()
+                    self.positions.copy_(self.initial_positions)
+                current.wait_stream(warmup)
+                torch.cuda.synchronize(self.device)
+                self.graph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(self.graph, capture_error_mode="thread_local"):
+                    self.output = self._decode()
+                self.positions.copy_(self.initial_positions)
+
+    return GatedGraphAR
 
 
 @dataclass
@@ -110,7 +165,7 @@ class YuE2Context:
         self._model_lock = threading.Lock()
         #: Held by an AR graph capture and by the ring around its GPU work.
         self.gpu_gate = threading.Lock()
-        self.capture_ms: deque = deque(maxlen=64)
+        self._graph_ar = None  # gated_graph_ar(gpu_gate), built on first compose
         self.load_s = time.perf_counter() - t0
         logger.info(
             "yue2_context_loaded root={} nar={} vae_window={} load_s={:.1f}",
@@ -121,12 +176,13 @@ class YuE2Context:
     # ---- assembly ------------------------------------------------------------
 
     def _make_pipeline(self):
+        import yue2.pipeline
         from yue2 import YuE2Pipeline
 
         identities = {MODEL_DIR: self.model_identity, VAE_DIR: self.vae_identity}
         # Hashes were verified by load_verified; do not re-read 7 GB.
-        with patch("yue2.pipeline.model_identity",
-                   side_effect=lambda path, verify: identities[Path(path).name]):
+        with swapped_attr(yue2.pipeline, "model_identity",
+                          lambda path, verify: identities[Path(path).name]):
             pipe = YuE2Pipeline(self.root / MODEL_DIR, self.root / VAE_DIR, device=str(self.device),
                                 progress=False, memory_budget_gib=MEMORY_BUDGET_GIB)
         pipe._model = self.model
@@ -158,38 +214,14 @@ class YuE2Context:
 
     # ---- conditioning ----------------------------------------------------------
 
-    @contextmanager
     def _ar_graphs(self):
-        """Upstream CUDA-graph AR with cuDNN attention (Windows torch has
-        no FlashAttention). Each capture runs in thread-local mode AND
-        under :attr:`gpu_gate`: thread-local mode alone did not stop the
-        ring's CUDA work on the runner thread from failing a capture on
-        the worker ("operation not permitted when stream is capturing",
-        M4), so the ring holds the same gate around its GPU work and a
-        capture (warmup + record, tens of ms) briefly excludes it."""
-        from yue2.cuda_graph import GraphAR
+        """Upstream's AR stages on :func:`gated_graph_ar` for the length of
+        a compose (caller holds ``_model_lock``)."""
+        import yue2.cuda_graph
 
-        original_capture = GraphAR._capture
-
-        def capture(graph_ar):
-            original_graph = torch.cuda.graph
-
-            def thread_local_graph(cuda_graph, **kwargs):
-                kwargs.setdefault("capture_error_mode", "thread_local")
-                return original_graph(cuda_graph, **kwargs)
-
-            with self.gpu_gate, patch("torch.cuda.graph", thread_local_graph):
-                t0 = time.perf_counter()
-                result = original_capture(graph_ar)
-                self.capture_ms.append((time.perf_counter() - t0) * 1000)
-                return result
-
-        def make(*args, **kwargs):
-            return GraphAR(*args, **dict(kwargs, attention_backend="cudnn"))
-
-        with patch("yue2.cuda_graph.GraphAR", side_effect=make), \
-                patch.object(GraphAR, "_capture", capture):
-            yield
+        if self._graph_ar is None:
+            self._graph_ar = gated_graph_ar(self.gpu_gate)
+        return swapped_attr(yue2.cuda_graph, "GraphAR", self._graph_ar)
 
     def semantic_budget(self, max_frames: int, exact_frames: Optional[int] = None) -> dict:
         """Semantic sampling bounds for a song of at most ``max_frames``.
