@@ -224,8 +224,6 @@ graphs: session create takes ~27-28 s on a cold pod and first audio arrives
 21-34 s after Start, so expect roughly half a minute. Later sessions in the
 same server reuse the process-cached context and skip the load.
 
-**Hot-loop note.** This branch also adds an aux-cond CFG path to
-`acestep/engine/stream.py` and an exact-CFG shortcut to
-`acestep/engine/ode_steps.py` (ACE/SA3 defaults unchanged). The live family
-does not use them: `MiniMaxChunkRenderer` runs its own CFG, and only
-`tests/unit/test_stream_aux_cfg.py` exercises the new path.
+**Hot loop.** The family leaves `acestep/engine/stream.py` and
+`acestep/engine/ode_steps.py` as they are on main: `MiniMaxChunkRenderer`
+runs its own CFG.
