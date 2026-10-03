@@ -1,6 +1,6 @@
 # MiniMax-Music3 demo (`/minimax`)
 
-A point-cloud sphere that swells with the bass and ripples with the mids while
+A 2D canvas ring of points that swells with the bass and ripples with the mids while
 MiniMax-Music3 composes a continuous piece from a style prompt (and optional lyrics).
 
 Prerequisites: the MiniMaxAI/MiniMax-Music3 weights in the HF cache or under

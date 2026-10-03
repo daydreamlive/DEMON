@@ -14,5 +14,3 @@ button { flex: 1; padding: 6px 10px; background: #2b2b48; color: #e8e8f8;
   border: 1px solid #44446a; border-radius: 4px; cursor: pointer; font: inherit; }
 button:disabled { opacity: 0.4; cursor: default; }
 .knobs { display: flex; flex-direction: column; gap: 6px; }
-.knob { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; }
-.knob input[type="range"] { grid-column: 1 / 3; }

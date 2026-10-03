@@ -1,12 +1,12 @@
-import * as THREE from "three";
 import { AudioPlayer, RemoteBackend, SLICE_FLAG_DELTA } from "/sdk/demon-client.js";
 
-// --- state ---
+// state
 const DEFAULT_PROMPT =
   "bpm is 140. key is F, and scale is minor. Darkwave / Coldwave. " +
   "Gothic synth textures, driving bass, cavernous drums.";
 const PARAMS_TICK_MS = 100;
 const KNOB_PREFIX = "minimax_";
+const POINT_COUNT = 256;
 // MiniMax ignores the upload (no audio encoder). The SDK always sends a PCM
 // frame, which text_only would leave unread, so upload a short silent stub.
 const STUB_SAMPLE_RATE = 48000;
@@ -14,14 +14,13 @@ const STUB_SECONDS = 2;
 const STUB_CHANNELS = 2;
 // A healthy session commits a chunk every few s; a long gap = piece ended, tape looping.
 const ENDED_AFTER_MS = 15000;
-
 const state = {
   remote: null, player: null, analyser: null, freq: null, wave: null,
-  status: "idle", connected: false, slices: 0, receivedFrames: 0,
-  lastSliceAt: null, values: {}, paramsTimer: null, rms: 0,
+  status: "idle", slices: 0, receivedFrames: 0, lastSliceAt: null, rms: 0,
+  values: {}, paramsTimer: null, error: "", gen: 0,
 };
 
-// --- DOM ---
+// DOM
 const els = {
   canvas: document.querySelector("#scene"),
   status: document.querySelector("#status"),
@@ -37,68 +36,30 @@ els.prompt.value = DEFAULT_PROMPT;
 
 function setStatus(status) {
   state.status = status;
-  renderStatus();
+  els.start.textContent = status === "idle" || status === "error" ? "Start" : "Stop";
+  els.send.disabled = !state.player;
+  els.reconnect.disabled = !state.player;
 }
 
-function renderStatus() {
-  const live = state.remote != null;
-  els.start.textContent = live ? "Stop" : "Start";
-  els.send.disabled = !state.connected;
-  els.reconnect.disabled = !live;
-  let text = state.status;
-  if (state.status === "playing" && state.player) {
-    const received = state.receivedFrames / state.remote.sampleRate;
-    const ahead = Math.max(0, received - state.player.positionSec);
-    text += ` | ${ahead.toFixed(1)} s buffered`;
+function renderStatusLine() {
+  if (state.status === "error" || state.status === "idle" || state.status === "connecting") {
+    els.status.textContent = state.error ? `error: ${state.error}` : state.status;
+    return;
   }
-  els.status.textContent = text;
-}
-
-function buildKnobPanel(manifest) {
-  const entries = Object.entries(manifest).filter(([name]) => name.startsWith(KNOB_PREFIX));
-  els.knobs.replaceChildren(...entries.map(([name, entry]) => knobControl(name, entry)));
-}
-
-function knobControl(name, entry) {
-  const wrap = document.createElement("label");
-  wrap.className = "knob";
-  if (entry.description) wrap.title = entry.description;
-  const label = document.createElement("span");
-  label.textContent = name.slice(KNOB_PREFIX.length).replace(/_/g, " ");
-  const readout = document.createElement("span");
-  const show = (v) => { readout.textContent = typeof v === "number" ? String(+v.toFixed(2)) : String(v); };
-  let input;
-  if (entry.type === "bool") {
-    input = document.createElement("input");
-    input.type = "checkbox";
-    input.checked = Boolean(state.values[name]);
-    input.addEventListener("change", () => commitKnob(name, input.checked, show));
-  } else if (entry.type === "enum") {
-    input = document.createElement("select");
-    for (const option of entry.options ?? []) input.append(new Option(String(option), String(option)));
-    input.value = String(state.values[name]);
-    input.addEventListener("change", () => commitKnob(name, input.value, show));
-  } else {
-    const min = entry.min ?? 0;
-    const max = entry.max ?? 1;
-    input = document.createElement("input");
-    Object.assign(input, { type: "range", min: String(min), max: String(max) });
-    input.step = entry.type === "int" ? "1" : String((max - min) / 200);
-    input.value = String(state.values[name]);
-    input.addEventListener("input", () => commitKnob(name, Number(input.value), show));
+  if (!state.player || state.slices === 0) {
+    els.status.textContent = "waiting for first audio (~10 s)";
+    return;
   }
-  show(state.values[name]);
-  wrap.append(label, readout, input);
-  return wrap;
+  if (performance.now() - state.lastSliceAt > ENDED_AFTER_MS) {
+    els.status.textContent = "piece ended (tape loops): Reconnect for a new one";
+    return;
+  }
+  const received = state.receivedFrames / state.remote.sampleRate;
+  const ahead = Math.max(0, received - state.player.positionSec);
+  els.status.textContent = `playing, ${ahead.toFixed(1)} s buffered, ${state.slices} slices`;
 }
 
-function commitKnob(name, value, show) {
-  state.values[name] = value;
-  show(value);
-  sendParams();
-}
-
-// --- DEMON connection ---
+// DEMON connection
 function wsUrl() {
   const override = new URLSearchParams(location.search).get("ws");
   return override || `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/`;
@@ -123,86 +84,132 @@ function defaultKnobValue(entry) {
   return entry.min ?? 0;
 }
 
-async function start() {
-  await stop();
-  setStatus("connecting");
-  try {
-    const remote = new RemoteBackend(
-      wsUrl(),
-      new Float32Array(STUB_SAMPLE_RATE * STUB_SECONDS * STUB_CHANNELS),
-      STUB_CHANNELS,
-      buildConfig(),
-      { sliceWorkerUrl: "/sdk/sliceDecoder.worker.js" },
-    );
-    state.remote = remote;
-    remote.addEventListener("slice", onSlice);
-    remote.addEventListener("close", () => {
-      if (!remote.closedByUser) setStatus("connection lost");
-    });
-    await remote.connect();
-    if (!remote.initialBuffer) throw new Error("server sent no initial buffer");
-    console.info("minimax session", remote.backendSessionId);
-
-    const manifest = remote.knobManifest?.knobs ?? {};
-    state.values = Object.fromEntries(
-      Object.entries(manifest).map(([name, entry]) => [name, defaultKnobValue(entry)]));
-    // Steer a continuous stream (mask the end token) and pivot hard on a new
-    // prompt (keep 2.5 s of history), as the original page did.
-    if ("minimax_endless" in state.values) state.values.minimax_endless = true;
-    if ("minimax_reprompt_history_s" in state.values) state.values.minimax_reprompt_history_s = 2.5;
-    buildKnobPanel(manifest);
-
-    const player = new AudioPlayer({ workletUrl: "/sdk/audio-worklet.js" });
-    state.player = player;
-    await player.init(remote.initialBuffer, remote.channels);
-    attachAnalyser(player);
-    state.connected = true;
-    state.paramsTimer = window.setInterval(onParamsTick, PARAMS_TICK_MS);
-    // Playback starts on the first slice (onSlice) so the playhead stays behind the frontier.
-    setStatus("waiting for first audio (~10 s)");
-  } catch (err) {
-    await stop();
-    setStatus(`error: ${err instanceof Error ? err.message : "start failed"}`);
-  }
-}
-
-function onSlice(event) {
+function handleSlice(event) {
   const detail = event.detail;
   const player = state.player;
   if (!player || detail.epoch !== player.swapCount) return;
+  // Playback starts on the first slice so the playhead stays behind the frontier.
   if (state.slices === 0) void player.resume();
-  const startFrame = Math.floor(detail.startSample);
-  if (detail.flags === SLICE_FLAG_DELTA) player.addDelta(startFrame, detail.audio);
-  else player.patch(startFrame, detail.audio);
-  const end = startFrame + detail.audio.length / state.remote.channels;
-  state.receivedFrames = Math.max(state.receivedFrames, end);
+  const start = Math.floor(detail.startSample);
+  if (detail.flags === SLICE_FLAG_DELTA) player.addDelta(start, detail.audio);
+  else player.patch(start, detail.audio);
+  state.receivedFrames = Math.max(state.receivedFrames, start + detail.audio.length / state.remote.channels);
   state.slices += 1;
   state.lastSliceAt = performance.now();
-  if (state.status !== "playing") setStatus("playing");
-}
-
-function onParamsTick() {
-  sendParams();
-  const stale = state.lastSliceAt != null && performance.now() - state.lastSliceAt > ENDED_AFTER_MS;
-  if (stale && state.status === "playing") setStatus("piece ended (tape loops): Reconnect for a new one");
-  else renderStatus();
 }
 
 function sendParams() {
-  if (state.connected) state.remote.sendParams(state.values, state.player.positionSec);
+  if (!state.remote || !state.player) return;
+  state.remote.sendParams(state.values, state.player.positionSec);
 }
 
-async function stop() {
+// disconnect() bumps state.gen, so a connect() still awaiting drops what it built.
+async function connect() {
+  const gen = state.gen;
+  const remote = new RemoteBackend(
+    wsUrl(), new Float32Array(STUB_SAMPLE_RATE * STUB_SECONDS * STUB_CHANNELS), STUB_CHANNELS,
+    buildConfig(), { sliceWorkerUrl: "/sdk/sliceDecoder.worker.js" },
+  );
+  state.remote = remote;
+  remote.addEventListener("slice", handleSlice);
+  remote.addEventListener("close", () => {
+    if (remote.closedByUser || state.remote !== remote) return;
+    state.error = "connection lost";
+    setStatus("error");
+  });
+  await remote.connect();
+  if (gen !== state.gen) return void remote.close();
+  if (!remote.initialBuffer) throw new Error("server sent no initial buffer");
+  console.info("minimax session", remote.backendSessionId);
+
+  const manifest = remote.knobManifest?.knobs ?? {};
+  const knobs = Object.entries(manifest).filter(([name]) => name.startsWith(KNOB_PREFIX));
+  state.values = Object.fromEntries(knobs.map(([name, entry]) => [name, defaultKnobValue(entry)]));
+  // Steer a continuous stream (mask the end token) and pivot hard on a new
+  // prompt (keep 2.5 s of history), as the original page did.
+  if ("minimax_endless" in state.values) state.values.minimax_endless = true;
+  if ("minimax_reprompt_history_s" in state.values) state.values.minimax_reprompt_history_s = 2.5;
+  renderKnobs(knobs);
+
+  const player = new AudioPlayer({ workletUrl: "/sdk/audio-worklet.js" });
+  try {
+    await player.init(remote.initialBuffer, remote.channels);
+  } catch (err) {
+    try { await player.close(); } catch {}
+    throw err;
+  }
+  if (gen !== state.gen) {
+    try { await player.close(); } catch {}
+    return void remote.close();
+  }
+  state.player = player;
+  attachAnalyser(player);
+  state.paramsTimer = window.setInterval(sendParams, PARAMS_TICK_MS);
+  setStatus("playing");
+}
+
+async function disconnect() {
+  state.gen += 1;
   window.clearInterval(state.paramsTimer);
-  state.connected = false; // stops sendParams before the socket closes
+  state.paramsTimer = null;
   try { await state.player?.close(); } catch {}
   try { state.remote?.close(); } catch {}
-  Object.assign(state, { remote: null, player: null, analyser: null, paramsTimer: null });
-  Object.assign(state, { slices: 0, receivedFrames: 0, lastSliceAt: null, rms: 0 });
+  Object.assign(state, { remote: null, player: null, analyser: null, rms: 0 });
+  Object.assign(state, { slices: 0, receivedFrames: 0, lastSliceAt: null });
   setStatus("idle");
 }
 
-// --- audio analyser ---
+async function restart() {
+  await disconnect(); // tear down any session left behind by an error
+  state.error = "";
+  setStatus("connecting");
+  const gen = state.gen;
+  try {
+    await connect();
+  } catch (err) {
+    if (gen !== state.gen) return; // Stop was pressed mid-connect
+    await disconnect();
+    state.error = err instanceof Error ? err.message : String(err);
+    setStatus("error");
+  }
+}
+
+function renderKnobs(knobs) {
+  els.knobs.replaceChildren(...knobs.map(([name, entry]) => knobControl(name, entry)));
+}
+
+function knobControl(name, entry) {
+  const label = document.createElement("label");
+  if (entry.description) label.title = entry.description;
+  const value = document.createElement("span");
+  const show = (v) => { value.textContent = ` ${typeof v === "number" ? +v.toFixed(2) : v}`; };
+  const commit = (v) => { state.values = { ...state.values, [name]: v }; show(v); sendParams(); };
+  let input;
+  if (entry.type === "bool") {
+    input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = Boolean(state.values[name]);
+    input.addEventListener("change", () => commit(input.checked));
+  } else if (entry.type === "enum") {
+    input = document.createElement("select");
+    for (const option of entry.options ?? []) input.append(new Option(String(option), String(option)));
+    input.value = String(state.values[name]);
+    input.addEventListener("change", () => commit(input.value));
+  } else {
+    const min = entry.min ?? 0;
+    const max = entry.max ?? 1;
+    input = document.createElement("input");
+    Object.assign(input, { type: "range", min: String(min), max: String(max) });
+    input.step = entry.type === "int" ? "1" : String((max - min) / 200);
+    input.value = String(state.values[name]);
+    input.addEventListener("input", () => commit(Number(input.value)));
+  }
+  show(state.values[name]);
+  label.append(name.slice(KNOB_PREFIX.length).replace(/_/g, " "), value, input);
+  return label;
+}
+
+// audio analyser
 function attachAnalyser(player) {
   const analyser = player.ctx.createAnalyser();
   analyser.fftSize = 1024;
@@ -214,88 +221,80 @@ function attachAnalyser(player) {
 }
 
 function bandEnergy(from, to) {
+  if (!state.analyser) return 0;
   let sum = 0;
   for (let i = from; i < to; i++) sum += state.freq[i];
   return sum / ((to - from) * 255);
 }
 
-function readBands() {
-  if (!state.analyser) return { low: 0, mid: 0, high: 0 };
+function readAnalyser() {
+  if (!state.analyser) return;
   state.analyser.getByteFrequencyData(state.freq);
   state.analyser.getFloatTimeDomainData(state.wave);
-  let sq = 0;
-  for (const s of state.wave) sq += s * s;
-  state.rms = Math.sqrt(sq / state.wave.length);
-  return { low: bandEnergy(1, 12), mid: bandEnergy(12, 90), high: bandEnergy(90, 400) };
+  let sum = 0;
+  for (const s of state.wave) sum += s * s;
+  state.rms = Math.sqrt(sum / state.wave.length);
 }
 
-// --- three scene ---
-const renderer = new THREE.WebGLRenderer({ canvas: els.canvas, antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 100);
-camera.position.set(0, 0, 4.2);
-scene.add(new THREE.AmbientLight(0x404060, 1.2));
-const sun = new THREE.DirectionalLight(0xffffff, 1.6);
-sun.position.set(3, 4, 5);
-scene.add(sun);
-
-const sphereGeometry = new THREE.IcosahedronGeometry(1.2, 5);
-const basePositions = sphereGeometry.attributes.position.array.slice();
-const pointsMaterial = new THREE.PointsMaterial({ size: 0.022, color: 0x8fb6ff });
-const points = new THREE.Points(sphereGeometry, pointsMaterial);
-scene.add(points);
-const core = new THREE.Mesh(
-  new THREE.IcosahedronGeometry(0.55, 2),
-  new THREE.MeshStandardMaterial({ color: 0x24204a, emissive: 0x3a1f6a, roughness: 0.6, flatShading: true }),
-);
-scene.add(core);
+// ring canvas: a ring of points that swells with the bass and ripples with the mids
+const ctx2d = els.canvas.getContext("2d");
 
 function resize() {
-  renderer.setSize(window.innerWidth, window.innerHeight, false);
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
+  const dpr = Math.min(window.devicePixelRatio, 2);
+  els.canvas.width = Math.round(window.innerWidth * dpr);
+  els.canvas.height = Math.round(window.innerHeight * dpr);
 }
 
-function updateScene(bands, t) {
-  const pos = sphereGeometry.attributes.position.array;
-  const swell = 1 + bands.low * 0.45;
-  for (let i = 0; i < pos.length; i += 3) {
-    const x = basePositions[i], y = basePositions[i + 1], z = basePositions[i + 2];
-    const k = swell * (1 + Math.sin(t * 3 + y * 6 + x * 2) * bands.mid * 0.12);
-    pos[i] = x * k; pos[i + 1] = y * k; pos[i + 2] = z * k;
+function drawRing(t) {
+  const { width, height } = els.canvas;
+  ctx2d.fillStyle = "#07070b";
+  ctx2d.fillRect(0, 0, width, height);
+  const low = bandEnergy(1, 12);
+  const mid = bandEnergy(12, 90);
+  const high = bandEnergy(90, 400);
+  const base = Math.min(width, height) * 0.28 * (1 + low * 0.45);
+  const dot = Math.max(1.5, Math.min(width, height) * 0.004 * (1 + high * 2));
+  ctx2d.fillStyle = `hsl(${225 - high * 180} 70% ${60 + high * 25}%)`;
+  for (let i = 0; i < POINT_COUNT; i++) {
+    const angle = (i / POINT_COUNT) * Math.PI * 2 + t * 0.12;
+    const r = base * (1 + Math.sin(t * 3 + angle * 6) * mid * 0.15);
+    ctx2d.fillRect(width / 2 + Math.cos(angle) * r, height / 2 + Math.sin(angle) * r, dot, dot);
   }
-  sphereGeometry.attributes.position.needsUpdate = true;
-  pointsMaterial.color.setHSL(0.62 - bands.high * 0.5, 0.7, 0.6 + bands.high * 0.25);
-  points.rotation.y = t * 0.12;
-  points.rotation.x = Math.sin(t * 0.2) * 0.25;
-  core.rotation.y = -t * 0.3;
-  core.scale.setScalar(1 + bands.low * 0.3);
-  core.material.emissiveIntensity = 0.4 + bands.high * 2;
 }
 
-// --- render loop ---
+// render loop
 function frame(ms) {
-  updateScene(readBands(), ms / 1000);
-  renderer.render(scene, camera);
+  readAnalyser();
+  drawRing(ms / 1000);
+  renderStatusLine();
   requestAnimationFrame(frame);
 }
 
-// --- event wiring ---
-els.start.addEventListener("click", () => (state.remote ? void stop() : void start()));
-els.reconnect.addEventListener("click", () => void start());
+// event wiring
+els.start.addEventListener("click", async () => {
+  if (state.status !== "idle" && state.status !== "error") await disconnect();
+  else await restart();
+});
+els.reconnect.addEventListener("click", () => void restart());
 els.send.addEventListener("click", () => {
   const prompt = els.prompt.value.trim() || DEFAULT_PROMPT;
   state.remote?.sendPrompt(prompt, undefined, undefined, prompt);
 });
 window.addEventListener("resize", resize);
-window.addEventListener("beforeunload", () => { try { state.remote?.close(); } catch {} });
+window.addEventListener("beforeunload", () => {
+  try { state.remote?.close(); } catch {}
+});
 window.__demo = {
   get stats() {
-    const { connected, slices, rms } = state;
-    return { connected, slices, positionSec: state.player?.positionSec ?? 0, rms };
+    return {
+      connected: Boolean(state.remote && state.player),
+      slices: state.slices,
+      positionSec: state.player?.positionSec ?? 0,
+      rms: state.rms,
+    };
   },
 };
+
 resize();
-renderStatus();
+setStatus("idle");
 requestAnimationFrame(frame);
