@@ -1,0 +1,714 @@
+"""MRT2 backend family: frame protocol + append-only frontier semantics.
+
+Covers the pieces that don't need the sidecar (or a GPU):
+
+* protocol framing round-trips over a real socketpair,
+* the rolling-window emission contract (overlap head, wrap-seam clamp,
+  start_sample placement) with an injected fake sidecar client,
+* credit pacing and knob forwarding,
+* the family's declared contract surface (capabilities / geometry /
+  knob universe registration; the homonym guard in
+  test_knob_homonyms.py picks the universe up automatically).
+
+The live path (real sidecar in the MRT2 venv, WS session end-to-end)
+is exercised manually; see scripts/mrt2_sidecar.py.
+"""
+
+import socket
+import time
+
+import numpy as np
+import pytest
+
+from acestep.streaming.generator_backend import Capabilities, TickContext
+from acestep.streaming.knobs import KnobState
+from acestep.streaming.mrt2 import protocol as mp
+from acestep.streaming.mrt2.backend import (
+    WINDOW_S,
+    WINDOW_SAMPLES,
+    XFADE,
+    MRT2Backend,
+    mrt2_knob_specs,
+)
+
+
+# ---------------------------------------------------------------------------
+# Protocol framing
+# ---------------------------------------------------------------------------
+
+
+def test_protocol_json_roundtrip():
+    a, b = socket.socketpair()
+    try:
+        msg = {"type": "knobs", "temperature": 1.7, "top_k": 64}
+        a.sendall(mp.pack_json(msg))
+        kind, payload = mp.recv_msg(b)
+        assert kind == mp.MSG_JSON
+        assert mp.unpack_json(payload) == msg
+    finally:
+        a.close()
+        b.close()
+
+
+def test_protocol_audio_roundtrip():
+    a, b = socket.socketpair()
+    try:
+        pcm = np.arange(2 * mp.FRAME_SAMPLES * mp.CHANNELS, dtype=np.float32)
+        a.sendall(mp.pack_audio(123, 2, pcm.tobytes()))
+        kind, payload = mp.recv_msg(b)
+        assert kind == mp.MSG_AUDIO
+        idx, n, raw = mp.unpack_audio(payload)
+        assert (idx, n) == (123, 2)
+        out = np.frombuffer(raw, dtype=np.float32)
+        np.testing.assert_array_equal(out, pcm)
+    finally:
+        a.close()
+        b.close()
+
+
+def test_protocol_rejects_corrupt_length():
+    a, b = socket.socketpair()
+    try:
+        a.sendall(b"\xff\xff\xff\xff")
+        with pytest.raises(ConnectionError):
+            mp.recv_msg(b)
+    finally:
+        a.close()
+        b.close()
+
+
+# ---------------------------------------------------------------------------
+# Backend with a fake sidecar client
+# ---------------------------------------------------------------------------
+
+
+class FakeClient:
+    """Stands in for SidecarClient: records control sends, lets tests
+    feed audio frames directly."""
+
+    def __init__(self):
+        self.sent: list = []
+        self.lost = False
+        self.last_rx_ts = time.monotonic()
+        self.frames_received = 0
+        self.meta = {"type": "meta", "model": "fake"}
+        self.closed = False
+        self.credit_dropped = 0
+        self._audio: list = []
+
+    def send_json(self, obj):
+        self.sent.append(obj)
+
+    def pop_audio(self):
+        out, self._audio = self._audio, []
+        return out
+
+    def pop_credit_dropped(self):
+        n, self.credit_dropped = self.credit_dropped, 0
+        return n
+
+    def close(self):
+        self.closed = True
+
+    # test helper
+    def feed_frames(self, num_frames: int, value: float = 0.5):
+        arr = np.full(
+            (num_frames * mp.FRAME_SAMPLES, mp.CHANNELS), value, np.float32,
+        )
+        self._audio.append(arr)
+        self.frames_received += num_frames
+        self.last_rx_ts = time.monotonic()
+
+
+class _State:
+    prompt_text = "test prompt"
+    prompt_text_b = "test prompt b"
+
+    def __init__(self):
+        self.params = {}
+
+
+def make_backend():
+    client = FakeClient()
+    backend = MRT2Backend(
+        config=None,
+        state=_State(),
+        midi_knobs=KnobState(mrt2_knob_specs()),
+        client=client,
+    )
+    return backend, client
+
+
+def _ctx(playhead_s=0.0):
+    return TickContext(playhead_s=playhead_s, buffer_duration_s=WINDOW_S)
+
+
+def test_constructor_sends_initial_prompt():
+    backend, client = make_backend()
+    prompts = [m for m in client.sent if m["type"] == "prompt"]
+    assert prompts and prompts[0]["tags"] == "test prompt"
+    assert prompts[0]["tags_b"] == "test prompt b"
+
+
+def test_contract_surface():
+    backend, _ = make_backend()
+    assert backend.capabilities() == Capabilities()  # everything False
+    g = backend.geometry()
+    assert (g.sample_rate, g.channels) == (mp.SAMPLE_RATE, mp.CHANNELS)
+    assert g.chunk_rate_hz == pytest.approx(25.0)
+    assert g.duration_s == WINDOW_S
+    assert backend.playable_duration_s() == WINDOW_S
+    assert backend.vae_window > 0
+    assert not backend.has_renderable_state()
+    assert backend.render_full() is None
+    names = {s.name for s in backend.knob_specs()}
+    assert all(n.startswith("mrt2_") for n in names)
+
+
+def test_produce_grants_credit_for_the_lead():
+    backend, client = make_backend()
+    knobs = backend.read_knobs()
+    backend.sync_source(_ctx(0.0))
+    fresh = backend.produce(knobs, _ctx(0.0), "generate")
+    assert fresh is False  # nothing fed yet
+    credits = [m for m in client.sent if m["type"] == "credit"]
+    assert len(credits) == 1
+    # default mrt2_lead = 0.75 s -> ceil(0.75 * 48000 / 1920) = 19 frames
+    assert credits[0]["frames"] == 19
+    # No double-grant while the first is outstanding.
+    backend.produce(knobs, _ctx(0.0), "generate")
+    assert len([m for m in client.sent if m["type"] == "credit"]) == 1
+
+
+def test_emission_overlap_and_placement():
+    backend, client = make_backend()
+    knobs = backend.read_knobs()
+
+    client.feed_frames(5, value=0.25)
+    backend.sync_source(_ctx(0.0))
+    assert backend.produce(knobs, _ctx(0.0), "generate") is True
+
+    chunk1 = backend.render_window(0.0)
+    assert chunk1 is not None
+    assert chunk1.start_sample == 0  # first chunk: no overlap head
+    assert chunk1.pcm.shape == (5 * mp.FRAME_SAMPLES, mp.CHANNELS)
+    assert backend.has_renderable_state()
+
+    # Second batch: chunk must re-emit the previous XFADE samples at
+    # its head so the runner's leading-edge crossfade blends identical
+    # audio.
+    client.feed_frames(3, value=0.75)
+    assert backend.produce(knobs, _ctx(0.0), "generate") is True
+    chunk2 = backend.render_window(0.0)
+    assert chunk2.start_sample == 5 * mp.FRAME_SAMPLES - XFADE
+    assert chunk2.pcm.shape[0] == 3 * mp.FRAME_SAMPLES + XFADE
+    np.testing.assert_array_equal(
+        chunk2.pcm[:XFADE],
+        np.full((XFADE, mp.CHANNELS), 0.25, np.float32),
+    )
+    np.testing.assert_array_equal(
+        chunk2.pcm[XFADE:],
+        np.full((3 * mp.FRAME_SAMPLES, mp.CHANNELS), 0.75, np.float32),
+    )
+
+    # Runner mutates chunks in place (crossfade); the backend's tail
+    # copy must be unaffected.
+    chunk2.pcm[:] = -1.0
+    client.feed_frames(1, value=0.5)
+    backend.produce(knobs, _ctx(0.0), "generate")
+    chunk3 = backend.render_window(0.0)
+    np.testing.assert_array_equal(
+        chunk3.pcm[:XFADE],
+        np.full((XFADE, mp.CHANNELS), 0.75, np.float32),
+    )
+
+
+def test_emission_clamps_at_window_wrap():
+    backend, client = make_backend()
+    knobs = backend.read_knobs()
+
+    # Park the frontier just shy of the window seam.
+    short = 1000
+    backend._abs_written = WINDOW_SAMPLES - short
+    backend._tail = np.full((XFADE, mp.CHANNELS), 0.1, np.float32)
+
+    client.feed_frames(2, value=0.9)  # 3840 samples > room
+    backend.sync_source(_ctx(0.0))
+    backend.produce(knobs, _ctx(0.0), "generate")
+
+    pre = backend.render_window(0.0)
+    # Clamped at the seam: overlap head + exactly `short` new samples.
+    assert pre.start_sample == WINDOW_SAMPLES - short - XFADE
+    assert pre.pcm.shape[0] == short + XFADE
+    assert pre.start_sample + pre.pcm.shape[0] == WINDOW_SAMPLES
+
+    post = backend.render_window(0.0)
+    # Remainder lands at the window start, overlap skipped across the
+    # seam (it would wrap backwards).
+    assert post.start_sample == 0
+    assert post.pcm.shape[0] == 2 * mp.FRAME_SAMPLES - short
+    assert backend.render_window(0.0) is None  # drained
+
+
+def test_knob_changes_forward_once():
+    backend, client = make_backend()
+    state = backend.midi_knobs
+    backend.sync_source(_ctx(0.0))
+    backend.produce(backend.read_knobs(), _ctx(0.0), "generate")
+    baseline = [m for m in client.sent if m["type"] == "knobs"]
+    assert len(baseline) == 1  # initial defaults forwarded once
+
+    state.update({"mrt2_temperature": 2.0})
+    backend.produce(backend.read_knobs(), _ctx(0.0), "generate")
+    backend.produce(backend.read_knobs(), _ctx(0.0), "generate")
+    updates = [m for m in client.sent if m["type"] == "knobs"][1:]
+    assert updates == [{"type": "knobs", "temperature": 2.0}]
+
+
+def test_prompt_hooks_forward_to_sidecar():
+    backend, client = make_backend()
+    backend.handle_set_prompt("acid techno", tags_b="lofi house")
+    backend.handle_set_prompt_blend(0.4)
+    assert {"type": "prompt", "tags": "acid techno", "tags_b": "lofi house"} in client.sent
+    assert {"type": "blend", "value": 0.4} in client.sent
+
+
+def test_family_is_registered():
+    from acestep.streaming.families import FAMILY_SPECS, get_family
+
+    spec = FAMILY_SPECS["mrt2"]
+    assert get_family("mrt2") is spec
+    assert callable(spec.create_session) and callable(spec.preflight)
+    assert spec.warmup_policy == "none"
+    assert spec.prompt_policy == "acestep"
+    assert spec.text_only.default_duration_s == WINDOW_S
+    assert spec.text_only.max_duration_s == WINDOW_S
+    assert spec.text_only.duration_field is None
+    assert spec.shutdown is not None
+    assert spec.supports_extensions is False
+    universe = spec.knob_universe()
+    assert {s.name for s in universe} == {s.name for s in mrt2_knob_specs()}
+
+
+def test_checkpoint_alias_boots_the_family():
+    from acestep.streaming.families import resolve_checkpoint
+
+    assert resolve_checkpoint("mrt2-sidecar") == ("mrt2", "mrt2")
+
+
+# ---------------------------------------------------------------------------
+# Seam conformance (no sidecar process, no GPU)
+# ---------------------------------------------------------------------------
+
+
+def test_backend_satisfies_the_generator_backend_protocol():
+    from acestep.streaming.generator_backend import GeneratorBackend
+
+    backend, _ = make_backend()
+    assert isinstance(backend, GeneratorBackend)
+    assert backend.max_duration_s() == WINDOW_S
+    assert backend.has_pending_refit() is False
+    assert backend.rebuild_imminent({}) is False
+
+
+def test_lora_facade_is_off():
+    from acestep.streaming.generator_backend import UnsupportedOperation
+
+    backend, _ = make_backend()
+    assert backend.capabilities().lora is False
+    assert backend.lora_available() is False
+    assert backend.list_loras() == []
+    assert backend.lora_compatible({}) is False
+    for call in (
+        lambda: backend.register_lora("x.safetensors"),
+        lambda: backend.prewarm_lora("x"),
+        lambda: backend.enable_lora("x", 1.0),
+        lambda: backend.disable_lora("x"),
+        lambda: backend.set_lora_strength("x", 0.5),
+    ):
+        with pytest.raises(UnsupportedOperation):
+            call()
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def test_preflight_reports_a_missing_sidecar(monkeypatch):
+    from acestep.streaming.families import get_family
+    from acestep.streaming.preflight import PreflightRequest
+
+    monkeypatch.setenv("DEMON_MRT2_SIDECAR", f"127.0.0.1:{_free_port()}")
+    res = get_family("mrt2").preflight(PreflightRequest(model_id="mrt2"))
+    assert not res.ok
+    assert "not running" in res.title
+
+
+def test_preflight_passes_when_the_sidecar_listens(monkeypatch):
+    from acestep.streaming.families import get_family
+    from acestep.streaming.preflight import PreflightRequest
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    try:
+        monkeypatch.setenv("DEMON_MRT2_SIDECAR", f"127.0.0.1:{srv.getsockname()[1]}")
+        res = get_family("mrt2").preflight(PreflightRequest(model_id="mrt2"))
+        assert res.ok, res
+    finally:
+        srv.close()
+
+
+class _FakeSidecar:
+    """A one-connection TCP server speaking the real protocol: answers
+    hello with meta and records every control message."""
+
+    def __init__(self):
+        import threading
+
+        self.srv = socket.socket()
+        self.srv.bind(("127.0.0.1", 0))
+        self.srv.listen(1)
+        self.port = self.srv.getsockname()[1]
+        self.received: list = []
+        self.conn = None
+        self._t = threading.Thread(target=self._serve, daemon=True)
+        self._t.start()
+
+    def _serve(self):
+        try:
+            self.conn, _ = self.srv.accept()
+            while True:
+                kind, payload = mp.recv_msg(self.conn)
+                msg = mp.unpack_json(payload)
+                self.received.append(msg)
+                if msg.get("type") == "hello":
+                    self.conn.sendall(mp.pack_json({
+                        "type": "meta", "sample_rate": mp.SAMPLE_RATE,
+                        "channels": mp.CHANNELS,
+                        "frame_samples": mp.FRAME_SAMPLES,
+                    }))
+        except (ConnectionError, OSError):
+            pass
+
+    def close(self):
+        for s in (self.conn, self.srv):
+            try:
+                if s is not None:
+                    s.close()
+            except OSError:
+                pass
+
+
+def test_create_session_through_the_family_seam(monkeypatch):
+    """The family create path builds a StreamingSession with canvas=None
+    and an MRT2Backend connected over TCP; close() closes the link."""
+    from acestep.streaming.config import SessionConfig
+    from acestep.streaming.families import get_family
+    from acestep.streaming.mrt2.backend import close_open_clients
+    from acestep.streaming.session import StreamingSession
+
+    side = _FakeSidecar()
+    monkeypatch.setenv("DEMON_MRT2_SIDECAR", f"127.0.0.1:{side.port}")
+    try:
+        cfg = SessionConfig.from_dict({"backend": "mrt2", "prompt": "lofi"})
+        ss = get_family("mrt2").create_session(
+            StreamingSession, audio=None, config=cfg, checkpoint="mrt2",
+            session_id="t-mrt2", decoder_backend="eager", vae_backend="eager",
+            offload_text_encoder=False, checkpoint_dir=None,
+            model_extension=None,
+        )
+        try:
+            assert ss.canvas is None
+            assert ss.session is None and ss.stream is None
+            assert isinstance(ss.backend, MRT2Backend)
+            assert ss.lora_available is False
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline and not any(
+                m.get("type") == "prompt" for m in side.received
+            ):
+                time.sleep(0.01)
+            prompts = [m for m in side.received if m.get("type") == "prompt"]
+            assert prompts and prompts[0]["tags"] == "lofi"
+        finally:
+            ss.close()
+        assert ss.backend.client.lost
+        assert close_open_clients() == 0
+    finally:
+        side.close()
+
+
+@pytest.mark.parametrize("raw", ["foo", "localhost:", "host:notaport", "h:70000"])
+def test_malformed_sidecar_address_is_named_not_raised_bare(monkeypatch, raw):
+    from acestep.streaming.families import get_family
+    from acestep.streaming.preflight import PreflightRequest
+
+    monkeypatch.setenv("DEMON_MRT2_SIDECAR", raw)
+    res = get_family("mrt2").preflight(PreflightRequest(model_id="mrt2"))
+    assert not res.ok and res.title == "MRT2 sidecar address invalid"
+    assert "DEMON_MRT2_SIDECAR" in res.lines[0] and "host:port" in res.lines[0]
+    with pytest.raises(RuntimeError, match="DEMON_MRT2_SIDECAR.*host:port"):
+        MRT2Backend(config=None, state=_State(), midi_knobs=KnobState(mrt2_knob_specs()))
+
+
+def test_sidecar_address_parses_host_and_port():
+    assert mp.parse_sidecar_address("10.0.0.5:9000") == ("10.0.0.5", 9000)
+    assert mp.parse_sidecar_address(":9000") == (mp.DEFAULT_HOST, 9000)
+
+
+# ---------------------------------------------------------------------------
+# Runner write path with an append-only backend
+# ---------------------------------------------------------------------------
+
+
+class _RunnerState(_State):
+    running = True
+    last_activity_ts = float("inf")  # never idle-pause
+
+
+@pytest.mark.parametrize("playhead_s", [0.0, 59.0])
+def test_runner_writes_append_only_chunks_verbatim(monkeypatch, playhead_s):
+    """Driving the real PipelineRunner with the MRT2 backend, the buffer
+    must equal the fed PCM sample for sample: no edge crossfades toward
+    stale buffer content (every chunk seam), and no wrap-spill second
+    render that pops the next chunk and writes it at sample 0 (a
+    playhead near the window end makes the runner's spill fire)."""
+    import threading
+
+    from acestep.streaming.audio_engine import AudioEngine
+    from acestep.streaming.pipeline_runner import PipelineRunner
+
+    backend, client = make_backend()
+    state = _RunnerState()
+    backend.state = state
+    # Frontier one full lap in (wrapped position 0): ahead of either
+    # playhead, so the underrun re-anchor stays out of the picture.
+    backend._abs_written = WINDOW_SAMPLES
+    total_start = WINDOW_SAMPLES
+    stale = np.full((WINDOW_SAMPLES, mp.CHANNELS), -0.5, np.float32)
+    eng = AudioEngine(stale.copy(), mp.SAMPLE_RATE)
+
+    # A ramp makes every sample unique, so any blend or misplacement shows.
+    total = 200 * mp.FRAME_SAMPLES  # 8 s, several 1.5 s emissions
+    ramp = (np.arange(total, dtype=np.float32) / total).reshape(-1, 1)
+    ramp = np.repeat(ramp, mp.CHANNELS, axis=1)
+    for i in range(0, total, 2 * mp.FRAME_SAMPLES):  # 80 ms sidecar chunks
+        client._audio.append(ramp[i:i + 2 * mp.FRAME_SAMPLES])
+    client.frames_received = 200
+
+    runner = PipelineRunner(
+        backend, eng, state=state, vae_window=backend.vae_window,
+    )
+    monkeypatch.setattr(runner, "_playhead_seconds_now", lambda: playhead_s)
+    t = threading.Thread(target=runner.run, daemon=True)
+    t.start()
+    deadline = time.monotonic() + 10.0
+    while (
+        backend._abs_written < total_start + total
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.01)
+    state.running = False
+    t.join(5.0)
+    eng.stop()
+
+    assert backend._abs_written == total_start + total
+    np.testing.assert_array_equal(eng.current[:total], ramp)
+    np.testing.assert_array_equal(eng.current[total:], stale[total:])
+
+
+# ---------------------------------------------------------------------------
+# Sidecar link lifecycle
+# ---------------------------------------------------------------------------
+
+
+def test_client_close_shuts_the_socket_down_so_the_sidecar_sees_eof():
+    """close() must shutdown(SHUT_RDWR) before close(): on Linux a bare
+    close() from another thread while the reader is blocked in recv()
+    sends no FIN, and the one-session sidecar keeps serving a dead peer."""
+    from acestep.streaming.mrt2.backend import SidecarClient
+
+    side = _FakeSidecar()
+    try:
+        client = SidecarClient("127.0.0.1", side.port)
+        calls = []
+        real = client._sock
+
+        class _Spy:
+            def shutdown(self, how):
+                calls.append(("shutdown", how))
+                return real.shutdown(how)
+
+            def close(self):
+                calls.append(("close",))
+                return real.close()
+
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+        client._sock = _Spy()
+        client.close()
+        assert calls[0] == ("shutdown", socket.SHUT_RDWR)
+        assert ("close",) in calls
+        client._reader.join(2.0)
+        assert not client._reader.is_alive()
+        side._t.join(2.0)
+        assert not side._t.is_alive()  # the sidecar side saw EOF
+    finally:
+        side.close()
+
+
+def test_client_heartbeat_runs_without_runner_ticks(monkeypatch):
+    """Pings come from the client's own thread (the runner stops calling
+    produce() during the idle pause), and a sidecar that stops answering
+    flips the link to lost with a reason."""
+    from acestep.streaming.mrt2 import backend as mb
+
+    monkeypatch.setattr(mb, "PING_EVERY_S", 0.05)
+    monkeypatch.setattr(mb, "LOST_AFTER_S", 0.3)
+    side = _FakeSidecar()  # records pings, never answers them
+    try:
+        client = mb.SidecarClient("127.0.0.1", side.port)
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not client.lost:
+            time.sleep(0.02)
+        assert any(m.get("type") == "ping" for m in side.received)
+        assert client.lost
+        assert "liveness" in (client.lost_reason or "")
+        client.close()
+    finally:
+        side.close()
+
+
+def _load_sidecar_module():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "scripts" / "mrt2_sidecar.py"
+    spec = importlib.util.spec_from_file_location("mrt2_sidecar_under_test", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_sidecar_drops_a_backend_that_goes_silent(monkeypatch):
+    """A backend that vanished without a FIN must not hold the
+    one-session sidecar forever."""
+    import threading
+    from types import SimpleNamespace
+
+    sc = _load_sidecar_module()
+    monkeypatch.setattr(sc.mp, "PEER_IDLE_DROP_S", 0.3)
+    a, b = socket.socketpair()
+    try:
+        mrt = SimpleNamespace(_style_model=None)
+        t = threading.Thread(
+            target=sc.serve_one, args=(a, mrt, {}, 2), daemon=True,
+        )
+        t.start()
+        b.sendall(mp.pack_json({"type": "hello"}))
+        kind, payload = mp.recv_msg(b)
+        assert mp.unpack_json(payload)["type"] == "meta"
+        # Now go silent without closing.
+        t.join(3.0)
+        assert not t.is_alive()
+    finally:
+        a.close()
+        b.close()
+
+
+def test_produce_raises_once_the_link_is_lost():
+    backend, client = make_backend()
+    client.lost = True
+    client.lost_reason = "reader error=EOF"
+    with pytest.raises(RuntimeError, match="reader error=EOF"):
+        backend.produce(backend.read_knobs(), _ctx(0.0), "generate")
+
+
+def test_sidecar_loss_ends_the_session_with_an_error(monkeypatch):
+    """A sidecar that goes away mid-session must reach the client as a
+    SessionError and stop the session, not loop stale audio forever."""
+    import threading
+
+    from acestep.streaming.config import SessionConfig
+    from acestep.streaming.events import SessionError
+    from acestep.streaming.families import get_family
+    from acestep.streaming.session import StreamingSession
+
+    side = _FakeSidecar()
+    monkeypatch.setenv("DEMON_MRT2_SIDECAR", f"127.0.0.1:{side.port}")
+    try:
+        cfg = SessionConfig.from_dict({"backend": "mrt2", "prompt": "lofi"})
+        ss = get_family("mrt2").create_session(
+            StreamingSession, audio=None, config=cfg, checkpoint="mrt2",
+            session_id="t-mrt2-loss", decoder_backend="eager",
+            vae_backend="eager", offload_text_encoder=False,
+            checkpoint_dir=None, model_extension=None,
+        )
+        errors = []
+        ss.bus.subscribe(
+            lambda ev: errors.append(ev) if isinstance(ev, SessionError) else None,
+        )
+        ss.state.running = True
+        t = threading.Thread(target=ss.run, daemon=True)
+        t.start()
+        time.sleep(0.2)
+        side.close()  # the sidecar process dies: EOF on the client link
+        t.join(5.0)
+        assert not t.is_alive(), "session kept running after the link died"
+        assert ss.closed.is_set()
+        deadline = time.monotonic() + 2.0
+        while not errors and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert errors and "mrt2 sidecar link lost" in errors[0].message
+    finally:
+        side.close()
+
+
+def test_credit_dropped_by_a_sidecar_error_is_refunded():
+    backend, client = make_backend()
+    knobs = backend.read_knobs()
+    backend.produce(knobs, _ctx(0.0), "generate")
+    credits = [m for m in client.sent if m["type"] == "credit"]
+    assert [c["frames"] for c in credits] == [19]
+    # The sidecar's generate failed and discarded all 19 frames.
+    client.credit_dropped = 19
+    backend.produce(knobs, _ctx(0.0), "generate")
+    credits = [m for m in client.sent if m["type"] == "credit"]
+    assert [c["frames"] for c in credits] == [19, 19]
+
+
+def test_client_records_credit_dropped_from_the_sidecar_err():
+    from acestep.streaming.mrt2.backend import SidecarClient
+
+    side = _FakeSidecar()
+    try:
+        client = SidecarClient("127.0.0.1", side.port)
+        side.conn.sendall(mp.pack_json({
+            "type": "err", "message": "oom", "dropped_credit": 7,
+        }))
+        deadline = time.monotonic() + 2.0
+        while client.credit_dropped == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert client.pop_credit_dropped() == 7
+        assert client.credit_dropped == 0
+        client.close()
+    finally:
+        side.close()
+
+
+def test_frontier_reanchors_ahead_of_the_playhead_after_an_underrun():
+    backend, client = make_backend()
+    knobs = backend.read_knobs()
+    backend._abs_written = 1 * mp.SAMPLE_RATE  # frontier at 1 s
+    backend._tail = np.full((XFADE, mp.CHANNELS), 0.1, np.float32)
+    backend.sync_source(_ctx(5.0))  # the listener is already at 5 s
+    client.feed_frames(2, value=0.3)
+    backend.produce(knobs, _ctx(5.0), "generate")
+    chunk = backend.render_window(0.0)
+    lead = int(0.75 * mp.SAMPLE_RATE)
+    assert chunk.start_sample == 5 * mp.SAMPLE_RATE + lead
+    assert chunk.pcm.shape[0] == 2 * mp.FRAME_SAMPLES  # no stale head
+    assert backend.underruns == 1
