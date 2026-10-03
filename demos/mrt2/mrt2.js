@@ -142,7 +142,7 @@ async function disconnect() {
   state.paramsTimer = null;
   try { await state.player?.close(); } catch {}
   try { state.remote?.close(); } catch {}
-  Object.assign(state, { remote: null, player: null, analyser: null, slices: 0, rms: 0, lastEndSec: 0 });
+  Object.assign(state, { remote: null, player: null, analyser: null, freq: null, wave: null, slices: 0, rms: 0, lastEndSec: 0 });
   setStatus("idle");
 }
 
