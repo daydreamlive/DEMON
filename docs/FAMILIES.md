@@ -125,6 +125,26 @@ in `scripts/mrt2_sidecar.py`, because JAX has no CUDA on native Windows.
   `render_window` ignores the position hint and returns the next frontier
   chunk. Uploaded audio is ignored, so the family is text-only
   (`text_only` 60 s, no duration field). Capabilities all False; LoRA off.
+  Because `refines_audio` is False, `PipelineRunner` writes each chunk
+  verbatim: no edge crossfades and no wrap-spill re-render (both are for
+  refining families).
+- **Failure handling:** the client pings every 2 s from its own thread and
+  declares the link lost after 8 s of silence; a lost link (sidecar died,
+  deadline, send error) ends the session with a `pipeline_error`
+  SessionError. The sidecar drops a backend that has sent nothing for 20 s,
+  and the client shuts its socket down on close, so a stopped session frees
+  the one-session sidecar at once. Credit the sidecar discards on a
+  `generate` error is reported in its `err` and refunded. When the frontier
+  falls behind the playhead it restarts one `mrt2_lead` ahead of it (a hard
+  seam at that point).
+- **Known gaps:** one session per sidecar; a second concurrent session hangs
+  5 s and is told the sidecar is unreachable (no busy reply). No reconnect
+  after a lost link. The playhead unwrap counts at most one lap between
+  ticks, so after the runner's idle pause spans more than one lap the
+  frontier can sit up to a lap "ahead" and generation waits for the playhead
+  to catch up. A sidecar slower than real time (`mrt2_base`) re-anchors
+  repeatedly: fresh audio arrives in bursts between stretches of the previous
+  lap.
 - **Knobs:** `mrt2_temperature`, `mrt2_top_k`, `mrt2_cfg_musiccoca`,
   `mrt2_cfg_notes`, `mrt2_cfg_drums` (forwarded to the sidecar),
   `mrt2_lead` (backend-local). `set_prompt` / `set_prompt_blend` go to the
