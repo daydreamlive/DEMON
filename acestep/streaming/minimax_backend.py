@@ -1105,6 +1105,7 @@ class MiniMaxBackend:
         p["chunks"] = self.chunks
         p["chunk_render_ms"] = round(self.mean_chunk_render_ms, 1)
         p["frontier_lead_s"] = round(self.frontier_s() - self._playhead_abs_s, 2)
+        p["minimax_ar_seed"] = self._seed
         p["ar_finished"] = self.ar_finished
 
     # ---- construction --------------------------------------------------------

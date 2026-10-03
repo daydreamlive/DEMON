@@ -485,6 +485,8 @@ namespace config {
   inline constexpr const char* kMinimaxLyrics = "minimax_lyrics";
   /** Drive the minimax autoregressive stage as one CUDA graph per frame over a static KV cache (default true). False selects the plain torch loop, kept for parity work against saved captures. */
   inline constexpr const char* kMinimaxArGraph = "minimax_ar_graph";
+  /** Seed for the minimax autoregressive stage, i.e. the composition. Absent or null = a fresh random seed per session (echoed as minimax_ar_seed in params); give one to replay a composition for the same prompt and lyrics. The shared seed knob only seeds the renderer's noise. */
+  inline constexpr const char* kMinimaxSeed = "minimax_seed";
 }  // namespace config
 
 // ── Init-phase upload handshake ──

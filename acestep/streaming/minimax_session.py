@@ -34,6 +34,7 @@ meant a 30 s request cost ~55 s of connect time.
 from __future__ import annotations
 
 import os
+import secrets
 
 import numpy as np
 
@@ -113,6 +114,10 @@ def create_minimax_session(
     lyrics = family_config.get("minimax_lyrics") or "[instrumental]"
     ar_graph = family_config.get("minimax_ar_graph")
     ar_graph = True if ar_graph is None else bool(ar_graph)
+    # The AR seed picks the composition: a fixed default would make every
+    # session with the same prompt play the same piece.
+    seed = family_config.get("minimax_seed")
+    seed = secrets.randbits(32) if seed is None else int(seed) & 0xFFFFFFFF
     if getattr(config, "prompt_b", None):
         logger.warning(
             "minimax_prompt_b_ignored reason=no_ab_blend_on_ar_prefix",
@@ -135,10 +140,10 @@ def create_minimax_session(
 
     logger.info(
         "minimax_session_create window_s={:.1f} steps={} dit={} codec={} "
-        "capture={} ar_vram_gb={:.0f} lyrics_chars={}",
+        "capture={} ar_vram_gb={:.0f} lyrics_chars={} ar_seed={}",
         window_s, steps, dit_backend, codec_backend,
         capture or "<live AR>", 0.0 if capture else AR_RESIDENT_VRAM_GB,
-        len(lyrics),
+        len(lyrics), seed,
     )
 
     # The audio ring starts silent at the delivery geometry. The upload
@@ -202,6 +207,7 @@ def create_minimax_session(
                 "lyrics": lyrics,
                 "window_s": window_s,
                 "steps": steps,
+                "seed": seed,
                 "capture": capture,
                 "dit_backend": dit_backend,
                 "codec_backend": codec_backend,
@@ -263,6 +269,7 @@ def make_minimax_backend(ss) -> MiniMaxBackend:
             context=context,
             window_s=float(init["window_s"]),
             steps=int(init["steps"]),
+            seed=int(init.get("seed", 1528)),
         )
 
     return MiniMaxBackend.from_context(
@@ -273,6 +280,7 @@ def make_minimax_backend(ss) -> MiniMaxBackend:
         state=ss.state,
         window_s=float(init["window_s"]),
         steps=int(init["steps"]),
+        seed=int(init.get("seed", 1528)),
         max_ar_frames=MINIMAX_MAX_AR_FRAMES,
         dit_backend=init.get("dit_backend", "eager"),
         codec_backend=init.get("codec_backend", "eager"),

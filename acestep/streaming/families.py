@@ -615,6 +615,14 @@ MINIMAX = FamilySpec(
             "frame over a static KV cache (default true). False selects the "
             "plain torch loop, kept for parity work against saved captures.",
         ),
+        FamilyConfigField(
+            "minimax_seed", "int",
+            "Seed for the minimax autoregressive stage, i.e. the "
+            "composition. Absent or null = a fresh random seed per session "
+            "(echoed as minimax_ar_seed in params); give one to replay a "
+            "composition for the same prompt and lyrics. The shared seed "
+            "knob only seeds the renderer's noise.",
+        ),
     ),
     # Uploads are ignored (no audio encoder in the checkpoint), so every
     # session is effectively text-only; the anchor is the silent window.

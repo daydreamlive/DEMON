@@ -541,3 +541,55 @@ def test_zero_valued_knobs_are_honoured_not_defaulted():
     got, _, _ = b._snapshot()
     assert got.cond_strength == 0.0
     assert got.seed == 0
+
+
+# ---- AR seed -----------------------------------------------------------------
+
+
+def _create_init(monkeypatch, family_config):
+    """Run create_minimax_session with a stub context and a recording
+    session class; return the backend_init payload it stashed."""
+    import acestep.engine.minimax_context as mctx
+    from acestep.streaming.config import SessionConfig
+    from acestep.streaming.minimax_session import create_minimax_session
+
+    class _Ctx:
+        def codec_backend_in_use(self, requested):
+            return requested
+
+    monkeypatch.setattr(mctx, "get_minimax_context", lambda **kw: _Ctx())
+    monkeypatch.delenv("DEMON_MINIMAX_CAPTURE", raising=False)
+
+    class _Recorder:
+        def __init__(self, **kwargs):
+            self.backend_init = kwargs["backend_init"]
+
+    cfg = SessionConfig.from_dict({"backend": "minimax", **family_config})
+    ss = create_minimax_session(
+        _Recorder, config=cfg, decoder_backend="eager", vae_backend="eager",
+    )
+    return ss
+
+
+def test_each_session_draws_its_own_ar_seed_by_default(monkeypatch):
+    seeds = {_create_init(monkeypatch, {}).backend_init["seed"] for _ in range(4)}
+    assert len(seeds) > 1, "every session composed with the same AR seed"
+
+
+def test_a_given_ar_seed_reaches_the_ar_stream(monkeypatch):
+    from acestep.streaming import minimax_session as ms
+
+    ss = _create_init(monkeypatch, {"minimax_seed": 7})
+    assert ss.backend_init["seed"] == 7
+
+    seen = {}
+
+    def _from_context(context, **kwargs):
+        seen.update(kwargs)
+        return "backend"
+
+    monkeypatch.setattr(ms.MiniMaxBackend, "from_context", _from_context)
+    ss.virtual_knobs = None
+    ss.state = None
+    assert ms.make_minimax_backend(ss) == "backend"
+    assert seen["seed"] == 7
