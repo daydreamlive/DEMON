@@ -794,3 +794,104 @@ def test_a_replaced_song_is_freed_on_the_runner_not_at_publish():
     backend.produce(_knobs(seed=2), CTX, "generate")  # restarts on the new song
     backend.produce(_knobs(seed=2), CTX, "generate")
     assert codec.released == [old.bundle]
+
+
+# ---- review v2: engine profile limits come from the engine ----
+
+
+class _ProfileContext(_FakeContext):
+    def __init__(self, limits):
+        super().__init__()
+        self.limits = limits
+
+    def set_input_shape(self, name, shape):
+        lo, hi = self.limits.get(name, (None, None))
+        if lo is not None and not all(a <= s <= b for a, s, b in zip(lo, shape, hi)):
+            return False
+        return super().set_input_shape(name, shape)
+
+
+class _ProfileEngine:
+    """Reports ``(min, opt, max)`` per input like TensorRT; its contexts
+    refuse shapes outside ``limits`` (which may be narrower than the
+    reported profile, to model a bind that fails anyway)."""
+
+    def __init__(self, profile, limits=None):
+        self.profile = profile
+        self.limits = limits if limits is not None else {k: (v[0], v[2]) for k, v in profile.items()}
+
+    def get_tensor_profile_shape(self, name, index):
+        return self.profile[name]
+
+    def create_execution_context(self):
+        return _ProfileContext(self.limits)
+
+
+class _NarBundle:
+    def __init__(self, frames, cond_tokens):
+        self.frames, self.seed = frames, 0
+        self.keys = self.values = torch.zeros(2, cond_tokens, 1)
+        pad = torch.zeros(1, frames + 2, 1)
+        from types import SimpleNamespace
+
+        self.nar = SimpleNamespace(cos=pad, sin=pad, pos_emb=pad)
+
+    @property
+    def cond_tokens(self):
+        return int(self.keys.shape[1])
+
+
+def _narrow_profile():
+    return {
+        "state": ([1, 1000, 64], [1, 1000, 64], [2, 2000, 64]),
+        "raw_time": ([1], [1], [2]),
+        "keys": ([2, 1001, 1], [2, 1001, 1], [2, 3000, 1]),
+        "values": ([2, 1001, 1], [2, 1001, 1], [2, 3000, 1]),
+        "cos": ([1, 1002, 1], [1, 1002, 1], [1, 2002, 1]),
+        "sin": ([1, 1002, 1], [1, 1002, 1], [1, 2002, 1]),
+        "position": ([1, 1002, 1], [1, 1002, 1], [1, 2002, 1]),
+    }
+
+
+def _trt_velocity(monkeypatch, engine):
+    from acestep.engine import yue2_trt
+
+    monkeypatch.setattr(yue2_trt, "_deserialize", lambda path: engine)
+    eager_calls = []
+
+    def eager(bundle, state, raw_times):
+        eager_calls.append(bundle)
+        return torch.zeros_like(state)
+
+    velocity = yue2_trt.TRTVelocity("unused", eager, device="cpu")
+    return velocity, eager_calls
+
+
+def test_trt_velocity_reads_its_profile_from_the_engine(monkeypatch):
+    """A song inside the code's constants (<= 2500 frames, <= 4000
+    tokens) but outside a narrower engine runs eager instead of failing."""
+    velocity, eager_calls = _trt_velocity(monkeypatch, _ProfileEngine(_narrow_profile()))
+    inside, long_song, long_cond = _NarBundle(1500, 2000), _NarBundle(2200, 2000), _NarBundle(1500, 3500)
+    assert velocity.covers(inside)
+    assert not velocity.covers(long_song) and not velocity.covers(long_cond)
+    for bundle in (long_song, long_cond):
+        out = velocity(bundle, torch.zeros(1, bundle.frames, 64), [0.5])
+        assert out.shape == (1, bundle.frames, 64)
+    assert eager_calls == [long_song, long_cond]
+    # Batch over the engine's max batch (2 here, not the constant 4).
+    velocity(inside, torch.zeros(3, 1500, 64), [0.5] * 3)
+    assert eager_calls[-1] is inside
+    assert velocity.path_for(inside) == "trt" and velocity.path_for(long_song) == "eager"
+
+
+def test_a_bind_the_engine_refuses_falls_back_to_eager_for_that_bundle(monkeypatch):
+    profile = _narrow_profile()
+    limits = {k: (v[0], v[2]) for k, v in profile.items()}
+    limits["cos"] = ([1, 1002, 1], [1, 1200, 1])  # narrower than reported
+    velocity, eager_calls = _trt_velocity(monkeypatch, _ProfileEngine(profile, limits))
+    bundle = _NarBundle(1500, 2000)
+    assert velocity.covers(bundle)
+    for _ in range(3):
+        velocity(bundle, torch.zeros(1, 1500, 64), [0.5])
+    assert eager_calls == [bundle] * 3
+    assert velocity.path_for(bundle) == "eager"

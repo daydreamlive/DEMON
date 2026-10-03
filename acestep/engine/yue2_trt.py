@@ -30,7 +30,9 @@ import torch
 
 from acestep.engine.obs import logger
 
-#: The flexible NAR engine's profile bounds (frames, conditioning tokens).
+#: The flexible NAR engine's profile bounds (frames, conditioning tokens)
+#: as the builder writes them. At run time :class:`TRTVelocity` reads the
+#: bounds from the loaded engine; these are the fallback when it cannot.
 FLEX_FRAMES = (1000, 2500)
 FLEX_COND_TOKENS = (1001, 4000)
 FLEX_MAX_BATCH = 4
@@ -71,6 +73,21 @@ def find_vae_window_engine(trt_dir: Optional[Path]) -> Optional[Path]:
         if cand.is_file():
             return cand
     return None
+
+
+def engine_profile_bounds(engine) -> dict:
+    """``{"frames": (lo, hi), "cond_tokens": (lo, hi), "batch": hi}`` from
+    the engine's optimization profile 0 (``state`` is ``[batch, frames,
+    64]``, ``keys`` is ``[layers, tokens, ...]``). Falls back to the
+    builder's constants, with a warning, when the engine cannot say."""
+    try:
+        s_lo, _, s_hi = (tuple(d) for d in engine.get_tensor_profile_shape("state", 0))
+        k_lo, _, k_hi = (tuple(d) for d in engine.get_tensor_profile_shape("keys", 0))
+        return {"frames": (int(s_lo[1]), int(s_hi[1])),
+                "cond_tokens": (int(k_lo[1]), int(k_hi[1])), "batch": int(s_hi[0])}
+    except Exception as exc:  # noqa: BLE001 - an older runtime or a foreign engine
+        logger.warning("yue2_nar_trt_profile_unknown error={!r} using=builder_constants", exc)
+        return {"frames": FLEX_FRAMES, "cond_tokens": FLEX_COND_TOKENS, "batch": FLEX_MAX_BATCH}
 
 
 def _deserialize(path: Path):
@@ -134,8 +151,9 @@ class TRTVelocity:
     """Velocity backend over the flexible NAR engine, with a per-bundle
     execution-context cache and an eager fallback.
 
-    A bundle outside the engine profile (too short, too long, or a
-    conditioning prefix past 4000 tokens) runs on ``fallback`` and is
+    A bundle outside the engine's own profile (read from the engine: too
+    short, too long, or a conditioning prefix past its token bound), or
+    one whose bind the engine refuses anyway, runs on ``fallback`` and is
     logged once. Contexts are cached per (bundle, batch), LRU-bounded at
     ``max_bundles`` bundles and dropped when their bundle is collected.
     Returns the engine's persistent output buffer (see
@@ -151,20 +169,37 @@ class TRTVelocity:
         self.device = torch.device(device)
         self._contexts: "OrderedDict[int, Tuple[weakref.ref, dict]]" = OrderedDict()
         self._eager_logged: set = set()
+        self._bind_failed: "weakref.WeakSet" = weakref.WeakSet()
+        self.bounds = engine_profile_bounds(self.engine)
 
     def covers(self, bundle) -> bool:
-        return flexible_profile_fits(int(bundle.frames), int(bundle.cond_tokens))
+        (f_lo, f_hi), (c_lo, c_hi) = self.bounds["frames"], self.bounds["cond_tokens"]
+        return f_lo <= int(bundle.frames) <= f_hi and c_lo <= int(bundle.cond_tokens) <= c_hi
+
+    def path_for(self, bundle) -> str:
+        """"trt" or "eager": the path a batch-1 call on ``bundle`` takes."""
+        return "trt" if self.covers(bundle) and bundle not in self._bind_failed else "eager"
 
     def __call__(self, bundle, state: torch.Tensor, raw_times: List[float]) -> torch.Tensor:
-        if not self.covers(bundle) or state.shape[0] > FLEX_MAX_BATCH:
-            if id(bundle) not in self._eager_logged:
-                self._eager_logged.add(id(bundle))
-                logger.warning(
-                    "yue2_nar_trt_skipped frames={} cond_tokens={} batch={} using=eager",
-                    bundle.frames, bundle.cond_tokens, state.shape[0],
-                )
+        if self.path_for(bundle) == "eager" or state.shape[0] > self.bounds["batch"]:
+            self._log_eager(bundle, state.shape[0])
             return self.fallback(bundle, state, raw_times)
-        return self._bound(bundle, state.shape[0])(state, raw_times)
+        try:
+            bound = self._bound(bundle, state.shape[0])
+        except RuntimeError as exc:  # the engine refused a shape: eager for this bundle
+            self._bind_failed.add(bundle)
+            self._log_eager(bundle, state.shape[0], error=exc)
+            return self.fallback(bundle, state, raw_times)
+        return bound(state, raw_times)
+
+    def _log_eager(self, bundle, batch: int, error=None) -> None:
+        if id(bundle) in self._eager_logged:
+            return
+        self._eager_logged.add(id(bundle))
+        logger.warning(
+            "yue2_nar_trt_skipped frames={} cond_tokens={} batch={} bounds={} error={!r} using=eager",
+            bundle.frames, bundle.cond_tokens, batch, self.bounds, error,
+        )
 
     def _bound(self, bundle, batch: int) -> _BoundExecution:
         key = id(bundle)
