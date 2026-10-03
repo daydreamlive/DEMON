@@ -618,3 +618,24 @@ def test_close_does_not_free_state_under_a_running_worker(monkeypatch):
     assert closed == [], "AR state freed while the worker was still in it"
     release.set()
     b._worker.join(2.0)
+
+
+def test_preflight_fails_without_the_ar_stage_unless_a_capture_is_set(
+    monkeypatch, tmp_path,
+):
+    """Every live session opens the AR stage at create, so a checkpoint
+    without it must fail the boot, not pass and fail every session."""
+    from acestep.engine.minimax_helpers import (
+        MINIMAX_DIFFUSERS_COMPONENTS,
+        minimax_checkpoint_status,
+    )
+
+    for c in MINIMAX_DIFFUSERS_COMPONENTS:
+        (tmp_path / c).mkdir()
+    monkeypatch.delenv("DEMON_MINIMAX_CAPTURE", raising=False)
+    ok, msg = minimax_checkpoint_status(tmp_path)
+    assert not ok and "autoregressive" in msg
+
+    monkeypatch.setenv("DEMON_MINIMAX_CAPTURE", str(tmp_path / "cap.pt"))
+    ok, _ = minimax_checkpoint_status(tmp_path)
+    assert ok

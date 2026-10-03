@@ -177,9 +177,9 @@ def minimax_preflight(req: PreflightRequest) -> PreflightResult:
     Offline path-existence only (never downloads, never imports torch):
     the diffusers-layout checkpoint under ``DEMON_MINIMAX_DIR``, the
     models directory, or the local Hugging Face cache, with the renderer
-    components present. An absent autoregressive stage is not fatal (a
-    saved capture still streams), and neither is a missing DiT engine
-    (the renderer degrades to eager). An explicitly set
+    components present. An absent autoregressive stage is fatal unless
+    ``DEMON_MINIMAX_CAPTURE`` names a saved capture to stream; a missing
+    DiT engine is not (the renderer degrades to eager). An explicitly set
     ``DEMON_MINIMAX_TRT_DIR`` that does not exist IS fatal: the operator
     asked for engines in a place that is not there.
     """
@@ -198,5 +198,8 @@ def minimax_preflight(req: PreflightRequest) -> PreflightResult:
             "Unset it to run the eager renderer, or point it at the engines "
             "built by acestep/engine/trt/minimax_build.py.",
         )
-    logger.info("preflight_minimax_ok model_id={} detail={}", req.model_id, msg)
+    # Capture mode is a dev/test mode that serves one fixed composition
+    # to every user: say so at warning level.
+    log = logger.warning if os.environ.get("DEMON_MINIMAX_CAPTURE") else logger.info
+    log("preflight_minimax_ok model_id={} detail={}", req.model_id, msg)
     return PreflightResult.passed()

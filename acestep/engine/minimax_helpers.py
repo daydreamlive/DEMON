@@ -33,8 +33,8 @@ MINIMAX_DIFFUSERS_COMPONENTS = (
     "scheduler",
 )
 
-# The autoregressive stage. Separated because it is 17 GB and is needed
-# only when CAPTURING a composition, never inside a tick.
+# The autoregressive stage (17 GB). Every live session runs it; only a
+# saved capture (DEMON_MINIMAX_CAPTURE) streams without it.
 MINIMAX_AR_COMPONENTS = ("language_model", "tokenizer")
 
 
@@ -127,10 +127,18 @@ def minimax_checkpoint_status(
         )
     ar_missing = [c for c in MINIMAX_AR_COMPONENTS if not (root / c).is_dir()]
     if ar_missing:
+        if not os.environ.get("DEMON_MINIMAX_CAPTURE"):
+            # Every live session opens the AR stage at create.
+            return False, (
+                f"MiniMax-Music3 at {root} is missing the autoregressive "
+                f"stage ({', '.join(ar_missing)}), so no session can be "
+                "created. Re-run the download with those components, or "
+                "set DEMON_MINIMAX_CAPTURE to stream a saved capture."
+            )
         return True, (
             f"MiniMax-Music3 renderer ready at {root}, but the "
             f"autoregressive stage is absent ({', '.join(ar_missing)}). "
-            "Streaming from a saved conditioning capture will work; "
-            "set_prompt will not."
+            "Streaming the saved capture in DEMON_MINIMAX_CAPTURE; "
+            "set_prompt will not work."
         )
     return True, f"MiniMax-Music3 ready at {root}"
