@@ -59,47 +59,51 @@ def _run(sam, x, ctx, steps=2):
     return outs
 
 
-def test_capture_means_per_step_and_layer():
+def test_target_records_cross_attn_means_per_step_and_layer():
+    from acestep.tada import ActivationRecorder, forward_counter
+
     sam = _sam()
+    target = sa3_tada.sa3_target(sam)
+    assert target.num_blocks == NB
     x = torch.randn(1, 5, H)
     ctx = torch.randn(1, 7, H)
-    with sa3_tada.capture_cross_attn_means(sam, layers=[0, 2]) as store:
+    with ActivationRecorder(target, blocks=[0, 2], context=forward_counter(1)) as rec:
         _run(sam, x, ctx, steps=2)
-    assert sorted(store) == [0, 1]
-    assert sorted(store[0]) == [0, 2]
+    store = rec.steps()
+    assert sorted(store) == [0, 1] and sorted(store[0]) == [0, 2]
     want = (x * 0.5 + ctx.mean(dim=1, keepdim=True)).mean(dim=(0, 1))
-    assert torch.allclose(store[0][0], want)
+    assert torch.allclose(store[0][0][0], want)
 
 
-def test_patch_layer_context_equals_clean_at_that_layer_only():
+def test_target_patch_is_the_clean_context_at_that_layer_only():
+    from acestep.tada.patching import run_patched
+
     sam = _sam()
+    target = sa3_tada.sa3_target(sam)
     x = torch.randn(1, 5, H)
     clean, corrupt = torch.randn(1, 7, H), torch.randn(1, 7, H)
-    with sa3_tada.capture_context(sam) as box:
-        ref_clean = _run(sam, x, clean, steps=1)[0]
-    assert torch.equal(box[0], clean)
+    ref_clean = _run(sam, x, clean, steps=1)[0]
     ref_corrupt = _run(sam, x, corrupt, steps=1)[0]
-    with sa3_tada.patch_context(sam, range(NB), box[0]):
-        all_patched = _run(sam, x, corrupt, steps=1)[0]
-    assert torch.allclose(all_patched, ref_clean)
-    with sa3_tada.patch_context(sam, [1], box[0]):
-        one = _run(sam, x, corrupt, steps=1)[0]
-    assert not torch.allclose(one, ref_clean) and not torch.allclose(one, ref_corrupt)
-    # Hooks are gone afterwards.
+    _, all_p = run_patched(target, range(NB), lambda: _run(sam, x, clean, 1),
+                           lambda: _run(sam, x, corrupt, 1))
+    assert torch.allclose(all_p[0], ref_clean)
+    _, one = run_patched(target, [1], lambda: _run(sam, x, clean, 1),
+                         lambda: _run(sam, x, corrupt, 1))
+    assert not torch.allclose(one[0], ref_clean) and not torch.allclose(one[0], ref_corrupt)
     assert torch.equal(_run(sam, x, corrupt, steps=1)[0], ref_corrupt)
 
 
-def test_steer_adds_alpha_v_on_the_cross_attn_output_per_step():
+def test_steer_offline_adds_alpha_v_per_step():
     sam = _sam()
     x = torch.randn(1, 5, H)
     ctx = torch.randn(1, 7, H)
     v0 = torch.tensor([1.0, 0.0, 0.0, 0.0])
     v1 = torch.tensor([0.0, 1.0, 0.0, 0.0])
     base = _run(sam, x, ctx, steps=2)
-    with sa3_tada.steer_cross_attn(sam, {0: {1: v0}, 1: {1: v1}}, alpha=0.0):
+    with sa3_tada.steer_offline(sam, {0: {1: v0}, 1: {1: v1}}, alpha=0.0):
         zero = _run(sam, x, ctx, steps=2)
     assert all(torch.equal(a, b) for a, b in zip(zero, base))
-    with sa3_tada.steer_cross_attn(sam, {0: {1: v0}, 1: {1: v1}}, alpha=2.0):
+    with sa3_tada.steer_offline(sam, {0: {1: v0}, 1: {1: v1}}, alpha=2.0):
         got = _run(sam, x, ctx, steps=2)
     for step, v in ((0, v0), (1, v1)):
         h = x
