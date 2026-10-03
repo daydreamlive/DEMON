@@ -1,4 +1,4 @@
-"""MRT2 sidecar frame protocol — the single source of truth.
+"""MRT2 sidecar frame protocol: the single source of truth.
 
 The Magenta RT 2 model runs out-of-process (JAX has no CUDA on native
 Windows; the generation loop lives in a WSL venv or on a pod) behind a
@@ -8,8 +8,8 @@ import it:
 * the in-process :class:`~acestep.streaming.mrt2.backend.MRT2Backend`
   imports it normally, and
 * ``scripts/mrt2_sidecar.py`` loads THIS FILE via
-  ``importlib.util.spec_from_file_location`` — never ``import acestep``
-  — because the sidecar venv has magenta_rt + JAX but no torch, and the
+  ``importlib.util.spec_from_file_location``, never ``import acestep``,
+  because the sidecar venv has magenta_rt + JAX but no torch, and the
   ``acestep`` package import would pull the GPU stack.
 
 So: stdlib only. No numpy, no acestep imports.
@@ -41,15 +41,15 @@ field. Control plane:
 
 ``frame_index`` is the index of the FIRST frame in the chunk, counting
 every frame the sidecar has emitted since its process started (it does
-NOT reset per connection — the backend anchors on the first chunk it
+NOT reset per connection; the backend anchors on the first chunk it
 sees). Audio is final on first emit: the model is autoregressive and
 never refines, so frames are append-only by construction.
 
 Flow control is credit-based: the sidecar generates only while it holds
 credit, the backend grants credit to keep the frontier a configured
 lead ahead of the playhead. The model outruns real time (mrt2_small =
-~1.7x RT on the dev 5090), so credit, not throughput, paces generation
-— and the buffered lead stays small because for an append-only model
+~1.7x RT on the dev 5090), so credit, not throughput, paces generation,
+and the buffered lead stays small because for an append-only model
 the buffered lead IS the knob-to-ear latency.
 """
 
@@ -58,7 +58,7 @@ import os
 import struct
 
 # Audio shape (matches Magenta RT 2's SpectroStream output and,
-# fortuitously, DEMON's engine rate — no resample needed).
+# fortuitously, DEMON's engine rate, so no resample is needed).
 SAMPLE_RATE = 48000
 CHANNELS = 2
 FRAME_SAMPLES = 1920          # one model frame = 40 ms at 48 kHz

@@ -113,7 +113,7 @@ def main() -> int:
         )
         print(f"wrote {path}")
 
-    # Evaluate BEFORE close() — close marks the client lost by design.
+    # Evaluate BEFORE close(): close marks the client lost by design.
     ok = (
         backend.client.lost is False
         and first_audio_s is not None

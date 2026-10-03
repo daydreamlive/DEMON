@@ -7,11 +7,11 @@ import styles from "./magenta.module.css";
 
 import { useMagentaSession } from "./useMagentaSession";
 
-// Magenta RT 2 frontend — the hardware-pedal chassis from the
+// Magenta RT 2 frontend: the hardware-pedal chassis from the
 // ambient-oneknob POC (daydream-ambien-oneknob branch), but instead of
 // one macro knob it lays out every control the mrt2 family actually
 // declares: the knob bank straight from ready.knob_manifest, Tags A/B,
-// and the A↔B blend. Nothing acestep-shaped exists here — no fixtures,
+// and the A↔B blend. Nothing acestep-shaped exists here: no fixtures,
 // no LoRAs, no timbre/structure.
 
 const DEFAULT_TAGS_A = "warm analog synthwave, steady beat";
@@ -32,7 +32,7 @@ interface RotorKnobProps {
   onChange: (value: number) => void;
 }
 
-// Small rotary control — the POC's rotor pattern (invisible range input
+// Small rotary control: the POC's rotor pattern (invisible range input
 // over a CSS pointer disc) at satellite size. Range/step come from the
 // manifest entry; the -135°..+135° sweep matches the POC's big knob.
 function RotorKnob({ name, entry, value, onChange }: RotorKnobProps) {

@@ -7,7 +7,7 @@ Covers the pieces that don't need the sidecar (or a GPU):
   start_sample placement) with an injected fake sidecar client,
 * credit pacing and knob forwarding,
 * the family's declared contract surface (capabilities / geometry /
-  knob universe registration — the homonym guard in
+  knob universe registration; the homonym guard in
   test_knob_homonyms.py picks the universe up automatically).
 
 The live path (real sidecar in the MRT2 venv, WS session end-to-end)

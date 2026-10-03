@@ -12,13 +12,13 @@ import type {
 import { defaultWsUrl } from "@/engine/podUrl";
 
 // Magenta-only session hook. Deliberately standalone: no app stores, no
-// fixture decode, no LoRA catalog, no prompt transform — the mrt2 family
+// fixture decode, no LoRA catalog, no prompt transform. The mrt2 family
 // has none of those surfaces, so this is just SDK + the four things a
 // magenta session actually speaks: config, params, set_prompt,
 // set_prompt_blend.
 //
 // The knob bank comes from the session's own `ready.knob_manifest`
-// (backend-owned, session-resolved), NOT the static /api/knobs probe —
+// (backend-owned, session-resolved), NOT the static /api/knobs probe,
 // so the panel renders whatever knobs the mrt2 backend declares, and
 // future additions (notes/drums conditioning) appear without UI edits.
 
@@ -30,7 +30,7 @@ export interface MagentaKnob {
 }
 
 // The mrt2 session creator ignores the handshake audio entirely (no
-// positional source — the frontier starts from silence), but the WS
+// positional source; the frontier starts from silence), but the WS
 // adapter still reads one binary frame when no server-side fixture is
 // named. Send the smallest honest stub: 0.2 s of stereo zeros, one
 // server latent-pool (9600 samples) so every downstream length
@@ -41,7 +41,7 @@ const STUB_CHANNELS = 2;
 const PARAMS_TICK_MS = 80;
 
 function knobList(manifest: KnobManifest): MagentaKnob[] {
-  // Insertion order is the registry's declaration order — keep it.
+  // Insertion order is the registry's declaration order; keep it.
   return Object.entries(manifest)
     .filter(([, entry]) => entry.type === "float" || entry.type === "int")
     .map(([name, entry]) => ({ name, entry }));
@@ -133,7 +133,7 @@ export function useMagentaSession() {
 
         // Per-session knob bank from ready.knob_manifest. A server old
         // enough to omit it can't run mrt2 sessions anyway, so an empty
-        // panel here would mean a contract break — surface it.
+        // panel here would mean a contract break, so surface it.
         const manifest = remote.knobManifest?.knobs ?? {};
         const list = knobList(manifest);
         const defaults = defaultValues(list);

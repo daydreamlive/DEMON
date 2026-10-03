@@ -15,8 +15,8 @@ family sits behind the seam:
   loop continuously overwritten just behind the playhead.
 * Each emitted chunk re-emits the previous chunk's final ``XFADE``
   samples at its head (overlap), so the runner's unconditional
-  leading-edge crossfade blends new audio against identical samples —
-  a no-op — instead of smearing every chunk start with last lap's
+  leading-edge crossfade blends new audio against identical samples
+  (a no-op) instead of smearing every chunk start with last lap's
   stale audio.
 * Generation runs out-of-process (JAX has no CUDA on native Windows):
   this class is a thin TCP client to ``scripts/mrt2_sidecar.py``
@@ -85,7 +85,7 @@ MAX_GRANT_FRAMES = 50
 def mrt2_knob_specs() -> list:
     """The MRT2 family knob universe (also the homonym-guard manifest;
     see families.FAMILY_KNOB_UNIVERSES). All names carry the family
-    prefix per plan §3.3 — none of these mean anything to another
+    prefix per plan §3.3; none of these mean anything to another
     family. CFG bounds mirror the model's documented [-1, 7] range."""
     return [
         KnobSpec(
@@ -161,7 +161,7 @@ class SidecarClient:
     runner thread; control sends happen from whatever thread the
     session op runs on, serialized by a lock. All link failures
     degrade to ``lost = True`` (logged once) rather than raising into
-    the runner loop — the session keeps serving its rolling buffer.
+    the runner loop; the session keeps serving its rolling buffer.
     """
 
     def __init__(self, host: str, port: int, connect_timeout_s: float = 5.0):
@@ -296,7 +296,7 @@ class MRT2Backend:
 
         # The TCP link is a real acquired resource: from here on, any
         # failure before __init__ returns (e.g. the initial prompt seed
-        # below hitting a sidecar protocol error) must not strand it —
+        # below hitting a sidecar protocol error) must not strand it:
         # the caller can't close a backend it never received. Mirrors
         # ModelContext/Session's transactional constructors. Injected
         # clients stay caller-owned and are left alone.
@@ -469,7 +469,7 @@ class MRT2Backend:
     def produce(self, knobs: dict, ctx: TickContext, mode: ProduceMode) -> bool:
         """One tick: forward control changes, pace the sidecar with
         credit, drain arrived audio. Modes are a no-op distinction
-        here — there is no expensive local generate step to skip, and
+        here: there is no expensive local generate step to skip, and
         music must keep flowing through DiT-pause idle ("reuse"), so
         every mode runs the same pull path."""
         t0 = time.perf_counter()
@@ -528,7 +528,7 @@ class MRT2Backend:
     def render_window(self, t_start_s: float):
         """Emit the next frontier chunk. The position hint is ignored
         (append-only: there is exactly one place new audio can go).
-        Returns None when no new frames are pending — the runner's
+        Returns None when no new frames are pending; the runner's
         gap-fill tick then writes nothing, which is correct: committed
         audio is already in the buffer and never changes."""
         if self._pending_samples == 0:
@@ -614,12 +614,12 @@ def create_mrt2_session(cls, *, audio, config, checkpoint, session_id, **_unused
     encode) doesn't apply: the model lives in the sidecar. What a
     session needs here is the rolling-window buffer, the family knob
     bank, and a SessionState whose source-derived metadata is honestly
-    absent — geometry/capabilities in ``ready`` are the declared truth
+    absent; geometry/capabilities in ``ready`` are the declared truth
     (plan §3.6: nullable metadata rides the capability mask).
 
     ``audio`` (the handshake upload/fixture) is intentionally ignored:
     there is no source to swap in, and starting from silence is honest
-    — the frontier overwrites the window from t=0. ``checkpoint`` is
+    (the frontier overwrites the window from t=0). ``checkpoint`` is
     recorded but unused; the sidecar picks the model variant at ITS
     launch (``--model``).
     """
@@ -660,7 +660,7 @@ def create_mrt2_session(cls, *, audio, config, checkpoint, session_id, **_unused
     # the stack the moment they exist; ownership transfers via
     # ``pop_all()`` only on success. The sidecar TCP link itself is
     # acquired inside ``cls(...)`` (MRT2Backend.__init__, via
-    # make_backend) — its no-leak guarantee lives in the transactional
+    # make_backend); its no-leak guarantee lives in the transactional
     # constructors (MRT2Backend.__init__ closes a self-acquired client
     # on failure; StreamingSession.__init__ closes the backend if init
     # fails after make_backend).

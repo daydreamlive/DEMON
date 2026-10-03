@@ -8,7 +8,7 @@ serves frames to :class:`acestep.streaming.mrt2.backend.MRT2Backend`
 over the tiny TCP protocol in ``acestep/streaming/mrt2/protocol.py``.
 
 That protocol module is loaded BY FILE PATH (spec_from_file_location),
-never via ``import acestep`` — the acestep package import would pull
+never via ``import acestep``; the acestep package import would pull
 torch, which this venv deliberately does not have.
 
 Usage (from the repo root, inside the MRT2 venv):
@@ -19,7 +19,7 @@ The model is loaded and JIT-warmed once at startup (~30s); connections
 are then served one at a time. Generation is credit-paced: the loop
 only runs ``mrt.generate`` while the connected backend has granted
 frames, so the (faster-than-real-time) model never runs ahead of the
-backend's configured lead — for an append-only model, audio generated
+backend's configured lead. For an append-only model, audio generated
 ahead of need is latency, not safety.
 
 The recurrent state persists across prompt/knob changes (that is the
@@ -39,7 +39,7 @@ from pathlib import Path
 import numpy as np
 
 # ---------------------------------------------------------------------------
-# Protocol module, loaded by file path (NOT ``import acestep`` — no torch
+# Protocol module, loaded by file path (NOT ``import acestep``: no torch
 # in this venv; see module docstring).
 # ---------------------------------------------------------------------------
 
