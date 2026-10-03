@@ -5,52 +5,31 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>DEMON MiniMax</title>
     <link rel="stylesheet" href="./styles.css">
+    <script type="importmap">
+      { "imports": { "three": "https://esm.sh/three@0.183.1" } }
+    </script>
   </head>
   <body>
-    <main class="shell">
-      <section class="plugin" aria-label="MiniMax-Music3 demo">
-        <div class="brand-row">
-          <div class="brand">Daydream</div>
-        </div>
+    <canvas id="scene"></canvas>
+    <div id="status" class="status">idle</div>
 
-        <div id="knobs" class="knob-grid">
-          <div class="knob-placeholder">knobs appear when the session starts</div>
-        </div>
-
-        <div class="controls">
-          <label class="field-slot">
-            <span>Prompt</span>
-            <textarea id="prompt" rows="2"></textarea>
-          </label>
-
-          <label class="field-slot">
-            <span>Lyrics</span>
-            <textarea id="lyrics" rows="2" placeholder="[instrumental]"></textarea>
-          </label>
-
-          <div class="source-row">
-            <label class="field-slot duration-slot">
-              <span>Window s</span>
-              <input id="window" type="number" min="30" max="300" placeholder="60">
-            </label>
-            <button id="send-prompt" type="button" class="send-btn" disabled>Send Prompt</button>
-          </div>
-        </div>
-
-        <div class="title">music 3</div>
-
-        <div class="transport">
-          <button id="transport" type="button" class="power-btn">Start</button>
-          <span class="tick-readout" title="Backend tick time">
-            <b>tick</b>
-            <span id="tick">--.-</span>
-            <small>ms</small>
-          </span>
-          <span id="status-dot" class="status-dot status-idle" aria-hidden="true"></span>
-          <span id="status-text" class="status-text">idle</span>
-        </div>
-      </section>
-    </main>
+    <section class="panel" aria-label="MiniMax-Music3 controls">
+      <label>Style prompt
+        <textarea id="prompt" rows="3"></textarea>
+      </label>
+      <div class="row">
+        <button id="start" type="button">Start</button>
+        <button id="send" type="button" disabled>Send prompt</button>
+      </div>
+      <label>Lyrics (applied on Reconnect)
+        <textarea id="lyrics" rows="3" placeholder="[instrumental]"></textarea>
+      </label>
+      <label>Duration s (applied on Reconnect)
+        <input id="duration" type="number" min="30" max="360" placeholder="60">
+      </label>
+      <button id="reconnect" type="button" disabled>Reconnect</button>
+      <div id="knobs" class="knobs"></div>
+    </section>
 
     <script type="module" src="./minimax.js"></script>
   </body>
