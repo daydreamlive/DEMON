@@ -352,3 +352,43 @@ def test_settles_at_the_released_step_count(depth, denoise):
     assert ticks < 4 * 32
     assert backend.produce(knobs, CTX, "generate") is False
     assert backend.pipeline.ticks == ticks
+
+
+class _FakeContext:
+    def __init__(self):
+        self.shapes = {}
+
+    def set_input_shape(self, name, shape):
+        self.shapes[name] = shape
+        return True
+
+    def set_tensor_address(self, name, ptr):
+        pass
+
+    def get_tensor_shape(self, name):
+        return self.shapes["state"]
+
+    def execute_async_v3(self, stream):
+        return True
+
+
+class _FakeEngine:
+    def create_execution_context(self):
+        return _FakeContext()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="binds on the current CUDA stream")
+def test_trt_binding_made_under_inference_mode_runs_outside_it():
+    """The anchor solve binds under inference_mode; the runner then calls
+    the same binding outside it and must be able to write the staging
+    buffers."""
+    from types import SimpleNamespace
+
+    from acestep.engine.yue2_trt import _BoundExecution
+
+    z = torch.zeros(1, device="cuda")
+    bundle = SimpleNamespace(frames=8, keys=z, values=z, nar=SimpleNamespace(cos=z, sin=z, pos_emb=z))
+    with torch.inference_mode():
+        bound = _BoundExecution(_FakeEngine(), bundle, 1, "cuda")
+    out = bound(torch.ones(1, 8, 64, device="cuda", dtype=torch.bfloat16), [0.5])
+    assert out.shape == (1, 8, 64) and not out.is_inference()

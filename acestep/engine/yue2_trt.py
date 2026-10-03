@@ -88,9 +88,19 @@ class _BoundExecution:
 
     ``state`` / ``raw_time`` are staging inputs; the conditioning
     tensors are the bundle's own (bound by address, so the bundle must
-    outlive this object; the owner keys it weakly by bundle)."""
+    outlive this object; the owner keys it weakly by bundle).
+
+    The staging and output buffers are ordinary tensors even when the
+    first bind happens under ``torch.inference_mode`` (the create-time
+    anchor solve): the ring later writes them from the runner thread,
+    outside inference mode, where an inference tensor refuses in-place
+    updates."""
 
     def __init__(self, engine, bundle, batch: int, device):
+        with torch.inference_mode(False):
+            self._bind(engine, bundle, batch, device)
+
+    def _bind(self, engine, bundle, batch: int, device):
         nar = bundle.nar
         self.state = torch.empty(batch, bundle.frames, 64, device=device, dtype=torch.bfloat16)
         self.raw_time = torch.empty(batch, device=device, dtype=torch.bfloat16)
