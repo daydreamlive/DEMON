@@ -140,7 +140,9 @@ def sa3_lora_compatible(metadata: dict, model_id: str) -> bool:
     return lineage == model_id
 
 
-def sa3_knob_specs(loras: tuple | list = (), *, extension_specs=()) -> list:
+def sa3_knob_specs(
+    loras: tuple | list = (), *, extension_specs=(), steering_specs=(),
+) -> list:
     """The SA3 family knob manifest (backend-owned, plan §3.3).
 
     ``seed``, ``steps_override``, ``x0_target``, ``feedback`` and
@@ -164,6 +166,9 @@ def sa3_knob_specs(loras: tuple | list = (), *, extension_specs=()) -> list:
     ``coerce_knob_values`` — by the same route as every core knob. A knob
     that reached the client but not that map would be accepted from the
     wire unvalidated and unclamped, with no error.
+
+    ``steering_specs`` are the session's ``steer_<name>`` pack knobs
+    (``acestep.steering.packs``), shaped by the shared registry factory.
     """
     shared = {s.name: s for s in registry_knob_specs(False)}
     return [
@@ -192,7 +197,9 @@ def sa3_knob_specs(loras: tuple | list = (), *, extension_specs=()) -> list:
         shared["feedback_depth"],
         shared["seed"],
         shared["steps_override"],
-    ] + [lora_strength_spec(lid) for lid in loras] + list(extension_specs or ())
+    ] + [lora_strength_spec(lid) for lid in loras] + list(
+        steering_specs or ()
+    ) + list(extension_specs or ())
 
 
 class SA3Backend(DiffusionBackend):
@@ -456,6 +463,8 @@ class SA3Backend(DiffusionBackend):
         self._decode_seed = None
         self._windowed_codec = hasattr(codec, "decode_window")
 
+        # (pipeline, snapshot) key for the steering-pack slot sync.
+        self._last_steering = None
         self.pipeline = self._build_pipeline(self._steps)
 
     # ---- assembly -----------------------------------------------------------
@@ -740,6 +749,11 @@ class SA3Backend(DiffusionBackend):
         from acestep.engine.stream import StreamPipeline
 
         self.adapter.schedule_builder = self._schedule_builder_factory(steps)
+        # The SA3 model is process-cached: a replaced pipeline must take
+        # its eager steering hooks with it.
+        old = getattr(self, "pipeline", None)
+        if old is not None:
+            old.remove_steering_hooks()
         config = DiffusionConfig(
             infer_steps=int(steps),
             infer_method="sde" if self._sampler in ("sde", "pingpong") else "ode",
@@ -793,6 +807,7 @@ class SA3Backend(DiffusionBackend):
     def knob_specs(self, lora_ids=()) -> list:
         return sa3_knob_specs(
             loras=list(lora_ids or []),
+            steering_specs=self.pack_knob_specs(),
             extension_specs=(
                 self._extension.knob_specs if self._extension is not None else ()
             ),
@@ -1495,6 +1510,7 @@ class SA3Backend(DiffusionBackend):
         except (TypeError, ValueError):
             fb_depth_raw = 1.0
         return {
+            "knobs": knobs,
             "denoise": float(knobs.get("sa3_denoise", 1.0)),
             "seed": int(knobs.get("seed", self._default_seed)),
             "steps": int(knobs.get("steps_override", self._steps)),
@@ -1539,6 +1555,13 @@ class SA3Backend(DiffusionBackend):
             source = INTERPOLATIONS[method](
                 source, fb_latent, prep["feedback"],
             )
+
+        # Steering packs: merged into the (possibly just rebuilt)
+        # pipeline's steering slot before this tick's forward.
+        self._last_steering = self._sync_steering_slot(
+            prep.get("knobs") or {}, self._last_steering, self.pipeline,
+            prep["steps"], (self.steering_packs,),
+        )
 
         # Snapshot the conditioning a prompt swap publishes atomically
         # (active bundle + its latent geometry) so this request can't pair
@@ -1763,6 +1786,10 @@ class SA3Backend(DiffusionBackend):
         # because refittable engines are never process-cached).
         self._refit_mirror = None
         self._pending_lora_strengths.clear()
+        # Steering hooks sit on the shared, process-cached trunk blocks.
+        pipe = getattr(self, "pipeline", None)
+        if pipe is not None:
+            pipe.remove_steering_hooks()
 
     # ---- bookkeeping -------------------------------------------------------------
 

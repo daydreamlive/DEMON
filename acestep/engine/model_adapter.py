@@ -108,6 +108,31 @@ class ModelAdapter(Protocol):
         ...
 
 
+def ace_engine_steering_layout(engine):
+    """ACE steering layout from a ``DiffusionEngine`` before any pipeline
+    exists (the session factory needs it to filter packs at boot).
+    Mirrors :meth:`ACEAdapter.steering_layout`."""
+    from acestep.steering.layout import SteeringLayout
+
+    if engine is None:
+        return None
+    if getattr(engine, "_trt_engine", None) is not None:
+        n = int(getattr(engine, "_steering_num_layers", 0) or 0)
+        if n <= 0:
+            return None
+        return SteeringLayout(
+            num_blocks=n,
+            hidden_size=int(getattr(engine, "_steering_hidden_size", 0)),
+            engine_input=True,
+        )
+    decoder = getattr(engine, "decoder", None)
+    layers = getattr(decoder, "layers", None)
+    if layers is None:
+        return None
+    hidden = getattr(getattr(decoder, "config", None), "hidden_size", 0)
+    return SteeringLayout(num_blocks=len(layers), hidden_size=int(hidden or 0))
+
+
 class ACEAdapter:
     """The ACE-Step v1.5 family behind the seam — today's math, moved
     verbatim from ``StreamPipeline._decoder_forward`` and friends. The

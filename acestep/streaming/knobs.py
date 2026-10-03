@@ -254,6 +254,41 @@ def steering_axis_spec(
     )
 
 
+def steering_pack_spec(
+    name: str,
+    *,
+    label: str = "",
+    block: int = 0,
+    policy: Optional[dict] = None,
+    blurb: str = "",
+) -> KnobSpec:
+    """The registry spec for one data-driven steering-pack knob.
+
+    Same wire semantics as :func:`steering_axis_spec` (range, group,
+    bank), so a pack knob and a built-in axis of the same name can never
+    fork (the homonym rule); only the description says where the pack's
+    vector lands. Packs come from ``acestep.steering.packs``.
+    """
+    pol = policy or {}
+    if pol.get("kind", "range") == "range":
+        where = (
+            f"steps {float(pol.get('start', 0.0)):.2f}-"
+            f"{float(pol.get('end', 1.0)):.2f} of the schedule"
+        )
+    else:
+        where = f"policy {pol.get('kind')}"
+    return KnobSpec(
+        name, default=0.0,
+        min_val=-STEERING_ALPHA_MAX, max_val=STEERING_ALPHA_MAX,
+        group="steering",
+        description=(
+            f"Activation steering ({label or name}): a contrastive "
+            f"difference-of-means vector added after block {block}, "
+            f"{where}. 0 = off, negative inverts. {blurb}".rstrip()
+        ),
+    )
+
+
 def manual_slot_specs(
     slot_id: int,
     *,
