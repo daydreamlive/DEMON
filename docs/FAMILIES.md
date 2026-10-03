@@ -2,8 +2,8 @@
 
 A *family* is one generative model behind DEMON's streaming runner: ACE-Step,
 Stable Audio 3, Magenta RealTime 2, MiniMax-Music3 and YuE2 today. This
-document is the contract for adding one and the map of what still branches on a family name in the core. Read it before
-`acestep/streaming/families.py`.
+document is the contract for adding one and the map of what still branches on
+a family name in the core. Read it before `acestep/streaming/families.py`.
 
 ## The one thing you register
 
