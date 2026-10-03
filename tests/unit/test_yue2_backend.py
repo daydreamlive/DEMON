@@ -755,3 +755,42 @@ def test_resending_a_prompt_after_its_build_failed_retries_it():
     backend.handle_set_prompt("rock")
     backend.handle_set_prompt("rock")
     assert calls == ["rock", "rock"] and backend._active.tags == "rock"
+
+
+def test_repeated_recomposes_keep_no_dead_bundles():
+    """Each re-composed song's bundle is freed once nothing can use it;
+    only the last six used to be checked, so up to five dead ones stayed."""
+    codec = _Codec()
+    first = _song(0.0, tags="pop")
+    made = [first.bundle]
+
+    def recompose(tags, epoch):
+        song = Song(bundle=_Bundle(float(epoch)), anchor=None, tags=tags, epoch=epoch)
+        made.append(song.bundle)
+        return song
+
+    backend = _backend(song=first, codec=codec, recompose=recompose)
+    knobs = _knobs(seed=0)
+    _produce_until_fresh(backend, knobs)
+    for i in range(10):
+        backend.handle_set_prompt(f"style {i}")
+        _produce_until_fresh(backend, knobs)
+        live = [b for b in made if all(b is not r for r in codec.released)]
+        assert live == [backend._active.bundle], f"after re-compose {i}: {len(live)} live"
+    assert len(codec.released) == len(set(map(id, codec.released)))  # each freed once
+    backend.close()
+    assert len(codec.released) == len(made)
+
+
+def test_a_replaced_song_is_freed_on_the_runner_not_at_publish():
+    """The ring may still be mid-solve on the old song when the worker
+    publishes; its bundle is freed by the runner after it moves on."""
+    codec = _Codec()
+    old = _song(0.0)
+    backend = _backend(song=old, codec=codec, recompose=_recompose_to(1.0))
+    backend.produce(_knobs(seed=2), CTX, "generate")  # a slot on the old song
+    backend.handle_set_prompt("rock")
+    assert codec.released == []
+    backend.produce(_knobs(seed=2), CTX, "generate")  # restarts on the new song
+    backend.produce(_knobs(seed=2), CTX, "generate")
+    assert codec.released == [old.bundle]

@@ -175,8 +175,8 @@ class YuE2Backend(DiffusionBackend):
         self._cond_epoch = 0
         self._closed = False
         self._on_error = on_error
-        # Every song this session published (bounded), for attribution
-        # and for releasing their bundles at close.
+        # Every song this session holds a bundle for: the runner frees
+        # the replaced ones (_release_retired), close frees the rest.
         self._songs: list = [song] + ([song_b] if song_b is not None else [])
         self._recomposer = None
         if recompose is not None:
@@ -330,7 +330,6 @@ class YuE2Backend(DiffusionBackend):
                         slot, song.tags, reason)
             self._release_song(song)
             return
-        self._release_stale()
         if self.state is not None:
             # Wake the runner's idle pause: the new song must be rendered
             # even when no knob moves.
@@ -349,14 +348,20 @@ class YuE2Backend(DiffusionBackend):
         self._active = self._select(self._blend)
         self._songs.append(song)
 
-    def _release_stale(self) -> None:
-        """Free the bundles of published songs beyond the last six that
-        no slot plays any more."""
+    def _release_retired(self) -> None:
+        """Runner-side, under the GPU gate: free the bundle of every song
+        that no slot plays and no in-flight solve uses. In-flight slots
+        only ever hold ``_submitted_song`` (a song change restarts the
+        ring), so a replaced song is freed on the tick after the ring
+        moves off it, on the only thread that runs the velocity."""
         with self._control_lock:
-            playing = (self._song_a, self._song_b, self._active)
-            stale = [s for s in self._songs[:-6] if all(s is not p for p in playing)]
-            self._songs = [s for s in self._songs if all(s is not x for x in stale)]
-        for old in stale:
+            keep = (self._song_a, self._song_b, self._active, self._submitted_song)
+            retired = [s for s in self._songs if all(s is not k for k in keep)]
+            if not retired:
+                return
+            self._songs = [s for s in self._songs if all(s is not r for r in retired)]
+        for old in retired:
+            logger.info("yue2_song_released tags={!r} cond_epoch={}", old.tags, old.epoch)
             self._release_song(old)
 
     def _recompose_failed(self, slot: str, tags: str, exc: BaseException) -> None:
@@ -464,6 +469,7 @@ class YuE2Backend(DiffusionBackend):
         self._submitted.clear()
 
     def _generate(self, prep: dict):
+        self._release_retired()
         settled = self.is_settled(prep)
         if settled and not self._settled_last and self.pipeline.active_slots:
             # depth >= 2: the other slots hold the same request (redundant)
