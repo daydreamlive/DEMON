@@ -67,7 +67,7 @@ function wsUrl() {
 
 function buildConfig() {
   const prompt = els.prompt.value.trim() || DEFAULT_PROMPT;
-  const config = { telemetry_version: 1, backend: "minimax", prompt, prompt_b: prompt };
+  const config = { telemetry_version: 1, backend: "minimax", prompt };
   const lyrics = els.lyrics.value.trim();
   if (lyrics) config.minimax_lyrics = lyrics;
   const duration = Number(els.duration.value);
@@ -278,7 +278,7 @@ els.start.addEventListener("click", async () => {
 els.reconnect.addEventListener("click", () => void restart());
 els.send.addEventListener("click", () => {
   const prompt = els.prompt.value.trim() || DEFAULT_PROMPT;
-  state.remote?.sendPrompt(prompt, undefined, undefined, prompt);
+  state.remote?.sendPrompt(prompt);
 });
 window.addEventListener("resize", resize);
 window.addEventListener("beforeunload", () => {
