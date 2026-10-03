@@ -73,7 +73,7 @@
 
       <h2 class="abstract-label abstract-label--sub">Model families</h2>
       <p class="abstract">
-        A server boots one family; every client talks the same protocol. Per-frame curves, morphing and LoRAs belong to the diffusion families. The others are append-only streams steered by prompt and lyrics. DEMON does not train or own these models.
+        A server boots one family; every client talks the same protocol. Per-frame curves, morphing and LoRAs belong to the diffusion families. Magenta RealTime 2 and MiniMax-Music3 are append-only streams steered by prompt and lyrics; YuE2 composes a song, then reshapes it in the ring. DEMON does not train or own these models.
       </p>
       <div class="table-scroll">
         <table class="perf-table" aria-label="Model families DEMON can run">
@@ -107,8 +107,8 @@
             </tr>
             <tr>
               <td><a href="https://github.com/multimodal-art-projection/YuE">YuE2</a> (m-a-p; weights CC BY-NC 4.0)</td>
-              <td>Song-level, sidecar; genre prompt, lyrics; each change renders a new song</td>
-              <td class="num">68&nbsp;s song in 18.5&nbsp;s (11.4&nbsp;s for 64&nbsp;s with YuE2-Turbo, an inference layer on the same weights)</td>
+              <td>Song-level; composes with an AR stage, then reshapes the song in the ring (denoise, x0 target, feedback, seed); prompt change re-composes</td>
+              <td class="num">2.4&nbsp;s knob-to-ear (60&nbsp;s song)</td>
             </tr>
           </tbody>
         </table>
