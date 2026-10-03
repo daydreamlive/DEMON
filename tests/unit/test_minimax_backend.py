@@ -593,3 +593,28 @@ def test_a_given_ar_seed_reaches_the_ar_stream(monkeypatch):
     ss.state = None
     assert ms.make_minimax_backend(ss) == "backend"
     assert seen["seed"] == 7
+
+
+def test_close_does_not_free_state_under_a_running_worker(monkeypatch):
+    import threading
+
+    b = _backend()
+    monkeypatch.setattr(b, "CLOSE_JOIN_S", 0.1, raising=False)
+    inside = threading.Event()
+    release = threading.Event()
+
+    def _slow_advance(n):
+        inside.set()
+        release.wait(10.0)  # a long reprompt replay or paged render
+        return None
+
+    closed = []
+    b.ar.advance = _slow_advance
+    b.ar.close = lambda: closed.append(True)
+    b._worker = threading.Thread(target=b._run, daemon=True)
+    b._worker.start()
+    assert inside.wait(2.0)
+    b.close()
+    assert closed == [], "AR state freed while the worker was still in it"
+    release.set()
+    b._worker.join(2.0)

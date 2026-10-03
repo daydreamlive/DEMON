@@ -854,11 +854,23 @@ class MiniMaxBackend:
             "audio already written",
         )
 
+    # How long close() waits for the worker to notice _stop.
+    CLOSE_JOIN_S = 5.0
+
     def close(self) -> None:
         self._stop.set()
         worker = getattr(self, "_worker", None)
         if worker is not None and worker.is_alive():
-            worker.join(timeout=5.0)
+            worker.join(timeout=self.CLOSE_JOIN_S)
+            if worker.is_alive():
+                # Freeing the KV cache / CUDA graph under a running
+                # worker would crash it mid-step. It exits at its next
+                # _stop check; its state is released with the backend.
+                logger.error(
+                    "minimax_close_worker_still_running join_s={} "
+                    "state=left_allocated", self.CLOSE_JOIN_S,
+                )
+                return
         self.ar.close()
         self.latents.close()
         self.resampler.close()
