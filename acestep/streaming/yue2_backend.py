@@ -273,25 +273,31 @@ class YuE2Backend(DiffusionBackend):
         """Re-compose for new style tags in the background (see
         :mod:`acestep.streaming.yue2_recompose`); returns at once and the
         ring keeps playing the current song until the new one is
-        published. A slot whose tags did not change is left alone; an
-        absent / empty / identical ``tags_b`` makes B follow A."""
+        published. A slot whose tags did not change is left alone, and so
+        is a slot already re-composing for exactly these tags (a repeated
+        click keeps the job in flight); an absent / empty / identical
+        ``tags_b`` makes B follow A."""
         if self._recomposer is None:
             raise RuntimeError("YuE2Backend was constructed without a recompose function")
         follows = not (tags_b and tags_b != tags)
         with self._control_lock:
             self._cond_epoch += 1
             epoch = self._cond_epoch
-            redo_a = tags != self._song_a.tags
-            redo_b = not follows and tags_b != self._song_b.tags
+            # A job still building these tags may publish (it re-checks
+            # under this lock), so it counts as the slot's state.
+            keep_a = tags == self._recomposer.inflight("a")
+            keep_b = not follows and tags_b == self._recomposer.inflight("b")
+            redo_a = not keep_a and tags != self._song_a.tags
+            redo_b = not follows and not keep_b and tags_b != self._song_b.tags
             self._b_follows_a = follows
             # Going back to the playing prompt abandons the job in flight
             # for that slot (latest wins). Under this lock, so a publish
             # racing it re-checks and releases instead.
-            if not redo_a:
+            if not (redo_a or keep_a):
                 self._recomposer.cancel("a")
-            if not redo_b:
+            if not (redo_b or keep_b):
                 self._recomposer.cancel("b")
-            if follows and not redo_a:
+            if follows and not (redo_a or keep_a):
                 self._song_b = self._song_a
                 self._active = self._select(self._blend)
         logger.info("yue2_recompose_requested tags={!r} tags_b={!r} cond_epoch={} a={} b={}",

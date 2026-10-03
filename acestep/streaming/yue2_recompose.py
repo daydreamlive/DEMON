@@ -16,7 +16,9 @@ to the backend atomically.
   (or cancelled: the user went back to the playing prompt) before it
   starts is skipped; one superseded while it ran releases its bundle
   instead of publishing. A failed job is logged at WARNING and handed to
-  ``on_failure`` (the session's error event).
+  ``on_failure`` (the session's error event). :meth:`Recomposer.inflight`
+  names the tags a slot is building, so the backend can treat a repeated
+  request as the job already running.
 """
 
 from __future__ import annotations
@@ -85,12 +87,20 @@ class Recomposer:
         self._on_failure = on_failure
         self._lock = threading.Lock()
         self._latest: dict = {}
+        self._inflight: dict = {}
         self._pending: set = set()
+
+    def inflight(self, slot: str) -> Optional[str]:
+        """The tags the slot's current (queued or running) job builds,
+        or None when the slot has no job that may still publish."""
+        with self._lock:
+            return self._inflight.get(slot) if slot in self._latest else None
 
     def request(self, slot: str, tags: str, epoch: int) -> Future:
         token = object()
         with self._lock:
             self._latest[slot] = token
+            self._inflight[slot] = tags
         future = self._submit(self._job, slot, tags, epoch, token)
         with self._lock:
             self._pending.add(future)
@@ -102,12 +112,14 @@ class Recomposer:
         is released instead of published)."""
         with self._lock:
             self._latest.pop(slot, None)
+            self._inflight.pop(slot, None)
 
     def cancel_all(self) -> None:
         """Abandon every job; a job that has not started yet is also
         removed from the worker's queue."""
         with self._lock:
             self._latest.clear()
+            self._inflight.clear()
             pending = list(self._pending)
         for future in pending:
             future.cancel()
@@ -117,6 +129,17 @@ class Recomposer:
             return self._latest.get(slot) is token
 
     def _job(self, slot: str, tags: str, epoch: int, token) -> Optional[Song]:
+        try:
+            return self._run(slot, tags, epoch, token)
+        finally:
+            # Done (published, dropped or failed): a repeat of these tags
+            # is a new request from here on (a retry after a failure).
+            with self._lock:
+                if self._latest.get(slot) is token:
+                    del self._latest[slot]
+                    self._inflight.pop(slot, None)
+
+    def _run(self, slot: str, tags: str, epoch: int, token) -> Optional[Song]:
         if not self._current(slot, token):
             logger.info("yue2_recompose_skipped slot={} tags={!r} reason=superseded", slot, tags)
             return None

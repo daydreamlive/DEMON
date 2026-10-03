@@ -710,3 +710,48 @@ def test_a_published_song_restarts_the_ring_instead_of_finishing_the_old_solve()
     # old slot's remaining steps plus one.
     assert n == STEPS
     assert backend.pipeline.last_finished_request.aux_cond is backend._active.bundle
+
+
+# ---- review v2 fixes ----
+
+
+def test_a_repeated_prompt_during_the_build_keeps_the_job_in_flight():
+    """A second identical ``set_prompt`` while A re-composes used to
+    supersede the running job and build the same song again."""
+    codec = _Codec()
+    submit = _deferred()
+    recompose = _recompose_to(1.0)
+    backend = _backend(codec=codec, recompose=recompose, submit=submit)
+    backend.handle_set_prompt("rock")
+    backend.handle_set_prompt("rock")
+    assert len(submit.jobs) == 1
+    song = submit.run(0).result()
+    assert song is not None and backend._active is song and song.tags == "rock"
+    assert recompose.calls == [("rock", 1)] and codec.released == []
+
+
+def test_a_b_only_change_during_an_a_build_leaves_a_alone():
+    submit = _deferred()
+    backend = _backend(song=_song(tags="pop"), recompose=_recompose_to(1.0), submit=submit)
+    backend.handle_set_prompt("rock")
+    backend.handle_set_prompt("rock", tags_b="jazz")  # the page sends A with B
+    assert [args[1] for _, args, _ in submit.jobs] == ["rock", "jazz"]
+    song_a = submit.run(0).result()
+    song_b = submit.run(1).result()
+    assert backend._song_a is song_a and backend._song_b is song_b
+    assert (song_a.tags, song_b.tags) == ("rock", "jazz")
+
+
+def test_resending_a_prompt_after_its_build_failed_retries_it():
+    calls = []
+
+    def recompose(tags, epoch):
+        calls.append(tags)
+        if len(calls) == 1:
+            raise RuntimeError("semantic stage returned no tokens")
+        return Song(bundle=_Bundle(1.0), anchor=None, tags=tags, epoch=epoch)
+
+    backend = _backend(recompose=recompose, on_error=lambda c, m: None)
+    backend.handle_set_prompt("rock")
+    backend.handle_set_prompt("rock")
+    assert calls == ["rock", "rock"] and backend._active.tags == "rock"
