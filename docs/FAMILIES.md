@@ -237,7 +237,8 @@ flow-matching solve of the WHOLE song, one step per tick, behind the Tier 2
 seam (`acestep/engine/yue2_adapter.py`). The adapter returns the midpoint
 velocity, so the pipeline's Euler step is upstream's midpoint update exactly.
 `yue2_denoise` truncates the released grid (the last `ceil(32*d)` steps from
-the re-noised song anchor); it is never rescaled. Ring depth is 1.
+the re-noised song anchor); it is never rescaled. Ring depth is 1 (see
+Measured).
 
 **What is conditioning.** Score plan, semantic tokens and the AR-prefix KV
 prefill (`acestep/engine/yue2_context.py`). They run at create, before
@@ -253,12 +254,19 @@ less than a seed change does (long-term spectrum distance 0.04-0.06 dB vs
 style pairs). So `set_prompt` composes the session's lyrics under the new tags
 at the session's length (semantic `min_tokens = max_tokens = T`) while the
 current song keeps playing, publishes the new song atomically, and the ring
-renders its anchor with one full solve. A distinct `prompt_b` is a second
-song composed at create; `set_prompt_blend` is a hard switch at 0.5.
+drops the old song's in-flight slots and renders the new anchor with one full
+solve. Latest wins per slot: going back to the playing prompt cancels the job
+in flight, and a song finishing after the session closes releases its KV
+bundle. A failed re-compose is logged at WARNING and sent as the session's
+runtime error event (wire `error`, the SDK's `server_error`); the current song
+keeps playing. A distinct `prompt_b` is a second song composed at create;
+`set_prompt_blend` is a hard switch at 0.5.
 
 **Settled ring.** With fixed conditioning, seed and knobs and no feedback,
 the ring stops after one generation and the renderer keeps playing that latent
 (repeat windows come from a cache), so the GPU is free until something moves.
+Slots still in flight when it settles (depth >= 2) are dropped, so the next
+change does not first finish a stale one.
 
 **Knobs.** `yue2_denoise` (prefixed: it is not ACE's `denoise`), `x0_target`,
 `feedback`, `feedback_depth`, `seed` (new acoustic noise, same composition).
@@ -295,14 +303,22 @@ builder is a port of that build and was not re-run here.
 | knob change on a settled ring to new audio: `seed`, `x0_target` | 4.0 s | 2.4-2.5 s |
 | same, `yue2_denoise` 0.5 | 2.0 s | 1.2 s |
 | change landing mid-solve: first changed / fully updated (`seed`) | 1.9 / 5.9 s | 1.15 / 3.6 s |
-| `set_prompt` to the new song heard | | 32-42 s idle ring, 36-58 s busy ring |
+| `set_prompt` to the new song heard | | 21-42 s idle ring, 36-58 s busy ring |
 | nvidia-smi peak (incl. 3.9 GB desktop) | 18.4 GB | 21-22 GB |
 
 Knob-to-ear is measured to CPU PCM (produce + window render), excluding
 transport and the client buffer. Parity: the ring is bit-exact against
 upstream's eager midpoint solve at depth 1 and 4, and against an explicit
-TensorRT solve on TensorRT; TensorRT vs eager is 0.79% relative L2. Depth 2
-nearly doubled both the tick and the update time, hence depth 1.
+TensorRT solve on TensorRT; TensorRT vs eager is 0.79-1.19% relative L2 (two
+compositions). Depth 1 is a performance cap: a settled ring runs one solve per
+change, and depth 2 ran a 102-124 ms tick (60 s songs) and slowed every update
+by 40-75% (settled latents identical to depth 1).
+
+Browser smoke (headless Chromium on `/yue2/`, 57.8 s song, TensorRT): `ready`
+34.1 s after Start in a fresh server (model load included), first audio 0.1 s
+later; slices kept arriving through `yue2_denoise` and `x0_target` moves (about
+290 per 8 s); a prompt change was heard 20.9 s later (re-compose 18.0 s plus
+the anchor solve 2.7 s, ring idle); no console errors.
 
 **Known gaps.**
 
