@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>DEMON YuE2</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+    <div id="status" class="status">idle</div>
+    <section class="panel" aria-label="YuE2 controls">
+      <label>Style <input id="prompt-a" type="text"></label>
+      <label>Style B <input id="prompt-b" type="text"></label>
+      <label>A/B switch <span id="blend-value">A</span>
+        <input id="blend" type="range" min="0" max="1" step="0.01" value="0">
+      </label>
+      <label>Lyrics (fixed after Start)
+        <textarea id="lyrics" rows="4"></textarea>
+      </label>
+      <label>Longest song, seconds (fixed after Start)
+        <input id="duration" type="number" min="10" max="100" step="1" value="60">
+      </label>
+      <div id="knobs" class="knobs"></div>
+      <div class="buttons">
+        <button id="start" type="button">Start</button>
+        <button id="send" type="button" disabled>Send style</button>
+      </div>
+    </section>
+    <script type="module" src="./yue2.js"></script>
+  </body>
+</html>
