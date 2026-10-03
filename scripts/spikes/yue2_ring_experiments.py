@@ -107,8 +107,13 @@ def settle(backend, values, ctx, limit=400) -> torch.Tensor:
 
 
 def compose(ctx, prompt, seconds):
-    return compose_song(ctx, prompt=prompt, prompt_b=prompt, lyrics="", seed=0,
-                        max_frames=int(round(seconds * 25)))
+    from contextlib import ExitStack
+
+    with ExitStack() as cleanup:
+        song = compose_song(ctx, cleanup, prompt=prompt, prompt_b=prompt, lyrics="", seed=0,
+                            max_frames=int(round(seconds * 25)))
+        cleanup.pop_all()  # the backend built from it releases the bundle
+    return song
 
 
 # ---- quality (E2, E3, E5) ------------------------------------------------------
@@ -265,6 +270,10 @@ def measure_change(loop, before, after, *, busy=None, limit=600) -> dict:
     and time first changed / fully updated PCM."""
     backend = loop.backend
     settle(backend, before, loop.ctx)
+    # Slots left in flight once settled: (step_idx, last step) each. At
+    # depth >= 2 a slot frozen here finishes first on the next change.
+    in_flight = [(int(sl.step_idx), len(sl.t_schedule) - 1)
+                 for sl in backend.pipeline._slots if sl is not None]
     current = before
     if busy is not None:
         n, current = busy
@@ -277,14 +286,15 @@ def measure_change(loop, before, after, *, busy=None, limit=600) -> dict:
     for _ in range(limit):
         fresh, pcm = loop.step(after)
         if target_sig is None:
-            target_sig = backend._signature(backend._last_prep, backend._active_bundle)
+            target_sig = backend._signature(backend._last_prep, backend._active)
         now = time.perf_counter() - t0
         if first_changed is None and np.abs(pcm - reference).max() > PCM_EPS:
             first_changed = now
         if fresh and backend._emerged_signature == target_sig:
             fully_updated = now
             break
-    return {"first_changed_s": first_changed, "fully_updated_s": fully_updated}
+    return {"first_changed_s": first_changed, "fully_updated_s": fully_updated,
+            "slots_in_flight_at_settle": in_flight}
 
 
 def run_latency(ctx, seconds, depth, out: Path) -> dict:
@@ -304,10 +314,21 @@ def run_latency(ctx, seconds, depth, out: Path) -> dict:
               "nar": nar_backend_for(song["bundle"], ctx.has_trt_nar),
               "create_ms": song["timings_ms"], "changes": {}}
     torch.cuda.reset_peak_memory_stats()
+    reference = None
+    if depth > 1:
+        # Same song, depth 1: the settled latents must match per knob set.
+        reference = YuE2Backend.from_context(
+            ctx, composition=song["composition"], song=song["song"],
+            knob_state=KnobState(yue2_knob_specs()), depth=1,
+        )
     for name, after in changes.items():
         idle = measure_change(loop, base, after)
         busy = measure_change(loop, base, after, busy=(16, knobs(seed=3)))
         report["changes"][name] = {"idle": idle, "busy": busy}
+        if reference is not None:
+            ours = settle(backend, after, loop.ctx)
+            theirs = settle(reference, after, loop.ctx)
+            report["changes"][name]["settled_vs_depth1_rel_l2"] = rel_l2(ours, theirs)
         print(name, json.dumps(report["changes"][name]), flush=True)
     report["tick_ms_p50"] = float(np.percentile(loop.ticks, 50))
     report["tick_ms_p95"] = float(np.percentile(loop.ticks, 95))

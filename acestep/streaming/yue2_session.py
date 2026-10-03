@@ -34,11 +34,12 @@ from acestep.streaming.yue2_backend import (
 )
 from acestep.streaming.yue2_recompose import Song
 
-#: Ring depth ceiling. The settled ring runs one solve per change, so
-#: depth buys no throughput; measured on a 5090 (M3, 60 s song, TRT),
-#: depth 2 nearly doubled the tick (70 -> 128 ms) and the change-to-
-#: update time (2.4 -> 4.2 s), and a slot frozen at settle re-emitted
-#: stale audio on the next change.
+#: Ring depth ceiling, a performance choice. The settled ring runs one
+#: solve per change, so a second slot buys no throughput: on a 5090
+#: (60 s songs, TRT) depth 2 ran a 102-124 ms tick against 70 ms at
+#: depth 1 and every change-to-update time grew by 40-75 %. (Depth 2
+#: once also re-emitted a slot frozen at settle; the backend now drops
+#: in-flight slots when it settles.)
 YUE2_MAX_PIPELINE_DEPTH = 1
 
 #: Wire-slice width: two 200 ms VAE window cores.

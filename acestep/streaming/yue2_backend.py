@@ -12,8 +12,8 @@ codec). Shaped like the SA3 backend:
   prefill. They run at session create (synchronously, before ``ready``)
   and, for a prompt change, on the context worker
   (:mod:`acestep.streaming.yue2_recompose`): the new song is published
-  under ``_control_lock``, the ring renders its anchor with one full
-  solve, and latents still in flight for the old song are dropped.
+  under ``_control_lock``, the ring drops the old song's in-flight
+  slots and renders the new song's anchor with one full solve.
 * **The source canvas** is the song's own clean latent (the anchor, one
   full solve at create or after a re-compose). ``yue2_denoise`` < 1
   re-noises the anchor with the seed's noise and integrates the
@@ -35,7 +35,9 @@ Settled short-circuit: with fixed conditioning, seed and knobs and no
 feedback, the ring re-renders the same latent forever. Once a latent
 generated under the current signature has emerged, :meth:`_generate`
 stops ticking and the renderer keeps playing that latent, so the GPU is
-idle until something moves.
+idle until something moves. Slots still in flight when the ring settles
+(depth >= 2) hold redundant or stale work and are dropped, so the next
+change starts clean instead of first finishing a frozen slot.
 """
 
 from __future__ import annotations
@@ -194,6 +196,7 @@ class YuE2Backend(DiffusionBackend):
         self._emerged_request = None
         self._emerged_song = None
         self._emerged_marker = None
+        self._submitted_song = None
         self._rendered_for = None
         self._rendered_pcm = None
         self._settled_last = False
@@ -447,12 +450,31 @@ class YuE2Backend(DiffusionBackend):
             latent_frames=self._frames,
         )
 
+    def _restart_ring(self, prep: dict) -> None:
+        """Drop every in-flight slot and queued request: a fresh pipeline
+        over the same adapter (no weights, no engine rebuild)."""
+        self.pipeline = self._build_pipeline(self._steps)
+        self.pipeline.set_shared_curve("x0_target_strength", prep["x0_target"])
+        self._submitted.clear()
+
     def _generate(self, prep: dict):
-        self._settled_last = self.is_settled(prep)
-        if self._settled_last:
+        settled = self.is_settled(prep)
+        if settled and not self._settled_last and self.pipeline.active_slots:
+            # depth >= 2: the other slots hold the same request (redundant)
+            # or an older one (stale). Left alone they freeze mid-solve and
+            # the next change first emits one of them.
+            self._restart_ring(prep)
+        self._settled_last = settled
+        if settled:
             return None
         with self._control_lock:
             song = self._active
+        if song is not self._submitted_song:
+            if self._submitted_song is not None and self.pipeline.active_slots:
+                # The old song's slots would be discarded when they emerge;
+                # start the new song now instead of after them.
+                self._restart_ring(prep)
+            self._submitted_song = song
         request = self._request_for(prep, song)
         self._submitted.append((request, self._signature(prep, song), song))
         self.pipeline.submit(request)

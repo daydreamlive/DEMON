@@ -682,3 +682,31 @@ def test_a_failed_recompose_publishes_the_session_error_event():
     backend.handle_set_prompt("rock")
     assert len(published) == 1 and isinstance(published[0], SessionError)
     assert published[0].code == "yue2_recompose_failed"
+
+
+def test_depth_two_settles_without_a_frozen_slot():
+    """At depth >= 2 the other slot used to freeze mid-solve at settle and
+    emerge first on the next change, carrying the old request (with the
+    new shared x0 strength). Now it is dropped at settle."""
+    backend = _backend(depth=2)
+    knobs = _knobs()
+    _produce_until_fresh(backend, knobs)
+    assert backend.produce(knobs, CTX, "generate") is False
+    assert backend.pipeline.active_slots == 0
+    moved = _knobs(x0_target=0.5)
+    req = _produce_until_fresh(backend, moved)
+    assert req.x0_target_strength == 0.5
+
+
+def test_a_published_song_restarts_the_ring_instead_of_finishing_the_old_solve():
+    backend = _backend(recompose=_recompose_to(1.0))
+    knobs = _knobs(seed=2)
+    backend.produce(knobs, CTX, "generate")  # a slot starts on the old song
+    backend.handle_set_prompt("rock")
+    for n in range(1, 3 * STEPS):
+        if backend.produce(knobs, CTX, "generate"):
+            break
+    # The new song's anchor emerged after one full solve, not after the
+    # old slot's remaining steps plus one.
+    assert n == STEPS
+    assert backend.pipeline.last_finished_request.aux_cond is backend._active.bundle
