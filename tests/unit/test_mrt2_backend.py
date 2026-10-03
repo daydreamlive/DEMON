@@ -505,3 +505,103 @@ def test_runner_writes_append_only_chunks_verbatim(monkeypatch, playhead_s):
     assert backend._abs_written == total
     np.testing.assert_array_equal(eng.current[:total], ramp)
     np.testing.assert_array_equal(eng.current[total:], stale[total:])
+
+
+# ---------------------------------------------------------------------------
+# Sidecar link lifecycle
+# ---------------------------------------------------------------------------
+
+
+def test_client_close_shuts_the_socket_down_so_the_sidecar_sees_eof():
+    """close() must shutdown(SHUT_RDWR) before close(): on Linux a bare
+    close() from another thread while the reader is blocked in recv()
+    sends no FIN, and the one-session sidecar keeps serving a dead peer."""
+    from acestep.streaming.mrt2.backend import SidecarClient
+
+    side = _FakeSidecar()
+    try:
+        client = SidecarClient("127.0.0.1", side.port)
+        calls = []
+        real = client._sock
+
+        class _Spy:
+            def shutdown(self, how):
+                calls.append(("shutdown", how))
+                return real.shutdown(how)
+
+            def close(self):
+                calls.append(("close",))
+                return real.close()
+
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+        client._sock = _Spy()
+        client.close()
+        assert calls[0] == ("shutdown", socket.SHUT_RDWR)
+        assert ("close",) in calls
+        client._reader.join(2.0)
+        assert not client._reader.is_alive()
+        side._t.join(2.0)
+        assert not side._t.is_alive()  # the sidecar side saw EOF
+    finally:
+        side.close()
+
+
+def test_client_heartbeat_runs_without_runner_ticks(monkeypatch):
+    """Pings come from the client's own thread (the runner stops calling
+    produce() during the idle pause), and a sidecar that stops answering
+    flips the link to lost with a reason."""
+    from acestep.streaming.mrt2 import backend as mb
+
+    monkeypatch.setattr(mb, "PING_EVERY_S", 0.05)
+    monkeypatch.setattr(mb, "LOST_AFTER_S", 0.3)
+    side = _FakeSidecar()  # records pings, never answers them
+    try:
+        client = mb.SidecarClient("127.0.0.1", side.port)
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not client.lost:
+            time.sleep(0.02)
+        assert any(m.get("type") == "ping" for m in side.received)
+        assert client.lost
+        assert "liveness" in (client.lost_reason or "")
+        client.close()
+    finally:
+        side.close()
+
+
+def _load_sidecar_module():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "scripts" / "mrt2_sidecar.py"
+    spec = importlib.util.spec_from_file_location("mrt2_sidecar_under_test", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_sidecar_drops_a_backend_that_goes_silent(monkeypatch):
+    """A backend that vanished without a FIN must not hold the
+    one-session sidecar forever."""
+    import threading
+    from types import SimpleNamespace
+
+    sc = _load_sidecar_module()
+    monkeypatch.setattr(sc.mp, "PEER_IDLE_DROP_S", 0.3)
+    a, b = socket.socketpair()
+    try:
+        mrt = SimpleNamespace(_style_model=None)
+        t = threading.Thread(
+            target=sc.serve_one, args=(a, mrt, {}, 2), daemon=True,
+        )
+        t.start()
+        b.sendall(mp.pack_json({"type": "hello"}))
+        kind, payload = mp.recv_msg(b)
+        assert mp.unpack_json(payload)["type"] == "meta"
+        # Now go silent without closing.
+        t.join(3.0)
+        assert not t.is_alive()
+    finally:
+        a.close()
+        b.close()

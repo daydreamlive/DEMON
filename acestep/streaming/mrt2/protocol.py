@@ -28,7 +28,7 @@ field. Control plane:
                          "cfg_musiccoca"?: float, "cfg_notes"?: float,
                          "cfg_drums"?: float}
                         {"type": "credit", "frames": int}          # grant N more 40ms frames
-                        {"type": "ping", "t": float}
+                        {"type": "ping", "t": float}           # every PING_EVERY_S
     sidecar -> backend: {"type": "meta", "sample_rate": int, "channels": int,
                          "frame_samples": int, "model": str}
                         {"type": "pong", "t": float}
@@ -76,6 +76,17 @@ AUDIO_HDR = struct.Struct("<QH")  # frame_index, num_frames
 # server reaches a sidecar bound inside WSL at the same address.
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 7531
+
+# Link liveness, both directions. The backend's client pings every
+# PING_EVERY_S from its own heartbeat thread (independent of the
+# runner, which stops ticking during the idle pause) and declares the
+# link lost after LOST_AFTER_S without any message. The sidecar drops a
+# connection that has sent nothing for PEER_IDLE_DROP_S, so a backend
+# that vanished without a FIN (host crash, half-open TCP) cannot hold
+# the one-session sidecar forever.
+PING_EVERY_S = 2.0
+LOST_AFTER_S = 8.0
+PEER_IDLE_DROP_S = 20.0
 
 
 def parse_sidecar_address(raw: str) -> tuple:

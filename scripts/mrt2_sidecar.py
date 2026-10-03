@@ -128,11 +128,13 @@ def serve_one(conn, mrt, cond_defaults: dict, chunk_frames: int) -> None:
     conn.settimeout(None)
     ctrl: "queue.Queue" = queue.Queue()
     alive = [True]
+    last_rx = [time.monotonic()]
 
     def _reader():
         try:
             while True:
                 kind, payload = mp.recv_msg(conn)
+                last_rx[0] = time.monotonic()
                 if kind == mp.MSG_JSON:
                     ctrl.put(mp.unpack_json(payload))
         except (ConnectionError, OSError):
@@ -157,6 +159,13 @@ def serve_one(conn, mrt, cond_defaults: dict, chunk_frames: int) -> None:
     threading.Thread(target=_reader, daemon=True).start()
 
     while alive[0]:
+        # A live backend pings every PING_EVERY_S. Silence past the
+        # deadline means it vanished without a FIN (crash, half-open
+        # TCP): drop it so the next session can connect.
+        silent_s = time.monotonic() - last_rx[0]
+        if silent_s > mp.PEER_IDLE_DROP_S:
+            log(f"backend silent for {silent_s:.1f}s; dropping the connection")
+            return
         # Drain control messages. Out of credit -> block briefly (the
         # next message is the only thing that can change that); credit
         # in hand -> drain whatever is queued and get on with generating.

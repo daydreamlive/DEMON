@@ -73,9 +73,10 @@ XFADE = 1200
 # a multi-second slab in one tick (and from out-running the wire).
 MAX_EMIT_S = 1.5
 
-# Heartbeat cadence / liveness deadline for the sidecar link.
-PING_EVERY_S = 2.0
-LOST_AFTER_S = 8.0
+# Heartbeat cadence / liveness deadline for the sidecar link (shared
+# with the sidecar; see protocol.py).
+PING_EVERY_S = mp.PING_EVERY_S
+LOST_AFTER_S = mp.LOST_AFTER_S
 
 # Largest credit grant per tick. The sidecar holds at most ~this much
 # un-asked-for work, so a stale grant can't run far past a knob change.
@@ -159,9 +160,12 @@ class SidecarClient:
 
     Audio chunks land in an internal queue the backend drains on the
     runner thread; control sends happen from whatever thread the
-    session op runs on, serialized by a lock. All link failures
-    degrade to ``lost = True`` (logged once) rather than raising into
-    the runner loop; the session keeps serving its rolling buffer.
+    session op runs on, serialized by a lock. A heartbeat thread pings
+    the sidecar and enforces the liveness deadline, so liveness does
+    not depend on the runner ticking (it pauses when idle). Link
+    failures set ``lost = True`` and ``lost_reason`` (logged once);
+    the backend turns that into a session error on its next tick.
+    ``close()`` sets ``lost`` without a reason.
     """
 
     def __init__(self, host: str, port: int, connect_timeout_s: float = 5.0):
@@ -173,7 +177,9 @@ class SidecarClient:
         self.frames_received = 0
         self.last_rx_ts = time.monotonic()
         self.lost = False
+        self.lost_reason: str | None = None
         self.meta: dict = {}
+        self._closed = threading.Event()
 
         # Handshake: hello -> meta, still on the connect timeout.
         self._sock.sendall(mp.pack_json({"type": "hello"}))
@@ -196,7 +202,19 @@ class SidecarClient:
             target=self._read_loop, name="mrt2-sidecar-reader", daemon=True,
         )
         self._reader.start()
+        self._heartbeat = threading.Thread(
+            target=self._heartbeat_loop, name="mrt2-sidecar-heartbeat",
+            daemon=True,
+        )
+        self._heartbeat.start()
         _OPEN_CLIENTS.add(self)
+
+    def _mark_lost(self, reason: str) -> None:
+        if self.lost:
+            return
+        self.lost_reason = reason
+        self.lost = True
+        logger.error("mrt2_sidecar_lost {}", reason)
 
     # ---- reader thread ----------------------------------------------------
 
@@ -219,9 +237,20 @@ class SidecarClient:
                         logger.error("mrt2_sidecar_err message={}", msg.get("message"))
                     # pong and anything else: last_rx_ts update is enough.
         except (ConnectionError, OSError) as exc:
-            if not self.lost:
-                self.lost = True
-                logger.error("mrt2_sidecar_lost reader error={}", exc)
+            self._mark_lost(f"reader error={exc}")
+
+    def _heartbeat_loop(self) -> None:
+        while not self._closed.wait(PING_EVERY_S):
+            if self.lost:
+                return
+            self.send_json({"type": "ping", "t": time.monotonic()})
+            silent_s = time.monotonic() - self.last_rx_ts
+            if silent_s > LOST_AFTER_S:
+                self._mark_lost(
+                    f"liveness: no message for {silent_s:.1f}s "
+                    f"(deadline {LOST_AFTER_S:.0f}s)"
+                )
+                return
 
     # ---- senders (any thread) ----------------------------------------------
 
@@ -232,9 +261,7 @@ class SidecarClient:
             with self._send_lock:
                 self._sock.sendall(mp.pack_json(obj))
         except (ConnectionError, OSError) as exc:
-            if not self.lost:
-                self.lost = True
-                logger.error("mrt2_sidecar_lost send error={}", exc)
+            self._mark_lost(f"send error={exc}")
 
     # ---- runner-thread drains ----------------------------------------------
 
@@ -246,6 +273,14 @@ class SidecarClient:
 
     def close(self) -> None:
         self.lost = True
+        self._closed.set()
+        # shutdown() first: on Linux, close() from another thread while
+        # the reader is blocked in recv() sends no FIN, so the sidecar
+        # would keep serving a dead peer and refuse the next session.
+        try:
+            self._sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         try:
             self._sock.close()
         except OSError:
@@ -322,8 +357,6 @@ class MRT2Backend:
             # Last knob values forwarded to the sidecar.
             self._sent_knobs: dict = {}
 
-            self._last_ping_ts = 0.0
-            self._lost_logged = False
 
             # Stashed for the params echo.
             self._echo: dict = {}
@@ -473,21 +506,10 @@ class MRT2Backend:
         music must keep flowing through DiT-pause idle ("reuse"), so
         every mode runs the same pull path."""
         t0 = time.perf_counter()
-        now = time.monotonic()
 
         client = self.client
         if not client.lost:
-            # Heartbeat + liveness.
-            if now - self._last_ping_ts >= PING_EVERY_S:
-                self._last_ping_ts = now
-                client.send_json({"type": "ping", "t": now})
-            if now - client.last_rx_ts > LOST_AFTER_S:
-                client.lost = True
-                logger.error(
-                    "mrt2_sidecar_lost reason=liveness deadline_s={}",
-                    LOST_AFTER_S,
-                )
-
+            # Heartbeat + liveness live on the client's own thread.
             self._forward_knobs(knobs)
 
             # Credit pacing: keep (emitted + pending + outstanding)
