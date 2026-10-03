@@ -87,6 +87,7 @@ class _DrainSession:
         self.backend = backend
         self.state = types.SimpleNamespace(
             _lock=threading.Lock(),
+            pending_register=[],
             pending_enable=[],
             pending_disable=[],
         )
