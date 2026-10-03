@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from acestep.engine.yue2_trt import FLEX_PROFILES, profile_index
 from acestep.streaming import yue2_session
 from acestep.streaming.yue2_backend import YuE2Backend, playable_seconds
 
@@ -22,28 +23,30 @@ T = 1200
 
 
 class _FakeVelocity:
-    """The TRT velocity's path decision on the builder's profile."""
+    """The TRT velocity's path decision on the builder's profiles."""
 
-    def __init__(self, has_trt):
+    def __init__(self, has_trt, profiles=FLEX_PROFILES):
         self.has_trt = has_trt
+        self.profiles = profiles
 
     def __call__(self, bundle, state, raw):
         return torch.zeros_like(state)
 
-    def path_for(self, bundle):
-        from acestep.engine.yue2_trt import flexible_profile_fits
+    def covers(self, bundle):
+        return profile_index(self.profiles, bundle.frames, bundle.cond_tokens) is not None
 
-        fits = flexible_profile_fits(bundle.frames, bundle.cond_tokens)
-        return "trt" if self.has_trt and fits else "eager"
+    def path_for(self, bundle):
+        return "trt" if self.has_trt and self.covers(bundle) else "eager"
 
 
 class _FakeContext:
-    def __init__(self, *, frames=T, cond_tokens=2000, truncated=False, has_trt=True):
+    def __init__(self, *, frames=T, cond_tokens=2000, truncated=False, has_trt=True,
+                 profiles=FLEX_PROFILES):
         self.frames, self.cond_tokens, self.truncated = frames, cond_tokens, truncated
         self.has_trt_nar = has_trt
         self.gpu_gate = threading.Lock()
         self.device = torch.device("cpu")
-        self.velocity = _FakeVelocity(has_trt)
+        self.velocity = _FakeVelocity(has_trt, profiles)
         self.compose_calls: list = []
         self.bundle_styles: list = []
         self.released: list = []
@@ -141,6 +144,25 @@ def test_conditioning_past_the_profile_selects_eager_and_truncation_is_flagged(m
     try:
         assert ss.state.params["yue2_nar"] == "eager"
         assert ss.state.params["yue2_truncated"] is True
+    finally:
+        _close(ss)
+
+
+@pytest.mark.parametrize("frames", [250, 500, 700, 999, 1000])
+def test_short_song_runs_on_the_short_trt_profile(monkeypatch, frames):
+    context = _FakeContext(frames=frames, cond_tokens=frames + 700)
+    ss = _create(monkeypatch, context)
+    try:
+        assert ss.state.params["yue2_nar"] == "trt"
+    finally:
+        _close(ss)
+
+
+def test_short_song_on_a_long_only_engine_is_eager(monkeypatch):
+    context = _FakeContext(frames=700, profiles=FLEX_PROFILES[:1])
+    ss = _create(monkeypatch, context)
+    try:
+        assert ss.state.params["yue2_nar"] == "eager"
     finally:
         _close(ss)
 
@@ -250,6 +272,14 @@ def test_semantic_budget_never_allows_a_song_under_the_vae_window():
 
     eager = SimpleNamespace(has_trt_nar=False)
     assert YuE2Context.semantic_budget(eager, 50)["min_tokens"] == VAE_CTX_FRAMES
-    trt = SimpleNamespace(has_trt_nar=True)
-    assert YuE2Context.semantic_budget(trt, 500)["min_tokens"] == VAE_CTX_FRAMES
-    assert YuE2Context.semantic_budget(trt, 2500)["min_tokens"] == 1000
+    from acestep.engine.yue2_trt import frames_floor
+
+    long_only = SimpleNamespace(has_trt_nar=True, velocity=SimpleNamespace(
+        frames_floor=lambda m: frames_floor(FLEX_PROFILES[:1], m)))
+    assert YuE2Context.semantic_budget(long_only, 500)["min_tokens"] == VAE_CTX_FRAMES
+    assert YuE2Context.semantic_budget(long_only, 2500)["min_tokens"] == 1000
+    both = SimpleNamespace(has_trt_nar=True, velocity=SimpleNamespace(
+        frames_floor=lambda m: frames_floor(FLEX_PROFILES, m)))
+    assert YuE2Context.semantic_budget(both, 200)["min_tokens"] == VAE_CTX_FRAMES
+    assert YuE2Context.semantic_budget(both, 500)["min_tokens"] == 250
+    assert YuE2Context.semantic_budget(both, 2500)["min_tokens"] == 1000

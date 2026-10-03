@@ -25,7 +25,14 @@ import pytest
 import torch
 
 from acestep.engine.yue2_adapter import YuE2Adapter
-from acestep.engine.yue2_trt import window_plan
+from acestep.engine.yue2_trt import (
+    FLEX_PROFILES,
+    FlexProfile,
+    engine_profiles,
+    frames_floor,
+    profile_index,
+    window_plan,
+)
 from acestep.streaming.generator_backend import GeneratorBackend, TickContext
 from acestep.streaming.knobs import KnobState
 from acestep.engine.yue2_velocity import truncated_grid, upstream_noise
@@ -332,6 +339,41 @@ def test_render_window_clamps_at_the_song_edges():
     assert chunk.pcm.shape == (n * 1920 - 64, 2)
     full = backend.render_full()
     assert full.pcm.shape == (T * 1920 - 64, 2)
+
+
+@pytest.mark.parametrize("frames, cond, expected", [
+    (1500, 2200, 0), (1000, 1700, 0), (2500, 4000, 0), (999, 1700, 1), (250, 900, 1),
+    (249, 900, None), (2501, 3000, None), (1500, 4001, None), (600, 4001, None),
+])
+def test_profile_selection(frames, cond, expected):
+    assert profile_index(FLEX_PROFILES, frames, cond) == expected
+    assert profile_index(FLEX_PROFILES[:1], frames, cond) == (0 if expected == 0 else None)
+
+
+@pytest.mark.parametrize("budget, both, long_only", [
+    (2500, 1000, 1000), (1000, 1000, 1000), (999, 250, 1), (500, 250, 1), (250, 250, 1), (100, 1, 1),
+])
+def test_semantic_floor_keeps_songs_on_trt(budget, both, long_only):
+    assert frames_floor(FLEX_PROFILES, budget) == both
+    assert frames_floor(FLEX_PROFILES[:1], budget) == long_only
+
+
+class _ProfiledEngine:
+    def __init__(self, profiles):
+        self._p = profiles
+        self.num_optimization_profiles = len(profiles)
+
+    def get_tensor_profile_shape(self, name, index):
+        p = self._p[index]
+        if name == "state":
+            return (1, p.frames[0], 64), (1, p.frames[0], 64), (p.max_batch, p.frames[1], 64)
+        return ((28, p.cond_tokens[0], 8, 128), (28, p.cond_tokens[0], 8, 128),
+                (28, p.cond_tokens[1], 8, 128))
+
+
+def test_engine_profiles_are_read_from_the_engine():
+    assert engine_profiles(_ProfiledEngine(FLEX_PROFILES)) == FLEX_PROFILES
+    assert engine_profiles(_ProfiledEngine(FLEX_PROFILES[:1])) == (FlexProfile((1000, 2500), (1001, 4000)),)
 
 
 def test_window_plan_interior_and_edges():

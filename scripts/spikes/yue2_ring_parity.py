@@ -79,6 +79,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--song", type=Path, help="request JSON (default: upstream examples/song.json)")
+    parser.add_argument("--seconds", type=float, default=None,
+                        help="force the song to this length (e.g. 20 or 30 for the short TRT profile)")
     args = parser.parse_args()
 
     from acestep.engine.yue2_context import YuE2Context
@@ -89,11 +91,17 @@ def main():
     request = json.loads(song_path.read_text())
     report = {"song": str(song_path), "load_s": ctx.load_s, "gpu": torch.cuda.get_device_name()}
 
-    comp = ctx.compose(style=request["style"], lyrics=request["lyrics"], seed=int(request["seed"]),
-                       max_frames=2500)
+    if args.seconds:
+        frames = int(round(args.seconds * 25))
+        comp = ctx.compose(style=request["style"], lyrics=request["lyrics"], seed=int(request["seed"]),
+                           max_frames=frames, exact_frames=frames)
+    else:
+        comp = ctx.compose(style=request["style"], lyrics=request["lyrics"], seed=int(request["seed"]),
+                           max_frames=2500)
     bundle = ctx.bundle(comp)
     report.update(frames=bundle.frames, cond_tokens=bundle.cond_tokens, truncated=bundle.truncated,
-                  compose_ms=comp.timings_ms)
+                  compose_ms=comp.timings_ms,
+                  trt_profile=ctx.velocity.profile_for(bundle) if ctx.has_trt_nar else None)
     seed = bundle.seed
     noise = upstream_noise(seed, bundle.frames).to("cuda", torch.bfloat16)[None]
     eager, trt = ctx.eager_velocity, (ctx.velocity if ctx.has_trt_nar else None)
