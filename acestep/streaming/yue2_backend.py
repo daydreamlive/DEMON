@@ -538,6 +538,7 @@ class YuE2Backend(DiffusionBackend):
         p["gen_seed"] = int(req.seed)
         p["gen_cond_epoch"] = song.epoch
         p["gen_prompt"] = song.tags
+        self._stamp_nar_path(song)
         marker = (p["gen_yue2_denoise"], song.epoch, p["gen_seed"], id(song))
         if marker != self._emerged_marker:
             self._emerged_marker = marker
@@ -545,6 +546,20 @@ class YuE2Backend(DiffusionBackend):
                 "yue2_gen_emerged denoise={} seed={} cond_epoch={} tags={!r}",
                 p["gen_yue2_denoise"], p["gen_seed"], song.epoch, song.tags,
             )
+
+    def _stamp_nar_path(self, song: Song) -> None:
+        """``yue2_nar``: the NAR path of the song that just emerged. A
+        re-composed song can leave the TRT profile (conditioning past its
+        token bound) and run eager at several times the tick."""
+        from acestep.streaming.yue2_session import nar_backend_for
+
+        nar = nar_backend_for(song.bundle, self.adapter.velocity)
+        previous = self.state.params.get("yue2_nar")
+        self.state.params["yue2_nar"] = nar
+        if previous is not None and previous != nar:
+            logger.warning("yue2_nar_path_changed from={} to={} tags={!r} frames={} cond_tokens={}",
+                           previous, nar, song.tags, song.frames,
+                           getattr(song.bundle, "cond_tokens", None))
 
     # ---- rendering -------------------------------------------------------------
 

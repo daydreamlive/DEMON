@@ -895,3 +895,34 @@ def test_a_bind_the_engine_refuses_falls_back_to_eager_for_that_bundle(monkeypat
         velocity(bundle, torch.zeros(1, 1500, 64), [0.5])
     assert eager_calls == [bundle] * 3
     assert velocity.path_for(bundle) == "eager"
+
+
+def test_telemetry_reports_the_nar_path_of_the_song_that_plays():
+    """A re-composed song can fall off the TRT profile (conditioning past
+    its token bound); ``yue2_nar`` used to keep saying ``trt``."""
+
+    class _PathVelocity:
+        def __call__(self, bundle, state, raw_times):
+            return _velocity(bundle, state, raw_times)
+
+        def path_for(self, bundle):
+            return "eager" if bundle.offset == 1.0 else "trt"
+
+    class _State:
+        prompt_text = "pop"
+        interp_feedback = "slerp"
+        last_activity_ts = 0.0
+
+    state = _State()
+    state.params = {"yue2_nar": "trt"}
+    backend = YuE2Backend(
+        adapter=YuE2Adapter(_PathVelocity(), steps=STEPS), codec=_Codec(), song=_song(0.0),
+        knob_state=KnobState(yue2_knob_specs()), recompose=_recompose_to(1.0), steps=STEPS,
+        state=state, settled_nap_s=0.0,
+    )
+    knobs = _knobs(seed=0)
+    _produce_until_fresh(backend, knobs)
+    assert state.params["yue2_nar"] == "trt"
+    backend.handle_set_prompt("rock")
+    _produce_until_fresh(backend, knobs)
+    assert state.params["yue2_nar"] == "eager"

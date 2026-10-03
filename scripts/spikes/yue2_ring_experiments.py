@@ -157,7 +157,7 @@ def run_quality(ctx, seconds, out: Path) -> dict:
         anchor_features = spectral(anchor_audio)
         save_wav(out / f"{tag}_anchor_A.wav", anchor_audio)
         rows = {"anchor_A": describe(anchor_audio, anchor_features)}
-        rows["anchor_A"].update(frames=bundle_a.frames, nar=nar_backend_for(bundle_a, ctx.has_trt_nar))
+        rows["anchor_A"].update(frames=bundle_a.frames, nar=nar_backend_for(bundle_a, ctx.velocity))
 
         # E3 reference: seed change, same style (no style change at all).
         seed1 = ctx.solve(bundle_a, seed=1)
@@ -311,7 +311,7 @@ def run_latency(ctx, seconds, depth, out: Path) -> dict:
         "x0_target": knobs(seed=1, x0_target=0.5),
     }
     report = {"frames": frames, "depth": depth, "cond_tokens": song["bundle"].cond_tokens,
-              "nar": nar_backend_for(song["bundle"], ctx.has_trt_nar),
+              "nar": nar_backend_for(song["bundle"], ctx.velocity),
               "create_ms": song["timings_ms"], "changes": {}}
     torch.cuda.reset_peak_memory_stats()
     reference = None

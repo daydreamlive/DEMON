@@ -93,12 +93,11 @@ def song_budget_frames(config) -> int:
     return int(round(seconds * LATENT_RATE_HZ))
 
 
-def nar_backend_for(bundle, has_trt: bool) -> str:
-    """Which NAR path a song runs on: "trt" inside the flexible engine
-    profile, else "eager" (the TRT velocity applies the same test)."""
-    from acestep.engine.yue2_trt import flexible_profile_fits
-
-    return "trt" if has_trt and flexible_profile_fits(bundle.frames, bundle.cond_tokens) else "eager"
+def nar_backend_for(bundle, velocity) -> str:
+    """Which NAR path a song runs on, as the velocity backend decides it:
+    "trt" inside the loaded engine's profile (and bound), else "eager"."""
+    path_for = getattr(velocity, "path_for", None)
+    return path_for(bundle) if path_for is not None else "eager"
 
 
 def compose_song(context, cleanup, *, prompt: str, prompt_b: str, lyrics: str, seed: int,
@@ -193,7 +192,7 @@ def _assemble_session(cls, context, song: dict, cleanup, *, config, checkpoint, 
 
     bundle = song["bundle"]
     playable_s = playable_seconds(bundle.frames)
-    nar = nar_backend_for(bundle, context.has_trt_nar)
+    nar = nar_backend_for(bundle, context.velocity)
     if bundle.truncated:
         logger.warning(
             "yue2_song_truncated frames={} budget_frames={} (the score or semantic "

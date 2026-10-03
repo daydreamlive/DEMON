@@ -21,13 +21,29 @@ from acestep.streaming.yue2_backend import YuE2Backend, playable_seconds
 T = 1200
 
 
+class _FakeVelocity:
+    """The TRT velocity's path decision on the builder's profile."""
+
+    def __init__(self, has_trt):
+        self.has_trt = has_trt
+
+    def __call__(self, bundle, state, raw):
+        return torch.zeros_like(state)
+
+    def path_for(self, bundle):
+        from acestep.engine.yue2_trt import flexible_profile_fits
+
+        fits = flexible_profile_fits(bundle.frames, bundle.cond_tokens)
+        return "trt" if self.has_trt and fits else "eager"
+
+
 class _FakeContext:
     def __init__(self, *, frames=T, cond_tokens=2000, truncated=False, has_trt=True):
         self.frames, self.cond_tokens, self.truncated = frames, cond_tokens, truncated
         self.has_trt_nar = has_trt
         self.gpu_gate = threading.Lock()
         self.device = torch.device("cpu")
-        self.velocity = lambda bundle, state, raw: torch.zeros_like(state)
+        self.velocity = _FakeVelocity(has_trt)
         self.compose_calls: list = []
         self.bundle_styles: list = []
         self.released: list = []
