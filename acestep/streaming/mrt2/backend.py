@@ -13,11 +13,11 @@ family sits behind the seam:
   ``WINDOW_S`` duration; the frontier writes advance modulo the window
   and the player loops it like any fixed song. The "song" is a tape
   loop continuously overwritten just behind the playhead.
-* Each emitted chunk re-emits the previous chunk's final ``XFADE``
-  samples at its head (overlap), so the runner's unconditional
-  leading-edge crossfade blends new audio against identical samples
-  (a no-op) instead of smearing every chunk start with last lap's
-  stale audio.
+* The runner writes append-only chunks verbatim (no edge crossfades,
+  no wrap-spill re-render; gated on ``refines_audio``). Each emitted
+  chunk still re-emits the previous chunk's final ``XFADE`` samples at
+  its head; that overlap rewrites identical samples and is redundant
+  under the gated runner.
 * Generation runs out-of-process (JAX has no CUDA on native Windows):
   this class is a thin TCP client to ``scripts/mrt2_sidecar.py``
   (protocol: :mod:`acestep.streaming.mrt2.protocol`), pacing the

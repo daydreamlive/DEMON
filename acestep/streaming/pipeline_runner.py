@@ -138,6 +138,24 @@ class _RemotePlayheadClock:
         return self.sample() / SAMPLE_RATE
 
 
+def _backend_refines_audio(backend) -> bool:
+    """Whether ``backend`` re-renders already-written audio.
+
+    Refining backends (ACE-Step, SA3) re-decode overlapping windows, so
+    the runner crossfades each window's edges into the buffer and
+    patches the wrapped spill at the loop head. Append-only backends
+    (``Capabilities.refines_audio`` False) emit contiguous frontier
+    chunks and ignore the position hint: edge fades would blend final
+    audio toward whatever the buffer held there, and a second render
+    for the spill would pop the NEXT chunk and misplace it. A backend
+    without ``capabilities()`` (test doubles) keeps the refining path.
+    """
+    caps = getattr(backend, "capabilities", None)
+    if caps is None:
+        return True
+    return bool(getattr(caps(), "refines_audio", True))
+
+
 def _finalized_segments(hwm, win_start: int, n: int):
     """Pure region selection for emit-trim. Given the previous emit
     high-water mark ``hwm`` (None on the first call), the frontier's new
@@ -666,6 +684,8 @@ class PipelineRunner:
 
     def run(self):
         backend = self.backend
+        # Capabilities are fixed for a backend's life; read once.
+        refines_audio = _backend_refines_audio(backend)
         logger.info(
             "stream decode: vae_window={:.3f}s decode_span={:.3f}s "
             "lead_margin={:.3f}s lead~={:.3f}s backend={}",
@@ -947,7 +967,12 @@ class PipelineRunner:
                         # 25 ms at 48 kHz — matches CROSSFADE_SECONDS.
                         # Cuts perceived "smear" of param transitions in
                         # half from the previous 50 ms.
-                        xfade = min(1200, win_np.shape[0] // 4)
+                        # Append-only chunks are contiguous final audio:
+                        # no edge fades (see _backend_refines_audio).
+                        xfade = (
+                            min(1200, win_np.shape[0] // 4)
+                            if refines_audio else 0
+                        )
                         if win_start > 0 and xfade > 0:
                             t_in = np.linspace(0.0, 1.0, xfade).reshape(-1, 1)
                             win_np[:xfade] = (
@@ -1074,7 +1099,8 @@ class PipelineRunner:
                                     band_start_sample, wrap_len,
                                 )
                         elif (
-                            not anchored
+                            refines_audio
+                            and not anchored
                             and band_end_sample is None
                             and not position_chase_only
                             and eff_dur > 0

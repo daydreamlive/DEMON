@@ -451,3 +451,57 @@ def test_malformed_sidecar_address_is_named_not_raised_bare(monkeypatch, raw):
 def test_sidecar_address_parses_host_and_port():
     assert mp.parse_sidecar_address("10.0.0.5:9000") == ("10.0.0.5", 9000)
     assert mp.parse_sidecar_address(":9000") == (mp.DEFAULT_HOST, 9000)
+
+
+# ---------------------------------------------------------------------------
+# Runner write path with an append-only backend
+# ---------------------------------------------------------------------------
+
+
+class _RunnerState(_State):
+    running = True
+    last_activity_ts = float("inf")  # never idle-pause
+
+
+@pytest.mark.parametrize("playhead_s", [0.0, 59.0])
+def test_runner_writes_append_only_chunks_verbatim(monkeypatch, playhead_s):
+    """Driving the real PipelineRunner with the MRT2 backend, the buffer
+    must equal the fed PCM sample for sample: no edge crossfades toward
+    stale buffer content (every chunk seam), and no wrap-spill second
+    render that pops the next chunk and writes it at sample 0 (a
+    playhead near the window end makes the runner's spill fire)."""
+    import threading
+
+    from acestep.streaming.audio_engine import AudioEngine
+    from acestep.streaming.pipeline_runner import PipelineRunner
+
+    backend, client = make_backend()
+    state = _RunnerState()
+    backend.state = state
+    stale = np.full((WINDOW_SAMPLES, mp.CHANNELS), -0.5, np.float32)
+    eng = AudioEngine(stale.copy(), mp.SAMPLE_RATE)
+
+    # A ramp makes every sample unique, so any blend or misplacement shows.
+    total = 200 * mp.FRAME_SAMPLES  # 8 s, several 1.5 s emissions
+    ramp = (np.arange(total, dtype=np.float32) / total).reshape(-1, 1)
+    ramp = np.repeat(ramp, mp.CHANNELS, axis=1)
+    for i in range(0, total, 2 * mp.FRAME_SAMPLES):  # 80 ms sidecar chunks
+        client._audio.append(ramp[i:i + 2 * mp.FRAME_SAMPLES])
+    client.frames_received = 200
+
+    runner = PipelineRunner(
+        backend, eng, state=state, vae_window=backend.vae_window,
+    )
+    monkeypatch.setattr(runner, "_playhead_seconds_now", lambda: playhead_s)
+    t = threading.Thread(target=runner.run, daemon=True)
+    t.start()
+    deadline = time.monotonic() + 10.0
+    while backend._abs_written < total and time.monotonic() < deadline:
+        time.sleep(0.01)
+    state.running = False
+    t.join(5.0)
+    eng.stop()
+
+    assert backend._abs_written == total
+    np.testing.assert_array_equal(eng.current[:total], ramp)
+    np.testing.assert_array_equal(eng.current[total:], stale[total:])
