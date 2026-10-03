@@ -1,4 +1,3 @@
-import * as THREE from "three";
 import { AudioPlayer, RemoteBackend, SLICE_FLAG_DELTA } from "/sdk/demon-client.js";
 
 // state
@@ -182,78 +181,47 @@ function attachAnalyser(player) {
   state.wave = new Float32Array(analyser.fftSize);
 }
 
-function readBands() {
-  if (!state.analyser) return { low: 0, mid: 0, high: 0 };
+function readAnalyser() {
+  if (!state.analyser) return;
   state.analyser.getByteFrequencyData(state.freq);
   state.analyser.getFloatTimeDomainData(state.wave);
   let sum = 0;
   for (const s of state.wave) sum += s * s;
   state.rms = Math.sqrt(sum / state.wave.length);
-  const avg = (a, b) => {
-    let t = 0;
-    for (let i = a; i < b; i++) t += state.freq[i];
-    return t / ((b - a) * 255);
-  };
-  return { low: avg(1, 12), mid: avg(12, 96), high: avg(96, 384) };
 }
 
-// three scene
-const renderer = new THREE.WebGLRenderer({ canvas: els.canvas, antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x07080b);
-const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 100);
-camera.position.set(0, 0, 14);
-scene.add(new THREE.AmbientLight(0xffffff, 0.35));
-const sun = new THREE.DirectionalLight(0xffffff, 1.6);
-sun.position.set(4, 6, 10);
-scene.add(sun);
-
-const ring = new THREE.Group();
-const bars = [];
-const barGeometry = new THREE.BoxGeometry(0.32, 1, 0.32);
-barGeometry.translate(0, 0.5, 0); // grow outward from the ring radius
-for (let i = 0; i < BAR_COUNT; i++) {
-  const pivot = new THREE.Group();
-  pivot.rotation.z = (i / BAR_COUNT) * Math.PI * 2;
-  const bar = new THREE.Mesh(barGeometry, new THREE.MeshStandardMaterial({ roughness: 0.4 }));
-  bar.position.y = 3.2;
-  pivot.add(bar);
-  ring.add(pivot);
-  bars.push(bar);
-}
-scene.add(ring);
+// spectrum canvas
+const ctx2d = els.canvas.getContext("2d");
 
 function resize() {
-  renderer.setSize(window.innerWidth, window.innerHeight, false);
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
+  const dpr = Math.min(window.devicePixelRatio, 2);
+  els.canvas.width = Math.round(window.innerWidth * dpr);
+  els.canvas.height = Math.round(window.innerHeight * dpr);
 }
 
-function updateScene(bands, dt) {
-  const hue = 0.58 - Number(els.blend.value) * 0.52; // A = cool blue, B = warm orange
-  const bucket = state.freq ? Math.floor(384 / BAR_COUNT) : 0;
-  bars.forEach((bar, i) => {
+function drawSpectrum() {
+  const { width, height } = els.canvas;
+  ctx2d.fillStyle = "#07080b";
+  ctx2d.fillRect(0, 0, width, height);
+  const hue = 210 - Number(els.blend.value) * 185; // A = cool blue, B = warm orange
+  const bucket = Math.floor(384 / BAR_COUNT);
+  const barW = width / BAR_COUNT;
+  for (let i = 0; i < BAR_COUNT; i++) {
     let level = 0;
     if (state.freq) {
       for (let k = 0; k < bucket; k++) level += state.freq[i * bucket + k];
       level /= bucket * 255;
     }
-    bar.scale.y = 0.15 + level * 4.5;
-    bar.material.color.setHSL(hue + level * 0.08, 0.75, 0.35 + level * 0.3);
-  });
-  ring.rotation.z += dt * (0.1 + bands.mid * 0.9);
-  camera.position.z = 14 - bands.low * 3;
-  sun.intensity = 1.2 + bands.high * 3;
+    const h = Math.max(2, level * height * 0.7);
+    ctx2d.fillStyle = `hsl(${hue + level * 30} 75% ${35 + level * 30}%)`;
+    ctx2d.fillRect(i * barW + 1, height - h, barW - 2, h);
+  }
 }
 
 // render loop
-let lastFrame = performance.now();
-function frame(now) {
-  const dt = Math.min((now - lastFrame) / 1000, 0.1);
-  lastFrame = now;
-  updateScene(readBands(), dt);
-  renderer.render(scene, camera);
+function frame() {
+  readAnalyser();
+  drawSpectrum();
   renderStatusLine();
   requestAnimationFrame(frame);
 }

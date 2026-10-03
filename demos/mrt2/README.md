@@ -1,8 +1,8 @@
 # /mrt2: Magenta RealTime 2 demo
 
-A ring of 64 bars around the camera axis follows the live spectrum of the
-Magenta RealTime 2 stream; the ring spins with mid-band energy and its colour
-moves from cool (prompt A) to warm (prompt B) with the blend slider.
+A plain 2D canvas draws 64 spectrum bars from the live Magenta RealTime 2 stream;
+their colour moves from cool (prompt A) to warm (prompt B) with the blend slider.
+No third-party dependencies: one JS module on /sdk/demon-client.js, like /sa3.
 
 Prerequisites: the MRT2 sidecar running in a Linux/WSL venv with `magenta_rt` + JAX
 (`python scripts/mrt2_sidecar.py --model mrt2_small`, listens on 127.0.0.1:7531 after a
