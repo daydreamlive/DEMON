@@ -1,9 +1,7 @@
 """Build the YuE2 TensorRT engines: the flexible acoustic NAR and the
 37-frame VAE window decoder (consumed by :mod:`acestep.engine.yue2_trt`).
 
-Ported from the spike that measured them (``scripts/spikes/
-yue2_round2.py`` ``AcousticExport``, ``yue2_edit_profile.py``
-``export_flexible``, ``yue2_nar_trt_build.py``, ``yue2_vae_trt.py``).
+Ported from the feasibility spike that measured them.
 Run on an otherwise idle GPU (a build under contention can produce an
 engine that segfaults on load)::
 
