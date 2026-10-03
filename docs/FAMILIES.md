@@ -287,8 +287,10 @@ and `yue2_denoise` truncates whichever grid is active.
 clamped (absent or null = 100 s). The ceiling is the flexible NAR engine's
 2500 frames; the 2 s floor keeps every song longer than the window decoder's
 37 frames, and a composition that still comes out shorter fails create with a
-clear error. With engines present the semantic stage is held to at least 1000
-frames (40 s) when the budget allows, so songs land on TensorRT. (The family's
+clear error. With engines present the semantic stage is held to the floor of
+the largest engine profile the budget reaches (1000 frames = 40 s, or 250
+frames = 10 s for shorter budgets on an engine with the short profile), so
+songs land on TensorRT. (The family's
 `TextOnlySpec` default of 60 s only sizes the silent stub source, which YuE2
 ignores.)
 
@@ -303,10 +305,12 @@ ignores.)
 
 **Engines.** `python -m acestep.engine.trt.yue2_build nar --out $DEMON_YUE2_TRT_DIR`
 and `python -m acestep.engine.trt.yue2_build vae --out $DEMON_YUE2_TRT_DIR`.
-The NAR profile covers 1000-2500 frames, batch 1-4 and 1001-4000 conditioning
-tokens; at run time the bounds are read from the loaded engine, and a song
-outside them (or one whose bind the engine refuses) runs eager instead of
-failing. The VAE engine decodes 37-frame windows and keeps 5 core frames. The
+The NAR engine has two optimization profiles: 1000-2500 frames (40-100 s) and
+250-1000 frames (10-40 s, short songs), both batch 1-4 and up to 4000
+conditioning tokens (`yue2_build nar --long-only` writes the first only, as
+older engines have). At run time the profiles are read from the loaded engine
+and each song binds on the first that holds it; a song outside every profile
+(or one whose bind the engine refuses) runs eager instead of failing. The VAE engine decodes 37-frame windows and keeps 5 core frames. The
 numbers below used the engines built during the feasibility spike; this
 builder is a port of that build and was not re-run here.
 
@@ -339,9 +343,9 @@ the anchor solve 2.7 s, ring idle); no console errors.
 
 **Known gaps.**
 
-- Songs under 40 s run the NAR eager (the flexible engine's floor is 1000
-  frames); a second, short-song engine profile would fix it.
-- A composition whose conditioning exceeds 4000 tokens also runs eager (seen
+- Songs under 10 s, and songs under 40 s on an engine built without the short
+  profile, run the NAR eager.
+- A composition whose conditioning exceeds 4000 tokens runs eager (seen
   for re-composed songs: 4181 and 4839 tokens); `yue2_nar` reports it and the
   server logs `yue2_nar_path_changed`.
 - The AR is about 2x slower inside a live session than at create (and up to

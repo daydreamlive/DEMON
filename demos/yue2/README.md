@@ -28,11 +28,12 @@ Open http://localhost:1318/yue2/.
   the composition, which takes seconds of AR before audio starts
   ("composing", about 15-20 s; the first session after a server start also
   loads the model, about 34 s to `ready` in the browser smoke).
-- **Longest song** below 40 s runs the acoustic stage without TensorRT (the
-  engine's floor is 1000 frames), so every update is slower; the server
-  clamps it to 2-100 s.
+- **Longest song** below 10 s (below 40 s on an engine built without the
+  short-song profile) runs the acoustic stage without TensorRT, so every
+  update is slower; the server clamps it to 2-100 s.
 - Audio starts from the composed song (the anchor) and loops.
-- **yue2_denoise**: how much of the 32-step solve each pass re-runs.
+- **yue2_denoise**: how much of the active step grid (`yue2_steps`, default
+  32) each pass re-runs.
 - **x0_target**: pull toward the anchor.
 - **seed** (number box): new acoustic noise for the same composition.
 - **feedback** / **feedback depth**: blend one of the last few outputs
