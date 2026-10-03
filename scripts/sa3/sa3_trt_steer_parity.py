@@ -13,8 +13,14 @@ and reports, per timestep:
 then the per-step engine time of the previous engine, the steering
 engine at zero and at nonzero steering, and the fp8 engine when present.
 
+``--site cross_attn_output`` gates the cross-attention-output engine
+(``sa3_m_dit_steerxa_*``, TADA's hook point) the same way: the eager
+reference adds the shift to each block's ``cross_attn`` module output and
+the test shift is scaled to that output's per-token norm.
+
 Run (idle GPU, no server):
     .venv/Scripts/python.exe scripts/sa3/sa3_trt_steer_parity.py [--duration 54]
+    .venv/Scripts/python.exe scripts/sa3/sa3_trt_steer_parity.py --site cross_attn_output
 """
 
 from __future__ import annotations
@@ -73,7 +79,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--duration", type=float, default=54.0)
     ap.add_argument("--json", default=None, help="write the numbers here")
+    ap.add_argument("--site", default="post_block_residual",
+                    choices=("post_block_residual", "cross_attn_output"))
     args = ap.parse_args()
+    xattn = args.site == "cross_attn_output"
+    marker = "_steerxa_" if xattn else "_steer_"
     duration = float(args.duration)
 
     from acestep.engine.sa3_internals import wrapper_blocks
@@ -84,6 +94,8 @@ def main() -> int:
     sam.model.eval()
     dit_eager = sam.model.model
     blocks = wrapper_blocks(dit_eager)
+    # Modules whose output receives row i (the eager delivery path).
+    sites = [b.cross_attn for b in blocks] if xattn else list(blocks)
 
     cond = prepare_sa3_conditioning(sam, prompt=PROMPT, duration=duration, steps=STEPS)
     bundle = cond.cond_bundle
@@ -91,12 +103,14 @@ def main() -> int:
     print(f"[cond] latent_frames={L}")
 
     plain_path = find_dit_engine("medium", L)  # selection without steering
-    steer_path = find_dit_engine("medium", L, want_steering=True)
-    if steer_path is None or "_steer_" not in steer_path.parent.name:
-        raise RuntimeError(f"no steering engine covers L={L}")
+    steer_path = find_dit_engine(
+        "medium", L, want_steering=args.site if xattn else True,
+    )
+    if steer_path is None or marker not in steer_path.parent.name:
+        raise RuntimeError(f"no {args.site} steering engine covers L={L}")
     base_path = None
     for sub in sorted(trt_engines_dir().iterdir()):
-        if sub.name == steer_path.parent.name.replace("_steer_", "_"):
+        if sub.name == steer_path.parent.name.replace(marker, "_"):
             base_path = sub / f"{sub.name}.trt"
     if base_path is None or not base_path.is_file():
         raise RuntimeError("previous fp16mixed engine for the same profile not found")
@@ -122,7 +136,7 @@ def main() -> int:
             norms[i] = out.float().norm(dim=-1).mean().item()
         return h
 
-    hs = [blocks[i].register_forward_hook(_cap(i)) for i in STEER_BLOCKS]
+    hs = [sites[i].register_forward_hook(_cap(i)) for i in STEER_BLOCKS]
     x0 = torch.randn(1, 256, L, device="cuda", dtype=dtype, generator=g)
     with torch.no_grad():
         dit_eager(x0, torch.tensor([0.7], device="cuda", dtype=dtype), **bundle)
@@ -148,7 +162,7 @@ def main() -> int:
         t_b = torch.tensor([t_val], device="cuda", dtype=dtype)
         with torch.no_grad():
             v_eager = dit_eager(x, t_b, **bundle).float()
-            hooks = [blocks[i].register_forward_hook(_eager_hook(i)) for i in STEER_BLOCKS]
+            hooks = [sites[i].register_forward_hook(_eager_hook(i)) for i in STEER_BLOCKS]
             try:
                 v_eager_s = dit_eager(x, t_b, **bundle).float()
             finally:
@@ -204,7 +218,7 @@ def main() -> int:
         min(r["steer_trt_vs_eager_cos"] for r in rows),
     )
     out = {
-        "L": L, "duration": duration, "engine": str(steer_path),
+        "L": L, "duration": duration, "site": args.site, "engine": str(steer_path),
         "previous_engine": str(base_path), "rows": rows, "timing": timing,
         "min_cos_vs_eager": gate,
         "pass": gate >= 0.9998 and all(r["zero_after_steer_bitexact"] for r in rows),
