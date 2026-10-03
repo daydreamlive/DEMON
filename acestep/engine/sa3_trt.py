@@ -106,7 +106,7 @@ _DIT_STEER_DIR_RE = re.compile(
 )
 # fp16mixed DiT engines with the steering input at every block's
 # cross-attention OUTPUT (``sa3_build --steer-cross-attn``; input
-# ``steering_cross_attn``): ``sa3_m_dit_steerxa_l{min}_{opt}_{max}``. TADA's
+# ``steering_xattn``): ``sa3_m_dit_steerxa_l{min}_{opt}_{max}``. TADA's
 # hook point (arXiv 2602.11910); selected when the session's packs target
 # ``cross_attn_output``.
 _DIT_STEERXA_DIR_RE = re.compile(
@@ -115,7 +115,7 @@ _DIT_STEERXA_DIR_RE = re.compile(
 #: Engine steering input name -> the steering layout hook it implements.
 STEERING_INPUT_HOOKS = {
     "steering": "post_block_residual",
-    "steering_cross_attn": "cross_attn_output",
+    "steering_xattn": "cross_attn_output",
 }
 _SAME_L_DIR_RE = re.compile(
     r"^same_l_decode_window_(?P<tag>[a-z0-9_]+)_t"
@@ -461,7 +461,7 @@ class SA3TRTDit:
         self._ctx.set_input_shape("local_add_cond", (1, 257, L))
         # Activation-steering input (``sa3_m_dit_steer_*``: ``steering``
         # at the post-block residual; ``sa3_m_dit_steerxa_*``:
-        # ``steering_cross_attn`` at the cross-attention output): static
+        # ``steering_xattn`` at the cross-attention output): static
         # [1, num_blocks, hidden]. ``steering_shape`` / ``steering_hook``
         # advertise it to SA3Adapter.steering_layout; None on engines
         # without one.

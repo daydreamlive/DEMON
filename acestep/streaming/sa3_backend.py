@@ -540,7 +540,7 @@ class SA3Backend(DiffusionBackend):
         # Sessions with steering packs prefer a steering-input engine,
         # the only TRT DiT that can apply them (see find_dit_engine).
         # The packs' hook point picks the engine family (post-block
-        # ``steering`` or cross-attention ``steering_cross_attn``).
+        # ``steering`` or cross-attention ``steering_xattn``).
         from acestep.steering.packs import packs_steering_hook
 
         want_steer = packs_steering_hook(
@@ -561,9 +561,6 @@ class SA3Backend(DiffusionBackend):
             device=context.device,
             dtype=context.dtype,
         )
-        if want_steer:
-            # Eager forwards hook the same point the packs target.
-            adapter.steering_hook = want_steer
 
         # Phase-2 refit mirror: engaged only when the selected DiT is a
         # refit-built engine AND its validated manifest exists;

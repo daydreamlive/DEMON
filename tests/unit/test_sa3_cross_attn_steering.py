@@ -269,12 +269,12 @@ def test_eager_adapter_hooks_cross_attn_modules(monkeypatch):
                     device="cpu", dtype=torch.float32)
     lay = ad.steering_layout()
     assert lay.hook == HOOK_POST_BLOCK_RESIDUAL and not lay.engine_input
-    ad.steering_hook = HOOK_CROSS_ATTN_OUTPUT
-    lay = ad.steering_layout()
-    assert lay.hook == HOOK_CROSS_ATTN_OUTPUT and lay.num_blocks == NB
-    blocks = ad.steering_blocks()
+    assert lay.hooks == (HOOK_POST_BLOCK_RESIDUAL, HOOK_CROSS_ATTN_OUTPUT)
+    assert lay.num_blocks == NB
+    blocks = ad.steering_hook_modules(HOOK_CROSS_ATTN_OUTPUT)
     assert [type(m) for m in blocks] == [_XAttn] * NB
-    assert ad.steering_blocks() is blocks  # identity-stable across ticks
+    assert ad.steering_hook_modules(HOOK_CROSS_ATTN_OUTPUT) is blocks
+    assert ad.steering_hook_modules("nope") is None
 
     # Drive the pipeline's own hook install + fill with a bare instance
     # (the hook machinery reads only the steering attributes).
@@ -282,14 +282,16 @@ def test_eager_adapter_hooks_cross_attn_modules(monkeypatch):
     pipe.adapter = ad
     pipe._steering_by_layer = {}
     pipe._steering_hooks_installed = False
-    pipe._steering_hooked_blocks = None
+    pipe._steering_hooked_blocks = {}
     pipe._steering_hook_handles = []
+    pipe._steering_neg_pass = False
     pipe._current_step_per_row = [0]
 
     x = torch.randn(1, 5, H)
     ref = w.run(x.clone())
     v = torch.tensor([1.0, 0.0, -1.0, 0.5])
-    pipe.set_steering([{"layer": 1, "step": 0, "vector": v, "magnitude": 1.0, "alpha": 3.0}])
+    pipe.set_steering([{"layer": 1, "step": 0, "vector": v, "magnitude": 1.0,
+                        "alpha": 3.0, "hook": HOOK_CROSS_ATTN_OUTPUT}])
     got = w.run(x.clone())
     # Reference: block 1's cross-attention output shifted by 3 * v.
     h = x.clone()
@@ -304,3 +306,22 @@ def test_eager_adapter_hooks_cross_attn_modules(monkeypatch):
     assert torch.equal(w.run(x.clone()), ref)
     pipe.remove_steering_hooks()
     assert all(not m._forward_hooks for m in blocks)
+
+
+class _FakeXattnTrtDit:
+    trt_batch1 = True
+    steering_shape = (NB, H)
+    steering_hook = HOOK_CROSS_ATTN_OUTPUT
+
+
+def test_trt_layout_reports_the_engine_hook():
+    from acestep.engine.sa3_adapter import SA3Adapter
+
+    ad = SA3Adapter(_FakeXattnTrtDit(), schedule_builder=lambda d: torch.linspace(d, 0, 3),
+                    device="cpu", dtype=torch.float32)
+    lay = ad.steering_layout()
+    assert lay.engine_input and lay.hook == HOOK_CROSS_ATTN_OUTPUT
+    assert lay.accepts(1, H, HOOK_CROSS_ATTN_OUTPUT)
+    assert not lay.accepts(1, H, HOOK_POST_BLOCK_RESIDUAL)
+    assert ad.steering_blocks() is None
+    assert ad.steering_hook_modules(HOOK_CROSS_ATTN_OUTPUT) is None

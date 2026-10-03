@@ -23,7 +23,7 @@ A second site, ``cross_attn_output`` (TADA, Staniszewski et al., arXiv
 2602.11910: steering at the cross-attention output of the functional
 blocks), adds a separate graph input
 
-    steering_cross_attn  float32  [1, num_blocks, hidden]
+    steering_xattn  float32  [1, num_blocks, hidden]
 
 whose row ``i`` is added to the output of block ``i``'s cross-attention
 module (``/transformer/layers.{i}/cross_attn/to_out``) before it joins the
@@ -53,7 +53,7 @@ STEERING_INPUT = "steering"
 CROSS_ATTN_SURGERY_VERSION = 1
 
 #: Graph input for the ``cross_attn_output`` site.
-STEERING_CROSS_ATTN_INPUT = "steering_cross_attn"
+STEERING_CROSS_ATTN_INPUT = "steering_xattn"
 
 #: Steering site -> graph input name. Sites are the hook names of
 #: :mod:`acestep.steering.layout` (literals here: no torch import).
@@ -167,7 +167,7 @@ def add_steering_input(
     trunk width read off the ``project_in`` weight. ``site`` picks the
     hook point (:data:`SITE_INPUTS`): ``post_block_residual`` (input
     ``steering``, the v1 surgery, byte-for-byte unchanged) or
-    ``cross_attn_output`` (input ``steering_cross_attn``).
+    ``cross_attn_output`` (input ``steering_xattn``).
     """
     import numpy as np
     from onnx import TensorProto, helper, numpy_helper

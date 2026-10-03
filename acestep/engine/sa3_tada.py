@@ -25,7 +25,7 @@ prepends its global token the same way).
 
 Everything here is eager-only and offline; the live path steers through the
 pipeline's steering slot (``cross_attn_output`` hook, eager hooks or the
-``steering_cross_attn`` TensorRT input).
+``steering_xattn`` TensorRT input).
 """
 
 from __future__ import annotations

@@ -38,7 +38,7 @@ on first use.
   convention), compiled to ``sa3_m_dit_steer_l*`` engines. Built only with
   ``--steer``; selected at runtime when the session has steering packs.
 * **sa3-m DiT (cross-attention steering, opt-in)**: the same surgery at a
-  second site, ``steering_cross_attn [1, blocks, hidden]`` added to each
+  second site, ``steering_xattn [1, blocks, hidden]`` added to each
   block's cross-attention output (TADA's hook point, arXiv 2602.11910),
   compiled to ``sa3_m_dit_steerxa_l*`` engines. Built only with
   ``--steer-cross-attn``; selected when the session's packs target
@@ -273,7 +273,7 @@ class SA3DiTSteerBuildConfig:
 class SA3DiTSteerCrossAttnBuildConfig:
     """Build parameters for one sa3-m fp16mixed DiT engine with the
     activation-steering input at the cross-attention OUTPUT of every block
-    (input ``steering_cross_attn``; TADA's hook point, arXiv 2602.11910).
+    (input ``steering_xattn``; TADA's hook point, arXiv 2602.11910).
 
     A separate engine family from :class:`SA3DiTSteerBuildConfig` (whose
     post-block ``steering`` input is unchanged): ``sa3_m_dit_steerxa_l*``.
