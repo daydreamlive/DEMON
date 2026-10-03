@@ -30,6 +30,7 @@ class _FakeContext:
         self.velocity = lambda bundle, state, raw: torch.zeros_like(state)
         self.compose_calls: list = []
         self.bundle_styles: list = []
+        self.released: list = []
 
     def compose(self, *, style, lyrics, seed, max_frames, exact_frames=None):
         self.compose_calls.append(dict(style=style, lyrics=lyrics, seed=seed, max_frames=max_frames,
@@ -50,6 +51,9 @@ class _FakeContext:
 
     def decode_window(self, latent, start, n):
         return torch.zeros(2, n * 1920)
+
+    def release_bundle(self, bundle):
+        self.released.append(bundle)
 
     def submit(self, fn, *args):
         from acestep.streaming.yue2_recompose import run_inline
@@ -155,5 +159,48 @@ def test_ring_depth_is_one_whatever_the_client_asks(monkeypatch):
     try:
         assert ss.state.current_depth == 1
         assert ss.max_pipeline_depth == 1
+    finally:
+        _close(ss)
+
+
+def test_a_failed_second_song_releases_the_first_bundle(monkeypatch):
+    context = _FakeContext()
+    compose = context.compose
+
+    def failing_b(**kw):
+        if kw.get("exact_frames") is not None:
+            raise RuntimeError("song B semantic stage failed")
+        return compose(**kw)
+
+    context.compose = failing_b
+    with pytest.raises(RuntimeError, match="song B"):
+        _create(monkeypatch, context, prompt_b="dark techno")
+    assert [b.tags for b in context.released] == ["city pop"]
+
+
+def test_a_failed_session_construction_releases_every_bundle(monkeypatch):
+    from acestep.streaming import yue2_session as mod
+
+    context = _FakeContext()
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("session ctor failed")
+
+    monkeypatch.setattr(mod, "_assemble_session", broken)
+    with pytest.raises(RuntimeError, match="ctor"):
+        _create(monkeypatch, context, prompt_b="dark techno")
+    assert sorted(b.tags for b in context.released) == ["city pop", "dark techno"]
+
+
+def test_create_runs_the_anchor_solve_and_decode_under_the_gpu_gate(monkeypatch):
+    context = _FakeContext()
+    held = []
+    solve, decode = context.solve, context.decode_full
+    context.solve = lambda bundle, **kw: (held.append(context.gpu_gate.locked()), solve(bundle))[1]
+    context.decode_full = lambda latent: (held.append(context.gpu_gate.locked()), decode(latent))[1]
+    ss = _create(monkeypatch, context)
+    try:
+        assert held == [True, True]
+        assert context.released == []  # the session owns the bundle now
     finally:
         _close(ss)

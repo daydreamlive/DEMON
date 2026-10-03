@@ -27,6 +27,7 @@ from acestep.streaming.knobs import KnobState
 from acestep.streaming.source import SAMPLE_RATE
 from acestep.streaming.state import SessionState
 from acestep.streaming.yue2_backend import (
+    LATENT_RATE_HZ,
     YUE2_MAX_SONG_S,
     playable_seconds,
     yue2_knob_specs,
@@ -83,7 +84,7 @@ def song_budget_frames(config) -> int:
     """Semantic token budget (= latent frames) for this session."""
     requested = float(config.family_config.get("yue2_duration_s") or 0.0) or YUE2_DEFAULT_BUDGET_S
     seconds = max(1.0, min(requested, YUE2_MAX_SONG_S))
-    return int(round(seconds * 25))
+    return int(round(seconds * LATENT_RATE_HZ))
 
 
 def nar_backend_for(bundle, has_trt: bool) -> str:
@@ -94,21 +95,31 @@ def nar_backend_for(bundle, has_trt: bool) -> str:
     return "trt" if has_trt and flexible_profile_fits(bundle.frames, bundle.cond_tokens) else "eager"
 
 
-def compose_song(context, *, prompt: str, prompt_b: str, lyrics: str, seed: int,
+def compose_song(context, cleanup, *, prompt: str, prompt_b: str, lyrics: str, seed: int,
                  max_frames: int) -> dict:
     """Run the create-time conditioning; returns the songs and a timing
     breakdown (ms). A distinct ``prompt_b`` is a second composition of
-    the same lyrics at song A's length (style lives in the semantics)."""
+    the same lyrics at song A's length (style lives in the semantics).
+
+    Every KV bundle is registered on ``cleanup`` (an ExitStack) for
+    release, so a failure later in create frees its GPU memory; the
+    caller pops the stack once the session owns the bundles. The anchor
+    solves and the decode hold ``context.gpu_gate``, which excludes a
+    CUDA graph capture on the conditioning worker (another session's
+    re-compose), as the ring does."""
     times = {}
     t0 = time.perf_counter()
     composition = context.compose(style=prompt, lyrics=lyrics, seed=seed, max_frames=max_frames)
     times.update(composition.timings_ms)
     t1 = time.perf_counter()
     bundle = context.bundle(composition)
+    cleanup.callback(context.release_bundle, bundle)
     t2 = time.perf_counter()
-    anchor = context.solve(bundle)
+    with context.gpu_gate:
+        anchor = context.solve(bundle)
     t3 = time.perf_counter()
-    initial = context.decode_full(anchor).clamp(-1, 1).float().cpu().numpy().T.copy()
+    with context.gpu_gate:
+        initial = context.decode_full(anchor).clamp(-1, 1).float().cpu().numpy().T.copy()
     t4 = time.perf_counter()
     song = Song(bundle=bundle, anchor=anchor, tags=prompt)
     song_b = None
@@ -116,7 +127,10 @@ def compose_song(context, *, prompt: str, prompt_b: str, lyrics: str, seed: int,
         composition_b = context.compose(style=prompt_b, lyrics=lyrics, seed=seed,
                                         max_frames=bundle.frames, exact_frames=bundle.frames)
         bundle_b = context.bundle(composition_b)
-        song_b = Song(bundle=bundle_b, anchor=context.solve(bundle_b), tags=prompt_b)
+        cleanup.callback(context.release_bundle, bundle_b)
+        with context.gpu_gate:
+            anchor_b = context.solve(bundle_b)
+        song_b = Song(bundle=bundle_b, anchor=anchor_b, tags=prompt_b)
         times["song_b_ms"] = (time.perf_counter() - t4) * 1000
     times.update(
         prefill_ms=(t2 - t1) * 1000, anchor_solve_ms=(t3 - t2) * 1000,
@@ -131,12 +145,11 @@ def create_yue2_session(cls, *, audio, config, checkpoint, session_id, **_unused
     ``audio`` (the uploaded or text-only silent source) is ignored: YuE2
     composes its own song. Accel kwargs land in ``_unused``: the NAR runs
     on TRT whenever ``DEMON_YUE2_TRT_DIR`` holds the engines and the song
-    fits their profile."""
+    fits their profile. A failure anywhere after the first KV prefill
+    releases every bundle made so far and stops the audio engine."""
     from contextlib import ExitStack
 
     from acestep.engine.yue2_context import DEFAULT_LYRICS
-    from acestep.streaming.audio_engine import AudioEngine
-    from acestep.streaming.session import _cleanup_create_resource
 
     context = get_yue2_context()
     prompt = config.prompt
@@ -147,8 +160,25 @@ def create_yue2_session(cls, *, audio, config, checkpoint, session_id, **_unused
     virtual_knobs = KnobState(yue2_knob_specs())
     seed = int(virtual_knobs.get_all_values().get("seed", 0))
 
-    song = compose_song(context, prompt=prompt, prompt_b=prompt_b, lyrics=lyrics,
-                        seed=seed, max_frames=max_frames)
+    with ExitStack() as cleanup:
+        song = compose_song(context, cleanup, prompt=prompt, prompt_b=prompt_b, lyrics=lyrics,
+                            seed=seed, max_frames=max_frames)
+        streaming = _assemble_session(
+            cls, context, song, cleanup, config=config, checkpoint=checkpoint,
+            session_id=session_id, prompt=prompt, prompt_b=prompt_b, max_frames=max_frames,
+            depth=depth, virtual_knobs=virtual_knobs,
+        )
+        cleanup.pop_all()  # the session's backend owns the bundles now
+        return streaming
+
+
+def _assemble_session(cls, context, song: dict, cleanup, *, config, checkpoint, session_id,
+                      prompt, prompt_b, max_frames, depth, virtual_knobs):
+    """The second half of create: session state, audio engine and the
+    StreamingSession around the composed song(s)."""
+    from acestep.streaming.audio_engine import AudioEngine
+    from acestep.streaming.session import _cleanup_create_resource
+
     bundle = song["bundle"]
     playable_s = playable_seconds(bundle.frames)
     nar = nar_backend_for(bundle, context.has_trt_nar)
@@ -178,44 +208,41 @@ def create_yue2_session(cls, *, audio, config, checkpoint, session_id, **_unused
     state.params["yue2_truncated"] = bool(bundle.truncated)
     state.params["yue2_create_ms"] = round(song["timings_ms"]["total_ms"], 1)
 
-    with ExitStack() as cleanup:
-        audio_eng = AudioEngine(initial, SAMPLE_RATE)
-        cleanup.callback(_cleanup_create_resource, "audio_engine", audio_eng.stop)
-        streaming = cls(
-            session_id=session_id,
-            checkpoint=checkpoint,
-            config=config,
-            engine_session=None,
-            stream=None,
-            state=state,
-            audio_eng=audio_eng,
-            canvas=None,
-            virtual_knobs=virtual_knobs,
-            engine_obj=None,
-            profile_mgr=None,
-            cond_negative=None,
-            initial_buffer=initial,
-            initial_upload_stems=None,
-            initial_stem_error=None,
-            initial_stem_source_mode=None,
-            initial_enable_ids=[],
-            lora_strengths_init={},
-            lora_available=False,
-            max_pipeline_depth=YUE2_MAX_PIPELINE_DEPTH,
-            max_seconds=playable_s,
-            walk_window=False,
-            walk_window_s=0.0,
-            vae_window=YUE2_VAE_WINDOW_S,
-            crop_seconds=0.0,
-            use_sde=False,
-            use_lora=False,
-            k1_name="yue2_denoise",
-            backend_init={
-                "context": context,
-                "composition": song["composition"],
-                "song": song["song"],
-                "song_b": song["song_b"],
-            },
-        )
-        cleanup.pop_all()
-        return streaming
+    audio_eng = AudioEngine(initial, SAMPLE_RATE)
+    cleanup.callback(_cleanup_create_resource, "audio_engine", audio_eng.stop)
+    return cls(
+        session_id=session_id,
+        checkpoint=checkpoint,
+        config=config,
+        engine_session=None,
+        stream=None,
+        state=state,
+        audio_eng=audio_eng,
+        canvas=None,
+        virtual_knobs=virtual_knobs,
+        engine_obj=None,
+        profile_mgr=None,
+        cond_negative=None,
+        initial_buffer=initial,
+        initial_upload_stems=None,
+        initial_stem_error=None,
+        initial_stem_source_mode=None,
+        initial_enable_ids=[],
+        lora_strengths_init={},
+        lora_available=False,
+        max_pipeline_depth=YUE2_MAX_PIPELINE_DEPTH,
+        max_seconds=playable_s,
+        walk_window=False,
+        walk_window_s=0.0,
+        vae_window=YUE2_VAE_WINDOW_S,
+        crop_seconds=0.0,
+        use_sde=False,
+        use_lora=False,
+        k1_name="yue2_denoise",
+        backend_init={
+            "context": context,
+            "composition": song["composition"],
+            "song": song["song"],
+            "song_b": song["song_b"],
+        },
+    )
