@@ -21,10 +21,15 @@ codec). Shaped like the SA3 backend:
   conditioning); ``x0_target`` locks toward it; ``feedback`` blends the latest outputs into it.
 
 Control surface: ``yue2_denoise`` (prefixed; ACE's ``denoise`` means
-something else) plus the shared ``x0_target`` / ``feedback`` /
-``feedback_depth`` / ``seed``. The step count stays at the released
-32-step grid: the shared ``steps_override`` knob (default 8, at most 16)
-cannot express it, and ``yue2_denoise`` already shortens the work.
+something else), ``yue2_steps`` (the uniform midpoint grid the ring
+solves on: the released 32 by default, or one of the fewer-step grids
+validated against it, :data:`YUE2_STEP_CHOICES`) plus the shared
+``x0_target`` / ``feedback`` / ``feedback_depth`` / ``seed``. The shared
+``steps_override`` knob (default 8, at most 16) is not used: it would
+change the released behaviour on a session's first tick. A
+``yue2_steps`` change restarts the ring on the new grid (no weights or
+engines are rebuilt) and ``yue2_denoise`` truncates whichever grid is
+active.
 ``prompt`` re-composes the session's lyrics under the new tags at the
 session's length (a ``[Tags]``-only restyle with frozen semantics is
 nearly inaudible, experiment E3); ``set_prompt_blend`` is a hard switch
@@ -78,6 +83,12 @@ WINDOW_CACHE_MAX = 512
 #: Runner pacing while settled (also the worst-case extra knob latency).
 SETTLED_NAP_S = 0.02
 
+#: The uniform midpoint grids ``yue2_steps`` may select, validated against
+#: the released 32-step solve on the same composition and seed (runbook 14,
+#: docs/FAMILIES.md YuE2 section). Any other value snaps to the nearest.
+YUE2_STEP_CHOICES = (4, 6, 8, 12, 16, 24, 32)
+RELEASED_STEPS = 32
+
 MAX_FEEDBACK_DEPTH = int(
     next(s for s in registry_knob_specs(False) if s.name == "feedback_depth").max_val
 )
@@ -88,24 +99,47 @@ def playable_seconds(frames: int) -> float:
     return (SAMPLES_PER_FRAME * int(frames) - DECODE_TAIL_SAMPLES) / SAMPLE_RATE
 
 
+def snap_steps(value) -> int:
+    """The validated grid nearest to ``value`` (ties go to more steps)."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return RELEASED_STEPS
+    return min(YUE2_STEP_CHOICES, key=lambda n: (abs(n - v), -n))
+
+
 def yue2_knob_specs() -> list:
     """The YuE2 knob manifest (also the homonym-guard universe).
 
     ``seed``, ``x0_target``, ``feedback`` and ``feedback_depth`` come
     FROM the shared registry by name, so their semantics cannot fork
     from ACE's. ``yue2_denoise`` is prefixed: it truncates the released
-    step grid, not ACE's k1 strength. No ``steps_override``: the shared
-    spec (default 8, max 16) cannot express the released 32 steps."""
+    step grid, not ACE's k1 strength. ``yue2_steps`` picks the grid
+    (default the released 32). No ``steps_override``: the shared spec
+    (default 8, max 16) would change the released behaviour by default."""
     shared = {s.name: s for s in registry_knob_specs(False)}
     return [
         KnobSpec(
             "yue2_denoise", default=1.0, max_val=1.0, group="yue2",
             description=(
                 "How much of the song's acoustic solve is redone per "
-                "generation: 1.0 renders from pure noise (32 midpoint steps), "
-                "lower values re-noise the song anchor and run only the last "
-                "ceil(32*d) steps (faster updates, closer to the anchor). "
-                "Distinct from ACE's 'denoise', hence the prefix."
+                "generation: 1.0 renders from pure noise (all yue2_steps "
+                "midpoint steps), lower values re-noise the song anchor and run "
+                "only the last ceil(steps*d) steps of the grid (faster updates, "
+                "closer to the anchor). Distinct from ACE's 'denoise', hence "
+                "the prefix."
+            ),
+        ),
+        KnobSpec(
+            "yue2_steps", default=RELEASED_STEPS, min_val=float(min(YUE2_STEP_CHOICES)),
+            max_val=float(max(YUE2_STEP_CHOICES)), type="int", group="yue2",
+            description=(
+                "Midpoint steps per full acoustic solve (one step per ring "
+                "tick, so update latency scales with it). 32 is the released "
+                "sampler; fewer steps answer faster at a small quality cost. "
+                "Validated grids: " + ", ".join(map(str, YUE2_STEP_CHOICES))
+                + "; other values snap to the nearest. A change restarts the "
+                "ring on the new grid."
             ),
         ),
         shared["x0_target"],
@@ -156,6 +190,8 @@ class YuE2Backend(DiffusionBackend):
         self.knob_state = knob_state
         self.state = state
         self._steps = int(steps)
+        # Steps when the knobs carry no yue2_steps (tests, old clients).
+        self._default_steps = int(steps)
         self._depth = int(depth)
         self._default_seed = song.seed
         self.vae_window = float(vae_window_s)
@@ -193,7 +229,7 @@ class YuE2Backend(DiffusionBackend):
         # latent that emerged. A request can finish up to ``steps +
         # depth`` ticks after it was submitted (one per tick at
         # queue_cap 1), so the bookkeeping must outlive a full solve.
-        self._submitted: deque = deque(maxlen=4 * self._steps)
+        self._submitted: deque = deque(maxlen=4 * max(self._steps, *YUE2_STEP_CHOICES))
         self._emerged_signature = None
         self._emerged_request = None
         self._emerged_song = None
@@ -415,7 +451,9 @@ class YuE2Backend(DiffusionBackend):
             fb_depth_raw = float(knobs.get("feedback_depth", 1.0))
         except (TypeError, ValueError):
             fb_depth_raw = 1.0
+        raw_steps = knobs.get("yue2_steps")
         return {
+            "steps": self._default_steps if raw_steps is None else snap_steps(raw_steps),
             "denoise": float(knobs.get("yue2_denoise", 1.0)),
             "seed": int(knobs.get("seed", self._default_seed)),
             "x0_target": x0_str,
@@ -431,8 +469,8 @@ class YuE2Backend(DiffusionBackend):
             return ("anchor", id(song))
         if prep["feedback"] > 0.0:
             return None
-        return (id(song), id(song.anchor), round(prep["denoise"], 4), prep["seed"],
-                round(prep["x0_target"], 4))
+        return (id(song), id(song.anchor), prep["steps"], round(prep["denoise"], 4),
+                prep["seed"], round(prep["x0_target"], 4))
 
     def is_settled(self, prep: dict) -> bool:
         """True when the latest emerged latent is exactly what the ring
@@ -479,6 +517,11 @@ class YuE2Backend(DiffusionBackend):
 
     def _generate(self, prep: dict):
         self._release_retired()
+        if prep["steps"] != self._steps:
+            # A new grid: slots in flight are mid-way through the old one.
+            logger.info("yue2_steps_changed from={} to={}", self._steps, prep["steps"])
+            self._steps = prep["steps"]
+            self._restart_ring(prep)
         settled = self.is_settled(prep)
         if settled and not self._settled_last and self.pipeline.active_slots:
             # depth >= 2: the other slots hold the same request (redundant)
@@ -544,16 +587,19 @@ class YuE2Backend(DiffusionBackend):
             return
         p = self.state.params
         p["gen_yue2_denoise"] = round(float(req.denoise), 4)
+        # The ring restarts on a steps change, so whatever emerges ran on
+        # the active grid.
+        p["gen_yue2_steps"] = self._steps
         p["gen_seed"] = int(req.seed)
         p["gen_cond_epoch"] = song.epoch
         p["gen_prompt"] = song.tags
         self._stamp_nar_path(song)
-        marker = (p["gen_yue2_denoise"], song.epoch, p["gen_seed"], id(song))
+        marker = (p["gen_yue2_denoise"], p["gen_yue2_steps"], song.epoch, p["gen_seed"], id(song))
         if marker != self._emerged_marker:
             self._emerged_marker = marker
             logger.info(
-                "yue2_gen_emerged denoise={} seed={} cond_epoch={} tags={!r}",
-                p["gen_yue2_denoise"], p["gen_seed"], song.epoch, song.tags,
+                "yue2_gen_emerged denoise={} steps={} seed={} cond_epoch={} tags={!r}",
+                p["gen_yue2_denoise"], p["gen_yue2_steps"], p["gen_seed"], song.epoch, song.tags,
             )
 
     def _stamp_nar_path(self, song: Song) -> None:
@@ -660,6 +706,7 @@ class YuE2Backend(DiffusionBackend):
         prep = self._last_prep
         if prep:
             p["yue2_denoise"] = round(prep["denoise"], 2)
+            p["yue2_steps"] = prep["steps"]
             p["seed"] = prep["seed"]
             p["x0_target"] = round(prep["x0_target"], 2)
             p["feedback"] = round(prep["feedback"], 2)

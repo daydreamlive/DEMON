@@ -29,6 +29,7 @@ from acestep.engine.yue2_velocity import (
     truncated_grid,
     upstream_noise,
 )
+from acestep.streaming.yue2_backend import YUE2_STEP_CHOICES
 
 T = 12
 STEPS = 32
@@ -79,31 +80,38 @@ def _run_until_result(pipe, make_request, max_ticks=200):
     raise AssertionError("no result")
 
 
+@pytest.mark.parametrize("steps", YUE2_STEP_CHOICES)
 @pytest.mark.parametrize("depth", [1, 4])
-def test_ring_matches_the_upstream_midpoint_solve(depth):
+def test_ring_matches_the_upstream_midpoint_solve(depth, steps):
+    """At every grid ``yue2_steps`` may select (32 = released)."""
     vel = _FakeVelocity()
     bundle = _Bundle(0.1)
-    pipe = _pipeline(vel, depth=depth)
+    pipe = _pipeline(vel, depth=depth, steps=steps)
     out, _ = _run_until_result(
         pipe, lambda: SlotRequest(seed=7, latent_frames=T, aux_cond=bundle),
     )
     noise = upstream_noise(7, T)[None]
-    expected = _reference_solve(vel, bundle, noise, truncated_grid(STEPS, 1.0))
+    expected = _reference_solve(vel, bundle, noise, truncated_grid(steps, 1.0), steps=steps)
     assert torch.equal(out, expected)
+    assert pipe.ticks >= steps
 
 
-def test_partial_denoise_renoises_the_source_and_matches_the_truncated_solve():
+@pytest.mark.parametrize("steps", YUE2_STEP_CHOICES)
+@pytest.mark.parametrize("d", [0.5, 0.3])
+def test_partial_denoise_renoises_the_source_and_matches_the_truncated_solve(steps, d):
+    """``yue2_denoise`` truncation stays exact relative to the chosen grid."""
     vel = _FakeVelocity()
     bundle = _Bundle(-0.05)
     source = torch.linspace(-1, 1, T * 64).view(1, T, 64)
-    pipe = _pipeline(vel)
+    pipe = _pipeline(vel, steps=steps)
     out, _ = _run_until_result(pipe, lambda: SlotRequest(
-        seed=3, denoise=0.5, source_latents=source, latent_frames=T, aux_cond=bundle,
+        seed=3, denoise=d, source_latents=source, latent_frames=T, aux_cond=bundle,
     ))
-    schedule = truncated_grid(STEPS, 0.5)
+    schedule = truncated_grid(steps, d)
+    assert len(schedule) - 1 == max(1, math.ceil(steps * d - 1e-9))
     s0 = schedule[0].item()
     x = s0 * upstream_noise(3, T)[None] + (1.0 - s0) * source
-    assert torch.equal(out, _reference_solve(vel, bundle, x, schedule))
+    assert torch.equal(out, _reference_solve(vel, bundle, x, schedule, steps=steps))
 
 
 @pytest.mark.parametrize("d", [1.0, 0.75, 0.5, 0.3, 0.25, 1 / 32, 0.01, 0.0])

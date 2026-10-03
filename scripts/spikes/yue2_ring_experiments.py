@@ -21,6 +21,9 @@ on one GPU, no server, and writes one JSON plus wavs per command.
 ``forced``   E4: five prompts composed at their natural length and forced
              to the session length; ending loudness proxies and wavs.
 
+``steps``    the latency method per ``yue2_steps`` value on one song
+             (seed and x0_target, idle and busy; runbook 14).
+
 ``latency``  ring tick p50/p95 and knob-to-ear with the spike method:
              first changed PCM (> 1e-5 vs the pre-change render of the
              same window) and first fully updated PCM (rendered from a
@@ -90,8 +93,14 @@ def make_backend(ctx, song, prompt, depth=1):
     )
 
 
+#: ``yue2_steps`` for every knob set (``--steps``; None = the backend default).
+STEPS = None
+
+
 def knobs(**over) -> dict:
     values = {"yue2_denoise": 1.0, "seed": 0, "x0_target": 0.0, "feedback": 0.0, "feedback_depth": 1}
+    if STEPS is not None:
+        values["yue2_steps"] = STEPS
     values.update(over)
     return values
 
@@ -310,7 +319,7 @@ def run_latency(ctx, seconds, depth, out: Path) -> dict:
         "yue2_denoise": knobs(seed=1, yue2_denoise=0.5),
         "x0_target": knobs(seed=1, x0_target=0.5),
     }
-    report = {"frames": frames, "depth": depth, "cond_tokens": song["bundle"].cond_tokens,
+    report = {"frames": frames, "depth": depth, "steps": STEPS, "cond_tokens": song["bundle"].cond_tokens,
               "nar": nar_backend_for(song["bundle"], ctx.velocity),
               "create_ms": song["timings_ms"], "changes": {}}
     torch.cuda.reset_peak_memory_stats()
@@ -338,13 +347,49 @@ def run_latency(ctx, seconds, depth, out: Path) -> dict:
     return report
 
 
+def run_steps(ctx, seconds, step_counts, out: Path) -> dict:
+    """``steps``: one song, one production backend at depth 1; for each
+    ``yue2_steps`` value (switched through the knob, as a client does),
+    the ring tick p50/p95 and knob-to-ear for seed and x0_target from a
+    settled ring (idle) and with the change landing half way through
+    another solve (busy)."""
+    global STEPS
+    prompt = STYLE_PAIRS[0][0]
+    song = compose(ctx, prompt, seconds)
+    backend = make_backend(ctx, song, prompt, depth=1)
+    frames = song["bundle"].frames
+    duration = playable_seconds(frames)
+    report = {"frames": frames, "cond_tokens": song["bundle"].cond_tokens,
+              "nar": nar_backend_for(song["bundle"], ctx.velocity),
+              "create_ms": song["timings_ms"], "by_steps": {}}
+    for steps in step_counts:
+        STEPS = int(steps)
+        loop = RealtimeLoop(backend, duration, probe_s=duration / 2)
+        rows = {}
+        for name, after in (("seed", knobs(seed=2)), ("x0_target", knobs(seed=1, x0_target=0.5))):
+            idle = measure_change(loop, knobs(seed=1), after)
+            busy = measure_change(loop, knobs(seed=1), after, busy=(max(1, steps // 2), knobs(seed=3)))
+            rows[name] = {"idle": idle, "busy": busy}
+        rows["tick_ms_p50"] = float(np.percentile(loop.ticks, 50))
+        rows["tick_ms_p95"] = float(np.percentile(loop.ticks, 95))
+        rows["ticks_measured"] = len(loop.ticks)
+        report["by_steps"][str(steps)] = rows
+        print(steps, json.dumps(rows), flush=True)
+    backend.close()
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("command", choices=["quality", "latency", "forced"])
+    parser.add_argument("command", choices=["quality", "latency", "forced", "steps"])
     parser.add_argument("--seconds", type=float, default=60.0)
     parser.add_argument("--depth", type=int, default=1)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--steps", type=int, nargs="*", default=None,
+                        help="yue2_steps: one value for latency, the list for the steps command")
     args = parser.parse_args()
+    global STEPS
+    STEPS = args.steps[0] if args.command == "latency" and args.steps else None
     args.out.mkdir(parents=True, exist_ok=True)
 
     from acestep.engine.yue2_context import YuE2Context
@@ -354,12 +399,15 @@ def main():
     if args.command == "quality":
         report = run_quality(ctx, args.seconds, args.out)
         name = f"quality_{int(args.seconds)}s.json"
+    elif args.command == "steps":
+        report = run_steps(ctx, args.seconds, args.steps or [32, 24, 16, 12, 8, 6, 4], args.out)
+        name = f"steps_{int(args.seconds)}s.json"
     elif args.command == "forced":
         report = run_forced(ctx, args.seconds, args.out)
         name = f"e4_forced_{int(args.seconds)}s.json"
     else:
         report = run_latency(ctx, args.seconds, args.depth, args.out)
-        name = f"latency_{int(args.seconds)}s_d{args.depth}.json"
+        name = f"latency_{int(args.seconds)}s_d{args.depth}" + (f"_s{STEPS}" if STEPS else "") + ".json"
     (args.out / name).write_text(json.dumps(report, indent=2))
     print(json.dumps({k: v for k, v in report.items() if k != "changes"}, indent=2, default=str))
     ctx.close()

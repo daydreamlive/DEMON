@@ -18,6 +18,7 @@ CPU only, no weights.
 from __future__ import annotations
 
 import json
+import math
 
 import numpy as np
 import pytest
@@ -27,10 +28,13 @@ from acestep.engine.yue2_adapter import YuE2Adapter
 from acestep.engine.yue2_trt import window_plan
 from acestep.streaming.generator_backend import GeneratorBackend, TickContext
 from acestep.streaming.knobs import KnobState
+from acestep.engine.yue2_velocity import truncated_grid, upstream_noise
 from acestep.streaming.yue2_backend import (
     YUE2_MAX_SONG_S,
+    YUE2_STEP_CHOICES,
     YuE2Backend,
     playable_seconds,
+    snap_steps,
     yue2_knob_specs,
 )
 from acestep.streaming.yue2_recompose import Song
@@ -122,7 +126,10 @@ def test_contract_surface():
     assert geo.duration_s == pytest.approx((T * 1920 - 64) / 48000)
     assert backend.max_duration_s() == YUE2_MAX_SONG_S
     names = [s.name for s in backend.knob_specs()]
-    assert names == ["yue2_denoise", "x0_target", "feedback", "feedback_depth", "seed"]
+    assert names == ["yue2_denoise", "yue2_steps", "x0_target", "feedback", "feedback_depth",
+                     "seed"]
+    steps_spec = next(s for s in backend.knob_specs() if s.name == "yue2_steps")
+    assert steps_spec.default == 32 and steps_spec.type == "int"
     assert backend.rebuild_imminent({"steps_override": 8}) is False
     assert backend.lora_available() is False and backend.list_loras() == []
     with pytest.raises(RuntimeError):
@@ -247,10 +254,67 @@ def test_prompt_blend_is_a_hard_switch_at_half():
     assert backend._active is a
 
 
-def test_steps_stay_on_the_released_grid_whatever_the_knobs_say():
+def test_shared_steps_override_is_ignored():
     backend = _backend()
     backend.produce(_knobs(steps_override=8), CTX, "generate")
     assert backend.adapter.steps == STEPS and backend.pipeline.config.infer_steps == STEPS
+
+
+@pytest.mark.parametrize("raw, snapped", [(32, 32), (8, 8), (9, 8), (10, 12), (14, 16),
+                                          (20, 24), (28, 32), (1, 4), (99, 32), ("x", 32)])
+def test_steps_snap_to_the_validated_grids(raw, snapped):
+    assert snap_steps(raw) == snapped
+    assert snapped in YUE2_STEP_CHOICES
+
+
+def test_yue2_steps_default_is_the_released_grid():
+    backend = YuE2Backend(
+        adapter=YuE2Adapter(_velocity, steps=32), codec=_Codec(), song=_song(),
+        knob_state=KnobState(yue2_knob_specs()), settled_nap_s=0.0,
+    )
+    knobs = {**backend.read_knobs(), "seed": 1}
+    assert knobs["yue2_steps"] == 32
+    _produce_until_fresh(backend, knobs, limit=80)
+    assert backend.adapter.steps == 32 and backend.pipeline.ticks == 32
+
+
+@pytest.mark.parametrize("steps", YUE2_STEP_CHOICES)
+@pytest.mark.parametrize("denoise", [1.0, 0.5])
+def test_yue2_steps_switches_the_grid_and_matches_an_explicit_midpoint_solve(steps, denoise):
+    """Through the backend: after a settled 32-step render, ``yue2_steps``
+    restarts the ring on the chosen grid and the emerged latent equals an
+    explicit midpoint solve on that grid (re-noised anchor at ``denoise``)."""
+    anchor = torch.linspace(-1, 1, T * 64).view(1, T, 64)
+    song = Song(bundle=_Bundle(0.1), anchor=anchor, tags="pop")
+    backend = YuE2Backend(
+        adapter=YuE2Adapter(_velocity, steps=32), codec=_Codec(), song=song,
+        knob_state=KnobState(yue2_knob_specs()), settled_nap_s=0.0,
+    )
+    _produce_until_fresh(backend, _knobs(yue2_steps=32), limit=80)
+    while backend.produce(_knobs(yue2_steps=32), CTX, "generate"):
+        pass
+    before = backend.pipeline
+    ticks_before = before.ticks
+    knobs = _knobs(yue2_steps=steps, yue2_denoise=denoise, seed=5)
+    req = _produce_until_fresh(backend, knobs, limit=80)
+    assert backend.adapter.steps == steps and backend.pipeline.config.infer_steps == steps
+    assert (backend.pipeline is before) == (steps == 32)  # a new grid restarts the ring
+    ran = backend.pipeline.ticks - (ticks_before if backend.pipeline is before else 0)
+    assert ran == math.ceil(steps * denoise)
+    schedule = truncated_grid(steps, denoise)
+    s0 = schedule[0].item()
+    x = s0 * upstream_noise(5, T)[None] + (1.0 - s0) * anchor if denoise < 1 else upstream_noise(5, T)[None]
+    h = 1.0 / steps
+    for s in schedule[:-1].tolist():
+        first = _velocity(song.bundle, x, None)
+        x = x - _velocity(song.bundle, x - first * (h / 2), None) * h
+    assert req.aux_cond is song.bundle
+    assert torch.equal(backend._last_result_latent, x)
+    assert backend.state is None or backend.state.params["gen_yue2_steps"] == steps
+    # Settled on the new grid: no more ticks.
+    ticks = backend.pipeline.ticks
+    assert backend.produce(knobs, CTX, "generate") is False
+    assert backend.pipeline.ticks == ticks
 
 
 def test_render_window_clamps_at_the_song_edges():
