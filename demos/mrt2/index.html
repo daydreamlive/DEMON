@@ -7,20 +7,51 @@
     <link rel="stylesheet" href="./styles.css">
   </head>
   <body>
-    <canvas id="scene"></canvas>
-    <div id="status" class="status">idle</div>
-    <section class="panel" aria-label="Magenta RealTime 2 controls">
-      <label>Prompt A <input id="prompt-a" type="text"></label>
-      <label>Prompt B <input id="prompt-b" type="text"></label>
-      <label>A/B blend <span id="blend-value">0.00</span>
-        <input id="blend" type="range" min="0" max="1" step="0.01" value="0">
-      </label>
-      <div id="knobs" class="knobs"></div>
-      <div class="buttons">
-        <button id="start" type="button">Start</button>
-        <button id="send" type="button" disabled>Send</button>
-      </div>
-    </section>
+    <canvas id="scene" aria-hidden="true"></canvas>
+    <main class="shell">
+      <section class="panel" aria-label="Magenta RealTime 2 controls">
+        <header class="panel-header">
+          <div class="brand-row">
+            <span class="brand">DAYDREAM <span class="brand-divider">/</span> DEMON</span>
+          </div>
+          <div class="title-row">
+            <div>
+              <h1>MRT2</h1>
+              <p>Magenta RealTime 2</p>
+            </div>
+            <span class="title-mark" aria-hidden="true">M/2</span>
+          </div>
+          <div id="status" class="status">idle</div>
+        </header>
+
+        <div class="control-section">
+          <div class="section-heading"><span>01</span> Prompt source</div>
+          <label class="field">
+            <span class="field-label">Prompt A</span>
+            <input id="prompt-a" type="text" autocomplete="off">
+          </label>
+          <label class="field">
+            <span class="field-label">Prompt B</span>
+            <input id="prompt-b" type="text" autocomplete="off">
+          </label>
+          <label class="field blend-field">
+            <span class="field-heading"><span class="field-label">A/B blend</span><span id="blend-value" class="readout">0.00</span></span>
+            <input id="blend" type="range" min="0" max="1" step="0.01" value="0">
+            <span class="blend-endpoints" aria-hidden="true"><span>A</span><span>B</span></span>
+          </label>
+        </div>
+
+        <div class="control-section parameters">
+          <div class="section-heading"><span>02</span> Parameters</div>
+          <div id="knobs" class="knobs"></div>
+        </div>
+
+        <div class="buttons">
+          <button id="start" class="start-button" type="button">Start</button>
+          <button id="send" class="send-button" type="button" disabled>Send prompt</button>
+        </div>
+      </section>
+    </main>
     <script type="module" src="./mrt2.js"></script>
   </body>
 </html>

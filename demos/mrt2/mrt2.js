@@ -149,7 +149,14 @@ async function disconnect() {
 function renderKnobs() {
   const nodes = state.knobs.map(({ name, entry }) => {
     const label = document.createElement("label");
+    label.className = "knob-control";
+    const heading = document.createElement("span");
+    heading.className = "knob-heading";
+    const caption = document.createElement("span");
+    caption.className = "knob-label";
+    caption.textContent = name.replace(/^mrt2_/, "").replace(/_/g, " ");
     const value = document.createElement("span");
+    value.className = "knob-value";
     const input = document.createElement("input");
     input.type = "range";
     input.min = String(entry.min ?? 0);
@@ -164,7 +171,8 @@ function renderKnobs() {
       value.textContent = ` ${Number(input.value).toFixed(entry.type === "int" ? 0 : 2)}`;
       sendParams();
     });
-    label.append(name.replace(/^mrt2_/, "").replace(/_/g, " "), value, input);
+    heading.append(caption, value);
+    label.append(heading, input);
     return label;
   });
   els.knobs.replaceChildren(...nodes);
@@ -190,32 +198,50 @@ function readAnalyser() {
   state.rms = Math.sqrt(sum / state.wave.length);
 }
 
-// spectrum canvas
 const ctx2d = els.canvas.getContext("2d");
-
 function resize() {
   const dpr = Math.min(window.devicePixelRatio, 2);
   els.canvas.width = Math.round(window.innerWidth * dpr);
   els.canvas.height = Math.round(window.innerHeight * dpr);
 }
-
 function drawSpectrum() {
   const { width, height } = els.canvas;
-  ctx2d.fillStyle = "#07080b";
-  ctx2d.fillRect(0, 0, width, height);
+  ctx2d.clearRect(0, 0, width, height);
   const hue = 210 - Number(els.blend.value) * 185; // A = cool blue, B = warm orange
   const bucket = Math.floor(384 / BAR_COUNT);
-  const barW = width / BAR_COUNT;
+  const left = width > 760 ? width * 0.42 : width * 0.04;
+  const barW = (width - left - width * 0.04) / BAR_COUNT;
+  const baseline = height * 0.76;
+  const gradient = ctx2d.createLinearGradient(0, baseline - height * 0.42, 0, baseline);
+  gradient.addColorStop(0, `hsla(${hue} 78% 70% / 0.9)`);
+  gradient.addColorStop(1, `hsla(${hue} 72% 46% / 0.42)`);
+  ctx2d.strokeStyle = `hsla(${hue} 46% 66% / 0.1)`;
+  ctx2d.lineWidth = 1;
+  for (const y of [0.34, 0.55, 0.76]) {
+    ctx2d.beginPath();
+    ctx2d.moveTo(left, height * y);
+    ctx2d.lineTo(width * 0.96, height * y);
+    ctx2d.stroke();
+  }
+  ctx2d.strokeStyle = gradient;
+  ctx2d.lineWidth = Math.max(2, barW * 0.43);
+  ctx2d.lineCap = "round";
+  ctx2d.shadowColor = `hsla(${hue} 85% 62% / 0.5)`;
+  ctx2d.shadowBlur = Math.min(18, barW * 1.5);
   for (let i = 0; i < BAR_COUNT; i++) {
     let level = 0;
     if (state.freq) {
       for (let k = 0; k < bucket; k++) level += state.freq[i * bucket + k];
       level /= bucket * 255;
     }
-    const h = Math.max(2, level * height * 0.7);
-    ctx2d.fillStyle = `hsl(${hue + level * 30} 75% ${35 + level * 30}%)`;
-    ctx2d.fillRect(i * barW + 1, height - h, barW - 2, h);
+    const h = Math.max(1, level * height * 0.42);
+    const x = left + (i + 0.5) * barW;
+    ctx2d.beginPath();
+    ctx2d.moveTo(x, baseline);
+    ctx2d.lineTo(x, baseline - h);
+    ctx2d.stroke();
   }
+  ctx2d.shadowBlur = 0;
 }
 
 // render loop
