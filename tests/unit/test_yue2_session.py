@@ -204,3 +204,36 @@ def test_create_runs_the_anchor_solve_and_decode_under_the_gpu_gate(monkeypatch)
         assert context.released == []  # the session owns the bundle now
     finally:
         _close(ss)
+
+
+# ---- review v2: songs shorter than the 37-frame VAE window ----
+
+
+def test_budget_has_a_floor_above_the_vae_window(monkeypatch):
+    from acestep.engine.yue2_trt import VAE_CTX_FRAMES
+
+    context = _FakeContext()
+    ss = _create(monkeypatch, context, yue2_duration_s=1)
+    try:
+        assert context.compose_calls[0]["max_frames"] == 50  # 2 s
+        assert context.compose_calls[0]["max_frames"] >= VAE_CTX_FRAMES
+    finally:
+        _close(ss)
+
+
+def test_a_song_shorter_than_the_vae_window_fails_create_clearly(monkeypatch):
+    context = _FakeContext(frames=30, has_trt=False)
+    with pytest.raises(ValueError, match="at least 37 frames"):
+        _create(monkeypatch, context, yue2_duration_s=2)
+    assert len(context.released) == 1  # the bundle made before the check
+
+
+def test_semantic_budget_never_allows_a_song_under_the_vae_window():
+    from acestep.engine.yue2_context import YuE2Context
+    from acestep.engine.yue2_trt import VAE_CTX_FRAMES
+
+    eager = SimpleNamespace(has_trt_nar=False)
+    assert YuE2Context.semantic_budget(eager, 50)["min_tokens"] == VAE_CTX_FRAMES
+    trt = SimpleNamespace(has_trt_nar=True)
+    assert YuE2Context.semantic_budget(trt, 500)["min_tokens"] == VAE_CTX_FRAMES
+    assert YuE2Context.semantic_budget(trt, 2500)["min_tokens"] == 1000

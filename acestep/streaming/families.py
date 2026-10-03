@@ -713,8 +713,8 @@ YUE2 = FamilySpec(
         ),
         FamilyConfigField(
             "yue2_duration_s", "float",
-            "Longest song yue2 may compose, seconds (at most 100). The model "
-            "decides the actual length within it. Absent or null allows 100 s. "
+            "Longest song yue2 may compose, seconds (2 to 100, clamped). The "
+            "model decides the actual length within it. Absent or null allows 100 s. "
             "Fixed for the session lifetime.",
         ),
     ),

@@ -9,8 +9,8 @@ Shaped like :mod:`acestep.streaming.sa3_session`. :func:`create_yue2_session`:
   distinct ``prompt_b`` composes a second song at the same length. This
   is seconds of AR before ``ready``; the client shows "composing".
 * **Text only**: an uploaded or synthesised source is ignored; the song
-  length is the semantic stage's, capped by ``yue2_duration_s`` (at most
-  100 s, the flexible NAR engine's cover). Geometry is fixed for the
+  length is the semantic stage's, capped by ``yue2_duration_s`` (2 to
+  100 s: the window decoder's floor, the flexible NAR engine's cover). Geometry is fixed for the
   session.
 * **Initial buffer = the anchor**, decoded, so audio plays from ``ready``.
 * **ACE-only fields neutral**; the backend is built by the registry
@@ -23,6 +23,7 @@ import threading
 import time
 
 from acestep.engine.obs import logger
+from acestep.engine.yue2_trt import VAE_CTX_FRAMES
 from acestep.streaming.knobs import KnobState
 from acestep.streaming.source import SAMPLE_RATE
 from acestep.streaming.state import SessionState
@@ -47,6 +48,10 @@ YUE2_VAE_WINDOW_S = 0.4
 
 #: Song budget when the client sets no ``yue2_duration_s``.
 YUE2_DEFAULT_BUDGET_S = YUE2_MAX_SONG_S
+
+#: Shortest song budget: the window decoder needs at least
+#: ``VAE_CTX_FRAMES`` (37 frames, 1.48 s); 2 s leaves whole cores.
+YUE2_MIN_SONG_S = 2.0
 
 _CONTEXTS: dict = {}
 _CONTEXTS_LOCK = threading.Lock()
@@ -84,7 +89,7 @@ def evict_yue2_contexts() -> int:
 def song_budget_frames(config) -> int:
     """Semantic token budget (= latent frames) for this session."""
     requested = float(config.family_config.get("yue2_duration_s") or 0.0) or YUE2_DEFAULT_BUDGET_S
-    seconds = max(1.0, min(requested, YUE2_MAX_SONG_S))
+    seconds = max(YUE2_MIN_SONG_S, min(requested, YUE2_MAX_SONG_S))
     return int(round(seconds * LATENT_RATE_HZ))
 
 
@@ -115,6 +120,12 @@ def compose_song(context, cleanup, *, prompt: str, prompt_b: str, lyrics: str, s
     t1 = time.perf_counter()
     bundle = context.bundle(composition)
     cleanup.callback(context.release_bundle, bundle)
+    if bundle.frames < VAE_CTX_FRAMES:
+        raise ValueError(
+            f"yue2 composed a {bundle.frames}-frame song; the window decoder needs at least "
+            f"{VAE_CTX_FRAMES} frames ({VAE_CTX_FRAMES / LATENT_RATE_HZ:.2f} s). Try a longer "
+            "yue2_duration_s or different lyrics."
+        )
     t2 = time.perf_counter()
     with context.gpu_gate:
         anchor = context.solve(bundle)

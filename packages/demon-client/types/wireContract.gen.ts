@@ -543,7 +543,7 @@ export interface SessionConfigPayload {
   minimax_seed?: number | null;
   /** Lyrics for yue2 sessions in YuE section format ([Verse], [Chorus], [Outro] headers, one lyric line per line). Absent or null renders an instrumental song. Fixed for the session lifetime. */
   yue2_lyrics?: string | null;
-  /** Longest song yue2 may compose, seconds (at most 100). The model decides the actual length within it. Absent or null allows 100 s. Fixed for the session lifetime. */
+  /** Longest song yue2 may compose, seconds (2 to 100, clamped). The model decides the actual length within it. Absent or null allows 100 s. Fixed for the session lifetime. */
   yue2_duration_s?: number | null;
   // SessionConfig is permissive; extras pass through.
   [k: string]: unknown;

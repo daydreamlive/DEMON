@@ -45,6 +45,7 @@ from acestep.engine.yue2_runtime import (
 )
 from acestep.engine.yue2_trt import (
     FLEX_FRAMES,
+    VAE_CTX_FRAMES,
     TRTVelocity,
     TRTWindowVAE,
     decode_span,
@@ -227,11 +228,12 @@ class YuE2Context:
         """Semantic sampling bounds for a song of at most ``max_frames``.
         With the flexible NAR engine, songs are held to its 1000-frame
         floor (40 s) when the budget allows, so they land on TRT instead
-        of the several-times-slower eager NAR. ``exact_frames`` forces
-        the length (a re-compose keeps the session geometry)."""
+        of the several-times-slower eager NAR; never below the window
+        decoder's 37 frames. ``exact_frames`` forces the length (a
+        re-compose keeps the session geometry)."""
         if exact_frames is not None:
             return {"min_tokens": int(exact_frames), "max_tokens": int(exact_frames)}
-        floor = FLEX_FRAMES[0] if self.has_trt_nar and max_frames >= FLEX_FRAMES[0] else 1
+        floor = FLEX_FRAMES[0] if self.has_trt_nar and max_frames >= FLEX_FRAMES[0] else VAE_CTX_FRAMES
         return {"min_tokens": floor, "max_tokens": int(max_frames)}
 
     def compose(self, *, style: str, lyrics: str, seed: int, max_frames: int,
