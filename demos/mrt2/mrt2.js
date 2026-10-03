@@ -12,7 +12,7 @@ const DEFAULT_PROMPT_B = "ambient piano, slow strings, tape hiss";
 const state = {
   remote: null, player: null, analyser: null, freq: null, wave: null,
   status: "idle", slices: 0, lastEndSec: 0, windowSec: 0, rms: 0,
-  knobs: [], values: {}, paramsTimer: null, error: "",
+  knobs: [], values: {}, paramsTimer: null, error: "", gen: 0,
 };
 
 // DOM
@@ -89,7 +89,9 @@ function sendParams() {
   state.remote.sendParams(state.values, state.player.positionSec);
 }
 
+// disconnect() bumps state.gen, so a connect() still awaiting drops what it built.
 async function connect() {
+  const gen = state.gen;
   const [prompt, promptB] = promptPair();
   const config = { telemetry_version: 1, backend: "mrt2", prompt, prompt_b: promptB };
   const remote = new RemoteBackend(
@@ -99,11 +101,13 @@ async function connect() {
   state.remote = remote;
   remote.addEventListener("slice", handleSlice);
   remote.addEventListener("close", () => {
-    if (remote.closedByUser) return;
+    if (remote.closedByUser || state.remote !== remote) return;
     state.error = "connection lost";
     setStatus("error");
   });
   await remote.connect();
+  if (gen !== state.gen) return void remote.close();
+  if (!remote.initialBuffer) throw new Error("server sent no initial buffer");
   console.info("mrt2 session", remote.backendSessionId);
   setStatus("ready");
 
@@ -115,8 +119,17 @@ async function connect() {
   renderKnobs();
 
   const player = new AudioPlayer({ workletUrl: "/sdk/audio-worklet.js" });
-  await player.init(remote.initialBuffer, remote.channels);
-  await player.resume();
+  try {
+    await player.init(remote.initialBuffer, remote.channels);
+    await player.resume();
+  } catch (err) {
+    try { await player.close(); } catch {}
+    throw err;
+  }
+  if (gen !== state.gen) {
+    try { await player.close(); } catch {}
+    return void remote.close();
+  }
   state.player = player;
   state.windowSec = remote.initialBuffer.length / remote.channels / SAMPLE_RATE;
   attachAnalyser(player);
@@ -125,6 +138,7 @@ async function connect() {
 }
 
 async function disconnect() {
+  state.gen += 1;
   window.clearInterval(state.paramsTimer);
   state.paramsTimer = null;
   try { await state.player?.close(); } catch {}
@@ -250,11 +264,14 @@ els.start.addEventListener("click", async () => {
     await disconnect();
     return;
   }
+  await disconnect(); // tear down any session left behind by an error
   state.error = "";
   setStatus("connecting");
+  const gen = state.gen;
   try {
     await connect();
   } catch (err) {
+    if (gen !== state.gen) return; // Stop was pressed mid-connect
     await disconnect();
     state.error = err instanceof Error ? err.message : String(err);
     setStatus("error");
