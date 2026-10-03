@@ -1,12 +1,12 @@
 # DEMON
 
-<p align="center"><strong>StreamDiffusion, for audio.</strong></p>
+<p align="center"><strong>A platform for real-time music generation.</strong></p>
 <p align="center"><sub>Diffusion Engine for Musical Orchestrated Noise</sub></p>
 
 <p align="center">
   <a href="LICENSE"><img alt="License: AGPL-3.0-or-later + MIT" src="https://img.shields.io/badge/license-AGPL--3.0--or--later%20%2B%20MIT-blue.svg"></a>
   <img alt="Python 3.11" src="https://img.shields.io/badge/python-3.11-blue.svg">
-  <a href="https://huggingface.co/ACE-Step/Ace-Step1.5"><img alt="Built on ACE-Step v1.5" src="https://img.shields.io/badge/built%20on-ACE--Step%20v1.5-yellow.svg"></a>
+  <a href="#model-families"><img alt="Model families: 5" src="https://img.shields.io/badge/model%20families-5-yellow.svg"></a>
 </p>
 
 <p align="center">
@@ -19,7 +19,7 @@
 </p>
 <p align="center"><sub><em>The DEMON realtime web demo — live control drawer, automation curves, and audio-reactive visuals.</em></sub></p>
 
-DEMON is **StreamDiffusion, for audio** — a GPU-accelerated streaming diffusion engine that generates and transforms music in real time, built on [ACE-Step v1.5](https://huggingface.co/ACE-Step/Ace-Step1.5). It streams continuous, low-latency audio you can steer live: every modulation parameter is a per-frame knob you can sweep while the model plays, and the streaming output is bit-identical to a batch run.
+DEMON is a platform for real-time music generation: one streaming engine, one wire protocol, one client SDK, and interchangeable generative model families behind it. A pod boots one family (`--checkpoint <alias>`), and every client, demo and integration talks the same protocol whichever family is loaded. The deepest controls come from the original family, [ACE-Step v1.5](https://huggingface.co/ACE-Step/Ace-Step1.5): every modulation parameter is a per-frame knob you can sweep while the model plays, and the streaming output is bit-identical to a batch run.
 
 > Don't have a GPU, or just want to play first? Try the hosted instance at **[music.daydream.live](https://music.daydream.live)**.
 
@@ -44,7 +44,23 @@ DEMON is **StreamDiffusion, for audio** — a GPU-accelerated streaming diffusio
 
 ## What DEMON is
 
-DEMON is a streaming diffusion engine for ACE-Step v1.5. Think StreamDiffusion, for audio: a ring buffer holds several in-flight generations at different denoising stages, advanced together per tick. After warmup, finished latents stream out at a steady rate of `depth/steps` generations per tick. End-to-end TensorRT keeps the tick tight; per-frame modulation knobs accept scalars or `[T]` curves and are hot-mutable mid-stream; ring buffer depth itself is hot-resizable. Streaming output is bit-identical to batch.
+DEMON streams music from a generative model while you steer it. The runtime is shared: the streaming runner, the WebSocket wire protocol, the knob manifest, the client SDK ([`packages/demon-client`](packages/demon-client/)), the bundled demos and the integrations. The model is a *family* plugged in behind it. Each family declares what it supports (capabilities, knobs, handshake fields), and clients read that from the protocol instead of assuming a model.
+
+DEMON began as a streaming diffusion engine for ACE-Step v1.5 (described in the [paper](https://arxiv.org/abs/2605.28657)), and that engine is still the core of the ACE-Step and Stable Audio 3 families. Think StreamDiffusion, for audio: a ring buffer holds several in-flight generations at different denoising stages, advanced together per tick. After warmup, finished latents stream out at a steady rate of `depth/steps` generations per tick. End-to-end TensorRT keeps the tick tight; per-frame modulation knobs accept scalars or `[T]` curves and are hot-mutable mid-stream; ring buffer depth itself is hot-resizable. Streaming output is bit-identical to batch.
+
+### Model families
+
+| Family | Kind | Steering | Boot alias | Measured realtime (RTX 5090) | Status / notes |
+|---|---|---|---|---|---|
+| [ACE-Step v1.5](https://huggingface.co/ACE-Step/Ace-Step1.5) (turbo 2B, XL turbo 5B) | Streaming diffusion, in process | Per-frame curves on every solver knob, prompt A/B morphing, LoRA hot-swap, timbre and structure references, audio in | none (default); `xl` for XL turbo | ~43 ms tick, 11.3 generations/s at depth 4 (turbo 2B, 60 s songs; see [Performance](#performance)) | Default family and what `demon-setup` installs; TensorRT end to end |
+| [Stable Audio 3](https://huggingface.co/stabilityai/stable-audio-3-small-music) (small-music, medium) | Streaming diffusion through the same pipeline, via a model adapter | Per-frame curves and prompt morphing (shared with ACE-Step through `StreamPipeline`) | `sa3-small`, `sa3-medium` | TODO(measure) | Weights are a manual download ([docs/INSTALL.md](docs/INSTALL.md)) |
+| Magenta RealTime 2 (`mrt2_small`, `mrt2_base`) | Autoregressive, in a JAX sidecar process | Prompt A/B blend (MusicCoCa embeddings), sampling and guidance knobs; append-only, text only | `mrt2-sidecar` | `mrt2_small` ~1.7x; `mrt2_base` ~0.93x (below realtime, expect underruns) | Experimental; the sidecar runs in a Linux/WSL venv |
+| [MiniMax-Music3](https://huggingface.co/MiniMaxAI/MiniMax-Music3) | Autoregressive language model plus a flow-matching renderer, in process | Style prompt (re-prefills against the audio already written), lyrics at connect; append-only, text only, no prompt blend | `minimax-music3` | ~1.3x steady; first audio ~6 s after connect | Experimental; the AR stage holds ~21 GB of VRAM; knob-to-ear is seconds, not milliseconds |
+| [YuE2](https://github.com/multimodal-art-projection/YuE) (3B) | Song-level: semantic AR plus 32-step acoustic flow matching, in a sidecar process | Genre prompt and lyrics; every change renders a new whole song | `yue2-3b` | A 59 s song renders in 17.3 s (3.41x); a change is heard when the next song finishes | Experimental, the least live-ready family; weights CC BY-NC 4.0 |
+
+Per-frame curves, morphing, LoRAs and audio input are diffusion-family features (ACE-Step, and Stable Audio 3 where noted). Magenta RealTime 2, MiniMax-Music3 and YuE2 are append-only streams steered by prompt (and lyrics); they ignore uploaded audio.
+
+The pod picks its family at boot from `--checkpoint`, and a client that omits `backend` from its handshake gets the pod's family. Switching families means restarting the server with another alias. Prerequisites, knobs and known gaps for each family, and the contract for adding one, are in [docs/FAMILIES.md](docs/FAMILIES.md).
 
 **Who it's for:**
 
@@ -80,7 +96,21 @@ uv run python -u -m demos.realtime_motion_graph_web.run
 # open http://localhost:6660
 ```
 
-### Stable Audio 3 demo
+**What you'll see and hear.** The page loads with a default fixture already selected. Click **Play** (browsers gate audio behind a click, so this also unlocks sound). The first start takes ~15 s while the model and TensorRT engines load (longer under `--accel compile`); then the HUD goes live and audio streams continuously. Once a session is playing, the spectral-control sliders live in the control drawer's **Experimental** tab; they steer generation itself, so changes land on the upcoming audio after a moment; sweep slowly and listen.
+
+> **The bare launch command runs all-TensorRT by default**, which needs the engines `demon-setup` just built. If they are missing, the server exits at boot and prints the exact fix. If you ran `demon-setup --skip-engines`, you **must** launch with `-- --accel compile` (no engines needed; expect a long `torch.compile` warmup on the first tick).
+
+**Where things live.** Everything downloads to `~/.daydream-scope/models/demon/` (override with the `ACESTEP_MODELS_DIR` environment variable), *not* into the repository: checkpoints under `<models dir>/checkpoints/`, Stable Audio 3 source under `<models dir>/sa3/vendor/`, TensorRT engines under `<models dir>/trt_engines/`. The ACE-Step models must be the v1.5 weights fetched by `demon-setup` (equivalently `uv run acestep-download`); do not substitute other checkpoints or paths. Full directory tree, manual download, engine-build options, headless/pod notes, and a troubleshooting table are in [docs/INSTALL.md](docs/INSTALL.md).
+
+**Audio fixtures** pull on first use from the [`daydreamlive/demon-fixtures-v2`](https://huggingface.co/datasets/daydreamlive/demon-fixtures-v2) Hugging Face dataset (the older `daydreamlive/demon-fixtures` is kept as a fallback) and materialize under `<models dir>/fixtures/`. See [`acestep/fixtures.py`](acestep/fixtures.py) for the canonical set.
+
+**Starter LoRAs.** `demon-setup` downloads a starter pack of 16 genre LoRAs (jazz, phonk, lo-fi, punk, acoustic, ambient, and deep house in 2B and XL variants, plus funk and deathstep; skip with `--skip-loras`). To add your own, drop a `.safetensors` file (optionally with a `<stem>.metadata.json` sidecar) anywhere under `$ACESTEP_MODELS_DIR/loras/` (defaults to `~/.daydream-scope/models/demon/loras/`) and it will appear in any consumer that scans the library on next refresh. See [`acestep/paths.py`](acestep/paths.py) and [`acestep/lora_metadata.py`](acestep/lora_metadata.py).
+
+### Other families
+
+The default install above is the ACE-Step family. Each other family boots from the same launcher with its alias, and its demo page is served by the backend on `:1318`. Use the space form `--checkpoint <alias>`; `--checkpoint=<alias>` is ignored and the pod boots ACE-Step.
+
+#### Stable Audio 3
 
 The SA3 UI is a separate static demo mounted at `/sa3/`. It starts
 sessions with `backend: "sa3"`, but the SA3 model variant is resolved
@@ -98,17 +128,44 @@ if you are running the backend directly). Opening `/sa3/` against the
 default ACE-Step checkpoint will not switch models; restart the backend
 with `--checkpoint sa3-small` or `--checkpoint sa3-medium`.
 
-**What you'll see and hear.** The page loads with a default fixture already selected. Click **Play** — browsers gate audio behind a click, so this also unlocks sound. The first start takes ~15 s while the model and TensorRT engines load (longer under `--accel compile`); then the HUD goes live and audio streams continuously. Once a session is playing, the spectral-control sliders live in the control drawer's **Experimental** tab — they steer generation itself, so changes land on the upcoming audio after a moment; sweep slowly and listen.
+#### Magenta RealTime 2
 
-> **The bare launch command runs all-TensorRT by default**, which needs the engines `demon-setup` just built. If they are missing, the server exits at boot and prints the exact fix. If you ran `demon-setup --skip-engines`, you **must** launch with `-- --accel compile` (no engines needed; expect a long `torch.compile` warmup on the first tick).
+Start the sidecar first, in a Linux/WSL venv with `magenta_rt`, JAX (CUDA) and numpy (no torch). It listens on `127.0.0.1:7531` after a ~30 s JIT warmup (override with `DEMON_MRT2_SIDECAR=host:port`):
 
-**Where things live.** Everything downloads to `~/.daydream-scope/models/demon/` (override with the `ACESTEP_MODELS_DIR` environment variable), *not* into the repository: checkpoints under `<models dir>/checkpoints/`, Stable Audio 3 source under `<models dir>/sa3/vendor/`, TensorRT engines under `<models dir>/trt_engines/`. The models must be the ACE-Step v1.5 weights fetched by `demon-setup` (equivalently `uv run acestep-download`) — do not substitute other checkpoints or paths. Full directory tree, manual download, engine-build options, headless/pod notes, and a troubleshooting table are in [docs/INSTALL.md](docs/INSTALL.md).
+```bash
+python scripts/mrt2_sidecar.py --model mrt2_small
+```
 
-**Audio fixtures** pull on first use from the [`daydreamlive/demon-fixtures-v2`](https://huggingface.co/datasets/daydreamlive/demon-fixtures-v2) Hugging Face dataset (the older `daydreamlive/demon-fixtures` is kept as a fallback) and materialize under `<models dir>/fixtures/`. See [`acestep/fixtures.py`](acestep/fixtures.py) for the canonical set.
+Then boot the server and open `http://localhost:1318/mrt2/` (the web app's `/magenta` page on `:6660` drives the same family):
 
-**Starter LoRAs.** `demon-setup` downloads a starter pack of 16 genre LoRAs (jazz, phonk, lo-fi, punk, acoustic, ambient, and deep house in 2B and XL variants, plus funk and deathstep; skip with `--skip-loras`). To add your own, drop a `.safetensors` file (optionally with a `<stem>.metadata.json` sidecar) anywhere under `$ACESTEP_MODELS_DIR/loras/` (defaults to `~/.daydream-scope/models/demon/loras/`) and it will appear in any consumer that scans the library on next refresh. See [`acestep/paths.py`](acestep/paths.py) and [`acestep/lora_metadata.py`](acestep/lora_metadata.py).
+```bash
+uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint mrt2-sidecar
+```
+
+#### MiniMax-Music3
+
+Needs the diffusers layout of [`MiniMaxAI/MiniMax-Music3`](https://huggingface.co/MiniMaxAI/MiniMax-Music3) (~18 GB bf16 LM + 2.4B DiT + DAV decoder) under `DEMON_MINIMAX_DIR`, `<models dir>/minimax/checkpoints/MiniMax-Music3`, or the local Hugging Face cache. An optional fp16 TensorRT engine for the renderer is built by `acestep/engine/trt/minimax_build.py`; without it the renderer runs eager.
+
+```bash
+uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint minimax-music3
+# open http://localhost:1318/minimax/
+```
+
+#### YuE2
+
+Needs the `m-a-p/YuE2-3B` and `m-a-p/YuE2-Vae` weights under `DEMON_YUE2_ROOT` and the upstream YuE source under `DEMON_YUE2_YUE_SRC` (see [docs/FAMILIES.md](docs/FAMILIES.md) for pinned revisions and the optional TensorRT engine). Start the sidecar in the DEMON venv, then the server:
+
+```bash
+DEMON_YUE2_ROOT=E:/models/yue2 DEMON_YUE2_YUE_SRC=E:/src/YuE-0edaf2f4/src python scripts/yue2_sidecar.py
+uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint yue2-3b
+# open http://localhost:1318/yue2/
+```
+
+The page plays silence until the first song finishes rendering.
 
 ## Features
+
+These are the ACE-Step family's features. Stable Audio 3 shares the streaming pipeline (ring buffer, slot batching, shared curves and CFG) through its model adapter.
 
 - **Streaming diffusion for ACE-Step v1.5** — a ring buffer of in-flight generations advanced one denoise step per tick; throughput is `depth/steps` finished generations per tick, and depth is hot-resizable mid-stream.
 - **End-to-end TensorRT** — the DiT decoder and VAE encode/decode all run through TRT, and the decoder is refit-enabled so LoRA swaps never rebuild an engine.
@@ -121,6 +178,8 @@ with `--checkpoint sa3-small` or `--checkpoint sa3-medium`.
 See [Engine internals](#engine-internals) for the full mechanism behind each of these.
 
 ## Performance
+
+These numbers are for the ACE-Step family; figures for the other families are in the [Model families](#model-families) table.
 
 RTX 5090, ACE-Step v1.5 turbo (2B), all-TRT, `depth=4`, `steps=8`, `vae_window=3s`, 60 s source.
 
@@ -136,6 +195,8 @@ RTX 5090, ACE-Step v1.5 turbo (2B), all-TRT, `depth=4`, `steps=8`, `vae_window=3
 Tested on NVIDIA RTX 3090, 4090, and 5090. The demo fits comfortably on a 24 GB card such as an RTX 4090 (see the VRAM breakdown under [Tuning](#tuning)).
 
 ## Tuning
+
+This section applies to the ACE-Step family.
 
 Three knobs trade off against each other. Picking the right point on the curve is what makes DEMON run well on a given card.
 
@@ -159,6 +220,8 @@ These are per-engine peaks captured in separate subprocesses, not a live-runtime
 </details>
 
 ## Acceleration backends
+
+These backends apply to the ACE-Step family; other families document their own acceleration in [docs/FAMILIES.md](docs/FAMILIES.md).
 
 The DiT decoder and the VAE pick a backend independently. Three values each: `tensorrt`, `compile`, `eager`.
 
@@ -185,6 +248,8 @@ uv run python -u -m demos.realtime_motion_graph_web.run -- \
 **Recommended baseline: TRT windowed VAE decoder at minimum.** It is the cheapest TRT engine to build, it is checkpoint- and duration-agnostic, and it unlocks the low-latency streaming path. Pair it with `--decoder-accel compile` if you do not want to build the decoder engine yet.
 
 ## Programmatic use: the Session API
+
+This section applies to the ACE-Step family. Every family is reachable through the wire protocol and the client SDK.
 
 The Session API is the engine's primary surface. Load the model once, then iterate.
 
@@ -264,6 +329,8 @@ Quick-start scripts:
 </details>
 
 ## Building TensorRT engines
+
+These engines are for the ACE-Step family.
 
 DEMON targets TensorRT 10.16.x. Plans are version- and GPU-architecture-specific by default, so rebuild after changing TensorRT, CUDA, driver, or the GPU used for inference. The minimal set for the realtime web demo (what `demon-setup` builds) is the 60 s profile (decoder + VAE encode/decode) plus the fixed 1 s windowed VAE decode:
 
@@ -395,6 +462,8 @@ See [`demos/realtime_motion_graph_web/README.md`](demos/realtime_motion_graph_we
 
 ## Engine internals
 
+These mechanisms make up the streaming diffusion pipeline behind the ACE-Step family; Stable Audio 3 uses the same pipeline through its model adapter.
+
 The capabilities listed under [Features](#features) come from a handful of mechanisms in the streaming pipeline. The full surface:
 
 <details>
@@ -417,7 +486,9 @@ The capabilities listed under [Features](#features) come from a handful of mecha
 
 ## How DEMON compares
 
-DEMON is to audio what StreamDiffusion is to images: a streaming, real-time-steerable diffusion runtime. Here is how it relates to its closest points of reference — a relationship map, not a benchmark:
+Most music generation servers wrap one model. DEMON puts one protocol and one SDK in front of several model families, and clients read each family's capabilities and knobs from that protocol instead of hard-coding a model.
+
+For the ACE-Step family, DEMON is to audio what StreamDiffusion is to images: a streaming, real-time-steerable diffusion runtime. Here is how it relates to its closest points of reference (a relationship map, not a benchmark):
 
 | | DEMON | ACE-Step v1.5 (upstream) | StreamDiffusion |
 |---|---|---|---|
@@ -436,7 +507,7 @@ The main DEMON paper is on arXiv; two companion technical notes are forthcoming:
 - FastOobleckDecoder (VAE distillation) — *forthcoming*
 - Latent Channel Semantics (64-channel VAE characterization) — *forthcoming*
 
-If you use DEMON in your work, please cite both DEMON and the underlying ACE-Step model:
+If you use DEMON in your work, please cite DEMON and the model of the family you used. For the ACE-Step family:
 
 ```bibtex
 @article{fosdick2026demon,
@@ -473,9 +544,15 @@ Then open a pull request or file an issue on GitHub.
 
 ## Acknowledgments
 
-DEMON is built on top of [ACE-Step](https://github.com/ace-step/ACE-Step). The base diffusion model, VAE, text encoder, and 5 Hz LM are all ACE-Step's work; without them, none of this exists. Huge thanks to the ACE-Step team for releasing the v1.5 weights and code under MIT.
+DEMON began as a streaming engine for [ACE-Step](https://github.com/ace-step/ACE-Step) v1.5 and still owes its deepest controls to that model. DEMON does not train or own any of the models it runs; each family is its upstream team's work:
 
-If you use DEMON in your work, please also cite ACE-Step.
+- **ACE-Step v1.5**: the ACE-Step team. The base diffusion model, VAE, text encoder, and 5 Hz LM are all ACE-Step's work; without them, none of this exists. Huge thanks for releasing the v1.5 weights and code under MIT.
+- **Stable Audio 3**: Stability AI ([`stabilityai`](https://huggingface.co/stabilityai) on Hugging Face).
+- **Magenta RealTime 2**: Google Magenta (`magenta_rt`).
+- **MiniMax-Music3**: MiniMax ([`MiniMaxAI/MiniMax-Music3`](https://huggingface.co/MiniMaxAI/MiniMax-Music3)).
+- **YuE2**: the m-a-p YuE team ([`multimodal-art-projection/YuE`](https://github.com/multimodal-art-projection/YuE); weights [`m-a-p/YuE2-3B`](https://huggingface.co/m-a-p/YuE2-3B)). The weights are CC BY-NC 4.0 (code Apache-2.0) and are not cleared for hosted or commercial use.
+
+If you use DEMON in your work, please also cite the upstream model you ran.
 
 ## Authors
 
