@@ -77,7 +77,14 @@ class SA3Adapter:
     #: an engine input; the eager path ignores it (hooks deliver instead).
     accepts_steering = True
 
-    def _eager_blocks(self):
+    #: Hook point the EAGER forward delivers steering at (TRT engines
+    #: report their own via ``steering_hook``). ``post_block_residual``
+    #: hooks the trunk blocks; ``cross_attn_output`` hooks each block's
+    #: ``cross_attn`` module (TADA's site, arXiv 2602.11910). The backend
+    #: sets it from the hook its steering packs target.
+    steering_hook = "post_block_residual"
+
+    def _trunk_blocks(self):
         """The trunk blocks of the eager DiT wrapper, or None."""
         if getattr(self.dit, "trt_batch1", False):
             return None
@@ -88,6 +95,24 @@ class SA3Adapter:
         except LayoutError:
             return None
 
+    def _eager_blocks(self):
+        """The eager modules whose outputs receive slot row ``i``: the
+        trunk blocks, or their ``cross_attn`` modules for the
+        ``cross_attn_output`` hook. None when not eager / not resolvable.
+        The sequence is cached per trunk so the pipeline's identity check
+        (``blocks is self._steering_hooked_blocks``) holds across ticks."""
+        blocks = self._trunk_blocks()
+        if blocks is None or self.steering_hook != "cross_attn_output":
+            return blocks
+        cache = getattr(self, "_xattn_cache", None)
+        if cache is not None and cache[0] is blocks:
+            return cache[1]
+        mods = [getattr(b, "cross_attn", None) for b in blocks]
+        if not mods or any(m is None for m in mods):
+            return None
+        self._xattn_cache = (blocks, mods)
+        return mods
+
     def steering_layout(self):
         """SA3 DiT layout: one slot per trunk block, ``embed_dim`` wide.
 
@@ -95,7 +120,7 @@ class SA3Adapter:
         (engines built before the steering surgery have none, so
         steering no-ops there). Eager: the trunk's own blocks.
         """
-        from acestep.steering.layout import SteeringLayout
+        from acestep.steering.layout import HOOK_POST_BLOCK_RESIDUAL, SteeringLayout
 
         if getattr(self.dit, "trt_batch1", False):
             shape = getattr(self.dit, "steering_shape", None)
@@ -103,15 +128,20 @@ class SA3Adapter:
                 return None
             return SteeringLayout(
                 num_blocks=int(shape[0]), hidden_size=int(shape[1]),
+                hook=getattr(self.dit, "steering_hook", None)
+                or HOOK_POST_BLOCK_RESIDUAL,
                 engine_input=True,
             )
-        blocks = self._eager_blocks()
-        if blocks is None or len(blocks) == 0:
+        blocks = self._trunk_blocks()
+        if blocks is None or len(blocks) == 0 or self._eager_blocks() is None:
             return None
         hidden = int(getattr(blocks[0], "dim", 0) or 0)
         if hidden <= 0:
             return None
-        return SteeringLayout(num_blocks=len(blocks), hidden_size=int(hidden))
+        return SteeringLayout(
+            num_blocks=len(blocks), hidden_size=int(hidden),
+            hook=self.steering_hook,
+        )
 
     def steering_blocks(self):
         return self._eager_blocks()

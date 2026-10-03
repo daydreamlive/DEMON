@@ -319,7 +319,7 @@ class SA3Context:
 
     def make_dit(
         self, *, latent_frames: int, seconds_total: float, backend: str = "eager",
-        prefer_refittable: bool = False, prefer_steering: bool = False,
+        prefer_refittable: bool = False, prefer_steering: "bool | str" = False,
     ):
         """The per-step velocity callable for one session: with
         ``backend="tensorrt"``, the built TRT engine when one covers
@@ -338,7 +338,9 @@ class SA3Context:
         engine when one covers the window, and avoid fp8 (whose refit
         story is unproven) otherwise. ``prefer_steering`` (the session has
         steering packs) picks a steering-input engine when one covers the
-        window (see :func:`~acestep.engine.sa3_trt.find_dit_engine`)."""
+        window (see :func:`~acestep.engine.sa3_trt.find_dit_engine`); it
+        may name the hook point the packs target (``"cross_attn_output"``
+        picks the cross-attention steering engine)."""
         from acestep.engine.sa3_trt import SA3TRTDit, find_dit_engine
 
         if backend != "tensorrt":
@@ -351,7 +353,10 @@ class SA3Context:
         engine_path = find_dit_engine(
             self.model_id, int(latent_frames),
             want_refittable=bool(prefer_refittable),
-            want_steering=bool(prefer_steering),
+            want_steering=(
+                prefer_steering if isinstance(prefer_steering, str)
+                else bool(prefer_steering)
+            ),
         )
         if engine_path is None:
             logger.info(
