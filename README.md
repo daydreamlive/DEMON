@@ -46,7 +46,7 @@ DEMON is a platform for real-time music generation: one streaming engine, one wi
 
 DEMON streams music from a generative model while you steer it. The runtime is shared: the streaming runner, the WebSocket wire protocol, the knob manifest, the client SDK ([`packages/demon-client`](packages/demon-client/)), the bundled demos and the integrations. The model is a *family* plugged in behind it. Each family declares what it supports (capabilities, knobs, handshake fields), and clients read that from the protocol instead of assuming a model.
 
-DEMON began as a streaming diffusion engine for ACE-Step v1.5 (described in the [paper](https://arxiv.org/abs/2605.28657)), and that engine is still the core of the ACE-Step and Stable Audio 3 families. Think StreamDiffusion, for audio: a ring buffer holds several in-flight generations at different denoising stages, advanced together per tick. After warmup, finished latents stream out at a steady rate of `depth/steps` generations per tick. End-to-end TensorRT keeps the tick tight; per-frame modulation knobs accept scalars or `[T]` curves and are hot-mutable mid-stream; ring buffer depth itself is hot-resizable. Streaming output is bit-identical to batch.
+DEMON began as a streaming diffusion engine for ACE-Step v1.5 (described in the [paper](https://arxiv.org/abs/2605.28657)), and that engine is still the core of the ACE-Step and Stable Audio 3 families and runs YuE2's acoustic stage. Think StreamDiffusion, for audio: a ring buffer holds several in-flight generations at different denoising stages, advanced together per tick. After warmup, finished latents stream out at a steady rate of `depth/steps` generations per tick. End-to-end TensorRT keeps the tick tight; per-frame modulation knobs accept scalars or `[T]` curves and are hot-mutable mid-stream; ring buffer depth itself is hot-resizable. Streaming output is bit-identical to batch.
 
 ### Model families
 
@@ -56,9 +56,9 @@ DEMON began as a streaming diffusion engine for ACE-Step v1.5 (described in the 
 | [Stable Audio 3](https://huggingface.co/stabilityai/stable-audio-3-small-music) (small-music, medium) | Streaming diffusion through the same pipeline, via a model adapter | Per-frame curves and prompt morphing (shared with ACE-Step through `StreamPipeline`) | `sa3-small`, `sa3-medium` | realtime on an RTX 5090 (figures to follow) | Weights are a manual download ([docs/INSTALL.md](docs/INSTALL.md)) |
 | Magenta RealTime 2 (`mrt2_small`, `mrt2_base`) | Autoregressive, in a JAX sidecar process | Prompt A/B blend (MusicCoCa embeddings), sampling and guidance knobs; append-only, text only | `mrt2-sidecar` | `mrt2_small` ~1.7x; `mrt2_base` ~0.93x (below realtime, expect underruns) | Experimental; the sidecar runs in a Linux/WSL venv |
 | [MiniMax-Music3](https://huggingface.co/MiniMaxAI/MiniMax-Music3) | Autoregressive language model plus a flow-matching renderer, in process | Style prompt (re-prefills against the audio already written), lyrics at connect; append-only, text only, no prompt blend | `minimax-music3` | ~1.3x steady; first audio ~6 s after connect | Experimental; the AR stage holds ~21 GB of VRAM; knob-to-ear is seconds, not milliseconds |
-| [YuE2](https://github.com/multimodal-art-projection/YuE) (3B) | Song-level: semantic AR plus 32-step acoustic flow matching, in a sidecar process | Genre prompt and lyrics; every change renders a new whole song | `yue2-3b` | Default `eager-trt` engine: a 68 s song in 18.5 s (RTF 0.265); `turbo` engine: a 64 s song in 11.4 s (RTF 0.179, 1.48x faster). Prompt to first audible song: 17.8 s (`eager-trt`), 11.7 to 13.5 s (`turbo`). A change is heard when the next song finishes | Experimental, the least live-ready family; weights CC BY-NC 4.0. `turbo` uses YuE2-Turbo, an inference layer over the same weights, not a different or distilled checkpoint |
+| [YuE2](https://github.com/multimodal-art-projection/YuE) (3B) | Song-level, in process: semantic AR (plan + semantic tokens) as cached conditioning, 32-step acoustic flow matching in the ring on 64-channel 25 Hz latents like ACE-Step; optional TensorRT engines (flexible NAR for 40-100 s songs, VAE window) | `yue2_denoise`, `x0_target`, `feedback`, `seed` through the ring; a prompt change re-composes the song in the background and swaps it in; lyrics and duration at connect; ring depth 1 | `yue2-3b` | Create 18.3 s for a 60 s song (plan 5.7 s, semantic 9.5 s, anchor solve 2.5-2.7 s); tick p50 70 ms at 60 s (TensorRT), 119 ms at 30 s (eager, under the engine floor); knob-to-ear (to CPU PCM) for `seed` / `x0_target` 2.4 s at 60 s, 4.0 s at 30 s, `yue2_denoise` 0.5 1.2 s; a prompt change is heard after 32-42 s | Experimental; 18.4-22.2 GB VRAM; weights CC BY-NC 4.0. YuE2-Turbo is an inference layer that speeds the AR stages only and is not used by this family |
 
-Per-frame curves, morphing, LoRAs and audio input are diffusion-family features (ACE-Step, and Stable Audio 3 where noted). Magenta RealTime 2, MiniMax-Music3 and YuE2 are append-only streams steered by prompt (and lyrics); they ignore uploaded audio.
+Per-frame curves, morphing, LoRAs and audio input are diffusion-family features (ACE-Step, and Stable Audio 3 where noted). Magenta RealTime 2 and MiniMax-Music3 are append-only streams steered by prompt (and lyrics); they ignore uploaded audio. YuE2 composes a whole song from a style prompt and lyrics, then reshapes it in the ring with a few knobs; it has no per-frame curves, LoRA or CFG.
 
 The pod picks its family at boot from `--checkpoint`, and a client that omits `backend` from its handshake gets the pod's family. Switching families means restarting the server with another alias. Prerequisites, knobs and known gaps for each family, and the contract for adding one, are in [docs/FAMILIES.md](docs/FAMILIES.md).
 
@@ -153,24 +153,17 @@ uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint minimax-
 
 #### YuE2
 
-Needs the `m-a-p/YuE2-3B` and `m-a-p/YuE2-Vae` weights under `DEMON_YUE2_ROOT` (see [docs/FAMILIES.md](docs/FAMILIES.md) for pinned revisions and every variable). The sidecar has two engines on the same weights: `eager-trt` (default; the DEMON venv with the upstream YuE source, optional NAR TensorRT engine) and `turbo` (YuE2-Turbo, vLLM for the two AR stages; Linux/WSL venv only, with the server staying on Windows and reaching it through `DEMON_YUE2_SIDECAR`). Start one sidecar, then the server:
+Runs in the server process, no sidecar. Set the environment (variables and the TensorRT engine build are in [docs/FAMILIES.md](docs/FAMILIES.md)), then start the server:
 
 ```bash
-# default engine (DEMON venv)
-DEMON_YUE2_ROOT=E:/models/yue2 DEMON_YUE2_YUE_SRC=<YuE-0edaf2f4>/src DEMON_YUE2_EXTRA_PATH=<tiktoken dir> DEMON_YUE2_TRT_DIR=<dir with flexible_song/>   python scripts/yue2_sidecar.py
-
-# turbo engine (WSL2 / Linux venv)
-uv venv --python 3.12 ~/.venvs/yue2turbo && . ~/.venvs/yue2turbo/bin/activate
-uv pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
-git clone https://github.com/NoizAI/YuE2-Turbo && uv pip install './YuE2-Turbo[server]'
-DEMON_YUE2_ROOT=~/models/yue2 python scripts/yue2_sidecar.py --engine turbo
-
-# server (either engine)
-uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint yue2-3b
-# open http://localhost:1318/yue2/
+export DEMON_YUE2_ROOT=/path/to/yue2            # weights (YuE2-3B + codec)
+export DEMON_YUE2_YUE_SRC=/path/to/YuE/src      # upstream YuE source at the pinned revision
+export DEMON_YUE2_EXTRA_PATH=/path/to/extra-deps  # optional extra import path
+export DEMON_YUE2_TRT_DIR=/path/to/engines      # optional; eager NAR without it
+python -u -m demos.realtime_motion_graph_web.server --port 1318 --checkpoint yue2-3b
 ```
 
-The page plays silence until the first song finishes rendering.
+Open `http://localhost:1318/yue2/`. Lyrics and duration are fixed at Start; the page shows "composing" for the seconds of AR before the song plays.
 
 ## Features
 
