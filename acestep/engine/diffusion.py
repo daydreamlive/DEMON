@@ -583,6 +583,8 @@ class DiffusionEngine:
         encoder_hidden_states: torch.Tensor,
         context_latents: torch.Tensor,
         steering: Optional[torch.Tensor] = None,
+        steering_xattn: Optional[torch.Tensor] = None,
+        steering_xattn_renorm: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run one decoder step through TRT with pre-allocated buffers.
 
@@ -591,6 +593,9 @@ class DiffusionEngine:
 
         ``steering`` is optional ``[B, num_layers, hidden_size]``;
         when omitted the cached zero buffer makes the per-layer adds a no-op.
+        ``steering_xattn`` (same shape) and ``steering_xattn_renorm``
+        (``[B, num_layers]``) feed the cross-attention-output inputs on
+        engines that carry them; omitted means zero.
         """
         orig_T = hidden_states.shape[1]
         pad = orig_T % 2 == 1
@@ -669,6 +674,15 @@ class DiffusionEngine:
                 bufs["steering"].copy_(steering)
             else:
                 bufs["steering"].zero_()
+        for name, val in (
+            ("steering_xattn", steering_xattn),
+            ("steering_xattn_renorm", steering_xattn_renorm),
+        ):
+            if name in bufs:
+                if val is not None:
+                    bufs[name].copy_(val)
+                else:
+                    bufs[name].zero_()
 
         ctx = self._trt_ctx
         for name, buf in bufs.items():
