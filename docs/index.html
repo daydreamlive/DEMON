@@ -71,11 +71,11 @@
         DEMON is a platform for real-time music generation: one streaming engine, one wire protocol and one client SDK, with interchangeable generative model families behind it. Its core, and the subject of the paper, is a streaming diffusion engine first built for ACE-Step v1.5 (2&nbsp;B turbo and 5&nbsp;B XL turbo). A ring buffer of in-flight generations, each carrying its own per-slot timestep schedule, is advanced by one batched decoder forward pass per tick; after warmup, at full pipeline depth, every tick produces a finished song latent. Every solver-side parameter (per-frame source preservation, velocity scaling, ODE noise injection, classifier-free guidance, x0-target morphing, channel gain) accepts a scalar or a per-frame curve at the latent's 25&nbsp;Hz frame resolution, and a shared-mutable-curve lane propagates parameter changes to every in-flight slot on the next tick, independent of pipeline depth. Native TensorRT engines cover 60, 120, and 240&nbsp;s song lengths; longer songs route through a sliding 60&nbsp;s window. The decoder runs under TensorRT with a refit-enabled engine that hot-swaps LoRAs without rebuild.
       </p>
 
-      <h2 class="abstract-label" style="margin-top:2rem;">Model families</h2>
+      <h2 class="abstract-label abstract-label--sub">Model families</h2>
       <p class="abstract">
         A server boots one family; every client talks the same protocol. Per-frame curves, morphing and LoRAs belong to the diffusion families. The others are append-only streams steered by prompt and lyrics. DEMON does not train or own these models.
       </p>
-      <div style="overflow-x:auto;">
+      <div class="table-scroll">
         <table class="perf-table" aria-label="Model families DEMON can run">
           <thead>
             <tr>
@@ -93,7 +93,7 @@
             <tr>
               <td><a href="https://huggingface.co/stabilityai/stable-audio-3-small-music">Stable Audio 3</a> (Stability AI)</td>
               <td>Streaming diffusion through the same pipeline; per-frame curves, morphing</td>
-              <td class="num">TODO(measure)</td>
+              <td class="num">realtime</td>
             </tr>
             <tr>
               <td>Magenta RealTime 2 (Google Magenta)</td>
