@@ -73,18 +73,21 @@ class Recomposer:
     under its own lock before swapping the song in (a cancel can land
     between the job's check and the publish); ``release(song)`` frees a
     result nobody will play; ``on_failure(slot, tags, exc)`` reports a
-    build that raised.
+    build that raised; ``on_change(slots)`` hears the sorted slots that
+    have a job which may still publish, whenever that set changes.
     """
 
     def __init__(self, *, build: Callable[[str, int], Song], submit: Callable,
                  publish: Callable[[str, Song, float, Callable[[], bool]], None],
                  release: Callable[[Song], None],
-                 on_failure: Optional[Callable[[str, str, BaseException], None]] = None):
+                 on_failure: Optional[Callable[[str, str, BaseException], None]] = None,
+                 on_change: Optional[Callable[[list], None]] = None):
         self._build = build
         self._submit = submit
         self._publish = publish
         self._release = release
         self._on_failure = on_failure
+        self._on_change = on_change
         self._lock = threading.Lock()
         self._latest: dict = {}
         self._inflight: dict = {}
@@ -101,6 +104,7 @@ class Recomposer:
         with self._lock:
             self._latest[slot] = token
             self._inflight[slot] = tags
+        self._changed()
         future = self._submit(self._job, slot, tags, epoch, token)
         with self._lock:
             self._pending.add(future)
@@ -113,6 +117,7 @@ class Recomposer:
         with self._lock:
             self._latest.pop(slot, None)
             self._inflight.pop(slot, None)
+        self._changed()
 
     def cancel_all(self) -> None:
         """Abandon every job; a job that has not started yet is also
@@ -121,8 +126,16 @@ class Recomposer:
             self._latest.clear()
             self._inflight.clear()
             pending = list(self._pending)
+        self._changed()
         for future in pending:
             future.cancel()
+
+    def _changed(self) -> None:
+        if self._on_change is None:
+            return
+        with self._lock:
+            slots = sorted(self._latest)
+        self._on_change(slots)
 
     def _current(self, slot: str, token) -> bool:
         with self._lock:
@@ -135,9 +148,12 @@ class Recomposer:
             # Done (published, dropped or failed): a repeat of these tags
             # is a new request from here on (a retry after a failure).
             with self._lock:
-                if self._latest.get(slot) is token:
+                done = self._latest.get(slot) is token
+                if done:
                     del self._latest[slot]
                     self._inflight.pop(slot, None)
+            if done:
+                self._changed()
 
     def _run(self, slot: str, tags: str, epoch: int, token) -> Optional[Song]:
         if not self._current(slot, token):

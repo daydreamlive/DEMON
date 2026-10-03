@@ -183,7 +183,9 @@ class YuE2Backend(DiffusionBackend):
             self._recomposer = Recomposer(
                 build=recompose, submit=submit, publish=self._publish_song,
                 release=self._release_song, on_failure=self._recompose_failed,
+                on_change=self._stamp_recomposing,
             )
+        self._stamp_recomposing([])
 
         self._latent_history: deque = deque(maxlen=MAX_FEEDBACK_DEPTH)
         # Settled short-circuit bookkeeping: (request, signature, song)
@@ -363,6 +365,13 @@ class YuE2Backend(DiffusionBackend):
         for old in retired:
             logger.info("yue2_song_released tags={!r} cond_epoch={}", old.tags, old.epoch)
             self._release_song(old)
+
+    def _stamp_recomposing(self, slots: list) -> None:
+        """``yue2_recomposing``: the song slots ("a", "b") with a
+        re-compose that may still publish. Rides every params_update, so
+        a client can show that a new song is on its way."""
+        if self.state is not None:
+            self.state.params["yue2_recomposing"] = list(slots)
 
     def _recompose_failed(self, slot: str, tags: str, exc: BaseException) -> None:
         """The ring keeps playing the current song; tell the client."""

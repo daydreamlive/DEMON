@@ -15,6 +15,7 @@ const state = {
   remote: null, player: null, analyser: null, freq: null, wave: null,
   status: "idle", slices: 0, lastEndSec: 0, windowSec: 0, rms: 0,
   knobs: [], values: {}, paramsTimer: null, error: "", notice: "", gen: 0, numGens: 0,
+  recomposing: false,
 };
 
 // DOM
@@ -48,7 +49,8 @@ function setStatus(status) {
 
 function renderStatusLine() {
   if (state.status === "connecting") {
-    els.status.textContent = "composing (score + semantic tokens, about 15-20 s)";
+    els.status.textContent =
+      "composing (score + semantic tokens, about 15-20 s; the first session also loads the model)";
     return;
   }
   if (state.status === "error" || state.status === "idle") {
@@ -62,6 +64,7 @@ function renderStatusLine() {
   const play = state.windowSec > 0 ? state.player.positionSec % state.windowSec : state.player.positionSec;
   els.status.textContent =
     `playing ${play.toFixed(1)} / ${state.windowSec.toFixed(1)} s, ${state.slices} slices` +
+    (state.recomposing ? ", re-composing (about 30 s; this song keeps playing)" : "") +
     (state.notice ? ` (${state.notice})` : "");
 }
 
@@ -115,6 +118,11 @@ async function connect() {
   );
   state.remote = remote;
   remote.addEventListener("slice", handleSlice);
+  // yue2_recomposing (server telemetry): song slots with a re-compose in flight.
+  remote.addEventListener("params", (event) => {
+    const slots = event.detail?.yue2_recomposing;
+    if (Array.isArray(slots)) state.recomposing = slots.length > 0;
+  });
   // Non-fatal server errors (a failed re-compose): the old song keeps playing.
   remote.addEventListener("server_error", (event) => {
     state.notice = event.detail?.message || event.detail?.code || "server error";
@@ -164,6 +172,7 @@ async function disconnect() {
   try { state.remote?.close(); } catch {}
   Object.assign(state, {
     remote: null, player: null, analyser: null, freq: null, wave: null, slices: 0, rms: 0, lastEndSec: 0, notice: "", numGens: 0,
+    recomposing: false,
   });
   setStatus("idle");
 }
@@ -295,7 +304,11 @@ els.start.addEventListener("click", async () => {
 });
 els.send.addEventListener("click", () => {
   const [prompt, promptB] = promptPair();
-  state.remote?.sendPrompt(prompt, undefined, undefined, promptB);
+  if (!state.remote) return;
+  // Shown at once; the next params_update confirms or clears it.
+  state.recomposing = true;
+  state.notice = "";
+  state.remote.sendPrompt(prompt, undefined, undefined, promptB);
 });
 els.blend.addEventListener("input", () => {
   els.blendValue.textContent = Number(els.blend.value) >= 0.5 ? "B" : "A"; // hard switch at 0.5
@@ -314,6 +327,7 @@ window.__demo = {
       slices: state.slices,
       numGens: state.numGens,
       notice: state.notice,
+      recomposing: state.recomposing,
       positionSec: state.player?.positionSec ?? 0,
       rms: state.rms,
     };

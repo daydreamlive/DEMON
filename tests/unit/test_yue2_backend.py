@@ -926,3 +926,41 @@ def test_telemetry_reports_the_nar_path_of_the_song_that_plays():
     backend.handle_set_prompt("rock")
     _produce_until_fresh(backend, knobs)
     assert state.params["yue2_nar"] == "eager"
+
+
+def test_telemetry_says_which_slots_are_recomposing():
+    """``yue2_recomposing`` rides every params_update, so the page can
+    show the composing state (it used to show nothing for ~30 s)."""
+
+    class _State:
+        last_activity_ts = 0.0
+
+    state = _State()
+    state.params = {}
+    submit = _deferred()
+    backend = _backend(state=state, recompose=_recompose_to(1.0), submit=submit)
+    assert state.params["yue2_recomposing"] == []
+    backend.handle_set_prompt("rock", tags_b="jazz")
+    assert state.params["yue2_recomposing"] == ["a", "b"]
+    submit.run(0)
+    assert state.params["yue2_recomposing"] == ["b"]
+    backend.handle_set_prompt("rock")  # B follows A again: its job is dropped
+    assert state.params["yue2_recomposing"] == []
+    backend.handle_set_prompt("punk")
+    assert state.params["yue2_recomposing"] == ["a"]
+    backend.close()
+    assert state.params["yue2_recomposing"] == []
+
+
+def test_a_failed_recompose_clears_the_recomposing_flag():
+    class _State:
+        last_activity_ts = 0.0
+
+    def recompose(tags, epoch):
+        raise RuntimeError("boom")
+
+    state = _State()
+    state.params = {}
+    backend = _backend(state=state, recompose=recompose, on_error=lambda c, m: None)
+    backend.handle_set_prompt("rock")
+    assert state.params["yue2_recomposing"] == []
