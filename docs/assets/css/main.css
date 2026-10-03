@@ -368,6 +368,8 @@ section + section {
   max-width: none;
   margin: 0;
 }
+.abstract-label--sub { margin-top: 2rem; }
+.table-scroll { overflow-x: auto; }
 
 /* ============================================================
    LORA MORPH SHOWCASE
