@@ -59,7 +59,7 @@ DEMON began as a streaming diffusion engine for ACE-Step v1.5 (described in the 
 | [ACE-Step v1.5](https://huggingface.co/ACE-Step/Ace-Step1.5) (turbo 2B, XL turbo 5B) | Featured; the default install | Streaming diffusion, in process | Per-frame curves on every solver knob, prompt A/B morphing, LoRA hot-swap, timbre and structure references, audio in | none (default); `xl` for XL turbo |
 | Magenta RealTime 2 (`mrt2_small`, `mrt2_base`) | Experimental | Autoregressive, in a JAX sidecar process | Prompt A/B blend (MusicCoCa embeddings), sampling and guidance knobs; append-only, text only | `mrt2-sidecar` |
 | [MiniMax-Music3](https://huggingface.co/MiniMaxAI/MiniMax-Music3) | Experimental. Just barely fits on an RTX 5090: a session uses 28.7 GB of the card's 32 GB, and it does not fit a 24 GB card. It is slow, ~1.3x realtime. | Autoregressive language model plus a flow-matching renderer, in process | Style prompt (re-prefills against the audio already written), lyrics at connect; a random composition seed per session, or `minimax_seed` to replay a piece; append-only, text only, no prompt blend | `minimax-music3` |
-| [YuE2](https://github.com/multimodal-art-projection/YuE) (3B) | Experimental | Song-level, in process: semantic AR (plan + semantic tokens) as cached conditioning, 32-step acoustic flow matching in the ring | `yue2_denoise`, `x0_target`, `feedback`, `seed` through the ring; a prompt change re-composes the song in the background; lyrics and duration at connect | `yue2-3b` |
+| [YuE2](https://github.com/multimodal-art-projection/YuE) (3B) | Experimental | Song-level, in process: semantic AR (plan + semantic tokens) as cached conditioning, acoustic flow matching in the ring (32 steps by default) | `yue2_denoise`, `yue2_steps`, `x0_target`, `feedback`, `seed` through the ring; a prompt change re-composes the song in the background; lyrics and duration at connect | `yue2-3b` |
 
 Per-frame curves, morphing and audio input are diffusion-family features (Stable Audio 3 and ACE-Step; LoRAs, timbre and structure references are ACE-Step's). Magenta RealTime 2 and MiniMax-Music3 are append-only streams steered by prompt (and lyrics); they ignore uploaded audio. YuE2 composes a whole song from a style prompt and lyrics, then reshapes it in the ring with a few knobs; it has no per-frame curves, LoRA or CFG.
 
@@ -108,10 +108,10 @@ Sources: Stable Audio 3 from the maintainers' benchmark runs on an RTX 5090 (med
 - Licence: the MiniMax-Music3 Community License requires "MiniMax-Music3" to be displayed prominently in a product UI, and written authorisation above US$20M yearly revenue ([docs/MINIMAX.md](docs/MINIMAX.md)).
 
 **YuE2**
-- The acoustic flow-matching stage runs the released 32-step schedule, so one full solve is 32 ticks and sets the knob-to-ear floor. No distilled or turbo acoustic checkpoint exists upstream; YuE2-Turbo is a serving layer that speeds only the autoregressive stages. The family would work much better with a few-step turbo distillation of the acoustic flow-matching model.
+- The acoustic flow-matching stage runs one step per tick, so the step grid sets the knob-to-ear floor. The grid is selectable with `yue2_steps` (default 32, upstream's released grid; 24, 16, 12, 8, 6 or 4): fewer steps answer faster at lower quality. No distilled or turbo acoustic checkpoint exists upstream; YuE2-Turbo is a serving layer that speeds only the autoregressive stages. A few-step distillation of the acoustic model would keep the speed without the quality loss.
 - A prompt change needs a background re-compose of the song and is heard 21-42 s later on an idle ring, 36-58 s on a busy one. Lyrics and song length are fixed for the session.
 - Ring depth is capped at 1 (depth 2 slowed every update by 40-75% with identical results).
-- Songs under 40 s, and compositions over 4000 conditioning tokens, run the acoustic stage eager, with slower ticks.
+- Songs under 10 s (under 40 s on an engine built without the short-song profile), and compositions over 4000 conditioning tokens, run the acoustic stage eager, with slower ticks.
 - The weights are CC BY-NC 4.0: non-commercial use only.
 
 **Who it's for:**
