@@ -1,4 +1,4 @@
-**YuE2 feasibility plan for DEMON — 2026-09-14**
+**YuE2 feasibility plan for DEMON (2026-09-14)**
 
 **Status:** the source-inspection plan below is historical. Read the [actual ring, acoustic TensorRT, distilled-model search, and musical-duration results](YUE2_RING_RESULTS.md) for the current assessment. The measured BF16 route has not established DEMON's required live responsiveness. Short-clip and individual-instrument behavior are capability measurements, not blockers for model support.
 

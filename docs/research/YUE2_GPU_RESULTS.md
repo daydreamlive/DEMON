@@ -1,4 +1,4 @@
-**YuE2 GPU feasibility experiments — 2026-09-14**
+**YuE2 GPU feasibility experiments (2026-09-14)**
 
 This is the measured follow-up to the [integration plan](YUE2_FEASIBILITY_PLAN.md). Short-duration and single-instrument behavior are capability measurements, not requirements for admitting the model into DEMON.
 

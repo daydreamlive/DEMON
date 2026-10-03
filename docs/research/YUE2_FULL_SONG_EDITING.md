@@ -1,4 +1,4 @@
-**YuE2 full-song generation and cached editing — 2026-09-18**
+**YuE2 full-song generation and cached editing (2026-09-18)**
 
 The relevant DEMON workflow is to prepare a song once, then keep its score, semantic tokens, conditioning cache, and acoustic model resident while editing. This investigation measures both fresh text-to-audio and that cached loop. It uses the original 32-step midpoint sampler (64 acoustic evaluations), BF16 acoustic TensorRT, CUDA graphs, and the local RTX 5090. No step reduction or distillation is claimed.
 

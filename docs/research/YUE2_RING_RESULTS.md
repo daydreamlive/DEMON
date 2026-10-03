@@ -1,4 +1,4 @@
-**YuE2: musical duration, acoustic TensorRT, and DEMON ring measurements — 2026-09-14**
+**YuE2: musical duration, acoustic TensorRT, and DEMON ring measurements (2026-09-14)**
 
 **Follow-up:** [Full-song generation and cached editing measurements](YUE2_FULL_SONG_EDITING.md) add a continuously timed text-to-audio request, one-minute acoustic TensorRT profiles, and actual control-change-to-PCM measurements through the ring.
 
