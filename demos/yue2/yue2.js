@@ -8,18 +8,13 @@ const PARAMS_TICK_MS = 100;
 const BAR_COUNT = 64;
 const DEFAULT_PROMPT_A = "English, warm piano pop, female vocal, 90 BPM";
 const DEFAULT_PROMPT_B = ""; // empty = B follows A; a distinct B composes a second song (more create time)
-const DEFAULT_LYRICS = "[Verse]
-City lights are calling me home
-Every street I walk alone
-[Chorus]
-Sing it loud
-[Outro]
-";
+const DEFAULT_LYRICS =
+  "[Verse]\nCity lights are calling me home\nEvery street I walk alone\n[Chorus]\nSing it loud\n[Outro]\n";
 const DEFAULT_DURATION_S = 60;
 const state = {
   remote: null, player: null, analyser: null, freq: null, wave: null,
   status: "idle", slices: 0, lastEndSec: 0, windowSec: 0, rms: 0,
-  knobs: [], values: {}, paramsTimer: null, error: "", gen: 0,
+  knobs: [], values: {}, paramsTimer: null, error: "", notice: "", gen: 0, numGens: 0,
 };
 
 // DOM
@@ -66,7 +61,8 @@ function renderStatusLine() {
   }
   const play = state.windowSec > 0 ? state.player.positionSec % state.windowSec : state.player.positionSec;
   els.status.textContent =
-    `playing ${play.toFixed(1)} / ${state.windowSec.toFixed(1)} s, ${state.slices} slices`;
+    `playing ${play.toFixed(1)} / ${state.windowSec.toFixed(1)} s, ${state.slices} slices` +
+    (state.notice ? ` (${state.notice})` : "");
 }
 
 // DEMON connection
@@ -95,6 +91,7 @@ function handleSlice(event) {
   if (detail.flags === SLICE_FLAG_DELTA) player.addDelta(start, detail.audio);
   else player.patch(start, detail.audio);
   state.slices += 1;
+  state.numGens = detail.numGens ?? state.numGens;
   state.lastEndSec = (start + detail.numSamples) / SAMPLE_RATE;
 }
 
@@ -118,6 +115,10 @@ async function connect() {
   );
   state.remote = remote;
   remote.addEventListener("slice", handleSlice);
+  // Non-fatal server errors (a failed re-compose): the old song keeps playing.
+  remote.addEventListener("server_error", (event) => {
+    state.notice = event.detail?.message || event.detail?.code || "server error";
+  });
   remote.addEventListener("close", () => {
     if (remote.closedByUser || state.remote !== remote) return;
     state.error = "connection lost";
@@ -161,26 +162,42 @@ async function disconnect() {
   state.paramsTimer = null;
   try { await state.player?.close(); } catch {}
   try { state.remote?.close(); } catch {}
-  Object.assign(state, { remote: null, player: null, analyser: null, slices: 0, rms: 0, lastEndSec: 0 });
+  Object.assign(state, {
+    remote: null, player: null, analyser: null, slices: 0, rms: 0, lastEndSec: 0, notice: "", numGens: 0,
+  });
   setStatus("idle");
+}
+
+function knobInput(name, entry) {
+  const input = document.createElement("input");
+  if (name === "seed") {
+    // A seed is an identity, not a quantity: a number box, not a 0..2^32 slider.
+    input.type = "number";
+    input.step = "1";
+  } else {
+    input.type = "range";
+    input.step = entry.type === "int" ? "1" : String(((entry.max ?? 1) - (entry.min ?? 0)) / 200);
+  }
+  input.min = String(entry.min ?? 0);
+  input.max = String(entry.max ?? 1);
+  input.value = String(state.values[name]);
+  input.dataset.knob = name;
+  return input;
 }
 
 function renderKnobs() {
   const nodes = state.knobs.map(({ name, entry }) => {
     const label = document.createElement("label");
     const value = document.createElement("span");
-    const input = document.createElement("input");
-    input.type = "range";
-    input.min = String(entry.min ?? 0);
-    input.max = String(entry.max ?? 1);
-    input.step = entry.type === "int" ? "1" : String(((entry.max ?? 1) - (entry.min ?? 0)) / 200);
-    input.value = String(state.values[name]);
-    input.dataset.knob = name;
+    const input = knobInput(name, entry);
+    const digits = entry.type === "int" ? 0 : 2;
     if (entry.description) label.title = entry.description;
-    value.textContent = ` ${Number(input.value).toFixed(entry.type === "int" ? 0 : 2)}`;
+    if (input.type === "range") value.textContent = ` ${Number(input.value).toFixed(digits)}`;
     input.addEventListener("input", () => {
-      state.values = { ...state.values, [name]: Number(input.value) };
-      value.textContent = ` ${Number(input.value).toFixed(entry.type === "int" ? 0 : 2)}`;
+      const v = Number(input.value);
+      if (!Number.isFinite(v)) return;
+      state.values = { ...state.values, [name]: entry.type === "int" ? Math.round(v) : v };
+      if (input.type === "range") value.textContent = ` ${v.toFixed(digits)}`;
       sendParams();
     });
     label.append(name.replace(/^yue2_/, "").replace(/_/g, " "), value, input);
@@ -283,6 +300,8 @@ window.__demo = {
       connected: Boolean(state.remote && state.player),
       windowSec: state.windowSec,
       slices: state.slices,
+      numGens: state.numGens,
+      notice: state.notice,
       positionSec: state.player?.positionSec ?? 0,
       rms: state.rms,
     };
