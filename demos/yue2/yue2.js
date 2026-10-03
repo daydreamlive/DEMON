@@ -163,7 +163,7 @@ async function disconnect() {
   try { await state.player?.close(); } catch {}
   try { state.remote?.close(); } catch {}
   Object.assign(state, {
-    remote: null, player: null, analyser: null, slices: 0, rms: 0, lastEndSec: 0, notice: "", numGens: 0,
+    remote: null, player: null, analyser: null, freq: null, wave: null, slices: 0, rms: 0, lastEndSec: 0, notice: "", numGens: 0,
   });
   setStatus("idle");
 }
@@ -257,7 +257,7 @@ function drawSpectrum() {
       for (let k = 0; k < bucket; k++) level += state.freq[i * bucket + k];
       level /= bucket * 255;
     }
-    const h = Math.max(2, level * maxH, state.freq ? 0 : maxH * 0.15 * Math.sin(Math.PI * i / BAR_COUNT) * Math.sin(i * 0.4) ** 2);
+    const h = Math.max(1, level * maxH); // flat baseline when idle; real bars only from the analyser
     ctx2d.fillStyle = glow;
     ctx2d.shadowColor = `hsl(${hue} 70% 55% / 65%)`;
     ctx2d.shadowBlur = level > 0.08 ? 12 : 0;
