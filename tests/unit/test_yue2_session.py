@@ -136,3 +136,13 @@ def test_prompt_b_restyles_the_same_composition(monkeypatch):
         assert ss.backend._active_bundle.tags == "dark techno"
     finally:
         _close(ss)
+
+
+def test_ring_depth_is_one_whatever_the_client_asks(monkeypatch):
+    context = _FakeContext()
+    ss = _create(monkeypatch, context, depth=4)
+    try:
+        assert ss.state.current_depth == 1
+        assert ss.max_pipeline_depth == 1
+    finally:
+        _close(ss)

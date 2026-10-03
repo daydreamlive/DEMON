@@ -32,9 +32,12 @@ from acestep.streaming.yue2_backend import (
     yue2_knob_specs,
 )
 
-#: Ring depth ceiling: at 63 s depth 4 bought ~10% throughput and doubled
-#: convergence time (docs/research/YUE2_FULL_SONG_EDITING.md).
-YUE2_MAX_PIPELINE_DEPTH = 2
+#: Ring depth ceiling. The settled ring runs one solve per change, so
+#: depth buys no throughput; measured on a 5090 (M3, 60 s song, TRT),
+#: depth 2 nearly doubled the tick (70 -> 128 ms) and the change-to-
+#: update time (2.4 -> 4.2 s), and a slot frozen at settle re-emitted
+#: stale audio on the next change.
+YUE2_MAX_PIPELINE_DEPTH = 1
 
 #: Wire-slice width: two 200 ms VAE window cores.
 YUE2_VAE_WINDOW_S = 0.4
