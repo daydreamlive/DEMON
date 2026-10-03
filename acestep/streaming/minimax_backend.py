@@ -18,9 +18,11 @@ MRT2, and it inherits that family's shape:
 * Song shape is a rolling window. The frontier writes advance modulo
   ``window_s`` and the player loops it, so the "song" is a tape being
   overwritten just behind the playhead.
-* Each emission re-emits the previous one's last ``XFADE`` samples at
-  its head, so the runner's unconditional leading-edge crossfade blends
-  identical samples instead of smearing new audio against last lap's.
+* The runner writes append-only chunks verbatim (no edge crossfades,
+  no wrap-spill re-render; gated on ``refines_audio``). Each emission
+  still re-emits the previous one's last ``XFADE`` samples at its head;
+  that overlap rewrites identical samples and is redundant under the
+  gated runner.
 
 What this backend deliberately does NOT do is run the ring buffer and
 the batch-axis staircase. Those exist to make a one-shot, whole-song

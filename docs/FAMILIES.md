@@ -181,14 +181,18 @@ the model load, later sessions reuse the process-cached context.
   in `DEMON_MINIMAX_TRT_DIR` or `<models>/minimax/trt_engines`. Without it
   the renderer runs eager.
 - Preflight (`minimax_preflight`) checks the renderer components offline and
-  fails if `DEMON_MINIMAX_TRT_DIR` is set to a missing directory; an absent
-  AR stage only warns (a saved capture via `DEMON_MINIMAX_CAPTURE` still
-  streams).
+  fails if `DEMON_MINIMAX_TRT_DIR` is set to a missing directory. An absent
+  AR stage fails it too, unless `DEMON_MINIMAX_CAPTURE` names a saved capture
+  to stream (logged at warning level: every user gets that one composition).
 
 **Config fields.** `minimax_duration_s` (rolling-window length, default 60 s,
 capped at the AR ceiling of 360 s), `minimax_lyrics` (default
 `"[instrumental]"`), `minimax_ar_graph` (default true: one CUDA graph per AR
-frame over a static KV cache; false = plain loop for parity work).
+frame over a static KV cache; false = plain loop for parity work),
+`minimax_seed` (the AR seed, i.e. the composition; absent = a random seed per
+session, echoed as `minimax_ar_seed` in params; give one to replay a piece).
+The shared `seed` knob seeds only the renderer's noise; zero is a valid value
+for it and for `minimax_cond_strength`.
 
 **Behaviour.** Append-only: `refines_audio=False` and every other capability
 off (no swap, write_audio, timbre, structure, stems, depth, LoRA). Uploaded
@@ -197,7 +201,20 @@ starts from a silent window, and `text_only` advertises the same window.
 `set_prompt` re-prefills the LM against the audio already written;
 `prompt_b` / prompt blend are refused. The piece ends when the LM emits
 end-of-audio. Shutdown evicts the cached contexts; each backend frees its
-CUDA graphs and static cache on close.
+CUDA graphs and static cache on close, unless its worker is still running
+after the 5 s join (then the state is left to the worker and logged). The
+runner writes chunks verbatim (no edge crossfades or wrap-spill re-render
+for `refines_audio=False`). If the generation worker dies (for example an
+OOM), the session ends with a `pipeline_error` SessionError.
+
+**Known gaps.** `set_prompt` after the piece has ended (or on a replayed
+capture) is logged and dropped with no client-visible error. Caption plus
+lyrics share a 512-token prompt budget; an over-long prompt fails session
+create, and on a live reprompt it is dropped. A backward seek is counted as a
+window lap, which breaks pacing until the session ends (no client seeks a
+MiniMax session today). The generation worker starts inside the backend
+constructor. The ws_adapter shedding bypass is gated on `refines_audio`, so
+it applies to MRT2 as well.
 
 **Measured (RTX 5090).** Steady ~1.3x realtime (AR stage 1.54x in session,
 renderer 7.8x). With the model already loaded, first audio comes ~6 s after

@@ -104,9 +104,11 @@ MiniMaxBackend           append-only frontier behind GeneratorBackend
 `MiniMaxBackend` is the **second append-only family** behind the Tier-1
 seam, after MRT2, and it takes MRT2's shape: `render_window` ignores the
 runner's position hint and returns the next frontier chunk, the song is
-a rolling window the frontier overwrites and the player loops, and each
-emission re-issues the previous one's last 1200 samples so the runner's
-leading-edge crossfade blends identical audio.
+a rolling window the frontier overwrites and the player loops, and the
+runner writes each chunk verbatim (no edge crossfades, no wrap-spill
+re-render: both are gated on `refines_audio`). Each emission still
+re-issues the previous one's last 1200 samples; under the gated runner
+that overlap is redundant.
 
 `Capabilities` is all-False, and honestly so: an autoregressive stage
 cannot revise a frame it has emitted, so `refines_audio` is not a
@@ -612,14 +614,12 @@ leading `[tag]`**.
 
 ## 9. Not done
 
-* **Not driven through `PipelineRunner` or the WS server.**
-  `StreamingSession.create(backend="minimax")` is verified end to end:
-  family dispatch, create path, backend assembly, geometry/capability/
-  knob payloads, produce and render ticks, params echo, clean close;
-  and `scripts/minimax/minimax_stream_bench.py` runs the real backend
-  through the loop the runner runs, with the real crossfade. What has
-  not been run is the runner and a browser session. **No web panel**, no
-  boot preflight in `server.py`.
+* **Runner write path.** `scripts/minimax/minimax_stream_bench.py`
+  applies its own crossfade, which is not the runner's (its trailing fade
+  is the mirror image), so it never validated `PipelineRunner`'s write.
+  The runner now writes append-only chunks verbatim; that path is covered
+  by `tests/unit/test_mrt2_backend.py::test_runner_writes_append_only_chunks_verbatim`
+  with the MRT2 backend, not yet by a live MiniMax session.
 * **Headroom is thin on a 32 GB card.** 28.7 GB in use for a session,
   with the desktop's share on top. The next 1.1 GB is the LM head: it
   scores all 151,936 tokens every frame and the sampler admits 16,385
