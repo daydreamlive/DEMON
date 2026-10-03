@@ -295,6 +295,20 @@ class PackSteering:
         return configs
 
 
+def packs_available(*, family: str, checkpoint: str) -> bool:
+    """Whether any pack in the configured directory targets this boot
+    (family + checkpoint only; layout filtering needs the loaded model).
+    Engine selection reads this before the model forward exists."""
+    from acestep.paths import steering_packs_dir
+
+    try:
+        return bool(discover_packs(
+            steering_packs_dir(), family=family, checkpoint=checkpoint,
+        ))
+    except Exception:
+        return False
+
+
 def load_session_packs(
     *, family: str, checkpoint: str, layout=None, reserved_names: Iterable[str] = (),
 ) -> PackSteering:

@@ -31,6 +31,12 @@ on first use.
   producer-built graph until it is.
   :func:`acestep.engine.sa3_trt.find_dit_engine` prefers an fp8 engine when one
   covers the window, else fp16mixed.
+* **sa3-m DiT (steering, opt-in)**: the same fp16mixed graph with the
+  activation-steering input added by proto-only surgery
+  (:mod:`acestep.engine.trt.sa3_steering_onnx`: ``steering [1, blocks,
+  hidden]`` added to each block's output residual, the ACE decoder
+  convention), compiled to ``sa3_m_dit_steer_l*`` engines. Built only with
+  ``--steer``; selected at runtime when the session has steering packs.
 * **SAME-L window decoder**: ``dec_fp16.onnx`` (upstream renamed it from
   ``dec_dynamic_triton_swa.onnx`` on 2026-08-28, same bytes),
   STRONGLY_TYPED; needs the ``samel::diff_attn_swa`` plugin registered
@@ -49,6 +55,9 @@ Usage:
 
     # SAME-L window decoder (defaults t32_56_96):
     python -m acestep.engine.trt.sa3_build --same-l-window
+
+    # Canonical DiT profiles plus the steering-input variants:
+    python -m acestep.engine.trt.sa3_build --all --dit-only --steer
 
     # Canonical matrix plus the FP8 DiT variants (producer-built ONNX until
     # dit_fp8.onnx is published to HF):
@@ -225,6 +234,32 @@ class SA3DiTRefitBuildConfig:
 
 
 @dataclass
+class SA3DiTSteerBuildConfig:
+    """Build parameters for one sa3-m fp16mixed DiT engine WITH the
+    activation-steering input (graph surgery in
+    :mod:`acestep.engine.trt.sa3_steering_onnx`).
+
+    Separate dataclass for the same reason as the fp8/refit ones (the
+    metadata gate hashes the whole config). ``steering_surgery`` is the
+    surgery version, so a surgery change rebuilds the engine even though
+    the upstream proto hash is unchanged.
+    """
+
+    min_latents: int
+    opt_latents: int
+    max_latents: int
+    workspace_gb: float = 16.0
+    onnx_files: list[str] = field(default_factory=lambda: list(DIT_ONNX_FILES))
+    steering_surgery: int = 1
+
+    def engine_name(self) -> str:
+        return (
+            f"sa3_m_dit_steer_l{self.min_latents}"
+            f"_{self.opt_latents}_{self.max_latents}"
+        )
+
+
+@dataclass
 class SameLWindowBuildConfig:
     """Build parameters for the SAME-L window decoder engine."""
 
@@ -309,8 +344,13 @@ def _build_strongly_typed_engine(
     profile_shapes: dict[str, tuple[tuple, tuple, tuple]],
     refit: bool = False,
     python_plugin_preference: str | None = None,
+    onnx_bytes: bytes | None = None,
 ) -> None:
     """Parse + build one STRONGLY_TYPED engine and serialize it to disk.
+
+    ``onnx_bytes`` parses an in-memory (surgered) proto instead of the file;
+    ``onnx_path`` is then still passed so external weights resolve next to
+    the original file.
 
     Shared by both SA3 engine kinds: the fp16mixed ONNX graphs carry
     per-tensor dtypes (the FP32 islands), so the network must be
@@ -332,7 +372,11 @@ def _build_strongly_typed_engine(
         )
     network = builder.create_network(network_flags)
     parser = trt.OnnxParser(network, trt_logger)
-    if not parser.parse_from_file(onnx_path):
+    parsed = (
+        parser.parse(onnx_bytes, onnx_path) if onnx_bytes is not None
+        else parser.parse_from_file(onnx_path)
+    )
+    if not parsed:
         for i in range(parser.num_errors):
             logger.error("ONNX parse error: {}", parser.get_error(i))
         raise RuntimeError(f"ONNX parse failed: {onnx_path}")
@@ -368,6 +412,7 @@ def _build_dit_engine(
     precision_label: str = "fp16mixed",
     local_onnx: str | None = None,
     refit: bool = False,
+    steer: bool = False,
 ) -> tuple[str, str, float, str]:
     """Build one sa3-m DiT engine. Returns (label, path, elapsed, status).
 
@@ -440,8 +485,27 @@ def _build_dit_engine(
 
     lo, opt, hi = config.min_latents, config.opt_latents, config.max_latents
     t0 = time.time()
+    onnx_bytes = None
+    if steer:
+        from .sa3_steering_onnx import (
+            STEERING_SURGERY_VERSION,
+            steered_dit_onnx_bytes,
+        )
+
+        if getattr(config, "steering_surgery", None) != STEERING_SURGERY_VERSION:
+            raise RuntimeError(
+                "SA3DiTSteerBuildConfig.steering_surgery is out of sync with "
+                "sa3_steering_onnx.STEERING_SURGERY_VERSION"
+            )
+        onnx_bytes, n_blocks, hidden = steered_dit_onnx_bytes(onnx_path)
+        logger.info(
+            "steering surgery v{}: input steering [1, {}, {}] added to the "
+            "graph ({:.1f} MB proto, weights stay in the sidecar)",
+            STEERING_SURGERY_VERSION, n_blocks, hidden, len(onnx_bytes) / 1e6,
+        )
     _build_strongly_typed_engine(
         onnx_path=onnx_path,
+        onnx_bytes=onnx_bytes,
         engine_path=engine_path,
         workspace_gb=config.workspace_gb,
         profile_shapes={
@@ -582,6 +646,14 @@ def _matrix_jobs(args) -> list[tuple[str, str]]:
                     f" (~{hi * SAMPLES_PER_LATENT / SA3_SAMPLE_RATE:.0f}s window)",
                     cfg.engine_name(),
                 ))
+        if args.steer:
+            for lo, opt, hi in dit_profiles:
+                cfg = SA3DiTSteerBuildConfig(lo, opt, hi)
+                jobs.append((
+                    f"SA3-M DiT steer l{lo}_{opt}_{hi}"
+                    f" (~{hi * SAMPLES_PER_LATENT / SA3_SAMPLE_RATE:.0f}s window)",
+                    cfg.engine_name(),
+                ))
     if not args.dit_only:
         lo, opt, hi = CANONICAL_SAME_L_WINDOW
         cfg = SameLWindowBuildConfig(lo, opt, hi)
@@ -696,6 +768,10 @@ def main() -> int:
                              "in-place-refit engines, preferred by "
                              "LoRA-enabled sessions and exclusively owned "
                              "at runtime — never process-cached).")
+    single.add_argument("--steer", action="store_true",
+                        help="Also build the fp16mixed DiT variant(s) WITH "
+                             "the activation-steering input (sa3_m_dit_steer_*; "
+                             "selected by sessions that have steering packs).")
     single.add_argument("--fp8-onnx", default=None,
                         help="Path to a producer-built dit_fp8.onnx (with its "
                              ".onnx.data sidecar alongside) to compile instead "
@@ -759,6 +835,18 @@ def main() -> int:
                         precision_label="fp16mixed refit",
                         refit=True,
                     ))
+            if args.steer:
+                for lo, opt, hi in dit_profiles:
+                    results.append(_build_dit_engine(
+                        output_dir=args.output_dir,
+                        config=SA3DiTSteerBuildConfig(
+                            lo, opt, hi, workspace_gb=args.workspace_gb),
+                        env=env,
+                        force_rebuild=args.force_rebuild,
+                        component="sa3_m_dit_steer",
+                        precision_label="fp16mixed steer",
+                        steer=True,
+                    ))
         if not args.dit_only:
             lo, opt, hi = CANONICAL_SAME_L_WINDOW
             results.append(_build_same_l_window_engine(
@@ -818,6 +906,20 @@ def main() -> int:
                 component="sa3_m_dit_refit",
                 precision_label="fp16mixed refit",
                 refit=True,
+            ))
+        if args.steer:
+            steer_cfg = SA3DiTSteerBuildConfig(
+                min_latents=config.min_latents,
+                opt_latents=config.opt_latents,
+                max_latents=config.max_latents,
+                workspace_gb=args.workspace_gb,
+            )
+            built.append(_build_dit_engine(
+                output_dir=args.output_dir, config=steer_cfg, env=env,
+                force_rebuild=args.force_rebuild,
+                component="sa3_m_dit_steer",
+                precision_label="fp16mixed steer",
+                steer=True,
             ))
     if args.same_l_window:
         d_lo, d_opt, d_hi = CANONICAL_SAME_L_WINDOW

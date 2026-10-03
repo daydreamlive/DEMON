@@ -537,6 +537,11 @@ class SA3Backend(DiffusionBackend):
         want_lora = bool(kwargs.get("use_lora")) and (
             kwargs.get("lora_manager") is not None
         )
+        # Sessions with steering packs prefer a steering-input engine,
+        # the only TRT DiT that can apply them (see find_dit_engine).
+        from acestep.steering.packs import packs_available
+
+        want_steer = packs_available(family="sa3", checkpoint=context.model_id)
         adapter = SA3Adapter(
             context.make_dit(
                 latent_frames=cond.latent_frames,
@@ -546,6 +551,7 @@ class SA3Backend(DiffusionBackend):
                 seconds_total=context.cond_seconds_total(duration_s),
                 backend=dit_backend,
                 prefer_refittable=want_lora,
+                prefer_steering=want_steer,
             ),
             schedule_builder=context.make_schedule_builder(cond, steps),
             device=context.device,
@@ -620,6 +626,7 @@ class SA3Backend(DiffusionBackend):
                 seconds_total=context.cond_seconds_total(d),
                 backend=dit_backend,
                 prefer_refittable=want_lora,
+                prefer_steering=want_steer,
             )
             return d, new_cond, new_cond_b, new_dit, (
                 lambda s, _c=new_cond: context.make_schedule_builder(_c, s)
