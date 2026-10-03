@@ -108,7 +108,7 @@ uv run python -u -m demos.realtime_motion_graph_web.run
 
 ### Other families
 
-The default install above is the ACE-Step family. Each other family boots from the same launcher with its alias, and its demo page is served by the backend on `:1318`. Use the space form `--checkpoint <alias>`; `--checkpoint=<alias>` is ignored and the pod boots ACE-Step.
+The default install above is the ACE-Step family. Each other family boots from the same launcher with its alias, and its demo page is served by the backend on `:1318`.
 
 #### Stable Audio 3
 
