@@ -58,7 +58,7 @@ DEMON began as a streaming diffusion engine for ACE-Step v1.5 (described in the 
 | [Stable Audio 3](https://huggingface.co/stabilityai/stable-audio-3-small-music) (small-music, medium) | Featured | Streaming diffusion through the shared pipeline, via a model adapter | Per-frame curves and prompt morphing (shared with ACE-Step through `StreamPipeline`); audio-to-audio from an uploaded source | `sa3-small`, `sa3-medium` |
 | [ACE-Step v1.5](https://huggingface.co/ACE-Step/Ace-Step1.5) (turbo 2B, XL turbo 5B) | Featured; the default install | Streaming diffusion, in process | Per-frame curves on every solver knob, prompt A/B morphing, LoRA hot-swap, timbre and structure references, audio in | none (default); `xl` for XL turbo |
 | Magenta RealTime 2 (`mrt2_small`, `mrt2_base`) | Experimental | Autoregressive, in a JAX sidecar process | Prompt A/B blend (MusicCoCa embeddings), sampling and guidance knobs; append-only, text only | `mrt2-sidecar` |
-| [MiniMax-Music3](https://huggingface.co/MiniMaxAI/MiniMax-Music3) | Experimental. Just barely fits on an RTX 5090: a session uses 28.7 GB of the card's 32 GB, and it does not fit a 24 GB card. It is slow, ~1.3x realtime. | Autoregressive language model plus a flow-matching renderer, in process | Style prompt (re-prefills against the audio already written), lyrics at connect; append-only, text only, no prompt blend | `minimax-music3` |
+| [MiniMax-Music3](https://huggingface.co/MiniMaxAI/MiniMax-Music3) | Experimental. Just barely fits on an RTX 5090: a session uses 28.7 GB of the card's 32 GB, and it does not fit a 24 GB card. It is slow, ~1.3x realtime. | Autoregressive language model plus a flow-matching renderer, in process | Style prompt (re-prefills against the audio already written), lyrics at connect; a random composition seed per session, or `minimax_seed` to replay a piece; append-only, text only, no prompt blend | `minimax-music3` |
 | [YuE2](https://github.com/multimodal-art-projection/YuE) (3B) | Experimental | Song-level, in process: semantic AR (plan + semantic tokens) as cached conditioning, 32-step acoustic flow matching in the ring | `yue2_denoise`, `x0_target`, `feedback`, `seed` through the ring; a prompt change re-composes the song in the background; lyrics and duration at connect | `yue2-3b` |
 
 Per-frame curves, morphing and audio input are diffusion-family features (Stable Audio 3 and ACE-Step; LoRAs, timbre and structure references are ACE-Step's). Magenta RealTime 2 and MiniMax-Music3 are append-only streams steered by prompt (and lyrics); they ignore uploaded audio. YuE2 composes a whole song from a style prompt and lyrics, then reshapes it in the ring with a few knobs; it has no per-frame curves, LoRA or CFG.
@@ -96,19 +96,22 @@ Sources: Stable Audio 3 from the maintainers' benchmark runs on an RTX 5090 (med
 - The model runs in a JAX sidecar in a Linux/WSL venv (no CUDA JAX on native Windows); the server talks to it over TCP.
 - Append-only on a 60 s rolling window: changes are heard after `mrt2_lead`, nothing already generated is revised, and uploaded audio is ignored.
 - Steering is prompt A/B blend plus sampling and guidance knobs only.
-- `mrt2_small` runs ~1.7x realtime; `mrt2_base` ~0.93x, below realtime, so expect underruns.
+- `mrt2_small` runs ~1.7x realtime; `mrt2_base` ~0.93x, below realtime: it re-anchors repeatedly, so fresh audio arrives in bursts.
+- One session per sidecar (a second one is told the sidecar is unreachable). A lost sidecar link ends the session with an error, and there is no reconnect.
 
 **MiniMax-Music3**
 - Just barely fits on an RTX 5090, and it is slow. A session uses 28.7 GB of the card's 32 GB; the ~3 GB left exists only because the eager DiT is parked on the host, and anything else on the card (a desktop took 1.7-4.6 GB in the measurements) eats into it. When the card fills, nothing reports it: frame times triple. It does not fit a 24 GB card (the renderer alone does; the renderer plus the resident AR stage does not). Throughput is ~1.3x realtime, a slim margin.
 - Append-only autoregressive stream: no audio input, no prompt blend, and changes take seconds (3.3-3.6 s to the frontier), not milliseconds.
 - Expect roughly half a minute before first audio on a freshly started server: session create (language model load and CUDA graph capture) takes ~27-28 s cold, and first audio arrived 21-34 s after Start. The ~6 s figure is generation start to first audio with the model already loaded; later sessions in the same server skip the load.
 - No distilled DiT is used: the renderer runs the released model.
+- Caption plus lyrics share a 512-token prompt budget: an over-long prompt fails session create, and on a live reprompt it is dropped. A prompt change after the piece has ended is dropped without a client-visible error.
 - Licence: the MiniMax-Music3 Community License requires "MiniMax-Music3" to be displayed prominently in a product UI, and written authorisation above US$20M yearly revenue ([docs/MINIMAX.md](docs/MINIMAX.md)).
 
 **YuE2**
 - The acoustic flow-matching stage runs the released 32-step schedule, so one full solve is 32 ticks and sets the knob-to-ear floor. No distilled or turbo acoustic checkpoint exists upstream; YuE2-Turbo is a serving layer that speeds only the autoregressive stages. The family would work much better with a few-step turbo distillation of the acoustic flow-matching model.
 - A prompt change needs a background re-compose of the song and is heard 21-42 s later on an idle ring, 36-58 s on a busy one. Lyrics and song length are fixed for the session.
 - Ring depth is capped at 1 (depth 2 slowed every update by 40-75% with identical results).
+- Songs under 40 s, and compositions over 4000 conditioning tokens, run the acoustic stage eager, with slower ticks.
 - The weights are CC BY-NC 4.0: non-commercial use only.
 
 **Who it's for:**
