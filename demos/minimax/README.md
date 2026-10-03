@@ -4,7 +4,7 @@ A 2D canvas ring of points that swells with the bass and ripples with the mids w
 MiniMax-Music3 composes a continuous piece from a style prompt (and optional lyrics).
 
 Prerequisites: the MiniMaxAI/MiniMax-Music3 weights in the HF cache or under
-`<models>/checkpoints/MiniMax-Music3` (`DEMON_MINIMAX_DIR` overrides), a GPU with
+`<models>/minimax/checkpoints/MiniMax-Music3` (`DEMON_MINIMAX_DIR` overrides), a GPU with
 more than 20 GB free. Optional DiT TensorRT engine dir: `DEMON_MINIMAX_TRT_DIR`.
 
 Run the backend from the repo root:
