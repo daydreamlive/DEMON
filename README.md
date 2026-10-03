@@ -56,7 +56,7 @@ DEMON began as a streaming diffusion engine for ACE-Step v1.5 (described in the 
 | [Stable Audio 3](https://huggingface.co/stabilityai/stable-audio-3-small-music) (small-music, medium) | Streaming diffusion through the same pipeline, via a model adapter | Per-frame curves and prompt morphing (shared with ACE-Step through `StreamPipeline`) | `sa3-small`, `sa3-medium` | realtime on an RTX 5090 (figures to follow) | Weights are a manual download ([docs/INSTALL.md](docs/INSTALL.md)) |
 | Magenta RealTime 2 (`mrt2_small`, `mrt2_base`) | Autoregressive, in a JAX sidecar process | Prompt A/B blend (MusicCoCa embeddings), sampling and guidance knobs; append-only, text only | `mrt2-sidecar` | `mrt2_small` ~1.7x; `mrt2_base` ~0.93x (below realtime, expect underruns) | Experimental; the sidecar runs in a Linux/WSL venv |
 | [MiniMax-Music3](https://huggingface.co/MiniMaxAI/MiniMax-Music3) | Autoregressive language model plus a flow-matching renderer, in process | Style prompt (re-prefills against the audio already written), lyrics at connect; append-only, text only, no prompt blend | `minimax-music3` | ~1.3x steady; first audio ~6 s after connect | Experimental; the AR stage holds ~21 GB of VRAM; knob-to-ear is seconds, not milliseconds |
-| [YuE2](https://github.com/multimodal-art-projection/YuE) (3B) | Song-level: semantic AR plus 32-step acoustic flow matching, in a sidecar process | Genre prompt and lyrics; every change renders a new whole song | `yue2-3b` | A 59 s song renders in 17.3 s (3.41x); a change is heard when the next song finishes | Experimental, the least live-ready family; weights CC BY-NC 4.0 |
+| [YuE2](https://github.com/multimodal-art-projection/YuE) (3B) | Song-level: semantic AR plus 32-step acoustic flow matching, in a sidecar process | Genre prompt and lyrics; every change renders a new whole song | `yue2-3b` | Default `eager-trt` engine: a 68 s song in 18.5 s (RTF 0.265); `turbo` engine: a 64 s song in 11.4 s (RTF 0.179, 1.48x faster). Prompt to first audible song: 17.8 s (`eager-trt`), 11.7 to 13.5 s (`turbo`). A change is heard when the next song finishes | Experimental, the least live-ready family; weights CC BY-NC 4.0. `turbo` uses YuE2-Turbo, an inference layer over the same weights, not a different or distilled checkpoint |
 
 Per-frame curves, morphing, LoRAs and audio input are diffusion-family features (ACE-Step, and Stable Audio 3 where noted). Magenta RealTime 2, MiniMax-Music3 and YuE2 are append-only streams steered by prompt (and lyrics); they ignore uploaded audio.
 
@@ -153,10 +153,19 @@ uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint minimax-
 
 #### YuE2
 
-Needs the `m-a-p/YuE2-3B` and `m-a-p/YuE2-Vae` weights under `DEMON_YUE2_ROOT` and the upstream YuE source under `DEMON_YUE2_YUE_SRC` (see [docs/FAMILIES.md](docs/FAMILIES.md) for pinned revisions and the optional TensorRT engine). Start the sidecar in the DEMON venv, then the server:
+Needs the `m-a-p/YuE2-3B` and `m-a-p/YuE2-Vae` weights under `DEMON_YUE2_ROOT` (see [docs/FAMILIES.md](docs/FAMILIES.md) for pinned revisions and every variable). The sidecar has two engines on the same weights: `eager-trt` (default; the DEMON venv with the upstream YuE source, optional NAR TensorRT engine) and `turbo` (YuE2-Turbo, vLLM for the two AR stages; Linux/WSL venv only, with the server staying on Windows and reaching it through `DEMON_YUE2_SIDECAR`). Start one sidecar, then the server:
 
 ```bash
-DEMON_YUE2_ROOT=E:/models/yue2 DEMON_YUE2_YUE_SRC=E:/src/YuE-0edaf2f4/src python scripts/yue2_sidecar.py
+# default engine (DEMON venv)
+DEMON_YUE2_ROOT=E:/models/yue2 DEMON_YUE2_YUE_SRC=<YuE-0edaf2f4>/src DEMON_YUE2_EXTRA_PATH=<tiktoken dir> DEMON_YUE2_TRT_DIR=<dir with flexible_song/>   python scripts/yue2_sidecar.py
+
+# turbo engine (WSL2 / Linux venv)
+uv venv --python 3.12 ~/.venvs/yue2turbo && . ~/.venvs/yue2turbo/bin/activate
+uv pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
+git clone https://github.com/NoizAI/YuE2-Turbo && uv pip install './YuE2-Turbo[server]'
+DEMON_YUE2_ROOT=~/models/yue2 python scripts/yue2_sidecar.py --engine turbo
+
+# server (either engine)
 uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint yue2-3b
 # open http://localhost:1318/yue2/
 ```
