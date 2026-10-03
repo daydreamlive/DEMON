@@ -7,7 +7,7 @@ const STUB_CHANNELS = 2;
 const PARAMS_TICK_MS = 100;
 const BAR_COUNT = 64;
 const DEFAULT_PROMPT_A = "English, warm piano pop, female vocal, 90 BPM";
-const DEFAULT_PROMPT_B = "English, dark synthwave, male vocal, 110 BPM";
+const DEFAULT_PROMPT_B = ""; // empty = B follows A; a distinct B composes a second song (more create time)
 const DEFAULT_LYRICS = "[Verse]
 City lights are calling me home
 Every street I walk alone

@@ -3,8 +3,8 @@
 ``create_yue2_session`` must build a real StreamingSession whose geometry
 comes from the composed song (not from the synthesised text-only
 anchor), pick the NAR path the TRT velocity will use, flag truncated
-songs, honour ``yue2_duration_s`` as the semantic budget, and restyle
-the same composition for ``prompt_b``.
+songs, honour ``yue2_duration_s`` as the semantic budget, and compose
+``prompt_b`` as a second song at song A's length.
 """
 
 from __future__ import annotations
@@ -29,13 +29,15 @@ class _FakeContext:
         self.compose_calls: list = []
         self.bundle_styles: list = []
 
-    def compose(self, *, style, lyrics, seed, max_frames):
-        self.compose_calls.append(dict(style=style, lyrics=lyrics, seed=seed, max_frames=max_frames))
-        return SimpleNamespace(style=style, timings_ms={"plan_ms": 1.0, "semantic_ms": 2.0})
+    def compose(self, *, style, lyrics, seed, max_frames, exact_frames=None):
+        self.compose_calls.append(dict(style=style, lyrics=lyrics, seed=seed, max_frames=max_frames,
+                                       exact_frames=exact_frames))
+        return SimpleNamespace(style=style, lyrics=lyrics, seed=seed,
+                               timings_ms={"plan_ms": 1.0, "semantic_ms": 2.0})
 
     def bundle(self, composition, *, style=None, epoch=0):
-        self.bundle_styles.append(style)
-        return SimpleNamespace(frames=self.frames, cond_tokens=self.cond_tokens,
+        self.bundle_styles.append(composition.style)
+        return SimpleNamespace(frames=self.frames, cond_tokens=self.cond_tokens, seed=composition.seed,
                                truncated=self.truncated, tags=style or composition.style)
 
     def solve(self, bundle, **kw):
@@ -46,6 +48,11 @@ class _FakeContext:
 
     def decode_window(self, latent, start, n):
         return torch.zeros(2, n * 1920)
+
+    def submit(self, fn, *args):
+        from acestep.streaming.yue2_recompose import run_inline
+
+        return run_inline(fn, *args)
 
 
 def _create(monkeypatch, context, **config):
@@ -81,7 +88,7 @@ def test_create_builds_a_session_from_the_composed_song(monkeypatch):
         assert call["style"] == "city pop"
         assert ss.state.params["yue2_nar"] == "trt"
         assert ss.state.params["yue2_truncated"] is False
-        assert context.bundle_styles == [None]  # no prompt_b: one bundle
+        assert context.bundle_styles == ["city pop"]  # no prompt_b: one song
     finally:
         _close(ss)
 
@@ -126,14 +133,16 @@ def test_short_song_without_engines_is_eager(monkeypatch):
         _close(ss)
 
 
-def test_prompt_b_restyles_the_same_composition(monkeypatch):
+def test_prompt_b_is_a_second_song_at_the_same_length(monkeypatch):
     context = _FakeContext()
-    ss = _create(monkeypatch, context, prompt_b="dark techno")
+    ss = _create(monkeypatch, context, prompt_b="dark techno", yue2_lyrics="[Verse] la")
     try:
-        assert len(context.compose_calls) == 1
-        assert context.bundle_styles == [None, "dark techno"]
+        a_call, b_call = context.compose_calls
+        assert b_call["style"] == "dark techno" and b_call["lyrics"] == a_call["lyrics"]
+        assert b_call["exact_frames"] == T
         ss.backend.handle_set_prompt_blend(1.0)
-        assert ss.backend._active_bundle.tags == "dark techno"
+        song_b = ss.backend._active
+        assert song_b.tags == "dark techno" and song_b.anchor is not None
     finally:
         _close(ss)
 

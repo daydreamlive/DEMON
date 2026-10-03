@@ -4,11 +4,11 @@ The adapter is the production :class:`YuE2Adapter` over a fake velocity;
 the codec is a recording fake. Pinned here:
 
 * contract surface (capabilities, geometry, manifest, no LoRA);
-* a prompt restyle publishes atomically and in-flight slots finish on
-  the bundle they were submitted with (by identity, through
-  ``last_finished_request``);
+* a prompt change re-composes in the background, publishes atomically,
+  drops latents still in flight for the old song, and the ring renders
+  the new song's anchor with one full solve before applying the knobs;
 * the settled short-circuit stops ticking only when nothing changed;
-* ``set_prompt_blend`` is a hard switch at 0.5;
+* ``set_prompt_blend`` is a hard switch at 0.5 between two songs;
 * window rendering clamps at the song edges (and the VAE window plan);
 * registration, config fields and the preflight verdicts.
 
@@ -33,6 +33,7 @@ from acestep.streaming.yue2_backend import (
     playable_seconds,
     yue2_knob_specs,
 )
+from acestep.streaming.yue2_recompose import Song
 
 T = 40
 STEPS = 4
@@ -40,8 +41,12 @@ CTX = TickContext(playhead_s=0.0, buffer_duration_s=2.0)
 
 
 class _Bundle:
-    def __init__(self, offset: float, frames: int = T, cond_tokens: int = 2000):
-        self.offset, self.frames, self.cond_tokens = offset, frames, cond_tokens
+    def __init__(self, offset: float, frames: int = T, cond_tokens: int = 2000, seed: int = 0):
+        self.offset, self.frames, self.cond_tokens, self.seed = offset, frames, cond_tokens, seed
+
+
+def _song(offset=0.0, tags="pop", **kw):
+    return Song(bundle=_Bundle(offset, **kw), anchor=torch.zeros(1, T, 64), tags=tags)
 
 
 def _velocity(bundle, state, raw_times):
@@ -64,20 +69,31 @@ class _Codec:
         self.released.append(bundle)
 
 
-def _backend(*, depth=1, restyler=None, bundle=None, codec=None, **kw):
-    bundle = bundle or _Bundle(0.0)
+def _backend(*, depth=1, recompose=None, song=None, song_b=None, codec=None, submit=None, **kw):
+    extra = {"submit": submit} if submit is not None else {}
     return YuE2Backend(
         adapter=YuE2Adapter(_velocity, steps=STEPS),
         codec=codec or _Codec(),
-        bundle=bundle,
-        anchor_latent=torch.zeros(1, T, 64),
+        song=song or _song(),
+        song_b=song_b,
         knob_state=KnobState(yue2_knob_specs()),
-        restyler=restyler,
+        recompose=recompose,
         steps=STEPS,
         depth=depth,
-        prompt_tags="pop",
+        **extra,
         **kw,
     )
+
+
+def _recompose_to(offset, frames=T):
+    calls = []
+
+    def recompose(tags, epoch):
+        calls.append((tags, epoch))
+        return Song(bundle=_Bundle(offset, frames=frames), anchor=None, tags=tags, epoch=epoch)
+
+    recompose.calls = calls
+    return recompose
 
 
 def _knobs(**over):
@@ -113,39 +129,91 @@ def test_contract_surface():
 
 
 def test_ring_emits_after_the_schedule_and_attributes_the_bundle():
-    bundle = _Bundle(0.25)
-    backend = _backend(bundle=bundle)
+    song = _song(0.25)
+    backend = _backend(song=song)
     req = _produce_until_fresh(backend, _knobs())
-    assert req.aux_cond is bundle and req.latent_frames == T
+    assert req.aux_cond is song.bundle and req.latent_frames == T
     assert backend.pipeline.ticks == STEPS
 
 
-def test_restyle_publishes_atomically_and_in_flight_slots_keep_the_old_bundle():
-    old = _Bundle(0.0)
-    new = _Bundle(1.0)
-    backend = _backend(depth=2, bundle=old, restyler=lambda tags, epoch: new)
-    knobs = _knobs()
-    backend.produce(knobs, CTX, "generate")
-    backend.produce(knobs, CTX, "generate")
+def test_prompt_change_recomposes_and_the_ring_anchors_the_new_song():
+    old = _song(0.0)
+    recompose = _recompose_to(1.0)
+    backend = _backend(song=old, recompose=recompose)
+    knobs = _knobs(seed=0)  # the song seed: the knobs ask for the anchor
+    _produce_until_fresh(backend, knobs)
+    backend.handle_set_prompt("rock")
+    assert recompose.calls == [("rock", 1)]
+    new = backend._active
+    assert new is not old and new.anchor is None and new.tags == "rock"
+    req = _produce_until_fresh(backend, knobs)
+    # The anchor request: full solve from the song seed, no source/lock.
+    assert req.aux_cond is new.bundle and req.denoise == 1.0
+    assert req.source_latents is None and req.x0_target is None
+    assert new.anchor is not None
+    # Knobs equal to "the anchor": settled straight away.
+    ticks = backend.pipeline.ticks
+    assert backend.produce(knobs, CTX, "generate") is False
+    assert backend.pipeline.ticks == ticks
+    # Any other knob renders over the NEW anchor.
+    req = _produce_until_fresh(backend, _knobs(seed=0, yue2_denoise=0.5))
+    assert req.x0_target is new.anchor and req.source_latents is new.anchor
+
+
+def test_latents_in_flight_for_the_old_song_are_dropped():
+    backend = _backend(depth=1, recompose=_recompose_to(1.0))
+    knobs = _knobs(seed=2)
+    backend.produce(knobs, CTX, "generate")  # a slot starts on the old song
     backend.handle_set_prompt("rock")
     emerged = []
     for _ in range(3 * STEPS):
         if backend.produce(knobs, CTX, "generate"):
-            emerged.append(backend.pipeline.last_finished_request.aux_cond)
-    # Slots submitted before the swap finish on the old bundle; every
-    # later one carries the new bundle.
-    assert emerged[0] is old
-    assert emerged[-1] is new
-    assert emerged.index(new) == len([b for b in emerged if b is old])
-    assert backend._cond_meta_for(new) == (1, "rock")
+            emerged.append(backend.pipeline.last_finished_request)
+    assert emerged and all(r.aux_cond is backend._active.bundle for r in emerged)
 
 
-def test_restyle_must_keep_the_song_length():
-    backend = _backend(restyler=lambda tags, epoch: _Bundle(0.0, frames=T + 5))
-    with pytest.raises(ValueError, match="length"):
-        backend.handle_set_prompt("rock")
-    with pytest.raises(RuntimeError, match="restyler"):
+def test_unchanged_tags_do_not_recompose_and_b_follows_a():
+    recompose = _recompose_to(1.0)
+    backend = _backend(song=_song(tags="pop"), recompose=recompose)
+    backend.handle_set_prompt("pop")
+    assert recompose.calls == []
+    backend.handle_set_prompt("rock", tags_b="jazz")
+    assert [c[0] for c in recompose.calls] == ["rock", "jazz"]
+    assert backend._song_a.tags == "rock" and backend._song_b.tags == "jazz"
+    backend.handle_set_prompt("rock")  # B now follows A again
+    assert backend._song_b is backend._song_a
+
+
+def test_a_recompose_of_the_wrong_length_is_rejected():
+    codec = _Codec()
+    backend = _backend(codec=codec, recompose=_recompose_to(0.0, frames=T + 5))
+    before = backend._active
+    backend.handle_set_prompt("rock")
+    assert backend._active is before
+    assert len(codec.released) == 1
+    with pytest.raises(RuntimeError, match="recompose"):
         _backend().handle_set_prompt("rock")
+
+
+def test_a_superseded_recompose_never_publishes():
+    from concurrent.futures import Future
+
+    jobs = []
+
+    def deferred(fn, *args):
+        jobs.append((fn, args))
+        return Future()
+
+    codec = _Codec()
+    backend = _backend(codec=codec, recompose=_recompose_to(1.0), submit=deferred)
+    before = backend._active
+    backend.handle_set_prompt("rock")
+    backend.handle_set_prompt("jazz")
+    fn, args = jobs[0]
+    assert fn(*args) is None  # superseded before it started: skipped
+    fn, args = jobs[1]
+    song = fn(*args)
+    assert backend._active is song and song.tags == "jazz" and before is not song
 
 
 def test_settled_short_circuit_only_when_nothing_changed():
@@ -168,14 +236,14 @@ def test_settled_short_circuit_only_when_nothing_changed():
 
 
 def test_prompt_blend_is_a_hard_switch_at_half():
-    a, b = _Bundle(0.0), _Bundle(1.0)
-    backend = _backend(bundle=a, bundle_b=b, prompt_tags_b="jazz")
+    a, b = _song(0.0), _song(1.0, tags="jazz")
+    backend = _backend(song=a, song_b=b)
     backend.handle_set_prompt_blend(0.49)
-    assert backend._active_bundle is a
+    assert backend._active is a
     backend.handle_set_prompt_blend(0.5)
-    assert backend._active_bundle is b
+    assert backend._active is b
     backend.handle_set_prompt_blend(0.0)
-    assert backend._active_bundle is a
+    assert backend._active is a
 
 
 def test_steps_stay_on_the_released_grid_whatever_the_knobs_say():
@@ -212,10 +280,10 @@ def test_window_plan_interior_and_edges():
 
 def test_close_releases_every_bundle():
     codec = _Codec()
-    a, b = _Bundle(0.0), _Bundle(1.0)
-    backend = _backend(codec=codec, bundle=a, bundle_b=b, prompt_tags_b="jazz")
+    a, b = _song(0.0), _song(1.0, tags="jazz")
+    backend = _backend(codec=codec, song=a, song_b=b)
     backend.close()
-    assert set(map(id, codec.released)) == {id(a), id(b)}
+    assert set(map(id, codec.released)) == {id(a.bundle), id(b.bundle)}
 
 
 def test_emerged_params_are_stamped():
@@ -341,9 +409,8 @@ def test_settles_at_the_released_step_count(depth, denoise):
     """A 32-step solve outlives a short submission history; the ring must
     still recognise the emerged latent and stop ticking."""
     backend = YuE2Backend(
-        adapter=YuE2Adapter(_velocity, steps=32), codec=_Codec(), bundle=_Bundle(0.0),
-        anchor_latent=torch.zeros(1, T, 64), knob_state=KnobState(yue2_knob_specs()),
-        restyler=None, steps=32, depth=depth, prompt_tags="pop",
+        adapter=YuE2Adapter(_velocity, steps=32), codec=_Codec(), song=_song(),
+        knob_state=KnobState(yue2_knob_specs()), steps=32, depth=depth,
     )
     knobs = _knobs(yue2_denoise=denoise)
     for _ in range(4 * 32):

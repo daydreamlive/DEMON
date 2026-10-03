@@ -8,7 +8,11 @@ wraps at the song end (the loop), and walks the knobs through phases:
   seed      seed 1: new acoustic noise, same composition
   denoise   seed 1 + yue2_denoise 0.5: re-noise the anchor, last 16 steps
   x0        seed 1 + yue2_denoise 1.0 + x0_target 0.5: pull toward the anchor
-  style     seed 0 + style prompt change (fast restyle, frozen semantics)
+  style     seed 0 + style prompt change
+
+``--scenario recompose`` instead sends two prompt changes (background
+re-compose) and times the first changed slice; run the server with
+DEMON_LAT_TRACE=1 to read write leads (underruns) from its log.
 
 Each phase plays ``--loops`` full passes of the song so every window is
 re-decoded under the phase's knobs, then the mirrored buffer is saved as
@@ -40,6 +44,7 @@ from tests.golden.client import SAMPLE_RATE, GoldenClient
 
 PROMPT = "city pop, female vocal, bright synths, groovy bass"
 PROMPT_STYLE = "dark industrial techno, distorted kick, male vocal"
+PROMPT_FOLK = "acoustic folk, fingerpicked guitar, warm, gentle"
 PARAMS_TICK_S = 0.1
 
 
@@ -112,6 +117,55 @@ def play(client: GoldenClient, playhead: Playhead, values: dict, seconds: float)
     return client.slices[first:]
 
 
+def play_watching(client, playhead, schedule, seconds, snapshot):
+    """Like :func:`play` with a knob ``schedule`` [(t_offset_s, values)]
+    and the time of the first slice that differs from ``snapshot`` (the
+    buffer when the change was sent) by more than 1e-5."""
+    t0 = time.monotonic()
+    first_changed = None
+    next_params = 0.0
+    seen = len(client.slices)
+    values = schedule[0][1]
+    while time.monotonic() - t0 < seconds:
+        now = time.monotonic()
+        for offset, vals in schedule:
+            if now - t0 >= offset:
+                values = vals
+        if now >= next_params:
+            client.send_params(values, playhead.position())
+            next_params = now + PARAMS_TICK_S
+        client.pump(timeout=0.02)
+        while first_changed is None and seen < len(client.slices):
+            sl = client.slices[seen]
+            seen += 1
+            ref = snapshot[sl.start_sample:sl.start_sample + sl.num_samples]
+            if ref.shape == sl.audio.shape and np.abs(sl.audio - ref).max() > 1e-5:
+                first_changed = time.monotonic() - t0
+    return first_changed
+
+
+def run_recompose(client, ready, defaults, out: Path) -> dict:
+    """M4/E6: set_prompt re-composes in the background while the song
+    keeps playing; once with the ring idle (settled), once with the seed
+    churning every 2.5 s for the first 25 s (ring busy throughout)."""
+    playhead = Playhead(ready["duration"])
+    play(client, playhead, defaults, 8.0)
+    span = 20.0 + ready["duration"] * 1.15
+    report = {}
+    churn = [(0.0, {**defaults, "seed": 1})] + [
+        (2.5 * i, {**defaults, "seed": 1 + i % 2}) for i in range(1, 10)] + [(25.0, dict(defaults))]
+    for name, prompt, schedule in (("idle", PROMPT_STYLE, [(0.0, dict(defaults))]),
+                                   ("busy", PROMPT_FOLK, churn)):
+        snapshot = client.buffer.copy()
+        client.send_prompt(prompt, prompt)
+        first = play_watching(client, playhead, schedule, span, snapshot)
+        save_wav(out / f"recompose_{name}.wav", client.buffer)
+        report[name] = {"prompt": prompt, "first_changed_slice_s": first,
+                        "rms_diff_vs_before": rms(client.buffer - snapshot)}
+        print(name, json.dumps(report[name]), flush=True)
+    return report
+
+
 def phase_report(slices, audio, anchor):
     # Settled slices re-decode the cached latent and carry a ~0 ms tick;
     # only ticks that ran the ring count.
@@ -133,6 +187,7 @@ def main():
     parser.add_argument("--depth", type=int, default=1)
     parser.add_argument("--loops", type=float, default=1.15)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--scenario", choices=["knobs", "recompose"], default="knobs")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
 
@@ -157,6 +212,9 @@ def main():
 
     defaults = {k: v.get("default") for k, v in ready["knob_manifest"]["knobs"].items()
                 if v.get("type") in ("float", "int")}
+    if args.scenario == "recompose":
+        report["recompose"] = run_recompose(client, ready, defaults, args.out)
+        return finish(client, gpu, report, args.out)
     playhead = Playhead(ready["duration"])
     span = ready["duration"] * args.loops
     phases = [
@@ -178,13 +236,16 @@ def main():
         report["phases"][name] = rep
         print(name, json.dumps({k: v for k, v in rep.items() if k != "values"}), flush=True)
 
-    errors = [d for _, d in client.events if d.get("type") == "error"]
-    report["errors"] = errors
+    finish(client, gpu, report, args.out)
+
+
+def finish(client, gpu, report, out: Path):
+    report["errors"] = [d for _, d in client.events if d.get("type") == "error"]
     client.close()
     gpu.stop()
     report["nvidia_smi_mib_max"] = max(gpu.samples) if gpu.samples else None
     report["nvidia_smi_mib_min"] = min(gpu.samples) if gpu.samples else None
-    (args.out / "report.json").write_text(json.dumps(report, indent=2))
+    (out / "report.json").write_text(json.dumps(report, indent=2))
     print(json.dumps({k: v for k, v in report.items() if k != "phases"}, indent=2))
 
 

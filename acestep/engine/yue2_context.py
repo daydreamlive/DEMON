@@ -180,23 +180,29 @@ class YuE2Context:
                 patch.object(GraphAR, "_capture", capture):
             yield
 
-    def semantic_budget(self, max_frames: int) -> dict:
+    def semantic_budget(self, max_frames: int, exact_frames: Optional[int] = None) -> dict:
         """Semantic sampling bounds for a song of at most ``max_frames``.
         With the flexible NAR engine, songs are held to its 1000-frame
         floor (40 s) when the budget allows, so they land on TRT instead
-        of the several-times-slower eager NAR."""
+        of the several-times-slower eager NAR. ``exact_frames`` forces
+        the length (a re-compose keeps the session geometry)."""
+        if exact_frames is not None:
+            return {"min_tokens": int(exact_frames), "max_tokens": int(exact_frames)}
         floor = FLEX_FRAMES[0] if self.has_trt_nar and max_frames >= FLEX_FRAMES[0] else 1
         return {"min_tokens": floor, "max_tokens": int(max_frames)}
 
-    def compose(self, *, style: str, lyrics: str, seed: int, max_frames: int) -> Composition:
-        """Score plan + semantic tokens for one song (seconds of AR)."""
+    def compose(self, *, style: str, lyrics: str, seed: int, max_frames: int,
+                exact_frames: Optional[int] = None) -> Composition:
+        """Score plan + semantic tokens for one song (seconds of AR);
+        exactly ``exact_frames`` semantic tokens when given."""
         lyrics = lyrics or DEFAULT_LYRICS
         with self._model_lock, torch.inference_mode(), self._ar_graphs():
             t0 = time.perf_counter()
             plan = self.pipe.plan(style=style, lyrics=lyrics, cot="full", seed=int(seed),
                                   abc_sampling={"min_tokens": 1, "max_tokens": ABC_MAX_TOKENS})
             t1 = time.perf_counter()
-            semantic = self.pipe.generate_semantic(plan, sampling=self.semantic_budget(max_frames))
+            semantic = self.pipe.generate_semantic(
+                plan, sampling=self.semantic_budget(max_frames, exact_frames))
             t2 = time.perf_counter()
         if not semantic.tokens:
             raise RuntimeError("yue2 semantic stage returned no tokens")

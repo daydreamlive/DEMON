@@ -5,8 +5,8 @@ Shaped like :mod:`acestep.streaming.sa3_session`. :func:`create_yue2_session`:
 * **YuE2Context, process-cached** (:func:`get_yue2_context`): one model,
   VAE and engine set per weights root for the process lifetime.
 * **Conditioning, synchronously**: compose (score plan + semantic AR),
-  prefill the KV bundle (twice when ``prompt_b`` differs: a restyle of
-  the same composition), then one full solve for the song anchor. This
+  prefill the KV bundle, then one full solve for the song anchor; a
+  distinct ``prompt_b`` composes a second song at the same length. This
   is seconds of AR before ``ready``; the client shows "composing".
 * **Text only**: an uploaded or synthesised source is ignored; the song
   length is the semantic stage's, capped by ``yue2_duration_s`` (at most
@@ -31,6 +31,7 @@ from acestep.streaming.yue2_backend import (
     playable_seconds,
     yue2_knob_specs,
 )
+from acestep.streaming.yue2_recompose import Song
 
 #: Ring depth ceiling. The settled ring runs one solve per change, so
 #: depth buys no throughput; measured on a 5090 (M3, 60 s song, TRT),
@@ -95,26 +96,34 @@ def nar_backend_for(bundle, has_trt: bool) -> str:
 
 def compose_song(context, *, prompt: str, prompt_b: str, lyrics: str, seed: int,
                  max_frames: int) -> dict:
-    """Run the create-time conditioning; returns the pieces and a timing
-    breakdown (ms)."""
+    """Run the create-time conditioning; returns the songs and a timing
+    breakdown (ms). A distinct ``prompt_b`` is a second composition of
+    the same lyrics at song A's length (style lives in the semantics)."""
     times = {}
     t0 = time.perf_counter()
     composition = context.compose(style=prompt, lyrics=lyrics, seed=seed, max_frames=max_frames)
     times.update(composition.timings_ms)
     t1 = time.perf_counter()
     bundle = context.bundle(composition)
-    bundle_b = context.bundle(composition, style=prompt_b) if prompt_b != prompt else None
     t2 = time.perf_counter()
     anchor = context.solve(bundle)
     t3 = time.perf_counter()
     initial = context.decode_full(anchor).clamp(-1, 1).float().cpu().numpy().T.copy()
     t4 = time.perf_counter()
+    song = Song(bundle=bundle, anchor=anchor, tags=prompt)
+    song_b = None
+    if prompt_b != prompt:
+        composition_b = context.compose(style=prompt_b, lyrics=lyrics, seed=seed,
+                                        max_frames=bundle.frames, exact_frames=bundle.frames)
+        bundle_b = context.bundle(composition_b)
+        song_b = Song(bundle=bundle_b, anchor=context.solve(bundle_b), tags=prompt_b)
+        times["song_b_ms"] = (time.perf_counter() - t4) * 1000
     times.update(
         prefill_ms=(t2 - t1) * 1000, anchor_solve_ms=(t3 - t2) * 1000,
-        anchor_decode_ms=(t4 - t3) * 1000, total_ms=(t4 - t0) * 1000,
+        anchor_decode_ms=(t4 - t3) * 1000, total_ms=(time.perf_counter() - t0) * 1000,
     )
-    return dict(composition=composition, bundle=bundle, bundle_b=bundle_b,
-                anchor=anchor, initial_buffer=initial, timings_ms=times)
+    return dict(composition=composition, song=song, song_b=song_b, bundle=bundle,
+                initial_buffer=initial, timings_ms=times)
 
 
 def create_yue2_session(cls, *, audio, config, checkpoint, session_id, **_unused):
@@ -204,10 +213,8 @@ def create_yue2_session(cls, *, audio, config, checkpoint, session_id, **_unused
             backend_init={
                 "context": context,
                 "composition": song["composition"],
-                "bundle": bundle,
-                "bundle_b": song["bundle_b"],
-                "anchor_latent": song["anchor"],
-                "seed": seed,
+                "song": song["song"],
+                "song_b": song["song_b"],
             },
         )
         cleanup.pop_all()

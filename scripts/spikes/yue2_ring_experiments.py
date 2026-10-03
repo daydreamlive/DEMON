@@ -18,6 +18,9 @@ on one GPU, no server, and writes one JSON plus wavs per command.
   E5  after a restyle to B, re-noise the anchor with seed 1 to d in
       {0.25, 0.5, 0.75, 1.0} and integrate under B.
 
+``forced``   E4: five prompts composed at their natural length and forced
+             to the session length; ending loudness proxies and wavs.
+
 ``latency``  ring tick p50/p95 and knob-to-ear with the spike method:
              first changed PCM (> 1e-5 vs the pre-change render of the
              same window) and first fully updated PCM (rendered from a
@@ -29,6 +32,7 @@ on one GPU, no server, and writes one JSON plus wavs per command.
 
     python scripts/spikes/yue2_ring_experiments.py quality --seconds 60 --out DIR
     python scripts/spikes/yue2_ring_experiments.py latency --seconds 30 --depth 1 --out DIR
+    python scripts/spikes/yue2_ring_experiments.py forced --seconds 60 --out DIR
 """
 
 from __future__ import annotations
@@ -49,6 +53,7 @@ import torch
 from acestep.streaming.generator_backend import TickContext
 from acestep.streaming.knobs import KnobState
 from acestep.streaming.yue2_backend import YuE2Backend, playable_seconds, yue2_knob_specs
+from acestep.streaming.yue2_recompose import Song
 from acestep.streaming.yue2_session import compose_song, nar_backend_for
 
 STYLE_PAIRS = [
@@ -80,9 +85,8 @@ def rel_l2(a, b) -> float:
 
 def make_backend(ctx, song, prompt, depth=1):
     return YuE2Backend.from_context(
-        ctx, composition=song["composition"], bundle=song["bundle"],
-        bundle_b=song["bundle_b"], anchor_latent=song["anchor"],
-        knob_state=KnobState(yue2_knob_specs()), prompt_tags=prompt, depth=depth,
+        ctx, composition=song["composition"], song=song["song"], song_b=song["song_b"],
+        knob_state=KnobState(yue2_knob_specs()), depth=depth,
     )
 
 
@@ -143,7 +147,7 @@ def run_quality(ctx, seconds, out: Path) -> dict:
         tag = f"pair{pair_index}"
         song = compose(ctx, style_a, seconds)
         bundle_a = song["bundle"]
-        anchor = song["anchor"]
+        anchor = song["song"].anchor
         anchor_audio = ctx.decode_full(anchor)
         anchor_features = spectral(anchor_audio)
         save_wav(out / f"{tag}_anchor_A.wav", anchor_audio)
@@ -176,18 +180,61 @@ def run_quality(ctx, seconds, out: Path) -> dict:
         for d in (0.25, 0.5, 0.75):
             lat = settle(backend, knobs(yue2_denoise=d, seed=0), pctx)
             rows[f"E2_d{d}"] = {"latent_rel_l2_vs_anchor": rel_l2(lat, anchor)}
-        # E5: restyle to B in the ring, then audio-to-audio at seed 1.
-        backend.handle_set_prompt(style_b)
+        # E5: a [Tags]-only restyle to B published in the ring (same
+        # semantics, same anchor), then audio-to-audio at seed 1.
+        backend._publish_song("a", Song(bundle=bundle_b, anchor=anchor, tags=style_b, epoch=1), 0.0)
         for d in (0.25, 0.5, 0.75, 1.0):
             lat = settle(backend, knobs(yue2_denoise=d, seed=1), pctx)
             audio = ctx.decode_full(lat)
             save_wav(out / f"{tag}_E5_B_seed1_d{d}.wav", audio)
             rows[f"E5_d{d}"] = describe(audio, anchor_features)
             rows[f"E5_d{d}"]["latent_rel_l2_vs_anchor"] = rel_l2(lat, anchor)
-        backend.close()
-        ctx.release_bundle(bundle_b)
+        backend.close()  # releases bundle_b too (it was published)
         report[tag] = {"style_A": style_a, "style_B": style_b, "rows": rows}
         print(tag, json.dumps(rows, indent=1), flush=True)
+    return report
+
+
+# ---- E4: forced-length re-compose ------------------------------------------------
+
+E4_PROMPTS = [
+    "city pop, female vocal, bright synths, groovy bass",
+    "dark industrial techno, distorted kick, male vocal",
+    "acoustic folk, fingerpicked guitar, warm, gentle",
+    "heavy metal, distorted guitars, aggressive drums, fast",
+    "lo-fi hip hop, mellow piano, vinyl crackle, laid back",
+]
+
+
+def ending_profile(audio_2n: torch.Tensor) -> dict:
+    """RMS of the last second and of the last 0.25 s relative to the
+    song's median 1 s RMS: a cut ending stays loud to the last sample,
+    a natural ending decays."""
+    mono = audio_2n.float().mean(0).cpu().numpy()
+    sec = [float(np.sqrt(np.mean(mono[i:i + SR] ** 2))) for i in range(0, len(mono) - SR + 1, SR)]
+    median = float(np.median(sec)) or 1e-9
+    tail = float(np.sqrt(np.mean(mono[-SR // 4:] ** 2)))
+    return {"last_1s_rel": sec[-1] / median, "last_250ms_rel": tail / median}
+
+
+def run_forced(ctx, seconds, out: Path) -> dict:
+    """E4: each prompt composed at its natural length (budget 100 s) and
+    forced to ``seconds`` (min = max tokens), as a re-compose would."""
+    exact = int(round(seconds * 25))
+    report = {"exact_frames": exact, "prompts": {}}
+    for index, prompt in enumerate(E4_PROMPTS):
+        rows = {}
+        for kind, kwargs in (("natural", {"max_frames": 2500}),
+                             ("forced", {"max_frames": exact, "exact_frames": exact})):
+            composition = ctx.compose(style=prompt, lyrics="", seed=0, **kwargs)
+            bundle = ctx.bundle(composition)
+            audio = ctx.decode_full(ctx.solve(bundle))
+            save_wav(out / f"e4_p{index}_{kind}.wav", audio)
+            rows[kind] = {"frames": bundle.frames, "truncated": bool(bundle.truncated),
+                          "semantic_ms": composition.timings_ms["semantic_ms"], **ending_profile(audio)}
+            ctx.release_bundle(bundle)
+        report["prompts"][prompt] = rows
+        print(prompt, json.dumps(rows), flush=True)
     return report
 
 
@@ -272,7 +319,7 @@ def run_latency(ctx, seconds, depth, out: Path) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("command", choices=["quality", "latency"])
+    parser.add_argument("command", choices=["quality", "latency", "forced"])
     parser.add_argument("--seconds", type=float, default=60.0)
     parser.add_argument("--depth", type=int, default=1)
     parser.add_argument("--out", type=Path, required=True)
@@ -286,6 +333,9 @@ def main():
     if args.command == "quality":
         report = run_quality(ctx, args.seconds, args.out)
         name = f"quality_{int(args.seconds)}s.json"
+    elif args.command == "forced":
+        report = run_forced(ctx, args.seconds, args.out)
+        name = f"e4_forced_{int(args.seconds)}s.json"
     else:
         report = run_latency(ctx, args.seconds, args.depth, args.out)
         name = f"latency_{int(args.seconds)}s_d{args.depth}.json"

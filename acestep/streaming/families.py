@@ -645,7 +645,7 @@ YUE2_TEXT_ONLY_MAX_DURATION_S = 100.0
 def _make_yue2(ss):
     # Assembles YuE2Backend from the create path's payload
     # (acestep.streaming.yue2_session): the process-cached YuE2Context,
-    # the composition, its KV bundle(s) and the song anchor.
+    # the composition and its song(s) (KV bundle + anchor).
     init = getattr(ss, "backend_init", None)
     if not init or "context" not in init:
         raise ValueError(
@@ -657,15 +657,11 @@ def _make_yue2(ss):
     return YuE2Backend.from_context(
         init["context"],
         composition=init["composition"],
-        bundle=init["bundle"],
-        bundle_b=init.get("bundle_b"),
-        anchor_latent=init["anchor_latent"],
+        song=init["song"],
+        song_b=init.get("song_b"),
         knob_state=ss.virtual_knobs,
         state=ss.state,
-        prompt_tags=ss.state.prompt_text,
-        prompt_tags_b=ss.state.prompt_text_b,
         depth=int(ss.state.current_depth),
-        default_seed=int(init.get("seed", 0)),
         vae_window_s=float(ss.vae_window),
     )
 

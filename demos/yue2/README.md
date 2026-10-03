@@ -20,9 +20,10 @@ Open http://localhost:1318/yue2/.
 
 ## Use
 
-- **Style A / Style B**: tag prompts. B is a restyle of the same
-  composition (same lyrics and semantic tokens); the A/B switch flips
-  between them.
+- **Style / Style B**: tag prompts. Leave B empty for one song; a
+  distinct B composes a second song from the same lyrics at the same
+  length (create takes about twice as long) and the A/B switch flips
+  between the two songs.
 - **Lyrics** and **Duration** are fixed once you press Start: they decide
   the composition, which takes seconds of AR before audio starts
   ("composing").
@@ -30,6 +31,10 @@ Open http://localhost:1318/yue2/.
 - **yue2_denoise**: how much of the 32-step solve each pass re-runs.
 - **x0_target**: pull toward the anchor.
 - **seed**: new acoustic noise for the same composition.
-- **Send style** applies a new Style A while the song plays.
+- **Re-compose** sends the current Style (and B): the song keeps playing
+  while YuE2 composes the new one in the background, then the new song
+  replaces it. A YuE2 style lives in its semantic tokens, so a new style
+  means a new composition (same lyrics, same length), not a re-colouring
+  of the current one.
 
 YuE2 weights are CC BY-NC 4.0 (non-commercial).

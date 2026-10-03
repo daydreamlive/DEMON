@@ -10,11 +10,12 @@ codec). Shaped like the SA3 backend:
   (AR-prefix KV) that rides ``SlotRequest.aux_cond`` by reference.
 * **What is conditioning**: score plan, semantic tokens and the KV
   prefill. They run at session create (synchronously, before ``ready``)
-  and, for a prompt change, outside the hot loop
-  (:meth:`YuE2Backend.handle_set_prompt`): the new bundle is published
-  under ``_control_lock`` and in-flight slots finish on the old one.
+  and, for a prompt change, on the context worker
+  (:mod:`acestep.streaming.yue2_recompose`): the new song is published
+  under ``_control_lock``, the ring renders its anchor with one full
+  solve, and latents still in flight for the old song are dropped.
 * **The source canvas** is the song's own clean latent (the anchor, one
-  full solve at create). ``yue2_denoise`` < 1 re-noises the anchor with
+  full solve at create or after a re-compose). ``yue2_denoise`` < 1 re-noises the anchor with
   the seed's noise and integrates the truncated grid from there
   (audio-to-audio toward the live conditioning); ``x0_target`` locks
   toward it; ``feedback`` blends the latest outputs into it.
@@ -23,11 +24,12 @@ Control surface: ``yue2_denoise`` (prefixed; ACE's ``denoise`` means
 something else) plus the shared ``x0_target`` / ``feedback`` /
 ``feedback_depth`` / ``seed``. The step count stays at the released
 32-step grid: the shared ``steps_override`` knob (default 8, at most 16)
-cannot express it, and ``yue2_denoise`` already shortens the work. ``prompt`` is a fast
-restyle (same score and semantic tokens, new ``[Tags]`` prefix);
-``set_prompt_blend`` is a hard A/B switch at 0.5 (two prefixes of
-different lengths have no KV to interpolate). Lyrics and song length
-are fixed for the session. No LoRA, no CFG, no per-frame curves.
+cannot express it, and ``yue2_denoise`` already shortens the work.
+``prompt`` re-composes the session's lyrics under the new tags at the
+session's length (a ``[Tags]``-only restyle with frozen semantics is
+nearly inaudible, experiment E3); ``set_prompt_blend`` is a hard switch
+at 0.5 between the A and B songs. Lyrics and song length are fixed for
+the session. No LoRA, no CFG, no per-frame curves.
 
 Settled short-circuit: with fixed conditioning, seed and knobs and no
 feedback, the ring re-renders the same latent forever. Once a latent
@@ -55,6 +57,7 @@ from acestep.streaming.generator_backend import (
     TickContext,
 )
 from acestep.streaming.knobs import KnobSpec, knob_specs as registry_knob_specs
+from acestep.streaming.yue2_recompose import Recomposer, Song, run_inline
 
 SAMPLE_RATE = 48000
 LATENT_RATE_HZ = 25.0
@@ -109,8 +112,10 @@ class YuE2Backend(DiffusionBackend):
     Decoupled from the YuE2Context for testability: ``codec`` is anything
     with ``decode_window(latent_btc, start_frame, n_frames) -> [2, N]``
     and ``decode_full(latent_btc) -> [2, N]`` (optionally
-    ``release_bundle(bundle)``); ``restyler(tags, epoch) -> bundle``
-    builds a bundle for new style tags on the session's composition.
+    ``release_bundle(bundle)``); ``recompose(tags, epoch) -> Song``
+    composes the session's lyrics under new style tags at the session's
+    length, and ``submit(fn, *args)`` runs it off the command thread
+    (the context's worker; inline in tests).
     """
 
     name = "yue2"
@@ -120,61 +125,57 @@ class YuE2Backend(DiffusionBackend):
         *,
         adapter,
         codec,
-        bundle,
-        anchor_latent: torch.Tensor,
+        song: Song,
         knob_state,
         state=None,
-        restyler: Optional[Callable] = None,
-        bundle_b=None,
-        prompt_tags: Optional[str] = None,
-        prompt_tags_b: Optional[str] = None,
+        song_b: Optional[Song] = None,
+        recompose: Optional[Callable[[str, int], Song]] = None,
+        submit: Callable = run_inline,
         steps: int = 32,
         depth: int = 1,
-        default_seed: int = 0,
         vae_window_s: float = 0.4,
     ):
         super().__init__(adapter=adapter, codec=codec)
         self.knob_state = knob_state
         self.state = state
-        self._restyler = restyler
         self._steps = int(steps)
         self._depth = int(depth)
-        self._default_seed = int(default_seed)
+        self._default_seed = song.seed
         self.vae_window = float(vae_window_s)
-        self._frames = int(bundle.frames)
-        if anchor_latent.shape[1] != self._frames:
-            raise ValueError(
-                f"yue2 anchor has {anchor_latent.shape[1]} frames, bundle {self._frames}"
-            )
-        # The song anchor: source canvas and x0 lock target, [1, T, 64].
-        self._anchor = anchor_latent
+        self._frames = song.frames
+        if song.anchor is None or song.anchor.shape[1] != self._frames:
+            raise ValueError("yue2 session song needs an anchor of the song's length")
 
-        # Conditioning control state, swapped by the command thread and
+        # Song control state, swapped by the command / worker threads and
         # snapshotted by the runner under _control_lock (never held
         # across pipeline work).
         self._control_lock = threading.Lock()
-        self._bundle_a = bundle
-        self._bundle_b = bundle_b if bundle_b is not None else bundle
+        self._song_a = song
+        self._song_b = song_b if song_b is not None else song
+        self._b_follows_a = song_b is None
         self._blend = 0.0
-        self._active_bundle = bundle
-        self._tags_a = prompt_tags
-        self._tags_b = prompt_tags_b if prompt_tags_b not in (None, "", prompt_tags) else None
+        self._active = song
         self._cond_epoch = 0
-        # (bundle, epoch, tags) for emerged-latent attribution, bounded.
-        self._cond_history: list = [(bundle, 0, prompt_tags)]
-        if self._bundle_b is not bundle:
-            self._cond_history.append((self._bundle_b, 0, self._tags_b))
+        # Every song this session published (bounded), for attribution
+        # and for releasing their bundles at close.
+        self._songs: list = [song] + ([song_b] if song_b is not None else [])
+        self._recomposer = None
+        if recompose is not None:
+            self._recomposer = Recomposer(
+                build=recompose, submit=submit, publish=self._publish_song,
+                release=self._release_song,
+            )
 
         self._latent_history: deque = deque(maxlen=MAX_FEEDBACK_DEPTH)
-        # Settled short-circuit bookkeeping: the signature each submitted
-        # request was built under, and the signature of the last latent
-        # that emerged. A request can finish up to ``steps + depth`` ticks
-        # after it was submitted (one per tick at queue_cap 1), so the
-        # bookkeeping must outlive a full solve: 4x the step count covers
-        # every depth the ring allows with room to spare.
+        # Settled short-circuit bookkeeping: (request, signature, song)
+        # for each submitted request, and the signature of the last
+        # latent that emerged. A request can finish up to ``steps +
+        # depth`` ticks after it was submitted (one per tick at
+        # queue_cap 1), so the bookkeeping must outlive a full solve.
         self._submitted: deque = deque(maxlen=4 * self._steps)
         self._emerged_signature = None
         self._emerged_request = None
+        self._emerged_song = None
         self._emerged_marker = None
         self._rendered_for = None
         self._rendered_pcm = None
@@ -182,26 +183,27 @@ class YuE2Backend(DiffusionBackend):
 
         self.pipeline = self._build_pipeline(self._steps)
 
-    # ---- assembly -----------------------------------------------------------
-
     @classmethod
-    def from_context(cls, context, *, composition, bundle, anchor_latent, steps: int = 32,
+    def from_context(cls, context, *, composition, song: Song, steps: int = 32,
                      **kwargs) -> "YuE2Backend":
         """Production assembly over a :class:`~acestep.engine.yue2_context.
         YuE2Context`: the adapter on the context's velocity backend (TRT
-        when built), the context as codec, and a restyler that prefills a
-        new bundle for the session's composition."""
+        when built), the context as codec, and a re-compose of the
+        session's lyrics at the session's length on the context worker."""
         from acestep.engine.yue2_adapter import YuE2Adapter
 
         adapter = YuE2Adapter(
             context.velocity, steps=steps, device=context.device, dtype=torch.bfloat16,
         )
+        frames = song.frames
 
-        def restyler(tags: str, epoch: int):
-            return context.bundle(composition, style=tags, epoch=epoch)
+        def recompose(tags: str, epoch: int) -> Song:
+            new = context.compose(style=tags, lyrics=composition.lyrics, seed=composition.seed,
+                                  max_frames=frames, exact_frames=frames)
+            return Song(bundle=context.bundle(new, epoch=epoch), anchor=None, tags=tags, epoch=epoch)
 
-        return cls(adapter=adapter, codec=context, bundle=bundle, anchor_latent=anchor_latent,
-                   restyler=restyler, steps=steps, **kwargs)
+        return cls(adapter=adapter, codec=context, song=song, recompose=recompose,
+                   submit=context.submit, steps=steps, **kwargs)
 
     def _build_pipeline(self, steps: int):
         from acestep.engine.diffusion import DiffusionConfig
@@ -244,54 +246,69 @@ class YuE2Backend(DiffusionBackend):
     # ---- control: prompt ------------------------------------------------------
 
     def handle_set_prompt(self, tags: str, *, tags_b: Optional[str] = None) -> None:
-        """Fast restyle: rebuild the conditioning for new style tags on
-        the session's fixed score and semantic tokens (a KV prefill, not
-        a re-compose), then publish atomically. In-flight slots finish
-        on the bundle they were submitted with; an absent / empty /
-        identical ``tags_b`` resets B to A."""
-        if self._restyler is None:
-            raise RuntimeError("YuE2Backend was constructed without a restyler")
-        t0 = time.perf_counter()
-        epoch = self._cond_epoch + 1
-        bundle = self._restyler(tags, epoch)
-        self._check_geometry(bundle)
-        if tags_b and tags_b != tags:
-            bundle_b = self._restyler(tags_b, epoch)
-            self._check_geometry(bundle_b)
-        else:
-            bundle_b = bundle
+        """Re-compose for new style tags in the background (see
+        :mod:`acestep.streaming.yue2_recompose`); returns at once and the
+        ring keeps playing the current song until the new one is
+        published. A slot whose tags did not change is left alone; an
+        absent / empty / identical ``tags_b`` makes B follow A."""
+        if self._recomposer is None:
+            raise RuntimeError("YuE2Backend was constructed without a recompose function")
+        follows = not (tags_b and tags_b != tags)
         with self._control_lock:
-            self._bundle_a, self._bundle_b = bundle, bundle_b
-            self._active_bundle = self._select(self._blend)
-            self._cond_epoch = epoch
-            self._tags_a = tags
-            self._tags_b = tags_b if (tags_b and tags_b != tags) else None
-            self._cond_history.append((bundle, epoch, tags))
-            if bundle_b is not bundle:
-                self._cond_history.append((bundle_b, epoch, tags_b))
-            del self._cond_history[:-6]
-        logger.info(
-            "yue2_prompt_applied tags={!r} tags_b={!r} cond_epoch={} restyle_ms={:.1f}",
-            tags, tags_b, epoch, (time.perf_counter() - t0) * 1000,
-        )
+            self._cond_epoch += 1
+            epoch = self._cond_epoch
+            redo_a = tags != self._song_a.tags
+            redo_b = not follows and tags_b != self._song_b.tags
+            self._b_follows_a = follows
+            if follows and not redo_a:
+                self._song_b = self._song_a
+                self._active = self._select(self._blend)
+        logger.info("yue2_recompose_requested tags={!r} tags_b={!r} cond_epoch={} a={} b={}",
+                    tags, tags_b, epoch, redo_a, redo_b)
+        if redo_a:
+            self._recomposer.request("a", tags, epoch)
+        if redo_b:
+            self._recomposer.request("b", tags_b, epoch)
 
-    def _check_geometry(self, bundle) -> None:
-        if int(bundle.frames) != self._frames:
-            raise ValueError(
-                f"yue2 restyle changed the song length ({self._frames} -> "
-                f"{bundle.frames} frames); a restyle keeps the semantic tokens"
-            )
+    def _publish_song(self, slot: str, song: Song, build_ms: float) -> None:
+        """Worker-side: swap a finished song in atomically. The ring
+        renders it with one full solve before it is heard."""
+        if song.frames != self._frames:
+            logger.error("yue2_recompose_rejected frames={} session_frames={} (forced length "
+                         "not honoured)", song.frames, self._frames)
+            self._release_song(song)
+            return
+        with self._control_lock:
+            if slot == "a":
+                self._song_a = song
+                if self._b_follows_a:
+                    self._song_b = song
+            else:
+                self._song_b = song
+            self._active = self._select(self._blend)
+            self._songs.append(song)
+            stale = self._songs[:-6]
+            del self._songs[:-6]
+        for old in stale:
+            if old not in (self._song_a, self._song_b, self._active):
+                self._release_song(old)
+        logger.info("yue2_recompose_published slot={} tags={!r} cond_epoch={} build_ms={:.0f}",
+                    slot, song.tags, song.epoch, build_ms)
+
+    def _release_song(self, song: Song) -> None:
+        release = getattr(self.codec, "release_bundle", None)
+        if release is not None:
+            release(song.bundle)
 
     def handle_set_prompt_blend(self, value: float) -> None:
-        """Hard A/B switch at 0.5 (no KV interpolation between prefixes
-        of different lengths)."""
+        """Hard A/B switch at 0.5 between the two songs."""
         v = max(0.0, min(1.0, float(value)))
         with self._control_lock:
             self._blend = v
-            self._active_bundle = self._select(v)
+            self._active = self._select(v)
 
-    def _select(self, v: float):
-        return self._bundle_b if v >= 0.5 else self._bundle_a
+    def _select(self, v: float) -> Song:
+        return self._song_b if v >= 0.5 else self._song_a
 
     # ---- produce hooks ---------------------------------------------------------
 
@@ -312,95 +329,115 @@ class YuE2Backend(DiffusionBackend):
             "feedback_depth": max(1, min(MAX_FEEDBACK_DEPTH, int(round(fb_depth_raw)))),
         }
 
-    def _signature(self, prep: dict, bundle) -> Optional[tuple]:
+    def _signature(self, prep: dict, song: Song) -> Optional[tuple]:
         """What a generation depends on; None when it depends on history
-        (feedback) and so never settles."""
+        (feedback) and so never settles. A song without an anchor renders
+        its anchor whatever the knobs say."""
+        if song.anchor is None:
+            return ("anchor", id(song))
         if prep["feedback"] > 0.0:
             return None
-        return (id(bundle), id(self._anchor), round(prep["denoise"], 4), prep["seed"],
+        return (id(song), id(song.anchor), round(prep["denoise"], 4), prep["seed"],
                 round(prep["x0_target"], 4))
 
     def is_settled(self, prep: dict) -> bool:
         """True when the latest emerged latent is exactly what the ring
         would render now (nothing changed since)."""
         with self._control_lock:
-            bundle = self._active_bundle
-        sig = self._signature(prep, bundle)
+            song = self._active
+        sig = self._signature(prep, song)
         return sig is not None and sig == self._emerged_signature
 
-    def _source_for(self, prep: dict) -> torch.Tensor:
+    def _source_for(self, prep: dict, song: Song) -> torch.Tensor:
         """The anchor, feedback-blended with a past output when asked
         (the ACE / SA3 delay-tap, verbatim)."""
-        source = self._anchor
+        source = song.anchor
         if prep["feedback"] > 0.0 and self._latent_history:
             tap = min(prep["feedback_depth"] - 1, len(self._latent_history) - 1)
             method = getattr(self.state, "interp_feedback", "slerp") if self.state is not None else "slerp"
             source = INTERPOLATIONS[method](source, self._latent_history[tap], prep["feedback"])
         return source
 
-    def _generate(self, prep: dict):
+    def _request_for(self, prep: dict, song: Song):
         from acestep.engine.stream import SlotRequest
 
-        if self.is_settled(prep):
-            return None
-
-        with self._control_lock:
-            bundle = self._active_bundle
-        request = SlotRequest(
+        if song.anchor is None:
+            # The song's anchor: one full solve from its own seed, no
+            # source, no lock target.
+            return SlotRequest(seed=song.seed, denoise=1.0, aux_cond=song.bundle,
+                               latent_frames=self._frames)
+        return SlotRequest(
             seed=prep["seed"],
             denoise=prep["denoise"],
-            source_latents=self._source_for(prep),
-            # The lock target stays the clean anchor (feedback is upstream
-            # of it), and identity against the live anchor tells a stale
-            # latent apart after a re-anchor.
-            x0_target=self._anchor,
+            source_latents=self._source_for(prep, song),
+            x0_target=song.anchor,
             x0_target_strength=prep["x0_target"],
-            aux_cond=bundle,
+            aux_cond=song.bundle,
             latent_frames=self._frames,
         )
-        self._submitted.append((request, self._signature(prep, bundle)))
+
+    def _generate(self, prep: dict):
+        if self.is_settled(prep):
+            return None
+        with self._control_lock:
+            song = self._active
+        request = self._request_for(prep, song)
+        self._submitted.append((request, self._signature(prep, song), song))
         self.pipeline.submit(request)
         latent = self.pipeline.tick()
         if latent is None:
             return None
         req = getattr(self.pipeline, "last_finished_request", None)
-        if req is not None and req.x0_target is not self._anchor:
-            logger.info("yue2_gen_discarded reason=anchor_replaced")
+        entry = next((e for e in self._submitted if e[0] is req), None)
+        if entry is None:
+            return latent
+        _, signature, emerged_song = entry
+        with self._control_lock:
+            active = self._active
+        if emerged_song is not active:
+            logger.info("yue2_gen_discarded reason=song_replaced")
             return None
+        if signature is not None and signature[0] == "anchor":
+            signature = self._adopt_anchor(emerged_song, latent, prep)
         self._emerged_request = req
-        self._emerged_signature = next(
-            (sig for r, sig in self._submitted if r is req), None,
-        )
+        self._emerged_song = emerged_song
+        self._emerged_signature = signature
         return latent
 
-    def _cond_meta_for(self, bundle) -> tuple:
-        with self._control_lock:
-            history = tuple(self._cond_history)
-        for b, epoch, tags in history:
-            if b is bundle:
-                return epoch, tags
-        return None, None
+    def _adopt_anchor(self, song: Song, latent: torch.Tensor, prep: dict) -> Optional[tuple]:
+        """A song's first full solve becomes its anchor. Returns the
+        signature the emerged latent now satisfies: the knobs' own when
+        they ask for exactly the anchor (song seed, full solve, no
+        feedback), else one that never matches, so the ring goes on to
+        render the knobs over the new anchor."""
+        if song.anchor is not None:  # a stale anchor request finishing late
+            return ("anchored", id(song))
+        song.anchor = latent.detach().clone()
+        self._latent_history.clear()  # feedback never reaches across songs
+        logger.info("yue2_song_anchored tags={!r} cond_epoch={}", song.tags, song.epoch)
+        if prep["seed"] == song.seed and prep["denoise"] >= 1.0 and prep["feedback"] == 0.0:
+            return self._signature(prep, song)
+        return ("anchored", id(song))
 
     def _after_produce(self, prep: dict, result_latent, is_fresh: bool) -> None:
         self._last_prep = prep
         if not is_fresh:
             return
         self._latent_history.appendleft(result_latent.detach().clone())
-        req = self._emerged_request
-        if self.state is None or req is None:
+        req, song = self._emerged_request, self._emerged_song
+        if self.state is None or req is None or song is None:
             return
-        epoch, tags = self._cond_meta_for(req.aux_cond)
         p = self.state.params
         p["gen_yue2_denoise"] = round(float(req.denoise), 4)
         p["gen_seed"] = int(req.seed)
-        p["gen_cond_epoch"] = epoch
-        p["gen_prompt"] = tags
-        marker = (p["gen_yue2_denoise"], epoch, p["gen_seed"])
+        p["gen_cond_epoch"] = song.epoch
+        p["gen_prompt"] = song.tags
+        marker = (p["gen_yue2_denoise"], song.epoch, p["gen_seed"], id(song))
         if marker != self._emerged_marker:
             self._emerged_marker = marker
             logger.info(
                 "yue2_gen_emerged denoise={} seed={} cond_epoch={} tags={!r}",
-                p["gen_yue2_denoise"], p["gen_seed"], epoch, tags,
+                p["gen_yue2_denoise"], p["gen_seed"], song.epoch, song.tags,
             )
 
     # ---- rendering -------------------------------------------------------------
@@ -444,15 +481,16 @@ class YuE2Backend(DiffusionBackend):
     # ---- teardown / bookkeeping -------------------------------------------------
 
     def close(self) -> None:
-        """Free this session's conditioning bundles (GPU KV). The model
-        is process-cached and outlives the session."""
-        release = getattr(self.codec, "release_bundle", None)
+        """Free this session's conditioning bundles (GPU KV) and drop any
+        re-compose still running. The model is process-cached and
+        outlives the session."""
+        if self._recomposer is not None:
+            self._recomposer.cancel_all()
         with self._control_lock:
-            bundles = {id(b): b for b, _, _ in self._cond_history}
-            self._cond_history = []
-        if release is not None:
-            for bundle in bundles.values():
-                release(bundle)
+            songs = {id(s): s for s in [*self._songs, self._song_a, self._song_b, self._active]}
+            self._songs = []
+        for song in songs.values():
+            self._release_song(song)
 
     def on_fresh_generation(self, knobs: dict) -> None:
         if self.state is None:
