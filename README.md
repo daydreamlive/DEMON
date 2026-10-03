@@ -69,18 +69,21 @@ The pod picks its family at boot from `--checkpoint`, and a client that omits `b
 
 | Family | Throughput | Control latency | Session start | VRAM |
 |---|---|---|---|---|
-| Stable Audio 3 | not yet measured | not yet measured | not yet measured | not yet measured |
+| Stable Audio 3 (medium, TensorRT fp16mixed, 8 steps, 54-60 s song) | 6.2-6.3 generations/s at depth 1, 4 and 8 (tick 20 / 80 / 159 ms) | knob change converged in 218 ms at depth 1, 1.2 s at depth 4; prompt change acknowledged in 78 ms, first audible at 250 ms, fully audible at 3.2 s (depth 4) | 16.6-20.2 s from config to ready on a cold first session (model and engine load; one run took 26.0 s), first slice 0.9-1.2 s after ready | 5.4 GB allocated by torch; 8.3-10.7 GB of device memory per session, TensorRT engines included |
 | ACE-Step v1.5 (turbo 2B, all-TRT, depth 4, 8 steps, 60 s) | ~43 ms tick, 11.3 generations/s | ~248 ms parameter convergence | ~15 s first start (model and engine load) | fits a 24 GB card with the 60 s engines (see [Tuning](#tuning)) |
 | Magenta RealTime 2 | `mrt2_small` ~1.7x realtime; `mrt2_base` ~0.93x | `mrt2_lead`, 0.75 s by default | sidecar JIT warmup ~30 s, once, before the server boots | not yet measured |
 | MiniMax-Music3 | ~1.3x realtime steady (AR stage 1.54x, renderer 7.8x) | 3.3-3.6 s to the delivery frontier (renderer guidance, AR temperature, prompt), plus the playback lead | first audio ~6 s after connect | AR stage ~21 GB resident, on top of the renderer |
 | YuE2 | tick p50 70 ms at a 60 s song (TensorRT), 119 ms at 30 s (eager); one full solve is 32 ticks | `seed` / `x0_target` 2.4-2.5 s at 60 s, 4.0 s at 30 s; `yue2_denoise` 0.5: 1.2 s; prompt change 21-42 s (idle ring), 36-58 s (busy ring) | composition at create for a 60 s song: plan 5.7 s, semantic 9.5 s, anchor solve 2.5-2.7 s; ready 34.1 s after Start in a fresh server, model load included | peak 18.4 GB (30 s song) to 21-22 GB (60 s song), desktop included |
 
-Sources: ACE-Step from [Performance](#performance) and [Quickstart](#quickstart); the others from [docs/FAMILIES.md](docs/FAMILIES.md), [docs/MINIMAX.md](docs/MINIMAX.md) (§4, knob-to-frontier at hop 100) and [demos/mrt2/README.md](demos/mrt2/README.md). Latencies are measured differently per family (ACE-Step: parameter convergence; MiniMax-Music3: to the delivery frontier; YuE2: to CPU PCM), so compare them within a row, not across rows.
+**Stable Audio 3 in detail.** The TensorRT DiT (fp16mixed) takes ~17 ms per step at a 60 s window, against ~54 ms eager. Throughput is flat across ring depth: 6.30, 6.16 and 6.27 generations/s at depth 1, 4 and 8, because the tick grows with depth (20.0, 80.1 and 159.5 ms). Depth therefore buys smoother parameter glides, not speed, and costs control latency: a knob change converged in 218 ms at depth 1 and 1.2 s at depth 4. Use low depth for fast control; the generation rate stays the same. The figures are for the medium model on an RTX 5090; small-music is not yet measured.
+
+Sources: Stable Audio 3 from the maintainers' benchmark runs on an RTX 5090 (medium model) and [`acestep/engine/sa3_trt.py`](acestep/engine/sa3_trt.py); ACE-Step from [Performance](#performance) and [Quickstart](#quickstart); the others from [docs/FAMILIES.md](docs/FAMILIES.md), [docs/MINIMAX.md](docs/MINIMAX.md) (§4, knob-to-frontier at hop 100) and [demos/mrt2/README.md](demos/mrt2/README.md). Latencies are measured differently per family (ACE-Step: parameter convergence; MiniMax-Music3: to the delivery frontier; YuE2: to CPU PCM), so compare them within a row, not across rows.
 
 ### Limitations
 
 **Stable Audio 3**
-- No committed realtime, latency or VRAM figures yet for this stack.
+- Ring depth does not raise throughput (6.2-6.3 generations/s at depth 1, 4 and 8); it trades control latency (218 ms at depth 1, 1.2 s at depth 4) for smoother glides.
+- A cold first session takes 16.6-20.2 s to become ready (model and engine load). Figures are for the medium model; small-music is not yet measured.
 - The weights are a manual download ([docs/INSTALL.md](docs/INSTALL.md)), and the model variant (small-music or medium) is fixed when the backend boots; the page cannot switch it.
 - Generation length is fixed for the session (`sa3_duration_s`, or the uploaded source's length), up to 120 s.
 
