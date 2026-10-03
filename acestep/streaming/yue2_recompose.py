@@ -13,8 +13,10 @@ to the backend atomically.
   (the clean full solve). A freshly re-composed song has no anchor yet;
   the ring renders it with one full solve and adopts that latent.
 * :class:`Recomposer`: latest-wins jobs per A/B slot. A job superseded
-  before it starts is skipped; one superseded while it ran releases its
-  bundle instead of publishing.
+  (or cancelled: the user went back to the playing prompt) before it
+  starts is skipped; one superseded while it ran releases its bundle
+  instead of publishing. A failed job is logged at WARNING and handed to
+  ``on_failure`` (the session's error event).
 """
 
 from __future__ import annotations
@@ -64,31 +66,51 @@ class Recomposer:
     """Latest-wins background re-compose for the A and B song slots.
 
     ``build(tags, epoch) -> Song`` does the AR work (on the worker that
-    ``submit`` targets); ``publish(slot, song, build_ms)`` hands the
-    result to the backend; ``release(song)`` frees a result nobody will
-    play.
+    ``submit`` targets); ``publish(slot, song, build_ms, is_current)``
+    hands the result to the backend, which must re-check ``is_current()``
+    under its own lock before swapping the song in (a cancel can land
+    between the job's check and the publish); ``release(song)`` frees a
+    result nobody will play; ``on_failure(slot, tags, exc)`` reports a
+    build that raised.
     """
 
     def __init__(self, *, build: Callable[[str, int], Song], submit: Callable,
-                 publish: Callable[[str, Song, float], None], release: Callable[[Song], None]):
+                 publish: Callable[[str, Song, float, Callable[[], bool]], None],
+                 release: Callable[[Song], None],
+                 on_failure: Optional[Callable[[str, str, BaseException], None]] = None):
         self._build = build
         self._submit = submit
         self._publish = publish
         self._release = release
+        self._on_failure = on_failure
         self._lock = threading.Lock()
         self._latest: dict = {}
+        self._pending: set = set()
 
     def request(self, slot: str, tags: str, epoch: int) -> Future:
         token = object()
         with self._lock:
             self._latest[slot] = token
         future = self._submit(self._job, slot, tags, epoch, token)
-        future.add_done_callback(lambda f: self._log_failure(f, slot, tags))
+        with self._lock:
+            self._pending.add(future)
+        future.add_done_callback(lambda f: self._finished(f, slot, tags))
         return future
 
+    def cancel(self, slot: str) -> None:
+        """Abandon the slot's queued or running job (its result, if any,
+        is released instead of published)."""
+        with self._lock:
+            self._latest.pop(slot, None)
+
     def cancel_all(self) -> None:
+        """Abandon every job; a job that has not started yet is also
+        removed from the worker's queue."""
         with self._lock:
             self._latest.clear()
+            pending = list(self._pending)
+        for future in pending:
+            future.cancel()
 
     def _current(self, slot: str, token) -> bool:
         with self._lock:
@@ -105,11 +127,20 @@ class Recomposer:
             logger.info("yue2_recompose_dropped slot={} tags={!r} reason=superseded", slot, tags)
             self._release(song)
             return None
-        self._publish(slot, song, build_ms)
+        self._publish(slot, song, build_ms, lambda: self._current(slot, token))
         return song
 
-    @staticmethod
-    def _log_failure(future: Future, slot: str, tags: str) -> None:
+    def _finished(self, future: Future, slot: str, tags: str) -> None:
+        with self._lock:
+            self._pending.discard(future)
+        if future.cancelled():
+            return
         exc = future.exception()
-        if exc is not None:
-            logger.error("yue2_recompose_failed slot={} tags={!r} error={!r}", slot, tags, exc)
+        if exc is None:
+            return
+        logger.warning("yue2_recompose_failed slot={} tags={!r} error={!r}", slot, tags, exc)
+        if self._on_failure is not None:
+            try:
+                self._on_failure(slot, tags, exc)
+            except Exception as report_exc:  # noqa: BLE001 - never kill the worker
+                logger.warning("yue2_recompose_failure_report_raised error={!r}", report_exc)

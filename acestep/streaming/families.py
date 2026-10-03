@@ -652,7 +652,13 @@ def _make_yue2(ss):
             "backend 'yue2' requires the per-family create path "
             "(acestep.streaming.yue2_session.create_yue2_session)"
         )
+    from acestep.streaming.events import SessionError
     from acestep.streaming.yue2_backend import YuE2Backend
+
+    def on_error(code: str, message: str) -> None:
+        # A failed background re-compose does not stop the session: the
+        # runtime-error event (wire ``error``, the SDK's server_error).
+        ss.bus.publish(SessionError(code=code, message=message))
 
     return YuE2Backend.from_context(
         init["context"],
@@ -663,6 +669,7 @@ def _make_yue2(ss):
         state=ss.state,
         depth=int(ss.state.current_depth),
         vae_window_s=float(ss.vae_window),
+        on_error=on_error,
     )
 
 

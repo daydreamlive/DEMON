@@ -15,10 +15,10 @@ codec). Shaped like the SA3 backend:
   under ``_control_lock``, the ring renders its anchor with one full
   solve, and latents still in flight for the old song are dropped.
 * **The source canvas** is the song's own clean latent (the anchor, one
-  full solve at create or after a re-compose). ``yue2_denoise`` < 1 re-noises the anchor with
-  the seed's noise and integrates the truncated grid from there
-  (audio-to-audio toward the live conditioning); ``x0_target`` locks
-  toward it; ``feedback`` blends the latest outputs into it.
+  full solve at create or after a re-compose). ``yue2_denoise`` < 1
+  re-noises the anchor with the seed's noise and integrates the
+  truncated grid from there (audio-to-audio toward the live
+  conditioning); ``x0_target`` locks toward it; ``feedback`` blends the latest outputs into it.
 
 Control surface: ``yue2_denoise`` (prefixed; ACE's ``denoise`` means
 something else) plus the shared ``x0_target`` / ``feedback`` /
@@ -121,7 +121,9 @@ class YuE2Backend(DiffusionBackend):
     ``release_bundle(bundle)``); ``recompose(tags, epoch) -> Song``
     composes the session's lyrics under new style tags at the session's
     length, and ``submit(fn, *args)`` runs it off the command thread
-    (the context's worker; inline in tests).
+    (the context's worker; inline in tests). ``on_error(code, message)``
+    reports a failed re-compose to the client (the session's
+    ``SessionError`` event).
     """
 
     name = "yue2"
@@ -142,6 +144,7 @@ class YuE2Backend(DiffusionBackend):
         vae_window_s: float = 0.4,
         gpu_gate=None,
         settled_nap_s: float = SETTLED_NAP_S,
+        on_error: Optional[Callable[[str, str], None]] = None,
     ):
         super().__init__(adapter=adapter, codec=codec)
         # Excludes a conditioning-worker CUDA graph capture while the ring
@@ -167,6 +170,8 @@ class YuE2Backend(DiffusionBackend):
         self._blend = 0.0
         self._active = song
         self._cond_epoch = 0
+        self._closed = False
+        self._on_error = on_error
         # Every song this session published (bounded), for attribution
         # and for releasing their bundles at close.
         self._songs: list = [song] + ([song_b] if song_b is not None else [])
@@ -174,7 +179,7 @@ class YuE2Backend(DiffusionBackend):
         if recompose is not None:
             self._recomposer = Recomposer(
                 build=recompose, submit=submit, publish=self._publish_song,
-                release=self._release_song,
+                release=self._release_song, on_failure=self._recompose_failed,
             )
 
         self._latent_history: deque = deque(maxlen=MAX_FEEDBACK_DEPTH)
@@ -275,6 +280,13 @@ class YuE2Backend(DiffusionBackend):
             redo_a = tags != self._song_a.tags
             redo_b = not follows and tags_b != self._song_b.tags
             self._b_follows_a = follows
+            # Going back to the playing prompt abandons the job in flight
+            # for that slot (latest wins). Under this lock, so a publish
+            # racing it re-checks and releases instead.
+            if not redo_a:
+                self._recomposer.cancel("a")
+            if not redo_b:
+                self._recomposer.cancel("b")
             if follows and not redo_a:
                 self._song_b = self._song_a
                 self._active = self._select(self._blend)
@@ -285,34 +297,63 @@ class YuE2Backend(DiffusionBackend):
         if redo_b:
             self._recomposer.request("b", tags_b, epoch)
 
-    def _publish_song(self, slot: str, song: Song, build_ms: float) -> None:
+    def _publish_song(self, slot: str, song: Song, build_ms: float,
+                      is_current: Callable[[], bool] = lambda: True) -> None:
         """Worker-side: swap a finished song in atomically. The ring
-        renders it with one full solve before it is heard."""
+        renders it with one full solve before it is heard. A song whose
+        job was cancelled, a B song after B went back to following A, and
+        anything finishing after :meth:`close` are released instead."""
         if song.frames != self._frames:
             logger.error("yue2_recompose_rejected frames={} session_frames={} (forced length "
                          "not honoured)", song.frames, self._frames)
             self._release_song(song)
             return
         with self._control_lock:
-            if slot == "a":
-                self._song_a = song
-                if self._b_follows_a:
-                    self._song_b = song
-            else:
-                self._song_b = song
-            self._active = self._select(self._blend)
-            self._songs.append(song)
-            stale = self._songs[:-6]
-            del self._songs[:-6]
-        for old in stale:
-            if old not in (self._song_a, self._song_b, self._active):
-                self._release_song(old)
+            reason = ("closed" if self._closed
+                      else "superseded" if not is_current()
+                      else "b_follows_a" if slot == "b" and self._b_follows_a
+                      else None)
+            if reason is None:
+                self._install_song(slot, song)
+        if reason is not None:
+            logger.info("yue2_recompose_dropped slot={} tags={!r} reason={}",
+                        slot, song.tags, reason)
+            self._release_song(song)
+            return
+        self._release_stale()
         if self.state is not None:
             # Wake the runner's idle pause: the new song must be rendered
             # even when no knob moves.
             self.state.last_activity_ts = time.monotonic()
         logger.info("yue2_recompose_published slot={} tags={!r} cond_epoch={} build_ms={:.0f}",
                     slot, song.tags, song.epoch, build_ms)
+
+    def _install_song(self, slot: str, song: Song) -> None:
+        """Under ``_control_lock``."""
+        if slot == "a":
+            self._song_a = song
+            if self._b_follows_a:
+                self._song_b = song
+        else:
+            self._song_b = song
+        self._active = self._select(self._blend)
+        self._songs.append(song)
+
+    def _release_stale(self) -> None:
+        """Free the bundles of published songs beyond the last six that
+        no slot plays any more."""
+        with self._control_lock:
+            playing = (self._song_a, self._song_b, self._active)
+            stale = [s for s in self._songs[:-6] if all(s is not p for p in playing)]
+            self._songs = [s for s in self._songs if all(s is not x for x in stale)]
+        for old in stale:
+            self._release_song(old)
+
+    def _recompose_failed(self, slot: str, tags: str, exc: BaseException) -> None:
+        """The ring keeps playing the current song; tell the client."""
+        if self._on_error is not None and not self._closed:
+            self._on_error("yue2_recompose_failed",
+                           f"Re-compose for {tags!r} failed: {type(exc).__name__}: {exc}")
 
     def _release_song(self, song: Song) -> None:
         release = getattr(self.codec, "release_bundle", None)
@@ -535,8 +576,13 @@ class YuE2Backend(DiffusionBackend):
 
     def close(self) -> None:
         """Free this session's conditioning bundles (GPU KV) and drop any
-        re-compose still running. The model is process-cached and
+        re-compose still queued or running (a running one releases its
+        bundle when it finishes, without waiting here). The model is process-cached and
         outlives the session."""
+        with self._control_lock:
+            # A re-compose finishing from here on releases its song
+            # (_publish_song checks this flag under the same lock).
+            self._closed = True
         if self._recomposer is not None:
             self._recomposer.cancel_all()
         with self._control_lock:

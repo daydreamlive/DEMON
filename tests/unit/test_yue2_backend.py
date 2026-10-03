@@ -513,3 +513,172 @@ def test_a_settled_ring_paces_the_runner():
     t0 = _time.perf_counter()
     assert backend.produce(knobs, CTX, "generate") is False
     assert _time.perf_counter() - t0 >= 0.05
+
+
+# ---- review fixes: latest-wins on a revert, close race, failures, depth ----
+
+
+def _deferred():
+    """A ``submit`` that queues jobs; ``run(i)`` runs job i on the caller."""
+    from concurrent.futures import Future
+
+    jobs = []
+
+    def submit(fn, *args):
+        future = Future()
+        jobs.append((fn, args, future))
+        return future
+
+    def run(i):
+        fn, args, future = jobs[i]
+        try:
+            future.set_result(fn(*args))
+        except BaseException as exc:  # noqa: BLE001
+            future.set_exception(exc)
+        return future
+
+    submit.jobs, submit.run = jobs, run
+    return submit
+
+
+def test_going_back_to_the_playing_prompt_keeps_it_published():
+    """A -> X -> A: the X job must not publish (it used to: the revert
+    made no new request, so X's token stayed current)."""
+    a = _song(0.0, tags="pop")
+    codec = _Codec()
+    submit = _deferred()
+    backend = _backend(song=a, codec=codec, recompose=_recompose_to(1.0), submit=submit)
+    backend.handle_set_prompt("rock")
+    backend.handle_set_prompt("pop")
+    assert len(submit.jobs) == 1  # the revert queues nothing
+    assert submit.run(0).result() is None
+    assert backend._song_a is a and backend._active is a
+
+
+def test_a_revert_during_the_build_releases_the_abandoned_song():
+    a = _song(0.0, tags="pop")
+    codec = _Codec()
+    holder = {}
+
+    def recompose(tags, epoch):
+        holder["backend"].handle_set_prompt("pop")  # the user goes back mid-build
+        return Song(bundle=_Bundle(1.0), anchor=None, tags=tags, epoch=epoch)
+
+    backend = _backend(song=a, codec=codec, recompose=recompose)
+    holder["backend"] = backend
+    backend.handle_set_prompt("rock")
+    assert backend._song_a is a and backend._active is a
+    assert len(codec.released) == 1 and codec.released[0].offset == 1.0
+
+
+def test_b_going_back_to_following_a_drops_the_b_job():
+    a = _song(0.0, tags="pop")
+    codec = _Codec()
+    submit = _deferred()
+    backend = _backend(song=a, codec=codec, recompose=_recompose_to(1.0), submit=submit)
+    backend.handle_set_prompt("pop", tags_b="jazz")
+    backend.handle_set_prompt("pop")  # B follows A again
+    assert submit.run(0).result() is None
+    assert backend._song_b is a
+    # A B song that slipped past the job's check is released at publish.
+    late = Song(bundle=_Bundle(2.0), anchor=None, tags="jazz")
+    backend._publish_song("b", late, 0.0)
+    assert backend._song_b is a and codec.released[-1] is late.bundle
+
+
+def test_close_during_a_recompose_releases_its_song():
+    import threading
+
+    codec = _Codec()
+    started, finish = threading.Event(), threading.Event()
+
+    def recompose(tags, epoch):
+        started.set()
+        finish.wait(5.0)
+        return Song(bundle=_Bundle(1.0), anchor=None, tags=tags, epoch=epoch)
+
+    def threaded(fn, *args):
+        from concurrent.futures import Future
+
+        future = Future()
+        future.set_running_or_notify_cancel()  # as a pool worker picks the job up
+        threading.Thread(target=lambda: future.set_result(fn(*args))).start()
+        return future
+
+    a = _song(0.0)
+    backend = _backend(song=a, codec=codec, recompose=recompose, submit=threaded)
+    backend.handle_set_prompt("rock")
+    assert started.wait(5.0)
+    backend.close()
+    finish.set()
+    for _ in range(100):
+        if len(codec.released) == 2:
+            break
+        import time as _time
+
+        _time.sleep(0.02)
+    assert {b.offset for b in codec.released} == {0.0, 1.0}
+    assert backend._songs == []
+    # A publish that passed the job's check before close also releases.
+    late = Song(bundle=_Bundle(3.0), anchor=None, tags="jazz")
+    backend._publish_song("a", late, 0.0)
+    assert codec.released[-1] is late.bundle and backend._song_a is a
+
+
+def test_close_unqueues_a_recompose_that_has_not_started():
+    submit = _deferred()
+    backend = _backend(recompose=_recompose_to(1.0), submit=submit)
+    backend.handle_set_prompt("rock")
+    backend.close()
+    assert submit.jobs[0][2].cancelled()
+
+
+def test_a_failed_recompose_is_reported_and_the_song_keeps_playing():
+    errors = []
+
+    def recompose(tags, epoch):
+        raise RuntimeError("semantic stage returned no tokens")
+
+    a = _song(0.0)
+    backend = _backend(song=a, recompose=recompose, on_error=lambda c, m: errors.append((c, m)))
+    backend.handle_set_prompt("rock")
+    assert backend._active is a
+    assert len(errors) == 1 and errors[0][0] == "yue2_recompose_failed"
+    assert "rock" in errors[0][1] and "no tokens" in errors[0][1]
+
+
+def test_a_failed_recompose_publishes_the_session_error_event():
+    from types import SimpleNamespace
+
+    from acestep.streaming.events import SessionError
+    from acestep.streaming.families import get_family
+
+    published = []
+
+    class _Ctx:
+        velocity = staticmethod(_velocity)
+        device = torch.device("cpu")
+        gpu_gate = None
+
+        def compose(self, **kw):
+            raise RuntimeError("boom")
+
+        def submit(self, fn, *args):
+            from acestep.streaming.yue2_recompose import run_inline
+
+            return run_inline(fn, *args)
+
+    import threading
+
+    ctx = _Ctx()
+    ctx.gpu_gate = threading.Lock()
+    ss = SimpleNamespace(
+        backend_init={"context": ctx, "composition": SimpleNamespace(lyrics="", seed=0),
+                      "song": _song(0.0)},
+        virtual_knobs=KnobState(yue2_knob_specs()), state=SimpleNamespace(current_depth=1, params={}),
+        vae_window=0.4, bus=SimpleNamespace(publish=published.append),
+    )
+    backend = get_family("yue2").make_backend(ss)
+    backend.handle_set_prompt("rock")
+    assert len(published) == 1 and isinstance(published[0], SessionError)
+    assert published[0].code == "yue2_recompose_failed"
