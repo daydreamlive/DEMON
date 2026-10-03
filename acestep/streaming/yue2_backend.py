@@ -48,6 +48,8 @@ from typing import Callable, Optional
 import torch
 
 from acestep.engine.obs import logger
+from acestep.engine.yue2_adapter import YuE2Adapter
+from acestep.engine.yue2_trt import FLEX_FRAMES, SAMPLES_PER_FRAME
 from acestep.nodes.interpolation import INTERPOLATIONS
 from acestep.streaming.diffusion_backend import DiffusionBackend
 from acestep.streaming.generator_backend import (
@@ -59,12 +61,11 @@ from acestep.streaming.generator_backend import (
 from acestep.streaming.knobs import KnobSpec, knob_specs as registry_knob_specs
 from acestep.streaming.yue2_recompose import Recomposer, Song, run_inline
 
-SAMPLE_RATE = 48000
-LATENT_RATE_HZ = 25.0
-SAMPLES_PER_FRAME = 1920
+SAMPLE_RATE = YuE2Adapter.sample_rate
+LATENT_RATE_HZ = YuE2Adapter.latent_rate_hz
 
 #: Longest song: the flexible NAR TRT profile's 2500 frames at 25 Hz.
-YUE2_MAX_SONG_S = 100.0
+YUE2_MAX_SONG_S = FLEX_FRAMES[1] / LATENT_RATE_HZ
 
 #: The full decode is 64 samples shorter than T frames of 1920.
 DECODE_TAIL_SAMPLES = 64
