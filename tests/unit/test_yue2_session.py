@@ -1,0 +1,138 @@
+"""The yue2 create path with a fake YuE2Context (no GPU, no weights).
+
+``create_yue2_session`` must build a real StreamingSession whose geometry
+comes from the composed song (not from the synthesised text-only
+anchor), pick the NAR path the TRT velocity will use, flag truncated
+songs, honour ``yue2_duration_s`` as the semantic budget, and restyle
+the same composition for ``prompt_b``.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+import torch
+
+from acestep.streaming import yue2_session
+from acestep.streaming.yue2_backend import YuE2Backend, playable_seconds
+
+T = 1200
+
+
+class _FakeContext:
+    def __init__(self, *, frames=T, cond_tokens=2000, truncated=False, has_trt=True):
+        self.frames, self.cond_tokens, self.truncated = frames, cond_tokens, truncated
+        self.has_trt_nar = has_trt
+        self.device = torch.device("cpu")
+        self.velocity = lambda bundle, state, raw: torch.zeros_like(state)
+        self.compose_calls: list = []
+        self.bundle_styles: list = []
+
+    def compose(self, *, style, lyrics, seed, max_frames):
+        self.compose_calls.append(dict(style=style, lyrics=lyrics, seed=seed, max_frames=max_frames))
+        return SimpleNamespace(style=style, timings_ms={"plan_ms": 1.0, "semantic_ms": 2.0})
+
+    def bundle(self, composition, *, style=None, epoch=0):
+        self.bundle_styles.append(style)
+        return SimpleNamespace(frames=self.frames, cond_tokens=self.cond_tokens,
+                               truncated=self.truncated, tags=style or composition.style)
+
+    def solve(self, bundle, **kw):
+        return torch.zeros(1, bundle.frames, 64)
+
+    def decode_full(self, latent):
+        return torch.zeros(2, latent.shape[1] * 1920 - 64)
+
+    def decode_window(self, latent, start, n):
+        return torch.zeros(2, n * 1920)
+
+
+def _create(monkeypatch, context, **config):
+    from acestep.streaming.config import SessionConfig
+    from acestep.streaming.families import get_family
+    from acestep.streaming.session import StreamingSession
+
+    monkeypatch.setattr(yue2_session, "get_yue2_context", lambda: context)
+    cfg = SessionConfig.from_dict({"backend": "yue2", "prompt": "city pop", **config})
+    return get_family("yue2").create_session(
+        StreamingSession, audio=None, config=cfg, checkpoint="YuE2-3B", session_id="t",
+        decoder_backend="tensorrt", vae_backend="tensorrt", offload_text_encoder=False,
+        checkpoint_dir=None, model_extension=None,
+    )
+
+
+def _close(ss):
+    ss.backend.close()
+    ss.audio_eng.stop()
+
+
+def test_create_builds_a_session_from_the_composed_song(monkeypatch):
+    context = _FakeContext()
+    ss = _create(monkeypatch, context, yue2_lyrics="[Verse]\nla\n", yue2_duration_s=60)
+    try:
+        assert isinstance(ss.backend, YuE2Backend)
+        assert ss.canvas is None and ss.session is None
+        assert ss.state.duration == pytest.approx(playable_seconds(T))
+        assert ss.initial_buffer.shape == (T * 1920 - 64, 2)
+        assert ss.backend.geometry().duration_s == pytest.approx(playable_seconds(T))
+        call = context.compose_calls[0]
+        assert call["lyrics"] == "[Verse]\nla\n" and call["max_frames"] == 1500
+        assert call["style"] == "city pop"
+        assert ss.state.params["yue2_nar"] == "trt"
+        assert ss.state.params["yue2_truncated"] is False
+        assert context.bundle_styles == [None]  # no prompt_b: one bundle
+    finally:
+        _close(ss)
+
+
+def test_defaults_instrumental_and_full_budget(monkeypatch):
+    context = _FakeContext()
+    ss = _create(monkeypatch, context)
+    try:
+        call = context.compose_calls[0]
+        assert call["lyrics"] == "[Verse]\n\n[Outro]\n"
+        assert call["max_frames"] == 2500
+    finally:
+        _close(ss)
+
+
+def test_budget_is_capped_at_the_engine_cover(monkeypatch):
+    context = _FakeContext()
+    ss = _create(monkeypatch, context, yue2_duration_s=500)
+    try:
+        assert context.compose_calls[0]["max_frames"] == 2500
+    finally:
+        _close(ss)
+
+
+def test_conditioning_past_the_profile_selects_eager_and_truncation_is_flagged(monkeypatch):
+    context = _FakeContext(cond_tokens=4500, truncated=True)
+    ss = _create(monkeypatch, context)
+    try:
+        assert ss.state.params["yue2_nar"] == "eager"
+        assert ss.state.params["yue2_truncated"] is True
+    finally:
+        _close(ss)
+
+
+def test_short_song_without_engines_is_eager(monkeypatch):
+    context = _FakeContext(frames=700, has_trt=False)
+    ss = _create(monkeypatch, context)
+    try:
+        assert ss.state.params["yue2_nar"] == "eager"
+        assert ss.state.duration == pytest.approx(playable_seconds(700))
+    finally:
+        _close(ss)
+
+
+def test_prompt_b_restyles_the_same_composition(monkeypatch):
+    context = _FakeContext()
+    ss = _create(monkeypatch, context, prompt_b="dark techno")
+    try:
+        assert len(context.compose_calls) == 1
+        assert context.bundle_styles == [None, "dark techno"]
+        ss.backend.handle_set_prompt_blend(1.0)
+        assert ss.backend._active_bundle.tags == "dark techno"
+    finally:
+        _close(ss)

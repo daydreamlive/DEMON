@@ -1,0 +1,339 @@
+"""YuE2Backend through the REAL StreamPipeline, plus the family registration.
+
+The adapter is the production :class:`YuE2Adapter` over a fake velocity;
+the codec is a recording fake. Pinned here:
+
+* contract surface (capabilities, geometry, manifest, no LoRA);
+* a prompt restyle publishes atomically and in-flight slots finish on
+  the bundle they were submitted with (by identity, through
+  ``last_finished_request``);
+* the settled short-circuit stops ticking only when nothing changed;
+* ``set_prompt_blend`` is a hard switch at 0.5;
+* window rendering clamps at the song edges (and the VAE window plan);
+* registration, config fields and the preflight verdicts.
+
+CPU only, no weights.
+"""
+
+from __future__ import annotations
+
+import json
+
+import numpy as np
+import pytest
+import torch
+
+from acestep.engine.yue2_adapter import YuE2Adapter
+from acestep.engine.yue2_trt import window_plan
+from acestep.streaming.generator_backend import GeneratorBackend, TickContext
+from acestep.streaming.knobs import KnobState
+from acestep.streaming.yue2_backend import (
+    YUE2_MAX_SONG_S,
+    YuE2Backend,
+    playable_seconds,
+    yue2_knob_specs,
+)
+
+T = 40
+STEPS = 4
+CTX = TickContext(playhead_s=0.0, buffer_duration_s=2.0)
+
+
+class _Bundle:
+    def __init__(self, offset: float, frames: int = T, cond_tokens: int = 2000):
+        self.offset, self.frames, self.cond_tokens = offset, frames, cond_tokens
+
+
+def _velocity(bundle, state, raw_times):
+    return -0.5 * state + bundle.offset
+
+
+class _Codec:
+    def __init__(self):
+        self.windows: list = []
+        self.released: list = []
+
+    def decode_window(self, latent, start, n):
+        self.windows.append((start, n))
+        return torch.zeros(2, n * 1920)
+
+    def decode_full(self, latent):
+        return torch.zeros(2, latent.shape[1] * 1920 - 64)
+
+    def release_bundle(self, bundle):
+        self.released.append(bundle)
+
+
+def _backend(*, depth=1, restyler=None, bundle=None, codec=None, **kw):
+    bundle = bundle or _Bundle(0.0)
+    return YuE2Backend(
+        adapter=YuE2Adapter(_velocity, steps=STEPS),
+        codec=codec or _Codec(),
+        bundle=bundle,
+        anchor_latent=torch.zeros(1, T, 64),
+        knob_state=KnobState(yue2_knob_specs()),
+        restyler=restyler,
+        steps=STEPS,
+        depth=depth,
+        prompt_tags="pop",
+        **kw,
+    )
+
+
+def _knobs(**over):
+    knobs = {"yue2_denoise": 1.0, "seed": 1, "steps_override": STEPS,
+             "x0_target": 0.0, "feedback": 0.0, "feedback_depth": 1}
+    knobs.update(over)
+    return knobs
+
+
+def _produce_until_fresh(backend, knobs, limit=50):
+    for _ in range(limit):
+        if backend.produce(knobs, CTX, "generate"):
+            return backend.pipeline.last_finished_request
+    raise AssertionError("no fresh latent")
+
+
+def test_contract_surface():
+    backend = _backend()
+    assert isinstance(backend, GeneratorBackend)
+    caps = backend.capabilities()
+    assert caps.refines_audio and caps.loop_band and caps.render_anchor_queue
+    assert not (caps.swap or caps.lora or caps.timbre or caps.write_audio or caps.curves)
+    geo = backend.geometry()
+    assert (geo.sample_rate, geo.channels, geo.chunk_rate_hz) == (48000, 2, 25.0)
+    assert geo.duration_s == pytest.approx((T * 1920 - 64) / 48000)
+    assert backend.max_duration_s() == YUE2_MAX_SONG_S
+    names = [s.name for s in backend.knob_specs()]
+    assert names == ["yue2_denoise", "x0_target", "feedback", "feedback_depth", "seed",
+                     "steps_override"]
+    assert backend.lora_available() is False and backend.list_loras() == []
+    with pytest.raises(RuntimeError):
+        backend.register_lora("x.safetensors")
+
+
+def test_ring_emits_after_the_schedule_and_attributes_the_bundle():
+    bundle = _Bundle(0.25)
+    backend = _backend(bundle=bundle)
+    req = _produce_until_fresh(backend, _knobs())
+    assert req.aux_cond is bundle and req.latent_frames == T
+    assert backend.pipeline.ticks == STEPS
+
+
+def test_restyle_publishes_atomically_and_in_flight_slots_keep_the_old_bundle():
+    old = _Bundle(0.0)
+    new = _Bundle(1.0)
+    backend = _backend(depth=2, bundle=old, restyler=lambda tags, epoch: new)
+    knobs = _knobs()
+    backend.produce(knobs, CTX, "generate")
+    backend.produce(knobs, CTX, "generate")
+    backend.handle_set_prompt("rock")
+    emerged = []
+    for _ in range(3 * STEPS):
+        if backend.produce(knobs, CTX, "generate"):
+            emerged.append(backend.pipeline.last_finished_request.aux_cond)
+    # Slots submitted before the swap finish on the old bundle; every
+    # later one carries the new bundle.
+    assert emerged[0] is old
+    assert emerged[-1] is new
+    assert emerged.index(new) == len([b for b in emerged if b is old])
+    assert backend._cond_meta_for(new) == (1, "rock")
+
+
+def test_restyle_must_keep_the_song_length():
+    backend = _backend(restyler=lambda tags, epoch: _Bundle(0.0, frames=T + 5))
+    with pytest.raises(ValueError, match="length"):
+        backend.handle_set_prompt("rock")
+    with pytest.raises(RuntimeError, match="restyler"):
+        _backend().handle_set_prompt("rock")
+
+
+def test_settled_short_circuit_only_when_nothing_changed():
+    backend = _backend()
+    knobs = _knobs()
+    _produce_until_fresh(backend, knobs)
+    ticks = backend.pipeline.ticks
+    assert backend.produce(knobs, CTX, "generate") is False
+    assert backend.pipeline.ticks == ticks  # no GPU work while settled
+    moved = _knobs(seed=2)
+    assert backend.produce(moved, CTX, "generate") is False
+    assert backend.pipeline.ticks == ticks + 1
+    _produce_until_fresh(backend, moved)
+    # Feedback depends on history: it never settles.
+    fed = _knobs(seed=2, feedback=0.5)
+    ticks = backend.pipeline.ticks
+    for _ in range(2 * STEPS):
+        backend.produce(fed, CTX, "generate")
+    assert backend.pipeline.ticks == ticks + 2 * STEPS
+
+
+def test_prompt_blend_is_a_hard_switch_at_half():
+    a, b = _Bundle(0.0), _Bundle(1.0)
+    backend = _backend(bundle=a, bundle_b=b, prompt_tags_b="jazz")
+    backend.handle_set_prompt_blend(0.49)
+    assert backend._active_bundle is a
+    backend.handle_set_prompt_blend(0.5)
+    assert backend._active_bundle is b
+    backend.handle_set_prompt_blend(0.0)
+    assert backend._active_bundle is a
+
+
+def test_steps_override_rebuilds_pipeline_and_adapter_together():
+    backend = _backend()
+    assert backend.rebuild_imminent(_knobs(steps_override=8))
+    assert not backend.rebuild_imminent(_knobs())
+    old_pipe = backend.pipeline
+    backend.produce(_knobs(steps_override=8), CTX, "generate")
+    assert backend.pipeline is not old_pipe
+    assert backend.adapter.steps == 8 and backend.pipeline.config.infer_steps == 8
+
+
+def test_render_window_clamps_at_the_song_edges():
+    codec = _Codec()
+    backend = _backend(codec=codec)
+    _produce_until_fresh(backend, _knobs())
+    n = backend.window_frames()
+    assert n == 10  # 0.4 s = two 5-frame window cores
+    chunk = backend.render_window(0.0)
+    assert codec.windows[-1] == (0, n) and chunk.start_sample == 0
+    chunk = backend.render_window(10.0)  # past the end
+    assert codec.windows[-1] == (T - n, n)
+    assert chunk.start_sample == (T - n) * 1920
+    # The last window stops at the full decode's length (1920*T - 64).
+    assert chunk.pcm.shape == (n * 1920 - 64, 2)
+    full = backend.render_full()
+    assert full.pcm.shape == (T * 1920 - 64, 2)
+
+
+def test_window_plan_interior_and_edges():
+    assert window_plan(100, 10, 400) == [(84, 16, 5), (89, 16, 5)]
+    assert window_plan(0, 10, 400) == [(0, 0, 5), (0, 5, 5)]
+    assert window_plan(395, 5, 400) == [(363, 32, 5)]
+    assert window_plan(398, 10, 400) == [(363, 35, 2)]
+    with pytest.raises(ValueError):
+        window_plan(0, 5, 20)
+
+
+def test_close_releases_every_bundle():
+    codec = _Codec()
+    a, b = _Bundle(0.0), _Bundle(1.0)
+    backend = _backend(codec=codec, bundle=a, bundle_b=b, prompt_tags_b="jazz")
+    backend.close()
+    assert set(map(id, codec.released)) == {id(a), id(b)}
+
+
+def test_emerged_params_are_stamped():
+    class _State:
+        params: dict = {}
+        prompt_text = "pop"
+        interp_feedback = "slerp"
+
+    state = _State()
+    state.params = {}
+    backend = _backend(state=state)
+    _produce_until_fresh(backend, _knobs(yue2_denoise=0.5, seed=9))
+    backend.on_fresh_generation({})
+    assert state.params["gen_yue2_denoise"] == 0.5
+    assert state.params["gen_seed"] == 9 and state.params["gen_cond_epoch"] == 0
+    assert state.params["yue2_denoise"] == 0.5 and state.params["num_gens"] == 1
+
+
+def test_playable_seconds():
+    assert playable_seconds(25) == pytest.approx((25 * 1920 - 64) / 48000)
+
+
+# ---------------------------------------------------------------------------
+# Family registration
+# ---------------------------------------------------------------------------
+
+
+def test_family_is_registered():
+    from acestep.streaming.families import (
+        FAMILY_SPECS,
+        YUE2_TEXT_ONLY_MAX_DURATION_S,
+        get_family,
+        resolve_checkpoint,
+    )
+
+    spec = get_family("yue2")
+    assert FAMILY_SPECS["yue2"] is spec
+    assert [s.name for s in spec.knob_universe()] == [s.name for s in yue2_knob_specs()]
+    assert resolve_checkpoint("yue2-3b") == ("yue2", "YuE2-3B")
+    assert spec.warmup_policy == "none" and spec.prompt_policy == "acestep"
+    assert spec.supports_extensions is False and spec.accepts_checkpoint_dir is False
+    assert YUE2_TEXT_ONLY_MAX_DURATION_S == YUE2_MAX_SONG_S
+    assert spec.text_only.max_duration_s == YUE2_MAX_SONG_S
+    assert spec.text_only.default_duration_s == 60.0
+    assert spec.text_only.duration_field == "yue2_duration_s"
+    assert [cf.name for cf in spec.config_fields] == ["yue2_lyrics", "yue2_duration_s"]
+    assert spec.shutdown is not None
+
+
+def test_config_fields_parse():
+    from acestep.streaming.config import SessionConfig
+
+    cfg = SessionConfig.from_dict({"yue2_lyrics": "[Verse]\nhi\n", "yue2_duration_s": "45"})
+    assert cfg.family_config["yue2_lyrics"] == "[Verse]\nhi\n"
+    assert cfg.family_config["yue2_duration_s"] == 45.0
+    empty = SessionConfig.from_dict({}).family_config
+    assert empty["yue2_lyrics"] is None and empty["yue2_duration_s"] is None
+
+
+def test_make_backend_requires_the_create_path():
+    from acestep.streaming.families import make_backend
+
+    class _Session:
+        backend_init = None
+
+    with pytest.raises(ValueError, match="create path"):
+        make_backend("yue2", _Session())
+
+
+def _fake_weights(root, *, size=4):
+    for name in ("YuE2-3B", "YuE2-Vae"):
+        d = root / name
+        d.mkdir(parents=True)
+        (d / "config.json").write_text("{}")
+        (d / "model.safetensors").write_bytes(b"x" * size)
+        (d / "weights_manifest.json").write_text(json.dumps(
+            {"files": {"model.safetensors": {"sha256": "0", "bytes": 4}}}))
+
+
+def _preflight():
+    from acestep.streaming.families import get_family
+    from acestep.streaming.preflight import PreflightRequest
+
+    return get_family("yue2").preflight(PreflightRequest(model_id="YuE2-3B"))
+
+
+def test_preflight_verdicts(tmp_path, monkeypatch):
+    from acestep.engine import yue2_runtime as rt
+
+    monkeypatch.delenv(rt.ROOT_ENV, raising=False)
+    monkeypatch.delenv(rt.TRT_DIR_ENV, raising=False)
+    res = _preflight()
+    assert not res.ok and "weights" in res.title
+
+    _fake_weights(tmp_path / "w", size=5)
+    monkeypatch.setenv(rt.ROOT_ENV, str(tmp_path / "w"))
+    res = _preflight()
+    assert not res.ok and "manifest says 4" in res.lines[0]
+
+    (tmp_path / "w2").mkdir()
+    _fake_weights(tmp_path / "w2" / "r")
+    monkeypatch.setenv(rt.ROOT_ENV, str(tmp_path / "w2" / "r"))
+    monkeypatch.setattr(rt, "missing_modules", lambda: ["yue2"])
+    res = _preflight()
+    assert not res.ok and "importable" in res.title
+
+    monkeypatch.setattr(rt, "missing_modules", lambda: [])
+    assert _preflight().ok
+
+    trt = tmp_path / "trt"
+    (trt / "flexible_song").mkdir(parents=True)
+    (trt / "flexible_song" / "velocity.trt").write_bytes(b"")
+    monkeypatch.setenv(rt.TRT_DIR_ENV, str(trt))
+    res = _preflight()
+    assert not res.ok and "vae_fp32_t37.trt" in res.lines[0]
+    (trt / "vae_fp32_t37.trt").write_bytes(b"")
+    assert _preflight().ok

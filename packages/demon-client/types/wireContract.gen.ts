@@ -541,6 +541,10 @@ export interface SessionConfigPayload {
   minimax_ar_graph?: boolean | null;
   /** Seed for the minimax autoregressive stage, i.e. the composition. Absent or null = a fresh random seed per session (echoed as minimax_ar_seed in params); give one to replay a composition for the same prompt and lyrics. The shared seed knob only seeds the renderer's noise. */
   minimax_seed?: number | null;
+  /** Lyrics for yue2 sessions in YuE section format ([Verse], [Chorus], [Outro] headers, one lyric line per line). Absent or null renders an instrumental song. Fixed for the session lifetime. */
+  yue2_lyrics?: string | null;
+  /** Longest song yue2 may compose, seconds (at most 100). The model decides the actual length within it. Absent or null allows 100 s. Fixed for the session lifetime. */
+  yue2_duration_s?: number | null;
   // SessionConfig is permissive; extras pass through.
   [k: string]: unknown;
 }
