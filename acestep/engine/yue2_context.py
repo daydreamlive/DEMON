@@ -26,6 +26,7 @@ from __future__ import annotations
 import dataclasses
 import threading
 import time
+from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -107,6 +108,9 @@ class YuE2Context:
         # static caches while they run).
         self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="yue2-cond")
         self._model_lock = threading.Lock()
+        #: Held by an AR graph capture and by the ring around its GPU work.
+        self.gpu_gate = threading.Lock()
+        self.capture_ms: deque = deque(maxlen=64)
         self.load_s = time.perf_counter() - t0
         logger.info(
             "yue2_context_loaded root={} nar={} vae_window={} load_s={:.1f}",
@@ -157,8 +161,12 @@ class YuE2Context:
     @contextmanager
     def _ar_graphs(self):
         """Upstream CUDA-graph AR with cuDNN attention (Windows torch has
-        no FlashAttention), captured in thread-local mode so a capture
-        on the conditioning worker cannot fail other threads' CUDA calls."""
+        no FlashAttention). Each capture runs in thread-local mode AND
+        under :attr:`gpu_gate`: thread-local mode alone did not stop the
+        ring's CUDA work on the runner thread from failing a capture on
+        the worker ("operation not permitted when stream is capturing",
+        M4), so the ring holds the same gate around its GPU work and a
+        capture (warmup + record, tens of ms) briefly excludes it."""
         from yue2.cuda_graph import GraphAR
 
         original_capture = GraphAR._capture
@@ -170,8 +178,11 @@ class YuE2Context:
                 kwargs.setdefault("capture_error_mode", "thread_local")
                 return original_graph(cuda_graph, **kwargs)
 
-            with patch("torch.cuda.graph", thread_local_graph):
-                return original_capture(graph_ar)
+            with self.gpu_gate, patch("torch.cuda.graph", thread_local_graph):
+                t0 = time.perf_counter()
+                result = original_capture(graph_ar)
+                self.capture_ms.append((time.perf_counter() - t0) * 1000)
+                return result
 
         def make(*args, **kwargs):
             return GraphAR(*args, **dict(kwargs, attention_backend="cudnn"))

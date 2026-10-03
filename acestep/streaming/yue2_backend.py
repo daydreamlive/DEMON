@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from typing import Callable, Optional
 
 import torch
@@ -68,6 +68,9 @@ YUE2_MAX_SONG_S = 100.0
 
 #: The full decode is 64 samples shorter than T frames of 1920.
 DECODE_TAIL_SAMPLES = 64
+
+#: Decoded windows kept per latent (0.4 s stereo float32 each, ~150 KB).
+WINDOW_CACHE_MAX = 512
 
 MAX_FEEDBACK_DEPTH = int(
     next(s for s in registry_knob_specs(False) if s.name == "feedback_depth").max_val
@@ -134,8 +137,12 @@ class YuE2Backend(DiffusionBackend):
         steps: int = 32,
         depth: int = 1,
         vae_window_s: float = 0.4,
+        gpu_gate=None,
     ):
         super().__init__(adapter=adapter, codec=codec)
+        # Excludes a conditioning-worker CUDA graph capture while the ring
+        # does GPU work (YuE2Context.gpu_gate).
+        self._gpu_gate = gpu_gate if gpu_gate is not None else threading.Lock()
         self.knob_state = knob_state
         self.state = state
         self._steps = int(steps)
@@ -179,6 +186,8 @@ class YuE2Backend(DiffusionBackend):
         self._emerged_marker = None
         self._rendered_for = None
         self._rendered_pcm = None
+        self._window_cache: OrderedDict = OrderedDict()
+        self._window_cache_src = None
         self._last_prep = None
 
         self.pipeline = self._build_pipeline(self._steps)
@@ -203,7 +212,7 @@ class YuE2Backend(DiffusionBackend):
             return Song(bundle=context.bundle(new, epoch=epoch), anchor=None, tags=tags, epoch=epoch)
 
         return cls(adapter=adapter, codec=context, song=song, recompose=recompose,
-                   submit=context.submit, steps=steps, **kwargs)
+                   submit=context.submit, gpu_gate=context.gpu_gate, steps=steps, **kwargs)
 
     def _build_pipeline(self, steps: int):
         from acestep.engine.diffusion import DiffusionConfig
@@ -292,6 +301,10 @@ class YuE2Backend(DiffusionBackend):
         for old in stale:
             if old not in (self._song_a, self._song_b, self._active):
                 self._release_song(old)
+        if self.state is not None:
+            # Wake the runner's idle pause: the new song must be rendered
+            # even when no knob moves.
+            self.state.last_activity_ts = time.monotonic()
         logger.info("yue2_recompose_published slot={} tags={!r} cond_epoch={} build_ms={:.0f}",
                     slot, song.tags, song.epoch, build_ms)
 
@@ -311,6 +324,10 @@ class YuE2Backend(DiffusionBackend):
         return self._song_b if v >= 0.5 else self._song_a
 
     # ---- produce hooks ---------------------------------------------------------
+
+    def produce(self, knobs: dict, ctx: TickContext, mode) -> bool:
+        with self._gpu_gate:
+            return super().produce(knobs, ctx, mode)
 
     def _prepare_tick(self, knobs: dict, ctx: TickContext) -> dict:
         x0_str = float(knobs.get("x0_target", 0.0))
@@ -450,6 +467,10 @@ class YuE2Backend(DiffusionBackend):
         return frames_for_seconds(self.vae_window, LATENT_RATE_HZ)
 
     def render_window(self, t_start_s: float):
+        with self._gpu_gate:
+            return self._render_window(t_start_s)
+
+    def _render_window(self, t_start_s: float):
         decode_src = (
             self._current_result if self._current_result is not None
             else self._last_result_latent
@@ -459,17 +480,36 @@ class YuE2Backend(DiffusionBackend):
         n = self.window_frames()
         start = int(round(float(t_start_s) * LATENT_RATE_HZ))
         start = max(0, min(start, self._frames - n))
-        t0 = time.perf_counter()
-        audio = self.codec.decode_window(decode_src, start, n)
-        pcm = audio.clamp(-1, 1).cpu().numpy().T
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        self.last_dec_ms += (time.perf_counter() - t0) * 1000
         start_sample = start * SAMPLES_PER_FRAME
-        playable = SAMPLES_PER_FRAME * self._frames - DECODE_TAIL_SAMPLES
-        return AudioChunk(pcm=pcm[: max(0, playable - start_sample)], start_sample=start_sample)
+        # The runner re-renders windows of a settled latent many times a
+        # second; the decode is deterministic per (latent, start), so a
+        # repeat costs a CPU copy instead of GPU time (which a background
+        # re-compose needs). The runner crossfades in place: hand out copies.
+        if self._window_cache_src is not decode_src:
+            self._window_cache.clear()
+            self._window_cache_src = decode_src
+        pcm = self._window_cache.get(start)
+        if pcm is None:
+            t0 = time.perf_counter()
+            audio = self.codec.decode_window(decode_src, start, n)
+            pcm = audio.clamp(-1, 1).cpu().numpy().T
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            self.last_dec_ms += (time.perf_counter() - t0) * 1000
+            playable = SAMPLES_PER_FRAME * self._frames - DECODE_TAIL_SAMPLES
+            pcm = pcm[: max(0, playable - start_sample)]
+            self._window_cache[start] = pcm
+            while len(self._window_cache) > WINDOW_CACHE_MAX:
+                self._window_cache.popitem(last=False)
+        else:
+            self._window_cache.move_to_end(start)
+        return AudioChunk(pcm=pcm.copy(), start_sample=start_sample)
 
     def render_full(self):
+        with self._gpu_gate:
+            return self._render_full()
+
+    def _render_full(self):
         if self._current_result is None:
             return None
         latent = self._current_result

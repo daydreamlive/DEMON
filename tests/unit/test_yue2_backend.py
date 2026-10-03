@@ -459,3 +459,45 @@ def test_trt_binding_made_under_inference_mode_runs_outside_it():
         bound = _BoundExecution(_FakeEngine(), bundle, 1, "cuda")
     out = bound(torch.ones(1, 8, 64, device="cuda", dtype=torch.bfloat16), [0.5])
     assert out.shape == (1, 8, 64) and not out.is_inference()
+
+
+def test_ring_gpu_work_waits_for_a_held_gate():
+    """A conditioning-worker graph capture holds the gate; the ring's
+    produce and render must not run GPU work meanwhile."""
+    import threading
+
+    gate = threading.Lock()
+    backend = _backend(gpu_gate=gate)
+    done = threading.Event()
+    gate.acquire()
+    worker = threading.Thread(target=lambda: (backend.produce(_knobs(), CTX, "generate"), done.set()))
+    worker.start()
+    assert not done.wait(0.2)
+    gate.release()
+    assert done.wait(5.0)
+    worker.join()
+
+
+def test_repeat_window_renders_of_one_latent_decode_once():
+    codec = _Codec()
+    backend = _backend(codec=codec)
+    _produce_until_fresh(backend, _knobs())
+    first = backend.render_window(0.4)
+    first.pcm[:] = 1.0  # the runner crossfades in place
+    again = backend.render_window(0.4)
+    assert len(codec.windows) == 1
+    assert not np.any(again.pcm == 1.0)
+    _produce_until_fresh(backend, _knobs(seed=5))  # a new latent: decode again
+    backend.render_window(0.4)
+    assert len(codec.windows) == 2
+
+
+def test_a_published_song_wakes_the_idle_runner():
+    class _State:
+        last_activity_ts = 0.0
+        params: dict = {}
+
+    state = _State()
+    backend = _backend(state=state, recompose=_recompose_to(1.0))
+    backend.handle_set_prompt("rock")
+    assert state.last_activity_ts > 0.0

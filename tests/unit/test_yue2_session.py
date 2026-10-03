@@ -9,6 +9,7 @@ songs, honour ``yue2_duration_s`` as the semantic budget, and compose
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +25,7 @@ class _FakeContext:
     def __init__(self, *, frames=T, cond_tokens=2000, truncated=False, has_trt=True):
         self.frames, self.cond_tokens, self.truncated = frames, cond_tokens, truncated
         self.has_trt_nar = has_trt
+        self.gpu_gate = threading.Lock()
         self.device = torch.device("cpu")
         self.velocity = lambda bundle, state, raw: torch.zeros_like(state)
         self.compose_calls: list = []
