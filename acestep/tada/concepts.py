@@ -54,6 +54,12 @@ def caa_eval_config(concept: str, variant: str = "loc") -> dict:
     return dict(load("steering_concepts")["caa_eval"][concept][variant])
 
 
+def austeer_eval_config(concept: str, variant: str = "loc") -> dict:
+    """Released AUSteer evaluation settings (``loc``, ``all``): the top-s
+    budget is ``["method-kwargs"]["k"]``."""
+    return dict(load("steering_concepts")["austeer_eval"][concept][variant])
+
+
 def benchmark_prompts(holdout: bool = False) -> Tuple[List[str], List[str]]:
     """``(prompts, paired lyrics)``: the 100 test prompts, or the 20
     held-out prompts used for hyperparameter selection."""

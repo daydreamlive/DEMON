@@ -126,6 +126,13 @@ def time_mean(h: torch.Tensor) -> torch.Tensor:
     return h.detach().float().reshape(-1, h.shape[-1]).mean(dim=0).cpu()
 
 
+def frames(h: torch.Tensor) -> torch.Tensor:
+    """Every time frame of every batch row as a sample, ``[rows * frames,
+    hidden]`` float32 (AUSteer pools pairs and frames; reference
+    ``collect_raw_activations``)."""
+    return h.detach().float().reshape(-1, h.shape[-1]).cpu()
+
+
 class ActivationRecorder:
     """Records time-averaged hook-point outputs per (step, block).
 
@@ -136,6 +143,8 @@ class ActivationRecorder:
 
     ``store[step][block]`` is a list with one ``[hidden]`` float32 tensor
     per recorded call, the reference code's ``{step: {layer: [vec]}}``.
+    ``reduce`` maps the recorded rows to what is stored: :func:`time_mean`
+    (CAA, the default) or :func:`frames` (AUSteer).
     """
 
     def __init__(
@@ -144,7 +153,9 @@ class ActivationRecorder:
         hook: str = HOOK_CROSS_ATTN_OUTPUT,
         blocks: Optional[Sequence[int]] = None,
         context: Optional[Callable[[int], CallGroups]] = None,
+        reduce: Callable[[torch.Tensor], torch.Tensor] = time_mean,
     ):
+        self.reduce = reduce
         self.target = target
         self.hook = hook
         self.blocks = (
@@ -165,7 +176,7 @@ class ActivationRecorder:
             if not groups:
                 return None
             for rows, step in groups:
-                self.store[int(step)][block].append(time_mean(hs[rows]))
+                self.store[int(step)][block].append(self.reduce(hs[rows]))
             return None
         return _hook
 

@@ -37,6 +37,8 @@ from .target import (
     ConditioningPatcher,
     ModuleTarget,
     forward_counter,
+    frames,
+    time_mean,
 )
 
 __all__ = [
@@ -47,4 +49,6 @@ __all__ = [
     "ConditioningPatcher",
     "ModuleTarget",
     "forward_counter",
+    "frames",
+    "time_mean",
 ]

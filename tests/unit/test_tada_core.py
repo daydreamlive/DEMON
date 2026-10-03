@@ -30,11 +30,19 @@ from acestep.tada import concepts
 from acestep.tada import metrics as M
 from acestep.tada.caa import (
     alphas_from_range,
+    combine,
     caa_vectors,
     stack_vectors,
     steer_activation,
 )
-from acestep.tada.packs import METHOD_TADA_CAA, caa_pack, write_caa_pack
+from acestep.tada.austeer import austeer_scores, austeer_vectors, select_top_s
+from acestep.tada.packs import (
+    METHOD_AUSTEER,
+    METHOD_TADA_CAA,
+    austeer_pack,
+    caa_pack,
+    write_caa_pack,
+)
 from acestep.tada.patching import (
     impact_score,
     localize,
@@ -42,7 +50,7 @@ from acestep.tada.patching import (
     run_patched,
     select_layers,
 )
-from acestep.tada.target import ActivationRecorder, ModuleTarget, forward_counter
+from acestep.tada.target import ActivationRecorder, ModuleTarget, forward_counter, frames
 
 H = 8     # hidden size
 DC = 6    # text-conditioning width
@@ -555,3 +563,136 @@ def test_quality_sampling_and_mir_axes():
     c = np.abs(np.random.default_rng(0).normal(size=(12, 20)))
     assert M.harmony_distance(c, c) == pytest.approx(0.0, abs=1e-6)
     assert M.structure_distance(c, c) == pytest.approx(0.0, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# AUSteer and multi-concept combination
+# ---------------------------------------------------------------------------
+
+def _planted_momentum_runs(pairs=6, frames=5, steps=2):
+    """Paired recordings (``reduce=frames`` layout) with planted sign-stable
+    dimensions: block 0 dim 2 always up, block 1 dim 5 always down, block 1
+    dim 0 up on all but one sample; everything else is noise."""
+    g = torch.Generator().manual_seed(3)
+    pos_runs, neg_runs = [], []
+    for i in range(pairs):
+        pos, neg = {}, {}
+        for s in range(steps):
+            pos[s], neg[s] = {}, {}
+            for b in range(2):
+                base = torch.randn(frames, H, generator=g)
+                m = torch.randn(frames, H, generator=g)
+                if b == 0:
+                    m[:, 2] = m[:, 2].abs() + 0.1
+                else:
+                    m[:, 5] = -(m[:, 5].abs() + 0.1)
+                    m[:, 0] = m[:, 0].abs() + 0.1
+                    if i == 0:
+                        m[0, 0] = -1.0
+                pos[s][b] = [base + m]
+                neg[s][b] = [base]
+        pos_runs.append(pos)
+        neg_runs.append(neg)
+    return pos_runs, neg_runs
+
+
+def _reference_betas(pos_list, neg_list):
+    """``compute_austeer_scores`` from the reference code, for one layer."""
+    mom = np.concatenate([p.numpy() - n.numpy() for p, n in zip(pos_list, neg_list)], axis=0)
+    n = mom.shape[0]
+    r_pos = (mom > 0).sum(axis=0) / n
+    r_neg = (mom < 0).sum(axis=0) / n
+    scores = np.maximum(r_pos, r_neg)
+    return np.where(r_pos >= r_neg, scores, -scores)
+
+
+def test_austeer_selects_planted_sign_consistent_dimensions():
+    pos_runs, neg_runs = _planted_momentum_runs()
+    betas = austeer_scores(pos_runs, neg_runs)
+    for s in betas:
+        for b in betas[s]:
+            ref = _reference_betas([r[s][b][0] for r in pos_runs], [r[s][b][0] for r in neg_runs])
+            assert np.allclose(betas[s][b].numpy(), ref)
+            assert float(betas[s][b].abs().min()) >= 0.5 and float(betas[s][b].abs().max()) <= 1.0
+    assert float(betas[0][0][2]) == 1.0 and float(betas[0][1][5]) == -1.0
+    assert float(betas[0][1][0]) == pytest.approx(29 / 30)
+
+    sel = select_top_s(betas, s=2)
+    for s in sel:
+        nz = {(b, int(d)) for b in sel[s] for d in torch.nonzero(sel[s][b]).reshape(-1)}
+        assert nz == {(0, 2), (1, 5)}
+        assert float(sel[s][0][2]) == 1.0 and float(sel[s][1][5]) == -1.0
+    sel3 = select_top_s(betas, s=3)
+    assert {(b, int(d)) for b in sel3[0] for d in torch.nonzero(sel3[0][b]).reshape(-1)} == {
+        (0, 2), (1, 5), (1, 0)}
+    # Localised: only block 1 competes for the budget.
+    loc = select_top_s(betas, s=2, blocks=[1])
+    assert sorted(loc[0]) == [1]
+    assert {int(d) for d in torch.nonzero(loc[0][1]).reshape(-1)} == {5, 0}
+    assert torch.equal(austeer_vectors(pos_runs, neg_runs, s=2)[1][0], sel[1][0])
+    # Ties keep block order, then dimension order (the reference stable sort).
+    tie = select_top_s({0: {0: torch.full((H,), -0.5), 1: torch.full((H,), 0.5)}}, s=3)
+    assert torch.nonzero(tie[0][0]).reshape(-1).tolist() == [0, 1, 2]
+    assert not tie[0][1].any()
+
+
+def test_austeer_scores_from_recorded_frames():
+    model = _Model()
+    target = model.target()
+
+    def run(enc, x):
+        rec = ActivationRecorder(target, context=forward_counter(1), reduce=frames)
+        with rec:
+            for _ in range(2):
+                model(x, enc)
+        return rec.steps()
+
+    pos = [run(_enc(i) + 0.5, _x(i)) for i in range(3)]
+    neg = [run(_enc(i), _x(i)) for i in range(3)]
+    assert tuple(pos[0][0][0][0].shape) == (T, H)
+    betas = austeer_scores(pos, neg)
+    assert sorted(betas) == [0, 1] and sorted(betas[0]) == list(range(NB))
+    # The conditioning shift is the same for every frame and pair: every
+    # dimension of block 0 is perfectly sign-consistent.
+    assert torch.all(betas[0][0].abs() == 1.0)
+
+
+def test_austeer_pack_round_trip_and_zero_strength_noop(tmp_path: Path):
+    pos_runs, neg_runs = _planted_momentum_runs(steps=4)
+    sel = select_top_s(austeer_scores(pos_runs, neg_runs), s=2)
+    vec = stack_vectors({s: {1: sel[s][0], 2: sel[s][1]} for s in sel}, [1, 2])
+    pack = austeer_pack(vec, top_s=2, family="fake", checkpoint="tiny",
+                        concept="piano", blocks=[1, 2], magnitude=10.0)
+    back = load_pack(write_caa_pack(pack, tmp_path))
+    assert back.method == METHOD_AUSTEER == "auscore"
+    assert back.provenance["top_s"] == 2 and back.cond_only and back.renorm
+    assert torch.equal(back.vector, vec)
+
+    surf = PackSteering([back])
+    base = _drain(_pipe(_FakeAdapter()), [1, 2])
+    pipe = _pipe(_FakeAdapter())
+    pipe.set_steering(surf.build_configs({"steer_piano": 0.0}, 4))
+    same = _drain(pipe, [1, 2])
+    assert base and len(same) == len(base)
+    assert all(torch.equal(a, b) for a, b in zip(base, same))
+    pipe = _pipe(_FakeAdapter())
+    pipe.set_steering(surf.build_configs({"steer_piano": 2.0}, 4))
+    assert any(not torch.equal(a, b) for a, b in zip(base, _drain(pipe, [1, 2])))
+
+
+def test_multi_concept_combination_is_unit_weight_sum_with_negation():
+    g = torch.Generator().manual_seed(1)
+    a, b, c = (torch.randn(2, 3, H, generator=g) for _ in range(3))
+    assert torch.allclose(combine([a, b]), a + b)
+    assert torch.allclose(combine([a, b, c], negate=[False, True, False]), a - b + c)
+    assert torch.allclose(combine([a]), a)
+    with pytest.raises(ValueError):
+        combine([a, torch.zeros(H)])
+    with pytest.raises(ValueError):
+        combine([a, b], negate=[True])
+
+
+def test_austeer_released_budgets_are_data():
+    assert concepts.austeer_eval_config("piano", "loc")["method-kwargs"]["k"] == 4096
+    assert concepts.austeer_eval_config("violin", "all")["method-kwargs"]["k"] == 256
+    assert concepts.austeer_eval_config("piano", "loc")["layers"] == "tf6tf7"

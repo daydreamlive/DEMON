@@ -96,11 +96,26 @@ def steer_activation(
     return out
 
 
-def combine(vectors: Sequence[torch.Tensor], signs: Optional[Sequence[float]] = None) -> torch.Tensor:
-    """Multi-concept vector: uniformly weighted sum of single-concept vectors,
-    negated where ``signs`` is negative (paper Sec. 5.5)."""
-    signs = [1.0] * len(vectors) if signs is None else [float(s) for s in signs]
-    return sum(s * v for s, v in zip(signs, vectors))
+def combine(
+    vectors: Sequence[torch.Tensor], negate: Optional[Sequence[bool]] = None,
+) -> torch.Tensor:
+    """Multi-concept vector (paper Sec. 5.5, App. O): the unit-weight sum
+    of single-concept vectors of one method (CAA, AUSteer or SAE), each
+    sign-flipped where ``negate`` is True (a concept-suppressing
+    direction, e.g. male vocal from the female-vocal vector). Vectors must
+    share a shape, e.g. the pack layout ``[blocks, steps, hidden]``."""
+    if not vectors:
+        raise ValueError("need at least one vector")
+    negate = [False] * len(vectors) if negate is None else [bool(n) for n in negate]
+    if len(negate) != len(vectors):
+        raise ValueError(f"negate has {len(negate)} entries for {len(vectors)} vectors")
+    shapes = {tuple(v.shape) for v in vectors}
+    if len(shapes) != 1:
+        raise ValueError(f"vectors differ in shape: {sorted(shapes)}")
+    out = torch.zeros_like(vectors[0], dtype=torch.float32)
+    for v, n in zip(vectors, negate):
+        out = out - v.float() if n else out + v.float()
+    return out
 
 
 def alphas_from_range(min_range: float, max_range: float, steps_per_side: int = 15) -> List[float]:

@@ -31,7 +31,22 @@ in `acestep/tada/` names a particular model.
    residual add, on the conditional CFG pass only. The released evaluation
    configs also rescale each frame back to its original L2 norm (`renorm`).
    A negative `alpha` removes the concept.
-3. **Evaluation.** The alignment gain is sign-corrected
+3. **AUSteer (Feng et al.), as TADA adapts it.** From the same paired
+   conditional-pass activations, every time frame of every pair is a sample
+   of the momentum `m_j = h_pos[j] - h_neg[j]`. Each dimension gets the
+   signed sign-consistency score `beta_j = +-max(r+_j, r-_j)` (the fractions
+   of samples with `m_j > 0` and `m_j < 0`; positive on a tie, as in the
+   reference code). At each step a global top-`s` over `|beta|`, across every
+   active layer, keeps `s` dimensions. The steering vector is that sparse
+   `beta`, added as in CAA (`h <- h + alpha * v`, conditional pass, renorm).
+   The reference default is `s = 256`. The released per-concept budgets
+   (256 to 8192) are in the data. The original multiplicative form gave no
+   gain in the paper and is not ported.
+4. **Multi-concept steering (Sec. 5.5).** The combined vector is the
+   unit-weight sum of single-concept vectors of one method, with
+   concept-suppressing directions sign-flipped (`caa.combine(vectors,
+   negate=...)`).
+5. **Evaluation.** The alignment gain is sign-corrected
    (`sign(alpha) * (sim(alpha) - sim(0))`, using MuQ-MuLan and CLAP) and is
    plotted against LPAPS distance from the `alpha = 0` audio. The area under
    that curve is cut off at the LPAPS of a full prompt swap (the PCI cutoff).
@@ -50,14 +65,17 @@ blocks 6 and 7.
 | --- | --- |
 | `acestep/tada/target.py` | `ActivationTarget` protocol, `ModuleTarget` (a family's cross-attention modules and conditioning argument names), `ActivationRecorder` (per step and block, time-averaged outputs), `ConditioningPatcher` (record the clean run's conditioning, substitute it into the chosen layers), `forward_counter` (which forward is the conditional pass of which step) |
 | `acestep/tada/patching.py` | impact score, the `L + 2` patch sets, `patching_sweep`, `localize` (mean over concepts, `tau`) |
-| `acestep/tada/caa.py` | `caa_vectors`, `stack_vectors` (pack layout `[blocks, steps, hidden]`), `steer_activation` (the reference intervention), `combine`, `alphas_from_range` |
-| `acestep/tada/packs.py` | `caa_pack` / `write_caa_pack`: a TADA vector set as a steering pack (`hook = cross_attn_output`, `blocks`, `cond_only`, `renorm`), one `steer_<concept>` knob |
+| `acestep/tada/caa.py` | `caa_vectors`, `stack_vectors` (pack layout `[blocks, steps, hidden]`), `steer_activation` (the reference intervention), `combine` (multi-concept sum with optional negation), `alphas_from_range` |
+| `acestep/tada/austeer.py` | `austeer_scores` (signed sign-consistency `beta` per step and block, from recordings made with `reduce=frames`), `select_top_s` (global top-`s` per step, optionally restricted to the localised blocks), `austeer_vectors`, `DEFAULT_TOP_S = 256` |
+| `acestep/tada/packs.py` | `caa_pack` (method `tada_caa`), `austeer_pack` (method `auscore`), `write_caa_pack`: a TADA vector set as a steering pack (`hook = cross_attn_output`, `blocks`, `cond_only`, `renorm`), one `steer_<concept>` knob |
 | `acestep/tada/metrics.py` | sign-corrected gain, AUC with cutoff, smoothness, LPAPS cutoff, quality at LPAPS, extra preservation axes; the CLAP, MuQ and mir_eval scorers are imported lazily |
 | `acestep/tada/concepts.py`, `acestep/tada/data/` | the reference concept sets, prompt pairs, alignment queries, benchmark prompts, calibrated ranges and patching data, verbatim (regenerate with `scripts/tada/import_upstream_data.py --repo <steer-audio checkout>`) |
 
 `tests/unit/test_tada_core.py` checks the following on CPU. The sweep picks
 a planted block. The CAA vector equals a planted difference. A pack
-round-trips. Zero strength is bit-identical to no steering through the real
+round-trips. AUSteer selects planted sign-consistent dimensions, matches
+the reference score formula, and an AUSteer pack is a no-op at zero
+strength. The multi-concept sum negates as asked. Zero strength is bit-identical to no steering through the real
 `StreamPipeline`, and a nonzero strength moves only the conditional pass at
 the steered cross-attention output. The AUC and smoothness port reproduces
 the paper's published piano numbers from the released per-alpha table.
@@ -113,6 +131,8 @@ same code but is not run here.
 | Stable Audio 3 | localised | TBD | TBD | TBD | TBD | Table 1 CAA loc: 0.104 MuQ / 0.065 CLAP |
 | Stable Audio 3 | all blocks | TBD | TBD | TBD | TBD | Table 1 CAA all: 0.075 MuQ / 0.046 CLAP |
 | Stable Audio 3 | ablated | TBD | TBD | TBD | TBD | App. L, 4 concepts: 0.055 / 0.083 / 0.021 MuQ (all / loc / ablated) |
+| Stable Audio 3 | AUSteer localised | TBD | TBD | TBD | TBD | Table 1 AUSteer loc: 0.096 MuQ / 0.063 CLAP |
+| Stable Audio 3 | AUSteer all blocks | TBD | TBD | TBD | TBD | Table 1 AUSteer: 0.081 MuQ / 0.058 CLAP |
 
 ### Per concept (Stable Audio 3)
 

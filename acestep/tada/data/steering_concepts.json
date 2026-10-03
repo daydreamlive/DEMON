@@ -1678,6 +1678,460 @@
    "save_all_cfg_passes": true
   }
  },
+ "austeer_eval": {
+  "electronic_music": {
+   "all": {
+    "layers": "all",
+    "steer-mode": "cond_only",
+    "min-range": -5.3317,
+    "max-range": 6.3869,
+    "steps-per-side": 15,
+    "duration": 30.0,
+    "steps": 30,
+    "guidance-scale": 5.0,
+    "seed": 2115,
+    "method-kwargs": {
+     "k": 4096,
+     "mode": "additive",
+     "renorm": true
+    }
+   },
+   "loc": {
+    "layers": "tf6tf7",
+    "steer-mode": "cond_only",
+    "min-range": -5.8335,
+    "max-range": 6.6693,
+    "steps-per-side": 15,
+    "duration": 30.0,
+    "steps": 30,
+    "guidance-scale": 5.0,
+    "seed": 2115,
+    "method-kwargs": {
+     "k": 2048,
+     "mode": "additive",
+     "renorm": true
+    }
+   }
+  },
+  "guitar_electronic": {
+   "all": {
+    "layers": "all",
+    "steer-mode": "cond_only",
+    "min-range": -4.8158,
+    "max-range": 4.7401,
+    "steps-per-side": 15,
+    "duration": 30.0,
+    "steps": 30,
+    "guidance-scale": 5.0,
+    "seed": 2115,
+    "method-kwargs": {
+     "k": 2048,
+     "mode": "additive",
+     "renorm": true
+    }
+   },
+   "loc": {
+    "layers": "tf6tf7",
+    "steer-mode": "cond_only",
+    "min-range": -2.0738,
+    "max-range": 2.0243,
+    "steps-per-side": 15,
+    "duration": 30.0,
+    "steps": 30,
+    "guidance-scale": 5.0,
+    "seed": 2115,
+    "method-kwargs": {
+     "k": 5120,
+     "mode": "additive",
+     "renorm": true
+    }
+   }
+  },
+  "mood": {
+   "all": {
+    "layers": "all",
+    "steer-mode": "cond_only",
+    "min-range": -20.6003,
+    "max-range": 12.0334,
+    "steps-per-side": 15,
+    "duration": 30.0,
+    "steps": 30,
+    "guidance-scale": 5.0,
+    "seed": 2115,
+    "method-kwargs": {
+     "k": 1024,
+     "mode": "additive",
+     "renorm": true
+    }
+   },
+   "loc": {
+    "layers": "tf6tf7",
+    "steer-mode": "cond_only",
+    "min-range": -2.493,
+    "max-range": 2.304,
+    "steps-per-side": 15,
+    "duration": 30.0,
+    "steps": 30,
+    "guidance-scale": 5.0,
+    "seed": 2115,
+    "method-kwargs": {
+     "k": 5120,
+     "mode": "additive",
+     "renorm": true
+    }
+   }
+  },
+  "piano": {
+   "all": {
+    "layers": "all",
+    "steer-mode": "cond_only",
+    "min-range": -20.631,
+    "max-range": 20.5885,
+    "steps-per-side": 15,
+    "duration": 30.0,
+    "steps": 30,
+    "guidance-scale": 5.0,
+    "seed": 2115,
+    "method-kwargs": {
+     "k": 2048,
+     "mode": "additive",
+     "renorm": true
+    }
+   },
+   "loc": {
+    "layers": "tf6tf7",
+    "steer-mode": "cond_only",
+    "min-range": -3.0872,
+    "max-range": 2.9872,
+    "steps-per-side": 15,
+    "duration": 30.0,
+    "steps": 30,
+    "guidance-scale": 5.0,
+    "seed": 2115,
+    "method-kwargs": {
+     "k": 4096,
+     "mode": "additive",
+     "renorm": true
+    }
+   }
+  },
+  "rock_genre": {
+   "all": {
+    "layers": "all",
+    "steer-mode": "cond_only",
+    "min-range": -4.1805,
+    "max-range": 6.1311,
+    "steps-per-side": 15,
+    "duration": 30.0,
+    "steps": 30,
+    "guidance-scale": 5.0,
+    "seed": 2115,
+    "method-kwargs": {
+     "k": 2048,
+     "mode": "additive",
+     "renorm": true
+    }
+   },
+   "loc": {
+    "layers": "tf6tf7",
+    "steer-mode": "cond_only",
+    "min-range": -5.5333,
+    "max-range": 2.1524,
+    "steps-per-side": 15,
+    "duration": 30.0,
+    "steps": 30,
+    "guidance-scale": 5.0,
+    "seed": 2115,
+    "method-kwargs": {
+     "k": 5120,
+     "mode": "additive",
+     "renorm": true
+    }
+   }
+  },
+  "tempo": {
+   "all": {
+    "layers": "all",
+    "steer-mode": "cond_only",
+    "min-range": -1.5863,
+    "max-range": 3.3586,
+    "steps-per-side": 15,
+    "duration": 30.0,
+    "steps": 30,
+    "guidance-scale": 5.0,
+    "seed": 2115,
+    "method-kwargs": {
+     "k": 4096,
+     "mode": "additive",
+     "renorm": true
+    }
+   },
+   "loc": {
+    "layers": "tf6tf7",
+    "steer-mode": "cond_only",
+    "min-range": -1.4303,
+    "max-range": 1.7204,
+    "steps-per-side": 15,
+    "duration": 30.0,
+    "steps": 30,
+    "guidance-scale": 5.0,
+    "seed": 2115,
+    "method-kwargs": {
+     "k": 4096,
+     "mode": "additive",
+     "renorm": true
+    }
+   }
+  },
+  "violin": {
+   "all": {
+    "layers": "all",
+    "steer-mode": "cond_only",
+    "min-range": -19.0649,
+    "max-range": 56.8553,
+    "steps-per-side": 15,
+    "duration": 30.0,
+    "steps": 30,
+    "guidance-scale": 5.0,
+    "seed": 2115,
+    "method-kwargs": {
+     "k": 256,
+     "mode": "additive",
+     "renorm": true
+    }
+   },
+   "loc": {
+    "layers": "tf6tf7",
+    "steer-mode": "cond_only",
+    "min-range": -5.7733,
+    "max-range": 6.3885,
+    "steps-per-side": 15,
+    "duration": 30.0,
+    "steps": 30,
+    "guidance-scale": 5.0,
+    "seed": 2115,
+    "method-kwargs": {
+     "k": 2048,
+     "mode": "additive",
+     "renorm": true
+    }
+   }
+  },
+  "vocal_gender": {
+   "all": {
+    "layers": "all",
+    "steer-mode": "cond_only",
+    "min-range": -2.3836,
+    "max-range": 2.0231,
+    "steps-per-side": 15,
+    "duration": 30.0,
+    "steps": 30,
+    "guidance-scale": 5.0,
+    "seed": 2115,
+    "method-kwargs": {
+     "k": 8192,
+     "mode": "additive",
+     "renorm": true
+    }
+   },
+   "loc": {
+    "layers": "tf6tf7",
+    "steer-mode": "cond_only",
+    "min-range": -5.2727,
+    "max-range": 3.603,
+    "steps-per-side": 15,
+    "duration": 30.0,
+    "steps": 30,
+    "guidance-scale": 5.0,
+    "seed": 2115,
+    "method-kwargs": {
+     "k": 2048,
+     "mode": "additive",
+     "renorm": true
+    }
+   }
+  },
+  "vocal_style": {
+   "all": {
+    "layers": "all",
+    "steer-mode": "cond_only",
+    "min-range": -1.6234,
+    "max-range": 3.9687,
+    "steps-per-side": 15,
+    "duration": 30.0,
+    "steps": 30,
+    "guidance-scale": 5.0,
+    "seed": 2115,
+    "method-kwargs": {
+     "k": 8192,
+     "mode": "additive",
+     "renorm": true
+    }
+   },
+   "loc": {
+    "layers": "tf6tf7",
+    "steer-mode": "cond_only",
+    "min-range": -1.7995,
+    "max-range": 2.8987,
+    "steps-per-side": 15,
+    "duration": 30.0,
+    "steps": 30,
+    "guidance-scale": 5.0,
+    "seed": 2115,
+    "method-kwargs": {
+     "k": 5120,
+     "mode": "additive",
+     "renorm": true
+    }
+   }
+  }
+ },
+ "austeer_compute": {
+  "electronic_music": {
+   "all": {
+    "layers": "all",
+    "num_inference_steps": 30,
+    "audio_duration": 30.0,
+    "guidance_scale": 5.0,
+    "seed": 10
+   },
+   "loc": {
+    "layers": "tf6tf7",
+    "num_inference_steps": 30,
+    "audio_duration": 30.0,
+    "guidance_scale": 5.0,
+    "seed": 10
+   }
+  },
+  "guitar_electronic": {
+   "all": {
+    "layers": "all",
+    "num_inference_steps": 30,
+    "audio_duration": 30.0,
+    "guidance_scale": 5.0,
+    "seed": 10
+   },
+   "loc": {
+    "layers": "tf6tf7",
+    "num_inference_steps": 30,
+    "audio_duration": 30.0,
+    "guidance_scale": 5.0,
+    "seed": 10
+   }
+  },
+  "mood": {
+   "all": {
+    "layers": "all",
+    "num_inference_steps": 30,
+    "audio_duration": 30.0,
+    "guidance_scale": 5.0,
+    "seed": 10
+   },
+   "loc": {
+    "layers": "tf6tf7",
+    "num_inference_steps": 30,
+    "audio_duration": 30.0,
+    "guidance_scale": 5.0,
+    "seed": 10
+   }
+  },
+  "piano": {
+   "all": {
+    "layers": "all",
+    "num_inference_steps": 30,
+    "audio_duration": 30.0,
+    "guidance_scale": 5.0,
+    "seed": 10
+   },
+   "loc": {
+    "layers": "tf6tf7",
+    "num_inference_steps": 30,
+    "audio_duration": 30.0,
+    "guidance_scale": 5.0,
+    "seed": 10
+   }
+  },
+  "rock_genre": {
+   "all": {
+    "layers": "all",
+    "num_inference_steps": 30,
+    "audio_duration": 30.0,
+    "guidance_scale": 5.0,
+    "seed": 10
+   },
+   "loc": {
+    "layers": "tf6tf7",
+    "num_inference_steps": 30,
+    "audio_duration": 30.0,
+    "guidance_scale": 5.0,
+    "seed": 10
+   }
+  },
+  "tempo": {
+   "all": {
+    "layers": "all",
+    "num_inference_steps": 30,
+    "audio_duration": 30.0,
+    "guidance_scale": 5.0,
+    "seed": 10
+   },
+   "loc": {
+    "layers": "tf6tf7",
+    "num_inference_steps": 30,
+    "audio_duration": 30.0,
+    "guidance_scale": 5.0,
+    "seed": 10
+   }
+  },
+  "violin": {
+   "all": {
+    "layers": "all",
+    "num_inference_steps": 30,
+    "audio_duration": 30.0,
+    "guidance_scale": 5.0,
+    "seed": 10
+   },
+   "loc": {
+    "layers": "tf6tf7",
+    "num_inference_steps": 30,
+    "audio_duration": 30.0,
+    "guidance_scale": 5.0,
+    "seed": 10
+   }
+  },
+  "vocal_gender": {
+   "all": {
+    "layers": "all",
+    "num_inference_steps": 30,
+    "audio_duration": 30.0,
+    "guidance_scale": 5.0,
+    "seed": 10
+   },
+   "loc": {
+    "layers": "tf6tf7",
+    "num_inference_steps": 30,
+    "audio_duration": 30.0,
+    "guidance_scale": 5.0,
+    "seed": 10
+   }
+  },
+  "vocal_style": {
+   "all": {
+    "layers": "all",
+    "num_inference_steps": 30,
+    "audio_duration": 30.0,
+    "guidance_scale": 5.0,
+    "seed": 10
+   },
+   "loc": {
+    "layers": "tf6tf7",
+    "num_inference_steps": 30,
+    "audio_duration": 30.0,
+    "guidance_scale": 5.0,
+    "seed": 10
+   }
+  }
+ },
  "stable_audio_caa": {
   "compute_electronic_music": {
    "scorer": "stable_audio_caa",

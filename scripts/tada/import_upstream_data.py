@@ -84,6 +84,26 @@ def main() -> None:
     for cfg_path in sorted((repo / "configs/steering/ace/caa").glob("compute_*.yaml")):
         cfg = _yaml(cfg_path)
         compute[cfg["concept"]] = cfg.get("scorer-kwargs", {})
+    # AUSteer (paper Eq. 7-9, App. I.1.4): per-concept top-s budget,
+    # calibrated ranges and compute settings (configs/steering/ace/austeer).
+    austeer = {}
+    for cfg_path in sorted((repo / "configs/steering/ace/austeer").glob("eval_*.yaml")):
+        cfg = _yaml(cfg_path)
+        concept = cfg.get("concept")
+        if not concept or not cfg_path.stem.endswith("_" + concept):
+            continue
+        variant = cfg_path.stem[len("eval_"):-len("_" + concept)]
+        austeer.setdefault(concept, {})[variant] = {
+            k: cfg.get(k) for k in (
+                "layers", "steer-mode", "min-range", "max-range", "steps-per-side",
+                "duration", "steps", "guidance-scale", "seed", "method-kwargs",
+            )
+        }
+    austeer_compute = {}
+    for cfg_path in sorted((repo / "configs/steering/ace/austeer").glob("compute_*.yaml")):
+        cfg = _yaml(cfg_path)
+        variant = cfg_path.stem[len("compute_"):-len("_" + cfg["concept"])]
+        austeer_compute.setdefault(cfg["concept"], {})[variant] = cfg.get("scorer-kwargs", {})
     sao = {}
     for cfg_path in sorted((repo / "configs/steering/stable_audio/stable_audio_caa").glob("*.yaml")):
         sao[cfg_path.stem] = _yaml(cfg_path)
@@ -95,6 +115,8 @@ def main() -> None:
         "eval_prompts": ev.CONCEPT_TO_EVAL_PROMPTS,
         "caa_eval": caa,
         "caa_compute": compute,
+        "austeer_eval": austeer,
+        "austeer_compute": austeer_compute,
         "stable_audio_caa": sao,
     })
 
