@@ -7,26 +7,42 @@
     <link rel="stylesheet" href="./styles.css">
   </head>
   <body>
-    <canvas id="scene"></canvas>
-    <div id="status" class="status">idle</div>
-    <section class="panel" aria-label="YuE2 controls">
-      <label>Style <input id="prompt-a" type="text"></label>
-      <label>Style B (optional second song) <input id="prompt-b" type="text" placeholder="same as Style"></label>
-      <label>A/B switch <span id="blend-value">A</span>
-        <input id="blend" type="range" min="0" max="1" step="0.01" value="0">
-      </label>
-      <label>Lyrics (fixed after Start)
-        <textarea id="lyrics" rows="4"></textarea>
-      </label>
-      <label>Longest song, seconds (fixed after Start)
-        <input id="duration" type="number" min="10" max="100" step="1" value="60">
-      </label>
-      <div id="knobs" class="knobs"></div>
-      <div class="buttons">
-        <button id="start" type="button">Start</button>
-        <button id="send" type="button" disabled>Re-compose</button>
-      </div>
-    </section>
+    <canvas id="scene" aria-hidden="true"></canvas>
+    <main class="shell">
+      <section class="panel" aria-label="YuE2 controls">
+        <header class="panel-header">
+          <div class="brand-row"><span class="brand">DAYDREAM <span class="brand-divider">/</span> DEMON</span></div>
+          <h1>YuE2</h1>
+          <div id="status" class="status" role="status">idle</div>
+        </header>
+
+        <div class="control-section">
+          <div class="section-heading"><span>01</span> Style</div>
+          <label class="field"><span class="field-label">Style</span><input id="prompt-a" type="text"></label>
+          <label class="field"><span class="field-label">Style B (optional second song)</span><input id="prompt-b" type="text" placeholder="same as Style"></label>
+          <label class="field blend-field">
+            <span class="field-label">A/B switch <span id="blend-value" class="blend-value">A</span></span>
+            <input id="blend" type="range" min="0" max="1" step="0.01" value="0">
+          </label>
+        </div>
+
+        <div class="control-section">
+          <div class="section-heading"><span>02</span> Song</div>
+          <label class="field"><span class="field-label">Lyrics</span><textarea id="lyrics" rows="3"></textarea></label>
+          <label class="field"><span class="field-label">Longest song, seconds</span><input id="duration" type="number" min="10" max="100" step="1" value="60"></label>
+          <p class="field-hint">Lyrics and longest song are fixed after Start.</p>
+        </div>
+
+        <div class="control-section parameters">
+          <div class="section-heading"><span>03</span> Parameters</div>
+          <div id="knobs" class="knobs"></div>
+        </div>
+        <div class="buttons">
+          <button id="start" class="start-button" type="button">Start</button>
+          <button id="send" class="send-button" type="button" disabled>Re-compose</button>
+        </div>
+      </section>
+    </main>
     <script type="module" src="./yue2.js"></script>
   </body>
 </html>

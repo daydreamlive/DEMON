@@ -188,7 +188,10 @@ function knobInput(name, entry) {
 function renderKnobs() {
   const nodes = state.knobs.map(({ name, entry }) => {
     const label = document.createElement("label");
-    const value = document.createElement("span");
+    label.className = "knob-control";
+    const heading = document.createElement("span"); heading.className = "knob-heading";
+    const caption = document.createElement("span"); caption.className = "knob-label"; caption.textContent = name.replace(/^yue2_/, "").replace(/_/g, " ");
+    const value = document.createElement("span"); value.className = "knob-value";
     const input = knobInput(name, entry);
     const digits = entry.type === "int" ? 0 : 2;
     if (entry.description) label.title = entry.description;
@@ -200,7 +203,7 @@ function renderKnobs() {
       if (input.type === "range") value.textContent = ` ${v.toFixed(digits)}`;
       sendParams();
     });
-    label.append(name.replace(/^yue2_/, "").replace(/_/g, " "), value, input);
+    heading.append(caption, value); label.append(heading, input);
     return label;
   });
   els.knobs.replaceChildren(...nodes);
@@ -237,21 +240,30 @@ function resize() {
 
 function drawSpectrum() {
   const { width, height } = els.canvas;
-  ctx2d.fillStyle = "#07080b";
-  ctx2d.fillRect(0, 0, width, height);
+  ctx2d.clearRect(0, 0, width, height);
   const hue = 210 - Number(els.blend.value) * 185; // A = cool blue, B = warm orange
   const bucket = Math.floor(384 / BAR_COUNT);
-  const barW = width / BAR_COUNT;
+  const startX = width > 760 ? width * 0.52 : width * 0.08;
+  const span = width > 760 ? width * 0.43 : width * 0.84;
+  const barW = span / BAR_COUNT;
+  const baseline = height * 0.72, maxH = height * 0.42;
+  ctx2d.strokeStyle = "rgb(130 177 197 / 12%)";
+  ctx2d.beginPath(); ctx2d.moveTo(startX, baseline + 1); ctx2d.lineTo(startX + span, baseline + 1); ctx2d.stroke();
+  const glow = ctx2d.createLinearGradient(0, baseline - maxH, 0, baseline);
+  glow.addColorStop(0, `hsl(${hue + 25} 64% 68%)`); glow.addColorStop(1, `hsl(${hue} 48% 35%)`);
   for (let i = 0; i < BAR_COUNT; i++) {
     let level = 0;
     if (state.freq) {
       for (let k = 0; k < bucket; k++) level += state.freq[i * bucket + k];
       level /= bucket * 255;
     }
-    const h = Math.max(2, level * height * 0.7);
-    ctx2d.fillStyle = `hsl(${hue + level * 30} 75% ${35 + level * 30}%)`;
-    ctx2d.fillRect(i * barW + 1, height - h, barW - 2, h);
+    const h = Math.max(2, level * maxH, state.freq ? 0 : maxH * 0.15 * Math.sin(Math.PI * i / BAR_COUNT) * Math.sin(i * 0.4) ** 2);
+    ctx2d.fillStyle = glow;
+    ctx2d.shadowColor = `hsl(${hue} 70% 55% / 65%)`;
+    ctx2d.shadowBlur = level > 0.08 ? 12 : 0;
+    ctx2d.fillRect(startX + i * barW + 1, baseline - h, Math.max(1, barW - 3), h);
   }
+  ctx2d.shadowBlur = 0;
 }
 
 // render loop
