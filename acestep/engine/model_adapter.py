@@ -124,13 +124,35 @@ def ace_engine_steering_layout(engine):
             num_blocks=n,
             hidden_size=int(getattr(engine, "_steering_hidden_size", 0)),
             engine_input=True,
+            extra_hooks=_ace_trt_extra_hooks(engine),
         )
     decoder = getattr(engine, "decoder", None)
     layers = getattr(decoder, "layers", None)
     if layers is None:
         return None
     hidden = getattr(getattr(decoder, "config", None), "hidden_size", 0)
-    return SteeringLayout(num_blocks=len(layers), hidden_size=int(hidden or 0))
+    return SteeringLayout(
+        num_blocks=len(layers), hidden_size=int(hidden or 0),
+        extra_hooks=_ace_eager_extra_hooks(layers),
+    )
+
+
+def _ace_trt_extra_hooks(owner) -> tuple:
+    """Extra hook points an ACE TRT decoder serves: ``cross_attn_output``
+    when the engine carries the ``steering_xattn`` input."""
+    from acestep.steering.layout import HOOK_CROSS_ATTN_OUTPUT
+
+    return (HOOK_CROSS_ATTN_OUTPUT,) if getattr(owner, "_steering_xattn", False) else ()
+
+
+def _ace_eager_extra_hooks(layers) -> tuple:
+    """Extra hook points the eager ACE decoder serves: ``cross_attn_output``
+    when its blocks carry a cross-attention module."""
+    from acestep.steering.layout import HOOK_CROSS_ATTN_OUTPUT
+
+    if len(layers) and all(getattr(l, "cross_attn", None) is not None for l in layers):
+        return (HOOK_CROSS_ATTN_OUTPUT,)
+    return ()
 
 
 class ACEAdapter:
@@ -178,6 +200,7 @@ class ACEAdapter:
                 num_blocks=int(p._steering_num_layers),
                 hidden_size=int(p._steering_hidden_size),
                 engine_input=True,
+                extra_hooks=_ace_trt_extra_hooks(p),
             )
         layers = getattr(p.decoder, "layers", None)
         if layers is None:
@@ -185,7 +208,10 @@ class ACEAdapter:
         hidden = getattr(getattr(p.decoder, "config", None), "hidden_size", None)
         if hidden is None:
             hidden = getattr(layers[0], "hidden_size", 0) if len(layers) else 0
-        return SteeringLayout(num_blocks=len(layers), hidden_size=int(hidden))
+        return SteeringLayout(
+            num_blocks=len(layers), hidden_size=int(hidden),
+            extra_hooks=_ace_eager_extra_hooks(layers),
+        )
 
     def steering_blocks(self):
         """``decoder.layers`` when the eager decoder runs, else None."""
@@ -193,6 +219,23 @@ class ACEAdapter:
         if p._trt_engine is not None:
             return None
         return getattr(p.decoder, "layers", None)
+
+    def steering_hook_modules(self, hook):
+        """Eager modules for a non-primary hook point, else None.
+
+        ``cross_attn_output``: each block's ``cross_attn`` module, whose
+        first output is the attention output before the residual add
+        (``AceStepDiTLayer.forward``), TADA's intervention site.
+        """
+        from acestep.steering.layout import HOOK_CROSS_ATTN_OUTPUT
+
+        p = self._pipeline
+        if p._trt_engine is not None or hook != HOOK_CROSS_ATTN_OUTPUT:
+            return None
+        layers = getattr(p.decoder, "layers", None)
+        if layers is None or not _ace_eager_extra_hooks(layers):
+            return None
+        return [l.cross_attn for l in layers]
 
     def request_frames(self, request) -> int:
         return request.context_latents.shape[1]

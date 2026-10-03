@@ -261,6 +261,8 @@ def steering_pack_spec(
     block: int = 0,
     policy: Optional[dict] = None,
     blurb: str = "",
+    hook: str = "post_block_residual",
+    blocks: Optional[list] = None,
 ) -> KnobSpec:
     """The registry spec for one data-driven steering-pack knob.
 
@@ -277,13 +279,21 @@ def steering_pack_spec(
         )
     else:
         where = f"policy {pol.get('kind')}"
+    targets = blocks if blocks else [block]
+    blk = "block " + str(targets[0]) if len(targets) == 1 else (
+        "blocks " + ",".join(str(b) for b in targets)
+    )
+    site = (
+        f"added to the cross-attention output of {blk}"
+        if hook == "cross_attn_output" else f"added after {blk}"
+    )
     return KnobSpec(
         name, default=0.0,
         min_val=-STEERING_ALPHA_MAX, max_val=STEERING_ALPHA_MAX,
         group="steering",
         description=(
             f"Activation steering ({label or name}): a contrastive "
-            f"difference-of-means vector added after block {block}, "
+            f"difference-of-means vector {site}, "
             f"{where}. 0 = off, negative inverts. {blurb}".rstrip()
         ),
     )

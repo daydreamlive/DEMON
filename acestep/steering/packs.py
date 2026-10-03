@@ -22,8 +22,16 @@ A pack is a single ``.safetensors`` file holding one tensor, ``vector``
     }
 
 The effective shift at a step is ``knob * magnitude * policy_weight *
-vector`` added to block ``block``'s output residual, the same additive
-post-block convention the ACE decoder engine uses. The vector method is
+vector`` added at ``hook`` of block ``block``: the output residual
+(``post_block_residual``, the convention the ACE decoder engine uses) or
+the block's cross-attention output (``cross_attn_output``, TADA's site).
+
+TADA-shaped packs (Staniszewski et al., arXiv 2602.11910) extend this
+with optional fields: ``blocks`` (several blocks under one knob, e.g. the
+localised pair), a per-step vector (tensor ``[n_steps, hidden]``, or
+``[len(blocks), n_steps, hidden]`` for several blocks; resampled by
+schedule position to the live step count), ``cond_only`` (skip the CFG
+negative pass) and ``renorm`` (restore each token's norm after adding). The vector method is
 contrastive activation addition (difference of means over paired
 prompts), with the block chosen by activation patching, following TADA
 (Staniszewski et al., arXiv 2602.11910). ``scripts/steering/discover.py``
@@ -114,7 +122,37 @@ class SteeringPack:
     magnitude: float = 1.0
     policy: dict = field(default_factory=lambda: {"kind": "range", "start": 0.0, "end": 1.0})
     provenance: dict = field(default_factory=dict)
+    # Optional multi-block form: every block this pack steers (``block``
+    # is then ``blocks[0]``). Empty = just ``block``.
+    blocks: list = field(default_factory=list)
+    cond_only: bool = False
+    renorm: bool = False
     path: Optional[Path] = None
+
+    @property
+    def target_blocks(self) -> list:
+        """Every block index this pack steers."""
+        return [int(b) for b in self.blocks] if self.blocks else [int(self.block)]
+
+    def block_vectors(self, n: int) -> list:
+        """``[(block, vector)]`` with ``vector`` shaped ``[hidden]`` (all
+        steps) or ``[n, hidden]`` (per step, resampled by schedule position
+        from the stored step count to ``n``)."""
+        n = max(1, int(n))
+        v = self.vector
+        blocks = self.target_blocks
+        if v.ndim == 1:
+            return [(b, v) for b in blocks]
+        if v.ndim == 2:
+            per_block = [v] * len(blocks)
+        else:
+            per_block = [v[k] for k in range(len(blocks))]
+        out = []
+        for b, vb in zip(blocks, per_block):
+            m = int(vb.shape[0])
+            idx = [min(m - 1, int(i * m / n)) for i in range(n)]
+            out.append((b, vb[idx]))
+        return out
 
     @property
     def knob_name(self) -> str:
@@ -133,13 +171,26 @@ class SteeringPack:
                 f"pack name {self.name!r} must match {_NAME_RE.pattern} "
                 "(it becomes the knob steer_<name>)"
             )
-        if self.vector.ndim != 1 or int(self.vector.shape[0]) != int(self.hidden_size):
+        shape = tuple(int(x) for x in self.vector.shape)
+        n_blocks = len(self.target_blocks)
+        ok = (
+            self.vector.ndim in (1, 2, 3)
+            and shape[-1] == int(self.hidden_size)
+            and (self.vector.ndim < 3 or shape[0] == n_blocks)
+            and all(x > 0 for x in shape)
+        )
+        if not ok:
             raise ValueError(
-                f"pack {self.name!r}: vector shape {tuple(self.vector.shape)} "
-                f"!= [hidden_size={self.hidden_size}]"
+                f"pack {self.name!r}: vector shape {shape} is not [hidden], "
+                f"[n_steps, hidden] or [n_blocks={n_blocks}, n_steps, hidden] "
+                f"with hidden_size={self.hidden_size}"
             )
-        if int(self.block) < 0:
-            raise ValueError(f"pack {self.name!r}: negative block {self.block}")
+        if self.blocks and int(self.block) != int(self.blocks[0]):
+            raise ValueError(
+                f"pack {self.name!r}: block {self.block} != blocks[0] {self.blocks[0]}"
+            )
+        if any(b < 0 for b in self.target_blocks):
+            raise ValueError(f"pack {self.name!r}: negative block {self.target_blocks}")
         if not self.family or not self.checkpoint:
             raise ValueError(f"pack {self.name!r}: family and checkpoint are required")
         policy_weights(self.policy, 8)  # raises on an unknown kind
@@ -181,6 +232,7 @@ def load_pack(path: Path | str) -> SteeringPack:
     known = {
         "family", "checkpoint", "block", "hidden_size", "name", "label",
         "blurb", "hook", "method", "norm", "magnitude", "policy", "provenance",
+        "blocks", "cond_only", "renorm",
     }
     pack = SteeringPack(
         vector=vec, path=path, **{k: v for k, v in meta.items() if k in known},
@@ -223,8 +275,8 @@ def discover_packs(
             continue
         if pack.family != family or pack.checkpoint != checkpoint:
             continue
-        if layout is not None and not layout.accepts(
-            pack.block, pack.hidden_size, pack.hook,
+        if layout is not None and not all(
+            layout.accepts(b, pack.hidden_size, pack.hook) for b in pack.target_blocks
         ):
             logger.warning(
                 "steering_pack_skipped path={} reason=layout_mismatch "
@@ -268,6 +320,8 @@ class PackSteering:
                 block=p.block,
                 policy=p.policy,
                 blurb=p.blurb,
+                hook=p.hook,
+                blocks=p.target_blocks,
             )
             for p in self.packs
         ]
@@ -284,14 +338,19 @@ class PackSteering:
             alpha = float(raw.get(p.knob_name, 0.0))
             if alpha == 0.0:
                 continue
-            configs.append({
-                "layer": int(p.block),
-                "step": -1,
-                "weights": policy_weights(p.policy, n),
-                "vector": p.vector,
-                "magnitude": float(p.magnitude),
-                "alpha": alpha,
-            })
+            weights = policy_weights(p.policy, n)
+            for block, vec in p.block_vectors(n):
+                configs.append({
+                    "layer": int(block),
+                    "step": -1,
+                    "weights": weights,
+                    "vector": vec,
+                    "magnitude": float(p.magnitude),
+                    "alpha": alpha,
+                    "hook": p.hook,
+                    "cond_only": bool(p.cond_only),
+                    "renorm": bool(p.renorm),
+                })
         return configs
 
 

@@ -24,6 +24,7 @@ from .diffusion import DiffusionConfig, DiffusionEngine
 from .model_adapter import ACEAdapter, ModelAdapter
 from . import ode_steps
 from .dcw import DCWAdvanced, DCWCorrector
+from acestep.steering.layout import HOOK_CROSS_ATTN_OUTPUT, HOOK_POST_BLOCK_RESIDUAL
 
 if TYPE_CHECKING:
     from .masking import LatentNoiseMask
@@ -37,11 +38,23 @@ class _SteeringApply(NamedTuple):
     Otherwise ``weights`` is the per-step policy curve (index = the
     row's step index, values multiply ``scale``; steps past the end of
     the curve get 0), the family-agnostic form steering packs use.
+
+    ``vector`` is either one direction ``[hidden_dim]`` for every step or
+    a per-step stack ``[n_steps, hidden_dim]`` (row ``s`` used at denoise
+    step ``s``; steps past the end get no shift), the form TADA's
+    per-diffusion-step vectors take. ``hook`` names the layout hook point
+    the shift lands on. ``cond_only`` skips the CFG negative pass (TADA
+    steers only the conditional pass).
     """
-    vector: torch.Tensor   # 1-D [hidden_dim]
+    vector: torch.Tensor   # [hidden_dim] or [n_steps, hidden_dim]
     scale: float           # alpha * magnitude
     step: int              # gate: only rows at this denoise step receive it
     weights: Optional[Tuple[float, ...]] = None  # per-step policy curve
+    hook: str = HOOK_POST_BLOCK_RESIDUAL
+    cond_only: bool = False
+    # Rescale each steered token back to its pre-steering L2 norm (TADA's
+    # benchmark setting, ``renorm: true``); cross_attn_output only.
+    renorm: bool = False
 
 
 @dataclass
@@ -332,6 +345,7 @@ class StreamPipeline:
         # per-tick buffer fill doesn't re-query TRT.
         self._steering_num_layers = getattr(engine, "_steering_num_layers", 0)
         self._steering_hidden_size = getattr(engine, "_steering_hidden_size", 0)
+        self._steering_xattn = bool(getattr(engine, "_steering_xattn", False))
 
         # Currently-bound TRT I/O buffers (set by _ensure_trt_bufs to one
         # entry of _trt_bufs_cache). _trt_forward reads these directly.
@@ -391,11 +405,15 @@ class StreamPipeline:
         self._steering_by_layer: Dict[int, List[_SteeringApply]] = {}
         self._steering_hooks_installed: bool = False
         self._current_step_per_row: List[int] = []
-        # Eager hook bookkeeping: the block sequence the hooks sit on
-        # (identity) and their removable handles. Families whose model
-        # is process-cached and shared across sessions (SA3) need the
-        # hooks gone when this pipeline is rebuilt or closed.
-        self._steering_hooked_blocks = None
+        # True while the CFG negative (unconditional) pass runs, so
+        # ``cond_only`` shifts skip it.
+        self._steering_neg_pass: bool = False
+        # Eager hook bookkeeping: the module sequences the hooks sit on
+        # (per hook point, by module identity) and their removable
+        # handles. Families whose model is process-cached and shared
+        # across sessions (SA3) need the hooks gone when this pipeline
+        # is rebuilt or closed.
+        self._steering_hooked_blocks: Dict[str, Tuple[int, ...]] = {}
         self._steering_hook_handles: list = []
         # Per-batch-size scratch for adapters that take the steering
         # tensor as a forward argument (``accepts_steering``).
@@ -487,6 +505,7 @@ class StreamPipeline:
         )
         self._steering_num_layers = getattr(engine, "_steering_num_layers", 0)
         self._steering_hidden_size = getattr(engine, "_steering_hidden_size", 0)
+        self._steering_xattn = bool(getattr(engine, "_steering_xattn", False))
         self._trt_bufs = None
         self._trt_out_buf = None
         self._trt_bufs_cache.clear()
@@ -876,9 +895,15 @@ class StreamPipeline:
         else:
             bufs["context_latents"].copy_(ctx_io)
 
-        # Steering: absent on non-spectral engines.
+        # Steering: absent on non-spectral engines. ``steering_xattn``
+        # (cross-attention output hook) only on engines that carry it.
         if "steering" in bufs:
             self._fill_trt_steering_buffer(bufs["steering"], B)
+        if "steering_xattn" in bufs:
+            self._fill_trt_steering_buffer(
+                bufs["steering_xattn"], B, hook=HOOK_CROSS_ATTN_OUTPUT,
+                renorm_buf=bufs.get("steering_xattn_renorm"),
+            )
 
         # Rebind and execute.
         ctx = self._trt_ctx
@@ -921,34 +946,66 @@ class StreamPipeline:
 
     def _steering_row_groups(
         self, apply: _SteeringApply, B: int,
-    ) -> List[Tuple[List[int], float]]:
-        """``[(rows, scale)]`` this apply contributes to a ``B``-row forward.
+    ) -> List[Tuple[List[int], float, torch.Tensor]]:
+        """``[(rows, scale, vector)]`` this apply contributes to a ``B``-row
+        forward.
 
         One-hot applies (``weights is None``) are the historical step
         gate and keep their exact scale. Curve applies group rows by
-        their policy weight so each distinct weight costs one indexed
-        add. Empty when the row/step mapping is absent or mismatched.
+        their policy weight (and, for per-step vectors, by step) so each
+        group costs one indexed add. Empty when the row/step mapping is
+        absent or mismatched, or for a ``cond_only`` apply during the CFG
+        negative pass.
         """
+        if apply.cond_only and self._steering_neg_pass:
+            return []
+        per_step = apply.vector.dim() == 2
         if apply.weights is None:
             mask = self._steering_row_mask(apply.step, B)
-            return [] if mask is None else [(mask, apply.scale)]
+            if mask is None:
+                return []
+            if not per_step:
+                return [(mask, apply.scale, apply.vector)]
+            if not 0 <= apply.step < apply.vector.shape[0]:
+                return []
+            return [(mask, apply.scale, apply.vector[apply.step])]
         row_steps = self._current_step_per_row
         if not row_steps or len(row_steps) != B:
             return []
-        groups: Dict[float, List[int]] = {}
+        groups: Dict[Tuple[float, int], List[int]] = {}
         curve = apply.weights
+        n_vec = apply.vector.shape[0] if per_step else 0
         for i, s in enumerate(row_steps):
             w = float(curve[s]) if 0 <= s < len(curve) else 0.0
-            if w != 0.0:
-                groups.setdefault(w, []).append(i)
-        return [(rows, apply.scale * w) for w, rows in groups.items()]
+            if w == 0.0:
+                continue
+            if per_step and not 0 <= s < n_vec:
+                continue
+            groups.setdefault((w, s if per_step else -1), []).append(i)
+        return [
+            (rows, apply.scale * w, apply.vector[s] if per_step else apply.vector)
+            for (w, s), rows in groups.items()
+        ]
 
-    def _fill_steering_rows(self, buf: torch.Tensor, B: int) -> bool:
-        """Add every active shift into ``buf`` (``[B, num_blocks, H]``).
+    def _has_steering_for(self, hook: str) -> bool:
+        """Whether any active apply targets ``hook``."""
+        return any(
+            a.hook == hook
+            for applies in self._steering_by_layer.values() for a in applies
+        )
 
-        The one family-agnostic slot fill: the ACE TRT buffer and the
-        adapter-forward steering tensor both come from here. ``buf``
-        must be zeroed by the caller. Returns whether anything landed.
+    def _fill_steering_rows(
+        self, buf: torch.Tensor, B: int, hook: str = HOOK_POST_BLOCK_RESIDUAL,
+        renorm_buf: Optional[torch.Tensor] = None,
+    ) -> bool:
+        """Add every active shift for ``hook`` into ``buf``
+        (``[B, num_blocks, H]``).
+
+        The one family-agnostic slot fill: the ACE TRT buffers and the
+        adapter-forward steering tensor all come from here. ``buf``
+        must be zeroed by the caller (and ``renorm_buf``, ``[B,
+        num_blocks]``, when given: set to 1 where a ``renorm`` apply
+        landed). Returns whether anything landed.
         """
         wrote = False
         num_blocks = buf.shape[1]
@@ -956,13 +1013,20 @@ class StreamPipeline:
             if layer_idx < 0 or layer_idx >= num_blocks:
                 continue
             for apply in applies:
-                for rows, scale in self._steering_row_groups(apply, B):
-                    v = apply.vector.to(device=buf.device, dtype=buf.dtype)
+                if apply.hook != hook:
+                    continue
+                for rows, scale, vec in self._steering_row_groups(apply, B):
+                    v = vec.to(device=buf.device, dtype=buf.dtype)
                     buf[rows, layer_idx, :] += scale * v
+                    if apply.renorm and renorm_buf is not None:
+                        renorm_buf[rows, layer_idx] = 1.0
                     wrote = True
         return wrote
 
-    def _fill_trt_steering_buffer(self, buf: torch.Tensor, B: int) -> None:
+    def _fill_trt_steering_buffer(
+        self, buf: torch.Tensor, B: int, hook: str = HOOK_POST_BLOCK_RESIDUAL,
+        renorm_buf: Optional[torch.Tensor] = None,
+    ) -> None:
         """Populate the TRT steering buffer for one forward.
 
         ``buf`` is ``[B, num_layers, hidden_size]``; zeroed first so
@@ -976,15 +1040,23 @@ class StreamPipeline:
         a no-op instead of a per-forward fill kernel.
         """
         bufs = self._trt_bufs
-        if not self._steering_by_layer:
-            if bufs is not None and bufs.get("_steering_dirty"):
+        dirty_key = (
+            "_steering_dirty" if hook == HOOK_POST_BLOCK_RESIDUAL
+            else f"_steering_dirty_{hook}"
+        )
+        if not self._has_steering_for(hook):
+            if bufs is not None and bufs.get(dirty_key):
                 buf.zero_()
-                bufs["_steering_dirty"] = False
+                if renorm_buf is not None:
+                    renorm_buf.zero_()
+                bufs[dirty_key] = False
             return
         buf.zero_()
-        wrote = self._fill_steering_rows(buf, B)
+        if renorm_buf is not None:
+            renorm_buf.zero_()
+        wrote = self._fill_steering_rows(buf, B, hook, renorm_buf)
         if bufs is not None:
-            bufs["_steering_dirty"] = wrote
+            bufs[dirty_key] = wrote
 
     # ------------------------------------------------------------------
     # Family-agnostic steering delivery (adapter seam)
@@ -996,11 +1068,21 @@ class StreamPipeline:
         fn = getattr(self.adapter, "steering_layout", None)
         return fn() if fn is not None else None
 
-    def _steering_blocks(self):
-        """Eager block modules to hook, or None when the forward is not
-        eager (engine input, or no layout)."""
-        fn = getattr(self.adapter, "steering_blocks", None)
-        return fn() if fn is not None else None
+    def _steering_blocks(self, hook: str = HOOK_POST_BLOCK_RESIDUAL):
+        """Eager modules to hook for ``hook``, or None when the forward is
+        not eager (engine input, or no layout) or the hook is unserved.
+
+        The layout's primary hook comes from the adapter's
+        ``steering_blocks()``; further hook points from its optional
+        ``steering_hook_modules(hook)``.
+        """
+        layout = self.steering_layout()
+        primary = layout.hook if layout is not None else HOOK_POST_BLOCK_RESIDUAL
+        if hook == primary:
+            fn = getattr(self.adapter, "steering_blocks", None)
+            return fn() if fn is not None else None
+        fn = getattr(self.adapter, "steering_hook_modules", None)
+        return fn(hook) if fn is not None else None
 
     def _adapter_steering_tensor(self, B: int) -> Optional[torch.Tensor]:
         """The ``[B, num_blocks, H]`` float32 steering tensor for an
@@ -1011,6 +1093,8 @@ class StreamPipeline:
             return None
         layout = self.steering_layout()
         if layout is None or not layout.engine_input:
+            return None
+        if not self._has_steering_for(layout.hook):
             return None
         buf = self._steering_scratch.get(B)
         device = self._device or torch.device("cpu")
@@ -1027,23 +1111,37 @@ class StreamPipeline:
             self._steering_scratch[B] = buf
         else:
             buf.zero_()
-        return buf if self._fill_steering_rows(buf, B) else None
+        return buf if self._fill_steering_rows(buf, B, layout.hook) else None
 
     def _ensure_steering_hooks(self) -> None:
-        """Hook the adapter's eager blocks if they aren't hooked yet.
+        """Hook the adapter's eager modules if they aren't hooked yet.
 
         Re-evaluated per forward while steering is active because a
         family can flip its forward between an engine and the eager
         module mid-session (SA3's LoRA swap); the hooks follow the
-        block sequence actually in use.
+        module sequences actually in use, one per hook point that an
+        active apply targets.
         """
-        blocks = self._steering_blocks()
-        if blocks is None or blocks is self._steering_hooked_blocks:
+        wanted: Dict[str, Tuple[int, ...]] = {}
+        modules_by_hook = {}
+        for hook in sorted({
+            a.hook for applies in self._steering_by_layer.values() for a in applies
+        }):
+            mods = self._steering_blocks(hook)
+            if mods is None:
+                continue
+            mods = list(mods)
+            wanted[hook] = tuple(id(m) for m in mods)
+            modules_by_hook[hook] = mods
+        if all(
+            self._steering_hooked_blocks.get(h) == ids for h, ids in wanted.items()
+        ):
             return
         self.remove_steering_hooks()
-        self._install_steering_hooks(blocks)
-        self._steering_hooked_blocks = blocks
-        self._steering_hooks_installed = True
+        for hook, mods in modules_by_hook.items():
+            self._install_steering_hooks(mods, hook)
+        self._steering_hooked_blocks = wanted
+        self._steering_hooks_installed = bool(wanted)
 
     def remove_steering_hooks(self) -> None:
         """Detach every eager steering hook this pipeline installed."""
@@ -1053,7 +1151,7 @@ class StreamPipeline:
             except Exception:
                 pass
         self._steering_hook_handles = []
-        self._steering_hooked_blocks = None
+        self._steering_hooked_blocks = {}
         self._steering_hooks_installed = False
 
     # ------------------------------------------------------------------
@@ -1121,6 +1219,17 @@ class StreamPipeline:
                 dtype=in_dtypes.get("steering", io_dtype),
                 device=device,
             )
+            if self._steering_xattn:
+                bufs["steering_xattn"] = torch.zeros(
+                    B, self._steering_num_layers, self._steering_hidden_size,
+                    dtype=in_dtypes.get("steering_xattn", io_dtype),
+                    device=device,
+                )
+                bufs["steering_xattn_renorm"] = torch.zeros(
+                    B, self._steering_num_layers,
+                    dtype=in_dtypes.get("steering_xattn_renorm", torch.float32),
+                    device=device,
+                )
 
         for name, buf in bufs.items():
             if not ctx.set_input_shape(name, tuple(buf.shape)):
@@ -1420,10 +1529,12 @@ class StreamPipeline:
                 neg_pair_cond.append(c)
         if neg_pair_si:
             self._current_step_per_row = [slots[si].step_idx for si in neg_pair_si]
+            self._steering_neg_pass = True
             try:
                 vt_neg_all = _forward_pairs(neg_pair_si, neg_pair_cond)
             finally:
                 self._current_step_per_row = []
+                self._steering_neg_pass = False
         else:
             vt_neg_all = None
 
@@ -1854,7 +1965,14 @@ class StreamPipeline:
           - ``step``: int, the denoise step at which to fire (one-hot gate)
           - ``weights``: optional per-step policy curve; when present it
             replaces the one-hot ``step`` gate (index = step index)
-          - ``vector``: 1-D unit-norm tensor [hidden_dim]
+          - ``vector``: unit-norm tensor ``[hidden_dim]``, or a per-step
+            stack ``[n_steps, hidden_dim]`` (row = denoise step index)
+          - ``hook``: optional layout hook point (default
+            ``post_block_residual``; ``cross_attn_output`` lands on the
+            block's cross-attention output)
+          - ``cond_only``: optional, True skips the CFG negative pass
+          - ``renorm``: optional, True rescales each steered token back
+            to its pre-steering L2 norm (``cross_attn_output`` only)
           - ``magnitude``: float, paired mean-diff scale
           - ``alpha``: float, knob value; effective shift is
             ``alpha * magnitude * vector`` (times the step weight)
@@ -1882,6 +2000,9 @@ class StreamPipeline:
                     tuple(float(w) for w in weights)  # type: ignore[union-attr]
                     if weights is not None else None
                 ),
+                hook=str(c.get("hook") or HOOK_POST_BLOCK_RESIDUAL),
+                cond_only=bool(c.get("cond_only", False)),
+                renorm=bool(c.get("renorm", False)),
             ))
         self._steering_by_layer = by_layer
         # Eager-path hooks only matter when the family forward runs
@@ -1889,12 +2010,18 @@ class StreamPipeline:
         if by_layer:
             self._ensure_steering_hooks()
 
-    def _install_steering_hooks(self, layers) -> None:
-        """Attach one forward hook per block of ``layers``.
+    def _install_steering_hooks(
+        self, layers, hook: str = HOOK_POST_BLOCK_RESIDUAL,
+    ) -> None:
+        """Attach one forward hook per module of ``layers`` for ``hook``.
 
-        Reads ``_steering_by_layer`` + ``_current_step_per_row`` at call
-        time. Handles are kept so :meth:`remove_steering_hooks` can
-        detach them (engine swap, pipeline rebuild, close).
+        ``layers[i]`` is the module whose output (first element when it
+        returns a tuple) receives block ``i``'s shift: the block itself
+        for ``post_block_residual``, its cross-attention module for
+        ``cross_attn_output``. Reads ``_steering_by_layer`` +
+        ``_current_step_per_row`` at call time. Handles are kept so
+        :meth:`remove_steering_hooks` can detach them (engine swap,
+        pipeline rebuild, close).
         """
 
         def make_hook(layer_idx: int):
@@ -1905,13 +2032,29 @@ class StreamPipeline:
                 hs = output[0] if isinstance(output, tuple) else output
                 B = hs.shape[0]
                 changed = False
+                renorm_rows: set = set()
+                orig_norm = None
                 for apply in applies:
-                    for rows, scale in self._steering_row_groups(apply, B):
-                        v = apply.vector.to(device=hs.device, dtype=hs.dtype)
+                    if apply.hook != hook:
+                        continue
+                    for rows, scale, vec in self._steering_row_groups(apply, B):
+                        if apply.renorm and orig_norm is None:
+                            orig_norm = hs.float().norm(dim=-1, keepdim=True)
+                        v = vec.to(device=hs.device, dtype=hs.dtype)
                         hs[rows] = hs[rows] + scale * v.view(1, 1, -1)
+                        if apply.renorm:
+                            renorm_rows.update(rows)
                         changed = True
                 if not changed:
                     return output
+                if renorm_rows:
+                    # Same arithmetic as the engine's cross-attention
+                    # steering island: fp32 norms, cast back.
+                    rr = sorted(renorm_rows)
+                    h = hs[rr].float()
+                    hs[rr] = (
+                        h * (orig_norm[rr] / h.norm(dim=-1, keepdim=True))
+                    ).to(hs.dtype)
                 if isinstance(output, tuple):
                     return (hs,) + output[1:]
                 return hs
