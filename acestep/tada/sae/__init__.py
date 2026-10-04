@@ -21,7 +21,7 @@ modules, a call context saying which rows are the conditional pass, and a
 generate callable. Nothing here names a model.
 """
 
-from .cache import ActivationStore, TokenRecorder, cache_generations
+from .cache import ActivationStore, TokenRecorder, TokenSelect, cache_generations, select_tokens
 from .model import Sae, SaeConfig
 from .packs import METHOD_TADA_SAE, sae_pack, write_sae_pack
 from .scoring import (
@@ -34,7 +34,7 @@ from .train import (
 )
 
 __all__ = [
-    "ActivationStore", "FeatureMeanRecorder", "K_GRID", "METHOD_TADA_SAE", "SWEEP_K",
+    "ActivationStore", "FeatureMeanRecorder", "TokenSelect", "select_tokens", "K_GRID", "METHOD_TADA_SAE", "SWEEP_K",
     "SWEEP_M", "Sae", "SaeConfig", "SaeTrainer", "TokenRecorder", "TrainConfig",
     "absolute_bucket_gate", "cache_generations", "choose_config", "concept_vectors",
     "config_name", "fvu_by_bucket", "pooled_scores", "sae_pack", "sae_vector",

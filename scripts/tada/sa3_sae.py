@@ -21,6 +21,13 @@ default the value the SA3 lane's CAA collection uses). TADA's ACE cache
 keeps 5 of 30 steps (every 6th) and its Stable Audio Open cache 10 of 100;
 ``--every 2`` keeps 4 of 8 here.
 
+Token means and training samples use AUDIO tokens only: SA3 prepends 64
+learned memory tokens inside every block's sequence (the reference models
+have none), and padding is excluded when present
+(:mod:`acestep.engine.sa3_tada_tokens`). On SA3, MuQ is the primary
+alignment metric for every decision (CLAP barely separates even the real
+positive and negative prompts on this model; status_tada_skeptic.md A).
+
 Outputs go under ``--root`` (default E:/Projects/tada-replication).
 """
 
@@ -138,7 +145,8 @@ def cmd_cache(args, *, limit=None, store_dir=None, sam=None) -> dict:
     store = ActivationStore(store_dir or (root / "sae_cache" / FAMILY))
     cfg = {
         "family": FAMILY, "checkpoint": CHECKPOINT, "blocks": args.blocks,
-        "hook": args.hook, "steps": args.steps, "every": args.every,
+        "hook": args.hook, "tokens": "audio only (64 memory tokens and padding excluded)",
+        "steps": args.steps, "every": args.every,
         "duration": args.duration, "cfg_scale": 1.0, "batch": args.batch,
         "prompts": "MusicCaps captions, shuffled seed 42", "n_prompts": len(prompts),
         "caption_index": [int(i) for i in order[:len(prompts)]],
@@ -147,8 +155,11 @@ def cmd_cache(args, *, limit=None, store_dir=None, sam=None) -> dict:
     store.write_config(cfg)
     start = store.shard_count(args.blocks[0]) * args.batch
     sam = sam if sam is not None else load_sam()
+    from acestep.engine.sa3_tada_tokens import sa3_audio_tokens
+
     target = hook_target(sam, args.hook)
     probe = SigmaProbe(sam)
+    audio = sa3_audio_tokens(sam)
     gen = make_generate(sam, duration=args.duration, steps=args.steps)
     seeds = [1000 + j for j in range((len(prompts) + args.batch - 1) // args.batch)]
     t0 = time.perf_counter()
@@ -166,10 +177,11 @@ def cmd_cache(args, *, limit=None, store_dir=None, sam=None) -> dict:
         done = cache_generations(
             gen, prompts,
             lambda: TokenRecorder(target, args.blocks, every=args.every, hook=args.hook,
-                                  context=forward_counter(1), sigma_fn=probe),
+                                  context=forward_counter(1), sigma_fn=probe, tokens=audio),
             store, seeds=seeds, batch_size=args.batch, start=start, on_batch=on_batch,
         )
     probe.remove()
+    audio.remove()
     secs = time.perf_counter() - t0
     return {"cached_prompts": done, "seconds": secs, "store": str(store.root)}
 
@@ -325,7 +337,10 @@ def cmd_score(args) -> dict:
         name = args.sae or sweep[str(b)]["chosen"]
         saes[b] = Sae.load_from_disk(root / "sae" / FAMILY / f"block_{b}" / name, device="cuda")
     sam = load_sam()
+    from acestep.engine.sa3_tada_tokens import sa3_audio_tokens
+
     target = hook_target(sam, args.hook)
+    audio = sa3_audio_tokens(sam)
     gen = make_generate(sam, duration=args.score_duration, steps=args.steps)
     out_dir = root / "sae_scores" / FAMILY
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -334,7 +349,8 @@ def cmd_score(args) -> dict:
         pos, neg, _lyrics = concepts.prompt_pairs(concept)
         means = {}
         for label, prompts in (("pos", pos), ("neg", neg)):
-            rec = FeatureMeanRecorder(target, saes, hook=args.hook, context=forward_counter(1))
+            rec = FeatureMeanRecorder(target, saes, hook=args.hook, context=forward_counter(1),
+                                      tokens=audio)
             with rec, torch.no_grad():
                 for i in range(0, len(prompts), args.batch):
                     rec.reset_steps()

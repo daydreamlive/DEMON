@@ -34,6 +34,28 @@ from acestep.tada.target import (
 )
 
 
+#: ``tokens(hs) -> bool mask`` over the sequence axis of a hook output
+#: ``hs [B, seq, d]``: ``[seq]`` (same for every row) or ``[B, seq]``.
+#: True = an audio token to keep. Families use it to drop tokens that are
+#: not audio (learned memory or prepended conditioning tokens, padding),
+#: which the reference models do not have inside the cross-attention
+#: output sequence.
+TokenSelect = Callable[[torch.Tensor], torch.Tensor]
+
+
+def select_tokens(hs: torch.Tensor, tokens: Optional[TokenSelect]) -> torch.Tensor:
+    """``hs [B, seq, d]`` restricted to the kept tokens: ``[B, kept, d]``
+    when the mask is shared by every row, else ``[n_kept_total, d]``."""
+    if tokens is None:
+        return hs
+    m = tokens(hs).to(device=hs.device, dtype=torch.bool)
+    if m.ndim == 1:
+        return hs[:, m]
+    if m.ndim == 2 and bool((m == m[:1]).all()):
+        return hs[:, m[0]]
+    return hs[m]
+
+
 class TokenRecorder:
     """Records full-token hook-point outputs every ``every``-th step.
 
@@ -54,6 +76,7 @@ class TokenRecorder:
         hook: str = HOOK_CROSS_ATTN_OUTPUT,
         context: Optional[Callable[[int], CallGroups]] = None,
         sigma_fn: Optional[Callable[[], float]] = None,
+        tokens: Optional[TokenSelect] = None,
         dtype: torch.dtype = torch.float16,
     ):
         if every < 1:
@@ -64,6 +87,7 @@ class TokenRecorder:
         self.hook = hook
         self.context = context if context is not None else forward_counter(1)
         self.sigma_fn = sigma_fn
+        self.tokens = tokens
         self.dtype = dtype
         self.store: Dict[int, List[Tuple[int, float, torch.Tensor]]] = defaultdict(list)
         self._handles: list = []
@@ -80,9 +104,11 @@ class TokenRecorder:
                 if int(step) % self.every:
                     continue
                 sigma = float(self.sigma_fn()) if self.sigma_fn is not None else float("nan")
-                self.store[block].append(
-                    (int(step), sigma, hs[rows].detach().to(self.dtype).cpu())
-                )
+                x = select_tokens(hs[rows], self.tokens)
+                if x.ndim != 3:
+                    raise ValueError("rows of one recorded call keep different token sets; "
+                                     "a training sample needs a fixed token count")
+                self.store[block].append((int(step), sigma, x.detach().to(self.dtype).cpu()))
             return None
         return _hook
 

@@ -39,6 +39,7 @@ from acestep.tada.target import (
     HOOK_CROSS_ATTN_OUTPUT, ActivationTarget, CallGroups, forward_counter,
 )
 
+from .cache import TokenSelect, select_tokens
 from .model import Sae
 
 #: Reference epsilon in Eq. 12.
@@ -51,7 +52,8 @@ class FeatureMeanRecorder:
     """Per-step mean SAE encoder activation of each block's hook output.
 
     ``means[block][step]`` accumulates ``(sum over tokens of relu
-    pre-acts, token count)`` so that :meth:`result` returns
+    pre-acts, token count)`` over the kept tokens (``tokens``, as for
+    :class:`~acestep.tada.sae.cache.TokenRecorder`) so that :meth:`result` returns
     ``{block: tensor[n_steps, num_latents]}`` (steps in ascending order),
     the mean over every recorded token of every generation run under this
     recorder (prompts of one set have equal lengths, so this is the
@@ -65,8 +67,10 @@ class FeatureMeanRecorder:
         *,
         hook: str = HOOK_CROSS_ATTN_OUTPUT,
         context: Optional[Callable[[int], CallGroups]] = None,
+        tokens: Optional[TokenSelect] = None,
     ):
         self.target = target
+        self.tokens = tokens
         self.saes = {int(b): s for b, s in saes.items()}
         self.hook = hook
         self.context = context if context is not None else forward_counter(1)
@@ -92,7 +96,7 @@ class FeatureMeanRecorder:
             if not groups:
                 return None
             for rows, step in groups:
-                x = hs[rows].detach()
+                x = select_tokens(hs[rows].detach(), self.tokens)
                 x = x.reshape(-1, x.shape[-1]).to(device=sae.device)
                 acts = sae.pre_acts(x).float()
                 s = acts.sum(0).cpu()

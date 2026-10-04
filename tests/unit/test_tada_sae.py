@@ -338,3 +338,81 @@ def test_pack_roundtrip_knob_and_zero_noop(tmp_path):
     with pytest.raises(ValueError):
         sae_pack(torch.randn(4, D), family="sa3", checkpoint="x", concept="c",
                  blocks=[1], k_per_block={1: 5})
+
+
+# ---------------------------------------------------------------------------
+# audio tokens only (memory tokens and padding excluded)
+# ---------------------------------------------------------------------------
+
+def test_token_select_excludes_memory_rows():
+    from acestep.tada.sae import select_tokens
+
+    hs = torch.arange(2 * 5 * 3, dtype=torch.float32).reshape(2, 5, 3)
+    shared = torch.tensor([False, False, True, True, True])
+    assert torch.equal(select_tokens(hs, lambda h: shared), hs[:, 2:])
+    per_row = torch.tensor([[False, True, True, True, True], [False, False, True, True, True]])
+    assert select_tokens(hs, lambda h: per_row).shape == (7, 3)
+    assert select_tokens(hs, None) is hs
+
+
+def test_recorders_skip_memory_tokens():
+    mem = 3
+
+    class _WithMemory(torch.nn.Module):
+        """Output = [memory rows carrying feature 9 hugely; audio rows]."""
+
+        def forward(self, x, context=None):
+            m = torch.zeros(x.shape[0], mem, D)
+            m[..., 9] = 50.0
+            return torch.cat([m, x + context], dim=1)
+
+    mods = [_WithMemory()]
+    target = ModuleTarget({HOOK_CROSS_ATTN_OUTPUT: mods})
+    keep = lambda h: torch.arange(h.shape[1]) >= mem  # noqa: E731
+    rec = TokenRecorder(target, [0], tokens=keep)
+    with rec:
+        mods[0](torch.zeros(2, SEQ, D), context=torch.ones(2, SEQ, D))
+    acts, _, _, rows = rec.samples(0)
+    assert acts.shape == (2, SEQ, D) and rows == [0, 1]
+    assert float(acts[..., 9].abs().max()) == 1.0  # no memory row leaked in
+
+    sae = _identity_sae()
+
+    def run(planted, tokens):
+        r = FeatureMeanRecorder(target, {0: sae}, context=forward_counter(1), tokens=tokens)
+        with r:
+            ctx = torch.zeros(1, SEQ, D)
+            if planted:
+                ctx[..., 5] = 2.0
+            mods[0](torch.rand(1, SEQ, D) * 0.1, context=ctx)
+        return r.result()[0]
+
+    with_mem = tfidf(run(True, None), run(False, None))[0]
+    audio_only = tfidf(run(True, keep), run(False, keep))[0]
+    assert int(audio_only.argmax()) == 5
+    assert float(run(True, keep)[0, 9]) < 1.0 < float(run(True, None)[0, 9])
+    assert with_mem.shape == audio_only.shape
+
+
+def test_sa3_audio_token_mask():
+    from acestep.engine.sa3_tada_tokens import SA3AudioTokens
+
+    class _Trunk(torch.nn.Module):
+        num_memory_tokens = 4
+
+        def forward(self, x, padding_mask=None):
+            return x
+
+    t = _Trunk()
+    sel = SA3AudioTokens(t)
+    hs = torch.zeros(2, 4 + 6, D)
+    t(torch.zeros(1), padding_mask=None)
+    m = sel(hs)
+    assert m.shape == (2, 10) and not m[:, :4].any() and m[:, 4:].all()
+    pm = torch.tensor([[True] * 5 + [False]])
+    t(torch.zeros(1), padding_mask=pm)
+    m = sel(hs)
+    assert m[:, 4:].sum().item() == 10 and not m[:, -1].any()
+    sel.remove()
+    with pytest.raises(ValueError):
+        SA3AudioTokens(t, num_memory_tokens=20)(hs)
