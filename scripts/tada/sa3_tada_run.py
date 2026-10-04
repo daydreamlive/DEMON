@@ -1026,7 +1026,6 @@ def main() -> int:
     ap.add_argument("--suffix", default="")
     ap.add_argument("--pci-ks", type=int, nargs="*", default=None,
                     help="pci: switch lengths (both signs; default every step)")
-    ap.add_argument("--checkpoint", default="medium", help="SA3 checkpoint id (medium, medium-base)")
     ap.add_argument("--cfg", type=float, default=1.0, help="classifier-free guidance scale")
     ap.add_argument("--pci-sites", nargs="+", choices=("all", "loc"), default=["all", "loc"],
                     help="pci: which PCI variants to render")
