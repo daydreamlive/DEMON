@@ -502,6 +502,23 @@ def cmd_pci(args, sam) -> None:
             _log(f"pci {site} {concept}: {len(ks)} strengths x {len(tests)} prompts")
 
 
+def cmd_swap(args, sam) -> None:
+    """Ear-package reference: the real positive and negative prompts of
+    the PCI triple rendered from step 0 (PCI at full switch length) with
+    the same seed and batch layout as the sweeps (``--batch``), into
+    ``<eval_sub>/swap_full_<concept>/{pos,neg}``."""
+    tests = _eval_prompts(args)
+    for concept in args.concepts:
+        triples = [_pci_triple(p, concept) for p in tests]
+        for tag, j in (("pos", 1), ("neg", 2)):
+            d = args.out / args.eval_sub / f"swap_full_{concept}" / tag
+            outs = [sa3_tada.generate(sam, [triples[i][j] for i in idx], seed=EVAL_SEED,
+                                      duration=DURATION, steps=STEPS)
+                    for idx in _batches(len(tests), args.batch)]
+            _save_npz(d, torch.cat(outs), [f"p{i:03d}.wav" for i in range(len(tests))], mono=True)
+        _log(f"swap {concept}: {len(tests)} prompts")
+
+
 def _pci_triple(p: str, concept: str):
     """Reference ``build_prompt_triple``: (neutral, positive, negative)."""
     table = {
@@ -970,7 +987,7 @@ def cmd_pack(args, _sam=None) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=("patch", "caa", "austeer", "pci", "sweep", "probe", "localize", "pack", "calibrate", "subset", "caakv", "oracle"))
+    ap.add_argument("cmd", choices=("patch", "caa", "austeer", "pci", "sweep", "probe", "localize", "pack", "calibrate", "subset", "caakv", "oracle", "swap"))
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--concepts", nargs="+", default=None)
     ap.add_argument("--batch", type=int, default=16)
@@ -1033,7 +1050,7 @@ def main() -> int:
         _KV_REAL_TOKENS = True
     if args.steps:
         STEPS = int(args.steps)
-    {"patch": cmd_patch, "caa": cmd_caa, "austeer": cmd_austeer, "caakv": cmd_caakv, "pci": cmd_pci, "sweep": cmd_sweep,
+    {"patch": cmd_patch, "caa": cmd_caa, "austeer": cmd_austeer, "caakv": cmd_caakv, "pci": cmd_pci, "swap": cmd_swap, "sweep": cmd_sweep,
      "probe": cmd_probe, "oracle": cmd_oracle}[args.cmd](args, sam)
     _log("done")
     return 0
