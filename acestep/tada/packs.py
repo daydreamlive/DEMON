@@ -5,8 +5,9 @@ share the layout below; an AUSteer vector is the sparse signed ``beta``
 (not unit norm). A TADA pack is a format-2 :class:`~acestep.steering.packs.SteeringPack`:
 ``vector`` is ``[len(blocks), n_steps, hidden]`` (one unit vector per
 localised block and denoise step), ``hook`` is ``cross_attn_output``,
-``cond_only`` is set (the conditional CFG pass only) and ``renorm``
-follows the reference evaluation configs (True). The knob value times
+``cond_only`` is set (the conditional CFG pass only) and ``renorm`` is
+off by default (paper eq. 6 has no renorm; the reference repo defaults
+renorm_after_steer=False for CAA and AUSteer). The knob value times
 ``magnitude`` is TADA's ``alpha``. The pipeline's steering slot maps the
 pack's steps onto the live schedule by position (step ``i`` of ``n`` uses
 row ``int(i * n_steps / n)``).
@@ -64,7 +65,7 @@ def tada_pack(
     label: str = "",
     blurb: str = "",
     magnitude: float = 1.0,
-    renorm: bool = True,
+    renorm: bool = False,
     cond_only: bool = True,
     hook: str = HOOK_CROSS_ATTN_OUTPUT,
     policy: Optional[Mapping] = None,
