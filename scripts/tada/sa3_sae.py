@@ -217,7 +217,7 @@ def cmd_train(args, *, store_dir=None, out_dir=None, max_steps=None) -> dict:
 
     root = Path(args.root)
     store = ActivationStore(store_dir or (Path(args.work) / "sae_cache" / FAMILY))
-    out_root = Path(out_dir or (Path(args.work) / "sae" / FAMILY))
+    out_root = Path(out_dir or args.sae_dir or (Path(args.work) / "sae" / FAMILY))
     report = {}
     for block in args.blocks:
         acts_all, meta = store.load(block)
@@ -329,6 +329,21 @@ def cmd_time(args) -> dict:
     return out
 
 
+def _chosen(entry: dict) -> str:
+    """The block's SAE: the sweep's choice (paper criterion plus the
+    absolute per-sigma-bucket gate) when one passes; otherwise the paper's
+    criterion alone (lowest held-out FVU with dead <= 1 percent and fire
+    <= 25 percent), the gate failure being recorded in the sweep and the
+    status file; lowest held-out FVU if nothing meets even that."""
+    if entry.get("chosen"):
+        return entry["chosen"]
+    from acestep.tada.sae import choose_config
+
+    rows = [{**r, "gate": True} for r in entry["rows"]]
+    best = choose_config(rows, bar=float("inf"))
+    return (best or min(rows, key=lambda r: r["val_fvu"]))["name"]
+
+
 def cmd_score(args) -> dict:
     """Feature means over TADA's contrastive prompts per concept (Eq. 12
     inputs), every step, for the chosen SAE of each block."""
@@ -340,7 +355,7 @@ def cmd_score(args) -> dict:
     sweep = json.loads((root / "sae" / FAMILY / "sweep.json").read_text(encoding="utf-8"))
     saes = {}
     for b in args.blocks:
-        name = args.sae or sweep[str(b)]["chosen"]
+        name = args.sae or _chosen(sweep[str(b)])
         saes[b] = Sae.load_from_disk(root / "sae" / FAMILY / f"block_{b}" / name, device="cuda")
     sam = load_sam()
     from acestep.engine.sa3_tada_tokens import sa3_audio_tokens
@@ -371,7 +386,7 @@ def cmd_score(args) -> dict:
             payload[str(b)] = {k: v.cpu() for k, v in t.items()}
             payload[str(b)]["mean_neg"] = means["neg"][b].cpu()
         torch.save({"concept": concept, "tables": payload,
-                    "sae": {str(b): args.sae or sweep[str(b)]["chosen"] for b in args.blocks},
+                    "sae": {str(b): args.sae or _chosen(sweep[str(b)]) for b in args.blocks},
                     "steps": args.steps, "sigmas": sigmas,
                     "duration": args.score_duration, "seed": 10},
                    out_dir / f"{concept}.pt")
@@ -393,7 +408,7 @@ def cmd_vectors(args) -> dict:
     root = Path(args.work)
     sweep = json.loads((root / "sae" / FAMILY / "sweep.json").read_text(encoding="utf-8"))
     saes = {b: Sae.load_from_disk(root / "sae" / FAMILY / f"block_{b}" /
-                                  (args.sae or sweep[str(b)]["chosen"]))
+                                  (args.sae or _chosen(sweep[str(b)])))
             for b in args.blocks}
     out = {}
     for concept in args.concepts:
@@ -413,7 +428,7 @@ def cmd_vectors(args) -> dict:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 torch.save({"vectors": vec, "k": int(k), "form": form, "blocks": args.blocks,
                             "sigmas": {s: sigmas[s] for s in range(n_steps)},
-                            "sae": {str(b): args.sae or sweep[str(b)]["chosen"]
+                            "sae": {str(b): args.sae or _chosen(sweep[str(b)])
                                     for b in args.blocks}}, dst)
                 out[f"{concept}/{form}/k{k}"] = round(float(
                     torch.stack([vec[0][b].norm() for b in args.blocks]).mean()), 3)
@@ -779,6 +794,7 @@ def main() -> int:
     ap.add_argument("--pci-src", default=str(DEFAULT_ROOT / "sa3" / "eval50"),
                     help="the SA3 lane's PCI rows (cutoffs and the PCI AUC)")
     ap.add_argument("--selection", default=None, help="k_c selection json (select writes it)")
+    ap.add_argument("--sae-dir", default=None, help="train: output directory (default <work>/sae/sa3)")
     ap.add_argument("--caa-auc", default=str(DEFAULT_ROOT / "sa3" / "eval_e3" / "auc.json"))
     ap.add_argument("--packs", default=str(DEFAULT_ROOT / "packs" / "sa3_sae"))
     ap.add_argument("--dst", default=str(DEFAULT_ROOT / "listen_sae"))
