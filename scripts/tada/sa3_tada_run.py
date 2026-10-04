@@ -245,9 +245,9 @@ def cmd_patch(args, sam) -> None:
 
 def cmd_caa(args, sam) -> None:
     target = sa3_tada.sa3_target(sam)
-    (args.out / "caa").mkdir(parents=True, exist_ok=True)
+    (args.out / args.vec_dir).mkdir(parents=True, exist_ok=True)
     for concept in args.concepts:
-        path = args.out / "caa" / f"{concept}.pt"
+        path = args.out / args.vec_dir / f"{concept}.pt"
         if path.exists() and not args.force:
             _log(f"caa {concept}: done, skipping")
             continue
@@ -256,7 +256,7 @@ def cmd_caa(args, sam) -> None:
         pos_runs, neg_runs = [], []
         for idx in _batches(n, args.batch):
             for prompts, runs in (([pos[i] for i in idx], pos_runs), ([neg[i] for i in idx], neg_runs)):
-                with ActivationRecorder(target, context=_PerRow()) as rec:
+                with ActivationRecorder(target, context=_PerRow(), reduce=_audio_mean) as rec, _check_no_padding(sam):
                     sa3_tada.generate(sam, prompts, seed=CAA_SEED, duration=DURATION, steps=STEPS)
                 st = rec.steps()
                 # One run per prompt: the mean over prompts is the reference
@@ -269,16 +269,17 @@ def cmd_caa(args, sam) -> None:
                                             for s_ in sorted(run)]) for run in runs]).half()
             for pole, runs in (("pos", pos_runs), ("neg", neg_runs))
         }
-        torch.save({"acts": acts, "layout": "[prompt, step, block, hidden] time-mean cross-attn output, fp16",
+        torch.save({"acts": acts, "audio_from": _AUDIO_FROM,
+                    "layout": "[prompt, step, block, hidden] time-mean cross-attn output (rows from audio_from), fp16",
                     "positive": pos[:n], "negative": neg[:n], "seed": CAA_SEED},
-                   args.out / "caa" / f"{concept}.acts.pt")
+                   args.out / args.vec_dir / f"{concept}.acts.pt")
         vec = caa_vectors(pos_runs, neg_runs, normalize=True)
         raw = caa_vectors(pos_runs, neg_runs, normalize=False)
         torch.save({
             "vectors": vec,
             "raw_norm": {s: {b: float(v.norm()) for b, v in per.items()} for s, per in raw.items()},
             "concept": concept, "pairs": n, "seed": CAA_SEED, "steps": STEPS,
-            "duration": DURATION, "example": [pos[0], neg[0]],
+            "duration": DURATION, "example": [pos[0], neg[0]], "audio_from": _AUDIO_FROM,
         }, path)
         _log(f"caa {concept}: {n} pairs, steps {sorted(vec)} blocks {len(vec[0])}")
 
@@ -296,7 +297,7 @@ def cmd_austeer(args, sam) -> None:
     target = sa3_tada.sa3_target(sam)
     nb = target.num_blocks
     for concept in args.concepts:
-        path = args.out / "caa" / f"{concept}.austeer.pt"
+        path = args.out / args.vec_dir / f"{concept}.austeer.pt"
         if path.exists() and not args.force:
             _log(f"austeer {concept}: done, skipping")
             continue
@@ -306,7 +307,7 @@ def cmd_austeer(args, sam) -> None:
         for idx in _batches(n, args.batch):
             stores = []
             for prompts in ([pos[i] for i in idx], [neg[i] for i in idx]):
-                with ActivationRecorder(target, context=forward_counter(1), reduce=frames) as rec:
+                with ActivationRecorder(target, context=forward_counter(1), reduce=_audio_frames) as rec, _check_no_padding(sam):
                     sa3_tada.generate(sam, prompts, seed=CAA_SEED, duration=DURATION, steps=STEPS)
                 stores.append(rec.steps())
             sp, sn = stores
@@ -333,6 +334,68 @@ def cmd_austeer(args, sam) -> None:
         kept = {site: sorted({b for per in v.values() for b, x in per.items() if x.abs().sum() > 0})
                 for site, v in vecs.items()}
         _log(f"austeer {concept}: {n} pairs, {total[(0, 0)]} samples/step-block, blocks kept {kept}")
+
+
+#: First audio row of a cross-attention output (``--audio-tokens``): SA3
+#: medium prepends 64 learned memory tokens to the latent sequence; the
+#: audit (E3) asks for the CAA/AUSteer token mean over audio rows only.
+#: 0 = every row (the original vectors).
+_AUDIO_FROM = 0
+
+#: ``--audio-tokens`` also switches the K/V-site variant to the real
+#: prompt tokens (conditioner mask, seconds token excluded).
+_KV_REAL_TOKENS = False
+
+
+def _audio_mean(h: torch.Tensor) -> torch.Tensor:
+    from acestep.tada.target import time_mean
+    return time_mean(h[:, _AUDIO_FROM:])
+
+
+def _audio_frames(h: torch.Tensor) -> torch.Tensor:
+    from acestep.tada.target import frames
+    return frames(h[:, _AUDIO_FROM:])
+
+
+@contextmanager
+def _null():
+    yield
+
+
+@contextmanager
+def _check_no_padding(sam):
+    """Fail if any latent frame is padding (fixed 10 s renders: none)."""
+    def pre(_m, _a, kw):
+        pm = kw.get("padding_mask")
+        if pm is not None and not bool(pm.all()):
+            raise RuntimeError("latent padding present; audio-token mean would include it")
+    h = sam.model.model.model.register_forward_pre_hook(pre, with_kwargs=True)
+    try:
+        yield
+    finally:
+        h.remove()
+
+
+@contextmanager
+def _prompt_token_mask(sam, state):
+    """``state["keep"]``: ``[B, tokens, 1]``, true for the real prompt
+    tokens of the cross-attention conditioning, from the conditioner's own
+    mask (``cross_attn_cond_mask``; T5Gemma pads with a LEARNED non-zero
+    embedding, so an abs-sum test keeps padding), with the trailing
+    ``seconds_total`` token (``cross_attn_cond_ids = [prompt,
+    seconds_total]``) excluded."""
+    def pre(_m, _a, kw):
+        m = kw.get("cross_attn_cond_mask")
+        if m is None:
+            raise RuntimeError("SA3 DiT got no cross_attn_cond_mask")
+        keep = m.bool().clone()
+        keep[:, -1] = False
+        state["keep"] = keep.unsqueeze(-1)
+    h = sam.model.model.model.register_forward_pre_hook(pre, with_kwargs=True)
+    try:
+        yield state
+    finally:
+        h.remove()
 
 
 class _PerRow:
@@ -554,11 +617,11 @@ def _load_vectors(args, concept, site="loc"):
             raise SystemExit("oracle vectors exist for the localized blocks only")
         return {"oracle": d["diff"], "blocks": d["blocks"], "mean": args.method == "oraclemean"}
     if getattr(args, "method", "caa") == "caakv":
-        return {"kv": torch.load(args.out / "caa" / f"{concept}.kv.pt", weights_only=False)["vector"]}
+        return {"kv": torch.load(args.out / args.vec_dir / f"{concept}.kv.pt", weights_only=False)["vector"]}
     if getattr(args, "method", "caa") == "austeer":
-        d = torch.load(args.out / "caa" / f"{concept}.austeer.pt", weights_only=False)
+        d = torch.load(args.out / args.vec_dir / f"{concept}.austeer.pt", weights_only=False)
         return d["vectors"][site]
-    d = torch.load(args.out / "caa" / f"{concept}.pt", weights_only=False)
+    d = torch.load(args.out / args.vec_dir / f"{concept}.pt", weights_only=False)
     return d["vectors"]
 
 
@@ -591,20 +654,25 @@ def _steer_context(sam, v, blocks, alpha):
     zero tokens). ``alpha == 0`` installs nothing."""
     mods = sa3_tada.cross_attn_modules(sam)
     handles = []
-    if alpha != 0:
-        def pre(_m, a, kw):
-            ctx = kw.get("context")
-            if ctx is None:
-                return None
-            keep = (ctx.abs().sum(dim=-1, keepdim=True) > 0).to(ctx.dtype)
-            kw["context"] = ctx + float(alpha) * keep * v.to(ctx.device, ctx.dtype)
-            return a, kw
-        handles = [mods[b].register_forward_pre_hook(pre, with_kwargs=True) for b in blocks]
-    try:
-        yield
-    finally:
-        for h in handles:
-            h.remove()
+    state = {}
+    with (_prompt_token_mask(sam, state) if _KV_REAL_TOKENS else _null()):
+        if alpha != 0:
+            def pre(_m, a, kw):
+                ctx = kw.get("context")
+                if ctx is None:
+                    return None
+                if _KV_REAL_TOKENS:
+                    keep = state["keep"].to(ctx.device, ctx.dtype)
+                else:
+                    keep = (ctx.abs().sum(dim=-1, keepdim=True) > 0).to(ctx.dtype)
+                kw["context"] = ctx + float(alpha) * keep * v.to(ctx.device, ctx.dtype)
+                return a, kw
+            handles = [mods[b].register_forward_pre_hook(pre, with_kwargs=True) for b in blocks]
+        try:
+            yield
+        finally:
+            for h in handles:
+                h.remove()
 
 
 def cmd_caakv(args, sam) -> None:
@@ -614,7 +682,7 @@ def cmd_caakv(args, sam) -> None:
     conditioning to every block and step, so one ``[768]`` vector."""
     target = sa3_tada.sa3_target(sam)
     for concept in args.concepts:
-        path = args.out / "caa" / f"{concept}.kv.pt"
+        path = args.out / args.vec_dir / f"{concept}.kv.pt"
         if path.exists() and not args.force:
             continue
         pos, neg, _ = C.prompt_pairs(concept)
@@ -624,14 +692,19 @@ def cmd_caakv(args, sam) -> None:
             rows = []
             for idx in _batches(n, args.batch):
                 rec = ConditioningPatcher(target, [0], hook=HOOK_CROSS_ATTN_COND)
-                with rec.record():
+                state = {}
+                with rec.record(), (_prompt_token_mask(sam, state) if _KV_REAL_TOKENS else _null()):
                     sa3_tada.generate(sam, [prompts[i] for i in idx], seed=CAA_SEED, duration=DURATION, steps=1)
                 ctx = rec.cache[0][0]["context"].float()
-                keep = (ctx.abs().sum(dim=-1, keepdim=True) > 0).float()
+                if _KV_REAL_TOKENS:
+                    keep = state["keep"].to(ctx.device).float()
+                else:
+                    keep = (ctx.abs().sum(dim=-1, keepdim=True) > 0).float()
                 rows.append(((ctx * keep).sum(1) / keep.sum(1).clamp_min(1)).cpu())
             means[pole] = torch.cat(rows).mean(0)
         v = means["pos"] - means["neg"]
-        torch.save({"vector": v / v.norm(), "raw_norm": float(v.norm()), "pairs": n}, path)
+        torch.save({"vector": v / v.norm(), "raw_norm": float(v.norm()), "pairs": n,
+                    "tokens": "real prompt tokens" if _KV_REAL_TOKENS else "abs-sum > 0 (all 257)"}, path)
         _log(f"caakv {concept}: raw norm {float(v.norm()):.3f}")
 
 
@@ -706,7 +779,7 @@ def cmd_probe(args, sam) -> None:
         for site in args.sites:
             vectors = _load_vectors(args, concept, site)
             blocks = _site_blocks(site, args.loc, nb)
-            root = args.out / "calib" / f"{args.method}_{site}_{concept}"
+            root = args.out / args.calib_sub / f"{args.method}_{site}_{concept}"
             for a in [0.0] + [float(x) for x in args.alphas]:
                 d = root / _fmt_alpha(a)
                 if (d / "audios.npz").exists() and not args.force:
@@ -744,7 +817,7 @@ def cmd_calibrate(args, _sam=None) -> None:
                         if lp(args.out / args.eval_sub / f"pci_{site}_{concept}")]
                 cut[direction] = min(vals) if vals else None
             for site in ("all", "loc", "ablated"):
-                pr = lp(args.out / "calib" / f"{method}_{site}_{concept}")
+                pr = lp(args.out / args.calib_sub / f"{method}_{site}_{concept}")
                 if not pr or None in cut.values():
                     continue
                 rng = []
@@ -799,7 +872,9 @@ def cmd_localize(args, _sam=None) -> dict:
     per = {}
     raw = {}
     for concept in args.concepts:
-        f = args.out / _patch_dir(args) / concept / "scores.json"
+        # paper (Sec. 4): MuQ for mood, tempo, instruments, genres; CLAP for vocal gender
+        use_muq = args.metric == "muq" or (args.metric == "paper" and concept not in ("female", "male"))
+        f = args.out / _patch_dir(args) / concept / ("scores_muq.json" if use_muq else "scores.json")
         if not f.exists():
             continue
         js = json.loads(f.read_text())
@@ -817,7 +892,12 @@ def cmd_localize(args, _sam=None) -> dict:
     res = {"tau": TAU, "blocks": sel, "impacts": agg, "per_concept": per, "refs": raw,
            "ranked": sorted(range(len(agg)), key=lambda l: -agg[l])[:8]}
     name = "localization.json" if args.patch_site == "xattn_cond" else f"localization_{args.patch_site}.json"
+    if args.metric != "clap":
+        name = name.replace(".json", f"_{args.metric}.json")
     res["site"] = args.patch_site
+    res["metric"] = args.metric
+    res["peaks"] = {c: max(range(len(v)), key=lambda l: v[l] if v[l] == v[l] else -1) for c, v in per.items()}
+    res["per_concept_selected"] = {c: select_layers(v, TAU) for c, v in per.items()}
     (args.out / name).write_text(json.dumps(res, indent=1))
     print("I(l): " + " ".join(f"tf{l}={agg[l]:.3f}" for l in res["ranked"]))
     print(f"functional blocks (tau {TAU}): {sel}")
@@ -875,6 +955,12 @@ def main() -> int:
     ap.add_argument("--prompts-csv", type=Path, default=DEFAULT_PROMPTS_CSV)
     ap.add_argument("--pairs", type=int, default=34)
     ap.add_argument("--patch-site", choices=PATCH_SITES, default="xattn_cond")
+    ap.add_argument("--vec-dir", default="caa", help="vector directory under --out")
+    ap.add_argument("--audio-tokens", action="store_true",
+                    help="E3: token means over audio rows only; K/V site on real prompt tokens")
+    ap.add_argument("--calib-sub", default="calib", help="probe/calibrate directory under --out")
+    ap.add_argument("--metric", choices=("clap", "muq", "paper"), default="clap",
+                    help="localize: patch score metric (paper = MuQ, CLAP for vocal gender)")
     ap.add_argument("--seeds", type=int, default=4)
     # eval
     ap.add_argument("--loc", type=int, nargs="*", default=[])
@@ -913,9 +999,12 @@ def main() -> int:
     torch.backends.cuda.matmul.allow_tf32 = True
     _log(f"{args.cmd}: loading SA3 medium")
     sam = _load_sam()
-    global _RENORM, _GUIDANCE, STEPS
+    global _RENORM, _GUIDANCE, STEPS, _AUDIO_FROM, _KV_REAL_TOKENS
     _RENORM = bool(args.renorm)
     _GUIDANCE = float(args.guidance)
+    if args.audio_tokens:
+        _AUDIO_FROM = int(sam.model.model.model.transformer.num_memory_tokens)
+        _KV_REAL_TOKENS = True
     if args.steps:
         STEPS = int(args.steps)
     {"patch": cmd_patch, "caa": cmd_caa, "austeer": cmd_austeer, "caakv": cmd_caakv, "pci": cmd_pci, "sweep": cmd_sweep,

@@ -37,6 +37,7 @@ TADA_ROOT = Path(os.environ.get("TADA_ROOT", "tada-replication"))
 REF = Path(os.environ.get("TADA_REF", str(TADA_ROOT / "steer-audio")))
 DEFAULT_OUT = TADA_ROOT / "sa3"
 CLAP_TEMPLATE = "This is a music of {p}"
+SA3_SR = 44100
 
 sys.path.insert(0, str(REF / "editing" / "AudioEditingCode"))
 sys.path.insert(0, str(REF))
@@ -76,11 +77,42 @@ def _clap_model():
     return m.to("cuda").eval()
 
 
+def _patch_muq(args) -> None:
+    """MuQ-T eq. 2 scores (SA3 primary metric; the audit found CLAP barely
+    separates the real positive and negative prompts on SA3): reference
+    ``calculate_muqt`` (MuQ-MuLan large, 24 kHz, template ``{p}``) of every
+    patch set against the concept's ``eval_muqt_prompts``. Writes
+    ``scores_muq.json`` beside the CLAP ``scores.json``."""
+    from src.metrics.metrics import calculate_muqt
+
+    _cache_models()
+    for cdir in sorted((args.out / args.patch_dir).iterdir()):
+        meta = cdir / "done.json"
+        if not meta.exists() or (args.concepts and cdir.name not in args.concepts):
+            continue
+        dst = cdir / "scores_muq.json"
+        if dst.exists() and not args.force:
+            continue
+        prompts = json.loads(meta.read_text())["eval_muqt_prompts"]
+        scores = {}
+        for sdir in sorted(p for p in cdir.iterdir() if p.is_dir()):
+            _, per = calculate_muqt(audio_dir=str(sdir), prompts=prompts, sr=SA3_SR,
+                                    resample_to_24k=True)
+            # full precision (the summary is formatted to 3 decimals)
+            scores[sdir.name] = [sum(r[f"muqt_sim_p{i}"] for r in per.values()) / len(per)
+                                 for i in range(len(prompts))]
+        dst.write_text(json.dumps({"prompts": prompts, "metric": "muq", "template": "{p}",
+                                   "scores": scores}, indent=1))
+        print(f"patch muq {cdir.name}: {len(scores)} sets", flush=True)
+
+
 def cmd_patch(args) -> None:
     """Reference ``calculate_clap`` with the model loaded once."""
     import torch
     from src.steering.eval.audio_io import as_wav_dir
 
+    if args.metric == "muq":
+        return _patch_muq(args)
     model = _clap_model()
     for cdir in sorted((args.out / args.patch_dir).iterdir()):
         meta = cdir / "done.json"
@@ -116,7 +148,7 @@ def _eval_dirs(args):
         if not d.is_dir():
             continue
         method, site, concept = d.name.split("_", 2)
-        if args.sub != "calib" and method != "pci" and not (d / "sweep.json").exists():
+        if not args.sub.startswith("calib") and method != "pci" and not (d / "sweep.json").exists():
             continue  # sweep still rendering (sweep.json is written last)
         if args.methods and method not in args.methods:
             continue
@@ -251,6 +283,7 @@ def main() -> int:
     ap.add_argument("--skip-aesthetics", action="store_true")
     ap.add_argument("--sub", default="eval", help="eval or calib")
     ap.add_argument("--patch-dir", default="patch", help="patch, patch_xattn_out or patch_resid")
+    ap.add_argument("--metric", choices=("clap", "muq"), default="clap", help="patch scoring metric")
     ap.add_argument("--reverse", action="store_true", help="walk directories in reverse order")
     ap.add_argument("--methods", nargs="*", default=None, help="caa, austeer, pci")
     args = ap.parse_args()
