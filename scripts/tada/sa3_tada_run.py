@@ -315,7 +315,7 @@ def cmd_pci(args, sam) -> None:
     for concept in args.concepts:
         triples = [_pci_triple(p, concept) for p in tests]
         for site in ("all", "loc"):
-            root = args.out / "eval" / f"pci_{site}_{concept}{args.suffix}"
+            root = args.out / args.eval_sub / f"pci_{site}_{concept}{args.suffix}"
             blocks = _site_blocks(site, args.loc, nb)
             for k in ks:
                 d = root / _fmt_alpha(k)
@@ -408,7 +408,7 @@ def _load_vectors(args, concept, site="loc"):
 
 
 def _sweep_dir(args, site, concept):
-    return args.out / "eval" / f"{args.method}_{site}_{concept}{args.suffix}"
+    return args.out / args.eval_sub / f"{args.method}_{site}_{concept}{args.suffix}"
 
 
 #: Set from ``--renorm`` (reference SAO CAA configs: off).
@@ -489,6 +489,8 @@ def cmd_calibrate(args, _sam=None) -> None:
     def lp(d):
         f = d / "protocol_results" / "lpaps.csv"
         if not f.exists():
+            f = d / "protocol_results" / "lpaps_endpoints.csv"
+        if not f.exists():
             return None
         return {float(r["alpha"]): float(r["mean"]) for r in csv.DictReader(f.open())}
 
@@ -497,9 +499,9 @@ def cmd_calibrate(args, _sam=None) -> None:
         for concept in args.concepts:
             cut = {}
             for direction, sign in (("pos", 1), ("neg", -1)):
-                vals = [max(v for a, v in (lp(args.out / "eval" / f"pci_{site}_{concept}") or {}).items()
+                vals = [max(v for a, v in (lp(args.out / args.eval_sub / f"pci_{site}_{concept}") or {}).items()
                             if sign * a > 0) for site in ("all", "loc")
-                        if lp(args.out / "eval" / f"pci_{site}_{concept}")]
+                        if lp(args.out / args.eval_sub / f"pci_{site}_{concept}")]
                 cut[direction] = min(vals) if vals else None
             for site in ("all", "loc", "ablated"):
                 pr = lp(args.out / "calib" / f"{method}_{site}_{concept}")
@@ -514,11 +516,29 @@ def cmd_calibrate(args, _sam=None) -> None:
                     notes.setdefault(method, {}).setdefault(concept, {})[f"{site}_{direction}"] = {
                         "cutoff": cut[direction], "alpha": sign * a, "reached": bool(hit)}
                 ranges.setdefault(method, {}).setdefault(concept, {})[site] = rng
-    (args.out / "ranges.json").write_text(json.dumps(ranges, indent=1))
-    (args.out / "ranges_notes.json").write_text(json.dumps(notes, indent=1))
+    (args.out / f"ranges_{args.eval_sub}.json").write_text(json.dumps(ranges, indent=1))
+    (args.out / f"ranges_{args.eval_sub}_notes.json").write_text(json.dumps(notes, indent=1))
     for m, per in ranges.items():
         for c, sites in per.items():
             print(m, c, sites)
+
+
+def cmd_subset(args, _sam=None) -> None:
+    """Copy the first ``--n-prompts`` rows of every PCI strength under
+    ``eval`` into ``--eval-sub``: the PCI cutoff for a sweep run on the
+    first N benchmark prompts is measured on the same N prompts."""
+    src = args.out / "eval"
+    for d in sorted(src.glob("pci_*")):
+        for a in sorted(d.glob("alpha_*")):
+            f = a / "audios.npz"
+            dst = args.out / args.eval_sub / d.name / a.name / "audios.npz"
+            if dst.exists() and not args.force:
+                continue
+            z = np.load(f)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            np.savez(dst, audio=z["audio"][: args.n_prompts], sr=z["sr"],
+                     names=z["names"][: args.n_prompts])
+    print(f"subset: {args.n_prompts} prompts into {args.out / args.eval_sub}")
 
 
 def _clap_index(concept: str, prompts) -> int:
@@ -590,7 +610,7 @@ def cmd_pack(args, _sam=None) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=("patch", "caa", "austeer", "pci", "sweep", "probe", "localize", "pack", "calibrate"))
+    ap.add_argument("cmd", choices=("patch", "caa", "austeer", "pci", "sweep", "probe", "localize", "pack", "calibrate", "subset"))
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--concepts", nargs="+", default=None)
     ap.add_argument("--batch", type=int, default=16)
@@ -610,6 +630,7 @@ def main() -> int:
     ap.add_argument("--ranges", default=None, help="json {concept: {site: max}}")
     ap.add_argument("--alphas", nargs="*", default=[])
     ap.add_argument("--suffix", default="")
+    ap.add_argument("--eval-sub", default="eval", help="eval directory under --out")
     ap.add_argument("--packs", type=Path, default=Path("E:/Projects/tada-replication/packs"))
     ap.add_argument("--checkpoint", default="medium")
     ap.add_argument("--method", choices=("caa", "austeer"), default="caa")
@@ -621,8 +642,9 @@ def main() -> int:
     if args.concepts is None:
         args.concepts = list(SAO_LOC_CONCEPTS if args.cmd in ("patch", "localize")
                              else C.STEERING_CONCEPTS)
-    if args.cmd in ("localize", "pack", "calibrate"):
-        {"localize": cmd_localize, "pack": cmd_pack, "calibrate": cmd_calibrate}[args.cmd](args)
+    if args.cmd in ("localize", "pack", "calibrate", "subset"):
+        {"localize": cmd_localize, "pack": cmd_pack, "calibrate": cmd_calibrate,
+         "subset": cmd_subset}[args.cmd](args)
         return 0
     if args.cmd in ("caa", "austeer") and args.pairs == 34:
         args.pairs = 50

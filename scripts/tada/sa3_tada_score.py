@@ -111,6 +111,8 @@ def _eval_dirs(args):
         if not d.is_dir():
             continue
         method, site, concept = d.name.split("_", 2)
+        if args.sub != "calib" and method != "pci" and not (d / "sweep.json").exists():
+            continue  # sweep still rendering (sweep.json is written last)
         if args.methods and method not in args.methods:
             continue
         if args.concepts and concept not in args.concepts:
@@ -162,6 +164,48 @@ def cmd_protocol(args) -> None:
         protocol(str(d), concept, skip_aesthetics=args.skip_aesthetics)
 
 
+def cmd_cutoff(args) -> None:
+    """Reference LPAPS (``compute_lpaps_preservation``) of every PCI
+    directory at its strongest switch lengths only, ``protocol_results/
+    lpaps_endpoints.csv``: the PCI cutoff is the max LPAPS, reached at
+    the full prompt swap (reference ``PCI_CUTOFFS.md``), so strength
+    calibration can start before the full PCI protocol finishes."""
+    from src.steering.eval.eval_steering_protocol import compute_lpaps_preservation
+
+    _cache_models()
+    for d, label, concept in _eval_dirs(args):
+        if not label.startswith("pci_"):
+            continue
+        out = d / "protocol_results" / "lpaps_endpoints.csv"
+        if out.exists() and not args.force:
+            continue
+        alphas = sorted(float(p.name[len("alpha_"):]) for p in d.glob("alpha_*"))
+        ends = [0.0, min(alphas), max(alphas)]
+        df = compute_lpaps_preservation(str(d), ends)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(out, index=False)
+        print(f"cutoff {d.name}: {df.to_dict('records')}", flush=True)
+
+
+def _pci_cutoff(root: Path, concept: str, direction: str, reference) -> float:
+    """``auc.pci_cutoff`` when the PCI directories carry the full
+    protocol; otherwise the same min-of-max from ``lpaps_endpoints.csv``
+    (the max is the full-swap endpoint)."""
+    import pandas as pd
+
+    full = [root / f"pci_{s}_{concept}" / "protocol_results" / "lpaps.csv" for s in ("all", "loc")]
+    if all(f.exists() for f in full):
+        return reference(root, concept, direction)
+    vals = []
+    for s in ("all", "loc"):
+        f = root / f"pci_{s}_{concept}" / "protocol_results" / "lpaps_endpoints.csv"
+        if f.exists():
+            df = pd.read_csv(f)
+            df = df[df["alpha"] > 0] if direction == "pos" else df[df["alpha"] < 0]
+            vals.append(float(df["mean"].max()))
+    return min(vals) if vals else float("nan")
+
+
 def cmd_auc(args) -> None:
     from src.steering.eval.auc import (
         N_QUALITY_POINTS, compute_alignment_auc_direction, compute_csm_direction,
@@ -176,7 +220,7 @@ def cmd_auc(args) -> None:
             continue
         row = res.setdefault(concept, {}).setdefault(label, {})
         for direction in ("pos", "neg"):
-            cut = pci_cutoff(root, concept, direction)
+            cut = _pci_cutoff(root, concept, direction, pci_cutoff)
             auc = compute_alignment_auc_direction(pr, direction, cut, ["muqt", "clap"])
             csm = compute_csm_direction(pr, direction, cut, ["muqt", "clap"])
             row[direction] = {"cutoff": cut, **auc, **csm}
@@ -195,7 +239,7 @@ def cmd_auc(args) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=("patch", "protocol", "auc"))
+    ap.add_argument("cmd", choices=("patch", "protocol", "auc", "cutoff"))
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--concepts", nargs="*", default=None)
     ap.add_argument("--force", action="store_true")
@@ -205,7 +249,8 @@ def main() -> int:
     ap.add_argument("--methods", nargs="*", default=None, help="caa, austeer, pci")
     args = ap.parse_args()
     args.out = args.out.resolve()
-    {"patch": cmd_patch, "protocol": cmd_protocol, "auc": cmd_auc}[args.cmd](args)
+    {"patch": cmd_patch, "protocol": cmd_protocol, "auc": cmd_auc,
+     "cutoff": cmd_cutoff}[args.cmd](args)
     return 0
 
 
