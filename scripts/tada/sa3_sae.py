@@ -382,11 +382,11 @@ def cmd_score(args) -> dict:
     from acestep.tada.target import forward_counter
 
     root = Path(args.work)
-    sweep = json.loads((root / "sae" / FAMILY / "sweep.json").read_text(encoding="utf-8"))
+    sweep = json.loads((_sae_root(args) / "sweep.json").read_text(encoding="utf-8"))
     saes = {}
     for b in args.blocks:
         name = args.sae or _chosen(sweep[str(b)])
-        saes[b] = Sae.load_from_disk(root / "sae" / FAMILY / f"block_{b}" / name, device="cuda")
+        saes[b] = Sae.load_from_disk(_sae_root(args) / f"block_{b}" / name, device="cuda")
     sam = load_sam()
     from acestep.engine.sa3_tada_tokens import sa3_audio_tokens
 
@@ -394,15 +394,17 @@ def cmd_score(args) -> dict:
     audio = sa3_audio_tokens(sam)
     probe = SigmaProbe(sam)
     gen = make_generate(sam, duration=args.score_duration, steps=args.steps)
-    out_dir = root / "sae_scores" / FAMILY
+    out_dir = root / "sae_scores" / (FAMILY + args.tag)
     out_dir.mkdir(parents=True, exist_ok=True)
     report = {}
     for concept in args.concepts:
         pos, neg, _lyrics = concepts.prompt_pairs(concept)
         means = {}
         for label, prompts in (("pos", pos), ("neg", neg)):
+            scale = {b: sweep[str(b)]["step_rms"] for b in args.blocks
+                     if sweep[str(b)].get("step_rms")}
             rec = FeatureMeanRecorder(target, saes, hook=args.hook, context=forward_counter(1),
-                                      tokens=audio, sigma_fn=probe)
+                                      tokens=audio, sigma_fn=probe, step_scale=scale)
             with rec, torch.no_grad():
                 for i in range(0, len(prompts), args.batch):
                     rec.reset_steps()
@@ -436,13 +438,13 @@ def cmd_vectors(args) -> dict:
     from acestep.tada.sae import Sae, concept_vectors
 
     root = Path(args.work)
-    sweep = json.loads((root / "sae" / FAMILY / "sweep.json").read_text(encoding="utf-8"))
-    saes = {b: Sae.load_from_disk(root / "sae" / FAMILY / f"block_{b}" /
+    sweep = json.loads((_sae_root(args) / "sweep.json").read_text(encoding="utf-8"))
+    saes = {b: Sae.load_from_disk(_sae_root(args) / f"block_{b}" /
                                   (args.sae or _chosen(sweep[str(b)])))
             for b in args.blocks}
     out = {}
     for concept in args.concepts:
-        d = torch.load(root / "sae_scores" / FAMILY / f"{concept}.pt", weights_only=False)
+        d = torch.load(root / "sae_scores" / (FAMILY + args.tag) / f"{concept}.pt", weights_only=False)
         tab = d["tables"]
         mp = {b: tab[str(b)]["mean_pos"] for b in args.blocks}
         mn = {b: tab[str(b)]["mean_neg"] for b in args.blocks}
@@ -454,7 +456,7 @@ def cmd_vectors(args) -> dict:
                                     per_step=(form == "perstep"))
                 vec = {s: {b: (v[b][s] if v[b].ndim == 2 else v[b]).float()
                            for b in args.blocks} for s in range(n_steps)}
-                dst = root / "sae_sel" / f"{form}_k{k}" / "caa" / f"{concept}.sae.pt"
+                dst = root / "sae_sel" / f"{form}_k{k}{args.tag}" / "caa" / f"{concept}.sae.pt"
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 torch.save({"vectors": vec, "k": int(k), "form": form, "blocks": args.blocks,
                             "sigmas": {s: sigmas[s] for s in range(n_steps)},
@@ -484,7 +486,7 @@ def _run_module(args):
 
 def _sel_vectors(args, concept, form, k):
     root = Path(args.work)
-    d = torch.load(root / "sae_sel" / f"{form}_k{k}" / "caa" / f"{concept}.sae.pt",
+    d = torch.load(root / "sae_sel" / f"{form}_k{k}{args.tag}" / "caa" / f"{concept}.sae.pt",
                    weights_only=False)
     return d["vectors"]
 
@@ -493,9 +495,17 @@ def _vec_scale(vectors, blocks) -> float:
     return float(torch.stack([vectors[0][b].float().norm() for b in blocks]).mean())
 
 
+_TAG = {"tag": ""}
+
+
 def _site(form: str, k: int) -> str:
-    """Directory site token (no underscore: the scorer splits on '_')."""
-    return f"{form[0]}{int(k)}"
+    """Directory site token (no underscore: the scorer splits on '_');
+    a tagged variant (``--tag``) appends its letters."""
+    return f"{form[0]}{int(k)}{_TAG['tag'].replace('_', '')}"
+
+
+def _sae_root(args) -> Path:
+    return Path(args.sae_dir) if args.sae_dir else Path(args.work) / "sae" / FAMILY
 
 
 def cmd_probe(args) -> dict:
@@ -857,7 +867,9 @@ def main() -> int:
     ap.add_argument("--n-prompts", type=int, default=50)
     ap.add_argument("--points", type=int, default=10)
     ap.add_argument("--json", default=None)
+    ap.add_argument("--tag", default="", help="variant suffix for score, vector and site names")
     args = ap.parse_args()
+    _TAG["tag"] = args.tag
     fn = {"time": cmd_time, "cache": cmd_cache, "train": cmd_train, "score": cmd_score,
           "vectors": cmd_vectors, "probe": cmd_probe, "calibrate": cmd_calibrate,
           "select": cmd_select, "sweep": cmd_sweep, "report": cmd_report, "pack": cmd_pack,

@@ -69,9 +69,14 @@ class FeatureMeanRecorder:
         context: Optional[Callable[[int], CallGroups]] = None,
         tokens: Optional[TokenSelect] = None,
         sigma_fn: Optional[Callable[[], float]] = None,
+        step_scale: Optional[Mapping[int, Mapping[int, float]]] = None,
     ):
         self.target = target
         self.tokens = tokens
+        #: ``{block: {step: rms}}``: inputs are divided by it before the
+        #: encoder (for SAEs trained on per-step RMS normalized activations).
+        self.step_scale = {int(b): {int(k): float(v) for k, v in m.items()}
+                           for b, m in (step_scale or {}).items()}
         self.sigma_fn = sigma_fn
         #: ``{step: sigma}`` seen while recording (noise level per step).
         self.sigmas: Dict[int, float] = {}
@@ -102,6 +107,9 @@ class FeatureMeanRecorder:
             for rows, step in groups:
                 x = select_tokens(hs[rows].detach(), self.tokens)
                 x = x.reshape(-1, x.shape[-1]).to(device=sae.device)
+                scale = self.step_scale.get(block, {}).get(int(step))
+                if scale is not None:
+                    x = x / scale
                 acts = sae.pre_acts(x).float()
                 s = acts.sum(0).cpu()
                 d = self._sum[block]
