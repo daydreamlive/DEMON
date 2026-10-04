@@ -58,7 +58,7 @@ def sa3_target(sam):
 @contextmanager
 def steer_offline(
     sam, vectors: Mapping[int, Mapping[int, torch.Tensor]], alpha: float,
-    *, renorm: bool = False,
+    *, renorm: bool = False, guidance: float = 1.0,
 ):
     """TADA's CAA application during an offline SA3 render:
     ``h_l <- h_l + alpha * v[step][l]`` on the cross-attention output
@@ -66,21 +66,27 @@ def steer_offline(
     conditional pass per step). ``vectors`` is ``{step: {block: [H]}}``;
     absent entries leave that call unchanged. Forwards are counted at
     block 0, so the step index is the sampler step.
+
+    ``guidance`` > 1 is the pipeline's steering guidance
+    (:meth:`acestep.engine.stream.StreamPipeline.set_steering`): every
+    step's DiT call (``sam.model.model``) also runs unsteered and the step
+    uses ``v0 + guidance * (v1 - v0)``.
     """
     from acestep.tada.caa import steer_activation
 
     mods = cross_attn_modules(sam)
     blocks = sorted({int(b) for per in vectors.values() for b in per})
-    state = {"step": -1}
+    state = {"step": -1, "plain": False}
 
     def tick(_m, _i):
-        state["step"] += 1
+        if not state["plain"]:
+            state["step"] += 1
 
     handles = [sa3_blocks(sam)[0].register_forward_pre_hook(tick)]
 
     def make(block: int):
         def hook(_m, _inp, out):
-            v = vectors.get(state["step"], {}).get(block)
+            v = None if state["plain"] else vectors.get(state["step"], {}).get(block)
             if v is None:
                 return out
             return steer_activation(out, v, alpha, renorm=renorm)
@@ -88,6 +94,20 @@ def steer_offline(
 
     for b in blocks:
         handles.append(mods[b].register_forward_hook(make(b)))
+
+    if float(guidance) != 1.0 and float(alpha) != 0.0:
+        def guide(module, args, kwargs, out):
+            if state["plain"]:
+                return out
+            steered = out.clone()
+            state["plain"] = True
+            try:
+                plain = module(*args, **kwargs)
+            finally:
+                state["plain"] = False
+            return plain + float(guidance) * (steered - plain)
+
+        handles.append(sam.model.model.register_forward_hook(guide, with_kwargs=True))
     try:
         yield
     finally:

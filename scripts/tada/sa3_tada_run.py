@@ -422,6 +422,19 @@ def _sweep_dir(args, site, concept):
 
 #: Set from ``--renorm`` (reference SAO CAA configs: off).
 _RENORM = False
+#: Set from ``--guidance``: the steering slot's CFG-free guidance (1 = off).
+_GUIDANCE = 1.0
+
+
+def _steps_for(vectors: dict, steps: int) -> dict:
+    """Per-step vectors for a ``steps``-step render. Vectors are taken
+    at the 8-step schedule; a longer render (``--steps``) uses the vector
+    of the 8-step step covering the same fraction of the trajectory."""
+    have = sorted(vectors)
+    if len(have) == steps:
+        return vectors
+    n = len(have)
+    return {s: vectors[have[min(n - 1, (s * n) // steps)]] for s in range(steps)}
 
 
 @contextmanager
@@ -485,9 +498,10 @@ def _render_alpha(sam, prompts, vectors, blocks, alpha, batch):
                                               duration=DURATION, steps=STEPS))
         return torch.cat(outs)
     sel = {s: {b: v for b, v in per.items() if b in set(blocks)} for s, per in vectors.items()}
+    sel = _steps_for(sel, STEPS)
     outs = []
     for idx in _batches(len(prompts), batch):
-        with sa3_tada.steer_offline(sam, sel, alpha, renorm=_RENORM):
+        with sa3_tada.steer_offline(sam, sel, alpha, renorm=_RENORM, guidance=_GUIDANCE):
             outs.append(sa3_tada.generate(sam, [prompts[i] for i in idx], seed=EVAL_SEED,
                                           duration=DURATION, steps=STEPS))
     return torch.cat(outs)
@@ -504,6 +518,8 @@ def cmd_sweep(args, sam) -> None:
             from acestep.tada.caa import alphas_from_range
 
             rng = ranges.get(args.method, {}).get(concept, {}).get(site)
+            if rng is not None and args.range_scale != 1.0:
+                rng = [float(x) * args.range_scale for x in rng]
             if rng is None:
                 if not args.alpha_max:
                     raise SystemExit(f"no strength range for {args.method}/{concept}/{site}")
@@ -521,6 +537,7 @@ def cmd_sweep(args, sam) -> None:
                 "concept": concept, "site": site, "blocks": blocks, "alphas": alphas,
                 "prompts": len(tests), "seed": EVAL_SEED, "steps": STEPS,
                 "duration": DURATION, "holdout": bool(args.holdout),
+                "guidance": _GUIDANCE, "renorm": _RENORM, "range": list(rng),
             }, indent=2))
             _log(f"sweep {site} {concept}: {len(alphas)} strengths x {len(tests)} prompts (max {amax})")
 
@@ -717,6 +734,11 @@ def main() -> int:
     ap.add_argument("--checkpoint", default="medium")
     ap.add_argument("--method", choices=("caa", "austeer", "caakv"), default="caa")
     ap.add_argument("--renorm", action="store_true")
+    ap.add_argument("--guidance", type=float, default=1.0,
+                    help="steering guidance: v0 + g (v1 - v0) per step (1 = off)")
+    ap.add_argument("--steps", type=int, default=None, help="sampler steps (default 8)")
+    ap.add_argument("--range-scale", type=float, default=1.0,
+                    help="multiply the --ranges strength range")
     ap.add_argument("--top-s-loc", type=int, default=1024)
     ap.add_argument("--top-s-all", type=int, default=2048)
     args = ap.parse_args()
@@ -733,8 +755,11 @@ def main() -> int:
     torch.backends.cuda.matmul.allow_tf32 = True
     _log(f"{args.cmd}: loading SA3 medium")
     sam = _load_sam()
-    global _RENORM
+    global _RENORM, _GUIDANCE, STEPS
     _RENORM = bool(args.renorm)
+    _GUIDANCE = float(args.guidance)
+    if args.steps:
+        STEPS = int(args.steps)
     {"patch": cmd_patch, "caa": cmd_caa, "austeer": cmd_austeer, "caakv": cmd_caakv, "pci": cmd_pci, "sweep": cmd_sweep,
      "probe": cmd_probe}[args.cmd](args, sam)
     _log("done")
