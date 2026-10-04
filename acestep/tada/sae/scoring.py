@@ -68,9 +68,13 @@ class FeatureMeanRecorder:
         hook: str = HOOK_CROSS_ATTN_OUTPUT,
         context: Optional[Callable[[int], CallGroups]] = None,
         tokens: Optional[TokenSelect] = None,
+        sigma_fn: Optional[Callable[[], float]] = None,
     ):
         self.target = target
         self.tokens = tokens
+        self.sigma_fn = sigma_fn
+        #: ``{step: sigma}`` seen while recording (noise level per step).
+        self.sigmas: Dict[int, float] = {}
         self.saes = {int(b): s for b, s in saes.items()}
         self.hook = hook
         self.context = context if context is not None else forward_counter(1)
@@ -103,6 +107,8 @@ class FeatureMeanRecorder:
                 d = self._sum[block]
                 d[int(step)] = d[int(step)] + s if int(step) in d else s
                 self._cnt[block][int(step)] += int(acts.shape[0])
+                if self.sigma_fn is not None:
+                    self.sigmas.setdefault(int(step), float(self.sigma_fn()))
             return None
         return _hook
 
@@ -117,6 +123,12 @@ class FeatureMeanRecorder:
         for h in self._handles:
             h.remove()
         self._handles = []
+
+    def step_sigmas(self) -> List[float]:
+        """Noise level of each recorded step, ascending step order (nan
+        when no ``sigma_fn`` was given)."""
+        steps = sorted({s for per in self._sum.values() for s in per})
+        return [self.sigmas.get(s, float("nan")) for s in steps]
 
     def result(self) -> Dict[int, Tensor]:
         out = {}

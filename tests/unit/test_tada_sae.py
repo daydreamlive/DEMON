@@ -260,17 +260,22 @@ def test_tfidf_ranks_planted_concept_feature_first():
     target = ModuleTarget({HOOK_CROSS_ATTN_OUTPUT: mods})
     g = torch.Generator().manual_seed(0)
 
+    sig = {"v": 1.0}
+
     def run(planted: bool, n=8, steps=3):
-        rec = FeatureMeanRecorder(target, {0: sae}, context=forward_counter(1))
+        rec = FeatureMeanRecorder(target, {0: sae}, context=forward_counter(1),
+                                  sigma_fn=lambda: sig["v"])
         with rec:
             for _ in range(n):
                 rec.reset_steps()
                 for _s in range(steps):
+                    sig["v"] = 1.0 - 0.25 * _s
                     base = torch.rand(1, SEQ, D, generator=g) * 0.5  # shared "music"
                     ctx = torch.zeros(1, SEQ, D)
                     if planted:
                         ctx[..., 5] = 2.0   # the concept feature
                     mods[0](base, context=ctx)
+        assert rec.step_sigmas() == [1.0, 0.75, 0.5]
         return rec.result()[0]
 
     mp, mn = run(True), run(False)
@@ -316,13 +321,18 @@ def test_select_k_grid():
 def test_pack_roundtrip_knob_and_zero_noop(tmp_path):
     vec = torch.randn(2, 4, D)
     pack = sae_pack(vec, family="sa3", checkpoint="sa3-medium", concept="piano",
-                    blocks=[11, 12], k_per_block={11: 5, 12: 20})
+                    blocks=[11, 12], k_per_block={11: 5, 12: 20},
+                    sigmas=[1.0, 0.9, 0.5, 0.1])
     assert pack.method == METHOD_TADA_SAE and pack.hook == HOOK_CROSS_ATTN_OUTPUT
     assert pack.cond_only and pack.renorm
     path = write_sae_pack(pack, tmp_path)
     back = load_pack(path)
     assert torch.equal(back.vector, pack.vector) and back.blocks == [11, 12]
     assert back.provenance["k_c"] == {"11": 5, "12": 20}
+    assert back.provenance["sigmas"] == [1.0, 0.9, 0.5, 0.1]
+    with pytest.raises(ValueError):
+        sae_pack(vec, family="sa3", checkpoint="x", concept="c", blocks=[11, 12],
+                 k_per_block={11: 5, 12: 5}, sigmas=[1.0])
     ps = PackSteering([back])
     assert [s.name for s in ps.knob_specs()] == ["steer_piano"]
     assert ps.build_configs({"steer_piano": 0.0}, 8) == []

@@ -41,8 +41,12 @@ def sae_pack(
     cond_only: bool = True,
     policy: Optional[Mapping] = None,
     provenance: Optional[Mapping] = None,
+    sigmas: Optional[Sequence[float]] = None,
 ) -> SteeringPack:
-    """Build a TADA SAE pack from ``[len(blocks), n_steps, d]`` vectors."""
+    """Build a TADA SAE pack from ``[len(blocks), n_steps, d]`` vectors.
+
+    ``sigmas`` (one per stored step) records the noise level each step
+    row was computed at, so the table can be looked up by noise level."""
     if vectors.ndim != 3 or vectors.shape[0] != len(blocks):
         raise ValueError(
             f"vectors must be [len(blocks)={len(blocks)}, n_steps, d], got {tuple(vectors.shape)}"
@@ -51,6 +55,7 @@ def sae_pack(
         "method": "sum of top-k_c TF-IDF SAE decoder rows (Eq. 12-13), unit weights",
         "per_step": bool(vectors.shape[1] > 1),
         "k_c": {str(int(b)): int(k_per_block[int(b)]) for b in blocks},
+        "sigmas": [float(x) for x in sigmas] if sigmas is not None else None,
         "citation": CITATION,
         "date": _dt.date.today().isoformat(),
     }
@@ -74,6 +79,8 @@ def sae_pack(
         cond_only=bool(cond_only),
         renorm=bool(renorm),
     )
+    if sigmas is not None and len(prov["sigmas"]) != int(vectors.shape[1]):
+        raise ValueError(f"{len(prov['sigmas'])} sigmas for {int(vectors.shape[1])} steps")
     pack.validate()
     return pack
 

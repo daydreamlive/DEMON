@@ -19,7 +19,11 @@ post-trained for ``cfg_scale = 1`` with its own few-step sampler, so every
 forward is one conditional pass and the step count is SA3's (``--steps``,
 default the value the SA3 lane's CAA collection uses). TADA's ACE cache
 keeps 5 of 30 steps (every 6th) and its Stable Audio Open cache 10 of 100;
-``--every 2`` keeps 4 of 8 here.
+SA3's equivalent at 8 steps is every step (``--every 1``, the default).
+Checkpoint: the served SA3 medium (ARC post-trained, ``stable-audio-3-
+medium``, the same 8-step CFG-free render the CAA vectors used), not the
+base model. Every cached sample and every per-step quantity (score tables,
+vectors) carries the step's noise level ``sigma`` next to its step index.
 
 Token means and training samples use AUDIO tokens only: SA3 prepends 64
 learned memory tokens inside every block's sequence (the reference models
@@ -341,6 +345,7 @@ def cmd_score(args) -> dict:
 
     target = hook_target(sam, args.hook)
     audio = sa3_audio_tokens(sam)
+    probe = SigmaProbe(sam)
     gen = make_generate(sam, duration=args.score_duration, steps=args.steps)
     out_dir = root / "sae_scores" / FAMILY
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -350,13 +355,14 @@ def cmd_score(args) -> dict:
         means = {}
         for label, prompts in (("pos", pos), ("neg", neg)):
             rec = FeatureMeanRecorder(target, saes, hook=args.hook, context=forward_counter(1),
-                                      tokens=audio)
+                                      tokens=audio, sigma_fn=probe)
             with rec, torch.no_grad():
                 for i in range(0, len(prompts), args.batch):
                     rec.reset_steps()
                     # Reference: seed 10, one shared latent batch.
                     gen(prompts[i:i + args.batch], 10)
             means[label] = rec.result()
+            sigmas = rec.step_sigmas()
         payload = {}
         for b in args.blocks:
             t = score_tables(means["pos"][b], means["neg"][b])
@@ -364,7 +370,8 @@ def cmd_score(args) -> dict:
             payload[str(b)]["mean_neg"] = means["neg"][b].cpu()
         torch.save({"concept": concept, "tables": payload,
                     "sae": {str(b): args.sae or sweep[str(b)]["chosen"] for b in args.blocks},
-                    "steps": args.steps, "duration": args.score_duration, "seed": 10},
+                    "steps": args.steps, "sigmas": sigmas,
+                    "duration": args.score_duration, "seed": 10},
                    out_dir / f"{concept}.pt")
         report[concept] = {str(b): payload[str(b)]["tfidf"].shape[0] for b in args.blocks}
         print(f"[score] {concept} done", flush=True)
@@ -393,6 +400,7 @@ def cmd_vectors(args) -> dict:
         mp = {b: tab[str(b)]["mean_pos"] for b in args.blocks}
         mn = {b: tab[str(b)]["mean_neg"] for b in args.blocks}
         n_steps = int(next(iter(mp.values())).shape[0])
+        sigmas = list(d.get("sigmas") or [float("nan")] * n_steps)
         for form in args.forms:
             for k in args.k_grid:
                 v = concept_vectors(saes, mp, mn, {b: k for b in args.blocks},
@@ -402,6 +410,7 @@ def cmd_vectors(args) -> dict:
                 dst = root / "sae_sel" / f"{form}_k{k}" / "caa" / f"{concept}.sae.pt"
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 torch.save({"vectors": vec, "k": int(k), "form": form, "blocks": args.blocks,
+                            "sigmas": {s: sigmas[s] for s in range(n_steps)},
                             "sae": {str(b): args.sae or sweep[str(b)]["chosen"]
                                     for b in args.blocks}}, dst)
                 out[f"{concept}/{form}/k{k}"] = round(float(
@@ -579,7 +588,7 @@ def main() -> int:
     ap.add_argument("--blocks", type=int, nargs="+", required=True)
     ap.add_argument("--hook", default="cross_attn_output")
     ap.add_argument("--steps", type=int, default=8)
-    ap.add_argument("--every", type=int, default=2)
+    ap.add_argument("--every", type=int, default=1)
     ap.add_argument("--duration", type=float, default=10.0)
     ap.add_argument("--score-duration", type=float, default=10.0)
     ap.add_argument("--batch", type=int, default=16)
