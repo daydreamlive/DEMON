@@ -475,7 +475,7 @@ def cmd_pci(args, sam) -> None:
     ks = list(range(-STEPS, STEPS + 1))
     for concept in args.concepts:
         triples = [_pci_triple(p, concept) for p in tests]
-        for site in ("all", "loc"):
+        for site in args.pci_sites:
             root = args.out / args.eval_sub / f"pci_{site}_{concept}{args.suffix}"
             blocks = _site_blocks(site, args.loc, nb)
             for k in ks:
@@ -997,6 +997,8 @@ def main() -> int:
     ap.add_argument("--ranges", default=None, help="json {concept: {site: max}}")
     ap.add_argument("--alphas", nargs="*", default=[])
     ap.add_argument("--suffix", default="")
+    ap.add_argument("--pci-sites", nargs="+", choices=("all", "loc"), default=["all", "loc"],
+                    help="pci: which PCI variants to render")
     ap.add_argument("--eval-sub", default="eval", help="eval directory under --out")
     ap.add_argument("--packs", type=Path, default=TADA_ROOT / "packs")
     ap.add_argument("--checkpoint", default="medium")
