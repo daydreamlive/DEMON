@@ -499,8 +499,12 @@ def cmd_pci(args, sam) -> None:
                         outs.append(sa3_tada.generate(sam, neutral, seed=EVAL_SEED, duration=DURATION, steps=STEPS))
                         continue
                     rec = CP(target, blocks, hook=HOOK_CROSS_ATTN_COND)
+                    # The cross-attention context is the same at every step
+                    # on SA3 (text enters only as the conditioner output), so
+                    # one recorded step serves every switch step; recording
+                    # all steps x blocks would hold steps x blocks copies.
                     with rec.record():
-                        sa3_tada.generate(sam, swap, seed=EVAL_SEED, duration=DURATION, steps=STEPS)
+                        sa3_tada.generate(sam, swap, seed=EVAL_SEED, duration=DURATION, steps=1)
                     switch = STEPS - abs(k)
                     # Calls before the switch step keep the neutral context:
                     # patch only from call ``switch`` on.
@@ -566,7 +570,7 @@ class _SwitchPatcher:
                     calls[b] += 1
                     if i < self.switch:
                         return None
-                    saved = self.cache[b][i]
+                    saved = self.cache[b][min(i, len(self.cache[b]) - 1)]
                     for k in keys:
                         if saved.get(k) is not None:
                             kw[k] = saved[k]
