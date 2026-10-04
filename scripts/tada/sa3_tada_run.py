@@ -587,25 +587,39 @@ def cmd_localize(args, _sam=None) -> dict:
 
 
 def cmd_pack(args, _sam=None) -> None:
-    """CAA vectors at the localised blocks -> TADA packs
-    (``<packs>/sa3/<checkpoint>/<concept>.safetensors``). ``magnitude``
-    is the calibrated strength for the site (knob 1 = that alpha)."""
+    """CAA and AUSteer vectors at the localised blocks -> TADA packs
+    (``<packs>/sa3/<checkpoint>/<name>.safetensors``; CAA as
+    ``<concept>``, AUSteer as ``<concept>_austeer``). ``magnitude`` maps
+    the knob's full scale (``STEERING_ALPHA_MAX``) to the calibrated
+    localised strength, so a slider end is about the prompt-swap
+    distortion of that concept."""
+    from acestep.streaming.knobs import STEERING_ALPHA_MAX
     from acestep.tada.caa import stack_vectors
-    from acestep.tada.packs import caa_pack, write_caa_pack
+    from acestep.tada.packs import austeer_pack, caa_pack, write_caa_pack
 
-    ranges = json.loads(Path(args.ranges).read_text()) if args.ranges else {}
+    ranges = json.loads(Path(args.ranges).read_text())
+    blocks = list(args.loc)
     for concept in args.concepts:
-        vec = _load_vectors(args, concept)
-        blocks = list(args.loc)
-        mag = float(ranges.get(concept, {}).get("loc", args.alpha_max or 1.0))
-        pack = caa_pack(
-            stack_vectors(vec, blocks), family="sa3", checkpoint=args.checkpoint,
-            concept=concept, blocks=blocks, magnitude=mag, renorm=False, cond_only=True,
-            blurb=f"TADA CAA ({concept}) at cross-attention outputs of blocks {blocks}",
-            provenance={"pairs": 50, "seed": CAA_SEED, "steps": STEPS,
-                        "renorm": "off (reference Stable Audio Open eval configs)"},
-        )
-        print(write_caa_pack(pack, args.packs))
+        for method in ("caa", "austeer"):
+            args.method = method
+            vec = _load_vectors(args, concept, "loc")
+            lo, hi = ranges[method][concept]["loc"]
+            mag = max(abs(lo), abs(hi)) / STEERING_ALPHA_MAX
+            common = dict(
+                family="sa3", checkpoint=args.checkpoint, blocks=blocks, magnitude=mag,
+                renorm=False, cond_only=True,
+            )
+            prov = {"pairs": 50, "seed": CAA_SEED, "steps": STEPS, "calibrated_range": [lo, hi],
+                    "renorm": "off (reference Stable Audio Open eval configs)"}
+            stacked = stack_vectors(vec, blocks)
+            if method == "caa":
+                pack = caa_pack(stacked, concept=concept, provenance=prov,
+                                blurb=f"TADA CAA at cross-attention outputs of blocks {blocks}", **common)
+            else:
+                pack = austeer_pack(stacked, top_s=args.top_s_loc, concept=f"{concept}_austeer",
+                                    label=f"{concept.replace('_', ' ').title()} (AUSteer)", provenance=prov,
+                                    blurb=f"TADA AUSteer (top {args.top_s_loc}) at blocks {blocks}", **common)
+            print(write_caa_pack(pack, args.packs))
 
 
 def main() -> int:
