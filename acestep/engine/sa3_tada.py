@@ -58,7 +58,7 @@ def sa3_target(sam):
 @contextmanager
 def steer_offline(
     sam, vectors: Mapping[int, Mapping[int, torch.Tensor]], alpha: float,
-    *, renorm: bool = False, guidance: float = 1.0,
+    *, renorm: bool = False, guidance: float = 1.0, cfg_rows: bool = False,
 ):
     """TADA's CAA application during an offline SA3 render:
     ``h_l <- h_l + alpha * v[step][l]`` on the cross-attention output
@@ -89,6 +89,11 @@ def steer_offline(
             v = None if state["plain"] else vectors.get(state["step"], {}).get(block)
             if v is None:
                 return out
+            if cfg_rows:
+                # batched CFG (vendored DiT: [cond; uncond]): the paper
+                # steers the conditional pass only
+                h = out.shape[0] // 2
+                return torch.cat([steer_activation(out[:h], v, alpha, renorm=renorm), out[h:]])
             return steer_activation(out, v, alpha, renorm=renorm)
         return hook
 
@@ -117,7 +122,7 @@ def steer_offline(
 
 @torch.no_grad()
 def generate(sam, prompts: Sequence[str], *, seed: int, duration: float = 10.0,
-             steps: int = 8) -> torch.Tensor:
+             steps: int = 8, cfg_scale: float = 1.0) -> torch.Tensor:
     """One batched SA3 text-to-audio render: ``[B, channels, samples]``
     float32 on cpu, ``cfg_scale=1``. The same ``seed`` and batch size give
     the same initial latents row by row, which patching (clean vs
@@ -125,6 +130,6 @@ def generate(sam, prompts: Sequence[str], *, seed: int, duration: float = 10.0,
     prompts = list(prompts)
     audio = sam.generate(
         prompt=prompts, duration=float(duration), steps=int(steps),
-        seed=int(seed), cfg_scale=1.0, batch_size=len(prompts),
+        seed=int(seed), cfg_scale=float(cfg_scale), batch_size=len(prompts),
     )
     return audio.float().cpu()

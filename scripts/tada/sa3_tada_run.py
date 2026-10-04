@@ -82,10 +82,18 @@ CAA_SEED = 10
 EVAL_SEED = 2115
 
 
+#: ``--checkpoint`` (default the served ARC ``medium``) and ``--cfg``
+#: (classifier-free guidance; 1 = SA3 medium's CFG-free sampling). With
+#: ``--cfg`` > 1 the vendored DiT batches ``[cond; uncond]`` rows: CAA and
+#: AUSteer record, and steering adds to, the conditional half only.
+_CHECKPOINT = "medium"
+_CFG = 1.0
+
+
 def _load_sam():
     from sa3_reference_generate import checkpoint_dir, load_local_model
 
-    sam = load_local_model(checkpoint_dir("medium"), device="cuda", model_half=True)
+    sam = load_local_model(checkpoint_dir(_CHECKPOINT), device="cuda", model_half=True)
     sam.model.eval()
     return sam
 
@@ -434,7 +442,8 @@ class _PerRow:
 
     def __call__(self, batch: int):
         k = max(0, self.forwards)
-        return [(slice(i, i + 1), k) for i in range(int(batch))]
+        rows = int(batch) // 2 if _CFG != 1.0 else int(batch)
+        return [(slice(i, i + 1), k) for i in range(rows)]
 
 
 # ---------------------------------------------------------------------------
@@ -472,7 +481,7 @@ def cmd_pci(args, sam) -> None:
     nb = target.num_blocks
     tests = _eval_prompts(args)
     # Both directions, as the reference PCI cells (cutoff per direction).
-    ks = list(range(-STEPS, STEPS + 1))
+    ks = sorted({0} | {int(k) for k in args.pci_ks} | {-int(k) for k in args.pci_ks}) if args.pci_ks         else list(range(-STEPS, STEPS + 1))
     for concept in args.concepts:
         triples = [_pci_triple(p, concept) for p in tests]
         for site in args.pci_sites:
@@ -770,7 +779,8 @@ def _render_alpha(sam, prompts, vectors, blocks, alpha, batch):
     sel = _steps_for(sel, STEPS)
     outs = []
     for idx in _batches(len(prompts), batch):
-        with sa3_tada.steer_offline(sam, sel, alpha, renorm=_RENORM, guidance=_GUIDANCE):
+        with sa3_tada.steer_offline(sam, sel, alpha, renorm=_RENORM, guidance=_GUIDANCE,
+                                    cfg_rows=_CFG != 1.0):
             outs.append(sa3_tada.generate(sam, [prompts[i] for i in idx], seed=EVAL_SEED,
                                           duration=DURATION, steps=STEPS))
     return torch.cat(outs)
@@ -1014,6 +1024,10 @@ def main() -> int:
     ap.add_argument("--ranges", default=None, help="json {concept: {site: max}}")
     ap.add_argument("--alphas", nargs="*", default=[])
     ap.add_argument("--suffix", default="")
+    ap.add_argument("--pci-ks", type=int, nargs="*", default=None,
+                    help="pci: switch lengths (both signs; default every step)")
+    ap.add_argument("--checkpoint", default="medium", help="SA3 checkpoint id (medium, medium-base)")
+    ap.add_argument("--cfg", type=float, default=1.0, help="classifier-free guidance scale")
     ap.add_argument("--pci-sites", nargs="+", choices=("all", "loc"), default=["all", "loc"],
                     help="pci: which PCI variants to render")
     ap.add_argument("--eval-sub", default="eval", help="eval directory under --out")
@@ -1041,6 +1055,11 @@ def main() -> int:
         args.pairs = 50
     torch.backends.cuda.matmul.allow_tf32 = True
     _log(f"{args.cmd}: loading SA3 medium")
+    global _CHECKPOINT, _CFG
+    _CHECKPOINT, _CFG = args.checkpoint, float(args.cfg)
+    if _CFG != 1.0:
+        import functools
+        sa3_tada.generate = functools.partial(sa3_tada.generate, cfg_scale=_CFG)
     sam = _load_sam()
     global _RENORM, _GUIDANCE, STEPS, _AUDIO_FROM, _KV_REAL_TOKENS
     _RENORM = bool(args.renorm)
