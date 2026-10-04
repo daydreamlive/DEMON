@@ -347,14 +347,28 @@ _AUDIO_FROM = 0
 _KV_REAL_TOKENS = False
 
 
+#: Valid (non-padding) latent frames of the current render, set by
+#: :func:`_check_no_padding` from the DiT ``padding_mask``. SA3 pads the
+#: latent past ``duration + headroom`` to its chunk alignment; those
+#: frames are excluded from the audio-token mean. None = no mask seen.
+_VALID_FRAMES = {"n": None}
+
+
+def _audio_rows(h: torch.Tensor) -> torch.Tensor:
+    n = _VALID_FRAMES["n"]
+    if _AUDIO_FROM == 0:
+        return h
+    return h[:, _AUDIO_FROM:] if n is None else h[:, _AUDIO_FROM:_AUDIO_FROM + n]
+
+
 def _audio_mean(h: torch.Tensor) -> torch.Tensor:
     from acestep.tada.target import time_mean
-    return time_mean(h[:, _AUDIO_FROM:])
+    return time_mean(_audio_rows(h))
 
 
 def _audio_frames(h: torch.Tensor) -> torch.Tensor:
     from acestep.tada.target import frames
-    return frames(h[:, _AUDIO_FROM:])
+    return frames(_audio_rows(h))
 
 
 @contextmanager
@@ -364,16 +378,26 @@ def _null():
 
 @contextmanager
 def _check_no_padding(sam):
-    """Fail if any latent frame is padding (fixed 10 s renders: none)."""
+    """Record the valid latent length from the DiT ``padding_mask`` (SA3
+    pads the latent past ``duration + headroom`` to its chunk alignment)
+    so the audio-token mean excludes padding. Fails unless the mask is one
+    shared prefix for every row (fixed-duration batches)."""
     def pre(_m, _a, kw):
         pm = kw.get("padding_mask")
-        if pm is not None and not bool(pm.all()):
-            raise RuntimeError("latent padding present; audio-token mean would include it")
+        if pm is None:
+            _VALID_FRAMES["n"] = None
+            return
+        pm = pm.bool()
+        n = int(pm[0].sum())
+        if not (bool((pm == pm[0:1]).all()) and bool(pm[0, :n].all())):
+            raise RuntimeError("padding_mask is not one shared prefix; per-row audio means needed")
+        _VALID_FRAMES["n"] = n
     h = sam.model.model.model.register_forward_pre_hook(pre, with_kwargs=True)
     try:
         yield
     finally:
         h.remove()
+        _VALID_FRAMES["n"] = None
 
 
 @contextmanager
