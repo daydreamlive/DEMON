@@ -47,7 +47,9 @@ def _with_pci(args) -> int:
     auc = json.loads((root / "auc.json").read_text())
     bench = json.loads((Path(__file__).resolve().parents[2] / "acestep" / "tada" / "data"
                         / "benchmark_prompts.json").read_text(encoding="utf-8"))["test_prompts"]
-    lines = ["# TADA on Stable Audio 3: ear package (E3, corrected vectors)", ""]
+    lines = [f"# TADA on Stable Audio 3: ear package ({args.sub}, CAA {args.site})", "",
+             "One benchmark prompt per concept: the one whose MuQ alignment gains most from strength 0 to",
+             "the admitted strength (a best case chosen by the metric, not a typical one).", ""]
     for c in args.concepts:
         d = root / f"{args.method}_{args.site}_{c}"
         pr = d / "protocol_results"
