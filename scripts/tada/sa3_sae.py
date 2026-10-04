@@ -409,9 +409,172 @@ def cmd_vectors(args) -> dict:
     return out
 
 
+# ---------------------------------------------------------------------------
+# evaluation through the SA3 lane's driver and protocol layout
+# ---------------------------------------------------------------------------
+
+def _run_module(args):
+    """The SA3 lane's driver (``sa3_tada_run.py``) with the MECHANISM
+    line's renorm and guidance, so SAE vectors render exactly like CAA."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import sa3_tada_run as R
+
+    R._RENORM = bool(args.renorm)
+    if hasattr(R, "_GUIDANCE"):
+        R._GUIDANCE = float(args.guidance)
+    R.STEPS = int(args.steps)
+    return R
+
+
+def _sel_vectors(args, concept, form, k):
+    root = Path(args.root)
+    d = torch.load(root / "sae_sel" / f"{form}_k{k}" / "caa" / f"{concept}.sae.pt",
+                   weights_only=False)
+    return d["vectors"]
+
+
+def _vec_scale(vectors, blocks) -> float:
+    return float(torch.stack([vectors[0][b].float().norm() for b in blocks]).mean())
+
+
+def _site(form: str, k: int) -> str:
+    """Directory site token (no underscore: the scorer splits on '_')."""
+    return f"{form[0]}{int(k)}"
+
+
+def cmd_probe(args) -> dict:
+    """Calibration probes on the held-out prompts: strengths chosen so
+    that ``alpha * |v_SAE|`` spans ``--probe-mults`` (CAA's unit-vector
+    probes reach its cutoffs between 4 and 32), into
+    ``<sa3>/calib_sae/sae_<form><k>_<concept>/alpha_*``."""
+    from acestep.tada import concepts as C
+
+    R = _run_module(args)
+    sam = R._load_sam()
+    prompts, _ = C.benchmark_prompts(holdout=True)
+    out = {}
+    for concept in args.concepts:
+        for form in args.forms:
+            for k in args.k_grid:
+                vec = _sel_vectors(args, concept, form, k)
+                scale = _vec_scale(vec, args.blocks)
+                root = Path(args.sa3_out) / "calib_sae" / f"sae_{_site(form, k)}_{concept}"
+                alphas = [0.0] + [round(sg * m / scale, 4)
+                                  for m in args.probe_mults for sg in (1, -1)]
+                for a in alphas:
+                    d = root / R._fmt_alpha(a)
+                    if (d / "audios.npz").exists():
+                        continue
+                    audio = R._render_alpha(sam, prompts, vec, args.blocks, a, args.batch)
+                    R._save_npz(d, audio, [f"p{i:03d}.wav" for i in range(len(prompts))],
+                                mono=True)
+                meta = json.dumps({"concept": concept, "form": form, "k": k,
+                                   "scale": scale, "alphas": alphas}, indent=1)
+                (root / "probe.json").write_text(meta)
+                # The SA3 scorer treats a directory as complete once sweep.json exists.
+                (root / "sweep.json").write_text(meta)
+                out[f"{concept}/{form}/k{k}"] = scale
+                print(f"[probe] {root.name} scale {scale:.2f}", flush=True)
+    return out
+
+
+def cmd_calibrate(args) -> dict:
+    """Per concept / form / k, the smallest probed ``|alpha|`` per
+    direction whose mean LPAPS reaches the concept's PCI cutoff (the SA3
+    lane's rule and its eval50 cutoffs); the largest probe otherwise."""
+    import csv
+
+    sa3 = Path(args.sa3_out)
+
+    def lp(d):
+        for name in ("lpaps.csv", "lpaps_endpoints.csv"):
+            f = d / "protocol_results" / name
+            if f.exists():
+                with f.open() as fh:
+                    return {float(r["alpha"]): float(r["mean"]) for r in csv.DictReader(fh)}
+        return None
+
+    ranges, notes = {}, {}
+    for concept in args.concepts:
+        cut = {}
+        for direction, sign in (("pos", 1), ("neg", -1)):
+            vals = []
+            for site in ("all", "loc"):
+                t = lp(sa3 / "eval50" / f"pci_{site}_{concept}")
+                if t:
+                    vals.append(max(v for a, v in t.items() if sign * a > 0))
+            cut[direction] = min(vals) if vals else None
+        for form in args.forms:
+            for k in args.k_grid:
+                pr = lp(sa3 / "calib_sae" / f"sae_{_site(form, k)}_{concept}")
+                if not pr or None in cut.values():
+                    continue
+                rng = []
+                for direction, sign in (("neg", -1), ("pos", 1)):
+                    probes = sorted((abs(a), v) for a, v in pr.items() if sign * a > 0)
+                    hit = [a for a, v in probes if v >= cut[direction]]
+                    a = hit[0] if hit else probes[-1][0]
+                    rng.append(sign * a)
+                    notes[f"{concept}/{_site(form, k)}/{direction}"] = {
+                        "cutoff": cut[direction], "alpha": sign * a, "reached": bool(hit)}
+                ranges.setdefault(concept, {})[_site(form, k)] = rng
+    (sa3 / "ranges_sae.json").write_text(json.dumps(ranges, indent=1))
+    (sa3 / "ranges_sae_notes.json").write_text(json.dumps(notes, indent=1))
+    return ranges
+
+
+def cmd_sweep(args) -> dict:
+    """The scaled protocol's strength sweep for SAE vectors, in the SA3
+    lane's layout ``<sa3>/<sub>/sae_<site>_<concept>/alpha_*`` (site =
+    form initial + k_c, or ``--site-name``), with the eval50 PCI
+    ``protocol_results`` copied in so the scorer finds the cutoffs."""
+    import shutil
+
+    from acestep.tada import concepts as C
+    from acestep.tada.caa import alphas_from_range
+
+    R = _run_module(args)
+    sa3 = Path(args.sa3_out)
+    sub = sa3 / args.sub
+    sub.mkdir(parents=True, exist_ok=True)
+    for pci in (sa3 / "eval50").glob("pci_*"):
+        dst = sub / pci.name / "protocol_results"
+        if not dst.exists() and (pci / "protocol_results").exists():
+            shutil.copytree(pci / "protocol_results", dst)
+    ranges = json.loads((sa3 / "ranges_sae.json").read_text())
+    prompts, _ = C.benchmark_prompts(holdout=args.holdout)
+    prompts = prompts[: args.n_prompts]
+    sam = R._load_sam()
+    done = {}
+    for concept in args.concepts:
+        for form in args.forms:
+            for k in args.k_grid:
+                site = _site(form, k)
+                rng = ranges[concept][site]
+                alphas = alphas_from_range(float(rng[0]), float(rng[1]), args.points)
+                vec = _sel_vectors(args, concept, form, k)
+                root = sub / f"sae_{args.site_name or site}_{concept}"
+                for a in alphas:
+                    d = root / R._fmt_alpha(a)
+                    if (d / "audios.npz").exists():
+                        continue
+                    audio = R._render_alpha(sam, prompts, vec, args.blocks, a, args.batch)
+                    R._save_npz(d, audio, [f"p{i:03d}.wav" for i in range(len(prompts))],
+                                mono=True)
+                (root / "sweep.json").write_text(json.dumps({
+                    "concept": concept, "form": form, "k": k, "blocks": args.blocks,
+                    "alphas": alphas, "prompts": len(prompts), "seed": R.EVAL_SEED,
+                    "steps": args.steps, "renorm": bool(args.renorm),
+                    "guidance": float(args.guidance), "holdout": bool(args.holdout),
+                    "range": rng}, indent=1))
+                done[f"{concept}/{site}"] = len(alphas)
+                print(f"[sweep] {root.name}: {len(alphas)} strengths x {len(prompts)}", flush=True)
+    return done
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("command", choices=("time", "cache", "train", "score", "vectors"))
+    ap.add_argument("command", choices=("time", "cache", "train", "score", "vectors", "probe", "calibrate", "sweep"))
     ap.add_argument("--root", default=str(DEFAULT_ROOT))
     ap.add_argument("--blocks", type=int, nargs="+", required=True)
     ap.add_argument("--hook", default="cross_attn_output")
@@ -430,10 +593,20 @@ def main() -> int:
     ap.add_argument("--sae", default=None, help="SAE config name to score with (default: chosen)")
     ap.add_argument("--k-grid", type=int, nargs="*", default=[5, 10, 20, 50, 100, 500])
     ap.add_argument("--forms", nargs="*", default=["pooled", "perstep"])
+    ap.add_argument("--sa3-out", default=str(DEFAULT_ROOT / "sa3"))
+    ap.add_argument("--renorm", action="store_true")
+    ap.add_argument("--guidance", type=float, default=1.0)
+    ap.add_argument("--probe-mults", type=float, nargs="*", default=[2, 4, 8, 16, 32, 64, 128])
+    ap.add_argument("--sub", default="sae_sel")
+    ap.add_argument("--site-name", default=None)
+    ap.add_argument("--holdout", action="store_true")
+    ap.add_argument("--n-prompts", type=int, default=50)
+    ap.add_argument("--points", type=int, default=10)
     ap.add_argument("--json", default=None)
     args = ap.parse_args()
     fn = {"time": cmd_time, "cache": cmd_cache, "train": cmd_train, "score": cmd_score,
-          "vectors": cmd_vectors}
+          "vectors": cmd_vectors, "probe": cmd_probe, "calibrate": cmd_calibrate,
+          "sweep": cmd_sweep}
     res = fn[args.command](args)
     text = json.dumps(res, indent=2, default=str)
     print(text if len(text) < 4000 else text[:4000])
