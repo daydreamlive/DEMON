@@ -82,7 +82,7 @@ def cmd_patch(args) -> None:
     from src.steering.eval.audio_io import as_wav_dir
 
     model = _clap_model()
-    for cdir in sorted((args.out / "patch").iterdir()):
+    for cdir in sorted((args.out / args.patch_dir).iterdir()):
         meta = cdir / "done.json"
         if not meta.exists() or (args.concepts and cdir.name not in args.concepts):
             continue
@@ -250,6 +250,7 @@ def main() -> int:
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--skip-aesthetics", action="store_true")
     ap.add_argument("--sub", default="eval", help="eval or calib")
+    ap.add_argument("--patch-dir", default="patch", help="patch, patch_xattn_out or patch_resid")
     ap.add_argument("--reverse", action="store_true", help="walk directories in reverse order")
     ap.add_argument("--methods", nargs="*", default=None, help="caa, austeer, pci")
     args = ap.parse_args()

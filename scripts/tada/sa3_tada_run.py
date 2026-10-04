@@ -123,12 +123,78 @@ def _patch_pairs(concept: str, csv_path: Path, limit: int):
     return clean[:limit], corr[:limit], d
 
 
+class _OutputPatcher:
+    """Activation patch at a module OUTPUT (E2 site sweep): record each
+    listed module's output during the clean run (one call per sampler
+    step at ``cfg_scale=1``), then substitute it, call by call, during
+    the corrupted run. ``modules`` is indexed by block."""
+
+    def __init__(self, modules, blocks):
+        self.modules = modules
+        self.blocks = list(blocks)
+        self.cache = {b: [] for b in self.blocks}
+        self.leftover = {}
+
+    @contextmanager
+    def record(self):
+        def make(b):
+            def hook(_m, _i, out):
+                self.cache[b].append(out.detach().clone())
+            return hook
+        hs = [self.modules[b].register_forward_hook(make(b)) for b in self.blocks]
+        try:
+            yield self
+        finally:
+            for h in hs:
+                h.remove()
+
+    @contextmanager
+    def patch(self):
+        queues = {b: list(self.cache[b]) for b in self.blocks}
+
+        def make(b):
+            def hook(_m, _i, out):
+                if not queues[b]:
+                    raise RuntimeError(f"patched run made more calls at block {b}")
+                rec = queues[b].pop(0)
+                if rec.shape != out.shape:
+                    raise RuntimeError(f"patch shape {tuple(rec.shape)} != {tuple(out.shape)}")
+                return rec.to(out.dtype)
+            return hook
+        hs = [self.modules[b].register_forward_hook(make(b)) for b in self.blocks]
+        try:
+            yield self
+        finally:
+            for h in hs:
+                h.remove()
+            self.leftover = {b: len(q) for b, q in queues.items() if q}
+
+
+#: E2 patch sites. ``xattn_cond``: TADA's K/V patch (the ``context``
+#: keyword of each block's cross-attention; the original localization).
+#: ``xattn_out``: the cross-attention OUTPUT (before the residual add).
+#: ``resid``: the post-block residual stream (block output).
+PATCH_SITES = ("xattn_cond", "xattn_out", "resid")
+
+
+def _patch_dir(args) -> str:
+    return "patch" if args.patch_site == "xattn_cond" else f"patch_{args.patch_site}"
+
+
+def _make_patcher(args, sam, target, blocks):
+    if args.patch_site == "xattn_cond":
+        return ConditioningPatcher(target, list(blocks), hook=HOOK_CROSS_ATTN_COND)
+    mods = (sa3_tada.cross_attn_modules(sam) if args.patch_site == "xattn_out"
+            else list(sa3_tada.sa3_blocks(sam)))
+    return _OutputPatcher(mods, blocks)
+
+
 def cmd_patch(args, sam) -> None:
     target = sa3_tada.sa3_target(sam)
     nb = target.num_blocks
     sets = run_sets(nb)
     for concept in args.concepts:
-        root = args.out / "patch" / concept
+        root = args.out / _patch_dir(args) / concept
         if (root / "done.json").exists() and not args.force:
             _log(f"patch {concept}: done, skipping")
             continue
@@ -142,14 +208,14 @@ def cmd_patch(args, sam) -> None:
             for idx in _batches(n, args.batch):
                 cp = [clean[i] for i in idx]
                 xp = [corr[i] for i in idx]
-                rec = ConditioningPatcher(target, list(range(nb)), hook=HOOK_CROSS_ATTN_COND)
+                rec = _make_patcher(args, sam, target, range(nb))
                 with rec.record():
                     sa3_tada.generate(sam, cp, seed=seed, duration=DURATION, steps=STEPS)
                 for key, blocks in sets:
                     if not blocks:
                         out = sa3_tada.generate(sam, xp, seed=seed, duration=DURATION, steps=STEPS)
                     else:
-                        p = ConditioningPatcher(target, list(blocks), hook=HOOK_CROSS_ATTN_COND)
+                        p = _make_patcher(args, sam, target, blocks)
                         p.cache = {b: list(rec.cache[b]) for b in blocks}
                         with p.patch():
                             out = sa3_tada.generate(sam, xp, seed=seed, duration=DURATION, steps=STEPS)
@@ -164,6 +230,7 @@ def cmd_patch(args, sam) -> None:
         (root / "done.json").write_text(json.dumps({
             "concept": concept, "pairs": n, "seeds": args.seeds, "seed0": PATCH_SEED,
             "steps": STEPS, "duration": DURATION, "cfg_scale": 1.0,
+            "site": args.patch_site,
             "eval_clap_prompts": d["eval_clap_prompts"],
             "eval_muqt_prompts": d["eval_muqt_prompts"],
             "example_pair": [clean[0], corr[0]],
@@ -403,10 +470,89 @@ class _SwitchPatcher:
         return ctx()
 
 
+def cmd_oracle(args, sam) -> None:
+    """E2 oracle vectors: for each of the 50 CAA prompt pairs, the
+    cross-attention output at the localized blocks under the positive
+    prompt minus under the negative prompt, same seed (``EVAL_SEED``),
+    same batch partition (``--batch``, so row ``i`` shares its noise with
+    eval prompt ``i`` of the sweep), every sampler step, every token.
+    Saved as ``[pair, step, block, token, hidden]`` fp16."""
+    mods = sa3_tada.cross_attn_modules(sam)
+    blocks = list(args.loc)
+    (args.out / "oracle").mkdir(parents=True, exist_ok=True)
+    for concept in args.concepts:
+        path = args.out / "oracle" / f"{concept}.pt"
+        if path.exists() and not args.force:
+            continue
+        pos, neg, _ = C.prompt_pairs(concept)
+        n = min(len(pos), args.pairs)
+        diffs = []
+        for idx in _batches(n, args.batch):
+            got = []
+            for prompts in ([pos[i] for i in idx], [neg[i] for i in idx]):
+                rec = {b: [] for b in blocks}
+
+                def make(b, rec=rec):
+                    def hook(_m, _i, out):
+                        rec[b].append(out.detach().to("cpu", torch.float32))
+                    return hook
+                hs = [mods[b].register_forward_hook(make(b)) for b in blocks]
+                try:
+                    sa3_tada.generate(sam, prompts, seed=EVAL_SEED, duration=DURATION, steps=STEPS)
+                finally:
+                    for h in hs:
+                        h.remove()
+                # [B, step, block, T, H]
+                got.append(torch.stack([torch.stack(rec[b], dim=1) for b in blocks], dim=2))
+            diffs.append((got[0] - got[1]).half())
+        diff = torch.cat(diffs)
+        torch.save({"diff": diff, "blocks": blocks, "batch": args.batch, "seed": EVAL_SEED,
+                    "pairs": n, "steps": STEPS, "positive": pos[:n], "negative": neg[:n],
+                    "layout": "[pair, step, block, token, hidden] cross-attn output pos - neg"}, path)
+        norms = diff.float().norm(dim=-1).mean(dim=(0, 3))
+        _log(f"oracle {concept}: {tuple(diff.shape)}; mean token norm per step x block {norms.numpy().round(2).tolist()}")
+
+
+@contextmanager
+def _oracle_context(sam, vectors, rows, alpha):
+    """Add ``alpha * diff[row, step, block]`` (per token, or its token
+    mean for ``oraclemean``) to the localized blocks' cross-attention
+    outputs; one forward per sampler step (``cfg_scale=1``)."""
+    mods = sa3_tada.cross_attn_modules(sam)
+    handles = []
+    if alpha != 0:
+        diff = vectors["oracle"][list(rows)]
+        if vectors["mean"]:
+            diff = diff.float().mean(dim=3, keepdim=True).half()
+        state = {"step": -1, "dev": None}
+
+        def tick(_m, _i):
+            state["step"] += 1
+        handles.append(sa3_tada.sa3_blocks(sam)[0].register_forward_pre_hook(tick))
+
+        def make(j):
+            def hook(_m, _i, out):
+                d = diff[:, state["step"], j].to(out.device, out.dtype)
+                return out + float(alpha) * d
+            return hook
+        for j, b in enumerate(vectors["blocks"]):
+            handles.append(mods[b].register_forward_hook(make(j)))
+    try:
+        yield
+    finally:
+        for h in handles:
+            h.remove()
+
+
 def _load_vectors(args, concept, site="loc"):
     """``{step: {block: [H]}}`` for ``args.method``: the CAA unit vectors
     (every block; the site picks blocks), or the AUSteer sparse vectors
     selected for that site (top-s is global over the site's blocks)."""
+    if getattr(args, "method", "caa") in ("oracle", "oraclemean"):
+        d = torch.load(args.out / "oracle" / f"{concept}.pt", weights_only=False)
+        if site != "loc" or list(args.loc) != list(d["blocks"]):
+            raise SystemExit("oracle vectors exist for the localized blocks only")
+        return {"oracle": d["diff"], "blocks": d["blocks"], "mean": args.method == "oraclemean"}
     if getattr(args, "method", "caa") == "caakv":
         return {"kv": torch.load(args.out / "caa" / f"{concept}.kv.pt", weights_only=False)["vector"]}
     if getattr(args, "method", "caa") == "austeer":
@@ -490,6 +636,15 @@ def cmd_caakv(args, sam) -> None:
 
 
 def _render_alpha(sam, prompts, vectors, blocks, alpha, batch):
+    if "oracle" in vectors:
+        if len(prompts) > vectors["oracle"].shape[0]:
+            raise SystemExit("more prompts than oracle pairs")
+        outs = []
+        for idx in _batches(len(prompts), batch):
+            with _oracle_context(sam, vectors, idx, alpha):
+                outs.append(sa3_tada.generate(sam, [prompts[i] for i in idx], seed=EVAL_SEED,
+                                              duration=DURATION, steps=STEPS))
+        return torch.cat(outs)
     if "kv" in vectors:
         outs = []
         for idx in _batches(len(prompts), batch):
@@ -580,7 +735,7 @@ def cmd_calibrate(args, _sam=None) -> None:
         return {float(r["alpha"]): float(r["mean"]) for r in csv.DictReader(f.open())}
 
     ranges, notes = {}, {}
-    for method in ("caa", "austeer", "caakv"):
+    for method in ("caa", "austeer", "caakv", "oracle", "oraclemean"):
         for concept in args.concepts:
             cut = {}
             for direction, sign in (("pos", 1), ("neg", -1)):
@@ -644,7 +799,7 @@ def cmd_localize(args, _sam=None) -> dict:
     per = {}
     raw = {}
     for concept in args.concepts:
-        f = args.out / "patch" / concept / "scores.json"
+        f = args.out / _patch_dir(args) / concept / "scores.json"
         if not f.exists():
             continue
         js = json.loads(f.read_text())
@@ -661,7 +816,9 @@ def cmd_localize(args, _sam=None) -> dict:
     sel = select_layers(agg, TAU)
     res = {"tau": TAU, "blocks": sel, "impacts": agg, "per_concept": per, "refs": raw,
            "ranked": sorted(range(len(agg)), key=lambda l: -agg[l])[:8]}
-    (args.out / "localization.json").write_text(json.dumps(res, indent=1))
+    name = "localization.json" if args.patch_site == "xattn_cond" else f"localization_{args.patch_site}.json"
+    res["site"] = args.patch_site
+    (args.out / name).write_text(json.dumps(res, indent=1))
     print("I(l): " + " ".join(f"tf{l}={agg[l]:.3f}" for l in res["ranked"]))
     print(f"functional blocks (tau {TAU}): {sel}")
     for c, v in per.items():
@@ -709,7 +866,7 @@ def cmd_pack(args, _sam=None) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=("patch", "caa", "austeer", "pci", "sweep", "probe", "localize", "pack", "calibrate", "subset", "caakv"))
+    ap.add_argument("cmd", choices=("patch", "caa", "austeer", "pci", "sweep", "probe", "localize", "pack", "calibrate", "subset", "caakv", "oracle"))
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--concepts", nargs="+", default=None)
     ap.add_argument("--batch", type=int, default=16)
@@ -717,6 +874,7 @@ def main() -> int:
     # patch
     ap.add_argument("--prompts-csv", type=Path, default=DEFAULT_PROMPTS_CSV)
     ap.add_argument("--pairs", type=int, default=34)
+    ap.add_argument("--patch-site", choices=PATCH_SITES, default="xattn_cond")
     ap.add_argument("--seeds", type=int, default=4)
     # eval
     ap.add_argument("--loc", type=int, nargs="*", default=[])
@@ -732,7 +890,7 @@ def main() -> int:
     ap.add_argument("--eval-sub", default="eval", help="eval directory under --out")
     ap.add_argument("--packs", type=Path, default=TADA_ROOT / "packs")
     ap.add_argument("--checkpoint", default="medium")
-    ap.add_argument("--method", choices=("caa", "austeer", "caakv"), default="caa")
+    ap.add_argument("--method", choices=("caa", "austeer", "caakv", "oracle", "oraclemean"), default="caa")
     ap.add_argument("--renorm", action="store_true")
     ap.add_argument("--guidance", type=float, default=1.0,
                     help="steering guidance: v0 + g (v1 - v0) per step (1 = off)")
@@ -750,7 +908,7 @@ def main() -> int:
         {"localize": cmd_localize, "pack": cmd_pack, "calibrate": cmd_calibrate,
          "subset": cmd_subset}[args.cmd](args)
         return 0
-    if args.cmd in ("caa", "austeer", "caakv") and args.pairs == 34:
+    if args.cmd in ("caa", "austeer", "caakv", "oracle") and args.pairs == 34:
         args.pairs = 50
     torch.backends.cuda.matmul.allow_tf32 = True
     _log(f"{args.cmd}: loading SA3 medium")
@@ -761,7 +919,7 @@ def main() -> int:
     if args.steps:
         STEPS = int(args.steps)
     {"patch": cmd_patch, "caa": cmd_caa, "austeer": cmd_austeer, "caakv": cmd_caakv, "pci": cmd_pci, "sweep": cmd_sweep,
-     "probe": cmd_probe}[args.cmd](args, sam)
+     "probe": cmd_probe, "oracle": cmd_oracle}[args.cmd](args, sam)
     _log("done")
     return 0
 
