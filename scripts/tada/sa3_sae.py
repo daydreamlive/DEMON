@@ -56,6 +56,8 @@ import torch  # noqa: E402
 FAMILY = "sa3"
 CHECKPOINT = "medium"
 DEFAULT_ROOT = Path("E:/Projects/tada-replication")
+#: Heavy outputs (activation cache, SAEs, score tables, eval audio).
+DEFAULT_WORK = Path("D:/tada-replication")
 MUSICCAPS = "data/musiccaps-public.csv"
 
 
@@ -146,7 +148,7 @@ def cmd_cache(args, *, limit=None, store_dir=None, sam=None) -> dict:
     prompts = [caps[i] for i in order]
     if limit is not None:
         prompts = prompts[:limit]
-    store = ActivationStore(store_dir or (root / "sae_cache" / FAMILY))
+    store = ActivationStore(store_dir or (Path(args.work) / "sae_cache" / FAMILY))
     cfg = {
         "family": FAMILY, "checkpoint": CHECKPOINT, "blocks": args.blocks,
         "hook": args.hook, "tokens": "audio only (64 memory tokens and padding excluded)",
@@ -214,8 +216,8 @@ def cmd_train(args, *, store_dir=None, out_dir=None, max_steps=None) -> dict:
     )
 
     root = Path(args.root)
-    store = ActivationStore(store_dir or (root / "sae_cache" / FAMILY))
-    out_root = Path(out_dir or (root / "sae" / FAMILY))
+    store = ActivationStore(store_dir or (Path(args.work) / "sae_cache" / FAMILY))
+    out_root = Path(out_dir or (Path(args.work) / "sae" / FAMILY))
     report = {}
     for block in args.blocks:
         acts_all, meta = store.load(block)
@@ -275,7 +277,7 @@ def cmd_time(args) -> dict:
     from acestep.tada.sae import ActivationStore
 
     root = Path(args.root)
-    tmp = Path(tempfile.mkdtemp(prefix="sae_time_", dir=str(root)))
+    tmp = Path(tempfile.mkdtemp(prefix="sae_time_", dir=str(args.work)))
     out = {"batch": args.batch, "steps": args.steps, "every": args.every,
            "duration": args.duration, "blocks": args.blocks}
     sam = load_sam()
@@ -334,7 +336,7 @@ def cmd_score(args) -> dict:
     from acestep.tada.sae import FeatureMeanRecorder, Sae, score_tables
     from acestep.tada.target import forward_counter
 
-    root = Path(args.root)
+    root = Path(args.work)
     sweep = json.loads((root / "sae" / FAMILY / "sweep.json").read_text(encoding="utf-8"))
     saes = {}
     for b in args.blocks:
@@ -388,7 +390,7 @@ def cmd_vectors(args) -> dict:
     blocks; three blocks would make the grid 6**3)."""
     from acestep.tada.sae import Sae, concept_vectors
 
-    root = Path(args.root)
+    root = Path(args.work)
     sweep = json.loads((root / "sae" / FAMILY / "sweep.json").read_text(encoding="utf-8"))
     saes = {b: Sae.load_from_disk(root / "sae" / FAMILY / f"block_{b}" /
                                   (args.sae or sweep[str(b)]["chosen"]))
@@ -436,7 +438,7 @@ def _run_module(args):
 
 
 def _sel_vectors(args, concept, form, k):
-    root = Path(args.root)
+    root = Path(args.work)
     d = torch.load(root / "sae_sel" / f"{form}_k{k}" / "caa" / f"{concept}.sae.pt",
                    weights_only=False)
     return d["vectors"]
@@ -459,6 +461,7 @@ def cmd_probe(args) -> dict:
     from acestep.tada import concepts as C
 
     R = _run_module(args)
+    _copy_pci(args, Path(args.sa3_out) / "calib_sae")
     sam = R._load_sam()
     prompts, _ = C.benchmark_prompts(holdout=True)
     out = {}
@@ -509,7 +512,7 @@ def cmd_calibrate(args) -> dict:
         for direction, sign in (("pos", 1), ("neg", -1)):
             vals = []
             for site in ("all", "loc"):
-                t = lp(sa3 / "eval50" / f"pci_{site}_{concept}")
+                t = lp(Path(args.pci_src) / f"pci_{site}_{concept}")
                 if t:
                     vals.append(max(v for a, v in t.items() if sign * a > 0))
             cut[direction] = min(vals) if vals else None
@@ -537,8 +540,6 @@ def cmd_sweep(args) -> dict:
     lane's layout ``<sa3>/<sub>/sae_<site>_<concept>/alpha_*`` (site =
     form initial + k_c, or ``--site-name``), with the eval50 PCI
     ``protocol_results`` copied in so the scorer finds the cutoffs."""
-    import shutil
-
     from acestep.tada import concepts as C
     from acestep.tada.caa import alphas_from_range
 
@@ -546,18 +547,16 @@ def cmd_sweep(args) -> dict:
     sa3 = Path(args.sa3_out)
     sub = sa3 / args.sub
     sub.mkdir(parents=True, exist_ok=True)
-    for pci in (sa3 / "eval50").glob("pci_*"):
-        dst = sub / pci.name / "protocol_results"
-        if not dst.exists() and (pci / "protocol_results").exists():
-            shutil.copytree(pci / "protocol_results", dst)
+    _copy_pci(args, sub)
     ranges = json.loads((sa3 / "ranges_sae.json").read_text())
     prompts, _ = C.benchmark_prompts(holdout=args.holdout)
     prompts = prompts[: args.n_prompts]
     sam = R._load_sam()
     done = {}
+    sel = _selection(args)
     for concept in args.concepts:
         for form in args.forms:
-            for k in args.k_grid:
+            for k in ([sel[concept]["k"]] if sel else args.k_grid):
                 site = _site(form, k)
                 rng = ranges[concept][site]
                 alphas = alphas_from_range(float(rng[0]), float(rng[1]), args.points)
@@ -581,10 +580,208 @@ def cmd_sweep(args) -> dict:
     return done
 
 
+def _copy_pci(args, sub: Path) -> None:
+    """The PCI rows' ``protocol_results`` (``--pci-src``, the SA3 lane's
+    eval50) into ``sub`` so the scorer finds SA3's own PCI cutoffs and
+    reports the PCI AUC beside the SAE rows."""
+    import shutil
+
+    sub.mkdir(parents=True, exist_ok=True)
+    for pci in Path(args.pci_src).glob("pci_*"):
+        dst = sub / pci.name / "protocol_results"
+        if not dst.exists() and (pci / "protocol_results").exists():
+            shutil.copytree(pci / "protocol_results", dst)
+
+
+def _selection(args):
+    if not args.selection:
+        return None
+    return json.loads(Path(args.selection).read_text())
+
+
+def _auc_avg(row: dict, metric: str) -> float:
+    return 0.5 * (float(row["pos"][metric]) + float(row["neg"][metric]))
+
+
+def selection_metric(concept: str) -> str:
+    """The paper's benchmark metric per concept (Sec. 4 / App. I): CLAP for
+    vocal gender, MuQ-T for everything else (MuQ primary on SA3)."""
+    return "clap" if concept == "vocal_gender" else "muqt"
+
+
+def cmd_select(args) -> dict:
+    """``k_c`` per concept on the 20 held-out prompts (paper App. I.2): the
+    ``k_c`` whose calibration-grid alignment AUC (mean of the two
+    directions, SA3's own PCI cutoffs) is highest, by the concept's
+    benchmark metric. Reads ``<sa3-out>/calib_sae/auc.json`` (scorer
+    ``auc --sub calib_sae``); writes ``--selection``."""
+    auc = json.loads((Path(args.sa3_out) / "calib_sae" / "auc.json").read_text())
+    out = {}
+    for concept in args.concepts:
+        metric = selection_metric(concept)
+        rows = {}
+        for form in args.forms:
+            for k in args.k_grid:
+                r = auc.get(concept, {}).get(f"sae_{_site(form, k)}")
+                if r and "pos" in r and "neg" in r:
+                    rows[(form, k)] = _auc_avg(r, metric)
+        if not rows:
+            continue
+        (form, k), best = max(rows.items(), key=lambda kv: kv[1])
+        out[concept] = {"k": int(k), "form": form, "metric": metric, "holdout_auc": best,
+                        "all": {f"{f}{kk}": round(v, 4) for (f, kk), v in rows.items()}}
+    Path(args.selection).write_text(json.dumps(out, indent=1))
+    return out
+
+
+def cmd_report(args) -> dict:
+    """SAE/PCI ratios on the eval prompts: per concept the alignment AUC
+    (mean of the two directions) of ``sae_<site>`` and of PCI-all from the
+    same ``auc.json`` (scorer ``auc --sub <sub>``), MuQ and CLAP, plus the
+    corrected CAA-loc row when ``--caa-auc`` exists. Paper reference
+    (Table 1, ACE-Step): SAE-loc / PCI = 0.118 / 0.084 = 1.40 (MuQ)."""
+    sub = Path(args.sa3_out) / args.sub
+    auc = json.loads((sub / "auc.json").read_text())
+    caa = {}
+    if args.caa_auc and Path(args.caa_auc).exists():
+        caa = json.loads(Path(args.caa_auc).read_text())
+    label = f"sae_{args.site_name or 'loc'}"
+    rows = {}
+    acc = {"sae_muqt": [], "pci_muqt": [], "sae_clap": [], "pci_clap": [], "caa_muqt": []}
+    for concept in args.concepts:
+        r = auc.get(concept, {})
+        if label not in r or "pci_all" not in r:
+            continue
+        row = {}
+        for m in ("muqt", "clap"):
+            row[f"sae_{m}"] = _auc_avg(r[label], m)
+            row[f"pci_{m}"] = _auc_avg(r["pci_all"], m)
+            acc[f"sae_{m}"].append(row[f"sae_{m}"])
+            acc[f"pci_{m}"].append(row[f"pci_{m}"])
+        row["ratio_muqt"] = row["sae_muqt"] / row["pci_muqt"] if row["pci_muqt"] else float("nan")
+        c = caa.get(concept, {}).get("caa_loc")
+        if c and "pos" in c and "neg" in c:
+            row["caa_loc_muqt"] = _auc_avg(c, "muqt")
+            acc["caa_muqt"].append(row["caa_loc_muqt"])
+        rows[concept] = row
+    mean = {k: float(np.mean(v)) for k, v in acc.items() if v}
+    if mean.get("pci_muqt"):
+        mean["ratio_muqt_of_means"] = mean["sae_muqt"] / mean["pci_muqt"]
+    rep = {"rows": rows, "mean": mean, "n_concepts": len(rows),
+           "paper_ref": "ACE-Step Table 1: SAE-loc/PCI 0.118/0.084 = 1.40 (MuQ)"}
+    (sub / "sae_report.json").write_text(json.dumps(rep, indent=1))
+    return rep
+
+
+def cmd_pack(args) -> dict:
+    """Per-step ``v_SAE`` packs (hook ``cross_attn_output``, renorm off,
+    cond pass) for the selected ``k_c``, with the eval strength range as
+    the knob magnitude, into ``--packs``."""
+    from acestep.tada.sae import sae_pack, write_sae_pack
+
+    sel = _selection(args)
+    ranges = json.loads((Path(args.sa3_out) / "ranges_sae.json").read_text())
+    out = {}
+    for concept in args.concepts:
+        s = sel[concept]
+        d = torch.load(Path(args.work) / "sae_sel" / f"{s['form']}_k{s['k']}" / "caa" /
+                       f"{concept}.sae.pt", weights_only=False)
+        vec = d["vectors"]
+        steps = sorted(vec)
+        v = torch.stack([torch.stack([vec[st][b].float() for st in steps]) for b in args.blocks])
+        rng = [float(x) for x in ranges[concept][_site(s["form"], s["k"])]]
+        mag = max(abs(x) for x in rng)
+        pack = sae_pack(v, family=FAMILY, checkpoint=CHECKPOINT, concept=concept,
+                        blocks=args.blocks, k_per_block={b: int(s["k"]) for b in args.blocks},
+                        magnitude=mag, renorm=False,
+                        policy={"kind": "range", "start": rng[0] / mag, "end": rng[1] / mag},
+                        sigmas=[float(d["sigmas"][st]) for st in steps],
+                        provenance={"sae": d["sae"], "selection": s, "range": rng,
+                                    "negative": "negated positive vector (alpha < 0)"})
+        out[concept] = str(write_sae_pack(pack, args.packs))
+    return out
+
+
+def cmd_listen(args) -> dict:
+    """Ear package: per concept, four files of one benchmark prompt from
+    the same seed (2115) and batch layout: zero (strength 0 of the SAE
+    sweep), the real positive prompt (PCI reference at full switch length,
+    ``sa3_tada_run.py swap`` into the same eval directory), SAE at the
+    strongest positive strength within the PCI cutoff, SAE at the largest
+    positive grid strength. Prompt = largest MuQ gain zero -> admitted."""
+    import ast
+
+    import pandas as pd
+    import soundfile as sf
+
+    sub = Path(args.sa3_out) / args.sub
+    auc = json.loads((sub / "auc.json").read_text())
+    bench = json.loads((_REPO_ROOT / "acestep" / "tada" / "data" / "benchmark_prompts.json")
+                       .read_text(encoding="utf-8"))["test_prompts"]
+    sel = _selection(args) or {}
+    dst = Path(args.dst)
+    dst.mkdir(parents=True, exist_ok=True)
+    label = f"sae_{args.site_name or 'loc'}"
+    lines = ["# TADA SAE on Stable Audio 3 medium: ear package", "",
+             "SAE = sum of the top-k_c TF-IDF SAE decoder rows per step (unit weights), added at the",
+             f"cross-attention output of blocks {args.blocks}, cond pass, renorm off. Positive direction.", ""]
+    for c in args.concepts:
+        d = sub / f"{label}_{c}"
+        pr = d / "protocol_results"
+        lp = pd.read_csv(pr / "lpaps.csv")
+        mq = pd.read_csv(pr / "muqt.csv")
+        cut = auc[c][label]["pos"]["cutoff"]
+        adm = lp[(lp.alpha > 0) & (lp["mean"] <= cut)]
+        a_adm = float(adm.alpha.max()) if len(adm) else float(lp[lp.alpha > 0].alpha.min())
+        a_max = float(lp.alpha.max())
+        sc = {float(r.alpha): np.array(ast.literal_eval(r.scores)) for r in mq.itertuples()}
+        k = int(np.argmax(sc[a_adm] - sc[0.0]))
+
+        def lpm(a):
+            return float(lp[lp.alpha == a]["mean"].iloc[0])
+
+        note = "" if len(adm) else " (no positive strength within the cutoff: file 3 is the smallest)"
+        lines.append(f"## {c}")
+        lines.append(f"Prompt {k}: \"{bench[k]}\". k_c {sel.get(c, {}).get('k', '?')}, MuQ query "
+                     f"\"{mq.prompt_used.iloc[0]}\", PCI cutoff (mean LPAPS) {cut:.2f}{note}.")
+        files = [("1_zero", d / "alpha_0.0", f"strength 0 (the prompt as written), MuQ {sc[0.0][k]:.3f}"),
+                 ("2_pci_real_prompt", sub / f"swap_full_{c}" / "pos",
+                  "REFERENCE: the real positive prompt of the PCI triple rendered from step 0 "
+                  "(its own wording, same seed and batch layout)"),
+                 (f"3_sae_admitted_alpha{a_adm:+g}", d / f"alpha_{a_adm}",
+                  f"SAE at the strongest strength within the PCI cutoff (mean LPAPS {lpm(a_adm):.2f}), "
+                  f"MuQ {sc[a_adm][k]:.3f}"),
+                 (f"4_sae_max_alpha{a_max:+g}", d / f"alpha_{a_max}",
+                  f"SAE at the largest grid strength (mean LPAPS {lpm(a_max):.2f}), MuQ {sc[a_max][k]:.3f}")]
+        for tag, src, what in files:
+            z = np.load(src / "audios.npz")
+            x = z["audio"][k].astype(np.float32) / 32768.0
+            name = f"{c}_{tag}.wav"
+            sf.write(dst / name, x.T, int(z["sr"]))
+            lines.append(f"- `{name}`: {what}")
+        lines.append("- Listen for: files 3 and 4 moving toward the positive pole relative to file 1, "
+                     "against what the real prompt (file 2, the reference) does; the piece should stay "
+                     "recognisable in file 3.")
+        lines.append("")
+    lines += ["All files: SA3 medium (served ARC checkpoint), 8 steps, cfg 1, seed 2115, 10 s mono,",
+              "batch 25, so zero, reference and steered files share their initial noise."]
+    (dst / "README.md").write_text("\n".join(lines), encoding="utf-8")
+    return {"dst": str(dst), "files": len(list(dst.glob("*.wav")))}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("command", choices=("time", "cache", "train", "score", "vectors", "probe", "calibrate", "sweep"))
-    ap.add_argument("--root", default=str(DEFAULT_ROOT))
+    ap.add_argument("command", choices=("time", "cache", "train", "score", "vectors", "probe",
+                                        "calibrate", "select", "sweep", "report", "pack", "listen"))
+    ap.add_argument("--root", default=str(DEFAULT_ROOT), help="data root (MusicCaps captions)")
+    ap.add_argument("--work", default=str(DEFAULT_WORK),
+                    help="cache, SAEs, score tables and selection vectors")
+    ap.add_argument("--pci-src", default=str(DEFAULT_ROOT / "sa3" / "eval50"),
+                    help="the SA3 lane's PCI rows (cutoffs and the PCI AUC)")
+    ap.add_argument("--selection", default=None, help="k_c selection json (select writes it)")
+    ap.add_argument("--caa-auc", default=str(DEFAULT_ROOT / "sa3" / "eval_e3" / "auc.json"))
+    ap.add_argument("--packs", default=str(DEFAULT_ROOT / "packs" / "sa3_sae"))
+    ap.add_argument("--dst", default=str(DEFAULT_ROOT / "listen_sae"))
     ap.add_argument("--blocks", type=int, nargs="+", required=True)
     ap.add_argument("--hook", default="cross_attn_output")
     ap.add_argument("--steps", type=int, default=8)
@@ -615,7 +812,8 @@ def main() -> int:
     args = ap.parse_args()
     fn = {"time": cmd_time, "cache": cmd_cache, "train": cmd_train, "score": cmd_score,
           "vectors": cmd_vectors, "probe": cmd_probe, "calibrate": cmd_calibrate,
-          "sweep": cmd_sweep}
+          "select": cmd_select, "sweep": cmd_sweep, "report": cmd_report, "pack": cmd_pack,
+          "listen": cmd_listen}
     res = fn[args.command](args)
     text = json.dumps(res, indent=2, default=str)
     print(text if len(text) < 4000 else text[:4000])
