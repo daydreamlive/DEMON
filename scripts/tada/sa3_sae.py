@@ -209,6 +209,28 @@ def split_prompts(meta_prompt: np.ndarray, frac: float = 0.05, seed: int = 0):
     return [int(i) for i in ids if int(i) not in held], sorted(int(i) for i in held)
 
 
+def _normalize_steps(tr, tr_steps, va, va_steps) -> dict:
+    """Divide every sample by its denoise step's RMS (over all train
+    tokens and channels of that step), in place; returns ``{step: rms}``.
+    Control for the per-sigma variance spread (not part of TADA)."""
+    rms = {}
+    for s in sorted(set(int(x) for x in tr_steps)):
+        idx = np.nonzero(tr_steps == s)[0]
+        acc, n = 0.0, 0
+        for i in range(0, len(idx), 512):
+            x = tr[torch.from_numpy(idx[i:i + 512])].float()
+            acc += float(x.pow(2).sum())
+            n += x.numel()
+        rms[s] = (acc / n) ** 0.5
+    for acts, steps in ((tr, tr_steps), (va, va_steps)):
+        for s, r in rms.items():
+            idx = torch.from_numpy(np.nonzero(steps == s)[0])
+            for i in range(0, len(idx), 512):
+                j = idx[i:i + 512]
+                acts[j] = (acts[j].float() / r).to(acts.dtype)
+    return {str(k): v for k, v in rms.items()}
+
+
 def cmd_train(args, *, store_dir=None, out_dir=None, max_steps=None) -> dict:
     from acestep.tada.sae import (
         ActivationStore, Sae, SaeTrainer, TrainConfig, absolute_bucket_gate, choose_config,
@@ -218,7 +240,9 @@ def cmd_train(args, *, store_dir=None, out_dir=None, max_steps=None) -> dict:
     root = Path(args.root)
     store = ActivationStore(store_dir or (Path(args.work) / "sae_cache" / FAMILY))
     out_root = Path(out_dir or args.sae_dir or (Path(args.work) / "sae" / FAMILY))
-    report = {}
+    prev = out_root / "sweep.json"
+    report = (json.loads(prev.read_text(encoding="utf-8"))
+              if out_dir is not False and prev.exists() else {})
     for block in args.blocks:
         acts_all, meta = store.load(block)
         train_ids, held_ids = split_prompts(meta["prompt"])
@@ -227,6 +251,9 @@ def cmd_train(args, *, store_dir=None, out_dir=None, max_steps=None) -> dict:
         va = acts_all[torch.from_numpy(held_mask)]
         va_steps = meta["step"][held_mask]
         del acts_all
+        step_rms = None
+        if args.step_rms_norm:
+            step_rms = _normalize_steps(tr, meta["step"][~held_mask], va, va_steps)
         if args.gpu_resident:
             tr = tr.to(args.device)
         d_in = tr.shape[-1]
@@ -254,9 +281,12 @@ def cmd_train(args, *, store_dir=None, out_dir=None, max_steps=None) -> dict:
             rows.append(row)
             if out_dir is not False:
                 sae.save_to_disk(out_root / f"block_{block}" / name)
+        names = {r["name"] for r in rows}
+        old = report.get(str(block), {}).get("rows", [])
+        rows = [r for r in old if r["name"] not in names] + rows
         best = choose_config(rows)
         report[str(block)] = {
-            "rows": rows, "chosen": best["name"] if best else None,
+            "rows": rows, "chosen": best["name"] if best else None, "step_rms": step_rms,
             "seconds": time.perf_counter() - t0, "train_samples": int(tr.shape[0]),
             "held_out_prompts": len(held_ids), "epochs": args.epochs, "lr": args.lr,
         }
@@ -810,6 +840,8 @@ def main() -> int:
     ap.add_argument("--ms", type=int, nargs="*")
     ap.add_argument("--ks", type=int, nargs="*")
     ap.add_argument("--gpu-resident", action="store_true")
+    ap.add_argument("--step-rms-norm", action="store_true",
+                    help="train: divide each step's tokens by that step's RMS (control)")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--concepts", nargs="*", default=[])
     ap.add_argument("--sae", default=None, help="SAE config name to score with (default: chosen)")
