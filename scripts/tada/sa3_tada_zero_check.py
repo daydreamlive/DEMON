@@ -6,7 +6,13 @@ from __future__ import annotations
 
 import json
 import sys
+import os
 from pathlib import Path
+
+#: Working root for the replication data (audio, vectors, packs, the
+#: steer-audio checkout); set TADA_ROOT to relocate it.
+TADA_ROOT = Path(os.environ.get("TADA_ROOT", "tada-replication"))
+
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "scripts" / "sa3"))
@@ -17,7 +23,7 @@ import torch  # noqa: E402
 from acestep.engine import sa3_tada  # noqa: E402
 from acestep.tada import concepts as C  # noqa: E402
 
-OUT = Path("E:/Projects/tada-replication/sa3")
+OUT = TADA_ROOT / "sa3"
 
 
 def main() -> int:

@@ -35,10 +35,17 @@ Run with the GPU lock held, no server:
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
 import sys
 import time
+import os
 from pathlib import Path
+
+#: Working root for the replication data (audio, vectors, packs, the
+#: steer-audio checkout); set TADA_ROOT to relocate it.
+TADA_ROOT = Path(os.environ.get("TADA_ROOT", "tada-replication"))
+
 
 REPO = Path(__file__).resolve().parents[2]
 for _p in (str(REPO), str(REPO / "scripts" / "sa3")):
@@ -57,8 +64,8 @@ from acestep.tada.caa import caa_vectors  # noqa: E402
 from acestep.tada.patching import ALL, NONE, run_sets  # noqa: E402
 from acestep.tada.target import HOOK_CROSS_ATTN_COND  # noqa: E402
 
-DEFAULT_OUT = Path("E:/Projects/tada-replication/sa3")
-DEFAULT_PROMPTS_CSV = Path("E:/Projects/tada-replication/data/patching_prompts.csv")
+DEFAULT_OUT = TADA_ROOT / "sa3"
+DEFAULT_PROMPTS_CSV = TADA_ROOT / "data/patching_prompts.csv"
 STEPS = 8
 DURATION = 10.0
 SA3_SR = 44100
@@ -400,6 +407,8 @@ def _load_vectors(args, concept, site="loc"):
     """``{step: {block: [H]}}`` for ``args.method``: the CAA unit vectors
     (every block; the site picks blocks), or the AUSteer sparse vectors
     selected for that site (top-s is global over the site's blocks)."""
+    if getattr(args, "method", "caa") == "caakv":
+        return {"kv": torch.load(args.out / "caa" / f"{concept}.kv.pt", weights_only=False)["vector"]}
     if getattr(args, "method", "caa") == "austeer":
         d = torch.load(args.out / "caa" / f"{concept}.austeer.pt", weights_only=False)
         return d["vectors"][site]
@@ -415,7 +424,66 @@ def _sweep_dir(args, site, concept):
 _RENORM = False
 
 
+@contextmanager
+def _steer_context(sam, v, blocks, alpha):
+    """Negative-result variant (c): steer the cross-attention K/V site,
+    i.e. add ``alpha * v`` to the conditioning tokens the chosen blocks'
+    cross-attention reads (every non-padding token; SA3 marks padding as
+    zero tokens). ``alpha == 0`` installs nothing."""
+    mods = sa3_tada.cross_attn_modules(sam)
+    handles = []
+    if alpha != 0:
+        def pre(_m, a, kw):
+            ctx = kw.get("context")
+            if ctx is None:
+                return None
+            keep = (ctx.abs().sum(dim=-1, keepdim=True) > 0).to(ctx.dtype)
+            kw["context"] = ctx + float(alpha) * keep * v.to(ctx.device, ctx.dtype)
+            return a, kw
+        handles = [mods[b].register_forward_pre_hook(pre, with_kwargs=True) for b in blocks]
+    try:
+        yield
+    finally:
+        for h in handles:
+            h.remove()
+
+
+def cmd_caakv(args, sam) -> None:
+    """K/V-site CAA vector per concept: the difference of the mean
+    (non-padding token, then prompt) conditioning between the 50
+    positive and negative prompts, unit norm. SA3 feeds the same
+    conditioning to every block and step, so one ``[768]`` vector."""
+    target = sa3_tada.sa3_target(sam)
+    for concept in args.concepts:
+        path = args.out / "caa" / f"{concept}.kv.pt"
+        if path.exists() and not args.force:
+            continue
+        pos, neg, _ = C.prompt_pairs(concept)
+        n = min(len(pos), args.pairs)
+        means = {}
+        for pole, prompts in (("pos", pos[:n]), ("neg", neg[:n])):
+            rows = []
+            for idx in _batches(n, args.batch):
+                rec = ConditioningPatcher(target, [0], hook=HOOK_CROSS_ATTN_COND)
+                with rec.record():
+                    sa3_tada.generate(sam, [prompts[i] for i in idx], seed=CAA_SEED, duration=DURATION, steps=1)
+                ctx = rec.cache[0][0]["context"].float()
+                keep = (ctx.abs().sum(dim=-1, keepdim=True) > 0).float()
+                rows.append(((ctx * keep).sum(1) / keep.sum(1).clamp_min(1)).cpu())
+            means[pole] = torch.cat(rows).mean(0)
+        v = means["pos"] - means["neg"]
+        torch.save({"vector": v / v.norm(), "raw_norm": float(v.norm()), "pairs": n}, path)
+        _log(f"caakv {concept}: raw norm {float(v.norm()):.3f}")
+
+
 def _render_alpha(sam, prompts, vectors, blocks, alpha, batch):
+    if "kv" in vectors:
+        outs = []
+        for idx in _batches(len(prompts), batch):
+            with _steer_context(sam, vectors["kv"], blocks, alpha):
+                outs.append(sa3_tada.generate(sam, [prompts[i] for i in idx], seed=EVAL_SEED,
+                                              duration=DURATION, steps=STEPS))
+        return torch.cat(outs)
     sel = {s: {b: v for b, v in per.items() if b in set(blocks)} for s, per in vectors.items()}
     outs = []
     for idx in _batches(len(prompts), batch):
@@ -495,7 +563,7 @@ def cmd_calibrate(args, _sam=None) -> None:
         return {float(r["alpha"]): float(r["mean"]) for r in csv.DictReader(f.open())}
 
     ranges, notes = {}, {}
-    for method in ("caa", "austeer"):
+    for method in ("caa", "austeer", "caakv"):
         for concept in args.concepts:
             cut = {}
             for direction, sign in (("pos", 1), ("neg", -1)):
@@ -624,7 +692,7 @@ def cmd_pack(args, _sam=None) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=("patch", "caa", "austeer", "pci", "sweep", "probe", "localize", "pack", "calibrate", "subset"))
+    ap.add_argument("cmd", choices=("patch", "caa", "austeer", "pci", "sweep", "probe", "localize", "pack", "calibrate", "subset", "caakv"))
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--concepts", nargs="+", default=None)
     ap.add_argument("--batch", type=int, default=16)
@@ -645,9 +713,9 @@ def main() -> int:
     ap.add_argument("--alphas", nargs="*", default=[])
     ap.add_argument("--suffix", default="")
     ap.add_argument("--eval-sub", default="eval", help="eval directory under --out")
-    ap.add_argument("--packs", type=Path, default=Path("E:/Projects/tada-replication/packs"))
+    ap.add_argument("--packs", type=Path, default=TADA_ROOT / "packs")
     ap.add_argument("--checkpoint", default="medium")
-    ap.add_argument("--method", choices=("caa", "austeer"), default="caa")
+    ap.add_argument("--method", choices=("caa", "austeer", "caakv"), default="caa")
     ap.add_argument("--renorm", action="store_true")
     ap.add_argument("--top-s-loc", type=int, default=1024)
     ap.add_argument("--top-s-all", type=int, default=2048)
@@ -660,14 +728,14 @@ def main() -> int:
         {"localize": cmd_localize, "pack": cmd_pack, "calibrate": cmd_calibrate,
          "subset": cmd_subset}[args.cmd](args)
         return 0
-    if args.cmd in ("caa", "austeer") and args.pairs == 34:
+    if args.cmd in ("caa", "austeer", "caakv") and args.pairs == 34:
         args.pairs = 50
     torch.backends.cuda.matmul.allow_tf32 = True
     _log(f"{args.cmd}: loading SA3 medium")
     sam = _load_sam()
     global _RENORM
     _RENORM = bool(args.renorm)
-    {"patch": cmd_patch, "caa": cmd_caa, "austeer": cmd_austeer, "pci": cmd_pci, "sweep": cmd_sweep,
+    {"patch": cmd_patch, "caa": cmd_caa, "austeer": cmd_austeer, "caakv": cmd_caakv, "pci": cmd_pci, "sweep": cmd_sweep,
      "probe": cmd_probe}[args.cmd](args, sam)
     _log("done")
     return 0

@@ -18,7 +18,7 @@ metric functions so the numbers mean what the paper's numbers mean:
   ``min(PCI-all, PCI-loc)`` max LPAPS (``auc.py: pci_cutoff``); writes
   ``eval/auc.json`` and prints a table.
 
-    E:/Projects/tada-replication/evalenv/Scripts/python.exe scripts/tada/sa3_tada_score.py patch
+    <eval env python> scripts/tada/sa3_tada_score.py patch
 """
 
 from __future__ import annotations
@@ -29,8 +29,13 @@ import os
 import sys
 from pathlib import Path
 
-REF = Path(os.environ.get("TADA_REF", "E:/Projects/tada-replication/steer-audio"))
-DEFAULT_OUT = Path("E:/Projects/tada-replication/sa3")
+#: Working root for the replication data (audio, vectors, packs, the
+#: steer-audio checkout); set TADA_ROOT to relocate it.
+TADA_ROOT = Path(os.environ.get("TADA_ROOT", "tada-replication"))
+
+
+REF = Path(os.environ.get("TADA_REF", str(TADA_ROOT / "steer-audio")))
+DEFAULT_OUT = TADA_ROOT / "sa3"
 CLAP_TEMPLATE = "This is a music of {p}"
 
 sys.path.insert(0, str(REF / "editing" / "AudioEditingCode"))
