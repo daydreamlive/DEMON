@@ -152,6 +152,8 @@ def _eval_dirs(args):
             continue  # sweep still rendering (sweep.json is written last)
         if args.methods and method not in args.methods:
             continue
+        if args.labels and f"{method}_{site}" not in args.labels:
+            continue
         if args.concepts and concept not in args.concepts:
             continue
         yield d, f"{method}_{site}", concept
@@ -296,6 +298,7 @@ def main() -> int:
     ap.add_argument("--metric", choices=("clap", "muq"), default="clap", help="patch scoring metric")
     ap.add_argument("--reverse", action="store_true", help="walk directories in reverse order")
     ap.add_argument("--methods", nargs="*", default=None, help="caa, austeer, pci")
+    ap.add_argument("--labels", nargs="*", default=None, help="method_site filter, e.g. pci_all caa_loc")
     args = ap.parse_args()
     args.out = args.out.resolve()
     {"patch": cmd_patch, "protocol": cmd_protocol, "auc": cmd_auc,
