@@ -198,6 +198,14 @@ def cmd_protocol(args) -> None:
         if (d / "protocol_results" / "lpaps.csv").exists() and not args.force:
             continue
         print(f"protocol {d.name}", flush=True)
+        if args.lpaps_only:
+            # calibration probes need only the preservation curve
+            from src.steering.eval.eval_steering_protocol import compute_lpaps_preservation
+            alphas = sorted(float(p.name[len("alpha_"):]) for p in d.glob("alpha_*"))
+            df = compute_lpaps_preservation(str(d), alphas)
+            (d / "protocol_results").mkdir(parents=True, exist_ok=True)
+            df.to_csv(d / "protocol_results" / "lpaps.csv", index=False)
+            continue
         protocol(str(d), concept, skip_aesthetics=args.skip_aesthetics)
 
 
@@ -281,6 +289,8 @@ def main() -> int:
     ap.add_argument("--concepts", nargs="*", default=None)
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--skip-aesthetics", action="store_true")
+    ap.add_argument("--lpaps-only", action="store_true",
+                    help="protocol: LPAPS preservation curve only (calibration probes)")
     ap.add_argument("--sub", default="eval", help="eval or calib")
     ap.add_argument("--patch-dir", default="patch", help="patch, patch_xattn_out or patch_resid")
     ap.add_argument("--metric", choices=("clap", "muq"), default="clap", help="patch scoring metric")
