@@ -65,6 +65,15 @@ class SA3Adapter:
         # mutates this and must invalidate the pipeline's schedule
         # cache — the cache is keyed by denoise alone.
         self.shift_alpha: float = 1.0
+        # AN EXPLICIT SCHEDULE (the ``sa3_sigmas`` knob): per-step noise
+        # levels, normalized so 1.0 is "start from the strength knob" and
+        # the final 0 is implied. When set it REPLACES the builder's stock
+        # schedule outright — this is the streaming analogue of a
+        # StreamDiffusion ``t_index_list`` — and the step count is its
+        # length, which the backend enforces by rebuilding the pipeline.
+        # shift_alpha still composes on top (1.0 = untouched), so SHIFT
+        # becomes a macro over a hand-placed schedule rather than dead.
+        self.sigmas_override: Optional[List[float]] = None
         self._device = torch.device(device)
         self._dtype = dtype
         # The spike's cond stacker (pads cross-attn tensors to the
@@ -74,7 +83,12 @@ class SA3Adapter:
     # ---- ModelAdapter ------------------------------------------------------
 
     def build_schedule(self, config, denoise: float, device, dtype) -> torch.Tensor:
-        schedule = self.schedule_builder(float(denoise)).detach().float()
+        if self.sigmas_override:
+            schedule = torch.tensor(
+                list(self.sigmas_override) + [0.0], dtype=torch.float32,
+            ) * float(denoise)
+        else:
+            schedule = self.schedule_builder(float(denoise)).detach().float()
         if schedule.ndim != 1:
             raise ValueError(
                 f"SA3 schedule must be 1-D, got {tuple(schedule.shape)}"
