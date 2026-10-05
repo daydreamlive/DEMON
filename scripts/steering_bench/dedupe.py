@@ -34,7 +34,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_directions import _class_diff, load_corpus, load_labels, parse_sign  # noqa: E402
+from build_directions import _class_diff, block_ids, load_corpus, load_labels, parse_sign  # noqa: E402
 
 
 def read_index(path: Path) -> list:
@@ -57,6 +57,7 @@ def main() -> int:
         raise SystemExit("index.csv has no usable concepts")
     means, _meta, ids, _cats = load_corpus(cap)
     n, steps, nb, h = means.shape
+    loc_of = {b: j for j, b in enumerate(block_ids(_meta, nb))}
     labels = load_labels(Path(args.labels) if args.labels else cap / "labels" / "merged.parquet", ids)
     names = [r["name"] for r in rows]
     c = len(rows)
@@ -74,7 +75,7 @@ def main() -> int:
     cos_at = {}                      # block -> [C, C] cosine of step-mean units at that block
     proj = np.zeros((n, c))          # clip projections on each concept's own best-block direction
     for b in sorted(set(best.tolist())):
-        xbm = np.asarray(means[:, :, b, :], dtype=np.float32).mean(1)          # [N, H] step mean
+        xbm = np.asarray(means[:, :, loc_of[b], :], dtype=np.float32).mean(1)  # [N, H] step mean
         d = _class_diff(xbm, P, Q)
         u = d / np.maximum(np.linalg.norm(d, axis=1, keepdims=True), 1e-12)
         cos_at[b] = u @ u.T

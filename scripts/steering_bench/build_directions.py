@@ -264,6 +264,13 @@ def load_corpus(cap: Path):
     return means, meta, ids, cats
 
 
+def block_ids(meta: dict, nb: int) -> list:
+    """Model block index of each stored block (capture_resid.py --blocks
+    writes ``block_ids``; older captures stored all blocks in order)."""
+    b = meta.get("block_ids") if meta else None
+    return [int(x) for x in b] if b else list(range(nb))
+
+
 def load_labels(path: Path, ids: np.ndarray):
     """Label table (parquet or csv, column ``id``) reindexed to the capture's
     row order; clips without labels are NaN."""
@@ -325,6 +332,9 @@ def population_mask(pop: str, cats: np.ndarray) -> np.ndarray:
     return m
 
 
+TOP_N_SCALE = 1.0
+
+
 def class_masks(y: np.ndarray, rule: str, q: float):
     """Positive / negative rows of ``y`` (sign-adjusted; NaN = outside the
     population or unlabelled) from the catalogue ``class_rule``:
@@ -342,7 +352,7 @@ def class_masks(y: np.ndarray, rule: str, q: float):
     lo = np.quantile(y[ok], q_bot)
     neg = ok & (y <= lo)
     if m_top_n:
-        n = min(int(m_top_n.group(1)), k // 2)
+        n = min(int(round(int(m_top_n.group(1)) * TOP_N_SCALE)), k // 2)
         order = np.argsort(np.where(ok, -y, np.inf), kind="stable")[:n]
         pos = np.zeros_like(ok)
         pos[order] = True
@@ -451,7 +461,7 @@ def concept_specs(rows: list, labels, quantile: float, cats: np.ndarray, aliases
         y[~population_mask(r.get("population", ""), cats)] = np.nan
         pos, neg = class_masks(y, r.get("class_rule", ""), quantile)
         r["status"] = "ok" if pos is not None else "too_few"
-        r["_pos"], r["_neg"] = pos, neg
+        r["_pos"], r["_neg"], r["_y"] = pos, neg, y
         r["label_std"] = round(float(np.nanstd(raw)), 6)
         cols, corrs = [], []
         for key in SECOND_COLS:
@@ -499,6 +509,9 @@ def generic_main(args) -> int:
     pos = np.stack([r["_pos"] for r in live])
     neg = np.stack([r["_neg"] for r in live])
     c = len(live)
+    bid = block_ids(meta, nb)
+    nb_model = int(meta.get("model_blocks", max(bid) + 1)) if meta else nb
+    print(f"[load] stored blocks {bid} (model has {nb_model})", flush=True)
     # all blocks held as fp16 until the best 4 are known (500 concepts ~ 0.3 GB)
     units = np.zeros((c, nb, steps, h), dtype=np.float16)
     norms = np.zeros((c, nb, steps), dtype=np.float32)
@@ -510,26 +523,42 @@ def generic_main(args) -> int:
         u, nr, sd, ef = block_directions(xb, pos, neg)
         units[:, b], norms[:, b] = u.astype(np.float16), nr
         stds[:, :, b], effects[:, :, b] = sd, ef
-        print(f"[block {b:02d}] {time.time() - t0:.0f} s", flush=True)
+        print(f"[block {bid[b]:02d}] {time.time() - t0:.0f} s", flush=True)
 
     keep = min(args.keep_blocks, nb)
+    stds_full = np.full((c, steps, nb_model), np.nan, dtype=np.float32)
+    effects_full = np.full((c, steps, nb_model), np.nan, dtype=np.float32)
+    stds_full[:, :, bid], effects_full[:, :, bid] = stds, effects
+    variants = [v for v in (args.variants or "a").split(",") if v]
+    best_local = np.array([int(np.argmax(effects[i].mean(0))) for i in range(c)])
+    var_c = {}
+    if "c" in variants:
+        var_c = asym_directions(means, live, pos, neg, best_local, bid, cats)
     extra = []
     for r in specs:
         for k in r:
             if not k.startswith("_") and k not in INDEX_COLS and k not in extra:
                 extra.append(k)
     out_rows = []
+    var_rows = {}
     for r in specs:
         row = {k: v for k, v in r.items() if not k.startswith("_")}
         if r["status"] == "ok":
             i = next(j for j, x in enumerate(live) if x is r)
             score = effects[i].mean(0)                                 # step-mean effect per block
-            blocks = [int(x) for x in np.argsort(-score)[:keep]]
+            loc = [int(x) for x in np.argsort(-score)[:keep]]
+            blocks = [bid[x] for x in loc]
             best = blocks[0]
             path = out / f"{r['name']}.npz"
-            np.savez(path, unit=units[i, blocks].transpose(1, 0, 2), blocks=np.array(blocks),
-                     best_block=np.int64(best), norm=norms[i, blocks].T.astype(np.float32),
-                     std=stds[i], effect=effects[i], n_pos=np.int64(r["_pos"].sum()),
+            # variant a: step-mean unit at the best block (what screen_knobs / make_packs use)
+            sm = (units[i, loc[0]].astype(np.float64) * norms[i, loc[0]][:, None]).mean(0)
+            vec_a = (sm / max(np.linalg.norm(sm), 1e-12))[None].astype(np.float32)
+            std_best = float(stds[i, :, loc[0]].mean())
+            np.savez(path, unit=units[i, loc].transpose(1, 0, 2), blocks=np.array(blocks),
+                     best_block=np.int64(best), norm=norms[i, loc].T.astype(np.float32),
+                     vec=vec_a, vec_blocks=np.array([best]), vec_std=np.float64(std_best),
+                     variant=np.array("a"),
+                     std=stds_full[i], effect=effects_full[i], n_pos=np.int64(r["_pos"].sum()),
                      n_neg=np.int64(r["_neg"].sum()), label_col=np.array(r["label_col"]),
                      pos_idx=np.flatnonzero(r["_pos"]).astype(np.int32),
                      neg_idx=np.flatnonzero(r["_neg"]).astype(np.int32),
@@ -538,12 +567,53 @@ def generic_main(args) -> int:
                      method=np.array("mass_mean_quartile"),
                      hook=np.array(meta.get("hook", "post_block_residual")))
             row.update(n_pos=int(r["_pos"].sum()), n_neg=int(r["_neg"].sum()), best_block=best,
-                       blocks=" ".join(map(str, blocks)), effect_best=round(float(score[best]), 5),
-                       std_best=round(float(stds[i, :, best].mean()), 5),
-                       norm_best=round(float(norms[i, best].mean()), 5), quantile=args.quantile,
+                       blocks=" ".join(map(str, blocks)), effect_best=round(float(score[loc[0]]), 5),
+                       std_best=round(std_best, 5),
+                       norm_best=round(float(norms[i, loc[0]].mean()), 5), quantile=args.quantile,
                        path=str(path))
+            if "b" in variants:
+                # variant b: the top-3 blocks together, each pushed by its own projection std per unit
+                l3 = loc[:3]
+                vb = []
+                for x in l3:
+                    smx = (units[i, x].astype(np.float64) * norms[i, x][:, None]).mean(0)
+                    vb.append(smx / max(np.linalg.norm(smx), 1e-12) * float(stds[i, :, x].mean()) / std_best)
+                pb = out.parent / (out.name + "_b") / f"{r['name']}.npz"
+                pb.parent.mkdir(parents=True, exist_ok=True)
+                np.savez(pb, unit=units[i, loc].transpose(1, 0, 2), blocks=np.array(blocks),
+                         best_block=np.int64(best), norm=norms[i, loc].T.astype(np.float32),
+                         vec=np.stack(vb).astype(np.float32), vec_blocks=np.array([bid[x] for x in l3]),
+                         vec_std=np.float64(std_best), variant=np.array("b"),
+                         std=stds_full[i], effect=effects_full[i], n_pos=np.int64(r["_pos"].sum()),
+                         n_neg=np.int64(r["_neg"].sum()), label_col=np.array(r["label_col"]),
+                         pos_idx=np.flatnonzero(r["_pos"]).astype(np.int32),
+                         neg_idx=np.flatnonzero(r["_neg"]).astype(np.int32), sign=np.int64(r["sign"]),
+                         name=np.array(r["name"]), hook=np.array(meta.get("hook", "post_block_residual")))
+                var_rows.setdefault("b", []).append({**row, "path": str(pb), "variant": "b", "base": r["name"],
+                                                     "vec_blocks": " ".join(str(bid[x]) for x in l3),
+                                                     "k_scale": 0.5})
+            if i in var_c:
+                for side, vc in var_c[i].items():
+                    nm = f"{r['name'][:29]}_{side}"
+                    pc = out.parent / (out.name + "_c") / f"{nm}.npz"
+                    pc.parent.mkdir(parents=True, exist_ok=True)
+                    sgn = r["sign"] if side == "up" else -r["sign"]
+                    np.savez(pc, unit=vc["unit"][:, None].astype(np.float16), blocks=np.array([best]),
+                             best_block=np.int64(best), norm=vc["norm"][:, None].astype(np.float32),
+                             vec=vc["vec"][None].astype(np.float32), vec_blocks=np.array([best]),
+                             vec_std=np.float64(vc["std"]), variant=np.array("c"),
+                             std=stds_full[i], effect=effects_full[i], n_pos=np.int64(len(vc["pos_idx"])),
+                             n_neg=np.int64(len(vc["neg_idx"])), label_col=np.array(r["label_col"]),
+                             pos_idx=vc["pos_idx"].astype(np.int32), neg_idx=vc["neg_idx"].astype(np.int32),
+                             sign=np.int64(sgn), name=np.array(nm),
+                             hook=np.array(meta.get("hook", "post_block_residual")))
+                    var_rows.setdefault("c", []).append({
+                        **row, "name": nm, "sign": sgn, "path": str(pc), "variant": "c",
+                        "base": r["name"], "side": side, "std_best": round(vc["std"], 5),
+                        "norm_best": round(float(vc["norm"].mean()), 5), "vec_blocks": str(best),
+                        "effect_best": round(float(score[loc[0]]), 5)})
             print(f"[{r['name']}] {r['label_col']} sign {r['sign']:+d} n {row['n_pos']}/{row['n_neg']} "
-                  f"best b{best} effect {score[best]:.2f} std {row['std_best']:.3f}", flush=True)
+                  f"best b{best} effect {score[loc[0]]:.2f} std {row['std_best']:.3f}", flush=True)
         else:
             print(f"[{r['name']}] SKIP {r['status']} ({r['label_col']})", flush=True)
         out_rows.append(row)
@@ -563,7 +633,63 @@ def generic_main(args) -> int:
         print(f"WARN {sum(miss.values())} concepts have no label column in the table, by scorer prefix: {miss} "
               "(see --col-alias)", flush=True)
     print(f"wrote {idx} ({len(live)} directions)", flush=True)
+    for v, vrows in var_rows.items():
+        vcols = cols + [k for k in ("variant", "base", "side", "vec_blocks", "k_scale") if k not in cols]
+        vidx = out.parent / (out.name + f"_{v}") / "index.csv"
+        with open(vidx, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=vcols, restval="")
+            w.writeheader()
+            for row in vrows:
+                w.writerow({k: row.get(k, "") for k in vcols})
+        print(f"wrote {vidx} ({len(vrows)} variant-{v} directions)", flush=True)
     return 0
+
+
+def asym_directions(means, live, pos, neg, best_local, bid, cats, lo_q=0.375, hi_q=0.625) -> dict:
+    """Variant c (asymmetric per sign), at each concept's best block:
+    ``up`` = mean(positive class) - mean(median band), ``dn`` = mean(negative
+    class) - mean(median band); median band = clips of the concept's
+    population whose sign-adjusted label lies between the ``lo_q`` and
+    ``hi_q`` quantiles (outside both classes). Returns ``{i: {"up"|"dn": {unit
+    [steps,H] per-step units, norm [steps], vec [H] step-mean unit, std
+    (projection std of every clip, step mean), pos_idx, neg_idx (= median band)}}}``."""
+    n = means.shape[0]
+    mids = []
+    for i, r in enumerate(live):
+        y = r["_y"]
+        ok = np.isfinite(y) & ~pos[i] & ~neg[i]
+        if ok.sum() < 8:
+            mids.append(None)
+            continue
+        a, b = np.quantile(y[np.isfinite(y)], [lo_q, hi_q])
+        m = ok & (y >= a) & (y <= b)
+        mids.append(m if m.sum() >= 4 else None)
+    out = {}
+    for lb in sorted(set(best_local.tolist())):
+        idx = [i for i in range(len(live)) if best_local[i] == lb and mids[i] is not None]
+        if not idx:
+            continue
+        xb = np.asarray(means[:, :, lb, :], dtype=np.float32)
+        steps, h = xb.shape[1], xb.shape[2]
+        flat = xb.reshape(n, steps * h)
+        M = np.stack([mids[i] for i in idx]).astype(np.float32)
+        mid_mean = (M @ flat) / M.sum(1)[:, None]
+        for side, cls in (("up", pos), ("dn", neg)):
+            C = cls[idx].astype(np.float32)
+            d = ((C @ flat) / C.sum(1)[:, None] - mid_mean).reshape(len(idx), steps, h)
+            nrm = np.linalg.norm(d, axis=-1)
+            unit = d / np.maximum(nrm[..., None], 1e-12)
+            sm = d.mean(1)
+            vec = sm / np.maximum(np.linalg.norm(sm, axis=-1, keepdims=True), 1e-12)
+            std = np.zeros(len(idx))
+            for st in range(steps):
+                std += (xb[:, st, :] @ vec.T).std(0, ddof=1) / steps
+            for j, i in enumerate(idx):
+                out.setdefault(i, {})[side] = {
+                    "unit": unit[j], "norm": nrm[j], "vec": vec[j], "std": float(std[j]),
+                    "pos_idx": np.flatnonzero(cls[i]), "neg_idx": np.flatnonzero(mids[i])}
+        print(f"[variant c] block {bid[lb]:02d}: {len(idx)} concepts", flush=True)
+    return out
 
 
 def main() -> int:
@@ -580,6 +706,11 @@ def main() -> int:
     g.add_argument("--second-col", help="one concept: second scorer column")
     g.add_argument("--dirs-out", help="default $CAP/dirs")
     g.add_argument("--keep-blocks", type=int, default=KEEP_BLOCKS, help="blocks stored per concept")
+    g.add_argument("--variants", default="a",
+                   help="comma list: a = best block (dirs/), b = top-3 blocks (dirs_b/), "
+                        "c = asymmetric per sign vs the median band (dirs_c/, <name>_up / <name>_dn)")
+    g.add_argument("--top-n-scale", type=float, default=1.0,
+                   help="multiply 'top N by score' class sizes (4 for a corpus 4x the catalogue's 5000)")
     g.add_argument("--col-alias", nargs="*", default=[], metavar="PREFIX=ALT[,ALT]",
                    help="catalogue scorer prefix -> label table prefix when the exact column is missing, "
                         "e.g. proxies=desc spectral=desc level=dyn rhythm=dyn tonal=dyn")
@@ -598,6 +729,8 @@ def main() -> int:
     if args.cap:
         if not (args.catalogue or args.label_col):
             ap.error("--cap needs --catalogue or --label-col")
+        global TOP_N_SCALE
+        TOP_N_SCALE = float(args.top_n_scale)
         return generic_main(args)
     if not (args.capture and args.out):
         ap.error("legacy modes need --capture and --out (or use --cap for the generic mode)")

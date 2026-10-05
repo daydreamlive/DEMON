@@ -91,7 +91,8 @@ FAMILY = {
 }
 SUMMARY_COLS = ("name", "label_col", "best_block", "std", "alphas", "lpaps", "own_delta", "own_z",
                 "second", "second_delta", "n_band", "slope_per_lpaps", "alpha_at_cut", "cut_reached",
-                "lpaps_cut", "pass_signal", "max_cos_accepted", "pass", "flags", "gpu", "seconds")
+                "lpaps_cut", "pass_signal", "max_cos_accepted", "pass", "flags", "gpu", "seconds",
+                "pass_signal_neg", "slope_per_lpaps_neg", "own_z_neg", "second_delta_neg", "variant", "base")
 
 
 def scorer_of(col: str) -> str:
@@ -393,8 +394,12 @@ class SA3Generator:
         self.sam = R._load_sam()
 
     def render(self, prompts, unit, block, alpha) -> np.ndarray:
-        v = self.torch.from_numpy(np.asarray(unit, dtype=np.float32))
-        vectors = {s: {int(block): v} for s in range(STEPS)}
+        u = np.asarray(unit, dtype=np.float32)
+        if u.ndim == 1:
+            per_block = {int(block): self.torch.from_numpy(u)}
+        else:   # several blocks (variant b): one row per block
+            per_block = {int(b): self.torch.from_numpy(np.ascontiguousarray(u[j])) for j, b in enumerate(block)}
+        vectors = {s: dict(per_block) for s in range(STEPS)}
         with self.E.steer_offline(self.sam, vectors, float(alpha), hook=HOOK):
             audio = self.E.generate(self.sam, prompts, seed=self.R.EVAL_SEED, duration=DURATION, steps=STEPS)
         mono = audio.mean(dim=1)
@@ -468,8 +473,15 @@ def load_anchor_table(path) -> dict:
 
 
 def direction(npz_path: str, per_step: bool = False):
-    """``(unit [H] step-mean at the best block, block, std at that block)``."""
+    """``(unit [H] step-mean at the best block, block, std at that block)``.
+    Variant npz (build_directions --variants): ``vec`` [m, H] at ``vec_blocks``
+    with alpha unit ``vec_std``; m > 1 returns ``(vec [m, H], [blocks], ...)``."""
     z = np.load(npz_path)
+    if "vec" in z.files:
+        v, bl = z["vec"].astype(np.float32), [int(x) for x in z["vec_blocks"]]
+        if len(bl) == 1:
+            return v[0], bl[0], float(z["vec_std"]), float(np.linalg.norm(v[0]))
+        return v, bl, float(z["vec_std"]), float(np.linalg.norm(v[0]))
     b = int(z["best_block"])
     k = list(z["blocks"]).index(b)
     sm = (z["unit"][:, k].astype(np.float64) * z["norm"][:, k][:, None]).mean(0)
@@ -558,7 +570,9 @@ def analyse(row: dict, meta: dict, res: dict, args) -> dict:
                 f = (cut - ys[i - 1]) / max(ys[i] - ys[i - 1], 1e-12)
                 a_cut_neg, reached_neg = xs[i - 1] + f * (xs[i] - xs[i - 1]), True
                 break
+    neg_side = _neg_side(per_alpha, own, second, meta, cut, lab_std, args)
     return {
+        "neg_side": neg_side,
         "per_alpha": per_alpha, "lpaps_cut": cut, "in_band": [e["alpha"] for e in band],
         "own": {"col": own, "deltas": own_d, "z_at_max_band": z, "ok": bool(own_ok and z_ok)},
         "second": {"col": second, "deltas": sec_d, "ok": bool(sec_ok)},
@@ -566,6 +580,33 @@ def analyse(row: dict, meta: dict, res: dict, args) -> dict:
         "cut_reached": {"pos": reached, "neg": reached_neg},
         "pass_signal": bool(own_ok and z_ok and sec_ok), "flags": flags,
     }
+
+
+def _neg_side(per_alpha, own, second, meta, cut, lab_std, args) -> dict | None:
+    """The acceptance rule mirrored on the negative alphas (``--signs both``):
+    the own label (and the second scorer) must move AGAINST its positive sign."""
+    neg = sorted([e for e in per_alpha if e["alpha"] < 0], key=lambda e: -e["alpha"])
+    if not neg:
+        return None
+    band = [e for e in neg if e["lpaps_mean"] <= cut]
+    own_d = [-e["own_scores"][own]["delta"] for e in band]
+    own_ok = len(band) >= args.min_band and _monotone_pos(own_d)
+    se = band[-1]["own_scores"][own]["se"] if band else float("nan")
+    z = own_d[-1] / se if band and se and np.isfinite(se) else float("nan")
+    z_ok = args.min_z <= 0 or (np.isfinite(z) and z >= args.min_z)
+    sec_d = []
+    if second and second.startswith("muq:"):
+        t = second[4:]
+        sec_d = [-e["muq"][t]["delta"] for e in band]
+    elif second:
+        sec_d = [-e["own_scores"][second]["delta"] for e in band]
+    sec_ok = bool(second) and len(band) >= args.min_band and _monotone_pos(sec_d)
+    lp = np.array([e["lpaps_mean"] for e in band])
+    dn = np.array(own_d) / lab_std
+    slope = float((dn * lp).sum() / (lp * lp).sum()) if len(band) and (lp * lp).sum() > 0 else float("nan")
+    return {"in_band": [e["alpha"] for e in band], "own_deltas": own_d, "z_at_max_band": z,
+            "own_ok": bool(own_ok and z_ok), "second_deltas": sec_d, "second_ok": bool(sec_ok),
+            "slope_per_lpaps": slope, "pass_signal": bool(own_ok and z_ok and sec_ok)}
 
 
 def accepted_units(screen: Path, dirs_by_name: dict) -> dict:
@@ -816,7 +857,13 @@ def main() -> int:
             "alpha_at_cut": f"{an['alpha_at_cut']['pos']:.3f}", "cut_reached": int(an["cut_reached"]["pos"]),
             "lpaps_cut": an["lpaps_cut"], "pass_signal": int(an["pass_signal"]),
             "max_cos_accepted": f"{mx[0]:.3f}", "pass": int(ok), "flags": ";".join(an["flags"]),
-            "gpu": args.gpu_index, "seconds": f"{secs:.1f}"})
+            "gpu": args.gpu_index, "seconds": f"{secs:.1f}",
+            **({"pass_signal_neg": int(an["neg_side"]["pass_signal"]),
+                "slope_per_lpaps_neg": f"{an['neg_side']['slope_per_lpaps']:.5g}",
+                "own_z_neg": f"{an['neg_side']['z_at_max_band']:.2f}",
+                "second_delta_neg": " ".join(f"{x:.4g}" for x in an["neg_side"]["second_deltas"])}
+               if an.get("neg_side") else {}),
+            "variant": row.get("variant", ""), "base": row.get("base", "")})
         _log(f"{name}: lpaps {[round(e['lpaps_mean'], 2) for e in band]} own {an['own']['ok']} "
              f"second {an['second']['ok']} pass {ok} ({secs:.1f} s)")
 
@@ -824,7 +871,8 @@ def main() -> int:
         name = row["name"]
         unit, block, std, norm = direction(row["path"])
         ks = list(args.k) + ([-k for k in args.k] if args.signs == "both" else [])
-        alphas = [float(k * std) for k in ks]
+        kscale = float(row.get("k_scale") or 1.0)
+        alphas = [float(k * kscale * std) for k in ks]
         if row.get("second_cols") is not None and "second_corrs" in row:
             # build_directions: second/third scorer columns present in the labels + corpus correlation
             second_cols = [c for c in row["second_cols"].split(";") if c]
