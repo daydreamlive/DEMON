@@ -491,6 +491,16 @@ def generic_main(args) -> int:
     n, steps, nb, h = means.shape
     labels = load_labels(Path(args.labels) if args.labels else cap / "labels" / "merged.parquet", ids)
     out = Path(args.dirs_out) if args.dirs_out else cap / "dirs"
+    groups = None
+    if args.center_prompt:
+        # variant d: labels and residual means centred on their prompt's mean over its seeds
+        pr = json.loads((cap / "prompts.json").read_text())[: means.shape[0]]
+        groups = np.array([int(r.get("base_id", r["id"])) for r in pr])
+        num = labels.select_dtypes("number")
+        labels = num - num.groupby(groups).transform("mean")
+        _u, g_inv = np.unique(groups, return_inverse=True)
+        g_cnt = np.bincount(g_inv).astype(np.float32)
+        print(f"[center] {len(_u)} prompt groups (median size {int(np.median(g_cnt))})", flush=True)
     out.mkdir(parents=True, exist_ok=True)
     if args.catalogue:
         rows = read_catalogue(Path(args.catalogue))
@@ -520,7 +530,17 @@ def generic_main(args) -> int:
     t0 = time.time()
     for b in range(nb):
         xb = np.asarray(means[:, :, b, :], dtype=np.float32)
-        u, nr, sd, ef = block_directions(xb, pos, neg)
+        if groups is not None:
+            flat = xb.reshape(n, -1)
+            gsum = np.zeros((len(g_cnt), flat.shape[1]), dtype=np.float32)
+            np.add.at(gsum, g_inv, flat)
+            xc = (flat - (gsum / g_cnt[:, None])[g_inv]).reshape(xb.shape)
+            u, nr, sd, ef = block_directions(xc, pos, neg)
+            for st in range(steps):        # alpha unit = projection std of the RAW activations
+                sd[:, st] = (xb[:, st, :] @ u[:, st, :].T).std(0, ddof=1)
+            del xc, flat, gsum
+        else:
+            u, nr, sd, ef = block_directions(xb, pos, neg)
         units[:, b], norms[:, b] = u.astype(np.float16), nr
         stds[:, :, b], effects[:, :, b] = sd, ef
         print(f"[block {bid[b]:02d}] {time.time() - t0:.0f} s", flush=True)
@@ -557,7 +577,7 @@ def generic_main(args) -> int:
             np.savez(path, unit=units[i, loc].transpose(1, 0, 2), blocks=np.array(blocks),
                      best_block=np.int64(best), norm=norms[i, loc].T.astype(np.float32),
                      vec=vec_a, vec_blocks=np.array([best]), vec_std=np.float64(std_best),
-                     variant=np.array("a"),
+                     variant=np.array(args.variant_tag),
                      std=stds_full[i], effect=effects_full[i], n_pos=np.int64(r["_pos"].sum()),
                      n_neg=np.int64(r["_neg"].sum()), label_col=np.array(r["label_col"]),
                      pos_idx=np.flatnonzero(r["_pos"]).astype(np.int32),
@@ -570,7 +590,7 @@ def generic_main(args) -> int:
                        blocks=" ".join(map(str, blocks)), effect_best=round(float(score[loc[0]]), 5),
                        std_best=round(std_best, 5),
                        norm_best=round(float(norms[i, loc[0]].mean()), 5), quantile=args.quantile,
-                       path=str(path))
+                       path=str(path), variant=args.variant_tag, base=r["name"])
             if "b" in variants:
                 # variant b: the top-3 blocks together, each pushed by its own projection std per unit
                 l3 = loc[:3]
@@ -618,7 +638,7 @@ def generic_main(args) -> int:
             print(f"[{r['name']}] SKIP {r['status']} ({r['label_col']})", flush=True)
         out_rows.append(row)
     idx = out / "index.csv"
-    cols = list(INDEX_COLS) + extra
+    cols = list(INDEX_COLS) + extra + [k for k in ("variant", "base") if k not in extra]
     with open(idx, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=cols, restval="")
         w.writeheader()
@@ -709,6 +729,9 @@ def main() -> int:
     g.add_argument("--variants", default="a",
                    help="comma list: a = best block (dirs/), b = top-3 blocks (dirs_b/), "
                         "c = asymmetric per sign vs the median band (dirs_c/, <name>_up / <name>_dn)")
+    g.add_argument("--center-prompt", action="store_true",
+                   help="variant d: centre labels and means on the prompt mean over its seeds (prompts.json base_id)")
+    g.add_argument("--variant-tag", default="a", help="variant name written for the --dirs-out directions")
     g.add_argument("--top-n-scale", type=float, default=1.0,
                    help="multiply 'top N by score' class sizes (4 for a corpus 4x the catalogue's 5000)")
     g.add_argument("--col-alias", nargs="*", default=[], metavar="PREFIX=ALT[,ALT]",

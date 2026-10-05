@@ -718,11 +718,15 @@ def _pack_vectors(path, n: int = 8) -> dict:
     pack = load_pack(path)
     w = policy_weights(pack.policy, n)
     out = {s: {} for s in range(n)}
-    for b, v in pack.block_vectors(n):
+    bv = pack.block_vectors(n)
+    for b, v in bv:
         for s in range(n):
             vs = (v if v.ndim == 1 else v[s]).float()
+            # multi-block packs keep their rows' relative scale: normalise by the first block's row
+            v0 = bv[0][1]
+            ref = (v0 if v0.ndim == 1 else v0[s]).float().norm().clamp_min(1e-12)
             if w[s] != 0.0:
-                out[s][int(b)] = vs / vs.norm().clamp_min(1e-12) * float(w[s])
+                out[s][int(b)] = vs / ref * float(w[s])
     _PACK.clear()
     _PACK.update(path=str(path), name=pack.name, hook=pack.hook, block=int(pack.block),
                  blocks=list(pack.target_blocks), magnitude=float(pack.magnitude),

@@ -129,8 +129,10 @@ def main() -> int:
         if scr is None and not args.allow_unscreened:
             raise SystemExit(f"{name}: no {sj} (pass --allow-unscreened to pack anyway)")
         screening, gain = None, None
+        sblock = scr["block"][0] if scr is not None and isinstance(scr["block"], list) else (
+            scr["block"] if scr is not None else None)
         if scr is not None:
-            if int(scr["block"]) != block:
+            if int(sblock) != block:
                 raise SystemExit(f"{name}: screened at b{scr['block']}, npz best block b{block}")
             ap_pos = scr["alpha_at_cut"]["pos"]
             ap_neg = scr["alpha_at_cut"].get("neg")
@@ -168,14 +170,27 @@ def main() -> int:
             "caveat": "estimated at 10 s ARC sam.generate, audio tokens only; production applies at 54 s "
                       "pingpong StreamPipeline to every token incl. 64 memory tokens",
         }
+        vec, vblocks = unit.astype(np.float32), []
+        if "vec" in z.files and len(z["vec_blocks"]) > 1:
+            # variant b: several blocks under one knob; row 0 = the best block's unit vector, the other
+            # rows scaled by their projection std relative to it ([n_blocks, 1 step, hidden])
+            vblocks = [int(x) for x in z["vec_blocks"]]
+            if vblocks[0] != block:
+                raise SystemExit(f"{name}: vec_blocks {vblocks} do not start at the best block {block}")
+            vec = z["vec"].astype(np.float32)[:, None, :]
+            prov["blocks"] = vblocks
+            prov["block_choice"] = "top-3 blocks by cross-fitted step-mean effect, each scaled by its projection std"
+        if "variant" in z.files:
+            prov["variant"] = str(z["variant"])
         pack = SteeringPack(family="sa3", checkpoint="medium", block=block, hidden_size=int(unit.shape[0]),
-                            name=name, vector=torch.from_numpy(unit.astype(np.float32)), label=label,
+                            blocks=vblocks,
+                            name=name, vector=torch.from_numpy(vec), label=label,
                             blurb=blurb, hook=str(z["hook"]) if "hook" in z else "post_block_residual",
                             method="caa_diff_means", norm=norm, magnitude=mag,
                             policy={"kind": "range", "start": 0.0, "end": 1.0}, provenance=prov)
         path = save_pack(pack, out / f"{name}.safetensors")
         back = load_pack(path)
-        cos = float(torch.dot(back.vector, pack.vector) / back.vector.norm() / pack.vector.norm())
+        cos = float(torch.dot(back.vector.flatten(), pack.vector.flatten()) / back.vector.norm() / pack.vector.norm())
         ok = (back.block == block and abs(back.magnitude - mag) < 1e-6 and cos > 0.99999
               and back.hook == pack.hook and back.provenance["label_col"] == row["label_col"])
         if not ok:
