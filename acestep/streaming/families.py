@@ -37,6 +37,7 @@ from acestep.streaming.preflight import (
     PreflightRequest,
     PreflightResult,
     acestep_preflight,
+    mrt2_preflight,
     sa3_preflight,
 )
 
@@ -331,6 +332,19 @@ def _make_sa3(ss):
     )
 
 
+def _make_mrt2(ss):
+    # The model lives in an out-of-process sidecar (JAX has no CUDA on
+    # native Windows); the backend is a TCP client that connects here,
+    # at session create. Nothing to read from backend_init.
+    from acestep.streaming.mrt2.backend import MRT2Backend
+
+    return MRT2Backend(
+        config=ss.config,
+        state=ss.state,
+        midi_knobs=ss.virtual_knobs,
+    )
+
+
 def resolve_checkpoint(name: str) -> tuple:
     """``--checkpoint`` name -> ``(backend_family, model_id)``.
 
@@ -418,6 +432,25 @@ def _shutdown_sa3() -> int:
     return evict_sa3_contexts()
 
 
+def _mrt2_knob_universe():
+    from acestep.streaming.mrt2.backend import mrt2_knob_specs
+
+    return mrt2_knob_specs()
+
+
+def _shutdown_mrt2() -> int:
+    """Close any sidecar link a session left open. Returns how many."""
+    from acestep.streaming.mrt2.backend import close_open_clients
+
+    return close_open_clients()
+
+
+def _create_mrt2_session(cls, **kwargs):
+    from acestep.streaming.mrt2.backend import create_mrt2_session
+
+    return create_mrt2_session(cls, **kwargs)
+
+
 def _create_acestep_session(cls, **kwargs):
     from acestep.streaming.ace_session import create_acestep_session
 
@@ -486,6 +519,27 @@ SA3 = FamilySpec(
 )
 
 
+MRT2 = FamilySpec(
+    name="mrt2",
+    display_name="Magenta RealTime 2",
+    make_backend=_make_mrt2,
+    knob_universe=_mrt2_knob_universe,
+    # The sidecar picks the model variant (mrt2_small / mrt2_base) at ITS
+    # launch; the alias only selects the family. It cannot be the bare
+    # family name: an alias must not be mistakable for one.
+    checkpoint_aliases={"mrt2-sidecar": "mrt2"},
+    create_session=_create_mrt2_session,
+    warmup_policy="none",
+    preflight=mrt2_preflight,
+    # MusicCoCa takes free-form style tags, the same shape ACE prompts use.
+    prompt_policy="acestep",
+    # Natively text-only (uploads are ignored); the session is the
+    # backend's 60 s rolling window (mrt2.backend.WINDOW_S).
+    text_only=TextOnlySpec(default_duration_s=60.0, max_duration_s=60.0),
+    shutdown=_shutdown_mrt2,
+)
+
+
 def _register(*specs: FamilySpec) -> dict:
     from dataclasses import fields as _dc_fields
 
@@ -522,7 +576,7 @@ def _register(*specs: FamilySpec) -> dict:
 
 
 #: ``family name -> FamilySpec``. The source of truth.
-FAMILY_SPECS: dict = _register(ACESTEP, SA3)
+FAMILY_SPECS: dict = _register(ACESTEP, SA3, MRT2)
 
 
 def family_config_fields() -> tuple:

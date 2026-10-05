@@ -1,7 +1,7 @@
 # Adding a model family
 
-A *family* is one generative model behind DEMON's streaming runner: ACE-Step
-and Stable Audio 3 today. This document is the contract for adding one and
+A *family* is one generative model behind DEMON's streaming runner: ACE-Step,
+Stable Audio 3 and Magenta RealTime 2 today. This document is the contract for adding one and
 the map of what still branches on a family name in the core. Read it before
 `acestep/streaming/families.py`.
 
@@ -99,3 +99,58 @@ One family per pod. The pod's engine family is `DEMON_MODEL`; its routing
 identity is `RTMG_POOL_MODEL`, which defaults to the family and may carry a
 variant (`sa3-controlnet`). Warmup and preflight are family policy, read from
 the spec by the server at boot.
+
+## Magenta RealTime 2 (`mrt2`)
+
+The first token/autoregressive family and the first sidecar-hosted one, and
+the reference for both. `acestep/streaming/mrt2/backend.py` is a Tier 1
+`GeneratorBackend` implemented directly (no `ModelAdapter`); generation runs
+in `scripts/mrt2_sidecar.py`, because JAX has no CUDA on native Windows.
+
+- **Boot:** `--checkpoint mrt2-sidecar`. The alias only selects the family;
+  the sidecar picks the model variant at its own launch.
+- **Prerequisite:** a running sidecar in a Linux/WSL venv with `magenta_rt`,
+  JAX (CUDA) and numpy (no torch):
+  `python scripts/mrt2_sidecar.py --model mrt2_small`. It listens on
+  `127.0.0.1:7531` once its JIT warmup (~30 s) is done; WSL2 forwards
+  localhost to the Windows-side server. Override with
+  `DEMON_MRT2_SIDECAR=host:port`. Preflight is a TCP connect and fails the
+  boot with "MRT2 sidecar not running" when nothing listens.
+- **Protocol:** `acestep/streaming/mrt2/protocol.py` (stdlib only, loaded by
+  file path in the sidecar venv): `u32 len | u8 kind | payload`, JSON control
+  (hello/meta, prompt, blend, knobs, credit, ping) and 48 kHz stereo f32 audio
+  in 40 ms frames. The backend grants credit so the frontier stays `mrt2_lead`
+  seconds ahead of the playhead; that lead is the knob-to-ear latency.
+- **Shape:** append-only on a 60 s rolling window the player loops;
+  `render_window` ignores the position hint and returns the next frontier
+  chunk. Uploaded audio is ignored, so the family is text-only
+  (`text_only` 60 s, no duration field). Capabilities all False; LoRA off.
+  Because `refines_audio` is False, `PipelineRunner` writes each chunk
+  verbatim: no edge crossfades and no wrap-spill re-render (both are for
+  refining families).
+- **Failure handling:** the client pings every 2 s from its own thread and
+  declares the link lost after 8 s of silence; a lost link (sidecar died,
+  deadline, send error) ends the session with a `pipeline_error`
+  SessionError. The sidecar drops a backend that has sent nothing for 20 s,
+  and the client shuts its socket down on close, so a stopped session frees
+  the one-session sidecar at once. Credit the sidecar discards on a
+  `generate` error is reported in its `err` and refunded. When the frontier
+  falls behind the playhead it restarts one `mrt2_lead` ahead of it (a hard
+  seam at that point).
+- **Known gaps:** one session per sidecar; a second concurrent session hangs
+  5 s and is told the sidecar is unreachable (no busy reply). No reconnect
+  after a lost link. The playhead unwrap counts at most one lap between
+  ticks, so after the runner's idle pause spans more than one lap the
+  frontier can sit up to a lap "ahead" and generation waits for the playhead
+  to catch up. A sidecar slower than real time (`mrt2_base`) re-anchors
+  repeatedly: fresh audio arrives in bursts between stretches of the previous
+  lap.
+- **Knobs:** `mrt2_temperature`, `mrt2_top_k`, `mrt2_cfg_musiccoca`,
+  `mrt2_cfg_notes`, `mrt2_cfg_drums` (forwarded to the sidecar),
+  `mrt2_lead` (backend-local). `set_prompt` / `set_prompt_blend` go to the
+  sidecar, which embeds tags with MusicCoCa and lerps A/B.
+- **Speed (RTX 5090):** `mrt2_small` ~1.7x real time, `mrt2_base` ~0.93x
+  (below real time; expect underruns).
+- **Frontend:** `demos/mrt2/` (static plain-canvas page, route `/mrt2` on the
+  backend port) and `demos/realtime_motion_graph_web/web/app/magenta` (route
+  `/magenta`); both send `backend: "mrt2"`.
