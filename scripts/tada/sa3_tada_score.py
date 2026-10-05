@@ -204,22 +204,53 @@ PACK_ANCHORS = {
 }
 
 
-def _register_anchors() -> None:
-    """Add :data:`PACK_ANCHORS` to the reference table in memory. The
-    reference ``main`` looks the concept up BEFORE applying its
-    ``eval_prompt=`` override (eval_steering_protocol.py:810), so the
-    override alone would still KeyError on a new concept."""
+def load_catalogue_anchors(path) -> dict:
+    """``{name: pos_anchor}`` from a many-knobs catalogue CSV (name,
+    pos_anchor columns) or a JSON ``{name: [pos, neg]}`` / ``{name: {"pos":
+    ...}}`` / ``{name: "text"}`` (make_packs.py pci_descriptors.json)."""
+    path = Path(path)
+    if path.suffix.lower() == ".csv":
+        import csv
+
+        with open(path, newline="", encoding="utf-8") as f:
+            return {r["name"].strip(): r["pos_anchor"].strip() for r in csv.DictReader(f)
+                    if (r.get("name") or "").strip() and (r.get("pos_anchor") or "").strip()}
+    d = json.loads(path.read_text(encoding="utf-8"))
+    d = d.get("concepts", d) if isinstance(d, dict) else {}
+    out = {}
+    for k, v in d.items():
+        t = v if isinstance(v, str) else (v.get("pos") or v.get("pos_anchor") if isinstance(v, dict) else
+                                          (v[0] if isinstance(v, list) and v else None))
+        if isinstance(t, str) and t.strip() and not str(k).startswith("_"):
+            out[str(k)] = t.strip()
+    return out
+
+
+def _register_anchors(extra: dict | None = None) -> dict:
+    """Add :data:`PACK_ANCHORS` (then ``extra``, the ``--catalogue`` pos
+    anchors) to the reference table in memory. The reference ``main`` looks
+    the concept up BEFORE applying its ``eval_prompt=`` override
+    (eval_steering_protocol.py:810), so the override alone would still
+    KeyError on a new concept. Returns ``{concept: anchor}`` for every
+    concept that gets the MuQ-form override: PACK_ANCHORS first, then
+    catalogue names the reference table does not already have (the 9 TADA
+    concepts keep their reference prompts)."""
     from src.steering.methods.sae.lib.configs.eval import CONCEPT_TO_EVAL_PROMPTS as table
 
-    for c, a in PACK_ANCHORS.items():
+    own = dict(PACK_ANCHORS)
+    for c, a in (extra or {}).items():
+        if c not in own and c not in table:
+            own[c] = a
+    for c, a in own.items():
         table.setdefault(c, {"clap": a, "muqt": f"This is a music of {a}"})
+    return own
 
 
 def cmd_protocol(args) -> None:
     from src.steering.eval.eval_steering_protocol import main as protocol
 
     _cache_models()
-    _register_anchors()
+    own = _register_anchors(load_catalogue_anchors(args.catalogue) if args.catalogue else None)
 
     for d, label, concept in _eval_dirs(args):
         # Re-checked per directory: another scorer may have finished it.
@@ -235,9 +266,9 @@ def cmd_protocol(args) -> None:
             df.to_csv(d / "protocol_results" / "lpaps.csv", index=False)
             continue
         kw = {}
-        if concept in PACK_ANCHORS:
+        if concept in own:
             # MuQ form for both metrics (CLAP is secondary on SA3)
-            kw["eval_prompt"] = f"This is a music of {PACK_ANCHORS[concept]}"
+            kw["eval_prompt"] = f"This is a music of {own[concept]}"
         protocol(str(d), concept, skip_aesthetics=args.skip_aesthetics, **kw)
 
 
@@ -329,6 +360,10 @@ def main() -> int:
     ap.add_argument("--reverse", action="store_true", help="walk directories in reverse order")
     ap.add_argument("--methods", nargs="*", default=None, help="caa, austeer, pci")
     ap.add_argument("--labels", nargs="*", default=None, help="method_site filter, e.g. pci_all caa_loc")
+    ap.add_argument("--catalogue", default=None,
+                    help="protocol: alignment anchor (pos_anchor) for any concept name, from the many-knobs "
+                         "concept_catalogue.csv or a JSON {name: [pos, neg]} (pci_descriptors.json); "
+                         "PACK_ANCHORS and the reference TADA concepts keep their own anchors")
     args = ap.parse_args()
     args.out = args.out.resolve()
     {"patch": cmd_patch, "protocol": cmd_protocol, "auc": cmd_auc,

@@ -82,7 +82,7 @@ STEPS = 8
 HOOK = "post_block_residual"
 ANCHOR_COLS = ("pos_anchor", "anchor", "anchors", "text_anchor", "anchor_text")
 FAMILY = {
-    "descriptors": "descriptor", "descriptor": "descriptor", "desc": "descriptor", "timbral": "descriptor",
+    "descriptors": "descriptor", "descriptor": "descriptor", "desc": "descriptor", "dyn": "descriptor", "timbral": "descriptor",
     "loudness": "descriptor", "tempo": "descriptor", "key": "descriptor", "onsets": "descriptor",
     "rhythm": "descriptor", "essentia": "descriptor",
     "passt": "classifier", "panns": "classifier", "audioset": "classifier",

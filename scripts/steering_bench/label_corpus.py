@@ -14,7 +14,13 @@ Scorers:
 * ``desc``     the five proxies.py descriptors (centroid, lowhigh_db, flatness,
                onset_rate, perc_ratio) + ``centroid_st`` (centroid as a MIDI
                note number, 69 + 12 log2(c / 440)) + ``hf_ratio`` (energy above
-               4 kHz over total). CPU, multiprocess.
+               4 kHz over total) + spectral shape from the same STFT: band
+               shares in dB of total (sub_db 20-60 Hz, bass_db 60-250, lowmid_db
+               250-500, nasal_db 700-1500, presence_db 2-5 kHz, hf_db 8-16 kHz,
+               air_db 12-20 kHz), tilt_db_oct (slope of octave-band dB per
+               octave, 63 Hz-16 kHz), bandwidth (energy-weighted spectral
+               bandwidth, Hz), rolloff85 (median 85% rolloff, Hz), floor_db
+               (10th-percentile frame power, dB). CPU, multiprocess.
 * ``timbral``  AudioCommons timbral_models: brightness, warmth, hardness, depth,
                roughness, sharpness, boominess, reverb (NaN per clip/feature on
                failure). numpy 2 / librosa 0.11 shim applied first (box_status.md
@@ -27,14 +33,28 @@ Scorers:
                key_strength (best Krumhansl correlation), major_minus_minor (best
                major minus best minor correlation), flux_mean (mean librosa onset
                strength = mel spectral flux), hp_ratio_db (10 log10 harmonic /
-               percussive HPSS energy). CPU, multiprocess.
+               percussive HPSS energy), loudness_slope (LU/s, short-term
+               loudness vs time), momentary_std (dB std of 400 ms windows),
+               silence_frac (share of 50 ms windows 40 dB under the loudest),
+               peak_to_lufs, clip_frac (|x| >= 0.999), am_tremolo (4-8 Hz share
+               of the 0.5-20 Hz RMS-envelope modulation spectrum), pulse_clarity
+               (max onset-envelope autocorrelation at 0.25-2 s lags),
+               tempo_stability (1 - CV of inter-beat intervals), offbeat_share
+               (onset envelope at beat midpoints over on + off), hf_onset_rate
+               (onsets/s of the >6 kHz mel onset envelope), pitch_centroid (CQT
+               magnitude-weighted mean MIDI note, C1-B7), chroma_entropy (bits,
+               mean chroma). CPU, multiprocess.
 * ``passt``    AudioSet 527-class sigmoid probabilities (hear21passt, 32 kHz),
                columns ``passt.<display_name>`` from class_labels_indices.csv.
                If hear21passt is missing it writes nothing and exits 2.
 * ``clap_music`` / ``clap_general``  laion_clap cosine to every anchor text in
                anchors.json (music_audioset_epoch_15_esc_90.14.pt HTSAT-base /
-               630k-audioset-best.pt HTSAT-tiny, 48 kHz).
-* ``muq``      MuQ-MuLan-large cosine to the same anchors (24 kHz).
+               630k-audioset-best.pt HTSAT-tiny, 48 kHz), plus one column per
+               entry of anchors.json ``concepts`` ({name: [pos, neg]}, synced
+               from the catalogue by check_catalogue.py --sync-anchors):
+               ``<scorer>.<name>`` = cos(pos) - cos(neg). An anchor text equal
+               to a concept name is written as ``<scorer>.anchor:<text>``.
+* ``muq``      MuQ-MuLan-large cosine to the same anchors and concepts (24 kHz).
 * ``musetimbre`` interface stub (NotImplementedError; reads MUSETIMBRE_REPO).
 
 ``--merge`` outer-joins every ``labels/<scorer>.parquet`` on id into
@@ -74,11 +94,18 @@ AUDIOSET_LABELS = os.environ.get("AUDIOSET_LABELS",
                                  "/dev/shm/steerbench/ckpt/audioset/class_labels_indices.csv")
 MUQ_MODEL = os.environ.get("MUQ_MODEL", "OpenMuQ/MuQ-MuLan-large")
 
-DESC_COLS = ["centroid", "lowhigh_db", "flatness", "onset_rate", "perc_ratio", "centroid_st", "hf_ratio"]
+DESC_COLS = ["centroid", "lowhigh_db", "flatness", "onset_rate", "perc_ratio", "centroid_st", "hf_ratio",
+             "sub_db", "bass_db", "lowmid_db", "nasal_db", "presence_db", "hf_db", "air_db",
+             "tilt_db_oct", "bandwidth", "rolloff85", "floor_db"]
+DESC_BANDS = {"sub_db": (20, 60), "bass_db": (60, 250), "lowmid_db": (250, 500), "nasal_db": (700, 1500),
+              "presence_db": (2000, 5000), "hf_db": (8000, 16000), "air_db": (12000, 20000)}
 TIMBRAL_COLS = ["brightness", "warmth", "hardness", "depth", "roughness", "sharpness", "boominess", "reverb"]
 TIMBRAL_FN = {"boominess": "timbral_booming"}
 DYN_COLS = ["lufs", "rms_db", "lra", "crest_db", "onset_count", "onset_rate", "tempo", "beat_strength",
-            "key", "mode", "key_strength", "major_minus_minor", "flux_mean", "hp_ratio_db"]
+            "key", "mode", "key_strength", "major_minus_minor", "flux_mean", "hp_ratio_db",
+            "loudness_slope", "momentary_std", "silence_frac", "peak_to_lufs", "clip_frac", "am_tremolo",
+            "pulse_clarity", "tempo_stability", "offbeat_share", "hf_onset_rate", "pitch_centroid",
+            "chroma_entropy"]
 CPU_SCORERS = {"desc", "timbral", "dyn"}
 GPU_SCORERS = {"passt", "clap_music", "clap_general", "muq", "musetimbre"}
 SCORERS = sorted(CPU_SCORERS | GPU_SCORERS)
@@ -116,6 +143,56 @@ def load_anchors(path) -> tuple[list[str], dict[str, str]]:
     return texts, group
 
 
+def load_concepts(path) -> dict:
+    """anchors.json ``concepts``: {name: [pos_text, neg_text]} (empty if absent)."""
+    d = json.loads(Path(path).read_text(encoding="utf-8"))
+    c = d.get("concepts") if isinstance(d, dict) else None
+    out = {}
+    for name, v in (c or {}).items():
+        pos, neg = (v.get("pos"), v.get("neg")) if isinstance(v, dict) else v
+        out[str(name)] = (str(pos).strip(), str(neg).strip())
+    return out
+
+
+def text_plan(path) -> tuple[list[str], list[tuple[str, int, int | None]]]:
+    """Texts to encode once, and the output columns ``(col, pos_idx, neg_idx)``:
+    every anchor text (cosine; renamed ``anchor:<text>`` when it equals a
+    concept name) then every concept (cos(pos) - cos(neg))."""
+    anchors, _ = load_anchors(path)
+    concepts = load_concepts(path)
+    texts, idx = [], {}
+    for t in anchors + [t for pn in concepts.values() for t in pn]:
+        if t not in idx:
+            idx[t] = len(texts)
+            texts.append(t)
+    cols = [(f"anchor:{t}" if t in concepts else t, idx[t], None) for t in anchors]
+    cols += [(n, idx[p], idx[q]) for n, (p, q) in concepts.items()]
+    return texts, cols
+
+
+def _text_cols(sim: np.ndarray, plan) -> dict:
+    return {c: (sim[:, i] - sim[:, j] if j is not None else sim[:, i]) for c, i, j in plan}
+
+
+def scorer_columns(scorer: str, anchors=DEFAULT_ANCHORS, labels_csv=AUDIOSET_LABELS) -> list | None:
+    """Column names (with the ``<scorer>.`` prefix) that ``--scorer`` writes,
+    without audio or models. passt needs the AudioSet csv (None if missing)."""
+    if scorer in CPU_FN:
+        cols = CPU_FN[scorer][1]
+    elif scorer == "passt":
+        if not labels_csv or not Path(labels_csv).exists():
+            return None
+        import csv
+
+        with open(labels_csv, newline="", encoding="utf-8") as f:
+            cols = [r["display_name"].strip() for r in csv.DictReader(f)]
+    elif scorer in ("clap_music", "clap_general", "muq"):
+        cols = [c for c, _, _ in text_plan(anchors)[1]]
+    else:
+        cols = []
+    return [f"{scorer}.{c}" for c in cols]
+
+
 # ------------------------------------------------------------- CPU scorers
 
 def _f32(clip) -> np.ndarray:
@@ -140,6 +217,24 @@ def desc_clip(job) -> list:
     f = np.linspace(0, sr / 2, p.shape[0])
     tot = float(p.sum())
     out.append(float(p[f > 4000.0].sum()) / tot if tot > 0 else float("nan"))
+    nan = float("nan")
+    for lo, hi in DESC_BANDS.values():
+        out.append(_db(float(p[(f >= lo) & (f < hi)].sum()) / tot) if tot > 0 else nan)
+    if tot <= 0:
+        return out + [nan] * 4
+    octs = 63.0 * 2.0 ** np.arange(9)                        # 63 Hz .. 16 kHz
+    band = np.array([float(p[(f >= c / np.sqrt(2)) & (f < c * np.sqrt(2))].sum()) for c in octs])
+    ok = band > 0
+    out.append(float(np.polyfit(np.arange(9)[ok], 10 * np.log10(band[ok]), 1)[0]) if ok.sum() > 1 else nan)
+    e = p.sum(axis=0)
+    act = e > 1e-4 * e.max()
+    pa, ea = p[:, act], e[act]
+    c = (f[:, None] * pa).sum(axis=0) / ea
+    bw = np.sqrt((((f[:, None] - c[None]) ** 2) * pa).sum(axis=0) / ea)
+    out.append(float((bw * ea).sum() / ea.sum()))
+    cum = np.cumsum(pa, axis=0) / ea[None]
+    out.append(float(np.median(f[np.argmax(cum >= 0.85, axis=0)])))
+    out.append(_db(float(np.percentile(e, 10)) / p.shape[0]))
     return out
 
 
@@ -252,9 +347,36 @@ def dyn_clip(job) -> list:
             r["lufs"] = v if np.isfinite(v) else nan
         except Exception:
             pass
-    r["lra"] = _lra(_short_term(y, sr, meter))
+    st = _short_term(y, sr, meter)
+    r["lra"] = _lra(st)
     if peak == 0:
         return [r[c] for c in DYN_COLS]
+    r["clip_frac"] = float(np.mean(np.abs(y) >= 0.999))
+    r["peak_to_lufs"] = float(20.0 * np.log10(peak)) - (r["lufs"] if np.isfinite(r["lufs"]) else r["rms_db"])
+    ok = np.isfinite(st) & (st > -70.0)
+    if ok.sum() >= 2:
+        r["loudness_slope"] = float(np.polyfit(0.5 * np.arange(len(st))[ok], st[ok], 1)[0])
+    yy = y.astype(np.float64) ** 2
+
+    def _win_db(w, h):
+        n = 1 + max(0, (len(yy) - w) // h)
+        return np.array([_db(float(yy[i * h:i * h + w].mean())) for i in range(n)])
+
+    mom = _win_db(int(0.4 * sr), int(0.1 * sr))
+    mom = mom[mom > -70.0]
+    if mom.size >= 2:
+        r["momentary_std"] = float(mom.std())
+    w50 = _win_db(int(0.05 * sr), int(0.05 * sr))
+    r["silence_frac"] = float(np.mean(w50 < w50.max() - 40.0))
+    try:
+        rms = librosa.feature.rms(y=y, frame_length=1024, hop_length=512)[0].astype(np.float64)
+        spec = np.abs(np.fft.rfft((rms - rms.mean()) * np.hanning(len(rms)))) ** 2
+        fq = np.fft.rfftfreq(len(rms), 512.0 / sr)
+        den = spec[(fq >= 0.5) & (fq <= 20.0)].sum()
+        if den > 0:
+            r["am_tremolo"] = float(spec[(fq >= 4.0) & (fq <= 8.0)].sum() / den)
+    except Exception:
+        pass
     try:
         env = librosa.onset.onset_strength(y=y, sr=sr)
         r["flux_mean"] = float(env.mean())
@@ -265,6 +387,27 @@ def dyn_clip(job) -> list:
         r["tempo"] = float(np.asarray(tempo).reshape(-1)[0])
         if len(beats) and env.mean() > 0:
             r["beat_strength"] = float(env[np.asarray(beats, dtype=int)].mean() / env.mean())
+        beats = np.asarray(beats, dtype=int)
+        if len(beats) >= 3:
+            ibi = np.diff(beats).astype(np.float64)
+            r["tempo_stability"] = float(1.0 - ibi.std() / ibi.mean())
+            mid = (beats[:-1] + beats[1:]) // 2
+            on_b, off_b = float(env[beats[:-1]].sum()), float(env[mid].sum())
+            if on_b + off_b > 0:
+                r["offbeat_share"] = off_b / (on_b + off_b)
+        e0 = env - env.mean()
+        ac = np.correlate(e0, e0, mode="full")[len(e0) - 1:]
+        fr = sr / 512.0
+        lo, hi = int(0.25 * fr), min(int(2.0 * fr), len(ac) - 1)
+        if ac[0] > 0 and hi > lo:
+            r["pulse_clarity"] = float(ac[lo:hi + 1].max() / ac[0])
+        # >6 kHz bands of the full-band mel dB spectrogram (ref = clip max, 80 dB floor), so a clip
+        # with no HF content gives a flat envelope and no onsets (no per-band renormalisation)
+        mel = librosa.power_to_db(librosa.feature.melspectrogram(y=y, sr=sr, n_mels=128), ref=np.max)
+        hf = librosa.mel_frequencies(n_mels=128, fmax=sr / 2.0) >= 6000.0
+        envh = librosa.onset.onset_strength(S=mel[hf], sr=sr)
+        onh = librosa.onset.onset_detect(onset_envelope=envh, sr=sr, normalize=False, delta=0.5)
+        r["hf_onset_rate"] = float(len(onh) / max(len(y) / sr, 1e-6))
     except Exception:
         pass
     try:
@@ -277,6 +420,16 @@ def dyn_clip(job) -> list:
             else:
                 r["key"], r["mode"], r["key_strength"] = float(mnr.argmax()), 0.0, float(mnr.max())
             r["major_minus_minor"] = float(maj.max() - mnr.max())
+        if chroma.sum() > 0:
+            q = chroma / chroma.sum()
+            r["chroma_entropy"] = float(-(q[q > 0] * np.log2(q[q > 0])).sum())
+    except Exception:
+        pass
+    try:
+        cq = np.abs(librosa.cqt(y, sr=sr, hop_length=1024, fmin=librosa.note_to_hz("C1"), n_bins=84))
+        w = cq.sum(axis=1)
+        if w.sum() > 0:
+            r["pitch_centroid"] = float(24.0 + (np.arange(84) * w).sum() / w.sum())
     except Exception:
         pass
     try:
@@ -403,8 +556,9 @@ class ClapScorer:
             torch.load = orig
         self.model = m.to(device).eval()
         self.device, self.chunk = device, chunk
-        self.cols = list(anchors)
-        texts = [template.format(t) for t in anchors]
+        texts, self.plan = anchors
+        self.cols = [c for c, _, _ in self.plan]
+        texts = [template.format(t) for t in texts]
         with torch.no_grad():
             embs = [self.model.get_text_embedding(texts[i:i + 64], use_tensor=True)
                     for i in range(0, len(texts), 64)]
@@ -419,8 +573,7 @@ class ClapScorer:
                 x = _resample(wav[i:i + self.chunk], sr, 48000, self.device)
                 emb = self.model.get_audio_embedding_from_data(x=x, use_tensor=True)
                 out.append(_cos(emb, self.text))
-        a = np.concatenate(out, 0)
-        return {c: a[:, j] for j, c in enumerate(self.cols)}
+        return _text_cols(np.concatenate(out, 0), self.plan)
 
     def close(self):
         pass
@@ -433,8 +586,9 @@ class MuqScorer:
 
         self.model = MuQMuLan.from_pretrained(MUQ_MODEL).to(device).eval()
         self.device, self.chunk = device, chunk
-        self.cols = list(anchors)
-        texts = [template.format(t) for t in anchors]
+        texts, self.plan = anchors
+        self.cols = [c for c, _, _ in self.plan]
+        texts = [template.format(t) for t in texts]
         with torch.no_grad():
             self.text = torch.cat([self.model(texts=texts[i:i + 64]) for i in range(0, len(texts), 64)], 0)
 
@@ -446,8 +600,7 @@ class MuqScorer:
             for i in range(0, len(wav), self.chunk):
                 x = _resample(wav[i:i + self.chunk], sr, 24000, self.device)
                 out.append(_cos(self.model(wavs=x), self.text))
-        a = np.concatenate(out, 0)
-        return {c: a[:, j] for j, c in enumerate(self.cols)}
+        return _text_cols(np.concatenate(out, 0), self.plan)
 
     def close(self):
         pass
@@ -475,7 +628,7 @@ def make_scorer(args):
         return CpuScorer(args.scorer, args.workers)
     anchors = None
     if args.scorer in ("clap_music", "clap_general", "muq", "musetimbre"):
-        anchors, _ = load_anchors(args.anchors)
+        anchors = text_plan(args.anchors)
     if args.scorer == "passt":
         return PasstScorer(args.device, args.labels_csv)
     if args.scorer in CLAP_CKPT:
