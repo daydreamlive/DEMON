@@ -33,7 +33,7 @@ E=${E:-/e/Projects/tada-replication/evalenv/Scripts/python.exe}
 R=scripts/tada/sa3_tada_run.py
 S=scripts/tada/sa3_tada_score.py
 B=scripts/steering_bench
-LOG=$OUT/$SUB/logs; mkdir -p "$LOG"
+LOG=$OUT/logs/$SUB; mkdir -p "$LOG"
 $P $R --help 2>/dev/null | grep -q -- "--pack " || { echo "FLAG: $R has no --method pack (other agent's shim not in)"; exit 3; }
 scale() { # scale <block>  -> K x alpha_scale_per_block[block]
   $P -c "import json,sys; d=json.load(open(sys.argv[1]))['concepts'][sys.argv[2]]; print(float(sys.argv[3])*d['alpha_scale_per_block'][int(sys.argv[4])])" \
