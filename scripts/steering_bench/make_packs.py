@@ -161,8 +161,8 @@ def main() -> int:
             "date": today, "label_col": row["label_col"], "sign": int(float(row["sign"])),
             "category": row.get("category", ""), "second_cols": row.get("second_cols", ""),
             "population": row.get("population", ""), "class_rule": row.get("class_rule", ""),
-            "quantile": float(z["quantile"]), "n_pos": int(z["n_pos"]), "n_neg": int(z["n_neg"]),
-            "capture": str(z["capture"]), "directions": str(row["path"]), "block_choice":
+            "quantile": float(z["quantile"]) if "quantile" in z.files else None, "n_pos": int(z["n_pos"]), "n_neg": int(z["n_neg"]),
+            "capture": str(z["capture"]) if "capture" in z.files else "", "directions": str(row["path"]), "block_choice":
             "best block by cross-fitted step-mean effect (build_directions.py)",
             "effect_best": float(row["effect_best"]), "proj_std_at_block": float(z["std"][:, block].mean()),
             "step_reduction": "mean of per-step raw differences over all steps", "knob_unit": KNOB_UNIT,
