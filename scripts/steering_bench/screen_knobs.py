@@ -299,7 +299,19 @@ def serve(args) -> int:
         if req.get("quit"):
             break
         try:
-            res = score_request(backend, req, cache)
+            for attempt in range(7):  # CUDA OOM under co-resident drivers: free, wait, retry
+                try:
+                    res = score_request(backend, req, cache)
+                    break
+                except RuntimeError as e:
+                    if "out of memory" not in str(e) or attempt == 6:
+                        raise
+                    import time
+
+                    import torch
+
+                    torch.cuda.empty_cache()
+                    time.sleep(10 * (attempt + 1))
         except Exception as e:  # report and keep serving
             import traceback
 
