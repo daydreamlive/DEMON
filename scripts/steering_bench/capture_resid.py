@@ -192,9 +192,14 @@ def run_prompts_json(args, sam, nb, state, sigmas, audio_tok, hidden, generate) 
     and owns ``meta.json`` (it waits for every shard before ``complete``),
     the other parts wait for part 0's ``meta.json`` and write their rows
     into the same memmap."""
-    rows = load_prompts_json(args.prompts_json, args.n)
+    rows_all = load_prompts_json(args.prompts_json, args.n)
+    start = int(args.render_from or 0)
+    rows = rows_all[start:]
+    n_total = len(rows_all)
     n, shard = len(rows), int(args.shard)
     n_shards = (n + shard - 1) // shard
+    sel = list(state["sel"])
+    ring, ring_scorers = int(args.ring or 0), [x for x in (args.ring_scorers or "").split(",") if x]
     part, n_parts = (int(x) for x in str(args.part or "0/1").split("/"))
     if not 0 <= part < n_parts:
         raise SystemExit(f"--part {args.part}: expected I/N with 0 <= I < N")
@@ -202,7 +207,9 @@ def run_prompts_json(args, sam, nb, state, sigmas, audio_tok, hidden, generate) 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     mpath, meta_path = out / "means.npy", out / "meta.json"
-    shape = (n, args.steps, nb, hidden)
+    shape = (n_total, args.steps, len(sel), hidden)
+    if ring and ring % n_parts:
+        raise SystemExit(f"--ring {ring} must be a multiple of the part count {n_parts}")
     old = {}
     if owner:
         if args.resume and mpath.exists():
@@ -211,6 +218,16 @@ def run_prompts_json(args, sam, nb, state, sigmas, audio_tok, hidden, generate) 
             if any(out.glob("audio_*.done")):
                 raise SystemExit(f"{out} already has finished shards; pass --resume or use a fresh --out")
             arr = np.lib.format.open_memmap(mpath, mode="w+", dtype=np.float16, shape=shape)
+            if start:
+                if not args.init_means:
+                    raise SystemExit("--render-from needs --init-means (the earlier corpus's means.npy)")
+                src = np.load(args.init_means, mmap_mode="r")
+                if src.shape[0] < start or src.shape[1] != args.steps or src.shape[2] != nb:
+                    raise SystemExit(f"--init-means {src.shape} cannot fill {start} rows x {args.steps} steps x {nb}")
+                for a in range(0, start, 250):
+                    arr[a:min(start, a + 250)] = src[a:min(start, a + 250)][:, :, sel]
+                arr.flush()
+                print(f"[resid] copied {start} rows x blocks {sel} from {args.init_means}", flush=True)
         if args.resume and meta_path.exists():
             old = json.loads(meta_path.read_text())
     else:
@@ -234,21 +251,30 @@ def run_prompts_json(args, sam, nb, state, sigmas, audio_tok, hidden, generate) 
         for i in range(lo, hi, args.batch):
             for r in range(i, min(hi, i + args.batch)):
                 gen_seed[r] = int(rows[i]["seed"])
+    gen_seed_all = [None] * start + gen_seed
 
     def meta(complete: bool) -> dict:
         return {
-            "n": n, "n_shards": n_shards, "shard_size": shard, "complete": bool(complete),
-            "steps": [sigmas[k] for k in sorted(sigmas)], "n_steps": args.steps, "blocks": nb,
+            "n": n_total, "n_rendered": n, "render_from": start, "n_shards": n_shards, "shard_size": shard,
+            "complete": bool(complete),
+            "steps": [sigmas[k] for k in sorted(sigmas)], "n_steps": args.steps, "blocks": len(sel),
+            "block_ids": sel, "model_blocks": nb,
+            "init_means": str(args.init_means) if start else None,
+            "ring": ring, "ring_scorers": ring_scorers,
             "hidden": hidden, "hook": "post_block_residual",
             "site": "post_block_residual (output of sa3_blocks(sam)[b])",
             "sr": SR, "duration_s": args.duration, "mode": "prompts_json",
-            "prompts": str(args.prompts_json), "ids": [int(r["id"]) for r in rows],
-            "batch": args.batch, "parts": n_parts, "gen_seed": gen_seed,
+            "prompts": str(args.prompts_json), "ids": [int(r["id"]) for r in rows_all],
+            "batch": args.batch, "parts": n_parts, "gen_seed": gen_seed_all,
             "seed_rule": "one seed per generate call = seed of the call's first row",
             "sampler": "ARC sam.generate default (cfg 1)",
             "tokens": f"audio only ({audio_tok.num_memory_tokens} memory tokens and padding excluded)",
-            "means": "float16 [n, n_steps, blocks, hidden], row order = prompts order",
-            "audio": "audio_{k:04d}.npz: wav int16 [B, T] mono, ids [B]; complete when audio_{k:04d}.done exists",
+            "means": "float16 [n, n_steps, len(block_ids), hidden], row order = prompts order; "
+                     "rows < render_from copied from init_means",
+            "audio": "audio_{k:04d}.npz: wav int16 [B, T] mono, ids [B] (shard k = rendered rows "
+                     "[k*shard, (k+1)*shard) after render_from); complete when audio_{k:04d}.done exists; "
+                     "with ring R the file of shard k-R is recycled (renamed, overwritten) for shard k once "
+                     "every ring scorer has labels/.parts/<scorer>/shard_{k-R}.parquet",
             "checkpoint": f"{args.checkpoint} (ARC)" if args.checkpoint == "medium" else args.checkpoint,
             "date": time.strftime("%Y-%m-%d"),
         }
@@ -268,15 +294,27 @@ def run_prompts_json(args, sam, nb, state, sigmas, audio_tok, hidden, generate) 
             wavs = []
             for i in range(lo, hi, args.batch):
                 part_rows = rows[i:min(hi, i + args.batch)]
-                state["buf"] = torch.zeros(len(part_rows), args.steps, nb, hidden)
+                state["buf"] = torch.zeros(len(part_rows), args.steps, len(sel), hidden)
                 state["step"] = -1
                 audio = generate(sam, [str(r["prompt"]) for r in part_rows], seed=gen_seed[i],
                                  duration=args.duration, steps=args.steps)
                 if state["step"] != args.steps - 1:
                     raise RuntimeError(f"saw {state['step'] + 1} forwards, expected {args.steps}")
-                arr[i:i + len(part_rows)] = state["buf"].numpy().astype(np.float16)
+                arr[start + i:start + i + len(part_rows)] = state["buf"].numpy().astype(np.float16)
                 wavs.append(to_mono_int16(audio))
             arr.flush()
+            if ring and k >= ring:
+                old_k = k - ring
+                t_ring = time.perf_counter()
+                while not all((out / "labels" / ".parts" / sc / f"shard_{old_k:04d}.parquet").exists()
+                              for sc in ring_scorers):
+                    time.sleep(2)
+                old_f = out / f"audio_{old_k:04d}.npz"
+                if old_f.exists():
+                    old_f.replace(out / f"audio_{k:04d}.npz.tmp")
+                waited = time.perf_counter() - t_ring
+                if waited > 5:
+                    print(f"[resid {part}/{n_parts}] ring wait {waited:.0f}s for shard {old_k}", flush=True)
             _atomic_npz(out / f"audio_{k:04d}.npz", wav=np.concatenate(wavs, axis=0),
                         ids=np.array([int(r["id"]) for r in rows[lo:hi]], dtype=np.int64))
             done.write_text(json.dumps({"rows": [lo, hi], "part": part, "t": time.strftime("%H:%M:%S")}))
@@ -315,6 +353,16 @@ def main() -> int:
     ap.add_argument("--resume", action="store_true", help="--prompts-json: skip shards whose .done exists")
     ap.add_argument("--part", default="0/1",
                     help="--prompts-json: I/N, render shards k %% N == I (one process per GPU; part 0 owns meta)")
+    ap.add_argument("--blocks", default=None,
+                    help="--prompts-json: comma list of block indices to store (default all); meta block_ids")
+    ap.add_argument("--render-from", type=int, default=0,
+                    help="--prompts-json: render rows from this index on; earlier rows come from --init-means")
+    ap.add_argument("--init-means", default=None,
+                    help="earlier corpus means.npy [N0, steps, all blocks, hidden]; part 0 copies the --blocks slice")
+    ap.add_argument("--ring", type=int, default=0,
+                    help="--prompts-json: recycle the audio file of shard k-R for shard k (0 = keep every shard)")
+    ap.add_argument("--ring-scorers", default="desc,dyn,timbral,passt,clap_music,clap_general,muq",
+                    help="scorers whose labels/.parts must hold shard k-R before its file is recycled")
     args = ap.parse_args()
     if args.prompts_json and args.self_label:
         ap.error("--prompts-json and --self-label are exclusive")
@@ -347,18 +395,24 @@ def main() -> int:
         state["step"] += 1
         sigmas.setdefault(state["step"], probe())
 
-    def make(b):
+    def make(j):
         @torch.no_grad()
         def hook(_m, _i, out):
             hs = out[0] if isinstance(out, tuple) else out
             mask = audio_tok(hs).to(hs.dtype).unsqueeze(-1)
             mean = (hs * mask).sum(1) / mask.sum(1)
-            state["buf"][:, state["step"], b] = mean.float().cpu()
+            state["buf"][:, state["step"], j] = mean.float().cpu()
         return hook
 
+    sel = sorted({int(x) for x in args.blocks.split(",")}) if args.blocks else list(range(nb))
+    if args.blocks and not args.prompts_json:
+        raise SystemExit("--blocks is only supported with --prompts-json")
+    if any(not 0 <= b < nb for b in sel):
+        raise SystemExit(f"--blocks {sel}: model has {nb} blocks")
+    state["sel"] = sel
     hidden = int(getattr(blocks[0], "dim", 1536))
     handles = [blocks[0].register_forward_pre_hook(pre0)]
-    handles += [m.register_forward_hook(make(b)) for b, m in enumerate(blocks)]
+    handles += [blocks[b].register_forward_hook(make(j)) for j, b in enumerate(sel)]
     if args.prompts_json:
         try:
             return run_prompts_json(args, sam, nb, state, sigmas, audio_tok, hidden, sa3_tada.generate)

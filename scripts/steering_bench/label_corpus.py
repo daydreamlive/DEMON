@@ -567,12 +567,14 @@ class ClapScorer:
     def score(self, wav, sr):
         import torch
 
-        out = []
+        out, embs = [], []
         with torch.no_grad():
             for i in range(0, len(wav), self.chunk):
                 x = _resample(wav[i:i + self.chunk], sr, 48000, self.device)
                 emb = self.model.get_audio_embedding_from_data(x=x, use_tensor=True)
+                embs.append(emb.float().cpu().numpy())
                 out.append(_cos(emb, self.text))
+        self.last_emb = np.concatenate(embs, 0)
         return _text_cols(np.concatenate(out, 0), self.plan)
 
     def close(self):
@@ -595,11 +597,14 @@ class MuqScorer:
     def score(self, wav, sr):
         import torch
 
-        out = []
+        out, embs = [], []
         with torch.no_grad():
             for i in range(0, len(wav), self.chunk):
                 x = _resample(wav[i:i + self.chunk], sr, 24000, self.device)
-                out.append(_cos(self.model(wavs=x), self.text))
+                emb = self.model(wavs=x)
+                embs.append(emb.float().cpu().numpy())
+                out.append(_cos(emb, self.text))
+        self.last_emb = np.concatenate(embs, 0)
         return _text_cols(np.concatenate(out, 0), self.plan)
 
     def close(self):
@@ -700,6 +705,15 @@ def run_scorer(args) -> int:
                 ts = time.perf_counter()
                 parts.mkdir(parents=True, exist_ok=True)
                 _write_part(part, ids, scorer.score(wav, sr), args.scorer)
+                emb = getattr(scorer, "last_emb", None)
+                if emb is not None:
+                    # audio embeddings, so new text anchors can be scored later without the audio
+                    edir = labels / ".emb" / args.scorer
+                    edir.mkdir(parents=True, exist_ok=True)
+                    tmp = edir / f"shard_{k:04d}.npz.tmp"
+                    with open(tmp, "wb") as f:
+                        np.savez(f, emb=emb.astype(np.float16), ids=np.asarray(ids, dtype=np.int64))
+                    tmp.replace(edir / f"shard_{k:04d}.npz")
                 n_done += 1
                 new, last_new = True, time.perf_counter()
                 print(f"[{args.scorer}] shard {k} ({len(ids)} clips) {time.perf_counter() - ts:.1f}s"
