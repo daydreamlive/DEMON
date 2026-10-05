@@ -58,6 +58,38 @@ def stepmean(npz) -> tuple:
     return sm / max(n, 1e-12), n, b
 
 
+def _lpaps_curve(d: Path):
+    for fn in ("lpaps.csv", "lpaps_endpoints.csv"):
+        f = d / "protocol_results" / fn
+        if f.exists():
+            with open(f, newline="") as fh:
+                return {float(r["alpha"]): float(r["mean"]) for r in csv.DictReader(fh)}
+    return None
+
+
+def phase6_gain(res: Path, name: str, mag: float) -> dict:
+    """Per-sign knob value at the PCI cutoff, as ``sa3_tada_run.py calibrate``
+    picks it: the smallest probed |alpha| whose mean LPAPS reaches that sign's
+    PCI-all max LPAPS on the 50 test prompts, else the largest probe
+    (``reached`` false). Read from the phase 6 per-knob results dir."""
+    pci = _lpaps_curve(res / "eval" / f"pci_all_{name}")
+    probe = _lpaps_curve(res / "calib" / f"pack_pack_{name}")
+    if not pci or not probe:
+        raise SystemExit(f"{name}: no phase 6 PCI / probe LPAPS under {res}")
+    gain = {"unit": "knob value at which mean LPAPS vs the unsteered render reaches the PCI-all cutoff",
+            "source": "phase 6 full protocol (probe 20 holdout prompts, PCI-all on 50 TADA test prompts)"}
+    for direction, sign in (("pos", 1), ("neg", -1)):
+        cut = max(v for a, v in pci.items() if sign * a > 0)
+        probes = sorted((abs(a), v) for a, v in probe.items() if sign * a > 0)
+        hit = [a for a, v in probes if v >= cut]
+        a = hit[0] if hit else probes[-1][0]
+        gain[direction] = a / mag
+        gain[f"{direction}_alpha"] = sign * a
+        gain[f"{direction}_cutoff"] = cut
+        gain[f"{direction}_reached"] = bool(hit)
+    return gain
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--cap", required=True, help="corpus root ($CAP)")
@@ -67,6 +99,8 @@ def main() -> int:
     ap.add_argument("--concepts", nargs="*", default=[])
     ap.add_argument("--allow-unscreened", action="store_true", help="pack without a screen json (no gain)")
     ap.add_argument("--pci-descriptors", action="store_true")
+    ap.add_argument("--phase6-results", help="many_knobs_eval/results: calibrated_gain from the phase 6 PCI cutoff "
+                                             "(sa3_tada_run calibrate rule) instead of the screening estimate")
     args = ap.parse_args()
 
     import torch
@@ -113,6 +147,8 @@ def main() -> int:
                 "own": scr["own"], "second": scr["second"], "slope_per_lpaps": scr["slope_per_lpaps"],
                 "max_cos_accepted": scr["max_cos_accepted"], "pass": scr["pass"], "flags": scr["flags"],
                 "dry_run": scr.get("dry_run", False)}
+        if args.phase6_results:
+            gain = phase6_gain(Path(args.phase6_results) / name, name, mag)
         label = row.get("label") or name.replace("_", " ").title()
         blurb = row.get("blurb") or f"positive raises {row['label_col']}" + (
             " (sign -1: lowers it)" if int(float(row["sign"])) < 0 else "")
