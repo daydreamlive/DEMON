@@ -222,10 +222,15 @@ def run_prompts_json(args, sam, nb, state, sigmas, audio_tok, hidden, generate) 
                 if not args.init_means:
                     raise SystemExit("--render-from needs --init-means (the earlier corpus's means.npy)")
                 src = np.load(args.init_means, mmap_mode="r")
-                if src.shape[0] < start or src.shape[1] != args.steps or src.shape[2] != nb:
-                    raise SystemExit(f"--init-means {src.shape} cannot fill {start} rows x {args.steps} steps x {nb}")
+                src_meta = Path(args.init_means).with_name("meta.json")
+                src_ids = list(range(src.shape[2]))
+                if src_meta.exists():
+                    src_ids = json.loads(src_meta.read_text()).get("block_ids") or src_ids
+                if src.shape[0] < start or src.shape[1] != args.steps or any(b not in src_ids for b in sel):
+                    raise SystemExit(f"--init-means {src.shape} (blocks {src_ids}) cannot fill {start} rows x blocks {sel}")
+                pick = [src_ids.index(b) for b in sel]
                 for a in range(0, start, 250):
-                    arr[a:min(start, a + 250)] = src[a:min(start, a + 250)][:, :, sel]
+                    arr[a:min(start, a + 250)] = src[a:min(start, a + 250)][:, :, pick]
                 arr.flush()
                 print(f"[resid] copied {start} rows x blocks {sel} from {args.init_means}", flush=True)
         if args.resume and meta_path.exists():

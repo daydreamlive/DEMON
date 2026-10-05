@@ -320,6 +320,8 @@ def population_mask(pop: str, cats: np.ndarray) -> np.ndarray:
     ``music`` = every other category (music, solo, hybrid, musiccaps,
     abstract, tada_test: the catalogue's 3700); else that category."""
     pop = (pop or "all").strip().lower()
+    if "+" in pop:
+        return np.logical_or.reduce([population_mask(p, cats) for p in pop.split("+")])
     if pop in ("all", "", "*"):
         return np.ones(len(cats), dtype=bool)
     if pop == "music":
