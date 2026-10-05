@@ -318,6 +318,8 @@ def serve(args) -> int:
             traceback.print_exc()
             res = {"cand": req.get("cand"), "error": f"{type(e).__name__}: {e}"}
         out.write(json.dumps(res) + "\n")
+        if "torch" in sys.modules:  # hand cached blocks back: two drivers share one GPU
+            sys.modules["torch"].cuda.empty_cache()
     return 0
 
 
@@ -415,6 +417,7 @@ class SA3Generator:
         with self.E.steer_offline(self.sam, vectors, float(alpha), hook=HOOK):
             audio = self.E.generate(self.sam, prompts, seed=self.R.EVAL_SEED, duration=DURATION, steps=STEPS)
         mono = audio.mean(dim=1)
+        self.torch.cuda.empty_cache()
         return (mono * 32768.0).round().clamp(-32768, 32767).to(self.torch.int16).numpy()
 
 
