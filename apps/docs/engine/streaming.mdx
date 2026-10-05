@@ -1,0 +1,111 @@
+---
+title: "Streaming Pipeline"
+description: "The ring buffer, per-frame modulation, CFG modes, and what governs control latency"
+icon: "gauge-high"
+---
+
+`StreamPipeline` (`acestep/engine/stream.py`) is the heart of DEMON: a ring
+buffer holding several in-flight generations at different denoising stages.
+Each tick runs **one batched decoder forward pass** (two when CFG is active)
+that advances every active slot by one step. After warmup, finished latents
+emerge at a steady `depth/steps` generations per tick.
+
+## Heterogeneous slots
+
+Every in-flight slot carries its own `SlotRequest`: its own seed, its own
+`denoise` strength (with its own cached timestep schedule), its own source
+latent, its own per-frame curves, its own conditioning (one or more
+`SlotCondition`s with per-frame `temporal_weight` and per-condition
+`step_range`), its own CFG mode, its own x0 target, and its own latent-noise
+mask. A single ring buffer can mix a `denoise=1.0` regeneration, a
+`denoise=0.5` style transfer, and an RCFG-`self` request simultaneously and
+batch them in one forward pass.
+
+## Scalar-or-curve modulation
+
+Velocity scale, SDE re-noise, ODE noise injection, guidance scale, x0 target
+strength, initial noise mix, APG momentum, CFG rescale, DCW scalers, and
+condition temporal weights all accept either a Python scalar or a `[T]`
+tensor — one value per latent frame, at 25 Hz (40 ms) resolution. Everything
+is canonicalized through `normalize_curve` at the boundary so the kernels see
+one shape.
+
+Two related surfaces sit alongside the `[T]`-curve pattern:
+
+- **Channel guidance** — a `[1, T, 64]` per-channel gain applied to `xt`
+  before each forward pass (`pipeline.set_channel_gain_tensor(...)`). This is
+  what the demo's channel-group and keystone faders drive.
+- **Shared mutable curves** — `pipeline.set_shared_curve(name, value)`
+  overrides one curve-shaped field (`velocity_scale`, `sde_denoise_curve`,
+  `ode_noise_curve`, `apg_momentum`, `x0_target_strength`,
+  `cfg_rescale_curve`) on **every in-flight slot at the next tick**, instead
+  of waiting for new submissions to drain through the ring. Pass `None` to
+  revert to per-slot behavior.
+
+## The two latency classes
+
+This is the most important thing to understand when building on the engine:
+
+| Parameter class | Reaches the output in | Examples |
+|---|---|---|
+| **Shared-curve** | 1 tick (~36–43 ms on TRT) | velocity, SDE re-noise amplitude, x0 strength, CFG rescale, channel gains |
+| **Per-slot** | submit-queue wait + up to `steps` ticks (~280–460 ms at depth 4 / steps 8) | ODE `denoise`, `seed` |
+
+Per-slot parameters only land on newly submitted requests, which must run
+their full step schedule before they retire. The streaming path keeps its
+submit queue capped at 1 so a retiring slot always picks up the *freshest*
+parameters. The demo's strength knob is per-slot in ODE mode but shared-curve
+in SDE mode — SDE mode is structurally an order of magnitude more responsive.
+
+## Ring depth, duration, and VAE windowing
+
+Three knobs trade off against each other:
+
+- **`pipeline_depth` (1–8, hot-resizable)** — higher depth makes parameter
+  sweeps glide smoothly through finer intermediate states at the cost of
+  per-tick compute and VRAM; lower depth feels snappier and more discrete.
+  Resize live with `pipeline.set_depth(n)`; active slots drain naturally.
+- **Engine duration** — TRT engines reserve workspace sized to their profile;
+  a 240 s engine costs ~9 GB more across the engine set than 60 s. Build only
+  what you need.
+- **`vae_window`** — when > 0, decode happens in overlapped 3–30 s windows
+  (the `t_start` parameter picks the window) instead of full-length. This is
+  what unlocks low-latency streaming updates: ~4.5 ms per 3 s window on TRT.
+
+## Conditioning & CFG
+
+- **Multi-condition compositing** — within one slot, the decoder runs once per
+  active condition; velocities are blended per frame by `temporal_weight`, and
+  conditions gate in/out of the schedule by `step_range`.
+  `ConditioningBlend` (scalar alpha) and `ConditioningCombine` (per-frame
+  weights) are the typed entry points. The demo's prompt A/B slider is a
+  `ConditioningBlend`.
+- **Three CFG modes** — standard CFG (uncond forward every step),
+  RCFG-`initialize` (one uncond forward per slot, cached), and RCFG-`self`
+  (zero uncond forwards; the slot's initial noise stands in as the virtual
+  uncond velocity). All three layer APG momentum and an optional per-frame
+  CFG-rescale curve on top.
+- **Latent-noise-mask inpainting** — two-sided x0 blending matching ComfyUI
+  semantics: pre-blend on `xt` and post-blend on predicted `x0`, with an
+  optional per-step strength function for progressive masking.
+- **DCW post-step correction** — wavelet-domain sampler-side correction
+  (Yu et al., CVPR 2026), four modes (`low` / `high` / `double` / `pix`) plus
+  an advanced surface that at zero is byte-identical to the upstream
+  reference. Hot-updatable via `pipeline.set_dcw(...)`.
+
+## Hot LoRA
+
+Register a directory once, then enable / set strength / remove without
+rebuilding anything. When the decoder runs on TensorRT, applies route through
+a **refitter against the live engine** — no engine rebuild, no session
+restart.
+
+## Playback lead (full-stack latency)
+
+In the full streaming stack, the engine's convergence (~250 ms) is usually not
+the audible bottleneck — the **playback lead** is: freshly decoded audio is
+placed ahead of the live playhead by an adaptive margin (floor ~0.25 s by
+default, ceiling 1.35 s) that absorbs GPU contention spikes. The lead
+controller's floor/ceiling/release are tunable in the demo's
+[`config.json`](/demo/configuration). The full knob-to-ear path and measured
+numbers are in [Benchmarking & Latency](/advanced/benchmarking).

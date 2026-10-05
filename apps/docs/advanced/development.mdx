@@ -1,0 +1,84 @@
+---
+title: "Development"
+description: "The contract-first workflow, tests, and building your own frontend on the SDK"
+icon: "wrench"
+---
+
+## The contract-first rule
+
+The control surface is **contract-first**: two Python registries are the
+single source of truth, and every consumer — the bundled UI, the MCP server,
+your frontend — derives from them.
+
+| Registry | Serves |
+|---|---|
+| `acestep/streaming/knobs.py` | The knob universe → `GET /api/knobs` |
+| `demos/realtime_motion_graph_web/protocol.py` | The wire contract → `GET /api/protocol` |
+
+After changing either registry, regenerate the TypeScript projection:
+
+```bash
+python demos/realtime_motion_graph_web/scripts/gen_wire_types.py
+# writes web/sdk/types/wireContract.gen.ts
+```
+
+Contract-drift guards (`tests/unit/test_wire_contract.py`,
+`test_client_sdk.py`) fail if the generated types or SDK fall out of sync.
+
+## Tests
+
+```bash
+# Unit tests — no GPU required; includes the contract guards
+uv run pytest tests/unit -v
+
+# Web front-end checks
+cd demos/realtime_motion_graph_web/web
+npm run typecheck && npm run build
+
+# Web unit + replay tests, and Playwright e2e
+npm run test
+npm run test:e2e
+
+# GPU suites
+uv run pytest tests/e2e_latency/ -v -s     # latency measurements
+# tests/golden/ — wire-level regression net (refs captured per GPU class)
+```
+
+## Building your own frontend
+
+The demo's web client is built on an importable SDK
+(`demos/realtime_motion_graph_web/web/sdk/`) that any frontend can reuse:
+
+- `protocol.ts` + `types/wireContract.gen.ts` — wire format primitives,
+  generated from the Python source of truth.
+- `audio/RemoteBackend.ts` — the WebSocket client (session init + streaming
+  receive); `audio/AudioPlayer.ts` — playback with crossfade/delta logic;
+  `assets/audio-worklet.js` — the AudioWorklet ring buffer.
+- `fetchKnobManifest.ts` / `fetchWireContract.ts` — runtime contract
+  discovery; `wsReconnect.ts` — backoff + reconnect.
+
+Two reference implementations to copy from:
+
+- **`DynamicKnobPanel.tsx`** — renders a complete control panel purely from
+  the `/api/knobs` manifest, zero hardcoded knobs. If your frontend does
+  this, new server-side knobs appear automatically.
+- **`useStartSession.ts`** — the full session bootstrap + reconnect
+  orchestration.
+
+The SDK ships its own `AGENTS.md` developer guide covering the invariants
+(manifest discovery, echo channels, epoch guards, state management).
+
+## Repo gotchas
+
+- **`sys.path` shadowing:** standalone scripts must prepend the repo root
+  before importing `acestep` — a sibling ACE-Step checkout can shadow the
+  package.
+- **Fixture sidecars:** after editing a fixture's `track.json` (BPM/key),
+  re-run `uv run python -m scripts.calibration.precompute_fixture_sidecars`
+  (`--force` to re-derive everything; `--with-stems` to also rip stems).
+- **Knob coercion semantics are deliberate:** knob values *clamp*
+  out-of-range numerics; command-envelope fields *drop* on type mismatch.
+  The two coercers are intentionally divergent — don't merge them.
+- The repo-root `docs/` folder contains internal development notes (TRT
+  deep-dive, latency review, stem extraction) — useful background, not part
+  of this site.

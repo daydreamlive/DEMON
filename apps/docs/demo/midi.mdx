@@ -1,0 +1,93 @@
+---
+title: "MIDI & Keyboard"
+description: "Hardware MIDI with per-control learn, and the full keyboard performance surface"
+icon: "keyboard"
+---
+
+## Web MIDI
+
+Click the **MIDI in** toggle in the tools cluster (bottom-right of the
+hero-macros bay) to enable hardware input. The LED reports state: dark = off,
+red = listening, amber = the browser denied permission.
+
+<Note>
+Web MIDI requires Chromium on `localhost` or HTTPS. On a remote box, either
+use an SSH tunnel so the URL stays `localhost`, or serve behind TLS.
+</Note>
+
+The first MIDI input auto-attaches. Values use endless-encoder
+two's-complement CC semantics, so common controllers just work in relative
+mode. Out of the box, **CC 71 / CC 72** drive the two hero style faders.
+
+### MIDI learn
+
+Any mappable control — knobs, faders, the blend rail, enum dropdowns, even
+action buttons — can be rebound live:
+
+1. **Right-click** the control. A context menu opens showing the target
+   (e.g. *Remix strength*) and its current binding (*Bound to CC 74*).
+2. Pick a mode: **Absolute**, **Relative (inc)**, **Relative (dec)**,
+   **Toggle** (for buttons), or **Pitch bend**.
+3. Wiggle the physical control. The binding captures and the menu closes.
+
+**Re-learn as same type** re-maps without changing mode; **Clear mapping**
+removes the binding. Mappings persist per option-profile in `localStorage`;
+*Reset MIDI map* restores the automatic layout.
+
+## Keyboard shortcuts
+
+The whole instrument is playable from the keyboard. Hold a parameter key and
+tap <kbd>↑</kbd>/<kbd>↓</kbd> to move that parameter:
+
+### Performance
+
+| Keys | Action |
+|---|---|
+| <kbd>A</kbd> + <kbd>↑↓</kbd> | Remix strength (denoise) |
+| <kbd>G</kbd> + <kbd>↑↓</kbd> | Structure (hint) strength |
+| <kbd>B</kbd> + <kbd>↑↓</kbd> | Prompt blend A↔B |
+| <kbd>Z</kbd> / <kbd>X</kbd> + <kbd>↑↓</kbd> | Hero LoRA strength, slots 1 / 2 |
+| <kbd>F</kbd> | Randomize seed |
+| <kbd>Enter</kbd> | Send prompt (<kbd>Ctrl/⌘</kbd>+<kbd>Enter</kbd> inside the textarea) |
+| <kbd>Space</kbd> | Pause / resume |
+
+### Engine
+
+| Keys | Action |
+|---|---|
+| <kbd>E</kbd> + <kbd>↑↓</kbd> | Feedback |
+| <kbd>H</kbd> + <kbd>↑↓</kbd> | Shift |
+| <kbd>N</kbd> + <kbd>↑↓</kbd> | Noise share |
+| <kbd>D</kbd> + <kbd>↑↓</kbd> | ODE control |
+| <kbd>0</kbd>–<kbd>7</kbd> + <kbd>↑↓</kbd> | Channel groups G0–G7 |
+| <kbd>Shift</kbd>+<kbd>1</kbd>–<kbd>6</kbd> + <kbd>↑↓</kbd> | Keystone channels CH13–CH56 |
+
+### DCW corrector
+
+| Keys | Action |
+|---|---|
+| <kbd>T</kbd> | Toggle DCW on/off |
+| <kbd>Shift</kbd>+<kbd>T</kbd> | Cycle DCW mode |
+| <kbd>Shift</kbd>+<kbd>W</kbd> | Cycle DCW wavelet |
+| <kbd>W</kbd> / <kbd>Y</kbd> + <kbd>↑↓</kbd> | DCW low / high push |
+
+### Transport & UI
+
+| Keys | Action |
+|---|---|
+| <kbd>R</kbd> | Record / stop |
+| <kbd>L</kbd> | Toggle loop (arm region drawing) |
+| <kbd>←</kbd>/<kbd>→</kbd> | Nudge loop one grid step (<kbd>Shift</kbd> = move by loop length) |
+| <kbd>O</kbd> or <kbd>Esc</kbd> | Toggle Full Controls drawer |
+| <kbd>Esc</kbd> <kbd>Esc</kbd> | Expanded (spread) drawer view |
+| <kbd>K</kbd> | Kiosk mode |
+| <kbd>Shift</kbd>+<kbd>P</kbd> | Performance overlay (dev builds) |
+
+The same table lives in the [keyboard shortcut reference](/reference/keyboard-shortcuts).
+
+## Webcam motion input
+
+An optional webcam mode drives remix strength from motion: a low-resolution
+capture canvas runs a frame-difference detector, smoothed, mapped onto
+`denoise`. It needs the same secure-origin permissions as MIDI; if the camera
+is blocked, stay with on-screen or MIDI control.

@@ -1,0 +1,50 @@
+---
+title: "Recording"
+description: "Capture the live audio, or the HUD canvas as video with audio muxed in"
+icon: "circle-dot"
+---
+
+Press <kbd>R</kbd> or click the **Record** pill in the tools cluster. The pill
+walks through *Starting…* → a live **MM:SS** counter → *Saving…*, and a
+preview dialog offers the finished files for download with timestamped
+filenames.
+
+## What gets captured
+
+Audio and video are recorded in parallel; you pick which to keep in the save
+dialog.
+
+| Track | Format | Fallback |
+|---|---|---|
+| **Audio** | Opus-in-WebM at 192 kbps (`.webm`) | AAC-in-MP4 at 256 kbps (`.m4a`) on Safari/iOS |
+| **Video** (optional) | VP9-in-WebM (`.webm`) | VP8-in-WebM, then H.264-in-MP4 (`.mp4`) |
+
+- Audio is teed off the player's output node — 48 kHz stereo, exactly what
+  you hear (including the LUFS matcher if enabled).
+- Video captures the live graph canvas at 30 fps with the audio muxed in.
+  If no video codec is supported, recording silently becomes audio-only.
+
+## Limits & behavior
+
+- Soft caps: **60 minutes** or **~150 MB**, whichever comes first.
+- Recording auto-pauses if the tab loses visibility or the audio context is
+  interrupted; the pill shows **PAUSED** and resumes on click.
+
+## Audio-reactive video backdrop
+
+Recording pairs well with the optional video mode: drop any `.mp4` / `.webm`
+/ `.mov` into the `videos/` folder (sibling of `web/` in the demo directory)
+and it becomes a backdrop rendered through a WebGL2 shader pipeline with two
+audio-reactive effects:
+
+- **Color parallax** — saturated regions drift horizontally, with a punch on
+  every kick.
+- **Bloom on kick** — luminance-thresholded bloom driven by the bass
+  envelope. The same kick envelope feeds the perimeter HUD ribbons and the
+  cursor halo via a CSS variable, so the whole frame pulses in lockstep.
+
+There is no preprocessing step — parallax is saturation-driven, not
+depth-driven. With no videos present, the demo runs in graph mode and looks
+the same. Shader intensities are tunable under `effects` in
+[config.json](/demo/configuration). If WebGL2 is unavailable the plain video
+plays as a fallback.

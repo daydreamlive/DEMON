@@ -1,0 +1,68 @@
+---
+title: "Prompts & LoRAs"
+description: "Live prompt blending and the hot-swappable LoRA library"
+icon: "pen-nib"
+---
+
+## Prompt A ↔ B blending
+
+<img src="/images/drawer-styles.png" alt="The Styles tab — prompts and LoRA library" />
+
+The **Styles** tab has two prompt fields — **A** and **B** — plus a blend
+slider (<kbd>B</kbd> + <kbd>↑</kbd>/<kbd>↓</kbd>):
+
+- Press <kbd>Enter</kbd> (or <kbd>Ctrl/⌘</kbd>+<kbd>Enter</kbd> inside the
+  textarea) to submit. Submission costs **one text-encoder pass** per prompt
+  (~60 ms warm); a `prompt_applied` ack arrives when the re-encode lands.
+- The **blend slider is free**: it lerps between the two cached encodings per
+  tick with no re-encode — sweep it live as a performance control.
+- The interpolation path is switchable between **slerp** and **linear**
+  (`set_interp_method`), for prompts as well as timbre/structure/feedback
+  blends.
+
+Prompts are comma-separated tags in ACE-Step style (genres, instruments,
+moods, production descriptors). The shipped defaults are in
+[config.json](/demo/configuration).
+
+## The LoRA library
+
+The LoRA browser lists every `.safetensors` under the server's
+`$ACESTEP_MODELS_DIR/loras/` directory (default
+`~/.daydream-scope/models/demon/loras/`), grouped by genre from sidecar
+metadata. `demon-setup` downloads a starter pack of 16 genre LoRAs so hot
+swapping works immediately; skip it with `uv run demon-setup --skip-loras` or
+`DEMON_SKIP_STARTER_LORAS=1`. Drop your own `.safetensors` files in that
+folder, optionally with `<stem>.metadata.json` sidecars, and refresh.
+
+- **Click to enable / disable.** Enabling allocates a strength knob
+  (`lora_str_<id>`) and applies the weights live. On a TensorRT decoder this
+  goes through an **engine refit** — no rebuild, no session restart.
+- **Drag the fader** for strength (0–2). Each enabled LoRA gets its own
+  fader; the first two enabled LoRAs also bind to the hero style faders
+  (<kbd>Z</kbd> / <kbd>X</kbd>).
+- **Trigger words.** By default, enabling a LoRA prepends its primary trigger
+  word to both prompt fields so you see exactly what the encoder sees;
+  disabling removes it again (best-effort, only if still at the head).
+  Disable this with `auto_prepend_lora_triggers: false` in config.json for
+  fully manual workflows.
+- **Checkpoint compatibility.** LoRAs trained for the other model scale
+  (2B vs 5B/XL) are hidden by default; set `show_incompatible_loras: true` to
+  list them anyway. LoRAs without a declared scale always show.
+
+Auto-enabled LoRAs at boot (and their strengths) are configured per
+checkpoint scale via `enabled_loras` / `enabled_loras_xl` in
+[config.json](/demo/configuration).
+
+<Note>
+On the XL checkpoint, TRT LoRA refit is **not yet validated** — XL TRT
+generation works, but LoRA applies may log `No engine weights matched` and
+have no effect. The 2B turbo checkpoint has full hot-LoRA support.
+</Note>
+
+## LoRA strength as automation
+
+Any enabled LoRA's strength fader can also be driven by a drawn
+[automation curve](/demo/automation-curves) or bound to a
+[MIDI controller](/demo/midi) — strength sweeps are a cheap, expressive
+performance gesture since refit targets update without interrupting the
+stream.

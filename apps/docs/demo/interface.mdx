@@ -1,0 +1,97 @@
+---
+title: "The Interface"
+description: "A tour of the demo UI — start flow, HUD, hero macros, and the Full Controls drawer"
+icon: "compass"
+---
+
+## Starting a session
+
+<img src="/images/start-overlay.png" alt="The start overlay" />
+
+1. Open the app and click **click to begin** (*tap to begin* on mobile). The
+   button doubles as the browser's audio-unlock gesture, so playback starts
+   without any extra clicks.
+2. The demo loads the default fixture and connects. Cold start takes ~15 s
+   while the server loads the model and TensorRT engines; the status bar shows
+   *loading* with "this might take up to a minute" while connecting.
+3. When you upload your own track (or swap to one), the **Almost Ready**
+   dialog appears first:
+   - **Step 1 — Inference source.** Choose what the model hears: **Full
+     track**, **Instruments**, or **Vocals**. Stems are ripped automatically
+     either way; the choice only controls what feeds inference.
+   - **Step 2 — Key & time signature.** Leave both on **Auto-detect** or pin
+     them explicitly, then hit **Start**. Encoding on the server can take up
+     to a minute for a fresh upload.
+
+## The HUD
+
+<img src="/images/hud-live.png" alt="The live HUD" />
+
+The center of the screen is a canvas HUD: waveform background, history trails,
+a playhead, and DAW-style name pills for each active parameter lane. The
+DEMON brand mark sits top-left; perimeter ribbons and the cursor halo pulse
+with the kick.
+
+- **The top ribbon is the remix-strength slider.** Drag it (or
+  <kbd>A</kbd> + <kbd>↑</kbd>/<kbd>↓</kbd>) to control how far the model
+  departs from the source. On every session start and song swap, the engine
+  value snaps to 0 and glides visually — a "hear the source first" cue (the
+  *denoise session gate*, configurable in
+  [config.json](/demo/configuration)).
+- When parameter lanes overflow the display, a **+N more** chip appears.
+- <kbd>Shift</kbd>+<kbd>P</kbd> toggles a developer performance overlay
+  (frame time, p95, long tasks); live engine stats (`tick_ms`, `dec_ms`,
+  generation count) arrive with every params update.
+
+## Hero macros
+
+The bay at the bottom-center holds the controls you'll touch most, in three
+zones:
+
+| Zone | Controls |
+|---|---|
+| **Macros** | **STRENGTH** (remix strength, <kbd>A</kbd>), **STRUCTURE** (<kbd>G</kbd>), **TIMBRE**, and a **SEED** randomizer (<kbd>F</kbd>) |
+| **Style faders** | Two hero LoRA faders (<kbd>Z</kbd> / <kbd>X</kbd>), labeled with the enabled LoRA names |
+| **Tools** | **RECORD** pill (<kbd>R</kbd>), **CURVE EDITOR**, the **FULL CONTROLS** drawer toggle (<kbd>O</kbd>; reads **SIMPLE CONTROLS** while open), and the **MIDI IN** toggle |
+
+## The Full Controls drawer
+
+<img src="/images/drawer-core.png" alt="The Full Controls drawer" />
+
+Press <kbd>O</kbd> (or <kbd>Esc</kbd>) to open the drawer. It has seven tabs;
+press <kbd>Esc</kbd> <kbd>Esc</kbd> for the expanded *spread view* that lays
+every section out at once.
+
+| Tab | Contents |
+|---|---|
+| **Core** | The STRENGTH / STRUCTURE / TIMBRE / SEED knobs; input-track picker, audio upload, and the timbre & structure reference pickers |
+| **Styles** | The **Tags** prompt fields (A/B with blend) and the [LoRA library](/demo/prompts-and-loras) |
+| **Mod** | Engine internals — shift, feedback, feedback depth; [DCW corrector and CFG guidance](/demo/controls) |
+| **Experimental** | The 14 [channel faders](/demo/controls#channel-faders-experimental) (channel highlights + channel groups) and activation steering |
+| **Auto** | A control surface rendered entirely from the backend's `/api/knobs` manifest — every knob the server knows about, with nothing hardcoded |
+| **Saved** | Saved sessions (hosted app only; standalone builds show a notice) |
+| **Config** | Key / time-signature, transport, MIDI settings, preferences |
+
+A help readout at the bottom of the drawer explains whatever control you
+hover — *"Hover any control to read about it."*
+
+## Status & indicators
+
+- The **status bar** appears for connection states (*loading*, errors,
+  mid-session swap progress) and hides once you're playing.
+- A network indicator and live indicator report stream health.
+- **Kiosk mode** (<kbd>K</kbd>, or launch with `--kiosk`) hides the cursor
+  when idle — built for installations.
+
+## Mobile
+
+On phones the app is **landscape-only** — portrait shows a "Rotate to
+landscape" overlay. The mobile layout replaces the drawer with:
+
+- **Lite controls** along the bottom: a track carousel, four faders
+  (**strength**, **structure**, **timbre**, **shift**), a **REC** toggle, and
+  a **More →** button.
+- **Edge stepper rails** — vertical drag-to-value tracks on the left/right
+  screen edges with haptic feedback.
+- **More →** opens a full-screen sheet with the same seven tabs as the
+  desktop drawer.
