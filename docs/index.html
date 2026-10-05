@@ -4,11 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 
-  <title>DEMON: a platform for real-time music generation</title>
-  <meta name="description" content="DEMON: a platform for real-time music generation. One streaming engine, wire protocol and client SDK in front of interchangeable model families, starting with ACE-Step v1.5.">
+  <title>DEMON: Diffusion Engine for Musical Orchestrated Noise</title>
+  <meta name="description" content="DEMON: a streaming diffusion engine for real-time music generation, built on ACE-Step v1.5.">
 
   <meta property="og:title" content="DEMON: Diffusion Engine for Musical Orchestrated Noise">
-  <meta property="og:description" content="A platform for real-time music generation: one streaming engine, one wire protocol and one client SDK in front of interchangeable model families. Per-frame parametric control of streaming diffusion on a single consumer GPU.">
+  <meta property="og:description" content="A streaming diffusion engine for real-time music generation, built on ACE-Step v1.5. Per-frame parametric control of the diffusion process on a single consumer GPU.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://daydreamlive.github.io/DEMON/">
   <meta property="og:image" content="https://daydreamlive.github.io/DEMON/assets/img/poster-hero.jpg">
@@ -17,7 +17,7 @@
   <meta property="og:image:alt" content="DEMON: Diffusion Engine for Musical Orchestrated Noise — streaming diffusion engine for real-time music generation.">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="DEMON: Diffusion Engine for Musical Orchestrated Noise">
-  <meta name="twitter:description" content="A platform for real-time music generation: one streaming engine, one wire protocol and one client SDK in front of interchangeable model families. Per-frame parametric control of streaming diffusion on a single consumer GPU.">
+  <meta name="twitter:description" content="A streaming diffusion engine for real-time music generation, built on ACE-Step v1.5. Per-frame parametric control of the diffusion process on a single consumer GPU.">
   <meta name="twitter:image" content="https://daydreamlive.github.io/DEMON/assets/img/poster-hero.jpg">
   <meta name="twitter:image:alt" content="DEMON: Diffusion Engine for Musical Orchestrated Noise — streaming diffusion engine for real-time music generation.">
 
@@ -43,7 +43,7 @@
 
     <h1 class="hero__name">DEMON</h1>
     <p class="hero__expansion"><span class="acronym">D</span>iffusion <span class="acronym">E</span>ngine for <span class="acronym">M</span>usical <span class="acronym">O</span>rchestrated <span class="acronym">N</span>oise</p>
-    <p class="hero__subtitle">A Platform for Real-Time Music Generation</p>
+    <p class="hero__subtitle">Streaming Diffusion Engine for Real-Time Music Generation</p>
 
     <p class="author-line">
       <a href="https://ryanontheinside.com">Ryan Fosdick</a> <span class="sep">·</span> Daydream
@@ -68,51 +68,8 @@
     <div class="abstract-block">
       <h2 class="abstract-label">Abstract</h2>
       <p class="abstract">
-        DEMON is a platform for real-time music generation: one streaming engine, one wire protocol and one client SDK, with interchangeable generative model families behind it. Its core, and the subject of the paper, is a streaming diffusion engine first built for ACE-Step v1.5 (2&nbsp;B turbo and 5&nbsp;B XL turbo). A ring buffer of in-flight generations, each carrying its own per-slot timestep schedule, is advanced by one batched decoder forward pass per tick; after warmup, at full pipeline depth, every tick produces a finished song latent. Every solver-side parameter (per-frame source preservation, velocity scaling, ODE noise injection, classifier-free guidance, x0-target morphing, channel gain) accepts a scalar or a per-frame curve at the latent's 25&nbsp;Hz frame resolution, and a shared-mutable-curve lane propagates parameter changes to every in-flight slot on the next tick, independent of pipeline depth. Native TensorRT engines cover 60, 120, and 240&nbsp;s song lengths; longer songs route through a sliding 60&nbsp;s window. The decoder runs under TensorRT with a refit-enabled engine that hot-swaps LoRAs without rebuild.
+        DEMON is a streaming diffusion engine for music, built on ACE-Step v1.5 (2&nbsp;B turbo and 5&nbsp;B XL turbo). A ring buffer of in-flight generations, each carrying its own per-slot timestep schedule, is advanced by one batched decoder forward pass per tick; after warmup, at full pipeline depth, every tick produces a finished song latent. Every solver-side parameter (per-frame source preservation, velocity scaling, ODE noise injection, classifier-free guidance, x0-target morphing, channel gain) accepts a scalar or a per-frame curve at the latent's 25&nbsp;Hz frame resolution, and a shared-mutable-curve lane propagates parameter changes to every in-flight slot on the next tick, independent of pipeline depth. Native TensorRT engines cover 60, 120, and 240&nbsp;s song lengths; longer songs route through a sliding 60&nbsp;s window. The decoder runs under TensorRT with a refit-enabled engine that hot-swaps LoRAs without rebuild.
       </p>
-
-      <h2 class="abstract-label abstract-label--sub">Model families</h2>
-      <p class="abstract">
-        A server boots one family; every client talks the same protocol. Per-frame curves, morphing and LoRAs belong to the diffusion families. Magenta RealTime 2 and MiniMax-Music3 are append-only streams steered by prompt and lyrics; YuE2 composes a song, then reshapes it in the ring. DEMON does not train or own these models.
-      </p>
-      <div class="table-scroll">
-        <table class="perf-table" aria-label="Model families DEMON can run">
-          <thead>
-            <tr>
-              <th scope="col">Family</th>
-              <th scope="col">Kind and steering</th>
-              <th scope="col">RTX 5090</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td><a href="https://github.com/ace-step/ACE-Step-1.5">ACE-Step v1.5</a> (ACE-Step team)</td>
-              <td>Streaming diffusion; per-frame curves, morphing, LoRA hot-swap, audio in</td>
-              <td class="num">11.3 gen/s</td>
-            </tr>
-            <tr>
-              <td><a href="https://huggingface.co/stabilityai/stable-audio-3-small-music">Stable Audio 3</a> (Stability AI)</td>
-              <td>Streaming diffusion through the same pipeline; per-frame curves, morphing</td>
-              <td class="num">realtime</td>
-            </tr>
-            <tr>
-              <td>Magenta RealTime 2 (Google Magenta)</td>
-              <td>Autoregressive, sidecar; prompt A/B blend</td>
-              <td class="num">1.7x (small)</td>
-            </tr>
-            <tr>
-              <td><a href="https://huggingface.co/MiniMaxAI/MiniMax-Music3">MiniMax-Music3</a> (MiniMax)</td>
-              <td>Autoregressive; style prompt, lyrics</td>
-              <td class="num">1.3x</td>
-            </tr>
-            <tr>
-              <td><a href="https://github.com/multimodal-art-projection/YuE">YuE2</a> (m-a-p; weights CC BY-NC 4.0)</td>
-              <td>Song-level; composes with an AR stage, then reshapes the song in the ring (denoise, x0 target, feedback, seed); prompt change re-composes</td>
-              <td class="num">2.4&nbsp;s knob-to-ear (60&nbsp;s song)</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
     </div>
 
   </div>
@@ -389,11 +346,29 @@
 
     <div class="prose">
       <p>
-        DEMON is the runtime, control surface, and acceleration layer; in the family described here, the diffusion model is <a href="https://github.com/ace-step/ACE-Step-1.5">ACE-Step v1.5</a>, released by the ACE-Step team under MIT. The engine maintains a ring buffer of in-flight generations at staggered denoising stages. Crucially, <strong>each in-flight slot carries its own denoise scalar and its own timestep schedule</strong>: one batched decoder forward pass per tick advances slots that are simultaneously at different stages of different schedules. Native TensorRT engines cover 60, 120, and 240&nbsp;s song lengths; longer songs route through a sliding 60&nbsp;s window that advances at chunk boundaries.
+        DEMON is the runtime, control surface, and acceleration layer; the diffusion model is <a href="https://github.com/ace-step/ACE-Step-1.5">ACE-Step v1.5</a>, released by the ACE-Step team under MIT. The engine maintains a ring buffer of in-flight generations at staggered denoising stages. Crucially, <strong>each in-flight slot carries its own denoise scalar and its own timestep schedule</strong>: one batched decoder forward pass per tick advances slots that are simultaneously at different stages of different schedules. Native TensorRT engines cover 60, 120, and 240&nbsp;s song lengths; longer songs route through a sliding 60&nbsp;s window that advances at chunk boundaries.
       </p>
 
       <p>
         Two control lanes coexist. <em>Submission-time</em> parameters (text conditioning, source audio, denoise) enter the pipeline when a new request is submitted and reach the next emptied slot within one tick; they then take effect over that slot's remaining schedule. <em>Step-time</em> parameters (per-frame source preservation, x0-target morph, velocity scaling, ODE noise injection, channel gain, guidance, CFG rescale, APG momentum, DCW scalers) live in a <strong>shared mutable registry that every slot reads on every forward pass</strong>; writing to that registry takes effect on the next tick for every in-flight slot at once, regardless of pipeline depth. The decoder runs under TensorRT with refit enabled, so LoRA deltas are written into the live engine without a rebuild. The paper covers the SDE derivation behind the per-frame source-preservation curve, the windowed-decode receptive-field analysis, and the TensorRT precision recipe.
+      </p>
+    </div>
+  </div>
+</section>
+
+
+<!-- ============================================================
+     MODEL FAMILIES
+     ============================================================ -->
+<section id="families">
+  <div class="container container--narrow">
+    <div class="section-label">
+      <span class="name">Model families</span>
+    </div>
+
+    <div class="prose">
+      <p>
+        The paper describes the engine on ACE-Step v1.5. Since then DEMON has become a platform: the same streaming runtime, wire protocol and client SDK now sit in front of interchangeable model families. <a href="https://huggingface.co/stabilityai/stable-audio-3-small-music">Stable Audio 3</a> runs through the same streaming diffusion pipeline with per-frame curves, prompt morphing and audio-to-audio; Magenta RealTime 2, MiniMax-Music3 and YuE2 are experimental. A server boots one family, and every client reads that family's capabilities from the protocol. The family table, benchmarks and setup are in the <a href="https://github.com/daydreamlive/DEMON#model-families">repository README</a>.
       </p>
     </div>
   </div>
@@ -435,7 +410,7 @@
           <strong>ACE-Step v1.5</strong> &mdash; the base diffusion model, VAE, text encoder, and semantic LM. Architecture, training, weights, and turbo distillation are the work of the <a href="https://github.com/ace-step/ACE-Step-1.5">ACE-Step team</a>, released under MIT.
         </p>
         <p>
-          <strong>Model families</strong>: Stable Audio 3 is the work of Stability AI; Magenta RealTime 2 of Google Magenta; MiniMax-Music3 of MiniMax; YuE2 of the m-a-p YuE team (weights CC BY-NC 4.0, code Apache-2.0).
+          <strong>Model families</strong> &mdash; Stable Audio 3 is the work of Stability AI; Magenta RealTime 2 of Google Magenta; MiniMax-Music3 of MiniMax; YuE2 of the m-a-p YuE team (weights CC BY-NC 4.0, code Apache-2.0).
         </p>
         <p>
           <strong>StreamDiffusion</strong> &mdash; ring-buffer streaming pattern for image diffusion (<a href="https://arxiv.org/abs/2312.12491">Kodaira et al., 2023</a>), adapted here for long music latents.
@@ -459,7 +434,7 @@
     </div>
 
     <p>
-      If you use DEMON, please cite DEMON and the model of the family you used. For the ACE-Step family, cite ACE-Step below.
+      If you use DEMON, please cite DEMON and the model of the family you ran. For ACE-Step, cite both entries below.
     </p>
 
     <h3 style="margin-top:2.5rem;">DEMON</h3>
