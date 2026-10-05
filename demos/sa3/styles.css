@@ -147,7 +147,14 @@ textarea {
 }
 
 .plugin-steer .knob-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.plugin-steer .knob-cell {
+  flex: 0 0 calc((100% - 30px) / 4);
+  min-width: 0;
 }
 
 .knob-placeholder {
@@ -527,14 +534,17 @@ body.knob-dragging {
     grid-template-columns: 1fr;
   }
 
-  .plugin-steer .knob-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+  .plugin-steer .knob-cell {
+    flex-basis: calc((100% - 20px) / 3);
   }
 }
 
 @media (max-width: 380px) {
-  .knob-grid,
-  .plugin-steer .knob-grid {
+  .knob-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .plugin-steer .knob-cell {
+    flex-basis: calc((100% - 10px) / 2);
   }
 }
