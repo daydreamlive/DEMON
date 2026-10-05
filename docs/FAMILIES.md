@@ -1,10 +1,9 @@
 # Adding a model family
 
 A *family* is one generative model behind DEMON's streaming runner: ACE-Step,
-Stable Audio 3, Magenta RealTime 2 and MiniMax-Music3 today. This document is
-the contract for adding one and
-the map of what still branches on a family name in the core. Read it before
-`acestep/streaming/families.py`.
+Stable Audio 3, Magenta RealTime 2, MiniMax-Music3 and YuE2 today. This
+document is the contract for adding one and the map of what still branches on
+a family name in the core. Read it before `acestep/streaming/families.py`.
 
 ## The one thing you register
 
@@ -227,3 +226,138 @@ same server reuse the process-cached context and skip the load.
 **Hot loop.** The family leaves `acestep/engine/stream.py` and
 `acestep/engine/ode_steps.py` as they are on main: `MiniMaxChunkRenderer`
 runs its own CFG.
+
+## YuE2
+
+`--checkpoint yue2-3b` (family `yue2`). YuE2 composes a whole song from a
+style prompt and lyrics; DEMON runs its acoustic stage in the ring.
+
+**What runs in the ring.** The acoustic NAR: a 32-step uniform midpoint
+flow-matching solve of the WHOLE song, one step per tick, behind the Tier 2
+seam (`acestep/engine/yue2_adapter.py`). The adapter returns the midpoint
+velocity, so the pipeline's Euler step is upstream's midpoint update exactly.
+`yue2_denoise` truncates the released grid (the last `ceil(32*d)` steps from
+the re-noised song anchor); it is never rescaled. Ring depth is 1 (see
+Measured).
+
+**What is conditioning.** Score plan, semantic tokens and the AR-prefix KV
+prefill (`acestep/engine/yue2_context.py`). They run at create, before
+`ready` (the page shows "composing"), and again for a prompt change on the
+context's worker thread (`acestep/streaming/yue2_recompose.py`). The KV bundle
+rides `SlotRequest.aux_cond`. Lyrics and song length are fixed for the
+session.
+
+**Prompt changes re-compose.** A YuE2 style lives in the semantic tokens:
+with the semantics frozen, swapping only the `[Tags]` prefix moved the audio
+less than a seed change does (long-term spectrum distance 0.04-0.06 dB vs
+0.70-1.20 dB for a seed change and 3.3-4.2 dB for a fresh composition, two
+style pairs). So `set_prompt` composes the session's lyrics under the new tags
+at the session's length (semantic `min_tokens = max_tokens = T`) while the
+current song keeps playing, publishes the new song atomically, and the ring
+drops the old song's in-flight slots and renders the new anchor with one full
+solve. Latest wins per slot: going back to the playing prompt cancels the job
+in flight, re-sending the tags a slot is already composing keeps that job (so
+does an unchanged A sent alongside a new B), and a song finishing after the
+session closes releases its KV bundle. A replaced song's KV bundle is freed by
+the runner as soon as no slot plays it and no in-flight solve uses it. The
+params telemetry carries `yue2_recomposing` (the slots with a job in flight)
+and `yue2_nar` (the NAR path of the song that last emerged). A failed re-compose is logged at WARNING and sent as the session's
+runtime error event (wire `error`, the SDK's `server_error`); the current song
+keeps playing. A distinct `prompt_b` is a second song composed at create;
+`set_prompt_blend` is a hard switch at 0.5.
+
+**Settled ring.** With fixed conditioning, seed and knobs and no feedback,
+the ring stops after one generation and the renderer keeps playing that latent
+(repeat windows come from a cache), so the GPU is free until something moves.
+Slots still in flight when it settles (depth >= 2) are dropped, so the next
+change does not first finish a stale one.
+
+**Knobs.** `yue2_denoise` (prefixed: it is not ACE's `denoise`), `yue2_steps`,
+`x0_target`, `feedback`, `feedback_depth`, `seed` (new acoustic noise, same
+composition). No `steps_override` (its shared default of 8 would change the
+released behaviour), no LoRA, no CFG, no per-frame curves.
+
+**`yue2_steps`.** Midpoint steps per acoustic solve: 32 (the default) is
+upstream's released grid; 24, 16, 12, 8, 6 or 4 answer faster (one step per
+tick, so update latency scales with the step count) at lower quality. Other
+values snap to the nearest choice; a change restarts the ring on the new grid,
+and `yue2_denoise` truncates whichever grid is active.
+
+**Caps.** `yue2_duration_s` is the longest song YuE2 may compose: 2-100 s,
+clamped (absent or null = 100 s). The ceiling is the flexible NAR engine's
+2500 frames; the 2 s floor keeps every song longer than the window decoder's
+37 frames, and a composition that still comes out shorter fails create with a
+clear error. With engines present the semantic stage is held to the floor of
+the largest engine profile the budget reaches (1000 frames = 40 s, or 250
+frames = 10 s for shorter budgets on an engine with the short profile), so
+songs land on TensorRT. (The family's
+`TextOnlySpec` default of 60 s only sizes the silent stub source, which YuE2
+ignores.)
+
+**Environment.**
+
+| Variable | Meaning |
+| --- | --- |
+| `DEMON_YUE2_ROOT` | weights root holding `YuE2-3B/` and `YuE2-Vae/` (checked against a SHA256 manifest) |
+| `DEMON_YUE2_YUE_SRC` | upstream YuE `src/` at revision `0edaf2f4` |
+| `DEMON_YUE2_EXTRA_PATH` | optional extra import paths (`os.pathsep`-separated) |
+| `DEMON_YUE2_TRT_DIR` | optional; holds `flexible_song/velocity.trt` (NAR) and `vae_fp32_t37.trt` (window VAE). Without it everything runs eager |
+
+**Engines.** `python -m acestep.engine.trt.yue2_build nar --out $DEMON_YUE2_TRT_DIR`
+and `python -m acestep.engine.trt.yue2_build vae --out $DEMON_YUE2_TRT_DIR`.
+The NAR engine has two optimization profiles: 1000-2500 frames (40-100 s) and
+250-1000 frames (10-40 s, short songs), both batch 1-4 and up to 4000
+conditioning tokens (`yue2_build nar --long-only` writes the first only, as
+older engines have). At run time the profiles are read from the loaded engine
+and each song binds on the first that holds it; a song outside every profile
+(or one whose bind the engine refuses) runs eager instead of failing. The VAE engine decodes 37-frame windows and keeps 5 core frames. The
+numbers below used the engines built during the feasibility spike; this
+builder is a port of that build and was not re-run here.
+
+**Measured** (RTX 5090, Windows, one process; raw data in the PR notes):
+
+| | 30 s budget | 60 s budget |
+| --- | --- | --- |
+| NAR path | eager (750 frames < engine floor) | TensorRT |
+| create: plan / semantic / prefill / anchor solve / decode | 5.7 / 4.9 / 0.06 / 3.8 / 0.2 s | 5.7 / 9.5 / 0.1 / 2.5-2.7 / 0.3-0.4 s |
+| ring tick p50 / p95 (depth 1) | 118.7 / 120.2 ms | 70.2 / 71.5 ms |
+| knob change on a settled ring to new audio: `seed`, `x0_target` | 4.0 s | 2.4-2.5 s |
+| same, `yue2_denoise` 0.5 | 2.0 s | 1.2 s |
+| change landing mid-solve: first changed / fully updated (`seed`) | 1.9 / 5.9 s | 1.15 / 3.6 s |
+| `set_prompt` to the new song heard | | 21-42 s idle ring, 36-58 s busy ring |
+| nvidia-smi peak (incl. 3.9 GB desktop) | 18.4 GB | 21-22 GB |
+
+Knob-to-ear is measured to CPU PCM (produce + window render), excluding
+transport and the client buffer. Parity: the ring is bit-exact against
+upstream's eager midpoint solve at depth 1 and 4, and against an explicit
+TensorRT solve on TensorRT; TensorRT vs eager is 0.79-1.19% relative L2 (two
+compositions). Depth 1 is a performance cap: a settled ring runs one solve per
+change, and depth 2 ran a 102-124 ms tick (60 s songs) and slowed every update
+by 40-75% (settled latents identical to depth 1).
+
+Browser smoke (headless Chromium on `/yue2/`, 57.8 s song, TensorRT): `ready`
+34.1 s after Start in a fresh server (model load included), first audio 0.1 s
+later; slices kept arriving through `yue2_denoise` and `x0_target` moves (about
+290 per 8 s); a prompt change was heard 20.9 s later (re-compose 18.0 s plus
+the anchor solve 2.7 s, ring idle); no console errors.
+
+**Known gaps.**
+
+- Songs under 10 s, and songs under 40 s on an engine built without the short
+  profile, run the NAR eager.
+- A composition whose conditioning exceeds 4000 tokens runs eager (seen
+  for re-composed songs: 4181 and 4839 tokens); `yue2_nar` reports it and the
+  server logs `yue2_nar_path_changed`.
+- The AR is about 2x slower inside a live session than at create (and up to
+  3.7x while the ring is busy): a re-compose takes about 30 s at 60 s. The
+  ring never underran during one. A tokens-only conditioning subprocess would
+  isolate it.
+- Songs end where the length budget cuts them unless the model ends earlier
+  (a re-compose forces the session's length).
+- Ear verdicts on `yue2_denoise` < 1 and on re-composed songs are pending.
+
+**Licence.** The YuE2 weights are CC BY-NC 4.0: non-commercial use only.
+
+**Turbo.** There is no YuE2-Turbo checkpoint: "Turbo" is NoizAI's vLLM
+serving layer for the AR stages (Linux), so it could only shorten create and
+re-compose, and it is out of v1.
