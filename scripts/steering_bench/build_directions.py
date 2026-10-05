@@ -597,7 +597,7 @@ def generic_main(args) -> int:
                 vb = []
                 for x in l3:
                     smx = (units[i, x].astype(np.float64) * norms[i, x][:, None]).mean(0)
-                    vb.append(smx / max(np.linalg.norm(smx), 1e-12) * float(stds[i, :, x].mean()) / std_best)
+                    vb.append(smx / max(float(np.linalg.norm(sm)), 1e-12))   # unit_b x |raw_b| / |raw_best|
                 pb = out.parent / (out.name + "_b") / f"{r['name']}.npz"
                 pb.parent.mkdir(parents=True, exist_ok=True)
                 np.savez(pb, unit=units[i, loc].transpose(1, 0, 2), blocks=np.array(blocks),
