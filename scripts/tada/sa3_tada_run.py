@@ -1126,6 +1126,9 @@ def main() -> int:
                     help="--method pack: a production .safetensors pack, or a directory of <concept>.safetensors")
     ap.add_argument("--hook", choices=("cross_attn_output", "post_block_residual"), default="cross_attn_output",
                     help="steering site for --vec-dir vectors (caa/austeer); --method pack uses the pack's hook")
+    ap.add_argument("--pci-descriptors", default=None,
+                    help="json {concept: [positive, negative]} (make_packs.py --pci-descriptors): PCI triples "
+                         "'{p}', '{p}, <pos>', '{p}, <neg>' for screened many-knobs packs, added to PACK_DESCRIPTORS")
     ap.add_argument("--renorm", action="store_true")
     ap.add_argument("--guidance", type=float, default=1.0,
                     help="steering guidance: v0 + g (v1 - v0) per step (1 = off)")
@@ -1136,6 +1139,9 @@ def main() -> int:
     ap.add_argument("--top-s-all", type=int, default=2048)
     args = ap.parse_args()
 
+    if args.pci_descriptors:
+        for k, v in json.loads(Path(args.pci_descriptors).read_text()).items():
+            PACK_DESCRIPTORS.setdefault(k, (str(v[0]), str(v[1])))
     if args.method == "pack" and args.sites == ["all", "loc", "ablated"]:
         args.sites = ["pack"]
     if args.concepts is None and args.method == "pack":
