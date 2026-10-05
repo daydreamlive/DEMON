@@ -801,7 +801,7 @@ def main() -> int:
     def render_ref(set_name: str, prompts: list) -> Path:
         """Alpha 0 of a prompt set: rendered once per process (same seed and
         batch as every steered render, so it is the unsteered twin)."""
-        path = ring_dir / f"{args.ring_tag or "g" + str(args.gpu_index)}_ref_{set_name}.npz"
+        path = ring_dir / f"{args.ring_tag or 'g' + str(args.gpu_index)}_ref_{set_name}.npz"
         gen.cand = ""
         _save_inplace(path, wav=gen.render(prompts, np.zeros(1536, np.float32), 0, 0.0), sr=np.int64(SR),
                       alpha=np.float64(0.0), cand=np.array(""))
@@ -811,7 +811,7 @@ def main() -> int:
 
     anchor_table = load_anchor_table(args.anchors)
 
-    ring = [ring_dir / f"{args.ring_tag or "g" + str(args.gpu_index)}_s{k}.npz" for k in range(args.ring)]
+    ring = [ring_dir / f"{args.ring_tag or 'g' + str(args.gpu_index)}_s{k}.npz" for k in range(args.ring)]
     busy = {}                      # slot -> candidate name
     inflight = {}                  # name -> (row, meta, t0, slots)
     accepted = accepted_units(screen, dirs_by_name)
