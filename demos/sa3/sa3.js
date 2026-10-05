@@ -183,6 +183,38 @@ function knobTick(pos, className) {
   return tick;
 }
 
+// User-facing tooltip. Catalogue packs carry internal labelling notes in
+// meta.blurb (scorer, CLAP, spot-check remarks), so it is never shown for
+// them: line 1 is the +/- anchors (or the label), line 2 the calibrated
+// range and cutoff per sign, line 3 the pack description. The five legacy
+// packs keep their original blurb + description.
+function knobTooltip(name, entry, min, max) {
+  const meta = entry.meta ?? {};
+  const description = meta.description || entry.description || "";
+  if (!name.startsWith(STEER_PREFIX)) return description;
+  if (name in LEGACY_PACK_PEDAL && !meta.category) {
+    return [meta.blurb, entry.description].filter(Boolean).join("\n\n");
+  }
+  const lines = [];
+  if (meta.pos_anchor || meta.neg_anchor) {
+    lines.push(`+ ${meta.pos_anchor || "-"}  /  - ${meta.neg_anchor || "-"}`);
+  } else {
+    lines.push(knobLabel(name, entry));
+  }
+  if (meta.calibrated) {
+    const reached = meta.cutoff_reached ?? {};
+    const cut = meta.cutoff ?? {};
+    const side = (sign, limit, c, ok) =>
+      `${sign}${Math.abs(Number(limit)).toFixed(1)}` +
+      (c != null ? ` (cutoff ${Number(c).toFixed(1)}, ${ok === false ? "not reached" : "reached"})` : "");
+    lines.push(`range ${side("+", max, cut.pos, reached.pos)}  /  ${side("-", min, cut.neg, reached.neg)}`);
+  } else {
+    lines.push(`range ${Number(min).toFixed(1)} to +${Number(max).toFixed(1)} (uncalibrated)`);
+  }
+  if (description) lines.push(description);
+  return lines.join("\n");
+}
+
 function numericKnob(name, entry) {
   const min = entry.min ?? 0;
   const max = entry.max ?? 1;
@@ -202,8 +234,8 @@ function numericKnob(name, entry) {
 
   const cell = document.createElement("div");
   cell.className = "knob-cell";
-  const tip = [meta.blurb, entry.description].filter(Boolean);
-  if (tip.length) cell.title = tip.join("\n\n");
+  const tip = knobTooltip(name, entry, min, max);
+  if (tip) cell.title = tip;
 
   const wrap = document.createElement("div");
   wrap.className = "knob-wrap";

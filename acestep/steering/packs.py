@@ -21,6 +21,22 @@ A pack is a single ``.safetensors`` file holding one tensor, ``vector``
       "provenance": {...}                   # prompts, pairs, steps, date...
     }
 
+Format 2 (additive; every format-1 pack loads and applies unchanged)
+adds optional header keys ``category``, ``applies_to``, ``seeds``,
+``variant``, ``description``, ``pos_anchor`` / ``neg_anchor`` and
+``norms``, and two optional tensor shapes:
+
+* ``vectors`` ``[K, hidden]`` + ``blocks`` int64 ``[K]`` in place of
+  ``vector``: row k lands on block ``blocks[k]``, all rows driven by the
+  same knob value. A unit-norm row uses the pack ``magnitude`` (or
+  ``norms[k] * knob_unit`` when the header carries per-block ``norms``);
+  a non-unit row is a raw mean difference and is applied as its unit
+  direction times its own norm times ``knob_unit`` (``magnitude / norm``,
+  i.e. 0.1).
+* ``vectors_neg`` ``[K, hidden]`` (or ``vector_neg`` ``[hidden]`` beside
+  a legacy ``vector``): a negative knob value applies these rows at
+  ``|knob|`` instead of negating the positive rows.
+
 The effective shift at a step is ``knob * magnitude * policy_weight *
 vector`` added to block ``block``'s output residual, the same additive
 post-block convention the ACE decoder engine uses. The vector method is
@@ -48,6 +64,12 @@ if TYPE_CHECKING:
     import torch
 
 PACK_FORMAT = 1
+PACK_FORMAT_V2 = 2
+SUPPORTED_PACK_FORMATS = (PACK_FORMAT, PACK_FORMAT_V2)
+# Default knob unit (magnitude / norm) when a pack does not imply one.
+DEFAULT_KNOB_UNIT = 0.1
+# A format-2 row within this of unit L2 norm counts as a unit direction.
+_UNIT_TOL = 1e-3
 PACK_SUFFIX = ".safetensors"
 PACK_METADATA_KEY = "steering_pack"
 PACK_KNOB_PREFIX = "steer_"
@@ -96,9 +118,28 @@ def policy_weights(policy: Mapping | None, n: int) -> tuple:
     raise ValueError(f"unknown steering policy kind {kind!r}")
 
 
+@dataclass(frozen=True)
+class SteeringTerm:
+    """One block's additive shift: the shared internal form of every pack
+    shape. ``neg`` is None when a negative knob simply negates ``pos``."""
+
+    block: int
+    pos: "torch.Tensor"
+    pos_magnitude: float
+    neg: Optional["torch.Tensor"] = None
+    neg_magnitude: float = 0.0
+
+
 @dataclass
 class SteeringPack:
-    """One steering vector plus everything needed to apply it."""
+    """One steering pack plus everything needed to apply it.
+
+    ``vector`` / ``block`` are the format-1 single-block form (for a
+    multi-block pack they mirror row 0, so single-block readers keep
+    working). ``vectors`` / ``blocks`` / ``vectors_neg`` / ``vector_neg``
+    are the format-2 additions; :meth:`terms` folds every shape into one
+    tuple of :class:`SteeringTerm`.
+    """
 
     family: str
     checkpoint: str
@@ -115,16 +156,98 @@ class SteeringPack:
     policy: dict = field(default_factory=lambda: {"kind": "range", "start": 0.0, "end": 1.0})
     provenance: dict = field(default_factory=dict)
     path: Optional[Path] = None
+    # ---- format 2 (all optional) ----
+    vectors: Optional["torch.Tensor"] = None       # [K, hidden]
+    blocks: tuple = ()                             # K block indices
+    vectors_neg: Optional["torch.Tensor"] = None   # [K, hidden]
+    vector_neg: Optional["torch.Tensor"] = None    # [hidden], beside `vector`
+    norms: tuple = ()                              # optional per-block raw norms
+    category: str = ""
+    applies_to: object = None
+    seeds: object = None
+    variant: str = ""
+    description: str = ""
+    pos_anchor: str = ""
+    neg_anchor: str = ""
 
     @property
     def knob_name(self) -> str:
         return f"{PACK_KNOB_PREFIX}{self.name}"
 
+    @property
+    def is_v2(self) -> bool:
+        return (
+            self.vectors is not None or self.vectors_neg is not None
+            or self.vector_neg is not None
+        )
+
+    @property
+    def all_blocks(self) -> tuple:
+        if self.vectors is not None:
+            return tuple(int(b) for b in self.blocks)
+        return (int(self.block),)
+
+    @property
+    def effective_category(self) -> str:
+        """Top-level ``category`` when set, else ``provenance.category``."""
+        if self.category:
+            return str(self.category)
+        prov = self.provenance if isinstance(self.provenance, Mapping) else {}
+        return str(prov.get("category") or "")
+
+    def knob_unit(self) -> float:
+        if self.norm and self.magnitude:
+            return float(self.magnitude) / float(self.norm)
+        prov = self.provenance if isinstance(self.provenance, Mapping) else {}
+        try:
+            return float(prov.get("knob_unit", DEFAULT_KNOB_UNIT))
+        except (TypeError, ValueError):
+            return DEFAULT_KNOB_UNIT
+
+    def _row(self, row: "torch.Tensor", k: int) -> tuple:
+        """(direction, magnitude) for one format-2 row."""
+        n = float(row.norm())
+        if n > 0.0 and abs(n - 1.0) > _UNIT_TOL:
+            return row / n, n * self.knob_unit()
+        if self.norms and k < len(self.norms):
+            return row, float(self.norms[k]) * self.knob_unit()
+        return row, float(self.magnitude)
+
+    def terms(self) -> tuple:
+        """Every block shift this pack applies, one per target block.
+
+        A format-1 pack yields exactly ``(block, vector, magnitude)``
+        with the stored tensor untouched, so its numerics are unchanged.
+        """
+        out = []
+        if self.vectors is None:
+            neg, neg_mag = None, 0.0
+            if self.vector_neg is not None:
+                neg, neg_mag = self._row(self.vector_neg, 0)
+            out.append(SteeringTerm(
+                int(self.block), self.vector, float(self.magnitude), neg, neg_mag,
+            ))
+        else:
+            for k, b in enumerate(self.blocks):
+                pos, pos_mag = self._row(self.vectors[k], k)
+                neg, neg_mag = None, 0.0
+                if self.vectors_neg is not None:
+                    neg, neg_mag = self._row(self.vectors_neg[k], k)
+                out.append(SteeringTerm(int(b), pos, pos_mag, neg, neg_mag))
+        return tuple(out)
+
     def metadata(self) -> dict:
         meta = asdict(self)
-        meta.pop("vector")
-        meta.pop("path")
-        meta["format"] = PACK_FORMAT
+        for k in ("vector", "path", "vectors", "blocks", "vectors_neg", "vector_neg"):
+            meta.pop(k)
+        # Format-2 header keys are written only when set, so a format-1
+        # pack's header is unchanged.
+        for k in _V2_META_KEYS:
+            if meta.get(k) in (None, "", (), []):
+                meta.pop(k, None)
+        if "norms" in meta:
+            meta["norms"] = [float(x) for x in meta["norms"]]
+        meta["format"] = PACK_FORMAT_V2 if self.is_v2 else PACK_FORMAT
         return meta
 
     def validate(self) -> None:
@@ -133,13 +256,38 @@ class SteeringPack:
                 f"pack name {self.name!r} must match {_NAME_RE.pattern} "
                 "(it becomes the knob steer_<name>)"
             )
-        if self.vector.ndim != 1 or int(self.vector.shape[0]) != int(self.hidden_size):
-            raise ValueError(
-                f"pack {self.name!r}: vector shape {tuple(self.vector.shape)} "
-                f"!= [hidden_size={self.hidden_size}]"
-            )
-        if int(self.block) < 0:
-            raise ValueError(f"pack {self.name!r}: negative block {self.block}")
+        H = int(self.hidden_size)
+        for nm in ("vector", "vector_neg"):
+            v = getattr(self, nm)
+            if v is None and nm == "vector_neg":
+                continue
+            if v is None or v.ndim != 1 or int(v.shape[0]) != H:
+                raise ValueError(
+                    f"pack {self.name!r}: {nm} shape "
+                    f"{None if v is None else tuple(v.shape)} != [hidden_size={H}]"
+                )
+        if self.vectors is not None:
+            K = len(self.blocks)
+            if K == 0:
+                raise ValueError(f"pack {self.name!r}: vectors without blocks")
+            for nm in ("vectors", "vectors_neg"):
+                v = getattr(self, nm)
+                if v is not None and (v.ndim != 2 or tuple(v.shape) != (K, H)):
+                    raise ValueError(
+                        f"pack {self.name!r}: {nm} shape {tuple(v.shape)} "
+                        f"!= [K={K}, hidden_size={H}]"
+                    )
+            if self.vector_neg is not None:
+                raise ValueError(
+                    f"pack {self.name!r}: vector_neg beside vectors (use vectors_neg)"
+                )
+            if self.norms and len(self.norms) != K:
+                raise ValueError(f"pack {self.name!r}: norms length != K={K}")
+        elif self.vectors_neg is not None:
+            raise ValueError(f"pack {self.name!r}: vectors_neg without vectors")
+        for b in self.all_blocks:
+            if int(b) < 0:
+                raise ValueError(f"pack {self.name!r}: negative block {b}")
         if not self.family or not self.checkpoint:
             raise ValueError(f"pack {self.name!r}: family and checkpoint are required")
         policy_weights(self.policy, 8)  # raises on an unknown kind
@@ -155,9 +303,22 @@ def save_pack(pack: SteeringPack, path: Path | str) -> Path:
     if path.suffix != PACK_SUFFIX:
         path = path.with_suffix(PACK_SUFFIX)
     path.parent.mkdir(parents=True, exist_ok=True)
-    vec = pack.vector.detach().to(device="cpu", dtype=torch.float32).contiguous()
+    def f32(t):
+        return t.detach().to(device="cpu", dtype=torch.float32).contiguous()
+
+    if pack.vectors is not None:
+        tensors = {
+            "vectors": f32(pack.vectors),
+            "blocks": torch.tensor([int(b) for b in pack.blocks], dtype=torch.int64),
+        }
+        if pack.vectors_neg is not None:
+            tensors["vectors_neg"] = f32(pack.vectors_neg)
+    else:
+        tensors = {"vector": f32(pack.vector)}
+        if pack.vector_neg is not None:
+            tensors["vector_neg"] = f32(pack.vector_neg)
     save_file(
-        {"vector": vec}, str(path),
+        tensors, str(path),
         metadata={PACK_METADATA_KEY: json.dumps(pack.metadata(), sort_keys=True)},
     )
     return path
@@ -173,20 +334,54 @@ def load_pack(path: Path | str) -> SteeringPack:
         meta_raw = (f.metadata() or {}).get(PACK_METADATA_KEY)
         if meta_raw is None:
             raise ValueError(f"{path.name}: no {PACK_METADATA_KEY!r} metadata")
-        vec = f.get_tensor("vector").to(torch.float32)
+        t = {k: f.get_tensor(k) for k in set(f.keys()) & _TENSOR_KEYS}
     meta = json.loads(meta_raw)
     fmt = int(meta.pop("format", 0))
-    if fmt != PACK_FORMAT:
-        raise ValueError(f"{path.name}: pack format {fmt} != {PACK_FORMAT}")
-    known = {
-        "family", "checkpoint", "block", "hidden_size", "name", "label",
-        "blurb", "hook", "method", "norm", "magnitude", "policy", "provenance",
-    }
-    pack = SteeringPack(
-        vector=vec, path=path, **{k: v for k, v in meta.items() if k in known},
-    )
+    if fmt not in SUPPORTED_PACK_FORMATS:
+        raise ValueError(
+            f"{path.name}: pack format {fmt} not in {SUPPORTED_PACK_FORMATS}"
+        )
+    kw = {k: v for k, v in meta.items() if k in _KNOWN_META}
+    if "norms" in kw:
+        kw["norms"] = tuple(float(x) for x in (kw["norms"] or ()))
+    if "vectors" in t:
+        if "blocks" not in t:
+            raise ValueError(f"{path.name}: 'vectors' without 'blocks'")
+        vectors = t["vectors"].to(torch.float32)
+        blocks = tuple(int(b) for b in t["blocks"].reshape(-1).tolist())
+        if vectors.ndim != 2 or int(vectors.shape[0]) != len(blocks) or not blocks:
+            raise ValueError(f"{path.name}: vectors/blocks shape mismatch")
+        kw.setdefault("block", blocks[0])
+        kw.setdefault("hidden_size", int(vectors.shape[1]))
+        kw["vector"] = vectors[0]
+        kw["vectors"] = vectors
+        kw["blocks"] = blocks
+        if "vectors_neg" in t:
+            kw["vectors_neg"] = t["vectors_neg"].to(torch.float32)
+    elif "vector" in t:
+        kw["vector"] = t["vector"].to(torch.float32)
+        if "vector_neg" in t:
+            kw["vector_neg"] = t["vector_neg"].to(torch.float32)
+    else:
+        raise ValueError(f"{path.name}: no 'vector' or 'vectors' tensor")
+    pack = SteeringPack(path=path, **kw)
     pack.validate()
     return pack
+
+
+_TENSOR_KEYS = frozenset({"vector", "vector_neg", "vectors", "vectors_neg", "blocks"})
+# Header keys added by format 2 (written only when set). The legacy
+# header's own ``blocks`` list (always empty) is not one of them: the
+# block list of a multi-block pack is the ``blocks`` tensor.
+_V2_META_KEYS = (
+    "norms", "category", "applies_to", "seeds", "variant", "description",
+    "pos_anchor", "neg_anchor",
+)
+_KNOWN_META = frozenset({
+    "family", "checkpoint", "block", "hidden_size", "name", "label",
+    "blurb", "hook", "method", "norm", "magnitude", "policy", "provenance",
+    *_V2_META_KEYS,
+})
 
 
 def discover_packs(
@@ -223,13 +418,13 @@ def discover_packs(
             continue
         if pack.family != family or pack.checkpoint != checkpoint:
             continue
-        if layout is not None and not layout.accepts(
-            pack.block, pack.hidden_size, pack.hook,
+        if layout is not None and not all(
+            layout.accepts(b, pack.hidden_size, pack.hook) for b in pack.all_blocks
         ):
             logger.warning(
                 "steering_pack_skipped path={} reason=layout_mismatch "
-                "block={} hidden={} hook={} layout={}",
-                path, pack.block, pack.hidden_size, pack.hook, layout,
+                "blocks={} hidden={} hook={} layout={}",
+                path, list(pack.all_blocks), pack.hidden_size, pack.hook, layout,
             )
             continue
         if pack.knob_name in reserved or pack.knob_name in seen:
@@ -272,8 +467,14 @@ class PackSteering:
                 block=p.block,
                 policy=p.policy,
                 blurb=p.blurb,
-                category=str(prov.get("category") or ""),
+                category=p.effective_category,
                 gain=prov.get("calibrated_gain"),
+                blocks=p.all_blocks,
+                applies_to=p.applies_to,
+                variant=p.variant,
+                pack_description=p.description,
+                pos_anchor=p.pos_anchor,
+                neg_anchor=p.neg_anchor,
                 flags=(
                     tuple(flags) if isinstance(flags, (list, tuple))
                     else tuple(f for f in re.split(r"[;,\s]+", flags) if f)
@@ -294,14 +495,22 @@ class PackSteering:
             alpha = float(raw.get(p.knob_name, 0.0))
             if alpha == 0.0:
                 continue
-            configs.append({
-                "layer": int(p.block),
-                "step": -1,
-                "weights": policy_weights(p.policy, n),
-                "vector": p.vector,
-                "magnitude": float(p.magnitude),
-                "alpha": alpha,
-            })
+            weights = policy_weights(p.policy, n)
+            for t in p.terms():
+                # A negative knob uses the pack's own negative direction
+                # at |knob| when it has one, else negates the positive one.
+                if alpha < 0.0 and t.neg is not None:
+                    vec, mag, a = t.neg, t.neg_magnitude, -alpha
+                else:
+                    vec, mag, a = t.pos, t.pos_magnitude, alpha
+                configs.append({
+                    "layer": int(t.block),
+                    "step": -1,
+                    "weights": weights,
+                    "vector": vec,
+                    "magnitude": float(mag),
+                    "alpha": a,
+                })
         return configs
 
 

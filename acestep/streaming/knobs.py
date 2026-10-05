@@ -283,6 +283,12 @@ def steering_pack_spec(
     category: str = "",
     gain: Optional[Mapping] = None,
     flags: Sequence = (),
+    blocks: Sequence = (),
+    applies_to: Any = None,
+    variant: str = "",
+    pack_description: str = "",
+    pos_anchor: str = "",
+    neg_anchor: str = "",
 ) -> KnobSpec:
     """The registry spec for one data-driven steering-pack knob.
 
@@ -293,7 +299,10 @@ def steering_pack_spec(
     ``provenance.calibrated_gain``: knob value at the fidelity cutoff per
     sign) gets a per-sign range of ``gain x STEERING_PACK_HEADROOM``.
     Label, category, blurb and the calibration ride in ``meta`` for the
-    UI. Packs come from ``acestep.steering.packs``.
+    UI, plus (pack format 2, when set) applies_to, variant, description,
+    pos/neg anchors and the block list of a multi-block pack. A pack
+    ``description`` replaces the generated knob description. Packs come
+    from ``acestep.steering.packs``.
     """
     pol = policy or {}
     if pol.get("kind", "range") == "range":
@@ -332,15 +341,37 @@ def steering_pack_spec(
         meta["calibrated"] = False
     if flags:
         meta["flags"] = [str(f) for f in flags]
+    blk = tuple(int(b) for b in blocks) if blocks else (int(block),)
+    if len(blk) > 1:
+        meta["blocks"] = list(blk)
+    for key, val in (
+        ("applies_to", applies_to), ("variant", variant),
+        ("description", pack_description),
+        ("pos_anchor", pos_anchor), ("neg_anchor", neg_anchor),
+    ):
+        if val not in (None, "", (), []):
+            meta[key] = list(val) if isinstance(val, tuple) else val
+    if pack_description:
+        description = str(pack_description)
+    else:
+        where_blocks = (
+            f"block {blk[0]}" if len(blk) == 1
+            else "blocks " + ", ".join(str(b) for b in blk)
+        )
+        description = (
+            f"Activation steering ({label or name}): a contrastive "
+            f"difference-of-means vector added after {where_blocks}, "
+            f"{where}. 0 = off, negative inverts."
+        )
+        # The blurb is a user-facing note only on uncategorised (legacy)
+        # packs; on catalogue packs it is an internal labelling note.
+        if blurb and not category:
+            description = f"{description} {blurb}"
     return KnobSpec(
         name, default=0.0,
         min_val=lo, max_val=hi,
         group="steering",
-        description=(
-            f"Activation steering ({label or name}): a contrastive "
-            f"difference-of-means vector added after block {block}, "
-            f"{where}. 0 = off, negative inverts. {blurb}".rstrip()
-        ),
+        description=description,
         meta=meta,
     )
 
