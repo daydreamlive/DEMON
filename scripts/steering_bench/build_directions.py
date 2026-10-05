@@ -592,7 +592,7 @@ def generic_main(args) -> int:
                        norm_best=round(float(norms[i, loc[0]].mean()), 5), quantile=args.quantile,
                        path=str(path), variant=args.variant_tag, base=r["name"])
             if "b" in variants:
-                # variant b: the top-3 blocks together, each pushed by its own projection std per unit
+                # variant b: the top-3 blocks together, each scaled by its raw step-mean norm relative to the best block
                 l3 = loc[:3]
                 vb = []
                 for x in l3:
