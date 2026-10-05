@@ -9,13 +9,17 @@
 # 20 holdout prompts, --points 2 (alphas -a, -a/2, 0, a/2, a), a = K x alpha_scale_per_block[b]
 # from $OUT/<tag>_summary.json (pooled within-class std of the projection, step mean), so every
 # block is pushed by the same number of activation stds. Then LPAPS only (eval env) and the five
-# descriptors (CPU) -> one row per block in $OUT/$SUB/summary.csv. PROD=1 (default) also runs
+# descriptors (CPU, scripts/tada/sa3_descriptor_score.py, the single descriptor scorer) ->
+# $OUT/$SUB/cross_effect.csv (one row per block dir x descriptor: slope near 0, delta and
+# delta/LPAPS at the endpoints, delta at the PCI cutoff) and, when $OUT/$PCI_SUB holds the
+# concept's scored PCI dirs, auc_desc.csv (descriptor AUC, steer/PCI ratio). PROD=1 (default) also runs
 # the production pack at its own block with the same K (dir suffix _prod) as the baseline row.
 #
 # Env: OUT (bench root, required), K (default 4), SUB (default blocks_<tag>_<concept>),
+#      PCI_SUB (eval sub with the pci_* dirs, default eval), WORKERS (CPU workers, 24),
 #      PROD (1), PROD_PACKS (production packs dir, read-only), BATCH (20), TADA_ROOT, HF_HOME.
 set -u
-[ $# -ge 4 ] || { sed -n 2,16p "$0"; exit 2; }
+[ $# -ge 4 ] || { sed -n 2,20p "$0"; exit 2; }
 C=$1; GPU=$2; TAG=$3; shift 3; BLOCKS="$*"
 : "${OUT:?set OUT to the bench root (sa3_tada_run.py --out)}"
 K=${K:-4}; SUB=${SUB:-blocks_${TAG}_${C}}; PROD=${PROD:-1}; BATCH=${BATCH:-20}
@@ -52,6 +56,10 @@ fi
 echo "[$(date +%H:%M:%S)] LPAPS"
 $E $S protocol --out "$OUT" --sub "$SUB" --lpaps-only > "$LOG/lpaps.log" 2>&1 || { echo "FLAG: LPAPS failed"; exit 6; }
 echo "[$(date +%H:%M:%S)] descriptors"
-$P $B/score_descriptors.py --dirs "$OUT/$SUB"/pack_pack_${C}_* --summary "$OUT/$SUB/summary.csv" \
+D=scripts/tada/sa3_descriptor_score.py
+PCI_SUB=${PCI_SUB:-eval}
+PR=(); [ -d "$OUT/$PCI_SUB" ] && PR=(--pci-root "$OUT/$PCI_SUB")
+{ $P $D score "$OUT/$SUB"/pack_pack_${C}_* --workers "${WORKERS:-24}" \
+  && $P $D auc --root "$OUT/$SUB" ${PR[@]+"${PR[@]}"} --concepts "$C"; } \
   > "$LOG/descriptors.log" 2>&1 || { echo "FLAG: descriptor scoring failed"; exit 7; }
-echo "[$(date +%H:%M:%S)] done: $OUT/$SUB/summary.csv"
+echo "[$(date +%H:%M:%S)] done: $OUT/$SUB/cross_effect.csv"

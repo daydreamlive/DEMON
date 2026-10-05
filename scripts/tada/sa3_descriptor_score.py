@@ -140,6 +140,21 @@ def _split(name: str):
     return method, site, concept
 
 
+_concept_of: dict = {}
+
+
+def _base_concept(concept: str, pci_root: Path) -> str:
+    """Strip a run suffix (``bright_b23``, ``bright_prod``) back to the
+    concept that has PCI dirs under ``pci_root``; the PCI concept names
+    (or the descriptor home concepts) win, else the name as is."""
+    known = {p.name.split("_", 2)[2] for p in pci_root.glob("pci_*_*") if p.is_dir()} | set(HOME.values())
+    parts = concept.split("_")
+    for k in range(len(parts), 0, -1):
+        if "_".join(parts[:k]) in known:
+            return "_".join(parts[:k])
+    return concept
+
+
 def _read_curve(f: Path) -> dict:
     """``{alpha: mean}`` from a reference-layout csv."""
     if not f.exists():
@@ -302,12 +317,17 @@ def _names_present(d: Path):
 def cmd_auc(args) -> None:
     root = Path(args.root)
     dirs = _eval_dirs(root)
-    concepts = sorted({_split(d.name)[2] for d in dirs})
+    proot = Path(args.pci_root) if args.pci_root else root
+    if proot.resolve() != root.resolve():
+        # the PCI dirs elsewhere (e.g. eval) score their own AUC for the ratios
+        dirs += [d for d in _eval_dirs(proot) if d.name.startswith("pci_")]
+    _concept_of.update({d.name: _base_concept(_split(d.name)[2], proot) for d in dirs})
+    concepts = sorted(set(_concept_of.values()))
     if args.concepts:
         concepts = [c for c in concepts if c in args.concepts]
-    cut = {c: {dn: pci_cutoff(root, c, dn) for dn in ("pos", "neg")} for c in concepts}
+    cut = {c: {dn: pci_cutoff(proot, c, dn) for dn in ("pos", "neg")} for c in concepts}
     names_all = sorted({n for d in dirs for n in _names_present(d)}, key=(*BASE, *TIMBRAL).index)
-    gaps = {c: {n: pci_gap(root, c, n) for n in names_all} for c in set(concepts) | set(HOME.values())}
+    gaps = {c: {n: pci_gap(proot, c, n) for n in names_all} for c in set(concepts) | set(HOME.values())}
 
     try:
         ref = _reference_auc()
@@ -318,7 +338,8 @@ def cmd_auc(args) -> None:
     auc_rows, cross_rows = [], []
     auc = {}
     for d in dirs:
-        method, site, concept = _split(d.name)
+        method, site, _ = _split(d.name)
+        concept = _concept_of[d.name]
         if concept not in concepts:
             continue
         pr = d / "protocol_results"
@@ -356,11 +377,19 @@ def cmd_auc(args) -> None:
                 row[f"alpha_at_cut_{dn}"] = a
                 row[f"knob_at_cut_{dn}"] = a / mag if mag else float("nan")
                 row[f"reached_{dn}"] = reached
+                # endpoint gain per unit distortion (no PCI needed): delta / LPAPS
+                # at the strongest alpha of the direction
+                side = [x for x in desc if (x > 0 if dn == "pos" else x < 0)]
+                ae = (max(side) if dn == "pos" else min(side)) if side else None
+                le = lp.get(ae) if ae is not None else None
+                row[f"lpaps_at_max_{dn}"] = le if le is not None else float("nan")
+                row[f"delta_per_lpaps_{dn}"] = (
+                    (desc[ae] - desc[0.0]) / le if le and 0.0 in desc else float("nan"))
             cross_rows.append(row)
 
     # steer / PCI-all ratios
     for name, per in auc.items():
-        method, site, concept = _split(name)
+        concept = _concept_of[name]
         pci = auc.get(f"pci_all_{concept}", {})
         for n, e in per.items():
             avg = np.nanmean([e.get("pos", np.nan), e.get("neg", np.nan)])
@@ -426,6 +455,8 @@ def main() -> int:
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--auc", action="store_true", help="score: run auc on --root afterwards")
     ap.add_argument("--concepts", nargs="*", default=None)
+    ap.add_argument("--pci-root", default=None,
+                    help="auc: eval root holding the pci_* dirs (default --root)")
     args = ap.parse_args()
     if args.cmd == "score" and not (args.dirs or args.root):
         raise SystemExit("score needs dirs or --root")

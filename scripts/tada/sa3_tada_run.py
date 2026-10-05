@@ -862,11 +862,15 @@ def _render_alpha(sam, prompts, vectors, blocks, alpha, batch):
     return torch.cat(outs)
 
 
+#: Set from ``--hook``: the ``steer_offline`` site for ``--vec-dir``
+#: vectors (default the TADA cross-attention output, as before).
+_HOOK = "cross_attn_output"
+
+
 def _hook_kw() -> dict:
-    """``steer_offline`` site: the pack's hook under ``--method pack``
-    (``post_block_residual`` for the production packs), else the TADA
-    default (cross-attention output)."""
-    return {"hook": _PACK["hook"]} if _PACK.get("hook") else {}
+    """``steer_offline`` site: the pack's own hook under ``--method pack``
+    (``post_block_residual`` for the production packs), else ``--hook``."""
+    return {"hook": _PACK.get("hook") or _HOOK}
 
 
 def cmd_sweep(args, sam) -> None:
@@ -900,6 +904,7 @@ def cmd_sweep(args, sam) -> None:
                 "prompts": len(tests), "seed": EVAL_SEED, "steps": STEPS,
                 "duration": DURATION, "holdout": bool(args.holdout),
                 "guidance": _GUIDANCE, "renorm": _RENORM, "range": list(rng),
+                "hook": _hook_kw()["hook"],
                 **({"pack": dict(_PACK)} if args.method == "pack" else {}),
             }, indent=2))
             _log(f"sweep {site} {concept}: {len(alphas)} strengths x {len(tests)} prompts (max {amax})")
@@ -1119,6 +1124,8 @@ def main() -> int:
     ap.add_argument("--method", choices=("caa", "austeer", "caakv", "oracle", "oraclemean", "pack"), default="caa")
     ap.add_argument("--pack", default=None,
                     help="--method pack: a production .safetensors pack, or a directory of <concept>.safetensors")
+    ap.add_argument("--hook", choices=("cross_attn_output", "post_block_residual"), default="cross_attn_output",
+                    help="steering site for --vec-dir vectors (caa/austeer); --method pack uses the pack's hook")
     ap.add_argument("--renorm", action="store_true")
     ap.add_argument("--guidance", type=float, default=1.0,
                     help="steering guidance: v0 + g (v1 - v0) per step (1 = off)")
@@ -1150,8 +1157,9 @@ def main() -> int:
         import functools
         sa3_tada.generate = functools.partial(sa3_tada.generate, cfg_scale=_CFG)
     sam = _load_sam()
-    global _RENORM, _GUIDANCE, STEPS, _AUDIO_FROM, _KV_REAL_TOKENS
+    global _RENORM, _GUIDANCE, STEPS, _AUDIO_FROM, _KV_REAL_TOKENS, _HOOK
     _RENORM = bool(args.renorm)
+    _HOOK = args.hook
     _GUIDANCE = float(args.guidance)
     if args.audio_tokens:
         _AUDIO_FROM = int(sam.model.model.model.transformer.num_memory_tokens)
