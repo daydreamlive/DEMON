@@ -38,6 +38,7 @@ from acestep.streaming.preflight import (
     PreflightResult,
     acestep_preflight,
     mrt2_preflight,
+    minimax_preflight,
     sa3_preflight,
 )
 
@@ -463,6 +464,45 @@ def _create_sa3_session(cls, **kwargs):
     return create_sa3_session(cls, **kwargs)
 
 
+def _make_minimax(ss):
+    # Same contract as _make_sa3: the per-family create path
+    # (acestep.streaming.minimax_session) stashes the process-cached
+    # context on the session. MiniMax is autoregressive and the backend
+    # drives the LM itself, so the payload holds the prompt and window
+    # geometry, and the assembly (live AR session vs replayed capture)
+    # lives next to the create path that produced it.
+    from acestep.streaming.minimax_session import make_minimax_backend
+
+    return make_minimax_backend(ss)
+
+
+def _minimax_knob_universe():
+    from acestep.streaming.minimax_backend import minimax_knob_specs
+
+    return minimax_knob_specs()
+
+
+def _create_minimax_session(cls, **kwargs):
+    from acestep.streaming.minimax_session import create_minimax_session
+
+    return create_minimax_session(cls, **kwargs)
+
+
+def _shutdown_minimax() -> int:
+    """Drop every process-cached MiniMax context. Per-session CUDA graphs
+    and static KV caches are freed by ``MiniMaxBackend.close``."""
+    from acestep.engine.minimax_context import evict_minimax_contexts
+
+    return evict_minimax_contexts()
+
+
+#: MiniMaxBackend's DEFAULT_WINDOW_S and longest rolling window. Mirrored
+#: here so the registry does not import the backend module (torch) at
+#: import time; the minimax backend test pins the values together.
+MINIMAX_TEXT_ONLY_DEFAULT_S = 60.0
+MINIMAX_TEXT_ONLY_MAX_DURATION_S = 360.0
+
+
 # ---------------------------------------------------------------------------
 # The registered families. One spec each; everything below is derived.
 # ---------------------------------------------------------------------------
@@ -540,6 +580,61 @@ MRT2 = FamilySpec(
 )
 
 
+MINIMAX = FamilySpec(
+    name="minimax",
+    display_name="MiniMax-Music3",
+    make_backend=_make_minimax,
+    knob_universe=_minimax_knob_universe,
+    checkpoint_aliases={"minimax-music3": "MiniMaxAI/MiniMax-Music3"},
+    # The one-time cost is the model load, which the create path
+    # process-caches; there is no TRT warmup session to drive.
+    create_session=_create_minimax_session,
+    warmup_policy="none",
+    preflight=minimax_preflight,
+    # The caption is free-form text into the LM's chat template, closer
+    # to ACE's tag style than SA3's; no policy of its own yet.
+    prompt_policy="acestep",
+    config_fields=(
+        FamilyConfigField(
+            "minimax_duration_s", "float",
+            "Rolling-window length for minimax sessions, seconds: the tape "
+            "the append-only frontier overwrites and the player loops, NOT "
+            "a song length. The piece ends when the autoregressive stage "
+            "emits end-of-audio (ceiling 9000 frames at 25 Hz = 360 s). "
+            "Absent or null = 60 s.",
+        ),
+        FamilyConfigField(
+            "minimax_lyrics", "str",
+            "Lyrics for the minimax autoregressive stage. Absent or null = "
+            "\"[instrumental]\", upstream's no-singing convention (the "
+            "tokenizer refuses an empty lyric).",
+        ),
+        FamilyConfigField(
+            "minimax_ar_graph", "bool",
+            "Drive the minimax autoregressive stage as one CUDA graph per "
+            "frame over a static KV cache (default true). False selects the "
+            "plain torch loop, kept for parity work against saved captures.",
+        ),
+        FamilyConfigField(
+            "minimax_seed", "int",
+            "Seed for the minimax autoregressive stage, i.e. the "
+            "composition. Absent or null = a fresh random seed per session "
+            "(echoed as minimax_ar_seed in params); give one to replay a "
+            "composition for the same prompt and lyrics. The shared seed "
+            "knob only seeds the renderer's noise.",
+        ),
+    ),
+    # Uploads are ignored (no audio encoder in the checkpoint), so every
+    # session is effectively text-only; the anchor is the silent window.
+    text_only=TextOnlySpec(
+        default_duration_s=MINIMAX_TEXT_ONLY_DEFAULT_S,
+        max_duration_s=MINIMAX_TEXT_ONLY_MAX_DURATION_S,
+        duration_field="minimax_duration_s",
+    ),
+    shutdown=_shutdown_minimax,
+)
+
+
 def _register(*specs: FamilySpec) -> dict:
     from dataclasses import fields as _dc_fields
 
@@ -576,7 +671,7 @@ def _register(*specs: FamilySpec) -> dict:
 
 
 #: ``family name -> FamilySpec``. The source of truth.
-FAMILY_SPECS: dict = _register(ACESTEP, SA3, MRT2)
+FAMILY_SPECS: dict = _register(ACESTEP, SA3, MRT2, MINIMAX)
 
 
 def family_config_fields() -> tuple:

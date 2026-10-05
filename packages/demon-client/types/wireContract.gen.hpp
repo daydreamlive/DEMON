@@ -479,6 +479,14 @@ namespace config {
   inline constexpr const char* kTelemetryVersion = "telemetry_version";
   /** Fixed generation duration for sa3 sessions, seconds. Absent or null derives it from the uploaded source audio length (the audio-to-audio anchor); SA3 conditioning is captured per (prompt, duration), so this is fixed for the session lifetime. */
   inline constexpr const char* kSa3DurationS = "sa3_duration_s";
+  /** Rolling-window length for minimax sessions, seconds: the tape the append-only frontier overwrites and the player loops, NOT a song length. The piece ends when the autoregressive stage emits end-of-audio (ceiling 9000 frames at 25 Hz = 360 s). Absent or null = 60 s. */
+  inline constexpr const char* kMinimaxDurationS = "minimax_duration_s";
+  /** Lyrics for the minimax autoregressive stage. Absent or null = "[instrumental]", upstream's no-singing convention (the tokenizer refuses an empty lyric). */
+  inline constexpr const char* kMinimaxLyrics = "minimax_lyrics";
+  /** Drive the minimax autoregressive stage as one CUDA graph per frame over a static KV cache (default true). False selects the plain torch loop, kept for parity work against saved captures. */
+  inline constexpr const char* kMinimaxArGraph = "minimax_ar_graph";
+  /** Seed for the minimax autoregressive stage, i.e. the composition. Absent or null = a fresh random seed per session (echoed as minimax_ar_seed in params); give one to replay a composition for the same prompt and lyrics. The shared seed knob only seeds the renderer's noise. */
+  inline constexpr const char* kMinimaxSeed = "minimax_seed";
 }  // namespace config
 
 // ── Init-phase upload handshake ──

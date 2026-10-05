@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>DEMON MiniMax-Music3</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <canvas id="scene" aria-hidden="true"></canvas>
+    <main class="shell">
+      <section class="panel" aria-label="MiniMax-Music3 controls">
+        <header class="panel-header">
+          <div class="brand-row"><span class="brand">DAYDREAM <span class="brand-divider">/</span> DEMON</span></div>
+          <div class="title-row"><h1>MiniMax-Music3</h1></div>
+          <div id="status" class="status">idle</div>
+        </header>
+
+        <div class="control-section">
+          <div class="section-heading"><span>01</span> Prompt</div>
+          <label class="field">
+            <span class="field-label">Style prompt</span>
+            <textarea id="prompt" rows="3"></textarea>
+          </label>
+          <div class="buttons">
+            <button id="start" class="start-button" type="button">Start</button>
+            <button id="send" class="send-button" type="button" disabled>Send prompt</button>
+          </div>
+        </div>
+
+        <div class="control-section">
+          <div class="section-heading"><span>02</span> Reconnect settings</div>
+          <label class="field">
+            <span class="field-label">Lyrics</span>
+            <textarea id="lyrics" rows="3" placeholder="[instrumental]"></textarea>
+          </label>
+          <label class="field">
+            <span class="field-label">Duration (seconds)</span>
+            <input id="duration" type="number" min="30" max="360" placeholder="60">
+          </label>
+          <p class="field-hint">Lyrics and duration apply on Reconnect.</p>
+          <button id="reconnect" class="reconnect-button" type="button" disabled>Reconnect</button>
+        </div>
+
+        <div class="control-section parameters">
+          <div class="section-heading"><span>03</span> Parameters</div>
+          <div id="knobs" class="knobs"></div>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="./minimax.js"></script>
+  </body>
+</html>

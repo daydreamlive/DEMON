@@ -1,7 +1,8 @@
 # Adding a model family
 
 A *family* is one generative model behind DEMON's streaming runner: ACE-Step,
-Stable Audio 3 and Magenta RealTime 2 today. This document is the contract for adding one and
+Stable Audio 3, Magenta RealTime 2 and MiniMax-Music3 today. This document is
+the contract for adding one and
 the map of what still branches on a family name in the core. Read it before
 `acestep/streaming/families.py`.
 
@@ -154,3 +155,75 @@ in `scripts/mrt2_sidecar.py`, because JAX has no CUDA on native Windows.
 - **Frontend:** `demos/mrt2/` (static plain-canvas page, route `/mrt2` on the
   backend port) and `demos/realtime_motion_graph_web/web/app/magenta` (route
   `/magenta`); both send `backend: "mrt2"`.
+
+## MiniMax-Music3 (`minimax`)
+
+An append-only autoregressive family: an 8.58B Qwen3 language model plus a
+646M RVQ depth decoder write 25 Hz acoustic frames, a 2.43B flow-matching DiT
+renders them in chunks, and a 54M DAV decoder turns latents into 44.1 kHz
+stereo (delivered at 48 kHz). Integration report: `docs/MINIMAX.md`.
+
+**Boot.** `--checkpoint minimax-music3` (model id
+`MiniMaxAI/MiniMax-Music3`). Warmup policy `"none"`: the first session pays
+the model load, later sessions reuse the process-cached context.
+
+**Prerequisites.**
+- Weights: the diffusers layout of the Hugging Face repo
+  `MiniMaxAI/MiniMax-Music3` (`transformer`, `vocoder`, `condition_encoder`,
+  `scheduler`, plus `language_model` and `tokenizer` for the AR stage):
+  ~18 GB bf16 LM + 2.4B DiT + DAV decoder. Found under `DEMON_MINIMAX_DIR`,
+  `<models>/minimax/checkpoints/MiniMax-Music3` (`ACESTEP_MODELS_DIR`
+  overrides the models root) or the local HF cache. bf16/fp32 only.
+- VRAM: the AR stage stays resident (~21 GB with its KV cache) on top of the
+  renderer; measured on a 32 GB 5090.
+- Optional: a fp16 TensorRT engine for the DiT renderer, built by
+  `acestep/engine/trt/minimax_build.py` against tensorrt 10.16 (main's pin),
+  in `DEMON_MINIMAX_TRT_DIR` or `<models>/minimax/trt_engines`. Without it
+  the renderer runs eager.
+- Preflight (`minimax_preflight`) checks the renderer components offline and
+  fails if `DEMON_MINIMAX_TRT_DIR` is set to a missing directory. An absent
+  AR stage fails it too, unless `DEMON_MINIMAX_CAPTURE` names a saved capture
+  to stream (logged at warning level: every user gets that one composition).
+
+**Config fields.** `minimax_duration_s` (rolling-window length, default 60 s,
+capped at the AR ceiling of 360 s), `minimax_lyrics` (default
+`"[instrumental]"`), `minimax_ar_graph` (default true: one CUDA graph per AR
+frame over a static KV cache; false = plain loop for parity work),
+`minimax_seed` (the AR seed, i.e. the composition; absent = a random seed per
+session, echoed as `minimax_ar_seed` in params; give one to replay a piece).
+The shared `seed` knob seeds only the renderer's noise; zero is a valid value
+for it and for `minimax_cond_strength`.
+
+**Behaviour.** Append-only: `refines_audio=False` and every other capability
+off (no swap, write_audio, timbre, structure, stems, depth, LoRA). Uploaded
+audio is ignored (the checkpoint ships no audio encoder); every session
+starts from a silent window, and `text_only` advertises the same window.
+`set_prompt` re-prefills the LM against the audio already written;
+`prompt_b` / prompt blend are refused. The piece ends when the LM emits
+end-of-audio. Shutdown evicts the cached contexts; each backend frees its
+CUDA graphs and static cache on close, unless its worker is still running
+after the 5 s join (then the state is left to the worker and logged). The
+runner writes chunks verbatim (no edge crossfades or wrap-spill re-render
+for `refines_audio=False`). If the generation worker dies (for example an
+OOM), the session ends with a `pipeline_error` SessionError.
+
+**Known gaps.** `set_prompt` after the piece has ended (or on a replayed
+capture) is logged and dropped with no client-visible error. Caption plus
+lyrics share a 512-token prompt budget; an over-long prompt fails session
+create, and on a live reprompt it is dropped. A backward seek is counted as a
+window lap, which breaks pacing until the session ends (no client seeks a
+MiniMax session today). The generation worker starts inside the backend
+constructor. The ws_adapter shedding bypass is gated on `refines_audio`, so
+it applies to MRT2 as well.
+
+**Measured (RTX 5090).** Steady ~1.3x realtime (AR stage 1.54x in session,
+renderer 7.8x). With the model already loaded, first audio comes ~6 s after
+generation starts (200 AR frames plus one render). The first session in a
+freshly started server also loads the language model and captures its CUDA
+graphs: session create takes ~27-28 s on a cold pod and first audio arrives
+21-34 s after Start, so expect roughly half a minute. Later sessions in the
+same server reuse the process-cached context and skip the load.
+
+**Hot loop.** The family leaves `acestep/engine/stream.py` and
+`acestep/engine/ode_steps.py` as they are on main: `MiniMaxChunkRenderer`
+runs its own CFG.
