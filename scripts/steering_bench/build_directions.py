@@ -92,27 +92,27 @@ def musiccaps_classes(csv_path, caption_index, n, cap, rng):
 
 def measure_descriptors(cap_dir: Path, n: int, cache: Path) -> np.ndarray:
     """``[n, 5]`` descriptor values (order DESCRIPTORS) for the capture's audio."""
-    import proxies
-
     if cache.exists():
         d = np.load(cache)
         if d.shape == (n, len(DESCRIPTORS)):
             print(f"[desc] reuse {cache}", flush=True)
             return d
+    from desc_pool import measure_clips
+
     vals = np.full((n, len(DESCRIPTORS)), np.nan)
     files = sorted((cap_dir / "audio").glob("batch_*.npz"))
     if not files:
         raise SystemExit(f"no audio under {cap_dir / 'audio'} (capture with --self-label)")
-    for k, f in enumerate(files):
+    rows, clips, sr = [], [], None
+    for f in files:
         z = np.load(f)
         sr = int(z["sr"])
         for row, a in zip(z["rows"], z["audio"]):
-            if row >= n:
-                continue
-            y = a.reshape(-1).astype(np.float32) / 32768.0
-            vals[row] = [proxies.measure(name, y, sr) for name in DESCRIPTORS]
-        if k % 10 == 0:
-            print(f"[desc] {k + 1}/{len(files)} batches", flush=True)
+            if row < n:
+                rows.append(int(row))
+                clips.append(a)
+    print(f"[desc] {len(clips)} clips, five descriptors (parallel)", flush=True)
+    vals[rows] = measure_clips(clips, sr)
     if np.isnan(vals).any():
         raise SystemExit(f"{int(np.isnan(vals).any(1).sum())} rows have no audio")
     np.save(cache, vals)

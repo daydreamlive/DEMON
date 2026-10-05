@@ -41,7 +41,7 @@ def _alpha(p: Path) -> float:
 
 def measure_dir(d: Path, force: bool = False) -> dict:
     """``{alpha: [n_clips, 5]}``, cached in ``descriptors.csv``."""
-    import proxies
+    from desc_pool import measure_clips
 
     cache = d / "descriptors.csv"
     alphas = sorted(_alpha(p) for p in d.glob("alpha_*") if (p / "audios.npz").exists())
@@ -56,8 +56,7 @@ def measure_dir(d: Path, force: bool = False) -> dict:
     for a in todo:
         z = np.load(d / f"alpha_{a}" / "audios.npz")
         sr = int(z["sr"])
-        out[a] = np.array([[proxies.measure(k, x.reshape(-1).astype(np.float32) / 32768.0, sr)
-                            for k in DESCRIPTORS] for x in z["audio"]])
+        out[a] = measure_clips(list(z["audio"]), sr)
     if todo:
         with cache.open("w", newline="") as f:
             w = csv.writer(f)
