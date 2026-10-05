@@ -1,0 +1,46 @@
+{
+ "_doc": "Text anchors for label_corpus.py clap_music / clap_general / muq. Every non-underscore key is a group: a list of strings (or of {\"text\": ...}). The column is <scorer>.<text>; texts must be unique across groups. Add groups freely.",
+ "instruments": [
+  "acoustic guitar", "electric guitar", "distorted electric guitar", "bass guitar", "upright bass",
+  "piano", "electric piano", "harpsichord", "organ", "synthesizer", "synth pad", "synth lead",
+  "violin", "cello", "string section", "harp", "trumpet", "saxophone", "trombone", "flute",
+  "clarinet", "brass section", "drum kit", "drum machine", "808 bass", "hand percussion",
+  "tabla", "congas", "marimba", "vibraphone", "glockenspiel", "bells", "banjo", "mandolin",
+  "ukulele", "accordion", "harmonica", "sitar", "choir", "whistling"
+ ],
+ "genres": [
+  "rock", "metal", "punk", "pop", "jazz", "blues", "funk", "soul", "hip hop", "trap", "reggae",
+  "country", "folk", "classical", "orchestral", "ambient", "techno", "house", "drum and bass",
+  "dubstep", "trance", "lo-fi", "synthwave", "latin", "bossa nova", "afrobeat", "gospel",
+  "cinematic score", "video game music", "chiptune"
+ ],
+ "moods": [
+  "happy", "sad", "melancholic", "energetic", "calm", "relaxing", "aggressive", "angry",
+  "romantic", "dreamy", "dark", "uplifting", "tense", "mysterious", "playful", "epic",
+  "nostalgic", "peaceful", "eerie", "triumphant"
+ ],
+ "seasons_places": [
+  "summer", "winter", "autumn", "spring", "beach", "forest", "desert", "city at night",
+  "underwater", "outer space", "cathedral", "nightclub", "small jazz club", "countryside",
+  "rainy day"
+ ],
+ "sound_effects": [
+  "rain", "thunder", "wind", "ocean waves", "birdsong", "crowd cheering", "applause",
+  "footsteps", "engine noise", "siren", "vinyl crackle", "tape hiss", "static noise",
+  "glitch", "explosion", "heartbeat", "clock ticking", "bell ringing", "water dripping",
+  "fire crackling"
+ ],
+ "production": [
+  "reverb", "dry mix", "heavy compression", "distortion", "saturation", "bitcrushed",
+  "lo-fi recording", "high fidelity studio recording", "live recording", "stereo wide",
+  "mono", "sidechain pumping", "delay echo", "chorus effect", "phaser", "filter sweep",
+  "muffled", "crisp high end", "heavy sub bass", "loud mastering", "quiet", "fade in",
+  "fade out"
+ ],
+ "abstract": [
+  "bright", "warm", "dark timbre", "rough", "smooth", "dense", "sparse", "busy", "minimal",
+  "complex", "simple", "fast", "slow", "groovy", "rhythmic", "melodic", "harmonic", "atonal",
+  "dissonant", "consonant", "percussive", "sustained", "airy", "heavy", "light", "metallic",
+  "wooden", "glassy", "organic", "mechanical", "futuristic", "vintage", "hypnotic", "chaotic"
+ ]
+}

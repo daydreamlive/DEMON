@@ -21,11 +21,29 @@ Modes:
   (``build_directions.py --self-label``). The 20 holdout prompts used by the
   block sweep are NOT used here.
 
+* ``--prompts-json FILE`` (many-knobs corpus, master plan "Interfaces"):
+  rows ``{id, prompt, seed, category, tags}``. Rendered shard by shard
+  (``--shard`` rows, default 32, each shard generated in ``--batch``
+  sized calls). Per shard, in this order: the means rows are flushed to
+  ``means.npy``, ``audio_{k:04d}.npz`` (int16 ``wav`` [B, T] mono, ``ids``
+  [B]) is written atomically, then ``audio_{k:04d}.done`` appears, so
+  ``label_corpus.py`` can start on it. ``meta.json`` is written before the
+  first shard (``n``, ``n_shards``, ``complete: false``) and rewritten with
+  the sigmas and ``complete: true`` at the end. ``--resume`` keeps the
+  existing ``means.npy`` and skips shards whose ``.done`` exists. Seeds: SA3
+  takes one seed per generate call, so every call uses the ``seed`` of its
+  first row (rows inside a call get distinct noise by batch position);
+  ``meta.json gen_seed`` records the seed each row was actually rendered with.
+  ``--part I/N`` splits the shards over N processes (one per GPU) writing the
+  same ``means.npy``; start part 0 first (it creates the memmap and owns
+  ``meta.json``; it sets ``complete`` only after every part's shards exist).
+
 Outputs in ``--out``: ``means.npy`` float16 ``[N, steps, 24, 1536]``
 (memmap) and ``meta.json``.
 
     python scripts/steering_bench/capture_resid.py --out D:/steer-bench/resid_mc
     python scripts/steering_bench/capture_resid.py --self-label --n 800 --out D:/steer-bench/resid_self
+    python scripts/steering_bench/capture_resid.py --prompts-json $CAP/prompts.json --out $CAP [--resume]
 """
 
 from __future__ import annotations
@@ -132,6 +150,152 @@ def save_audio(path: Path, audio: torch.Tensor, rows, prompts) -> None:
              rows=np.array(list(rows), dtype=np.int64))
 
 
+def load_prompts_json(path: str, n):
+    rows = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(rows, dict):
+        rows = rows.get("prompts", rows.get("rows"))
+    if not isinstance(rows, list) or not rows:
+        raise ValueError(f"{path}: expected a non-empty list of {{id, prompt, seed, category, tags}}")
+    for r in rows:
+        missing = {"id", "prompt", "seed"} - set(r)
+        if missing:
+            raise ValueError(f"{path}: row {r!r} lacks {sorted(missing)}")
+    ids = [int(r["id"]) for r in rows]
+    if len(set(ids)) != len(ids):
+        raise ValueError(f"{path}: duplicate ids")
+    return rows[:n] if n else rows
+
+
+def to_mono_int16(audio: torch.Tensor) -> np.ndarray:
+    """``[B, C, T]`` float in [-1, 1] -> int16 ``[B, T]`` (channel mean)."""
+    a = audio.float().mean(dim=1)
+    return (a * 32768.0).round().clamp(-32768, 32767).to(torch.int16).numpy()
+
+
+def _atomic_npz(path: Path, **arrays) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "wb") as f:
+        np.savez(f, **arrays)
+    tmp.replace(path)
+
+
+def _write_json(path: Path, obj) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(obj, indent=1))
+    tmp.replace(path)
+
+
+def run_prompts_json(args, sam, nb, state, sigmas, audio_tok, hidden, generate) -> int:
+    """Sharded corpus render + capture (see module docstring). ``generate``
+    = ``sa3_tada.generate`` (passed in so the shard logic is testable).
+    ``--part I/N`` renders shards ``k % N == I``; part 0 creates ``means.npy``
+    and owns ``meta.json`` (it waits for every shard before ``complete``),
+    the other parts wait for part 0's ``meta.json`` and write their rows
+    into the same memmap."""
+    rows = load_prompts_json(args.prompts_json, args.n)
+    n, shard = len(rows), int(args.shard)
+    n_shards = (n + shard - 1) // shard
+    part, n_parts = (int(x) for x in str(args.part or "0/1").split("/"))
+    if not 0 <= part < n_parts:
+        raise SystemExit(f"--part {args.part}: expected I/N with 0 <= I < N")
+    owner = part == 0
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    mpath, meta_path = out / "means.npy", out / "meta.json"
+    shape = (n, args.steps, nb, hidden)
+    old = {}
+    if owner:
+        if args.resume and mpath.exists():
+            arr = np.load(mpath, mmap_mode="r+")
+        else:
+            if any(out.glob("audio_*.done")):
+                raise SystemExit(f"{out} already has finished shards; pass --resume or use a fresh --out")
+            arr = np.lib.format.open_memmap(mpath, mode="w+", dtype=np.float16, shape=shape)
+        if args.resume and meta_path.exists():
+            old = json.loads(meta_path.read_text())
+    else:
+        t_wait = time.perf_counter()
+        while not (meta_path.exists() and mpath.exists()):
+            if time.perf_counter() - t_wait > 1800:
+                raise SystemExit("--part: part 0 never wrote meta.json / means.npy")
+            time.sleep(2)
+        arr = np.load(mpath, mmap_mode="r+")
+    if tuple(arr.shape) != shape or arr.dtype != np.float16:
+        raise SystemExit(f"{mpath} is {arr.dtype}{tuple(arr.shape)}, expected float16{shape}")
+    old_sig = old.get("steps")
+    if isinstance(old_sig, list):
+        for k, v in enumerate(old_sig):
+            sigmas.setdefault(k, v)
+    # The seed every row is rendered with follows from the rule, so any part
+    # can record it: each generate call = rows [i, i + batch) inside a shard.
+    gen_seed = [None] * n
+    for lo in range(0, n, shard):
+        hi = min(n, lo + shard)
+        for i in range(lo, hi, args.batch):
+            for r in range(i, min(hi, i + args.batch)):
+                gen_seed[r] = int(rows[i]["seed"])
+
+    def meta(complete: bool) -> dict:
+        return {
+            "n": n, "n_shards": n_shards, "shard_size": shard, "complete": bool(complete),
+            "steps": [sigmas[k] for k in sorted(sigmas)], "n_steps": args.steps, "blocks": nb,
+            "hidden": hidden, "hook": "post_block_residual",
+            "site": "post_block_residual (output of sa3_blocks(sam)[b])",
+            "sr": SR, "duration_s": args.duration, "mode": "prompts_json",
+            "prompts": str(args.prompts_json), "ids": [int(r["id"]) for r in rows],
+            "batch": args.batch, "parts": n_parts, "gen_seed": gen_seed,
+            "seed_rule": "one seed per generate call = seed of the call's first row",
+            "sampler": "ARC sam.generate default (cfg 1)",
+            "tokens": f"audio only ({audio_tok.num_memory_tokens} memory tokens and padding excluded)",
+            "means": "float16 [n, n_steps, blocks, hidden], row order = prompts order",
+            "audio": "audio_{k:04d}.npz: wav int16 [B, T] mono, ids [B]; complete when audio_{k:04d}.done exists",
+            "checkpoint": f"{args.checkpoint} (ARC)" if args.checkpoint == "medium" else args.checkpoint,
+            "date": time.strftime("%Y-%m-%d"),
+        }
+
+    if owner:
+        _write_json(meta_path, meta(False))
+    t0 = time.perf_counter()
+    resumed = 0
+    mine = [k for k in range(n_shards) if k % n_parts == part]
+    with torch.no_grad():
+        for j, k in enumerate(mine):
+            done = out / f"audio_{k:04d}.done"
+            if done.exists():
+                resumed += 1
+                continue
+            lo, hi = k * shard, min(n, (k + 1) * shard)
+            wavs = []
+            for i in range(lo, hi, args.batch):
+                part_rows = rows[i:min(hi, i + args.batch)]
+                state["buf"] = torch.zeros(len(part_rows), args.steps, nb, hidden)
+                state["step"] = -1
+                audio = generate(sam, [str(r["prompt"]) for r in part_rows], seed=gen_seed[i],
+                                 duration=args.duration, steps=args.steps)
+                if state["step"] != args.steps - 1:
+                    raise RuntimeError(f"saw {state['step'] + 1} forwards, expected {args.steps}")
+                arr[i:i + len(part_rows)] = state["buf"].numpy().astype(np.float16)
+                wavs.append(to_mono_int16(audio))
+            arr.flush()
+            _atomic_npz(out / f"audio_{k:04d}.npz", wav=np.concatenate(wavs, axis=0),
+                        ids=np.array([int(r["id"]) for r in rows[lo:hi]], dtype=np.int64))
+            done.write_text(json.dumps({"rows": [lo, hi], "part": part, "t": time.strftime("%H:%M:%S")}))
+            if j % 10 == 0 or j == len(mine) - 1:
+                if owner:
+                    _write_json(meta_path, meta(False))
+                print(f"[resid {part}/{n_parts}] shard {k} ({j + 1}/{len(mine)} of mine) rows {hi}/{n} "
+                      f"{time.perf_counter() - t0:.0f}s", flush=True)
+    arr.flush()
+    del arr
+    if owner:
+        while not all((out / f"audio_{k:04d}.done").exists() for k in range(n_shards)):
+            time.sleep(5)
+        _write_json(meta_path, meta(True))
+    print(f"done part {part}/{n_parts}: {len(mine)} shards ({resumed} resumed) "
+          f"{time.perf_counter() - t0:.0f}s", flush=True)
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--captions", default=DEFAULT_CAPTIONS, help="MusicCaps CSV (column 'caption')")
@@ -145,13 +309,23 @@ def main() -> int:
     ap.add_argument("--self-label", action="store_true",
                     help="benchmark test prompts cycled, audio saved for descriptor labels")
     ap.add_argument("--seed0", type=int, default=None, help="default 1000 (MusicCaps) / 5000 (self-label)")
+    ap.add_argument("--prompts-json", default=None,
+                    help="corpus prompts.json [{id, prompt, seed, category, tags}]: sharded audio + .done markers")
+    ap.add_argument("--shard", type=int, default=32, help="--prompts-json: clips per audio shard")
+    ap.add_argument("--resume", action="store_true", help="--prompts-json: skip shards whose .done exists")
+    ap.add_argument("--part", default="0/1",
+                    help="--prompts-json: I/N, render shards k %% N == I (one process per GPU; part 0 owns meta)")
     args = ap.parse_args()
+    if args.prompts_json and args.self_label:
+        ap.error("--prompts-json and --self-label are exclusive")
 
     from sa3_reference_generate import checkpoint_dir, load_local_model
     from acestep.engine import sa3_tada
     from acestep.engine.sa3_internals import trunk_module
 
-    if args.self_label:
+    if args.prompts_json:
+        prompts = prompt_index = seed0 = None
+    elif args.self_label:
         prompts, prompt_index = self_label_prompts(args.n or 800)
         seed0 = 5000 if args.seed0 is None else args.seed0
     else:
@@ -185,6 +359,14 @@ def main() -> int:
     hidden = int(getattr(blocks[0], "dim", 1536))
     handles = [blocks[0].register_forward_pre_hook(pre0)]
     handles += [m.register_forward_hook(make(b)) for b, m in enumerate(blocks)]
+    if args.prompts_json:
+        try:
+            return run_prompts_json(args, sam, nb, state, sigmas, audio_tok, hidden, sa3_tada.generate)
+        finally:
+            for h in handles:
+                h.remove()
+            audio_tok.remove()
+            probe.remove()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     if args.self_label:
