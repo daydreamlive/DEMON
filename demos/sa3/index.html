@@ -9,6 +9,7 @@
   <body>
     <main class="shell">
       <section class="plugin" aria-label="Stable Audio 3 demo">
+        <div class="screws" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
         <div class="brand-row">
           <div class="brand">Daydream</div>
         </div>
@@ -16,11 +17,6 @@
         <div id="knobs" class="knob-grid">
           <div class="knob-placeholder">knobs appear when the session starts</div>
         </div>
-
-        <section id="steer" class="steer-section" aria-label="Activation steering" hidden>
-          <div class="steer-head">Steer</div>
-          <div id="steer-sliders" class="steer-sliders"></div>
-        </section>
 
         <div class="controls">
           <label class="field-slot">
@@ -67,6 +63,14 @@
           <span id="status-dot" class="status-dot status-idle" aria-hidden="true"></span>
           <span id="status-text" class="status-text">idle</span>
         </div>
+      </section>
+      <section id="steer-pedal" class="plugin plugin-steer" aria-label="Activation steering pedal" hidden>
+        <div class="screws" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+        <div class="brand-row">
+          <div class="brand">Daydream</div>
+        </div>
+        <div id="steer-knobs" class="knob-grid"></div>
+        <div class="title">STEER</div>
       </section>
     </main>
 
