@@ -27,6 +27,11 @@ export interface KnobManifestEntry {
   options?: Array<string | boolean>;
   /** Agent/human-facing one-liner. */
   description?: string;
+  /** Optional presentation metadata (never read by the runner). Steering
+   *  pack knobs carry label, category, blurb, block, calibrated
+   *  (bool), cutoff {pos, neg}, cutoff_reached {pos, neg}, headroom,
+   *  flags. */
+  meta?: Record<string, unknown>;
 }
 
 export type KnobManifest = Record<string, KnobManifestEntry>;

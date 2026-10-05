@@ -261,16 +261,26 @@ class PackSteering:
     def knob_specs(self) -> list:
         from acestep.streaming.knobs import steering_pack_spec
 
-        return [
-            steering_pack_spec(
+        specs = []
+        for p in self.packs:
+            prov = p.provenance if isinstance(p.provenance, Mapping) else {}
+            screening = prov.get("screening")
+            flags = screening.get("flags") if isinstance(screening, Mapping) else None
+            specs.append(steering_pack_spec(
                 p.knob_name,
                 label=p.label or p.name,
                 block=p.block,
                 policy=p.policy,
                 blurb=p.blurb,
-            )
-            for p in self.packs
-        ]
+                category=str(prov.get("category") or ""),
+                gain=prov.get("calibrated_gain"),
+                flags=(
+                    tuple(flags) if isinstance(flags, (list, tuple))
+                    else tuple(f for f in re.split(r"[;,\s]+", flags) if f)
+                    if isinstance(flags, str) else ()
+                ),
+            ))
+        return specs
 
     def snapshot_key(self, raw: Mapping[str, float], n: int) -> tuple:
         return tuple(float(raw.get(p.knob_name, 0.0)) for p in self.packs) + (

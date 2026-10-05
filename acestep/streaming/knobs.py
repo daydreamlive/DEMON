@@ -11,7 +11,7 @@ the operator's hardware controller.
 
 import threading
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Mapping, Optional, Sequence
 
 
 # Manifest schema version. Bump when the knob contract changes shape in a
@@ -62,6 +62,10 @@ class KnobSpec:
     options: tuple = ()             # allowed values for enum / bool
     description: str = ""
     bank: bool = True
+    # Optional presentation metadata projected verbatim into the manifest
+    # (e.g. a steering pack's label, category, calibrated range). Never
+    # read by the runner; frontends may use it to lay knobs out.
+    meta: Optional[dict] = None
 
 
 def knob_specs(sde: bool, loras=None) -> list:
@@ -254,6 +258,21 @@ def steering_axis_spec(
     )
 
 
+# Headroom past a pack's calibrated fidelity cutoff. Full scale is
+# cutoff x STEERING_PACK_HEADROOM, so the cutoff sits at 1/1.25 = 80% of
+# the throw on either side. Multiplicative because calibrated gains
+# differ by ~10x between packs.
+STEERING_PACK_HEADROOM = 1.25
+
+
+def _gain_value(gain: Mapping, key: str) -> Optional[float]:
+    try:
+        v = abs(float(gain.get(key)))
+    except (TypeError, ValueError):
+        return None
+    return v if v > 0 else None
+
+
 def steering_pack_spec(
     name: str,
     *,
@@ -261,13 +280,20 @@ def steering_pack_spec(
     block: int = 0,
     policy: Optional[dict] = None,
     blurb: str = "",
+    category: str = "",
+    gain: Optional[Mapping] = None,
+    flags: Sequence = (),
 ) -> KnobSpec:
     """The registry spec for one data-driven steering-pack knob.
 
-    Same wire semantics as :func:`steering_axis_spec` (range, group,
-    bank), so a pack knob and a built-in axis of the same name can never
-    fork (the homonym rule); only the description says where the pack's
-    vector lands. Packs come from ``acestep.steering.packs``.
+    Same wire semantics as :func:`steering_axis_spec` (type, group,
+    bank) and, for an uncalibrated pack, the same +-STEERING_ALPHA_MAX
+    range, so a pack knob and a built-in axis of the same name can never
+    fork (the homonym rule). A calibrated pack (``gain`` = the pack's
+    ``provenance.calibrated_gain``: knob value at the fidelity cutoff per
+    sign) gets a per-sign range of ``gain x STEERING_PACK_HEADROOM``.
+    Label, category, blurb and the calibration ride in ``meta`` for the
+    UI. Packs come from ``acestep.steering.packs``.
     """
     pol = policy or {}
     if pol.get("kind", "range") == "range":
@@ -277,15 +303,45 @@ def steering_pack_spec(
         )
     else:
         where = f"policy {pol.get('kind')}"
+    lo, hi = -STEERING_ALPHA_MAX, STEERING_ALPHA_MAX
+    meta: dict = {
+        "label": label or name,
+        "category": category or "",
+        "blurb": blurb or "",
+        "block": int(block),
+    }
+    g = gain if isinstance(gain, Mapping) else None
+    pos = _gain_value(g, "pos") if g else None
+    if pos is not None:
+        neg = _gain_value(g, "neg") or pos
+        reached = g.get("reached")
+        pos_reached = g.get("pos_reached", reached)
+        neg_reached = g.get("neg_reached", reached)
+        if neg_reached is None:
+            neg_reached = pos_reached
+        hi = round(pos * STEERING_PACK_HEADROOM, 4)
+        lo = -round(neg * STEERING_PACK_HEADROOM, 4)
+        meta["calibrated"] = True
+        meta["cutoff"] = {"pos": round(pos, 4), "neg": round(neg, 4)}
+        meta["cutoff_reached"] = {
+            "pos": bool(pos_reached) if pos_reached is not None else True,
+            "neg": bool(neg_reached) if neg_reached is not None else True,
+        }
+        meta["headroom"] = STEERING_PACK_HEADROOM
+    else:
+        meta["calibrated"] = False
+    if flags:
+        meta["flags"] = [str(f) for f in flags]
     return KnobSpec(
         name, default=0.0,
-        min_val=-STEERING_ALPHA_MAX, max_val=STEERING_ALPHA_MAX,
+        min_val=lo, max_val=hi,
         group="steering",
         description=(
             f"Activation steering ({label or name}): a contrastive "
             f"difference-of-means vector added after block {block}, "
             f"{where}. 0 = off, negative inverts. {blurb}".rstrip()
         ),
+        meta=meta,
     )
 
 
@@ -385,6 +441,8 @@ def catalog_from_specs(specs) -> dict:
             entry["options"] = list(spec.options)
         if spec.description:
             entry["description"] = spec.description
+        if spec.meta:
+            entry["meta"] = dict(spec.meta)
         out[spec.name] = entry
     return out
 
