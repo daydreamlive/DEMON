@@ -685,6 +685,7 @@ def run_scorer(args) -> int:
         return 0
     scorer = None
     t0, last_new, n_done = time.perf_counter(), time.perf_counter(), 0
+    part_i, part_n = (int(x) for x in str(getattr(args, "part", None) or "0/1").split("/"))
     try:
         while True:
             meta = _read_meta(cap)
@@ -693,6 +694,8 @@ def run_scorer(args) -> int:
             new = False
             for d in sorted(cap.glob("audio_*.done")):
                 k = int(d.stem.split("_")[1])
+                if k % part_n != part_i:
+                    continue
                 part = parts / f"shard_{k:04d}.parquet"
                 if part.exists():
                     continue
@@ -721,6 +724,11 @@ def run_scorer(args) -> int:
             have = len(list(parts.glob("shard_*.parquet")))
             if total is not None and have >= total:
                 break
+            if total is not None and part_i != 0:
+                mine = sum(1 for k in range(total) if k % part_n == part_i)
+                if sum(1 for f in parts.glob("shard_*.parquet") if int(f.stem.split("_")[1]) % part_n == part_i) >= mine:
+                    print(f"[{args.scorer}] part {part_i}/{part_n} done ({mine} shards); part 0 writes the parquet")
+                    return 0
             if args.timeout and time.perf_counter() - last_new > args.timeout:
                 _fatal(f"{args.scorer}: no new shard for {args.timeout}s ({have}/{total}); parts kept, no .done")
                 return 3
@@ -782,6 +790,8 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 2), help="CPU scorers")
     ap.add_argument("--poll", type=float, default=10.0, help="seconds between shard scans")
     ap.add_argument("--timeout", type=float, default=0.0, help="give up after this many idle seconds (0 = never)")
+    ap.add_argument("--part", default="0/1",
+                    help="I/N: score shards k %% N == I (several processes per scorer); part 0 writes the parquet")
     ap.add_argument("--force", action="store_true", help="relabel even if <scorer>.done exists (parts are reused)")
     args = ap.parse_args()
     if args.merge:
