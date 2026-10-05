@@ -64,6 +64,7 @@ textarea {
    centre column across two rows; the first four pedals sit beside it
    (auto-placement fills the side cells) and the rest wrap below. */
 .shell.has-pedals {
+  align-content: center;
   align-items: center;
   display: grid;
   gap: 2.25rem 3rem;
