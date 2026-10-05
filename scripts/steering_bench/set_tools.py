@@ -49,27 +49,33 @@ def render(args) -> int:
     from acestep.engine import sa3_tada
 
     torch.backends.cuda.matmul.allow_tf32 = True
-    prompts = load_set(args.sets, args.set)
+    jobs = json.loads(Path(args.jobs).read_text()) if args.jobs else [
+        {"set": args.set, "seed": args.seed, "duration": args.duration,
+         "steer": [s.rsplit(":", 1) for s in args.steer], "scale": args.scale, "out": args.out}]
     sam = R._load_sam()
-    vectors, used = {s: {} for s in range(8)}, []
-    for spec in args.steer:
-        path, gain = spec.rsplit(":", 1)
-        pv = R._pack_vectors(path, 8)
-        alpha = float(gain) * float(R._PACK["magnitude"]) * args.scale
-        used.append({"pack": path, "gain": float(gain), "alpha": alpha})
-        for s, d in pv.items():
-            for b, v in d.items():
-                vectors[s][b] = vectors[s].get(b, 0) + v * alpha
-    out = Path(args.out)
-    if used:
-        with sa3_tada.steer_offline(sam, vectors, 1.0, hook="post_block_residual"):
-            audio = sa3_tada.generate(sam, prompts, seed=args.seed, duration=args.duration, steps=8)
-    else:
-        audio = sa3_tada.generate(sam, prompts, seed=args.seed, duration=args.duration, steps=8)
-    wav = (audio.mean(dim=1) * 32768.0).round().clamp(-32768, 32767).to(torch.int16).numpy()
-    _save_inplace(out, wav=wav, sr=np.int64(SR), seed=np.int64(args.seed), set=np.array(args.set),
-                  steer=np.array(json.dumps(used)), scale=np.float64(args.scale))
-    print(f"rendered {args.set} x{len(prompts)} seed {args.seed} {args.duration}s steer {len(used)} -> {out}")
+    cache = {}
+    for jb in jobs:
+        prompts = load_set(jb.get("sets", args.sets), jb["set"])
+        vectors, used = {s: {} for s in range(8)}, []
+        for path, gain in jb.get("steer", []):
+            if path not in cache:
+                cache[path] = (R._pack_vectors(path, 8), float(R._PACK["magnitude"]))
+            pv, mag = cache[path]
+            alpha = float(gain) * mag * float(jb.get("scale", 1.0))
+            used.append({"pack": path, "gain": float(gain), "alpha": alpha})
+            for s, d in pv.items():
+                for b, v in d.items():
+                    vectors[s][b] = vectors[s].get(b, 0) + v * alpha
+        seed, dur = int(jb.get("seed", 2115)), float(jb.get("duration", 10.0))
+        if used:
+            with sa3_tada.steer_offline(sam, vectors, 1.0, hook="post_block_residual"):
+                audio = sa3_tada.generate(sam, prompts, seed=seed, duration=dur, steps=8)
+        else:
+            audio = sa3_tada.generate(sam, prompts, seed=seed, duration=dur, steps=8)
+        wav = (audio.mean(dim=1) * 32768.0).round().clamp(-32768, 32767).to(torch.int16).numpy()
+        _save_inplace(Path(jb["out"]), wav=wav, sr=np.int64(SR), seed=np.int64(seed), set=np.array(jb["set"]),
+                      steer=np.array(json.dumps(used)), scale=np.float64(jb.get("scale", 1.0)))
+        print(f"rendered {jb['set']} x{len(prompts)} seed {seed} {dur}s steer {len(used)} -> {jb['out']}", flush=True)
     return 0
 
 
@@ -78,24 +84,30 @@ def score(args) -> int:
     from screen_knobs import RealBackend
 
     be = RealBackend(None, {"label_workers": args.workers})
-    z = np.load(args.npz)
-    wav, sr = z["wav"], int(z["sr"])
-    ref = np.load(args.ref)["wav"] if args.ref else None
-    wins = [tuple(float(x) for x in w.split(":")) for w in args.windows] or [None]
-    res = {"npz": args.npz, "ref": args.ref, "windows": args.windows}
-    for w in wins:
-        key = "all" if w is None else f"{w[0]:g}-{w[1]:g}"
-        a = wav if w is None else wav[:, int(w[0] * sr):int(w[1] * sr)]
-        r = {"cols": be.cols(args.cols, a, sr) if args.cols else {},
-             "muq": be.anchors("muq", args.anchors, a, sr) if args.anchors else {},
-             "clap": be.anchors("clap", args.anchors, a, sr) if args.anchors else {}}
-        if ref is not None:
-            rr = ref if w is None else ref[:, int(w[0] * sr):int(w[1] * sr)]
-            r["lpaps"] = be.lpaps(rr, a, sr)
-        res[key] = r
-    Path(args.json).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.json).write_text(json.dumps(res, default=float))
-    print(f"scored {args.npz} -> {args.json}")
+    jobs = json.loads(Path(args.jobs).read_text()) if args.jobs else [
+        {"npz": args.npz, "ref": args.ref, "cols": args.cols, "anchors": args.anchors,
+         "windows": args.windows, "json": args.json}]
+    for jb in jobs:
+        z = np.load(jb["npz"])
+        wav, sr = z["wav"], int(z["sr"])
+        ref = np.load(jb["ref"])["wav"] if jb.get("ref") else None
+        wins = [tuple(float(x) for x in w.split(":")) for w in jb.get("windows") or []] or [None]
+        res = {"npz": jb["npz"], "ref": jb.get("ref"), "windows": jb.get("windows"),
+               "steer": str(z["steer"]) if "steer" in z.files else "", "meta": jb.get("meta")}
+        cols, anchors = jb.get("cols") or [], jb.get("anchors") or []
+        for w in wins:
+            key = "all" if w is None else f"{w[0]:g}-{w[1]:g}"
+            a = wav if w is None else wav[:, int(w[0] * sr):int(w[1] * sr)]
+            r = {"cols": be.cols(cols, a, sr) if cols else {},
+                 "muq": be.anchors("muq", anchors, a, sr) if anchors else {},
+                 "clap": be.anchors("clap", anchors, a, sr) if anchors else {}}
+            if ref is not None and jb.get("lpaps", True):
+                rr = ref if w is None else ref[:, int(w[0] * sr):int(w[1] * sr)]
+                r["lpaps"] = be.lpaps(rr, a, sr)
+            res[key] = r
+        Path(jb["json"]).parent.mkdir(parents=True, exist_ok=True)
+        Path(jb["json"]).write_text(json.dumps(res, default=float))
+        print(f"scored {jb['npz']} -> {jb['json']}", flush=True)
     return 0
 
 
@@ -103,21 +115,23 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("render")
-    r.add_argument("--sets", required=True)
-    r.add_argument("--set", required=True)
+    r.add_argument("--sets", default=None)
+    r.add_argument("--set", default=None)
+    r.add_argument("--jobs", default=None, help="json list of {set, seed, duration, steer [[pack, gain]], scale, out}")
     r.add_argument("--seed", type=int, default=2115)
     r.add_argument("--duration", type=float, default=10.0)
     r.add_argument("--steer", nargs="*", default=[])
     r.add_argument("--scale", type=float, default=1.0)
     r.add_argument("--out", required=True)
     s = sub.add_parser("score")
-    s.add_argument("--npz", required=True)
+    s.add_argument("--jobs", default=None, help="json list of {npz, ref, cols, anchors, windows, json, lpaps}")
+    s.add_argument("--npz", default=None)
     s.add_argument("--ref")
     s.add_argument("--cols", nargs="*", default=[])
     s.add_argument("--anchors", nargs="*", default=[])
     s.add_argument("--windows", nargs="*", default=[])
     s.add_argument("--workers", type=int, default=12)
-    s.add_argument("--json", required=True)
+    s.add_argument("--json", default=None)
     args = ap.parse_args()
     return render(args) if args.cmd == "render" else score(args)
 
