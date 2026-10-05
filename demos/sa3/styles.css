@@ -8,6 +8,11 @@ body {
   min-height: 100%;
 }
 
+html {
+  --pedal-unit: clamp(10px, 1vw, 12.5px);
+  font-size: var(--pedal-unit);
+}
+
 body {
   background:
     radial-gradient(circle at 50% 18%, rgb(255 255 255 / 10%), transparent 26%),
@@ -27,28 +32,28 @@ textarea {
 .shell {
   align-items: center;
   display: flex;
-  gap: 52px;
+  gap: 3.25rem;
   justify-content: center;
   min-height: 100svh;
-  padding: 24px;
+  padding: 1.5rem;
 }
 
 .plugin {
   background:
     radial-gradient(circle at 50% 16%, rgb(255 255 255 / 8%), transparent 34%),
     linear-gradient(180deg, #30343a, #15181d 52%, #08090b);
-  border: 1px solid #565d66;
-  border-radius: 8px;
+  border: 0.0625rem solid #565d66;
+  border-radius: 0.5rem;
   box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 18%),
-    inset 0 -14px 30px rgb(0 0 0 / 46%),
-    0 28px 80px rgb(0 0 0 / 52%);
+    inset 0 0.0625rem 0 rgb(255 255 255 / 18%),
+    inset 0 -0.875rem 1.875rem rgb(0 0 0 / 46%),
+    0 1.75rem 5rem rgb(0 0 0 / 52%);
   display: grid;
-  gap: 16px;
+  gap: 1rem;
   min-width: 0;
-  padding: 26px 32px 24px;
+  padding: 1.625rem 2rem 1.5rem;
   position: relative;
-  width: min(100%, 560px);
+  width: min(100%, 35rem);
 }
 
 .plugin[hidden] {
@@ -67,53 +72,53 @@ textarea {
   background:
     radial-gradient(ellipse at 42% 8%, rgb(255 226 164 / 34%), transparent 22%),
     radial-gradient(ellipse at 70% 62%, rgb(58 26 9 / 45%), transparent 28%),
-    repeating-radial-gradient(ellipse at 18% 24%, rgb(66 31 11 / 32%) 0 3px, transparent 4px 15px),
-    repeating-linear-gradient(91deg, rgb(255 226 164 / 18%) 0 2px, transparent 2px 8px),
+    repeating-radial-gradient(ellipse at 18% 24%, rgb(66 31 11 / 32%) 0 0.1875rem, transparent 0.25rem 0.9375rem),
+    repeating-linear-gradient(91deg, rgb(255 226 164 / 18%) 0 0.125rem, transparent 0.125rem 0.5rem),
     linear-gradient(100deg, #693216 0%, #a7602a 22%, #cf8d45 48%, #793d1a 76%, #3c1a0c 100%);
-  border: 1px solid rgb(16 8 3 / 80%);
-  border-radius: 6px;
+  border: 0.0625rem solid rgb(16 8 3 / 80%);
+  border-radius: 0.375rem;
   box-shadow:
-    inset 6px 0 12px rgb(255 226 165 / 20%),
-    inset -8px 0 18px rgb(28 11 3 / 64%),
-    0 0 0 1px rgb(255 255 255 / 8%);
+    inset 0.375rem 0 0.75rem rgb(255 226 165 / 20%),
+    inset -0.5rem 0 1.125rem rgb(28 11 3 / 64%),
+    0 0 0 0.0625rem rgb(255 255 255 / 8%);
   content: "";
-  height: calc(100% - 58px);
+  height: calc(100% - 3.625rem);
   position: absolute;
-  top: 29px;
-  width: 44px;
+  top: 1.8125rem;
+  width: 2.75rem;
 }
 
 .plugin::before {
-  left: -17px;
+  left: -1.0625rem;
 }
 
 .plugin::after {
-  right: -17px;
+  right: -1.0625rem;
 }
 
 .plugin-steer::before,
 .plugin-steer::after {
   background:
     radial-gradient(ellipse at 42% 8%, rgb(190 230 239 / 35%), transparent 22%),
-    repeating-linear-gradient(91deg, rgb(166 212 226 / 18%) 0 2px, transparent 2px 8px),
+    repeating-linear-gradient(91deg, rgb(166 212 226 / 18%) 0 0.125rem, transparent 0.125rem 0.5rem),
     linear-gradient(100deg, #263c49 0%, #517988 22%, #79a8af 48%, #345666 76%, #152b37 100%);
   border-color: rgb(7 21 28 / 80%);
 }
 
 .screws {
-  inset: 11px 13px;
+  inset: 0.6875rem 0.8125rem;
   pointer-events: none;
   position: absolute;
 }
 
 .screws span {
   background: linear-gradient(135deg, #8c969a, #222a2e);
-  border: 1px solid #111719;
+  border: 0.0625rem solid #111719;
   border-radius: 50%;
-  box-shadow: inset 0 1px 1px rgb(255 255 255 / 50%), 0 1px 3px rgb(0 0 0 / 70%);
-  height: 9px;
+  box-shadow: inset 0 0.0625rem 0.0625rem rgb(255 255 255 / 50%), 0 0.0625rem 0.1875rem rgb(0 0 0 / 70%);
+  height: 0.5625rem;
   position: absolute;
-  width: 9px;
+  width: 0.5625rem;
 }
 
 .screws span:nth-child(1) { left: 0; top: 0; }
@@ -125,25 +130,25 @@ textarea {
   align-items: center;
   display: flex;
   justify-content: center;
-  min-height: 44px;
+  min-height: 2.75rem;
   position: relative;
 }
 
 .brand {
   color: #fff;
   font-family: "Product Sans", "Google Sans", "Arial Rounded MT Bold", "Trebuchet MS", system-ui, sans-serif;
-  font-size: 38px;
+  font-size: 2.375rem;
   font-weight: 800;
   line-height: 1;
-  text-shadow: 0 2px 0 rgb(0 0 0 / 55%), 0 0 18px rgb(255 255 255 / 14%);
+  text-shadow: 0 0.125rem 0 rgb(0 0 0 / 55%), 0 0 1.125rem rgb(255 255 255 / 14%);
 }
 
 .knob-grid {
   display: grid;
-  gap: 14px 10px;
+  gap: 0.875rem 0.625rem;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   justify-items: center;
-  min-height: 132px;
+  min-height: 8.25rem;
 }
 
 .plugin-steer .knob-grid {
@@ -153,30 +158,30 @@ textarea {
 }
 
 .plugin-steer .knob-cell {
-  flex: 0 0 calc((100% - 30px) / 4);
+  flex: 0 0 calc((100% - 1.875rem) / 4);
   min-width: 0;
 }
 
 .knob-placeholder {
   align-self: center;
   color: #8b8f93;
-  font-size: 12px;
+  font-size: 0.75rem;
   grid-column: 1 / -1;
   text-transform: uppercase;
 }
 
 .knob-cell {
   display: grid;
-  gap: 4px;
+  gap: 0.25rem;
   justify-items: center;
 }
 
 .knob-wrap {
   display: grid;
-  height: 84px;
+  height: 5.25rem;
   place-items: center;
   position: relative;
-  width: 84px;
+  width: 5.25rem;
 }
 
 .knob {
@@ -185,27 +190,27 @@ textarea {
     radial-gradient(circle at 38% 32%, #5c626b, transparent 22%),
     radial-gradient(circle at 62% 72%, #050607, transparent 34%),
     linear-gradient(135deg, #30353d, #070809);
-  border: 2px solid #0d0e0f;
+  border: 0.125rem solid #0d0e0f;
   border-radius: 50%;
   box-shadow:
-    inset 0 5px 9px rgb(255 255 255 / 7%),
-    inset 0 -9px 15px rgb(0 0 0 / 62%),
-    0 8px 14px rgb(0 0 0 / 62%);
+    inset 0 0.3125rem 0.5625rem rgb(255 255 255 / 7%),
+    inset 0 -0.5625rem 0.9375rem rgb(0 0 0 / 62%),
+    0 0.5rem 0.875rem rgb(0 0 0 / 62%);
   cursor: grab;
   display: flex;
-  height: 76px;
+  height: 4.75rem;
   justify-content: center;
   position: relative;
   /* Claim vertical-drag gestures so touch devices steer the knob
      instead of scrolling the page. */
   touch-action: none;
   user-select: none;
-  width: 76px;
+  width: 4.75rem;
 }
 
 .knob:focus-visible {
-  outline: 2px solid #6ba0cd;
-  outline-offset: 3px;
+  outline: 0.125rem solid #6ba0cd;
+  outline-offset: 0.1875rem;
 }
 
 .knob.dragging {
@@ -226,12 +231,12 @@ body.knob-dragging {
 }
 
 .knob::before {
-  border: 2px solid rgb(255 255 255 / 74%);
+  border: 0.125rem solid rgb(255 255 255 / 74%);
   border-radius: 50%;
   content: "";
-  height: 34px;
+  height: 2.125rem;
   position: absolute;
-  width: 34px;
+  width: 2.125rem;
 }
 
 .pointer-rotor {
@@ -242,25 +247,25 @@ body.knob-dragging {
 
 .knob-pointer {
   background: linear-gradient(180deg, #fff, #c9e0ee);
-  border-radius: 999px;
-  box-shadow: 0 0 6px rgb(255 255 255 / 34%);
-  height: 20px;
-  left: calc(50% - 2px);
+  border-radius: 62.4375rem;
+  box-shadow: 0 0 0.375rem rgb(255 255 255 / 34%);
+  height: 1.25rem;
+  left: calc(50% - 0.125rem);
   position: absolute;
-  top: 6px;
-  width: 4px;
+  top: 0.375rem;
+  width: 0.25rem;
 }
 
 .knob-value {
   color: #f6f7f7;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-variant-numeric: tabular-nums;
   font-weight: 800;
 }
 
 .knob-label {
   color: #d3d3cc;
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 900;
   text-align: center;
   text-transform: uppercase;
@@ -270,12 +275,12 @@ body.knob-dragging {
 .bool-knob {
   align-items: center;
   background: #101112;
-  border: 1px solid rgb(255 255 255 / 16%);
-  border-radius: 4px;
+  border: 0.0625rem solid rgb(255 255 255 / 16%);
+  border-radius: 0.25rem;
   color: #eee;
   display: flex;
-  min-height: 40px;
-  padding: 7px 9px;
+  min-height: 2.5rem;
+  padding: 0.4375rem 0.5625rem;
 }
 
 .select-knob {
@@ -284,23 +289,23 @@ body.knob-dragging {
 
 .bool-knob input {
   accent-color: #6ba0cd;
-  height: 18px;
-  width: 18px;
+  height: 1.125rem;
+  width: 1.125rem;
 }
 
 .controls {
   display: grid;
-  gap: 10px;
+  gap: 0.625rem;
 }
 
 .field-slot {
   display: grid;
-  gap: 5px;
+  gap: 0.3125rem;
 }
 
 .field-slot span {
   color: #d3d3cc;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 900;
   text-transform: uppercase;
 }
@@ -309,11 +314,11 @@ body.knob-dragging {
 .field-slot select,
 .field-slot input {
   background: #101112;
-  border: 1px solid rgb(255 255 255 / 16%);
-  border-radius: 4px;
+  border: 0.0625rem solid rgb(255 255 255 / 16%);
+  border-radius: 0.25rem;
   color: #eeeeea;
-  font-size: 13px;
-  padding: 7px 9px;
+  font-size: 0.8125rem;
+  padding: 0.4375rem 0.5625rem;
 }
 
 .field-slot textarea {
@@ -327,8 +332,8 @@ body.knob-dragging {
 
 .source-row {
   display: grid;
-  gap: 10px;
-  grid-template-columns: 1fr 110px;
+  gap: 0.625rem;
+  grid-template-columns: 1fr 6.875rem;
 }
 
 .duration-slot input {
@@ -340,7 +345,7 @@ body.knob-dragging {
   background: transparent;
   border: none;
   cursor: pointer;
-  height: 22px;
+  height: 1.375rem;
   padding: 0;
 }
 
@@ -351,34 +356,34 @@ body.knob-dragging {
 
 .blend-slot input::-webkit-slider-runnable-track {
   background: linear-gradient(180deg, #0c0d0e, #181a1d);
-  border: 1px solid rgb(255 255 255 / 16%);
-  border-radius: 3px;
-  height: 6px;
+  border: 0.0625rem solid rgb(255 255 255 / 16%);
+  border-radius: 0.1875rem;
+  height: 0.375rem;
 }
 
 .blend-slot input::-webkit-slider-thumb {
   appearance: none;
   background: linear-gradient(180deg, #2c3037, #14171b);
-  border: 1px solid rgb(255 255 255 / 30%);
-  border-radius: 3px;
-  height: 16px;
-  margin-top: -6px;
-  width: 10px;
+  border: 0.0625rem solid rgb(255 255 255 / 30%);
+  border-radius: 0.1875rem;
+  height: 1rem;
+  margin-top: -0.375rem;
+  width: 0.625rem;
 }
 
 .blend-slot input::-moz-range-track {
   background: linear-gradient(180deg, #0c0d0e, #181a1d);
-  border: 1px solid rgb(255 255 255 / 16%);
-  border-radius: 3px;
-  height: 6px;
+  border: 0.0625rem solid rgb(255 255 255 / 16%);
+  border-radius: 0.1875rem;
+  height: 0.375rem;
 }
 
 .blend-slot input::-moz-range-thumb {
   background: linear-gradient(180deg, #2c3037, #14171b);
-  border: 1px solid rgb(255 255 255 / 30%);
-  border-radius: 3px;
-  height: 16px;
-  width: 10px;
+  border: 0.0625rem solid rgb(255 255 255 / 30%);
+  border-radius: 0.1875rem;
+  height: 1rem;
+  width: 0.625rem;
 }
 
 .blend-slot > span {
@@ -397,19 +402,19 @@ body.knob-dragging {
 .send-btn,
 .power-btn {
   background: linear-gradient(180deg, #2c3037, #14171b);
-  border: 1px solid rgb(255 255 255 / 22%);
-  border-radius: 5px;
+  border: 0.0625rem solid rgb(255 255 255 / 22%);
+  border-radius: 0.3125rem;
   color: #f1f1ed;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 900;
-  min-height: 32px;
+  min-height: 2rem;
   text-transform: uppercase;
 }
 
 .send-btn {
   justify-self: end;
-  padding: 0 16px;
+  padding: 0 1rem;
 }
 
 .send-btn:disabled,
@@ -420,63 +425,63 @@ body.knob-dragging {
 
 .title {
   background: linear-gradient(180deg, #c9c9be, #878b89);
-  border: 1px solid #4d5557;
-  border-radius: 3px;
-  box-shadow: inset 0 1px rgb(255 255 255 / 55%), 0 3px 5px rgb(0 0 0 / 45%);
+  border: 0.0625rem solid #4d5557;
+  border-radius: 0.1875rem;
+  box-shadow: inset 0 0.0625rem rgb(255 255 255 / 55%), 0 0.1875rem 0.3125rem rgb(0 0 0 / 45%);
   color: #172026;
-  font-size: 30px;
+  font-size: 1.875rem;
   font-weight: 900;
   justify-self: center;
   line-height: 1;
-  padding: 6px 20px;
-  text-shadow: 0 1px rgb(255 255 255 / 35%);
+  padding: 0.375rem 1.25rem;
+  text-shadow: 0 0.0625rem rgb(255 255 255 / 35%);
 }
 
 .transport {
   align-items: center;
   display: flex;
-  gap: 10px;
+  gap: 0.625rem;
   justify-content: center;
-  min-height: 36px;
+  min-height: 2.25rem;
 }
 
 .power-btn {
-  min-width: 88px;
+  min-width: 5.5rem;
 }
 
 .power-on {
   border-color: rgb(107 160 205 / 70%);
-  box-shadow: 0 0 12px rgb(107 160 205 / 30%);
+  box-shadow: 0 0 0.75rem rgb(107 160 205 / 30%);
 }
 
 .tick-readout {
   align-items: baseline;
   background: #101112;
-  border: 1px solid rgb(255 255 255 / 14%);
-  border-radius: 4px;
+  border: 0.0625rem solid rgb(255 255 255 / 14%);
+  border-radius: 0.25rem;
   color: #f1f1ed;
   display: inline-flex;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
-  gap: 4px;
+  gap: 0.25rem;
   justify-content: center;
-  min-height: 30px;
-  min-width: 92px;
-  padding: 7px 8px 0;
+  min-height: 1.875rem;
+  min-width: 5.75rem;
+  padding: 0.4375rem 0.5rem 0;
 }
 
 .tick-readout b,
 .tick-readout small {
   color: #8f938f;
-  font-size: 9px;
+  font-size: 0.5625rem;
   font-weight: 900;
   text-transform: uppercase;
 }
 
 .status-dot {
   border-radius: 50%;
-  height: 9px;
-  width: 9px;
+  height: 0.5625rem;
+  width: 0.5625rem;
 }
 
 .status-idle {
@@ -490,17 +495,17 @@ body.knob-dragging {
 
 .status-ready {
   background: #5fd97e;
-  box-shadow: 0 0 8px rgb(95 217 126 / 55%);
+  box-shadow: 0 0 0.5rem rgb(95 217 126 / 55%);
 }
 
 .status-error {
   background: #e0524d;
-  box-shadow: 0 0 8px rgb(224 82 77 / 55%);
+  box-shadow: 0 0 0.5rem rgb(224 82 77 / 55%);
 }
 
 .status-text {
   color: #c9cbc6;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 @keyframes sa3-pulse {
@@ -509,25 +514,30 @@ body.knob-dragging {
   }
 }
 
-@media (max-width: 1200px) {
+@media (max-width: 800px) {
   .shell {
     flex-direction: column;
-    gap: 40px;
+    gap: 2.5rem;
   }
 }
 
 @media (max-width: 620px) {
+  html {
+    --pedal-unit: clamp(11.5px, 3.2vw, 12.5px);
+  }
+
   .shell {
-    padding: 18px 20px;
+    padding: 1rem 16px;
   }
 
   .plugin {
-    padding: 18px 22px;
+    padding: 1.125rem 1.375rem;
+    width: min(calc(100% - 2.125rem), 35rem);
   }
 
   .plugin::before,
   .plugin::after {
-    width: 28px;
+    width: 1.75rem;
   }
 
   .source-row {
@@ -535,7 +545,7 @@ body.knob-dragging {
   }
 
   .plugin-steer .knob-cell {
-    flex-basis: calc((100% - 20px) / 3);
+    flex-basis: calc((100% - 1.25rem) / 3);
   }
 }
 
@@ -545,6 +555,6 @@ body.knob-dragging {
   }
 
   .plugin-steer .knob-cell {
-    flex-basis: calc((100% - 10px) / 2);
+    flex-basis: calc((100% - 0.625rem) / 2);
   }
 }
