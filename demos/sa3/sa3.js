@@ -13,15 +13,40 @@ const STUB_CHANNELS = 2;
 const PARAMS_TICK_MS = 80;
 // Steering packs arrive as steer_<name> entries in the session manifest.
 const STEER_PREFIX = "steer_";
+// One pedal per pack category (entry.meta.category), in board order.
+// `cats` lists the manifest categories that land on the pedal; `hue`
+// tints the faceplate. Packs with no category land on MISC.
+const PEDALS = [
+  { id: "genre", title: "GENRE", cats: ["genre"], hue: 12 },
+  { id: "instrument", title: "INSTRUMENT", cats: ["instrument"], hue: 38 },
+  { id: "sound_effect", title: "SFX", cats: ["sound_effect", "sfx"], hue: 88 },
+  { id: "production", title: "PRODUCTION", cats: ["production"], hue: 150 },
+  { id: "mood", title: "MOOD", cats: ["mood"], hue: 330 },
+  { id: "space", title: "SPACE", cats: ["space"], hue: 245 },
+  { id: "tone", title: "TONE", cats: ["timbre", "dynamics", "rhythm"], hue: 200 },
+  { id: "abstract", title: "ABSTRACT", cats: ["abstract"], hue: 280 },
+  { id: "misc", title: "MISC", cats: [], hue: 210 },
+];
+// The first five packs predate the category field; they are timbre,
+// dynamics and rhythm controls, so they sit on the TONE pedal.
+const LEGACY_PACK_PEDAL = {
+  steer_bright: "tone",
+  steer_warm: "tone",
+  steer_percussive: "tone",
+  steer_rough: "tone",
+  steer_density: "tone",
+};
+// Calibrated knobs reach their fidelity cutoff at 1/headroom of the
+// throw (server: STEERING_PACK_HEADROOM = 1.25, so 80%).
+const DEFAULT_HEADROOM = 1.25;
 
 const els = {
   blend: document.querySelector("#blend"),
   blendValue: document.querySelector("#blend-value"),
   duration: document.querySelector("#duration"),
   fixture: document.querySelector("#fixture"),
+  board: document.querySelector("#board"),
   knobs: document.querySelector("#knobs"),
-  steerPedal: document.querySelector("#steer-pedal"),
-  steerKnobs: document.querySelector("#steer-knobs"),
   promptA: document.querySelector("#prompt-a"),
   promptB: document.querySelector("#prompt-b"),
   sendPrompt: document.querySelector("#send-prompt"),
@@ -35,6 +60,7 @@ const state = {
   fixtures: [],
   knobs: [],
   steer: [],
+  bypassed: new Set(),
   values: {},
   status: "idle",
   message: "",
@@ -67,7 +93,8 @@ function running() {
   return state.status === "ready" || state.status === "connecting";
 }
 
-function knobLabel(name) {
+function knobLabel(name, entry) {
+  if (entry?.meta?.label) return String(entry.meta.label);
   if (name.startsWith(STEER_PREFIX)) {
     return name.slice(STEER_PREFIX.length).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   }
@@ -129,22 +156,54 @@ function commitKnobValue(name, entry, value) {
   sendParamsNow();
 }
 
+// Bipolar knobs (min < 0 < max) put 0 at 12 o'clock and map each sign
+// to its own half of the throw, so an asymmetric range (a steering
+// pack's per-sign calibrated gain) still reads as "full CW = max, full
+// CCW = min". Other knobs map linearly. `pos` is the 0..1 throw.
+function knobScale(min, max) {
+  if (min < 0 && max > 0) {
+    return {
+      bipolar: true,
+      toPos: (v) => (v >= 0 ? 0.5 + 0.5 * (v / max) : 0.5 - 0.5 * (v / min)),
+      fromPos: (p) => (p >= 0.5 ? (p - 0.5) * 2 * max : (0.5 - p) * 2 * min),
+    };
+  }
+  const span = max - min || 1;
+  return {
+    bipolar: false,
+    toPos: (v) => (v - min) / span,
+    fromPos: (p) => min + p * span,
+  };
+}
+
+function knobTick(pos, className) {
+  const tick = document.createElement("div");
+  tick.className = `knob-tick ${className}`.trim();
+  tick.style.transform = `rotate(${-135 + pos * 270}deg)`;
+  return tick;
+}
+
 function numericKnob(name, entry) {
   const min = entry.min ?? 0;
   const max = entry.max ?? 1;
   const span = max - min || 1;
   const isInt = entry.type === "int";
+  const scale = knobScale(min, max);
   const defaultValue = clamp(Number(valueFromEntry(entry)), min, max);
+  const meta = entry.meta ?? {};
+  const label = knobLabel(name, entry);
 
-  // Increment ladder shared by wheel + keyboard. Drag uses a continuous
-  // pixel→value mapping instead (see below), so it isn't on this ladder.
-  const coarse = isInt ? 1 : span / 100;
-  const fine = isInt ? 1 : span / 1000;
-  const page = isInt ? Math.max(1, Math.round(span / 10)) : span / 10;
+  // Increment ladder shared by wheel + keyboard: throw (0..1) units for
+  // floats, value units for ints. Drag uses a continuous pixel-to-throw
+  // mapping instead (see below).
+  const coarse = isInt ? 1 : 1 / 100;
+  const fine = isInt ? 1 : 1 / 1000;
+  const page = isInt ? Math.max(1, Math.round(span / 10)) : 1 / 10;
 
   const cell = document.createElement("div");
   cell.className = "knob-cell";
-  if (entry.description) cell.title = entry.description;
+  const tip = [meta.blurb, entry.description].filter(Boolean);
+  if (tip.length) cell.title = tip.join("\n\n");
 
   const wrap = document.createElement("div");
   wrap.className = "knob-wrap";
@@ -153,7 +212,7 @@ function numericKnob(name, entry) {
   knob.className = "knob";
   knob.tabIndex = 0;
   knob.setAttribute("role", "slider");
-  knob.setAttribute("aria-label", knobLabel(name));
+  knob.setAttribute("aria-label", label);
   knob.setAttribute("aria-valuemin", String(min));
   knob.setAttribute("aria-valuemax", String(max));
 
@@ -165,23 +224,47 @@ function numericKnob(name, entry) {
   knob.append(rotor);
   wrap.append(knob);
 
+  // Calibrated steering knobs: a tick at the fidelity cutoff on each
+  // side (1/headroom = 80% of the throw). A sign whose screening never
+  // reached the cutoff gets a hollow tick and a dot on the label.
+  const unreached = [];
+  if (meta.calibrated && scale.bipolar) {
+    const frac = 1 / Number(meta.headroom || DEFAULT_HEADROOM);
+    const reached = meta.cutoff_reached ?? {};
+    wrap.append(
+      knobTick(0.5 + 0.5 * frac, reached.pos === false ? "tick-unreached" : ""),
+      knobTick(0.5 - 0.5 * frac, reached.neg === false ? "tick-unreached" : ""),
+    );
+    if (reached.pos === false) unreached.push("+");
+    if (reached.neg === false) unreached.push("-");
+  }
+
   const valueEl = document.createElement("div");
   valueEl.className = "knob-value";
 
-  const label = document.createElement("div");
-  label.className = "knob-label";
-  label.textContent = knobLabel(name);
+  const labelEl = document.createElement("div");
+  labelEl.className = "knob-label";
+  labelEl.textContent = label;
+  if (unreached.length) {
+    cell.classList.add("knob-unreached");
+    const dot = document.createElement("span");
+    dot.className = "unreached-dot";
+    dot.title =
+      `cutoff not reached in screening (${unreached.join(" ")}): ` +
+      "range uses the largest probe";
+    labelEl.append(dot);
+  }
 
-  cell.append(wrap, valueEl, label);
+  cell.append(wrap, valueEl, labelEl);
 
   // `current` is the quantized, committed value; `accum` is an
-  // unquantized float so sub-step drag motion accumulates rather than
-  // being rounded away every frame.
+  // unquantized throw position so sub-step drag motion accumulates
+  // rather than being rounded away every frame.
   let current = clamp(Number(state.values[name] ?? defaultValue), min, max);
-  let accum = current;
+  let accum = scale.toPos(current);
 
   function paint() {
-    const norm = clamp((current - min) / span, 0, 1);
+    const norm = clamp(scale.toPos(current), 0, 1);
     rotor.style.transform = `rotate(${-135 + norm * 270}deg)`;
     valueEl.textContent = formatValue(entry, current);
     knob.setAttribute("aria-valuenow", String(current));
@@ -189,12 +272,24 @@ function numericKnob(name, entry) {
   }
 
   function setValue(next) {
-    const q = clamp(isInt ? Math.round(next) : next, min, max);
-    accum = clamp(next, min, max);
+    const v = clamp(next, min, max);
+    const q = isInt ? Math.round(v) : v;
+    accum = clamp(scale.toPos(v), 0, 1);
     if (q === current) return;
     current = q;
     paint();
     commitKnobValue(name, entry, q);
+  }
+
+  function setPos(pos) {
+    const p = clamp(pos, 0, 1);
+    setValue(scale.fromPos(p));
+    accum = p;
+  }
+
+  function step(inc) {
+    if (isInt) setValue(current + inc);
+    else setPos(scale.toPos(current) + inc);
   }
 
   paint();
@@ -202,9 +297,9 @@ function numericKnob(name, entry) {
   // --- DAW-style vertical drag ---------------------------------------
   // Relative motion (not click-to-position): the value tracks how far
   // the pointer has moved since press, not where it landed. A full
-  // min→max sweep takes ~PIXELS_PER_SPAN px of upward travel; Shift
-  // drops sensitivity 5x for fine trims. Pointer capture keeps the
-  // gesture alive when the cursor leaves the 76px knob.
+  // sweep takes ~PIXELS_PER_SPAN px of upward travel; Shift drops
+  // sensitivity 5x for fine trims. Pointer capture keeps the gesture
+  // alive when the cursor leaves the knob.
   const PIXELS_PER_SPAN = 200;
   let dragging = false;
   let lastY = 0;
@@ -214,7 +309,7 @@ function numericKnob(name, entry) {
     event.preventDefault();
     knob.focus();
     dragging = true;
-    accum = current;
+    accum = scale.toPos(current);
     lastY = event.clientY;
     knob.classList.add("dragging");
     document.body.classList.add("knob-dragging");
@@ -223,10 +318,10 @@ function numericKnob(name, entry) {
 
   knob.addEventListener("pointermove", (event) => {
     if (!dragging) return;
-    const perPixel = (span / PIXELS_PER_SPAN) / (event.shiftKey ? 5 : 1);
+    const perPixel = 1 / PIXELS_PER_SPAN / (event.shiftKey ? 5 : 1);
     const dy = lastY - event.clientY; // up = increase
     lastY = event.clientY;
-    setValue(accum + dy * perPixel);
+    setPos(accum + dy * perPixel);
   });
 
   function endDrag(event) {
@@ -251,41 +346,38 @@ function numericKnob(name, entry) {
     "wheel",
     (event) => {
       event.preventDefault();
-      const inc = (event.shiftKey ? fine : coarse) * (event.deltaY < 0 ? 1 : -1);
-      setValue(current + inc);
+      step((event.shiftKey ? fine : coarse) * (event.deltaY < 0 ? 1 : -1));
     },
     { passive: false },
   );
 
   knob.addEventListener("keydown", (event) => {
     const inc = event.shiftKey ? fine : coarse;
-    let next;
     switch (event.key) {
       case "ArrowUp":
       case "ArrowRight":
-        next = current + inc;
+        step(inc);
         break;
       case "ArrowDown":
       case "ArrowLeft":
-        next = current - inc;
+        step(-inc);
         break;
       case "PageUp":
-        next = current + page;
+        step(page);
         break;
       case "PageDown":
-        next = current - page;
+        step(-page);
         break;
       case "Home":
-        next = min;
+        setValue(min);
         break;
       case "End":
-        next = max;
+        setValue(max);
         break;
       default:
         return;
     }
     event.preventDefault();
-    setValue(next);
   });
 
   return cell;
@@ -318,7 +410,7 @@ function enumKnob(name, entry) {
 
   const label = document.createElement("div");
   label.className = "knob-label";
-  label.textContent = knobLabel(name);
+  label.textContent = knobLabel(name, entry);
 
   cell.append(select, valueEl, label);
   return cell;
@@ -347,17 +439,83 @@ function boolKnob(name, entry) {
 
   const label = document.createElement("div");
   label.className = "knob-label";
-  label.textContent = knobLabel(name);
+  label.textContent = knobLabel(name, entry);
 
   cell.append(wrap, valueEl, label);
   return cell;
 }
 
+function pedalIdFor(name, entry) {
+  const cat = String(entry.meta?.category ?? "").trim().toLowerCase();
+  if (cat) {
+    const pedal = PEDALS.find((p) => p.cats.includes(cat));
+    return pedal ? pedal.id : "misc";
+  }
+  return LEGACY_PACK_PEDAL[name] ?? "misc";
+}
+
+function steerPedal(pedal, knobs) {
+  const section = document.createElement("section");
+  section.className = "plugin plugin-steer";
+  section.dataset.pedal = pedal.id;
+  section.style.setProperty("--hue", String(pedal.hue));
+  section.setAttribute("aria-label", `${pedal.title} steering pedal`);
+  const bypassed = state.bypassed.has(pedal.id);
+  section.classList.toggle("bypassed", bypassed);
+
+  const screws = document.createElement("div");
+  screws.className = "screws";
+  screws.setAttribute("aria-hidden", "true");
+  screws.append(...Array.from({ length: 4 }, () => document.createElement("span")));
+
+  const grid = document.createElement("div");
+  grid.className = "knob-grid";
+  grid.append(...knobs.map(({ name, entry }) => numericKnob(name, entry)));
+
+  // Footswitch + LED: LED lit = engaged. Bypass sends 0 for this
+  // pedal's knobs and keeps their positions for when it is re-engaged.
+  const foot = document.createElement("div");
+  foot.className = "pedal-foot";
+  const led = document.createElement("span");
+  led.className = "pedal-led";
+  led.setAttribute("aria-hidden", "true");
+  const title = document.createElement("div");
+  title.className = "title";
+  title.textContent = pedal.title;
+  const sw = document.createElement("button");
+  sw.type = "button";
+  sw.className = "footswitch";
+  sw.setAttribute("aria-pressed", String(!bypassed));
+  sw.setAttribute("aria-label", `${pedal.title} bypass`);
+  sw.title = "Bypass: sends 0 for this pedal's knobs and keeps their settings";
+  sw.addEventListener("click", () => {
+    const now = !state.bypassed.has(pedal.id);
+    if (now) state.bypassed.add(pedal.id);
+    else state.bypassed.delete(pedal.id);
+    section.classList.toggle("bypassed", now);
+    sw.setAttribute("aria-pressed", String(!now));
+    sendParamsNow();
+  });
+  foot.append(led, title, sw);
+
+  section.append(screws, grid, foot);
+  return section;
+}
+
+// Category pedals go after the main pedal in the board; the CSS grid
+// keeps the main pedal in the centre column and lays the first four
+// pedals beside it, the rest below.
+function renderPedals() {
+  for (const node of els.board.querySelectorAll(".plugin-steer")) node.remove();
+  const groups = new Map(PEDALS.map((p) => [p.id, []]));
+  for (const item of state.steer) groups.get(pedalIdFor(item.name, item.entry)).push(item);
+  const pedals = PEDALS.filter((p) => groups.get(p.id).length > 0);
+  els.board.classList.toggle("has-pedals", pedals.length > 0);
+  els.board.append(...pedals.map((p) => steerPedal(p, groups.get(p.id))));
+}
+
 function renderKnobs() {
-  els.steerPedal.hidden = state.steer.length === 0;
-  els.steerKnobs.replaceChildren(
-    ...state.steer.map(({ name, entry }) => numericKnob(name, entry)),
-  );
+  renderPedals();
 
   if (state.knobs.length === 0) {
     const placeholder = document.createElement("div");
@@ -378,9 +536,20 @@ function renderKnobs() {
   els.knobs.replaceChildren(...nodes);
 }
 
+// What goes on the wire: the knob values, with every knob on a
+// bypassed pedal sent as 0 (its stored value is kept for un-bypass).
+function wireValues() {
+  if (state.bypassed.size === 0) return state.values;
+  const out = { ...state.values };
+  for (const { name, entry } of state.steer) {
+    if (state.bypassed.has(pedalIdFor(name, entry))) out[name] = 0;
+  }
+  return out;
+}
+
 function sendParamsNow() {
   if (!state.remote || !state.player || state.status !== "ready") return;
-  state.remote.sendParams(state.values, state.player.positionSec);
+  state.remote.sendParams(wireValues(), state.player.positionSec);
 }
 
 async function fetchFixtures() {

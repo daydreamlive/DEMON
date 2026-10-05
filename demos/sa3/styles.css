@@ -60,11 +60,146 @@ textarea {
   display: none;
 }
 
+/* Pedalboard: with category pedals present, the main pedal holds the
+   centre column across two rows; the first four pedals sit beside it
+   (auto-placement fills the side cells) and the rest wrap below. */
+.shell.has-pedals {
+  align-items: center;
+  display: grid;
+  gap: 2.25rem 3rem;
+  grid-template-columns: repeat(3, auto);
+  justify-content: center;
+  justify-items: center;
+}
+
+.shell.has-pedals .plugin-main {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
+/* Category pedal: the steer faceplate, tinted per category via --hue
+   (200 = the original steer blue-grey). */
 .plugin-steer {
+  --hue: 200;
   background:
     radial-gradient(circle at 50% 16%, rgb(255 255 255 / 10%), transparent 34%),
-    linear-gradient(180deg, #384850, #1c2c34 52%, #0b1319);
-  border-color: #6b8792;
+    linear-gradient(180deg, hsl(var(--hue) 18% 27%), hsl(var(--hue) 30% 16%) 52%, hsl(var(--hue) 40% 6%));
+  border-color: hsl(var(--hue) 15% 50%);
+  gap: 0.75rem;
+  padding: 1.5rem 1.75rem 1.25rem;
+  width: min(100%, 25rem);
+}
+
+.plugin-steer .knob-wrap {
+  height: 4.5rem;
+  width: 4.5rem;
+}
+
+.plugin-steer .knob {
+  height: 4rem;
+  width: 4rem;
+}
+
+.plugin-steer .knob::before {
+  height: 1.75rem;
+  width: 1.75rem;
+}
+
+.plugin-steer .knob-pointer {
+  height: 1rem;
+  top: 0.3125rem;
+}
+
+.plugin-steer .title {
+  font-size: 1.375rem;
+}
+
+.pedal-foot {
+  align-items: center;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: 1fr auto 1fr;
+}
+
+.pedal-led {
+  background: radial-gradient(circle at 40% 35%, #ffb3a8, #e0302a 55%, #6b0d0b);
+  border: 0.0625rem solid #1a0605;
+  border-radius: 50%;
+  box-shadow: 0 0 0.5rem rgb(255 70 60 / 70%);
+  height: 0.6875rem;
+  justify-self: end;
+  width: 0.6875rem;
+}
+
+.footswitch {
+  background: radial-gradient(circle at 38% 30%, #f2f4f5, #9aa2a6 40%, #4a5155 75%, #262b2e);
+  border: 0.125rem solid #15191b;
+  border-radius: 50%;
+  box-shadow: inset 0 -0.1875rem 0.25rem rgb(0 0 0 / 45%), 0 0.25rem 0.5rem rgb(0 0 0 / 60%);
+  cursor: pointer;
+  height: 2.5rem;
+  justify-self: start;
+  padding: 0;
+  width: 2.5rem;
+}
+
+.footswitch:active {
+  transform: translateY(0.0625rem) scale(0.97);
+}
+
+.footswitch:focus-visible {
+  outline: 0.125rem solid #6ba0cd;
+  outline-offset: 0.1875rem;
+}
+
+.plugin-steer.bypassed .pedal-led {
+  background: radial-gradient(circle at 40% 35%, #6a3a37, #3a1311 60%, #1d0807);
+  box-shadow: none;
+}
+
+.plugin-steer.bypassed .knob-grid {
+  opacity: 0.45;
+}
+
+/* Fidelity-cutoff tick: sits in the ring outside the knob at 80% of
+   the throw on each side. Hollow when that sign never reached the
+   cutoff in screening. */
+.knob-tick {
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+.knob-tick::before {
+  background: #f0c24a;
+  border-radius: 0.0625rem;
+  content: "";
+  height: 0.375rem;
+  left: calc(50% - 0.0625rem);
+  position: absolute;
+  top: -0.0625rem;
+  width: 0.125rem;
+}
+
+.knob-tick.tick-unreached::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 0.0625rem #f0c24a;
+  opacity: 0.7;
+  width: 0.1875rem;
+}
+
+.unreached-dot {
+  background: #f0c24a;
+  border-radius: 50%;
+  display: inline-block;
+  height: 0.3125rem;
+  margin-left: 0.25rem;
+  vertical-align: middle;
+  width: 0.3125rem;
+}
+
+.knob-unreached .knob-label {
+  color: #a4a49c;
 }
 
 .plugin::before,
@@ -101,7 +236,7 @@ textarea {
   background:
     radial-gradient(ellipse at 42% 8%, rgb(190 230 239 / 35%), transparent 22%),
     repeating-linear-gradient(91deg, rgb(166 212 226 / 18%) 0 0.125rem, transparent 0.125rem 0.5rem),
-    linear-gradient(100deg, #263c49 0%, #517988 22%, #79a8af 48%, #345666 76%, #152b37 100%);
+    linear-gradient(100deg, hsl(var(--hue) 31% 22%) 0%, hsl(var(--hue) 25% 43%) 22%, hsl(var(--hue) 25% 58%) 48%, hsl(var(--hue) 33% 30%) 76%, hsl(var(--hue) 44% 15%) 100%);
   border-color: rgb(7 21 28 / 80%);
 }
 
@@ -514,8 +649,21 @@ body.knob-dragging {
   }
 }
 
+@media (max-width: 1200px) {
+  .shell.has-pedals {
+    grid-template-columns: repeat(2, auto);
+  }
+
+  .shell.has-pedals .plugin-main {
+    grid-column: 1 / -1;
+    grid-row: auto;
+  }
+}
+
 @media (max-width: 800px) {
-  .shell {
+  .shell,
+  .shell.has-pedals {
+    display: flex;
     flex-direction: column;
     gap: 2.5rem;
   }
