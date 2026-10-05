@@ -457,6 +457,11 @@ def _site_blocks(site: str, loc, nb: int):
         return list(loc)
     if site == "ablated":
         return [b for b in range(nb) if b not in set(loc)]
+    if site == "pack":
+        # the block(s) of the last pack loaded by _load_vectors
+        if not _PACK.get("blocks"):
+            raise SystemExit("site 'pack' needs --method pack")
+        return list(_PACK["blocks"])
     raise ValueError(site)
 
 
@@ -545,7 +550,28 @@ def _pci_triple(p: str, concept: str):
         "rock_genre": (f"a song, {p}", f"jazz song, {p}", f"rock song, {p}"),
         "electronic_music": (f"a song, {p}", f"classical song, {p}", f"electronic song, {p}"),
     }
+    if concept in PACK_DESCRIPTORS:
+        pos, neg = PACK_DESCRIPTORS[concept]
+        return (f"{p}", f"{p}, {pos}", f"{p}, {neg}")
     return table[concept]
+
+
+#: Production SA3 steering-pack concepts: (positive, negative) descriptor
+#: strings copied verbatim from DEMON-steer scripts/steering/discover.py
+#: CONCEPTS (lines 71-103), the prompts the packs were discovered from.
+#: PCI triple: neutral "{p}", positive "{p}, <pos>", negative "{p}, <neg>".
+PACK_DESCRIPTORS = {
+    "bright": ("bright, crisp, sparkling highs, airy, shimmering treble",
+               "dark, muffled, dull, lowpassed, murky, no treble"),
+    "warm": ("warm, deep round bass, mellow full low end",
+             "thin, tinny, no bass, harsh brittle highs"),
+    "rough": ("gritty, distorted, noisy, saturated, rough lo-fi texture",
+              "clean, smooth, pure, polished, pristine"),
+    "density": ("sparse, minimal, few instruments, lots of space and silence",
+                "dense, busy, layered, many instruments, wall of sound"),
+    "percussive": ("heavy drums, punchy percussion, driving beat",
+                   "no drums, beatless, ambient sustained pads"),
+}
 
 
 class _SwitchPatcher:
@@ -661,10 +687,56 @@ def _oracle_context(sam, vectors, rows, alpha):
             h.remove()
 
 
+#: The production steering pack in use (``--method pack``): its hook,
+#: target blocks, magnitude and path, set by :func:`_load_vectors`.
+_PACK: dict = {}
+_PACK_FIELDS = ("hook", "block", "policy", "norm", "magnitude")
+
+
+def _pack_path(args, concept) -> Path:
+    """``--pack`` is one ``.safetensors`` file, or a directory holding
+    ``<concept>.safetensors``."""
+    if not args.pack:
+        raise SystemExit("--method pack needs --pack <file or directory>")
+    p = Path(args.pack)
+    return p / f"{concept}.safetensors" if p.is_dir() else p
+
+
+def _pack_vectors(path, n: int = 8) -> dict:
+    """A format-1 production pack (``acestep.steering.packs.load_pack``)
+    as the bench's ``{step: {block: unit vector * policy_weight(step)}}``
+    for an ``n``-step render (steps of weight 0 are left out, i.e.
+    unsteered). Also records the pack's hook and blocks in ``_PACK``."""
+    import safetensors
+    from acestep.steering.packs import PACK_METADATA_KEY, load_pack, policy_weights
+
+    with safetensors.safe_open(str(path), framework="pt") as f:
+        header = json.loads((f.metadata() or {}).get(PACK_METADATA_KEY, "{}"))
+    missing = [k for k in _PACK_FIELDS if k not in header]
+    if missing:
+        raise SystemExit(f"{path}: pack header lacks {missing}")
+    pack = load_pack(path)
+    w = policy_weights(pack.policy, n)
+    out = {s: {} for s in range(n)}
+    for b, v in pack.block_vectors(n):
+        for s in range(n):
+            vs = (v if v.ndim == 1 else v[s]).float()
+            if w[s] != 0.0:
+                out[s][int(b)] = vs / vs.norm().clamp_min(1e-12) * float(w[s])
+    _PACK.clear()
+    _PACK.update(path=str(path), name=pack.name, hook=pack.hook, block=int(pack.block),
+                 blocks=list(pack.target_blocks), magnitude=float(pack.magnitude),
+                 norm=float(pack.norm), policy=dict(pack.policy), weights=list(w))
+    return out
+
+
 def _load_vectors(args, concept, site="loc"):
     """``{step: {block: [H]}}`` for ``args.method``: the CAA unit vectors
     (every block; the site picks blocks), or the AUSteer sparse vectors
-    selected for that site (top-s is global over the site's blocks)."""
+    selected for that site (top-s is global over the site's blocks), or
+    a production pack (``pack``; site ``pack`` = the pack's block)."""
+    if getattr(args, "method", "caa") == "pack":
+        return _pack_vectors(_pack_path(args, concept), STEPS)
     if getattr(args, "method", "caa") in ("oracle", "oraclemean"):
         d = torch.load(args.out / "oracle" / f"{concept}.pt", weights_only=False)
         if site != "loc" or list(args.loc) != list(d["blocks"]):
@@ -784,10 +856,17 @@ def _render_alpha(sam, prompts, vectors, blocks, alpha, batch):
     outs = []
     for idx in _batches(len(prompts), batch):
         with sa3_tada.steer_offline(sam, sel, alpha, renorm=_RENORM, guidance=_GUIDANCE,
-                                    cfg_rows=_CFG != 1.0):
+                                    cfg_rows=_CFG != 1.0, **_hook_kw()):
             outs.append(sa3_tada.generate(sam, [prompts[i] for i in idx], seed=EVAL_SEED,
                                           duration=DURATION, steps=STEPS))
     return torch.cat(outs)
+
+
+def _hook_kw() -> dict:
+    """``steer_offline`` site: the pack's hook under ``--method pack``
+    (``post_block_residual`` for the production packs), else the TADA
+    default (cross-attention output)."""
+    return {"hook": _PACK["hook"]} if _PACK.get("hook") else {}
 
 
 def cmd_sweep(args, sam) -> None:
@@ -821,6 +900,7 @@ def cmd_sweep(args, sam) -> None:
                 "prompts": len(tests), "seed": EVAL_SEED, "steps": STEPS,
                 "duration": DURATION, "holdout": bool(args.holdout),
                 "guidance": _GUIDANCE, "renorm": _RENORM, "range": list(rng),
+                **({"pack": dict(_PACK)} if args.method == "pack" else {}),
             }, indent=2))
             _log(f"sweep {site} {concept}: {len(alphas)} strengths x {len(tests)} prompts (max {amax})")
 
@@ -863,7 +943,7 @@ def cmd_calibrate(args, _sam=None) -> None:
         return {float(r["alpha"]): float(r["mean"]) for r in csv.DictReader(f.open())}
 
     ranges, notes = {}, {}
-    for method in ("caa", "austeer", "caakv", "oracle", "oraclemean"):
+    for method in ("caa", "austeer", "caakv", "oracle", "oraclemean", "pack"):
         for concept in args.concepts:
             cut = {}
             for direction, sign in (("pos", 1), ("neg", -1)):
@@ -871,7 +951,7 @@ def cmd_calibrate(args, _sam=None) -> None:
                             if sign * a > 0) for site in ("all", "loc")
                         if lp(args.out / args.eval_sub / f"pci_{site}_{concept}")]
                 cut[direction] = min(vals) if vals else None
-            for site in ("all", "loc", "ablated"):
+            for site in ("all", "loc", "ablated", "pack"):
                 pr = lp(args.out / args.calib_sub / f"{method}_{site}_{concept}")
                 if not pr or None in cut.values():
                     continue
@@ -1036,7 +1116,9 @@ def main() -> int:
     ap.add_argument("--eval-sub", default="eval", help="eval directory under --out")
     ap.add_argument("--packs", type=Path, default=TADA_ROOT / "packs")
     ap.add_argument("--checkpoint", default="medium")
-    ap.add_argument("--method", choices=("caa", "austeer", "caakv", "oracle", "oraclemean"), default="caa")
+    ap.add_argument("--method", choices=("caa", "austeer", "caakv", "oracle", "oraclemean", "pack"), default="caa")
+    ap.add_argument("--pack", default=None,
+                    help="--method pack: a production .safetensors pack, or a directory of <concept>.safetensors")
     ap.add_argument("--renorm", action="store_true")
     ap.add_argument("--guidance", type=float, default=1.0,
                     help="steering guidance: v0 + g (v1 - v0) per step (1 = off)")
@@ -1047,6 +1129,10 @@ def main() -> int:
     ap.add_argument("--top-s-all", type=int, default=2048)
     args = ap.parse_args()
 
+    if args.method == "pack" and args.sites == ["all", "loc", "ablated"]:
+        args.sites = ["pack"]
+    if args.concepts is None and args.method == "pack":
+        args.concepts = list(PACK_DESCRIPTORS)
     if args.concepts is None:
         args.concepts = list(SAO_LOC_CONCEPTS if args.cmd in ("patch", "localize")
                              else C.STEERING_CONCEPTS)

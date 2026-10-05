@@ -190,10 +190,36 @@ def _cache_models() -> None:
         pass
 
 
+#: Alignment anchors for the production SA3 steering-pack concepts (the
+#: reference ``CONCEPT_TO_EVAL_PROMPTS`` has only the 9 TADA concepts).
+#: Same form as the reference table: CLAP short prompt, MuQ "This is a
+#: music of ...". One anchor per concept, both directions (the negative
+#: direction scores as a decrease). density: positive = sparse.
+PACK_ANCHORS = {
+    "bright": "a bright track",
+    "warm": "a warm track",
+    "percussive": "a percussive track",
+    "rough": "a rough, gritty track",
+    "density": "a sparse, minimal track",
+}
+
+
+def _register_anchors() -> None:
+    """Add :data:`PACK_ANCHORS` to the reference table in memory. The
+    reference ``main`` looks the concept up BEFORE applying its
+    ``eval_prompt=`` override (eval_steering_protocol.py:810), so the
+    override alone would still KeyError on a new concept."""
+    from src.steering.methods.sae.lib.configs.eval import CONCEPT_TO_EVAL_PROMPTS as table
+
+    for c, a in PACK_ANCHORS.items():
+        table.setdefault(c, {"clap": a, "muqt": f"This is a music of {a}"})
+
+
 def cmd_protocol(args) -> None:
     from src.steering.eval.eval_steering_protocol import main as protocol
 
     _cache_models()
+    _register_anchors()
 
     for d, label, concept in _eval_dirs(args):
         # Re-checked per directory: another scorer may have finished it.
@@ -208,7 +234,11 @@ def cmd_protocol(args) -> None:
             (d / "protocol_results").mkdir(parents=True, exist_ok=True)
             df.to_csv(d / "protocol_results" / "lpaps.csv", index=False)
             continue
-        protocol(str(d), concept, skip_aesthetics=args.skip_aesthetics)
+        kw = {}
+        if concept in PACK_ANCHORS:
+            # MuQ form for both metrics (CLAP is secondary on SA3)
+            kw["eval_prompt"] = f"This is a music of {PACK_ANCHORS[concept]}"
+        protocol(str(d), concept, skip_aesthetics=args.skip_aesthetics, **kw)
 
 
 def cmd_cutoff(args) -> None:

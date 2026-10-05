@@ -28,7 +28,7 @@ from typing import Mapping, Sequence
 
 import torch
 
-from acestep.steering.layout import HOOK_CROSS_ATTN_OUTPUT
+from acestep.steering.layout import HOOK_CROSS_ATTN_OUTPUT, HOOK_POST_BLOCK_RESIDUAL
 
 
 def sa3_blocks(sam) -> Sequence:
@@ -59,6 +59,7 @@ def sa3_target(sam):
 def steer_offline(
     sam, vectors: Mapping[int, Mapping[int, torch.Tensor]], alpha: float,
     *, renorm: bool = False, guidance: float = 1.0, cfg_rows: bool = False,
+    hook: str = HOOK_CROSS_ATTN_OUTPUT,
 ):
     """TADA's CAA application during an offline SA3 render:
     ``h_l <- h_l + alpha * v[step][l]`` on the cross-attention output
@@ -71,10 +72,21 @@ def steer_offline(
     (:meth:`acestep.engine.stream.StreamPipeline.set_steering`): every
     step's DiT call (``sam.model.model``) also runs unsteered and the step
     uses ``v0 + guidance * (v1 - v0)``.
+
+    ``hook`` picks the site: ``cross_attn_output`` (default, TADA's site)
+    or ``post_block_residual``, the output of ``blocks[i]`` itself (the
+    production steering-pack site; the eager delivery in
+    ``acestep/engine/stream.py`` adds to the same tensor). A tuple block
+    output is steered on its first element, the rest passed through.
     """
     from acestep.tada.caa import steer_activation
 
-    mods = cross_attn_modules(sam)
+    if hook == HOOK_CROSS_ATTN_OUTPUT:
+        mods = cross_attn_modules(sam)
+    elif hook == HOOK_POST_BLOCK_RESIDUAL:
+        mods = list(sa3_blocks(sam))
+    else:
+        raise ValueError(f"unsupported steering hook {hook!r}")
     blocks = sorted({int(b) for per in vectors.values() for b in per})
     state = {"step": -1, "plain": False}
 
@@ -85,17 +97,20 @@ def steer_offline(
     handles = [sa3_blocks(sam)[0].register_forward_pre_hook(tick)]
 
     def make(block: int):
-        def hook(_m, _inp, out):
+        def _steer(_m, _inp, out):
             v = None if state["plain"] else vectors.get(state["step"], {}).get(block)
             if v is None:
                 return out
+            hs = out[0] if isinstance(out, tuple) else out
             if cfg_rows:
                 # batched CFG (vendored DiT: [cond; uncond]): the paper
                 # steers the conditional pass only
-                h = out.shape[0] // 2
-                return torch.cat([steer_activation(out[:h], v, alpha, renorm=renorm), out[h:]])
-            return steer_activation(out, v, alpha, renorm=renorm)
-        return hook
+                h = hs.shape[0] // 2
+                hs = torch.cat([steer_activation(hs[:h], v, alpha, renorm=renorm), hs[h:]])
+            else:
+                hs = steer_activation(hs, v, alpha, renorm=renorm)
+            return (hs,) + tuple(out[1:]) if isinstance(out, tuple) else hs
+        return _steer
 
     for b in blocks:
         handles.append(mods[b].register_forward_hook(make(b)))
