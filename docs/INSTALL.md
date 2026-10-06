@@ -41,6 +41,13 @@ uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint sa3-medi
 # open http://localhost:6660/sa3/
 ```
 
+Stable Audio 3 small-sfx (sound effects) has its own pad page:
+
+```bash
+uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint sa3-sfx
+# open http://localhost:6660/sfx/
+```
+
 The `/sa3/` UI sends `backend: "sa3"`, but it does not switch the
 server's loaded model after boot.
 
@@ -145,7 +152,9 @@ and is safe to re-run.
 The SA3 **weights** are a separate, manual download — `demon-setup` and
 `vendor_sa3.py` fetch only the source above, not the checkpoints. Only
 needed if you launch with `--checkpoint sa3-small` / `--checkpoint
-sa3-medium`:
+sa3-medium` / `--checkpoint sa3-sfx`. The repos are gated on Hugging Face:
+accept the licence on the model page and log in (`hf auth login` or
+`HF_TOKEN`) first.
 
 ```bash
 # small-music (or stable-audio-3-medium for the medium checkpoint)
@@ -153,7 +162,17 @@ huggingface-cli download stabilityai/stable-audio-3-small-music \
   --local-dir ~/.daydream-scope/models/demon/sa3/checkpoints/stable-audio-3-small-music
 ```
 
-The backend boot preflight fails fast with this exact command if the
+`sa3-sfx` uses `stabilityai/stable-audio-3-small-sfx` into
+`.../checkpoints/stable-audio-3-small-sfx`. Its TensorRT DiT engines are
+optional (eager runs real time) and build in under a minute each:
+
+```bash
+python -m acestep.engine.trt.sa3_build --dit --model small-sfx --min-latents 1 --opt-latents 76 --max-latents 162
+python -m acestep.engine.trt.sa3_build --dit --model small-sfx --min-latents 1 --opt-latents 248 --max-latents 356
+python -m acestep.engine.trt.sa3_build --dit --model small-sfx --seconds 60
+```
+
+The backend boot preflight fails fast with the download command if the
 weights are missing.
 
 ### 4. TensorRT engines
