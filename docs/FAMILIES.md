@@ -29,7 +29,7 @@ against it by `tests/unit/test_family_conformance.py`.
 | `shutdown()` | releases process-wide state the family holds (a cached model, an installed extension) when the server exits | `server.py` shutdown |
 | `accepts_checkpoint_dir` | whether `--sa3-base-checkpoint` may point the family at a non-catalog directory | `server.py` CLI |
 | `supports_extensions` | whether `--model-extension` may target the family | `acestep.plugins.selection` |
-| `max_concurrent_sessions` | how many sessions may run side by side on one pod before a new connection preempts the oldest (1 = one session per pod, required by ACE; SA3 allows 4 because each session owns its TRT execution context) | `ws_adapter.py` session create |
+| `max_concurrent_sessions` | per model id: how many sessions of that model may run side by side on one pod before a new connection preempts the oldest (absent = 1, one session per pod, required by ACE and kept by SA3 medium; SA3 small-music and small-sfx allow 4 because each session owns its TRT execution context) | `ws_adapter.py` session create |
 
 Both callables do their own lazy imports, so registering a family adds no
 model import to the registry. (The registry itself still imports the

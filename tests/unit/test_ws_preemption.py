@@ -173,11 +173,20 @@ def test_preempt_keeps_sessions_under_a_family_cap():
         assert [a.session_id for a in wa._ACTIVE_SESSIONS] == ["mid"]
 
 
-def test_family_session_caps():
-    from acestep.streaming.families import FAMILY_SPECS
+def test_model_session_caps():
+    from acestep.streaming.families import FAMILY_SPECS, resolve_checkpoint
 
-    assert FAMILY_SPECS["acestep"].max_concurrent_sessions == 1
-    assert FAMILY_SPECS["sa3"].max_concurrent_sessions == 4
+    def cap(alias):
+        family, model_id = resolve_checkpoint(alias)
+        return FAMILY_SPECS[family].session_cap(model_id)
+
+    # The cap belongs to the served model, not the family: medium keeps
+    # main's one-session-per-pod policy while the small-class SA3 models
+    # share a pod four ways.
+    assert cap("sa3-medium") == 1
+    assert cap("sa3-small") == 4
+    assert cap("sa3-sfx") == 4
+    assert cap("acestep-v15-turbo") == 1
 
 
 # ---------------------------------------------------------------------------

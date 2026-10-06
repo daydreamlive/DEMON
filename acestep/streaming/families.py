@@ -192,12 +192,13 @@ class FamilySpec:
     is never installed would generate with the stock model and sound
     entirely plausible.
 
-    ``max_concurrent_sessions`` is how many sessions the serving layer
-    lets run side by side on one pod before a new connection preempts
-    the oldest. 1 (the default) is the one-session-per-pod policy, which
-    ACE needs: its sessions share engine state a second create would
-    evict. A family whose sessions own their execution state (SA3: one
-    TRT execution context per session over a shared engine) may raise it.
+    ``max_concurrent_sessions`` maps a model id (the values of
+    ``checkpoint_aliases``) to how many sessions of that model the
+    serving layer lets run side by side on one pod before a new
+    connection preempts the oldest; :meth:`session_cap` reads it. A model
+    absent from the map gets 1, the one-session-per-pod policy, which ACE
+    needs (its sessions share engine state a second create would evict)
+    and which every model keeps unless it is measured to share a pod.
     """
 
     name: str
@@ -214,13 +215,20 @@ class FamilySpec:
     config_fields: tuple = ()
     shutdown: Optional[Callable[[], Any]] = None
     supports_extensions: bool = False
-    max_concurrent_sessions: int = 1
+    max_concurrent_sessions: Mapping[str, int] = field(default_factory=dict)
+
+    def session_cap(self, model_id: str) -> int:
+        """Live-session cap for ``model_id`` on one pod (1 unless the
+        family lists the model in ``max_concurrent_sessions``)."""
+        return int(self.max_concurrent_sessions.get(model_id, 1))
 
     def __post_init__(self):
-        if int(self.max_concurrent_sessions) < 1:
-            raise ValueError(
-                f"family {self.name!r} max_concurrent_sessions must be >= 1"
-            )
+        for model_id, cap in self.max_concurrent_sessions.items():
+            if int(cap) < 1:
+                raise ValueError(
+                    f"family {self.name!r} max_concurrent_sessions[{model_id!r}] "
+                    "must be >= 1"
+                )
         if self.prompt_policy not in PROMPT_POLICIES:
             raise ValueError(
                 f"family {self.name!r} prompt_policy {self.prompt_policy!r} "
@@ -584,11 +592,11 @@ SA3 = FamilySpec(
     shutdown=_shutdown_sa3,
     # SA3Context offers the model-extension veto/install/close hooks.
     supports_extensions=True,
-    # Sessions share the loaded model and the deserialized TRT engines but
-    # each owns its execution context, so several can run at once (the
-    # /sfx board mixes up to four layers). small-sfx measured ~2.1 GB and
-    # ~21+ gens/s per session on a 5090; medium is ~5.4 GB per session.
-    max_concurrent_sessions=4,
+    # Small-class sessions share the loaded model and the deserialized TRT
+    # engines but each owns its execution context, so several run at once
+    # (the /sfx board mixes up to four layers; ~2.1 GB and ~21+ gens/s per
+    # session on a 5090). medium is absent: one session per pod.
+    max_concurrent_sessions={"small-music": 4, "small-sfx": 4},
 )
 
 

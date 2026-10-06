@@ -241,8 +241,8 @@ _UPLOAD_INFER_LOCK = threading.Lock()
 
 _SESSION_LIFECYCLE_LOCK = threading.Lock()
 _ACTIVE_SLOT_LOCK = threading.Lock()
-# Live sessions, oldest first. At most the family's
-# ``max_concurrent_sessions`` (1 for ACE: the policy above).
+# Live sessions, oldest first. At most the served model's session cap
+# (``FamilySpec.session_cap``; 1 unless the model lists more: the policy above).
 _ACTIVE_SESSIONS: list = []  # [_ActiveSession]
 
 # 4000-range application close code: "this session was replaced by a
@@ -1359,7 +1359,8 @@ def _handle_client_body(
         from acestep.streaming.families import FAMILY_SPECS
 
         family_spec = FAMILY_SPECS.get(_effective_family(config_dict, backend_family))
-        cap = family_spec.max_concurrent_sessions if family_spec else 1
+        cap = family_spec.session_cap(checkpoint) if family_spec else 1
+        logger.info("session_cap model={} cap={}", checkpoint, cap)
         with _SESSION_LIFECYCLE_LOCK:
             _preempt_active_session(session_id, keep=cap - 1)
             _log_session_vram("create_start")
