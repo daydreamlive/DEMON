@@ -22,31 +22,9 @@
         <section id="layers" class="layers" aria-label="Mixer layers"></section>
 
         <aside class="side">
-          <section class="panel mic">
-            <h2>Mic to SFX</h2>
-            <p class="hint">Record up to 4 s (or pick a short sound file), describe what it should become, and the layer re-renders it. Evolve sets how much of the recording survives: low keeps it, 1.0 ignores it.</p>
-            <div class="row">
-              <button id="rec" type="button">Record</button>
-              <label class="file">or file <input id="file" type="file" accept="audio/*"></label>
-              <span id="rec-status" class="hint">no recording</span>
-            </div>
-            <canvas id="rec-scope" class="rec-scope" height="48" aria-label="Recording waveform"></canvas>
-            <label class="field">
-              <span>Turn it into</span>
-              <input id="rec-prompt" type="text" spellcheck="false" value="Large monster growl, deep and wet">
-            </label>
-            <div class="row">
-              <select id="rec-mode" aria-label="Mode for the recording layer">
-                <option value="oneshot">One-shot</option>
-                <option value="ambience">Ambience</option>
-              </select>
-              <button id="rec-use" type="button" disabled>Make layer</button>
-            </div>
-          </section>
-
           <section class="panel library">
             <h2>Examples</h2>
-            <p class="hint">Click a card to fill the prompt field you last clicked (default: layer 1, prompt A). Press Enter or Apply to hear it.</p>
+            <p class="hint">Click a card to send it to the prompt slot you last clicked (A or B; default layer 1, A). Typed prompts send on Enter or when you leave the field.</p>
             <div id="library"></div>
           </section>
         </aside>

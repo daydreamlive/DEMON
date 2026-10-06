@@ -1,8 +1,8 @@
 import { AudioPlayer, RemoteBackend, SLICE_FLAG_DELTA } from "/sdk/demon-client.js";
 import { LIBRARY } from "./library.js";
 import {
-  CHANNELS, MAX_RECORD_S, PARAMS_TICK_MS, SAMPLE_RATE,
-  LayerWire, VirtualPlayhead, encodeWav, mixLayers, randomSeed,
+  CHANNELS, DENOISE_DEFAULT, MAX_INPUT_S, MODES, PARAMS_TICK_MS, SAMPLE_RATE,
+  LayerWire, VirtualPlayhead, encodeWav, fitInput, mixLayers, randomSeed,
 } from "./layer-core.js";
 
 // Layers the RTX 5090 sustains in real time with one backend serving them
@@ -10,16 +10,17 @@ import {
 const MAX_LAYERS = 4;
 // Trigger-to-sound: the first analyser frame above this RMS (about -50 dBFS).
 const ONSET_RMS = 0.003;
+// A typed prompt is sent this long after its field loses focus (Enter
+// sends at once), so tabbing A -> B -> blend does not fire two swaps.
+const BLUR_SEND_MS = 250;
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const els = {
   play: $("#play"), add: $("#add"), saveMix: $("#save-mix"), status: $("#status"),
   layers: $("#layers"), library: $("#library"),
-  rec: $("#rec"), file: $("#file"), recStatus: $("#rec-status"), recScope: $("#rec-scope"),
-  recPrompt: $("#rec-prompt"), recMode: $("#rec-mode"), recUse: $("#rec-use"),
 };
 
-const app = { playing: false, layers: [], nextId: 1, focused: null, recording: null };
+const app = { playing: false, layers: [], nextId: 1, focused: null };
 
 function wsUrl() {
   const override = new URLSearchParams(window.location.search).get("ws");
@@ -37,13 +38,18 @@ const css = (name) => getComputedStyle(document.documentElement).getPropertyValu
 // --- one mixer layer -------------------------------------------------------
 
 class Layer {
-  constructor({ mode = "ambience", promptA = "", promptB = "", source = null, evolve } = {}) {
+  constructor({ mode = "ambience", promptA = "", promptB = "" } = {}) {
     this.id = app.nextId++;
     this.mode = mode;
-    this.source = source; // { interleaved, channels, seconds } or null
-    // Measured on a click + hum source: 0.2 keeps the hum (waveform corr
-    // 0.70), 0.45 keeps its timing but not its pitch, 1.0 ignores it.
-    this.evolve = evolve ?? (source ? 0.45 : 1);
+    // The layer's input recording ({ interleaved, channels, seconds },
+    // 48 kHz stereo, up to MAX_INPUT_S) or null for pure text-to-audio.
+    // It is fitted to the canvas per mode (fitInput) at session start and
+    // every regeneration renoises that fixed recording.
+    this.input = null;
+    this.inputLabel = "";
+    this.denoise = DENOISE_DEFAULT;
+    this.recorder = null;
+    this.blurTimer = null;
     this.seed = randomSeed();
     this.gain = 0.8;
     this.muted = false;
@@ -92,7 +98,7 @@ class Layer {
         <button type="button" class="power">Start</button>
         <button type="button" class="remove" title="Remove layer">&times;</button>
       </div>
-      <label class="prompt"><span>A</span><input class="pa" type="text" spellcheck="false" placeholder="describe a sound"></label>
+      <label class="prompt"><span>A</span><input class="pa" type="text" spellcheck="false" placeholder="describe a sound (Enter sends)"></label>
       <div class="blend">
         <span class="end">A</span>
         <input class="blend-range" type="range" min="0" max="1" step="0.005" value="0" aria-label="Blend A to B">
@@ -100,9 +106,19 @@ class Layer {
         <output class="blend-value">0.00</output>
       </div>
       <label class="prompt"><span>B</span><input class="pb" type="text" spellcheck="false" placeholder="optional: a second sound to blend toward"></label>
+      <div class="input-row">
+        <span class="input-label">Input</span>
+        <button type="button" class="rec">Record</button>
+        <label class="load">Load file<input class="file" type="file" accept="audio/*"></label>
+        <button type="button" class="clear">Clear</button>
+        <canvas class="input-scope" height="36" aria-label="Input waveform"></canvas>
+        <span class="input-note"></span>
+      </div>
+      <div class="denoise-row">
+        <label class="denoise">denoise <input class="denoise-range" type="range" min="0.1" max="1" step="0.01"><em></em></label>
+        <span class="hint">low = keeps the recording, high = only the prompt</span>
+      </div>
       <div class="layer-foot">
-        <button type="button" class="apply">Apply prompts</button>
-        <label class="evolve">evolve <input class="evolve-range" type="range" min="0.1" max="1" step="0.01"><em></em></label>
         <span class="oneshot-ctl">
           <button type="button" class="trigger">Trigger <kbd></kbd></button>
           <span class="latency"></span>
@@ -116,7 +132,7 @@ class Layer {
     this.q(".pa").value = promptA;
     this.q(".pb").value = promptB;
     this.q(".gain").value = String(this.gain);
-    this.q(".evolve-range").value = String(this.evolve);
+    this.q(".denoise-range").value = String(this.denoise);
 
     for (const btn of root.querySelectorAll(".seg button")) {
       btn.addEventListener("click", () => this.setMode(btn.dataset.mode));
@@ -124,20 +140,26 @@ class Layer {
     for (const sel of [".pa", ".pb"]) {
       const input = this.q(sel);
       input.addEventListener("focus", () => { app.focused = input; renderFocus(); });
-      input.addEventListener("input", () => this.markDirty(true));
-      input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") this.applyPrompts(); });
+      input.addEventListener("input", () => this.markDirty());
+      input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") this.sendPrompts(); });
+      input.addEventListener("blur", () => {
+        window.clearTimeout(this.blurTimer);
+        this.blurTimer = window.setTimeout(() => this.sendPrompts(), BLUR_SEND_MS);
+      });
     }
-    this.q(".apply").addEventListener("click", () => this.applyPrompts());
     this.q(".blend-range").addEventListener("input", (ev) => {
       const v = Number(ev.target.value);
       this.q(".blend-value").textContent = v.toFixed(2);
       this.wire.setBlend(v);
     });
-    this.q(".evolve-range").addEventListener("input", (ev) => {
-      this.evolve = Number(ev.target.value);
-      this.wire.setEvolve(this.evolve);
+    this.q(".denoise-range").addEventListener("input", (ev) => {
+      this.denoise = Number(ev.target.value);
+      this.wire.setDenoise(this.denoise);
       this.render();
     });
+    this.q(".rec").addEventListener("click", () => void this.record());
+    this.q(".file").addEventListener("change", (ev) => void this.loadFile(ev.target));
+    this.q(".clear").addEventListener("click", () => this.setInput(null));
     this.q(".gain").addEventListener("input", (ev) => { this.gain = Number(ev.target.value); applyGains(); });
     this.q(".mute").addEventListener("click", () => { this.muted = !this.muted; applyGains(); });
     this.q(".solo").addEventListener("click", () => { this.soloed = !this.soloed; applyGains(); });
@@ -155,7 +177,14 @@ class Layer {
     renderGlobal();
   }
 
-  markDirty(dirty) { this.q(".apply").classList.toggle("dirty", dirty); }
+  // A prompt field whose text has not reached the server yet.
+  markDirty() {
+    const sent = { ".pa": this.wire.promptA, ".pb": this.wire.promptB };
+    for (const [sel, value] of Object.entries(sent)) {
+      const input = this.q(sel);
+      input.classList.toggle("dirty", this.ready && input.value.trim() !== (value || ""));
+    }
+  }
 
   render() {
     const i = this.index;
@@ -165,8 +194,8 @@ class Layer {
       btn.classList.toggle("on", btn.dataset.mode === this.mode);
     }
     const src = this.q(".src");
-    src.textContent = this.source ? `mic ${this.source.seconds.toFixed(1)} s` : "text";
-    src.classList.toggle("mic", !!this.source);
+    src.textContent = this.input ? "text + input" : "text";
+    src.classList.toggle("mic", !!this.input);
     this.q(".mute").classList.toggle("on", this.muted);
     this.q(".solo").classList.toggle("on", this.soloed);
     $("em", this.q(".reroll")).textContent = String(this.seed);
@@ -174,9 +203,18 @@ class Layer {
     power.textContent = this.running ? "Stop" : "Start";
     power.classList.toggle("on", this.running);
     this.q(".save").disabled = !this.ready;
-    this.q(".apply").disabled = !this.ready;
     this.q(".blend-range").disabled = !this.ready;
-    $("em", this.q(".evolve")).textContent = this.evolve.toFixed(2);
+    this.el.classList.toggle("has-input", !!this.input);
+    $("em", this.q(".denoise")).textContent = this.denoise.toFixed(2);
+    const rec = this.q(".rec");
+    rec.textContent = this.recorder ? "Stop" : "Record";
+    rec.classList.toggle("on", !!this.recorder);
+    this.q(".clear").disabled = !this.input;
+    if (!this.recorder) {
+      this.q(".input-note").textContent = this.input
+        ? `${this.inputLabel}: ${fitInput(this.input, this.mode).note}`
+        : `none (record or load up to ${MODES[this.mode].duration} s)`;
+    }
     this.el.classList.toggle("is-oneshot", this.mode === "oneshot");
     $("kbd", this.q(".trigger")).textContent = String(i + 1);
     this.q(".trigger").disabled = !this.ready;
@@ -191,6 +229,7 @@ class Layer {
     this.mode = mode;
     this.latencyMs = null;
     this.render();
+    this.drawInput();
     if (this.running) void this.start(); // the canvas length is a session property
   }
 
@@ -204,9 +243,9 @@ class Layer {
         promptA: this.q(".pa").value.trim() || "Steady heavy rain on a tin roof",
         promptB: this.q(".pb").value.trim(),
         blend: Number(this.q(".blend-range").value),
-        evolve: this.evolve,
+        denoise: this.denoise,
         seed: this.seed,
-        source: this.source,
+        input: this.input,
       });
       if (gen !== this.gen) return;
       const remote = this.wire.remote;
@@ -228,8 +267,8 @@ class Layer {
         player.seek(player.duration);
       }
       this.timer = window.setInterval(() => this.report(), PARAMS_TICK_MS);
-      this.markDirty(false);
       this.setStatus("ready");
+      this.markDirty();
       applyGains();
     } catch (err) {
       await this.stop();
@@ -267,11 +306,12 @@ class Layer {
     else player.patch(startFrame, d.audio);
   }
 
-  applyPrompts() {
-    const a = this.q(".pa").value.trim();
-    if (!a || !this.ready) return;
-    this.wire.setPrompts(a, this.q(".pb").value.trim());
-    this.markDirty(false);
+  // Send whatever A and B hold now. Enter, blur (debounced) and example
+  // cards all land here; the wire skips a send when nothing changed.
+  sendPrompts() {
+    window.clearTimeout(this.blurTimer);
+    if (this.ready) this.wire.setPrompts(this.q(".pa").value, this.q(".pb").value);
+    this.markDirty();
   }
 
   reroll() {
@@ -285,6 +325,85 @@ class Layer {
     this.playhead.restart();
     this.player.seek(0);
     this.onset = { t0: performance.now() };
+  }
+
+  // --- input audio ---------------------------------------------------------
+
+  // A new input (or null to clear) is a new session source, so a running
+  // layer restarts on it; prompt, blend, seed and denoise carry over.
+  setInput(input, label = "") {
+    this.input = input;
+    this.inputLabel = label;
+    this.render();
+    this.drawInput();
+    if (this.running) void this.start();
+  }
+
+  async record() {
+    if (this.recorder) {
+      this.recorder.stop();
+      return;
+    }
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      this.q(".input-note").textContent = "no microphone access; load a file instead";
+      return;
+    }
+    const rec = new MediaRecorder(stream);
+    this.recorder = rec;
+    const chunks = [];
+    const maxS = MODES[this.mode].duration;
+    const timeout = setTimeout(() => rec.state === "recording" && rec.stop(), maxS * 1000);
+    rec.ondataavailable = (ev) => chunks.push(ev.data);
+    rec.onstop = async () => {
+      clearTimeout(timeout);
+      stream.getTracks().forEach((t) => t.stop());
+      this.recorder = null;
+      try {
+        this.setInput(await decodeInput(await new Blob(chunks).arrayBuffer()), "recording");
+      } catch {
+        this.render();
+        this.q(".input-note").textContent = "could not decode the recording";
+      }
+    };
+    rec.start();
+    this.render();
+    this.q(".input-note").textContent = `recording (up to ${maxS} s), click Stop to finish`;
+  }
+
+  async loadFile(picker) {
+    const file = picker.files?.[0];
+    picker.value = "";
+    if (!file) return;
+    try {
+      this.setInput(await decodeInput(await file.arrayBuffer()), file.name);
+    } catch {
+      this.q(".input-note").textContent = "could not decode that file";
+    }
+  }
+
+  // The input as the session gets it: fitted to this mode's canvas.
+  drawInput() {
+    const c = this.q(".input-scope");
+    const ctx = c.getContext("2d");
+    const w = (c.width = Math.max(1, Math.round(c.clientWidth * devicePixelRatio)));
+    const h = (c.height = Math.max(1, Math.round(c.clientHeight * devicePixelRatio)));
+    ctx.fillStyle = css("--scope-bg");
+    ctx.fillRect(0, 0, w, h);
+    if (!this.input) return;
+    const { pcm } = fitInput(this.input, this.mode);
+    const frames = pcm.length / CHANNELS;
+    ctx.fillStyle = css("--mic");
+    for (let x = 0; x < w; x++) {
+      const f0 = Math.floor((x / w) * frames);
+      const f1 = Math.floor(((x + 1) / w) * frames);
+      let peak = 0;
+      for (let f = f0; f < f1; f += 2) peak = Math.max(peak, Math.abs(pcm[f * CHANNELS]));
+      const bar = Math.max(1, Math.min(1, peak) * h);
+      ctx.fillRect(x, (h - bar) / 2, 1, bar);
+    }
   }
 
   // Called every animation frame: trigger onset detection + drawing.
@@ -386,6 +505,7 @@ function addLayer(opts) {
   app.layers.push(layer);
   els.layers.append(layer.el);
   app.layers.forEach((l) => l.render());
+  layer.drawInput();
   renderGlobal();
   if (app.playing) void layer.start();
   return layer;
@@ -411,7 +531,6 @@ function renderGlobal() {
   els.status.textContent = app.playing
     ? `${live} of ${app.layers.length} layers live${errors ? `, ${errors} failed` : ""}`
     : "idle";
-  els.recUse.disabled = !app.recording || app.layers.length >= MAX_LAYERS;
 }
 
 function renderFocus() {
@@ -464,27 +583,30 @@ function renderLibrary() {
   }));
 }
 
+// A card goes into the focused prompt slot (A or B of the selected layer;
+// layer 1's A by default) and is sent to the backend at once.
 function fillPrompt(text) {
   let target = app.focused && document.body.contains(app.focused) ? app.focused : null;
   if (!target) {
     const first = app.layers[0] ?? addLayer({});
-    target = first ? $(".pa", first.el) : els.recPrompt;
+    if (!first) return;
+    target = $(".pa", first.el);
   }
   target.value = text;
-  target.dispatchEvent(new Event("input"));
   app.focused = target;
   renderFocus();
+  app.layers.find((l) => l.el.contains(target))?.sendPrompts();
 }
 
-// --- mic / file to SFX -----------------------------------------------------
+// --- input audio -----------------------------------------------------------
 
-// Decode any recorded or picked audio to 48 kHz stereo interleaved PCM,
-// trimmed to MAX_RECORD_S: the same buffer shape the silent stub has, so
-// it rides the normal upload path as the session's audio-to-audio anchor.
-async function toSource(arrayBuffer) {
+// Decode a recorded or loaded sound to 48 kHz stereo interleaved PCM,
+// kept up to MAX_INPUT_S (the longest canvas); fitInput fits it to the
+// layer's mode at session start.
+async function decodeInput(arrayBuffer) {
   const ctx = new OfflineAudioContext(CHANNELS, SAMPLE_RATE, SAMPLE_RATE);
   const decoded = await ctx.decodeAudioData(arrayBuffer);
-  const frames = Math.min(decoded.length, Math.round(MAX_RECORD_S * SAMPLE_RATE));
+  const frames = Math.min(decoded.length, Math.round(MAX_INPUT_S * SAMPLE_RATE));
   const l = decoded.getChannelData(0);
   const r = decoded.numberOfChannels > 1 ? decoded.getChannelData(1) : l;
   const interleaved = new Float32Array(frames * CHANNELS);
@@ -493,93 +615,6 @@ async function toSource(arrayBuffer) {
     interleaved[2 * i + 1] = r[i];
   }
   return { interleaved, channels: CHANNELS, seconds: frames / SAMPLE_RATE };
-}
-
-function setRecording(source, label) {
-  app.recording = source;
-  els.recStatus.textContent = `${label}: ${source.seconds.toFixed(2)} s`;
-  drawRecording();
-  renderGlobal();
-}
-
-function drawRecording() {
-  const c = els.recScope;
-  const ctx = c.getContext("2d");
-  const w = (c.width = Math.max(1, Math.round(c.clientWidth * devicePixelRatio)));
-  const h = (c.height = Math.max(1, Math.round(c.clientHeight * devicePixelRatio)));
-  ctx.fillStyle = css("--scope-bg");
-  ctx.fillRect(0, 0, w, h);
-  const src = app.recording;
-  if (!src) return;
-  const frames = src.interleaved.length / 2;
-  // Drawn against the 4 s maximum so a short take reads as short.
-  const span = MAX_RECORD_S * SAMPLE_RATE;
-  ctx.fillStyle = css("--wave");
-  for (let x = 0; x < w; x++) {
-    const f0 = Math.floor((x / w) * span);
-    const f1 = Math.floor(((x + 1) / w) * span);
-    let peak = 0;
-    for (let f = f0; f < f1 && f < frames; f += 2) peak = Math.max(peak, Math.abs(src.interleaved[2 * f]));
-    const bar = Math.max(1, Math.min(1, peak) * h);
-    ctx.fillRect(x, (h - bar) / 2, 1, bar);
-  }
-}
-
-let recorder = null;
-
-async function record() {
-  if (recorder) {
-    recorder.stop();
-    return;
-  }
-  let stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch {
-    els.recStatus.textContent = "no microphone access; pick a file instead";
-    return;
-  }
-  const rec = new MediaRecorder(stream);
-  recorder = rec;
-  const chunks = [];
-  els.rec.textContent = "Stop";
-  els.rec.classList.add("on");
-  els.recStatus.textContent = "recording...";
-  const timeout = setTimeout(() => rec.state === "recording" && rec.stop(), MAX_RECORD_S * 1000);
-  rec.ondataavailable = (ev) => chunks.push(ev.data);
-  rec.onstop = async () => {
-    clearTimeout(timeout);
-    stream.getTracks().forEach((t) => t.stop());
-    recorder = null;
-    els.rec.textContent = "Record";
-    els.rec.classList.remove("on");
-    try {
-      setRecording(await toSource(await new Blob(chunks).arrayBuffer()), "recorded");
-    } catch {
-      els.recStatus.textContent = "could not decode the recording";
-    }
-  };
-  rec.start();
-}
-
-async function pickFile() {
-  const file = els.file.files?.[0];
-  if (!file) return;
-  try {
-    setRecording(await toSource(await file.arrayBuffer()), file.name);
-  } catch {
-    els.recStatus.textContent = "could not decode that file";
-  }
-}
-
-function useRecording() {
-  if (!app.recording) return;
-  const layer = addLayer({
-    mode: els.recMode.value,
-    promptA: els.recPrompt.value.trim() || "Large monster growl, deep and wet",
-    source: app.recording,
-  });
-  if (layer && !app.playing) setPlaying(true);
 }
 
 // --- wiring ----------------------------------------------------------------
@@ -599,10 +634,6 @@ els.add.addEventListener("click", () => {
   if (layer) { app.focused = $(".pa", layer.el); renderFocus(); }
 });
 els.saveMix.addEventListener("click", saveMix);
-els.rec.addEventListener("click", () => void record());
-els.file.addEventListener("change", () => void pickFile());
-els.recUse.addEventListener("click", useRecording);
-els.recPrompt.addEventListener("focus", () => { app.focused = els.recPrompt; renderFocus(); });
 window.addEventListener("keydown", (ev) => {
   const t = ev.target;
   if (t instanceof HTMLInputElement || t instanceof HTMLSelectElement || ev.repeat) return;
@@ -626,5 +657,4 @@ addLayer({
 });
 app.focused = $(".pa", app.layers[0].el);
 renderFocus();
-drawRecording();
 loop();

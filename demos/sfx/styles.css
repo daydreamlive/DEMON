@@ -86,10 +86,6 @@ kbd { font: 11px ui-monospace, monospace; border: 1px solid currentColor; border
 .blend-value { font-variant-numeric: tabular-nums; font-size: 16px; font-weight: 600; text-align: right; }
 
 .layer-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; font-size: 12px; color: var(--muted); }
-.apply.dirty { border-color: var(--accent); color: var(--accent); }
-.evolve { display: inline-flex; align-items: center; gap: 6px; }
-.evolve input { width: 120px; }
-.evolve em { font-style: normal; font-variant-numeric: tabular-nums; color: var(--ink); }
 .oneshot-ctl { display: none; align-items: center; gap: 8px; }
 .is-oneshot .oneshot-ctl { display: inline-flex; }
 .trigger { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
@@ -98,11 +94,19 @@ kbd { font: 11px ui-monospace, monospace; border: 1px solid currentColor; border
 .msg { color: var(--ink); }
 .scope { width: 100%; height: 150px; border-radius: 8px; display: block; }
 
-.mic .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
-.file { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
-.file input { max-width: 150px; font-size: 11px; }
-.rec-scope { width: 100%; height: 48px; border-radius: 6px; display: block; margin-bottom: 8px; }
-.field { display: grid; gap: 4px; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.input-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.input-label { font-weight: 700; }
+.load { border: 1px solid var(--line); border-radius: 6px; padding: 6px 11px; cursor: pointer; color: var(--ink); background: var(--panel); }
+.load input { display: none; }
+.input-scope { flex: 1 1 160px; min-width: 120px; height: 36px; border-radius: 6px; display: block; }
+.input-note { font-variant-numeric: tabular-nums; }
+.denoise-row { display: none; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+.has-input .denoise-row { display: flex; flex-wrap: wrap; }
+.denoise-row .hint { margin: 0; }
+.denoise { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); font-weight: 600; }
+.denoise input { width: 180px; }
+.denoise em { font-style: normal; font-variant-numeric: tabular-nums; }
+input[type="text"].dirty { border-style: dashed; }
 
 .cards { display: flex; flex-wrap: wrap; gap: 6px; }
 .card { font-size: 12px; text-align: left; padding: 5px 8px; border-radius: 8px; }
