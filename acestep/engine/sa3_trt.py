@@ -610,6 +610,7 @@ class _SameTRTDecoder:
 
     _needs_plugin = False
     _label = "same"
+    _err_name = "SAME"
 
     def __init__(self, engine_path: Path):
         import tensorrt as trt
@@ -645,7 +646,7 @@ class _SameTRTDecoder:
             self._stream.wait_stream(caller_stream)
             ok = self._ctx.execute_async_v3(self._stream.cuda_stream)
         if not ok:
-            raise RuntimeError(f"SA3 TRT {self._label} decode failed")
+            raise RuntimeError(f"SA3 TRT {self._err_name} decode failed")
         self._stream.synchronize()
         out = self._out_buf
         if self._out_name == "pcm":
@@ -662,6 +663,7 @@ class SameLWindowTRTDecoder(_SameTRTDecoder):
 
     _needs_plugin = True
     _label = "same_l"
+    _err_name = "SAME-L"
 
 
 class SameSTRTDecoder(_SameTRTDecoder):
@@ -674,3 +676,4 @@ class SameSTRTDecoder(_SameTRTDecoder):
     it sits at the deterministic eager decode, not the noisy one."""
 
     _label = "same_s"
+    _err_name = "SAME-S"

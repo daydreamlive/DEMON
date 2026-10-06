@@ -85,9 +85,10 @@ SONG_SECONDS_MAX = 384.0
 # trades the wrap for the full 60 s.
 # Eager SAME decode touches process-wide state: the seeded decode forks
 # and reseeds the global torch RNG, and the deterministic window decode
-# toggles noise flags on the shared model. Concurrent sessions (the
-# family allows several) serialize those decodes so one session's reseed
-# or flag flip can never land inside another's decode.
+# toggles noise flags on the shared model. Concurrent small-class
+# sessions (their models allow several per pod) serialize those decodes
+# so one session's reseed or flag flip can never land inside another's
+# decode. medium (SAME-L) runs one session per pod and never takes it.
 _SAM_DECODE_LOCK = threading.Lock()
 
 LEGACY_OUTRO_PAD_S = 6.0
@@ -693,15 +694,14 @@ class SA3SAMEWindowCodec:
             self._trt = SameLWindowTRTDecoder(path)
 
     def _decode_window_eager(self, latent_bct, start: int, num: int) -> torch.Tensor:
-        with _SAM_DECODE_LOCK:
-            result = self._helpers.decode_sa3_latent_window(
-                self._context.sam, latent_bct,
-                target_start_sample=int(start),
-                target_num_samples=int(num),
-                context_sec=self.context_sec,
-                chunked=False,
-                deterministic=True,
-            )
+        result = self._helpers.decode_sa3_latent_window(
+            self._context.sam, latent_bct,
+            target_start_sample=int(start),
+            target_num_samples=int(num),
+            context_sec=self.context_sec,
+            chunked=False,
+            deterministic=True,
+        )
         return result.audio_ct
 
     def decode_window(self, latent_bct: torch.Tensor, start: int, num: int) -> torch.Tensor:
@@ -752,8 +752,6 @@ class SA3SAMEWindowCodec:
         """Eager full decode (legacy full-buffer mode only; the hot path
         never calls this for windowed-codec families). ``decode_seed``
         pins the decode RNG exactly as on :class:`SA3SAMECodec`."""
-        with _SAM_DECODE_LOCK, self._helpers.sa3_decode_rng(
-            decode_seed, device=latent_bct.device,
-        ):
+        with self._helpers.sa3_decode_rng(decode_seed, device=latent_bct.device):
             audio = self._helpers.decode_sa3_latent(self._context.sam, latent_bct)
         return audio[0]

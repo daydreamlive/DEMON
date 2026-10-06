@@ -140,9 +140,10 @@ def sa3_preflight(req: PreflightRequest) -> PreflightResult:
     return PreflightResult.passed()
 
 
-#: ``sa3_build`` invocation per catalog id with TRT DiT support.
+#: ``sa3_build`` invocation per small-class catalog id with TRT support.
+#: medium is absent: its boot path stays as it was (a missing medium
+#: engine surfaces as the session-create EngineNotBuiltError).
 SA3_ENGINE_BUILD_COMMANDS = {
-    "medium": "python -m acestep.engine.trt.sa3_build --all",
     "small-music": "python -m acestep.engine.trt.sa3_build --model small-music --all",
 }
 

@@ -498,10 +498,16 @@ def _preempt_active_session(new_session_id: str, keep: int = 0) -> None:
             if len(_ACTIVE_SESSIONS) <= keep:
                 return
             prev = _ACTIVE_SESSIONS[0]
-        logger.info(
-            "session_preempt prev={} new={} reason=session_cap keep={}",
-            prev.session_id, new_session_id, keep,
-        )
+        if keep == 0:
+            logger.info(
+                "session_preempt prev={} new={} reason=single_session_policy",
+                prev.session_id, new_session_id,
+            )
+        else:
+            logger.info(
+                "session_preempt prev={} new={} reason=session_cap keep={}",
+                prev.session_id, new_session_id, keep,
+            )
         # Stop the runner; it observes this between pipeline iterations and
         # exits run() into close().
         prev.streaming.state.running = False
