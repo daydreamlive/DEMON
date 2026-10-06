@@ -250,8 +250,20 @@ def _register_same_plugin() -> None:
 # ---------------------------------------------------------------------------
 
 
+ALLOW_FP8_ENV = "DEMON_SA3_ALLOW_FP8"
+
+
+def fp8_allowed(env=None) -> bool:
+    """True when the operator opted into fp8 DiT engines
+    (``DEMON_SA3_ALLOW_FP8=1``). Off by default: no SA3 fp8 engine has met
+    the parity bar."""
+    env = os.environ if env is None else env
+    return env.get(ALLOW_FP8_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def find_dit_engine(
     model_id: str, latent_frames: int, *, want_refittable: bool = False,
+    allow_fp8: Optional[bool] = None,
 ) -> Optional[Path]:
     """Smallest-profile built DiT engine covering ``latent_frames`` for
     ``model_id``'s weights, or None (caller falls back to eager).
@@ -266,10 +278,14 @@ def find_dit_engine(
       serve at higher fidelity than the fp16mixed one), logged, and the
       interim eager swap covers actual enables.
 
-    Without it, selection is unchanged: fp8 preferred when covering,
-    else fp16mixed; refit-built engines are ignored (their refit
-    support costs a little optimization freedom, and non-LoRA sessions
-    shouldn't pay it).
+    Without it, the fp16mixed engine is selected; refit-built engines
+    are ignored (their refit support costs a little optimization
+    freedom, and non-LoRA sessions shouldn't pay it). fp8 engines are
+    opt-in (:func:`fp8_allowed`, ``DEMON_SA3_ALLOW_FP8=1``): medium's fp8
+    trunk is ~1.2x faster but measured per-step cos 0.976 / compounded
+    0.85 against eager, far under the 0.998 ship bar. With the opt-in,
+    fp8 wins when it covers the window. Every pick is logged
+    (``sa3_dit_engine_selected``).
     """
     prefix = DIT_ENGINE_PREFIX.get(model_id)
     base = trt_engines_dir()
@@ -313,14 +329,28 @@ def find_dit_engine(
                 best_fp8[1].parent.name, best[1].parent.name,
             )
         return best[1] if best else (best_fp8[1] if best_fp8 else None)
-    # fp8 is ~1.8x faster; prefer it when one covers the window.
-    if best_fp8 is not None:
+    if allow_fp8 is None:
+        allow_fp8 = fp8_allowed()
+    if best_fp8 is not None and allow_fp8:
         logger.info(
-            "sa3_dit_fp8_selected engine={} latent_frames={}",
-            best_fp8[1].parent.name, latent_frames,
+            "sa3_dit_engine_selected engine={} precision=fp8 latent_frames={} "
+            "reason={}=1",
+            best_fp8[1].parent.name, latent_frames, ALLOW_FP8_ENV,
         )
         return best_fp8[1]
-    return best[1] if best else None
+    if best_fp8 is not None:
+        logger.info(
+            "sa3_dit_fp8_skipped engine={} reason=below_parity_bar "
+            "(set {}=1 to use it)",
+            best_fp8[1].parent.name, ALLOW_FP8_ENV,
+        )
+    if best is None:
+        return None
+    logger.info(
+        "sa3_dit_engine_selected engine={} precision=fp16mixed latent_frames={}",
+        best[1].parent.name, latent_frames,
+    )
+    return best[1]
 
 
 def max_dit_engine_latents(model_id: str) -> Optional[int]:
@@ -332,15 +362,15 @@ def max_dit_engine_latents(model_id: str) -> Optional[int]:
     base = trt_engines_dir()
     if prefix is None or not base.is_dir():
         return None
-    # Both the fp16mixed and fp8 engines can serve this model_id (see
-    # find_dit_engine), so the cap must consider either — an fp8-only
-    # install would otherwise report no cap and skip the clamp.
+    # fp8 engines count only when opted in (find_dit_engine never picks
+    # them otherwise), so the clamp targets an engine that will be used.
+    allow_fp8 = fp8_allowed()
     his = []
     for sub in base.iterdir():
         m = (
             _DIT_REFIT_DIR_RE.match(sub.name)
             or _DIT_DIR_RE.match(sub.name)
-            or _DIT_FP8_DIR_RE.match(sub.name)
+            or (allow_fp8 and _DIT_FP8_DIR_RE.match(sub.name))
         )
         if (
             m
