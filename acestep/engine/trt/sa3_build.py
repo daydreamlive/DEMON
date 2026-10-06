@@ -63,7 +63,7 @@ Usage:
 
     # small-sfx DiT, one engine (official sa3-sm-sfx fp16 graph; the SAME-S
     # decoder it shares with small-music comes from --same-s-decode):
-    python -m acestep.engine.trt.sa3_build --dit --model small-sfx --seconds 60
+    python -m acestep.engine.trt.sa3_build --dit --model small-sfx --min-latents 1 --opt-latents 614 --max-latents 646
 
     # small-music matrix (DiT profiles 324 + 646 + 1292, SAME-S decoder):
     python -m acestep.engine.trt.sa3_build --model small-music --all

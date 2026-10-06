@@ -169,7 +169,7 @@ optional (eager runs real time) and build in under a minute each:
 ```bash
 python -m acestep.engine.trt.sa3_build --dit --model small-sfx --min-latents 1 --opt-latents 76 --max-latents 162
 python -m acestep.engine.trt.sa3_build --dit --model small-sfx --min-latents 1 --opt-latents 248 --max-latents 356
-python -m acestep.engine.trt.sa3_build --dit --model small-sfx --seconds 60
+python -m acestep.engine.trt.sa3_build --dit --model small-sfx --min-latents 1 --opt-latents 614 --max-latents 646
 # SAME-S decoder, shared with small-music (identical codec weights; skipped if built)
 python -m acestep.engine.trt.sa3_build --same-s-decode
 ```
