@@ -649,11 +649,11 @@ def cmd_enqueue0():
                         a_items.append(qline(0, f"A_{p}_s{o}", item_proto(p, o)))
     b_items = []
     for vid, v in vs.items():
-        if v["group"] in ("new", "v2gate") and vid in (jl(SH / "gains.json") or {}):
+        if v["group"] in ("new", "v2gate", "legacy") and vid in (jl(SH / "gains.json") or {}):
             b_items += [qline(0, f"B_{vid}_s{o}", item_fixed(vid, o)) for o in SEEDS]
     s_items = []
     for vid, v in vs.items():
-        if v["group"] in ("new", "v2gate") and v["category"] == "sound_effect" and vid in (jl(SH / "gains.json") or {}):
+        if v["group"] in ("new", "v2gate", "legacy") and v["category"] == "sound_effect" and vid in (jl(SH / "gains.json") or {}):
             s_items += [qline(0, f"S_{vid}_s{o}", item_py("sfx", vid, o)) for o in SEEDS]
     lines = [qline(0, f"base_app_sfx_s{EVAL_SEED + o}",
                    f"{ENV}; $DM scripts/steering_bench/set_tools.py render --sets {E2}/eval_sets.json --set app_sfx "
@@ -667,7 +667,7 @@ def cmd_enqueue0():
         lines += [x for x in (a, b) if x]
     lines.append(qline(2, "X_base", item_py("cfx", "base")))
     for vid, v in vs.items():
-        if v["group"] in ("new", "v2gate") and vid in (jl(SH / "gains.json") or {}):
+        if v["group"] in ("new", "v2gate", "legacy") and vid in (jl(SH / "gains.json") or {}):
             lines += [l for l in post_gain_items(vid, 0) if l.split()[1].startswith(("C_", "X_"))
                       or l.split()[1].endswith("_s3")]
     added = append(lines)
