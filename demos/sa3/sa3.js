@@ -23,7 +23,7 @@ const PEDALS = [
   { id: "production", title: "PRODUCTION", cats: ["production"], hue: 150 },
   { id: "mood", title: "MOOD", cats: ["mood"], hue: 330 },
   { id: "space", title: "SPACE", cats: ["space"], hue: 245 },
-  { id: "tone", title: "TONE", cats: ["timbre", "dynamics", "rhythm"], hue: 200 },
+  { id: "tone", title: "TONE", cats: ["timbre", "dynamics", "rhythm", "articulation"], hue: 200 },
   { id: "abstract", title: "ABSTRACT", cats: ["abstract"], hue: 280 },
   { id: "misc", title: "MISC", cats: [], hue: 210 },
 ];
