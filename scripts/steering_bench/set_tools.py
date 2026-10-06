@@ -122,7 +122,7 @@ def main() -> int:
     r.add_argument("--duration", type=float, default=10.0)
     r.add_argument("--steer", nargs="*", default=[])
     r.add_argument("--scale", type=float, default=1.0)
-    r.add_argument("--out", required=True)
+    r.add_argument("--out", default=None)
     s = sub.add_parser("score")
     s.add_argument("--jobs", default=None, help="json list of {npz, ref, cols, anchors, windows, json, lpaps}")
     s.add_argument("--npz", default=None)
