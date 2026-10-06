@@ -144,7 +144,10 @@ def main() -> int:
             timeout_s=300.0,
             config={"depth": args.depth, "steps": 8, "prompt": PROMPT_A,
                     "sa3_duration_s": args.duration},
-            actions=list(ACTIONS),
+            # Frontier positions wrap with the loop: a shorter canvas keeps
+            # only the actions that land inside it (20 s: the two first
+            # knob flips, no prompt change).
+            actions=[a for a in ACTIONS if a.at_s < args.duration - 2.0],
         )
         result = run_scenario(pod_url, sc, out / "bundle", save_blobs=False)
     finally:
