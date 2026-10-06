@@ -210,6 +210,14 @@ function knobScale(min, max) {
   };
 }
 
+// A bundled pack whose quality bar passed on one sign only: "+" or "-"
+// (the server already clamps the range to that side), else null.
+function oneSidedSign(meta) {
+  const bar = meta.bar_pass;
+  if (!bar || bar.pos === bar.neg) return null;
+  return bar.pos ? "+" : "-";
+}
+
 function knobTick(pos, className) {
   const tick = document.createElement("div");
   tick.className = `knob-tick ${className}`.trim();
@@ -241,7 +249,11 @@ function knobTooltip(name, entry, min, max) {
     const side = (sign, limit, c, ok) =>
       `${sign}${Math.abs(Number(limit)).toFixed(1)}` +
       (c != null ? ` (cutoff ${Number(c).toFixed(1)}, ${ok === false ? "not reached" : "reached"})` : "");
-    lines.push(`range ${side("+", max, cut.pos, reached.pos)}  /  ${side("-", min, cut.neg, reached.neg)}`);
+    const one = oneSidedSign(meta);
+    if (one === "+") lines.push(`range ${side("+", max, cut.pos, reached.pos)}`);
+    else if (one === "-") lines.push(`range ${side("-", min, cut.neg, reached.neg)}`);
+    else lines.push(`range ${side("+", max, cut.pos, reached.pos)}  /  ${side("-", min, cut.neg, reached.neg)}`);
+    if (one) lines.push(`one-sided: only ${one} is validated`);
   } else {
     lines.push(`range ${Number(min).toFixed(1)} to +${Number(max).toFixed(1)} (uncalibrated)`);
   }
@@ -254,9 +266,16 @@ function numericKnob(name, entry) {
   const max = entry.max ?? 1;
   const span = max - min || 1;
   const isInt = entry.type === "int";
-  const scale = knobScale(min, max);
-  const defaultValue = clamp(Number(valueFromEntry(entry)), min, max);
   const meta = entry.meta ?? {};
+  // One-sided pack: keep the bipolar throw (0 at 12 o'clock) by mirroring
+  // the passing side; setValue clamps to [min, max], so the failing half
+  // is dead travel.
+  const oneSided = oneSidedSign(meta);
+  const scale =
+    oneSided === "+" ? knobScale(-max, max)
+    : oneSided === "-" ? knobScale(min, -min)
+    : knobScale(min, max);
+  const defaultValue = clamp(Number(valueFromEntry(entry)), min, max);
   const label = knobLabel(name, entry);
 
   // Increment ladder shared by wheel + keyboard: throw (0..1) units for
@@ -297,12 +316,14 @@ function numericKnob(name, entry) {
   if (meta.calibrated && scale.bipolar) {
     const frac = 1 / Number(meta.headroom || DEFAULT_HEADROOM);
     const reached = meta.cutoff_reached ?? {};
-    wrap.append(
-      knobTick(0.5 + 0.5 * frac, reached.pos === false ? "tick-unreached" : ""),
-      knobTick(0.5 - 0.5 * frac, reached.neg === false ? "tick-unreached" : ""),
-    );
-    if (reached.pos === false) unreached.push("+");
-    if (reached.neg === false) unreached.push("-");
+    if (oneSided !== "-") {
+      wrap.append(knobTick(0.5 + 0.5 * frac, reached.pos === false ? "tick-unreached" : ""));
+      if (reached.pos === false) unreached.push("+");
+    }
+    if (oneSided !== "+") {
+      wrap.append(knobTick(0.5 - 0.5 * frac, reached.neg === false ? "tick-unreached" : ""));
+      if (reached.neg === false) unreached.push("-");
+    }
   }
 
   const valueEl = document.createElement("div");

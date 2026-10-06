@@ -124,12 +124,29 @@ def test_v1_synthetic_summed_input_matches_file_semantics(tmp_path):
 
 
 def _installed():
+    """The installed LOOSE format-1 sa3/medium packs (a bundle beside them
+    would shadow them in ``discover_packs``; its equivalence to these files
+    is pinned in test_steering_bundle)."""
     from acestep.paths import steering_packs_dir
+    from acestep.steering.packs import BUNDLE_NAME
 
     d = steering_packs_dir()
+    if not d.is_dir():
+        return []
     lay = SteeringLayout(num_blocks=NB, hidden_size=H, engine_input=True)
-    packs = discover_packs(d, family="sa3", checkpoint="medium", layout=lay)
-    return [p for p in packs if not p.is_v2]
+    out = []
+    for path in sorted(d.rglob("*.safetensors")):
+        if path.name == BUNDLE_NAME:
+            continue
+        try:
+            p = load_pack(path)
+        except ValueError:
+            continue
+        if (p.family, p.checkpoint) != ("sa3", "medium") or p.is_v2:
+            continue
+        if all(lay.accepts(b, p.hidden_size, p.hook) for b in p.all_blocks):
+            out.append(p)
+    return out
 
 
 @pytest.mark.parametrize("sign", [1.0, -1.0])

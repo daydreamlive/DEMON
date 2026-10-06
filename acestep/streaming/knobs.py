@@ -309,6 +309,7 @@ def steering_pack_spec(
     pack_description: str = "",
     pos_anchor: str = "",
     neg_anchor: str = "",
+    bar_pass: Optional[Mapping] = None,
 ) -> KnobSpec:
     """The registry spec for one data-driven steering-pack knob.
 
@@ -323,6 +324,11 @@ def steering_pack_spec(
     pos/neg anchors and the block list of a multi-block pack. A pack
     ``description`` replaces the generated knob description. Packs come
     from ``acestep.steering.packs``.
+
+    ``bar_pass`` (a bundled pack's ship quality bar, ``{"pos": bool,
+    "neg": bool}``) rides in ``meta.bar_pass``; when exactly one sign
+    passes, the range is clamped to that side (the failing side's limit
+    becomes 0), so every transport refuses the unvalidated direction.
     """
     pol = policy or {}
     if pol.get("kind", "range") == "range":
@@ -358,6 +364,13 @@ def steering_pack_spec(
         meta["headroom"] = STEERING_PACK_HEADROOM
     else:
         meta["calibrated"] = False
+    if isinstance(bar_pass, Mapping):
+        bp = {s: bool(bar_pass.get(s, True)) for s in ("pos", "neg")}
+        meta["bar_pass"] = bp
+        if bp["pos"] and not bp["neg"]:
+            lo = 0.0
+        elif bp["neg"] and not bp["pos"]:
+            hi = 0.0
     if flags:
         meta["flags"] = [str(f) for f in flags]
     blk = tuple(int(b) for b in blocks) if blocks else (int(block),)

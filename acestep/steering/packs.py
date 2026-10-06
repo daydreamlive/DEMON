@@ -169,6 +169,9 @@ class SteeringPack:
     description: str = ""
     pos_anchor: str = ""
     neg_anchor: str = ""
+    # Ship quality bar per sign ({"pos": bool, "neg": bool}); set only by
+    # a bundle (``load_bundle``). None = not measured (loose packs).
+    bar_pass: Optional[dict] = None
 
     @property
     def knob_name(self) -> str:
@@ -238,7 +241,8 @@ class SteeringPack:
 
     def metadata(self) -> dict:
         meta = asdict(self)
-        for k in ("vector", "path", "vectors", "blocks", "vectors_neg", "vector_neg"):
+        for k in ("vector", "path", "vectors", "blocks", "vectors_neg", "vector_neg",
+                  "bar_pass"):
             meta.pop(k)
         # Format-2 header keys are written only when set, so a format-1
         # pack's header is unchanged.
@@ -384,6 +388,250 @@ _KNOWN_META = frozenset({
 })
 
 
+# ---------------------------------------------------------------------------
+# Bundles: every shipped knob of one model in ONE file.
+#
+# ``<family>/<checkpoint>/bundle.safetensors`` holds each knob's tensors
+# under ``<name>/<tensor>`` (the pack's own tensor names: ``vector`` /
+# ``vector_neg`` for a single-block pack, ``vectors`` / ``blocks`` /
+# ``vectors_neg`` for a multi-block one, stored byte for byte) and one
+# metadata entry, ``manifest``, a JSON object::
+#
+#   {"version": 1, "model": "sa3/medium", "created": "...Z",
+#    "knobs": [{"name", "label", "category", "applies_to", "variant",
+#               "blocks", "description", "anchors": {"pos", "neg"},
+#               "calibrated_gain": {"pos"|"neg": {median, min, max,
+#                                   reached, seeds, cutoff}},
+#               "bar_pass": {"pos": bool, "neg": bool},
+#               "apply": {...header keys the engine needs...},
+#               "provenance": {...}}, ...]}
+#
+# Every knob carries the same calibrated_gain and bar_pass shape;
+# ``build_bundle`` refuses a knob missing either. Loose per-file packs
+# keep working beside a bundle (user-authored vectors); a loose pack
+# whose name a bundle already provides is skipped.
+# ---------------------------------------------------------------------------
+
+BUNDLE_NAME = "bundle" + PACK_SUFFIX
+BUNDLE_METADATA_KEY = "manifest"
+BUNDLE_VERSION = 1
+SIGNS = ("pos", "neg")
+GAIN_KEYS = ("median", "min", "max", "reached", "seeds", "cutoff")
+# Header keys the engine path needs that are not top-level manifest fields.
+_APPLY_KEYS = (
+    "family", "checkpoint", "hook", "block", "hidden_size", "method", "norm",
+    "magnitude", "policy", "norms", "seeds", "blurb",
+)
+
+
+def normalize_calibrated_gain(gain, name: str) -> dict:
+    """The one calibrated-gain shape a bundle carries, or ValueError.
+
+    Per sign: ``median`` / ``min`` / ``max`` (float) and per-seed lists
+    ``reached`` (bool), ``seeds`` (int) and ``cutoff`` (float) of equal
+    length. Anything else (a flat number, a missing sign or key) refuses.
+    """
+    if not isinstance(gain, Mapping):
+        raise ValueError(f"knob {name!r}: no calibrated_gain")
+    out: dict = {}
+    for sign in SIGNS:
+        g = gain.get(sign)
+        if not isinstance(g, Mapping):
+            raise ValueError(f"knob {name!r}: calibrated_gain.{sign} missing")
+        missing = [k for k in GAIN_KEYS if k not in g]
+        if missing:
+            raise ValueError(
+                f"knob {name!r}: calibrated_gain.{sign} lacks {missing}"
+            )
+        try:
+            entry = {k: float(g[k]) for k in ("median", "min", "max")}
+            entry["reached"] = [bool(x) for x in g["reached"]]
+            entry["seeds"] = [int(x) for x in g["seeds"]]
+            entry["cutoff"] = [float(x) for x in g["cutoff"]]
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"knob {name!r}: calibrated_gain.{sign} malformed ({exc})"
+            ) from None
+        n = len(entry["seeds"])
+        if n == 0 or len(entry["reached"]) != n or len(entry["cutoff"]) != n:
+            raise ValueError(
+                f"knob {name!r}: calibrated_gain.{sign} per-seed lists "
+                "empty or of unequal length"
+            )
+        out[sign] = entry
+    return out
+
+
+def normalize_bar_pass(bar, name: str) -> dict:
+    """``{"pos": bool, "neg": bool}`` or ValueError."""
+    if not isinstance(bar, Mapping) or any(
+        not isinstance(bar.get(s), bool) for s in SIGNS
+    ):
+        raise ValueError(f"knob {name!r}: bar_pass needs a bool per sign, got {bar!r}")
+    return {s: bool(bar[s]) for s in SIGNS}
+
+
+def _bundle_entry(pack: SteeringPack, bar_pass) -> dict:
+    prov = dict(pack.provenance) if isinstance(pack.provenance, Mapping) else {}
+    gain = normalize_calibrated_gain(prov.pop("calibrated_gain", None), pack.name)
+    meta = pack.metadata()
+    apply = {k: meta[k] for k in _APPLY_KEYS if k in meta}
+    return {
+        "name": pack.name,
+        "label": pack.label,
+        "category": pack.effective_category,
+        "applies_to": pack.applies_to,
+        "variant": pack.variant,
+        "blocks": list(pack.all_blocks),
+        "description": pack.description,
+        "anchors": {"pos": pack.pos_anchor, "neg": pack.neg_anchor},
+        "calibrated_gain": gain,
+        "bar_pass": normalize_bar_pass(bar_pass, pack.name),
+        "apply": apply,
+        "provenance": prov,
+    }
+
+
+def _pack_tensors(pack: SteeringPack) -> dict:
+    """The tensors ``save_pack`` would write, unprefixed."""
+    import torch
+
+    def f32(t):
+        return t.detach().to(device="cpu", dtype=torch.float32).contiguous()
+
+    if pack.vectors is not None:
+        out = {
+            "vectors": f32(pack.vectors),
+            "blocks": torch.tensor([int(b) for b in pack.blocks], dtype=torch.int64),
+        }
+        if pack.vectors_neg is not None:
+            out["vectors_neg"] = f32(pack.vectors_neg)
+    else:
+        out = {"vector": f32(pack.vector)}
+        if pack.vector_neg is not None:
+            out["vector_neg"] = f32(pack.vector_neg)
+    return out
+
+
+def build_bundle(
+    packs: Sequence[SteeringPack],
+    bar_pass: Mapping[str, Mapping],
+    path: Path | str,
+    *,
+    created: Optional[str] = None,
+) -> dict:
+    """Write ``packs`` to one bundle file; returns the manifest.
+
+    ``bar_pass`` maps pack name -> ``{"pos": bool, "neg": bool}``. All
+    packs must share one family/checkpoint, have distinct names and the
+    full calibrated-gain shape; any violation raises before writing.
+    """
+    from datetime import datetime, timezone
+
+    from safetensors.torch import save_file
+
+    if not packs:
+        raise ValueError("no packs to bundle")
+    models = {(p.family, p.checkpoint) for p in packs}
+    if len(models) != 1:
+        raise ValueError(f"packs span several models: {sorted(models)}")
+    (family, checkpoint), = models
+    tensors: dict = {}
+    knobs: list = []
+    for pack in sorted(packs, key=lambda p: p.name):
+        pack.validate()
+        if any(k["name"] == pack.name for k in knobs):
+            raise ValueError(f"duplicate pack name {pack.name!r}")
+        if pack.name not in bar_pass:
+            raise ValueError(f"knob {pack.name!r}: no bar_pass data")
+        knobs.append(_bundle_entry(pack, bar_pass[pack.name]))
+        for k, t in _pack_tensors(pack).items():
+            tensors[f"{pack.name}/{k}"] = t
+    manifest = {
+        "version": BUNDLE_VERSION,
+        "model": f"{family}/{checkpoint}",
+        "created": created or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "knobs": knobs,
+    }
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    save_file(tensors, str(path), metadata={
+        BUNDLE_METADATA_KEY: json.dumps(manifest, sort_keys=True),
+    })
+    return manifest
+
+
+def read_bundle_manifest(path: Path | str) -> dict:
+    """The ``manifest`` header of one bundle file, version-checked."""
+    from safetensors import safe_open
+
+    with safe_open(str(path), framework="pt") as f:
+        raw = (f.metadata() or {}).get(BUNDLE_METADATA_KEY)
+    if raw is None:
+        raise ValueError(f"{Path(path).name}: no {BUNDLE_METADATA_KEY!r} metadata")
+    manifest = json.loads(raw)
+    if int(manifest.get("version", 0)) != BUNDLE_VERSION:
+        raise ValueError(
+            f"{Path(path).name}: bundle version {manifest.get('version')} "
+            f"!= {BUNDLE_VERSION}"
+        )
+    return manifest
+
+
+def load_bundle(path: Path | str) -> list:
+    """Every pack in one bundle file, as :class:`SteeringPack` objects
+    whose tensors and apply header match the per-file packs exactly."""
+    import torch
+    from safetensors import safe_open
+
+    path = Path(path)
+    manifest = read_bundle_manifest(path)
+    out: list = []
+    with safe_open(str(path), framework="pt") as f:
+        names = set(f.keys())
+        for k in manifest.get("knobs", ()):
+            name = k["name"]
+            t = {
+                key: f.get_tensor(f"{name}/{key}")
+                for key in _TENSOR_KEYS if f"{name}/{key}" in names
+            }
+            prov = dict(k.get("provenance") or {})
+            prov["calibrated_gain"] = normalize_calibrated_gain(
+                k.get("calibrated_gain"), name,
+            )
+            anchors = k.get("anchors") or {}
+            kw = {kk: v for kk, v in (k.get("apply") or {}).items() if kk in _KNOWN_META}
+            if "norms" in kw:
+                kw["norms"] = tuple(float(x) for x in (kw["norms"] or ()))
+            kw.update(
+                name=name, label=k.get("label") or "",
+                category=k.get("category") or "", applies_to=k.get("applies_to"),
+                variant=k.get("variant") or "", description=k.get("description") or "",
+                pos_anchor=anchors.get("pos") or "", neg_anchor=anchors.get("neg") or "",
+                provenance=prov, bar_pass=normalize_bar_pass(k.get("bar_pass"), name),
+                path=path,
+            )
+            if "vectors" in t:
+                if "blocks" not in t:
+                    raise ValueError(f"{path.name}: {name}/vectors without blocks")
+                vectors = t["vectors"].to(torch.float32)
+                kw["blocks"] = tuple(int(b) for b in t["blocks"].reshape(-1).tolist())
+                kw["vector"] = vectors[0]
+                kw["vectors"] = vectors
+                if "vectors_neg" in t:
+                    kw["vectors_neg"] = t["vectors_neg"].to(torch.float32)
+            elif "vector" in t:
+                kw["vector"] = t["vector"].to(torch.float32)
+                if "vector_neg" in t:
+                    kw["vector_neg"] = t["vector_neg"].to(torch.float32)
+            else:
+                raise ValueError(f"{path.name}: knob {name!r} has no tensors")
+            pack = SteeringPack(**kw)
+            pack.validate()
+            out.append(pack)
+    return out
+
+
 def discover_packs(
     directory: Path | str | None,
     *,
@@ -399,6 +647,8 @@ def discover_packs(
     hook/block/hidden size fit it. Knob names in ``reserved_names``
     (built-in steering knobs) and duplicate names are skipped with a
     warning; the first file in sorted path order wins a duplicate.
+    Every ``bundle.safetensors`` is read first; a loose pack whose knob a
+    bundle already provides is skipped silently.
     """
     if directory is None:
         return []
@@ -410,12 +660,33 @@ def discover_packs(
     reserved = set(reserved_names)
     out: list = []
     seen: set = set()
+    # Bundles first: a bundled knob shadows a loose pack of the same name.
+    candidates: list = []
+    bundled: set = set()
+    for path in sorted(root.rglob(BUNDLE_NAME)):
+        try:
+            packs = load_bundle(path)
+        except Exception as exc:
+            logger.warning("steering_bundle_skipped path={} reason={}", path, exc)
+            continue
+        for pack in packs:
+            if pack.family == family and pack.checkpoint == checkpoint:
+                bundled.add(pack.knob_name)
+            candidates.append((path, pack))
     for path in sorted(root.rglob(f"*{PACK_SUFFIX}")):
+        if path.name == BUNDLE_NAME:
+            continue
+        if bundled and f"{PACK_KNOB_PREFIX}{path.stem}" in bundled:
+            continue  # cheap skip: the installed file name is the pack name
         try:
             pack = load_pack(path)
         except Exception as exc:
             logger.warning("steering_pack_skipped path={} reason={}", path, exc)
             continue
+        if pack.knob_name in bundled:
+            continue
+        candidates.append((path, pack))
+    for path, pack in candidates:
         if pack.family != family or pack.checkpoint != checkpoint:
             continue
         if layout is not None and not all(
@@ -475,6 +746,7 @@ class PackSteering:
                 pack_description=p.description,
                 pos_anchor=p.pos_anchor,
                 neg_anchor=p.neg_anchor,
+                bar_pass=p.bar_pass,
                 flags=(
                     tuple(flags) if isinstance(flags, (list, tuple))
                     else tuple(f for f in re.split(r"[;,\s]+", flags) if f)
