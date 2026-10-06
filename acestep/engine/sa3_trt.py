@@ -68,9 +68,10 @@ SAMPLES_PER_LATENT = 4096
 SA3_SAMPLE_RATE = 44100
 
 # Per-family DiT engine name prefixes: which engines can serve which
-# model_id's weights. Only medium has built engines today; small runs
-# real-time eager and has none.
-DIT_ENGINE_PREFIX = {"medium": "sa3_m_dit"}
+# model_id's weights. A TRT engine bakes in its weights, so each model id
+# needs its own prefix even when two share an architecture (small-sfx and
+# small-music do). Built by ``acestep.engine.trt.sa3_build --model <id>``.
+DIT_ENGINE_PREFIX = {"medium": "sa3_m_dit", "small-sfx": "sa3_sfx_dit"}
 
 _DIT_DIR_RE = re.compile(r"^(?P<prefix>.+_dit)_l(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$")
 # The fp8-trunk DiT engine: same ranged-profile naming as the fp16mixed

@@ -43,6 +43,9 @@ Usage:
     python -m acestep.engine.trt.sa3_build --all --dry-run
     python -m acestep.engine.trt.sa3_build --all --force-rebuild
 
+    # small-sfx DiT (official sa3-sm-sfx fp16 graph, DiT only):
+    python -m acestep.engine.trt.sa3_build --dit --model small-sfx --seconds 60
+
     # Single DiT engine sized for a padded latent window:
     python -m acestep.engine.trt.sa3_build --dit --seconds 60
     python -m acestep.engine.trt.sa3_build --dit --opt-latents 324 --max-latents 324
@@ -129,6 +132,10 @@ DIT_FP8_ONNX_FILES = (
     "onnx/sa3-m/dit_fp8.onnx",
     "onnx/sa3-m/dit_fp8.onnx.data",
 )
+# SA3 small-sfx DiT: same fp16mixed recipe and graph IO as sa3-m (x, t,
+# t5_hidden, t5_mask, seconds_total, local_add_cond -> velocity), weights
+# embedded in the proto (under 2 GB, so no sidecar).
+SFX_DIT_ONNX_FILES = ("onnx/sa3-sm-sfx/dit_fp16.onnx",)
 # Upstream renamed this on 2026-08-28 ("Rename the autoencoder ONNX to match
 # the engine naming scheme"); the bytes are unchanged (same LFS object as
 # the old dec_dynamic_triton_swa.onnx), so engines keyed on the ONNX hash
@@ -172,6 +179,31 @@ class SA3DiTBuildConfig:
 
     def engine_name(self) -> str:
         return f"sa3_m_dit_l{self.min_latents}_{self.opt_latents}_{self.max_latents}"
+
+
+@dataclass
+class SA3SfxDiTBuildConfig(SA3DiTBuildConfig):
+    """Build parameters for one small-sfx DiT engine.
+
+    A subclass rather than a ``model`` field on :class:`SA3DiTBuildConfig`
+    so the medium engines' metadata identity (the hashed config dict) is
+    unchanged. Engine names carry the ``sa3_sfx_dit`` prefix that
+    :data:`acestep.engine.sa3_trt.DIT_ENGINE_PREFIX` maps to ``small-sfx``.
+    """
+
+    onnx_files: list[str] = field(default_factory=lambda: list(SFX_DIT_ONNX_FILES))
+
+    def engine_name(self) -> str:
+        return f"sa3_sfx_dit_l{self.min_latents}_{self.opt_latents}_{self.max_latents}"
+
+
+#: ``--model`` -> (fp16mixed DiT config class, metadata component, label).
+#: Only medium has the fp8/refit variants and the SAME-L window decoder;
+#: small models decode with SAME-S in full (no window engine).
+DIT_MODELS = {
+    "medium": (SA3DiTBuildConfig, "sa3_m_dit", "SA3-M"),
+    "small-sfx": (SA3SfxDiTBuildConfig, "sa3_sfx_dit", "SA3-SFX"),
+}
 
 
 @dataclass
@@ -368,6 +400,7 @@ def _build_dit_engine(
     precision_label: str = "fp16mixed",
     local_onnx: str | None = None,
     refit: bool = False,
+    model_label: str = "SA3-M",
 ) -> tuple[str, str, float, str]:
     """Build one sa3-m DiT engine. Returns (label, path, elapsed, status).
 
@@ -379,7 +412,7 @@ def _build_dit_engine(
     name = config.engine_name()
     engine_path = os.path.join(output_dir, name, f"{name}.trt")
     label = (
-        f"SA3-M DiT {precision_label} "
+        f"{model_label} DiT {precision_label} "
         f"l{config.min_latents}_{config.opt_latents}_{config.max_latents}"
         f" (~{config.max_latents * SAMPLES_PER_LATENT / SA3_SAMPLE_RATE:.0f}s window)"
     )
@@ -559,10 +592,11 @@ def _matrix_jobs(args) -> list[tuple[str, str]]:
 
     jobs = []
     if not args.same_l_only:
+        cfg_cls, _, model_label = DIT_MODELS[args.model]
         for lo, opt, hi in dit_profiles:
-            cfg = SA3DiTBuildConfig(lo, opt, hi)
+            cfg = cfg_cls(lo, opt, hi)
             jobs.append((
-                f"SA3-M DiT fp16mixed l{lo}_{opt}_{hi}"
+                f"{model_label} DiT fp16mixed l{lo}_{opt}_{hi}"
                 f" (~{hi * SAMPLES_PER_LATENT / SA3_SAMPLE_RATE:.0f}s window)",
                 cfg.engine_name(),
             ))
@@ -668,6 +702,11 @@ def main() -> int:
                        help="Only build the SAME-L window decoder (skip DiT)")
 
     single = parser.add_argument_group("single mode / shared options")
+    single.add_argument("--model", choices=sorted(DIT_MODELS), default="medium",
+                        help="Which SA3 checkpoint's DiT to build (default: "
+                             "medium). small-sfx builds DiT engines only: no "
+                             "fp8/refit variants, and its SAME-S codec has no "
+                             "window decoder engine.")
     single.add_argument("--output-dir", default=str(trt_engines_dir()),
                         help="Engine output directory "
                              "(default: <models>/sa3/trt_engines)")
@@ -711,6 +750,11 @@ def main() -> int:
                      "build them in separate invocations or use --all")
     if args.dit_only and args.same_l_only:
         parser.error("--dit-only and --same-l-only are mutually exclusive")
+    if args.model != "medium":
+        if args.fp8 or args.refit or args.same_l_window or args.same_l_only:
+            parser.error(f"--model {args.model} builds the fp16mixed DiT only")
+        args.dit_only = True
+    dit_cls, dit_component, dit_label = DIT_MODELS[args.model]
 
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -731,9 +775,11 @@ def main() -> int:
             for lo, opt, hi in dit_profiles:
                 results.append(_build_dit_engine(
                     output_dir=args.output_dir,
-                    config=SA3DiTBuildConfig(lo, opt, hi, workspace_gb=args.workspace_gb),
+                    config=dit_cls(lo, opt, hi, workspace_gb=args.workspace_gb),
                     env=env,
                     force_rebuild=args.force_rebuild,
+                    component=dit_component,
+                    model_label=dit_label,
                 ))
             if args.fp8:
                 for lo, opt, hi in dit_profiles:
@@ -779,7 +825,7 @@ def main() -> int:
     built = []
     if args.dit:
         profile_l = latents_for_seconds(args.seconds)
-        config = SA3DiTBuildConfig(
+        config = dit_cls(
             min_latents=args.min_latents or 1,
             opt_latents=args.opt_latents or profile_l,
             max_latents=args.max_latents or args.opt_latents or profile_l,
@@ -790,6 +836,7 @@ def main() -> int:
         result = _build_dit_engine(
             output_dir=args.output_dir, config=config, env=env,
             force_rebuild=args.force_rebuild,
+            component=dit_component, model_label=dit_label,
         )
         built.append(result)
         if args.fp8:

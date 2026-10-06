@@ -529,7 +529,13 @@ SA3 = FamilySpec(
     display_name="Stable Audio 3",
     make_backend=_make_sa3,
     knob_universe=_sa3_knob_universe,
-    checkpoint_aliases={"sa3-small": "small-music", "sa3-medium": "medium"},
+    checkpoint_aliases={
+        "sa3-small": "small-music",
+        "sa3-medium": "medium",
+        # Sound effects: small-music's architecture and SAME-S codec with
+        # SFX weights, so it rides the same adapter and codec unchanged.
+        "sa3-sfx": "small-sfx",
+    },
     # Per-connect setup doesn't fit the ACE create path (TRT profiles,
     # model load, demucs, conditioning encode), so SA3 owns its creator.
     create_session=_create_sa3_session,
