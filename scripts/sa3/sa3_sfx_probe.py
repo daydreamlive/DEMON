@@ -237,6 +237,7 @@ def cmd_parity(args) -> int:
     pre-hook on the DiT recording every (x, t); each state then goes
     through the eager DiT and the TRT engine with the same bundle."""
     from acestep.engine.sa3_trt import SA3TRTDit, find_dit_engine
+    from sa3_parity_tier import infer_tier, judge
     from acestep.streaming.generator_backend import TickContext
     from acestep.streaming.knobs import KnobState
     from acestep.streaming.sa3_backend import SA3Backend, sa3_knob_specs
@@ -323,7 +324,8 @@ def cmd_parity(args) -> int:
                 step["cos_fp16_eager_vs_fp32"] = round(torch.nn.functional.cosine_similarity(
                     v_e.flatten(), v_h.flatten(), dim=0).item(), 6)
             per_step.append(step)
-        worst = min(s["cos"] for s in per_step) if per_step else float("nan")
+        verdict = judge([s["cos"] for s in per_step], infer_tier(engine.parent.name))
+        worst = verdict["min_step_cos"]
         if args.fp32_ref:
             del ref
             torch.cuda.empty_cache()
@@ -332,7 +334,9 @@ def cmd_parity(args) -> int:
                "label_s": context.cond_seconds_total(args.duration),
                "engine": engine.parent.name, "n_steps": len(per_step),
                "compounded_final_latent_cos": round(compounded, 6),
-               "steps": per_step, "min_cos": worst, "pass": worst >= 0.9998}
+               "steps": per_step, "min_cos": worst, "worst_step": verdict["worst_step"],
+               "tier": verdict["tier"], "tier_label": verdict["tier_label"],
+               "gate": verdict["gate"], "pass": verdict["pass"]}
         results.append(row)
         print(json.dumps(row), flush=True)
     if args.json:

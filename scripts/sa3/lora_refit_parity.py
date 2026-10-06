@@ -35,12 +35,14 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
 _REPO_ROOT = next(p for p in (_HERE, *_HERE.parents) if (p / "pyproject.toml").exists())
-for _p in (str(_REPO_ROOT),):
+for _p in (str(_HERE), str(_REPO_ROOT)):
     while _p in sys.path:
         sys.path.remove(_p)
     sys.path.insert(0, _p)
 
 import torch  # noqa: E402
+
+from sa3_parity_tier import TIERS, infer_tier, tier_bar, tier_label  # noqa: E402
 
 PROMPT = "warm analog house groove, 124 bpm"
 DURATION = 54.0
@@ -48,9 +50,10 @@ STEPS = 8
 T_VALUES = (1.0, 0.7, 0.4, 0.1)
 SEED = 1528
 # Engine-numerics floor from the pre-LoRA TRT parity signoff
-# (scripts/sa3/sa3_trt_dit_cond_parity.py): fp16mixed cos >= 0.9998/step
-# on all-valid windows.
-COS_FLOOR = 0.9998
+# (scripts/sa3/sa3_trt_dit_cond_parity.py), per tier (sa3_parity_tier):
+# fp16mixed is the fidelity tier, cos >= 0.9998/step on all-valid windows;
+# fp8 engines are a speed tier judged at upstream's bar (>= 0.90, upstream
+# PR #86), not at the fidelity gate.
 
 
 class _TRTShim(torch.nn.Module):
@@ -78,6 +81,9 @@ def main() -> int:
     ap.add_argument("--lora2", default=None,
                     help="second LoRA for the stacking phase "
                          "(default: the smoke synthetic adapter)")
+    ap.add_argument("--tier", choices=TIERS, default=None,
+                    help="parity tier (default: inferred from the engine "
+                         "name, _fp8_ => fp8, else fp16mixed)")
     args = ap.parse_args()
 
     from acestep.engine.sa3_context import SA3Context
@@ -106,6 +112,10 @@ def main() -> int:
     if manifest is None:
         raise RuntimeError("no refit manifest; run gen_sa3_refit_manifest.py")
     mirror = SA3TRTRefitMirror(trt_dit.engine, sam.model.model, manifest)
+    tier = infer_tier(engine_path.parent.name, args.tier)
+    COS_FLOOR = tier_bar(tier)
+    print(f"[engine] {engine_path.parent.name} tier={tier} "
+          f"[{tier_label(tier)}] bar={COS_FLOOR}")
 
     mgr = SA3LoRAManager(
         model_root=sam.model.model,

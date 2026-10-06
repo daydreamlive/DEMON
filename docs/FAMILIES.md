@@ -136,6 +136,10 @@ the SA3 DiT into `StreamPipeline`'s ring buffer, and every emit is an
   eager 2.9 gens/s at depth 1 rising to 19.5 at depth 8; medium TRT 11.7
   gens/s (fp8 engine) / 9.6 (fp16mixed). Real server, small TRT depth 4:
   session ready in 6.6 s, ~2.1 GB torch VRAM (medium 5.4 GB).
+- **TRT DiT parity (`scripts/sa3/sa3_trt_dit_cond_parity.py`):** fp16mixed
+  is the fidelity tier (min per-step cos >= 0.9998 vs eager); fp8 engines
+  are a speed tier judged at upstream's bar (min per-step cos >= 0.90,
+  upstream PR #86), not at the fidelity gate.
 
 ## Magenta RealTime 2 (`mrt2`)
 

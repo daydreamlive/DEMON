@@ -29,6 +29,11 @@ input; upstream's runtime always generates fully-valid windows — treats
 the tail as valid and cos drops to ~0.991-0.999. That residual is the
 mask-semantics difference, not engine numerics: giving eager an
 all-valid mask restores cos 0.9999 against the same TRT output.
+
+The gate is tier-aware (``sa3_parity_tier``): fp8 engines are a speed tier
+judged at upstream's bar (min per-step cos >= 0.90, upstream PR #86), not at
+the fidelity gate; fp16mixed is the fidelity tier (>= 0.9998). The tier is
+inferred from the engine name (``_fp8_`` => fp8); ``--tier`` overrides it.
 """
 
 from __future__ import annotations
@@ -45,9 +50,9 @@ import torch  # noqa: E402
 
 from sa3_reference_generate import checkpoint_dir, load_local_model  # noqa: E402
 from sa3_stream_pipeline import prepare_sa3_conditioning  # noqa: E402
+from sa3_parity_tier import TIERS, infer_tier, judge, verdict_line  # noqa: E402
 
 PROMPT = "funky ass shit"
-GATE_COS = 0.9998
 STEPS = 8
 
 
@@ -72,6 +77,9 @@ def main() -> int:
     ap.add_argument("--engine", default=None,
                     help="engine dir name under trt_engines/ to force "
                          "(default: what find_dit_engine selects)")
+    ap.add_argument("--tier", choices=TIERS, default=None,
+                    help="parity tier to judge at (default: inferred from "
+                         "the engine name, _fp8_ => fp8, else fp16mixed)")
     args = ap.parse_args()
     duration = float(args.duration)
     from acestep.engine.sa3_trt import SA3TRTDit, find_dit_engine
@@ -184,12 +192,10 @@ def main() -> int:
     final_cos = torch.nn.functional.cosine_similarity(
         x_eager.flatten(), x_trt.flatten(), dim=0).item()
     results["final_latent_cos"] = final_cos
-    min_cos = min(r["cos"] for r in results["trajectory"])
-    results["min_step_cos"] = min_cos
-    results["gate"] = GATE_COS
-    results["pass"] = bool(min_cos >= GATE_COS)
-    print(f"[trajectory] min per-step cos={min_cos:.6f} (gate {GATE_COS}) "
-          f"-> {'PASS' if results['pass'] else 'FAIL'}; compounded final "
+    verdict = judge([r["cos"] for r in results["trajectory"]],
+                    infer_tier(engine_path.parent.name, args.tier))
+    results.update(verdict)
+    print(f"[trajectory] {verdict_line(verdict)}; compounded final "
           f"latent cos={final_cos:.6f}")
     if args.json:
         import json
