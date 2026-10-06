@@ -29,6 +29,10 @@ SA3_VENDOR_SHA = "960da1f8cbe205ab3b702edbfabd91113ab22473"
 # Revision that last changed the source compiled into the SAME-L TensorRT
 # engine. Keep this stable across vendor bumps that only touch other code.
 SA3_SAME_L_PLUGIN_REVISION = "c07698548567fe6f163806f692d282bbaa57aba3"
+# Revision that last changed the vendored SAME-S fp16mixed converter
+# (optimized/tensorRT/build/build_same_s_dec_fp16.py + the build_dit_fp16
+# helpers it imports); part of the SAME-S decode engine name.
+SA3_SAME_S_DECODE_REVISION = "c7e88002a3d15bbd4b56f792c5be6f06692d80fb"
 SA3_VENDOR_ENV = "DEMON_SA3_SRC"
 SA3_VENDOR_DIRNAME = "stable-audio-3"
 

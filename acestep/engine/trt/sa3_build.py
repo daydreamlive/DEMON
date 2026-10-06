@@ -35,8 +35,19 @@ on first use.
   ``onnx/sa3-sm-music/dit_fp16.onnx`` (same fp16mixed recipe, same IO
   contract as sa3-m; a single proto, the ~0.9 GB of weights inline)
   compiled to ``sa3_sm_dit_l*`` engines. fp16mixed only: the fp8 and
-  refit variants stay medium-only. Small decodes with SAME-S (eager full
-  decode, ~11 ms flat), so a small build never builds the SAME-L engine.
+  refit variants stay medium-only. Small decodes with SAME-S, so a small
+  build never builds the SAME-L engine; it builds the SAME-S decoder.
+* **SAME-S full decoder** (``--model small-music``, or ``--same-s-decode``):
+  upstream publishes the SAME-S decoder only as an FP32 graph
+  (``onnx/same-s/dec_bf16.onnx``; "bf16" names upstream's retired BF16
+  builder-flag recipe, which crackles on long outputs, and is never used
+  here). The vendored ``build_same_s_dec_fp16.py`` converts it to
+  upstream's canonical fp16mixed graph (FP16 trunk, FP32 islands around
+  the tanh norms, softmax, differential-attention Sub and RoPE), which is
+  compiled STRONGLY_TYPED with no precision flags to
+  ``same_s_decode_<recipe tag>_t{min}_{opt}_{max}``
+  (:func:`acestep.engine.sa3_trt.same_s_decode_build_tag`). The converted
+  graph is cached under ``<engines_dir>/_onnx/``.
 * **SAME-L window decoder**: ``dec_fp16.onnx`` (upstream renamed it from
   ``dec_dynamic_triton_swa.onnx`` on 2026-08-28, same bytes),
   STRONGLY_TYPED; needs the ``samel::diff_attn_swa`` plugin registered
@@ -49,8 +60,11 @@ Usage:
     python -m acestep.engine.trt.sa3_build --all --dry-run
     python -m acestep.engine.trt.sa3_build --all --force-rebuild
 
-    # small-music DiT matrix (profiles 324 + 646 + 1292; no SAME-L):
+    # small-music matrix (DiT profiles 324 + 646 + 1292, SAME-S decoder):
     python -m acestep.engine.trt.sa3_build --model small-music --all
+
+    # SAME-S full decoder only (defaults t32_646_1292):
+    python -m acestep.engine.trt.sa3_build --same-s-decode
 
     # Single DiT engine sized for a padded latent window:
     python -m acestep.engine.trt.sa3_build --dit --seconds 60
@@ -96,10 +110,14 @@ from acestep.engine.sa3_trt import (
     SA3_SAMPLE_RATE,
     SAMPLES_PER_LATENT,
     T5_TOKENS,
+    SAME_S_FP32_ISLANDS,
+    SAME_S_UPSTREAM_DECODER_SHA256,
     _register_same_plugin,
     same_l_plugin_build_tag,
+    same_s_decode_build_tag,
     trt_engines_dir,
 )
+from acestep.engine.sa3_helpers import sa3_vendor_dir
 
 HF_REPO = "stabilityai/stable-audio-3-optimized"
 # The medium DiT ONNX exceeds 2 GB, so the weights travel in an
@@ -143,6 +161,10 @@ DIT_FP8_ONNX_FILES = (
 # the old dec_dynamic_triton_swa.onnx), so engines keyed on the ONNX hash
 # still match.
 SAME_L_ONNX_FILES = ("onnx/same-l/dec_fp16.onnx",)
+# SAME-S decoder: upstream's FP32 graph (the "bf16" suffix names the
+# retired builder-flag recipe, not the graph's dtypes); converted locally
+# to fp16mixed by the vendored build_same_s_dec_fp16.py before the build.
+SAME_S_ONNX_FILES = ("onnx/same-s/dec_bf16.onnx",)
 # sa3-sm-music DiT: the same fp16mixed recipe as sa3-m, published as a
 # single proto (weights inline, under the 2 GB protobuf limit).
 DIT_SMALL_ONNX_FILES = ("onnx/sa3-sm-music/dit_fp16.onnx",)
@@ -169,6 +191,11 @@ SMALL_EXTRA_DIT_PROFILES: tuple[tuple[int, int, int], ...] = ((1, 1292, 1292),)
 # SAME-L windowed decode profile: DEMON decodes ~1 s windows with 2 s of
 # context, so T stays inside [32, 96] with the steady state at 56.
 CANONICAL_SAME_L_WINDOW: tuple[int, int, int] = (32, 56, 96)
+# SAME-S full-decode profile: small decodes the whole canvas latent per
+# fresh generation (no windowing), so the profile spans the session
+# windows: opt 646 (the 54 s canvas class; production L = 614), max 1292
+# (the 120 s small window), min 32 (upstream's floor).
+CANONICAL_SAME_S_DECODE: tuple[int, int, int] = (32, 646, 1292)
 
 
 def latents_for_seconds(seconds: float) -> int:
@@ -286,6 +313,27 @@ class SameLWindowBuildConfig:
         return (
             f"same_l_decode_window_{self.plugin_build_tag}_t{self.min_latents}"
             f"_{self.opt_latents}_{self.max_latents}"
+        )
+
+
+@dataclass
+class SameSDecodeBuildConfig:
+    """Build parameters for the SAME-S full decoder engine."""
+
+    min_latents: int
+    opt_latents: int
+    max_latents: int
+    workspace_gb: float = 16.0
+    onnx_files: list[str] = field(default_factory=lambda: list(SAME_S_ONNX_FILES))
+    recipe_tag: str = field(default_factory=same_s_decode_build_tag)
+    # The codec weights upstream's graph carries (selection key; see
+    # acestep.engine.sa3_trt._SAME_S_DIR_RE).
+    weights_sha256: str = SAME_S_UPSTREAM_DECODER_SHA256
+
+    def engine_name(self) -> str:
+        return (
+            f"same_s_decode_{self.recipe_tag}_w{self.weights_sha256[:12]}"
+            f"_t{self.min_latents}_{self.opt_latents}_{self.max_latents}"
         )
 
 
@@ -582,6 +630,176 @@ def _build_same_l_window_engine(
     return (label, engine_path, elapsed, "OK")
 
 
+def _convert_same_s_fp16mixed(source_onnx: str, output_dir: str, tag: str) -> str:
+    """Upstream FP32 SAME-S decoder ONNX -> fp16mixed ONNX via the vendored
+    converter (``build_same_s_dec_fp16.convert_to_fp16``), cached under
+    ``<output_dir>/_onnx/``. Returns the converted graph's path."""
+    import importlib.util
+
+    out = Path(output_dir) / "_onnx" / f"same_s_dec_{tag}.onnx"
+    if out.is_file():
+        logger.info("SAME-S fp16mixed ONNX cached: {}", out)
+        return str(out)
+    build_dir = sa3_vendor_dir() / "optimized" / "tensorRT" / "build"
+    script = build_dir / "build_same_s_dec_fp16.py"
+    if not script.is_file():
+        raise ImportError(
+            f"SAME-S fp16 converter not found at {script}; the vendored "
+            "stable_audio_3 tree must include optimized/tensorRT/build. "
+            "Run `uv run demon-setup` to fetch the pinned SA3 source."
+        )
+    out.parent.mkdir(parents=True, exist_ok=True)
+    before = list(sys.path)
+    try:
+        spec = importlib.util.spec_from_file_location("_sa3_same_s_dec_fp16", script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)  # inserts its own dir for build_dit_fp16
+        tmp = out.with_name(out.stem + ".partial.onnx")
+        module.convert_to_fp16(source_onnx, str(tmp), mode=SAME_S_FP32_ISLANDS)
+    finally:
+        sys.path[:] = before
+    import onnx
+
+    model = onnx.load(str(tmp))
+    _pin_same_s_pcm_tail_fp32(model)
+    onnx.save(model, str(tmp))
+    os.replace(tmp, out)
+    return str(out)
+
+
+def _pin_same_s_pcm_tail_fp32(model) -> None:
+    """Run the SAME-S PCM tail in FP32 (in place on the converted graph).
+
+    Upstream's graph ends ``Cast(FP32) -> Clip(-1, 1) -> Mul(32767) ->
+    Clip(+-32767) -> Cast(INT32) -> Transpose -> pcm``. The converter
+    strips the leading FP32 Cast as a no-op and retargets only the first
+    Clip's bounds to FP16, so the second Clip mixes FP16 data with FP32
+    bounds (TensorRT refuses to parse it) and the x32767 product would be
+    FP16 (11-bit mantissa: steps of 16 near full scale). Re-insert the
+    FP32 Cast before the first Clip and keep every tail constant FP32.
+    """
+    import numpy as np
+    from onnx import TensorProto, helper, numpy_helper
+
+    graph = model.graph
+    by_out = {o: n for n in graph.node for o in n.output}
+    transpose = by_out.get("pcm")
+    to_int = by_out.get(transpose.input[0]) if transpose is not None else None
+    clip_pcm = by_out.get(to_int.input[0]) if to_int is not None else None
+    mul = by_out.get(clip_pcm.input[0]) if clip_pcm is not None else None
+    clip_unit = by_out.get(mul.input[0]) if mul is not None else None
+    chain = (transpose, to_int, clip_pcm, mul, clip_unit)
+    ops = tuple(n.op_type if n is not None else None for n in chain)
+    if ops != ("Transpose", "Cast", "Clip", "Mul", "Clip"):
+        raise RuntimeError(f"unexpected SAME-S PCM tail {ops}; upstream graph changed")
+
+    def _as_fp32(name: str) -> None:
+        node = by_out.get(name)
+        if node is None:
+            for init in graph.initializer:
+                if init.name == name and init.data_type != TensorProto.FLOAT:
+                    arr = numpy_helper.to_array(init).astype(np.float32)
+                    init.CopyFrom(numpy_helper.from_array(arr, name))
+            return
+        if node.op_type == "Cast":
+            for attr in node.attribute:
+                if attr.name == "to":
+                    attr.i = TensorProto.FLOAT
+        elif node.op_type == "Constant":
+            for attr in node.attribute:
+                if attr.name == "value" and attr.t.data_type != TensorProto.FLOAT:
+                    arr = numpy_helper.to_array(attr.t).astype(np.float32)
+                    attr.t.CopyFrom(numpy_helper.from_array(arr))
+
+    for clip in (clip_unit, clip_pcm):
+        for bound in clip.input[1:]:
+            _as_fp32(bound)
+    _as_fp32(mul.input[1])
+    src = clip_unit.input[0]
+    cast_name = "/demon_pcm_tail_fp32"
+    clip_unit.input[0] = cast_name + "_output_0"
+    cast = helper.make_node(
+        "Cast", [src], [cast_name + "_output_0"], name=cast_name, to=TensorProto.FLOAT,
+    )
+    from onnx import NodeProto
+
+    idx = next(i for i, n in enumerate(graph.node) if n.name == clip_unit.name)
+    tail = []
+    for node in graph.node[idx:]:
+        copy = NodeProto()
+        copy.CopyFrom(node)
+        tail.append(copy)
+    del graph.node[idx:]
+    graph.node.append(cast)
+    graph.node.extend(tail)
+
+
+def _build_same_s_decode_engine(
+    *,
+    output_dir: str,
+    config: SameSDecodeBuildConfig,
+    env: dict,
+    force_rebuild: bool = False,
+) -> tuple[str, str, float, str]:
+    """Build the SAME-S full decoder. Returns (label, path, elapsed, status)."""
+    name = config.engine_name()
+    engine_path = os.path.join(output_dir, name, f"{name}.trt")
+    label = (
+        f"SAME-S decoder fp16mixed t{config.min_latents}"
+        f"_{config.opt_latents}_{config.max_latents}"
+    )
+    try:
+        onnx_path = _fetch_onnx(config.onnx_files)
+    except Exception as exc:
+        kept = _engine_survives_missing_onnx(
+            engine_path=engine_path, component="same_s_decode",
+            config=config, env=env, force_rebuild=force_rebuild,
+        )
+        if not kept:
+            raise
+        logger.warning(
+            "ONNX fetch failed ({}) but nothing needed building — keeping "
+            "{}. If upstream re-exported the graph under a new name, update "
+            "the *_ONNX_FILES paths and rebuild.",
+            exc, kept,
+        )
+        return (label, engine_path, 0.0, "SKIPPED")
+    # Identity = the upstream source graph + the recipe tag in the config
+    # (converter revision + island mode); the converted graph is derived.
+    expected = _expected_metadata(
+        component="same_s_decode", onnx_path=onnx_path, config=config, env=env,
+    )
+    if not force_rebuild and os.path.exists(engine_path):
+        matches, reason = _metadata_matches(engine_path, expected)
+        if matches:
+            size_mb = os.path.getsize(engine_path) / 1e6
+            logger.info("SKIP {} ({:.0f} MB, {})", name, size_mb, reason)
+            return (label, engine_path, 0.0, "SKIPPED")
+        logger.info("REBUILD {} ({})", name, reason)
+
+    logger.info("=" * 60)
+    logger.info(
+        "SAME-S TRT BUILD: {} (fp16mixed, STRONGLY_TYPED, workspace {:.0f} GB)",
+        name, config.workspace_gb,
+    )
+    logger.info("=" * 60)
+    t0 = time.time()
+    fp16_onnx = _convert_same_s_fp16mixed(onnx_path, output_dir, config.recipe_tag)
+    lo, opt, hi = config.min_latents, config.opt_latents, config.max_latents
+    _build_strongly_typed_engine(
+        onnx_path=fp16_onnx,
+        engine_path=engine_path,
+        workspace_gb=config.workspace_gb,
+        profile_shapes={
+            "latent": ((1, IO_CHANNELS, lo), (1, IO_CHANNELS, opt), (1, IO_CHANNELS, hi)),
+        },
+    )
+    _write_metadata(engine_path=engine_path, expected=expected, env=env)
+    elapsed = time.time() - t0
+    logger.info("Built in {:.0f}s", elapsed)
+    return (label, engine_path, elapsed, "OK")
+
+
 # ------------------------------------------------------------------
 # Batch mode (--all)
 # ------------------------------------------------------------------
@@ -634,9 +852,14 @@ def _matrix_jobs(args) -> list[tuple[str, str]]:
                     cfg.engine_name(),
                 ))
     if not args.dit_only:
-        lo, opt, hi = CANONICAL_SAME_L_WINDOW
-        cfg = SameLWindowBuildConfig(lo, opt, hi)
-        jobs.append((f"SAME-L window decoder t{lo}_{opt}_{hi}", cfg.engine_name()))
+        if args.model == "medium":
+            lo, opt, hi = CANONICAL_SAME_L_WINDOW
+            cfg = SameLWindowBuildConfig(lo, opt, hi)
+            jobs.append((f"SAME-L window decoder t{lo}_{opt}_{hi}", cfg.engine_name()))
+        else:
+            lo, opt, hi = CANONICAL_SAME_S_DECODE
+            cfg = SameSDecodeBuildConfig(lo, opt, hi)
+            jobs.append((f"SAME-S decoder fp16mixed t{lo}_{opt}_{hi}", cfg.engine_name()))
     return jobs
 
 
@@ -717,13 +940,15 @@ def main() -> int:
                        help="Only build DiT engines (skip SAME-L)")
     batch.add_argument("--same-l-only", action="store_true",
                        help="Only build the SAME-L window decoder (skip DiT)")
+    batch.add_argument("--same-s-only", action="store_true",
+                       help="small-music: only build the SAME-S decoder (skip DiT)")
 
     single = parser.add_argument_group("single mode / shared options")
     single.add_argument("--model", choices=sorted(DIT_MODELS), default="medium",
                         help="Which SA3 checkpoint's DiT to build "
                              "(default: medium). small-music builds only "
-                             "the fp16mixed DiT: no fp8/refit variants, and "
-                             "no SAME-L (small decodes with SAME-S).")
+                             "the fp16mixed DiT and the SAME-S decoder: no "
+                             "fp8/refit variants, no SAME-L.")
     single.add_argument("--output-dir", default=str(trt_engines_dir()),
                         help="Engine output directory "
                              "(default: <models>/sa3/trt_engines)")
@@ -733,6 +958,9 @@ def main() -> int:
     single.add_argument("--same-l-window", action="store_true",
                         help="Build the SAME-L window decoder (size via the "
                              "latent flags; defaults t32_56_96)")
+    single.add_argument("--same-s-decode", action="store_true",
+                        help="Build the SAME-S full decoder (size via the "
+                             "latent flags; defaults t32_646_1292)")
     single.add_argument("--seconds", type=float, default=60.0,
                         help="Padded-window seconds for a single --dit build "
                              "(default: 60 = the 54s session + 6s padding)")
@@ -760,21 +988,26 @@ def main() -> int:
     args = parser.parse_args()
     if args.fp8_onnx:
         args.fp8 = True
-    if not (args.all or args.dit or args.same_l_window):
-        parser.error("nothing to build: pass --all, --dit, or --same-l-window")
-    if args.dit and args.same_l_window:
-        parser.error("--dit and --same-l-window share the latent flags; "
-                     "build them in separate invocations or use --all")
-    if args.dit_only and args.same_l_only:
-        parser.error("--dit-only and --same-l-only are mutually exclusive")
+    if not (args.all or args.dit or args.same_l_window or args.same_s_decode):
+        parser.error("nothing to build: pass --all, --dit, --same-l-window "
+                     "or --same-s-decode")
+    if sum(map(bool, (args.dit, args.same_l_window, args.same_s_decode))) > 1:
+        parser.error("--dit, --same-l-window and --same-s-decode share the "
+                     "latent flags; build them in separate invocations or "
+                     "use --all")
+    if args.dit_only and (args.same_l_only or args.same_s_only):
+        parser.error("--dit-only and --same-l-only/--same-s-only are mutually exclusive")
     if args.model != "medium":
         if args.fp8 or args.refit:
             parser.error(f"--fp8/--refit are medium-only (got --model {args.model})")
         if args.same_l_window or args.same_l_only:
             parser.error(f"SAME-L is the medium codec; --model {args.model} "
                          "decodes with SAME-S and has no window engine")
-        # Small's codec is SAME-S: an --all matrix is DiT-only.
-        args.dit_only = True
+    elif args.same_s_only:
+        parser.error("--same-s-only needs --model small-music (medium decodes "
+                     "with SAME-L)")
+    # The decoder-only switches share one meaning in the matrix: skip DiT.
+    args.same_l_only = args.same_l_only or args.same_s_only
     dit_cls, dit_component, dit_label = DIT_MODELS[args.model]
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -826,11 +1059,19 @@ def main() -> int:
                         precision_label="fp16mixed refit",
                         refit=True,
                     ))
-        if not args.dit_only:
+        if not args.dit_only and args.model == "medium":
             lo, opt, hi = CANONICAL_SAME_L_WINDOW
             results.append(_build_same_l_window_engine(
                 output_dir=args.output_dir,
                 config=SameLWindowBuildConfig(lo, opt, hi, workspace_gb=args.workspace_gb),
+                env=env,
+                force_rebuild=args.force_rebuild,
+            ))
+        elif not args.dit_only:
+            lo, opt, hi = CANONICAL_SAME_S_DECODE
+            results.append(_build_same_s_decode_engine(
+                output_dir=args.output_dir,
+                config=SameSDecodeBuildConfig(lo, opt, hi, workspace_gb=args.workspace_gb),
                 env=env,
                 force_rebuild=args.force_rebuild,
             ))
@@ -839,8 +1080,8 @@ def main() -> int:
         return 1 if failures else 0
 
     # Single mode
-    if args.same_l_window:
-        # Same vendor-plugin requirement as the --all path; fail fast.
+    if args.same_l_window or args.same_s_decode:
+        # Same vendor-tree requirement as the --all path; fail fast.
         require_sa3_vendor()
     env = _preflight("cuda")
     built = []
@@ -902,6 +1143,20 @@ def main() -> int:
             force_rebuild=args.force_rebuild,
         )
         built.append(result)
+    if args.same_s_decode:
+        d_lo, d_opt, d_hi = CANONICAL_SAME_S_DECODE
+        config = SameSDecodeBuildConfig(
+            min_latents=args.min_latents or d_lo,
+            opt_latents=args.opt_latents or d_opt,
+            max_latents=args.max_latents or d_hi,
+            workspace_gb=args.workspace_gb,
+        )
+        if not (0 < config.min_latents <= config.opt_latents <= config.max_latents):
+            parser.error("require 0 < min <= opt <= max latent frames")
+        built.append(_build_same_s_decode_engine(
+            output_dir=args.output_dir, config=config, env=env,
+            force_rebuild=args.force_rebuild,
+        ))
 
     fresh = [(label, path) for label, path, _, status in built if status == "OK"]
     if fresh:

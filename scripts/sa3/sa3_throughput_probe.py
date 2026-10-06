@@ -17,6 +17,12 @@ thread or any decode, so the number is the DiT ring buffer alone:
   knob change: queued requests drain first (the queue holds ``depth``
   requests), then a fresh slot needs ``steps`` steps.
 
+With ``--decode eager|tensorrt`` every finished generation is also
+decoded the way the server renders it (``SA3Backend._rendered_audio``:
+SAME full decode + 48 kHz resample + host copy) inside the timed tick,
+with the codec built for that backend; ``dec_ms`` reports that part.
+``--decode none`` (default) keeps the DiT-only numbers.
+
 Source: a 48 kHz server fixture as the audio-to-audio anchor (the flips
 move ``sa3_denoise`` between two values below 1.0 so the anchor is in
 play). Run one process per backend; each process sweeps the depths:
@@ -68,7 +74,8 @@ def _load_fixture() -> tuple[int, torch.Tensor]:
     return int(sr), torch.from_numpy(data.T.copy())
 
 
-def _make_backend(context, *, depth, steps, duration_s, source, backend):
+def _make_backend(context, *, depth, steps, duration_s, source, backend,
+                  codec_backend=None):
     from acestep.streaming.knobs import KnobState
     from acestep.streaming.sa3_backend import SA3Backend, sa3_knob_specs
 
@@ -79,7 +86,7 @@ def _make_backend(context, *, depth, steps, duration_s, source, backend):
         knob_state=KnobState(sa3_knob_specs()),
         source_audio=source,
         dit_backend=backend,
-        codec_backend=backend,
+        codec_backend=codec_backend or backend,
         steps=steps,
         depth=depth,
     )
@@ -92,19 +99,31 @@ def _prep(denoise: float, steps: int) -> dict:
     }
 
 
-def _tick(be, prep) -> tuple[float, bool, float | None]:
+_DEC_MS: list = []
+
+
+def _tick(be, prep, decode: bool = False) -> tuple[float, bool, float | None]:
     t0 = time.perf_counter()
     lat = be._generate(prep)
     torch.cuda.synchronize()
+    if decode and lat is not None:
+        t1 = time.perf_counter()
+        be._rendered_audio(lat)
+        _DEC_MS.append((time.perf_counter() - t1) * 1000.0)
     dt = (time.perf_counter() - t0) * 1000.0
     req = getattr(be.pipeline, "last_finished_request", None) if lat is not None else None
     return dt, lat is not None, (float(req.denoise) if req is not None else None)
 
 
 def probe_depth(context, *, depth, steps, duration_s, source, backend,
-                measure_ticks, flips) -> dict:
+                measure_ticks, flips, decode: str = "none") -> dict:
+    dec = decode != "none"
     be = _make_backend(context, depth=depth, steps=steps, duration_s=duration_s,
-                       source=source, backend=backend)
+                       source=source, backend=backend,
+                       codec_backend=decode if dec else None)
+    codec_kind = type(be.codec).__name__
+    if getattr(be.codec, "uses_trt", False):
+        codec_kind += ":" + be.codec._trt.engine_path.parent.name
     dit_kind = type(be.adapter.dit).__name__
     engine = getattr(getattr(be.adapter.dit, "engine_path", None), "parent", None)
     if engine is not None:
@@ -112,21 +131,23 @@ def probe_depth(context, *, depth, steps, duration_s, source, backend,
     try:
         cur = FLIP_VALUES[0]
         for _ in range(2 * steps + depth):  # warm-up: fill the ring
-            _tick(be, _prep(cur, steps))
+            _tick(be, _prep(cur, steps), dec)
         tick_ms, gens = [], 0
+        _DEC_MS.clear()
         t_start = time.perf_counter()
         for _ in range(measure_ticks):
-            dt, done, _ = _tick(be, _prep(cur, steps))
+            dt, done, _ = _tick(be, _prep(cur, steps), dec)
             tick_ms.append(dt)
             gens += int(done)
         wall = time.perf_counter() - t_start
+        dec_ms = list(_DEC_MS)
 
         conv_ticks, conv_ms = [], []
         for i in range(flips):
             new = FLIP_VALUES[(i + 1) % 2]
             n, ms = 0, 0.0
             while True:
-                dt, done, den = _tick(be, _prep(new, steps))
+                dt, done, den = _tick(be, _prep(new, steps), dec)
                 n += 1
                 ms += dt
                 if done and den is not None and abs(den - new) < 1e-6:
@@ -138,7 +159,7 @@ def probe_depth(context, *, depth, steps, duration_s, source, backend,
             cur = new
             # settle so the next flip starts from a steady ring
             for _ in range(steps + depth):
-                _tick(be, _prep(cur, steps))
+                _tick(be, _prep(cur, steps), dec)
         return {
             "depth": depth,
             "dit": dit_kind,
@@ -147,6 +168,9 @@ def probe_depth(context, *, depth, steps, duration_s, source, backend,
             "ticks_per_s": round(measure_ticks / wall, 2),
             "tick_ms": _stats(tick_ms),
             "gens_per_tick": round(gens / measure_ticks, 3),
+            "decode": decode,
+            "codec": codec_kind if dec else None,
+            "dec_ms": _stats(dec_ms),
             "conv_ticks": _stats(conv_ticks),
             "conv_ms": _stats(conv_ms),
         }
@@ -163,6 +187,10 @@ def main() -> int:
     ap.add_argument("--steps", type=int, default=8)
     ap.add_argument("--measure-ticks", type=int, default=150)
     ap.add_argument("--flips", type=int, default=4)
+    ap.add_argument("--decode", choices=("none", "eager", "tensorrt"), default="none",
+                    help="also decode every finished generation inside the "
+                         "timed tick with this codec backend (default: none, "
+                         "DiT ring buffer only)")
     ap.add_argument("--no-fp8", action="store_true",
                     help="hide fp8 DiT engines from discovery (medium: "
                          "measure the fp16mixed engine production would "
@@ -185,7 +213,7 @@ def main() -> int:
         "model": args.model, "duration_s": args.duration, "steps": args.steps,
         "dit_backend": args.backend, "measure_ticks": args.measure_ticks,
         "flips": args.flips, "gpu": torch.cuda.get_device_name(0),
-        "no_fp8": bool(args.no_fp8),
+        "no_fp8": bool(args.no_fp8), "decode": args.decode,
         "flip_values": list(FLIP_VALUES), "rows": [],
     }
     for d in args.depths:
@@ -193,6 +221,7 @@ def main() -> int:
             context, depth=d, steps=args.steps, duration_s=args.duration,
             source=source, backend=args.backend,
             measure_ticks=args.measure_ticks, flips=args.flips,
+            decode=args.decode,
         )
         print(json.dumps(row), flush=True)
         out["rows"].append(row)

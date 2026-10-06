@@ -113,13 +113,18 @@ the SA3 DiT into `StreamPipeline`'s ring buffer, and every emit is an
 - **Engines:** `python -m acestep.engine.trt.sa3_build --model small-music
   --all` builds the small DiT engines (`sa3_sm_dit_l1_{324,646,1292}`, from
   upstream's `onnx/sa3-sm-music/dit_fp16.onnx`, fp16mixed
-  STRONGLY_TYPED); `--all` without `--model` builds medium's DiT engines
-  plus the SAME-L window decoder. Discovery (`acestep/engine/sa3_trt.py`
-  `find_dit_engine`) picks the smallest engine covering the session's
-  latent window; with none, the DiT runs eager and preflight logs the build
-  command. Small decodes with SAME-S eager (full decode, ~60 ms per
-  render tick at 54 s on a 5090, now its largest per-tick cost), medium with
-  the SAME-L window engine (~10 ms).
+  STRONGLY_TYPED) and the SAME-S full decoder
+  (`same_s_decode_<recipe>_w<codec hash>_t32_646_1292`, upstream's FP32
+  `onnx/same-s/dec_bf16.onnx` converted to fp16mixed by the vendored
+  `build_same_s_dec_fp16.py`); `--all` without `--model` builds medium's DiT
+  engines plus the SAME-L window decoder. Discovery
+  (`acestep/engine/sa3_trt.py`) picks the smallest DiT engine covering the
+  session's latent window, and the SAME-S decoder whose weights tag matches
+  the checkpoint's codec hash (small-music and small-sfx share one codec, so
+  one engine file); anything missing runs eager and preflight logs the
+  build command. Small's full decode: ~16 ms TRT vs ~61 ms eager per render
+  tick at 54 s on a 5090 (odd latent lengths stay eager); medium decodes
+  with the SAME-L window engine (~10 ms).
 - **Speed (RTX 5090, 54 s session = 614 latent frames, 8 steps,
   `scripts/sa3/sa3_throughput_probe.py`):** small TRT ~21 gens/s flat
   across depth 1-8 (tick p50 5.8 ms at depth 1, 23 ms at depth 4); small

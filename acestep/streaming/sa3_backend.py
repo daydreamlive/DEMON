@@ -496,8 +496,8 @@ class SA3Backend(DiffusionBackend):
         params, compile already normalized to eager by the create
         path); the context maps them onto its components (``make_dit``
         / ``make_codec``): "tensorrt" selects the built engines when
-        they cover the session, with eager fallback (small's DiT has
-        engines; its SAME-S full-decode codec stays eager either way)."""
+        they cover the session, with eager fallback (small: the DiT
+        engines plus the SAME-S full-decode engine)."""
         from acestep.engine.sa3_adapter import SA3Adapter
 
         steps = int(kwargs.get("steps", 8))

@@ -147,22 +147,42 @@ SA3_ENGINE_BUILD_COMMANDS = {
 }
 
 
+#: Catalog ids whose codec is upstream's SAME-S (the decode engine's
+#: weights); the runtime still verifies the checkpoint's codec hash.
+SAME_S_DECODE_MODELS = {"small-music"}
+
+
 def _sa3_engine_hint(req: PreflightRequest) -> Optional[str]:
-    """Warn (never fail) when TensorRT was asked for but no DiT engine
-    exists for the model: sessions then run the eager DiT, several times
-    slower, and the operator should know why and how to fix it. Returns
-    the warning text (None when engines exist, TRT is off, or the model
+    """Warn (never fail) when TensorRT was asked for but an engine the
+    model can use is missing: sessions then run that stage eagerly
+    (DiT several times slower; small's SAME-S full decode ~3x slower),
+    and the operator should know why and how to fix it. Returns the
+    warning text (None when the engines exist, TRT is off, or the model
     has no engine support)."""
-    from acestep.engine.sa3_trt import max_dit_engine_latents
+    from acestep.engine.sa3_trt import (
+        SAME_S_UPSTREAM_DECODER_SHA256,
+        find_same_s_decode_engine,
+        max_dit_engine_latents,
+    )
 
     cmd = SA3_ENGINE_BUILD_COMMANDS.get(req.model_id)
-    if req.decoder_accel != "tensorrt" or cmd is None:
+    if cmd is None:
         return None
-    if max_dit_engine_latents(req.model_id) is not None:
+    missing = []
+    if req.decoder_accel == "tensorrt" and max_dit_engine_latents(req.model_id) is None:
+        missing.append("DiT")
+    if (
+        req.vae_accel == "tensorrt"
+        and req.model_id in SAME_S_DECODE_MODELS
+        and find_same_s_decode_engine(SAME_S_UPSTREAM_DECODER_SHA256) is None
+    ):
+        missing.append("SAME-S decoder")
+    if not missing:
         return None
+    what = " and ".join(missing)
     text = (
-        f"no SA3 TensorRT DiT engine for {req.model_id}: sessions will run "
-        f"the eager DiT. Build them with: {cmd}"
+        f"no SA3 TensorRT {what} engine for {req.model_id}: sessions will run "
+        f"the eager {what}. Build with: {cmd}"
     )
     logger.warning("preflight_sa3_no_trt_engine model_id={} hint={!r}", req.model_id, text)
     return text
