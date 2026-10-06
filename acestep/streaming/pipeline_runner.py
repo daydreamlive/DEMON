@@ -46,6 +46,25 @@ T = 1500
 _LAT_TRACE = os.environ.get("DEMON_LAT_TRACE", "") not in ("", "0")
 
 
+
+def _fade_in_over(win_np, current, start: int, xfade: int) -> None:
+    """Crossfade the head of a render window in over the live buffer,
+    in place.
+
+    The ramp is clipped to the buffer samples that exist past ``start``:
+    a window that begins within ``xfade`` samples of the buffer end (the
+    loop-wrap point, reached every lap on a short loop) would otherwise
+    broadcast a full-length ramp against a shorter buffer slice and kill
+    the session (``operands could not be broadcast``). No fade at song
+    position 0, where there is nothing earlier to blend from.
+    """
+    n = min(int(xfade), max(0, current.shape[0] - int(start)), win_np.shape[0])
+    if start <= 0 or n <= 0:
+        return
+    t_in = np.linspace(0.0, 1.0, n).reshape(-1, 1)
+    win_np[:n] = current[start:start + n] * (1 - t_in) + win_np[:n] * t_in
+
+
 class ReportStalenessEstimator:
     """Estimates how stale each client playhead report is at arrival.
 
@@ -619,12 +638,7 @@ class PipelineRunner:
         wrap_np = chunk.pcm[:wrap_len].copy()
         wrap_end = wrap_start + wrap_np.shape[0]
         xfade = min(1200, wrap_np.shape[0] // 4)
-        if wrap_start > 0 and xfade > 0:
-            t_in = np.linspace(0.0, 1.0, xfade).reshape(-1, 1)
-            wrap_np[:xfade] = (
-                current[wrap_start:wrap_start + xfade] * (1 - t_in)
-                + wrap_np[:xfade] * t_in
-            )
+        _fade_in_over(wrap_np, current, wrap_start, xfade)
         if wrap_end < current.shape[0] and xfade > 0:
             t_out = np.linspace(1.0, 0.0, xfade).reshape(-1, 1)
             wrap_np[-xfade:] = (
@@ -973,12 +987,7 @@ class PipelineRunner:
                             min(1200, win_np.shape[0] // 4)
                             if refines_audio else 0
                         )
-                        if win_start > 0 and xfade > 0:
-                            t_in = np.linspace(0.0, 1.0, xfade).reshape(-1, 1)
-                            win_np[:xfade] = (
-                                current[win_start:win_start + xfade] * (1 - t_in)
-                                + win_np[:xfade] * t_in
-                            )
+                        _fade_in_over(win_np, current, win_start, xfade)
                         if win_end < current.shape[0] and xfade > 0:
                             t_out = np.linspace(1.0, 0.0, xfade).reshape(-1, 1)
                             tail = min(xfade, current.shape[0] - win_end + xfade)
