@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>DEMON SFX</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="top">
+        <div class="title">sfx <small>a streaming sound-design board on Stable Audio 3 small-sfx</small></div>
+        <div class="transport">
+          <button id="play" type="button" class="power">Play</button>
+          <button id="add" type="button">+ Layer</button>
+          <button id="save-mix" type="button" disabled>Save mix WAV</button>
+          <span id="status" class="status">idle</span>
+        </div>
+      </header>
+
+      <div class="board">
+        <section id="layers" class="layers" aria-label="Mixer layers"></section>
+
+        <aside class="side">
+          <section class="panel library">
+            <h2>Examples</h2>
+            <p class="hint">Click a card to send it to the prompt slot you last clicked (A or B; default layer 1, A). Typed prompts send on Enter or when you leave the field.</p>
+            <div id="library"></div>
+          </section>
+        </aside>
+      </div>
+    </main>
+    <script type="module" src="./sfx.js"></script>
+  </body>
+</html>

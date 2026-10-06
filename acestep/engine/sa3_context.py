@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import math
 import os
+import threading
 from pathlib import Path
 from typing import Callable, Mapping
 
@@ -41,8 +42,9 @@ from acestep.engine.sa3_helpers import (
 
 # Models whose SAME decoder is too slow to full-decode per render tick
 # (SAME-L: ~80 ms eager full at 60 s) and therefore use the windowed
-# codec. SAME-S (small-music) full-decodes in ~11 ms flat — windowing
-# would only add seam surface there.
+# codec. SAME-S (small-music) full-decodes per fresh generation instead
+# (no chunk-phase seams); eager that costs ~60 ms at the 54 s canvas, so
+# under ``tensorrt`` it runs the SAME-S decode engine (see below).
 WINDOWED_DECODE_MODELS = {"medium"}
 
 # ---- Song-length conditioning -------------------------------------------
@@ -81,6 +83,14 @@ SONG_SECONDS_MAX = 384.0
 # also what the TRT clamp now costs a 60 s loop on the 646-latent
 # engine (~57 s, was ~54 s under the 6 s pad); ``DEMON_SA3_OUTRO_PAD_S=0``
 # trades the wrap for the full 60 s.
+# Eager SAME decode touches process-wide state: the seeded decode forks
+# and reseeds the global torch RNG, and the deterministic window decode
+# toggles noise flags on the shared model. Concurrent small-class
+# sessions (their models allow several per pod) serialize those decodes
+# so one session's reseed or flag flip can never land inside another's
+# decode. medium (SAME-L) runs one session per pod and never takes it.
+_SAM_DECODE_LOCK = threading.Lock()
+
 LEGACY_OUTRO_PAD_S = 6.0
 DEFAULT_LOOP_WRAP_S = 3.0
 
@@ -299,6 +309,17 @@ class SA3Context:
             return requested, ""
         return "eager", verdict.reason or "extension does not support tensorrt"
 
+    def with_song_seconds(self, song_seconds: float | None) -> "SA3LabelView":
+        """A per-session view of this context with its own song-length
+        label: ``None`` = the upstream whole-file semantics (label = the
+        render length, silent outro pad; one-shots decay to silence),
+        a number = that label (clamped to the conditioner's range). The
+        model, engines and caches stay shared; only the label and the
+        outro pad differ."""
+        if song_seconds is not None:
+            song_seconds = min(float(song_seconds), SONG_SECONDS_MAX)
+        return SA3LabelView(self, song_seconds, outro_pad_setting(song_seconds))
+
     def close(self) -> None:
         """Release the installed extension. Idempotent.
 
@@ -364,15 +385,15 @@ class SA3Context:
 
     def make_codec(self, *, backend: str = "eager"):
         """The family codec for one session: SAME-S full decode for
-        small (measured ~11 ms flat, so windowing buys nothing; eager
-        only, ``backend`` has no TRT flavor to select), the SAME-L
-        windowed codec for medium (full decode is ~80 ms per call — too
-        slow to run per render tick), whose per-window decode runs the
-        built TRT engine when ``backend="tensorrt"`` and eager
-        otherwise."""
+        small, the SAME-L windowed codec for medium (full decode is
+        ~80 ms per call — too slow to run per render tick). Under
+        ``backend="tensorrt"`` each runs its built TRT engine (SAME-S
+        full decoder / SAME-L window decoder) and falls back to eager
+        when the engine is missing or cannot serve the latent."""
+        use_trt = backend == "tensorrt"
         if self.model_id in WINDOWED_DECODE_MODELS:
-            return SA3SAMEWindowCodec(self, use_trt=(backend == "tensorrt"))
-        return SA3SAMECodec(self)
+            return SA3SAMEWindowCodec(self, use_trt=use_trt)
+        return SA3SAMECodec(self, use_trt=use_trt)
 
     def cond_seconds_total(self, duration_s: float) -> float:
         """The ``seconds_total`` label a render of ``duration_s`` is
@@ -399,7 +420,7 @@ class SA3Context:
         """Clamp a requested duration so its (padded, aligned) latent
         window fits a built TRT DiT engine — landing on the fast path
         instead of silently falling back to the ~5x-slower eager DiT.
-        No-op for models without engines (small) or durations already
+        No-op for models without built engines or durations already
         inside. No-op unless ``backend="tensorrt"`` (see
         :meth:`make_dit`) — the eager DiT has no length cap worth
         truncating the source for."""
@@ -499,23 +520,111 @@ class SA3Context:
         return sr, tiled
 
 
+class SA3LabelView:
+    """A process-cached :class:`SA3Context` seen with a per-session
+    ``song_seconds`` / ``outro_pad_s`` (see
+    :meth:`SA3Context.with_song_seconds`).
+
+    Every label consumer (``prepare_cond``, ``cond_seconds_total``,
+    ``window_latent_frames``, ``encode_source``, the TRT clamp) is a
+    context method reading ``self.song_seconds`` / ``self.outro_pad_s``,
+    so the view re-binds the context's methods to itself: they then read
+    the overrides and delegate everything else (model, engines, caches)
+    to the shared context. Writes other than the two overrides land on
+    the shared context, so a cache the context fills stays shared.
+    """
+
+    _OVERRIDES = ("song_seconds", "outro_pad_s")
+
+    def __init__(self, base: SA3Context, song_seconds, outro_pad_s: float):
+        object.__setattr__(self, "_base", base)
+        object.__setattr__(self, "song_seconds", song_seconds)
+        object.__setattr__(self, "outro_pad_s", float(outro_pad_s))
+
+    def __getattr__(self, name):
+        import inspect
+        import types
+
+        static = inspect.getattr_static(type(self._base), name, None)
+        if isinstance(static, types.FunctionType):
+            return types.MethodType(static, self)
+        if isinstance(static, property) and static.fget is not None:
+            return static.fget(self)
+        return getattr(self._base, name)
+
+    def __setattr__(self, name, value):
+        if name in self._OVERRIDES:
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._base, name, value)
+
+
 class SA3SAMECodec:
     """The SA3 family codec: SAME latent -> 44.1 kHz stereo audio.
 
-    v1 decodes the FULL latent per fresh generation rather than a
-    window: SAME-S decode is ~11 ms flat out to 60 s (measured), so
-    windowed decode buys nothing for small-music and full decode
-    sidesteps the chunk-phase (``chunk_midpoint_shift``) window
-    artifacts entirely. The windowed path
-    (``decode_sa3_latent_window`` + slice alignment) stays available in
-    the spike helpers for larger models. The 44.1→48 kHz delivery
-    resample is NOT here — it sits in the backend at the decode
-    boundary (round_3 decision 2).
+    Decodes the FULL latent per fresh generation rather than a window,
+    which sidesteps the chunk-phase (``chunk_midpoint_shift``) window
+    artifacts of SAME-S entirely. Two execution paths:
+
+    * **TRT** when ``use_trt`` and the SAME-S decode engine is built
+      (``same_s_decode_<recipe>_t*``, fp16mixed): the latent, scaled by
+      ``pretransform.scale``, runs through the engine whenever its frame
+      count is even and inside the engine profile (:meth:`trt_serves`). The engine graph carries the
+      SoftNorm renoise (drawn by TensorRT, so ``decode_seed`` does not
+      reach it) but no decoder ``mask_noise``: it matches the
+      deterministic eager decode, not the noisy legacy one.
+    * **Eager** otherwise (~60 ms at the 54 s canvas, 5090).
+
+    The 44.1→48 kHz delivery resample is NOT here — it sits in the
+    backend at the decode boundary (round_3 decision 2).
     """
 
-    def __init__(self, context: SA3Context):
+    def __init__(self, context: SA3Context, *, use_trt: bool = False):
         self._context = context
         self._helpers = context._helpers
+        self._scale = float(getattr(context.sam.model.pretransform, "scale", 1.0))
+        self._trt = None
+        self._min_t = self._max_t = 0
+        if not use_trt:
+            return
+        from acestep.engine.sa3_trt import (
+            SAME_S_UPSTREAM_DECODER_SHA256,
+            SameSTRTDecoder,
+            find_same_s_decode_engine,
+            same_decoder_weights_sha256,
+        )
+
+        # Engines are keyed on the checkpoint's codec weights, not its
+        # model id: a byte-identical codec (small-music, small-sfx) shares
+        # the engine file; any other codec stays eager.
+        sha = same_decoder_weights_sha256(context.checkpoint_dir)
+        found = find_same_s_decode_engine(sha)
+        if found is None:
+            known = sha is not None and sha == SAME_S_UPSTREAM_DECODER_SHA256
+            logger.info(
+                "sa3_same_s_decode mode=eager reason={} codec_sha={}",
+                "no_trt_engine" if known else "codec_weights_have_no_engine",
+                (sha or "unknown")[:12],
+            )
+            return
+        path, self._min_t, self._max_t = found
+        self._trt = SameSTRTDecoder(path)
+
+    @property
+    def uses_trt(self) -> bool:
+        return self._trt is not None
+
+    def trt_serves(self, frames: int) -> bool:
+        """Whether the engine decodes ``frames`` latent frames like eager.
+
+        Even counts only: upstream's graph pads an odd latent to even
+        before its chunked transformers, which is exactly eager decoding
+        the padded latent (cos 0.99993 there), while eager on the odd
+        latent itself runs a different chunk phase (cos ~0.998 to either).
+        Odd windows therefore stay eager so the TRT path never changes
+        what a session sounds like. The production 54 s canvas is even
+        (L = 614)."""
+        return frames % 2 == 0 and self._min_t <= frames <= self._max_t
 
     def decode_full(
         self, latent_bct: torch.Tensor, *, decode_seed: int | None = None,
@@ -527,8 +636,13 @@ class SA3SAMECodec:
         SAME decoder's inference-time noise (bottleneck renoise +
         decoder mask_noise) is reproducible: same latent + same seed →
         bit-identical audio. ``None`` keeps the legacy unseeded draw.
+        The TRT path ignores it (see the class docstring).
         """
-        with self._helpers.sa3_decode_rng(decode_seed, device=latent_bct.device):
+        if self._trt is not None and self.trt_serves(int(latent_bct.shape[-1])):
+            return self._trt.decode(latent_bct * self._scale)
+        with _SAM_DECODE_LOCK, self._helpers.sa3_decode_rng(
+            decode_seed, device=latent_bct.device,
+        ):
             audio = self._helpers.decode_sa3_latent(self._context.sam, latent_bct)
         return audio[0]
 

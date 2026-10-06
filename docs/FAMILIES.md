@@ -29,6 +29,7 @@ against it by `tests/unit/test_family_conformance.py`.
 | `shutdown()` | releases process-wide state the family holds (a cached model, an installed extension) when the server exits | `server.py` shutdown |
 | `accepts_checkpoint_dir` | whether `--sa3-base-checkpoint` may point the family at a non-catalog directory | `server.py` CLI |
 | `supports_extensions` | whether `--model-extension` may target the family | `acestep.plugins.selection` |
+| `max_concurrent_sessions` | per model id: how many sessions of that model may run side by side on one pod before a new connection preempts the oldest (absent = 1, one session per pod, required by ACE and kept by SA3 medium; SA3 small-music and small-sfx allow 4 because each session owns its TRT execution context) | `ws_adapter.py` session create |
 
 Both callables do their own lazy imports, so registering a family adds no
 model import to the registry. (The registry itself still imports the
@@ -85,6 +86,9 @@ phase 1 of the platform plan; a third family today would have to edit each.
 
 The `sa3_duration_s` handshake key is now declared by the SA3 spec and reaches
 the wire contract from there; `SessionConfig` carries it in `family_config`.
+`sa3_song_seconds` sets a session's own song-length label over the shared model
+(`SA3Context.with_song_seconds`): `0` labels the render with its own length, so
+a one-shot decays to silence inside the loop.
 
 `tests/unit/test_family_boundary.py` walks the AST of the frozen core files
 (`pipeline_runner.py`, `session.py`, `generator_backend.py`,
@@ -99,6 +103,43 @@ One family per pod. The pod's engine family is `DEMON_MODEL`; its routing
 identity is `RTMG_POOL_MODEL`, which defaults to the family and may carry a
 variant (`sa3-controlnet`). Warmup and preflight are family policy, read from
 the spec by the server at boot.
+
+## Stable Audio 3 (`sa3`)
+
+A refining diffusion family on the `ModelAdapter` seam: `SA3Adapter` plugs
+the SA3 DiT into `StreamPipeline`'s ring buffer, and every emit is an
+8-step pingpong audio-to-audio cover of the uploaded source.
+
+- **Boot:** `--checkpoint sa3-small` (catalog id `small-music`),
+  `--checkpoint sa3-sfx` (`small-sfx`, same architecture, sound-effects
+  weights, own `sa3_sfx_dit_*` engines) or `--checkpoint sa3-medium`. Weights are a manual
+  `huggingface-cli download` (see `docs/INSTALL.md`); preflight fails the
+  boot with the command when they are missing.
+- **Engines:** `python -m acestep.engine.trt.sa3_build --model small-music
+  --all` builds the small DiT engines (`sa3_sm_dit_l1_{324,646,1292}`, from
+  upstream's `onnx/sa3-sm-music/dit_fp16.onnx`, fp16mixed
+  STRONGLY_TYPED) and the SAME-S full decoder
+  (`same_s_decode_<recipe>_w<codec hash>_t32_646_1292`, upstream's FP32
+  `onnx/same-s/dec_bf16.onnx` converted to fp16mixed by the vendored
+  `build_same_s_dec_fp16.py`); `--all` without `--model` builds medium's DiT
+  engines plus the SAME-L window decoder. Discovery
+  (`acestep/engine/sa3_trt.py`) picks the smallest DiT engine covering the
+  session's latent window, and the SAME-S decoder whose weights tag matches
+  the checkpoint's codec hash (small-music and small-sfx share one codec, so
+  one engine file); anything missing runs eager and preflight logs the
+  build command. Small's full decode: ~16 ms TRT vs ~61 ms eager per render
+  tick at 54 s on a 5090 (odd latent lengths stay eager); medium decodes
+  with the SAME-L window engine (~10 ms).
+- **Speed (RTX 5090, 54 s session = 614 latent frames, 8 steps,
+  `scripts/sa3/sa3_throughput_probe.py`):** small TRT ~21 gens/s flat
+  across depth 1-8 (tick p50 5.8 ms at depth 1, 23 ms at depth 4); small
+  eager 2.9 gens/s at depth 1 rising to 19.5 at depth 8; medium TRT 11.7
+  gens/s (fp8 engine) / 9.6 (fp16mixed). Real server, small TRT depth 4:
+  session ready in 6.6 s, ~2.1 GB torch VRAM (medium 5.4 GB).
+- **TRT DiT parity (`scripts/sa3/sa3_trt_dit_cond_parity.py`):** fp16mixed
+  is the fidelity tier (min per-step cos >= 0.9998 vs eager); fp8 engines
+  are a speed tier judged at upstream's bar (min per-step cos >= 0.90,
+  upstream PR #86), not at the fidelity gate.
 
 ## Magenta RealTime 2 (`mrt2`)
 

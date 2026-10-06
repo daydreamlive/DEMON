@@ -29,6 +29,10 @@ SA3_VENDOR_SHA = "960da1f8cbe205ab3b702edbfabd91113ab22473"
 # Revision that last changed the source compiled into the SAME-L TensorRT
 # engine. Keep this stable across vendor bumps that only touch other code.
 SA3_SAME_L_PLUGIN_REVISION = "c07698548567fe6f163806f692d282bbaa57aba3"
+# Revision that last changed the vendored SAME-S fp16mixed converter
+# (optimized/tensorRT/build/build_same_s_dec_fp16.py + the build_dit_fp16
+# helpers it imports); part of the SAME-S decode engine name.
+SA3_SAME_S_DECODE_REVISION = "c7e88002a3d15bbd4b56f792c5be6f06692d80fb"
 SA3_VENDOR_ENV = "DEMON_SA3_SRC"
 SA3_VENDOR_DIRNAME = "stable-audio-3"
 
@@ -136,8 +140,12 @@ def sa3_checkpoint_status(model_id: str) -> tuple[bool, str]:
         # The weights are NOT fetched by demon-setup (which only vendors
         # the source below) — they are downloaded manually from HF into
         # the layout sa3_checkpoint_dir documents.
+        # Every SA3 repo is gated on Hugging Face (licence click-through,
+        # auto-approved), so an unauthenticated download 401s; say so.
         return False, (
-            f"SA3 checkpoint {model_id!r} not found at {ckpt}. Download it "
+            f"SA3 checkpoint {model_id!r} not found at {ckpt}. Accept the "
+            f"licence at https://huggingface.co/stabilityai/stable-audio-3-{model_id} "
+            f"(gated), log in (`hf auth login` or HF_TOKEN), then download it "
             f"with: huggingface-cli download stabilityai/stable-audio-3-{model_id} "
             f"--local-dir {ckpt}"
         )

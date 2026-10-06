@@ -168,6 +168,20 @@ def create_sa3_session(
         extension=model_extension,
     )
 
+    # Per-session song-length label (the sa3_song_seconds config field):
+    # 0 = the clip's own length (one-shots end in silence), a number =
+    # that label, absent = the process default. The view shares the
+    # loaded model; every label consumer below reads the override.
+    song_override = config.family_config.get("sa3_song_seconds")
+    if song_override is not None:
+        context = context.with_song_seconds(
+            None if float(song_override) <= 0 else float(song_override),
+        )
+        logger.info(
+            "sa3_session_label song_seconds={} outro_pad_s={:.1f}",
+            context.song_seconds, context.outro_pad_s,
+        )
+
     # An installed extension may not be runnable under a prebuilt
     # acceleration plan. Resolve that BEFORE component construction so the
     # duration clamp below sees the backend that will actually run: a
@@ -193,7 +207,7 @@ def create_sa3_session(
     source_duration_s = waveform.shape[-1] / SAMPLE_RATE
     duration_s = float(config.family_config.get("sa3_duration_s") or 0.0) or source_duration_s
     duration_s = min(duration_s, SA3_MAX_DURATION_S)
-    # Land on the TRT DiT fast path when engines are built (medium):
+    # Land on the TRT DiT fast path when engines are built:
     # a duration whose padded latent window exceeds every engine
     # profile would silently fall back to the ~5x-slower eager DiT.
     duration_s = context.clamp_duration_for_trt(duration_s, backend=dit_backend)

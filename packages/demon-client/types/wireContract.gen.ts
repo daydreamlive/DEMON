@@ -533,6 +533,8 @@ export interface SessionConfigPayload {
   telemetry_version?: number | null;
   /** Fixed generation duration for sa3 sessions, seconds. Absent or null derives it from the uploaded source audio length (the audio-to-audio anchor); SA3 conditioning is captured per (prompt, duration), so this is fixed for the session lifetime. */
   sa3_duration_s?: number | null;
+  /** Song-length label (seconds_total) for this sa3 session. Absent or null keeps the server default (a label longer than the loop: a crop of a longer file, so the loop never composes an ending). 0 labels the render with its own length, the upstream whole-file semantics: a one-shot decays to silence inside the loop. Fixed for the session lifetime. */
+  sa3_song_seconds?: number | null;
   /** Rolling-window length for minimax sessions, seconds: the tape the append-only frontier overwrites and the player loops, NOT a song length. The piece ends when the autoregressive stage emits end-of-audio (ceiling 9000 frames at 25 Hz = 360 s). Absent or null = 60 s. */
   minimax_duration_s?: number | null;
   /** Lyrics for the minimax autoregressive stage. Absent or null = "[instrumental]", upstream's no-singing convention (the tokenizer refuses an empty lyric). */

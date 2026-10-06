@@ -191,6 +191,14 @@ class FamilySpec:
     refuses a family that does not, because a selected extension that
     is never installed would generate with the stock model and sound
     entirely plausible.
+
+    ``max_concurrent_sessions`` maps a model id (the values of
+    ``checkpoint_aliases``) to how many sessions of that model the
+    serving layer lets run side by side on one pod before a new
+    connection preempts the oldest; :meth:`session_cap` reads it. A model
+    absent from the map gets 1, the one-session-per-pod policy, which ACE
+    needs (its sessions share engine state a second create would evict)
+    and which every model keeps unless it is measured to share a pod.
     """
 
     name: str
@@ -207,8 +215,20 @@ class FamilySpec:
     config_fields: tuple = ()
     shutdown: Optional[Callable[[], Any]] = None
     supports_extensions: bool = False
+    max_concurrent_sessions: Mapping[str, int] = field(default_factory=dict)
+
+    def session_cap(self, model_id: str) -> int:
+        """Live-session cap for ``model_id`` on one pod (1 unless the
+        family lists the model in ``max_concurrent_sessions``)."""
+        return int(self.max_concurrent_sessions.get(model_id, 1))
 
     def __post_init__(self):
+        for model_id, cap in self.max_concurrent_sessions.items():
+            if int(cap) < 1:
+                raise ValueError(
+                    f"family {self.name!r} max_concurrent_sessions[{model_id!r}] "
+                    "must be >= 1"
+                )
         if self.prompt_policy not in PROMPT_POLICIES:
             raise ValueError(
                 f"family {self.name!r} prompt_policy {self.prompt_policy!r} "
@@ -529,7 +549,13 @@ SA3 = FamilySpec(
     display_name="Stable Audio 3",
     make_backend=_make_sa3,
     knob_universe=_sa3_knob_universe,
-    checkpoint_aliases={"sa3-small": "small-music", "sa3-medium": "medium"},
+    checkpoint_aliases={
+        "sa3-small": "small-music",
+        "sa3-medium": "medium",
+        # Sound effects: small-music's architecture and SAME-S codec with
+        # SFX weights, so it rides the same adapter and codec unchanged.
+        "sa3-sfx": "small-sfx",
+    },
     # Per-connect setup doesn't fit the ACE create path (TRT profiles,
     # model load, demucs, conditioning encode), so SA3 owns its creator.
     create_session=_create_sa3_session,
@@ -546,6 +572,15 @@ SA3 = FamilySpec(
             "audio-to-audio anchor); SA3 conditioning is captured per "
             "(prompt, duration), so this is fixed for the session lifetime.",
         ),
+        FamilyConfigField(
+            "sa3_song_seconds", "float",
+            "Song-length label (seconds_total) for this sa3 session. Absent "
+            "or null keeps the server default (a label longer than the loop: "
+            "a crop of a longer file, so the loop never composes an ending). "
+            "0 labels the render with its own length, the upstream "
+            "whole-file semantics: a one-shot decays to silence inside the "
+            "loop. Fixed for the session lifetime.",
+        ),
     ),
     # The anchor is synthesised at the REQUESTED render length so the
     # source and the render agree in sa3_session; capped at the family's
@@ -557,6 +592,11 @@ SA3 = FamilySpec(
     shutdown=_shutdown_sa3,
     # SA3Context offers the model-extension veto/install/close hooks.
     supports_extensions=True,
+    # Small-class sessions share the loaded model and the deserialized TRT
+    # engines but each owns its execution context, so several run at once
+    # (the /sfx board mixes up to four layers; ~2.1 GB and ~21+ gens/s per
+    # session on a 5090). medium is absent: one session per pod.
+    max_concurrent_sessions={"small-music": 4, "small-sfx": 4},
 )
 
 

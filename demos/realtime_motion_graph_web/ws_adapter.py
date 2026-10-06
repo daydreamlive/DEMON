@@ -241,7 +241,9 @@ _UPLOAD_INFER_LOCK = threading.Lock()
 
 _SESSION_LIFECYCLE_LOCK = threading.Lock()
 _ACTIVE_SLOT_LOCK = threading.Lock()
-_ACTIVE_SESSION: list = [None]  # [_ActiveSession | None]
+# Live sessions, oldest first. At most the served model's session cap
+# (``FamilySpec.session_cap``; 1 unless the model lists more: the policy above).
+_ACTIVE_SESSIONS: list = []  # [_ActiveSession]
 
 # 4000-range application close code: "this session was replaced by a
 # newer connection". The web client (web/sdk/protocol.ts +
@@ -483,40 +485,48 @@ class _ActiveSession:
         self.ws = ws
 
 
-def _preempt_active_session(new_session_id: str) -> None:
-    """Stop and drain the currently-active session, if any.
+def _preempt_active_session(new_session_id: str, keep: int = 0) -> None:
+    """Stop and drain the oldest active sessions until at most ``keep``
+    remain (0 = the one-session policy: drain whatever is active).
 
-    Caller must hold ``_SESSION_LIFECYCLE_LOCK``. Returns once the old
-    session has released its GPU state (or after a bounded wait with a
-    warning — create proceeds either way; the OOM-retry paths downstream
-    are the backstop)."""
-    with _ACTIVE_SLOT_LOCK:
-        prev = _ACTIVE_SESSION[0]
-    if prev is None:
-        return
-    logger.info(
-        "session_preempt prev={} new={} reason=single_session_policy",
-        prev.session_id, new_session_id,
-    )
-    # Stop the runner; it observes this between pipeline iterations and
-    # exits run() into close().
-    prev.streaming.state.running = False
-    # Close the old socket so its handler unblocks from any recv/send
-    # and the client sees a deliberate, final close (not a 1006 blip).
-    try:
-        prev.ws.close(PREEMPTED_CLOSE_CODE, "preempted by a newer session")
-    except Exception:
-        pass
-    if not prev.streaming.closed.wait(timeout=_PREEMPT_TEARDOWN_TIMEOUT_S):
-        logger.warning(
-            "session_preempt_teardown_timeout prev={} waited_s={}",
-            prev.session_id, _PREEMPT_TEARDOWN_TIMEOUT_S,
-        )
-    else:
-        logger.info("session_preempt_complete prev={}", prev.session_id)
-    with _ACTIVE_SLOT_LOCK:
-        if _ACTIVE_SESSION[0] is prev:
-            _ACTIVE_SESSION[0] = None
+    Caller must hold ``_SESSION_LIFECYCLE_LOCK``. Returns once each
+    preempted session has released its GPU state (or after a bounded wait
+    with a warning — create proceeds either way; the OOM-retry paths
+    downstream are the backstop)."""
+    while True:
+        with _ACTIVE_SLOT_LOCK:
+            if len(_ACTIVE_SESSIONS) <= keep:
+                return
+            prev = _ACTIVE_SESSIONS[0]
+        if keep == 0:
+            logger.info(
+                "session_preempt prev={} new={} reason=single_session_policy",
+                prev.session_id, new_session_id,
+            )
+        else:
+            logger.info(
+                "session_preempt prev={} new={} reason=session_cap keep={}",
+                prev.session_id, new_session_id, keep,
+            )
+        # Stop the runner; it observes this between pipeline iterations and
+        # exits run() into close().
+        prev.streaming.state.running = False
+        # Close the old socket so its handler unblocks from any recv/send
+        # and the client sees a deliberate, final close (not a 1006 blip).
+        try:
+            prev.ws.close(PREEMPTED_CLOSE_CODE, "preempted by a newer session")
+        except Exception:
+            pass
+        if not prev.streaming.closed.wait(timeout=_PREEMPT_TEARDOWN_TIMEOUT_S):
+            logger.warning(
+                "session_preempt_teardown_timeout prev={} waited_s={}",
+                prev.session_id, _PREEMPT_TEARDOWN_TIMEOUT_S,
+            )
+        else:
+            logger.info("session_preempt_complete prev={}", prev.session_id)
+        with _ACTIVE_SLOT_LOCK:
+            if prev in _ACTIVE_SESSIONS:
+                _ACTIVE_SESSIONS.remove(prev)
 
 
 def _log_session_vram(stage: str) -> None:
@@ -851,7 +861,7 @@ def _publish_stems_to_active_session(
     slice stream). No-op when no session is active — the stems are on
     disk and the next swap serves them from cache."""
     with _ACTIVE_SLOT_LOCK:
-        cur = _ACTIVE_SESSION[0]
+        cur = _ACTIVE_SESSIONS[-1] if _ACTIVE_SESSIONS else None
     if cur is None:
         return False
     try:
@@ -1352,8 +1362,13 @@ def _handle_client_body(
         # Single-active-session policy: serialize construction and
         # preempt whatever session currently owns the GPU. See the
         # policy comment block at module top.
+        from acestep.streaming.families import FAMILY_SPECS
+
+        family_spec = FAMILY_SPECS.get(_effective_family(config_dict, backend_family))
+        cap = family_spec.session_cap(checkpoint) if family_spec else 1
+        logger.info("session_cap model={} cap={}", checkpoint, cap)
         with _SESSION_LIFECYCLE_LOCK:
-            _preempt_active_session(session_id)
+            _preempt_active_session(session_id, keep=cap - 1)
             _log_session_vram("create_start")
             streaming = StreamingSession.create(
                 audio=audio_in,
@@ -1367,7 +1382,7 @@ def _handle_client_body(
                 session_id=session_id,
             )
             with _ACTIVE_SLOT_LOCK:
-                _ACTIVE_SESSION[0] = _ActiveSession(session_id, streaming, ws)
+                _ACTIVE_SESSIONS.append(_ActiveSession(session_id, streaming, ws))
             _log_session_vram("create_done")
     except UnsupportedTrtCheckpointError as exc:
         try:
@@ -1420,9 +1435,9 @@ def _handle_client_body(
         # Compare-and-swap: only clear the slot if it's still ours (a
         # preempting connection may have already replaced it).
         with _ACTIVE_SLOT_LOCK:
-            cur = _ACTIVE_SESSION[0]
-            if cur is not None and cur.streaming is streaming:
-                _ACTIVE_SESSION[0] = None
+            _ACTIVE_SESSIONS[:] = [
+                cur for cur in _ACTIVE_SESSIONS if cur.streaming is not streaming
+            ]
 
     ctx_stack.callback(_release_active_slot)
 
