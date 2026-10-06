@@ -25,7 +25,7 @@ A server boots one family (`--checkpoint <alias>`). Every client speaks the same
 
 | Family | Status | Steer it with | Boot alias |
 |---|---|---|---|
-| [Stable Audio 3](https://huggingface.co/stabilityai/stable-audio-3-small-music) (small-music, medium) | Featured | Per-frame curves, prompt morphing, audio-to-audio from an uploaded source | `sa3-small`, `sa3-medium` |
+| [Stable Audio 3](https://huggingface.co/stabilityai/stable-audio-3-small-music) (small-music, medium) | Featured | Per-frame curves, prompt morphing, audio-to-audio from an uploaded source | `sa3-small`, `sa3-medium`, `sa3-sfx` |
 | [ACE-Step v1.5](https://huggingface.co/ACE-Step/Ace-Step1.5) (turbo 2B, XL turbo 5B) | Featured, the default install | Per-frame curves on every solver knob, prompt A/B morphing, LoRA hot-swap, timbre and structure references, audio in | default; `xl` |
 | Magenta RealTime 2 (`mrt2_small`, `mrt2_base`) | Experimental; JAX sidecar | Prompt A/B blend, sampling and guidance knobs; append-only | `mrt2-sidecar` |
 | [MiniMax-Music3](https://huggingface.co/MiniMaxAI/MiniMax-Music3) | Experimental; needs a 32 GB card | Style prompt and lyrics; append-only | `minimax-music3` |
@@ -41,9 +41,13 @@ Latency depends on the length of the latent being generated, so each row states 
 |---|---|---|---|---|---|
 | ACE-Step v1.5 turbo 2B, TensorRT, 8 steps | 60 s song, 1500 latent frames at 25 Hz | 11.3 generations/s at depth 4, 12.3 at depth 8 | Per-frame curves and other shared-state knobs: one tick, 14 ms at depth 1, 43 ms at depth 4, 81 ms at depth 8. Prompt, source or denoise change: 112 ms at depth 1, 471 ms at depth 4, 649 ms at depth 8 | ~15 s | ~12 GB working set |
 | Stable Audio 3 medium, TensorRT, 8 steps | 54 s window, 646 latent frames | 6.3 generations/s, flat from depth 1 to 8 | 218 ms at depth 1, 1,202 ms at depth 4 (knob rides the next request) | 17-21 s | 8-11 GB |
+| Stable Audio 3 small, TensorRT, 8 steps | TRT fp16mixed, 54 s / 614 latent frames | ~21 generations/s (DiT only), flat from depth 1 to 8 | 88 ms at depth 1, 277 ms at depth 4 (knob rides the next request) | ~7 s | 5-6 GB |
+| Stable Audio 3 SFX, TensorRT, 8 steps | TRT fp16mixed, 54 s / 614 latent frames; 4 s / 76 frames | 21.5 generations/s at 54 s, 31.5 at 4 s (DiT only, depth 4; flat from depth 1 to 8) | 48 ms at depth 1, 279 ms at depth 4 at 54 s; 32 ms and 193 ms at 4 s | ~7 s | 5-6 GB |
 | Magenta RealTime 2 | 60 s rolling window, 40 ms frames | 1.7x realtime (small), 0.93x (base) | 750 ms, the `mrt2_lead` default | ~30 s sidecar warmup, once | not measured |
 | MiniMax-Music3, TensorRT renderer | rolling song, 4 s render chunks | 1.3x realtime | 3,300-3,600 ms to the delivery frontier, plus the playback lead | ~30 s | 28.7 GB of 32 GB |
 | YuE2 3B, TensorRT acoustic stage | 60 s song | 70 ms tick, 32 ticks per full solve | 1,200 ms (denoise), 2,400-2,500 ms (seed, x0 target); a prompt change re-composes the song in 21-58 s | ~34 s | 21-22 GB |
+
+Small-class rows include the SAME-S TensorRT decoder engine; without it the eager decoder adds ~60 ms per tick at 54 s.
 
 Sources: ACE-Step from the paper (Tables 12, 14, 15); Stable Audio 3 from the maintainers' runs on the same machine; the rest from [docs/FAMILIES.md](docs/FAMILIES.md) and [docs/MINIMAX.md](docs/MINIMAX.md). For the diffusion families, ring depth trades control latency for smoother parameter glides.
 
@@ -68,6 +72,7 @@ huggingface-cli download stabilityai/stable-audio-3-small-music \
   --local-dir ~/.daydream-scope/models/demon/sa3/checkpoints/stable-audio-3-small-music
 
 uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint sa3-small   # or sa3-medium
+uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint sa3-sfx     # stable-audio-3-small-sfx; open /sfx/
 # open http://localhost:6660/sa3/
 ```
 
