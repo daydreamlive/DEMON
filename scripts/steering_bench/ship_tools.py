@@ -1073,8 +1073,9 @@ def cmd_final():
         if p.get("sfx_prompts"):
             prov["sfx_prompts"] = p["sfx_prompts"]
         cx = {s: cfx.get(f"{vid}{'+' if s == 'pos' else '-'}") for s in SIDES}
-        prov["cross_effect"] = {s: ({k: c[k] for k in ("own_label", "own_z", "max_off_label", "max_off_z",
-                                                       "n_off_over_own", "n_cols")} if c else None) for s in SIDES}
+        prov["cross_effect"] = {s: ({k: cx[s][k] for k in ("own_label", "own_z", "max_off_label", "max_off_z",
+                                                           "n_off_over_own", "n_cols")} if cx[s] else None)
+                                for s in SIDES}
         pos, neg = v["pos_anchor"], v["neg_anchor"]
         desc = f"+ {pos} / - {neg}" if neg else f"+ {pos}"
         kw = {"family": "sa3", "checkpoint": "medium", "block": int(bm["block"]), "hidden_size": int(bm["hidden_size"]),
@@ -1113,7 +1114,7 @@ def cmd_final():
         pk = SteeringPack(**kw)
         pk.validate()
         meta = pk.metadata()
-        meta.update({"label_note": v.get("blurb", "")})
+        meta.update({"label_note": v.get("blurb", ""), "applies_to": p.get("applies_to", [])})
         path = out / f"{name}.safetensors"
         save_file({k: x.detach().cpu().to(torch.float32).contiguous() if x.dtype != torch.int64 else x
                    for k, x in tensors.items()}, str(path), metadata={PACK_METADATA_KEY: json.dumps(meta, sort_keys=True)})
