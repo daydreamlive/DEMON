@@ -170,10 +170,34 @@ optional (eager runs real time) and build in under a minute each:
 python -m acestep.engine.trt.sa3_build --dit --model small-sfx --min-latents 1 --opt-latents 76 --max-latents 162
 python -m acestep.engine.trt.sa3_build --dit --model small-sfx --min-latents 1 --opt-latents 248 --max-latents 356
 python -m acestep.engine.trt.sa3_build --dit --model small-sfx --seconds 60
+# SAME-S decoder, shared with small-music (identical codec weights; skipped if built)
+python -m acestep.engine.trt.sa3_build --same-s-decode
 ```
 
 The backend boot preflight fails fast with the download command if the
 weights are missing.
+
+SA3 has its own TensorRT engines (optional: without them the DiT runs
+eager and the session still works, just slower). They compile
+Stability's official ONNX exports, fetched from
+`stabilityai/stable-audio-3-optimized` on first build, into
+`<models dir>/sa3/trt_engines/`; the runtime picks them up
+automatically when the backend boots with the default `--accel
+tensorrt`:
+
+```bash
+# small-music: three DiT engines covering every session length up to
+# the 120 s window (~45 s each to build on a 5090, ~0.9 GB each)
+uv run python -m acestep.engine.trt.sa3_build --model small-music --all
+
+# medium: DiT engines + the SAME-L window decoder
+uv run python -m acestep.engine.trt.sa3_build --all
+```
+
+Then boot as usual (`--checkpoint sa3-small`); the log line
+`sa3_trt_dit_ready engine=sa3_sm_dit_l1_646_646` confirms the TRT path
+(`sa3_dit_eager ... reason=no_trt_engine` means no engine covers the
+session).
 
 ### 4. TensorRT engines
 

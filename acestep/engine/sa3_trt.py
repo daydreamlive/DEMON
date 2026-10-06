@@ -59,7 +59,11 @@ import torch
 
 from acestep import paths
 from acestep.engine.obs import logger
-from acestep.engine.sa3_helpers import SA3_SAME_L_PLUGIN_REVISION, sa3_vendor_dir
+from acestep.engine.sa3_helpers import (
+    SA3_SAME_L_PLUGIN_REVISION,
+    SA3_SAME_S_DECODE_REVISION,
+    sa3_vendor_dir,
+)
 
 IO_CHANNELS = 256
 T5_TOKENS = 256
@@ -67,11 +71,17 @@ COND_DIM = 768
 SAMPLES_PER_LATENT = 4096
 SA3_SAMPLE_RATE = 44100
 
-# Per-family DiT engine name prefixes: which engines can serve which
-# model_id's weights. A TRT engine bakes in its weights, so each model id
-# needs its own prefix even when two share an architecture (small-sfx and
-# small-music do). Built by ``acestep.engine.trt.sa3_build --model <id>``.
-DIT_ENGINE_PREFIX = {"medium": "sa3_m_dit", "small-sfx": "sa3_sfx_dit"}
+# Per-checkpoint DiT engine name prefixes: which engines can serve which
+# model_id's weights (``sa3_build --model <id>``). A TRT engine bakes in its
+# weights, so each model id needs its own prefix even when two share an
+# architecture (small-music and small-sfx do). The small checkpoints compile
+# upstream's ``onnx/sa3-sm-{music,sfx}/dit_fp16.onnx`` (same fp16mixed recipe
+# and IO contract as medium) and have no fp8/refit variants.
+DIT_ENGINE_PREFIX = {
+    "medium": "sa3_m_dit",
+    "small-music": "sa3_sm_dit",
+    "small-sfx": "sa3_sfx_dit",
+}
 
 _DIT_DIR_RE = re.compile(r"^(?P<prefix>.+_dit)_l(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$")
 # The fp8-trunk DiT engine: same ranged-profile naming as the fp16mixed
@@ -101,6 +111,27 @@ _SAME_L_DIR_RE = re.compile(
     r"^same_l_decode_window_(?P<tag>[a-z0-9_]+)_t"
     r"(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$"
 )
+# SAME-S (small-music / small-sfx codec) full decoder:
+# ``same_s_decode_<recipe_tag>_w<weights12>_t{min}_{opt}_{max}``. The tag
+# names the precision recipe and the vendored conversion revision that
+# produced the fp16mixed graph (:func:`same_s_decode_build_tag`); ``w`` is
+# the first 12 hex of the codec-weights hash the engine's graph carries
+# (:func:`same_decoder_weights_sha256`). Selection keys on both, so a
+# checkpoint whose codec is byte-identical reuses the engine file and any
+# other codec (or recipe) never lands on it.
+_SAME_S_DIR_RE = re.compile(
+    r"^same_s_decode_(?P<tag>[a-z0-9_]+)_w(?P<w>[0-9a-f]{12})_t"
+    r"(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$"
+)
+#: :func:`same_decoder_weights_sha256` of the SAME-S decoder baked into
+#: upstream's ``onnx/same-s/dec_bf16.onnx``: the codec of
+#: stable-audio-3-small-music, byte-identical in stable-audio-3-small-sfx
+#: (measured 2026-10-06; engine parity vs the small-music eager decode is
+#: cos >= 0.9998 on real latents, which a different codec could not hit).
+SAME_S_UPSTREAM_DECODER_SHA256 = "f639e9fbdcbedfef70dde60e100aefd2082a2fe133a75a9e187fa3b202bff813"
+#: FP32-island coverage passed to the vendored SAME-S fp16 converter
+#: (``build_same_s_dec_fp16.py --mode``; upstream's default).
+SAME_S_FP32_ISLANDS = "attention"
 
 # Deserialized-engine process cache. Engines are immutable post-load and
 # support multiple execution contexts, so sharing one deserialization
@@ -128,6 +159,24 @@ def same_l_plugin_build_tag() -> str:
         requested_backend = os.environ.get("SA3_SWA_AOT", "mma").strip().lower()
         implementation = "mma" if requested_backend == "mma" else "ptx"
     return f"{plugin}_{implementation}_v{SA3_SAME_L_PLUGIN_REVISION[:12]}"
+
+
+def same_s_decode_build_tag() -> str:
+    """Identity of the recipe compiled into a SAME-S decode engine.
+
+    Upstream publishes the SAME-S decoder as an FP32 graph
+    (``onnx/same-s/dec_bf16.onnx``; the suffix names upstream's retired
+    BF16 build flag, which crackles on long outputs). The fp16mixed graph
+    DEMON compiles is produced locally by the vendored
+    ``build_same_s_dec_fp16.py`` (FP16 trunk, FP32 islands around the
+    tanh norms, softmax, differential-attention Sub and RoPE), so the
+    converter's revision and island mode are part of the engine identity,
+    as is DEMON's one post-pass on top of it (``tail32``: the PCM tail,
+    clip -> x32767 -> clip -> int32, pinned back to FP32; the converter
+    leaves it half FP16, which TensorRT rejects and which would quantize
+    the int16 PCM to steps of 16 near full scale).
+    """
+    return f"fp16mixed_{SAME_S_FP32_ISLANDS}_tail32_v{SA3_SAME_S_DECODE_REVISION[:12]}"
 
 
 def trt_engines_dir() -> Path:
@@ -319,6 +368,74 @@ def find_same_l_window_engine() -> Optional[tuple]:
     return None
 
 
+_CODEC_SHA_CACHE: dict = {}
+
+
+def same_decoder_weights_sha256(checkpoint_dir) -> Optional[str]:
+    """sha256 over a checkpoint's SAME decoder + bottleneck tensors
+    (``pretransform.*`` keys containing ``.decoder.`` or ``.bottleneck.``,
+    sorted; name, dtype, shape and raw bytes of each), read from its
+    ``model.safetensors``. None when the file or the keys are missing.
+    Cached per (path, size, mtime): the first call reads ~0.2 GB."""
+    path = Path(checkpoint_dir) / "model.safetensors"
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    key = (str(path), st.st_size, st.st_mtime_ns)
+    if key in _CODEC_SHA_CACHE:
+        return _CODEC_SHA_CACHE[key]
+    import hashlib
+
+    from safetensors import safe_open
+
+    h = hashlib.sha256()
+    n = 0
+    with safe_open(str(path), "pt") as f:
+        for k in sorted(f.keys()):
+            if not k.startswith("pretransform.") or not (
+                ".decoder." in k or ".bottleneck." in k
+            ):
+                continue
+            t = f.get_tensor(k).contiguous()
+            h.update(k.encode())
+            h.update(str(t.dtype).encode())
+            h.update(str(tuple(t.shape)).encode())
+            h.update(t.view(-1).view(torch.uint8).numpy().tobytes())
+            n += 1
+    digest = h.hexdigest() if n else None
+    _CODEC_SHA_CACHE[key] = digest
+    return digest
+
+
+def find_same_s_decode_engine(codec_sha256: Optional[str]) -> Optional[tuple]:
+    """``(path, min_t, max_t)`` of the built SAME-S full decoder for the
+    current recipe tag whose weights tag matches ``codec_sha256`` (the
+    session checkpoint's :func:`same_decoder_weights_sha256`), or None
+    (caller falls back to eager full decode). The widest-covering engine
+    wins when several are built."""
+    base = trt_engines_dir()
+    if not codec_sha256 or not base.is_dir():
+        return None
+    expected_tag = same_s_decode_build_tag()
+    best = None
+    for sub in base.iterdir():
+        m = _SAME_S_DIR_RE.match(sub.name)
+        if (
+            not m
+            or m.group("tag") != expected_tag
+            or m.group("w") != codec_sha256[:12]
+        ):
+            continue
+        f = sub / f"{sub.name}.trt"
+        if not f.is_file():
+            continue
+        lo, hi = int(m.group("lo")), int(m.group("hi"))
+        if best is None or hi > best[2]:
+            best = (f, lo, hi)
+    return best
+
+
 def _trt_dtype_to_torch(trt_mod, dtype):
     return {
         trt_mod.DataType.FLOAT: torch.float32,
@@ -485,16 +602,22 @@ class SA3TRTDit:
 # ---------------------------------------------------------------------------
 
 
-class SameLWindowTRTDecoder:
-    """The spike's SAME-L window decoder, productionized: latent
-    ``[1, 256, T]`` (already pretransform-scaled by the caller) →
-    ``[C, T*4096]`` float audio at 44.1 kHz."""
+class _SameTRTDecoder:
+    """One SAME decoder engine: latent ``[1, 256, T]`` (already
+    pretransform-scaled by the caller) -> ``[C, N]`` float audio at
+    44.1 kHz. Engine deserialization is process-cached; the execution
+    context, stream and output buffer are per instance."""
+
+    _needs_plugin = False
+    _label = "same"
 
     def __init__(self, engine_path: Path):
         import tensorrt as trt
 
-        _register_same_plugin()
+        if self._needs_plugin:
+            _register_same_plugin()
         engine = _deserialize_engine(engine_path)
+        self.engine_path = engine_path
         self._ctx = engine.create_execution_context()
         self._stream = torch.cuda.Stream()
         self._in_dtype = _trt_dtype_to_torch(trt, engine.get_tensor_dtype("latent"))
@@ -502,7 +625,7 @@ class SameLWindowTRTDecoder:
         self._out_name = "pcm" if "pcm" in names else "audio"
         self._out_dtype = _trt_dtype_to_torch(trt, engine.get_tensor_dtype(self._out_name))
         self._out_buf: Optional[torch.Tensor] = None
-        logger.info("sa3_trt_same_l_ready engine={}", engine_path.parent.name)
+        logger.info("sa3_trt_{}_ready engine={}", self._label, engine_path.parent.name)
 
     @torch.no_grad()
     def decode(self, latent_1ct: torch.Tensor) -> torch.Tensor:
@@ -522,10 +645,32 @@ class SameLWindowTRTDecoder:
             self._stream.wait_stream(caller_stream)
             ok = self._ctx.execute_async_v3(self._stream.cuda_stream)
         if not ok:
-            raise RuntimeError("SA3 TRT SAME-L decode failed")
+            raise RuntimeError(f"SA3 TRT {self._label} decode failed")
         self._stream.synchronize()
         out = self._out_buf
         if self._out_name == "pcm":
             # PCM-baked engine flavor: (1, N, 2) int scaled to int16 range.
             return (out[0].to(torch.float32).T / 32767.0).clamp(-1, 1)
         return out[0].float().clamp(-1, 1)
+
+
+class SameLWindowTRTDecoder(_SameTRTDecoder):
+    """The spike's SAME-L window decoder, productionized: latent
+    ``[1, 256, T]`` (already pretransform-scaled by the caller) ->
+    ``[C, T*4096]`` float audio at 44.1 kHz. Needs the
+    ``samel::diff_attn_swa`` plugin."""
+
+    _needs_plugin = True
+    _label = "same_l"
+
+
+class SameSTRTDecoder(_SameTRTDecoder):
+    """The SAME-S full decoder (small-music / small-sfx codec): latent
+    ``[1, 256, T]`` (pretransform-scaled by the caller) -> ``[C, T*4096]``
+    float audio at 44.1 kHz. Upstream's graph bakes the PCM tail (clip,
+    x32767, int32, transposed), which the base class undoes. The graph
+    keeps the SoftNorm bottleneck renoise (``RandomNormalLike`` x 0.001
+    running_std, drawn by TensorRT) but has no decoder ``mask_noise``, so
+    it sits at the deterministic eager decode, not the noisy one."""
+
+    _label = "same_s"

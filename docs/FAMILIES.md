@@ -104,6 +104,39 @@ identity is `RTMG_POOL_MODEL`, which defaults to the family and may carry a
 variant (`sa3-controlnet`). Warmup and preflight are family policy, read from
 the spec by the server at boot.
 
+## Stable Audio 3 (`sa3`)
+
+A refining diffusion family on the `ModelAdapter` seam: `SA3Adapter` plugs
+the SA3 DiT into `StreamPipeline`'s ring buffer, and every emit is an
+8-step pingpong audio-to-audio cover of the uploaded source.
+
+- **Boot:** `--checkpoint sa3-small` (catalog id `small-music`),
+  `--checkpoint sa3-sfx` (`small-sfx`, same architecture, sound-effects
+  weights, own `sa3_sfx_dit_*` engines) or `--checkpoint sa3-medium`. Weights are a manual
+  `huggingface-cli download` (see `docs/INSTALL.md`); preflight fails the
+  boot with the command when they are missing.
+- **Engines:** `python -m acestep.engine.trt.sa3_build --model small-music
+  --all` builds the small DiT engines (`sa3_sm_dit_l1_{324,646,1292}`, from
+  upstream's `onnx/sa3-sm-music/dit_fp16.onnx`, fp16mixed
+  STRONGLY_TYPED) and the SAME-S full decoder
+  (`same_s_decode_<recipe>_w<codec hash>_t32_646_1292`, upstream's FP32
+  `onnx/same-s/dec_bf16.onnx` converted to fp16mixed by the vendored
+  `build_same_s_dec_fp16.py`); `--all` without `--model` builds medium's DiT
+  engines plus the SAME-L window decoder. Discovery
+  (`acestep/engine/sa3_trt.py`) picks the smallest DiT engine covering the
+  session's latent window, and the SAME-S decoder whose weights tag matches
+  the checkpoint's codec hash (small-music and small-sfx share one codec, so
+  one engine file); anything missing runs eager and preflight logs the
+  build command. Small's full decode: ~16 ms TRT vs ~61 ms eager per render
+  tick at 54 s on a 5090 (odd latent lengths stay eager); medium decodes
+  with the SAME-L window engine (~10 ms).
+- **Speed (RTX 5090, 54 s session = 614 latent frames, 8 steps,
+  `scripts/sa3/sa3_throughput_probe.py`):** small TRT ~21 gens/s flat
+  across depth 1-8 (tick p50 5.8 ms at depth 1, 23 ms at depth 4); small
+  eager 2.9 gens/s at depth 1 rising to 19.5 at depth 8; medium TRT 11.7
+  gens/s (fp8 engine) / 9.6 (fp16mixed). Real server, small TRT depth 4:
+  session ready in 6.6 s, ~2.1 GB torch VRAM (medium 5.4 GB).
+
 ## Magenta RealTime 2 (`mrt2`)
 
 The first token/autoregressive family and the first sidecar-hosted one, and
