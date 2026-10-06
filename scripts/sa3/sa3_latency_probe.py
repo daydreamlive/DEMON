@@ -70,17 +70,17 @@ class _SmiSampler(threading.Thread):
         super().__init__(daemon=True)
         self.period_s = period_s
         self.samples: list[int] = []
-        self._stop = threading.Event()
+        self._halt = threading.Event()
 
     def run(self) -> None:
-        while not self._stop.is_set():
+        while not self._halt.is_set():
             v = _nvidia_smi_used_mib()
             if v is not None:
                 self.samples.append(v)
-            self._stop.wait(self.period_s)
+            self._halt.wait(self.period_s)
 
     def stop(self) -> None:
-        self._stop.set()
+        self._halt.set()
         self.join(timeout=15)
 
 

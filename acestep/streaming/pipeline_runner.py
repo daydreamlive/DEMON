@@ -619,11 +619,12 @@ class PipelineRunner:
         wrap_np = chunk.pcm[:wrap_len].copy()
         wrap_end = wrap_start + wrap_np.shape[0]
         xfade = min(1200, wrap_np.shape[0] // 4)
-        if wrap_start > 0 and xfade > 0:
-            t_in = np.linspace(0.0, 1.0, xfade).reshape(-1, 1)
-            wrap_np[:xfade] = (
-                current[wrap_start:wrap_start + xfade] * (1 - t_in)
-                + wrap_np[:xfade] * t_in
+        xin = min(xfade, max(0, current.shape[0] - wrap_start))
+        if wrap_start > 0 and xin > 0:
+            t_in = np.linspace(0.0, 1.0, xin).reshape(-1, 1)
+            wrap_np[:xin] = (
+                current[wrap_start:wrap_start + xin] * (1 - t_in)
+                + wrap_np[:xin] * t_in
             )
         if wrap_end < current.shape[0] and xfade > 0:
             t_out = np.linspace(1.0, 0.0, xfade).reshape(-1, 1)
@@ -973,11 +974,16 @@ class PipelineRunner:
                             min(1200, win_np.shape[0] // 4)
                             if refines_audio else 0
                         )
-                        if win_start > 0 and xfade > 0:
-                            t_in = np.linspace(0.0, 1.0, xfade).reshape(-1, 1)
-                            win_np[:xfade] = (
-                                current[win_start:win_start + xfade] * (1 - t_in)
-                                + win_np[:xfade] * t_in
+                        # A window starting within one fade of the buffer
+                        # end has less live audio than the fade to blend
+                        # against: fade over what exists (the remainder is
+                        # clamped off below anyway).
+                        xin = min(xfade, max(0, current.shape[0] - win_start))
+                        if win_start > 0 and xin > 0:
+                            t_in = np.linspace(0.0, 1.0, xin).reshape(-1, 1)
+                            win_np[:xin] = (
+                                current[win_start:win_start + xin] * (1 - t_in)
+                                + win_np[:xin] * t_in
                             )
                         if win_end < current.shape[0] and xfade > 0:
                             t_out = np.linspace(1.0, 0.0, xfade).reshape(-1, 1)
