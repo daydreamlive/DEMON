@@ -133,10 +133,8 @@ the SA3 DiT into `StreamPipeline`'s ring buffer, and every emit is an
 - **Speed (RTX 5090, 54 s session = 614 latent frames, 8 steps,
   `scripts/sa3/sa3_throughput_probe.py`):** small TRT ~21 gens/s flat
   across depth 1-8 (tick p50 5.8 ms at depth 1, 23 ms at depth 4); small
-  eager 2.9 gens/s at depth 1 rising to 19.5 at depth 8; medium TRT 9.6
-  gens/s (fp16mixed, the default) / 11.7 with the fp8 engine, which is
-  opt-in (`DEMON_SA3_ALLOW_FP8=1`; per-step cos 0.976 vs eager, under the
-  parity bar). Real server, small TRT depth 4:
+  eager 2.9 gens/s at depth 1 rising to 19.5 at depth 8; medium TRT 11.7
+  gens/s (fp8 engine) / 9.6 (fp16mixed). Real server, small TRT depth 4:
   session ready in 6.6 s, ~2.1 GB torch VRAM (medium 5.4 GB).
 
 ## Magenta RealTime 2 (`mrt2`)

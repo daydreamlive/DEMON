@@ -29,9 +29,8 @@ on first use.
   ``--fp8`` (additive to the fp16mixed DiT). The HF pair is not fetchable
   yet (see :data:`DIT_FP8_ONNX_FILES`); pass ``--fp8-onnx`` a
   producer-built graph until it is.
-  :func:`acestep.engine.sa3_trt.find_dit_engine` selects it only with
-  ``DEMON_SA3_ALLOW_FP8=1`` (it misses the parity bar); fp16mixed is the
-  default.
+  :func:`acestep.engine.sa3_trt.find_dit_engine` prefers an fp8 engine when one
+  covers the window, else fp16mixed.
 * **sa3-sm-music DiT** (``--model small-music``): upstream's
   ``onnx/sa3-sm-music/dit_fp16.onnx`` (same fp16mixed recipe, same IO
   contract as sa3-m; a single proto, the ~0.9 GB of weights inline)
