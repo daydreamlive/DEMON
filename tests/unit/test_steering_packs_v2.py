@@ -264,3 +264,25 @@ def test_knob_meta_category_precedence_and_v2_keys():
     assert cat["steer_t"]["description"] == "Pushes toward drum and bass."
     assert "Essentia" not in cat["steer_p"]["description"]
     assert cat["steer_bright"]["description"].endswith("positive brightens")
+
+
+def test_pack_spec_reads_per_seed_calibrated_gain():
+    """v1-kept and v2 packs store each sign as a per-seed summary; the
+    spec takes its median and marks the sign reached only if every seed
+    reached the cutoff."""
+    from acestep.streaming.knobs import STEERING_PACK_HEADROOM, steering_pack_spec
+
+    gain = {
+        "pos": {"median": 58.0, "min": 29.0, "max": 116.0, "reached": [True, True, True]},
+        "neg": {"median": 29.0, "min": 29.0, "max": 58.0, "reached": [True, False, True]},
+        "unit": "knob value",
+    }
+    spec = steering_pack_spec("steer_x", gain=gain)
+    assert spec.meta["calibrated"] is True
+    assert spec.meta["cutoff"] == {"pos": 58.0, "neg": 29.0}
+    assert spec.meta["cutoff_reached"] == {"pos": True, "neg": False}
+    assert spec.max_val == pytest.approx(58.0 * STEERING_PACK_HEADROOM)
+    assert spec.min_val == pytest.approx(-29.0 * STEERING_PACK_HEADROOM)
+
+    flat = steering_pack_spec("steer_y", gain={"pos": 46.2, "neg": 23.1, "pos_reached": True, "neg_reached": False})
+    assert flat.meta["cutoff_reached"] == {"pos": True, "neg": False}

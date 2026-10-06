@@ -266,11 +266,31 @@ STEERING_PACK_HEADROOM = 1.25
 
 
 def _gain_value(gain: Mapping, key: str) -> Optional[float]:
+    """Per-sign calibrated gain. Two shapes exist: a flat number
+    (``{"pos": 46.2, ...}``) and a per-seed summary
+    (``{"pos": {"median": 57.9, "min": ..., "max": ..., "reached": [...]}}``);
+    the summary contributes its median."""
+    raw = gain.get(key)
+    if isinstance(raw, Mapping):
+        raw = raw.get("median")
     try:
-        v = abs(float(gain.get(key)))
+        v = abs(float(raw))
     except (TypeError, ValueError):
         return None
     return v if v > 0 else None
+
+
+def _gain_reached(gain: Mapping, key: str) -> Any:
+    """Whether the cutoff was reached for one sign: the flat
+    ``<sign>_reached`` / ``reached`` keys, or, for a per-seed summary,
+    True only when every seed reached it. None when unknown."""
+    raw = gain.get(key)
+    if isinstance(raw, Mapping) and "reached" in raw:
+        r = raw.get("reached")
+        if isinstance(r, (list, tuple)):
+            return all(bool(x) for x in r) if r else None
+        return r
+    return gain.get(f"{key}_reached", gain.get("reached"))
 
 
 def steering_pack_spec(
@@ -323,9 +343,8 @@ def steering_pack_spec(
     pos = _gain_value(g, "pos") if g else None
     if pos is not None:
         neg = _gain_value(g, "neg") or pos
-        reached = g.get("reached")
-        pos_reached = g.get("pos_reached", reached)
-        neg_reached = g.get("neg_reached", reached)
+        pos_reached = _gain_reached(g, "pos")
+        neg_reached = _gain_reached(g, "neg")
         if neg_reached is None:
             neg_reached = pos_reached
         hi = round(pos * STEERING_PACK_HEADROOM, 4)

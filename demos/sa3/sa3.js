@@ -36,6 +36,61 @@ const LEGACY_PACK_PEDAL = {
   steer_rough: "tone",
   steer_density: "tone",
 };
+// Sub-pedals: a category pedal with more than 12 knobs splits by a
+// finer grouping. Pack name (no steer_ prefix) -> sub-pedal; a name not
+// listed stays on its parent pedal. Each sub-pedal has its own bypass.
+const SUB_PEDALS = {
+  genre: {
+    electronic: { title: "ELECTRONIC", names: ["acid_house", "future_bass", "hardstyle", "vaporwave", "lofi_hip_hop", "drone"] },
+    rock_metal: { title: "ROCK / METAL", names: ["black_metal", "post_rock", "surf_rock"] },
+    jazz_blues_soul: { title: "JAZZ / BLUES / SOUL", names: [] },
+    world_folk: { title: "WORLD / FOLK", names: ["cumbia", "samba", "tango"] },
+    classical_cinematic: { title: "CLASSICAL / CINEMATIC", names: ["horror_score"] },
+    other: { title: "OTHER", names: ["childrens", "christmas", "new_age"] },
+  },
+  instrument: {
+    keys: { title: "KEYS", names: ["electric_piano"] },
+    guitars_strings: { title: "GUITARS / STRINGS", names: ["strummed_guitar", "ukulele", "koto", "sitar", "erhu"] },
+    drums_percussion: { title: "DRUMS / PERCUSSION", names: ["drum_machine", "handclaps", "timpani", "jingle_bells"] },
+    synths: { title: "SYNTHS", names: ["acid_303", "synth_pad", "synthesizer"] },
+    winds_brass: { title: "WINDS / BRASS", names: [] },
+    other: { title: "OTHER", names: [] },
+  },
+  sound_effect: {
+    nature: { title: "NATURE", names: ["frogs", "rain_on_surface", "sfx_insects", "sfx_ocean_waves"] },
+    machines_vehicles: {
+      title: "MACHINES / VEHICLES",
+      names: ["jet", "revving", "alarm_clock", "phone_ring", "sfx_telephone", "ui_click", "laser_zap", "glitch_sfx"],
+    },
+    human_crowd: { title: "HUMAN / CROWD", names: ["sfx_applause", "sfx_baby_cry"] },
+    foley_impacts: { title: "FOLEY / IMPACTS", names: ["dishes", "explosion", "impact_boom", "smash", "riser", "magic_sparkle"] },
+  },
+  tone: {
+    color: { title: "COLOR", names: ["bright", "warm", "fizzy_highs", "shimmering", "muted_horn", "nylon_soft", "woody_body"] },
+    grit: { title: "GRIT", names: ["rough", "gritty", "fuzzy", "dissonant", "thick_unison", "percussive"] },
+    rhythm: {
+      title: "RHYTHM",
+      names: [
+        "accelerando", "arpeggiated", "clave_pattern", "dense_arrangement", "density", "locked_groove",
+        "polyrhythmic", "pulsing_synth", "quantized", "sfx_event_rate", "shaker_pulse", "swing", "tom_patterns",
+      ],
+    },
+    playing: {
+      title: "PLAYING",
+      names: [
+        "hammered_notes", "legato_phrasing", "marcato", "palm_muted", "spiccato", "virtuosic_runs",
+        "intense", "solo_build", "solo_crest",
+      ],
+    },
+  },
+};
+const SUB_PEDAL_OF = new Map(
+  Object.entries(SUB_PEDALS).flatMap(([parent, subs]) =>
+    Object.entries(subs).flatMap(([sub, { names }]) =>
+      names.map((n) => [`${parent}:${STEER_PREFIX}${n}`, `${parent}/${sub}`]),
+    ),
+  ),
+);
 // Calibrated knobs reach their fidelity cutoff at 1/headroom of the
 // throw (server: STEERING_PACK_HEADROOM = 1.25, so 80%).
 const DEFAULT_HEADROOM = 1.25;
@@ -477,13 +532,33 @@ function boolKnob(name, entry) {
   return cell;
 }
 
-function pedalIdFor(name, entry) {
+function parentPedalId(name, entry) {
   const cat = String(entry.meta?.category ?? "").trim().toLowerCase();
   if (cat) {
     const pedal = PEDALS.find((p) => p.cats.includes(cat));
     return pedal ? pedal.id : "misc";
   }
   return LEGACY_PACK_PEDAL[name] ?? "misc";
+}
+
+// The pedal (or sub-pedal, "<parent>/<sub>") a steer knob lands on;
+// bypass is keyed by this id.
+function pedalIdFor(name, entry) {
+  const parent = parentPedalId(name, entry);
+  return SUB_PEDAL_OF.get(`${parent}:${name}`) ?? parent;
+}
+
+// Board order: each parent pedal's sub-pedals in table order, then the
+// parent itself for any unlisted names.
+function pedalDescriptors() {
+  const out = [];
+  for (const p of PEDALS) {
+    for (const [sub, { title }] of Object.entries(SUB_PEDALS[p.id] ?? {})) {
+      out.push({ id: `${p.id}/${sub}`, title: `${p.title}: ${title}`, hue: p.hue });
+    }
+    out.push(p);
+  }
+  return out;
 }
 
 function steerPedal(pedal, knobs) {
@@ -500,8 +575,11 @@ function steerPedal(pedal, knobs) {
   screws.setAttribute("aria-hidden", "true");
   screws.append(...Array.from({ length: 4 }, () => document.createElement("span")));
 
+  // Up to 8 knobs on one row; more wrap into balanced rows.
   const grid = document.createElement("div");
   grid.className = "knob-grid";
+  const rows = Math.ceil(knobs.length / 8);
+  grid.style.setProperty("--cols", String(Math.ceil(knobs.length / rows)));
   grid.append(...knobs.map(({ name, entry }) => numericKnob(name, entry)));
 
   // Footswitch + LED: LED lit = engaged. Bypass sends 0 for this
@@ -534,16 +612,30 @@ function steerPedal(pedal, knobs) {
   return section;
 }
 
-// Category pedals go after the main pedal in the board; the CSS grid
-// keeps the main pedal in the centre column and lays the first four
-// pedals beside it, the rest below.
+// Pedals sit in two wings either side of the main pedal, each a dense
+// wrap of pedals sized to their knob count. Pedals go to the lighter
+// wing in board order so the main pedal stays centred.
 function renderPedals() {
-  for (const node of els.board.querySelectorAll(".plugin-steer")) node.remove();
-  const groups = new Map(PEDALS.map((p) => [p.id, []]));
-  for (const item of state.steer) groups.get(pedalIdFor(item.name, item.entry)).push(item);
-  const pedals = PEDALS.filter((p) => groups.get(p.id).length > 0);
+  for (const node of els.board.querySelectorAll(".pedal-wing")) node.remove();
+  const descs = pedalDescriptors();
+  const groups = new Map(descs.map((p) => [p.id, []]));
+  for (const item of state.steer) groups.get(pedalIdFor(item.name, item.entry))?.push(item);
+  const pedals = descs.filter((p) => groups.get(p.id).length > 0);
   els.board.classList.toggle("has-pedals", pedals.length > 0);
-  els.board.append(...pedals.map((p) => steerPedal(p, groups.get(p.id))));
+  if (pedals.length === 0) return;
+  const wings = [document.createElement("div"), document.createElement("div")];
+  const load = [0, 0];
+  wings[0].className = "pedal-wing pedal-wing-left";
+  wings[1].className = "pedal-wing pedal-wing-right";
+  for (const p of pedals) {
+    const knobs = groups.get(p.id);
+    const side = load[0] <= load[1] ? 0 : 1;
+    load[side] += knobs.length + 2;
+    wings[side].append(steerPedal(p, knobs));
+  }
+  const main = els.board.querySelector(".plugin-main");
+  els.board.insertBefore(wings[0], main);
+  els.board.append(wings[1]);
 }
 
 function renderKnobs() {

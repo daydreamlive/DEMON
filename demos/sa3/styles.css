@@ -60,65 +60,153 @@ textarea {
   display: none;
 }
 
-/* Pedalboard: with category pedals present, the main pedal holds the
-   centre column across two rows; the first four pedals sit beside it
-   (auto-placement fills the side cells) and the rest wrap below. */
+/* Pedalboard: with category pedals present, the main pedal sits in
+   the centre column and the category pedals fill two wings beside it,
+   each a dense wrap of pedals sized to their knob count. */
 .shell.has-pedals {
-  align-content: center;
   align-items: center;
   display: grid;
-  gap: 2.25rem 3rem;
-  grid-template-columns: repeat(3, auto);
-  justify-content: center;
-  justify-items: center;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  height: 100svh;
+  overflow: hidden;
+  padding: 0.75rem 1rem;
 }
 
 .shell.has-pedals .plugin-main {
   grid-column: 2;
-  grid-row: 1 / span 2;
+  grid-row: 1;
+  width: 30rem;
+}
+
+.pedal-wing {
+  align-content: center;
+  align-items: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.625rem 0.75rem;
+  justify-content: center;
+  min-width: 0;
+}
+
+.pedal-wing-left {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.pedal-wing-right {
+  grid-column: 3;
+  grid-row: 1;
 }
 
 /* Category pedal: the steer faceplate, tinted per category via --hue
-   (200 = the original steer blue-grey). */
+   (200 = the original steer blue-grey). Compact: knobs on a fixed
+   cell, width follows the column count set from JS (--cols). */
 .plugin-steer {
   --hue: 200;
+  --cell: 4.375rem;
   background:
     radial-gradient(circle at 50% 16%, rgb(255 255 255 / 10%), transparent 34%),
     linear-gradient(180deg, hsl(var(--hue) 18% 27%), hsl(var(--hue) 30% 16%) 52%, hsl(var(--hue) 40% 6%));
   border-color: hsl(var(--hue) 15% 50%);
-  gap: 0.75rem;
-  padding: 1.5rem 1.75rem 1.25rem;
-  width: min(100%, 25rem);
+  box-shadow:
+    inset 0 0.0625rem 0 rgb(255 255 255 / 18%),
+    inset 0 -0.5rem 1rem rgb(0 0 0 / 46%),
+    0 0.75rem 1.75rem rgb(0 0 0 / 52%);
+  gap: 0.375rem;
+  padding: 0.75rem 1rem 0.5rem;
+  width: auto;
+}
+
+.plugin-steer .knob-grid {
+  display: grid;
+  gap: 0.25rem 0.125rem;
+  grid-template-columns: repeat(var(--cols, 4), var(--cell));
+  justify-content: center;
+  min-height: 0;
+}
+
+.plugin-steer .knob-cell {
+  align-content: start;
+  gap: 0.0625rem;
+  min-width: 0;
+  width: var(--cell);
 }
 
 .plugin-steer .knob-wrap {
-  height: 4.5rem;
-  width: 4.5rem;
+  height: 3rem;
+  width: 3rem;
 }
 
 .plugin-steer .knob {
-  height: 4rem;
-  width: 4rem;
+  border-width: 0.0625rem;
+  box-shadow:
+    inset 0 0.1875rem 0.375rem rgb(255 255 255 / 7%),
+    inset 0 -0.375rem 0.625rem rgb(0 0 0 / 62%),
+    0 0.25rem 0.5rem rgb(0 0 0 / 62%);
+  height: 2.625rem;
+  width: 2.625rem;
 }
 
 .plugin-steer .knob::before {
-  height: 1.75rem;
-  width: 1.75rem;
+  border-width: 0.0625rem;
+  height: 1.125rem;
+  width: 1.125rem;
 }
 
 .plugin-steer .knob-pointer {
-  height: 1rem;
-  top: 0.3125rem;
+  height: 0.6875rem;
+  top: 0.1875rem;
+  width: 0.1875rem;
+  left: calc(50% - 0.09375rem);
+}
+
+.plugin-steer .knob-value {
+  font-size: 0.6875rem;
+  line-height: 1.1;
+}
+
+.plugin-steer .knob-label {
+  font-size: 0.5625rem;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  overflow-wrap: break-word;
 }
 
 .plugin-steer .title {
-  font-size: 1.375rem;
+  font-size: 0.75rem;
+  padding: 0.1875rem 0.5rem;
+  white-space: nowrap;
+}
+
+.plugin.plugin-steer::before,
+.plugin.plugin-steer::after {
+  height: calc(100% - 1.5rem);
+  top: 0.75rem;
+  width: 0.75rem;
+}
+
+.plugin.plugin-steer::before {
+  left: -0.4375rem;
+}
+
+.plugin.plugin-steer::after {
+  right: -0.4375rem;
+}
+
+.plugin-steer .screws {
+  inset: 0.3125rem 0.375rem;
+}
+
+.plugin-steer .screws span {
+  height: 0.375rem;
+  width: 0.375rem;
 }
 
 .pedal-foot {
   align-items: center;
   display: grid;
-  gap: 0.75rem;
+  gap: 0.5rem;
   grid-template-columns: 1fr auto 1fr;
 }
 
@@ -138,10 +226,10 @@ textarea {
   border-radius: 50%;
   box-shadow: inset 0 -0.1875rem 0.25rem rgb(0 0 0 / 45%), 0 0.25rem 0.5rem rgb(0 0 0 / 60%);
   cursor: pointer;
-  height: 2.5rem;
+  height: 1.5rem;
   justify-self: start;
   padding: 0;
-  width: 2.5rem;
+  width: 1.5rem;
 }
 
 .footswitch:active {
@@ -285,17 +373,6 @@ textarea {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   justify-items: center;
   min-height: 8.25rem;
-}
-
-.plugin-steer .knob-grid {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-}
-
-.plugin-steer .knob-cell {
-  flex: 0 0 calc((100% - 1.875rem) / 4);
-  min-width: 0;
 }
 
 .knob-placeholder {
@@ -652,12 +729,21 @@ body.knob-dragging {
 
 @media (max-width: 1200px) {
   .shell.has-pedals {
-    grid-template-columns: repeat(2, auto);
+    grid-template-columns: minmax(0, 1fr);
+    height: auto;
+    overflow: visible;
+  }
+
+  .shell.has-pedals .plugin-main,
+  .pedal-wing-left,
+  .pedal-wing-right {
+    grid-column: 1;
+    grid-row: auto;
   }
 
   .shell.has-pedals .plugin-main {
-    grid-column: 1 / -1;
-    grid-row: auto;
+    justify-self: center;
+    width: min(100%, 30rem);
   }
 }
 
@@ -692,18 +778,10 @@ body.knob-dragging {
   .source-row {
     grid-template-columns: 1fr;
   }
-
-  .plugin-steer .knob-cell {
-    flex-basis: calc((100% - 1.25rem) / 3);
-  }
 }
 
 @media (max-width: 380px) {
   .knob-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .plugin-steer .knob-cell {
-    flex-basis: calc((100% - 0.625rem) / 2);
   }
 }
