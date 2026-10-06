@@ -31,6 +31,12 @@ on first use.
   producer-built graph until it is.
   :func:`acestep.engine.sa3_trt.find_dit_engine` prefers an fp8 engine when one
   covers the window, else fp16mixed.
+* **sa3-sm-music DiT** (``--model small-music``): upstream's
+  ``onnx/sa3-sm-music/dit_fp16.onnx`` (same fp16mixed recipe, same IO
+  contract as sa3-m; a single proto, the ~0.9 GB of weights inline)
+  compiled to ``sa3_sm_dit_l*`` engines. fp16mixed only: the fp8 and
+  refit variants stay medium-only. Small decodes with SAME-S (eager full
+  decode, ~11 ms flat), so a small build never builds the SAME-L engine.
 * **SAME-L window decoder**: ``dec_fp16.onnx`` (upstream renamed it from
   ``dec_dynamic_triton_swa.onnx`` on 2026-08-28, same bytes),
   STRONGLY_TYPED; needs the ``samel::diff_attn_swa`` plugin registered
@@ -42,6 +48,9 @@ Usage:
     python -m acestep.engine.trt.sa3_build --all
     python -m acestep.engine.trt.sa3_build --all --dry-run
     python -m acestep.engine.trt.sa3_build --all --force-rebuild
+
+    # small-music DiT matrix (profiles 324 + 646 + 1292; no SAME-L):
+    python -m acestep.engine.trt.sa3_build --model small-music --all
 
     # Single DiT engine sized for a padded latent window:
     python -m acestep.engine.trt.sa3_build --dit --seconds 60
@@ -134,6 +143,9 @@ DIT_FP8_ONNX_FILES = (
 # the old dec_dynamic_triton_swa.onnx), so engines keyed on the ONNX hash
 # still match.
 SAME_L_ONNX_FILES = ("onnx/same-l/dec_fp16.onnx",)
+# sa3-sm-music DiT: the same fp16mixed recipe as sa3-m, published as a
+# single proto (weights inline, under the 2 GB protobuf limit).
+DIT_SMALL_ONNX_FILES = ("onnx/sa3-sm-music/dit_fp16.onnx",)
 
 # Canonical DiT latent profiles for --all. min=1 keeps short windows
 # on-engine; the names must keep the sa3_m_dit_l{min}_{opt}_{max} shape
@@ -148,6 +160,12 @@ CANONICAL_DIT_PROFILES: tuple[tuple[int, int, int], ...] = (
     (1, 324, 324),
     (1, 646, 646),
 )
+# small-music adds a full-range profile: its sessions run up to the 120 s
+# window (SA3_MAX_DURATION_S; sample_size 5292032 / 4096 = 1292 frames),
+# and without an engine covering that, the create path's TRT duration
+# clamp would cut every >54 s small session down to the 646 engine.
+# Medium never gets it (its sessions are clamped to 646 by design).
+SMALL_EXTRA_DIT_PROFILES: tuple[tuple[int, int, int], ...] = ((1, 1292, 1292),)
 # SAME-L windowed decode profile: DEMON decodes ~1 s windows with 2 s of
 # context, so T stays inside [32, 96] with the steady state at 56.
 CANONICAL_SAME_L_WINDOW: tuple[int, int, int] = (32, 56, 96)
@@ -172,6 +190,35 @@ class SA3DiTBuildConfig:
 
     def engine_name(self) -> str:
         return f"sa3_m_dit_l{self.min_latents}_{self.opt_latents}_{self.max_latents}"
+
+
+@dataclass
+class SA3SmallDiTBuildConfig:
+    """Build parameters for one sa3-sm-music fp16mixed DiT engine.
+
+    A separate dataclass (same rationale as the fp8 one): the metadata
+    skip gate hashes the whole config, so a ``model`` field on
+    :class:`SA3DiTBuildConfig` would change the medium engines' identity
+    and force a needless rebuild. Same profile inputs, the ``sa3_sm_dit``
+    name prefix :data:`acestep.engine.sa3_trt.DIT_ENGINE_PREFIX` maps
+    ``small-music`` to, and the small ONNX.
+    """
+
+    min_latents: int
+    opt_latents: int
+    max_latents: int
+    workspace_gb: float = 16.0
+    onnx_files: list[str] = field(default_factory=lambda: list(DIT_SMALL_ONNX_FILES))
+
+    def engine_name(self) -> str:
+        return f"sa3_sm_dit_l{self.min_latents}_{self.opt_latents}_{self.max_latents}"
+
+
+# Per-model fp16mixed DiT build: (config class, metadata component, label).
+DIT_MODELS: dict[str, tuple[type, str, str]] = {
+    "medium": (SA3DiTBuildConfig, "sa3_m_dit", "SA3-M"),
+    "small-music": (SA3SmallDiTBuildConfig, "sa3_sm_dit", "SA3-SM"),
+}
 
 
 @dataclass
@@ -368,6 +415,7 @@ def _build_dit_engine(
     precision_label: str = "fp16mixed",
     local_onnx: str | None = None,
     refit: bool = False,
+    model_label: str = "SA3-M",
 ) -> tuple[str, str, float, str]:
     """Build one sa3-m DiT engine. Returns (label, path, elapsed, status).
 
@@ -379,7 +427,7 @@ def _build_dit_engine(
     name = config.engine_name()
     engine_path = os.path.join(output_dir, name, f"{name}.trt")
     label = (
-        f"SA3-M DiT {precision_label} "
+        f"{model_label} DiT {precision_label} "
         f"l{config.min_latents}_{config.opt_latents}_{config.max_latents}"
         f" (~{config.max_latents * SAMPLES_PER_LATENT / SA3_SAMPLE_RATE:.0f}s window)"
     )
@@ -550,6 +598,8 @@ def _resolve_dit_profiles(args) -> tuple:
             (1, latents_for_seconds(s), latents_for_seconds(s))
             for s in args.duration
         )
+    if getattr(args, "model", "medium") == "small-music":
+        return CANONICAL_DIT_PROFILES + SMALL_EXTRA_DIT_PROFILES
     return CANONICAL_DIT_PROFILES
 
 
@@ -557,12 +607,13 @@ def _matrix_jobs(args) -> list[tuple[str, str]]:
     """(label, engine_dir_name) pairs for the --all matrix."""
     dit_profiles = _resolve_dit_profiles(args)
 
+    cfg_cls, _component, model_label = DIT_MODELS[args.model]
     jobs = []
     if not args.same_l_only:
         for lo, opt, hi in dit_profiles:
-            cfg = SA3DiTBuildConfig(lo, opt, hi)
+            cfg = cfg_cls(lo, opt, hi)
             jobs.append((
-                f"SA3-M DiT fp16mixed l{lo}_{opt}_{hi}"
+                f"{model_label} DiT fp16mixed l{lo}_{opt}_{hi}"
                 f" (~{hi * SAMPLES_PER_LATENT / SA3_SAMPLE_RATE:.0f}s window)",
                 cfg.engine_name(),
             ))
@@ -668,6 +719,11 @@ def main() -> int:
                        help="Only build the SAME-L window decoder (skip DiT)")
 
     single = parser.add_argument_group("single mode / shared options")
+    single.add_argument("--model", choices=sorted(DIT_MODELS), default="medium",
+                        help="Which SA3 checkpoint's DiT to build "
+                             "(default: medium). small-music builds only "
+                             "the fp16mixed DiT: no fp8/refit variants, and "
+                             "no SAME-L (small decodes with SAME-S).")
     single.add_argument("--output-dir", default=str(trt_engines_dir()),
                         help="Engine output directory "
                              "(default: <models>/sa3/trt_engines)")
@@ -711,6 +767,15 @@ def main() -> int:
                      "build them in separate invocations or use --all")
     if args.dit_only and args.same_l_only:
         parser.error("--dit-only and --same-l-only are mutually exclusive")
+    if args.model != "medium":
+        if args.fp8 or args.refit:
+            parser.error(f"--fp8/--refit are medium-only (got --model {args.model})")
+        if args.same_l_window or args.same_l_only:
+            parser.error(f"SAME-L is the medium codec; --model {args.model} "
+                         "decodes with SAME-S and has no window engine")
+        # Small's codec is SAME-S: an --all matrix is DiT-only.
+        args.dit_only = True
+    dit_cls, dit_component, dit_label = DIT_MODELS[args.model]
 
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -731,9 +796,11 @@ def main() -> int:
             for lo, opt, hi in dit_profiles:
                 results.append(_build_dit_engine(
                     output_dir=args.output_dir,
-                    config=SA3DiTBuildConfig(lo, opt, hi, workspace_gb=args.workspace_gb),
+                    config=dit_cls(lo, opt, hi, workspace_gb=args.workspace_gb),
                     env=env,
                     force_rebuild=args.force_rebuild,
+                    component=dit_component,
+                    model_label=dit_label,
                 ))
             if args.fp8:
                 for lo, opt, hi in dit_profiles:
@@ -779,7 +846,7 @@ def main() -> int:
     built = []
     if args.dit:
         profile_l = latents_for_seconds(args.seconds)
-        config = SA3DiTBuildConfig(
+        config = dit_cls(
             min_latents=args.min_latents or 1,
             opt_latents=args.opt_latents or profile_l,
             max_latents=args.max_latents or args.opt_latents or profile_l,
@@ -790,6 +857,7 @@ def main() -> int:
         result = _build_dit_engine(
             output_dir=args.output_dir, config=config, env=env,
             force_rebuild=args.force_rebuild,
+            component=dit_component, model_label=dit_label,
         )
         built.append(result)
         if args.fp8:

@@ -399,7 +399,7 @@ class SA3Context:
         """Clamp a requested duration so its (padded, aligned) latent
         window fits a built TRT DiT engine — landing on the fast path
         instead of silently falling back to the ~5x-slower eager DiT.
-        No-op for models without engines (small) or durations already
+        No-op for models without built engines or durations already
         inside. No-op unless ``backend="tensorrt"`` (see
         :meth:`make_dit`) — the eager DiT has no length cap worth
         truncating the source for."""

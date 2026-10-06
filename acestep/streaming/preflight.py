@@ -133,10 +133,39 @@ def sa3_preflight(req: PreflightRequest) -> PreflightResult:
         ok, msg = sa3_checkpoint_status(req.model_id)
     if not ok:
         return PreflightResult.failed("SA3 model unavailable", str(msg))
+    _sa3_engine_hint(req)
     logger.info(
         "preflight_sa3_ok model_id={} base_dir={}", req.model_id, req.checkpoint_dir,
     )
     return PreflightResult.passed()
+
+
+#: ``sa3_build`` invocation per catalog id with TRT DiT support.
+SA3_ENGINE_BUILD_COMMANDS = {
+    "medium": "python -m acestep.engine.trt.sa3_build --all",
+    "small-music": "python -m acestep.engine.trt.sa3_build --model small-music --all",
+}
+
+
+def _sa3_engine_hint(req: PreflightRequest) -> Optional[str]:
+    """Warn (never fail) when TensorRT was asked for but no DiT engine
+    exists for the model: sessions then run the eager DiT, several times
+    slower, and the operator should know why and how to fix it. Returns
+    the warning text (None when engines exist, TRT is off, or the model
+    has no engine support)."""
+    from acestep.engine.sa3_trt import max_dit_engine_latents
+
+    cmd = SA3_ENGINE_BUILD_COMMANDS.get(req.model_id)
+    if req.decoder_accel != "tensorrt" or cmd is None:
+        return None
+    if max_dit_engine_latents(req.model_id) is not None:
+        return None
+    text = (
+        f"no SA3 TensorRT DiT engine for {req.model_id}: sessions will run "
+        f"the eager DiT. Build them with: {cmd}"
+    )
+    logger.warning("preflight_sa3_no_trt_engine model_id={} hint={!r}", req.model_id, text)
+    return text
 
 
 def mrt2_preflight(req: PreflightRequest) -> PreflightResult:

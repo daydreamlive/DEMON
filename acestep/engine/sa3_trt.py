@@ -67,10 +67,12 @@ COND_DIM = 768
 SAMPLES_PER_LATENT = 4096
 SA3_SAMPLE_RATE = 44100
 
-# Per-family DiT engine name prefixes: which engines can serve which
-# model_id's weights. Only medium has built engines today; small runs
-# real-time eager and has none.
-DIT_ENGINE_PREFIX = {"medium": "sa3_m_dit"}
+# Per-checkpoint DiT engine name prefixes: which engines can serve which
+# model_id's weights (``sa3_build --model``). small-music compiles
+# upstream's ``onnx/sa3-sm-music/dit_fp16.onnx`` (same fp16mixed recipe
+# and IO contract as medium); it has no fp8/refit variants and keeps the
+# eager SAME-S codec.
+DIT_ENGINE_PREFIX = {"medium": "sa3_m_dit", "small-music": "sa3_sm_dit"}
 
 _DIT_DIR_RE = re.compile(r"^(?P<prefix>.+_dit)_l(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$")
 # The fp8-trunk DiT engine: same ranged-profile naming as the fp16mixed
