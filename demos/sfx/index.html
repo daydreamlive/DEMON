@@ -9,44 +9,48 @@
   <body>
     <main class="shell">
       <header class="top">
-        <div class="title">sfx <small>Stable Audio 3 small-sfx</small></div>
+        <div class="title">sfx <small>a streaming sound-design board on Stable Audio 3 small-sfx</small></div>
         <div class="transport">
-          <label class="field">
-            <span>Bank</span>
-            <select id="bank"></select>
-          </label>
-          <label class="field">
-            <span>Length s</span>
-            <input id="duration" type="number" min="1" max="60" step="1">
-          </label>
-          <button id="transport" type="button" class="power">Start</button>
-          <span class="readout"><b>tick</b> <span id="tick">--.-</span> ms</span>
-          <span id="status-dot" class="dot dot-idle" aria-hidden="true"></span>
-          <span id="status-text" class="status">idle</span>
+          <button id="play" type="button" class="power">Play</button>
+          <button id="add" type="button">+ Layer</button>
+          <button id="save-mix" type="button" disabled>Save mix WAV</button>
+          <span id="status" class="status">idle</span>
         </div>
       </header>
 
-      <canvas id="scope" class="scope" width="1200" height="180" aria-label="Loop waveform and playhead"></canvas>
+      <div class="board">
+        <section id="layers" class="layers" aria-label="Mixer layers"></section>
 
-      <section id="pads" class="pads" aria-label="Sound pads"></section>
+        <aside class="side">
+          <section class="panel mic">
+            <h2>Mic to SFX</h2>
+            <p class="hint">Record up to 4 s (or pick a short sound file), describe what it should become, and the layer re-renders it. Evolve sets how much of the recording survives: low keeps it, 1.0 ignores it.</p>
+            <div class="row">
+              <button id="rec" type="button">Record</button>
+              <label class="file">or file <input id="file" type="file" accept="audio/*"></label>
+              <span id="rec-status" class="hint">no recording</span>
+            </div>
+            <canvas id="rec-scope" class="rec-scope" height="48" aria-label="Recording waveform"></canvas>
+            <label class="field">
+              <span>Turn it into</span>
+              <input id="rec-prompt" type="text" spellcheck="false" value="Large monster growl, deep and wet">
+            </label>
+            <div class="row">
+              <select id="rec-mode" aria-label="Mode for the recording layer">
+                <option value="oneshot">One-shot</option>
+                <option value="ambience">Ambience</option>
+              </select>
+              <button id="rec-use" type="button" disabled>Make layer</button>
+            </div>
+          </section>
 
-      <section class="row">
-        <label class="field grow">
-          <span>Prompt (edit the active pad, Enter to send)</span>
-          <input id="prompt" type="text" spellcheck="false">
-        </label>
-        <button id="reroll" type="button" disabled>Re-roll seed</button>
-        <button id="save" type="button" disabled>Save WAV</button>
-      </section>
-
-      <section class="row">
-        <label class="field grow">
-          <span>Morph to <em id="morph-target">(shift-click a pad)</em> <em id="morph-value">0.00</em></span>
-          <input id="morph" type="range" min="0" max="1" step="0.01" value="0" disabled>
-        </label>
-      </section>
-
-      <section id="knobs" class="knobs" aria-label="Model knobs"></section>
+          <section class="panel library">
+            <h2>Examples</h2>
+            <p class="hint">Click a card to fill the prompt field you last clicked (default: layer 1, prompt A). Press Enter or Apply to hear it.</p>
+            <div id="library"></div>
+          </section>
+        </aside>
+      </div>
     </main>
     <script type="module" src="./sfx.js"></script>
   </body>

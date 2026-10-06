@@ -70,11 +70,11 @@ def test_web_client_handles_preempted_close():
 @pytest.fixture(autouse=True)
 def _isolated_active_slot():
     with wa._ACTIVE_SLOT_LOCK:
-        prev = wa._ACTIVE_SESSION[0]
-        wa._ACTIVE_SESSION[0] = None
+        prev = list(wa._ACTIVE_SESSIONS)
+        wa._ACTIVE_SESSIONS.clear()
     yield
     with wa._ACTIVE_SLOT_LOCK:
-        wa._ACTIVE_SESSION[0] = prev
+        wa._ACTIVE_SESSIONS[:] = prev
 
 
 class _FakeWs:
@@ -102,14 +102,14 @@ def _register(session_id="old", *, closed=True, raise_on_close=False):
     ws = _FakeWs(raise_on_close=raise_on_close)
     streaming = _fake_streaming(closed)
     with wa._ACTIVE_SLOT_LOCK:
-        wa._ACTIVE_SESSION[0] = wa._ActiveSession(session_id, streaming, ws)
+        wa._ACTIVE_SESSIONS.append(wa._ActiveSession(session_id, streaming, ws))
     return streaming, ws
 
 
 def test_preempt_noop_without_active_session():
     wa._preempt_active_session("new")  # must not raise
     with wa._ACTIVE_SLOT_LOCK:
-        assert wa._ACTIVE_SESSION[0] is None
+        assert wa._ACTIVE_SESSIONS == []
 
 
 def test_preempt_stops_runner_closes_with_4001_and_clears_slot():
@@ -118,7 +118,7 @@ def test_preempt_stops_runner_closes_with_4001_and_clears_slot():
     assert streaming.state.running is False
     assert ws.closes == [(wa.PREEMPTED_CLOSE_CODE, "preempted by a newer session")]
     with wa._ACTIVE_SLOT_LOCK:
-        assert wa._ACTIVE_SESSION[0] is None
+        assert wa._ACTIVE_SESSIONS == []
 
 
 def test_preempt_waits_for_teardown_signal():
@@ -137,7 +137,7 @@ def test_preempt_waits_for_teardown_signal():
         timer.cancel()
     assert released == [True]  # preempt returned only after the signal
     with wa._ACTIVE_SLOT_LOCK:
-        assert wa._ACTIVE_SESSION[0] is None
+        assert wa._ACTIVE_SESSIONS == []
 
 
 def test_preempt_proceeds_after_teardown_timeout(monkeypatch):
@@ -149,7 +149,7 @@ def test_preempt_proceeds_after_teardown_timeout(monkeypatch):
     assert streaming.state.running is False
     assert ws.closes[0][0] == wa.PREEMPTED_CLOSE_CODE
     with wa._ACTIVE_SLOT_LOCK:
-        assert wa._ACTIVE_SESSION[0] is None
+        assert wa._ACTIVE_SESSIONS == []
 
 
 def test_preempt_survives_socket_close_failure():
@@ -157,7 +157,27 @@ def test_preempt_survives_socket_close_failure():
     wa._preempt_active_session("new")  # close() raising must be swallowed
     assert streaming.state.running is False
     with wa._ACTIVE_SLOT_LOCK:
-        assert wa._ACTIVE_SESSION[0] is None
+        assert wa._ACTIVE_SESSIONS == []
+
+
+def test_preempt_keeps_sessions_under_a_family_cap():
+    old, old_ws = _register("old", closed=True)
+    mid, _ = _register("mid", closed=True)
+    wa._preempt_active_session("new", keep=2)  # under the cap: nothing stops
+    assert old.state.running is True and mid.state.running is True
+    wa._preempt_active_session("new", keep=1)  # at the cap: the OLDEST goes
+    assert old.state.running is False
+    assert old_ws.closes[0][0] == wa.PREEMPTED_CLOSE_CODE
+    assert mid.state.running is True
+    with wa._ACTIVE_SLOT_LOCK:
+        assert [a.session_id for a in wa._ACTIVE_SESSIONS] == ["mid"]
+
+
+def test_family_session_caps():
+    from acestep.streaming.families import FAMILY_SPECS
+
+    assert FAMILY_SPECS["acestep"].max_concurrent_sessions == 1
+    assert FAMILY_SPECS["sa3"].max_concurrent_sessions == 4
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +189,7 @@ def _register_with_bus():
     events = []
     streaming = SimpleNamespace(bus=SimpleNamespace(publish=events.append))
     with wa._ACTIVE_SLOT_LOCK:
-        wa._ACTIVE_SESSION[0] = wa._ActiveSession("live", streaming, _FakeWs())
+        wa._ACTIVE_SESSIONS.append(wa._ActiveSession("live", streaming, _FakeWs()))
     return events
 
 
@@ -214,6 +234,6 @@ def test_publish_stems_swallows_bus_errors():
         ),
     )
     with wa._ACTIVE_SLOT_LOCK:
-        wa._ACTIVE_SESSION[0] = wa._ActiveSession("live", streaming, _FakeWs())
+        wa._ACTIVE_SESSIONS.append(wa._ActiveSession("live", streaming, _FakeWs()))
     stems = {"vocals": torch.zeros((2, 8))}
     assert wa._publish_stems_to_active_session("track.wav", stems) is False

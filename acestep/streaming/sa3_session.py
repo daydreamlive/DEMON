@@ -168,6 +168,20 @@ def create_sa3_session(
         extension=model_extension,
     )
 
+    # Per-session song-length label (the sa3_song_seconds config field):
+    # 0 = the clip's own length (one-shots end in silence), a number =
+    # that label, absent = the process default. The view shares the
+    # loaded model; every label consumer below reads the override.
+    song_override = config.family_config.get("sa3_song_seconds")
+    if song_override is not None:
+        context = context.with_song_seconds(
+            None if float(song_override) <= 0 else float(song_override),
+        )
+        logger.info(
+            "sa3_session_label song_seconds={} outro_pad_s={:.1f}",
+            context.song_seconds, context.outro_pad_s,
+        )
+
     # An installed extension may not be runnable under a prebuilt
     # acceleration plan. Resolve that BEFORE component construction so the
     # duration clamp below sees the backend that will actually run: a

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import math
 import os
+import threading
 from pathlib import Path
 from typing import Callable, Mapping
 
@@ -81,6 +82,13 @@ SONG_SECONDS_MAX = 384.0
 # also what the TRT clamp now costs a 60 s loop on the 646-latent
 # engine (~57 s, was ~54 s under the 6 s pad); ``DEMON_SA3_OUTRO_PAD_S=0``
 # trades the wrap for the full 60 s.
+# Eager SAME decode touches process-wide state: the seeded decode forks
+# and reseeds the global torch RNG, and the deterministic window decode
+# toggles noise flags on the shared model. Concurrent sessions (the
+# family allows several) serialize those decodes so one session's reseed
+# or flag flip can never land inside another's decode.
+_SAM_DECODE_LOCK = threading.Lock()
+
 LEGACY_OUTRO_PAD_S = 6.0
 DEFAULT_LOOP_WRAP_S = 3.0
 
@@ -299,6 +307,17 @@ class SA3Context:
             return requested, ""
         return "eager", verdict.reason or "extension does not support tensorrt"
 
+    def with_song_seconds(self, song_seconds: float | None) -> "SA3LabelView":
+        """A per-session view of this context with its own song-length
+        label: ``None`` = the upstream whole-file semantics (label = the
+        render length, silent outro pad; one-shots decay to silence),
+        a number = that label (clamped to the conditioner's range). The
+        model, engines and caches stay shared; only the label and the
+        outro pad differ."""
+        if song_seconds is not None:
+            song_seconds = min(float(song_seconds), SONG_SECONDS_MAX)
+        return SA3LabelView(self, song_seconds, outro_pad_setting(song_seconds))
+
     def close(self) -> None:
         """Release the installed extension. Idempotent.
 
@@ -499,6 +518,45 @@ class SA3Context:
         return sr, tiled
 
 
+class SA3LabelView:
+    """A process-cached :class:`SA3Context` seen with a per-session
+    ``song_seconds`` / ``outro_pad_s`` (see
+    :meth:`SA3Context.with_song_seconds`).
+
+    Every label consumer (``prepare_cond``, ``cond_seconds_total``,
+    ``window_latent_frames``, ``encode_source``, the TRT clamp) is a
+    context method reading ``self.song_seconds`` / ``self.outro_pad_s``,
+    so the view re-binds the context's methods to itself: they then read
+    the overrides and delegate everything else (model, engines, caches)
+    to the shared context. Writes other than the two overrides land on
+    the shared context, so a cache the context fills stays shared.
+    """
+
+    _OVERRIDES = ("song_seconds", "outro_pad_s")
+
+    def __init__(self, base: SA3Context, song_seconds, outro_pad_s: float):
+        object.__setattr__(self, "_base", base)
+        object.__setattr__(self, "song_seconds", song_seconds)
+        object.__setattr__(self, "outro_pad_s", float(outro_pad_s))
+
+    def __getattr__(self, name):
+        import inspect
+        import types
+
+        static = inspect.getattr_static(type(self._base), name, None)
+        if isinstance(static, types.FunctionType):
+            return types.MethodType(static, self)
+        if isinstance(static, property) and static.fget is not None:
+            return static.fget(self)
+        return getattr(self._base, name)
+
+    def __setattr__(self, name, value):
+        if name in self._OVERRIDES:
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._base, name, value)
+
+
 class SA3SAMECodec:
     """The SA3 family codec: SAME latent -> 44.1 kHz stereo audio.
 
@@ -528,7 +586,9 @@ class SA3SAMECodec:
         decoder mask_noise) is reproducible: same latent + same seed →
         bit-identical audio. ``None`` keeps the legacy unseeded draw.
         """
-        with self._helpers.sa3_decode_rng(decode_seed, device=latent_bct.device):
+        with _SAM_DECODE_LOCK, self._helpers.sa3_decode_rng(
+            decode_seed, device=latent_bct.device,
+        ):
             audio = self._helpers.decode_sa3_latent(self._context.sam, latent_bct)
         return audio[0]
 
@@ -580,14 +640,15 @@ class SA3SAMEWindowCodec:
             self._trt = SameLWindowTRTDecoder(path)
 
     def _decode_window_eager(self, latent_bct, start: int, num: int) -> torch.Tensor:
-        result = self._helpers.decode_sa3_latent_window(
-            self._context.sam, latent_bct,
-            target_start_sample=int(start),
-            target_num_samples=int(num),
-            context_sec=self.context_sec,
-            chunked=False,
-            deterministic=True,
-        )
+        with _SAM_DECODE_LOCK:
+            result = self._helpers.decode_sa3_latent_window(
+                self._context.sam, latent_bct,
+                target_start_sample=int(start),
+                target_num_samples=int(num),
+                context_sec=self.context_sec,
+                chunked=False,
+                deterministic=True,
+            )
         return result.audio_ct
 
     def decode_window(self, latent_bct: torch.Tensor, start: int, num: int) -> torch.Tensor:
@@ -638,6 +699,8 @@ class SA3SAMEWindowCodec:
         """Eager full decode (legacy full-buffer mode only; the hot path
         never calls this for windowed-codec families). ``decode_seed``
         pins the decode RNG exactly as on :class:`SA3SAMECodec`."""
-        with self._helpers.sa3_decode_rng(decode_seed, device=latent_bct.device):
+        with _SAM_DECODE_LOCK, self._helpers.sa3_decode_rng(
+            decode_seed, device=latent_bct.device,
+        ):
             audio = self._helpers.decode_sa3_latent(self._context.sam, latent_bct)
         return audio[0]

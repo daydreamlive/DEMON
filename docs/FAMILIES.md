@@ -29,6 +29,7 @@ against it by `tests/unit/test_family_conformance.py`.
 | `shutdown()` | releases process-wide state the family holds (a cached model, an installed extension) when the server exits | `server.py` shutdown |
 | `accepts_checkpoint_dir` | whether `--sa3-base-checkpoint` may point the family at a non-catalog directory | `server.py` CLI |
 | `supports_extensions` | whether `--model-extension` may target the family | `acestep.plugins.selection` |
+| `max_concurrent_sessions` | how many sessions may run side by side on one pod before a new connection preempts the oldest (1 = one session per pod, required by ACE; SA3 allows 4 because each session owns its TRT execution context) | `ws_adapter.py` session create |
 
 Both callables do their own lazy imports, so registering a family adds no
 model import to the registry. (The registry itself still imports the
@@ -85,6 +86,9 @@ phase 1 of the platform plan; a third family today would have to edit each.
 
 The `sa3_duration_s` handshake key is now declared by the SA3 spec and reaches
 the wire contract from there; `SessionConfig` carries it in `family_config`.
+`sa3_song_seconds` sets a session's own song-length label over the shared model
+(`SA3Context.with_song_seconds`): `0` labels the render with its own length, so
+a one-shot decays to silence inside the loop.
 
 `tests/unit/test_family_boundary.py` walks the AST of the frozen core files
 (`pipeline_runner.py`, `session.py`, `generator_backend.py`,
