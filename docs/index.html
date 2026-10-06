@@ -358,6 +358,24 @@
 
 
 <!-- ============================================================
+     MODEL FAMILIES
+     ============================================================ -->
+<section id="families">
+  <div class="container container--narrow">
+    <div class="section-label">
+      <span class="name">Model families</span>
+    </div>
+
+    <div class="prose">
+      <p>
+        The paper describes the engine on ACE-Step v1.5. Since then DEMON has become a platform: the same streaming runtime, wire protocol and client SDK now sit in front of interchangeable model families. <a href="https://huggingface.co/stabilityai/stable-audio-3-small-music">Stable Audio 3</a> runs through the same streaming diffusion pipeline with per-frame curves, prompt morphing and audio-to-audio; Magenta RealTime 2, MiniMax-Music3 and YuE2 are experimental. A server boots one family, and every client reads that family's capabilities from the protocol. The family table, benchmarks and setup are in the <a href="https://github.com/daydreamlive/DEMON#model-families">repository README</a>.
+      </p>
+    </div>
+  </div>
+</section>
+
+
+<!-- ============================================================
      TEAM
      ============================================================ -->
 <section id="team">
@@ -392,6 +410,9 @@
           <strong>ACE-Step v1.5</strong> &mdash; the base diffusion model, VAE, text encoder, and semantic LM. Architecture, training, weights, and turbo distillation are the work of the <a href="https://github.com/ace-step/ACE-Step-1.5">ACE-Step team</a>, released under MIT.
         </p>
         <p>
+          <strong>Model families</strong> &mdash; Stable Audio 3 is the work of Stability AI; Magenta RealTime 2 of Google Magenta; MiniMax-Music3 of MiniMax; YuE2 of the m-a-p YuE team (weights CC BY-NC 4.0, code Apache-2.0).
+        </p>
+        <p>
           <strong>StreamDiffusion</strong> &mdash; ring-buffer streaming pattern for image diffusion (<a href="https://arxiv.org/abs/2312.12491">Kodaira et al., 2023</a>), adapted here for long music latents.
         </p>
         <p>
@@ -413,7 +434,7 @@
     </div>
 
     <p>
-      If you use DEMON, please cite both DEMON and the underlying ACE-Step model.
+      If you use DEMON, please cite DEMON and the model of the family you ran. For ACE-Step, cite both entries below.
     </p>
 
     <h3 style="margin-top:2.5rem;">DEMON</h3>
@@ -440,7 +461,7 @@
      ============================================================ -->
 <footer>
   <div class="row">
-    <div>DEMON · MIT License</div>
+    <div>DEMON · AGPL-3.0-or-later</div>
     <div>
       <a href="https://github.com/daydreamlive/DEMON">GITHUB</a>
       &nbsp;&nbsp;·&nbsp;&nbsp;
