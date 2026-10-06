@@ -77,3 +77,11 @@ def test_sfx_build_config_names_and_keeps_medium_identity():
     # Medium's hashed config identity is unchanged by the subclass.
     assert SA3DiTBuildConfig(1, 646, 646).engine_name() == "sa3_m_dit_l1_646_646"
     assert DIT_MODELS["small-sfx"][1] == "sa3_sfx_dit"
+
+
+def test_sfx_demo_is_mounted_by_default():
+    from demos.common import static_site
+
+    mounts = static_site.build_static_mounts()
+    assert mounts["/sfx"].entry == "index.html"
+    assert mounts["/sfx"].root.name == "sfx"
