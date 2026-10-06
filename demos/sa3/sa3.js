@@ -36,52 +36,30 @@ const LEGACY_PACK_PEDAL = {
   steer_rough: "tone",
   steer_density: "tone",
 };
-// Sub-pedals: a category pedal with more than 12 knobs splits by a
-// finer grouping. Pack name (no steer_ prefix) -> sub-pedal; a name not
-// listed stays on its parent pedal. Each sub-pedal has its own bypass.
+// Split only the two largest categories. A name not listed stays on its
+// parent pedal. Each sub-pedal has its own bypass.
 const SUB_PEDALS = {
-  genre: {
-    electronic: { title: "ELECTRONIC", names: ["acid_house", "future_bass", "hardstyle", "vaporwave", "lofi_hip_hop", "drone"] },
-    rock_metal: { title: "ROCK / METAL", names: ["black_metal", "post_rock", "surf_rock"] },
-    jazz_blues_soul: { title: "JAZZ / BLUES / SOUL", names: [] },
-    world_folk: { title: "WORLD / FOLK", names: ["cumbia", "samba", "tango"] },
-    classical_cinematic: { title: "CLASSICAL / CINEMATIC", names: ["horror_score"] },
-    other: { title: "OTHER", names: ["childrens", "christmas", "new_age"] },
-  },
-  instrument: {
-    keys: { title: "KEYS", names: ["electric_piano"] },
-    guitars_strings: { title: "GUITARS / STRINGS", names: ["strummed_guitar", "ukulele", "koto", "sitar", "erhu"] },
-    drums_percussion: { title: "DRUMS / PERCUSSION", names: ["drum_machine", "handclaps", "timpani", "jingle_bells"] },
-    synths: { title: "SYNTHS", names: ["acid_303", "synth_pad", "synthesizer"] },
-    winds_brass: { title: "WINDS / BRASS", names: [] },
-    other: { title: "OTHER", names: [] },
-  },
   sound_effect: {
-    nature: { title: "NATURE", names: ["frogs", "rain_on_surface", "sfx_insects", "sfx_ocean_waves"] },
-    machines_vehicles: {
-      title: "MACHINES / VEHICLES",
-      names: ["jet", "revving", "alarm_clock", "phone_ring", "sfx_telephone", "ui_click", "laser_zap", "glitch_sfx"],
-    },
-    human_crowd: { title: "HUMAN / CROWD", names: ["sfx_applause", "sfx_baby_cry"] },
-    foley_impacts: { title: "FOLEY / IMPACTS", names: ["dishes", "explosion", "impact_boom", "smash", "riser", "magic_sparkle"] },
+    environment: { title: "ENVIRONMENT / IMPACTS", names: [
+      "frogs", "rain_on_surface", "sfx_insects", "sfx_ocean_waves",
+      "dishes", "explosion", "impact_boom", "smash", "riser", "magic_sparkle",
+    ] },
+    machines: { title: "MACHINES / CROWD", names: [
+      "jet", "revving", "alarm_clock", "phone_ring", "sfx_telephone", "ui_click", "laser_zap", "glitch_sfx",
+      "sfx_applause", "sfx_baby_cry",
+    ] },
   },
   tone: {
-    color: { title: "COLOR", names: ["bright", "warm", "fizzy_highs", "shimmering", "muted_horn", "nylon_soft", "woody_body"] },
-    grit: { title: "GRIT", names: ["rough", "gritty", "fuzzy", "dissonant", "thick_unison", "percussive"] },
-    rhythm: {
-      title: "RHYTHM",
-      names: [
-        "accelerando", "arpeggiated", "clave_pattern", "dense_arrangement", "density", "locked_groove",
-        "polyrhythmic", "pulsing_synth", "quantized", "sfx_event_rate", "shaker_pulse", "swing", "tom_patterns",
-      ],
-    },
-    playing: {
-      title: "PLAYING",
-      names: [
-        "hammered_notes", "legato_phrasing", "marcato", "palm_muted", "spiccato", "virtuosic_runs",
-        "intense", "solo_build", "solo_crest",
-      ],
-    },
+    texture: { title: "COLOR / GRIT", names: [
+      "bright", "warm", "fizzy_highs", "shimmering", "muted_horn", "nylon_soft", "woody_body",
+      "rough", "gritty", "fuzzy", "dissonant", "thick_unison", "percussive",
+    ] },
+    motion: { title: "RHYTHM / PLAYING", names: [
+      "accelerando", "arpeggiated", "clave_pattern", "dense_arrangement", "density", "locked_groove",
+      "polyrhythmic", "pulsing_synth", "quantized", "sfx_event_rate", "shaker_pulse", "swing", "tom_patterns",
+      "hammered_notes", "legato_phrasing", "marcato", "palm_muted", "spiccato", "virtuosic_runs",
+      "intense", "solo_build", "solo_crest",
+    ] },
   },
 };
 const SUB_PEDAL_OF = new Map(
@@ -124,6 +102,7 @@ const state = {
   player: null,
   paramsTimer: null,
 };
+let sendFeedbackTimer = null;
 
 els.promptA.value = DEFAULT_PROMPT;
 
@@ -690,6 +669,9 @@ async function fetchFixtures() {
 }
 
 async function stop() {
+  window.clearTimeout(sendFeedbackTimer);
+  els.sendPrompt.textContent = "Send Prompt";
+  els.sendPrompt.classList.remove("sent");
   if (state.paramsTimer != null) {
     window.clearInterval(state.paramsTimer);
     state.paramsTimer = null;
@@ -714,7 +696,7 @@ function readDuration() {
 }
 
 function buildConfig() {
-  const prompt = els.promptA.value.trim() || DEFAULT_PROMPT;
+  const prompt = els.promptA.value.trim();
   const promptB = els.promptB.value.trim();
   const config = {
     telemetry_version: 1,
@@ -805,7 +787,7 @@ els.transport.addEventListener("click", () => {
 });
 
 els.sendPrompt.addEventListener("click", () => {
-  const prompt = els.promptA.value.trim() || DEFAULT_PROMPT;
+  const prompt = els.promptA.value.trim();
   const promptB = els.promptB.value.trim();
   state.remote?.sendPrompt(
     prompt,
@@ -813,6 +795,13 @@ els.sendPrompt.addEventListener("click", () => {
     undefined,
     promptB && promptB !== prompt ? promptB : undefined,
   );
+  els.sendPrompt.textContent = "Sent";
+  els.sendPrompt.classList.add("sent");
+  window.clearTimeout(sendFeedbackTimer);
+  sendFeedbackTimer = window.setTimeout(() => {
+    els.sendPrompt.textContent = "Send Prompt";
+    els.sendPrompt.classList.remove("sent");
+  }, 1200);
 });
 
 els.blend.addEventListener("input", () => {

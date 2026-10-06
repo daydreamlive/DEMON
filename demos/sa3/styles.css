@@ -630,6 +630,12 @@ body.knob-dragging {
   padding: 0 1rem;
 }
 
+.send-btn:active,
+.send-btn.sent {
+  background: linear-gradient(180deg, #477458, #234232);
+  border-color: #77bd8b;
+}
+
 .send-btn:disabled,
 .power-btn:disabled {
   cursor: default;
