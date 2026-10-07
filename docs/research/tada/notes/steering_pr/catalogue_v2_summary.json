@@ -1,0 +1,70 @@
+{
+ "rows": 660,
+ "v1_rows": 481,
+ "new_rows": 150,
+ "redefinitions": 29,
+ "new_by_category": {
+  "timbre": 36,
+  "articulation": 31,
+  "dynamics": 25,
+  "rhythm": 32,
+  "space": 26
+ },
+ "new_by_population": {
+  "music": 129,
+  "solo": 5,
+  "sfx": 15,
+  "all": 1
+ },
+ "new_by_strength": {
+  "text_only": 134,
+  "descriptor": 16
+ },
+ "redefined": [
+  "bass_heavy_r2",
+  "shimmering_r2",
+  "timbral_warmth_r2",
+  "lush_r2",
+  "muted_r2",
+  "swing_r2",
+  "halftime_r2",
+  "rolling_rhythm_r2",
+  "ostinato_r2",
+  "arpeggiated_r2",
+  "shoegaze_r2",
+  "slap_bass_r2",
+  "modular_synth_r2",
+  "vaporwave_r2",
+  "hammond_organ_r2",
+  "trumpet_r2",
+  "sitar_r2",
+  "harpsichord_r2",
+  "double_bass_r2",
+  "string_section_r2",
+  "electric_piano_r2",
+  "chorus_fx_r2",
+  "echo_delay_r2",
+  "staccato_r2",
+  "small_room_r2",
+  "deep_r2",
+  "punchy_r2",
+  "airy_r2",
+  "syncopated_r2"
+ ],
+ "twins_listed_first": [
+  "bass_heavy_r2",
+  "shimmering_r2",
+  "timbral_warmth_r2",
+  "lush_r2",
+  "muted_r2",
+  "swing_r2",
+  "halftime_r2",
+  "rolling_rhythm_r2",
+  "ostinato_r2",
+  "arpeggiated_r2",
+  "shoegaze_r2",
+  "slap_bass_r2",
+  "modular_synth_r2",
+  "vaporwave_r2"
+ ]
+}

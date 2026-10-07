@@ -1,0 +1,7418 @@
+[
+{
+"id": 100000,
+"prompt": "solo piano, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"piano"
+]
+},
+{
+"id": 100001,
+"prompt": "solo piano, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"piano"
+]
+},
+{
+"id": 100002,
+"prompt": "solo piano, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"piano"
+]
+},
+{
+"id": 100003,
+"prompt": "solo piano, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"piano"
+]
+},
+{
+"id": 100004,
+"prompt": "solo piano, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"piano"
+]
+},
+{
+"id": 100005,
+"prompt": "solo piano, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"piano"
+]
+},
+{
+"id": 100006,
+"prompt": "solo piano, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"piano"
+]
+},
+{
+"id": 100007,
+"prompt": "solo piano, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"piano"
+]
+},
+{
+"id": 100008,
+"prompt": "solo Rhodes electric piano, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"electric_piano"
+]
+},
+{
+"id": 100009,
+"prompt": "solo Rhodes electric piano, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"electric_piano"
+]
+},
+{
+"id": 100010,
+"prompt": "solo Rhodes electric piano, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"electric_piano"
+]
+},
+{
+"id": 100011,
+"prompt": "solo Rhodes electric piano, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"electric_piano"
+]
+},
+{
+"id": 100012,
+"prompt": "solo Rhodes electric piano, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"electric_piano"
+]
+},
+{
+"id": 100013,
+"prompt": "solo Rhodes electric piano, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"electric_piano"
+]
+},
+{
+"id": 100014,
+"prompt": "solo Rhodes electric piano, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"electric_piano"
+]
+},
+{
+"id": 100015,
+"prompt": "solo Rhodes electric piano, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"electric_piano"
+]
+},
+{
+"id": 100016,
+"prompt": "solo pipe organ, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"organ"
+]
+},
+{
+"id": 100017,
+"prompt": "solo pipe organ, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"organ"
+]
+},
+{
+"id": 100018,
+"prompt": "solo pipe organ, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"organ"
+]
+},
+{
+"id": 100019,
+"prompt": "solo pipe organ, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"organ"
+]
+},
+{
+"id": 100020,
+"prompt": "solo pipe organ, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"organ"
+]
+},
+{
+"id": 100021,
+"prompt": "solo pipe organ, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"organ"
+]
+},
+{
+"id": 100022,
+"prompt": "solo pipe organ, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"organ"
+]
+},
+{
+"id": 100023,
+"prompt": "solo pipe organ, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"organ"
+]
+},
+{
+"id": 100024,
+"prompt": "solo Hammond organ, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"hammond_organ"
+]
+},
+{
+"id": 100025,
+"prompt": "solo Hammond organ, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"hammond_organ"
+]
+},
+{
+"id": 100026,
+"prompt": "solo Hammond organ, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"hammond_organ"
+]
+},
+{
+"id": 100027,
+"prompt": "solo Hammond organ, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"hammond_organ"
+]
+},
+{
+"id": 100028,
+"prompt": "solo Hammond organ, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"hammond_organ"
+]
+},
+{
+"id": 100029,
+"prompt": "solo Hammond organ, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"hammond_organ"
+]
+},
+{
+"id": 100030,
+"prompt": "solo Hammond organ, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"hammond_organ"
+]
+},
+{
+"id": 100031,
+"prompt": "solo Hammond organ, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"hammond_organ"
+]
+},
+{
+"id": 100032,
+"prompt": "solo analog synthesizer, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"synthesizer"
+]
+},
+{
+"id": 100033,
+"prompt": "solo analog synthesizer, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"synthesizer"
+]
+},
+{
+"id": 100034,
+"prompt": "solo analog synthesizer, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"synthesizer"
+]
+},
+{
+"id": 100035,
+"prompt": "solo analog synthesizer, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"synthesizer"
+]
+},
+{
+"id": 100036,
+"prompt": "solo analog synthesizer, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"synthesizer"
+]
+},
+{
+"id": 100037,
+"prompt": "solo analog synthesizer, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"synthesizer"
+]
+},
+{
+"id": 100038,
+"prompt": "solo analog synthesizer, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"synthesizer"
+]
+},
+{
+"id": 100039,
+"prompt": "solo analog synthesizer, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"synthesizer"
+]
+},
+{
+"id": 100040,
+"prompt": "solo harpsichord, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"harpsichord"
+]
+},
+{
+"id": 100041,
+"prompt": "solo harpsichord, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"harpsichord"
+]
+},
+{
+"id": 100042,
+"prompt": "solo harpsichord, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"harpsichord"
+]
+},
+{
+"id": 100043,
+"prompt": "solo harpsichord, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"harpsichord"
+]
+},
+{
+"id": 100044,
+"prompt": "solo harpsichord, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"harpsichord"
+]
+},
+{
+"id": 100045,
+"prompt": "solo harpsichord, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"harpsichord"
+]
+},
+{
+"id": 100046,
+"prompt": "solo harpsichord, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"harpsichord"
+]
+},
+{
+"id": 100047,
+"prompt": "solo harpsichord, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"harpsichord"
+]
+},
+{
+"id": 100048,
+"prompt": "solo acoustic guitar, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"acoustic_guitar"
+]
+},
+{
+"id": 100049,
+"prompt": "solo acoustic guitar, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"acoustic_guitar"
+]
+},
+{
+"id": 100050,
+"prompt": "solo acoustic guitar, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"acoustic_guitar"
+]
+},
+{
+"id": 100051,
+"prompt": "solo acoustic guitar, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"acoustic_guitar"
+]
+},
+{
+"id": 100052,
+"prompt": "solo acoustic guitar, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"acoustic_guitar"
+]
+},
+{
+"id": 100053,
+"prompt": "solo acoustic guitar, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"acoustic_guitar"
+]
+},
+{
+"id": 100054,
+"prompt": "solo acoustic guitar, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"acoustic_guitar"
+]
+},
+{
+"id": 100055,
+"prompt": "solo acoustic guitar, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"acoustic_guitar"
+]
+},
+{
+"id": 100056,
+"prompt": "solo electric guitar, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"electric_guitar"
+]
+},
+{
+"id": 100057,
+"prompt": "solo electric guitar, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"electric_guitar"
+]
+},
+{
+"id": 100058,
+"prompt": "solo electric guitar, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"electric_guitar"
+]
+},
+{
+"id": 100059,
+"prompt": "solo electric guitar, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"electric_guitar"
+]
+},
+{
+"id": 100060,
+"prompt": "solo electric guitar, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"electric_guitar"
+]
+},
+{
+"id": 100061,
+"prompt": "solo electric guitar, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"electric_guitar"
+]
+},
+{
+"id": 100062,
+"prompt": "solo electric guitar, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"electric_guitar"
+]
+},
+{
+"id": 100063,
+"prompt": "solo electric guitar, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"electric_guitar"
+]
+},
+{
+"id": 100064,
+"prompt": "solo electric bass guitar, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"bass_guitar"
+]
+},
+{
+"id": 100065,
+"prompt": "solo electric bass guitar, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"bass_guitar"
+]
+},
+{
+"id": 100066,
+"prompt": "solo electric bass guitar, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"bass_guitar"
+]
+},
+{
+"id": 100067,
+"prompt": "solo electric bass guitar, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"bass_guitar"
+]
+},
+{
+"id": 100068,
+"prompt": "solo electric bass guitar, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"bass_guitar"
+]
+},
+{
+"id": 100069,
+"prompt": "solo electric bass guitar, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"bass_guitar"
+]
+},
+{
+"id": 100070,
+"prompt": "solo electric bass guitar, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"bass_guitar"
+]
+},
+{
+"id": 100071,
+"prompt": "solo electric bass guitar, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"bass_guitar"
+]
+},
+{
+"id": 100072,
+"prompt": "solo slide guitar, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"slide_guitar"
+]
+},
+{
+"id": 100073,
+"prompt": "solo slide guitar, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"slide_guitar"
+]
+},
+{
+"id": 100074,
+"prompt": "solo slide guitar, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"slide_guitar"
+]
+},
+{
+"id": 100075,
+"prompt": "solo slide guitar, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"slide_guitar"
+]
+},
+{
+"id": 100076,
+"prompt": "solo slide guitar, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"slide_guitar"
+]
+},
+{
+"id": 100077,
+"prompt": "solo slide guitar, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"slide_guitar"
+]
+},
+{
+"id": 100078,
+"prompt": "solo slide guitar, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"slide_guitar"
+]
+},
+{
+"id": 100079,
+"prompt": "solo slide guitar, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"slide_guitar"
+]
+},
+{
+"id": 100080,
+"prompt": "solo banjo, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"banjo"
+]
+},
+{
+"id": 100081,
+"prompt": "solo banjo, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"banjo"
+]
+},
+{
+"id": 100082,
+"prompt": "solo banjo, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"banjo"
+]
+},
+{
+"id": 100083,
+"prompt": "solo banjo, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"banjo"
+]
+},
+{
+"id": 100084,
+"prompt": "solo banjo, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"banjo"
+]
+},
+{
+"id": 100085,
+"prompt": "solo banjo, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"banjo"
+]
+},
+{
+"id": 100086,
+"prompt": "solo banjo, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"banjo"
+]
+},
+{
+"id": 100087,
+"prompt": "solo banjo, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"banjo"
+]
+},
+{
+"id": 100088,
+"prompt": "solo sitar, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"sitar"
+]
+},
+{
+"id": 100089,
+"prompt": "solo sitar, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"sitar"
+]
+},
+{
+"id": 100090,
+"prompt": "solo sitar, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"sitar"
+]
+},
+{
+"id": 100091,
+"prompt": "solo sitar, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"sitar"
+]
+},
+{
+"id": 100092,
+"prompt": "solo sitar, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"sitar"
+]
+},
+{
+"id": 100093,
+"prompt": "solo sitar, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"sitar"
+]
+},
+{
+"id": 100094,
+"prompt": "solo sitar, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"sitar"
+]
+},
+{
+"id": 100095,
+"prompt": "solo sitar, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"sitar"
+]
+},
+{
+"id": 100096,
+"prompt": "solo mandolin, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"mandolin"
+]
+},
+{
+"id": 100097,
+"prompt": "solo mandolin, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"mandolin"
+]
+},
+{
+"id": 100098,
+"prompt": "solo mandolin, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"mandolin"
+]
+},
+{
+"id": 100099,
+"prompt": "solo mandolin, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"mandolin"
+]
+},
+{
+"id": 100100,
+"prompt": "solo mandolin, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"mandolin"
+]
+},
+{
+"id": 100101,
+"prompt": "solo mandolin, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"mandolin"
+]
+},
+{
+"id": 100102,
+"prompt": "solo mandolin, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"mandolin"
+]
+},
+{
+"id": 100103,
+"prompt": "solo mandolin, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"mandolin"
+]
+},
+{
+"id": 100104,
+"prompt": "solo ukulele, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"ukulele"
+]
+},
+{
+"id": 100105,
+"prompt": "solo ukulele, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"ukulele"
+]
+},
+{
+"id": 100106,
+"prompt": "solo ukulele, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"ukulele"
+]
+},
+{
+"id": 100107,
+"prompt": "solo ukulele, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"ukulele"
+]
+},
+{
+"id": 100108,
+"prompt": "solo ukulele, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"ukulele"
+]
+},
+{
+"id": 100109,
+"prompt": "solo ukulele, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"ukulele"
+]
+},
+{
+"id": 100110,
+"prompt": "solo ukulele, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"ukulele"
+]
+},
+{
+"id": 100111,
+"prompt": "solo ukulele, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"ukulele"
+]
+},
+{
+"id": 100112,
+"prompt": "solo strummed guitar chords, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"strummed_guitar"
+]
+},
+{
+"id": 100113,
+"prompt": "solo strummed guitar chords, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"strummed_guitar"
+]
+},
+{
+"id": 100114,
+"prompt": "solo strummed guitar chords, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"strummed_guitar"
+]
+},
+{
+"id": 100115,
+"prompt": "solo strummed guitar chords, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"strummed_guitar"
+]
+},
+{
+"id": 100116,
+"prompt": "solo strummed guitar chords, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"strummed_guitar"
+]
+},
+{
+"id": 100117,
+"prompt": "solo strummed guitar chords, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"strummed_guitar"
+]
+},
+{
+"id": 100118,
+"prompt": "solo strummed guitar chords, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"strummed_guitar"
+]
+},
+{
+"id": 100119,
+"prompt": "solo strummed guitar chords, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"strummed_guitar"
+]
+},
+{
+"id": 100120,
+"prompt": "solo acoustic drum kit, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"drum_kit"
+]
+},
+{
+"id": 100121,
+"prompt": "solo acoustic drum kit, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"drum_kit"
+]
+},
+{
+"id": 100122,
+"prompt": "solo acoustic drum kit, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"drum_kit"
+]
+},
+{
+"id": 100123,
+"prompt": "solo acoustic drum kit, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"drum_kit"
+]
+},
+{
+"id": 100124,
+"prompt": "solo acoustic drum kit, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"drum_kit"
+]
+},
+{
+"id": 100125,
+"prompt": "solo acoustic drum kit, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"drum_kit"
+]
+},
+{
+"id": 100126,
+"prompt": "solo acoustic drum kit, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"drum_kit"
+]
+},
+{
+"id": 100127,
+"prompt": "solo acoustic drum kit, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"drum_kit"
+]
+},
+{
+"id": 100128,
+"prompt": "solo drum machine, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"drum_machine"
+]
+},
+{
+"id": 100129,
+"prompt": "solo drum machine, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"drum_machine"
+]
+},
+{
+"id": 100130,
+"prompt": "solo drum machine, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"drum_machine"
+]
+},
+{
+"id": 100131,
+"prompt": "solo drum machine, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"drum_machine"
+]
+},
+{
+"id": 100132,
+"prompt": "solo drum machine, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"drum_machine"
+]
+},
+{
+"id": 100133,
+"prompt": "solo drum machine, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"drum_machine"
+]
+},
+{
+"id": 100134,
+"prompt": "solo drum machine, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"drum_machine"
+]
+},
+{
+"id": 100135,
+"prompt": "solo drum machine, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"drum_machine"
+]
+},
+{
+"id": 100136,
+"prompt": "solo crisp snare drum, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"snare"
+]
+},
+{
+"id": 100137,
+"prompt": "solo crisp snare drum, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"snare"
+]
+},
+{
+"id": 100138,
+"prompt": "solo crisp snare drum, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"snare"
+]
+},
+{
+"id": 100139,
+"prompt": "solo crisp snare drum, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"snare"
+]
+},
+{
+"id": 100140,
+"prompt": "solo crisp snare drum, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"snare"
+]
+},
+{
+"id": 100141,
+"prompt": "solo crisp snare drum, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"snare"
+]
+},
+{
+"id": 100142,
+"prompt": "solo crisp snare drum, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"snare"
+]
+},
+{
+"id": 100143,
+"prompt": "solo crisp snare drum, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"snare"
+]
+},
+{
+"id": 100144,
+"prompt": "solo drum rolls, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"drum_roll"
+]
+},
+{
+"id": 100145,
+"prompt": "solo drum rolls, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"drum_roll"
+]
+},
+{
+"id": 100146,
+"prompt": "solo drum rolls, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"drum_roll"
+]
+},
+{
+"id": 100147,
+"prompt": "solo drum rolls, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"drum_roll"
+]
+},
+{
+"id": 100148,
+"prompt": "solo drum rolls, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"drum_roll"
+]
+},
+{
+"id": 100149,
+"prompt": "solo drum rolls, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"drum_roll"
+]
+},
+{
+"id": 100150,
+"prompt": "solo drum rolls, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"drum_roll"
+]
+},
+{
+"id": 100151,
+"prompt": "solo drum rolls, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"drum_roll"
+]
+},
+{
+"id": 100152,
+"prompt": "solo booming kick drum, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"kick_drum"
+]
+},
+{
+"id": 100153,
+"prompt": "solo booming kick drum, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"kick_drum"
+]
+},
+{
+"id": 100154,
+"prompt": "solo booming kick drum, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"kick_drum"
+]
+},
+{
+"id": 100155,
+"prompt": "solo booming kick drum, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"kick_drum"
+]
+},
+{
+"id": 100156,
+"prompt": "solo booming kick drum, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"kick_drum"
+]
+},
+{
+"id": 100157,
+"prompt": "solo booming kick drum, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"kick_drum"
+]
+},
+{
+"id": 100158,
+"prompt": "solo booming kick drum, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"kick_drum"
+]
+},
+{
+"id": 100159,
+"prompt": "solo booming kick drum, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"kick_drum"
+]
+},
+{
+"id": 100160,
+"prompt": "solo timpani, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"timpani"
+]
+},
+{
+"id": 100161,
+"prompt": "solo timpani, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"timpani"
+]
+},
+{
+"id": 100162,
+"prompt": "solo timpani, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"timpani"
+]
+},
+{
+"id": 100163,
+"prompt": "solo timpani, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"timpani"
+]
+},
+{
+"id": 100164,
+"prompt": "solo timpani, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"timpani"
+]
+},
+{
+"id": 100165,
+"prompt": "solo timpani, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"timpani"
+]
+},
+{
+"id": 100166,
+"prompt": "solo timpani, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"timpani"
+]
+},
+{
+"id": 100167,
+"prompt": "solo timpani, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"timpani"
+]
+},
+{
+"id": 100168,
+"prompt": "solo tabla, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"tabla"
+]
+},
+{
+"id": 100169,
+"prompt": "solo tabla, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"tabla"
+]
+},
+{
+"id": 100170,
+"prompt": "solo tabla, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"tabla"
+]
+},
+{
+"id": 100171,
+"prompt": "solo tabla, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"tabla"
+]
+},
+{
+"id": 100172,
+"prompt": "solo tabla, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"tabla"
+]
+},
+{
+"id": 100173,
+"prompt": "solo tabla, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"tabla"
+]
+},
+{
+"id": 100174,
+"prompt": "solo tabla, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"tabla"
+]
+},
+{
+"id": 100175,
+"prompt": "solo tabla, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"tabla"
+]
+},
+{
+"id": 100176,
+"prompt": "solo crash cymbals, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"cymbal"
+]
+},
+{
+"id": 100177,
+"prompt": "solo crash cymbals, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"cymbal"
+]
+},
+{
+"id": 100178,
+"prompt": "solo crash cymbals, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"cymbal"
+]
+},
+{
+"id": 100179,
+"prompt": "solo crash cymbals, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"cymbal"
+]
+},
+{
+"id": 100180,
+"prompt": "solo crash cymbals, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"cymbal"
+]
+},
+{
+"id": 100181,
+"prompt": "solo crash cymbals, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"cymbal"
+]
+},
+{
+"id": 100182,
+"prompt": "solo crash cymbals, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"cymbal"
+]
+},
+{
+"id": 100183,
+"prompt": "solo crash cymbals, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"cymbal"
+]
+},
+{
+"id": 100184,
+"prompt": "solo hi-hats, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"hi_hat"
+]
+},
+{
+"id": 100185,
+"prompt": "solo hi-hats, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"hi_hat"
+]
+},
+{
+"id": 100186,
+"prompt": "solo hi-hats, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"hi_hat"
+]
+},
+{
+"id": 100187,
+"prompt": "solo hi-hats, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"hi_hat"
+]
+},
+{
+"id": 100188,
+"prompt": "solo hi-hats, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"hi_hat"
+]
+},
+{
+"id": 100189,
+"prompt": "solo hi-hats, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"hi_hat"
+]
+},
+{
+"id": 100190,
+"prompt": "solo hi-hats, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"hi_hat"
+]
+},
+{
+"id": 100191,
+"prompt": "solo hi-hats, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"hi_hat"
+]
+},
+{
+"id": 100192,
+"prompt": "solo wood block, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"wood_block"
+]
+},
+{
+"id": 100193,
+"prompt": "solo wood block, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"wood_block"
+]
+},
+{
+"id": 100194,
+"prompt": "solo wood block, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"wood_block"
+]
+},
+{
+"id": 100195,
+"prompt": "solo wood block, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"wood_block"
+]
+},
+{
+"id": 100196,
+"prompt": "solo wood block, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"wood_block"
+]
+},
+{
+"id": 100197,
+"prompt": "solo wood block, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"wood_block"
+]
+},
+{
+"id": 100198,
+"prompt": "solo wood block, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"wood_block"
+]
+},
+{
+"id": 100199,
+"prompt": "solo wood block, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"wood_block"
+]
+},
+{
+"id": 100200,
+"prompt": "solo tambourine, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"tambourine"
+]
+},
+{
+"id": 100201,
+"prompt": "solo tambourine, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"tambourine"
+]
+},
+{
+"id": 100202,
+"prompt": "solo tambourine, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"tambourine"
+]
+},
+{
+"id": 100203,
+"prompt": "solo tambourine, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"tambourine"
+]
+},
+{
+"id": 100204,
+"prompt": "solo tambourine, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"tambourine"
+]
+},
+{
+"id": 100205,
+"prompt": "solo tambourine, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"tambourine"
+]
+},
+{
+"id": 100206,
+"prompt": "solo tambourine, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"tambourine"
+]
+},
+{
+"id": 100207,
+"prompt": "solo tambourine, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"tambourine"
+]
+},
+{
+"id": 100208,
+"prompt": "solo maracas, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"maracas"
+]
+},
+{
+"id": 100209,
+"prompt": "solo maracas, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"maracas"
+]
+},
+{
+"id": 100210,
+"prompt": "solo maracas, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"maracas"
+]
+},
+{
+"id": 100211,
+"prompt": "solo maracas, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"maracas"
+]
+},
+{
+"id": 100212,
+"prompt": "solo maracas, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"maracas"
+]
+},
+{
+"id": 100213,
+"prompt": "solo maracas, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"maracas"
+]
+},
+{
+"id": 100214,
+"prompt": "solo maracas, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"maracas"
+]
+},
+{
+"id": 100215,
+"prompt": "solo maracas, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"maracas"
+]
+},
+{
+"id": 100216,
+"prompt": "solo gong, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"gong"
+]
+},
+{
+"id": 100217,
+"prompt": "solo gong, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"gong"
+]
+},
+{
+"id": 100218,
+"prompt": "solo gong, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"gong"
+]
+},
+{
+"id": 100219,
+"prompt": "solo gong, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"gong"
+]
+},
+{
+"id": 100220,
+"prompt": "solo gong, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"gong"
+]
+},
+{
+"id": 100221,
+"prompt": "solo gong, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"gong"
+]
+},
+{
+"id": 100222,
+"prompt": "solo gong, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"gong"
+]
+},
+{
+"id": 100223,
+"prompt": "solo gong, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"gong"
+]
+},
+{
+"id": 100224,
+"prompt": "solo tubular bells, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"tubular_bells"
+]
+},
+{
+"id": 100225,
+"prompt": "solo tubular bells, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"tubular_bells"
+]
+},
+{
+"id": 100226,
+"prompt": "solo tubular bells, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"tubular_bells"
+]
+},
+{
+"id": 100227,
+"prompt": "solo tubular bells, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"tubular_bells"
+]
+},
+{
+"id": 100228,
+"prompt": "solo tubular bells, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"tubular_bells"
+]
+},
+{
+"id": 100229,
+"prompt": "solo tubular bells, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"tubular_bells"
+]
+},
+{
+"id": 100230,
+"prompt": "solo tubular bells, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"tubular_bells"
+]
+},
+{
+"id": 100231,
+"prompt": "solo tubular bells, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"tubular_bells"
+]
+},
+{
+"id": 100232,
+"prompt": "solo marimba, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"marimba"
+]
+},
+{
+"id": 100233,
+"prompt": "solo marimba, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"marimba"
+]
+},
+{
+"id": 100234,
+"prompt": "solo marimba, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"marimba"
+]
+},
+{
+"id": 100235,
+"prompt": "solo marimba, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"marimba"
+]
+},
+{
+"id": 100236,
+"prompt": "solo marimba, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"marimba"
+]
+},
+{
+"id": 100237,
+"prompt": "solo marimba, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"marimba"
+]
+},
+{
+"id": 100238,
+"prompt": "solo marimba, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"marimba"
+]
+},
+{
+"id": 100239,
+"prompt": "solo marimba, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"marimba"
+]
+},
+{
+"id": 100240,
+"prompt": "solo glockenspiel, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"glockenspiel"
+]
+},
+{
+"id": 100241,
+"prompt": "solo glockenspiel, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"glockenspiel"
+]
+},
+{
+"id": 100242,
+"prompt": "solo glockenspiel, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"glockenspiel"
+]
+},
+{
+"id": 100243,
+"prompt": "solo glockenspiel, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"glockenspiel"
+]
+},
+{
+"id": 100244,
+"prompt": "solo glockenspiel, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"glockenspiel"
+]
+},
+{
+"id": 100245,
+"prompt": "solo glockenspiel, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"glockenspiel"
+]
+},
+{
+"id": 100246,
+"prompt": "solo glockenspiel, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"glockenspiel"
+]
+},
+{
+"id": 100247,
+"prompt": "solo glockenspiel, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"glockenspiel"
+]
+},
+{
+"id": 100248,
+"prompt": "solo vibraphone, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"vibraphone"
+]
+},
+{
+"id": 100249,
+"prompt": "solo vibraphone, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"vibraphone"
+]
+},
+{
+"id": 100250,
+"prompt": "solo vibraphone, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"vibraphone"
+]
+},
+{
+"id": 100251,
+"prompt": "solo vibraphone, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"vibraphone"
+]
+},
+{
+"id": 100252,
+"prompt": "solo vibraphone, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"vibraphone"
+]
+},
+{
+"id": 100253,
+"prompt": "solo vibraphone, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"vibraphone"
+]
+},
+{
+"id": 100254,
+"prompt": "solo vibraphone, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"vibraphone"
+]
+},
+{
+"id": 100255,
+"prompt": "solo vibraphone, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"vibraphone"
+]
+},
+{
+"id": 100256,
+"prompt": "solo steel drums, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"steelpan"
+]
+},
+{
+"id": 100257,
+"prompt": "solo steel drums, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"steelpan"
+]
+},
+{
+"id": 100258,
+"prompt": "solo steel drums, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"steelpan"
+]
+},
+{
+"id": 100259,
+"prompt": "solo steel drums, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"steelpan"
+]
+},
+{
+"id": 100260,
+"prompt": "solo steel drums, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"steelpan"
+]
+},
+{
+"id": 100261,
+"prompt": "solo steel drums, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"steelpan"
+]
+},
+{
+"id": 100262,
+"prompt": "solo steel drums, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"steelpan"
+]
+},
+{
+"id": 100263,
+"prompt": "solo steel drums, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"steelpan"
+]
+},
+{
+"id": 100264,
+"prompt": "solo full orchestra, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"orchestra"
+]
+},
+{
+"id": 100265,
+"prompt": "solo full orchestra, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"orchestra"
+]
+},
+{
+"id": 100266,
+"prompt": "solo full orchestra, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"orchestra"
+]
+},
+{
+"id": 100267,
+"prompt": "solo full orchestra, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"orchestra"
+]
+},
+{
+"id": 100268,
+"prompt": "solo full orchestra, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"orchestra"
+]
+},
+{
+"id": 100269,
+"prompt": "solo full orchestra, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"orchestra"
+]
+},
+{
+"id": 100270,
+"prompt": "solo full orchestra, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"orchestra"
+]
+},
+{
+"id": 100271,
+"prompt": "solo full orchestra, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"orchestra"
+]
+},
+{
+"id": 100272,
+"prompt": "solo French horn, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"french_horn"
+]
+},
+{
+"id": 100273,
+"prompt": "solo French horn, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"french_horn"
+]
+},
+{
+"id": 100274,
+"prompt": "solo French horn, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"french_horn"
+]
+},
+{
+"id": 100275,
+"prompt": "solo French horn, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"french_horn"
+]
+},
+{
+"id": 100276,
+"prompt": "solo French horn, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"french_horn"
+]
+},
+{
+"id": 100277,
+"prompt": "solo French horn, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"french_horn"
+]
+},
+{
+"id": 100278,
+"prompt": "solo French horn, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"french_horn"
+]
+},
+{
+"id": 100279,
+"prompt": "solo French horn, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"french_horn"
+]
+},
+{
+"id": 100280,
+"prompt": "solo trumpet, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"trumpet"
+]
+},
+{
+"id": 100281,
+"prompt": "solo trumpet, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"trumpet"
+]
+},
+{
+"id": 100282,
+"prompt": "solo trumpet, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"trumpet"
+]
+},
+{
+"id": 100283,
+"prompt": "solo trumpet, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"trumpet"
+]
+},
+{
+"id": 100284,
+"prompt": "solo trumpet, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"trumpet"
+]
+},
+{
+"id": 100285,
+"prompt": "solo trumpet, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"trumpet"
+]
+},
+{
+"id": 100286,
+"prompt": "solo trumpet, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"trumpet"
+]
+},
+{
+"id": 100287,
+"prompt": "solo trumpet, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"trumpet"
+]
+},
+{
+"id": 100288,
+"prompt": "solo trombone, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"trombone"
+]
+},
+{
+"id": 100289,
+"prompt": "solo trombone, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"trombone"
+]
+},
+{
+"id": 100290,
+"prompt": "solo trombone, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"trombone"
+]
+},
+{
+"id": 100291,
+"prompt": "solo trombone, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"trombone"
+]
+},
+{
+"id": 100292,
+"prompt": "solo trombone, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"trombone"
+]
+},
+{
+"id": 100293,
+"prompt": "solo trombone, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"trombone"
+]
+},
+{
+"id": 100294,
+"prompt": "solo trombone, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"trombone"
+]
+},
+{
+"id": 100295,
+"prompt": "solo trombone, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"trombone"
+]
+},
+{
+"id": 100296,
+"prompt": "solo brass section, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"brass_section"
+]
+},
+{
+"id": 100297,
+"prompt": "solo brass section, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"brass_section"
+]
+},
+{
+"id": 100298,
+"prompt": "solo brass section, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"brass_section"
+]
+},
+{
+"id": 100299,
+"prompt": "solo brass section, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"brass_section"
+]
+},
+{
+"id": 100300,
+"prompt": "solo brass section, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"brass_section"
+]
+},
+{
+"id": 100301,
+"prompt": "solo brass section, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"brass_section"
+]
+},
+{
+"id": 100302,
+"prompt": "solo brass section, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"brass_section"
+]
+},
+{
+"id": 100303,
+"prompt": "solo brass section, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"brass_section"
+]
+},
+{
+"id": 100304,
+"prompt": "solo string section, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"string_section"
+]
+},
+{
+"id": 100305,
+"prompt": "solo string section, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"string_section"
+]
+},
+{
+"id": 100306,
+"prompt": "solo string section, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"string_section"
+]
+},
+{
+"id": 100307,
+"prompt": "solo string section, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"string_section"
+]
+},
+{
+"id": 100308,
+"prompt": "solo string section, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"string_section"
+]
+},
+{
+"id": 100309,
+"prompt": "solo string section, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"string_section"
+]
+},
+{
+"id": 100310,
+"prompt": "solo string section, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"string_section"
+]
+},
+{
+"id": 100311,
+"prompt": "solo string section, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"string_section"
+]
+},
+{
+"id": 100312,
+"prompt": "solo violin, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"violin"
+]
+},
+{
+"id": 100313,
+"prompt": "solo violin, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"violin"
+]
+},
+{
+"id": 100314,
+"prompt": "solo violin, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"violin"
+]
+},
+{
+"id": 100315,
+"prompt": "solo violin, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"violin"
+]
+},
+{
+"id": 100316,
+"prompt": "solo violin, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"violin"
+]
+},
+{
+"id": 100317,
+"prompt": "solo violin, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"violin"
+]
+},
+{
+"id": 100318,
+"prompt": "solo violin, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"violin"
+]
+},
+{
+"id": 100319,
+"prompt": "solo violin, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"violin"
+]
+},
+{
+"id": 100320,
+"prompt": "solo pizzicato strings, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"pizzicato"
+]
+},
+{
+"id": 100321,
+"prompt": "solo pizzicato strings, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"pizzicato"
+]
+},
+{
+"id": 100322,
+"prompt": "solo pizzicato strings, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"pizzicato"
+]
+},
+{
+"id": 100323,
+"prompt": "solo pizzicato strings, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"pizzicato"
+]
+},
+{
+"id": 100324,
+"prompt": "solo pizzicato strings, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"pizzicato"
+]
+},
+{
+"id": 100325,
+"prompt": "solo pizzicato strings, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"pizzicato"
+]
+},
+{
+"id": 100326,
+"prompt": "solo pizzicato strings, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"pizzicato"
+]
+},
+{
+"id": 100327,
+"prompt": "solo pizzicato strings, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"pizzicato"
+]
+},
+{
+"id": 100328,
+"prompt": "solo cello, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"cello"
+]
+},
+{
+"id": 100329,
+"prompt": "solo cello, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"cello"
+]
+},
+{
+"id": 100330,
+"prompt": "solo cello, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"cello"
+]
+},
+{
+"id": 100331,
+"prompt": "solo cello, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"cello"
+]
+},
+{
+"id": 100332,
+"prompt": "solo cello, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"cello"
+]
+},
+{
+"id": 100333,
+"prompt": "solo cello, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"cello"
+]
+},
+{
+"id": 100334,
+"prompt": "solo cello, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"cello"
+]
+},
+{
+"id": 100335,
+"prompt": "solo cello, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"cello"
+]
+},
+{
+"id": 100336,
+"prompt": "solo upright bass, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"double_bass"
+]
+},
+{
+"id": 100337,
+"prompt": "solo upright bass, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"double_bass"
+]
+},
+{
+"id": 100338,
+"prompt": "solo upright bass, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"double_bass"
+]
+},
+{
+"id": 100339,
+"prompt": "solo upright bass, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"double_bass"
+]
+},
+{
+"id": 100340,
+"prompt": "solo upright bass, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"double_bass"
+]
+},
+{
+"id": 100341,
+"prompt": "solo upright bass, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"double_bass"
+]
+},
+{
+"id": 100342,
+"prompt": "solo upright bass, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"double_bass"
+]
+},
+{
+"id": 100343,
+"prompt": "solo upright bass, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"double_bass"
+]
+},
+{
+"id": 100344,
+"prompt": "solo flute, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"flute"
+]
+},
+{
+"id": 100345,
+"prompt": "solo flute, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"flute"
+]
+},
+{
+"id": 100346,
+"prompt": "solo flute, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"flute"
+]
+},
+{
+"id": 100347,
+"prompt": "solo flute, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"flute"
+]
+},
+{
+"id": 100348,
+"prompt": "solo flute, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"flute"
+]
+},
+{
+"id": 100349,
+"prompt": "solo flute, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"flute"
+]
+},
+{
+"id": 100350,
+"prompt": "solo flute, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"flute"
+]
+},
+{
+"id": 100351,
+"prompt": "solo flute, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"flute"
+]
+},
+{
+"id": 100352,
+"prompt": "solo saxophone, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"saxophone"
+]
+},
+{
+"id": 100353,
+"prompt": "solo saxophone, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"saxophone"
+]
+},
+{
+"id": 100354,
+"prompt": "solo saxophone, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"saxophone"
+]
+},
+{
+"id": 100355,
+"prompt": "solo saxophone, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"saxophone"
+]
+},
+{
+"id": 100356,
+"prompt": "solo saxophone, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"saxophone"
+]
+},
+{
+"id": 100357,
+"prompt": "solo saxophone, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"saxophone"
+]
+},
+{
+"id": 100358,
+"prompt": "solo saxophone, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"saxophone"
+]
+},
+{
+"id": 100359,
+"prompt": "solo saxophone, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"saxophone"
+]
+},
+{
+"id": 100360,
+"prompt": "solo clarinet, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"clarinet"
+]
+},
+{
+"id": 100361,
+"prompt": "solo clarinet, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"clarinet"
+]
+},
+{
+"id": 100362,
+"prompt": "solo clarinet, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"clarinet"
+]
+},
+{
+"id": 100363,
+"prompt": "solo clarinet, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"clarinet"
+]
+},
+{
+"id": 100364,
+"prompt": "solo clarinet, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"clarinet"
+]
+},
+{
+"id": 100365,
+"prompt": "solo clarinet, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"clarinet"
+]
+},
+{
+"id": 100366,
+"prompt": "solo clarinet, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"clarinet"
+]
+},
+{
+"id": 100367,
+"prompt": "solo clarinet, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"clarinet"
+]
+},
+{
+"id": 100368,
+"prompt": "solo harp, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"harp"
+]
+},
+{
+"id": 100369,
+"prompt": "solo harp, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"harp"
+]
+},
+{
+"id": 100370,
+"prompt": "solo harp, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"harp"
+]
+},
+{
+"id": 100371,
+"prompt": "solo harp, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"harp"
+]
+},
+{
+"id": 100372,
+"prompt": "solo harp, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"harp"
+]
+},
+{
+"id": 100373,
+"prompt": "solo harp, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"harp"
+]
+},
+{
+"id": 100374,
+"prompt": "solo harp, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"harp"
+]
+},
+{
+"id": 100375,
+"prompt": "solo harp, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"harp"
+]
+},
+{
+"id": 100376,
+"prompt": "solo church bells, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"church_bells"
+]
+},
+{
+"id": 100377,
+"prompt": "solo church bells, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"church_bells"
+]
+},
+{
+"id": 100378,
+"prompt": "solo church bells, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"church_bells"
+]
+},
+{
+"id": 100379,
+"prompt": "solo church bells, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"church_bells"
+]
+},
+{
+"id": 100380,
+"prompt": "solo church bells, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"church_bells"
+]
+},
+{
+"id": 100381,
+"prompt": "solo church bells, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"church_bells"
+]
+},
+{
+"id": 100382,
+"prompt": "solo church bells, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"church_bells"
+]
+},
+{
+"id": 100383,
+"prompt": "solo church bells, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"church_bells"
+]
+},
+{
+"id": 100384,
+"prompt": "solo sleigh bells, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"jingle_bells"
+]
+},
+{
+"id": 100385,
+"prompt": "solo sleigh bells, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"jingle_bells"
+]
+},
+{
+"id": 100386,
+"prompt": "solo sleigh bells, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"jingle_bells"
+]
+},
+{
+"id": 100387,
+"prompt": "solo sleigh bells, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"jingle_bells"
+]
+},
+{
+"id": 100388,
+"prompt": "solo sleigh bells, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"jingle_bells"
+]
+},
+{
+"id": 100389,
+"prompt": "solo sleigh bells, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"jingle_bells"
+]
+},
+{
+"id": 100390,
+"prompt": "solo sleigh bells, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"jingle_bells"
+]
+},
+{
+"id": 100391,
+"prompt": "solo sleigh bells, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"jingle_bells"
+]
+},
+{
+"id": 100392,
+"prompt": "solo chimes, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"chimes"
+]
+},
+{
+"id": 100393,
+"prompt": "solo chimes, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"chimes"
+]
+},
+{
+"id": 100394,
+"prompt": "solo chimes, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"chimes"
+]
+},
+{
+"id": 100395,
+"prompt": "solo chimes, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"chimes"
+]
+},
+{
+"id": 100396,
+"prompt": "solo chimes, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"chimes"
+]
+},
+{
+"id": 100397,
+"prompt": "solo chimes, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"chimes"
+]
+},
+{
+"id": 100398,
+"prompt": "solo chimes, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"chimes"
+]
+},
+{
+"id": 100399,
+"prompt": "solo chimes, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"chimes"
+]
+},
+{
+"id": 100400,
+"prompt": "solo wind chimes, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"wind_chimes"
+]
+},
+{
+"id": 100401,
+"prompt": "solo wind chimes, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"wind_chimes"
+]
+},
+{
+"id": 100402,
+"prompt": "solo wind chimes, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"wind_chimes"
+]
+},
+{
+"id": 100403,
+"prompt": "solo wind chimes, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"wind_chimes"
+]
+},
+{
+"id": 100404,
+"prompt": "solo wind chimes, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"wind_chimes"
+]
+},
+{
+"id": 100405,
+"prompt": "solo wind chimes, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"wind_chimes"
+]
+},
+{
+"id": 100406,
+"prompt": "solo wind chimes, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"wind_chimes"
+]
+},
+{
+"id": 100407,
+"prompt": "solo wind chimes, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"wind_chimes"
+]
+},
+{
+"id": 100408,
+"prompt": "solo harmonica, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"harmonica"
+]
+},
+{
+"id": 100409,
+"prompt": "solo harmonica, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"harmonica"
+]
+},
+{
+"id": 100410,
+"prompt": "solo harmonica, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"harmonica"
+]
+},
+{
+"id": 100411,
+"prompt": "solo harmonica, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"harmonica"
+]
+},
+{
+"id": 100412,
+"prompt": "solo harmonica, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"harmonica"
+]
+},
+{
+"id": 100413,
+"prompt": "solo harmonica, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"harmonica"
+]
+},
+{
+"id": 100414,
+"prompt": "solo harmonica, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"harmonica"
+]
+},
+{
+"id": 100415,
+"prompt": "solo harmonica, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"harmonica"
+]
+},
+{
+"id": 100416,
+"prompt": "solo accordion, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"accordion"
+]
+},
+{
+"id": 100417,
+"prompt": "solo accordion, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"accordion"
+]
+},
+{
+"id": 100418,
+"prompt": "solo accordion, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"accordion"
+]
+},
+{
+"id": 100419,
+"prompt": "solo accordion, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"accordion"
+]
+},
+{
+"id": 100420,
+"prompt": "solo accordion, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"accordion"
+]
+},
+{
+"id": 100421,
+"prompt": "solo accordion, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"accordion"
+]
+},
+{
+"id": 100422,
+"prompt": "solo accordion, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"accordion"
+]
+},
+{
+"id": 100423,
+"prompt": "solo accordion, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"accordion"
+]
+},
+{
+"id": 100424,
+"prompt": "solo bagpipes, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"bagpipes"
+]
+},
+{
+"id": 100425,
+"prompt": "solo bagpipes, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"bagpipes"
+]
+},
+{
+"id": 100426,
+"prompt": "solo bagpipes, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"bagpipes"
+]
+},
+{
+"id": 100427,
+"prompt": "solo bagpipes, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"bagpipes"
+]
+},
+{
+"id": 100428,
+"prompt": "solo bagpipes, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"bagpipes"
+]
+},
+{
+"id": 100429,
+"prompt": "solo bagpipes, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"bagpipes"
+]
+},
+{
+"id": 100430,
+"prompt": "solo bagpipes, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"bagpipes"
+]
+},
+{
+"id": 100431,
+"prompt": "solo bagpipes, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"bagpipes"
+]
+},
+{
+"id": 100432,
+"prompt": "solo didgeridoo, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"didgeridoo"
+]
+},
+{
+"id": 100433,
+"prompt": "solo didgeridoo, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"didgeridoo"
+]
+},
+{
+"id": 100434,
+"prompt": "solo didgeridoo, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"didgeridoo"
+]
+},
+{
+"id": 100435,
+"prompt": "solo didgeridoo, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"didgeridoo"
+]
+},
+{
+"id": 100436,
+"prompt": "solo didgeridoo, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"didgeridoo"
+]
+},
+{
+"id": 100437,
+"prompt": "solo didgeridoo, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"didgeridoo"
+]
+},
+{
+"id": 100438,
+"prompt": "solo didgeridoo, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"didgeridoo"
+]
+},
+{
+"id": 100439,
+"prompt": "solo didgeridoo, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"didgeridoo"
+]
+},
+{
+"id": 100440,
+"prompt": "solo theremin, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"theremin"
+]
+},
+{
+"id": 100441,
+"prompt": "solo theremin, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"theremin"
+]
+},
+{
+"id": 100442,
+"prompt": "solo theremin, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"theremin"
+]
+},
+{
+"id": 100443,
+"prompt": "solo theremin, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"theremin"
+]
+},
+{
+"id": 100444,
+"prompt": "solo theremin, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"theremin"
+]
+},
+{
+"id": 100445,
+"prompt": "solo theremin, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"theremin"
+]
+},
+{
+"id": 100446,
+"prompt": "solo theremin, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"theremin"
+]
+},
+{
+"id": 100447,
+"prompt": "solo theremin, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"theremin"
+]
+},
+{
+"id": 100448,
+"prompt": "solo singing bowls, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"singing_bowl"
+]
+},
+{
+"id": 100449,
+"prompt": "solo singing bowls, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"singing_bowl"
+]
+},
+{
+"id": 100450,
+"prompt": "solo singing bowls, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"singing_bowl"
+]
+},
+{
+"id": 100451,
+"prompt": "solo singing bowls, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"singing_bowl"
+]
+},
+{
+"id": 100452,
+"prompt": "solo singing bowls, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"singing_bowl"
+]
+},
+{
+"id": 100453,
+"prompt": "solo singing bowls, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"singing_bowl"
+]
+},
+{
+"id": 100454,
+"prompt": "solo singing bowls, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"singing_bowl"
+]
+},
+{
+"id": 100455,
+"prompt": "solo singing bowls, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"singing_bowl"
+]
+},
+{
+"id": 100456,
+"prompt": "solo turntable scratching, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"turntable_scratch"
+]
+},
+{
+"id": 100457,
+"prompt": "solo turntable scratching, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"turntable_scratch"
+]
+},
+{
+"id": 100458,
+"prompt": "solo turntable scratching, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"turntable_scratch"
+]
+},
+{
+"id": 100459,
+"prompt": "solo turntable scratching, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"turntable_scratch"
+]
+},
+{
+"id": 100460,
+"prompt": "solo turntable scratching, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"turntable_scratch"
+]
+},
+{
+"id": 100461,
+"prompt": "solo turntable scratching, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"turntable_scratch"
+]
+},
+{
+"id": 100462,
+"prompt": "solo turntable scratching, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"turntable_scratch"
+]
+},
+{
+"id": 100463,
+"prompt": "solo turntable scratching, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"turntable_scratch"
+]
+},
+{
+"id": 100464,
+"prompt": "solo cowbell, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"cowbell"
+]
+},
+{
+"id": 100465,
+"prompt": "solo cowbell, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"cowbell"
+]
+},
+{
+"id": 100466,
+"prompt": "solo cowbell, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"cowbell"
+]
+},
+{
+"id": 100467,
+"prompt": "solo cowbell, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"cowbell"
+]
+},
+{
+"id": 100468,
+"prompt": "solo cowbell, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"cowbell"
+]
+},
+{
+"id": 100469,
+"prompt": "solo cowbell, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"cowbell"
+]
+},
+{
+"id": 100470,
+"prompt": "solo cowbell, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"cowbell"
+]
+},
+{
+"id": 100471,
+"prompt": "solo cowbell, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"cowbell"
+]
+},
+{
+"id": 100472,
+"prompt": "solo handclaps, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"handclaps"
+]
+},
+{
+"id": 100473,
+"prompt": "solo handclaps, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"handclaps"
+]
+},
+{
+"id": 100474,
+"prompt": "solo handclaps, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"handclaps"
+]
+},
+{
+"id": 100475,
+"prompt": "solo handclaps, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"handclaps"
+]
+},
+{
+"id": 100476,
+"prompt": "solo handclaps, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"handclaps"
+]
+},
+{
+"id": 100477,
+"prompt": "solo handclaps, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"handclaps"
+]
+},
+{
+"id": 100478,
+"prompt": "solo handclaps, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"handclaps"
+]
+},
+{
+"id": 100479,
+"prompt": "solo handclaps, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"handclaps"
+]
+},
+{
+"id": 100480,
+"prompt": "solo finger snaps, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"finger_snaps"
+]
+},
+{
+"id": 100481,
+"prompt": "solo finger snaps, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"finger_snaps"
+]
+},
+{
+"id": 100482,
+"prompt": "solo finger snaps, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"finger_snaps"
+]
+},
+{
+"id": 100483,
+"prompt": "solo finger snaps, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"finger_snaps"
+]
+},
+{
+"id": 100484,
+"prompt": "solo finger snaps, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"finger_snaps"
+]
+},
+{
+"id": 100485,
+"prompt": "solo finger snaps, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"finger_snaps"
+]
+},
+{
+"id": 100486,
+"prompt": "solo finger snaps, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"finger_snaps"
+]
+},
+{
+"id": 100487,
+"prompt": "solo finger snaps, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"finger_snaps"
+]
+},
+{
+"id": 100488,
+"prompt": "solo Wurlitzer electric piano, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"wurlitzer"
+]
+},
+{
+"id": 100489,
+"prompt": "solo Wurlitzer electric piano, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"wurlitzer"
+]
+},
+{
+"id": 100490,
+"prompt": "solo Wurlitzer electric piano, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"wurlitzer"
+]
+},
+{
+"id": 100491,
+"prompt": "solo Wurlitzer electric piano, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"wurlitzer"
+]
+},
+{
+"id": 100492,
+"prompt": "solo Wurlitzer electric piano, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"wurlitzer"
+]
+},
+{
+"id": 100493,
+"prompt": "solo Wurlitzer electric piano, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"wurlitzer"
+]
+},
+{
+"id": 100494,
+"prompt": "solo Wurlitzer electric piano, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"wurlitzer"
+]
+},
+{
+"id": 100495,
+"prompt": "solo Wurlitzer electric piano, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"wurlitzer"
+]
+},
+{
+"id": 100496,
+"prompt": "solo funky clavinet, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"clavinet"
+]
+},
+{
+"id": 100497,
+"prompt": "solo funky clavinet, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"clavinet"
+]
+},
+{
+"id": 100498,
+"prompt": "solo funky clavinet, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"clavinet"
+]
+},
+{
+"id": 100499,
+"prompt": "solo funky clavinet, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"clavinet"
+]
+},
+{
+"id": 100500,
+"prompt": "solo funky clavinet, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"clavinet"
+]
+},
+{
+"id": 100501,
+"prompt": "solo funky clavinet, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"clavinet"
+]
+},
+{
+"id": 100502,
+"prompt": "solo funky clavinet, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"clavinet"
+]
+},
+{
+"id": 100503,
+"prompt": "solo funky clavinet, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"clavinet"
+]
+},
+{
+"id": 100504,
+"prompt": "solo Mellotron flutes, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"mellotron"
+]
+},
+{
+"id": 100505,
+"prompt": "solo Mellotron flutes, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"mellotron"
+]
+},
+{
+"id": 100506,
+"prompt": "solo Mellotron flutes, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"mellotron"
+]
+},
+{
+"id": 100507,
+"prompt": "solo Mellotron flutes, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"mellotron"
+]
+},
+{
+"id": 100508,
+"prompt": "solo Mellotron flutes, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"mellotron"
+]
+},
+{
+"id": 100509,
+"prompt": "solo Mellotron flutes, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"mellotron"
+]
+},
+{
+"id": 100510,
+"prompt": "solo Mellotron flutes, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"mellotron"
+]
+},
+{
+"id": 100511,
+"prompt": "solo Mellotron flutes, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"mellotron"
+]
+},
+{
+"id": 100512,
+"prompt": "solo celesta, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"celesta"
+]
+},
+{
+"id": 100513,
+"prompt": "solo celesta, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"celesta"
+]
+},
+{
+"id": 100514,
+"prompt": "solo celesta, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"celesta"
+]
+},
+{
+"id": 100515,
+"prompt": "solo celesta, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"celesta"
+]
+},
+{
+"id": 100516,
+"prompt": "solo celesta, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"celesta"
+]
+},
+{
+"id": 100517,
+"prompt": "solo celesta, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"celesta"
+]
+},
+{
+"id": 100518,
+"prompt": "solo celesta, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"celesta"
+]
+},
+{
+"id": 100519,
+"prompt": "solo celesta, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"celesta"
+]
+},
+{
+"id": 100520,
+"prompt": "solo music box, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"music_box"
+]
+},
+{
+"id": 100521,
+"prompt": "solo music box, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"music_box"
+]
+},
+{
+"id": 100522,
+"prompt": "solo music box, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"music_box"
+]
+},
+{
+"id": 100523,
+"prompt": "solo music box, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"music_box"
+]
+},
+{
+"id": 100524,
+"prompt": "solo music box, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"music_box"
+]
+},
+{
+"id": 100525,
+"prompt": "solo music box, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"music_box"
+]
+},
+{
+"id": 100526,
+"prompt": "solo music box, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"music_box"
+]
+},
+{
+"id": 100527,
+"prompt": "solo music box, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"music_box"
+]
+},
+{
+"id": 100528,
+"prompt": "solo kalimba, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"kalimba"
+]
+},
+{
+"id": 100529,
+"prompt": "solo kalimba, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"kalimba"
+]
+},
+{
+"id": 100530,
+"prompt": "solo kalimba, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"kalimba"
+]
+},
+{
+"id": 100531,
+"prompt": "solo kalimba, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"kalimba"
+]
+},
+{
+"id": 100532,
+"prompt": "solo kalimba, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"kalimba"
+]
+},
+{
+"id": 100533,
+"prompt": "solo kalimba, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"kalimba"
+]
+},
+{
+"id": 100534,
+"prompt": "solo kalimba, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"kalimba"
+]
+},
+{
+"id": 100535,
+"prompt": "solo kalimba, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"kalimba"
+]
+},
+{
+"id": 100536,
+"prompt": "solo koto, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"koto"
+]
+},
+{
+"id": 100537,
+"prompt": "solo koto, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"koto"
+]
+},
+{
+"id": 100538,
+"prompt": "solo koto, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"koto"
+]
+},
+{
+"id": 100539,
+"prompt": "solo koto, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"koto"
+]
+},
+{
+"id": 100540,
+"prompt": "solo koto, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"koto"
+]
+},
+{
+"id": 100541,
+"prompt": "solo koto, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"koto"
+]
+},
+{
+"id": 100542,
+"prompt": "solo koto, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"koto"
+]
+},
+{
+"id": 100543,
+"prompt": "solo koto, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"koto"
+]
+},
+{
+"id": 100544,
+"prompt": "solo erhu, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"erhu"
+]
+},
+{
+"id": 100545,
+"prompt": "solo erhu, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"erhu"
+]
+},
+{
+"id": 100546,
+"prompt": "solo erhu, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"erhu"
+]
+},
+{
+"id": 100547,
+"prompt": "solo erhu, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"erhu"
+]
+},
+{
+"id": 100548,
+"prompt": "solo erhu, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"erhu"
+]
+},
+{
+"id": 100549,
+"prompt": "solo erhu, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"erhu"
+]
+},
+{
+"id": 100550,
+"prompt": "solo erhu, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"erhu"
+]
+},
+{
+"id": 100551,
+"prompt": "solo erhu, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"erhu"
+]
+},
+{
+"id": 100552,
+"prompt": "solo guzheng, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"guzheng"
+]
+},
+{
+"id": 100553,
+"prompt": "solo guzheng, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"guzheng"
+]
+},
+{
+"id": 100554,
+"prompt": "solo guzheng, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"guzheng"
+]
+},
+{
+"id": 100555,
+"prompt": "solo guzheng, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"guzheng"
+]
+},
+{
+"id": 100556,
+"prompt": "solo guzheng, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"guzheng"
+]
+},
+{
+"id": 100557,
+"prompt": "solo guzheng, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"guzheng"
+]
+},
+{
+"id": 100558,
+"prompt": "solo guzheng, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"guzheng"
+]
+},
+{
+"id": 100559,
+"prompt": "solo guzheng, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"guzheng"
+]
+},
+{
+"id": 100560,
+"prompt": "solo oud, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"oud"
+]
+},
+{
+"id": 100561,
+"prompt": "solo oud, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"oud"
+]
+},
+{
+"id": 100562,
+"prompt": "solo oud, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"oud"
+]
+},
+{
+"id": 100563,
+"prompt": "solo oud, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"oud"
+]
+},
+{
+"id": 100564,
+"prompt": "solo oud, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"oud"
+]
+},
+{
+"id": 100565,
+"prompt": "solo oud, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"oud"
+]
+},
+{
+"id": 100566,
+"prompt": "solo oud, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"oud"
+]
+},
+{
+"id": 100567,
+"prompt": "solo oud, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"oud"
+]
+},
+{
+"id": 100568,
+"prompt": "solo bansuri flute, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"bansuri"
+]
+},
+{
+"id": 100569,
+"prompt": "solo bansuri flute, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"bansuri"
+]
+},
+{
+"id": 100570,
+"prompt": "solo bansuri flute, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"bansuri"
+]
+},
+{
+"id": 100571,
+"prompt": "solo bansuri flute, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"bansuri"
+]
+},
+{
+"id": 100572,
+"prompt": "solo bansuri flute, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"bansuri"
+]
+},
+{
+"id": 100573,
+"prompt": "solo bansuri flute, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"bansuri"
+]
+},
+{
+"id": 100574,
+"prompt": "solo bansuri flute, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"bansuri"
+]
+},
+{
+"id": 100575,
+"prompt": "solo bansuri flute, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"bansuri"
+]
+},
+{
+"id": 100576,
+"prompt": "solo shakuhachi, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"shakuhachi"
+]
+},
+{
+"id": 100577,
+"prompt": "solo shakuhachi, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"shakuhachi"
+]
+},
+{
+"id": 100578,
+"prompt": "solo shakuhachi, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"shakuhachi"
+]
+},
+{
+"id": 100579,
+"prompt": "solo shakuhachi, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"shakuhachi"
+]
+},
+{
+"id": 100580,
+"prompt": "solo shakuhachi, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"shakuhachi"
+]
+},
+{
+"id": 100581,
+"prompt": "solo shakuhachi, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"shakuhachi"
+]
+},
+{
+"id": 100582,
+"prompt": "solo shakuhachi, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"shakuhachi"
+]
+},
+{
+"id": 100583,
+"prompt": "solo shakuhachi, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"shakuhachi"
+]
+},
+{
+"id": 100584,
+"prompt": "solo djembe, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"djembe"
+]
+},
+{
+"id": 100585,
+"prompt": "solo djembe, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"djembe"
+]
+},
+{
+"id": 100586,
+"prompt": "solo djembe, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"djembe"
+]
+},
+{
+"id": 100587,
+"prompt": "solo djembe, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"djembe"
+]
+},
+{
+"id": 100588,
+"prompt": "solo djembe, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"djembe"
+]
+},
+{
+"id": 100589,
+"prompt": "solo djembe, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"djembe"
+]
+},
+{
+"id": 100590,
+"prompt": "solo djembe, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"djembe"
+]
+},
+{
+"id": 100591,
+"prompt": "solo djembe, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"djembe"
+]
+},
+{
+"id": 100592,
+"prompt": "solo congas, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"congas"
+]
+},
+{
+"id": 100593,
+"prompt": "solo congas, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"congas"
+]
+},
+{
+"id": 100594,
+"prompt": "solo congas, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"congas"
+]
+},
+{
+"id": 100595,
+"prompt": "solo congas, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"congas"
+]
+},
+{
+"id": 100596,
+"prompt": "solo congas, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"congas"
+]
+},
+{
+"id": 100597,
+"prompt": "solo congas, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"congas"
+]
+},
+{
+"id": 100598,
+"prompt": "solo congas, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"congas"
+]
+},
+{
+"id": 100599,
+"prompt": "solo congas, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"congas"
+]
+},
+{
+"id": 100600,
+"prompt": "solo bongos, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"bongos"
+]
+},
+{
+"id": 100601,
+"prompt": "solo bongos, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"bongos"
+]
+},
+{
+"id": 100602,
+"prompt": "solo bongos, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"bongos"
+]
+},
+{
+"id": 100603,
+"prompt": "solo bongos, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"bongos"
+]
+},
+{
+"id": 100604,
+"prompt": "solo bongos, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"bongos"
+]
+},
+{
+"id": 100605,
+"prompt": "solo bongos, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"bongos"
+]
+},
+{
+"id": 100606,
+"prompt": "solo bongos, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"bongos"
+]
+},
+{
+"id": 100607,
+"prompt": "solo bongos, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"bongos"
+]
+},
+{
+"id": 100608,
+"prompt": "solo taiko drums, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"taiko"
+]
+},
+{
+"id": 100609,
+"prompt": "solo taiko drums, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"taiko"
+]
+},
+{
+"id": 100610,
+"prompt": "solo taiko drums, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"taiko"
+]
+},
+{
+"id": 100611,
+"prompt": "solo taiko drums, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"taiko"
+]
+},
+{
+"id": 100612,
+"prompt": "solo taiko drums, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"taiko"
+]
+},
+{
+"id": 100613,
+"prompt": "solo taiko drums, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"taiko"
+]
+},
+{
+"id": 100614,
+"prompt": "solo taiko drums, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"taiko"
+]
+},
+{
+"id": 100615,
+"prompt": "solo taiko drums, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"taiko"
+]
+},
+{
+"id": 100616,
+"prompt": "solo handpan, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"handpan"
+]
+},
+{
+"id": 100617,
+"prompt": "solo handpan, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"handpan"
+]
+},
+{
+"id": 100618,
+"prompt": "solo handpan, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"handpan"
+]
+},
+{
+"id": 100619,
+"prompt": "solo handpan, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"handpan"
+]
+},
+{
+"id": 100620,
+"prompt": "solo handpan, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"handpan"
+]
+},
+{
+"id": 100621,
+"prompt": "solo handpan, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"handpan"
+]
+},
+{
+"id": 100622,
+"prompt": "solo handpan, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"handpan"
+]
+},
+{
+"id": 100623,
+"prompt": "solo handpan, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"handpan"
+]
+},
+{
+"id": 100624,
+"prompt": "solo pan flute, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"pan_flute"
+]
+},
+{
+"id": 100625,
+"prompt": "solo pan flute, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"pan_flute"
+]
+},
+{
+"id": 100626,
+"prompt": "solo pan flute, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"pan_flute"
+]
+},
+{
+"id": 100627,
+"prompt": "solo pan flute, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"pan_flute"
+]
+},
+{
+"id": 100628,
+"prompt": "solo pan flute, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"pan_flute"
+]
+},
+{
+"id": 100629,
+"prompt": "solo pan flute, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"pan_flute"
+]
+},
+{
+"id": 100630,
+"prompt": "solo pan flute, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"pan_flute"
+]
+},
+{
+"id": 100631,
+"prompt": "solo pan flute, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"pan_flute"
+]
+},
+{
+"id": 100632,
+"prompt": "solo tin whistle, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"tin_whistle"
+]
+},
+{
+"id": 100633,
+"prompt": "solo tin whistle, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"tin_whistle"
+]
+},
+{
+"id": 100634,
+"prompt": "solo tin whistle, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"tin_whistle"
+]
+},
+{
+"id": 100635,
+"prompt": "solo tin whistle, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"tin_whistle"
+]
+},
+{
+"id": 100636,
+"prompt": "solo tin whistle, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"tin_whistle"
+]
+},
+{
+"id": 100637,
+"prompt": "solo tin whistle, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"tin_whistle"
+]
+},
+{
+"id": 100638,
+"prompt": "solo tin whistle, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"tin_whistle"
+]
+},
+{
+"id": 100639,
+"prompt": "solo tin whistle, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"tin_whistle"
+]
+},
+{
+"id": 100640,
+"prompt": "solo oboe, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"oboe"
+]
+},
+{
+"id": 100641,
+"prompt": "solo oboe, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"oboe"
+]
+},
+{
+"id": 100642,
+"prompt": "solo oboe, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"oboe"
+]
+},
+{
+"id": 100643,
+"prompt": "solo oboe, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"oboe"
+]
+},
+{
+"id": 100644,
+"prompt": "solo oboe, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"oboe"
+]
+},
+{
+"id": 100645,
+"prompt": "solo oboe, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"oboe"
+]
+},
+{
+"id": 100646,
+"prompt": "solo oboe, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"oboe"
+]
+},
+{
+"id": 100647,
+"prompt": "solo oboe, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"oboe"
+]
+},
+{
+"id": 100648,
+"prompt": "solo bassoon, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"bassoon"
+]
+},
+{
+"id": 100649,
+"prompt": "solo bassoon, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"bassoon"
+]
+},
+{
+"id": 100650,
+"prompt": "solo bassoon, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"bassoon"
+]
+},
+{
+"id": 100651,
+"prompt": "solo bassoon, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"bassoon"
+]
+},
+{
+"id": 100652,
+"prompt": "solo bassoon, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"bassoon"
+]
+},
+{
+"id": 100653,
+"prompt": "solo bassoon, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"bassoon"
+]
+},
+{
+"id": 100654,
+"prompt": "solo bassoon, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"bassoon"
+]
+},
+{
+"id": 100655,
+"prompt": "solo bassoon, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"bassoon"
+]
+},
+{
+"id": 100656,
+"prompt": "solo tuba, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"tuba"
+]
+},
+{
+"id": 100657,
+"prompt": "solo tuba, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"tuba"
+]
+},
+{
+"id": 100658,
+"prompt": "solo tuba, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"tuba"
+]
+},
+{
+"id": 100659,
+"prompt": "solo tuba, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"tuba"
+]
+},
+{
+"id": 100660,
+"prompt": "solo tuba, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"tuba"
+]
+},
+{
+"id": 100661,
+"prompt": "solo tuba, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"tuba"
+]
+},
+{
+"id": 100662,
+"prompt": "solo tuba, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"tuba"
+]
+},
+{
+"id": 100663,
+"prompt": "solo tuba, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"tuba"
+]
+},
+{
+"id": 100664,
+"prompt": "solo shaker, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"shaker"
+]
+},
+{
+"id": 100665,
+"prompt": "solo shaker, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"shaker"
+]
+},
+{
+"id": 100666,
+"prompt": "solo shaker, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"shaker"
+]
+},
+{
+"id": 100667,
+"prompt": "solo shaker, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"shaker"
+]
+},
+{
+"id": 100668,
+"prompt": "solo shaker, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"shaker"
+]
+},
+{
+"id": 100669,
+"prompt": "solo shaker, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"shaker"
+]
+},
+{
+"id": 100670,
+"prompt": "solo shaker, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"shaker"
+]
+},
+{
+"id": 100671,
+"prompt": "solo shaker, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"shaker"
+]
+},
+{
+"id": 100672,
+"prompt": "solo brushed drums, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"brushed_drums"
+]
+},
+{
+"id": 100673,
+"prompt": "solo brushed drums, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"brushed_drums"
+]
+},
+{
+"id": 100674,
+"prompt": "solo brushed drums, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"brushed_drums"
+]
+},
+{
+"id": 100675,
+"prompt": "solo brushed drums, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"brushed_drums"
+]
+},
+{
+"id": 100676,
+"prompt": "solo brushed drums, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"brushed_drums"
+]
+},
+{
+"id": 100677,
+"prompt": "solo brushed drums, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"brushed_drums"
+]
+},
+{
+"id": 100678,
+"prompt": "solo brushed drums, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"brushed_drums"
+]
+},
+{
+"id": 100679,
+"prompt": "solo brushed drums, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"brushed_drums"
+]
+},
+{
+"id": 100680,
+"prompt": "solo string quartet, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"string_quartet"
+]
+},
+{
+"id": 100681,
+"prompt": "solo string quartet, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"string_quartet"
+]
+},
+{
+"id": 100682,
+"prompt": "solo string quartet, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"string_quartet"
+]
+},
+{
+"id": 100683,
+"prompt": "solo string quartet, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"string_quartet"
+]
+},
+{
+"id": 100684,
+"prompt": "solo string quartet, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"string_quartet"
+]
+},
+{
+"id": 100685,
+"prompt": "solo string quartet, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"string_quartet"
+]
+},
+{
+"id": 100686,
+"prompt": "solo string quartet, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"string_quartet"
+]
+},
+{
+"id": 100687,
+"prompt": "solo string quartet, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"string_quartet"
+]
+},
+{
+"id": 100688,
+"prompt": "solo lush synth pad, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"synth_pad"
+]
+},
+{
+"id": 100689,
+"prompt": "solo lush synth pad, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"synth_pad"
+]
+},
+{
+"id": 100690,
+"prompt": "solo lush synth pad, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"synth_pad"
+]
+},
+{
+"id": 100691,
+"prompt": "solo lush synth pad, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"synth_pad"
+]
+},
+{
+"id": 100692,
+"prompt": "solo lush synth pad, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"synth_pad"
+]
+},
+{
+"id": 100693,
+"prompt": "solo lush synth pad, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"synth_pad"
+]
+},
+{
+"id": 100694,
+"prompt": "solo lush synth pad, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"synth_pad"
+]
+},
+{
+"id": 100695,
+"prompt": "solo lush synth pad, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"synth_pad"
+]
+},
+{
+"id": 100696,
+"prompt": "solo screaming synth lead, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"synth_lead"
+]
+},
+{
+"id": 100697,
+"prompt": "solo screaming synth lead, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"synth_lead"
+]
+},
+{
+"id": 100698,
+"prompt": "solo screaming synth lead, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"synth_lead"
+]
+},
+{
+"id": 100699,
+"prompt": "solo screaming synth lead, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"synth_lead"
+]
+},
+{
+"id": 100700,
+"prompt": "solo screaming synth lead, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"synth_lead"
+]
+},
+{
+"id": 100701,
+"prompt": "solo screaming synth lead, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"synth_lead"
+]
+},
+{
+"id": 100702,
+"prompt": "solo screaming synth lead, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"synth_lead"
+]
+},
+{
+"id": 100703,
+"prompt": "solo screaming synth lead, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"synth_lead"
+]
+},
+{
+"id": 100704,
+"prompt": "solo synth bass, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"synth_bass"
+]
+},
+{
+"id": 100705,
+"prompt": "solo synth bass, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"synth_bass"
+]
+},
+{
+"id": 100706,
+"prompt": "solo synth bass, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"synth_bass"
+]
+},
+{
+"id": 100707,
+"prompt": "solo synth bass, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"synth_bass"
+]
+},
+{
+"id": 100708,
+"prompt": "solo synth bass, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"synth_bass"
+]
+},
+{
+"id": 100709,
+"prompt": "solo synth bass, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"synth_bass"
+]
+},
+{
+"id": 100710,
+"prompt": "solo synth bass, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"synth_bass"
+]
+},
+{
+"id": 100711,
+"prompt": "solo synth bass, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"synth_bass"
+]
+},
+{
+"id": 100712,
+"prompt": "solo 808 bass, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"bass_808"
+]
+},
+{
+"id": 100713,
+"prompt": "solo 808 bass, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"bass_808"
+]
+},
+{
+"id": 100714,
+"prompt": "solo 808 bass, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"bass_808"
+]
+},
+{
+"id": 100715,
+"prompt": "solo 808 bass, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"bass_808"
+]
+},
+{
+"id": 100716,
+"prompt": "solo 808 bass, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"bass_808"
+]
+},
+{
+"id": 100717,
+"prompt": "solo 808 bass, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"bass_808"
+]
+},
+{
+"id": 100718,
+"prompt": "solo 808 bass, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"bass_808"
+]
+},
+{
+"id": 100719,
+"prompt": "solo 808 bass, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"bass_808"
+]
+},
+{
+"id": 100720,
+"prompt": "solo supersaw chords, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"supersaw"
+]
+},
+{
+"id": 100721,
+"prompt": "solo supersaw chords, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"supersaw"
+]
+},
+{
+"id": 100722,
+"prompt": "solo supersaw chords, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"supersaw"
+]
+},
+{
+"id": 100723,
+"prompt": "solo supersaw chords, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"supersaw"
+]
+},
+{
+"id": 100724,
+"prompt": "solo supersaw chords, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"supersaw"
+]
+},
+{
+"id": 100725,
+"prompt": "solo supersaw chords, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"supersaw"
+]
+},
+{
+"id": 100726,
+"prompt": "solo supersaw chords, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"supersaw"
+]
+},
+{
+"id": 100727,
+"prompt": "solo supersaw chords, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"supersaw"
+]
+},
+{
+"id": 100728,
+"prompt": "solo wobble bass, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"wobble_bass"
+]
+},
+{
+"id": 100729,
+"prompt": "solo wobble bass, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"wobble_bass"
+]
+},
+{
+"id": 100730,
+"prompt": "solo wobble bass, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"wobble_bass"
+]
+},
+{
+"id": 100731,
+"prompt": "solo wobble bass, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"wobble_bass"
+]
+},
+{
+"id": 100732,
+"prompt": "solo wobble bass, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"wobble_bass"
+]
+},
+{
+"id": 100733,
+"prompt": "solo wobble bass, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"wobble_bass"
+]
+},
+{
+"id": 100734,
+"prompt": "solo wobble bass, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"wobble_bass"
+]
+},
+{
+"id": 100735,
+"prompt": "solo wobble bass, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"wobble_bass"
+]
+},
+{
+"id": 100736,
+"prompt": "solo acid 303 bassline, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"acid_303"
+]
+},
+{
+"id": 100737,
+"prompt": "solo acid 303 bassline, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"acid_303"
+]
+},
+{
+"id": 100738,
+"prompt": "solo acid 303 bassline, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"acid_303"
+]
+},
+{
+"id": 100739,
+"prompt": "solo acid 303 bassline, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"acid_303"
+]
+},
+{
+"id": 100740,
+"prompt": "solo acid 303 bassline, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"acid_303"
+]
+},
+{
+"id": 100741,
+"prompt": "solo acid 303 bassline, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"acid_303"
+]
+},
+{
+"id": 100742,
+"prompt": "solo acid 303 bassline, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"acid_303"
+]
+},
+{
+"id": 100743,
+"prompt": "solo acid 303 bassline, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"acid_303"
+]
+},
+{
+"id": 100744,
+"prompt": "solo synth arpeggiator, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"arp_synth"
+]
+},
+{
+"id": 100745,
+"prompt": "solo synth arpeggiator, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"arp_synth"
+]
+},
+{
+"id": 100746,
+"prompt": "solo synth arpeggiator, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"arp_synth"
+]
+},
+{
+"id": 100747,
+"prompt": "solo synth arpeggiator, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"arp_synth"
+]
+},
+{
+"id": 100748,
+"prompt": "solo synth arpeggiator, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"arp_synth"
+]
+},
+{
+"id": 100749,
+"prompt": "solo synth arpeggiator, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"arp_synth"
+]
+},
+{
+"id": 100750,
+"prompt": "solo synth arpeggiator, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"arp_synth"
+]
+},
+{
+"id": 100751,
+"prompt": "solo synth arpeggiator, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"arp_synth"
+]
+},
+{
+"id": 100752,
+"prompt": "solo FM synth bells, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"fm_bells"
+]
+},
+{
+"id": 100753,
+"prompt": "solo FM synth bells, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"fm_bells"
+]
+},
+{
+"id": 100754,
+"prompt": "solo FM synth bells, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"fm_bells"
+]
+},
+{
+"id": 100755,
+"prompt": "solo FM synth bells, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"fm_bells"
+]
+},
+{
+"id": 100756,
+"prompt": "solo FM synth bells, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"fm_bells"
+]
+},
+{
+"id": 100757,
+"prompt": "solo FM synth bells, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"fm_bells"
+]
+},
+{
+"id": 100758,
+"prompt": "solo FM synth bells, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"fm_bells"
+]
+},
+{
+"id": 100759,
+"prompt": "solo FM synth bells, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"fm_bells"
+]
+},
+{
+"id": 100760,
+"prompt": "solo modular synthesizer bleeps, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"modular_synth"
+]
+},
+{
+"id": 100761,
+"prompt": "solo modular synthesizer bleeps, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"modular_synth"
+]
+},
+{
+"id": 100762,
+"prompt": "solo modular synthesizer bleeps, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"modular_synth"
+]
+},
+{
+"id": 100763,
+"prompt": "solo modular synthesizer bleeps, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"modular_synth"
+]
+},
+{
+"id": 100764,
+"prompt": "solo modular synthesizer bleeps, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"modular_synth"
+]
+},
+{
+"id": 100765,
+"prompt": "solo modular synthesizer bleeps, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"modular_synth"
+]
+},
+{
+"id": 100766,
+"prompt": "solo modular synthesizer bleeps, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"modular_synth"
+]
+},
+{
+"id": 100767,
+"prompt": "solo modular synthesizer bleeps, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"modular_synth"
+]
+},
+{
+"id": 100768,
+"prompt": "solo nylon-string classical guitar, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"nylon_guitar"
+]
+},
+{
+"id": 100769,
+"prompt": "solo nylon-string classical guitar, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"nylon_guitar"
+]
+},
+{
+"id": 100770,
+"prompt": "solo nylon-string classical guitar, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"nylon_guitar"
+]
+},
+{
+"id": 100771,
+"prompt": "solo nylon-string classical guitar, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"nylon_guitar"
+]
+},
+{
+"id": 100772,
+"prompt": "solo nylon-string classical guitar, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"nylon_guitar"
+]
+},
+{
+"id": 100773,
+"prompt": "solo nylon-string classical guitar, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"nylon_guitar"
+]
+},
+{
+"id": 100774,
+"prompt": "solo nylon-string classical guitar, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"nylon_guitar"
+]
+},
+{
+"id": 100775,
+"prompt": "solo nylon-string classical guitar, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"nylon_guitar"
+]
+},
+{
+"id": 100776,
+"prompt": "solo slap bass, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"slap_bass"
+]
+},
+{
+"id": 100777,
+"prompt": "solo slap bass, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"slap_bass"
+]
+},
+{
+"id": 100778,
+"prompt": "solo slap bass, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"slap_bass"
+]
+},
+{
+"id": 100779,
+"prompt": "solo slap bass, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"slap_bass"
+]
+},
+{
+"id": 100780,
+"prompt": "solo slap bass, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"slap_bass"
+]
+},
+{
+"id": 100781,
+"prompt": "solo slap bass, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"slap_bass"
+]
+},
+{
+"id": 100782,
+"prompt": "solo slap bass, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"slap_bass"
+]
+},
+{
+"id": 100783,
+"prompt": "solo slap bass, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"slap_bass"
+]
+},
+{
+"id": 100784,
+"prompt": "solo muted trumpet, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"muted_trumpet"
+]
+},
+{
+"id": 100785,
+"prompt": "solo muted trumpet, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"muted_trumpet"
+]
+},
+{
+"id": 100786,
+"prompt": "solo muted trumpet, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"muted_trumpet"
+]
+},
+{
+"id": 100787,
+"prompt": "solo muted trumpet, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"muted_trumpet"
+]
+},
+{
+"id": 100788,
+"prompt": "solo muted trumpet, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"muted_trumpet"
+]
+},
+{
+"id": 100789,
+"prompt": "solo muted trumpet, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"muted_trumpet"
+]
+},
+{
+"id": 100790,
+"prompt": "solo muted trumpet, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"muted_trumpet"
+]
+},
+{
+"id": 100791,
+"prompt": "solo muted trumpet, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"muted_trumpet"
+]
+},
+{
+"id": 100792,
+"prompt": "solo hammered dulcimer, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"hammered_dulcimer"
+]
+},
+{
+"id": 100793,
+"prompt": "solo hammered dulcimer, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"hammered_dulcimer"
+]
+},
+{
+"id": 100794,
+"prompt": "solo hammered dulcimer, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"hammered_dulcimer"
+]
+},
+{
+"id": 100795,
+"prompt": "solo hammered dulcimer, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"hammered_dulcimer"
+]
+},
+{
+"id": 100796,
+"prompt": "solo hammered dulcimer, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"hammered_dulcimer"
+]
+},
+{
+"id": 100797,
+"prompt": "solo hammered dulcimer, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"hammered_dulcimer"
+]
+},
+{
+"id": 100798,
+"prompt": "solo hammered dulcimer, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"hammered_dulcimer"
+]
+},
+{
+"id": 100799,
+"prompt": "solo hammered dulcimer, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"hammered_dulcimer"
+]
+},
+{
+"id": 100800,
+"prompt": "solo tanpura drone, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"tanpura_drone"
+]
+},
+{
+"id": 100801,
+"prompt": "solo tanpura drone, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"tanpura_drone"
+]
+},
+{
+"id": 100802,
+"prompt": "solo tanpura drone, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"tanpura_drone"
+]
+},
+{
+"id": 100803,
+"prompt": "solo tanpura drone, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"tanpura_drone"
+]
+},
+{
+"id": 100804,
+"prompt": "solo tanpura drone, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"tanpura_drone"
+]
+},
+{
+"id": 100805,
+"prompt": "solo tanpura drone, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"tanpura_drone"
+]
+},
+{
+"id": 100806,
+"prompt": "solo tanpura drone, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"tanpura_drone"
+]
+},
+{
+"id": 100807,
+"prompt": "solo tanpura drone, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"tanpura_drone"
+]
+},
+{
+"id": 100808,
+"prompt": "solo harmonium, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"harmonium"
+]
+},
+{
+"id": 100809,
+"prompt": "solo harmonium, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"harmonium"
+]
+},
+{
+"id": 100810,
+"prompt": "solo harmonium, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"harmonium"
+]
+},
+{
+"id": 100811,
+"prompt": "solo harmonium, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"harmonium"
+]
+},
+{
+"id": 100812,
+"prompt": "solo harmonium, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"harmonium"
+]
+},
+{
+"id": 100813,
+"prompt": "solo harmonium, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"harmonium"
+]
+},
+{
+"id": 100814,
+"prompt": "solo harmonium, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"harmonium"
+]
+},
+{
+"id": 100815,
+"prompt": "solo harmonium, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"harmonium"
+]
+},
+{
+"id": 100816,
+"prompt": "solo gamelan ensemble, no other instruments",
+"seed": 40000,
+"category": "musetimbre_proto",
+"tags": [
+"gamelan"
+]
+},
+{
+"id": 100817,
+"prompt": "solo gamelan ensemble, no other instruments",
+"seed": 40001,
+"category": "musetimbre_proto",
+"tags": [
+"gamelan"
+]
+},
+{
+"id": 100818,
+"prompt": "solo gamelan ensemble, no other instruments",
+"seed": 40002,
+"category": "musetimbre_proto",
+"tags": [
+"gamelan"
+]
+},
+{
+"id": 100819,
+"prompt": "solo gamelan ensemble, no other instruments",
+"seed": 40003,
+"category": "musetimbre_proto",
+"tags": [
+"gamelan"
+]
+},
+{
+"id": 100820,
+"prompt": "solo gamelan ensemble, no other instruments",
+"seed": 40004,
+"category": "musetimbre_proto",
+"tags": [
+"gamelan"
+]
+},
+{
+"id": 100821,
+"prompt": "solo gamelan ensemble, no other instruments",
+"seed": 40005,
+"category": "musetimbre_proto",
+"tags": [
+"gamelan"
+]
+},
+{
+"id": 100822,
+"prompt": "solo gamelan ensemble, no other instruments",
+"seed": 40006,
+"category": "musetimbre_proto",
+"tags": [
+"gamelan"
+]
+},
+{
+"id": 100823,
+"prompt": "solo gamelan ensemble, no other instruments",
+"seed": 40007,
+"category": "musetimbre_proto",
+"tags": [
+"gamelan"
+]
+}
+]

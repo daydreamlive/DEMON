@@ -1,0 +1,6 @@
+{
+  "enabledMcpjsonServers": [
+    "demon"
+  ],
+  "enableAllProjectMcpServers": true
+}

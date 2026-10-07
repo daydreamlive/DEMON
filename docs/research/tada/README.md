@@ -194,12 +194,25 @@ conflicted with main's small-music/SAME-S work (#372); both sides were kept
 (steer and steer-cross-attn builds stay medium-only; the SAME-L window build
 keeps main's `args.model == "medium"` guard).
 
-## Related work not in this branch
+## What is in the branch
 
-- `ryanontheinside/spike/steer-bench` (DEMON-steer-bench): the many-knobs
-  steering bench built on this stack (`scripts/steering_bench/`: residual
-  capture, ridge directions, catalogue, ship packs), with uncommitted work in
-  that worktree. Its results are in `notes/steering_pr/` (git-ignored).
+Besides the code, docs and `results/` above:
+
+- `notes/`: the working notes, runbooks and status files behind this record,
+  copied from DEMON's git-ignored `notes/` with their subpaths kept.
+  `notes/family_merge/` holds the lane runbooks (`18_tada_replication`,
+  `19_tada_overnight`, `20_tada_skeptic`, `16_steering_generic`), the external
+  review (`astra_tada_review`), the PR drafts, the `status_tada_*` and
+  `status_steering` files, the demo HOWTOs (`demo_logs/`), the background
+  surveys (`beyond/`) and the E3 helper scripts (`e3/`). `notes/steering_pr/`
+  holds the steering bench plans, runbooks, catalogues, results and logs
+  (text files under 1 MB only; screenshots and the 1 MB+ prompt dump were left out).
+- `scripts/steering_bench/` (merged from `ryanontheinside/spike/steer-bench`
+  with its history): the many-knobs steering bench built on this stack.
+  It captures per-step block residuals on SA3 medium, fits ridge and
+  difference-of-means directions for a catalogue of concepts, screens them as
+  knobs at `post_block_residual`, and ships the keepers as production steering packs.
+  Its results are in `notes/steering_pr/`.
 
 ## Open
 

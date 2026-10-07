@@ -1,0 +1,448 @@
+[32m09:07:06.498[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mstatic_route_mounted route=/sdk root=C:\_dev\projects\DEMON-steer\packages\demon-client\dist entry=index.html[0m
+[32m09:07:06.498[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mstatic_route_mounted route=/sa3 root=C:\_dev\projects\DEMON-steer\demos\sa3 entry=index.html[0m
+[32m09:07:06.499[0m [1mINFO    [0m [36macestep.streaming.preflight[0m - [1mpreflight_sa3_ok model_id=medium base_dir=None[0m
+[32m09:07:07.235[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mcontrol_bus_listening host=127.0.0.1 port=1319[0m
+[32m09:07:07.236[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1muser_uploads_wipe_at_startup skipped=env_disabled[0m
+[32m09:07:07.236[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mserver_starting port=1318[0m
+
+============================================================
+  Real-Time Motion-to-Music  (WEB APP, accel=tensorrt [mode=graph] [ckpt=medium])
+============================================================
+  WebSocket: ws://127.0.0.1:1318/
+  HTTP API:  http://127.0.0.1:1318/api/...
+  Static demo: http://127.0.0.1:1318/sa3/
+  Fixtures:  daydreamlive/demon-fixtures-v2 (HF, 4 files, on-demand)
+  Ctrl+C to stop
+============================================================
+
+[32m09:07:07.237[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mserver_ready host=127.0.0.1 port=1318 mode=WEB APP, accel=tensorrt [mode=graph] [ckpt=medium] no_backend=False kiosk=False default_mode=graph checkpoint=medium decoder_accel=tensorrt vae_accel=tensorrt[0m
+[32m09:07:07.728[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sa3/ status=200[0m
+[32m09:07:08.206[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1mclient_connected decoder=tensorrt vae=tensorrt checkpoint=medium family=sa3 text_encoder=resident[0m
+[32m09:07:08.206[0m [1mINFO    [0m [rdQ_e4Ki] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1msession_init config_keys=['backend', 'fixture_name', 'prompt', 'telemetry_version', 'use_server_fixture'] client_id=None[0m
+[32m09:07:08.281[0m [1mINFO    [0m [rdQ_e4Ki] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1msession_vram stage=create_start free_gb=30.20 available_gb=30.20 allocated_gb=0.00 reserved_gb=0.00[0m
+[32m09:07:08.327[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.sa3_context[0m - [1msa3_model_load_start model_id=medium dir=C:\Users\ryanf\.daydream-scope\models\demon\sa3\checkpoints\stable-audio-3-medium[0m
+C:\_dev\projects\DEMON-steer\.venv\Lib\site-packages\torch\nn\utils\weight_norm.py:144: FutureWarning: `torch.nn.utils.weight_norm` is deprecated in favor of `torch.nn.utils.parametrizations.weight_norm`.
+  WeightNorm.apply(module, name, dim)
+[32m09:07:12.032[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1maudio_analysis_jit_warmed duration_s=4.8[0m
+[32m09:07:23.953[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.sa3_context[0m - [1msa3_model_loaded model_id=medium latent_rate_hz=10.7666 dtype=torch.float16 song_seconds=180.0 schedule=song outro_pad_s=3.0 objective=rf_denoiser[0m
+[32m09:07:23.978[0m [33m[1mWARNING [0m [rdQ_e4Ki] [36macestep.engine.sa3_context[0m - [33m[1msa3_duration_clamped_for_trt model_id=medium requested_s=57.6 cap_s=57.0[0m
+[32m09:07:23.978[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.streaming.sa3_session[0m - [1msa3_session_create model_id=medium duration_s=57.0 source_duration_s=57.6 steps=8 depth=4 dit_backend=tensorrt codec_backend=tensorrt[0m
+[32m09:07:24.497[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.sa3_lora[0m - [1mSA3 LoRA manager ready: checkpoint_id=medium conditioner=True[0m
+[32m09:07:24.503[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.lora[0m - [1mRegistered LoRA: alt_pop50-acestep1.5-dora-v2 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\alt_pop50-acestep1.5-dora-v2.safetensors)[0m
+[32m09:07:24.503[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.lora[0m - [1mRegistered LoRA: ambient-v1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\ambient-v1.safetensors)[0m
+[32m09:07:24.503[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.lora[0m - [1mRegistered LoRA: bach (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\bach.safetensors)[0m
+[32m09:07:24.503[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.lora[0m - [1mRegistered LoRA: daftpunkstyle12001 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\daftpunkstyle12001.safetensors)[0m
+[32m09:07:24.503[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.lora[0m - [1mRegistered LoRA: deathsteap_1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\deathsteap_1.safetensors)[0m
+[32m09:07:24.503[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.lora[0m - [1mRegistered LoRA: deep_house-v1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\deep_house-v1.safetensors)[0m
+[32m09:07:24.503[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.lora[0m - [1mRegistered LoRA: dreampop_xl (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\dreampop_xl.safetensors)[0m
+[32m09:07:24.503[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.lora[0m - [1mRegistered LoRA: funkv1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\funkv1.safetensors)[0m
+[32m09:07:24.503[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.lora[0m - [1mRegistered LoRA: goa_trance_sa3m (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\goa_trance_sa3m.safetensors)[0m
+[32m09:07:24.503[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.lora[0m - [1mRegistered LoRA: lokr_weights (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\lokr_weights.safetensors)[0m
+[32m09:07:24.503[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.lora[0m - [1mRegistered LoRA: phonk_xl (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\phonk_xl.safetensors)[0m
+[32m09:07:24.503[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.lora[0m - [1mRegistered LoRA: progressive_metal_v1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\progressive_metal_v1.safetensors)[0m
+[32m09:07:24.503[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.lora[0m - [1mRegistered LoRA: punkrockv1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\punkrockv1.safetensors)[0m
+[32m09:07:24.503[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.lora[0m - [1mRegistered LoRA: walk_window_v1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\walk_window_v1.safetensors)[0m
+[32m09:07:24.503[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.lora[0m - [1mRegistered LoRA: xdeathcorev1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\xdeathcorev1.safetensors)[0m
+[32m09:07:24.503[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.lora[0m - [1mRegistered library: 15 LoRAs across all configured root(s)[0m
+[32m09:07:24.553[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.sa3_trt[0m - [1msa3_dit_steer_selected engine=sa3_m_dit_steer_l1_646_646 latent_frames=646[0m
+[32m09:07:27.496[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1midle_vram_trim freed_mib=4120 reserved_mib=5662 allocated_mib=5564[0m
+[32m09:07:28.723[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.sa3_trt[0m - [1msa3_trt_engine_load path=C:\Users\ryanf\.daydream-scope\models\demon\sa3\trt_engines\sa3_m_dit_steer_l1_646_646\sa3_m_dit_steer_l1_646_646.trt size_gb=2.9[0m
+[32m09:07:30.592[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.sa3_trt[0m - [1msa3_trt_dit_ready engine=sa3_m_dit_steer_l1_646_646 L=646 seconds_total=180.0[0m
+[10/05/2026-09:07:30] [TRT] [W] Functionality provided through tensorrt.plugin module is experimental.
+[32m09:07:30.663[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.sa3_trt[0m - [1msa3_trt_engine_load path=C:\Users\ryanf\.daydream-scope\models\demon\sa3\trt_engines\same_l_decode_window_aot_mma_vc07698548567_t32_56_96\same_l_decode_window_aot_mma_vc07698548567_t32_56_96.trt size_gb=1.2[0m
+[10/05/2026-09:07:30] [TRT] [W] WARNING The logger passed into createInferRuntime differs from one already registered for an existing builder, runtime, or refitter. So the current new logger is ignored, and TensorRT will use the existing one which is returned by nvinfer1::getLogger() instead.
+[32m09:07:31.336[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.engine.sa3_trt[0m - [1msa3_trt_same_l_ready engine=same_l_decode_window_aot_mma_vc07698548567_t32_56_96[0m
+[32m09:07:31.350[0m [1mINFO    [0m [rdQ_e4Ki] [36macestep.streaming.families[0m - [1msteering_packs_loaded family=sa3 checkpoint=medium knobs=['steer_bright', 'steer_density', 'steer_percussive', 'steer_rough', 'steer_warm'][0m
+[32m09:07:31.350[0m [1mINFO    [0m [rdQ_e4Ki] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1msession_vram stage=create_done free_gb=20.40 available_gb=20.49 allocated_gb=5.44 reserved_gb=5.53[0m
+WARNING:acestep.lora_metadata:LoRA metadata for ambient-v1 has sidecar id=ambient-acestep1.5-v1; using stem as runtime id
+WARNING:acestep.lora_metadata:LoRA metadata for deathsteap_1 has sidecar id=deathstep-v1; using stem as runtime id
+WARNING:acestep.lora_metadata:LoRA metadata for deep_house-v1 has sidecar id=deep_house-acestep1.5-v1; using stem as runtime id
+[32m09:07:31.721[0m [1mINFO    [0m [rdQ_e4Ki] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1muser_uploads_wipe_at_session_end skipped=env_disabled[0m
+ERROR:websockets.server:connection handler failed
+Traceback (most recent call last):
+  File "C:\_dev\projects\DEMON-steer\.venv\Lib\site-packages\websockets\sync\server.py", line 781, in sock_handler
+    handler(connection)
+  File "C:\_dev\projects\DEMON-steer\demos\realtime_motion_graph_web\server.py", line 958, in ws_handler
+    handle_client(
+  File "C:\_dev\projects\DEMON-steer\demos\realtime_motion_graph_web\ws_adapter.py", line 1117, in handle_client
+    _handle_client_body(
+  File "C:\_dev\projects\DEMON-steer\demos\realtime_motion_graph_web\ws_adapter.py", line 1735, in _handle_client_body
+    chunked_ws_send(ws, src_np.astype(np.float16).tobytes())
+  File "C:\_dev\projects\DEMON-steer\demos\realtime_motion_graph_web\audio_codec.py", line 127, in chunked_ws_send
+    ws.send(mv[i:i + chunk_size] for i in range(0, len(data), chunk_size))
+  File "C:\_dev\projects\DEMON-steer\.venv\Lib\site-packages\websockets\sync\connection.py", line 569, in send
+    with self.send_context():
+  File "C:\Users\ryanf\AppData\Roaming\uv\python\cpython-3.11.13-windows-x86_64-none\Lib\contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "C:\_dev\projects\DEMON-steer\.venv\Lib\site-packages\websockets\sync\connection.py", line 1068, in send_context
+    raise self.protocol.close_exc from original_exc
+websockets.exceptions.ConnectionClosedOK: received 1000 (OK); then sent 1000 (OK)
+[32m09:08:16.150[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sa3/ status=200[0m
+[32m09:08:16.160[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sa3/styles.css status=200[0m
+[32m09:08:16.162[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sa3/sa3.js status=200[0m
+[32m09:08:16.307[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sdk/demon-client.js status=200[0m
+[32m09:08:16.313[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/api/server-info status=200[0m
+[32m09:08:16.318[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/favicon.ico status=404[0m
+[32m09:08:32.338[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1mclient_connected decoder=tensorrt vae=tensorrt checkpoint=medium family=sa3 text_encoder=resident[0m
+[32m09:08:32.338[0m [1mINFO    [0m [YkvGXRjQ] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1msession_init config_keys=['backend', 'fixture_name', 'prompt', 'telemetry_version', 'use_server_fixture'] client_id=None[0m
+[32m09:08:32.349[0m [1mINFO    [0m [YkvGXRjQ] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1msession_vram stage=create_start free_gb=20.70 available_gb=20.79 allocated_gb=5.43 reserved_gb=5.53[0m
+[32m09:08:32.350[0m [33m[1mWARNING [0m [YkvGXRjQ] [36macestep.engine.sa3_context[0m - [33m[1msa3_duration_clamped_for_trt model_id=medium requested_s=57.6 cap_s=57.0[0m
+[32m09:08:32.350[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.sa3_session[0m - [1msa3_session_create model_id=medium duration_s=57.0 source_duration_s=57.6 steps=8 depth=4 dit_backend=tensorrt codec_backend=tensorrt[0m
+[32m09:08:32.356[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sdk/sliceDecoder.worker.js status=200[0m
+[32m09:08:32.531[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.engine.sa3_lora[0m - [1mSA3 LoRA manager ready: checkpoint_id=medium conditioner=True[0m
+[32m09:08:32.534[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.engine.lora[0m - [1mRegistered LoRA: alt_pop50-acestep1.5-dora-v2 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\alt_pop50-acestep1.5-dora-v2.safetensors)[0m
+[32m09:08:32.535[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.engine.lora[0m - [1mRegistered LoRA: ambient-v1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\ambient-v1.safetensors)[0m
+[32m09:08:32.535[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.engine.lora[0m - [1mRegistered LoRA: bach (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\bach.safetensors)[0m
+[32m09:08:32.535[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.engine.lora[0m - [1mRegistered LoRA: daftpunkstyle12001 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\daftpunkstyle12001.safetensors)[0m
+[32m09:08:32.535[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.engine.lora[0m - [1mRegistered LoRA: deathsteap_1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\deathsteap_1.safetensors)[0m
+[32m09:08:32.535[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.engine.lora[0m - [1mRegistered LoRA: deep_house-v1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\deep_house-v1.safetensors)[0m
+[32m09:08:32.535[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.engine.lora[0m - [1mRegistered LoRA: dreampop_xl (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\dreampop_xl.safetensors)[0m
+[32m09:08:32.535[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.engine.lora[0m - [1mRegistered LoRA: funkv1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\funkv1.safetensors)[0m
+[32m09:08:32.535[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.engine.lora[0m - [1mRegistered LoRA: goa_trance_sa3m (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\goa_trance_sa3m.safetensors)[0m
+[32m09:08:32.535[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.engine.lora[0m - [1mRegistered LoRA: lokr_weights (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\lokr_weights.safetensors)[0m
+[32m09:08:32.535[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.engine.lora[0m - [1mRegistered LoRA: phonk_xl (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\phonk_xl.safetensors)[0m
+[32m09:08:32.535[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.engine.lora[0m - [1mRegistered LoRA: progressive_metal_v1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\progressive_metal_v1.safetensors)[0m
+[32m09:08:32.535[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.engine.lora[0m - [1mRegistered LoRA: punkrockv1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\punkrockv1.safetensors)[0m
+[32m09:08:32.535[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.engine.lora[0m - [1mRegistered LoRA: walk_window_v1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\walk_window_v1.safetensors)[0m
+[32m09:08:32.535[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.engine.lora[0m - [1mRegistered LoRA: xdeathcorev1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\xdeathcorev1.safetensors)[0m
+[32m09:08:32.535[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.engine.lora[0m - [1mRegistered library: 15 LoRAs across all configured root(s)[0m
+[32m09:08:32.554[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.engine.sa3_trt[0m - [1msa3_dit_steer_selected engine=sa3_m_dit_steer_l1_646_646 latent_frames=646[0m
+[32m09:08:32.897[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.engine.sa3_trt[0m - [1msa3_trt_dit_ready engine=sa3_m_dit_steer_l1_646_646 L=646 seconds_total=180.0[0m
+[32m09:08:32.989[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.engine.sa3_trt[0m - [1msa3_trt_same_l_ready engine=same_l_decode_window_aot_mma_vc07698548567_t32_56_96[0m
+[32m09:08:32.991[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.families[0m - [1msteering_packs_loaded family=sa3 checkpoint=medium knobs=['steer_bright', 'steer_density', 'steer_percussive', 'steer_rough', 'steer_warm'][0m
+[32m09:08:32.992[0m [1mINFO    [0m [YkvGXRjQ] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1msession_vram stage=create_done free_gb=20.12 available_gb=20.49 allocated_gb=5.44 reserved_gb=5.81[0m
+[32m09:08:33.015[0m [1mINFO    [0m [YkvGXRjQ] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1minitial_buffer_sent duration_s=57.0[0m
+[32m09:08:33.017[0m [1mINFO    [0m [YkvGXRjQ] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1msession_registered[0m
+[32m09:08:33.017[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.session[0m - [1mpipeline_running[0m
+[32m09:08:33.017[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.pipeline_runner[0m - [1mstream decode: vae_window=3.000s decode_span=0.000s lead_margin=0.050s lead~=0.250s backend=sa3[0m
+[32m09:08:33.064[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sdk/audio-worklet.js?v=5 status=200[0m
+[32m09:08:33.116[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/favicon.ico status=404[0m
+[32m09:08:33.424[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=1.0 cond_epoch=0 tags='driving cinematic synthwave, analog arpeggios, gated reverb snare, wide saw-lead, 152 bpm, G minor, 4/4'[0m
+[32m09:08:33.592[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=1 reason=window detail=535095.00 sent=1065878 acked=530783[0m
+[32m09:08:38.790[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=15 reason=window detail=535182.00 sent=35336405 acked=34801223[0m
+[32m09:08:43.904[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=14 reason=window detail=534132.00 sent=68917797 acked=68383665[0m
+[32m09:08:49.104[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=13 reason=window detail=538292.00 sent=104253851 acked=103715559[0m
+[32m09:08:54.546[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=12 reason=window detail=537615.00 sent=141920576 acked=141382961[0m
+[32m09:08:59.911[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=13 reason=window detail=537239.00 sent=177706277 acked=177169038[0m
+[32m09:09:05.268[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=13 reason=window detail=537442.00 sent=213679143 acked=213141701[0m
+[32m09:09:10.471[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=13 reason=window detail=536330.00 sent=248543516 acked=248007186[0m
+[32m09:09:12.951[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.session[0m - [1mprompt_set origin=primary tags='a car engine revving' tags_b=None backend=sa3[0m
+[32m09:09:12.998[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.sa3_backend[0m - [1msa3_prompt_applied tags='a car engine revving' tags_b=None cond_epoch=1 rebuild_ms=47.8[0m
+[32m09:09:13.873[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=1.0 cond_epoch=1 tags='a car engine revving'[0m
+[32m09:09:15.821[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=13 reason=window detail=531322.00 sent=284377358 acked=283846036[0m
+[32m09:09:21.501[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=12 reason=window detail=531443.00 sent=323217990 acked=322686547[0m
+[32m09:09:26.870[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=12 reason=window detail=530914.00 sent=359336345 acked=358805431[0m
+[32m09:09:31.987[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=12 reason=window detail=533178.00 sent=380453777 acked=379920599[0m
+[32m09:09:37.182[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=13 reason=window detail=531562.00 sent=414990554 acked=414458992[0m
+[32m09:09:37.389[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.session[0m - [1mprompt_set origin=primary tags='breakbeat drums' tags_b=None backend=sa3[0m
+[32m09:09:37.439[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.sa3_backend[0m - [1msa3_prompt_applied tags='breakbeat drums' tags_b=None cond_epoch=2 rebuild_ms=49.3[0m
+[32m09:09:38.306[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=1.0 cond_epoch=2 tags='breakbeat drums'[0m
+[32m09:09:42.388[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=15 reason=window detail=540374.00 sent=448802180 acked=448261806[0m
+[32m09:09:43.593[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.session[0m - [1mprompt_set origin=primary tags='break beat drums' tags_b=None backend=sa3[0m
+[32m09:09:43.634[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.sa3_backend[0m - [1msa3_prompt_applied tags='break beat drums' tags_b=None cond_epoch=3 rebuild_ms=40.2[0m
+[32m09:09:44.378[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=1.0 cond_epoch=3 tags='break beat drums'[0m
+[32m09:09:47.587[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=13 reason=window detail=515585.00 sent=483063468 acked=482547883[0m
+[32m09:09:52.625[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=12 reason=window detail=484107.00 sent=514954561 acked=514470454[0m
+[32m09:09:57.750[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=11 reason=window detail=537837.00 sent=548721705 acked=548183868[0m
+[32m09:10:03.108[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=12 reason=window detail=545780.00 sent=584844283 acked=584298503[0m
+[32m09:10:08.302[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=11 reason=window detail=534397.00 sent=620490770 acked=619956373[0m
+[32m09:10:13.577[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=14 reason=window detail=538107.00 sent=655102352 acked=654564245[0m
+[32m09:10:18.705[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=13 reason=window detail=537383.00 sent=689207428 acked=688670045[0m
+[32m09:10:23.820[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=11 reason=window detail=540270.00 sent=723454554 acked=722914284[0m
+[32m09:10:29.026[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=8 reason=window detail=528353.00 sent=744356753 acked=743828400[0m
+[32m09:10:34.304[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=12 reason=window detail=476930.00 sent=773083354 acked=772606424[0m
+[32m09:10:39.421[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=12 reason=window detail=531105.00 sent=806232342 acked=805701237[0m
+[32m09:10:44.703[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=12 reason=window detail=504989.00 sent=840511014 acked=840006025[0m
+[32m09:10:50.141[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=12 reason=window detail=513123.00 sent=875580337 acked=875067214[0m
+[32m09:10:51.614[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_paused stage=dit idle_threshold_s=20[0m
+[32m09:10:55.173[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=62 reason=window detail=545071.00 sent=909353019 acked=908807948[0m
+[32m09:11:00.210[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=86 reason=window detail=537153.00 sent=943608023 acked=943070870[0m
+[32m09:11:05.242[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=86 reason=window detail=545426.00 sent=977946944 acked=977401518[0m
+[32m09:11:10.285[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=86 reason=window detail=546227.00 sent=1012270391 acked=1011724164[0m
+[32m09:11:15.336[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=85 reason=window detail=546153.00 sent=1046566171 acked=1046020018[0m
+[32m09:11:20.348[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=83 reason=window detail=545444.00 sent=1080900112 acked=1080354668[0m
+[32m09:11:29.258[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=12 reason=window detail=287458.00 sent=1097042468 acked=1096755010[0m
+[32m09:11:34.301[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=72 reason=window detail=529911.00 sent=1125971885 acked=1125441974[0m
+[32m09:11:39.339[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=78 reason=window detail=508032.00 sent=1158463582 acked=1157955550[0m
+[32m09:11:44.357[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=77 reason=window detail=523629.00 sent=1191034889 acked=1190511260[0m
+[32m09:11:48.628[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_paused stage=vae reason=buffer_full[0m
+[32m09:14:46.615[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_resumed stage=dit[0m
+[32m09:14:47.415[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=65 reason=window detail=538630.00 sent=1224425329 acked=1223886699[0m
+[32m09:14:52.696[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=10 reason=window detail=532283.00 sent=1258947718 acked=1258415435[0m
+[32m09:14:57.898[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=10 reason=window detail=540797.00 sent=1292874592 acked=1292333795[0m
+[32m09:15:03.573[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=9 reason=window detail=538806.00 sent=1330649341 acked=1330110535[0m
+[32m09:15:08.655[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=8 reason=window detail=532035.00 sent=1365072044 acked=1364540009[0m
+[32m09:15:13.737[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=17 reason=window detail=539137.00 sent=1390717904 acked=1390178767[0m
+[32m09:15:18.836[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.session[0m - [1mprompt_set origin=primary tags='bassline' tags_b=None backend=sa3[0m
+[32m09:15:18.905[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.sa3_backend[0m - [1msa3_prompt_applied tags='bassline' tags_b=None cond_epoch=4 rebuild_ms=68.1[0m
+[32m09:15:19.416[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=10 reason=window detail=538448.00 sent=1427341267 acked=1426802819[0m
+[32m09:15:19.685[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=1.0 cond_epoch=4 tags='bassline'[0m
+[32m09:15:24.854[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=6 reason=window detail=534244.00 sent=1463652877 acked=1463118633[0m
+[32m09:15:29.973[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=8 reason=window detail=535099.00 sent=1496671536 acked=1496136437[0m
+[32m09:15:33.537[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.session[0m - [1mprompt_set origin=primary tags='upright bass' tags_b=None backend=sa3[0m
+[32m09:15:33.596[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.sa3_backend[0m - [1msa3_prompt_applied tags='upright bass' tags_b=None cond_epoch=5 rebuild_ms=58.3[0m
+[32m09:15:34.429[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=1.0 cond_epoch=5 tags='upright bass'[0m
+[32m09:15:35.255[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=7 reason=window detail=527435.00 sent=1531296960 acked=1530769525[0m
+[32m09:15:40.857[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=6 reason=window detail=529578.00 sent=1567786587 acked=1567257009[0m
+[32m09:15:46.057[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=6 reason=window detail=529529.00 sent=1601772560 acked=1601243031[0m
+[32m09:15:52.132[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=6 reason=window detail=517228.00 sent=1641568947 acked=1641051719[0m
+[32m09:15:53.556[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_paused stage=dit idle_threshold_s=20[0m
+[32m09:15:56.273[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_resumed stage=dit[0m
+[32m09:15:57.496[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=32 reason=window detail=531087.00 sent=1677532090 acked=1677001003[0m
+[32m09:16:03.576[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=5 reason=window detail=529708.00 sent=1716812041 acked=1716282333[0m
+[32m09:16:10.534[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=3 reason=window detail=526110.00 sent=1747086336 acked=1746560226[0m
+[32m09:16:16.613[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=7 reason=window detail=532776.00 sent=1785298793 acked=1784766017[0m
+[32m09:16:24.694[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=5 reason=window detail=530173.00 sent=1837862848 acked=1837332675[0m
+[32m09:16:24.769[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_paused stage=dit idle_threshold_s=20[0m
+[32m09:16:29.720[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=54 reason=window detail=528751.00 sent=1870660184 acked=1870131433[0m
+[32m09:16:34.770[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=52 reason=window detail=529871.00 sent=1903996206 acked=1903466335[0m
+[32m09:16:39.810[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=50 reason=window detail=534360.00 sent=1937107062 acked=1936572702[0m
+[32m09:16:44.850[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=50 reason=window detail=532224.00 sent=1970527903 acked=1969995679[0m
+[32m09:16:49.948[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=47 reason=window detail=527363.00 sent=2004452455 acked=2003925092[0m
+[32m09:16:55.074[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=46 reason=window detail=530826.00 sent=2038315851 acked=2037785025[0m
+[32m09:17:00.185[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=44 reason=window detail=522354.00 sent=2072292419 acked=2071770065[0m
+[32m09:17:05.560[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=21 reason=window detail=530454.00 sent=2093785060 acked=2093254606[0m
+[32m09:17:10.679[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=41 reason=window detail=526761.00 sent=2127671945 acked=2127145184[0m
+[32m09:17:15.787[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=40 reason=window detail=531600.00 sent=2161489592 acked=2160957992[0m
+[32m09:17:20.919[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=38 reason=window detail=528007.00 sent=2195351416 acked=2194823409[0m
+[32m09:17:21.793[0m [1mINFO    [0m [YkvGXRjQ] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_paused stage=vae reason=buffer_full[0m
+[32m09:17:27.723[0m [1mINFO    [0m [YkvGXRjQ] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1mclient_disconnected num_gens=4539[0m
+[32m09:17:27.724[0m [1mINFO    [0m [YkvGXRjQ] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1muser_uploads_wipe_at_session_end skipped=env_disabled[0m
+[32m09:17:39.767[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1mclient_connected decoder=tensorrt vae=tensorrt checkpoint=medium family=sa3 text_encoder=resident[0m
+[32m09:17:39.767[0m [1mINFO    [0m [GwjyPcFl] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1msession_init config_keys=['backend', 'fixture_name', 'prompt', 'telemetry_version', 'use_server_fixture'] client_id=None[0m
+[32m09:17:39.768[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sdk/sliceDecoder.worker.js status=200[0m
+[32m09:17:39.779[0m [1mINFO    [0m [GwjyPcFl] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1msession_vram stage=create_start free_gb=17.83 available_gb=17.93 allocated_gb=5.44 reserved_gb=5.54[0m
+[32m09:17:39.780[0m [33m[1mWARNING [0m [GwjyPcFl] [36macestep.engine.sa3_context[0m - [33m[1msa3_duration_clamped_for_trt model_id=medium requested_s=57.6 cap_s=57.0[0m
+[32m09:17:39.780[0m [1mINFO    [0m [GwjyPcFl] [36macestep.streaming.sa3_session[0m - [1msa3_session_create model_id=medium duration_s=57.0 source_duration_s=57.6 steps=8 depth=4 dit_backend=tensorrt codec_backend=tensorrt[0m
+[32m09:17:39.959[0m [1mINFO    [0m [GwjyPcFl] [36macestep.engine.sa3_lora[0m - [1mSA3 LoRA manager ready: checkpoint_id=medium conditioner=True[0m
+[32m09:17:39.961[0m [1mINFO    [0m [GwjyPcFl] [36macestep.engine.lora[0m - [1mRegistered LoRA: alt_pop50-acestep1.5-dora-v2 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\alt_pop50-acestep1.5-dora-v2.safetensors)[0m
+[32m09:17:39.961[0m [1mINFO    [0m [GwjyPcFl] [36macestep.engine.lora[0m - [1mRegistered LoRA: ambient-v1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\ambient-v1.safetensors)[0m
+[32m09:17:39.961[0m [1mINFO    [0m [GwjyPcFl] [36macestep.engine.lora[0m - [1mRegistered LoRA: bach (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\bach.safetensors)[0m
+[32m09:17:39.961[0m [1mINFO    [0m [GwjyPcFl] [36macestep.engine.lora[0m - [1mRegistered LoRA: daftpunkstyle12001 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\daftpunkstyle12001.safetensors)[0m
+[32m09:17:39.961[0m [1mINFO    [0m [GwjyPcFl] [36macestep.engine.lora[0m - [1mRegistered LoRA: deathsteap_1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\deathsteap_1.safetensors)[0m
+[32m09:17:39.961[0m [1mINFO    [0m [GwjyPcFl] [36macestep.engine.lora[0m - [1mRegistered LoRA: deep_house-v1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\deep_house-v1.safetensors)[0m
+[32m09:17:39.961[0m [1mINFO    [0m [GwjyPcFl] [36macestep.engine.lora[0m - [1mRegistered LoRA: dreampop_xl (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\dreampop_xl.safetensors)[0m
+[32m09:17:39.961[0m [1mINFO    [0m [GwjyPcFl] [36macestep.engine.lora[0m - [1mRegistered LoRA: funkv1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\funkv1.safetensors)[0m
+[32m09:17:39.961[0m [1mINFO    [0m [GwjyPcFl] [36macestep.engine.lora[0m - [1mRegistered LoRA: goa_trance_sa3m (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\goa_trance_sa3m.safetensors)[0m
+[32m09:17:39.961[0m [1mINFO    [0m [GwjyPcFl] [36macestep.engine.lora[0m - [1mRegistered LoRA: lokr_weights (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\lokr_weights.safetensors)[0m
+[32m09:17:39.961[0m [1mINFO    [0m [GwjyPcFl] [36macestep.engine.lora[0m - [1mRegistered LoRA: phonk_xl (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\phonk_xl.safetensors)[0m
+[32m09:17:39.961[0m [1mINFO    [0m [GwjyPcFl] [36macestep.engine.lora[0m - [1mRegistered LoRA: progressive_metal_v1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\progressive_metal_v1.safetensors)[0m
+[32m09:17:39.961[0m [1mINFO    [0m [GwjyPcFl] [36macestep.engine.lora[0m - [1mRegistered LoRA: punkrockv1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\punkrockv1.safetensors)[0m
+[32m09:17:39.961[0m [1mINFO    [0m [GwjyPcFl] [36macestep.engine.lora[0m - [1mRegistered LoRA: walk_window_v1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\walk_window_v1.safetensors)[0m
+[32m09:17:39.961[0m [1mINFO    [0m [GwjyPcFl] [36macestep.engine.lora[0m - [1mRegistered LoRA: xdeathcorev1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\xdeathcorev1.safetensors)[0m
+[32m09:17:39.961[0m [1mINFO    [0m [GwjyPcFl] [36macestep.engine.lora[0m - [1mRegistered library: 15 LoRAs across all configured root(s)[0m
+[32m09:17:39.982[0m [1mINFO    [0m [GwjyPcFl] [36macestep.engine.sa3_trt[0m - [1msa3_dit_steer_selected engine=sa3_m_dit_steer_l1_646_646 latent_frames=646[0m
+[32m09:17:40.519[0m [1mINFO    [0m [GwjyPcFl] [36macestep.engine.sa3_trt[0m - [1msa3_trt_dit_ready engine=sa3_m_dit_steer_l1_646_646 L=646 seconds_total=180.0[0m
+[32m09:17:40.709[0m [1mINFO    [0m [GwjyPcFl] [36macestep.engine.sa3_trt[0m - [1msa3_trt_same_l_ready engine=same_l_decode_window_aot_mma_vc07698548567_t32_56_96[0m
+[32m09:17:40.710[0m [1mINFO    [0m [GwjyPcFl] [36macestep.streaming.families[0m - [1msteering_packs_loaded family=sa3 checkpoint=medium knobs=['steer_bright', 'steer_density', 'steer_percussive', 'steer_rough', 'steer_warm'][0m
+[32m09:17:40.711[0m [1mINFO    [0m [GwjyPcFl] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1msession_vram stage=create_done free_gb=17.25 available_gb=17.64 allocated_gb=5.45 reserved_gb=5.83[0m
+[32m09:17:40.743[0m [1mINFO    [0m [GwjyPcFl] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1minitial_buffer_sent duration_s=57.0[0m
+[32m09:17:40.746[0m [1mINFO    [0m [GwjyPcFl] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1msession_registered[0m
+[32m09:17:40.747[0m [1mINFO    [0m [GwjyPcFl] [36macestep.streaming.session[0m - [1mpipeline_running[0m
+[32m09:17:40.747[0m [1mINFO    [0m [GwjyPcFl] [36macestep.streaming.pipeline_runner[0m - [1mstream decode: vae_window=3.000s decode_span=0.000s lead_margin=0.050s lead~=0.250s backend=sa3[0m
+[32m09:17:40.780[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sdk/audio-worklet.js?v=5 status=200[0m
+[32m09:17:41.137[0m [1mINFO    [0m [GwjyPcFl] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=1.0 cond_epoch=0 tags='upright bass'[0m
+[32m09:17:43.386[0m [1mINFO    [0m [GwjyPcFl] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.9889 cond_epoch=0 tags='upright bass'[0m
+[32m09:17:43.475[0m [1mINFO    [0m [GwjyPcFl] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.9389 cond_epoch=0 tags='upright bass'[0m
+[32m09:17:43.906[0m [1mINFO    [0m [GwjyPcFl] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.8222 cond_epoch=0 tags='upright bass'[0m
+[32m09:17:43.992[0m [1mINFO    [0m [GwjyPcFl] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.8 cond_epoch=0 tags='upright bass'[0m
+[32m09:17:44.108[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=1 reason=window detail=532893.00 sent=17944686 acked=17411793[0m
+[32m09:17:54.989[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=3 reason=window detail=537151.00 sent=82628557 acked=82091406[0m
+[32m09:18:02.829[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=1 reason=window detail=536515.00 sent=129809218 acked=129272703[0m
+[32m09:18:12.025[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=3 reason=window detail=533434.00 sent=183040613 acked=182507179[0m
+[32m09:18:34.816[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=1 reason=window detail=292489.00 sent=316634655 acked=316342166[0m
+[32m09:19:14.930[0m [1mINFO    [0m [GwjyPcFl] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_paused stage=dit idle_threshold_s=20[0m
+[32m09:19:15.052[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=7 reason=window detail=534013.00 sent=533821028 acked=533287015[0m
+[32m09:19:20.186[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=20 reason=window detail=532195.00 sent=567888709 acked=567356514[0m
+[32m09:19:25.453[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=20 reason=window detail=531599.00 sent=603161647 acked=602630048[0m
+[32m09:19:30.570[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=20 reason=window detail=535046.00 sent=637278924 acked=636743878[0m
+[32m09:19:35.782[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=10 reason=window detail=531434.00 sent=656217641 acked=655686207[0m
+[32m09:19:40.969[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=18 reason=window detail=534130.00 sent=690844792 acked=690310662[0m
+[32m09:19:46.091[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=17 reason=window detail=531215.00 sent=725025944 acked=724494729[0m
+[32m09:19:51.300[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=16 reason=window detail=531871.00 sent=759574011 acked=759042140[0m
+[32m09:19:56.411[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=15 reason=window detail=534878.00 sent=793696430 acked=793161552[0m
+[32m09:20:01.615[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=10 reason=window detail=527544.00 sent=828040108 acked=827512564[0m
+[32m09:20:07.302[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=10 reason=window detail=530245.00 sent=865485717 acked=864955472[0m
+[32m09:20:11.942[0m [1mINFO    [0m [GwjyPcFl] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_paused stage=vae reason=buffer_full[0m
+[32m09:20:17.983[0m [1mINFO    [0m [GwjyPcFl] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_resumed stage=dit[0m
+[32m09:20:28.543[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=10 reason=window detail=532469.00 sent=949158036 acked=948625567[0m
+[32m09:21:15.783[0m [1mINFO    [0m [GwjyPcFl] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_paused stage=dit idle_threshold_s=20[0m
+[32m09:21:15.857[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=1 reason=window detail=538270.00 sent=1170772801 acked=1170234531[0m
+[32m09:21:21.860[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=8 reason=window detail=531791.00 sent=1210480404 acked=1209948613[0m
+[32m09:21:28.572[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=7 reason=window detail=535650.00 sent=1237276813 acked=1236741163[0m
+[32m09:21:34.179[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=7 reason=window detail=536662.00 sent=1273229036 acked=1272692374[0m
+[32m09:21:40.018[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=7 reason=window detail=536202.00 sent=1310771966 acked=1310235764[0m
+[32m09:21:45.467[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=6 reason=window detail=535819.00 sent=1343944945 acked=1343409126[0m
+[32m09:21:45.471[0m [1mINFO    [0m [GwjyPcFl] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1mclient_disconnected num_gens=2011[0m
+[32m09:21:45.472[0m [1mINFO    [0m [GwjyPcFl] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1muser_uploads_wipe_at_session_end skipped=env_disabled[0m
+[32m09:22:01.278[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1mclient_connected decoder=tensorrt vae=tensorrt checkpoint=medium family=sa3 text_encoder=resident[0m
+[32m09:22:01.278[0m [1mINFO    [0m [0fLpH0oC] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1msession_init config_keys=['backend', 'fixture_name', 'prompt', 'prompt_b', 'telemetry_version', 'use_server_fixture'] client_id=None[0m
+[32m09:22:01.279[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sdk/sliceDecoder.worker.js status=200[0m
+[32m09:22:01.292[0m [1mINFO    [0m [0fLpH0oC] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1msession_vram stage=create_start free_gb=16.56 available_gb=16.66 allocated_gb=5.44 reserved_gb=5.54[0m
+[32m09:22:01.293[0m [33m[1mWARNING [0m [0fLpH0oC] [36macestep.engine.sa3_context[0m - [33m[1msa3_duration_clamped_for_trt model_id=medium requested_s=57.6 cap_s=57.0[0m
+[32m09:22:01.294[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_session[0m - [1msa3_session_create model_id=medium duration_s=57.0 source_duration_s=57.6 steps=8 depth=4 dit_backend=tensorrt codec_backend=tensorrt[0m
+[32m09:22:01.516[0m [1mINFO    [0m [0fLpH0oC] [36macestep.engine.sa3_lora[0m - [1mSA3 LoRA manager ready: checkpoint_id=medium conditioner=True[0m
+[32m09:22:01.519[0m [1mINFO    [0m [0fLpH0oC] [36macestep.engine.lora[0m - [1mRegistered LoRA: alt_pop50-acestep1.5-dora-v2 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\alt_pop50-acestep1.5-dora-v2.safetensors)[0m
+[32m09:22:01.520[0m [1mINFO    [0m [0fLpH0oC] [36macestep.engine.lora[0m - [1mRegistered LoRA: ambient-v1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\ambient-v1.safetensors)[0m
+[32m09:22:01.520[0m [1mINFO    [0m [0fLpH0oC] [36macestep.engine.lora[0m - [1mRegistered LoRA: bach (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\bach.safetensors)[0m
+[32m09:22:01.520[0m [1mINFO    [0m [0fLpH0oC] [36macestep.engine.lora[0m - [1mRegistered LoRA: daftpunkstyle12001 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\daftpunkstyle12001.safetensors)[0m
+[32m09:22:01.520[0m [1mINFO    [0m [0fLpH0oC] [36macestep.engine.lora[0m - [1mRegistered LoRA: deathsteap_1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\deathsteap_1.safetensors)[0m
+[32m09:22:01.520[0m [1mINFO    [0m [0fLpH0oC] [36macestep.engine.lora[0m - [1mRegistered LoRA: deep_house-v1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\deep_house-v1.safetensors)[0m
+[32m09:22:01.520[0m [1mINFO    [0m [0fLpH0oC] [36macestep.engine.lora[0m - [1mRegistered LoRA: dreampop_xl (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\dreampop_xl.safetensors)[0m
+[32m09:22:01.520[0m [1mINFO    [0m [0fLpH0oC] [36macestep.engine.lora[0m - [1mRegistered LoRA: funkv1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\funkv1.safetensors)[0m
+[32m09:22:01.520[0m [1mINFO    [0m [0fLpH0oC] [36macestep.engine.lora[0m - [1mRegistered LoRA: goa_trance_sa3m (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\goa_trance_sa3m.safetensors)[0m
+[32m09:22:01.520[0m [1mINFO    [0m [0fLpH0oC] [36macestep.engine.lora[0m - [1mRegistered LoRA: lokr_weights (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\lokr_weights.safetensors)[0m
+[32m09:22:01.520[0m [1mINFO    [0m [0fLpH0oC] [36macestep.engine.lora[0m - [1mRegistered LoRA: phonk_xl (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\phonk_xl.safetensors)[0m
+[32m09:22:01.520[0m [1mINFO    [0m [0fLpH0oC] [36macestep.engine.lora[0m - [1mRegistered LoRA: progressive_metal_v1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\progressive_metal_v1.safetensors)[0m
+[32m09:22:01.520[0m [1mINFO    [0m [0fLpH0oC] [36macestep.engine.lora[0m - [1mRegistered LoRA: punkrockv1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\punkrockv1.safetensors)[0m
+[32m09:22:01.520[0m [1mINFO    [0m [0fLpH0oC] [36macestep.engine.lora[0m - [1mRegistered LoRA: walk_window_v1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\walk_window_v1.safetensors)[0m
+[32m09:22:01.520[0m [1mINFO    [0m [0fLpH0oC] [36macestep.engine.lora[0m - [1mRegistered LoRA: xdeathcorev1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\xdeathcorev1.safetensors)[0m
+[32m09:22:01.520[0m [1mINFO    [0m [0fLpH0oC] [36macestep.engine.lora[0m - [1mRegistered library: 15 LoRAs across all configured root(s)[0m
+[32m09:22:01.544[0m [1mINFO    [0m [0fLpH0oC] [36macestep.engine.sa3_trt[0m - [1msa3_dit_steer_selected engine=sa3_m_dit_steer_l1_646_646 latent_frames=646[0m
+[32m09:22:02.467[0m [1mINFO    [0m [0fLpH0oC] [36macestep.engine.sa3_trt[0m - [1msa3_trt_dit_ready engine=sa3_m_dit_steer_l1_646_646 L=646 seconds_total=180.0[0m
+[32m09:22:02.671[0m [1mINFO    [0m [0fLpH0oC] [36macestep.engine.sa3_trt[0m - [1msa3_trt_same_l_ready engine=same_l_decode_window_aot_mma_vc07698548567_t32_56_96[0m
+[32m09:22:02.675[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.families[0m - [1msteering_packs_loaded family=sa3 checkpoint=medium knobs=['steer_bright', 'steer_density', 'steer_percussive', 'steer_rough', 'steer_warm'][0m
+[32m09:22:02.675[0m [1mINFO    [0m [0fLpH0oC] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1msession_vram stage=create_done free_gb=15.99 available_gb=16.36 allocated_gb=5.45 reserved_gb=5.83[0m
+[32m09:22:02.711[0m [1mINFO    [0m [0fLpH0oC] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1minitial_buffer_sent duration_s=57.0[0m
+[32m09:22:02.715[0m [1mINFO    [0m [0fLpH0oC] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1msession_registered[0m
+[32m09:22:02.715[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.session[0m - [1mpipeline_running[0m
+[32m09:22:02.715[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.pipeline_runner[0m - [1mstream decode: vae_window=3.000s decode_span=0.000s lead_margin=0.050s lead~=0.250s backend=sa3[0m
+[32m09:22:02.748[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sdk/audio-worklet.js?v=5 status=200[0m
+[32m09:22:03.123[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=1.0 cond_epoch=0 tags='upright bass'[0m
+[32m09:22:06.817[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.96 cond_epoch=0 tags='upright bass'[0m
+[32m09:22:07.850[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.95 cond_epoch=0 tags='upright bass'[0m
+[32m09:22:07.961[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.94 cond_epoch=0 tags='upright bass'[0m
+[32m09:22:08.647[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.91 cond_epoch=0 tags='upright bass'[0m
+[32m09:22:08.993[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.9 cond_epoch=0 tags='upright bass'[0m
+[32m09:22:13.578[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.89 cond_epoch=0 tags='upright bass'[0m
+[32m09:22:14.142[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.87 cond_epoch=0 tags='upright bass'[0m
+[32m09:22:14.256[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.86 cond_epoch=0 tags='upright bass'[0m
+[32m09:22:14.374[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.85 cond_epoch=0 tags='upright bass'[0m
+[32m09:22:15.055[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.84 cond_epoch=0 tags='upright bass'[0m
+[32m09:22:16.081[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.83 cond_epoch=0 tags='upright bass'[0m
+[32m09:22:18.765[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.83 cond_epoch=None tags=None[0m
+[32m09:22:28.223[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.84 cond_epoch=None tags=None[0m
+[32m09:22:28.789[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.86 cond_epoch=None tags=None[0m
+[32m09:22:38.083[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.84 cond_epoch=None tags=None[0m
+[32m09:22:38.317[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.83 cond_epoch=None tags=None[0m
+[32m09:22:49.047[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.session[0m - [1mprompt_set origin=primary tags='upright bass' tags_b='a solo piano' backend=sa3[0m
+[32m09:22:49.208[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=1 reason=window detail=540563.00 sent=213024284 acked=212483721[0m
+[32m09:22:49.212[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_prompt_applied tags='upright bass' tags_b='a solo piano' cond_epoch=1 rebuild_ms=69.2[0m
+[32m09:22:56.862[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=1 reason=window detail=330085.00 sent=247698032 acked=247367947[0m
+[32m09:23:26.245[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_paused stage=dit idle_threshold_s=20[0m
+[32m09:23:29.271[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=1 reason=window detail=535085.00 sent=390264574 acked=389729489[0m
+[32m09:23:35.270[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=6 reason=window detail=536881.00 sent=424942099 acked=424405218[0m
+[32m09:23:40.870[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=7 reason=window detail=534934.00 sent=456468959 acked=455934025[0m
+[32m09:23:46.868[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=5 reason=window detail=534765.00 sent=491722416 acked=491187651[0m
+[32m09:23:51.994[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=4 reason=window detail=533387.00 sent=521085160 acked=520551773[0m
+[32m09:23:57.354[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=1 reason=window detail=533014.00 sent=539333873 acked=538800859[0m
+[32m09:24:04.070[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=6 reason=window detail=534256.00 sent=577352330 acked=576818074[0m
+[32m09:24:09.353[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=5 reason=window detail=532512.00 sent=607206430 acked=606673918[0m
+[32m09:24:15.430[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=3 reason=window detail=534141.00 sent=642361952 acked=641827811[0m
+[32m09:24:16.151[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_resumed stage=dit[0m
+[32m09:24:20.422[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.91 cond_epoch=None tags=None[0m
+[32m09:24:20.545[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=1.0 cond_epoch=None tags=None[0m
+[32m09:24:37.364[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.session[0m - [1mprompt_set origin=primary tags='upright bass g minor' tags_b='a solo piano' backend=sa3[0m
+[32m09:24:37.570[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=1 reason=window detail=532864.00 sent=736001049 acked=735468185[0m
+[32m09:24:37.572[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_prompt_applied tags='upright bass g minor' tags_b='a solo piano' cond_epoch=2 rebuild_ms=97.9[0m
+[32m09:24:43.469[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.915 cond_epoch=None tags=None[0m
+[32m09:24:43.599[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.9 cond_epoch=None tags=None[0m
+[32m09:24:48.978[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.89 cond_epoch=None tags=None[0m
+[32m09:24:49.612[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.86 cond_epoch=None tags=None[0m
+[32m09:24:50.703[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=1 reason=window detail=336570.00 sent=790113856 acked=789777286[0m
+[32m09:24:50.755[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.85 cond_epoch=None tags=None[0m
+[32m09:24:52.041[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.session[0m - [1mprompt_set origin=primary tags='upright bass' tags_b='a solo piano' backend=sa3[0m
+[32m09:24:52.279[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_prompt_applied tags='upright bass' tags_b='a solo piano' cond_epoch=3 rebuild_ms=100.8[0m
+[32m09:25:30.150[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.83 cond_epoch=None tags=None[0m
+[32m09:25:30.412[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.82 cond_epoch=None tags=None[0m
+[32m09:25:34.341[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.79 cond_epoch=None tags=None[0m
+[32m09:25:35.380[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.77 cond_epoch=None tags=None[0m
+[32m09:25:47.806[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=2 reason=window detail=302013.00 sent=1015325689 acked=1015023676[0m
+[32m09:26:15.154[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_paused stage=dit idle_threshold_s=20[0m
+[32m09:26:44.686[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=1 reason=window detail=329906.00 sent=1280479008 acked=1280149102[0m
+[32m09:27:12.194[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_paused stage=vae reason=buffer_full[0m
+[32m09:28:33.562[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_resumed stage=dit[0m
+[32m09:28:38.612[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=1 reason=window detail=278323.00 sent=1433922322 acked=1433643999[0m
+[32m09:28:55.067[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_paused stage=dit idle_threshold_s=20[0m
+[32m09:29:52.128[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_paused stage=vae reason=buffer_full[0m
+[32m09:32:49.742[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_resumed stage=dit[0m
+[32m09:32:58.994[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.session[0m - [1mprompt_set origin=primary tags='texas blues' tags_b='a solo piano' backend=sa3[0m
+[32m09:32:59.139[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=1 reason=window detail=530562.00 sent=1802970199 acked=1802439637[0m
+[32m09:32:59.224[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_prompt_applied tags='texas blues' tags_b='a solo piano' cond_epoch=4 rebuild_ms=158.2[0m
+[32m09:33:04.296[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.77 cond_epoch=4 tags='texas blues'[0m
+[32m09:33:06.633[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.78 cond_epoch=4 tags='texas blues'[0m
+[32m09:33:06.780[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.79 cond_epoch=4 tags='texas blues'[0m
+[32m09:33:06.929[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.8 cond_epoch=4 tags='texas blues'[0m
+[32m09:33:07.080[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.81 cond_epoch=4 tags='texas blues'[0m
+[32m09:33:07.790[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.83 cond_epoch=4 tags='texas blues'[0m
+[32m09:33:07.934[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.84 cond_epoch=4 tags='texas blues'[0m
+[32m09:33:08.227[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=0.85 cond_epoch=4 tags='texas blues'[0m
+[32m09:33:25.171[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=1 reason=window detail=533444.00 sent=1893651086 acked=1893117642[0m
+[32m09:33:57.131[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_paused stage=dit idle_threshold_s=20[0m
+[32m09:34:48.515[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_resumed stage=dit[0m
+[32m09:35:39.915[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_paused stage=dit idle_threshold_s=20[0m
+[32m09:36:36.985[0m [1mINFO    [0m [0fLpH0oC] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_paused stage=vae reason=buffer_full[0m
+[32m09:38:59.510[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sa3/ status=200[0m
+[32m09:38:59.789[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sa3/styles.css status=200[0m
+[32m09:38:59.791[0m [1mINFO    [0m [0fLpH0oC] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1mclient_disconnected num_gens=3827[0m
+[32m09:38:59.793[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sa3/sa3.js status=200[0m
+[32m09:38:59.795[0m [1mINFO    [0m [0fLpH0oC] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1muser_uploads_wipe_at_session_end skipped=env_disabled[0m
+[32m09:39:00.571[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sdk/demon-client.js status=200[0m
+[32m09:39:00.597[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/api/server-info status=200[0m
+[32m09:39:00.605[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/favicon.ico status=404[0m
+[32m09:39:05.841[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sdk/sliceDecoder.worker.js status=200[0m
+[32m09:39:05.841[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1mclient_connected decoder=tensorrt vae=tensorrt checkpoint=medium family=sa3 text_encoder=resident[0m
+[32m09:39:05.841[0m [1mINFO    [0m [f8HPRaVP] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1msession_init config_keys=['backend', 'fixture_name', 'prompt', 'telemetry_version', 'use_server_fixture'] client_id=None[0m
+[32m09:39:05.857[0m [1mINFO    [0m [f8HPRaVP] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1msession_vram stage=create_start free_gb=14.24 available_gb=14.34 allocated_gb=5.44 reserved_gb=5.54[0m
+[32m09:39:05.858[0m [33m[1mWARNING [0m [f8HPRaVP] [36macestep.engine.sa3_context[0m - [33m[1msa3_duration_clamped_for_trt model_id=medium requested_s=57.6 cap_s=57.0[0m
+[32m09:39:05.858[0m [1mINFO    [0m [f8HPRaVP] [36macestep.streaming.sa3_session[0m - [1msa3_session_create model_id=medium duration_s=57.0 source_duration_s=57.6 steps=8 depth=4 dit_backend=tensorrt codec_backend=tensorrt[0m
+[32m09:39:06.057[0m [1mINFO    [0m [f8HPRaVP] [36macestep.engine.sa3_lora[0m - [1mSA3 LoRA manager ready: checkpoint_id=medium conditioner=True[0m
+[32m09:39:06.059[0m [1mINFO    [0m [f8HPRaVP] [36macestep.engine.lora[0m - [1mRegistered LoRA: alt_pop50-acestep1.5-dora-v2 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\alt_pop50-acestep1.5-dora-v2.safetensors)[0m
+[32m09:39:06.059[0m [1mINFO    [0m [f8HPRaVP] [36macestep.engine.lora[0m - [1mRegistered LoRA: ambient-v1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\ambient-v1.safetensors)[0m
+[32m09:39:06.059[0m [1mINFO    [0m [f8HPRaVP] [36macestep.engine.lora[0m - [1mRegistered LoRA: bach (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\bach.safetensors)[0m
+[32m09:39:06.059[0m [1mINFO    [0m [f8HPRaVP] [36macestep.engine.lora[0m - [1mRegistered LoRA: daftpunkstyle12001 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\daftpunkstyle12001.safetensors)[0m
+[32m09:39:06.059[0m [1mINFO    [0m [f8HPRaVP] [36macestep.engine.lora[0m - [1mRegistered LoRA: deathsteap_1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\deathsteap_1.safetensors)[0m
+[32m09:39:06.059[0m [1mINFO    [0m [f8HPRaVP] [36macestep.engine.lora[0m - [1mRegistered LoRA: deep_house-v1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\deep_house-v1.safetensors)[0m
+[32m09:39:06.059[0m [1mINFO    [0m [f8HPRaVP] [36macestep.engine.lora[0m - [1mRegistered LoRA: dreampop_xl (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\dreampop_xl.safetensors)[0m
+[32m09:39:06.059[0m [1mINFO    [0m [f8HPRaVP] [36macestep.engine.lora[0m - [1mRegistered LoRA: funkv1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\funkv1.safetensors)[0m
+[32m09:39:06.059[0m [1mINFO    [0m [f8HPRaVP] [36macestep.engine.lora[0m - [1mRegistered LoRA: goa_trance_sa3m (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\goa_trance_sa3m.safetensors)[0m
+[32m09:39:06.059[0m [1mINFO    [0m [f8HPRaVP] [36macestep.engine.lora[0m - [1mRegistered LoRA: lokr_weights (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\lokr_weights.safetensors)[0m
+[32m09:39:06.060[0m [1mINFO    [0m [f8HPRaVP] [36macestep.engine.lora[0m - [1mRegistered LoRA: phonk_xl (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\phonk_xl.safetensors)[0m
+[32m09:39:06.060[0m [1mINFO    [0m [f8HPRaVP] [36macestep.engine.lora[0m - [1mRegistered LoRA: progressive_metal_v1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\progressive_metal_v1.safetensors)[0m
+[32m09:39:06.060[0m [1mINFO    [0m [f8HPRaVP] [36macestep.engine.lora[0m - [1mRegistered LoRA: punkrockv1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\punkrockv1.safetensors)[0m
+[32m09:39:06.060[0m [1mINFO    [0m [f8HPRaVP] [36macestep.engine.lora[0m - [1mRegistered LoRA: walk_window_v1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\walk_window_v1.safetensors)[0m
+[32m09:39:06.060[0m [1mINFO    [0m [f8HPRaVP] [36macestep.engine.lora[0m - [1mRegistered LoRA: xdeathcorev1 (path=C:\Users\ryanf\.daydream-scope\models\demon\loras\xdeathcorev1.safetensors)[0m
+[32m09:39:06.060[0m [1mINFO    [0m [f8HPRaVP] [36macestep.engine.lora[0m - [1mRegistered library: 15 LoRAs across all configured root(s)[0m
+[32m09:39:06.080[0m [1mINFO    [0m [f8HPRaVP] [36macestep.engine.sa3_trt[0m - [1msa3_dit_steer_selected engine=sa3_m_dit_steer_l1_646_646 latent_frames=646[0m
+[32m09:39:07.219[0m [1mINFO    [0m [f8HPRaVP] [36macestep.engine.sa3_trt[0m - [1msa3_trt_dit_ready engine=sa3_m_dit_steer_l1_646_646 L=646 seconds_total=180.0[0m
+[32m09:39:07.576[0m [1mINFO    [0m [f8HPRaVP] [36macestep.engine.sa3_trt[0m - [1msa3_trt_same_l_ready engine=same_l_decode_window_aot_mma_vc07698548567_t32_56_96[0m
+[32m09:39:07.579[0m [1mINFO    [0m [f8HPRaVP] [36macestep.streaming.families[0m - [1msteering_packs_loaded family=sa3 checkpoint=medium knobs=['steer_bright', 'steer_density', 'steer_percussive', 'steer_rough', 'steer_warm'][0m
+[32m09:39:07.579[0m [1mINFO    [0m [f8HPRaVP] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1msession_vram stage=create_done free_gb=13.67 available_gb=14.05 allocated_gb=5.45 reserved_gb=5.83[0m
+[32m09:39:07.620[0m [1mINFO    [0m [f8HPRaVP] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1minitial_buffer_sent duration_s=57.0[0m
+[32m09:39:07.625[0m [1mINFO    [0m [f8HPRaVP] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1msession_registered[0m
+[32m09:39:07.626[0m [1mINFO    [0m [f8HPRaVP] [36macestep.streaming.session[0m - [1mpipeline_running[0m
+[32m09:39:07.626[0m [1mINFO    [0m [f8HPRaVP] [36macestep.streaming.pipeline_runner[0m - [1mstream decode: vae_window=3.000s decode_span=0.000s lead_margin=0.050s lead~=0.250s backend=sa3[0m
+[32m09:39:07.666[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sdk/audio-worklet.js?v=5 status=200[0m
+[32m09:39:07.730[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/favicon.ico status=404[0m
+[32m09:39:08.031[0m [1mINFO    [0m [f8HPRaVP] [36macestep.streaming.sa3_backend[0m - [1msa3_gen_emerged denoise=1.0 cond_epoch=0 tags='driving cinematic synthwave, analog arpeggios, gated reverb snare, wide saw-lead, 152 bpm, G minor, 4/4'[0m
+[32m09:39:48.732[0m [1mINFO    [0m [f8HPRaVP] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_paused stage=dit idle_threshold_s=20[0m
+[32m09:40:03.609[0m [1mINFO    [0m [f8HPRaVP] [36macestep.streaming.pipeline_runner[0m - [1mpipeline_resumed stage=dit[0m
+[32m09:40:26.039[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sa3/ status=200[0m
+[32m09:40:26.055[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sa3/styles.css status=200[0m
+[32m09:40:26.082[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sa3/sa3.js status=200[0m
+[32m09:40:26.124[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sdk/demon-client.js status=200[0m
+[32m09:40:26.162[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/api/server-info status=200[0m
+[32m09:40:26.174[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/favicon.ico status=404[0m
+[32m09:40:26.445[0m [33m[1mWARNING [0m [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [33m[1mslice_backpressure_drop n=1 reason=window detail=543862.00 sent=260948893 acked=260405031[0m
+[32m09:40:26.447[0m [1mINFO    [0m [f8HPRaVP] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1mclient_disconnected num_gens=300[0m
+[32m09:40:26.452[0m [1mINFO    [0m [f8HPRaVP] [36mdemos.realtime_motion_graph_web.ws_adapter[0m - [1muser_uploads_wipe_at_session_end skipped=env_disabled[0m
+[32m09:41:14.505[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sa3/ status=200[0m
+[32m09:42:28.717[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sa3/ status=200[0m
+[32m18:21:22.048[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sa3/ status=200[0m
+[32m18:21:22.072[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sa3/styles.css status=200[0m
+[32m18:21:22.089[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sa3/sa3.js status=200[0m
+[32m18:21:22.228[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/sdk/demon-client.js status=200[0m
+[32m18:21:22.244[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/api/server-info status=200[0m
+[32m18:21:22.253[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/favicon.ico status=404[0m
+[32m18:21:50.324[0m [1mINFO    [0m [36mdemos.realtime_motion_graph_web.server[0m - [1mhttp_request remote=127.0.0.1 method=GET url=/api/server-info status=200[0m
