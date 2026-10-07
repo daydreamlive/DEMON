@@ -989,7 +989,7 @@ def _matrix_jobs(args) -> list[tuple[str, str]]:
                     f" (~{hi * SAMPLES_PER_LATENT / SA3_SAMPLE_RATE:.0f}s window)",
                     cfg.engine_name(),
                 ))
-        if args.steer:
+        if getattr(args, "steer", False):
             for lo, opt, hi in dit_profiles:
                 cfg = SA3DiTSteerBuildConfig(lo, opt, hi)
                 jobs.append((
