@@ -2,8 +2,8 @@
 # Ship pass, local side: hourly GPU accounting lines from the box into status_ship.md (append-only); when the box
 # writes ship/DONE: copy packs + tables to E:, install the packs (old set moved to ~/.claude-trash), restart the
 # SA3 steer demo backend on 1318 (Next on 6660 untouched), append the outcome, exit.
-SSH="ssh -o ConnectTimeout=30 -i $HOME/.ssh/inside -p 10126 root@ssh1.vast.ai"
-SCP="scp -q -o ConnectTimeout=30 -i $HOME/.ssh/inside -P 10126"
+SSH="ssh -o ConnectTimeout=30 -i <ssh-key> -p <box-port> root@<box-host>"
+SCP="scp -q -o ConnectTimeout=30 -i <ssh-key> -P <box-port>"
 SH=/dev/shm/steerbench/out/many_knobs_v2_eval/ship
 ST=/c/_dev/projects/DEMON/notes/steering_pr/status_ship.md
 DST=/e/Projects/DEMON/steering-bench/many_knobs_v2/ship

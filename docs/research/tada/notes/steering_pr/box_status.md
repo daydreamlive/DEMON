@@ -1,7 +1,7 @@
 # Box status: vast 51480126 (SA3 steering bench)
 
 ## 2026-10-05 15:25Z READY
-- ssh: `ssh -i ~/.ssh/inside -p 10126 root@ssh1.vast.ai` (direct 69.162.253.166:50040)
+- ssh: `ssh -i <ssh-key> -p <box-port> root@<box-host>` (direct <box-ip>:<box-direct-port>)
 - GPUs: 4x RTX 5090 32 GB, driver 610.43.02, CUDA UMD 13.3, idle. Ubuntu 24.04, 384 cores, 377 GB RAM.
 - DISK CONSTRAINT: overlay / 3.8G free (shared box: /workspace = 487G of other projects). /dev/shm is noexec, 25G free (shared, shrinking). All our bulk lives in /dev/shm/steerbench (LOST ON REBOOT). Bench outputs must stay small or go to shm with care.
 
