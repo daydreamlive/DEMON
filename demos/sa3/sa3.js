@@ -25,6 +25,7 @@ const PEDALS = [
   { id: "space", title: "SPACE", cats: ["space"], hue: 245 },
   { id: "tone", title: "TONE", cats: ["timbre", "dynamics", "rhythm", "articulation"], hue: 200 },
   { id: "abstract", title: "ABSTRACT", cats: ["abstract"], hue: 280 },
+  { id: "descriptor", title: "DESCRIPTOR", cats: ["descriptor"], hue: 175 },
   { id: "misc", title: "MISC", cats: [], hue: 210 },
 ];
 // The first five packs predate the category field; they are timbre,
@@ -70,8 +71,22 @@ const SUB_PEDAL_OF = new Map(
   ),
 );
 // Calibrated knobs reach their fidelity cutoff at 1/headroom of the
-// throw (server: STEERING_PACK_HEADROOM = 1.25, so 80%).
+// throw (server: STEERING_PACK_HEADROOM = 1.25, so 80%). The server
+// sends it as meta.cutoff_position; headroom is the fallback.
 const DEFAULT_HEADROOM = 1.25;
+
+// meta.mapping "perceptual": the knob value is a perceptual position in
+// -1..1 (the server maps it through the knob's response curve, so equal
+// throw = equal audible change); "linear" or absent: the raw gain.
+function isPerceptual(entry) {
+  return entry?.meta?.mapping === "perceptual";
+}
+
+function cutoffFraction(meta) {
+  const c = Number(meta.cutoff_position);
+  if (c > 0 && c <= 1) return c;
+  return 1 / Number(meta.headroom || DEFAULT_HEADROOM);
+}
 
 const els = {
   blend: document.querySelector("#blend"),
@@ -143,6 +158,10 @@ function valueFromEntry(entry) {
 }
 
 function formatValue(entry, value) {
+  if (isPerceptual(entry)) {
+    const pct = Math.round(Number(value) * 100);
+    return `${pct > 0 ? "+" : ""}${pct}%`;
+  }
   if (entry.type === "int") return String(Math.round(Number(value)));
   if (entry.type === "float") return Number(value).toFixed(2);
   if (entry.type === "bool") return value ? "on" : "off";
@@ -246,14 +265,21 @@ function knobTooltip(name, entry, min, max) {
   if (meta.calibrated) {
     const reached = meta.cutoff_reached ?? {};
     const cut = meta.cutoff ?? {};
-    const side = (sign, limit, c, ok) =>
-      `${sign}${Math.abs(Number(limit)).toFixed(1)}` +
-      (c != null ? ` (cutoff ${Number(c).toFixed(1)}, ${ok === false ? "not reached" : "reached"})` : "");
+    const perceptual = isPerceptual(entry);
+    const cutPct = Math.round(cutoffFraction(meta) * 100);
+    const side = perceptual
+      ? (sign, limit, c, ok) =>
+        `${sign}${Math.round(Math.abs(Number(limit)) * 100)}%` +
+        (c != null ? ` (cutoff at ${cutPct}% = gain ${Number(c).toFixed(1)}, ${ok === false ? "not reached" : "reached"})` : "")
+      : (sign, limit, c, ok) =>
+        `${sign}${Math.abs(Number(limit)).toFixed(1)}` +
+        (c != null ? ` (cutoff ${Number(c).toFixed(1)}, ${ok === false ? "not reached" : "reached"})` : "");
     const one = oneSidedSign(meta);
     if (one === "+") lines.push(`range ${side("+", max, cut.pos, reached.pos)}`);
     else if (one === "-") lines.push(`range ${side("-", min, cut.neg, reached.neg)}`);
     else lines.push(`range ${side("+", max, cut.pos, reached.pos)}  /  ${side("-", min, cut.neg, reached.neg)}`);
     if (one) lines.push(`one-sided: only ${one} is validated`);
+    if (perceptual) lines.push("perceptual knob: equal turns give equal audible change");
   } else {
     lines.push(`range ${Number(min).toFixed(1)} to +${Number(max).toFixed(1)} (uncalibrated)`);
   }
@@ -314,7 +340,7 @@ function numericKnob(name, entry) {
   // reached the cutoff gets a hollow tick and a dot on the label.
   const unreached = [];
   if (meta.calibrated && scale.bipolar) {
-    const frac = 1 / Number(meta.headroom || DEFAULT_HEADROOM);
+    const frac = cutoffFraction(meta);
     const reached = meta.cutoff_reached ?? {};
     if (oneSided !== "-") {
       wrap.append(knobTick(0.5 + 0.5 * frac, reached.pos === false ? "tick-unreached" : ""));
