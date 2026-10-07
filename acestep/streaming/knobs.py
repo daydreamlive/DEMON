@@ -310,6 +310,7 @@ def steering_pack_spec(
     pos_anchor: str = "",
     neg_anchor: str = "",
     bar_pass: Optional[Mapping] = None,
+    perceptual: Optional[float] = None,
 ) -> KnobSpec:
     """The registry spec for one data-driven steering-pack knob.
 
@@ -329,6 +330,15 @@ def steering_pack_spec(
     "neg": bool}``) rides in ``meta.bar_pass``; when exactly one sign
     passes, the range is clamped to that side (the failing side's limit
     becomes 0), so every transport refuses the unvalidated direction.
+
+    ``perceptual`` (the headroom of a ``knob_response.json`` entry, set
+    by the pack surface when the knob has one) makes a calibrated knob a
+    perceptual position: range -1..1 per sign, the calibrated gain at
+    ``1/headroom`` of the throw, the server mapping the position through
+    the knob's response curve. ``meta.mapping`` is ``"perceptual"`` then,
+    ``"linear"`` for any other calibrated knob; ``meta.cutoff`` stays in
+    applied (raw gain) units and ``meta.cutoff_position`` gives the
+    cutoff's throw fraction.
     """
     pol = policy or {}
     if pol.get("kind", "range") == "range":
@@ -353,15 +363,23 @@ def steering_pack_spec(
         neg_reached = _gain_reached(g, "neg")
         if neg_reached is None:
             neg_reached = pos_reached
-        hi = round(pos * STEERING_PACK_HEADROOM, 4)
-        lo = -round(neg * STEERING_PACK_HEADROOM, 4)
+        if perceptual is not None:
+            headroom = float(perceptual)
+            hi, lo = 1.0, -1.0
+            meta["mapping"] = "perceptual"
+        else:
+            headroom = STEERING_PACK_HEADROOM
+            hi = round(pos * headroom, 4)
+            lo = -round(neg * headroom, 4)
+            meta["mapping"] = "linear"
+        meta["cutoff_position"] = round(1.0 / headroom, 4)
         meta["calibrated"] = True
         meta["cutoff"] = {"pos": round(pos, 4), "neg": round(neg, 4)}
         meta["cutoff_reached"] = {
             "pos": bool(pos_reached) if pos_reached is not None else True,
             "neg": bool(neg_reached) if neg_reached is not None else True,
         }
-        meta["headroom"] = STEERING_PACK_HEADROOM
+        meta["headroom"] = headroom
     else:
         meta["calibrated"] = False
     if isinstance(bar_pass, Mapping):

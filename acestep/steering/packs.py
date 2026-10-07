@@ -758,6 +758,151 @@ def stacking_rule(rule: Optional[str] = None) -> str:
     return val
 
 
+# ---- knob response sidecar (perceptual knob map) ----------------------------
+
+KNOB_RESPONSE_NAME = "knob_response.json"
+KNOB_RESPONSE_KIND = "steering_knob_response"
+KNOB_RESPONSE_VERSION = 1
+
+
+@dataclass(frozen=True)
+class KnobResponse:
+    """One knob's perceptual map from ``knob_response.json``.
+
+    The client value ``v`` is a perceptual position in [-1, 1] per sign.
+    ``u = |v| x headroom`` puts the shipped (calibrated) gain at
+    ``|v| = 1/headroom`` (0.8). For ``u <= 1`` the applied knob is
+    ``sign x gain[sign] x interp(u_grid, r[sign], u)``; past it (the
+    headroom) it stays linear, ``sign x gain[sign] x u``. A sign without
+    a curve uses ``r(u) = u`` (the linear map on the same throw)."""
+
+    u_grid: tuple
+    headroom: float
+    gain: dict                      # sign -> calibrated gain (median, > 0)
+    r: dict                         # sign -> tuple of len(u_grid), or None
+
+    def apply(self, v: float) -> float:
+        if v == 0.0:
+            return 0.0
+        sign = "pos" if v > 0.0 else "neg"
+        g = self.gain.get(sign)
+        if not g:
+            return 0.0
+        u = min(abs(float(v)), 1.0) * self.headroom
+        curve = self.r.get(sign)
+        f = _interp(self.u_grid, curve, u) if (curve is not None and u <= 1.0) else u
+        return g * f if v > 0.0 else -g * f
+
+
+def _interp(xs: Sequence[float], ys: Sequence[float], x: float) -> float:
+    """Piecewise-linear interpolation, clamped to the end points."""
+    if x <= xs[0]:
+        return float(ys[0])
+    for i in range(1, len(xs)):
+        if x <= xs[i]:
+            x0, x1 = xs[i - 1], xs[i]
+            t = (x - x0) / (x1 - x0) if x1 > x0 else 1.0
+            return float(ys[i - 1]) + t * (float(ys[i]) - float(ys[i - 1]))
+    return float(ys[-1])
+
+
+def _read_knob_response_file(path: Path, *, family: str, checkpoint: str) -> dict:
+    """``{pack name: (u_grid, headroom, {sign: r or None})}`` from one
+    sidecar, or {} when it is the wrong kind / model / shape."""
+    from loguru import logger
+
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("knob_response_skipped path={} reason={}", path, exc)
+        return {}
+    if not isinstance(doc, Mapping) or doc.get("kind") != KNOB_RESPONSE_KIND:
+        logger.warning("knob_response_skipped path={} reason=kind", path)
+        return {}
+    if int(doc.get("version", 0)) != KNOB_RESPONSE_VERSION:
+        logger.warning("knob_response_skipped path={} reason=version", path)
+        return {}
+    model = doc.get("model")
+    if model and model != f"{family}/{checkpoint}":
+        return {}
+    if doc.get("interp", "piecewise_linear") != "piecewise_linear":
+        logger.warning("knob_response_skipped path={} reason=interp", path)
+        return {}
+    try:
+        grid = tuple(float(x) for x in doc["u_grid"])
+        headroom = float(doc.get("headroom", 1.25))
+    except (KeyError, TypeError, ValueError):
+        logger.warning("knob_response_skipped path={} reason=u_grid", path)
+        return {}
+    if (len(grid) < 2 or grid[0] != 0.0 or abs(grid[-1] - 1.0) > 1e-9
+            or any(b <= a for a, b in zip(grid, grid[1:])) or headroom < 1.0):
+        logger.warning("knob_response_skipped path={} reason=u_grid", path)
+        return {}
+    out: dict = {}
+    for name, entry in (doc.get("knobs") or {}).items():
+        if not isinstance(entry, Mapping):
+            continue
+        curves: dict = {}
+        for sign in SIGNS:
+            side = entry.get(sign)
+            r = side.get("r") if isinstance(side, Mapping) else None
+            if r is None:
+                curves[sign] = None
+                continue
+            try:
+                r = tuple(float(x) for x in r)
+            except (TypeError, ValueError):
+                r = ()
+            if len(r) != len(grid):
+                logger.warning(
+                    "knob_response_knob_skipped path={} knob={} sign={} reason=shape",
+                    path, name, sign,
+                )
+                r = None
+            curves[sign] = r
+        out[str(name)] = (grid, headroom, curves)
+    return out
+
+
+def load_knob_responses(
+    packs: Sequence[SteeringPack], *, family: str, checkpoint: str,
+) -> dict:
+    """``{knob name: KnobResponse}`` for every calibrated pack with an
+    entry in a ``knob_response.json`` beside its bundle (or pack file).
+    Packs without a sidecar entry or a calibrated gain are left out and
+    keep the raw linear knob."""
+    from acestep.streaming.knobs import _gain_value
+
+    files: dict = {}
+    out: dict = {}
+    for p in packs:
+        if p.path is None:
+            continue
+        sidecar = Path(p.path).parent / KNOB_RESPONSE_NAME
+        if sidecar not in files:
+            files[sidecar] = (
+                _read_knob_response_file(sidecar, family=family, checkpoint=checkpoint)
+                if sidecar.is_file() else {}
+            )
+        hit = files[sidecar].get(p.name)
+        if hit is None:
+            continue
+        prov = p.provenance if isinstance(p.provenance, Mapping) else {}
+        cal = prov.get("calibrated_gain")
+        if not isinstance(cal, Mapping):
+            continue
+        pos = _gain_value(cal, "pos")
+        if pos is None:
+            continue
+        neg = _gain_value(cal, "neg") or pos
+        grid, headroom, curves = hit
+        out[p.knob_name] = KnobResponse(
+            u_grid=grid, headroom=headroom,
+            gain={"pos": pos, "neg": neg}, r=dict(curves),
+        )
+    return out
+
+
 class PackSteering:
     """Per-session pack surface: knob specs and the knob -> config map.
 
@@ -771,11 +916,15 @@ class PackSteering:
         packs: Sequence[SteeringPack] = (),
         *,
         stacking: Optional[str] = None,
+        responses: Optional[Mapping[str, "KnobResponse"]] = None,
     ):
         self.packs: tuple = tuple(packs)
         # Stacking rule across simultaneously active pack knobs; None =
         # $DEMON_STEERING_STACKING, default inv_n (see stacking_rule).
         self.stacking: str = stacking_rule(stacking)
+        # knob name -> KnobResponse (perceptual knob map); a knob absent
+        # here keeps the raw linear map.
+        self.responses: dict = dict(responses or {})
 
     @property
     def is_loaded(self) -> bool:
@@ -804,6 +953,10 @@ class PackSteering:
                 pos_anchor=p.pos_anchor,
                 neg_anchor=p.neg_anchor,
                 bar_pass=p.bar_pass,
+                perceptual=(
+                    self.responses[p.knob_name].headroom
+                    if p.knob_name in self.responses else None
+                ),
                 flags=(
                     tuple(flags) if isinstance(flags, (list, tuple))
                     else tuple(f for f in re.split(r"[;,\s]+", flags) if f)
@@ -830,6 +983,11 @@ class PackSteering:
             alpha = values[p.knob_name]
             if alpha == 0.0:
                 continue
+            resp = self.responses.get(p.knob_name)
+            if resp is not None:
+                alpha = resp.apply(alpha)
+                if alpha == 0.0:
+                    continue
             alpha *= share
             weights = policy_weights(p.policy, n)
             for t in p.terms():
@@ -870,7 +1028,10 @@ def load_session_packs(
     """The pack surface for one session, from the configured directory."""
     from acestep.paths import steering_packs_dir
 
-    return PackSteering(discover_packs(
+    packs = discover_packs(
         steering_packs_dir(), family=family, checkpoint=checkpoint,
         layout=layout, reserved_names=reserved_names,
+    )
+    return PackSteering(packs, responses=load_knob_responses(
+        packs, family=family, checkpoint=checkpoint,
     ))

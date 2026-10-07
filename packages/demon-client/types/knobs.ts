@@ -30,7 +30,10 @@ export interface KnobManifestEntry {
   /** Optional presentation metadata (never read by the runner). Steering
    *  pack knobs carry label, category, blurb, block, calibrated
    *  (bool), cutoff {pos, neg}, cutoff_reached {pos, neg}, headroom,
-   *  flags. */
+   *  flags, and for calibrated knobs mapping ("linear" = the value is
+   *  the raw gain; "perceptual" = the value is a perceptual position in
+   *  -1..1 that the server maps through the knob's response curve) and
+   *  cutoff_position (throw fraction of the cutoff, 1/headroom). */
   meta?: Record<string, unknown>;
 }
 
