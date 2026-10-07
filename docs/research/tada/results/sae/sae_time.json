@@ -1,0 +1,36 @@
+{
+  "batch": 16,
+  "steps": 8,
+  "every": 2,
+  "duration": 10.0,
+  "blocks": [
+    3,
+    6,
+    7
+  ],
+  "seq": 238,
+  "d": 1536,
+  "samples_per_prompt": 4.0,
+  "steps_recorded": [
+    0,
+    2,
+    4,
+    6
+  ],
+  "sigmas_recorded": [
+    0.5127,
+    0.8911,
+    0.9844,
+    1.0
+  ],
+  "cache_seconds_one_warm_batch": 3.8002584999776445,
+  "tmp_dir": "E:\\Projects\\tada-replication\\sae_time_gwqhhdig",
+  "train_seconds_60_steps_whole_sweep": 10.56109319999814,
+  "sweep_size": 12,
+  "steps_per_epoch_full": 1299.0588235294117,
+  "est_cache_hours_full": 0.36425741629126,
+  "est_train_hours_per_block_per_epoch_whole_sweep": 0.06351611716469469,
+  "cache_gb_per_block": 16.146407424,
+  "n_captions": 5521,
+  "shards_written": 2
+}

@@ -1,0 +1,69 @@
+{
+  "L": 646,
+  "duration": 54.0,
+  "engine": "C:\\Users\\ryanf\\.daydream-scope\\models\\demon\\sa3\\trt_engines\\sa3_m_dit_steer_l1_646_646\\sa3_m_dit_steer_l1_646_646.trt",
+  "previous_engine": "C:\\Users\\ryanf\\.daydream-scope\\models\\demon\\sa3\\trt_engines\\sa3_m_dit_l1_646_646\\sa3_m_dit_l1_646_646.trt",
+  "rows": [
+    {
+      "t": 1.0,
+      "zero_vs_prev_bitexact": false,
+      "zero_vs_prev_cos": 0.9999681711196899,
+      "zero_vs_prev_maxabs": 0.05859375,
+      "zero_vs_eager_cos": 0.9999620914459229,
+      "prev_vs_eager_cos": 0.9999682903289795,
+      "steer_trt_vs_eager_cos": 0.9999662637710571,
+      "steer_trt_vs_eager_rel": 0.00820850022137165,
+      "steer_effect_cos": 0.8315854072570801,
+      "steer_effect_rel": 0.583025336265564,
+      "zero_after_steer_bitexact": true
+    },
+    {
+      "t": 0.7,
+      "zero_vs_prev_bitexact": false,
+      "zero_vs_prev_cos": 0.9999206066131592,
+      "zero_vs_prev_maxabs": 0.07470703125,
+      "zero_vs_eager_cos": 0.9998525381088257,
+      "prev_vs_eager_cos": 0.9998772144317627,
+      "steer_trt_vs_eager_cos": 0.9998987913131714,
+      "steer_trt_vs_eager_rel": 0.014447594992816448,
+      "steer_effect_cos": 0.8093509674072266,
+      "steer_effect_rel": 0.5941627025604248,
+      "zero_after_steer_bitexact": true
+    },
+    {
+      "t": 0.4,
+      "zero_vs_prev_bitexact": false,
+      "zero_vs_prev_cos": 0.9999530911445618,
+      "zero_vs_prev_maxabs": 0.0537109375,
+      "zero_vs_eager_cos": 0.9999569654464722,
+      "prev_vs_eager_cos": 0.999967098236084,
+      "steer_trt_vs_eager_cos": 0.9999595880508423,
+      "steer_trt_vs_eager_rel": 0.009031831286847591,
+      "steer_effect_cos": 0.9123809337615967,
+      "steer_effect_rel": 0.41241925954818726,
+      "zero_after_steer_bitexact": true
+    },
+    {
+      "t": 0.1,
+      "zero_vs_prev_bitexact": false,
+      "zero_vs_prev_cos": 0.9999602437019348,
+      "zero_vs_prev_maxabs": 0.05126953125,
+      "zero_vs_eager_cos": 0.9999682307243347,
+      "prev_vs_eager_cos": 0.9999809265136719,
+      "steer_trt_vs_eager_cos": 0.9999672770500183,
+      "steer_trt_vs_eager_rel": 0.008110611699521542,
+      "steer_effect_cos": 0.9458001852035522,
+      "steer_effect_rel": 0.3281884491443634,
+      "zero_after_steer_bitexact": true
+    }
+  ],
+  "timing": {
+    "prev_ms": 12.734221649169921,
+    "steer_zero_ms": 12.8822265625,
+    "steer_active_ms": 12.911421203613282,
+    "fp8_ms": 10.647286224365235,
+    "fp8_engine": "sa3_m_dit_fp8_l1_646_646"
+  },
+  "min_cos_vs_eager": 0.9998525381088257,
+  "pass": true
+}
