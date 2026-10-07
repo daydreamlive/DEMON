@@ -368,6 +368,33 @@ def packs_available(*, family: str, checkpoint: str) -> bool:
         return False
 
 
+def packs_steering_hook(*, family: str, checkpoint: str) -> Optional[str]:
+    """The hook point this boot's packs target, or None without packs.
+
+    A session delivers steering at ONE hook point (the slot is one
+    ``[B, num_blocks, hidden]`` tensor and the engine carries one steering
+    input), so engine selection needs to know which. When the configured
+    directory mixes hook points for this family/checkpoint the
+    cross-attention output wins (TADA packs, arXiv 2602.11910); packs at
+    the other hook are then filtered out by the layout, with a warning.
+    """
+    from acestep.paths import steering_packs_dir
+
+    from .layout import HOOK_CROSS_ATTN_OUTPUT
+
+    try:
+        hooks = {p.hook for p in discover_packs(
+            steering_packs_dir(), family=family, checkpoint=checkpoint,
+        )}
+    except Exception:
+        return None
+    if not hooks:
+        return None
+    if HOOK_CROSS_ATTN_OUTPUT in hooks:
+        return HOOK_CROSS_ATTN_OUTPUT
+    return sorted(hooks)[0]
+
+
 def load_session_packs(
     *, family: str, checkpoint: str, layout=None, reserved_names: Iterable[str] = (),
 ) -> PackSteering:

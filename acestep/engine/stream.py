@@ -403,6 +403,10 @@ class StreamPipeline:
         # around each forward; empty means "skip injection" so a
         # forward issued outside the rendezvous can't fire steering.
         self._steering_by_layer: Dict[int, List[_SteeringApply]] = {}
+        # Steering guidance (slot option ``guidance``): 1.0 applies the
+        # steer once; w > 1 runs the conditional pass unsteered and
+        # steered and extrapolates (see :meth:`set_steering`).
+        self._steering_guidance: float = 1.0
         self._steering_hooks_installed: bool = False
         self._current_step_per_row: List[int] = []
         # True while the CFG negative (unconditional) pass runs, so
@@ -1524,6 +1528,21 @@ class StreamPipeline:
         self._current_step_per_row = [slots[si].step_idx for si in pos_pair_si]
         try:
             vt_pos_all = _forward_pairs(pos_pair_si, pos_pair_cond)
+            g = self._steering_guidance
+            if g != 1.0 and self._steering_by_layer:
+                # Steering guidance: v = v0 + g * (v1 - v0), v0 the same
+                # forward with the slot emptied (every delivery path,
+                # eager hooks, engine buffers and the adapter tensor,
+                # then sees no steering). Clone v1 first: an engine may
+                # hand back its own output buffer.
+                vt_steered = vt_pos_all.clone()
+                saved = self._steering_by_layer
+                self._steering_by_layer = {}
+                try:
+                    vt_plain = _forward_pairs(pos_pair_si, pos_pair_cond)
+                finally:
+                    self._steering_by_layer = saved
+                vt_pos_all = vt_plain + g * (vt_steered - vt_plain)
         finally:
             self._current_step_per_row = []
 
@@ -1983,6 +2002,12 @@ class StreamPipeline:
           - ``magnitude``: float, paired mean-diff scale
           - ``alpha``: float, knob value; effective shift is
             ``alpha * magnitude * vector`` (times the step weight)
+          - ``guidance``: optional slot option, float (default 1.0). When
+            above 1 the conditional pass runs twice, unsteered (``v0``)
+            and steered (``v1``), and the step uses ``v0 + guidance *
+            (v1 - v0)``. A CFG-free family thereby gets the amplification
+            that a guided family's ``w * (c - u)`` gives a conditional-pass
+            steer. The largest value among active configs wins.
 
         Multiple configs may share a layer (additions sum, modulo the
         per-row gate). Zero-alpha entries drop. Pass ``[]`` to clear.
@@ -2012,6 +2037,10 @@ class StreamPipeline:
                 renorm=bool(c.get("renorm", False)),
             ))
         self._steering_by_layer = by_layer
+        self._steering_guidance = max(
+            [float(c.get("guidance", 1.0)) for c in configs
+             if float(c.get("alpha", 0.0)) != 0.0] or [1.0]
+        )
         # Eager-path hooks only matter when the family forward runs
         # eagerly (the adapter returns no blocks otherwise).
         if by_layer:

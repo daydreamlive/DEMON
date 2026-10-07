@@ -312,7 +312,7 @@ def test_pack_round_trip_and_discovery(tmp_path: Path):
     back = load_pack(path)
     assert back.blocks == [1, 2] and back.block == 1
     assert back.hook == HOOK_CROSS_ATTN_OUTPUT and back.method == METHOD_TADA_CAA
-    assert back.cond_only and back.renorm
+    assert back.cond_only and not back.renorm
     assert torch.equal(back.vector, pack.vector)
     assert back.provenance["pairs"] == 50 and "2602.11910" in back.provenance["citation"]
 
@@ -342,7 +342,7 @@ def test_pack_configs_map_steps_by_position():
     # One config per localised block, its vector one row per live step.
     assert [c["layer"] for c in cfgs] == [1, 2]
     for k, c in enumerate(cfgs):
-        assert c["hook"] == HOOK_CROSS_ATTN_OUTPUT and c["cond_only"] and c["renorm"]
+        assert c["hook"] == HOOK_CROSS_ATTN_OUTPUT and c["cond_only"] and not c["renorm"]
         assert tuple(c["vector"].shape) == (8, H)
         for i in range(8):
             assert torch.equal(c["vector"][i], pack.vector[k, min(3, int(i * 4 / 8))])
@@ -665,7 +665,7 @@ def test_austeer_pack_round_trip_and_zero_strength_noop(tmp_path: Path):
                         concept="piano", blocks=[1, 2], magnitude=10.0)
     back = load_pack(write_caa_pack(pack, tmp_path))
     assert back.method == METHOD_AUSTEER == "auscore"
-    assert back.provenance["top_s"] == 2 and back.cond_only and back.renorm
+    assert back.provenance["top_s"] == 2 and back.cond_only and not back.renorm
     assert torch.equal(back.vector, vec)
 
     surf = PackSteering([back])

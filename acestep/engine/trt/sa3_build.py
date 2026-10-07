@@ -54,6 +54,12 @@ on first use.
   hidden]`` added to each block's output residual, the ACE decoder
   convention), compiled to ``sa3_m_dit_steer_l*`` engines. Built only with
   ``--steer``; selected at runtime when the session has steering packs.
+* **sa3-m DiT (cross-attention steering, opt-in)**: the same surgery at a
+  second site, ``steering_xattn [1, blocks, hidden]`` added to each
+  block's cross-attention output (TADA's hook point, arXiv 2602.11910),
+  compiled to ``sa3_m_dit_steerxa_l*`` engines. Built only with
+  ``--steer-cross-attn``; selected when the session's packs target
+  ``cross_attn_output``.
 * **SAME-L window decoder**: ``dec_fp16.onnx`` (upstream renamed it from
   ``dec_dynamic_triton_swa.onnx`` on 2026-08-28, same bytes),
   STRONGLY_TYPED; needs the ``samel::diff_attn_swa`` plugin registered
@@ -85,6 +91,10 @@ Usage:
 
     # Canonical DiT profiles plus the steering-input variants:
     python -m acestep.engine.trt.sa3_build --all --dit-only --steer
+
+    # The cross-attention-output steering variant (TADA), 646 profile only:
+    python -m acestep.engine.trt.sa3_build --dit --min-latents 1 \
+        --opt-latents 646 --max-latents 646 --steer-cross-attn
 
     # Canonical matrix plus the FP8 DiT variants (producer-built ONNX until
     # dit_fp8.onnx is published to HF):
@@ -364,6 +374,32 @@ class SA3DiTSteerBuildConfig:
 
 
 @dataclass
+class SA3DiTSteerCrossAttnBuildConfig:
+    """Build parameters for one sa3-m fp16mixed DiT engine with the
+    activation-steering input at the cross-attention OUTPUT of every block
+    (input ``steering_xattn``; TADA's hook point, arXiv 2602.11910).
+
+    A separate engine family from :class:`SA3DiTSteerBuildConfig` (whose
+    post-block ``steering`` input is unchanged): ``sa3_m_dit_steerxa_l*``.
+    ``steering_surgery`` is the cross-attention surgery version.
+    """
+
+    min_latents: int
+    opt_latents: int
+    max_latents: int
+    workspace_gb: float = 16.0
+    onnx_files: list[str] = field(default_factory=lambda: list(DIT_ONNX_FILES))
+    steering_site: str = "cross_attn_output"
+    steering_surgery: int = 1
+
+    def engine_name(self) -> str:
+        return (
+            f"sa3_m_dit_steerxa_l{self.min_latents}"
+            f"_{self.opt_latents}_{self.max_latents}"
+        )
+
+
+@dataclass
 class SameLWindowBuildConfig:
     """Build parameters for the SAME-L window decoder engine."""
 
@@ -618,16 +654,24 @@ def _build_dit_engine(
             steered_dit_onnx_bytes,
         )
 
-        if getattr(config, "steering_surgery", None) != STEERING_SURGERY_VERSION:
+        from .sa3_steering_onnx import CROSS_ATTN_SURGERY_VERSION, SITE_INPUTS
+
+        site = getattr(config, "steering_site", "post_block_residual")
+        want_version = (
+            STEERING_SURGERY_VERSION if site == "post_block_residual"
+            else CROSS_ATTN_SURGERY_VERSION
+        )
+        if getattr(config, "steering_surgery", None) != want_version:
             raise RuntimeError(
-                "SA3DiTSteerBuildConfig.steering_surgery is out of sync with "
-                "sa3_steering_onnx.STEERING_SURGERY_VERSION"
+                f"{type(config).__name__}.steering_surgery is out of sync with "
+                f"the sa3_steering_onnx surgery version for site {site!r}"
             )
-        onnx_bytes, n_blocks, hidden = steered_dit_onnx_bytes(onnx_path)
+        onnx_bytes, n_blocks, hidden = steered_dit_onnx_bytes(onnx_path, site=site)
         logger.info(
-            "steering surgery v{}: input steering [1, {}, {}] added to the "
+            "steering surgery ({} v{}): input {} [1, {}, {}] added to the "
             "graph ({:.1f} MB proto, weights stay in the sidecar)",
-            STEERING_SURGERY_VERSION, n_blocks, hidden, len(onnx_bytes) / 1e6,
+            site, want_version, SITE_INPUTS[site], n_blocks, hidden,
+            len(onnx_bytes) / 1e6,
         )
     _build_strongly_typed_engine(
         onnx_path=onnx_path,
@@ -953,6 +997,14 @@ def _matrix_jobs(args) -> list[tuple[str, str]]:
                     f" (~{hi * SAMPLES_PER_LATENT / SA3_SAMPLE_RATE:.0f}s window)",
                     cfg.engine_name(),
                 ))
+        if getattr(args, "steer_cross_attn", False):
+            for lo, opt, hi in dit_profiles:
+                cfg = SA3DiTSteerCrossAttnBuildConfig(lo, opt, hi)
+                jobs.append((
+                    f"SA3-M DiT steer cross-attn l{lo}_{opt}_{hi}"
+                    f" (~{hi * SAMPLES_PER_LATENT / SA3_SAMPLE_RATE:.0f}s window)",
+                    cfg.engine_name(),
+                ))
     if not args.dit_only:
         if args.model == "medium":
             lo, opt, hi = CANONICAL_SAME_L_WINDOW
@@ -1086,6 +1138,12 @@ def main() -> int:
                         help="Also build the fp16mixed DiT variant(s) WITH "
                              "the activation-steering input (sa3_m_dit_steer_*; "
                              "selected by sessions that have steering packs).")
+    single.add_argument("--steer-cross-attn", action="store_true",
+                        help="Also build the fp16mixed DiT variant(s) with the "
+                             "steering input at every block's cross-attention "
+                             "output (sa3_m_dit_steerxa_*; TADA's hook point; "
+                             "selected by sessions whose packs target "
+                             "cross_attn_output).")
     single.add_argument("--fp8-onnx", default=None,
                         help="Path to a producer-built dit_fp8.onnx (with its "
                              ".onnx.data sidecar alongside) to compile instead "
@@ -1177,6 +1235,18 @@ def main() -> int:
                         precision_label="fp16mixed steer",
                         steer=True,
                     ))
+            if args.steer_cross_attn:
+                for lo, opt, hi in dit_profiles:
+                    results.append(_build_dit_engine(
+                        output_dir=args.output_dir,
+                        config=SA3DiTSteerCrossAttnBuildConfig(
+                            lo, opt, hi, workspace_gb=args.workspace_gb),
+                        env=env,
+                        force_rebuild=args.force_rebuild,
+                        component="sa3_m_dit_steerxa",
+                        precision_label="fp16mixed steer cross-attn",
+                        steer=True,
+                    ))
         if not args.dit_only and args.model == "medium":
             lo, opt, hi = CANONICAL_SAME_L_WINDOW
             results.append(_build_same_l_window_engine(
@@ -1258,6 +1328,20 @@ def main() -> int:
                 force_rebuild=args.force_rebuild,
                 component="sa3_m_dit_steer",
                 precision_label="fp16mixed steer",
+                steer=True,
+            ))
+        if args.steer_cross_attn:
+            xa_cfg = SA3DiTSteerCrossAttnBuildConfig(
+                min_latents=config.min_latents,
+                opt_latents=config.opt_latents,
+                max_latents=config.max_latents,
+                workspace_gb=args.workspace_gb,
+            )
+            built.append(_build_dit_engine(
+                output_dir=args.output_dir, config=xa_cfg, env=env,
+                force_rebuild=args.force_rebuild,
+                component="sa3_m_dit_steerxa",
+                precision_label="fp16mixed steer cross-attn",
                 steer=True,
             ))
     if args.same_l_window:

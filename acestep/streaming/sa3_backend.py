@@ -538,9 +538,13 @@ class SA3Backend(DiffusionBackend):
         )
         # Sessions with steering packs prefer a steering-input engine,
         # the only TRT DiT that can apply them (see find_dit_engine).
-        from acestep.steering.packs import packs_available
+        # The packs' hook point picks the engine family (post-block
+        # ``steering`` or cross-attention ``steering_xattn``).
+        from acestep.steering.packs import packs_steering_hook
 
-        want_steer = packs_available(family="sa3", checkpoint=context.model_id)
+        want_steer = packs_steering_hook(
+            family="sa3", checkpoint=context.model_id,
+        ) or False
         adapter = SA3Adapter(
             context.make_dit(
                 latent_frames=cond.latent_frames,

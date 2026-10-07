@@ -91,11 +91,18 @@ class SA3Adapter:
     def steering_layout(self):
         """SA3 DiT layout: one slot per trunk block, ``embed_dim`` wide.
 
-        TRT: the engine's ``steering`` input shape when it has one
-        (engines built before the steering surgery have none, so
-        steering no-ops there). Eager: the trunk's own blocks.
+        TRT: the engine's steering input when it has one; its hook point
+        is the engine's (``steering`` = ``post_block_residual``,
+        ``steering_xattn`` = ``cross_attn_output``, TADA's site); engines
+        without one have no layout, so steering no-ops there. Eager: the
+        trunk's own blocks (primary hook) plus every block's
+        ``cross_attn`` module as the extra ``cross_attn_output`` hook.
         """
-        from acestep.steering.layout import SteeringLayout
+        from acestep.steering.layout import (
+            HOOK_CROSS_ATTN_OUTPUT,
+            HOOK_POST_BLOCK_RESIDUAL,
+            SteeringLayout,
+        )
 
         if getattr(self.dit, "trt_batch1", False):
             shape = getattr(self.dit, "steering_shape", None)
@@ -103,6 +110,8 @@ class SA3Adapter:
                 return None
             return SteeringLayout(
                 num_blocks=int(shape[0]), hidden_size=int(shape[1]),
+                hook=getattr(self.dit, "steering_hook", None)
+                or HOOK_POST_BLOCK_RESIDUAL,
                 engine_input=True,
             )
         blocks = self._eager_blocks()
@@ -111,10 +120,45 @@ class SA3Adapter:
         hidden = int(getattr(blocks[0], "dim", 0) or 0)
         if hidden <= 0:
             return None
-        return SteeringLayout(num_blocks=len(blocks), hidden_size=int(hidden))
+        extra = (
+            (HOOK_CROSS_ATTN_OUTPUT,) if self._cross_attn_modules() is not None else ()
+        )
+        return SteeringLayout(
+            num_blocks=len(blocks), hidden_size=int(hidden), extra_hooks=extra,
+        )
 
     def steering_blocks(self):
         return self._eager_blocks()
+
+    def _cross_attn_modules(self):
+        """Every eager block's ``cross_attn`` module, or None. Cached per
+        trunk so repeated calls return the same modules."""
+        blocks = self._eager_blocks()
+        if blocks is None:
+            return None
+        cache = getattr(self, "_xattn_cache", None)
+        if cache is not None and cache[0] is blocks:
+            return cache[1]
+        mods = [getattr(b, "cross_attn", None) for b in blocks]
+        if not mods or any(m is None for m in mods):
+            return None
+        self._xattn_cache = (blocks, mods)
+        return mods
+
+    def steering_hook_modules(self, hook):
+        """Eager modules for a non-primary hook point, else None.
+
+        ``cross_attn_output``: each block's ``cross_attn`` module, whose
+        output is added to the residual stream in the vendored
+        ``TransformerBlock.forward`` (``x + cross_attn_scale(cross_attn(
+        ...))``, ``cross_attn_scale`` the identity for SA3 medium), TADA's
+        intervention site.
+        """
+        from acestep.steering.layout import HOOK_CROSS_ATTN_OUTPUT
+
+        if hook != HOOK_CROSS_ATTN_OUTPUT:
+            return None
+        return self._cross_attn_modules()
 
     # ---- ModelAdapter ------------------------------------------------------
 
