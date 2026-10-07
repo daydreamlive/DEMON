@@ -36,6 +36,9 @@ adds optional header keys ``category``, ``applies_to``, ``seeds``,
 * ``vectors_neg`` ``[K, hidden]`` (or ``vector_neg`` ``[hidden]`` beside
   a legacy ``vector``): a negative knob value applies these rows at
   ``|knob|`` instead of negating the positive rows.
+  A unit row's magnitude is ``provenance.dn_magnitude_own`` when the
+  header carries it (variant c: the neg gain is calibrated in the dn
+  vector's own magnitude units), else as for ``vectors``.
 
 The effective shift at a step is ``knob * magnitude * policy_weight *
 vector`` added to block ``block``'s output residual, the same additive
@@ -216,6 +219,23 @@ class SteeringPack:
             return row, float(self.norms[k]) * self.knob_unit()
         return row, float(self.magnitude)
 
+    def _neg_row(self, row: "torch.Tensor", k: int) -> tuple:
+        """(direction, magnitude) for one negative row.
+
+        A variant-c pack's unit ``vectors_neg`` row is the dn pack's own
+        direction, and its calibrated neg gain is in that dn vector's own
+        magnitude units (``provenance.dn_magnitude_own``, a float or one
+        per row). Without that key the row follows :meth:`_row`."""
+        prov = self.provenance if isinstance(self.provenance, Mapping) else {}
+        dn = prov.get("dn_magnitude_own")
+        if dn is not None:
+            if isinstance(dn, (list, tuple)):
+                dn = dn[k] if k < len(dn) else None
+            if dn is not None:
+                n = float(row.norm())
+                return (row / n if n > 0.0 else row), float(dn)
+        return self._row(row, k)
+
     def terms(self) -> tuple:
         """Every block shift this pack applies, one per target block.
 
@@ -226,7 +246,7 @@ class SteeringPack:
         if self.vectors is None:
             neg, neg_mag = None, 0.0
             if self.vector_neg is not None:
-                neg, neg_mag = self._row(self.vector_neg, 0)
+                neg, neg_mag = self._neg_row(self.vector_neg, 0)
             out.append(SteeringTerm(
                 int(self.block), self.vector, float(self.magnitude), neg, neg_mag,
             ))
@@ -235,7 +255,7 @@ class SteeringPack:
                 pos, pos_mag = self._row(self.vectors[k], k)
                 neg, neg_mag = None, 0.0
                 if self.vectors_neg is not None:
-                    neg, neg_mag = self._row(self.vectors_neg[k], k)
+                    neg, neg_mag = self._neg_row(self.vectors_neg[k], k)
                 out.append(SteeringTerm(int(b), pos, pos_mag, neg, neg_mag))
         return tuple(out)
 

@@ -241,3 +241,34 @@ def test_installed_bundle_matches_loose_packs():
     if not checked:
         pytest.skip("no loose packs beside the installed bundle")
     assert checked == len(packs)
+
+
+def _applied_shift(steer, knob, value):
+    (c,) = steer.build_configs({knob: value}, 1)
+    return float(c["vector"].float().norm()) * c["magnitude"] * c["alpha"]
+
+
+def test_installed_bundle_c_pack_neg_shift_matches_manifest():
+    """Variant-c packs carry the neg gain in the dn vector's own magnitude
+    units (provenance.dn_magnitude_own); a negative knob must apply exactly
+    that shift, and the positive side the pack magnitude."""
+    from acestep.paths import steering_packs_dir
+
+    bundle = steering_packs_dir() / "sa3" / "medium" / BUNDLE_NAME
+    if not bundle.is_file():
+        pytest.skip("no installed sa3/medium bundle")
+    manifest = {k["name"]: k for k in read_bundle_manifest(bundle)["knobs"]}
+    c_packs = [p for p in load_bundle(bundle) if p.vectors_neg is not None
+               and "dn_magnitude_own" in (manifest[p.name].get("provenance") or {})]
+    if not c_packs:
+        pytest.skip("no variant-c packs in the installed bundle")
+    for p in c_packs:
+        k = manifest[p.name]
+        steer = PackSteering([p])
+        dn_mag = float(k["provenance"]["dn_magnitude_own"])
+        pos_mag = float(k["apply"]["magnitude"])
+        for sign, expect in (("pos", pos_mag), ("neg", dn_mag)):
+            g = float(k["calibrated_gain"][sign]["median"])
+            value = g if sign == "pos" else -g
+            got = _applied_shift(steer, p.knob_name, value)
+            assert got == pytest.approx(g * expect, rel=1e-5), (p.name, sign)
