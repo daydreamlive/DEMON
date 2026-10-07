@@ -11,6 +11,10 @@ const DEFAULT_FIXTURE = "low_fi_Gm_loop_60s_gnm.wav";
 const STUB_FRAMES = 9600;
 const STUB_CHANNELS = 2;
 const PARAMS_TICK_MS = 80;
+// Activation-steering knobs (steering packs, one per vector) arrive in the
+// manifest as steer_<name>; they render as sliders in the Steer section
+// instead of the knob grid. Nothing here knows which packs exist.
+const STEER_PREFIX = "steer_";
 
 const els = {
   blend: document.querySelector("#blend"),
@@ -18,6 +22,8 @@ const els = {
   duration: document.querySelector("#duration"),
   fixture: document.querySelector("#fixture"),
   knobs: document.querySelector("#knobs"),
+  steer: document.querySelector("#steer"),
+  steerSliders: document.querySelector("#steer-sliders"),
   promptA: document.querySelector("#prompt-a"),
   promptB: document.querySelector("#prompt-b"),
   sendPrompt: document.querySelector("#send-prompt"),
@@ -30,6 +36,7 @@ const els = {
 const state = {
   fixtures: [],
   knobs: [],
+  steer: [],
   values: {},
   status: "idle",
   message: "",
@@ -365,6 +372,54 @@ function renderKnobs() {
   els.knobs.replaceChildren(...nodes);
 }
 
+function steerSlider(name, entry) {
+  const min = entry.min ?? -1;
+  const max = entry.max ?? 1;
+  const defaultValue = clamp(Number(valueFromEntry(entry)), min, max);
+  const current = clamp(Number(state.values[name] ?? defaultValue), min, max);
+
+  const slot = document.createElement("label");
+  slot.className = "field-slot blend-slot";
+  if (entry.description) slot.title = entry.description;
+
+  const head = document.createElement("span");
+  head.textContent = name.slice(STEER_PREFIX.length).replace(/_/g, " ");
+  const valueEl = document.createElement("em");
+  valueEl.className = "blend-value";
+  valueEl.textContent = Number(current).toFixed(1);
+  head.append(valueEl);
+
+  const input = document.createElement("input");
+  input.type = "range";
+  input.min = String(min);
+  input.max = String(max);
+  input.step = String((max - min) / 600 || 0.1);
+  input.value = String(current);
+  input.setAttribute("aria-label", `steer ${head.firstChild.textContent}`);
+
+  function set(value) {
+    const v = clamp(Number(value), min, max);
+    valueEl.textContent = v.toFixed(1);
+    commitKnobValue(name, entry, v);
+  }
+  input.addEventListener("input", () => set(input.value));
+  // Double-click returns the slider to its default (0 = steering off).
+  input.addEventListener("dblclick", () => {
+    input.value = String(defaultValue);
+    set(defaultValue);
+  });
+
+  slot.append(head, input);
+  return slot;
+}
+
+function renderSteer() {
+  els.steer.hidden = state.steer.length === 0;
+  els.steerSliders.replaceChildren(
+    ...state.steer.map(({ name, entry }) => steerSlider(name, entry)),
+  );
+}
+
 function sendParamsNow() {
   if (!state.remote || !state.player || state.status !== "ready") return;
   state.remote.sendParams(state.values, state.player.positionSec);
@@ -397,6 +452,8 @@ async function stop() {
   state.player = null;
   state.remote = null;
   state.tickMs = null;
+  state.steer = [];
+  renderSteer();
   setStatus("idle");
 }
 
@@ -470,11 +527,14 @@ async function start() {
     if (!remote.initialBuffer) throw new Error("server sent no initial buffer");
 
     const manifest = remote.knobManifest?.knobs ?? {};
-    state.knobs = Object.entries(manifest).map(([name, entry]) => ({ name, entry }));
+    const all = Object.entries(manifest).map(([name, entry]) => ({ name, entry }));
     state.values = Object.fromEntries(
-      state.knobs.map(({ name, entry }) => [name, valueFromEntry(entry)]),
+      all.map(({ name, entry }) => [name, valueFromEntry(entry)]),
     );
+    state.knobs = all.filter(({ name }) => !name.startsWith(STEER_PREFIX));
+    state.steer = all.filter(({ name }) => name.startsWith(STEER_PREFIX));
     renderKnobs();
+    renderSteer();
 
     const player = new AudioPlayer({ workletUrl: "/sdk/audio-worklet.js?v=5" });
     state.player = player;

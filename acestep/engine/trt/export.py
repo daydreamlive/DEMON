@@ -110,10 +110,15 @@ class DecoderForExport(nn.Module):
         decoder: nn.Module,
         mixed_precision: bool = False,
         precision: str = "fp32",
+        xattn_steering: bool = False,
     ):
         """
         Args:
             decoder: AceStepDiTModel instance to wrap.
+            xattn_steering: also take the cross-attention-output steering
+                inputs ``steering_xattn`` ``[B, num_layers, hidden]`` and
+                ``steering_xattn_renorm`` ``[B, num_layers]`` (TADA's hook
+                point, see :func:`_patch_cross_attn_steering`).
             mixed_precision: Bf16-hybrid recipe for the 2B turbo decoder.
                 When True, ``precision`` is ignored. Bf16 trunk + fp32
                 islands (timestep, AdaLN tables, RMSNorms, norm_out) +
@@ -127,6 +132,7 @@ class DecoderForExport(nn.Module):
         """
         super().__init__()
         self.decoder = decoder
+        self.xattn_steering = bool(xattn_steering)
         if mixed_precision:
             self.precision = "bf16_hybrid"
         else:
@@ -335,6 +341,8 @@ class DecoderForExport(nn.Module):
             encoder_attention_mask,
             context_latents,
             steering,
+            steering_xattn=None,
+            steering_xattn_renorm=None,
             use_cache=None,
             past_key_values=None,
             cache_position=None,
@@ -381,6 +389,11 @@ class DecoderForExport(nn.Module):
             )
             sw_mask = sw_mask.unsqueeze(0).unsqueeze(0)  # [1, 1, S, S]
 
+            # Cross-attention-output steering (optional): the patched
+            # cross_attn forwards read this per call.
+            xattn_holder["s"] = steering_xattn
+            xattn_holder["r"] = steering_xattn_renorm
+
             # Layer loop: static branching on layer_types. The added
             # ``steering[:, i, :]`` shift is the in-engine equivalent of
             # StreamPipeline._install_steering_hooks; the host zeros rows
@@ -409,6 +422,10 @@ class DecoderForExport(nn.Module):
 
             return (hidden_states, None)
 
+        xattn_holder: dict = {"s": None, "r": None}
+        if self.xattn_steering:
+            _patch_cross_attn_steering(decoder, xattn_holder)
+
         decoder.forward = types.MethodType(_export_forward, decoder)
 
     # ---- forward ----
@@ -420,6 +437,8 @@ class DecoderForExport(nn.Module):
         encoder_hidden_states: torch.Tensor,  # [B, L_enc, 2048]
         context_latents: torch.Tensor,     # [B, T, 128]
         steering: torch.Tensor,            # [B, num_layers, hidden_size]
+        steering_xattn: Optional[torch.Tensor] = None,         # [B, num_layers, hidden_size]
+        steering_xattn_renorm: Optional[torch.Tensor] = None,  # [B, num_layers]
     ) -> torch.Tensor:
         outputs = self.decoder(
             hidden_states=hidden_states,
@@ -430,11 +449,61 @@ class DecoderForExport(nn.Module):
             encoder_attention_mask=None,
             context_latents=context_latents,
             steering=steering,
+            steering_xattn=steering_xattn,
+            steering_xattn_renorm=steering_xattn_renorm,
             use_cache=False,
             past_key_values=None,
             output_attentions=False,
         )
         return outputs[0]  # velocity [B, T, 64]
+
+
+def _patch_cross_attn_steering(decoder: nn.Module, holder: dict) -> None:
+    """Add the cross-attention-output steering island to every block.
+
+    TADA (Staniszewski et al., arXiv 2602.11910) steers the OUTPUT of a
+    block's cross-attention, before ``AceStepDiTLayer.forward`` adds it
+    to the residual stream (``hidden_states = hidden_states +
+    attn_output``). Each ``layers[i].cross_attn.forward`` is wrapped (on
+    the instance, so module paths and refit names are unchanged) to::
+
+        h1  = h + steering_xattn[:, i]                 (broadcast over tokens)
+        out = where(renorm[:, i] > 0.5,
+                    h1 * ||h|| / ||h1||  (per token, fp32 norms),
+                    h1)
+
+    With a zero shift and renorm 0 the result is ``h + 0``: the exact
+    eager output. The eager reference is the forward hook
+    ``StreamPipeline`` installs on the same modules.
+    """
+    import types
+
+    for i, layer in enumerate(decoder.layers):
+        ca = getattr(layer, "cross_attn", None)
+        if ca is None:
+            continue
+        orig = ca.forward
+
+        def _forward(self_ca, *args, _i=i, _orig=orig, **kwargs):
+            out = _orig(*args, **kwargs)
+            s = holder.get("s")
+            if s is None:
+                return out
+            h = out[0] if isinstance(out, tuple) else out
+            h1 = h + s[:, _i, :].unsqueeze(1).type_as(h)
+            r = holder.get("r")
+            if r is not None:
+                hf = h.float()
+                h1f = h1.float()
+                hr = (
+                    h1f * (hf.norm(dim=-1, keepdim=True) / h1f.norm(dim=-1, keepdim=True))
+                ).type_as(h)
+                h1 = torch.where(r[:, _i].view(-1, 1, 1) > 0.5, hr, h1)
+            if isinstance(out, tuple):
+                return (h1,) + tuple(out[1:])
+            return h1
+
+        ca.forward = types.MethodType(_forward, ca)
 
 
 # ------------------------------------------------------------------
@@ -471,6 +540,10 @@ class OnnxExportConfig:
     # "onnx__MatMul_12882" that can't be mapped back to LoRA targets.
     for_refit: bool = False
 
+    # Also export the cross-attention-output steering inputs
+    # (``steering_xattn``, ``steering_xattn_renorm``): TADA's hook point.
+    xattn_steering: bool = False
+
 
 def export_decoder_onnx(
     model,
@@ -500,6 +573,7 @@ def export_decoder_onnx(
         decoder,
         mixed_precision=config.mixed_precision,
         precision=config.precision,
+        xattn_steering=config.xattn_steering,
     ).eval()
 
     if config.mixed_precision:
@@ -545,6 +619,12 @@ def export_decoder_onnx(
         "context_latents",
         "steering",
     ]
+    if config.xattn_steering:
+        example_inputs = example_inputs + (
+            torch.zeros(B, num_layers, hidden_size, device=device, dtype=trace_dtype),
+            torch.zeros(B, num_layers, device=device, dtype=torch.float32),
+        )
+        input_names += ["steering_xattn", "steering_xattn_renorm"]
     output_names = ["velocity"]
 
     dynamic_axes = {
@@ -556,6 +636,9 @@ def export_decoder_onnx(
         "steering":               {0: "batch"},
         "velocity":               {0: "batch", 1: "seq_len"},
     }
+    if config.xattn_steering:
+        dynamic_axes["steering_xattn"] = {0: "batch"}
+        dynamic_axes["steering_xattn_renorm"] = {0: "batch"}
 
     # For refit-enabled builds on the torchscript exporter, disable
     # constant folding to preserve weight names as ONNX initializer names.
@@ -606,6 +689,9 @@ def export_decoder_onnx(
                 "context_latents":       {0: batch, 1: seq},
                 "steering":              {0: batch},
             }
+            if config.xattn_steering:
+                dynamic_shapes["steering_xattn"] = {0: batch}
+                dynamic_shapes["steering_xattn_renorm"] = {0: batch}
             torch.onnx.export(
                 wrapper,
                 example_inputs,
@@ -1073,6 +1159,10 @@ class TRTBuildConfig:
     # precision flags are still governed by fp16/bf16/strongly_typed above.
     onnx_precision: str = "fp32"
 
+    # The parsed ONNX carries the cross-attention-output steering inputs
+    # (TADA engines); changes the engine filename prefix to ``tada_``.
+    xattn_steering: bool = False
+
     @property
     def max_duration_s(self) -> int:
         """Max duration in seconds, derived from seq_max at 25Hz."""
@@ -1105,7 +1195,8 @@ class TRTBuildConfig:
         dur = self.max_duration_s
         # Include variant in name for non-turbo models
         variant_tag = f"_{self.variant}" if self.variant != "turbo" else ""
-        return f"spectral_decoder{variant_tag}_{prec}{refit_tag}_b{self.batch_max}_{dur}s.engine"
+        prefix = "tada" if self.xattn_steering else "spectral"
+        return f"{prefix}_decoder{variant_tag}_{prec}{refit_tag}_b{self.batch_max}_{dur}s.engine"
 
 
 def build_trt_engine(
@@ -1231,6 +1322,18 @@ def build_trt_engine(
         opt=(Bopt, steer_L, steer_D),
         max=(Bmax, steer_L, steer_D),
     )
+    net_inputs = {network.get_input(ti).name for ti in range(network.num_inputs)}
+    if "steering_xattn" in net_inputs:
+        profile.set_shape(
+            "steering_xattn",
+            min=(Bmin, steer_L, steer_D),
+            opt=(Bopt, steer_L, steer_D),
+            max=(Bmax, steer_L, steer_D),
+        )
+        profile.set_shape(
+            "steering_xattn_renorm",
+            min=(Bmin, steer_L), opt=(Bopt, steer_L), max=(Bmax, steer_L),
+        )
 
     profile_idx = build_config.add_optimization_profile(profile)
     if profile_idx < 0:

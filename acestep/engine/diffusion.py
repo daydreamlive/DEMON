@@ -221,11 +221,22 @@ class DiffusionEngine:
         # older builds get _steering_num_layers == 0 and the streaming
         # pipeline skips the buffer entirely.
         has_steering = "steering" in engine_input_names
+        # ``steering_xattn`` ([B, num_layers, hidden]) is the optional
+        # cross-attention-output hook point (TADA engines); same shape as
+        # ``steering``, added to each block's cross-attention output, with
+        # ``steering_xattn_renorm`` ([B, num_layers], 0/1) selecting the
+        # per-token norm restore.
+        has_steering_xattn = has_steering and "steering_xattn" in engine_input_names
         base_inputs = (
             "hidden_states", "timestep", "encoder_hidden_states",
             "context_latents",
         )
-        input_names = base_inputs + (("steering",) if has_steering else ())
+        input_names = (
+            base_inputs
+            + (("steering",) if has_steering else ())
+            + (("steering_xattn", "steering_xattn_renorm") if has_steering_xattn else ())
+        )
+        self._steering_xattn = bool(has_steering_xattn)
         self._trt_input_dtypes = {
             name: _trt_dtype_map.get(self._trt_engine.get_tensor_dtype(name), torch.float32)
             for name in input_names
@@ -572,6 +583,8 @@ class DiffusionEngine:
         encoder_hidden_states: torch.Tensor,
         context_latents: torch.Tensor,
         steering: Optional[torch.Tensor] = None,
+        steering_xattn: Optional[torch.Tensor] = None,
+        steering_xattn_renorm: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run one decoder step through TRT with pre-allocated buffers.
 
@@ -580,6 +593,9 @@ class DiffusionEngine:
 
         ``steering`` is optional ``[B, num_layers, hidden_size]``;
         when omitted the cached zero buffer makes the per-layer adds a no-op.
+        ``steering_xattn`` (same shape) and ``steering_xattn_renorm``
+        (``[B, num_layers]``) feed the cross-attention-output inputs on
+        engines that carry them; omitted means zero.
         """
         orig_T = hidden_states.shape[1]
         pad = orig_T % 2 == 1
@@ -610,6 +626,15 @@ class DiffusionEngine:
                     B, self._steering_num_layers, self._steering_hidden_size,
                     dtype=in_dtypes["steering"], device=dev,
                 )
+                if getattr(self, "_steering_xattn", False):
+                    bufs["steering_xattn"] = torch.zeros(
+                        B, self._steering_num_layers, self._steering_hidden_size,
+                        dtype=in_dtypes["steering_xattn"], device=dev,
+                    )
+                    bufs["steering_xattn_renorm"] = torch.zeros(
+                        B, self._steering_num_layers,
+                        dtype=in_dtypes["steering_xattn_renorm"], device=dev,
+                    )
             for name, buf in bufs.items():
                 if not ctx.set_input_shape(name, tuple(buf.shape)):
                     raise RuntimeError(f"TRT decoder rejected input shape for {name}: {tuple(buf.shape)}")
@@ -649,6 +674,15 @@ class DiffusionEngine:
                 bufs["steering"].copy_(steering)
             else:
                 bufs["steering"].zero_()
+        for name, val in (
+            ("steering_xattn", steering_xattn),
+            ("steering_xattn_renorm", steering_xattn_renorm),
+        ):
+            if name in bufs:
+                if val is not None:
+                    bufs[name].copy_(val)
+                else:
+                    bufs[name].zero_()
 
         ctx = self._trt_ctx
         for name, buf in bufs.items():

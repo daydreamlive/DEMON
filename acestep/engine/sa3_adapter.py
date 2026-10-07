@@ -71,6 +71,51 @@ class SA3Adapter:
         # batch max length, concats dim 0, passes scalars through).
         self._stack = import_stream_helpers().stack_sa3_cond_bundles
 
+    # ---- steering surface (acestep.engine.model_adapter docstring) ---------
+
+    #: ``batched_forward`` takes ``steering=``: the TRT DiT consumes it as
+    #: an engine input; the eager path ignores it (hooks deliver instead).
+    accepts_steering = True
+
+    def _eager_blocks(self):
+        """The trunk blocks of the eager DiT wrapper, or None."""
+        if getattr(self.dit, "trt_batch1", False):
+            return None
+        from acestep.engine.sa3_internals import LayoutError, wrapper_blocks
+
+        try:
+            return wrapper_blocks(self.dit)
+        except LayoutError:
+            return None
+
+    def steering_layout(self):
+        """SA3 DiT layout: one slot per trunk block, ``embed_dim`` wide.
+
+        TRT: the engine's ``steering`` input shape when it has one
+        (engines built before the steering surgery have none, so
+        steering no-ops there). Eager: the trunk's own blocks.
+        """
+        from acestep.steering.layout import SteeringLayout
+
+        if getattr(self.dit, "trt_batch1", False):
+            shape = getattr(self.dit, "steering_shape", None)
+            if not shape:
+                return None
+            return SteeringLayout(
+                num_blocks=int(shape[0]), hidden_size=int(shape[1]),
+                engine_input=True,
+            )
+        blocks = self._eager_blocks()
+        if blocks is None or len(blocks) == 0:
+            return None
+        hidden = int(getattr(blocks[0], "dim", 0) or 0)
+        if hidden <= 0:
+            return None
+        return SteeringLayout(num_blocks=len(blocks), hidden_size=int(hidden))
+
+    def steering_blocks(self):
+        return self._eager_blocks()
+
     # ---- ModelAdapter ------------------------------------------------------
 
     def build_schedule(self, config, denoise: float, device, dtype) -> torch.Tensor:
@@ -123,7 +168,11 @@ class SA3Adapter:
         mask_list: List[Optional[torch.Tensor]],
         ctx_list: List[Optional[torch.Tensor]],
         aux_list: List[Optional[dict]],
+        steering: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        """``steering`` is the pipeline's ``[B, num_blocks, hidden]``
+        float32 shift (None = no shift on any row). Only the TRT branch
+        reads it; eager steering arrives through block hooks."""
         if any(b is None for b in aux_list):
             raise ValueError("SA3 SlotRequest must carry aux_cond")
         if getattr(self.dit, "trt_batch1", False):
@@ -137,11 +186,18 @@ class SA3Adapter:
             # well inside the tick budget where one eager batched
             # forward (~54 ms/slot-equivalent) would not.
             outs = []
+            steer_ok = getattr(self.dit, "steering_shape", None) is not None
             for i in range(xt_batch.shape[0]):
+                extra = {}
+                if steer_ok:
+                    extra["steering"] = (
+                        steering[i:i + 1] if steering is not None else None
+                    )
                 v_1ct = self.dit.step_bundle(
                     xt_batch[i:i + 1].movedim(1, 2),
                     float(timestep_list[i]),
                     aux_list[i],
+                    **extra,
                 )
                 # The wrapper returns its persistent output buffer —
                 # materialize before the next iteration overwrites it.

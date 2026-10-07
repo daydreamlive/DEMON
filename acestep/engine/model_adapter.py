@@ -41,6 +41,23 @@ the doc can be updated from working code):
   TRT dispatch state (engine snapshot, shape-keyed I/O buffer cache)
   is pipeline-owned and stays there — relocating it is Phase-4
   acceleration-contract work, not seam work.
+
+Optional steering surface (activation steering, family-agnostic; see
+:mod:`acestep.steering.layout`). An adapter that supports steering
+implements, beyond the protocol below:
+
+* ``steering_layout() -> SteeringLayout | None``: number of steerable
+  blocks, hidden size, hook point (``post_block_residual``), and whether
+  the loaded forward takes the steering tensor as an engine input.
+* ``steering_blocks() -> Sequence[nn.Module] | None``: the eager block
+  modules the pipeline hooks, or None when the forward is not eager.
+* ``accepts_steering: bool``: True when ``batched_forward`` takes a
+  ``steering=`` keyword (a ``[B, num_blocks, hidden]`` float32 tensor, or
+  None for "no shift on any row"). ACE leaves it False: its TRT steering
+  buffer is pipeline-owned and filled in place from the same slot.
+
+The pipeline probes these with ``getattr``, so adapters without steering
+(every family that predates it) are untouched: steering knobs no-op.
 """
 
 from __future__ import annotations
@@ -96,6 +113,53 @@ class ModelAdapter(Protocol):
         ...
 
 
+def ace_engine_steering_layout(engine):
+    """ACE steering layout from a ``DiffusionEngine`` before any pipeline
+    exists (the session factory needs it to filter packs at boot).
+    Mirrors :meth:`ACEAdapter.steering_layout`."""
+    from acestep.steering.layout import SteeringLayout
+
+    if engine is None:
+        return None
+    if getattr(engine, "_trt_engine", None) is not None:
+        n = int(getattr(engine, "_steering_num_layers", 0) or 0)
+        if n <= 0:
+            return None
+        return SteeringLayout(
+            num_blocks=n,
+            hidden_size=int(getattr(engine, "_steering_hidden_size", 0)),
+            engine_input=True,
+            extra_hooks=_ace_trt_extra_hooks(engine),
+        )
+    decoder = getattr(engine, "decoder", None)
+    layers = getattr(decoder, "layers", None)
+    if layers is None:
+        return None
+    hidden = getattr(getattr(decoder, "config", None), "hidden_size", 0)
+    return SteeringLayout(
+        num_blocks=len(layers), hidden_size=int(hidden or 0),
+        extra_hooks=_ace_eager_extra_hooks(layers),
+    )
+
+
+def _ace_trt_extra_hooks(owner) -> tuple:
+    """Extra hook points an ACE TRT decoder serves: ``cross_attn_output``
+    when the engine carries the ``steering_xattn`` input."""
+    from acestep.steering.layout import HOOK_CROSS_ATTN_OUTPUT
+
+    return (HOOK_CROSS_ATTN_OUTPUT,) if getattr(owner, "_steering_xattn", False) else ()
+
+
+def _ace_eager_extra_hooks(layers) -> tuple:
+    """Extra hook points the eager ACE decoder serves: ``cross_attn_output``
+    when its blocks carry a cross-attention module."""
+    from acestep.steering.layout import HOOK_CROSS_ATTN_OUTPUT
+
+    if len(layers) and all(getattr(l, "cross_attn", None) is not None for l in layers):
+        return (HOOK_CROSS_ATTN_OUTPUT,)
+    return ()
+
+
 class ACEAdapter:
     """The ACE-Step v1.5 family behind the seam — today's math, moved
     verbatim from ``StreamPipeline._decoder_forward`` and friends. The
@@ -119,6 +183,64 @@ class ACEAdapter:
             denoise=denoise,
         )
         return self._pipeline.engine._build_timestep_schedule(cfg, device, dtype)
+
+    # ---- steering surface (see module docstring) ----------------------
+
+    accepts_steering = False
+
+    def steering_layout(self):
+        """ACE v1.5 decoder layout: one slot per ``decoder.layers`` block.
+
+        With a TRT engine the shape comes from the engine's ``steering``
+        input (``engine_input`` True) or is absent (pre-steering engines:
+        steering no-ops, as before). Eager: the decoder's own blocks.
+        """
+        from acestep.steering.layout import SteeringLayout
+
+        p = self._pipeline
+        if p._trt_engine is not None:
+            if p._steering_num_layers <= 0:
+                return None
+            return SteeringLayout(
+                num_blocks=int(p._steering_num_layers),
+                hidden_size=int(p._steering_hidden_size),
+                engine_input=True,
+                extra_hooks=_ace_trt_extra_hooks(p),
+            )
+        layers = getattr(p.decoder, "layers", None)
+        if layers is None:
+            return None
+        hidden = getattr(getattr(p.decoder, "config", None), "hidden_size", None)
+        if hidden is None:
+            hidden = getattr(layers[0], "hidden_size", 0) if len(layers) else 0
+        return SteeringLayout(
+            num_blocks=len(layers), hidden_size=int(hidden),
+            extra_hooks=_ace_eager_extra_hooks(layers),
+        )
+
+    def steering_blocks(self):
+        """``decoder.layers`` when the eager decoder runs, else None."""
+        p = self._pipeline
+        if p._trt_engine is not None:
+            return None
+        return getattr(p.decoder, "layers", None)
+
+    def steering_hook_modules(self, hook):
+        """Eager modules for a non-primary hook point, else None.
+
+        ``cross_attn_output``: each block's ``cross_attn`` module, whose
+        first output is the attention output before the residual add
+        (``AceStepDiTLayer.forward``), TADA's intervention site.
+        """
+        from acestep.steering.layout import HOOK_CROSS_ATTN_OUTPUT
+
+        p = self._pipeline
+        if p._trt_engine is not None or hook != HOOK_CROSS_ATTN_OUTPUT:
+            return None
+        layers = getattr(p.decoder, "layers", None)
+        if layers is None or not _ace_eager_extra_hooks(layers):
+            return None
+        return [l.cross_attn for l in layers]
 
     def request_frames(self, request) -> int:
         return request.context_latents.shape[1]
