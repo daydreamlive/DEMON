@@ -122,6 +122,62 @@ class SigmaProbe:
         self._h.remove()
 
 
+class PerRowNoise:
+    """``--per-sample-seed``: noise seeded per clip inside a batched SA3 call.
+
+    ``sam.generate`` seeds once (``torch.manual_seed``) and draws the initial
+    latent noise as one ``torch.randn([B, C, L])``; the pingpong sampler adds
+    ``torch.randn_like(x)`` after every step; the decoder adds mask-token noise
+    (``randn_like`` over ``(b n)`` folded segments). Inside this context every 3-D
+    draw whose leading dim is a multiple of the batch size B is replaced by B
+    batch-major blocks, block r from one ``torch.Generator`` seeded with row r's
+    seed (created per context, so the draw sequence restarts each call); row r's noise
+    depends only on ``seeds[r]`` (not on its batch position or batch size). A
+    minimal pair rendered in one batch with one seed therefore shares its noise
+    exactly. Any other randn call passes through unchanged."""
+
+    def __init__(self, seeds, device):
+        self.seeds = [int(s) for s in seeds]
+        self.device = torch.device(device)
+        self.gens = None
+
+    def _gen(self, dev):
+        if self.gens is None:
+            self.gens = [torch.Generator(device=dev).manual_seed(s) for s in self.seeds]
+        return self.gens
+
+    def _rows(self, shape, dtype, dev):
+        """Leading dim = B x n, batch-major (``(b n)`` as the SA3 decoder folds its segments): row r's n x rest
+        block comes from generator r, so it does not depend on the other rows."""
+        n = int(shape[0]) // len(self.seeds)
+        return torch.cat([torch.randn((n,) + tuple(shape[1:]), generator=g, device=dev, dtype=dtype)
+                          for g in self._gen(dev)])
+
+    def __enter__(self):
+        b = len(self.seeds)
+        self._randn, self._randn_like = torch.randn, torch.randn_like
+        orig, orig_like = self._randn, self._randn_like
+
+        def randn(*size, **kw):
+            shape = tuple(size[0]) if len(size) == 1 and isinstance(size[0], (list, tuple, torch.Size)) else tuple(size)
+            if len(shape) == 3 and shape[0] % b == 0 and "generator" not in kw and "out" not in kw:
+                dev = torch.device(kw.get("device") or "cpu")
+                return self._rows(shape, kw.get("dtype") or torch.get_default_dtype(), dev)
+            return orig(*size, **kw)
+
+        def randn_like(x, **kw):
+            if x.dim() == 3 and x.shape[0] % b == 0 and not kw:
+                return self._rows(x.shape, x.dtype, x.device)
+            return orig_like(x, **kw)
+
+        torch.randn, torch.randn_like = randn, randn_like
+        return self
+
+    def __exit__(self, *exc):
+        torch.randn, torch.randn_like = self._randn, self._randn_like
+        return False
+
+
 def prompt_order(n: int, seed: int = 42) -> list:
     """The reference (and E5) shuffles the caption set with seed 42."""
     return np.random.default_rng(seed).permutation(n).tolist()
@@ -256,6 +312,9 @@ def run_prompts_json(args, sam, nb, state, sigmas, audio_tok, hidden, generate) 
         for i in range(lo, hi, args.batch):
             for r in range(i, min(hi, i + args.batch)):
                 gen_seed[r] = int(rows[i]["seed"])
+    per_sample = bool(getattr(args, "per_sample_seed", False))
+    if per_sample:
+        gen_seed = [int(r["seed"]) for r in rows]
     gen_seed_all = [None] * start + gen_seed
 
     def meta(complete: bool) -> dict:
@@ -271,7 +330,9 @@ def run_prompts_json(args, sam, nb, state, sigmas, audio_tok, hidden, generate) 
             "sr": SR, "duration_s": args.duration, "mode": "prompts_json",
             "prompts": str(args.prompts_json), "ids": [int(r["id"]) for r in rows_all],
             "batch": args.batch, "parts": n_parts, "gen_seed": gen_seed_all,
-            "seed_rule": "one seed per generate call = seed of the call's first row",
+            "seed_rule": ("per sample: each row's noise from its own torch.Generator seeded with its seed "
+                          "(capture_resid.PerRowNoise), independent of batch position" if per_sample else
+                          "one seed per generate call = seed of the call's first row"),
             "sampler": "ARC sam.generate default (cfg 1)",
             "tokens": f"audio only ({audio_tok.num_memory_tokens} memory tokens and padding excluded)",
             "means": "float16 [n, n_steps, len(block_ids), hidden], row order = prompts order; "
@@ -301,8 +362,13 @@ def run_prompts_json(args, sam, nb, state, sigmas, audio_tok, hidden, generate) 
                 part_rows = rows[i:min(hi, i + args.batch)]
                 state["buf"] = torch.zeros(len(part_rows), args.steps, len(sel), hidden)
                 state["step"] = -1
-                audio = generate(sam, [str(r["prompt"]) for r in part_rows], seed=gen_seed[i],
-                                 duration=args.duration, steps=args.steps)
+                if per_sample:
+                    with PerRowNoise([int(r["seed"]) for r in part_rows], args.device):
+                        audio = generate(sam, [str(r["prompt"]) for r in part_rows], seed=gen_seed[i],
+                                         duration=args.duration, steps=args.steps)
+                else:
+                    audio = generate(sam, [str(r["prompt"]) for r in part_rows], seed=gen_seed[i],
+                                     duration=args.duration, steps=args.steps)
                 if state["step"] != args.steps - 1:
                     raise RuntimeError(f"saw {state['step'] + 1} forwards, expected {args.steps}")
                 arr[start + i:start + i + len(part_rows)] = state["buf"].numpy().astype(np.float16)
@@ -356,6 +422,9 @@ def main() -> int:
                     help="corpus prompts.json [{id, prompt, seed, category, tags}]: sharded audio + .done markers")
     ap.add_argument("--shard", type=int, default=32, help="--prompts-json: clips per audio shard")
     ap.add_argument("--resume", action="store_true", help="--prompts-json: skip shards whose .done exists")
+    ap.add_argument("--per-sample-seed", action="store_true",
+                    help="--prompts-json: seed each clip's noise from its own row seed inside the batch "
+                         "(PerRowNoise; a minimal pair with one seed shares its noise exactly)")
     ap.add_argument("--part", default="0/1",
                     help="--prompts-json: I/N, render shards k %% N == I (one process per GPU; part 0 owns meta)")
     ap.add_argument("--blocks", default=None,
@@ -371,6 +440,8 @@ def main() -> int:
     args = ap.parse_args()
     if args.prompts_json and args.self_label:
         ap.error("--prompts-json and --self-label are exclusive")
+    if args.per_sample_seed and not args.prompts_json:
+        ap.error("--per-sample-seed needs --prompts-json")
 
     from sa3_reference_generate import checkpoint_dir, load_local_model
     from acestep.engine import sa3_tada
