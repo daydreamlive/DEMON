@@ -15,7 +15,7 @@ import pytest
 import torch
 
 from acestep.engine import sa3_context as ctx_mod
-from acestep.engine.sa3_adapter import SA3Adapter, ring_offset
+from acestep.engine.sa3_adapter import SA3Adapter, ring_margins, ring_offset
 from acestep.streaming.knobs import KnobState
 from acestep.streaming.sa3_backend import (
     SA3_SAMPLE_RATE,
@@ -60,7 +60,10 @@ def _forward(adapter, x_btc, ts):
 
 class _CircularConvDit(torch.nn.Module):
     """Translation-equivariant on a ring of ``period`` frames: a circular
-    depthwise conv over the first ``period`` frames (native [B,C,T])."""
+    depthwise conv over the first ``period`` frames, its output tiled over
+    the whole window (native [B,C,T]). For a ``period``-periodic input
+    that is the same as convolving every frame circularly, so it does not
+    care where in the window the ring starts."""
 
     def __init__(self, period):
         super().__init__()
@@ -72,9 +75,8 @@ class _CircularConvDit(torch.nn.Module):
         ring = x[..., : self.period]
         padded = torch.cat([ring[..., -2:], ring, ring[..., :2]], dim=-1)
         y = torch.nn.functional.conv1d(padded, self.w, groups=C)
-        out = torch.zeros_like(x)
-        out[..., : self.period] = y + t.view(-1, 1, 1)
-        return out
+        reps = -(-x.shape[-1] // self.period)
+        return y.repeat(1, 1, reps)[..., : x.shape[-1]] + t.view(-1, 1, 1)
 
 
 class _PositionDit(torch.nn.Module):
@@ -159,10 +161,66 @@ def test_dit_sees_a_rolled_periodic_window():
     t = SCHEDULE_8[1]
     _forward(_adapter(_Spy(), ring_frames=N), x, [t])
     k = ring_offset(t, N)
+    m_l, m_r = ring_margins(N, T)
+    assert (m_l, m_r) == (3, 3)
     got = seen["x"][0, 0]  # native [C, T] -> channel 0
     ring = torch.roll(torch.arange(N, dtype=torch.float32), k)
-    expect = torch.cat([ring, ring[: T - N]])
-    assert torch.equal(got, expect)
+    # The rolled ring occupies [m_l, m_l + N) of the DiT input ...
+    assert torch.equal(got[m_l:m_l + N], ring)
+    # ... and both margins are its periodic continuation, so neither
+    # window edge is a loop position with nothing beyond it.
+    assert torch.equal(got[:m_l], ring[N - m_l:])
+    assert torch.equal(got[m_l + N:], ring[:m_r])
+    assert torch.equal(got, torch.cat([ring[N - m_l:], ring, ring[:m_r]]))
+
+
+def test_velocity_is_read_from_the_ring_span():
+    """A position-marking DiT (velocity = the window index): every output
+    frame must come from ``[m_l, m_l + N)``, rolled back by ``-k``."""
+
+    class _Index(torch.nn.Module):
+        def forward(self, x, t, **_):
+            idx = torch.arange(x.shape[-1], dtype=x.dtype)
+            return idx.view(1, 1, -1).expand_as(x).clone()
+
+    ts = SCHEDULE_8[3:5]
+    v = _forward(_adapter(_Index(), ring_frames=N), torch.zeros(2, T, C), ts)
+    m_l, _ = ring_margins(N, T)
+    for b, t in enumerate(ts):
+        k = ring_offset(t, N)
+        expect = torch.tensor([m_l + (j + k) % N for j in range(T)],
+                              dtype=torch.float32)
+        assert torch.equal(v[b, :, 0], expect)
+        assert int(v[b, :, 0].min()) >= m_l
+        assert int(v[b, :, 0].max()) < m_l + N
+
+
+def test_ring_margins_split():
+    assert ring_margins(14, 20) == (3, 3)
+    assert ring_margins(14, 21) == (3, 4)   # odd headroom: extra frame right
+    assert ring_margins(136, 168) == (16, 16)
+    assert ring_margins(14, 15) == (0, 1)   # < 2 frames: phase C layout
+    assert ring_margins(14, 14) == (0, 0)
+
+
+@pytest.mark.parametrize("t_len", [N, N + 1])
+def test_small_headroom_falls_back_to_ring_at_window_start(t_len):
+    seen = {}
+
+    class _Spy(torch.nn.Module):
+        def forward(self, x, t, **_):
+            seen["x"] = x.clone()
+            return x[:, :1, :].expand_as(x).clone()
+
+    x = torch.arange(t_len, dtype=torch.float32).view(1, t_len, 1)
+    x = x.expand(1, t_len, C).clone()
+    t = SCHEDULE_8[2]
+    v = _forward(_adapter(_Spy(), ring_frames=N), x, [t])
+    k = ring_offset(t, N)
+    ring = torch.roll(torch.arange(N, dtype=torch.float32), k)
+    assert torch.equal(seen["x"][0, 0], torch.cat([ring, ring[: t_len - N]]))
+    expect = torch.tensor([j % N for j in range(t_len)], dtype=torch.float32)
+    assert torch.equal(v[0, :, 0], expect)
 
 
 def test_ring_off_is_bit_identical():

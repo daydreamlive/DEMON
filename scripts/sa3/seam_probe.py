@@ -25,6 +25,12 @@ Controls through the same metrics:
   rolled    each generated loop rolled by 4 bars before looping, so the
             measured "seam" is an interior bar line of the generation
 
+Per-bar scan (generated loops): the novelty z of every bar line of the
+loop, measured as the seam of the loop rolled by that many bars (bar 0 is
+the lap boundary itself). ``interior_max_z`` is the largest over bars
+1..7: a structural break the generation put INSIDE the loop. bars.png
+draws the log-mel novelty curve over [loop|loop] with the 16 bar lines.
+
   python scripts/sa3/seam_probe.py --label main \
       --fixtures low_fi_Gm_loop_60s_gnm.wav prog_rock_loop_60s_enm.wav \
       --denoise 0.9 1.0 --seeds 1 2
@@ -262,6 +268,49 @@ def seam_png(a: np.ndarray, bar: float, path: str, title: str,
     plt.close(fig)
 
 
+def perbar_z(a: np.ndarray, bar: float) -> list[float]:
+    """Log-mel novelty z of each of the BARS bar lines of the loop, each
+    measured as the seam of the loop rolled to start at that bar."""
+    out = []
+    for i in range(BARS):
+        r = np.roll(a, -int(round(i * bar * SR)), axis=1) if i else a
+        out.append(seam_metrics(r, bar)["novelty_mel"]["z"])
+    return out
+
+
+def bars_png(a: np.ndarray, bar: float, path: str, title: str,
+             zs: list[float]) -> None:
+    """Log-mel novelty over [a|a], the 16 bar lines marked (the lap
+    boundary in red), each first-lap line labelled with its per-bar z."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    mono = a.mean(axis=0)
+    x = np.concatenate([mono, mono])
+    nov = _novelty(_logmel(x))
+    tt = np.arange(len(nov)) * HOP / SR
+    lap = len(mono) / SR
+    fig, ax = plt.subplots(figsize=(12, 3.5))
+    ax.plot(tt, nov, color="k", lw=0.8)
+    top = float(nov.max()) if len(nov) else 1.0
+    for j in range(2 * BARS):
+        t = j * bar
+        seam = j % BARS == 0
+        ax.axvline(t, color="red" if seam else "tab:blue", lw=1.4 if seam else 0.8,
+                   ls="-" if seam else "--")
+        if j < BARS and j < len(zs):
+            ax.text(t + 0.05, top, f"z{zs[j]:+.1f}", fontsize=7, va="top",
+                    color="red" if seam else "tab:blue")
+    ax.axvline(2 * lap, color="red", lw=1.4)
+    ax.set_xlim(0, 2 * lap)
+    ax.set_xlabel("s over [loop|loop] (red = lap boundary)")
+    ax.set_ylabel("log-mel novelty")
+    ax.set_title(title, fontsize=10)
+    fig.tight_layout()
+    fig.savefig(path, dpi=110)
+    plt.close(fig)
+
+
 # ------------------------------------------------------------------ session
 
 def generate(args, cut: np.ndarray, denoise: float, seed: int) -> np.ndarray | None:
@@ -379,6 +428,13 @@ def main() -> None:
                 gbar = a.shape[1] / SR / BARS
                 m = save_run(rd, a, gbar, f"{run} generated", write_audio=not args.reuse)
                 rows.append(row(run, "generated", m))
+                zs = perbar_z(a, gbar)
+                inner = max(range(1, BARS), key=lambda i: zs[i])
+                rows[-1]["perbar_z"] = zs
+                rows[-1]["interior_max_z"] = zs[inner]
+                rows[-1]["interior_max_bar"] = inner
+                bars_png(a, gbar, os.path.join(rd, "bars.png"),
+                         f"{run} generated: novelty over [loop|loop]", zs)
                 rolled = np.roll(a, -int(round(4 * gbar * SR)), axis=1)
                 m = save_run(os.path.join(rd, "rolled"), rolled, gbar,
                              f"{run} control: generated rolled 4 bars (seam = interior)",
@@ -392,7 +448,8 @@ def main() -> None:
         json.dump({"label": args.label, "prompt": args.prompt, "cuts": cuts, "rows": rows}, f,
                   indent=1)
     cols = ["run", "kind", "nov_mel_z", "nov_chroma_z", "spectral_z", "spectral_seam_db",
-            "beat_seam_dev_ms", "beat_interior_p90_ms", "last1_db", "first1_db"]
+            "beat_seam_dev_ms", "beat_interior_p90_ms", "last1_db", "first1_db",
+            "interior_max_z", "interior_max_bar"]
     lines = [f"# seam probe: {args.label}", "", f"prompt: {args.prompt}", "",
              "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
     for r in rows:

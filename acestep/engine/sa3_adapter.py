@@ -25,10 +25,13 @@ checkpoints run ``cfg_scale=1.0``; requests carry no
 ``guidance_curve``).
 
 Loop ring (#365): with ``ring_frames = N`` every forward sees the first
-N latent frames rolled by a per-timestep offset (the window tail is the
-periodic continuation) and the velocity is rolled back, so no loop
-position is ever the sequence start or end of the rotary-only DiT and
-the lap boundary is denoised as an interior point. Built by the session
+N latent frames rolled by a per-timestep offset and the velocity is
+rolled back, so the lap boundary is denoised as an interior point. The
+rolled ring sits in the MIDDLE of the DiT window, ``[m_l | N | m_r]``,
+with both margins (the wrap headroom ``T - N`` split in half) filled by
+its periodic continuation, so neither window edge of the rotary-only
+DiT is a loop position: the model has nowhere inside the loop to put
+its intro or outro (:func:`ring_margins`). Built by the session
 when ``DEMON_SA3_LOOP_RING`` is on (default; ``0`` restores the plain
 window). ``ring_frames=None`` is the plain path, bit for bit.
 """
@@ -60,6 +63,23 @@ def ring_offset(t: float, n: int) -> int:
     the lap boundary to one fixed bar inside the loop (measured on the
     seam probe). Hashing spreads those steps around the ring."""
     return int(round(float(t) * RING_OFFSET_PRIME)) % int(n)
+
+
+def ring_margins(n: int, t_len: int) -> tuple:
+    """``(m_l, m_r)``: the periodic margins left and right of the ring in
+    the DiT input, ``m_l = (T - N) // 2`` and ``m_r = T - N - m_l``.
+
+    With a ring at the window start the left edge is always a loop
+    position with nothing before it, and the model composes its intro
+    there (phase C of #365 moved the structural break from the seam into
+    the loop interior). Centring the ring gives both edges periodic
+    context. Under 2 frames of headroom there is nothing to split and
+    the ring stays at the window start (``m_l = 0``)."""
+    head = int(t_len) - int(n)
+    if head < 2:
+        return 0, max(head, 0)
+    m_l = head // 2
+    return m_l, head - m_l
 
 
 def _ring_gather(x_btc: torch.Tensor, index_bt: torch.Tensor) -> torch.Tensor:
@@ -164,11 +184,15 @@ class SA3Adapter:
     def _ring_indices(self, timesteps, n: int, t_len: int, device):
         """``(in_idx, out_idx)`` gather indices ``[B, T]`` for one batch.
 
-        ``in_idx[b, j] = (j - k_b) mod N`` is ``roll(x[:, :N], k_b)``
-        followed by its periodic continuation over the whole window;
-        ``out_idx[b, j] = (j + k_b) mod N`` is ``roll(v[:, :N], -k_b)``
-        tiled the same way. Cached per offset tuple: a schedule has only
-        ``steps`` distinct timesteps."""
+        With ``r = roll(x[:, :N], k_b)`` and margins ``(m_l, m_r)``
+        (:func:`ring_margins`), the DiT input is
+        ``cat(r[N - m_l:], r, r[:m_r])``, i.e. the periodic continuation
+        of ``r`` starting ``m_l`` frames early:
+        ``in_idx[b, j] = (j - m_l - k_b) mod N``. The velocity is read
+        back from the ring's own span ``[m_l, m_l + N)``, rolled by
+        ``-k_b`` and tiled over the window:
+        ``out_idx[b, j] = m_l + (j + k_b) mod N``. Cached per offset
+        tuple: a schedule has only ``steps`` distinct timesteps."""
         ks = tuple(ring_offset(t, n) for t in timesteps)
         key = (ks, n, t_len, str(device))
         hit = self._ring_index_cache.get(key)
@@ -181,9 +205,10 @@ class SA3Adapter:
             if seen not in self._ring_offsets_logged and len(self._ring_offsets_logged) < 64:
                 self._ring_offsets_logged.add(seen)
                 logger.info("sa3_loop_ring_offset n={} t={:.6f} k={}", n, float(t), k)
+        m_l, _ = ring_margins(n, t_len)
         j = torch.arange(t_len, device=device).unsqueeze(0)
         k = torch.tensor(ks, device=device, dtype=torch.long).unsqueeze(1)
-        hit = ((j - k) % n, (j + k) % n)
+        hit = ((j - m_l - k) % n, m_l + (j + k) % n)
         self._ring_index_cache[key] = hit
         return hit
 
