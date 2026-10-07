@@ -1,0 +1,40 @@
+{
+ "caa": {
+  "tempo": {
+   "loc_neg": {
+    "cutoff": 3.3418157547712326,
+    "alpha": -8.0,
+    "reached": true
+   },
+   "loc_pos": {
+    "cutoff": 2.9466688305139543,
+    "alpha": 8.0,
+    "reached": true
+   }
+  },
+  "piano": {
+   "loc_neg": {
+    "cutoff": 2.720049986243248,
+    "alpha": -8.0,
+    "reached": true
+   },
+   "loc_pos": {
+    "cutoff": 2.658539766073227,
+    "alpha": 8.0,
+    "reached": true
+   }
+  },
+  "mood": {
+   "loc_neg": {
+    "cutoff": 2.509420894086361,
+    "alpha": -8.0,
+    "reached": true
+   },
+   "loc_pos": {
+    "cutoff": 2.3227209731936456,
+    "alpha": 4.0,
+    "reached": true
+   }
+  }
+ }
+}

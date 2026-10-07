@@ -242,6 +242,27 @@ body.knob-dragging {
   gap: 10px;
 }
 
+.steer-section {
+  display: grid;
+  gap: 10px;
+}
+
+.steer-section[hidden] {
+  display: none;
+}
+
+.steer-head {
+  color: #d3d3cc;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.steer-sliders {
+  display: grid;
+  gap: 8px;
+}
+
 .field-slot {
   display: grid;
   gap: 5px;

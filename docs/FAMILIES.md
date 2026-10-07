@@ -402,3 +402,22 @@ the anchor solve 2.7 s, ring idle); no console errors.
 **Turbo.** There is no YuE2-Turbo checkpoint: "Turbo" is NoizAI's vLLM
 serving layer for the AR stages (Linux), so it could only shorten create and
 re-compose, and it is out of v1.
+
+## Steering
+
+A rectified-flow family gets activation steering by implementing
+`steering_layout()` and `steering_blocks()` on its adapter (and
+`accepts_steering` for a TensorRT engine input). Packs then load as
+`steer_<name>` knobs with no family-specific code. See
+[STEERING.md](STEERING.md).
+
+**SA3 (medium).** The steering DiT engine `sa3_m_dit_steer_l1_646_646`
+matches the previous fp16mixed engine at zero steering (cos 0.99992 to
+0.99997 over t = 1.0 to 0.1) and eager with a steering input applied (cos
+≥ 0.99990). It costs 12.88 ms per step against 12.73 ms. A session uses it
+only when packs exist, and its tick is then 52 ms against 43 ms on the
+default fp8 engine. Five prompt-pair packs (bright b23, warm b15,
+percussive b15, rough b2, density b1). Knob 0 is bit-identical to no
+packs. Bright, warm and percussive move their proxy the right way on 3/3
+prompts at ±1 and ±10. The proxies for rough and density do not track
+those concepts.

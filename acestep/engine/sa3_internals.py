@@ -65,6 +65,7 @@ __all__ = [
     "trunk_wrapper",
     "trunk_module",
     "trunk_blocks",
+    "wrapper_blocks",
     "replace_trunk",
     "check_layout",
 ]
@@ -157,6 +158,25 @@ def trunk_blocks(sam) -> Sequence:
         raise LayoutError(
             f"trunk_blocks: {TRUNK_BLOCKS_PATH} is not a sized sequence "
             f"(got {type(blocks).__name__}); accessors written for "
+            f"{VENDOR_SHA}."
+        ) from exc
+    return blocks
+
+
+def wrapper_blocks(wrapper) -> Sequence:
+    """The trunk blocks reached from the per-step wrapper itself.
+
+    Same blocks as :func:`trunk_blocks`, for callers that hold the
+    wrapper (``sam.model.model``, what the streaming adapter calls) but
+    not the outer model object. Activation steering hooks these.
+    """
+    blocks = _walk(wrapper, "wrapper.model.transformer.layers", "wrapper_blocks")
+    try:
+        len(blocks)
+    except TypeError as exc:
+        raise LayoutError(
+            "wrapper_blocks: wrapper.model.transformer.layers is not a sized "
+            f"sequence (got {type(blocks).__name__}); accessors written for "
             f"{VENDOR_SHA}."
         ) from exc
     return blocks

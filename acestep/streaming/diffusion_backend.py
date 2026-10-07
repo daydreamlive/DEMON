@@ -66,6 +66,49 @@ class DiffusionBackend:
         self.last_tick_ms = 0.0
         self.last_dec_ms = 0.0
 
+        # Data-driven steering packs (acestep.steering.packs), attached by
+        # the family factory after construction. Empty = no pack knobs.
+        from acestep.steering.packs import PackSteering
+
+        self.steering_packs = PackSteering()
+
+    # ---- steering packs (family-agnostic) ------------------------------------
+
+    def attach_steering_packs(self, packs) -> None:
+        """Install the session's :class:`~acestep.steering.packs.PackSteering`.
+
+        Called by the family factory before the session builds its knob
+        manifest; every pack becomes a ``steer_<name>`` knob through
+        :meth:`pack_knob_specs` with no per-family code."""
+        self.steering_packs = packs
+
+    def pack_knob_specs(self) -> list:
+        """Registry specs for the attached packs (empty when none)."""
+        return self.steering_packs.knob_specs() if self.steering_packs.is_loaded else []
+
+    def _sync_steering_slot(self, raw: dict, last, pipe, n: int, sources) -> tuple:
+        """Push the merged steering configs into ``pipe``'s single slot.
+
+        ``sources`` are objects with the ``is_loaded`` / ``snapshot_key``
+        / ``build_configs`` contract (the ACE controller, the pack
+        surface). ``last`` is ``(pipeline, snapshot)`` or None; pipeline
+        identity is part of the key because a rebuilt pipeline starts
+        with an empty slot even when the knobs did not move.
+        """
+        active = [s for s in sources if s is not None and s.is_loaded]
+        if not active or pipe is None:
+            return last
+        n = max(1, int(n))
+        snapshot = tuple(s.snapshot_key(raw, n) for s in active)
+        last_pipe, last_snapshot = last if last is not None else (None, None)
+        if pipe is last_pipe and snapshot == last_snapshot:
+            return last
+        configs: list = []
+        for s in active:
+            configs.extend(s.build_configs(raw, n))
+        pipe.set_steering(configs)
+        return (pipe, snapshot)
+
     # ---- contract defaults --------------------------------------------------
 
     def lead_profile(self) -> LeadProfile:

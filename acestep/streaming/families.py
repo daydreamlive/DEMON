@@ -261,6 +261,40 @@ class FamilySpec:
                 )
 
 
+def _attach_steering_packs(backend, *, family: str, checkpoint: str, layout,
+                           reserved_names=()) -> None:
+    """Load this boot's steering packs onto ``backend`` (any family).
+
+    Packs are data (``acestep.steering.packs``): matched by their own
+    family/checkpoint metadata and filtered by the loaded model's
+    steering ``layout``; a family whose loaded forward has no steering
+    route (``layout`` None) gets no pack knobs rather than dead ones.
+    """
+    from acestep.steering.packs import PackSteering, load_session_packs
+
+    if layout is None:
+        backend.attach_steering_packs(PackSteering())
+        return
+    try:
+        packs = load_session_packs(
+            family=family, checkpoint=checkpoint, layout=layout,
+            reserved_names=reserved_names,
+        )
+    except Exception as exc:  # never let pack data block a session boot
+        from loguru import logger
+
+        logger.warning("steering_packs_load_failed family={} error={}", family, exc)
+        packs = PackSteering()
+    if packs.is_loaded:
+        from loguru import logger
+
+        logger.info(
+            "steering_packs_loaded family={} checkpoint={} knobs={}",
+            family, checkpoint, [p.knob_name for p in packs.packs],
+        )
+    backend.attach_steering_packs(packs)
+
+
 def _make_acestep(ss):
     from acestep.paths import checkpoint_scale
     from acestep.steering import SteeringController, ensure_steering_vectors
@@ -273,7 +307,7 @@ def _make_acestep(ss):
     # and drops the steering capability/knobs for the session).
     steering = SteeringController(ensure_steering_vectors(ss.checkpoint))
 
-    return ACEStepBackend(
+    backend = ACEStepBackend(
         ss.session, ss.stream,
         state=ss.state,
         use_midi=True,  # always "MIDI" mode; KnobState provides values
@@ -290,6 +324,15 @@ def _make_acestep(ss):
         # checkpoints outside the scale map = "don't filter".
         checkpoint_scale=checkpoint_scale(ss.checkpoint),
     )
+    from acestep.engine.model_adapter import ace_engine_steering_layout
+    from acestep.steering.policy import AUTO_AXES
+
+    _attach_steering_packs(
+        backend, family="acestep", checkpoint=str(ss.checkpoint),
+        layout=ace_engine_steering_layout(ss.engine_obj),
+        reserved_names=[ax.name for ax in AUTO_AXES],
+    )
+    return backend
 
 
 #: SA3Backend's longest render window (its SA3_MAX_DURATION_S). Mirrored
@@ -315,7 +358,7 @@ def _make_sa3(ss):
             "its construction payload; an ACE-shaped session cannot "
             "assemble an SA3 backend"
         )
-    return SA3Backend.from_context(
+    backend = SA3Backend.from_context(
         init["context"],
         prompt=ss.state.prompt_text,
         # The live B prompt seeds the backend's tag pair: a swap-resize
@@ -352,6 +395,11 @@ def _make_sa3(ss):
         lora_manager=init.get("lora_manager"),
         use_lora=bool(ss.use_lora),
     )
+    _attach_steering_packs(
+        backend, family="sa3", checkpoint=str(init["context"].model_id),
+        layout=backend.pipeline.steering_layout(),
+    )
+    return backend
 
 
 def _make_mrt2(ss):
@@ -392,6 +440,7 @@ def _acestep_knob_universe():
         knob_specs,
         manual_slot_specs,
         steering_axis_spec,
+        steering_pack_spec,
     )
 
     # Every spec the family can ever expose: both SDE-mode variants plus
@@ -419,7 +468,11 @@ def _acestep_knob_universe():
         catalog_len=144,
         layer_max=MANUAL_MAX_LAYER,
         step_max=MANUAL_MAX_STEP,
-    )
+    ) + [
+        # One representative data-driven pack knob (every pack spec comes
+        # from steering_pack_spec, so one placeholder covers the pattern).
+        steering_pack_spec("steer_<pack>"),
+    ]
     return (
         knob_specs(False, loras=["<lora_id>"])
         + knob_specs(True, loras=["<lora_id>"])
@@ -436,6 +489,7 @@ def _acestep_knob_universe():
 # can't become a silent semantic fork. Keyed identically to FAMILIES;
 # the guard enforces the keys stay in sync.
 def _sa3_knob_universe():
+    from acestep.streaming.knobs import steering_pack_spec
     from acestep.streaming.sa3_backend import sa3_knob_specs
 
     # One representative LoRA-strength knob (the per-id specs all come
@@ -443,7 +497,10 @@ def _sa3_knob_universe():
     # covers the pattern — same convention as the ACE universe). The
     # name is shared with ACE's universe deliberately: the homonym
     # guard proves the spec shapes are identical across families.
-    return sa3_knob_specs(loras=["<lora_id>"])
+    # Steering packs: one representative pack knob, as for ACE.
+    return sa3_knob_specs(
+        loras=["<lora_id>"], steering_specs=[steering_pack_spec("steer_<pack>")],
+    )
 
 
 def _shutdown_sa3() -> int:

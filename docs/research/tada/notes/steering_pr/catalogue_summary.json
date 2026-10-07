@@ -1,0 +1,78 @@
+{
+ "rows": 481,
+ "by_category": {
+  "timbre": 39,
+  "dynamics": 14,
+  "rhythm": 26,
+  "space": 14,
+  "production": 36,
+  "instrument": 103,
+  "genre": 86,
+  "mood": 40,
+  "sound_effect": 78,
+  "abstract": 45
+ },
+ "by_strength": {
+  "descriptor": 44,
+  "text_only": 231,
+  "classifier": 206
+ },
+ "prompt_categories": {
+  "music": 2500,
+  "solo": 300,
+  "sfx": 1300,
+  "hybrid": 300,
+  "abstract": 200,
+  "tada_test": 100,
+  "musiccaps": 300
+ },
+ "sparse_tagged_min_median_max": [
+  0,
+  52,
+  386
+ ],
+ "by_category_strength": {
+  "timbre": {
+   "descriptor": 22,
+   "text_only": 17
+  },
+  "dynamics": {
+   "descriptor": 9,
+   "text_only": 5
+  },
+  "rhythm": {
+   "descriptor": 8,
+   "text_only": 18
+  },
+  "space": {
+   "descriptor": 1,
+   "text_only": 6,
+   "classifier": 7
+  },
+  "production": {
+   "text_only": 24,
+   "classifier": 10,
+   "descriptor": 2
+  },
+  "instrument": {
+   "classifier": 61,
+   "text_only": 42
+  },
+  "genre": {
+   "classifier": 49,
+   "text_only": 37
+  },
+  "mood": {
+   "classifier": 7,
+   "descriptor": 2,
+   "text_only": 31
+  },
+  "sound_effect": {
+   "classifier": 72,
+   "text_only": 6
+  },
+  "abstract": {
+   "text_only": 45
+  }
+ }
+}

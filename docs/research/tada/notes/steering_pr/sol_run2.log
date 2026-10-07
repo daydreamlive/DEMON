@@ -1,0 +1,1301 @@
+OpenAI Codex v0.160.0
+--------
+workdir: C:\_dev\projects\DEMON-steer
+model: gpt-6-sol
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: high
+reasoning summaries: none
+session id: 01a10c25-77ae-75d3-8236-18cc7552cdad
+--------
+user
+One follow-up on your last commit (291a2fd8) in demos/sa3/styles.css only. The STEER pedal's knob grid uses fixed 4 columns, so a partial row sits left-aligned (1 knob alone at far left; 5 knobs = 4 + 1 stranded left). Make the second pedal's knobs lay out 1..8 cleanly: each row centered (a partial last row centered under the full one), at most 4 per row on wide pedals, 3 at <=620px, 2 at <=380px, same cell width and gap as the main pedal's knob grid. Do not change the main pedal's grid, sa3.js or index.html. Verify with node --check demos/sa3/sa3.js and git diff --check, then make one small commit with a conventional prefix (e.g. `demo(sa3): center partial knob rows on the steer pedal`). No Co-Authored-By, no AI or tool attribution of any kind anywhere. Do not push.
+
+codex
+I’ll inspect the SA3 grid rules and current worktree, change only `demos/sa3/styles.css`, run the two checks, and commit the CSS change.
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git status --short' in C:\_dev\projects\DEMON-steer
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git show --stat --oneline 291a2fd8' in C:\_dev\projects\DEMON-steer
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n -C 8 'knob|steer|pedal|620|380' demos/sa3/styles.css" in C:\_dev\projects\DEMON-steer
+ succeeded in 785ms:
+50-  position: relative;
+51-  width: min(100%, 560px);
+52-}
+53-
+54-.plugin[hidden] {
+55-  display: none;
+56-}
+57-
+58:.plugin-steer {
+59-  background:
+60-    radial-gradient(circle at 50% 16%, rgb(255 255 255 / 10%), transparent 34%),
+61-    linear-gradient(180deg, #384850, #1c2c34 52%, #0b1319);
+62-  border-color: #6b8792;
+63-}
+64-
+65-.plugin::before,
+66-.plugin::after {
+--
+86-.plugin::before {
+87-  left: -17px;
+88-}
+89-
+90-.plugin::after {
+91-  right: -17px;
+92-}
+93-
+94:.plugin-steer::before,
+95:.plugin-steer::after {
+96-  background:
+97-    radial-gradient(ellipse at 42% 8%, rgb(190 230 239 / 35%), transparent 22%),
+98-    repeating-linear-gradient(91deg, rgb(166 212 226 / 18%) 0 2px, transparent 2px 8px),
+99-    linear-gradient(100deg, #263c49 0%, #517988 22%, #79a8af 48%, #345666 76%, #152b37 100%);
+100-  border-color: rgb(7 21 28 / 80%);
+101-}
+102-
+103-.screws {
+--
+133-  color: #fff;
+134-  font-family: "Product Sans", "Google Sans", "Arial Rounded MT Bold", "Trebuchet MS", system-ui, sans-serif;
+135-  font-size: 38px;
+136-  font-weight: 800;
+137-  line-height: 1;
+138-  text-shadow: 0 2px 0 rgb(0 0 0 / 55%), 0 0 18px rgb(255 255 255 / 14%);
+139-}
+140-
+141:.knob-grid {
+142-  display: grid;
+143-  gap: 14px 10px;
+144-  grid-template-columns: repeat(3, minmax(0, 1fr));
+145-  justify-items: center;
+146-  min-height: 132px;
+147-}
+148-
+149:.plugin-steer .knob-grid {
+150-  grid-template-columns: repeat(4, minmax(0, 1fr));
+151-}
+152-
+153:.knob-placeholder {
+154-  align-self: center;
+155-  color: #8b8f93;
+156-  font-size: 12px;
+157-  grid-column: 1 / -1;
+158-  text-transform: uppercase;
+159-}
+160-
+161:.knob-cell {
+162-  display: grid;
+163-  gap: 4px;
+164-  justify-items: center;
+165-}
+166-
+167:.knob-wrap {
+168-  display: grid;
+169-  height: 84px;
+170-  place-items: center;
+171-  position: relative;
+172-  width: 84px;
+173-}
+174-
+175:.knob {
+176-  align-items: center;
+177-  background:
+178-    radial-gradient(circle at 38% 32%, #5c626b, transparent 22%),
+179-    radial-gradient(circle at 62% 72%, #050607, transparent 34%),
+180-    linear-gradient(135deg, #30353d, #070809);
+181-  border: 2px solid #0d0e0f;
+182-  border-radius: 50%;
+183-  box-shadow:
+184-    inset 0 5px 9px rgb(255 255 255 / 7%),
+185-    inset 0 -9px 15px rgb(0 0 0 / 62%),
+186-    0 8px 14px rgb(0 0 0 / 62%);
+187-  cursor: grab;
+188-  display: flex;
+189-  height: 76px;
+190-  justify-content: center;
+191-  position: relative;
+192:  /* Claim vertical-drag gestures so touch devices steer the knob
+193-     instead of scrolling the page. */
+194-  touch-action: none;
+195-  user-select: none;
+196-  width: 76px;
+197-}
+198-
+199:.knob:focus-visible {
+200-  outline: 2px solid #6ba0cd;
+201-  outline-offset: 3px;
+202-}
+203-
+204:.knob.dragging {
+205-  cursor: ns-resize;
+206-}
+207-
+208-/* While dragging, kill the rotor's settle animation so the pointer
+209-   tracks the cursor 1:1 instead of easing behind it. */
+210:.knob.dragging .pointer-rotor {
+211-  transition: none;
+212-}
+213-
+214:/* A drag started on a knob can travel anywhere via pointer capture;
+215-   pin the resize cursor and suppress text selection page-wide. */
+216:body.knob-dragging {
+217-  cursor: ns-resize;
+218-  user-select: none;
+219-}
+220-
+221:.knob::before {
+222-  border: 2px solid rgb(255 255 255 / 74%);
+223-  border-radius: 50%;
+224-  content: "";
+225-  height: 34px;
+226-  position: absolute;
+227-  width: 34px;
+228-}
+229-
+230-.pointer-rotor {
+231-  inset: 0;
+232-  position: absolute;
+233-  transition: transform 90ms linear;
+234-}
+235-
+236:.knob-pointer {
+237-  background: linear-gradient(180deg, #fff, #c9e0ee);
+238-  border-radius: 999px;
+239-  box-shadow: 0 0 6px rgb(255 255 255 / 34%);
+240-  height: 20px;
+241-  left: calc(50% - 2px);
+242-  position: absolute;
+243-  top: 6px;
+244-  width: 4px;
+245-}
+246-
+247:.knob-value {
+248-  color: #f6f7f7;
+249-  font-size: 13px;
+250-  font-variant-numeric: tabular-nums;
+251-  font-weight: 800;
+252-}
+253-
+254:.knob-label {
+255-  color: #d3d3cc;
+256-  font-size: 10px;
+257-  font-weight: 900;
+258-  text-align: center;
+259-  text-transform: uppercase;
+260-}
+261-
+262:.select-knob,
+263:.bool-knob {
+264-  align-items: center;
+265-  background: #101112;
+266-  border: 1px solid rgb(255 255 255 / 16%);
+267-  border-radius: 4px;
+268-  color: #eee;
+269-  display: flex;
+270-  min-height: 40px;
+271-  padding: 7px 9px;
+272-}
+273-
+274:.select-knob {
+275-  width: 100%;
+276-}
+277-
+278:.bool-knob input {
+279-  accent-color: #6ba0cd;
+280-  height: 18px;
+281-  width: 18px;
+282-}
+283-
+284-.controls {
+285-  display: grid;
+286-  gap: 10px;
+--
+504-
+505-@media (max-width: 1200px) {
+506-  .shell {
+507-    flex-direction: column;
+508-    gap: 40px;
+509-  }
+510-}
+511-
+512:@media (max-width: 620px) {
+513-  .shell {
+514-    padding: 18px 20px;
+515-  }
+516-
+517-  .plugin {
+518-    padding: 18px 22px;
+519-  }
+520-
+--
+522-  .plugin::after {
+523-    width: 28px;
+524-  }
+525-
+526-  .source-row {
+527-    grid-template-columns: 1fr;
+528-  }
+529-
+530:  .plugin-steer .knob-grid {
+531-    grid-template-columns: repeat(3, minmax(0, 1fr));
+532-  }
+533-}
+534-
+535:@media (max-width: 380px) {
+536:  .knob-grid,
+537:  .plugin-steer .knob-grid {
+538-    grid-template-columns: repeat(2, minmax(0, 1fr));
+539-  }
+540-}
+
+ succeeded in 789ms:
+291a2fd8 demo(sa3): add second pedal with rotary steering knobs
+ demos/sa3/index.html |  14 ++++---
+ demos/sa3/sa3.js     |  67 ++++++--------------------------
+ demos/sa3/styles.css | 105 ++++++++++++++++++++++++++++++++++++---------------
+ 3 files changed, 96 insertions(+), 90 deletions(-)
+
+ succeeded in 806ms:
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content demos/sa3/index.html | Select-Object -First 120' in C:\_dev\projects\DEMON-steer
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content demos/sa3/styles.css | Select-Object -First 165' in C:\_dev\projects\DEMON-steer
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n -C 5 'knob-grid|knob-cell|plugin-steer|appendChild' demos/sa3/sa3.js" in C:\_dev\projects\DEMON-steer
+ succeeded in 774ms:
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>DEMON SA3</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="plugin" aria-label="Stable Audio 3 demo">
+        <div class="screws" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+        <div class="brand-row">
+          <div class="brand">Daydream</div>
+        </div>
+
+        <div id="knobs" class="knob-grid">
+          <div class="knob-placeholder">knobs appear when the session starts</div>
+        </div>
+
+        <div class="controls">
+          <label class="field-slot">
+            <span>Prompt A</span>
+            <textarea id="prompt-a" rows="2"></textarea>
+          </label>
+
+          <label class="field-slot">
+            <span>Prompt B</span>
+            <textarea id="prompt-b" rows="2" placeholder="optional second prompt for the A/B blend"></textarea>
+          </label>
+
+          <label class="field-slot blend-slot">
+            <span>
+              A/B blend
+              <em id="blend-value" class="blend-value">0.00</em>
+            </span>
+            <input id="blend" type="range" min="0" max="1" step="0.01" value="0" disabled aria-label="Prompt A/B blend">
+          </label>
+
+          <div class="source-row">
+            <label class="field-slot">
+              <span>Source</span>
+              <select id="fixture"></select>
+            </label>
+            <label class="field-slot duration-slot">
+              <span>Duration s</span>
+              <input id="duration" type="number" min="1" max="120" placeholder="auto">
+            </label>
+          </div>
+
+          <button id="send-prompt" type="button" class="send-btn" disabled>Send Prompt</button>
+        </div>
+
+        <div class="title">sa3</div>
+
+        <div class="transport">
+          <button id="transport" type="button" class="power-btn">Start</button>
+          <span class="tick-readout" title="Backend tick time">
+            <b>tick</b>
+            <span id="tick">--.-</span>
+            <small>ms</small>
+          </span>
+          <span id="status-dot" class="status-dot status-idle" aria-hidden="true"></span>
+          <span id="status-text" class="status-text">idle</span>
+        </div>
+      </section>
+      <section id="steer-pedal" class="plugin plugin-steer" aria-label="Activation steering pedal" hidden>
+        <div class="screws" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+        <div class="brand-row">
+          <div class="brand">Daydream</div>
+        </div>
+        <div id="steer-knobs" class="knob-grid"></div>
+        <div class="title">STEER</div>
+      </section>
+    </main>
+
+    <script type="module" src="./sa3.js"></script>
+  </body>
+</html>
+
+ succeeded in 758ms:
+141-  const coarse = isInt ? 1 : span / 100;
+142-  const fine = isInt ? 1 : span / 1000;
+143-  const page = isInt ? Math.max(1, Math.round(span / 10)) : span / 10;
+144-
+145-  const cell = document.createElement("div");
+146:  cell.className = "knob-cell";
+147-  if (entry.description) cell.title = entry.description;
+148-
+149-  const wrap = document.createElement("div");
+150-  wrap.className = "knob-wrap";
+151-
+--
+291-  return cell;
+292-}
+293-
+294-function enumKnob(name, entry) {
+295-  const cell = document.createElement("label");
+296:  cell.className = "knob-cell";
+297-  if (entry.description) cell.title = entry.description;
+298-
+299-  const select = document.createElement("select");
+300-  select.className = "select-knob";
+301-  const options = entry.options ?? [];
+--
+324-  return cell;
+325-}
+326-
+327-function boolKnob(name, entry) {
+328-  const cell = document.createElement("label");
+329:  cell.className = "knob-cell";
+330-  if (entry.description) cell.title = entry.description;
+331-
+332-  const wrap = document.createElement("span");
+333-  wrap.className = "bool-knob";
+334-  const input = document.createElement("input");
+
+ succeeded in 777ms:
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(circle at 50% 18%, rgb(255 255 255 / 10%), transparent 26%),
+    radial-gradient(circle at 50% 86%, rgb(107 160 205 / 12%), transparent 32%),
+    linear-gradient(145deg, #14171b, #050607 72%);
+  color: #f1f1ed;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.shell {
+  align-items: center;
+  display: flex;
+  gap: 52px;
+  justify-content: center;
+  min-height: 100svh;
+  padding: 24px;
+}
+
+.plugin {
+  background:
+    radial-gradient(circle at 50% 16%, rgb(255 255 255 / 8%), transparent 34%),
+    linear-gradient(180deg, #30343a, #15181d 52%, #08090b);
+  border: 1px solid #565d66;
+  border-radius: 8px;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 18%),
+    inset 0 -14px 30px rgb(0 0 0 / 46%),
+    0 28px 80px rgb(0 0 0 / 52%);
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  padding: 26px 32px 24px;
+  position: relative;
+  width: min(100%, 560px);
+}
+
+.plugin[hidden] {
+  display: none;
+}
+
+.plugin-steer {
+  background:
+    radial-gradient(circle at 50% 16%, rgb(255 255 255 / 10%), transparent 34%),
+    linear-gradient(180deg, #384850, #1c2c34 52%, #0b1319);
+  border-color: #6b8792;
+}
+
+.plugin::before,
+.plugin::after {
+  background:
+    radial-gradient(ellipse at 42% 8%, rgb(255 226 164 / 34%), transparent 22%),
+    radial-gradient(ellipse at 70% 62%, rgb(58 26 9 / 45%), transparent 28%),
+    repeating-radial-gradient(ellipse at 18% 24%, rgb(66 31 11 / 32%) 0 3px, transparent 4px 15px),
+    repeating-linear-gradient(91deg, rgb(255 226 164 / 18%) 0 2px, transparent 2px 8px),
+    linear-gradient(100deg, #693216 0%, #a7602a 22%, #cf8d45 48%, #793d1a 76%, #3c1a0c 100%);
+  border: 1px solid rgb(16 8 3 / 80%);
+  border-radius: 6px;
+  box-shadow:
+    inset 6px 0 12px rgb(255 226 165 / 20%),
+    inset -8px 0 18px rgb(28 11 3 / 64%),
+    0 0 0 1px rgb(255 255 255 / 8%);
+  content: "";
+  height: calc(100% - 58px);
+  position: absolute;
+  top: 29px;
+  width: 44px;
+}
+
+.plugin::before {
+  left: -17px;
+}
+
+.plugin::after {
+  right: -17px;
+}
+
+.plugin-steer::before,
+.plugin-steer::after {
+  background:
+    radial-gradient(ellipse at 42% 8%, rgb(190 230 239 / 35%), transparent 22%),
+    repeating-linear-gradient(91deg, rgb(166 212 226 / 18%) 0 2px, transparent 2px 8px),
+    linear-gradient(100deg, #263c49 0%, #517988 22%, #79a8af 48%, #345666 76%, #152b37 100%);
+  border-color: rgb(7 21 28 / 80%);
+}
+
+.screws {
+  inset: 11px 13px;
+  pointer-events: none;
+  position: absolute;
+}
+
+.screws span {
+  background: linear-gradient(135deg, #8c969a, #222a2e);
+  border: 1px solid #111719;
+  border-radius: 50%;
+  box-shadow: inset 0 1px 1px rgb(255 255 255 / 50%), 0 1px 3px rgb(0 0 0 / 70%);
+  height: 9px;
+  position: absolute;
+  width: 9px;
+}
+
+.screws span:nth-child(1) { left: 0; top: 0; }
+.screws span:nth-child(2) { right: 0; top: 0; }
+.screws span:nth-child(3) { bottom: 0; left: 0; }
+.screws span:nth-child(4) { bottom: 0; right: 0; }
+
+.brand-row {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-height: 44px;
+  position: relative;
+}
+
+.brand {
+  color: #fff;
+  font-family: "Product Sans", "Google Sans", "Arial Rounded MT Bold", "Trebuchet MS", system-ui, sans-serif;
+  font-size: 38px;
+  font-weight: 800;
+  line-height: 1;
+  text-shadow: 0 2px 0 rgb(0 0 0 / 55%), 0 0 18px rgb(255 255 255 / 14%);
+}
+
+.knob-grid {
+  display: grid;
+  gap: 14px 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  justify-items: center;
+  min-height: 132px;
+}
+
+.plugin-steer .knob-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.knob-placeholder {
+  align-self: center;
+  color: #8b8f93;
+  font-size: 12px;
+  grid-column: 1 / -1;
+  text-transform: uppercase;
+}
+
+.knob-cell {
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+}
+
+codex
+The STEER pedal has its own grid override, so I can change its layout without touching the main pedal. I’ll use wrapping rows with centered items and keep the existing knob size and grid gaps.
+apply patch
+patch: completed
+C:\_dev\projects\DEMON-steer\demos\sa3\styles.css
+diff --git a/demos/sa3/styles.css b/demos/sa3/styles.css
+index 5e6c57a1e3b395b2510896de1236f829f372ec9a..32dd6fed3f26e518754b47c7ea9b1bf589949a85
+--- a/demos/sa3/styles.css
++++ b/demos/sa3/styles.css
+@@ -147,9 +147,15 @@
+ }
+ 
+ .plugin-steer .knob-grid {
+-  grid-template-columns: repeat(4, minmax(0, 1fr));
++  display: flex;
++  flex-wrap: wrap;
++  justify-content: center;
+ }
+ 
++.plugin-steer .knob-cell {
++  flex: 0 0 calc((100% - 30px) / 4);
++}
++
+ .knob-placeholder {
+   align-self: center;
+   color: #8b8f93;
+@@ -528,13 +534,20 @@
+   }
+ 
+   .plugin-steer .knob-grid {
+-    grid-template-columns: repeat(3, minmax(0, 1fr));
++    gap: 14px 10px;
+   }
++
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 20px) / 3);
++  }
+ }
+ 
+ @media (max-width: 380px) {
+-  .knob-grid,
+-  .plugin-steer .knob-grid {
++  .knob-grid {
+     grid-template-columns: repeat(2, minmax(0, 1fr));
+   }
++
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 10px) / 2);
++  }
+ }
+
+diff --git a/demos/sa3/styles.css b/demos/sa3/styles.css
+index 5e6c57a1e3b395b2510896de1236f829f372ec9a..32dd6fed3f26e518754b47c7ea9b1bf589949a85
+--- a/demos/sa3/styles.css
++++ b/demos/sa3/styles.css
+@@ -147,9 +147,15 @@
+ }
+ 
+ .plugin-steer .knob-grid {
+-  grid-template-columns: repeat(4, minmax(0, 1fr));
++  display: flex;
++  flex-wrap: wrap;
++  justify-content: center;
+ }
+ 
++.plugin-steer .knob-cell {
++  flex: 0 0 calc((100% - 30px) / 4);
++}
++
+ .knob-placeholder {
+   align-self: center;
+   color: #8b8f93;
+@@ -528,13 +534,20 @@
+   }
+ 
+   .plugin-steer .knob-grid {
+-    grid-template-columns: repeat(3, minmax(0, 1fr));
++    gap: 14px 10px;
+   }
++
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 20px) / 3);
++  }
+ }
+ 
+ @media (max-width: 380px) {
+-  .knob-grid,
+-  .plugin-steer .knob-grid {
++  .knob-grid {
+     grid-template-columns: repeat(2, minmax(0, 1fr));
+   }
++
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 10px) / 2);
++  }
+ }
+
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff -- demos/sa3/styles.css' in C:\_dev\projects\DEMON-steer
+ succeeded in 717ms:
+warning: in the working copy of 'demos/sa3/styles.css', LF will be replaced by CRLF the next time Git touches it
+diff --git a/demos/sa3/styles.css b/demos/sa3/styles.css
+index 30e65bba..c169a0b8 100644
+--- a/demos/sa3/styles.css
++++ b/demos/sa3/styles.css
+@@ -147,7 +147,13 @@ textarea {
+ }
+ 
+ .plugin-steer .knob-grid {
+-  grid-template-columns: repeat(4, minmax(0, 1fr));
++  display: flex;
++  flex-wrap: wrap;
++  justify-content: center;
++}
++
++.plugin-steer .knob-cell {
++  flex: 0 0 calc((100% - 30px) / 4);
+ }
+ 
+ .knob-placeholder {
+@@ -528,13 +534,20 @@ body.knob-dragging {
+   }
+ 
+   .plugin-steer .knob-grid {
+-    grid-template-columns: repeat(3, minmax(0, 1fr));
++    gap: 14px 10px;
++  }
++
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 20px) / 3);
+   }
+ }
+ 
+ @media (max-width: 380px) {
+-  .knob-grid,
+-  .plugin-steer .knob-grid {
++  .knob-grid {
+     grid-template-columns: repeat(2, minmax(0, 1fr));
+   }
++
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 10px) / 2);
++  }
+ }
+
+diff --git a/demos/sa3/styles.css b/demos/sa3/styles.css
+index 5e6c57a1e3b395b2510896de1236f829f372ec9a..32dd6fed3f26e518754b47c7ea9b1bf589949a85
+--- a/demos/sa3/styles.css
++++ b/demos/sa3/styles.css
+@@ -147,9 +147,15 @@
+ }
+ 
+ .plugin-steer .knob-grid {
+-  grid-template-columns: repeat(4, minmax(0, 1fr));
++  display: flex;
++  flex-wrap: wrap;
++  justify-content: center;
+ }
+ 
++.plugin-steer .knob-cell {
++  flex: 0 0 calc((100% - 30px) / 4);
++}
++
+ .knob-placeholder {
+   align-self: center;
+   color: #8b8f93;
+@@ -528,13 +534,20 @@
+   }
+ 
+   .plugin-steer .knob-grid {
+-    grid-template-columns: repeat(3, minmax(0, 1fr));
++    gap: 14px 10px;
+   }
++
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 20px) / 3);
++  }
+ }
+ 
+ @media (max-width: 380px) {
+-  .knob-grid,
+-  .plugin-steer .knob-grid {
++  .knob-grid {
+     grid-template-columns: repeat(2, minmax(0, 1fr));
+   }
++
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 10px) / 2);
++  }
+ }
+
+apply patch
+patch: completed
+C:\_dev\projects\DEMON-steer\demos\sa3\styles.css
+diff --git a/demos/sa3/styles.css b/demos/sa3/styles.css
+index 5e6c57a1e3b395b2510896de1236f829f372ec9a..22eb87267dcd3bc5f8dd51126682452b1b38fc99
+--- a/demos/sa3/styles.css
++++ b/demos/sa3/styles.css
+@@ -147,7 +147,13 @@
+ }
+ 
+ .plugin-steer .knob-grid {
+-  grid-template-columns: repeat(4, minmax(0, 1fr));
++  display: flex;
++  flex-wrap: wrap;
++  justify-content: center;
++}
++
++.plugin-steer .knob-cell {
++  flex: 0 0 calc((100% - 30px) / 4);
+ }
+ 
+ .knob-placeholder {
+@@ -527,14 +533,17 @@
+     grid-template-columns: 1fr;
+   }
+ 
+-  .plugin-steer .knob-grid {
+-    grid-template-columns: repeat(3, minmax(0, 1fr));
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 20px) / 3);
+   }
+ }
+ 
+ @media (max-width: 380px) {
+-  .knob-grid,
+-  .plugin-steer .knob-grid {
++  .knob-grid {
+     grid-template-columns: repeat(2, minmax(0, 1fr));
+   }
++
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 10px) / 2);
++  }
+ }
+
+diff --git a/demos/sa3/styles.css b/demos/sa3/styles.css
+index 5e6c57a1e3b395b2510896de1236f829f372ec9a..22eb87267dcd3bc5f8dd51126682452b1b38fc99
+--- a/demos/sa3/styles.css
++++ b/demos/sa3/styles.css
+@@ -147,7 +147,13 @@
+ }
+ 
+ .plugin-steer .knob-grid {
+-  grid-template-columns: repeat(4, minmax(0, 1fr));
++  display: flex;
++  flex-wrap: wrap;
++  justify-content: center;
++}
++
++.plugin-steer .knob-cell {
++  flex: 0 0 calc((100% - 30px) / 4);
+ }
+ 
+ .knob-placeholder {
+@@ -527,14 +533,17 @@
+     grid-template-columns: 1fr;
+   }
+ 
+-  .plugin-steer .knob-grid {
+-    grid-template-columns: repeat(3, minmax(0, 1fr));
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 20px) / 3);
+   }
+ }
+ 
+ @media (max-width: 380px) {
+-  .knob-grid,
+-  .plugin-steer .knob-grid {
++  .knob-grid {
+     grid-template-columns: repeat(2, minmax(0, 1fr));
+   }
++
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 10px) / 2);
++  }
+ }
+
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'node --check demos/sa3/sa3.js' in C:\_dev\projects\DEMON-steer
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat -- demos/sa3/styles.css' in C:\_dev\projects\DEMON-steer
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git status --short' in C:\_dev\projects\DEMON-steer
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --check' in C:\_dev\projects\DEMON-steer
+ succeeded in 823ms:
+warning: in the working copy of 'demos/sa3/styles.css', LF will be replaced by CRLF the next time Git touches it
+ demos/sa3/styles.css | 19 ++++++++++++++-----
+ 1 file changed, 14 insertions(+), 5 deletions(-)
+
+ succeeded in 823ms:
+ M demos/sa3/styles.css
+
+ succeeded in 824ms:
+warning: in the working copy of 'demos/sa3/styles.css', LF will be replaced by CRLF the next time Git touches it
+
+ succeeded in 847ms:
+diff --git a/demos/sa3/styles.css b/demos/sa3/styles.css
+index 5e6c57a1e3b395b2510896de1236f829f372ec9a..22eb87267dcd3bc5f8dd51126682452b1b38fc99
+--- a/demos/sa3/styles.css
++++ b/demos/sa3/styles.css
+@@ -147,7 +147,13 @@
+ }
+ 
+ .plugin-steer .knob-grid {
+-  grid-template-columns: repeat(4, minmax(0, 1fr));
++  display: flex;
++  flex-wrap: wrap;
++  justify-content: center;
++}
++
++.plugin-steer .knob-cell {
++  flex: 0 0 calc((100% - 30px) / 4);
+ }
+ 
+ .knob-placeholder {
+@@ -527,14 +533,17 @@
+     grid-template-columns: 1fr;
+   }
+ 
+-  .plugin-steer .knob-grid {
+-    grid-template-columns: repeat(3, minmax(0, 1fr));
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 20px) / 3);
+   }
+ }
+ 
+ @media (max-width: 380px) {
+-  .knob-grid,
+-  .plugin-steer .knob-grid {
++  .knob-grid {
+     grid-template-columns: repeat(2, minmax(0, 1fr));
+   }
++
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 10px) / 2);
++  }
+ }
+
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n -C 3 'steerKnobs|steer-knobs|knobGrid|createKnob' demos/sa3/sa3.js" in C:\_dev\projects\DEMON-steer
+ succeeded in 687ms:
+21-  fixture: document.querySelector("#fixture"),
+22-  knobs: document.querySelector("#knobs"),
+23-  steerPedal: document.querySelector("#steer-pedal"),
+24:  steerKnobs: document.querySelector("#steer-knobs"),
+25-  promptA: document.querySelector("#prompt-a"),
+26-  promptB: document.querySelector("#prompt-b"),
+27-  sendPrompt: document.querySelector("#send-prompt"),
+--
+355-
+356-function renderKnobs() {
+357-  els.steerPedal.hidden = state.steer.length === 0;
+358:  els.steerKnobs.replaceChildren(
+359-    ...state.steer.map(({ name, entry }) => numericKnob(name, entry)),
+360-  );
+361-
+
+diff --git a/demos/sa3/styles.css b/demos/sa3/styles.css
+index 5e6c57a1e3b395b2510896de1236f829f372ec9a..22eb87267dcd3bc5f8dd51126682452b1b38fc99
+--- a/demos/sa3/styles.css
++++ b/demos/sa3/styles.css
+@@ -147,7 +147,13 @@
+ }
+ 
+ .plugin-steer .knob-grid {
+-  grid-template-columns: repeat(4, minmax(0, 1fr));
++  display: flex;
++  flex-wrap: wrap;
++  justify-content: center;
++}
++
++.plugin-steer .knob-cell {
++  flex: 0 0 calc((100% - 30px) / 4);
+ }
+ 
+ .knob-placeholder {
+@@ -527,14 +533,17 @@
+     grid-template-columns: 1fr;
+   }
+ 
+-  .plugin-steer .knob-grid {
+-    grid-template-columns: repeat(3, minmax(0, 1fr));
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 20px) / 3);
+   }
+ }
+ 
+ @media (max-width: 380px) {
+-  .knob-grid,
+-  .plugin-steer .knob-grid {
++  .knob-grid {
+     grid-template-columns: repeat(2, minmax(0, 1fr));
+   }
++
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 10px) / 2);
++  }
+ }
+
+apply patch
+patch: completed
+C:\_dev\projects\DEMON-steer\demos\sa3\styles.css
+diff --git a/demos/sa3/styles.css b/demos/sa3/styles.css
+index 5e6c57a1e3b395b2510896de1236f829f372ec9a..0813e5d1c6568356509c6fc9abe5c69dc6237d12
+--- a/demos/sa3/styles.css
++++ b/demos/sa3/styles.css
+@@ -147,7 +147,14 @@
+ }
+ 
+ .plugin-steer .knob-grid {
+-  grid-template-columns: repeat(4, minmax(0, 1fr));
++  display: flex;
++  flex-wrap: wrap;
++  justify-content: center;
++}
++
++.plugin-steer .knob-cell {
++  flex: 0 0 calc((100% - 30px) / 4);
++  min-width: 0;
+ }
+ 
+ .knob-placeholder {
+@@ -527,14 +534,17 @@
+     grid-template-columns: 1fr;
+   }
+ 
+-  .plugin-steer .knob-grid {
+-    grid-template-columns: repeat(3, minmax(0, 1fr));
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 20px) / 3);
+   }
+ }
+ 
+ @media (max-width: 380px) {
+-  .knob-grid,
+-  .plugin-steer .knob-grid {
++  .knob-grid {
+     grid-template-columns: repeat(2, minmax(0, 1fr));
+   }
++
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 10px) / 2);
++  }
+ }
+
+diff --git a/demos/sa3/styles.css b/demos/sa3/styles.css
+index 5e6c57a1e3b395b2510896de1236f829f372ec9a..0813e5d1c6568356509c6fc9abe5c69dc6237d12
+--- a/demos/sa3/styles.css
++++ b/demos/sa3/styles.css
+@@ -147,7 +147,14 @@
+ }
+ 
+ .plugin-steer .knob-grid {
+-  grid-template-columns: repeat(4, minmax(0, 1fr));
++  display: flex;
++  flex-wrap: wrap;
++  justify-content: center;
++}
++
++.plugin-steer .knob-cell {
++  flex: 0 0 calc((100% - 30px) / 4);
++  min-width: 0;
+ }
+ 
+ .knob-placeholder {
+@@ -527,14 +534,17 @@
+     grid-template-columns: 1fr;
+   }
+ 
+-  .plugin-steer .knob-grid {
+-    grid-template-columns: repeat(3, minmax(0, 1fr));
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 20px) / 3);
+   }
+ }
+ 
+ @media (max-width: 380px) {
+-  .knob-grid,
+-  .plugin-steer .knob-grid {
++  .knob-grid {
+     grid-template-columns: repeat(2, minmax(0, 1fr));
+   }
++
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 10px) / 2);
++  }
+ }
+
+codex
+The STEER rows now use four equal slots on wide pedals, three at 620px, and two at 380px. Both checks passed; I added one small width guard for long knob labels and will rerun the checks before committing.
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff -- demos/sa3/styles.css' in C:\_dev\projects\DEMON-steer
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'node --check demos/sa3/sa3.js' in C:\_dev\projects\DEMON-steer
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --check' in C:\_dev\projects\DEMON-steer
+ succeeded in 811ms:
+warning: in the working copy of 'demos/sa3/styles.css', LF will be replaced by CRLF the next time Git touches it
+diff --git a/demos/sa3/styles.css b/demos/sa3/styles.css
+index 30e65bba..6e126fae 100644
+--- a/demos/sa3/styles.css
++++ b/demos/sa3/styles.css
+@@ -147,7 +147,14 @@ textarea {
+ }
+ 
+ .plugin-steer .knob-grid {
+-  grid-template-columns: repeat(4, minmax(0, 1fr));
++  display: flex;
++  flex-wrap: wrap;
++  justify-content: center;
++}
++
++.plugin-steer .knob-cell {
++  flex: 0 0 calc((100% - 30px) / 4);
++  min-width: 0;
+ }
+ 
+ .knob-placeholder {
+@@ -527,14 +534,17 @@ body.knob-dragging {
+     grid-template-columns: 1fr;
+   }
+ 
+-  .plugin-steer .knob-grid {
+-    grid-template-columns: repeat(3, minmax(0, 1fr));
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 20px) / 3);
+   }
+ }
+ 
+ @media (max-width: 380px) {
+-  .knob-grid,
+-  .plugin-steer .knob-grid {
++  .knob-grid {
+     grid-template-columns: repeat(2, minmax(0, 1fr));
+   }
++
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 10px) / 2);
++  }
+ }
+
+ succeeded in 820ms:
+warning: in the working copy of 'demos/sa3/styles.css', LF will be replaced by CRLF the next time Git touches it
+
+ succeeded in 823ms:
+diff --git a/demos/sa3/styles.css b/demos/sa3/styles.css
+index 5e6c57a1e3b395b2510896de1236f829f372ec9a..0813e5d1c6568356509c6fc9abe5c69dc6237d12
+--- a/demos/sa3/styles.css
++++ b/demos/sa3/styles.css
+@@ -147,7 +147,14 @@
+ }
+ 
+ .plugin-steer .knob-grid {
+-  grid-template-columns: repeat(4, minmax(0, 1fr));
++  display: flex;
++  flex-wrap: wrap;
++  justify-content: center;
++}
++
++.plugin-steer .knob-cell {
++  flex: 0 0 calc((100% - 30px) / 4);
++  min-width: 0;
+ }
+ 
+ .knob-placeholder {
+@@ -527,14 +534,17 @@
+     grid-template-columns: 1fr;
+   }
+ 
+-  .plugin-steer .knob-grid {
+-    grid-template-columns: repeat(3, minmax(0, 1fr));
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 20px) / 3);
+   }
+ }
+ 
+ @media (max-width: 380px) {
+-  .knob-grid,
+-  .plugin-steer .knob-grid {
++  .knob-grid {
+     grid-template-columns: repeat(2, minmax(0, 1fr));
+   }
++
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 10px) / 2);
++  }
+ }
+
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git commit -am "demo(sa3): center partial knob rows on the steer pedal"' in C:\_dev\projects\DEMON-steer
+ succeeded in 806ms:
+warning: in the working copy of 'demos/sa3/styles.css', LF will be replaced by CRLF the next time Git touches it
+[ryanontheinside/feat/steering-generic cf243595] demo(sa3): center partial knob rows on the steer pedal
+ 1 file changed, 15 insertions(+), 5 deletions(-)
+
+diff --git a/demos/sa3/styles.css b/demos/sa3/styles.css
+index 5e6c57a1e3b395b2510896de1236f829f372ec9a..0813e5d1c6568356509c6fc9abe5c69dc6237d12
+--- a/demos/sa3/styles.css
++++ b/demos/sa3/styles.css
+@@ -147,7 +147,14 @@
+ }
+ 
+ .plugin-steer .knob-grid {
+-  grid-template-columns: repeat(4, minmax(0, 1fr));
++  display: flex;
++  flex-wrap: wrap;
++  justify-content: center;
++}
++
++.plugin-steer .knob-cell {
++  flex: 0 0 calc((100% - 30px) / 4);
++  min-width: 0;
+ }
+ 
+ .knob-placeholder {
+@@ -527,14 +534,17 @@
+     grid-template-columns: 1fr;
+   }
+ 
+-  .plugin-steer .knob-grid {
+-    grid-template-columns: repeat(3, minmax(0, 1fr));
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 20px) / 3);
+   }
+ }
+ 
+ @media (max-width: 380px) {
+-  .knob-grid,
+-  .plugin-steer .knob-grid {
++  .knob-grid {
+     grid-template-columns: repeat(2, minmax(0, 1fr));
+   }
++
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 10px) / 2);
++  }
+ }
+
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git status --short' in C:\_dev\projects\DEMON-steer
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git show -s --format=%B HEAD' in C:\_dev\projects\DEMON-steer
+exec
+"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git show --format= --name-only HEAD' in C:\_dev\projects\DEMON-steer
+ succeeded in 802ms:
+ succeeded in 787ms:
+demos/sa3/styles.css
+
+ succeeded in 803ms:
+demo(sa3): center partial knob rows on the steer pedal
+
+
+diff --git a/demos/sa3/styles.css b/demos/sa3/styles.css
+index 5e6c57a1e3b395b2510896de1236f829f372ec9a..0813e5d1c6568356509c6fc9abe5c69dc6237d12
+--- a/demos/sa3/styles.css
++++ b/demos/sa3/styles.css
+@@ -147,7 +147,14 @@
+ }
+ 
+ .plugin-steer .knob-grid {
+-  grid-template-columns: repeat(4, minmax(0, 1fr));
++  display: flex;
++  flex-wrap: wrap;
++  justify-content: center;
++}
++
++.plugin-steer .knob-cell {
++  flex: 0 0 calc((100% - 30px) / 4);
++  min-width: 0;
+ }
+ 
+ .knob-placeholder {
+@@ -527,14 +534,17 @@
+     grid-template-columns: 1fr;
+   }
+ 
+-  .plugin-steer .knob-grid {
+-    grid-template-columns: repeat(3, minmax(0, 1fr));
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 20px) / 3);
+   }
+ }
+ 
+ @media (max-width: 380px) {
+-  .knob-grid,
+-  .plugin-steer .knob-grid {
++  .knob-grid {
+     grid-template-columns: repeat(2, minmax(0, 1fr));
+   }
++
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 10px) / 2);
++  }
+ }
+
+codex
+Updated [styles.css](C:/_dev/projects/DEMON-steer/demos/sa3/styles.css) so STEER knob rows center their items, with up to four per row on wide pedals, three at 620px, and two at 380px. The main pedal’s grid is unchanged.
+
+`node --check demos/sa3/sa3.js` and `git diff --check` passed. Committed as `cf243595` (`demo(sa3): center partial knob rows on the steer pedal`). The worktree is clean; nothing was pushed.
+diff --git a/demos/sa3/styles.css b/demos/sa3/styles.css
+index 5e6c57a1e3b395b2510896de1236f829f372ec9a..0813e5d1c6568356509c6fc9abe5c69dc6237d12
+--- a/demos/sa3/styles.css
++++ b/demos/sa3/styles.css
+@@ -147,7 +147,14 @@
+ }
+ 
+ .plugin-steer .knob-grid {
+-  grid-template-columns: repeat(4, minmax(0, 1fr));
++  display: flex;
++  flex-wrap: wrap;
++  justify-content: center;
++}
++
++.plugin-steer .knob-cell {
++  flex: 0 0 calc((100% - 30px) / 4);
++  min-width: 0;
+ }
+ 
+ .knob-placeholder {
+@@ -527,14 +534,17 @@
+     grid-template-columns: 1fr;
+   }
+ 
+-  .plugin-steer .knob-grid {
+-    grid-template-columns: repeat(3, minmax(0, 1fr));
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 20px) / 3);
+   }
+ }
+ 
+ @media (max-width: 380px) {
+-  .knob-grid,
+-  .plugin-steer .knob-grid {
++  .knob-grid {
+     grid-template-columns: repeat(2, minmax(0, 1fr));
+   }
++
++  .plugin-steer .knob-cell {
++    flex-basis: calc((100% - 10px) / 2);
++  }
+ }
+
+tokens used
+24,039
+Updated [styles.css](C:/_dev/projects/DEMON-steer/demos/sa3/styles.css) so STEER knob rows center their items, with up to four per row on wide pedals, three at 620px, and two at 380px. The main pedal’s grid is unchanged.
+
+`node --check demos/sa3/sa3.js` and `git diff --check` passed. Committed as `cf243595` (`demo(sa3): center partial knob rows on the steer pedal`). The worktree is clean; nothing was pushed.

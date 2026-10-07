@@ -107,6 +107,27 @@ _DIT_FP8_DIR_RE = re.compile(
 _DIT_REFIT_DIR_RE = re.compile(
     r"^(?P<prefix>.+_dit)_refit_l(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$"
 )
+# fp16mixed DiT engines WITH the activation-steering input
+# (``sa3_build --steer``; graph surgery in
+# acestep.engine.trt.sa3_steering_onnx): ``sa3_m_dit_steer_l{min}_{opt}_{max}``.
+# Same precision and graph as the plain fp16mixed engine plus one additive
+# input; selected when the session asks for steering (it has packs).
+_DIT_STEER_DIR_RE = re.compile(
+    r"^(?P<prefix>.+_dit)_steer_l(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$"
+)
+# fp16mixed DiT engines with the steering input at every block's
+# cross-attention OUTPUT (``sa3_build --steer-cross-attn``; input
+# ``steering_xattn``): ``sa3_m_dit_steerxa_l{min}_{opt}_{max}``. TADA's
+# hook point (arXiv 2602.11910); selected when the session's packs target
+# ``cross_attn_output``.
+_DIT_STEERXA_DIR_RE = re.compile(
+    r"^(?P<prefix>.+_dit)_steerxa_l(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$"
+)
+#: Engine steering input name -> the steering layout hook it implements.
+STEERING_INPUT_HOOKS = {
+    "steering": "post_block_residual",
+    "steering_xattn": "cross_attn_output",
+}
 _SAME_L_DIR_RE = re.compile(
     r"^same_l_decode_window_(?P<tag>[a-z0-9_]+)_t"
     r"(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$"
@@ -252,6 +273,7 @@ def _register_same_plugin() -> None:
 
 def find_dit_engine(
     model_id: str, latent_frames: int, *, want_refittable: bool = False,
+    want_steering: "bool | str" = False,
 ) -> Optional[Path]:
     """Smallest-profile built DiT engine covering ``latent_frames`` for
     ``model_id``'s weights, or None (caller falls back to eager).
@@ -270,7 +292,21 @@ def find_dit_engine(
     else fp16mixed; refit-built engines are ignored (their refit
     support costs a little optimization freedom, and non-LoRA sessions
     shouldn't pay it).
+
+    ``want_steering`` (the session has steering packs): a covering
+    steering-input engine (``sa3_m_dit_steer_*``) wins over fp8 and the
+    plain fp16mixed engine, since only it can apply steering on TRT. The
+    LoRA preference above still takes precedence (refit engines carry no
+    steering input; steering then no-ops on TRT, logged). Steering
+    engines are never chosen otherwise.
+
+    ``want_steering`` may also name the hook point the session's packs
+    target: ``"post_block_residual"`` (same as True) or
+    ``"cross_attn_output"``, which selects a covering
+    ``sa3_m_dit_steerxa_*`` engine instead.
     """
+    if want_steering is True:
+        want_steering = "post_block_residual"
     prefix = DIT_ENGINE_PREFIX.get(model_id)
     base = trt_engines_dir()
     if prefix is None or not base.is_dir():
@@ -278,9 +314,23 @@ def find_dit_engine(
     best = None        # smallest-covering fp16mixed engine
     best_fp8 = None    # smallest-covering fp8 engine
     best_refit = None  # smallest-covering refit-built engine
+    best_steer = None  # smallest-covering steering-input engine
+    best_steerxa = None  # smallest-covering cross-attn steering engine
     for sub in base.iterdir():
         f = sub / f"{sub.name}.trt"
         if not f.is_file():
+            continue
+        mx = _DIT_STEERXA_DIR_RE.match(sub.name)
+        if mx and mx.group("prefix") == prefix:
+            lo, hi = int(mx.group("lo")), int(mx.group("hi"))
+            if lo <= latent_frames <= hi and (best_steerxa is None or hi < best_steerxa[0]):
+                best_steerxa = (hi, f)
+            continue
+        ms = _DIT_STEER_DIR_RE.match(sub.name)
+        if ms and ms.group("prefix") == prefix:
+            lo, hi = int(ms.group("lo")), int(ms.group("hi"))
+            if lo <= latent_frames <= hi and (best_steer is None or hi < best_steer[0]):
+                best_steer = (hi, f)
             continue
         mr = _DIT_REFIT_DIR_RE.match(sub.name)
         if mr and mr.group("prefix") == prefix:
@@ -313,6 +363,35 @@ def find_dit_engine(
                 best_fp8[1].parent.name, best[1].parent.name,
             )
         return best[1] if best else (best_fp8[1] if best_fp8 else None)
+    if want_steering == "cross_attn_output":
+        if best_steerxa is not None:
+            logger.info(
+                "sa3_dit_steer_selected engine={} hook=cross_attn_output "
+                "latent_frames={}",
+                best_steerxa[1].parent.name, latent_frames,
+            )
+            return best_steerxa[1]
+        logger.warning(
+            "sa3_dit_steer_unavailable latent_frames={} hook=cross_attn_output "
+            "reason=no_covering_steerxa_engine (build: python -m "
+            "acestep.engine.trt.sa3_build --dit --min-latents 1 --opt-latents "
+            "646 --max-latents 646 --steer-cross-attn); steering will no-op on TRT",
+            latent_frames,
+        )
+        want_steering = False
+    if want_steering and best_steer is not None:
+        logger.info(
+            "sa3_dit_steer_selected engine={} latent_frames={}",
+            best_steer[1].parent.name, latent_frames,
+        )
+        return best_steer[1]
+    if want_steering:
+        logger.warning(
+            "sa3_dit_steer_unavailable latent_frames={} reason=no_covering_"
+            "steer_engine (build: python -m acestep.engine.trt.sa3_build "
+            "--all --dit-only --steer); steering will no-op on TRT",
+            latent_frames,
+        )
     # fp8 is ~1.8x faster; prefer it when one covers the window.
     if best_fp8 is not None:
         logger.info(
@@ -339,6 +418,8 @@ def max_dit_engine_latents(model_id: str) -> Optional[int]:
     for sub in base.iterdir():
         m = (
             _DIT_REFIT_DIR_RE.match(sub.name)
+            or _DIT_STEER_DIR_RE.match(sub.name)
+            or _DIT_STEERXA_DIR_RE.match(sub.name)
             or _DIT_DIR_RE.match(sub.name)
             or _DIT_FP8_DIR_RE.match(sub.name)
         )
@@ -496,6 +577,29 @@ class SA3TRTDit:
         self._ctx.set_input_shape("t5_mask", (1, T5_TOKENS))
         self._ctx.set_input_shape("seconds_total", (1,))
         self._ctx.set_input_shape("local_add_cond", (1, 257, L))
+        # Activation-steering input (``sa3_m_dit_steer_*``: ``steering``
+        # at the post-block residual; ``sa3_m_dit_steerxa_*``:
+        # ``steering_xattn`` at the cross-attention output): static
+        # [1, num_blocks, hidden]. ``steering_shape`` / ``steering_hook``
+        # advertise it to SA3Adapter.steering_layout; None on engines
+        # without one.
+        io_names = {engine.get_tensor_name(i) for i in range(engine.num_io_tensors)}
+        self.steering_shape: Optional[tuple] = None
+        self.steering_hook: Optional[str] = None
+        self._steering_input: Optional[str] = None
+        self._steering = None
+        self._steering_dirty = False
+        present = [n for n in STEERING_INPUT_HOOKS if n in io_names]
+        if len(present) > 1:
+            raise RuntimeError(f"SA3 engine carries several steering inputs {present}")
+        if present:
+            name = present[0]
+            s_shape = tuple(engine.get_tensor_shape(name))
+            if len(s_shape) != 3 or s_shape[0] != 1:
+                raise RuntimeError(f"unexpected SA3 {name} input shape {s_shape}")
+            self.steering_shape = (int(s_shape[1]), int(s_shape[2]))
+            self.steering_hook = STEERING_INPUT_HOOKS[name]
+            self._steering_input = name
         out_shape = tuple(self._ctx.get_tensor_shape("velocity"))
 
         dev = torch.device("cuda")
@@ -506,6 +610,13 @@ class SA3TRTDit:
         self._seconds = torch.full((1,), float(seconds_total), dtype=torch.float32, device=dev)
         self._local_add = torch.zeros(1, 257, L, dtype=torch.float32, device=dev)
         self._velocity = torch.empty(out_shape, dtype=torch.float32, device=dev)
+        if self.steering_shape is not None:
+            self._steering = torch.zeros(
+                1, *self.steering_shape, dtype=torch.float32, device=dev,
+            )
+            self._ctx.set_tensor_address(
+                self._steering_input, self._steering.data_ptr(),
+            )
 
         for name, buf in (
             ("x", self._x), ("t", self._t), ("t5_hidden", self._t5_hidden),
@@ -571,15 +682,30 @@ class SA3TRTDit:
         self._staged_bundle = bundle
 
     @torch.no_grad()
-    def step_bundle(self, x_1ct: torch.Tensor, t: float, bundle: dict) -> torch.Tensor:
+    def step_bundle(
+        self, x_1ct: torch.Tensor, t: float, bundle: dict,
+        steering: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """One velocity forward: SA3-native ``[1, 256, L]`` in and out.
         Returns the persistent output buffer — the caller must consume
-        (copy/cast) it before the next step overwrites it."""
+        (copy/cast) it before the next step overwrites it.
+
+        ``steering`` is ``[1, num_blocks, hidden]`` (None = zero shift);
+        ignored by engines without the steering input. The bound buffer
+        is only rewritten when steering is active or was last tick, so
+        the no-steering path costs nothing."""
         if x_1ct.shape[-1] != self._L:
             raise ValueError(
                 f"x latent frames {x_1ct.shape[-1]} != engine-bound L {self._L}"
             )
         self._stage_bundle(bundle)
+        if self._steering is not None:
+            if steering is not None:
+                self._steering.copy_(steering.reshape(self._steering.shape))
+                self._steering_dirty = True
+            elif self._steering_dirty:
+                self._steering.zero_()
+                self._steering_dirty = False
         self._x.copy_(x_1ct.float())
         self._t[0] = float(t)
         # The copies above (and _stage_bundle's) ran on the caller's

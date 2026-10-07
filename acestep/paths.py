@@ -212,6 +212,24 @@ def steering_vectors_dir() -> Path:
     return models_dir() / "steering_vectors"
 
 
+#: Override for the steering-pack directory (``acestep.steering.packs``).
+STEERING_PACKS_ENV = "DEMON_STEERING_PACKS_DIR"
+
+
+def steering_packs_dir() -> Path:
+    """Root directory scanned (recursively) for steering vector packs.
+
+    ``$DEMON_STEERING_PACKS_DIR`` when set, else
+    ``<models dir>/steering_packs``. Packs are matched to the booted
+    family and checkpoint by their own metadata, so one directory can
+    hold packs for every family.
+    """
+    override = os.environ.get(STEERING_PACKS_ENV)
+    if override:
+        return Path(override).expanduser()
+    return models_dir() / "steering_packs"
+
+
 def steering_vector_dir(
     checkpoint: str | Path | None = None,
 ) -> Path | None:

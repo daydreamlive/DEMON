@@ -384,7 +384,7 @@ class ACEStepBackend(DiffusionBackend):
         return registry_knob_specs(
             self.use_sde,
             loras=list(lora_ids) if self.use_lora else [],
-        ) + steering_knob_specs(self.steering)
+        ) + steering_knob_specs(self.steering) + self.pack_knob_specs()
 
     # ---- public hooks reachable from session ops ---------------------------
 
@@ -475,18 +475,13 @@ class ACEStepBackend(DiffusionBackend):
         changing ``raw`` — without the identity check the new pipeline
         would never receive ``set_steering``.
         """
-        if not self.steering.is_loaded:
-            return last
-        pipe = self.stream.pipeline
-        if pipe is None:
-            return last
         n = max(1, int(raw.get("steps_override", 8)))
-        snapshot = self.steering.snapshot_key(raw, n)
-        last_pipe, last_snapshot = last if last is not None else (None, None)
-        if pipe is last_pipe and snapshot == last_snapshot:
-            return last
-        pipe.set_steering(self.steering.build_configs(raw, n))
-        return (pipe, snapshot)
+        # The built-in axes/manual slots and any steering packs share the
+        # pipeline's one slot; the base class merges them.
+        return self._sync_steering_slot(
+            raw, last, self.stream.pipeline, n,
+            (self.steering, self.steering_packs),
+        )
 
     # ---- GeneratorBackend hot loop -----------------------------------------
 
