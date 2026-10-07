@@ -101,6 +101,25 @@ def delivered_samples(n_44k: int) -> int:
     new, orig = DELIVERY_SAMPLE_RATE // g, SA3_SAMPLE_RATE // g
     return -(-new * n_44k // orig)
 
+def _ring_stretch_swap(waveform, sample_rate, playable_44k: int):
+    """Swap-source stretch under the loop ring: an upload within 1% of
+    the ring period is stretched onto it exactly (44.1 kHz out, like the
+    create path); anything else keeps the plain truncate/tile anchor."""
+    from acestep.engine.sa3_context import stretch_to_length
+
+    n = int(waveform.shape[-1])
+    if n <= 0 or playable_44k <= 0:
+        return waveform, sample_rate
+    src_44k = n * SA3_SAMPLE_RATE / float(sample_rate)
+    if abs(playable_44k / src_44k - 1.0) > 0.01:
+        return waveform, sample_rate
+    stretched, ratio = stretch_to_length(
+        waveform, int(sample_rate), int(playable_44k), SA3_SAMPLE_RATE,
+    )
+    logger.info("sa3_loop_ring swap_stretch ratio={:.5f}", ratio)
+    return stretched, SA3_SAMPLE_RATE
+
+
 # Largest tap index the feedback delay can address. Derived from the
 # shared registry spec (the same one the manifest serves) so the knob
 # bound and the history ring can never drift apart.
@@ -455,6 +474,12 @@ class SA3Backend(DiffusionBackend):
         # bit-identical audio. None until the first fresh latent.
         self._decode_seed = None
         self._windowed_codec = hasattr(codec, "decode_window")
+        # (source latent, ring size, tail-filled copy) for the loop ring's
+        # decode-side periodic tail (_ring_decode_latent).
+        self._ring_decode_cache = None
+        # Whether this session runs the loop ring at all (fixed for the
+        # session; the ring SIZE follows swap-resizes).
+        self._loop_ring = bool(getattr(adapter, "ring_frames", None))
 
         self.pipeline = self._build_pipeline(self._steps)
 
@@ -477,6 +502,7 @@ class SA3Backend(DiffusionBackend):
         dit_backend: str = "eager",
         codec_backend: str = "eager",
         model_extension=None,
+        ring_frames: Optional[int] = None,
         **kwargs,
     ) -> "SA3Backend":
         """Production assembly over a loaded
@@ -497,7 +523,11 @@ class SA3Backend(DiffusionBackend):
         path); the context maps them onto its components (``make_dit``
         / ``make_codec``): "tensorrt" selects the built engines when
         they cover the session, with eager fallback (small: the DiT
-        engines plus the SAME-S full-decode engine)."""
+        engines plus the SAME-S full-decode engine).
+
+        ``ring_frames`` turns on the loop ring (``SA3Adapter.ring_frames``;
+        the create path snapped ``duration_s`` to exactly that many latent
+        frames); a swap-resize then snaps its new duration the same way."""
         from acestep.engine.sa3_adapter import SA3Adapter
 
         steps = int(kwargs.get("steps", 8))
@@ -540,6 +570,7 @@ class SA3Backend(DiffusionBackend):
             schedule_builder=context.make_schedule_builder(cond, steps),
             device=context.device,
             dtype=context.dtype,
+            ring_frames=ring_frames,
         )
 
         # Phase-2 refit mirror: engaged only when the selected DiT is a
@@ -598,6 +629,12 @@ class SA3Backend(DiffusionBackend):
             # has fully landed.
             d = min(float(new_duration_s), SA3_MAX_DURATION_S)
             d = context.clamp_duration_for_trt(d, backend=dit_backend)
+            if ring_frames is not None:
+                # Ring sessions keep a whole-frame loop across resizes
+                # (the backend re-derives the ring size from ``d``).
+                n = context.snap_loop_ring_frames(d, backend=dit_backend)
+                if n >= 2:
+                    d = n * context.downsampling_ratio / context.sample_rate
             new_cond = context.prepare_cond(
                 prompt=tags_a, duration=d, steps=steps_now,
             )
@@ -1232,6 +1269,14 @@ class SA3Backend(DiffusionBackend):
             sample_size = int(
                 (new_geom["cond"] if new_geom else self._cond).audio_sample_size
             )
+            if self._loop_ring:
+                playable_s = (
+                    min(new_geom["duration_s"], sample_size / SA3_SAMPLE_RATE)
+                    if new_geom else self._playable_s
+                )
+                waveform, sample_rate = _ring_stretch_swap(
+                    waveform, sample_rate, int(round(playable_s * SA3_SAMPLE_RATE)),
+                )
             t0 = time.perf_counter()
             # Encode BEFORE publishing any geometry: if this raises, the
             # session keeps its previous consistent state end to end (the
@@ -1296,6 +1341,10 @@ class SA3Backend(DiffusionBackend):
                     # the live cond doesn't match.
                     self._duration_s = new_geom["duration_s"]
                     self._playable_s = min(self._duration_s, window_s)
+                    if self._loop_ring:
+                        self.adapter.ring_frames = self._ring_frames_for(
+                            self._playable_s, int(self._cond.latent_frames),
+                        )
                     # Emerged-generation labeling, as in handle_set_prompt:
                     # the resized bundle gets the next cond epoch.
                     self._cond_epoch += 1
@@ -1652,6 +1701,34 @@ class SA3Backend(DiffusionBackend):
                 p["gen_sa3_denoise"], epoch, tags,
             )
 
+    # ---- loop ring --------------------------------------------------------------
+
+    @staticmethod
+    def _ring_frames_for(playable_s: float, latent_frames: int) -> Optional[int]:
+        """Ring size for a (frame-snapped) playable loop, None if it
+        cannot ring inside a ``latent_frames`` window."""
+        n = int(round(float(playable_s) * SA3_LATENT_RATE_HZ))
+        return n if 2 <= n <= int(latent_frames) else None
+
+    def _ring_decode_latent(self, latent_btc: torch.Tensor) -> torch.Tensor:
+        """The latent to decode: under the loop ring, a COPY whose frames
+        ``[N, T)`` are the periodic continuation of the loop start, so the
+        decoder's right context at the loop end is the loop's own start
+        (the DiT only ever denoised ``[0, N)`` as content). The pipeline's
+        result tensor is never mutated. Cached per latent identity."""
+        n = getattr(self.adapter, "ring_frames", None)
+        t_len = int(latent_btc.shape[1])
+        if not n or n >= t_len:
+            return latent_btc
+        cached = self._ring_decode_cache
+        if cached is not None and cached[0] is latent_btc and cached[1] == n:
+            return cached[2]
+        idx = torch.arange(n, t_len, device=latent_btc.device) % n
+        out = latent_btc.clone()
+        out[:, n:] = latent_btc[:, idx]
+        self._ring_decode_cache = (latent_btc, n, out)
+        return out
+
     # ---- rendering -------------------------------------------------------------
 
     def _rendered_audio(self, latent_btc: torch.Tensor):
@@ -1662,7 +1739,8 @@ class SA3Backend(DiffusionBackend):
 
         t0 = time.perf_counter()
         audio_ct = self.codec.decode_full(
-            latent_btc.movedim(1, 2), decode_seed=self._decode_seed,
+            self._ring_decode_latent(latent_btc).movedim(1, 2),
+            decode_seed=self._decode_seed,
         )
         # The decode boundary (round_3 decision 2): one whole-window
         # resample per generation, so window slices share one filter
@@ -1719,7 +1797,7 @@ class SA3Backend(DiffusionBackend):
 
         t0 = time.perf_counter()
         audio_ct = self.codec.decode_window(
-            latent_btc.movedim(1, 2), lo44, total44,
+            self._ring_decode_latent(latent_btc).movedim(1, 2), lo44, total44,
         )
         audio48 = torchaudio.functional.resample(
             audio_ct.float(), SA3_SAMPLE_RATE, DELIVERY_SAMPLE_RATE,

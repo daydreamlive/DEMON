@@ -23,15 +23,47 @@ i.e. the DiT kwargs plus ``cfg_scale=1.0`` / ``padding_mask`` /
 pipeline's own CFG/APG machinery stays dormant for SA3 v1 (post-trained
 checkpoints run ``cfg_scale=1.0``; requests carry no
 ``guidance_curve``).
+
+Loop ring (#365): with ``ring_frames = N`` every forward sees the first
+N latent frames rolled by a per-timestep offset (the window tail is the
+periodic continuation) and the velocity is rolled back, so no loop
+position is ever the sequence start or end of the rotary-only DiT and
+the lap boundary is denoised as an interior point. Built by the session
+when ``DEMON_SA3_LOOP_RING`` is on (default; ``0`` restores the plain
+window). ``ring_frames=None`` is the plain path, bit for bit.
 """
 
 from __future__ import annotations
 
+import math
 from typing import Callable, List, Optional
 
 import torch
 
+from acestep.engine.obs import logger
 from acestep.engine.sa3_helpers import import_stream_helpers
+
+def ring_offset(t: float, n: int) -> int:
+    """The ring roll for one denoise step: ``N//4 + floor(t * N//2)``.
+
+    A pure function of the step's timestep and the ring size, deliberately
+    NOT random: every slot and every process rolls the same step by the
+    same amount, so a session is reproducible run to run (the golden /
+    latency harnesses compare runs bit for bit). Over ``t`` in [0, 1] the
+    offset stays in [N/4, 3N/4]: the loop boundary always sits inside the
+    DiT's sequence with at least a quarter loop of context on either side,
+    and the steps of a schedule (spaced more than 2/N apart) get distinct
+    offsets, so no loop position is the sequence start at every step."""
+    n = int(n)
+    t = min(max(float(t), 0.0), 1.0)
+    return (n // 4 + int(math.floor(t * (n // 2)))) % n
+
+
+def _ring_gather(x_btc: torch.Tensor, index_bt: torch.Tensor) -> torch.Tensor:
+    """``out[b, j] = x[b, index[b, j]]`` over the frame axis (a new
+    contiguous tensor, same dtype/device)."""
+    rows = torch.arange(x_btc.shape[0], device=x_btc.device).unsqueeze(1)
+    return x_btc[rows, index_bt]
 
 
 class SA3Adapter:
@@ -53,8 +85,17 @@ class SA3Adapter:
         schedule_builder: Callable[[float], torch.Tensor],
         device,
         dtype,
+        ring_frames: Optional[int] = None,
     ):
         self.dit = dit
+        # Loop ring size in latent frames (module docstring), or None.
+        # The backend may move it on a swap-resize; it must stay <= the
+        # window's frame count.
+        self.ring_frames: Optional[int] = (
+            int(ring_frames) if ring_frames else None
+        )
+        self._ring_index_cache: dict = {}
+        self._ring_offsets_logged: set = set()
         self.schedule_builder = schedule_builder
         # Relative schedule warp on top of the checkpoint's own
         # dist_shift (the ``sa3_shift`` knob): the Flux/SD3 map
@@ -115,7 +156,69 @@ class SA3Adapter:
     def request_device_dtype(self, request):
         return self._device, self._dtype
 
+    # ---- loop ring -----------------------------------------------------------
+
+    def _ring_indices(self, timesteps, n: int, t_len: int, device):
+        """``(in_idx, out_idx)`` gather indices ``[B, T]`` for one batch.
+
+        ``in_idx[b, j] = (j - k_b) mod N`` is ``roll(x[:, :N], k_b)``
+        followed by its periodic continuation over the whole window;
+        ``out_idx[b, j] = (j + k_b) mod N`` is ``roll(v[:, :N], -k_b)``
+        tiled the same way. Cached per offset tuple: a schedule has only
+        ``steps`` distinct timesteps."""
+        ks = tuple(ring_offset(t, n) for t in timesteps)
+        key = (ks, n, t_len, str(device))
+        hit = self._ring_index_cache.get(key)
+        if hit is not None:
+            return hit
+        if len(self._ring_index_cache) > 256:
+            self._ring_index_cache.clear()
+        for t, k in zip(timesteps, ks):
+            seen = (round(float(t), 6), n)
+            if seen not in self._ring_offsets_logged and len(self._ring_offsets_logged) < 64:
+                self._ring_offsets_logged.add(seen)
+                logger.info("sa3_loop_ring_offset n={} t={:.6f} k={}", n, float(t), k)
+        j = torch.arange(t_len, device=device).unsqueeze(0)
+        k = torch.tensor(ks, device=device, dtype=torch.long).unsqueeze(1)
+        hit = ((j - k) % n, (j + k) % n)
+        self._ring_index_cache[key] = hit
+        return hit
+
+    def _active_ring(self, t_len: int) -> Optional[int]:
+        n = self.ring_frames
+        if not n or n < 2:
+            return None
+        if n > t_len:
+            raise ValueError(
+                f"sa3 ring_frames {n} exceeds the latent window ({t_len})"
+            )
+        return n
+
     def batched_forward(
+        self,
+        xt_batch: torch.Tensor,
+        timestep_list: List[float],
+        enc_list: List[Optional[torch.Tensor]],
+        mask_list: List[Optional[torch.Tensor]],
+        ctx_list: List[Optional[torch.Tensor]],
+        aux_list: List[Optional[dict]],
+    ) -> torch.Tensor:
+        n = self._active_ring(int(xt_batch.shape[1]))
+        if n is None:
+            return self._forward(
+                xt_batch, timestep_list, enc_list, mask_list, ctx_list,
+                aux_list,
+            )
+        in_idx, out_idx = self._ring_indices(
+            timestep_list, n, int(xt_batch.shape[1]), xt_batch.device,
+        )
+        v_in = self._forward(
+            _ring_gather(xt_batch, in_idx), timestep_list, enc_list,
+            mask_list, ctx_list, aux_list,
+        )
+        return _ring_gather(v_in, out_idx)
+
+    def _forward(
         self,
         xt_batch: torch.Tensor,
         timestep_list: List[float],

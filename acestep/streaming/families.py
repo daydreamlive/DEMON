@@ -342,6 +342,9 @@ def _make_sa3(ss):
         codec_backend=init.get("codec_backend", "eager"),
         # Startup-selected model extension, absent on stock sessions.
         model_extension=init.get("model_extension"),
+        # Loop ring size (sa3_session's plan_loop_ring); .get so an
+        # in-process payload without it keeps the plain window.
+        ring_frames=init.get("ring_frames"),
         steps=int(ss.config.steps),
         depth=int(ss.state.current_depth),
         vae_window_s=float(ss.vae_window),
