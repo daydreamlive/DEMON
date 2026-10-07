@@ -729,6 +729,35 @@ def discover_packs(
     return out
 
 
+# ---- stacking rule ----------------------------------------------------------
+
+STACKING_ENV = "DEMON_STEERING_STACKING"
+STACKING_INV_N = "inv_n"
+STACKING_NONE = "none"
+STACKING_RULES = (STACKING_INV_N, STACKING_NONE)
+
+
+def stacking_rule(rule: Optional[str] = None) -> str:
+    """The stacking rule for simultaneously active pack knobs.
+
+    ``inv_n`` (default) scales every active knob's shift by 1/k when k
+    pack knobs are non-zero; ``none`` sums them unscaled. ``rule`` None
+    reads ``$DEMON_STEERING_STACKING``; an unknown value falls back to
+    the default with a warning."""
+    import os
+
+    raw = rule if rule is not None else os.environ.get(STACKING_ENV, "")
+    val = str(raw).strip().lower() or STACKING_INV_N
+    if val in ("0", "off", "false"):
+        val = STACKING_NONE
+    if val not in STACKING_RULES:
+        from loguru import logger
+
+        logger.warning("steering_stacking_unknown rule={} using={}", raw, STACKING_INV_N)
+        val = STACKING_INV_N
+    return val
+
+
 class PackSteering:
     """Per-session pack surface: knob specs and the knob -> config map.
 
@@ -737,8 +766,16 @@ class PackSteering:
     both into the pipeline's single steering slot.
     """
 
-    def __init__(self, packs: Sequence[SteeringPack] = ()):
+    def __init__(
+        self,
+        packs: Sequence[SteeringPack] = (),
+        *,
+        stacking: Optional[str] = None,
+    ):
         self.packs: tuple = tuple(packs)
+        # Stacking rule across simultaneously active pack knobs; None =
+        # $DEMON_STEERING_STACKING, default inv_n (see stacking_rule).
+        self.stacking: str = stacking_rule(stacking)
 
     @property
     def is_loaded(self) -> bool:
@@ -783,10 +820,17 @@ class PackSteering:
     def build_configs(self, raw: Mapping[str, float], n: int) -> list:
         n = max(1, int(n))
         configs: list = []
+        values = {p.knob_name: float(raw.get(p.knob_name, 0.0)) for p in self.packs}
+        k = sum(1 for v in values.values() if v != 0.0)
+        # inv_n: with k pack knobs non-zero, each knob's shift is scaled
+        # by 1/k (v3 smoke S3: 82% of pairs and every triple stay under
+        # the strictest member's fidelity cutoff; unscaled sums leave 5%).
+        share = 1.0 / k if (self.stacking == STACKING_INV_N and k > 1) else 1.0
         for p in self.packs:
-            alpha = float(raw.get(p.knob_name, 0.0))
+            alpha = values[p.knob_name]
             if alpha == 0.0:
                 continue
+            alpha *= share
             weights = policy_weights(p.policy, n)
             for t in p.terms():
                 # A negative knob uses the pack's own negative direction

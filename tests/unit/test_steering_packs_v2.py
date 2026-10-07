@@ -116,7 +116,7 @@ def test_v1_synthetic_summed_input_matches_file_semantics(tmp_path):
     save_pack(_base("b", block=2, vector=_unit(1)), tmp_path / "b")
     save_pack(_base("c", block=9, vector=_unit(2), magnitude=0.7), tmp_path / "c")
     packs = discover_packs(tmp_path, family="sa3", checkpoint="medium")
-    ps = PackSteering(packs)
+    ps = PackSteering(packs, stacking="none")  # file semantics, no stacking rule
     raw = {"steer_a": 3.0, "steer_b": -1.5, "steer_c": 12.0}
     got = summed_input(ps.build_configs(raw, 4), steps=4)
     want = sum(_v1_reference(p.path, raw[p.knob_name], 4) for p in packs)
@@ -154,7 +154,7 @@ def test_installed_v1_packs_summed_input_identical(sign):
     packs = _installed()
     if not packs:
         pytest.skip("no installed format-1 sa3/medium packs")
-    ps = PackSteering(packs)
+    ps = PackSteering(packs, stacking="none")  # file semantics, no stacking rule
     raw = {p.knob_name: sign * (1.0 + 0.37 * i) for i, p in enumerate(packs)}
     steps = 8
     cfgs = ps.build_configs(raw, steps)

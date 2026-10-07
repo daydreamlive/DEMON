@@ -223,3 +223,43 @@ def test_sa3_backend_pushes_pack_configs_into_pipeline_slot():
     # Back to 0 clears the slot.
     b.produce(_knobs(b, steer_bright=0.0), ctx, "generate")
     assert b.pipeline._steering_by_layer == {}
+
+
+def _shift_norms(ps, raw):
+    """Per-knob applied shift norm (|alpha| x magnitude x |vector|)."""
+    out = {}
+    for c in ps.build_configs(raw, 1):
+        out[c["layer"]] = float(c["vector"].norm()) * c["magnitude"] * c["alpha"]
+    return out
+
+
+def test_stacking_inv_n_halves_two_active_knobs():
+    from acestep.steering.packs import STACKING_INV_N, STACKING_NONE
+
+    packs = [_pack("bright", block=2), _pack("warm", block=5, seed=1),
+             _pack("rough", block=7, seed=2)]
+    ps = PackSteering(packs, stacking=STACKING_INV_N)
+    one = _shift_norms(ps, {"steer_bright": 4.0})
+    assert one == pytest.approx(_shift_norms(PackSteering(packs, stacking=STACKING_NONE),
+                                             {"steer_bright": 4.0}))
+    solo_warm = _shift_norms(ps, {"steer_warm": -3.0})
+    two = _shift_norms(ps, {"steer_bright": 4.0, "steer_warm": -3.0, "steer_rough": 0.0})
+    assert two[2] == pytest.approx(one[2] / 2)
+    assert two[5] == pytest.approx(solo_warm[5] / 2)
+    three = _shift_norms(ps, {"steer_bright": 4.0, "steer_warm": -3.0, "steer_rough": 1.0})
+    assert three[2] == pytest.approx(one[2] / 3)
+    unscaled = _shift_norms(PackSteering(packs, stacking=STACKING_NONE),
+                            {"steer_bright": 4.0, "steer_warm": -3.0})
+    assert unscaled[2] == pytest.approx(one[2])
+
+
+def test_stacking_rule_env_toggle(monkeypatch):
+    from acestep.steering.packs import STACKING_ENV, stacking_rule
+
+    monkeypatch.delenv(STACKING_ENV, raising=False)
+    assert stacking_rule() == "inv_n"
+    monkeypatch.setenv(STACKING_ENV, "none")
+    assert stacking_rule() == "none"
+    assert PackSteering().stacking == "none"
+    monkeypatch.setenv(STACKING_ENV, "bogus")
+    assert stacking_rule() == "inv_n"
