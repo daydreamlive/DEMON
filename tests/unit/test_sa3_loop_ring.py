@@ -114,9 +114,17 @@ def test_ring_offset_is_deterministic_and_spread():
         assert ks == [ring_offset(t, n) for t in SCHEDULE_8]
         assert all(0 <= k < n for k in ks)
         assert any(k != 0 for k in ks)
+    # Distinct (a hash may collide once in a while; never collapse).
     for n in (136, 161, 220, 646):
         ks = [ring_offset(t, n) for t in SCHEDULE_8]
-        assert len(set(ks)) == len(ks), (n, ks)
+        assert len(set(ks)) >= 7, (n, ks)
+    # The shifted schedule's structural steps sit close together near
+    # t = 1; their offsets must still spread over the ring, or the
+    # sequence start lands on one fixed bar inside the loop.
+    clustered = [1.0, 0.994141, 0.984375, 0.958008, 0.942383, 0.927734]
+    for n in (136, 161, 220):
+        ks = sorted(ring_offset(t, n) for t in clustered)
+        assert ks[-1] - ks[0] > n // 2, (n, ks)
 
 
 def test_ring_on_matches_ring_off_for_an_equivariant_dit():

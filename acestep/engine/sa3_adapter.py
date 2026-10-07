@@ -35,7 +35,6 @@ window). ``ring_frames=None`` is the plain path, bit for bit.
 
 from __future__ import annotations
 
-import math
 from typing import Callable, List, Optional
 
 import torch
@@ -43,20 +42,24 @@ import torch
 from acestep.engine.obs import logger
 from acestep.engine.sa3_helpers import import_stream_helpers
 
+# Multiplier behind :func:`ring_offset`: a large prime, so timesteps that
+# differ only slightly still land on unrelated offsets.
+RING_OFFSET_PRIME = 1_000_003
+
+
 def ring_offset(t: float, n: int) -> int:
-    """The ring roll for one denoise step: ``N//4 + floor(t * N//2)``.
+    """The ring roll for one denoise step: ``round(t * 1_000_003) mod N``.
 
     A pure function of the step's timestep and the ring size, deliberately
     NOT random: every slot and every process rolls the same step by the
     same amount, so a session is reproducible run to run (the golden /
-    latency harnesses compare runs bit for bit). Over ``t`` in [0, 1] the
-    offset stays in [N/4, 3N/4]: the loop boundary always sits inside the
-    DiT's sequence with at least a quarter loop of context on either side,
-    and the steps of a schedule (spaced more than 2/N apart) get distinct
-    offsets, so no loop position is the sequence start at every step."""
-    n = int(n)
-    t = min(max(float(t), 0.0), 1.0)
-    return (n // 4 + int(math.floor(t * (n // 2)))) % n
+    latency harnesses compare runs bit for bit). It is a hash, not a
+    linear map, on purpose: the shifted SA3 schedule packs its structural
+    steps into t ~ 0.84..1.0, and an offset linear in t gave all of them
+    nearly the same roll, which moved the composed "sequence start" from
+    the lap boundary to one fixed bar inside the loop (measured on the
+    seam probe). Hashing spreads those steps around the ring."""
+    return int(round(float(t) * RING_OFFSET_PRIME)) % int(n)
 
 
 def _ring_gather(x_btc: torch.Tensor, index_bt: torch.Tensor) -> torch.Tensor:
