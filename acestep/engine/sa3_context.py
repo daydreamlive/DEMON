@@ -27,8 +27,9 @@ from __future__ import annotations
 import math
 import os
 import threading
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Optional
 
 import numpy as np
 import torch
@@ -93,6 +94,78 @@ _SAM_DECODE_LOCK = threading.Lock()
 
 LEGACY_OUTRO_PAD_S = 6.0
 DEFAULT_LOOP_WRAP_S = 3.0
+
+
+# ---- Loop ring (#365) ----------------------------------------------------
+# The DiT denoises the loop as a ring (``SA3Adapter.ring_frames``): the
+# ring period is a whole number of latent frames, and the played loop and
+# the source anchor are snapped/stretched to exactly that period so a
+# drum loop gets no sub-frame hiccup per lap. ``0`` disables (the plain
+# window, byte-identical to the pre-ring geometry).
+LOOP_RING_ENV = "DEMON_SA3_LOOP_RING"
+# Above this stretch the snap is audible-ish (very short loops); the
+# ring still runs, the log says so.
+RING_STRETCH_WARN = 0.01
+
+
+def loop_ring_setting(env: Mapping[str, str] | None = None) -> bool:
+    """``DEMON_SA3_LOOP_RING``: on unless set to ``0``/``off``/``false``."""
+    env = os.environ if env is None else env
+    raw = (env.get(LOOP_RING_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def snap_ring_frames(
+    duration_s: float,
+    *,
+    sample_rate: int = 44100,
+    downsampling_ratio: int = 4096,
+    fits: Optional[Callable[[int], bool]] = None,
+) -> int:
+    """Loop length in whole latent frames: the nearest frame count, or the
+    floor when rounding up would not ``fits`` (e.g. it pushes the padded
+    render window past the TRT engine's latent cap). 0 when nothing fits."""
+    frames = float(duration_s) * sample_rate / downsampling_ratio
+    n = int(round(frames))
+    if fits is not None and not fits(n):
+        n = int(math.floor(frames))
+        if n > 0 and not fits(n):
+            return 0
+    return max(0, n)
+
+
+def stretch_to_length(waveform, src_rate: int, target_samples: int,
+                      target_rate: int = 44100):
+    """FFT-resample ``waveform [C, N]`` at ``src_rate`` to exactly
+    ``target_samples`` at ``target_rate`` (rate change + loop-snap stretch
+    in one pass; the FFT treats the input as periodic, which is exactly
+    right for a loop). Returns ``(tensor [C, target_samples] float32,
+    ratio)`` where ``ratio`` is the time-stretch factor (1.0 = none)."""
+    import scipy.signal
+
+    wav = waveform if isinstance(waveform, np.ndarray) else (
+        waveform.detach().cpu().float().numpy()
+    )
+    n = int(wav.shape[-1])
+    ratio = float(target_samples) / (n * float(target_rate) / float(src_rate))
+    out = scipy.signal.resample(wav, int(target_samples), axis=-1)
+    return torch.from_numpy(np.ascontiguousarray(out, dtype=np.float32)), ratio
+
+
+@dataclass(frozen=True)
+class LoopRingPlan:
+    """Session loop geometry (see :meth:`SA3Context.plan_loop_ring`).
+
+    ``frames`` is the ring size N (None = ring off, ``reason`` says why);
+    ``playable_s`` the loop length the session conditions and plays;
+    ``source_audio`` the ``(rate, waveform)`` pair to encode/buffer (the
+    stretched 44.1 kHz loop when on, the input untouched when off)."""
+
+    frames: Optional[int]
+    playable_s: float
+    source_audio: tuple
+    stretch_ratio: float
+    reason: str
 
 
 def song_seconds_setting(env: Mapping[str, str] | None = None) -> float | None:
@@ -442,6 +515,69 @@ class SA3Context:
             self.model_id, duration_s, cap,
         )
         return cap
+
+    # ---- loop ring ----------------------------------------------------------
+
+    def snap_loop_ring_frames(self, duration_s: float, *, backend: str = "eager") -> int:
+        """Ring size for a loop of ``duration_s`` (:func:`snap_ring_frames`):
+        the ring must fit inside the render window, and with
+        ``backend="tensorrt"`` that window must stay within the built
+        engine's latent cap (the same arithmetic as
+        :meth:`clamp_duration_for_trt`)."""
+        from acestep.engine.sa3_trt import max_dit_engine_latents
+
+        sr, ds = self.sample_rate, self.downsampling_ratio
+        max_l = (
+            max_dit_engine_latents(self.model_id) if backend == "tensorrt"
+            else None
+        )
+
+        def _fits(n: int) -> bool:
+            window = self.window_latent_frames(n * ds / sr)
+            return n <= window and (max_l is None or window <= max_l)
+
+        return snap_ring_frames(
+            duration_s, sample_rate=sr, downsampling_ratio=ds, fits=_fits,
+        )
+
+    def plan_loop_ring(
+        self, waveform, src_rate: int, duration_s: float, *,
+        backend: str = "eager", env: Mapping[str, str] | None = None,
+    ) -> LoopRingPlan:
+        """Decide the loop ring for a session whose (already clamped)
+        loop is ``duration_s`` of ``waveform [C, N]`` at ``src_rate``.
+
+        On: N = :meth:`snap_loop_ring_frames`, playable = N frames exactly,
+        and the loop is stretched to exactly ``N * 4096`` samples at
+        44.1 kHz BEFORE tiling/encoding, so anchor, ring and played loop
+        share one period. Off (plain window, today's geometry): the env
+        switch, the legacy whole-song label (its padding mask masks the
+        window tail, so the window is not a ring), an installed model
+        extension (its per-frame conditioning would not roll with the
+        latent), a source shorter than the loop, or a loop too short to
+        snap."""
+        sr, ds = self.sample_rate, self.downsampling_ratio
+        duration_s = float(duration_s)
+
+        def _off(reason: str) -> LoopRingPlan:
+            return LoopRingPlan(None, duration_s, (src_rate, waveform), 1.0, reason)
+
+        if not loop_ring_setting(env):
+            return _off("env_disabled")
+        if self.song_seconds is None:
+            return _off("legacy_label")
+        if getattr(self, "extension", None) is not None:
+            return _off("model_extension")
+        n_src = int(waveform.shape[-1])
+        half_frame_s = 0.5 * ds / sr
+        if n_src / float(src_rate) + half_frame_s < duration_s:
+            return _off("source_shorter_than_loop")
+        n = self.snap_loop_ring_frames(duration_s, backend=backend)
+        if n < 2:
+            return _off("loop_too_short")
+        loop = waveform[..., : int(round(duration_s * src_rate))]
+        stretched, ratio = stretch_to_length(loop, src_rate, n * ds, sr)
+        return LoopRingPlan(n, n * ds / sr, (sr, stretched), ratio, "on")
 
     # ---- per-prompt (outside the hot loop) ---------------------------------
 
