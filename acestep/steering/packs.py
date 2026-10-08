@@ -740,21 +740,22 @@ STACKING_RULES = (STACKING_INV_N, STACKING_NONE)
 def stacking_rule(rule: Optional[str] = None) -> str:
     """The stacking rule for simultaneously active pack knobs.
 
-    ``inv_n`` (default) scales every active knob's shift by 1/k when k
-    pack knobs are non-zero; ``none`` sums them unscaled. ``rule`` None
+    ``none`` (default) sums active knobs' shifts unscaled (the v2
+    behaviour); ``inv_n`` (opt-in) scales every active knob's shift by
+    1/k when k pack knobs are non-zero. ``rule`` None
     reads ``$DEMON_STEERING_STACKING``; an unknown value falls back to
     the default with a warning."""
     import os
 
     raw = rule if rule is not None else os.environ.get(STACKING_ENV, "")
-    val = str(raw).strip().lower() or STACKING_INV_N
+    val = str(raw).strip().lower() or STACKING_NONE
     if val in ("0", "off", "false"):
         val = STACKING_NONE
     if val not in STACKING_RULES:
         from loguru import logger
 
-        logger.warning("steering_stacking_unknown rule={} using={}", raw, STACKING_INV_N)
-        val = STACKING_INV_N
+        logger.warning("steering_stacking_unknown rule={} using={}", raw, STACKING_NONE)
+        val = STACKING_NONE
     return val
 
 
@@ -920,7 +921,7 @@ class PackSteering:
     ):
         self.packs: tuple = tuple(packs)
         # Stacking rule across simultaneously active pack knobs; None =
-        # $DEMON_STEERING_STACKING, default inv_n (see stacking_rule).
+        # $DEMON_STEERING_STACKING, default none (see stacking_rule).
         self.stacking: str = stacking_rule(stacking)
         # knob name -> KnobResponse (perceptual knob map); a knob absent
         # here keeps the raw linear map.

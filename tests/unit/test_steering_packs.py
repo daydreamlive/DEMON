@@ -257,9 +257,10 @@ def test_stacking_rule_env_toggle(monkeypatch):
     from acestep.steering.packs import STACKING_ENV, stacking_rule
 
     monkeypatch.delenv(STACKING_ENV, raising=False)
-    assert stacking_rule() == "inv_n"
-    monkeypatch.setenv(STACKING_ENV, "none")
     assert stacking_rule() == "none"
     assert PackSteering().stacking == "none"
-    monkeypatch.setenv(STACKING_ENV, "bogus")
+    monkeypatch.setenv(STACKING_ENV, "inv_n")
     assert stacking_rule() == "inv_n"
+    assert PackSteering().stacking == "inv_n"
+    monkeypatch.setenv(STACKING_ENV, "bogus")
+    assert stacking_rule() == "none"
