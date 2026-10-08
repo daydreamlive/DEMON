@@ -19,6 +19,7 @@ binary follow-ups for one logical event stay atomic.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import struct
 
@@ -43,12 +44,36 @@ class SliceCodec:
     buffer.
     """
 
+    # Canvas chunking for the per-slice ``canvas_root`` (export forensics):
+    # fine enough that re-hashing the chunks one slice touches is cheap,
+    # coarse enough that the root recompute (one sha over ~170 digests)
+    # is trivial.
+    CANVAS_CHUNK = 16_384
+
+    @staticmethod
+    def _as_client_reconstruction(buf: np.ndarray) -> np.ndarray:
+        """Source buffers travel to the client as float16 (ws_adapter's
+        init/swap sends) and are upcast on arrival — so the client's base
+        state is the f16-quantized source, NOT the exact f32 source. The
+        mirror must track the client's reconstruction byte-for-byte (see
+        the encode() note), including this base: without the round-trip
+        every abs_sha256 differs from the client's buffer by the source's
+        quantization error, and export forensics can never match."""
+        return buf.astype(np.float16).astype(np.float32)
+
     def __init__(self, initial_mirror: np.ndarray, zstd_level: int = 1):
-        # ``copy()`` because the caller's ``initial_buffer`` may be a
-        # view into a session-owned array. The codec mutates this in
-        # place on every encode.
-        self._mirror = initial_mirror.copy()
+        # Quantized like the client's copy (see _as_client_reconstruction);
+        # also a fresh array (never a view into a session-owned buffer —
+        # the codec mutates this in place on every encode).
+        self._mirror = self._as_client_reconstruction(initial_mirror)
+        self._rebuild_canvas_hashes()
         self._zctx = zstd.ZstdCompressor(level=zstd_level)
+        # Pod-side monotonic slice counter (spec 06 §3) and the last
+        # encoded frame's slice-hash report (spec 06 §2.3), consumed by
+        # the transport to emit a ``slice.pod_hash`` ledger event. ``None``
+        # until the first non-empty frame is encoded.
+        self._slice_seq = 0
+        self.last_slice_hash: dict | None = None
 
     @property
     def mirror(self) -> np.ndarray:
@@ -59,8 +84,46 @@ class SliceCodec:
     def replace_mirror(self, new_mirror: np.ndarray) -> None:
         """Wholesale replace the mirror buffer. Used on swap so the
         next slice's delta is computed against the buffer the client
-        just crossfaded into."""
-        self._mirror = new_mirror.copy()
+        just crossfaded into — which arrived over the wire as float16,
+        so it is quantized here exactly like the init path."""
+        self._mirror = self._as_client_reconstruction(new_mirror)
+        self._rebuild_canvas_hashes()
+
+    # ---- canvas root (export forensics, 06 §2.3) --------------------------
+    #
+    # After every slice the codec publishes a hash of the ENTIRE canvas as
+    # the client then holds it: per-chunk SHA-256 digests folded into one
+    # root. Clients copy their buffer for export under the same lock that
+    # applies slices, so any exported file equals the canvas at some slice
+    # boundary — and its recomputed root MUST appear among the receipted
+    # ``canvas_root`` values. That gives a verifier 100% file coverage and
+    # pins the export to a receipt timestamp, which per-region hashes of an
+    # overlapping delta stream can never do (any later overlapping slice
+    # invalidates a region snapshot).
+
+    def _rebuild_canvas_hashes(self) -> None:
+        ch = self.CANVAS_CHUNK
+        m = self._mirror
+        self._chunk_hashes = [
+            hashlib.sha256(
+                np.ascontiguousarray(m[i : i + ch], dtype=np.float32).tobytes()
+            ).digest()
+            for i in range(0, len(m), ch)
+        ]
+
+    def _refresh_canvas_hashes(self, lo: int, hi: int) -> None:
+        ch = self.CANVAS_CHUNK
+        m = self._mirror
+        for idx in range(lo // ch, (max(hi, lo + 1) - 1) // ch + 1):
+            start = idx * ch
+            self._chunk_hashes[idx] = hashlib.sha256(
+                np.ascontiguousarray(
+                    m[start : start + ch], dtype=np.float32
+                ).tobytes()
+            ).digest()
+
+    def _canvas_root(self) -> str:
+        return hashlib.sha256(b"".join(self._chunk_hashes)).hexdigest()
 
     def encode(
         self,
@@ -78,12 +141,17 @@ class SliceCodec:
         ss = int(start_sample)
         se = min(ss + len(audio), len(self._mirror))
         if se <= ss:
+            self.last_slice_hash = None
             return None
         region = audio[: se - ss]
         mirror_region = self._mirror[ss:se]
         # Delta = what server has now minus what client has
         delta = (region - mirror_region).astype(np.float16)
-        compressed = self._zctx.compress(delta.tobytes())
+        delta_bytes = delta.tobytes()
+        # Pod-side slice hash (spec 06 §2.3): SHA-256 over the uncompressed
+        # interleaved float16 payload bytes — the exact bytes the client
+        # gets back after zstd-decompressing this frame, so the pod and
+        # client hashes compare directly for cross-checking.
         # Mirror our copy to the *reconstruction the client will hold*, not
         # the exact ``region``. The client applies ``mirror += float32(delta)``
         # with ``delta`` quantized to float16, so storing the exact region
@@ -95,7 +163,27 @@ class SliceCodec:
         # ghosting — multiple decoded versions stacked on top of each other.
         # Encoding against the quantized reconstruction keeps server and
         # client byte-identical, so each delta corrects toward the truth.
-        self._mirror[ss:se] = mirror_region + delta.astype(np.float32)
+        # ``abs_sha256`` (raw float32 bytes of this region) and
+        # ``canvas_root`` (whole-canvas chunk fold) hash that same
+        # reconstruction for export forensics (06 §2.3): a dragged float32
+        # WAV carries these exact bytes.
+        updated = mirror_region + delta.astype(np.float32)
+        self._mirror[ss:se] = updated
+        self._refresh_canvas_hashes(ss, se)
+        self.last_slice_hash = {
+            "sha256": hashlib.sha256(delta_bytes).hexdigest(),
+            "abs_sha256": hashlib.sha256(
+                np.ascontiguousarray(updated, dtype=np.float32).tobytes()
+            ).hexdigest(),
+            "canvas_root": self._canvas_root(),
+            "canvas_chunk": self.CANVAS_CHUNK,
+            "start_sample": ss,
+            "num_samples": se - ss,
+            "channels": int(channels),
+            "slice_seq": self._slice_seq,
+        }
+        self._slice_seq += 1
+        compressed = self._zctx.compress(delta_bytes)
         hdr = struct.pack(
             SLICE_HDR_FMT,
             SLICE_FLAG_DELTA,
