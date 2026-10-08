@@ -34,9 +34,12 @@ from __future__ import annotations
 
 import time
 
+import numpy as np
 import torch
 
+from acestep.engine.stream import next_submit_seq
 from acestep.streaming.generator_backend import (
+    AudioChunk,
     LeadProfile,
     ProduceMode,
     TickContext,
@@ -58,6 +61,10 @@ class DiffusionBackend:
         # Most recent successful generation; feeds gap-fill, DiT-pause
         # reuse, and stall pre-coverage (has_renderable_state).
         self._last_result_latent = None
+        # Submit stamp (acestep.engine.stream.next_submit_seq) of the
+        # request _last_result_latent was generated from: the freshness
+        # signal behind bounce_ready.
+        self._last_result_seq = 0
         # Result of THIS tick's produce (None on skip / mid-flight).
         self._current_result = None
 
@@ -158,7 +165,11 @@ class DiffusionBackend:
         elif mode == "skip":
             result_latent = None
         else:
+            pipe = self._stream_pipeline()
+            ticks_before = getattr(pipe, "ticks", None)
             result_latent = self._generate(prep)
+            if result_latent is not None:
+                self._last_result_seq = self._finished_seq(pipe, ticks_before)
 
         # Cache the most recent successful latent so the DiT-pause and
         # gap-fill paths have something to feed the renderer.
@@ -174,6 +185,77 @@ class DiffusionBackend:
         is_fresh = result_latent is not None
         self._after_produce(prep, result_latent, is_fresh)
         return is_fresh
+
+    # ---- bounce (Capabilities.bounce) ------------------------------------------
+
+    def _stream_pipeline(self):
+        """The StreamPipeline this backend submits to (None if none)."""
+        return getattr(self, "pipeline", None)
+
+    def _finished_seq(self, pipe_before, ticks_before) -> int:
+        """Submit stamp of the latent ``_generate`` just returned.
+
+        A pipeline that did not tick produced it synchronously from the
+        current state (e.g. a zero-denoise passthrough), so it is as
+        fresh as a new mark."""
+        pipe = self._stream_pipeline()
+        if pipe is None or (
+            pipe is pipe_before and getattr(pipe, "ticks", None) == ticks_before
+        ):
+            return next_submit_seq()
+        req = getattr(pipe, "last_finished_request", None)
+        return int(getattr(req, "submit_seq", 0) or 0)
+
+    def bounce_mark(self) -> int:
+        """Freshness mark for a bounce: taken on the runner thread once
+        every earlier control change has been applied."""
+        return next_submit_seq()
+
+    def bounce_ready(self, mark: int) -> bool:
+        """True once the latest generation began denoising after
+        ``mark`` — i.e. it reflects every change applied before it."""
+        return self._last_result_latent is not None and self._last_result_seq > mark
+
+    def render_bounce(self):
+        """The whole playable window of the latest generation as one
+        :class:`AudioChunk` (``start_sample=0``), or None when the
+        backend has no fixed window (walk mode) or no state yet.
+
+        Default: tile :meth:`render_window` across the window with the
+        runner's 25 ms crossfade at the seams, so the result is exactly
+        what the stream would converge to. Runner thread only."""
+        dur = self.playable_duration_s()
+        if dur is None or self.vae_window <= 0 or not self.has_renderable_state():
+            return None
+        sr = self.geometry().sample_rate
+        total = int(round(dur * sr))
+        xfade = min(1200, int(round(self.vae_window * sr)) // 4)
+        timing = (self.last_tick_ms, self.last_dec_ms)
+        out = None
+        pos = written = 0
+        try:
+            while written < total:
+                chunk = self.render_window(pos / sr)
+                if chunk is None or len(chunk.pcm) == 0:
+                    return None
+                pcm = np.array(chunk.pcm, dtype=np.float32)
+                if out is None:
+                    out = np.zeros((total, pcm.shape[1]), dtype=np.float32)
+                s = max(0, int(chunk.start_sample))
+                e = min(s + len(pcm), total)
+                if e <= written:
+                    return None  # render made no progress; don't spin
+                n = min(xfade, max(0, written - s), e - s)
+                if n > 0:
+                    ramp = np.linspace(0.0, 1.0, n, dtype=np.float32)[:, None]
+                    pcm[:n] = out[s:s + n] * (1 - ramp) + pcm[:n] * ramp
+                out[s:e] = pcm[:e - s]
+                written = e
+                pos = max(pos + 1, e - xfade)
+        finally:
+            # A bounce is not a tick: keep the latency trace honest.
+            self.last_tick_ms, self.last_dec_ms = timing
+        return AudioChunk(pcm=out, start_sample=0)
 
     # ---- family hooks --------------------------------------------------------
 

@@ -816,6 +816,7 @@ class SA3Backend(DiffusionBackend):
             ),
             render_anchor_queue=True,
             lora=bool(self._use_lora and self._lora_mgr is not None),
+            bounce=True,
         )
 
     def geometry(self) -> AudioGeometry:

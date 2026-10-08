@@ -231,6 +231,12 @@ namespace command {
     inline constexpr const char* kRequestId = "request_id";
   }  // namespace midi_transcribe
 
+  namespace bounce {
+    inline constexpr const char* kType = "bounce";
+    /** Client-chosen token echoed on bounce_ready / bounce_failed. */
+    inline constexpr const char* kRequestId = "request_id";
+  }  // namespace bounce
+
 }  // namespace command
 
 // ── Event payloads (server → client) ──
@@ -446,6 +452,25 @@ namespace event {
     inline constexpr const char* kRequestId = "request_id";
     inline constexpr const char* kError = "error";
   }  // namespace midi_failed
+
+  namespace bounce_ready {
+    inline constexpr const char* kType = "bounce_ready";
+    /** Echo of the bounce request_id. */
+    inline constexpr const char* kRequestId = "request_id";
+    inline constexpr const char* kSampleRate = "sample_rate";
+    inline constexpr const char* kChannels = "channels";
+    /** Samples per channel in the binary frame (the playable duration). */
+    inline constexpr const char* kFrames = "frames";
+    /** Generation counter at render time (same counter as params_update.num_gens). */
+    inline constexpr const char* kNumGens = "num_gens";
+  }  // namespace bounce_ready
+
+  namespace bounce_failed {
+    inline constexpr const char* kType = "bounce_failed";
+    /** Echo of the bounce request_id. */
+    inline constexpr const char* kRequestId = "request_id";
+    inline constexpr const char* kError = "error";
+  }  // namespace bounce_failed
 
 }  // namespace event
 

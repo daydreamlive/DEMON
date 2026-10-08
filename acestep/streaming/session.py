@@ -81,6 +81,8 @@ from acestep.streaming.events import (
     AudioReady,
     AudioWriteFailed,
     AudioWritten,
+    BounceFailed,
+    BounceReady,
     CommandFailed,
     DepthApplied,
     EventBus,
@@ -162,6 +164,9 @@ INTERP_METHODS = INTERP_METHOD_NAMES
 # message resets the timer immediately; the next loop iteration
 # resumes a normal tick. Set to 0 to disable the pause entirely.
 IDLE_PAUSE_S = float(os.environ.get("DEMON_IDLE_PAUSE_S", "20"))
+# How long a ``bounce`` may wait for a generation that started after
+# the request before it is answered with ``bounce_failed``.
+BOUNCE_TIMEOUT_S = 30.0
 
 # Sample-count alignment quantum for the source waveform. The vae_encode
 # graph builds latents in 5-frame groups at 48 kHz / 25 fps; sources
@@ -630,6 +635,10 @@ class StreamingSession:
         # Ids this session fetched via add_lora. close() wipes exactly
         # these — never the baked catalog, which it must not touch.
         self._fetched_loras: set[str] = set()
+        # Queued bounce requests: [request_id, mark | None, deadline].
+        # Appended by the dispatch thread, serviced on the runner thread
+        # (_service_bounces, inside before_tick).
+        self._bounces: list = []
 
         # Set at the end of close(), after GPU state is released. A
         # preempting connection (ws_adapter's single-active-session
@@ -1039,6 +1048,73 @@ class StreamingSession:
         self._apply_lora_pending()
         self._apply_swap_if_pending()
         self._apply_depth_pending()
+        self._service_bounces()
+
+    def _service_bounces(self) -> None:
+        """Answer queued ``bounce`` requests (runner thread).
+
+        A request takes its freshness mark here, once nothing queued
+        before it is still pending — every earlier command has then been
+        applied (the dispatcher handles commands in order; the ones that
+        touch the GPU drain just above). It is answered with the first
+        generation whose denoising began after the mark, so a staggered
+        pipeline's in-flight slots (started before the changes) never
+        satisfy it. The full-window render runs here, serialized with
+        the hot loop.
+        """
+        if not self._bounces:
+            return
+        state = self.state
+        now = time.monotonic()
+        # Keep generating while someone waits (the idle pause would
+        # otherwise freeze the pipeline on its cached result).
+        state.last_activity_ts = now
+        with state._lock:
+            settled = not (
+                state.pending_register or state.pending_enable
+                or state.pending_disable or state.pending_depth is not None
+                or state.swap_pending.get("waveform") is not None
+            )
+            reqs = list(self._bounces)
+        chunk = None
+        for req in reqs:
+            request_id, mark, deadline = req
+            if mark is None and settled:
+                req[1] = mark = self.backend.bounce_mark()
+            if mark is not None and self.backend.bounce_ready(mark):
+                if chunk is None:
+                    t0 = time.perf_counter()
+                    chunk = self.backend.render_bounce()
+                    logger.info(
+                        "bounce_rendered id={} ok={} ms={:.0f}",
+                        request_id, chunk is not None,
+                        (time.perf_counter() - t0) * 1000,
+                    )
+                if chunk is None:
+                    event = BounceFailed(
+                        request_id=request_id,
+                        error="this session has no fixed window to bounce",
+                    )
+                else:
+                    event = BounceReady(
+                        request_id=request_id,
+                        audio=chunk.pcm,
+                        sample_rate=self.backend.geometry().sample_rate,
+                        num_gens=int(state.params.get("num_gens", 0) or 0),
+                    )
+            elif now >= deadline:
+                event = BounceFailed(
+                    request_id=request_id,
+                    error=(
+                        "no fresh generation within "
+                        f"{BOUNCE_TIMEOUT_S:.0f}s"
+                    ),
+                )
+            else:
+                continue
+            with state._lock:
+                self._bounces.remove(req)
+            self.bus.publish(event)
 
     def _apply_lora_pending(self) -> None:
         if not self.lora_available:
@@ -2226,6 +2302,30 @@ class StreamingSession:
             "disable_lora_requested origin={} id={}",
             origin.value, lora_id,
         )
+
+    def bounce(
+        self,
+        request_id: str,
+        *,
+        origin: CommandOrigin = CommandOrigin.PRIMARY,
+    ) -> None:
+        """Queue a full-window render reflecting every command sent
+        before this one. Answered on the bus with :class:`BounceReady`
+        or :class:`BounceFailed` (unsupported backend, timeout). Read
+        only: generation is not interrupted."""
+        state = self.state
+        state.last_activity_ts = time.monotonic()
+        if not self.backend.capabilities().bounce:
+            self.bus.publish(BounceFailed(
+                request_id=request_id,
+                error=f"backend {self.backend.name!r} cannot bounce",
+            ))
+            return
+        with state._lock:
+            self._bounces.append(
+                [request_id, None, time.monotonic() + BOUNCE_TIMEOUT_S],
+            )
+        logger.info("bounce_requested origin={} id={}", origin.value, request_id)
 
     @requires_capability("steering", "manual_slot_add")
     def manual_slot_add(

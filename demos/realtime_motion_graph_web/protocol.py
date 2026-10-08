@@ -552,6 +552,26 @@ COMMANDS: tuple = (
                     "installed); otherwise answered with midi_failed. "
                     + _PCM_FRAME + " Acked by midi_notes / midi_failed.",
     ),
+    CommandSpec(
+        "bounce",
+        fields=(
+            FieldSpec("request_id", "str", required=True,
+                      description="Client-chosen token echoed on "
+                                  "bounce_ready / bounce_failed."),
+        ),
+        description="Return the WHOLE playable window of the current render "
+                    "in one go, instead of recording the stream in real "
+                    "time. The answer reflects every command sent before "
+                    "this one: the server waits for a generation that began "
+                    "denoising after those changes were applied (one "
+                    "pipeline latency: queued requests + denoise steps, a "
+                    "few ticks). Read-only; "
+                    "streaming continues. Available only when ready."
+                    "capabilities.bounce is true (fixed-window families); "
+                    "otherwise, or when no fresh generation lands within "
+                    "30 s, answered with bounce_failed. Acked by "
+                    "bounce_ready (+ binary) / bounce_failed.",
+    ),
 )
 
 EVENTS: tuple = (
@@ -872,6 +892,38 @@ EVENTS: tuple = (
         description="midi_transcribe rejected or failed (transcriber not "
                     "installed / weights unavailable / decode error). The "
                     "session is unaffected.",
+    ),
+    EventSpec(
+        "bounce_ready",
+        fields=(
+            FieldSpec("request_id", "str", required=True,
+                      description="Echo of the bounce request_id."),
+            FieldSpec("sample_rate", "int", required=True),
+            FieldSpec("channels", "int", required=True),
+            FieldSpec("frames", "int", required=True,
+                      description="Samples per channel in the binary frame "
+                                  "(the playable duration)."),
+            FieldSpec("num_gens", "int", required=True,
+                      description="Generation counter at render time (same "
+                                  "counter as params_update.num_gens)."),
+        ),
+        binary_follow=True,
+        description="Answer to bounce. ONE binary frame follows: the whole "
+                    "window from sample 0, interleaved [frames, channels] "
+                    "float16 (the ready initial-buffer framing; ~11.5 MB "
+                    "for 60 s stereo, sent as a fragmented message).",
+    ),
+    EventSpec(
+        "bounce_failed",
+        fields=(
+            FieldSpec("request_id", "str", required=True,
+                      description="Echo of the bounce request_id."),
+            FieldSpec("error", "str"),
+        ),
+        description="bounce not served: the backend cannot bounce "
+                    "(ready.capabilities.bounce false, e.g. append-only "
+                    "families or walk mode), or no fresh generation landed "
+                    "in time. The session is unaffected.",
     ),
 )
 

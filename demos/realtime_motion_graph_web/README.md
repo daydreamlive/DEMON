@@ -293,6 +293,19 @@ of truth that `web/engine/protocol.ts` mirrors):
 - **Streaming**: JSON params/prompt out, binary slice (raw float16 or
   zstd-compressed float16 delta) + `params_update` / `prompt_applied`
   JSON messages in
+- **Bounce** (when `ready.capabilities.bounce` is true): send
+  `{"type": "bounce", "request_id": "<any string>"}` to get the whole
+  playable window in one go instead of recording the stream in real time.
+  The server answers with the first generation that started denoising
+  after every command sent before the bounce was applied (one pipeline
+  latency: queued requests + denoise steps, a few ticks), as a
+  `bounce_ready` JSON header
+  (`request_id`, `sample_rate`, `channels`, `frames`, `num_gens`) followed
+  by ONE binary frame: interleaved `[frames, channels]` float16 from
+  sample 0, the same framing as the initial buffer. Unsupported families
+  and requests not served within 30 s get
+  `{"type": "bounce_failed", "request_id": ..., "error": ...}`.
+  Streaming carries on throughout.
 
 `server.py` multiplexes the JSON HTTP API, fixture/video file serving,
 and the WebSocket upgrade onto one TCP port; the WS handshake hands

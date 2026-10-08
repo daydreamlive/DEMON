@@ -64,6 +64,8 @@ from acestep.streaming.events import (
     AudioReady,
     AudioWriteFailed,
     AudioWritten,
+    BounceFailed,
+    BounceReady,
     CommandFailed,
     DepthApplied,
     LoraCatalogUpdate,
@@ -112,7 +114,12 @@ from acestep.user_uploads import (
     unique_user_upload_name,
 )
 
-from .audio_codec import SliceCodec, chunked_ws_send, send_stem_payload
+from .audio_codec import (
+    SliceCodec,
+    chunked_ws_send,
+    send_bounce_payload,
+    send_stem_payload,
+)
 from .protocol import COMMAND_NAMES, SAMPLE_RATE, coerce_command_payload
 
 
@@ -1691,6 +1698,24 @@ def _handle_client_body(
             })
         elif isinstance(event, AudioWriteFailed):
             _send_json({"type": "audio_write_failed", "error": event.error})
+        elif isinstance(event, BounceReady):
+            try:
+                with send_lock:
+                    send_bounce_payload(
+                        ws,
+                        request_id=event.request_id,
+                        audio=event.audio,
+                        sample_rate=event.sample_rate,
+                        num_gens=event.num_gens,
+                    )
+            except ConnectionClosed:
+                state.running = False
+        elif isinstance(event, BounceFailed):
+            _send_json({
+                "type": "bounce_failed",
+                "request_id": event.request_id,
+                "error": event.error,
+            })
         elif isinstance(event, StemAssets):
             # Late background-rip delivery (upload path): same wire
             # shape the init/swap paths send inline. send_lock keeps
@@ -2158,6 +2183,10 @@ def _handle_client_body(
                     source_epoch=int(epoch) if epoch is not None else None,
                     refresh_timbre=bool(data.get("refresh_timbre", False)),
                     origin=origin,
+                )
+            elif mtype == "bounce":
+                streaming.bounce(
+                    str(data.get("request_id") or ""), origin=origin,
                 )
             elif mtype == "midi_transcribe":
                 # "Drag MIDI out": the binary PCM frame is the clip the
