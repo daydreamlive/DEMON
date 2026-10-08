@@ -13,7 +13,7 @@ import {
 } from "@/lib/config";
 import { useCustomTracksStore } from "@/store/useCustomTracksStore";
 import { usePerformanceStore } from "@/store/usePerformanceStore";
-import { useSessionStore } from "@/store/useSessionStore";
+import { useSessionStore, type SessionStatus } from "@/store/useSessionStore";
 import { isTimeSignature } from "@/types/engine";
 
 // In-place fixture swap. Mirrors swapToFixture() in DEMON's app.js: when the
@@ -25,6 +25,36 @@ import { isTimeSignature } from "@/types/engine";
 // Falls back to a full session restart on swap_failed (e.g. server in a
 // state where it can't accept a new source). The full restart is delegated
 // back to useStartSession via the same fixture name.
+
+/**
+ * Decide whether a recovered session must swap to the user's current
+ * track selection.
+ *
+ * The reconnect path (useStartSession) rebinds the fixture snapshotted
+ * at session start. If the user switched tracks while the socket was
+ * down, the perf store's `fixture` (what the UI shows) diverges from the
+ * session store's `boundFixture` (what the recovered backend + player
+ * actually play). Mid-outage the perf-store swap subscription fires but
+ * `run()` bails on `status !== "ready"`, so the change is dropped and
+ * never re-applied — the recovered session keeps playing the stale
+ * track. This guard re-applies it exactly once, the instant the
+ * reconnect completes (status "reconnecting" → "ready").
+ *
+ * Returns false for every other transition so it never double-swaps a
+ * fresh Play (idle/connecting → ready) or a normal reconnect where the
+ * selection never changed.
+ */
+export function needsFixtureReconcile(args: {
+  prevStatus: SessionStatus;
+  status: SessionStatus;
+  selectedFixture: string;
+  boundFixture: string | null;
+}): boolean {
+  const { prevStatus, status, selectedFixture, boundFixture } = args;
+  if (prevStatus !== "reconnecting" || status !== "ready") return false;
+  if (!selectedFixture) return false;
+  return selectedFixture !== boundFixture;
+}
 
 export function useFixtureSwap() {
   // Skip the very first fixture write (which fires when the catalog populates
@@ -241,6 +271,11 @@ export function useFixtureSwap() {
         return;
       }
       lastSwappedTo.current = name;
+      // The live session is now bound to this track server-side. Keep
+      // the session store in sync so the reconnect reconcile compares
+      // against the truth (and a later reconnect doesn't re-swap a track
+      // that's already loaded).
+      useSessionStore.getState().setBoundFixture(name);
       // A source-mode hotswap (force) is the same song with a different
       // stem feeding inference — skip the new-track gate entirely so the
       // performer's denoise / remix-started state is left untouched.
@@ -305,6 +340,30 @@ export function useFixtureSwap() {
       void run(fixture, true);
     });
 
+    // Reconnect reconcile: when a recovered session reaches "ready", the
+    // backend + player are bound to the fixture snapshotted at session
+    // start. If the user switched tracks while the socket was down, that
+    // mid-outage change was dropped by run()'s `status !== "ready"`
+    // bail. Re-apply it here exactly once on the reconnecting → ready
+    // edge so the recovered session swaps to the live selection instead
+    // of playing the stale track. `force` re-runs the swap even when the
+    // name matches lastSwappedTo (which still points at the stale bound
+    // fixture until the swap below updates it).
+    const unsubReconnect = useSessionStore.subscribe((s, prev) => {
+      const selectedFixture = usePerformanceStore.getState().fixture;
+      if (
+        !needsFixtureReconcile({
+          prevStatus: prev.status,
+          status: s.status,
+          selectedFixture,
+          boundFixture: s.boundFixture,
+        })
+      ) {
+        return;
+      }
+      void run(selectedFixture, true);
+    });
+
     // Seed lastSwappedTo with the current fixture so the initial population
     // (catalog → default fixture write) doesn't trigger a no-op swap, and
     // seed lastSwappedMode so the first stem_assets echo is recognised.
@@ -318,6 +377,7 @@ export function useFixtureSwap() {
       cancelled = true;
       unsub();
       unsubSource();
+      unsubReconnect();
     };
   }, []);
 }
