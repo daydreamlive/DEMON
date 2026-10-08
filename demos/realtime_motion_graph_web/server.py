@@ -982,25 +982,38 @@ def main():
         # DEMON_STARTUP_WARMUP=1.
         #
         # Warmup is backend policy (plan §3.5): the synthetic warmup
-        # session is ACE-shaped (TRT engines, fixture upload path), so
-        # families whose policy isn't "ace_trt" skip it — sa3's one-time
-        # cost is the process-cached SA3Context load, paid by the first
-        # real session.
-        if os.environ.get("DEMON_STARTUP_WARMUP", "0") != "0":
-            if family_spec.warmup_policy == "ace_trt":
-                from acestep.streaming.warmup import run_startup_warmup
+        # session is ACE-shaped (TRT engines, fixture upload path).
+        # Other families declare a ``preload`` hook instead (the
+        # process-cached model + its TRT engines). A selected model
+        # extension always preloads: its install is the bulk of the
+        # one-time cost and would otherwise land on the first session.
+        # Fail closed: a pod that cannot load its model must not
+        # advertise itself as ready.
+        startup_warmup = os.environ.get("DEMON_STARTUP_WARMUP", "0") != "0"
+        if family_spec.warmup_policy == "ace_trt" and startup_warmup:
+            from acestep.streaming.warmup import run_startup_warmup
 
-                run_startup_warmup(
-                    decoder_backend=decoder_accel,
-                    vae_backend=vae_accel,
-                    checkpoint=checkpoint,
-                    offload_text_encoder=offload_text_encoder,
-                )
-            else:
-                logger.info(
-                    "startup_warmup_skipped family={} policy={}",
-                    backend_family, family_spec.warmup_policy,
-                )
+            run_startup_warmup(
+                decoder_backend=decoder_accel,
+                vae_backend=vae_accel,
+                checkpoint=checkpoint,
+                offload_text_encoder=offload_text_encoder,
+            )
+        elif family_spec.preload is not None and (
+            startup_warmup or model_extension is not None
+        ):
+            family_spec.preload(
+                checkpoint,
+                decoder_backend=decoder_accel,
+                vae_backend=vae_accel,
+                checkpoint_dir=base_checkpoint_dir,
+                model_extension=model_extension,
+            )
+        elif startup_warmup:
+            logger.info(
+                "startup_warmup_skipped family={} policy={}",
+                backend_family, family_spec.warmup_policy,
+            )
 
     # Start the MCP control bus FIRST so registry registrations from the
     # WS handler land in an already-listening HTTP server. Skipped in
