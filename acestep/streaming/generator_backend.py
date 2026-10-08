@@ -180,6 +180,14 @@ class Capabilities:
     # when it builds ``ready.capabilities``, so clients gate the "drag MIDI
     # out" affordance on what THIS pod can actually do.
     midi_transcribe: bool = False
+    # The ``bounce`` command: the backend regenerates its whole fixed
+    # window every generation and can hand back a full-window render of
+    # a generation that started after a given point. A backend that
+    # declares it implements ``bounce_mark()`` / ``bounce_ready(mark)``
+    # / ``render_bounce()`` (DiffusionBackend provides all three).
+    # Append-only families leave it False: they have no "whole window"
+    # to re-render.
+    bounce: bool = False
 
 
 @dataclass(frozen=True)

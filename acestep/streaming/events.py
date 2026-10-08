@@ -71,6 +71,8 @@ __all__ = [
     "StructureFailed",
     "AudioWritten",
     "AudioWriteFailed",
+    "BounceReady",
+    "BounceFailed",
     "SessionReady",
     "SessionError",
     "SubscriberDropped",
@@ -310,6 +312,23 @@ class AudioWritten:
 
 @dataclass(frozen=True)
 class AudioWriteFailed:
+    error: str
+
+
+@dataclass(frozen=True)
+class BounceReady:
+    """Answer to ``bounce``: the whole playable window of a generation
+    that started after every earlier control change was applied.
+    ``audio`` is interleaved ``[frames, channels]`` float32."""
+    request_id: str
+    audio: np.ndarray
+    sample_rate: int
+    num_gens: int
+
+
+@dataclass(frozen=True)
+class BounceFailed:
+    request_id: str
     error: str
 
 

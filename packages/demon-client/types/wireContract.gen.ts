@@ -41,7 +41,8 @@ export type CommandName =
   | "clear_structure_source"
   | "swap_source"
   | "write_audio"
-  | "midi_transcribe";
+  | "midi_transcribe"
+  | "bounce";
 
 export const COMMAND_NAMES: readonly CommandName[] = [
   "params",
@@ -65,6 +66,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "swap_source",
   "write_audio",
   "midi_transcribe",
+  "bounce",
 ] as const;
 
 export type EventName =
@@ -92,7 +94,9 @@ export type EventName =
   | "audio_write_failed"
   | "command_failed"
   | "midi_notes"
-  | "midi_failed";
+  | "midi_failed"
+  | "bounce_ready"
+  | "bounce_failed";
 
 export const EVENT_NAMES: readonly EventName[] = [
   "init_ack",
@@ -120,6 +124,8 @@ export const EVENT_NAMES: readonly EventName[] = [
   "command_failed",
   "midi_notes",
   "midi_failed",
+  "bounce_ready",
+  "bounce_failed",
 ] as const;
 
 export type HandshakeCommandName =
@@ -294,6 +300,12 @@ export interface WriteAudioCommand {
 export interface MidiTranscribeCommand {
   type: "midi_transcribe";
   /** Client-chosen token echoed on midi_notes / midi_failed so the answer can be matched to the clip it was asked for. */
+  request_id: string;
+}
+
+export interface BounceCommand {
+  type: "bounce";
+  /** Client-chosen token echoed on bounce_ready / bounce_failed. */
   request_id: string;
 }
 
@@ -503,6 +515,25 @@ export interface MidiFailedEvent {
   error?: string;
 }
 
+export interface BounceReadyEvent {
+  type: "bounce_ready";
+  /** Echo of the bounce request_id. */
+  request_id: string;
+  sample_rate: number;
+  channels: number;
+  /** Samples per channel in the binary frame (the playable duration). */
+  frames: number;
+  /** Generation counter at render time (same counter as params_update.num_gens). */
+  num_gens: number;
+}
+
+export interface BounceFailedEvent {
+  type: "bounce_failed";
+  /** Echo of the bounce request_id. */
+  request_id: string;
+  error?: string;
+}
+
 // ── Session-init config (client → server, sent at handshake) ──
 
 export interface SessionConfigPayload {
@@ -604,7 +635,8 @@ export type WireCommand =
   | ClearStructureSourceCommand
   | SwapSourceCommand
   | WriteAudioCommand
-  | MidiTranscribeCommand;
+  | MidiTranscribeCommand
+  | BounceCommand;
 
 export type WireEvent =
   | InitAckEvent
@@ -631,7 +663,9 @@ export type WireEvent =
   | AudioWriteFailedEvent
   | CommandFailedEvent
   | MidiNotesEvent
-  | MidiFailedEvent;
+  | MidiFailedEvent
+  | BounceReadyEvent
+  | BounceFailedEvent;
 
 export type HandshakeCommand =
   | UploadTrackCommand;

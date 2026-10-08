@@ -12,6 +12,7 @@ automatically.
 
 from __future__ import annotations
 
+import itertools
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -27,6 +28,21 @@ from .dcw import DCWAdvanced, DCWCorrector
 
 if TYPE_CHECKING:
     from .masking import LatentNoiseMask
+
+
+# Process-wide submit stamp. Every ``StreamPipeline.submit`` stamps the
+# request with the next value, so ``last_finished_request.submit_seq``
+# orders a finished latent against any point in time: a result whose
+# stamp is greater than a :func:`next_submit_seq` mark began denoising
+# after that mark was taken. Global (not per pipeline) so the order
+# survives pipeline rebuilds (steps / depth changes).
+_SUBMIT_SEQ = itertools.count(1)
+
+
+def next_submit_seq() -> int:
+    """Consume and return a submit stamp — a freshness mark: every
+    request submitted afterwards carries a strictly greater stamp."""
+    return next(_SUBMIT_SEQ)
 
 
 class _SteeringApply(NamedTuple):
@@ -164,6 +180,9 @@ class SlotRequest:
     # (the historical T source). Ignored when ``context_latents`` is
     # present — the adapter's ``request_frames`` decides.
     latent_frames: Optional[int] = None
+    # Set by StreamPipeline.submit (see next_submit_seq); 0 = never
+    # submitted.
+    submit_seq: int = 0
 
     def all_conditions(self) -> List[SlotCondition]:
         """Return primary + extra conditions as a single ordered list."""
@@ -490,6 +509,7 @@ class StreamPipeline:
         so a retiring slot is always refilled with the freshest
         parameters.
         """
+        request.submit_seq = next_submit_seq()
         cap = self._queue_cap if self._queue_cap is not None else self._depth
         cap = max(1, cap)
         while len(self._queue) >= cap:

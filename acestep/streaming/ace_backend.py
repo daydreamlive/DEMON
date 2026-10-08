@@ -344,7 +344,13 @@ class ACEStepBackend(DiffusionBackend):
             notes_conditioning=False,
             steering=self.steering.is_loaded,
             render_anchor_queue=True,
+            # Walk mode generates one chunk of a longer song at a time,
+            # so there is no single window to bounce.
+            bounce=not self.walk_window,
         )
+
+    def _stream_pipeline(self):
+        return getattr(self.stream, "pipeline", None)
 
     def lora_compatible(self, metadata: dict) -> bool:
         """ACE's compatibility axes: weight-format family and

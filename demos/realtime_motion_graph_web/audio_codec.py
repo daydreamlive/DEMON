@@ -161,3 +161,30 @@ def send_stem_payload(
     for name in order:
         arr = stems[name].detach().cpu().numpy().T.astype(np.float16)
         chunked_ws_send(ws, arr.tobytes())
+
+
+def send_bounce_payload(
+    ws,
+    *,
+    request_id: str,
+    audio: np.ndarray,
+    sample_rate: int,
+    num_gens: int,
+) -> None:
+    """Serialize a ``bounce_ready`` JSON header + ONE binary frame: the
+    whole window as interleaved ``[frames, channels]`` float16 — the
+    same framing as the ``ready`` initial buffer and ``stem_assets``.
+
+    Caller must hold the per-WS ``send_lock`` so the header and its
+    binary follow-up can't interleave with slice frames.
+    """
+    pcm = np.ascontiguousarray(audio, dtype=np.float16)
+    ws.send(json.dumps({
+        "type": "bounce_ready",
+        "request_id": request_id,
+        "sample_rate": int(sample_rate),
+        "channels": int(pcm.shape[1]),
+        "frames": int(pcm.shape[0]),
+        "num_gens": int(num_gens),
+    }))
+    chunked_ws_send(ws, pcm.tobytes())

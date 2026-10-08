@@ -50,6 +50,22 @@ rectified-flow model plugs in here and inherits the ring buffer, slot
 batching, shared curves and CFG from `StreamPipeline`. ACE and SA3 both use
 it; a token or autoregressive model implements Tier 1 directly.
 
+**Bounce.** `Capabilities.bounce` advertises the `bounce` command (the whole
+playable window of a generation that started after the request). A backend
+that declares it implements `bounce_mark()`, `bounce_ready(mark)` and
+`render_bounce()`; the session calls them on the runner thread inside
+`before_tick`. `DiffusionBackend` provides all three: every
+`StreamPipeline.submit` stamps the request with a process-wide sequence
+number (`SlotRequest.submit_seq`), `produce` records the stamp of the
+request each result came from, and a bounce is ready once that stamp is
+newer than its mark — so slots already in flight when a change landed never
+satisfy it. `render_bounce` tiles `render_window` across
+`playable_duration_s()` with the runner's 25 ms seam crossfade, so the take
+matches what the stream converges to; it returns None (answered with
+`bounce_failed`) when there is no fixed window. ACE-Step and SA3 declare
+it (ACE only outside walk mode, where the DiT holds one chunk of a longer
+song); append-only families (MRT2, MiniMax) and YuE2 leave it off.
+
 A family whose model cannot run in the DEMON process (a different framework
 or torch pin) implements Tier 1 as a client of a sidecar process. The
 credit-paced TCP frame protocol from the Magenta RT2 branch (#230) is the
@@ -141,6 +157,10 @@ the SA3 DiT into `StreamPipeline`'s ring buffer, and every emit is an
   is the fidelity tier (min per-step cos >= 0.9998 vs eager); fp8 engines
   are a speed tier judged at upstream's bar (min per-step cos >= 0.90,
   upstream PR #86), not at the fidelity gate.
+
+- **Bounce:** supported. Small slices its cached full decode; medium
+  tiles the SAME-L window decode (the same calls the stream makes, ~20
+  windows for 60 s at the 3 s default render window).
 
 ## Magenta RealTime 2 (`mrt2`)
 
