@@ -254,6 +254,9 @@ def test_trt_batch1_path_rings_and_materializes():
 # ---- geometry --------------------------------------------------------------
 
 
+# The ring is opt-in (2026-10-09): tests of the ring geometry turn it on.
+RING_ON = {"DEMON_SA3_LOOP_RING": "1"}
+
 def _bare_context(song_seconds=180.0, outro_pad_s=3.0, extension=None):
     c = ctx_mod.SA3Context.__new__(ctx_mod.SA3Context)
     c.model_id = "medium"
@@ -310,7 +313,7 @@ def test_plan_stretches_source_onto_the_ring_period():
     sr = 48000
     dur = 12.632
     wav = torch.randn(2, int(dur * sr))
-    plan = c.plan_loop_ring(wav, sr, dur, env={})
+    plan = c.plan_loop_ring(wav, sr, dur, env=RING_ON)
     assert plan.reason == "on"
     assert plan.frames == 136
     playable_44k = 136 * DS
@@ -343,9 +346,10 @@ def test_stretch_preserves_a_tone():
 
 @pytest.mark.parametrize("env,ctx_kw,src_s,reason", [
     ({"DEMON_SA3_LOOP_RING": "0"}, {}, 12.632, "env_disabled"),
-    ({}, {"song_seconds": None, "outro_pad_s": 6.0}, 12.632, "legacy_label"),
-    ({}, {"extension": object()}, 12.632, "model_extension"),
-    ({}, {}, 8.0, "source_shorter_than_loop"),
+    ({}, {}, 12.632, "env_disabled"),
+    (RING_ON, {"song_seconds": None, "outro_pad_s": 6.0}, 12.632, "legacy_label"),
+    (RING_ON, {"extension": object()}, 12.632, "model_extension"),
+    (RING_ON, {}, 8.0, "source_shorter_than_loop"),
 ])
 def test_plan_off_keeps_todays_geometry(env, ctx_kw, src_s, reason):
     c = _bare_context(**ctx_kw)
@@ -360,8 +364,9 @@ def test_plan_off_keeps_todays_geometry(env, ctx_kw, src_s, reason):
 
 
 def test_loop_ring_setting():
-    assert ctx_mod.loop_ring_setting({}) is True
+    assert ctx_mod.loop_ring_setting({}) is False
     assert ctx_mod.loop_ring_setting({"DEMON_SA3_LOOP_RING": "1"}) is True
+    assert ctx_mod.loop_ring_setting({"DEMON_SA3_LOOP_RING": "on"}) is True
     for off in ("0", "off", "false"):
         assert ctx_mod.loop_ring_setting({"DEMON_SA3_LOOP_RING": off}) is False
 

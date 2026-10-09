@@ -31,9 +31,11 @@ rolled ring sits in the MIDDLE of the DiT window, ``[m_l | N | m_r]``,
 with both margins (the wrap headroom ``T - N`` split in half) filled by
 its periodic continuation, so neither window edge of the rotary-only
 DiT is a loop position: the model has nowhere inside the loop to put
-its intro or outro (:func:`ring_margins`). Built by the session
-when ``DEMON_SA3_LOOP_RING`` is on (default; ``0`` restores the plain
-window). ``ring_frames=None`` is the plain path, bit for bit.
+its intro or outro (:func:`ring_margins`). Built by the session only
+when ``DEMON_SA3_LOOP_RING=1`` (opt-in since 2026-10-09: the ring loses
+the top end and the percussion transients at high denoise, see
+``LOOP_RING_ENV`` in sa3_context). ``ring_frames=None`` is the plain
+path, bit for bit, and the default.
 """
 
 from __future__ import annotations

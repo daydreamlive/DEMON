@@ -100,8 +100,13 @@ DEFAULT_LOOP_WRAP_S = 3.0
 # The DiT denoises the loop as a ring (``SA3Adapter.ring_frames``): the
 # ring period is a whole number of latent frames, and the played loop and
 # the source anchor are snapped/stretched to exactly that period so a
-# drum loop gets no sub-frame hiccup per lap. ``0`` disables (the plain
-# window, byte-identical to the pre-ring geometry).
+# drum loop gets no sub-frame hiccup per lap. OPT-IN (``1`` enables): with
+# the ring on, the per-timestep roll removes most of the energy above
+# 8 kHz and the hi-hat/percussion transients at denoise 1.0 and 0.85
+# (measured 2026-10-09 on the lofi fixture across every build since
+# #374: ring-on 0.0003 of the energy above 8 kHz vs 0.0018 ring-off, the
+# same with the ring switched off on the same build). Unset or ``0`` is
+# the plain window, byte-identical to the pre-#374 geometry.
 LOOP_RING_ENV = "DEMON_SA3_LOOP_RING"
 # Above this stretch the snap is audible-ish (very short loops); the
 # ring still runs, the log says so.
@@ -109,10 +114,10 @@ RING_STRETCH_WARN = 0.01
 
 
 def loop_ring_setting(env: Mapping[str, str] | None = None) -> bool:
-    """``DEMON_SA3_LOOP_RING``: on unless set to ``0``/``off``/``false``."""
+    """``DEMON_SA3_LOOP_RING``: off unless set to ``1``/``on``/``true``/``yes``."""
     env = os.environ if env is None else env
     raw = (env.get(LOOP_RING_ENV) or "").strip().lower()
-    return raw not in ("0", "off", "false", "no")
+    return raw in ("1", "on", "true", "yes")
 
 
 def snap_ring_frames(
