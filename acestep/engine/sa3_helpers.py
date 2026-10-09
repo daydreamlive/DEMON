@@ -25,14 +25,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # DEMON tracks this fork branch until the SA3 TensorRT/FP8 producer work
 # merges upstream. The hash is the reproducibility boundary for installs.
 SA3_VENDOR_URL = "https://github.com/ryanontheinside/stable-audio-3"
-SA3_VENDOR_SHA = "960da1f8cbe205ab3b702edbfabd91113ab22473"
+SA3_VENDOR_SHA = "5a14b78a7094fc1d7b92949bf5a60ef463cf74c2"
 # Revision that last changed the source compiled into the SAME-L TensorRT
 # engine. Keep this stable across vendor bumps that only touch other code.
-SA3_SAME_L_PLUGIN_REVISION = "c07698548567fe6f163806f692d282bbaa57aba3"
+SA3_SAME_L_PLUGIN_REVISION = "5f9fab053f154f068290ec674a48614866523c5b"
 # Revision that last changed the vendored SAME-S fp16mixed converter
 # (optimized/tensorRT/build/build_same_s_dec_fp16.py + the build_dit_fp16
 # helpers it imports); part of the SAME-S decode engine name.
-SA3_SAME_S_DECODE_REVISION = "c7e88002a3d15bbd4b56f792c5be6f06692d80fb"
+SA3_SAME_S_DECODE_REVISION = "ffaf2826503b3f64ce5378d8510919b0b33615a4"
 SA3_VENDOR_ENV = "DEMON_SA3_SRC"
 SA3_VENDOR_DIRNAME = "stable-audio-3"
 

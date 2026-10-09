@@ -6,7 +6,7 @@ fp16mixed) unless the caller overrides it:
 * ``fp16mixed`` is the fidelity tier: min per-step velocity cosine vs the
   eager reference >= 0.9998.
 * ``fp8`` is a speed tier judged at upstream's bar (Stability-AI/
-  stable-audio-3 PR #86, in our vendored pin 960da1f8): worst-step cosine
+  stable-audio-3 PR #86, in our vendored pin 5a14b78a): worst-step cosine
   vs fp32 on adversarial seeds ~0.92-0.94 with the early steps near the
   calibrated reference, default stays fp16mixed. An fp8 engine passes at
   min per-step cos >= 0.90 and is never judged at the fidelity gate.
