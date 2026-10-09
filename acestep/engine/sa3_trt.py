@@ -52,6 +52,7 @@ import os
 import re
 import sys
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 
@@ -143,9 +144,10 @@ _ENGINE_CACHE: dict = {}
 _ENGINE_CACHE_LOCK = threading.Lock()
 _SAME_PLUGIN_REGISTERED = False
 
-#: CUDA graph capture of the DiT engine launch. Default ON; ``0`` is the
-#: escape hatch (plain ``execute_async_v3`` every step). Read when a
-#: :class:`SA3TRTDit` is constructed.
+#: CUDA graph capture of the DiT engine launch and the SAME decoder
+#: execute. Default ON; ``0`` is the escape hatch for both (plain
+#: ``execute_async_v3`` every call). Read when a :class:`SA3TRTDit` or a
+#: decoder wrapper is constructed.
 TRT_CUDA_GRAPH_ENV = "DEMON_SA3_TRT_CUDA_GRAPH"
 
 # Per-engine refit counter. A LoRA refit rewrites the engine's weights in
@@ -160,8 +162,9 @@ _REFIT_EPOCH_LOCK = threading.Lock()
 
 
 def cuda_graph_enabled() -> bool:
-    """Whether DiT launches are captured (``DEMON_SA3_TRT_CUDA_GRAPH``,
-    default on; ``0`` / ``false`` / ``off`` / ``no`` turn it off)."""
+    """Whether DiT and decoder launches are captured
+    (``DEMON_SA3_TRT_CUDA_GRAPH``, default on; ``0`` / ``false`` / ``off``
+    / ``no`` turn it off)."""
     val = os.environ.get(TRT_CUDA_GRAPH_ENV, "").strip().lower()
     return val not in ("0", "false", "off", "no")
 
@@ -180,39 +183,80 @@ def engine_refit_epoch(engine) -> int:
     return _REFIT_EPOCH.get(id(engine), 0)
 
 
-class _LaunchGraphCache:
-    """One captured launch per wrapper, keyed by everything a replay
-    depends on: the engine (and its refit count), the execution context,
-    and each bound tensor's shape and device address. A key mismatch
-    drops the graph, so the next launch re-captures. Capture failure
-    disables capture for the wrapper (plain launches from then on)."""
+def _launch_key(engine, ctx, bindings) -> tuple:
+    """What a captured launch is valid for: the engine (and its refit
+    count), the execution context, and each bound tensor's name, shape
+    and device address. ``bindings`` is ``(name, tensor)`` pairs, exactly
+    what was passed to ``set_tensor_address``."""
+    return (
+        id(engine),
+        engine_refit_epoch(engine),
+        id(ctx),
+        tuple((name, tuple(buf.shape), buf.data_ptr()) for name, buf in bindings),
+    )
 
-    def __init__(self, enabled: bool) -> None:
+
+class _LaunchGraphCache:
+    """Captured launches per wrapper, keyed by :func:`_launch_key`.
+
+    ``capacity=1`` (the DiT: one fixed binding set per wrapper) keeps a
+    single graph, and a lookup under any other key drops it, so the next
+    launch re-captures. ``capacity>1`` (the decoders: one graph per
+    latent shape) keeps up to that many graphs, least recently used
+    evicted first; a key that is not cached simply misses. Capture
+    failure disables capture for the wrapper (plain launches from then
+    on)."""
+
+    def __init__(self, enabled: bool, capacity: int = 1) -> None:
         self.enabled = bool(enabled)
-        self.key = None
-        self.graph = None
+        self.capacity = max(1, int(capacity))
+        self._entries: "OrderedDict[tuple, object]" = OrderedDict()
         self.captures = 0
         self.invalidations = 0
+        self.evictions = 0
         self.disabled_reason: Optional[str] = None
 
+    @property
+    def key(self):
+        """Most recently used key (None when empty)."""
+        return next(reversed(self._entries)) if self._entries else None
+
+    @property
+    def graph(self):
+        """Most recently used graph (None when empty)."""
+        return self._entries[self.key] if self._entries else None
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
     def lookup(self, key):
-        """The graph captured under ``key``, or None (and the stale one
-        is dropped) when anything in the key changed."""
-        if self.graph is not None and self.key != key:
-            self.graph = None
-            self.key = None
-            self.invalidations += 1
-        return self.graph
+        """The graph captured under ``key``, or None. With capacity 1 a
+        miss also drops the stale graph (anything in the key changed)."""
+        graph = self._entries.get(key) if key is not None else None
+        if graph is None:
+            if self.capacity == 1 and self._entries:
+                self._entries.clear()
+                self.invalidations += 1
+            return None
+        self._entries.move_to_end(key)
+        return graph
 
     def store(self, key, graph) -> None:
-        self.key = key
-        self.graph = graph
+        self._entries[key] = graph
+        self._entries.move_to_end(key)
+        while len(self._entries) > self.capacity:
+            self._entries.popitem(last=False)
+            self.evictions += 1
         self.captures += 1
+
+    def discard(self, key) -> None:
+        """Drop the graph under ``key`` if there is one."""
+        if self._entries.pop(key, None) is not None:
+            self.invalidations += 1
 
     def disable(self, reason: str) -> None:
         self.enabled = False
-        self.graph = None
-        self.key = None
+        self._entries.clear()
         self.disabled_reason = reason
 
 
@@ -613,15 +657,7 @@ class SA3TRTDit:
         """What a captured launch is valid for. Shapes and addresses come
         from the wrapper's own buffers, which are exactly what was bound
         (set_tensor_address in __init__, never rebound)."""
-        return (
-            id(self.engine),
-            engine_refit_epoch(self.engine),
-            id(self._ctx),
-            tuple(
-                (name, tuple(buf.shape), buf.data_ptr())
-                for name, buf in self._bindings()
-            ),
-        )
+        return _launch_key(self.engine, self._ctx, self._bindings())
 
     def invalidate_graph(self) -> None:
         """Drop the captured launch; the next step re-captures."""
@@ -756,11 +792,28 @@ class _SameTRTDecoder:
     """One SAME decoder engine: latent ``[1, 256, T]`` (already
     pretransform-scaled by the caller) -> ``[C, N]`` float audio at
     44.1 kHz. Engine deserialization is process-cached; the execution
-    context, stream and output buffer are per instance."""
+    context, stream and buffers are per instance.
+
+    The execute is captured in a CUDA graph per latent shape and
+    replayed (``DEMON_SA3_TRT_CUDA_GRAPH``, default on, shared with the
+    DiT). Besides dropping the host enqueue, this is what keeps the
+    SAME-L window engine from growing the process: TensorRT's AOT plugin
+    path loads the plugin kernel's PTX as a new CUDA module on every
+    ``execute_async_v3`` (12 per call, never unloaded: ~0.45 MB device +
+    ~0.43 MB host per decode, issue #378). A graph replay never
+    enqueues, so it never loads one. Each shape gets persistent
+    input/output buffers bound once; the caller's latent is copied into
+    the input buffer in place before the replay, as the DiT stages its
+    inputs. Shapes vary (the main render window, edge-grown windows, a
+    different profile), so up to :attr:`graph_capacity` shapes are kept,
+    least recently used evicted together with their buffers."""
 
     _needs_plugin = False
     _label = "same"
     _err_name = "SAME"
+    #: Captured shapes kept per decoder (LRU). SAME-S decodes the fixed
+    #: session canvas, so a handful covers it.
+    graph_capacity = 8
 
     def __init__(self, engine_path: Path):
         import tensorrt as trt
@@ -768,6 +821,7 @@ class _SameTRTDecoder:
         if self._needs_plugin:
             _register_same_plugin()
         engine = _deserialize_engine(engine_path)
+        self.engine = engine
         self.engine_path = engine_path
         self._ctx = engine.create_execution_context()
         self._stream = torch.cuda.Stream()
@@ -776,16 +830,61 @@ class _SameTRTDecoder:
         self._out_name = "pcm" if "pcm" in names else "audio"
         self._out_dtype = _trt_dtype_to_torch(trt, engine.get_tensor_dtype(self._out_name))
         self._out_buf: Optional[torch.Tensor] = None
-        logger.info("sa3_trt_{}_ready engine={}", self._label, engine_path.parent.name)
+        self._device = torch.device("cuda")
+        # Graph mode: latent shape -> (input buffer, output buffer), LRU,
+        # same capacity as the graph cache so both evict together.
+        self._slots: "OrderedDict[tuple, tuple]" = OrderedDict()
+        self._graphs = _LaunchGraphCache(cuda_graph_enabled(), self.graph_capacity)
+        logger.info(
+            "sa3_trt_{}_ready engine={} cuda_graph={}",
+            self._label, engine_path.parent.name, self._graphs.enabled,
+        )
+
+    def _slot_bindings(self, slot) -> tuple:
+        return (("latent", slot[0]), (self._out_name, slot[1]))
+
+    def _slot_key(self, slot) -> tuple:
+        return _launch_key(self.engine, self._ctx, self._slot_bindings(slot))
+
+    def _slot_for(self, shape: tuple):
+        """Persistent (input, output) buffers for ``shape``. Creating
+        them evicts the least recently used shape (and its graph) past
+        the capacity. The context's input shape must already be set."""
+        slot = self._slots.get(shape)
+        if slot is not None:
+            self._slots.move_to_end(shape)
+            return slot
+        out_shape = tuple(self._ctx.get_tensor_shape(self._out_name))
+        slot = (
+            torch.empty(shape, dtype=self._in_dtype, device=self._device),
+            torch.empty(out_shape, dtype=self._out_dtype, device=self._device),
+        )
+        self._slots[shape] = slot
+        while len(self._slots) > self._graphs.capacity:
+            _, old = self._slots.popitem(last=False)
+            self._graphs.discard(self._slot_key(old))
+        return slot
 
     @torch.no_grad()
     def decode(self, latent_1ct: torch.Tensor) -> torch.Tensor:
-        lat = latent_1ct.to(device="cuda", dtype=self._in_dtype).contiguous()
+        lat = latent_1ct.to(device=self._device, dtype=self._in_dtype).contiguous()
         if not self._ctx.set_input_shape("latent", tuple(lat.shape)):
             raise RuntimeError(f"TRT rejected latent shape {tuple(lat.shape)}")
+        if self._graphs.enabled:
+            out = self._decode_graph(lat)
+        else:
+            out = self._decode_plain(lat)
+        if self._out_name == "pcm":
+            # PCM-baked engine flavor: (1, N, 2) int scaled to int16 range.
+            return (out[0].to(torch.float32).T / 32767.0).clamp(-1, 1)
+        return out[0].float().clamp(-1, 1)
+
+    def _decode_plain(self, lat: torch.Tensor) -> torch.Tensor:
+        """``execute_async_v3`` on the caller's latent (the escape hatch,
+        and the fallback after a capture failure)."""
         out_shape = tuple(self._ctx.get_tensor_shape(self._out_name))
         if self._out_buf is None or tuple(self._out_buf.shape) != out_shape:
-            self._out_buf = torch.empty(out_shape, dtype=self._out_dtype, device="cuda")
+            self._out_buf = torch.empty(out_shape, dtype=self._out_dtype, device=self._device)
         self._ctx.set_tensor_address("latent", lat.data_ptr())
         self._ctx.set_tensor_address(self._out_name, self._out_buf.data_ptr())
         # ``lat`` was produced on the caller's current stream; a non-blocking
@@ -798,11 +897,63 @@ class _SameTRTDecoder:
         if not ok:
             raise RuntimeError(f"SA3 TRT {self._err_name} decode failed")
         self._stream.synchronize()
-        out = self._out_buf
-        if self._out_name == "pcm":
-            # PCM-baked engine flavor: (1, N, 2) int scaled to int16 range.
-            return (out[0].to(torch.float32).T / 32767.0).clamp(-1, 1)
-        return out[0].float().clamp(-1, 1)
+        return self._out_buf
+
+    def _decode_graph(self, lat: torch.Tensor) -> torch.Tensor:
+        """Copy ``lat`` into this shape's bound input buffer and replay
+        its captured execute, capturing first when there is none. As in
+        :meth:`SA3TRTDit._launch_graph`: one plain execute precedes each
+        capture (TensorRT's lazy first-enqueue setup must not land inside
+        it), capture uses thread_local mode, and a capture failure logs
+        once and falls back to plain execute without failing the decode."""
+        slot = self._slot_for(tuple(lat.shape))
+        in_buf, out_buf = slot
+        for name, buf in self._slot_bindings(slot):
+            self._ctx.set_tensor_address(name, buf.data_ptr())
+        in_buf.copy_(lat)  # caller's stream, ordered by the wait below
+        key = self._slot_key(slot)
+        caller_stream = torch.cuda.current_stream()
+        with torch.cuda.stream(self._stream):
+            self._stream.wait_stream(caller_stream)
+            graph = self._graphs.lookup(key)
+            if graph is None:
+                if not self._ctx.execute_async_v3(self._stream.cuda_stream):
+                    raise RuntimeError(f"SA3 TRT {self._err_name} decode failed")
+                self._stream.synchronize()
+                # capture_begin/end directly, as the DiT does (no
+                # device-wide sync / gc / empty_cache around the capture).
+                g = torch.cuda.CUDAGraph()
+                try:
+                    g.capture_begin(capture_error_mode="thread_local")
+                    try:
+                        ok = self._ctx.execute_async_v3(self._stream.cuda_stream)
+                    finally:
+                        g.capture_end()
+                    if not ok:
+                        raise RuntimeError(
+                            f"SA3 TRT {self._err_name} capture enqueue failed"
+                        )
+                except Exception as exc:  # noqa: BLE001 - fall back, never fail a decode
+                    self._graphs.disable(f"capture_failed: {exc}")
+                    self._slots.clear()
+                    logger.warning(
+                        "sa3_trt_{}_graph_disabled engine={} T={} error={}",
+                        self._label, self.engine_path.parent.name,
+                        tuple(lat.shape)[-1], exc,
+                    )
+                    # The warm-up execute above already decoded this call
+                    # into out_buf (a replay would only overwrite it).
+                    return out_buf
+                self._graphs.store(key, g)
+                graph = g
+                logger.info(
+                    "sa3_trt_{}_graph_captured engine={} T={} captures={}",
+                    self._label, self.engine_path.parent.name,
+                    tuple(lat.shape)[-1], self._graphs.captures,
+                )
+            graph.replay()
+        self._stream.synchronize()
+        return out_buf
 
 
 class SameLWindowTRTDecoder(_SameTRTDecoder):
@@ -814,6 +965,13 @@ class SameLWindowTRTDecoder(_SameTRTDecoder):
     _needs_plugin = True
     _label = "same_l"
     _err_name = "SAME-L"
+    #: The window length is not constant: a live session cycles through
+    #: about 24 lengths every canvas lap (T 55-78 frames, the grown
+    #: windows around the loop wrap), so a small cache would evict and
+    #: re-capture (and plain-execute, which is what leaks) every lap.
+    #: 72 covers the engine's whole T 32-96 profile; buffers exist only
+    #: for lengths actually seen (a few MB each).
+    graph_capacity = 72
 
 
 class SameSTRTDecoder(_SameTRTDecoder):
