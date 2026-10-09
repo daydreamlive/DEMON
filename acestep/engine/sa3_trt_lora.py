@@ -94,6 +94,7 @@ class SA3TRTRefitMirror:
 
         trt = _trt
         self._trt = trt
+        self._engine = engine
         self._model_root = model_root
         self._refitter = _refitter if _refitter is not None else (
             trt.Refitter(engine, trt.Logger(trt.Logger.WARNING))
@@ -232,6 +233,11 @@ class SA3TRTRefitMirror:
                 context=f"sa3 refit mirror fqn={fqn}",
             )
         commit_refit(self._refitter)
+        # Any CUDA graph captured over this engine predates the new
+        # weights; SA3TRTDit re-captures on its next step.
+        from acestep.engine.sa3_trt import note_engine_refit  # noqa: PLC0415
+
+        note_engine_refit(self._engine)
         self._dirty.difference_update(now_clean)
         logger.info(
             "sa3_trt_refit_sync pushed={} restored={} reason={} refit_ms={:.1f}",
