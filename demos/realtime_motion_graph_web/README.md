@@ -306,6 +306,24 @@ of truth that `web/engine/protocol.ts` mirrors):
   and requests not served within 30 s get
   `{"type": "bounce_failed", "request_id": ..., "error": ...}`.
   Streaming carries on throughout.
+- **Tool proxy** (optional): side services running on the server's own
+  machine, bound to localhost, can be reached through the main port.
+  Configure them with `DEMON_TOOL_PROXIES` or `--tool-proxies`
+  (`name=http://127.0.0.1:1330,other=http://localhost:1331`; targets
+  must be `http://127.0.0.1` or `http://localhost`, names
+  `[a-z0-9-]{1,32}`). Then `GET`/`POST /tools/<name>/<path>?<query>` is
+  forwarded to `<target>/<path>?<query>` with its body and
+  `Content-Type`; the upstream status, `Content-Type` and body come
+  back. Every request must carry `X-Demon-Session: <session_id>` (from
+  `ready.session_id`) naming a session currently connected to this
+  server, else `401`; the one exception is `GET /tools/<name>/health`
+  from loopback without the header. Unknown tool `404`, target
+  unreachable `503`, upstream timeout `504` (all JSON `{"error": ...}`),
+  body over the cap `413`, chunked uploads `411`. `ready.tools` lists the
+  configured tools whose `GET /health` answered `200` within the last
+  30 s (polled every 10 s in the background). Env knobs:
+  `DEMON_TOOL_PROXY_MAX_BODY_MB` (default 256),
+  `DEMON_TOOL_PROXY_TIMEOUT_S` (default 120; connect timeout is 5 s).
 
 `server.py` multiplexes the JSON HTTP API, fixture/video file serving,
 and the WebSocket upgrade onto one TCP port; the WS handshake hands

@@ -278,6 +278,8 @@ namespace event {
     inline constexpr const char* kGeometry = "geometry";
     /** Backend capability mask: {capability: bool} over the Capabilities fields (swap, timbre, structure, lora, ...). Client panels and MCP tools gate on it; commands tagged with a matching `requires` fail with command_failed when the bit is false. */
     inline constexpr const char* kCapabilities = "capabilities";
+    /** Names of the localhost side services this server proxies at /tools/<name>/<path> (GET/POST, header X-Demon-Session: <session_id>) whose /health answered 200 recently; empty when none. Absent on older servers. */
+    inline constexpr const char* kTools = "tools";
     /** Per-session knob manifest: the same {version, knobs} envelope GET /api/knobs serves, but backend-owned and session-resolved (SDE mode, enabled lora_str_<id> knobs). /api/knobs remains the static pre-session probe. */
     inline constexpr const char* kKnobManifest = "knob_manifest";
     /** Active manual steering slot count; drives the client's man_*_<N> row rendering. Updated live via the manual_slot_count event. */
