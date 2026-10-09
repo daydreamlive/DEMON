@@ -85,6 +85,7 @@ from acestep.streaming.events import (
     TimbreCleared,
     TimbreFailed,
     TimbreSet,
+    X0TargetState,
 )
 from acestep.streaming.session import (
     StemExtractFailedError,
@@ -1717,6 +1718,13 @@ def _handle_client_body(
                 "request_id": event.request_id,
                 "error": event.error,
             })
+        elif isinstance(event, X0TargetState):
+            _send_json({
+                "type": "x0_target_state",
+                "status": event.status,
+                "tags": event.tags,
+                "error": event.error,
+            })
         elif isinstance(event, StemAssets):
             # Late background-rip delivery (upload path): same wire
             # shape the init/swap paths send inline. send_lock keeps
@@ -2191,6 +2199,10 @@ def _handle_client_body(
             elif mtype == "bounce":
                 streaming.bounce(
                     str(data.get("request_id") or ""), origin=origin,
+                )
+            elif mtype == "set_x0_target_prompt":
+                streaming.set_x0_target_prompt(
+                    str(data.get("tags") or ""), origin=origin,
                 )
             elif mtype == "midi_transcribe":
                 # "Drag MIDI out": the binary PCM frame is the clip the

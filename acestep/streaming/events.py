@@ -333,6 +333,18 @@ class BounceFailed:
 
 
 @dataclass(frozen=True)
+class X0TargetState:
+    """Progress of ``set_x0_target_prompt``. ``status`` is one of
+    ``generating`` (request accepted), ``ready`` (the generated window
+    is now the x0_target pull target), ``cleared`` (the knob pulls
+    toward the source again; ``error`` says why when the server did
+    it) or ``failed``."""
+    status: str
+    tags: str = ""
+    error: str = ""
+
+
+@dataclass(frozen=True)
 class CommandFailed:
     """A capability-gated command was rejected because the session's
     backend doesn't declare the required capability (plan §3.4: loud

@@ -33,6 +33,16 @@ textarea {
   padding: 24px;
 }
 
+/* The main unit and the Pull pedal sit side by side, pedal top-aligned
+   to the right; they stack on narrow screens. */
+.rig {
+  align-items: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 56px;
+  justify-content: center;
+}
+
 .plugin {
   background:
     radial-gradient(circle at 50% 16%, rgb(255 255 255 / 8%), transparent 34%),
@@ -471,4 +481,278 @@ body.knob-dragging {
   .source-row {
     grid-template-columns: 1fr;
   }
+}
+
+/* ---- Pull pedal: a stompbox for the x0 target ---------------------------- */
+
+.stompbox {
+  background:
+    radial-gradient(circle at 30% 12%, rgb(255 255 255 / 22%), transparent 30%),
+    repeating-radial-gradient(circle at 40% 30%, rgb(0 0 0 / 8%) 0 2px, transparent 3px 7px),
+    linear-gradient(165deg, #2f8f86 0%, #1d6660 45%, #0f3c39 100%);
+  border: 1px solid #0a2725;
+  border-radius: 14px;
+  box-shadow:
+    inset 0 2px 0 rgb(255 255 255 / 28%),
+    inset 0 -10px 22px rgb(0 0 0 / 45%),
+    inset 6px 0 14px rgb(255 255 255 / 6%),
+    0 24px 60px rgb(0 0 0 / 55%);
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+  padding: 22px 18px 20px;
+  position: relative;
+  width: 214px;
+}
+
+.screw {
+  background:
+    linear-gradient(45deg, transparent 44%, rgb(0 0 0 / 55%) 45% 55%, transparent 56%),
+    radial-gradient(circle at 35% 30%, #f2f2ee, #8d9196 60%, #4b4f54);
+  border-radius: 50%;
+  box-shadow: 0 1px 1px rgb(0 0 0 / 60%);
+  height: 9px;
+  position: absolute;
+  width: 9px;
+}
+
+.screw-tl { left: 8px; top: 8px; }
+.screw-tr { right: 8px; top: 8px; transform: rotate(60deg); }
+.screw-bl { bottom: 8px; left: 8px; transform: rotate(20deg); }
+.screw-br { bottom: 8px; right: 8px; transform: rotate(110deg); }
+
+.stomp-knobs {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 1fr 1fr;
+  justify-items: center;
+  min-height: 104px;
+  width: 100%;
+}
+
+.stomp-placeholder {
+  align-self: center;
+  color: rgb(255 255 255 / 55%);
+  font-size: 10px;
+  font-weight: 800;
+  grid-column: 1 / -1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Smaller chicken-head-sized knobs than the main unit's. */
+.stompbox .knob-wrap {
+  height: 64px;
+  width: 64px;
+}
+
+.stompbox .knob {
+  height: 58px;
+  width: 58px;
+}
+
+.stompbox .knob::before {
+  height: 24px;
+  width: 24px;
+}
+
+.stompbox .knob-pointer {
+  height: 15px;
+  top: 5px;
+}
+
+.stompbox .knob-value {
+  font-size: 11px;
+}
+
+.stompbox .knob-label {
+  color: #e8f3f1;
+  font-size: 9px;
+}
+
+.scribble {
+  display: block;
+  width: 100%;
+}
+
+.scribble textarea {
+  background: #101112;
+  border: 1px solid rgb(0 0 0 / 55%);
+  border-radius: 4px;
+  color: #eeeeea;
+  display: block;
+  font-size: 12px;
+  padding: 6px 8px;
+  resize: none;
+  width: 100%;
+}
+
+.scribble textarea:disabled {
+  opacity: 0.55;
+}
+
+.sr-only {
+  clip: rect(0 0 0 0);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+.stomp-name {
+  display: grid;
+  justify-items: center;
+  line-height: 1;
+}
+
+.stomp-name span {
+  color: #f6efe0;
+  font-family: "Arial Black", "Helvetica Neue", Impact, sans-serif;
+  font-size: 34px;
+  font-style: italic;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  text-shadow: 0 2px 0 rgb(0 0 0 / 45%);
+  text-transform: uppercase;
+}
+
+.stomp-name small {
+  color: rgb(246 239 224 / 70%);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  margin-top: 3px;
+  text-transform: uppercase;
+}
+
+.stomp-led-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  max-width: 100%;
+}
+
+.stomp-led {
+  background: radial-gradient(circle at 35% 30%, #6a2a26, #2a0f0d);
+  border: 2px solid #c9ccd0;
+  border-radius: 50%;
+  flex: none;
+  height: 12px;
+  width: 12px;
+}
+
+.stomp-led-generating {
+  animation: stomp-blink 0.7s ease-in-out infinite alternate;
+  background: radial-gradient(circle at 35% 30%, #ffe2a0, #e09a2c);
+  box-shadow: 0 0 10px rgb(240 170 60 / 80%);
+}
+
+.stomp-led-ready {
+  background: radial-gradient(circle at 35% 30%, #ff9c8f, #e2382b);
+  box-shadow: 0 0 12px rgb(255 70 50 / 85%);
+}
+
+.stomp-led-failed {
+  animation: stomp-blink 0.25s steps(2) 6;
+  background: radial-gradient(circle at 35% 30%, #ff9c8f, #8a1d16);
+}
+
+@keyframes stomp-blink {
+  from { opacity: 0.3; }
+  to { opacity: 1; }
+}
+
+.stomp-status {
+  color: rgb(246 239 224 / 80%);
+  font-size: 10px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stomp-foot {
+  align-items: center;
+  display: grid;
+  gap: 4px 10px;
+  grid-template-areas:
+    "clr switch"
+    ". label";
+  grid-template-columns: auto auto;
+  justify-content: center;
+}
+
+.footswitch {
+  background:
+    radial-gradient(circle at 50% 50%, #2b2e33 0 52%, transparent 53%),
+    radial-gradient(circle at 35% 30%, #fafafa, #9da2a8 55%, #4d5156);
+  border: 2px solid #1b1d20;
+  border-radius: 50%;
+  box-shadow:
+    0 6px 0 #0d0f11,
+    0 9px 14px rgb(0 0 0 / 55%);
+  cursor: pointer;
+  display: grid;
+  grid-area: switch;
+  height: 58px;
+  place-items: center;
+  transition: transform 60ms ease, box-shadow 60ms ease;
+  width: 58px;
+}
+
+.footswitch-cap {
+  background: radial-gradient(circle at 35% 30%, #f4f4f2, #a5aaaf 60%, #5c6066);
+  border-radius: 50%;
+  box-shadow: inset 0 -2px 3px rgb(0 0 0 / 40%);
+  height: 32px;
+  width: 32px;
+}
+
+.footswitch:active:not(:disabled) {
+  box-shadow:
+    0 2px 0 #0d0f11,
+    0 4px 8px rgb(0 0 0 / 55%);
+  transform: translateY(4px);
+}
+
+.footswitch:disabled {
+  cursor: default;
+  filter: brightness(0.7);
+}
+
+.footswitch:focus-visible,
+.stomp-clear:focus-visible {
+  outline: 2px solid #f6efe0;
+  outline-offset: 3px;
+}
+
+.stomp-foot-label {
+  color: rgb(246 239 224 / 75%);
+  font-size: 9px;
+  font-weight: 900;
+  grid-area: label;
+  justify-self: center;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.stomp-clear {
+  background: linear-gradient(180deg, #2c3037, #14171b);
+  border: 1px solid rgb(0 0 0 / 60%);
+  border-radius: 4px;
+  box-shadow: 0 2px 0 rgb(0 0 0 / 50%);
+  color: #f1f1ed;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 900;
+  grid-area: clr;
+  padding: 4px 7px;
+  text-transform: uppercase;
+}
+
+.stomp-clear:disabled {
+  cursor: default;
+  opacity: 0.45;
 }

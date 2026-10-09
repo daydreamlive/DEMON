@@ -13,6 +13,7 @@ automatically.
 from __future__ import annotations
 
 import itertools
+import math
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -125,6 +126,10 @@ class SlotRequest:
     # site so the engine sees a uniform [B, T, 1] tensor. Hot-mutable via
     # set_shared_curve("x0_target_strength", value).
     x0_target_strength: "float | torch.Tensor" = 0.0
+    # Steps the scalar x0_target blend applies to, as [lo, hi) fractions
+    # of the schedule (step indices floor(lo*N) .. ceil(hi*N)-1). None =
+    # the refinement half, step >= N // 2 (the historical gate).
+    x0_target_window: Optional[Tuple[float, float]] = None
     # --- New in Phase 1: absorb one-shot generate() features ---
     x0_target_curve: Optional[torch.Tensor] = None   # per-frame blend curve [T], [1,T], or [1,T,1]
     x0_target_gate: float = 0.0                       # gate-start fraction (matches DiffusionConfig default)
@@ -1431,11 +1436,20 @@ class StreamPipeline:
                     ode_steps.normalize_curve(req.x0_target_strength)
                     if strength_active else None
                 )
+            if req.x0_target_window is None:
+                in_x0_window = slot.step_idx >= total_steps // 2
+            else:
+                lo, hi = req.x0_target_window
+                in_x0_window = (
+                    math.floor(lo * total_steps)
+                    <= slot.step_idx
+                    < math.ceil(hi * total_steps)
+                )
             scalar_x0_target = (
                 req.x0_target is not None
                 and strength_active
                 and req.x0_target_curve is None
-                and slot.step_idx >= total_steps // 2
+                and in_x0_window
                 and t_curr > 0
             )
 

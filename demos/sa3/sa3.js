@@ -11,6 +11,12 @@ const DEFAULT_FIXTURE = "low_fi_Gm_loop_60s_gnm.wav";
 const STUB_FRAMES = 9600;
 const STUB_CHANNELS = 2;
 const PARAMS_TICK_MS = 80;
+// Knobs that live on the Pull pedal instead of the main unit.
+const PEDAL_KNOBS = ["x0_target", "sa3_x0_timing"];
+const PEDAL_TIP =
+  "Generate a full song with Stable Audio from this prompt. The x0 target " +
+  "knob then pulls toward it instead of the source. Match the main " +
+  "prompt's BPM and key so the two line up.";
 
 const els = {
   blend: document.querySelector("#blend"),
@@ -18,6 +24,12 @@ const els = {
   duration: document.querySelector("#duration"),
   fixture: document.querySelector("#fixture"),
   knobs: document.querySelector("#knobs"),
+  pedalKnobs: document.querySelector("#x0-knobs"),
+  x0Prompt: document.querySelector("#x0-prompt"),
+  x0Led: document.querySelector("#x0-led"),
+  x0Status: document.querySelector("#x0-status"),
+  x0Gen: document.querySelector("#x0-gen"),
+  x0Clear: document.querySelector("#x0-clear"),
   promptA: document.querySelector("#prompt-a"),
   promptB: document.querySelector("#prompt-b"),
   sendPrompt: document.querySelector("#send-prompt"),
@@ -37,6 +49,9 @@ const state = {
   remote: null,
   player: null,
   paramsTimer: null,
+  // set_x0_target_prompt progress: "none" | "generating" | "ready" | "failed"
+  x0Status: "none",
+  x0Message: "",
 };
 
 els.promptA.value = DEFAULT_PROMPT;
@@ -91,6 +106,7 @@ function renderStatus() {
     state.tickMs == null ? "--.-" : Number(state.tickMs).toFixed(1);
   els.statusDot.className = `status-dot status-${state.status}`;
   els.statusText.textContent = state.message || state.status;
+  renderX0Pedal();
 }
 
 function renderFixtures() {
@@ -345,6 +361,53 @@ function boolKnob(name, entry) {
   return cell;
 }
 
+function x0PedalAvailable() {
+  return (
+    state.status === "ready" &&
+    Boolean(state.remote?.capabilities?.x0_target_prompt)
+  );
+}
+
+function renderX0Pedal() {
+  const available = x0PedalAvailable();
+  const busy = state.x0Status === "generating";
+  els.x0Led.className = `stomp-led stomp-led-${state.x0Status}`;
+  els.x0Gen.disabled = !available || busy || !els.x0Prompt.value.trim();
+  els.x0Clear.disabled = !available || state.x0Status === "none";
+  els.x0Prompt.disabled = !available;
+  let text;
+  if (state.status === "ready" && !available) text = "not supported";
+  else if (state.x0Status === "generating") text = "generating...";
+  else if (state.x0Status === "ready") text = "pulling to song";
+  else if (state.x0Status === "failed") text = "failed";
+  else text = "pulling to source";
+  els.x0Status.textContent = state.x0Message || text;
+  els.x0Status.title = state.x0Message || "";
+}
+
+function onX0TargetState(msg) {
+  const status = msg?.status;
+  if (status === "generating" || status === "ready") {
+    state.x0Status = status;
+    state.x0Message = "";
+  } else if (status === "cleared") {
+    state.x0Status = "none";
+    state.x0Message = msg.error || "";
+  } else if (status === "failed") {
+    // A failed request leaves whatever target was live in place; only
+    // the status line says what went wrong.
+    state.x0Status = "failed";
+    state.x0Message = msg.error ? `failed: ${msg.error}` : "";
+  }
+  renderX0Pedal();
+}
+
+function knobNode(name, entry) {
+  if (entry.type === "enum") return enumKnob(name, entry);
+  if (entry.type === "bool") return boolKnob(name, entry);
+  return numericKnob(name, entry);
+}
+
 function renderKnobs() {
   if (state.knobs.length === 0) {
     const placeholder = document.createElement("div");
@@ -354,15 +417,23 @@ function renderKnobs() {
         ? "loading knob bank..."
         : "knobs appear when the session starts";
     els.knobs.replaceChildren(placeholder);
+    const pedalPlaceholder = document.createElement("div");
+    pedalPlaceholder.className = "stomp-placeholder";
+    pedalPlaceholder.textContent =
+      state.status === "connecting" ? "waking..." : "start to wake";
+    els.pedalKnobs.replaceChildren(pedalPlaceholder);
+    renderX0Pedal();
     return;
   }
 
-  const nodes = state.knobs.map(({ name, entry }) => {
-    if (entry.type === "enum") return enumKnob(name, entry);
-    if (entry.type === "bool") return boolKnob(name, entry);
-    return numericKnob(name, entry);
-  });
-  els.knobs.replaceChildren(...nodes);
+  const main = [];
+  const pedal = [];
+  for (const { name, entry } of state.knobs) {
+    (PEDAL_KNOBS.includes(name) ? pedal : main).push(knobNode(name, entry));
+  }
+  els.knobs.replaceChildren(...main);
+  els.pedalKnobs.replaceChildren(...pedal);
+  renderX0Pedal();
 }
 
 function sendParamsNow() {
@@ -397,6 +468,9 @@ async function stop() {
   state.player = null;
   state.remote = null;
   state.tickMs = null;
+  // The generated target lives in the server session; it is gone now.
+  state.x0Status = "none";
+  state.x0Message = "";
   setStatus("idle");
 }
 
@@ -461,6 +535,9 @@ async function start() {
         renderStatus();
       }
     });
+    remote.addEventListener("x0_target_state", (event) => {
+      onX0TargetState(event.detail);
+    });
     remote.addEventListener("close", () => {
       if (remote.closedByUser) return;
       setStatus("error", "Connection lost.");
@@ -512,6 +589,19 @@ els.blend.addEventListener("input", () => {
 });
 
 els.promptB.addEventListener("input", renderStatus);
+
+els.x0Gen.addEventListener("click", () => {
+  const tags = els.x0Prompt.value.trim();
+  if (!tags || !state.remote) return;
+  state.remote.sendSetX0TargetPrompt(tags);
+});
+
+els.x0Clear.addEventListener("click", () => {
+  state.remote?.sendSetX0TargetPrompt("");
+});
+
+els.x0Prompt.addEventListener("input", renderX0Pedal);
+els.x0Prompt.closest(".scribble").title = PEDAL_TIP;
 
 window.addEventListener("beforeunload", () => {
   try {

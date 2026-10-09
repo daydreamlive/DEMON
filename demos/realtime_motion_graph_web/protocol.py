@@ -572,6 +572,21 @@ COMMANDS: tuple = (
                     "30 s, answered with bounce_failed. Acked by "
                     "bounce_ready (+ binary) / bounce_failed.",
     ),
+    CommandSpec(
+        "set_x0_target_prompt",
+        fields=(
+            FieldSpec("tags", "str", required=True, default="",
+                      description="Prompt for the target song. Empty clears "
+                                  "the generated target, so x0_target pulls "
+                                  "toward the source again."),
+        ),
+        requires="x0_target_prompt",
+        description="Generate a whole window from a prompt and make it the "
+                    "x0_target knob's pull target in place of the source. "
+                    "Runs through the live pipeline as one slot (about one "
+                    "pipeline latency); the stream keeps playing. Kept for "
+                    "the session only. Acked by x0_target_state.",
+    ),
 )
 
 EVENTS: tuple = (
@@ -931,6 +946,24 @@ EVENTS: tuple = (
                     "(ready.capabilities.bounce false, e.g. append-only "
                     "families or walk mode), or no fresh generation landed "
                     "in time. The session is unaffected.",
+    ),
+    EventSpec(
+        "x0_target_state",
+        fields=(
+            FieldSpec("status", "enum", required=True,
+                      options=("generating", "ready", "cleared", "failed"),
+                      description="generating = request accepted; ready = "
+                                  "the generated window is the x0_target "
+                                  "pull target; cleared = x0_target pulls "
+                                  "toward the source again; failed = "
+                                  "the request was not applied."),
+            FieldSpec("tags", "str",
+                      description="The prompt the status refers to."),
+            FieldSpec("error", "str",
+                      description="Why, for failed (and for a server-side "
+                                  "cleared, e.g. a swap-resize)."),
+        ),
+        description="Progress of set_x0_target_prompt.",
     ),
 )
 

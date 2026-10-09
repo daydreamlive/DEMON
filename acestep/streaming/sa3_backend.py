@@ -31,9 +31,13 @@ Control surface (everything else off, capability-gated):
   pipeline's per-denoise schedule cache.
 * ``x0_target`` / ``feedback`` / ``feedback_depth`` — taken FROM the
   shared registry (identical semantics to ACE, solver-level latent
-  mechanics that are family-agnostic): the source-lock morph toward
-  the anchor latent and the past-latent delay-tap blend. Both are only
-  audible at ``sa3_denoise`` < 1, where slot init actually reads
+  mechanics that are family-agnostic): the morph toward a target
+  latent and the past-latent delay-tap blend. ``x0_target`` blends the
+  x0 prediction over the second half of the schedule, so it works at
+  any ``sa3_denoise`` including 1.0. Its target is the source anchor,
+  or a prompt-generated window once ``set_x0_target_prompt`` lands
+  (:meth:`SA3Backend.handle_set_x0_target_prompt`). ``feedback`` is
+  only audible at ``sa3_denoise`` < 1, where slot init actually reads
   ``source_latents`` — at 1.0 every slot starts from pure noise.
 * ``seed`` / ``steps_override`` — shared registry, as before.
 
@@ -54,6 +58,7 @@ plan Phase 5).
 from __future__ import annotations
 
 import math
+import os
 import threading
 import time
 from collections import deque
@@ -207,6 +212,16 @@ def sa3_knob_specs(loras: tuple | list = (), *, extension_specs=()) -> list:
             ),
         ),
         shared["x0_target"],
+        KnobSpec(
+            "sa3_x0_timing", default=1.0, max_val=1.0, group="sa3",
+            description=(
+                "Where in the schedule the x0_target pull applies: a "
+                "half-schedule window slid from the early, high-noise "
+                "steps (0: steers structure, the model finishes the "
+                "detail) to the late refinement steps (1: the historical "
+                "gate, a latent crossfade on the final output)."
+            ),
+        ),
         shared["feedback"],
         shared["feedback_depth"],
         shared["seed"],
@@ -423,6 +438,24 @@ class SA3Backend(DiffusionBackend):
         self._cond_history: list = [(cond.cond_bundle, 0, prompt_tags)]
         self._emerged_request = None
         self._emerged_marker = None  # (denoise, epoch) of the last log
+
+        # Prompt-generated x0 target (set_x0_target_prompt). The command
+        # thread stages a job ({tags, seed, bundle, frames, req}); the
+        # runner submits it as one denoise-1.0 slot and captures the
+        # emerged latent here instead of rendering it. Session-lifetime
+        # only: nothing is persisted. Events are (status, tags, error)
+        # tuples drained by the session onto the bus.
+        self._x0_target_btc = None
+        self._x0_target_tags = None
+        self._x0_job = None
+        self._x0_events: deque = deque()
+        # Source generation, bumped by every handle_swap_source. Each
+        # submitted request is recorded with the generation it was built
+        # against so a slot from before a swap is discarded on emergence
+        # (the x0 target may be the generated latent, so it no longer
+        # identifies the source a request was built for).
+        self._source_gen = 0
+        self._submitted_gen: deque = deque(maxlen=64)
 
         # Guards the conditioning control state shared between the
         # command thread (handle_set_prompt / handle_set_prompt_blend,
@@ -817,6 +850,7 @@ class SA3Backend(DiffusionBackend):
             render_anchor_queue=True,
             lora=bool(self._use_lora and self._lora_mgr is not None),
             bounce=True,
+            x0_target_prompt=self._prompt_rebuilder is not None,
         )
 
     def geometry(self) -> AudioGeometry:
@@ -1362,7 +1396,18 @@ class SA3Backend(DiffusionBackend):
                     # slot (their latents have the wrong shape for the new
                     # window and must never emerge).
                     self.pipeline = self._build_pipeline(self._steps)
+                    # A prompt-generated x0 target (and any job captured at
+                    # the old duration) has the old window's shape.
+                    if self._x0_target_btc is not None or self._x0_job is not None:
+                        self._x0_target_btc = None
+                        self._x0_target_tags = None
+                        self._x0_job = None
+                        self._x0_events.append((
+                            "cleared", "",
+                            "the session duration changed; generate again",
+                        ))
                 self._source_latent_btc = latent_btc
+                self._source_gen += 1
                 # The waveform is retained alongside the latent so an
                 # extension's next re-decoration sees a source view whose two
                 # halves describe the same audio. Dropping it here would leave
@@ -1455,6 +1500,99 @@ class SA3Backend(DiffusionBackend):
             self._blend = v
             self._active_bundle = self._blend_bundles(v)
 
+    # ---- prompt-generated x0 target ---------------------------------------
+
+    def handle_set_x0_target_prompt(self, tags: str) -> None:
+        """Generate a whole window from ``tags`` and make it the
+        ``x0_target`` knob's pull target (the session's
+        ``set_x0_target_prompt`` hook). Empty ``tags`` clears it and the
+        knob pulls toward the source again.
+
+        Command thread: capture the prompt's conditioning (the same
+        rebuild as :meth:`handle_set_prompt`) and stage a job. The
+        runner submits it through the live pipeline as one denoise-1.0
+        slot, so it shares the DiT with the stream instead of competing
+        for it, and captures the emerged latent in :meth:`_generate`
+        instead of rendering it. A new request replaces a job still in
+        flight; the old one's latent is dropped when it emerges.
+        """
+        tags = (tags or "").strip()
+        if not tags:
+            with self._control_lock:
+                self._x0_job = None
+                self._x0_target_btc = None
+                self._x0_target_tags = None
+                self._x0_events.append(("cleared", "", ""))
+            logger.info("sa3_x0_target_cleared")
+            return
+        if self._prompt_rebuilder is None:
+            raise RuntimeError(
+                "SA3Backend was constructed without a prompt_rebuilder; "
+                "set_x0_target_prompt requires the from_context assembly"
+            )
+        t0 = time.perf_counter()
+        with self._conditioner_lock:
+            cond, _ = self._prompt_rebuilder(
+                tags, self._steps, self._duration_s,
+            )
+        rebuild_ms = (time.perf_counter() - t0) * 1000
+        seed = int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF
+        with self._control_lock:
+            # Decorated against the live source, like the main prompt, so
+            # an extension's conditioning applies to the target too.
+            cond = self._decorate(cond, self._source_view())
+            self._x0_job = {
+                "tags": tags,
+                "seed": seed,
+                "bundle": cond.cond_bundle,
+                "frames": int(cond.latent_frames),
+                "req": None,
+            }
+            self._x0_events.append(("generating", tags, ""))
+        logger.info(
+            "sa3_x0_target_requested tags={!r} seed={} rebuild_ms={:.1f}",
+            tags, seed, rebuild_ms,
+        )
+
+    def drain_x0_target_events(self) -> list:
+        """Pop the queued (status, tags, error) x0-target events."""
+        with self._control_lock:
+            events = list(self._x0_events)
+            self._x0_events.clear()
+        return events
+
+    def x0_target_pending(self) -> bool:
+        """True while a target generation is staged or in flight."""
+        return self._x0_job is not None
+
+    @staticmethod
+    def _x0_window(timing) -> tuple:
+        """sa3_x0_timing -> the x0 blend's [lo, hi) schedule window: a
+        half-schedule window slid from [0, 0.5) at 0 to [0.5, 1.0) at 1,
+        which is exactly the pipeline's historical refinement-half gate."""
+        try:
+            t = min(1.0, max(0.0, float(timing)))
+        except (TypeError, ValueError):
+            t = 1.0
+        lo = 0.5 * t
+        return (lo, lo + 0.5)
+
+    def _x0_target_view(self):
+        """The live pull target: the generated window when one is set,
+        else the source anchor (None when neither exists)."""
+        if self._x0_target_btc is not None:
+            return self._x0_target_btc
+        return self._source_latent_btc
+
+    def _x0_job_alive(self, req) -> bool:
+        """Whether ``req`` is still queued or denoising in the live
+        pipeline. A steps rebuild or a T-coherence drop discards it
+        without notice; the runner resubmits when this goes False."""
+        pipe = self.pipeline
+        if any(r is req for r in pipe._queue):
+            return True
+        return any(s is not None and s.request is req for s in pipe._slots)
+
     def _blend_bundles(self, v: float) -> dict:
         """The active cond bundle for blend value ``v``: A verbatim at
         0, B verbatim at 1 (endpoint identity keeps the TRT wrapper's
@@ -1536,7 +1674,7 @@ class SA3Backend(DiffusionBackend):
         # bump engages the blend on in-flight slots submitted while it
         # was 0 — the ACE runner's exact per-tick convention.
         x0_str = float(knobs.get("x0_target", 0.0))
-        if self._source_latent_btc is not None:
+        if self._x0_target_view() is not None:
             self.pipeline.set_shared_curve("x0_target_strength", x0_str)
 
         try:
@@ -1549,6 +1687,7 @@ class SA3Backend(DiffusionBackend):
             "steps": int(knobs.get("steps_override", self._steps)),
             "shift": shift,
             "x0_target": x0_str,
+            "x0_window": self._x0_window(knobs.get("sa3_x0_timing", 1.0)),
             "feedback": float(knobs.get("feedback", 0.0)),
             "feedback_depth": max(
                 1, min(MAX_FEEDBACK_DEPTH, int(round(fb_depth_raw))),
@@ -1596,28 +1735,63 @@ class SA3Backend(DiffusionBackend):
         with self._control_lock:
             aux_cond = self._active_bundle
             latent_frames = self._cond.latent_frames
+            job = self._x0_job
 
-        self.pipeline.submit(SlotRequest(
-            seed=prep["seed"],
-            denoise=prep["denoise"],
-            source_latents=source,
-            # The morph target stays the clean anchor (not the
-            # feedback-blended source), matching ACE: x0_target is a
-            # source LOCK, feedback is deliberately upstream of it.
-            # Attached whenever an anchor exists so a strength bump via
-            # the shared override engages on in-flight slots; the
-            # request field carries the live value so a fresh pipeline
-            # (steps rebuild) is correct before the next prepare
-            # re-establishes the shared override.
-            x0_target=self._source_latent_btc,
-            x0_target_strength=prep["x0_target"],
-            aux_cond=aux_cond,
-            latent_frames=latent_frames,
-            # Deterministic pingpong: identical requests must replay the
-            # same trajectory or advancing windows splice different
-            # realizations (incoherent audio). See SlotRequest.
-            sde_noise_seeded=True,
-        ))
+        submit_stream = True
+        if job is not None:
+            if job["frames"] != int(latent_frames):
+                # A swap-resize landed between the capture and here; the
+                # job's conditioning is for the old window.
+                self._finish_x0_job(
+                    job, "failed",
+                    "the session duration changed; generate again",
+                )
+            elif job["req"] is None or not self._x0_job_alive(job["req"]):
+                # First submit, or the pipeline dropped it (steps rebuild).
+                # The stream request is skipped this tick so it can't push
+                # the job out of the capped queue.
+                job["req"] = SlotRequest(
+                    seed=job["seed"],
+                    denoise=1.0,
+                    source_latents=source,
+                    aux_cond=job["bundle"],
+                    latent_frames=job["frames"],
+                    sde_noise_seeded=True,
+                )
+                self.pipeline.submit(job["req"])
+                submit_stream = False
+            elif any(r is job["req"] for r in self.pipeline._queue):
+                # Still queued behind a full ring: hold the stream until
+                # a slot takes it.
+                submit_stream = False
+
+        if submit_stream:
+            req = SlotRequest(
+                seed=prep["seed"],
+                denoise=prep["denoise"],
+                source_latents=source,
+                # The morph target is the clean anchor (not the
+                # feedback-blended source), matching ACE: feedback is
+                # deliberately upstream of it. A prompt-generated target
+                # replaces the anchor when one is set. Attached whenever
+                # a target exists so a strength bump via the shared
+                # override engages on in-flight slots; the request field
+                # carries the live value so a fresh pipeline (steps
+                # rebuild) is correct before the next prepare
+                # re-establishes the shared override.
+                x0_target=self._x0_target_view(),
+                x0_target_strength=prep["x0_target"],
+                x0_target_window=prep["x0_window"],
+                aux_cond=aux_cond,
+                latent_frames=latent_frames,
+                # Deterministic pingpong: identical requests must replay
+                # the same trajectory or advancing windows splice
+                # different realizations (incoherent audio). See
+                # SlotRequest.
+                sde_noise_seeded=True,
+            )
+            self._submitted_gen.append((req, self._source_gen))
+            self.pipeline.submit(req)
         # With LoRAs active, wrap the tick in parametrize.cached():
         # without it, every weight ACCESS recomputes W + scaled delta,
         # and the measured overhead is +49% per step at 1 LoRA / +114%
@@ -1637,17 +1811,46 @@ class SA3Backend(DiffusionBackend):
             # The request this latent was generated from (valid only
             # right after a finishing tick — see StreamPipeline).
             req = getattr(self.pipeline, "last_finished_request", None)
-            # A slot submitted before a source swap was initialised from
-            # the old anchor and its latent is a cover of the previous
-            # source; it must not be rendered into the new one. Every
-            # request carries the anchor object it was built against as
-            # x0_target, so identity against the live anchor is the test
-            # (handle_swap_source replaces the object).
-            if req is not None and req.x0_target is not self._source_latent_btc:
+            if req is not None and job is not None and req is job["req"]:
+                # The prompt-generated target: keep it, never render it.
+                with self._control_lock:
+                    if self._x0_job is job:
+                        self._x0_target_btc = latent.detach().clone()
+                        self._x0_target_tags = job["tags"]
+                self._finish_x0_job(job, "ready", "")
+                return None
+            if req is not None and self._request_source_gen(req) != self._source_gen:
+                # A slot submitted before a source swap was initialised
+                # from the old anchor and its latent is a cover of the
+                # previous source; it must not be rendered into the new
+                # one. A superseded target job lands here too (it was
+                # never recorded).
                 logger.info("sa3_gen_discarded reason=source_swapped")
                 return None
             self._emerged_request = req
         return latent
+
+    def _request_source_gen(self, req):
+        """The source generation ``req`` was submitted against, or None
+        for a request this backend did not record as a stream slot."""
+        for r, gen in reversed(self._submitted_gen):
+            if r is req:
+                return gen
+        return None
+
+    def _finish_x0_job(self, job: dict, status: str, error: str) -> None:
+        """Retire ``job`` with a ``ready`` / ``failed`` event, unless a
+        newer request (or a clear) already replaced it."""
+        with self._control_lock:
+            if self._x0_job is not job:
+                return
+            self._x0_job = None
+            self._x0_events.append((status, job["tags"], error))
+        logger.info(
+            "sa3_x0_target_{} tags={!r} seed={}{}",
+            status, job["tags"], job["seed"],
+            f" error={error!r}" if error else "",
+        )
 
     def _cond_meta_for(self, bundle) -> tuple:
         """(epoch, tags) for a request's aux_cond, by identity."""

@@ -188,6 +188,12 @@ class Capabilities:
     # Append-only families leave it False: they have no "whole window"
     # to re-render.
     bounce: bool = False
+    # The ``set_x0_target_prompt`` command: the backend generates a whole
+    # window from a prompt and makes it the ``x0_target`` knob's pull
+    # target in place of the source. A backend that declares it
+    # implements ``handle_set_x0_target_prompt(tags)``,
+    # ``drain_x0_target_events()`` and ``x0_target_pending()``.
+    x0_target_prompt: bool = False
 
 
 @dataclass(frozen=True)

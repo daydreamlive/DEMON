@@ -8,61 +8,97 @@
   </head>
   <body>
     <main class="shell">
-      <section class="plugin" aria-label="Stable Audio 3 demo">
-        <div class="brand-row">
-          <div class="brand">Daydream</div>
-        </div>
-
-        <div id="knobs" class="knob-grid">
-          <div class="knob-placeholder">knobs appear when the session starts</div>
-        </div>
-
-        <div class="controls">
-          <label class="field-slot">
-            <span>Prompt A</span>
-            <textarea id="prompt-a" rows="2"></textarea>
-          </label>
-
-          <label class="field-slot">
-            <span>Prompt B</span>
-            <textarea id="prompt-b" rows="2" placeholder="optional second prompt for the A/B blend"></textarea>
-          </label>
-
-          <label class="field-slot blend-slot">
-            <span>
-              A/B blend
-              <em id="blend-value" class="blend-value">0.00</em>
-            </span>
-            <input id="blend" type="range" min="0" max="1" step="0.01" value="0" disabled aria-label="Prompt A/B blend">
-          </label>
-
-          <div class="source-row">
-            <label class="field-slot">
-              <span>Source</span>
-              <select id="fixture"></select>
-            </label>
-            <label class="field-slot duration-slot">
-              <span>Duration s</span>
-              <input id="duration" type="number" min="1" max="120" placeholder="auto">
-            </label>
+      <div class="rig">
+        <section class="plugin" aria-label="Stable Audio 3 demo">
+          <div class="brand-row">
+            <div class="brand">Daydream</div>
           </div>
 
-          <button id="send-prompt" type="button" class="send-btn" disabled>Send Prompt</button>
-        </div>
+          <div id="knobs" class="knob-grid">
+            <div class="knob-placeholder">knobs appear when the session starts</div>
+          </div>
 
-        <div class="title">sa3</div>
+          <div class="controls">
+            <label class="field-slot">
+              <span>Prompt A</span>
+              <textarea id="prompt-a" rows="2"></textarea>
+            </label>
 
-        <div class="transport">
-          <button id="transport" type="button" class="power-btn">Start</button>
-          <span class="tick-readout" title="Backend tick time">
-            <b>tick</b>
-            <span id="tick">--.-</span>
-            <small>ms</small>
-          </span>
-          <span id="status-dot" class="status-dot status-idle" aria-hidden="true"></span>
-          <span id="status-text" class="status-text">idle</span>
-        </div>
-      </section>
+            <label class="field-slot">
+              <span>Prompt B</span>
+              <textarea id="prompt-b" rows="2" placeholder="optional second prompt for the A/B blend"></textarea>
+            </label>
+
+            <label class="field-slot blend-slot">
+              <span>
+                A/B blend
+                <em id="blend-value" class="blend-value">0.00</em>
+              </span>
+              <input id="blend" type="range" min="0" max="1" step="0.01" value="0" disabled aria-label="Prompt A/B blend">
+            </label>
+
+            <div class="source-row">
+              <label class="field-slot">
+                <span>Source</span>
+                <select id="fixture"></select>
+              </label>
+              <label class="field-slot duration-slot">
+                <span>Duration s</span>
+                <input id="duration" type="number" min="1" max="120" placeholder="auto">
+              </label>
+            </div>
+
+            <button id="send-prompt" type="button" class="send-btn" disabled>Send Prompt</button>
+          </div>
+
+          <div class="title">sa3</div>
+
+          <div class="transport">
+            <button id="transport" type="button" class="power-btn">Start</button>
+            <span class="tick-readout" title="Backend tick time">
+              <b>tick</b>
+              <span id="tick">--.-</span>
+              <small>ms</small>
+            </span>
+            <span id="status-dot" class="status-dot status-idle" aria-hidden="true"></span>
+            <span id="status-text" class="status-text">idle</span>
+          </div>
+        </section>
+
+        <section class="stompbox" aria-label="x0 pull pedal">
+          <span class="screw screw-tl" aria-hidden="true"></span>
+          <span class="screw screw-tr" aria-hidden="true"></span>
+          <span class="screw screw-bl" aria-hidden="true"></span>
+          <span class="screw screw-br" aria-hidden="true"></span>
+
+          <div id="x0-knobs" class="stomp-knobs">
+            <div class="stomp-placeholder">start to wake</div>
+          </div>
+
+          <label class="scribble">
+            <span class="sr-only">Prompt for the song to pull toward</span>
+            <textarea id="x0-prompt" rows="3" placeholder="prompt for the target song"></textarea>
+          </label>
+
+          <div class="stomp-name">
+            <span>Pull</span>
+            <small>x0 target</small>
+          </div>
+
+          <div class="stomp-led-row">
+            <span id="x0-led" class="stomp-led" aria-hidden="true"></span>
+            <span id="x0-status" class="stomp-status">pulling to source</span>
+          </div>
+
+          <div class="stomp-foot">
+            <button id="x0-clear" type="button" class="stomp-clear" title="Pull toward the source again">clr</button>
+            <button id="x0-gen" type="button" class="footswitch" aria-label="Generate the target song">
+              <span class="footswitch-cap"></span>
+            </button>
+            <span class="stomp-foot-label">gen</span>
+          </div>
+        </section>
+      </div>
     </main>
 
     <script type="module" src="./sa3.js"></script>

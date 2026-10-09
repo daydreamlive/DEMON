@@ -42,7 +42,8 @@ export type CommandName =
   | "swap_source"
   | "write_audio"
   | "midi_transcribe"
-  | "bounce";
+  | "bounce"
+  | "set_x0_target_prompt";
 
 export const COMMAND_NAMES: readonly CommandName[] = [
   "params",
@@ -67,6 +68,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "write_audio",
   "midi_transcribe",
   "bounce",
+  "set_x0_target_prompt",
 ] as const;
 
 export type EventName =
@@ -96,7 +98,8 @@ export type EventName =
   | "midi_notes"
   | "midi_failed"
   | "bounce_ready"
-  | "bounce_failed";
+  | "bounce_failed"
+  | "x0_target_state";
 
 export const EVENT_NAMES: readonly EventName[] = [
   "init_ack",
@@ -126,6 +129,7 @@ export const EVENT_NAMES: readonly EventName[] = [
   "midi_failed",
   "bounce_ready",
   "bounce_failed",
+  "x0_target_state",
 ] as const;
 
 export type HandshakeCommandName =
@@ -307,6 +311,12 @@ export interface BounceCommand {
   type: "bounce";
   /** Client-chosen token echoed on bounce_ready / bounce_failed. */
   request_id: string;
+}
+
+export interface SetX0TargetPromptCommand {
+  type: "set_x0_target_prompt";
+  /** Prompt for the target song. Empty clears the generated target, so x0_target pulls toward the source again. */
+  tags: string;
 }
 
 // ── Event payloads (server → client) ──
@@ -536,6 +546,16 @@ export interface BounceFailedEvent {
   error?: string;
 }
 
+export interface X0TargetStateEvent {
+  type: "x0_target_state";
+  /** generating = request accepted; ready = the generated window is the x0_target pull target; cleared = x0_target pulls toward the source again; failed = the request was not applied. */
+  status: "generating" | "ready" | "cleared" | "failed";
+  /** The prompt the status refers to. */
+  tags?: string;
+  /** Why, for failed (and for a server-side cleared, e.g. a swap-resize). */
+  error?: string;
+}
+
 // ── Session-init config (client → server, sent at handshake) ──
 
 export interface SessionConfigPayload {
@@ -638,7 +658,8 @@ export type WireCommand =
   | SwapSourceCommand
   | WriteAudioCommand
   | MidiTranscribeCommand
-  | BounceCommand;
+  | BounceCommand
+  | SetX0TargetPromptCommand;
 
 export type WireEvent =
   | InitAckEvent
@@ -667,7 +688,8 @@ export type WireEvent =
   | MidiNotesEvent
   | MidiFailedEvent
   | BounceReadyEvent
-  | BounceFailedEvent;
+  | BounceFailedEvent
+  | X0TargetStateEvent;
 
 export type HandshakeCommand =
   | UploadTrackCommand;

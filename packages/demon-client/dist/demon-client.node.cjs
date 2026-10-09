@@ -1205,6 +1205,11 @@ var RemoteBackend = class extends EventTarget {
                 new CustomEvent("server_error", { detail: msg })
               );
               break;
+            case "x0_target_state":
+              this.dispatchEvent(
+                new CustomEvent("x0_target_state", { detail: msg })
+              );
+              break;
             default:
               this.dispatchEvent(new CustomEvent("json", { detail: msg }));
           }
@@ -1380,6 +1385,23 @@ var RemoteBackend = class extends EventTarget {
       const msg = {
         type: "set_prompt_blend",
         value: Math.max(0, Math.min(1, value))
+      };
+      this.ws.send(JSON.stringify(msg));
+    } catch {
+    }
+  }
+  /**
+   * Generate a whole window from ``tags`` and make it the ``x0_target``
+   * knob's pull target in place of the source; an empty string clears it.
+   * Progress arrives as ``x0_target_state`` events (generating / ready /
+   * cleared / failed). Gated on ``ready.capabilities.x0_target_prompt``.
+   */
+  sendSetX0TargetPrompt(tags) {
+    if (this.ws?.readyState !== this._wsOpen) return;
+    try {
+      const msg = {
+        type: "set_x0_target_prompt",
+        tags
       };
       this.ws.send(JSON.stringify(msg));
     } catch {
@@ -1780,6 +1802,7 @@ var COMMAND_NAMES = [
   "set_depth",
   "enable_lora",
   "disable_lora",
+  "add_lora",
   "manual_slot_add",
   "manual_slot_pop",
   "set_timbre_strength",
@@ -1790,7 +1813,10 @@ var COMMAND_NAMES = [
   "set_structure_fixture",
   "clear_structure_source",
   "swap_source",
-  "write_audio"
+  "write_audio",
+  "midi_transcribe",
+  "bounce",
+  "set_x0_target_prompt"
 ];
 var EVENT_NAMES = [
   "init_ack",
@@ -1815,7 +1841,12 @@ var EVENT_NAMES = [
   "structure_failed",
   "audio_written",
   "audio_write_failed",
-  "command_failed"
+  "command_failed",
+  "midi_notes",
+  "midi_failed",
+  "bounce_ready",
+  "bounce_failed",
+  "x0_target_state"
 ];
 
 // config/enums.ts

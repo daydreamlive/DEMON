@@ -100,6 +100,7 @@ from acestep.streaming.events import (
     TimbreCleared,
     TimbreFailed,
     TimbreSet,
+    X0TargetState,
 )
 from acestep.streaming.knobs import (
     KNOB_SCHEMA_VERSION,
@@ -1049,6 +1050,19 @@ class StreamingSession:
         self._apply_swap_if_pending()
         self._apply_depth_pending()
         self._service_bounces()
+        self._service_x0_target()
+
+    def _service_x0_target(self) -> None:
+        """Publish the backend's queued x0-target progress (runner
+        thread), and keep generating while a target job is in flight
+        (the idle pause would otherwise freeze the pipeline before the
+        job's slot emerges)."""
+        if not self.backend.capabilities().x0_target_prompt:
+            return
+        if self.backend.x0_target_pending():
+            self.state.last_activity_ts = time.monotonic()
+        for status, tags, error in self.backend.drain_x0_target_events():
+            self.bus.publish(X0TargetState(status=status, tags=tags, error=error))
 
     def _service_bounces(self) -> None:
         """Answer queued ``bounce`` requests (runner thread).
@@ -2326,6 +2340,33 @@ class StreamingSession:
                 [request_id, None, time.monotonic() + BOUNCE_TIMEOUT_S],
             )
         logger.info("bounce_requested origin={} id={}", origin.value, request_id)
+
+    @requires_capability("x0_target_prompt", "set_x0_target_prompt")
+    def set_x0_target_prompt(
+        self,
+        tags: str,
+        *,
+        origin: CommandOrigin = CommandOrigin.PRIMARY,
+    ) -> None:
+        """Generate a whole window from ``tags`` and make it the
+        ``x0_target`` knob's pull target; empty ``tags`` clears it.
+        Progress is published as :class:`X0TargetState` (``generating``
+        here, ``ready`` from the runner once the slot emerges)."""
+        self.state.last_activity_ts = time.monotonic()
+        logger.info(
+            "set_x0_target_prompt origin={} tags={!r}", origin.value, tags,
+        )
+        try:
+            self.backend.handle_set_x0_target_prompt(str(tags or ""))
+        except Exception as exc:
+            logger.exception("set_x0_target_prompt_failed")
+            self.bus.publish(X0TargetState(
+                status="failed", tags=str(tags or ""), error=str(exc),
+            ))
+            return
+        # Publish the accepted/cleared event now rather than a tick later.
+        for status, t, error in self.backend.drain_x0_target_events():
+            self.bus.publish(X0TargetState(status=status, tags=t, error=error))
 
     @requires_capability("steering", "manual_slot_add")
     def manual_slot_add(

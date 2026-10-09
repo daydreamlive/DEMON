@@ -136,7 +136,7 @@ def test_contract_surface():
 
     names = [s.name for s in b.knob_specs()]
     assert names == [
-        "sa3_denoise", "sa3_shift", "x0_target",
+        "sa3_denoise", "sa3_shift", "x0_target", "sa3_x0_timing",
         "feedback", "feedback_depth", "seed", "steps_override",
     ]
 
@@ -1107,3 +1107,182 @@ def test_close_drops_mirror_and_pending():
     assert b._refit_mirror is None
     assert b._pending_lora_strengths == {}
     assert mgr.closed is True
+
+
+# ---- prompt-generated x0 target (set_x0_target_prompt) ----------------------
+
+
+def _x0_backend(**kw):
+    """Backend with a rebuilder whose captures carry a marker value
+    (cross-attn filled with 2.0), so the target job's conditioning is
+    identifiable on the submitted request."""
+    def rebuilder(tags, steps, duration_s):
+        cond = _FakeCond()
+        cond.cond_bundle["cross_attn_cond"] = torch.full((1, 3, 4), 2.0)
+        return cond, lambda s: _schedule_builder_factory(s)
+
+    return _backend(prompt_rebuilder=rebuilder, **kw)
+
+
+def _run_until_target(b, knobs, limit=20):
+    for _ in range(limit):
+        b.produce(knobs, CTX, "generate")
+        if b._x0_target_btc is not None:
+            return
+    raise AssertionError("x0 target never emerged")
+
+
+def test_x0_target_prompt_capability_needs_a_rebuilder():
+    assert _backend().capabilities().x0_target_prompt is False
+    assert _x0_backend().capabilities().x0_target_prompt is True
+
+
+def test_x0_target_prompt_generates_and_becomes_the_pull_target():
+    src = torch.randn(1, C, T)
+    b = _x0_backend(source_latent_bct=src)
+    submitted = _capture_submits(b)
+    knobs = {**_knobs(b), "x0_target": 0.6}
+
+    b.handle_set_x0_target_prompt("target song")
+    assert b.x0_target_pending()
+    assert b.drain_x0_target_events() == [("generating", "target song", "")]
+
+    _run_until_target(b, knobs)
+    assert not b.x0_target_pending()
+    assert b.drain_x0_target_events() == [("ready", "target song", "")]
+
+    # The job ran as one pure-noise slot on the target prompt's
+    # conditioning, with no x0 pull of its own.
+    jobs = [
+        r for r in submitted if float(r.aux_cond["cross_attn_cond"].max()) == 2.0
+    ]
+    assert len(jobs) == 1
+    assert jobs[0].denoise == 1.0
+    assert jobs[0].x0_target is None
+    # Its latent is the target, not something the stream rendered.
+    assert b._emerged_request is not jobs[0]
+    assert b._x0_target_btc.shape == (1, T, C)
+
+    # Stream requests now pull toward the generated window, not the source.
+    b.produce(knobs, CTX, "generate")
+    assert submitted[-1].x0_target is b._x0_target_btc
+    assert submitted[-1].x0_target_strength == 0.6
+    assert submitted[-1].aux_cond is b._active_bundle
+
+
+def test_x0_target_prompt_clear_restores_the_source():
+    src = torch.randn(1, C, T)
+    b = _x0_backend(source_latent_bct=src)
+    submitted = _capture_submits(b)
+    knobs = _knobs(b)
+    b.handle_set_x0_target_prompt("target song")
+    _run_until_target(b, knobs)
+    b.drain_x0_target_events()
+
+    b.handle_set_x0_target_prompt("  ")
+    assert b._x0_target_btc is None
+    assert b.drain_x0_target_events() == [("cleared", "", "")]
+    b.produce(knobs, CTX, "generate")
+    assert submitted[-1].x0_target is b._source_latent_btc
+
+
+def test_x0_target_prompt_works_without_a_source():
+    b = _x0_backend()  # pure text-to-music session
+    submitted = _capture_submits(b)
+    knobs = {**_knobs(b), "x0_target": 0.5}
+    b.handle_set_x0_target_prompt("target song")
+    _run_until_target(b, knobs)
+    b.produce(knobs, CTX, "generate")
+    assert submitted[-1].x0_target is b._x0_target_btc
+    shared = b.pipeline._shared_curves["x0_target_strength"]
+    assert float(shared.flatten()[0]) == 0.5
+
+
+def test_x0_target_prompt_newer_request_supersedes_in_flight_job():
+    b = _x0_backend(source_latent_bct=torch.randn(1, C, T))
+    knobs = _knobs(b)
+    b.handle_set_x0_target_prompt("first")
+    b.produce(knobs, CTX, "generate")  # first job is now in the pipeline
+    b.handle_set_x0_target_prompt("second")
+    _run_until_target(b, knobs)
+    assert b._x0_target_tags == "second"
+    statuses = [e[:2] for e in b.drain_x0_target_events()]
+    assert statuses == [
+        ("generating", "first"), ("generating", "second"), ("ready", "second"),
+    ]
+
+
+def test_x0_target_prompt_survives_a_same_geometry_swap():
+    new_latent_bct = torch.randn(1, C, T)
+    b = _x0_backend(
+        source_latent_bct=torch.randn(1, C, T),
+        source_encoder=lambda waveform, sample_rate, sample_size: new_latent_bct,
+    )
+    submitted = _capture_submits(b)
+    knobs = _knobs(b)
+    b.handle_set_x0_target_prompt("target song")
+    _run_until_target(b, knobs)
+    target = b._x0_target_btc
+
+    b.handle_swap_source(torch.zeros(2, 48000), 48000)
+    assert b._x0_target_btc is target
+    # Pre-swap stream slots are still discarded on emergence.
+    fresh = []
+    for _ in range(10):
+        fresh.append(b.produce(knobs, CTX, "generate"))
+        if fresh[-1]:
+            break
+    assert fresh[:-1] and not any(fresh[:-1])
+    assert fresh[-1] is True
+    assert submitted[-1].x0_target is target
+
+
+def test_x0_timing_slides_the_blend_window():
+    b = _backend(source_latent_bct=torch.randn(1, C, T))
+    submitted = _capture_submits(b)
+    # Default 1.0 is the historical refinement-half gate.
+    b.produce(_knobs(b), CTX, "generate")
+    assert submitted[-1].x0_target_window == (0.5, 1.0)
+    b.produce({**_knobs(b), "sa3_x0_timing": 0.0}, CTX, "generate")
+    assert submitted[-1].x0_target_window == (0.0, 0.5)
+    b.produce({**_knobs(b), "sa3_x0_timing": 0.5}, CTX, "generate")
+    assert submitted[-1].x0_target_window == (0.25, 0.75)
+
+
+def _x0_blend_steps(window, steps=8):
+    """Per-step xt means of one slot under a full-strength blend toward
+    a constant 5.0 target: the steps the blend fires on pull the mean
+    toward the target, so the trajectory shows the window."""
+    from acestep.engine.stream import SlotRequest
+
+    b = _backend(steps=steps)
+    pipe = b.pipeline
+    target = torch.full((1, T, C), 5.0)
+    means: list = []
+
+    req = SlotRequest(
+        seed=1, denoise=1.0, x0_target=target, x0_target_strength=1.0,
+        x0_target_window=window, aux_cond=b._active_bundle,
+        latent_frames=T, sde_noise_seeded=True,
+    )
+    pipe.submit(req)
+    for _ in range(steps + 4):
+        pipe.tick()
+        slot = next((s for s in pipe._slots if s is not None and s.request is req), None)
+        if slot is None:
+            break
+        means.append(round(float(slot.xt.mean()), 3))
+    return means
+
+
+def test_x0_window_none_matches_the_historical_gate():
+    assert _x0_blend_steps(None) == _x0_blend_steps((0.5, 1.0))
+
+
+def test_x0_window_early_pulls_first_steps_and_releases_late_ones():
+    early = _x0_blend_steps((0.0, 0.5))
+    late = _x0_blend_steps((0.5, 1.0))
+    # Early: pulled from the first step, then released (the mean falls
+    # back once the blend stops). Late: untouched until the second half.
+    assert early[0] > 0.3 and late[0] < 0.1
+    assert early[-1] < early[3] and late[-1] > late[3]

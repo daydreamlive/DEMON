@@ -237,6 +237,12 @@ namespace command {
     inline constexpr const char* kRequestId = "request_id";
   }  // namespace bounce
 
+  namespace set_x0_target_prompt {
+    inline constexpr const char* kType = "set_x0_target_prompt";
+    /** Prompt for the target song. Empty clears the generated target, so x0_target pulls toward the source again. */
+    inline constexpr const char* kTags = "tags";
+  }  // namespace set_x0_target_prompt
+
 }  // namespace command
 
 // ── Event payloads (server → client) ──
@@ -473,6 +479,23 @@ namespace event {
     inline constexpr const char* kRequestId = "request_id";
     inline constexpr const char* kError = "error";
   }  // namespace bounce_failed
+
+  namespace x0_target_state {
+    inline constexpr const char* kType = "x0_target_state";
+    /** generating = request accepted; ready = the generated window is the x0_target pull target; cleared = x0_target pulls toward the source again; failed = the request was not applied. */
+    inline constexpr const char* kStatus = "status";
+    /** The prompt the status refers to. */
+    inline constexpr const char* kTags = "tags";
+    /** Why, for failed (and for a server-side cleared, e.g. a swap-resize). */
+    inline constexpr const char* kError = "error";
+
+    namespace status {
+      inline constexpr const char* kGenerating = "generating";
+      inline constexpr const char* kReady = "ready";
+      inline constexpr const char* kCleared = "cleared";
+      inline constexpr const char* kFailed = "failed";
+    }  // namespace status
+  }  // namespace x0_target_state
 
 }  // namespace event
 

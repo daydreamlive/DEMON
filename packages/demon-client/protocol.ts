@@ -46,6 +46,7 @@ import type {
   SetDepthCommand,
   SetInterpMethodCommand,
   SetPromptBlendCommand,
+  SetX0TargetPromptCommand,
   SetStructureFixtureCommand,
   SetTimbreFixtureCommand,
   SetStructureSourceCommand,
@@ -781,6 +782,11 @@ export class RemoteBackend extends EventTarget {
                 new CustomEvent("server_error", { detail: msg }),
               );
               break;
+            case "x0_target_state":
+              this.dispatchEvent(
+                new CustomEvent("x0_target_state", { detail: msg }),
+              );
+              break;
             default:
               this.dispatchEvent(new CustomEvent("json", { detail: msg }));
           }
@@ -1010,6 +1016,23 @@ export class RemoteBackend extends EventTarget {
       const msg: SetPromptBlendCommand = {
         type: "set_prompt_blend",
         value: Math.max(0, Math.min(1, value)),
+      };
+      this.ws.send(JSON.stringify(msg));
+    } catch {}
+  }
+
+  /**
+   * Generate a whole window from ``tags`` and make it the ``x0_target``
+   * knob's pull target in place of the source; an empty string clears it.
+   * Progress arrives as ``x0_target_state`` events (generating / ready /
+   * cleared / failed). Gated on ``ready.capabilities.x0_target_prompt``.
+   */
+  sendSetX0TargetPrompt(tags: string): void {
+    if (this.ws?.readyState !== this._wsOpen) return;
+    try {
+      const msg: SetX0TargetPromptCommand = {
+        type: "set_x0_target_prompt",
+        tags,
       };
       this.ws.send(JSON.stringify(msg));
     } catch {}
