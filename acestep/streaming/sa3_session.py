@@ -127,16 +127,6 @@ def evict_sa3_contexts() -> int:
     return len(contexts)
 
 
-def _ring_window_ok(cond, ring_frames: int) -> bool:
-    """The captured window can be denoised as a ring of ``ring_frames``:
-    it holds the ring, and no attention padding masks any of it (the
-    legacy whole-song label masks the outro headroom)."""
-    if int(ring_frames) > int(cond.latent_frames):
-        return False
-    mask = cond.cond_bundle.get("padding_mask")
-    return mask is None or bool(mask.all())
-
-
 def _resolve_accel(value: str, component: str) -> str:
     """Map the serving layer's accel value onto SA3's two execution
     modes. SA3 has no torch.compile path, so "compile" (the ACE server
@@ -271,41 +261,6 @@ def create_sa3_session(
     # profile would silently fall back to the ~5x-slower eager DiT.
     duration_s = context.clamp_duration_for_trt(duration_s, backend=dit_backend)
     waveform = waveform[:, : int(duration_s * SAMPLE_RATE)]
-    # The pair the source anchor is encoded from (and the extension hook
-    # sees); the loop ring below replaces it with the frame-snapped loop.
-    source_audio = (SAMPLE_RATE, waveform)
-
-    # Loop ring (#365, SA3Context.plan_loop_ring): snap the loop to a
-    # whole number of latent frames and stretch the source onto exactly
-    # that period, so the DiT's ring, the tiled anchor and the played
-    # loop share one period.
-    ring = context.plan_loop_ring(
-        waveform, SAMPLE_RATE, duration_s, backend=dit_backend,
-    )
-    ring_frames = ring.frames
-    if ring_frames is not None:
-        duration_s = ring.playable_s
-        source_audio = ring.source_audio
-        # The client buffer is the stretched loop at the delivery rate:
-        # the same 44.1 -> 48 kHz resample the backend applies to every
-        # decode, so buffer and renders agree to the sample.
-        import torchaudio
-
-        from acestep.engine.sa3_context import RING_STRETCH_WARN
-
-        waveform = torchaudio.functional.resample(
-            ring.source_audio[1], context.sample_rate, SAMPLE_RATE,
-        )
-        log = (
-            logger.warning if abs(ring.stretch_ratio - 1.0) > RING_STRETCH_WARN
-            else logger.info
-        )
-        log(
-            "sa3_loop_ring on frames={} playable_s={:.4f} stretch_ratio={:.5f}",
-            ring_frames, duration_s, ring.stretch_ratio,
-        )
-    else:
-        logger.info("sa3_loop_ring off reason={}", ring.reason)
 
     prompt = config.prompt
     prompt_b = config.prompt_b if config.prompt_b not in (None, "") else prompt
@@ -328,16 +283,9 @@ def create_sa3_session(
         context.prepare_cond(prompt=prompt_b, duration=duration_s, steps=steps)
         if prompt_b != prompt else None
     )
-    if ring_frames is not None and not _ring_window_ok(cond, ring_frames):
-        # The window is not a ring (a padding mask that masks its tail)
-        # or cannot hold it: plain window. The stretched source stays —
-        # a <=1% stretch is harmless on its own.
-        logger.warning(
-            "sa3_loop_ring off reason=window frames={} latent_frames={}",
-            ring_frames, int(cond.latent_frames),
-        )
-        ring_frames = None
-    source_latent = context.encode_source(source_audio, cond.audio_sample_size)
+    source_latent = context.encode_source(
+        (SAMPLE_RATE, waveform), cond.audio_sample_size,
+    )
 
     # ---- LoRA (notes/SA3_LORA_PLAN.md Phase 1) ------------------------
     # The family manager is constructed here — against the
@@ -540,10 +488,8 @@ def create_sa3_session(
                 # is the truncated, stereo-normalized waveform, i.e. the
                 # audio the anchor actually represents rather than the
                 # raw upload.
-                "source_audio": source_audio,
+                "source_audio": (SAMPLE_RATE, waveform),
                 "duration_s": duration_s,
-                # Loop ring size in latent frames, None = plain window.
-                "ring_frames": ring_frames,
                 "dit_backend": dit_backend,
                 "codec_backend": codec_backend,
                 "lora_manager": lora_mgr,
