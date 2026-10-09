@@ -26,9 +26,9 @@ on first use.
 * **sa3-m DiT (FP8, opt-in)**: ``dit_fp8.onnx`` (ModelOpt FP8 GEMM trunk on
   top of the fp16mixed graph) compiled to ``sa3_m_dit_fp8_l*`` engines,
   ~1.8x/step at compounded-euler cos ~0.976 vs fp16mixed. Built only with
-  ``--fp8`` (additive to the fp16mixed DiT). The HF pair is not fetchable
-  yet (see :data:`DIT_FP8_ONNX_FILES`); pass ``--fp8-onnx`` a
-  producer-built graph until it is.
+  ``--fp8`` (additive to the fp16mixed DiT). Fetched from HF as
+  ``dit_fp8.onnx`` + ``dit_fp8lin.onnx.data`` (see
+  :data:`DIT_FP8_ONNX_FILES`); ``--fp8-onnx`` compiles a local graph instead.
   :func:`acestep.engine.sa3_trt.find_dit_engine` prefers an fp8 engine when one
   covers the window, else fp16mixed.
 * **sa3-sm-music DiT** (``--model small-music``): upstream's
@@ -77,10 +77,9 @@ Usage:
     # SAME-L window decoder (defaults t32_56_96):
     python -m acestep.engine.trt.sa3_build --same-l-window
 
-    # Canonical matrix plus the FP8 DiT variants (producer-built ONNX until
-    # dit_fp8.onnx is published to HF):
-    python -m acestep.engine.trt.sa3_build --all --fp8 \
-        --fp8-onnx /path/to/dit_fp8.onnx
+    # Canonical matrix plus the FP8 DiT variants (HF dit_fp8.onnx, or a
+    # local graph via --fp8-onnx /path/to/dit_fp8.onnx):
+    python -m acestep.engine.trt.sa3_build --all --fp8
 
 Requirements:
     - tensorrt (uv pip install tensorrt; version-gated by the shared
@@ -139,14 +138,11 @@ DIT_ONNX_FILES = (
     "onnx/sa3-m/dit_fp16.onnx",
     "onnx/sa3-m/dit_fp16.onnx.data",
 )
-# FP8-trunk DiT (opt-in, ~1.8x/step). Upstream published `dit_fp8.onnx` in
-# the 2026-08-02 sweep, but its sidecar landed as `dit_fp8lin.onnx.data`
-# (sa3-sm-* got matching `dit_fp8.onnx.data` names) — so this pair still
-# 404s on the second entry and --fp8 still needs a graph passed via
-# --fp8-onnx. Switching the sidecar to the `fp8lin` name is a one-liner
-# once someone builds and parity-checks an engine from it, and upstream's
-# own consumer recipe (`build_from_onnx.py sa3-m-fp8`) confirms that pair
-# is what HF now serves.
+# FP8-trunk DiT (opt-in, ~1.8x/step). Upstream publishes `dit_fp8.onnx`
+# with its sidecar named `dit_fp8lin.onnx.data` (sa3-sm-* use matching
+# `dit_fp8.onnx.data` names); the proto's external-data location is
+# `dit_fp8lin.onnx.data`, and upstream's own consumer recipe
+# (`build_from_onnx.py sa3-m-fp8`) uses the same pair.
 # Producing that graph locally is NOT a vendored-tree operation at the
 # pinned revision: the ModelOpt PTQ builder (`build_dit_fp8.py`) lives in
 # Stability PR #47 and is not merged into the pinned tree. What IS vendored
@@ -158,7 +154,7 @@ DIT_ONNX_FILES = (
 # acestep.engine.sa3_trt does the runtime selection.
 DIT_FP8_ONNX_FILES = (
     "onnx/sa3-m/dit_fp8.onnx",
-    "onnx/sa3-m/dit_fp8.onnx.data",
+    "onnx/sa3-m/dit_fp8lin.onnx.data",
 )
 # SA3 small-sfx DiT: same fp16mixed recipe and graph IO as sa3-m (x, t,
 # t5_hidden, t5_mask, seconds_total, local_add_cond -> velocity), weights
@@ -532,10 +528,8 @@ def _build_dit_engine(
             if precision_label == "fp8":
                 raise RuntimeError(
                     f"dit_fp8.onnx is not fetchable from HF ({HF_REPO}) under "
-                    "the names this builder expects — upstream's sidecar is "
-                    "published as dit_fp8lin.onnx.data (see "
-                    "DIT_FP8_ONNX_FILES). Pass an already-built graph with "
-                    "--fp8-onnx <dit_fp8.onnx>. It cannot be produced from "
+                    "the names in DIT_FP8_ONNX_FILES. Pass an already-built "
+                    "graph with --fp8-onnx <dit_fp8.onnx>. It cannot be produced from "
                     "the vendored tree alone at the pinned revision: the "
                     "ModelOpt PTQ builder (build_dit_fp8.py) lives in "
                     "Stability PR #47, not in the pin, and the vendored "
@@ -1002,8 +996,8 @@ def main() -> int:
     single.add_argument("--fp8", action="store_true",
                         help="Also build the FP8-trunk DiT variant(s) "
                              "(~1.8x/step; preferred at runtime when present, "
-                             "fp16mixed fallback). Needs the published "
-                             "dit_fp8.onnx or --fp8-onnx.")
+                             "fp16mixed fallback). Fetches HF dit_fp8.onnx "
+                             "unless --fp8-onnx is given.")
     single.add_argument("--refit", action="store_true",
                         help="Also build the REFITTABLE fp16mixed DiT "
                              "variant(s) (BuilderFlag.REFIT; the LoRA "
