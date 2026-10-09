@@ -121,6 +121,7 @@ from .audio_codec import (
     send_stem_payload,
 )
 from .protocol import COMMAND_NAMES, SAMPLE_RATE, coerce_command_payload
+from . import tool_proxy
 
 
 # ---------------------------------------------------------------------------
@@ -1777,6 +1778,9 @@ def _handle_client_body(
         # backend-declared truth new clients read instead of constants.
         "geometry": streaming.geometry_payload(),
         "capabilities": _capabilities_with_midi(streaming.capabilities_payload()),
+        # Localhost side services this server proxies at /tools/<name>/
+        # (healthy ones only; cached, no I/O here).
+        "tools": tool_proxy.healthy_tools(),
         "knob_manifest": streaming.knob_manifest_payload(),
         # Activation-steering surface (manual_slot_count /
         # manual_slot_cap / steering_available).

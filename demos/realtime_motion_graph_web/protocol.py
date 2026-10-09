@@ -650,6 +650,13 @@ EVENTS: tuple = (
                                   "commands tagged with a matching "
                                   "`requires` fail with command_failed "
                                   "when the bit is false."),
+            FieldSpec("tools", "list",
+                      description="Names of the localhost side services "
+                                  "this server proxies at "
+                                  "/tools/<name>/<path> (GET/POST, header "
+                                  "X-Demon-Session: <session_id>) whose "
+                                  "/health answered 200 recently; empty "
+                                  "when none. Absent on older servers."),
             FieldSpec("knob_manifest", "dict",
                       description="Per-session knob manifest: the same "
                                   "{version, knobs} envelope GET /api/knobs "

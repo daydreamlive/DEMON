@@ -860,6 +860,19 @@ def main():
         control_port = int(args[idx + 1])
     control_disabled = "--no-control" in args
 
+    # Localhost side services reachable at /tools/<name>/... for clients
+    # holding a live session (see tool_proxy.py). Off when unset.
+    from . import tool_proxy
+    try:
+        tool_proxies = tool_proxy.configure_from_env(
+            _single_arg(args, "--tool-proxies"),
+        )
+    except ValueError as exc:
+        raise SystemExit(f"[Server] invalid tool proxy config: {exc}") from exc
+    for name, (t_host, t_port) in tool_proxies.items():
+        logger.info("tool_proxy_mounted route=/tools/{} target={}:{}",
+                    name, t_host, t_port)
+
     kiosk = "--kiosk" in args
     default_mode = "graph"
     if "--mode" in args:
@@ -1116,6 +1129,8 @@ def main():
         # plain path, which some WebKit clients reject once compressed.
         compression=None,
     )
+    if tool_proxies:
+        tool_proxy.wrap_server(srv)
     ws_thread = threading.Thread(target=srv.serve_forever, daemon=True)
     ws_thread.start()
 
