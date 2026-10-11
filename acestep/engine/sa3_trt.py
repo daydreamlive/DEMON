@@ -60,6 +60,24 @@ import torch
 
 from acestep import paths
 from acestep.engine.obs import logger
+
+# CUDA graph capture, stream ordering and the per-engine refit epoch live
+# in acestep.engine.trt.launch (shared by every TensorRT engine wrapper).
+# Re-exported here so ``sa3_trt.<name>`` keeps working for the refit
+# mirror, the decoders below and their callers.
+from acestep.engine.trt.launch import (  # noqa: F401
+    TRT_CUDA_GRAPH_ENV,
+    _REFIT_EPOCH,
+    _REFIT_EPOCH_LOCK,
+    LaunchGraphCache,
+    TrtLaunch,
+    _LaunchGraphCache,
+    _launch_key,
+    cuda_graph_enabled,
+    engine_refit_epoch,
+    launch_key,
+    note_engine_refit,
+)
 from acestep.engine.sa3_helpers import (
     SA3_SAME_L_PLUGIN_REVISION,
     SA3_SAME_S_DECODE_REVISION,
@@ -144,120 +162,6 @@ _ENGINE_CACHE: dict = {}
 _ENGINE_CACHE_LOCK = threading.Lock()
 _SAME_PLUGIN_REGISTERED = False
 
-#: CUDA graph capture of the DiT engine launch and the SAME decoder
-#: execute. Default ON; ``0`` is the escape hatch for both (plain
-#: ``execute_async_v3`` every call). Read when a :class:`SA3TRTDit` or a
-#: decoder wrapper is constructed.
-TRT_CUDA_GRAPH_ENV = "DEMON_SA3_TRT_CUDA_GRAPH"
-
-# Per-engine refit counter. A LoRA refit rewrites the engine's weights in
-# place (SA3TRTRefitMirror -> refit_cuda_engine()); a graph captured
-# before it is treated as stale and re-captured on the next step, so
-# replay never depends on how TensorRT stores refitted weights. Keyed by
-# id(engine): TensorRT engines are not weak-referenceable, and a reused
-# id only means the new engine's wrappers start from whatever count is
-# there (they read it at capture time, so the key stays consistent).
-_REFIT_EPOCH: dict = {}
-_REFIT_EPOCH_LOCK = threading.Lock()
-
-
-def cuda_graph_enabled() -> bool:
-    """Whether DiT and decoder launches are captured
-    (``DEMON_SA3_TRT_CUDA_GRAPH``, default on; ``0`` / ``false`` / ``off``
-    / ``no`` turn it off)."""
-    val = os.environ.get(TRT_CUDA_GRAPH_ENV, "").strip().lower()
-    return val not in ("0", "false", "off", "no")
-
-
-def note_engine_refit(engine) -> int:
-    """Record that ``engine``'s weights were refit; returns the new count.
-    Called by the refit mirror after every committed refit."""
-    with _REFIT_EPOCH_LOCK:
-        n = _REFIT_EPOCH.get(id(engine), 0) + 1
-        _REFIT_EPOCH[id(engine)] = n
-        return n
-
-
-def engine_refit_epoch(engine) -> int:
-    """How many refits have been committed on ``engine`` (0 = none)."""
-    return _REFIT_EPOCH.get(id(engine), 0)
-
-
-def _launch_key(engine, ctx, bindings) -> tuple:
-    """What a captured launch is valid for: the engine (and its refit
-    count), the execution context, and each bound tensor's name, shape
-    and device address. ``bindings`` is ``(name, tensor)`` pairs, exactly
-    what was passed to ``set_tensor_address``."""
-    return (
-        id(engine),
-        engine_refit_epoch(engine),
-        id(ctx),
-        tuple((name, tuple(buf.shape), buf.data_ptr()) for name, buf in bindings),
-    )
-
-
-class _LaunchGraphCache:
-    """Captured launches per wrapper, keyed by :func:`_launch_key`.
-
-    ``capacity=1`` (the DiT: one fixed binding set per wrapper) keeps a
-    single graph, and a lookup under any other key drops it, so the next
-    launch re-captures. ``capacity>1`` (the decoders: one graph per
-    latent shape) keeps up to that many graphs, least recently used
-    evicted first; a key that is not cached simply misses. Capture
-    failure disables capture for the wrapper (plain launches from then
-    on)."""
-
-    def __init__(self, enabled: bool, capacity: int = 1) -> None:
-        self.enabled = bool(enabled)
-        self.capacity = max(1, int(capacity))
-        self._entries: "OrderedDict[tuple, object]" = OrderedDict()
-        self.captures = 0
-        self.invalidations = 0
-        self.evictions = 0
-        self.disabled_reason: Optional[str] = None
-
-    @property
-    def key(self):
-        """Most recently used key (None when empty)."""
-        return next(reversed(self._entries)) if self._entries else None
-
-    @property
-    def graph(self):
-        """Most recently used graph (None when empty)."""
-        return self._entries[self.key] if self._entries else None
-
-    def __len__(self) -> int:
-        return len(self._entries)
-
-    def lookup(self, key):
-        """The graph captured under ``key``, or None. With capacity 1 a
-        miss also drops the stale graph (anything in the key changed)."""
-        graph = self._entries.get(key) if key is not None else None
-        if graph is None:
-            if self.capacity == 1 and self._entries:
-                self._entries.clear()
-                self.invalidations += 1
-            return None
-        self._entries.move_to_end(key)
-        return graph
-
-    def store(self, key, graph) -> None:
-        self._entries[key] = graph
-        self._entries.move_to_end(key)
-        while len(self._entries) > self.capacity:
-            self._entries.popitem(last=False)
-            self.evictions += 1
-        self.captures += 1
-
-    def discard(self, key) -> None:
-        """Drop the graph under ``key`` if there is one."""
-        if self._entries.pop(key, None) is not None:
-            self.invalidations += 1
-
-    def disable(self, reason: str) -> None:
-        self.enabled = False
-        self._entries.clear()
-        self.disabled_reason = reason
 
 
 def same_l_plugin_build_tag() -> str:
@@ -583,10 +487,11 @@ class SA3TRTDit:
     The engine runs on a private, non-default torch stream. Torch
     streams are created ``cudaStreamNonBlocking``, so they do NOT
     implicitly order after work on the caller's current stream (where
-    the input ``copy_`` calls run); :meth:`step_bundle` therefore issues
-    an explicit ``wait_stream`` before the launch so the engine can't
-    read a half-written input buffer. This is the same wait_stream
-    ordering contract ``acestep.engine.trt.runtime`` documents.
+    the input ``copy_`` calls run); the launch therefore issues an
+    explicit ``wait_stream`` first so the engine can't read a
+    half-written input buffer. Stream, ordering and CUDA graph capture
+    come from the shared :class:`~acestep.engine.trt.launch.TrtLaunch`
+    this wrapper composes (``self._launch``).
     """
 
     trt_batch1 = True
@@ -602,7 +507,6 @@ class SA3TRTDit:
         self.engine_path = Path(engine_path)
         self.refittable = is_refittable_engine_path(engine_path)
         self._ctx = engine.create_execution_context()
-        self._stream = torch.cuda.Stream()
         L = int(latent_frames)
         self._L = L
 
@@ -623,8 +527,23 @@ class SA3TRTDit:
         self._local_add = torch.zeros(1, 257, L, dtype=torch.float32, device=dev)
         self._velocity = torch.empty(out_shape, dtype=torch.float32, device=dev)
 
+        # CUDA graph capture of the engine launch (default on,
+        # DEMON_SA3_TRT_CUDA_GRAPH=0 turns it off), the dedicated stream and
+        # the refit-epoch key all live in the shared TrtLaunch. Every
+        # binding is a persistent buffer bound once and L is fixed for the
+        # wrapper's lifetime, so one capture serves all its steps; the key
+        # still covers engine, refit count, context, shapes and addresses,
+        # so a change to any of them re-captures instead of replaying stale
+        # launch parameters. It removes the per-step host enqueue of the
+        # engine's kernels.
+        self._launch = TrtLaunch(engine, self._ctx, label="sa3_trt_dit")
         for name, buf in self._bindings():
-            self._ctx.set_tensor_address(name, buf.data_ptr())
+            self._launch.bind(name, buf, is_input=name != "velocity")
+        # Aliases of the launch object's state, kept under the names the
+        # wrapper has always had (the bound buffers above are the wrapper's
+        # own, so _bindings()/_graph_key() read the same thing).
+        self._stream = self._launch.stream
+        self._graphs = self._launch.graphs
 
         # Strong ref to the currently-staged bundle (NOT its id()): an
         # id() key can stale-hit after the old bundle is GC'd and a fresh
@@ -632,15 +551,6 @@ class SA3TRTDit:
         # re-stage and running the previous prompt's conditioning. Holding
         # the object keeps its identity unique for as long as it's the key.
         self._staged_bundle = None
-        # CUDA graph capture of the engine launch (default on,
-        # DEMON_SA3_TRT_CUDA_GRAPH=0 turns it off). Every binding above is
-        # a persistent buffer bound once and L is fixed for the wrapper's
-        # lifetime, so one capture serves all its steps; the key still
-        # covers engine, refit count, context, shapes and addresses, so a
-        # change to any of them re-captures instead of replaying stale
-        # launch parameters. It removes the per-step host enqueue of the
-        # engine's kernels.
-        self._graphs = _LaunchGraphCache(cuda_graph_enabled())
         logger.info(
             "sa3_trt_dit_ready engine={} L={} seconds_total={:.1f} cuda_graph={}",
             engine_path.parent.name, L, seconds_total, self._graphs.enabled,
@@ -656,8 +566,9 @@ class SA3TRTDit:
     def _graph_key(self) -> tuple:
         """What a captured launch is valid for. Shapes and addresses come
         from the wrapper's own buffers, which are exactly what was bound
-        (set_tensor_address in __init__, never rebound)."""
-        return _launch_key(self.engine, self._ctx, self._bindings())
+        (TrtLaunch.bind in __init__, never rebound), so this equals
+        ``self._launch.key()``."""
+        return launch_key(self.engine, self._ctx, self._bindings())
 
     def invalidate_graph(self) -> None:
         """Drop the captured launch; the next step re-captures."""
@@ -721,66 +632,10 @@ class SA3TRTDit:
         self._x.copy_(x_1ct.float())
         self._t[0] = float(t)
         # The copies above (and _stage_bundle's) ran on the caller's
-        # current stream; a non-blocking torch stream would otherwise race
-        # them, so make the launch wait for that stream first. Captured
-        # BEFORE the context switch — inside it current_stream() is already
-        # self._stream, which would make the wait a no-op.
-        caller_stream = torch.cuda.current_stream()
-        with torch.cuda.stream(self._stream):
-            self._stream.wait_stream(caller_stream)
-            if self._graphs.enabled:
-                self._launch_graph()
-            elif not self._ctx.execute_async_v3(self._stream.cuda_stream):
-                raise RuntimeError("SA3 TRT DiT step failed")
-        self._stream.synchronize()
+        # current stream; TrtLaunch.launch orders the dedicated stream after
+        # it (wait_stream) before the captured or plain execute.
+        self._launch.launch()
         return self._velocity
-
-    def _launch_graph(self) -> None:
-        """Replay the captured launch, capturing first when there is none
-        for the current key. Runs on (and must be called inside) the
-        private stream context. Capture is preceded by one plain execute:
-        TensorRT does its lazy per-shape setup on the first enqueue, which
-        must not land inside a capture. That execute's output is a full
-        step on the current inputs, and the replay right after recomputes
-        the same values from the same buffers, so it is just overwritten.
-        thread_local capture mode keeps CUDA calls on other server
-        threads (decode, encode) from being flagged as capture violations."""
-        key = self._graph_key()
-        graph = self._graphs.lookup(key)
-        if graph is None:
-            if not self._ctx.execute_async_v3(self._stream.cuda_stream):
-                raise RuntimeError("SA3 TRT DiT step failed")
-            self._stream.synchronize()
-            # capture_begin/end directly rather than the torch.cuda.graph
-            # context manager, which adds a device-wide synchronize,
-            # gc.collect() and empty_cache() around every capture. We are
-            # already inside the private stream context, and the capture
-            # allocates nothing through torch (TensorRT's scratch belongs to
-            # the execution context).
-            g = torch.cuda.CUDAGraph()
-            try:
-                g.capture_begin(capture_error_mode="thread_local")
-                try:
-                    ok = self._ctx.execute_async_v3(self._stream.cuda_stream)
-                finally:
-                    g.capture_end()
-                if not ok:
-                    raise RuntimeError("SA3 TRT DiT capture enqueue failed")
-            except Exception as exc:  # noqa: BLE001 - fall back, never fail the tick
-                self._graphs.disable(f"capture_failed: {exc}")
-                logger.warning(
-                    "sa3_trt_dit_graph_disabled engine={} L={} error={}",
-                    self.engine_path.parent.name, self._L, exc,
-                )
-                # The warm-up execute above already produced this step.
-                return
-            self._graphs.store(key, g)
-            graph = g
-            logger.info(
-                "sa3_trt_dit_graph_captured engine={} L={} refit_epoch={} captures={}",
-                self.engine_path.parent.name, self._L, key[1], self._graphs.captures,
-            )
-        graph.replay()
 
 
 # ---------------------------------------------------------------------------
@@ -902,7 +757,7 @@ class _SameTRTDecoder:
     def _decode_graph(self, lat: torch.Tensor) -> torch.Tensor:
         """Copy ``lat`` into this shape's bound input buffer and replay
         its captured execute, capturing first when there is none. As in
-        :meth:`SA3TRTDit._launch_graph`: one plain execute precedes each
+        :class:`~acestep.engine.trt.launch.TrtLaunch`: one plain execute precedes each
         capture (TensorRT's lazy first-enqueue setup must not land inside
         it), capture uses thread_local mode, and a capture failure logs
         once and falls back to plain execute without failing the decode."""
