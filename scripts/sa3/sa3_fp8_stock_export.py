@@ -10,8 +10,8 @@ Three sub-commands, run one at a time by the GPU conductor:
               ``H/onnx/stock_fp16mixed.onnx``.
 ``--graft``   ``acestep.engine.trt.sa3_fp8.graft_fp8`` with
               ``H/calib/stock_act_scales.json`` -> ``H/onnx/stock_fp8.onnx``
-              with ``exclude=HF_MEDIUM_EXCLUDE`` (the HF medium fp8 set: exactly
-              222 Linears).
+              with ``exclude=DEMON_MEDIUM_EXCLUDE`` (the HF medium set minus
+              ``to_local_embed.0``: exactly 198 Linears; HF's engine has 222).
 ``--build``   ``acestep.engine.trt.sa3_build.build_engine_from_onnx`` for both
               graphs at profile (1,140,140) into the fixed engine dirs
               ``H/engines/stock/sa3_m_dit_ours_{fp16mixed,fp8}_l1_140_140``.
@@ -53,9 +53,12 @@ ENGINE_FP8 = f"sa3_m_dit_ours_fp8_l{PROFILE[0]}_{PROFILE[1]}_{PROFILE[2]}"
 COND_INPUTS = ("cross_attn_cond", "cross_attn_mask", "global_cond", "padding_mask",
                "local_add_cond")
 OUTPUT_NAME = "velocity"
-# The HF medium fp8 set (D1, read at source): every Linear with min dim >= 128
-# except to_timestep_embed.* and transformer.global_cond_embedder.*.
-STOCK_LINEARS = 222
+# DEMON medium fp8 set (planner decision 2026-10-12): the HF medium set
+# (every Linear with min dim >= 128 except to_timestep_embed.* and
+# transformer.global_cond_embedder.*, 222 Linears) minus *.to_local_embed.0,
+# which sees zero input under DEMON conditioning and stays fp16: 198 Linears.
+STOCK_LINEARS = 198
+HF_LINEARS = 222
 DEMO_DURATION_S = 10.0
 DEMO_LATENTS = 140
 EXPORT_PROMPT = "funky ass shit"
@@ -216,7 +219,7 @@ def load_scales(path: Path) -> dict[str, float]:
 
 def cmd_graft(args) -> int:
     graft_fp8 = _require("acestep.engine.trt.sa3_fp8", "graft_fp8", "d1_graft.ready")
-    exclude = _require("acestep.engine.trt.sa3_fp8", "HF_MEDIUM_EXCLUDE", "d1_graft.ready")
+    exclude = _require("acestep.engine.trt.sa3_fp8", "DEMON_MEDIUM_EXCLUDE", "d1_graft.ready")
     if not args.fp16_onnx.is_file():
         raise SystemExit(f"{args.fp16_onnx} missing: run --export first")
     scales = load_scales(args.scales)

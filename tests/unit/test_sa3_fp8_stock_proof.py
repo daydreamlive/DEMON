@@ -172,7 +172,10 @@ def test_markdown_table_has_every_arm_and_gate():
         m["engine"] = f"eng_{name}"
     report = {"latent_frames": 16, "n_cases": 2, "arms": arms,
               "verdict": proof.judge_arms(arms), "eager_ms_step_median": 1.0}
+    report["fp8_linears"] = {"hf_fp8": 222, "ours_fp8": 198}
     md = proof.markdown_table(report)
+    assert "ours_fp8: 198 fp8 Linears (to_local_embed.0 kept fp16) vs HF 222" in md
+    assert "24 fewer fp8 Linears in ours" in md
     for name in arms:
         assert f"| {name} | eng_{name} |" in md
     assert "GATE:" in md
@@ -295,3 +298,11 @@ def test_calibration_with_real_d1_capture_round_trips(tmp_path):
     assert set(scales) == {"mid"}
     out, _ = calib.write_scales(scales, tmp_path / "s.json", {})
     assert read_act_scales(out) == pytest.approx(scales)
+
+
+def test_fp8_linear_counts_from_graft_sidecar(tmp_path):
+    side = tmp_path / "stock_fp8.graft.json"
+    side.write_text(json.dumps({"linears_fp8": 198}))
+    counts = proof.fp8_linear_counts(["hf_fp8", "ours_fp16mixed", "ours_fp8"], side)
+    assert counts == {"hf_fp8": 222, "ours_fp8": 198}
+    assert proof.fp8_linear_counts(["ours_fp8"], tmp_path / "missing.json") == {"ours_fp8": None}

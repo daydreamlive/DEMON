@@ -83,6 +83,10 @@ PROOF_PROMPTS = (
 )
 SEEDS = (7, 1528)
 DEFAULT_OUT = Path(r"D:\hot\DEMON\musetimbre\fp8_2026-10-12\reports\stock_proof.json")
+DEFAULT_GRAFT_REPORT = Path(r"D:\hot\DEMON\musetimbre\fp8_2026-10-12\onnx\stock_fp8.graft.json")
+# HF's dit_fp8.onnx quantizes 222 Linears; ours uses DEMON_MEDIUM_EXCLUDE (198,
+# to_local_embed.0 kept fp16), so the control is not like-for-like on GEMM count.
+HF_FP8_LINEARS = 222
 
 StepFn = Callable  # (x [1,C,L] fp32, t: float, bundle: dict) -> v [1,C,L]
 
@@ -260,10 +264,31 @@ def markdown_table(report: dict) -> str:
         bar_s = f"{c['bar']:.6f}" if isinstance(c["bar"], float) else str(c["bar"])
         lines.append(f"| {c['check']} | {val_s} | {c['op']} {bar_s} | "
                      f"{'PASS' if c['pass'] else 'FAIL'} |")
+    counts = report.get("fp8_linears") or {}
+    if counts:
+        hf_n, ours_n = counts.get("hf_fp8"), counts.get("ours_fp8")
+        lines += ["", f"ours_fp8: {'unknown' if ours_n is None else ours_n} fp8 Linears "
+                  f"(to_local_embed.0 kept fp16) vs HF {hf_n}"
+                  + ("" if ours_n is None or hf_n is None else
+                     f" ({hf_n - ours_n} fewer fp8 Linears in ours; the control is not "
+                     "like-for-like on quantized GEMM count)") + "."]
     v = report["verdict"]
     lines += ["", f"GATE: {v['gate']}"
               + (f" (missing arms: {', '.join(v['missing_arms'])})" if v["missing_arms"] else "")]
     return "\n".join(lines) + "\n"
+
+
+def fp8_linear_counts(arms: Sequence[str], graft_report: Optional[Path]) -> dict:
+    """fp8 Linear count per fp8 arm: HF's fixed set, ours from the graft sidecar."""
+    out: dict = {}
+    if "hf_fp8" in arms:
+        out["hf_fp8"] = HF_FP8_LINEARS
+    if "ours_fp8" in arms:
+        n = None
+        if graft_report is not None and Path(graft_report).is_file():
+            n = json.loads(Path(graft_report).read_text(encoding="utf-8")).get("linears_fp8")
+        out["ours_fp8"] = n
+    return out
 
 
 def parse_arms(specs: Sequence[str]) -> dict[str, Path]:
@@ -426,6 +451,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--seeds", type=int, nargs="+", default=list(SEEDS))
     ap.add_argument("--warmups", type=int, default=WARMUPS)
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    ap.add_argument("--graft-report", type=Path, default=DEFAULT_GRAFT_REPORT,
+                    help="ours_fp8 graft sidecar (linears_fp8 is recorded in the report)")
     args = ap.parse_args(argv)
     arm_dirs = parse_arms(args.arm)
     engines = {n: resolve_engine(p) for n, p in arm_dirs.items()}
@@ -493,6 +520,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "n_cases": len(cases), "eager_dtype": str(dtype),
         "eager_ms_step_median": statistics.median(eager_ms) if eager_ms else None,
         "demon_commit": _git_head(), "arms": arms, "verdict": verdict,
+        "fp8_linears": fp8_linear_counts(list(arms), args.graft_report),
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2), encoding="utf-8")

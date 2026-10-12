@@ -125,20 +125,20 @@ def test_graft_plumbing_and_count_check(monkeypatch, tmp_path):
 
     def graft_fp8(src, dst, act, **kw):
         calls.append((src, dst, act, kw))
-        return {"linears_total": 224, "linears_fp8": 222, "unmatched": ["a", "b"], "scale_stats": {}}
+        return {"linears_total": 224, "linears_fp8": 198, "unmatched": ["a"] * 26, "scale_stats": {}}
 
-    excl = ("*to_timestep_embed.*", "*transformer.global_cond_embedder.*")
+    excl = ("*to_timestep_embed.*", "*transformer.global_cond_embedder.*", "*to_local_embed.0")
     _install(monkeypatch, "acestep.engine.trt.sa3_fp8", graft_fp8=graft_fp8,
-             HF_MEDIUM_EXCLUDE=excl)
+             DEMON_MEDIUM_EXCLUDE=excl)
     out = tmp_path / "stock_fp8.onnx"
     args = ex.parse_args(["--graft", "--fp16-onnx", str(fp16), "--fp8-onnx", str(out),
                           "--scales", str(scales)])
     assert ex.cmd_graft(args) == 0
     assert calls == [(fp16, out, {"model.transformer": 3.5}, {"exclude": excl})]
     side = json.loads((tmp_path / "stock_fp8.graft.json").read_text())
-    assert side["linears_fp8"] == 222 and len(side["act_scales_sha256"]) == 64
+    assert side["linears_fp8"] == 198 and len(side["act_scales_sha256"]) == 64
     assert side["exclude"] == list(excl)
-    args.expect_linears = 176
+    args.expect_linears = 222
     with pytest.raises(SystemExit):
         ex.cmd_graft(args)
 
@@ -180,7 +180,10 @@ def test_real_d1_signatures_accept_driver_calls():
 
     from acestep.engine.trt import sa3_build, sa3_export, sa3_fp8
 
-    assert len(sa3_fp8.HF_MEDIUM_EXCLUDE) == 2 and sa3_fp8.HF_MEDIUM_FP8_LINEARS == ex.STOCK_LINEARS
+    assert sa3_fp8.HF_MEDIUM_FP8_LINEARS == ex.HF_LINEARS
+    assert set(sa3_fp8.HF_MEDIUM_EXCLUDE) < set(sa3_fp8.DEMON_MEDIUM_EXCLUDE)
+    assert any("to_local_embed" in p for p in sa3_fp8.DEMON_MEDIUM_EXCLUDE)
+    assert getattr(sa3_fp8, "DEMON_MEDIUM_FP8_LINEARS", ex.STOCK_LINEARS) == ex.STOCK_LINEARS
     inspect.signature(sa3_fp8.graft_fp8).bind("a", "b", {}, exclude=())
     inspect.signature(sa3_fp8.capture_activation_scales).bind(None, lambda: None, min_features=128)
     inspect.signature(sa3_export.export_fp16mixed).bind(
