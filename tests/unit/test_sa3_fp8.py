@@ -156,7 +156,7 @@ def test_graft_per_tensor_and_margin(exported):
 
 def test_graft_scale_floor(exported):
     tmp, rep, scales = exported
-    zeroed = dict(scales, **{"attn.to_out": 0.0})
+    zeroed = dict(scales, **{"attn.to_out": 1e-6})
     r = Q.graft_fp8(rep.onnx_path, tmp / "tiny_fp8_floor.onnx", zeroed)
     row = next(row for row in r.sites if row["module"] == "attn.to_out")
     assert row["act_scale"] == pytest.approx(1e-4)
@@ -227,3 +227,21 @@ def test_graft_numerics_onnxruntime_reference(exported):
     got = torch.from_numpy(sess.run(None, {k: v.numpy() for k, v in inp.items()})[0])
     cos = F.cosine_similarity(got.flatten(), ref.flatten(), dim=0).item()
     assert cos > 0.99, cos
+
+
+def test_zero_scale_error_unless_excluded(exported):
+    tmp, rep, scales = exported
+    zeroed = dict(scales, **{"ff.ff.0": 0.0})
+    with pytest.raises(Q.ZeroActivationScaleError, match="ff.ff.0"):
+        Q.graft_fp8(rep.onnx_path, tmp / "z.onnx", zeroed)
+    r = Q.graft_fp8(rep.onnx_path, tmp / "tiny_fp8_z.onnx", zeroed, exclude=["*ff.ff.0"])
+    assert r.linears_fp8 == 7 and r.unmatched == ["ff.ff.0"]
+
+
+def test_demon_medium_exclude_set():
+    assert set(Q.HF_MEDIUM_EXCLUDE) < set(Q.DEMON_MEDIUM_EXCLUDE)
+    assert Q.DEMON_MEDIUM_FP8_LINEARS == Q.HF_MEDIUM_FP8_LINEARS - 24
+    from acestep.engine.trt.sa3_export import match_patterns
+    assert match_patterns("model.transformer.layers.3.to_local_embed.0", Q.DEMON_MEDIUM_EXCLUDE)
+    assert not match_patterns("model.transformer.layers.3.to_local_embed.2", Q.DEMON_MEDIUM_EXCLUDE)
+    assert not match_patterns("model.transformer.layers.3.to_local_embed.0", Q.HF_MEDIUM_EXCLUDE)

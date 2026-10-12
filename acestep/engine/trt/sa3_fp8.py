@@ -20,6 +20,9 @@ Stock medium reference (Stability's HF ``onnx/sa3-m/dit_fp8.onnx``, read
 2026-10-12): 222 fp8 Linears = every Linear with min dim >= 128 except
 ``to_timestep_embed.*`` and ``transformer.global_cond_embedder.*``
 (:data:`HF_MEDIUM_EXCLUDE`); per-channel weight scales on 220, per-tensor on 2.
+DEMON keeps ``to_local_embed.0`` fp16 as well (:data:`DEMON_MEDIUM_EXCLUDE`,
+198 Linears): its input is always zero in DEMON's conditioning. A 0.0
+activation scale on an included Linear is an error.
 
 CLI::
 
@@ -60,6 +63,12 @@ SCALE_FLOOR = 1e-4
 GRAFT_OPSET = 19
 HF_MEDIUM_EXCLUDE = ("*to_timestep_embed.*", "*transformer.global_cond_embedder.*")
 HF_MEDIUM_FP8_LINEARS = 222
+# DEMON's one deviation from the HF set: every ``to_local_embed.0`` stays
+# fp16. DEMON's conditioning feeds local_add_cond as all zeros, so those 24
+# Linears never see a non-zero activation (calibration gives 0.0 and the
+# floor would become their scale). 222 - 24 = 198 on the stock medium.
+DEMON_MEDIUM_EXCLUDE = HF_MEDIUM_EXCLUDE + ("*to_local_embed.0",)
+DEMON_MEDIUM_FP8_LINEARS = 198
 
 # Reduce ops whose ``axes`` moved from attribute to input at opset 18.
 _REDUCE_AXES_TO_INPUT = frozenset({
@@ -142,6 +151,11 @@ def write_act_scales(path: str | os.PathLike[str], act_scales: Mapping[str, floa
 
 class UnmatchedLinearError(RuntimeError):
     """An eligible Linear has no activation scale and is not excluded."""
+
+
+class ZeroActivationScaleError(ValueError):
+    """An included (not excluded) Linear calibrated to absmax 0.0. A 0.0 on
+    an excluded module is fine (it stays fp16)."""
 
 
 @dataclass
@@ -269,7 +283,7 @@ def graft_fp8(fp16_onnx: str | os.PathLike[str], out_onnx: str | os.PathLike[str
     sites = linear_sites(g, min_features=min_features)
     resolver = _ScaleResolver(act_scales)
 
-    plan, unmatched, missing = [], [], []
+    plan, unmatched, missing, zero = [], [], [], []
     for s in sites:
         if match_patterns(s.module_path, exclude) or match_patterns(s.name, exclude):
             unmatched.append(s.module_path)
@@ -278,7 +292,14 @@ def graft_fp8(fp16_onnx: str | os.PathLike[str], out_onnx: str | os.PathLike[str
         if key is None:
             missing.append(s.module_path)
             continue
+        if float(act_scales[key]) <= 0.0:
+            zero.append(s.module_path)
+            continue
         plan.append((s, key))
+    if zero:
+        raise ZeroActivationScaleError(
+            f"{len(zero)} included Linears have a 0.0 activation scale (never saw a non-zero input; "
+            f"exclude them to keep them fp16): {zero[:8]}")
     if missing:
         raise UnmatchedLinearError(
             f"{len(missing)} eligible Linears have no activation scale (pass exclude= to leave them fp16): "
@@ -402,6 +423,9 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--exclude", action="append", default=[], help="module path / node name / glob (repeat)")
     g.add_argument("--hf-medium-exclude", action="store_true",
                    help=f"add {HF_MEDIUM_EXCLUDE} (the HF medium fp8 set, {HF_MEDIUM_FP8_LINEARS} Linears)")
+    g.add_argument("--demon-medium-exclude", action="store_true",
+                   help=f"add {DEMON_MEDIUM_EXCLUDE} (HF set minus to_local_embed.0, "
+                        f"{DEMON_MEDIUM_FP8_LINEARS} Linears on the stock medium)")
     g.add_argument("--expect-linears", type=int, default=None)
     b = sub.add_parser("build", help="STRONGLY_TYPED engine from an ONNX (sa3_build.build_engine_from_onnx)")
     b.add_argument("--onnx", type=Path, required=True)
@@ -418,6 +442,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if a.cmd == "graft":
         exclude = list(a.exclude) + (list(HF_MEDIUM_EXCLUDE) if a.hf_medium_exclude else [])
+        if a.demon_medium_exclude:
+            exclude += [p for p in DEMON_MEDIUM_EXCLUDE if p not in exclude]
         report = graft_fp8(a.fp16_onnx, a.out, read_act_scales(a.act_scales), margin=a.margin,
                            scale_floor=a.scale_floor, weight_scales=a.weight_scales, exclude=exclude)
         side = a.out.with_suffix(".graft.json")
