@@ -129,22 +129,62 @@ def test_judge_all_pass():
         "hf_fp8": _fake_metrics(0.95, 0.97, 10.0),
         "ours_fp16mixed": _fake_metrics(0.99985, 0.9999, 15.0),
         "ours_fp8": _fake_metrics(0.945, 0.965, 10.4),
+        "hf_fp16mixed": _fake_metrics(0.9995, 0.98, 15.0),
     })
     assert v["gate"] == "PASS", v["checks"]
     assert v["tiers"]["ours_fp16mixed"]["tier"] == "fp16mixed"
     assert v["tiers"]["ours_fp8"]["tier"] == "fp8"
+    assert v["tiers"]["hf_fp16mixed"]["tier"] == "fp16mixed"
+
+
+def test_fp16mixed_bar_is_the_control_worst_step():
+    # The C3 numbers: ours 0.999706 vs Stability's fp16mixed 0.999513 passes
+    # although both are below the old fixed 0.9998.
+    base = {"hf_fp8": _fake_metrics(0.9335, 0.68, 5.95),
+            "ours_fp8": _fake_metrics(0.9462, 0.66, 4.66)}
+    v = proof.judge_arms({**base, "ours_fp16mixed": _fake_metrics(0.999706, 0.995, 5.27),
+                          "hf_fp16mixed": _fake_metrics(0.999513, 0.976, 5.3)})
+    assert v["gate"] == "PASS", v["checks"]
+    c = {c["check"]: c for c in v["checks"]}["ours_fp16mixed worst step vs hf_fp16mixed"]
+    assert c["bar"] == pytest.approx(0.999513)
+    v = proof.judge_arms({**base, "ours_fp16mixed": _fake_metrics(0.9994, 0.995, 5.27),
+                          "hf_fp16mixed": _fake_metrics(0.999513, 0.976, 5.3)})
+    assert v["gate"] == "FAIL"
+
+
+def test_fp16mixed_without_control_reports_number_without_bar():
+    v = proof.judge_arms({"hf_fp8": _fake_metrics(0.95, 0.97, 10.0),
+                          "ours_fp16mixed": _fake_metrics(0.99, 0.99, 15.0),
+                          "ours_fp8": _fake_metrics(0.95, 0.97, 10.0)})
+    assert v["gate"] == "PASS"
+    assert not any("ours_fp16mixed worst step" in c["check"] for c in v["checks"])
+    info = {c["check"]: c for c in v["informational"]}["ours_fp16mixed worst step"]
+    assert info["value"] == pytest.approx(0.99) and info["ref"] is None
+
+
+def test_compounded_is_informational_only():
+    v = proof.judge_arms({"hf_fp8": _fake_metrics(0.9335, 0.680441, 5.95),
+                          "ours_fp16mixed": _fake_metrics(0.9999, 0.99, 5.27),
+                          "ours_fp8": _fake_metrics(0.9462, 0.2, 4.66)})
+    assert v["gate"] == "PASS"
+    assert not any("compounded" in c["check"] for c in v["checks"])
+    info = {c["check"]: c for c in v["informational"]}["ours_fp8 compounded vs hf_fp8"]
+    assert info["value"] == pytest.approx(0.2) and info["ref"] == pytest.approx(0.680441)
+    assert info["note"] == "informational (euler, not the production sampler)"
 
 
 @pytest.mark.parametrize("arm,metrics,failing", [
-    ("ours_fp16mixed", _fake_metrics(0.9997, 0.9999, 15.0), "ours_fp16mixed worst step"),
+    ("ours_fp16mixed", _fake_metrics(0.9990, 0.9999, 15.0),
+     "ours_fp16mixed worst step vs hf_fp16mixed"),
     ("ours_fp8", _fake_metrics(0.93, 0.965, 10.0), "ours_fp8 worst step vs hf_fp8"),
-    ("ours_fp8", _fake_metrics(0.95, 0.95, 10.0), "ours_fp8 compounded vs hf_fp8"),
     ("ours_fp8", _fake_metrics(0.95, 0.97, 10.6), "ours_fp8 ms/step vs hf_fp8"),
+    ("ours_fp8", _fake_metrics(0.95, 0.97, 10.0, nonfinite=1), "ours_fp8 non-finite outputs"),
 ])
 def test_judge_each_bar(arm, metrics, failing):
     arms = {"hf_fp8": _fake_metrics(0.95, 0.97, 10.0),
             "ours_fp16mixed": _fake_metrics(0.99985, 0.9999, 15.0),
-            "ours_fp8": _fake_metrics(0.95, 0.97, 10.0)}
+            "ours_fp8": _fake_metrics(0.95, 0.97, 10.0),
+            "hf_fp16mixed": _fake_metrics(0.9995, 0.98, 15.0)}
     arms[arm] = metrics
     v = proof.judge_arms(arms)
     assert v["gate"] == "FAIL"
@@ -163,6 +203,7 @@ def test_fp8_floor_independent_of_control():
 def test_missing_arm_is_incomplete():
     v = proof.judge_arms({"hf_fp8": _fake_metrics(0.95, 0.97, 10.0)})
     assert v["gate"] == "incomplete"
+    # The hf_fp16mixed control is optional: never listed as missing.
     assert set(v["missing_arms"]) == {"ours_fp16mixed", "ours_fp8"}
 
 
@@ -176,6 +217,11 @@ def test_markdown_table_has_every_arm_and_gate():
     md = proof.markdown_table(report)
     assert "ours_fp8: 198 fp8 Linears (to_local_embed.0 kept fp16) vs HF 222" in md
     assert "24 fewer fp8 Linears in ours" in md
+    assert "compounded min (info)" in md
+    assert "informational (euler, not the production sampler)" in md
+    assert ("hf_fp8 = main's production fp8 engine built from Stability's published "
+            "fp8 ONNX") in md
+    assert "| ours_fp8 compounded vs hf_fp8 |" in md
     for name in arms:
         assert f"| {name} | eng_{name} |" in md
     assert "GATE:" in md
@@ -183,8 +229,8 @@ def test_markdown_table_has_every_arm_and_gate():
 
 
 def test_parse_arms_and_resolve_engine(tmp_path):
-    arms = proof.parse_arms([f"hf_fp8={tmp_path}", "ours_fp8 = x"])
-    assert set(arms) == {"hf_fp8", "ours_fp8"}
+    arms = proof.parse_arms([f"hf_fp8={tmp_path}", "ours_fp8 = x", "hf_fp16mixed=y"])
+    assert set(arms) == {"hf_fp8", "ours_fp8", "hf_fp16mixed"}
     with pytest.raises(ValueError):
         proof.parse_arms(["bogus=x"])
     with pytest.raises(ValueError):

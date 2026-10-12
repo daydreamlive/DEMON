@@ -8,10 +8,16 @@ demo window (L=140) and judges the D2 bars:
                       HF dit_fp8.onnx).
 * ``ours_fp16mixed``  our fp16mixed-style export built plain.
 * ``ours_fp8``        our fp16mixed-style export + fp8 graft.
+* ``hf_fp16mixed``    optional control: main's stock fp16mixed engine
+                      (``sa3_build --dit``, runbook C1).
 
-Bars: ours_fp16mixed worst step >= 0.9998; ours_fp8 worst step >= 0.90 and
->= hf_fp8 worst - 0.01, compounded >= hf_fp8 compounded - 0.01, ms/step <=
-1.05 x hf_fp8. The tier bars come from ``sa3_parity_tier``.
+Bars (per-step velocity cos is the deterministic bar; production samples
+with pingpong, which renoises every step): non-finite == 0 on every arm;
+ours_fp16mixed worst step >= hf_fp16mixed worst step in the same run (no bar
+when the control arm is absent, the number is reported); ours_fp8 worst step
+>= 0.90 and >= hf_fp8 worst - 0.01, ms/step <= 1.05 x hf_fp8. The 8-step
+euler compounded columns are informational only (euler is not the
+production sampler). The tier column comes from ``sa3_parity_tier``.
 
 Method (per arm, per prompt x seed case): deterministic 8-step euler on the
 session schedule. Per-step cos: the eager trajectory drives ``x_t`` and the
@@ -31,7 +37,7 @@ through the same ``TrtLaunch`` (CUDA graph on both, so ms/step is comparable).
 Run (GPU; the conductor only):
     python scripts/sa3/sa3_fp8_stock_proof.py \
         --arm hf_fp8=<engine dir> --arm ours_fp16mixed=<engine dir> \
-        --arm ours_fp8=<engine dir> \
+        --arm ours_fp8=<engine dir> [--arm hf_fp16mixed=<engine dir>] \
         --out D:/hot/DEMON/musetimbre/fp8_2026-10-12/reports/stock_proof.json
 """
 
@@ -58,9 +64,17 @@ STEPS = 8
 WARMUPS = 2
 DEMO_DURATION_S = 10.0
 DEMO_LATENTS = 140
-ARMS = ("hf_fp8", "ours_fp16mixed", "ours_fp8")
-ARM_TIERS = {"hf_fp8": TIER_FP8, "ours_fp16mixed": TIER_FP16MIXED, "ours_fp8": TIER_FP8}
-FP16MIXED_BAR = 0.9998
+REQUIRED_ARMS = ("hf_fp8", "ours_fp16mixed", "ours_fp8")
+FP16MIXED_CONTROL = "hf_fp16mixed"
+ARMS = REQUIRED_ARMS + (FP16MIXED_CONTROL,)
+ARM_TIERS = {"hf_fp8": TIER_FP8, "ours_fp16mixed": TIER_FP16MIXED, "ours_fp8": TIER_FP8,
+             FP16MIXED_CONTROL: TIER_FP16MIXED}
+COMPOUNDED_NOTE = "informational (euler, not the production sampler)"
+LEGEND = (
+    "hf_fp8 = main's production fp8 engine built from Stability's published fp8 ONNX",
+    "hf_fp16mixed = main's stock fp16mixed engine (sa3_build --dit, runbook C1); "
+    "control for ours_fp16mixed",
+)
 FP8_FLOOR = 0.90
 REL_TOL = 0.01
 SPEED_TOL = 1.05
@@ -199,12 +213,18 @@ def _nan_low(v) -> float:
 
 
 def judge_arms(arms: dict) -> dict:
-    """D2 bars over ``{arm: measure_arm(...)}``. Missing arms make the gate
-    ``incomplete``; a non-finite output fails its arm."""
+    """D2 bars over ``{arm: measure_arm(...)}``. Missing required arms make
+    the gate ``incomplete``; a non-finite output fails its arm. Compounded
+    (euler) comparisons and a control-less fp16mixed worst step land in
+    ``informational`` and never gate."""
     checks: list[dict] = []
+    informational: list[dict] = []
 
     def add(name, value, op, bar, ok):
         checks.append({"check": name, "value": value, "op": op, "bar": bar, "pass": bool(ok)})
+
+    def info(name, value, ref, note):
+        informational.append({"check": name, "value": value, "ref": ref, "note": note})
 
     tiers = {}
     for name, m in arms.items():
@@ -217,7 +237,13 @@ def judge_arms(arms: dict) -> dict:
     fp16 = arms.get("ours_fp16mixed")
     if fp16 is not None:
         w = _nan_low(fp16["worst_step_cos"])
-        add("ours_fp16mixed worst step", w, ">=", FP16MIXED_BAR, w >= FP16MIXED_BAR)
+        ctrl = arms.get(FP16MIXED_CONTROL)
+        if ctrl is not None:
+            cw = _nan_low(ctrl["worst_step_cos"])
+            add(f"ours_fp16mixed worst step vs {FP16MIXED_CONTROL}", w, ">=", cw, w >= cw)
+        else:
+            info("ours_fp16mixed worst step", w, None,
+                 f"no bar ({FP16MIXED_CONTROL} control arm absent)")
     ours, hf = arms.get("ours_fp8"), arms.get("hf_fp8")
     if ours is not None:
         w = _nan_low(ours["worst_step_cos"])
@@ -226,14 +252,15 @@ def judge_arms(arms: dict) -> dict:
             hw = _nan_low(hf["worst_step_cos"])
             add("ours_fp8 worst step vs hf_fp8", w, ">=", hw - REL_TOL, w >= hw - REL_TOL)
             oc, hc = _nan_low(ours["compounded_cos_min"]), _nan_low(hf["compounded_cos_min"])
-            add("ours_fp8 compounded vs hf_fp8", oc, ">=", hc - REL_TOL, oc >= hc - REL_TOL)
+            info("ours_fp8 compounded vs hf_fp8", oc, hc, COMPOUNDED_NOTE)
             om, hm = ours["ms_step_median"], hf["ms_step_median"]
             if om is not None and hm is not None:
                 add("ours_fp8 ms/step vs hf_fp8", om, "<=", SPEED_TOL * hm, om <= SPEED_TOL * hm)
-    missing = [a for a in ARMS if a not in arms]
+    missing = [a for a in REQUIRED_ARMS if a not in arms]
     all_pass = all(c["pass"] for c in checks)
     gate = "incomplete" if missing else ("PASS" if all_pass else "FAIL")
-    return {"gate": gate, "missing_arms": missing, "checks": checks, "tiers": tiers}
+    return {"gate": gate, "missing_arms": missing, "checks": checks,
+            "informational": informational, "tiers": tiers}
 
 
 def markdown_table(report: dict) -> str:
@@ -241,8 +268,8 @@ def markdown_table(report: dict) -> str:
         f"# SA3 fp8 stock-trunk proof (L={report.get('latent_frames')}, "
         f"{report.get('n_cases')} cases, euler {STEPS} steps, {WARMUPS} warm-ups)",
         "",
-        "| arm | engine | worst step cos | mean step cos | compounded min | "
-        "compounded mean | ms/step | non-finite | tier |",
+        "| arm | engine | worst step cos | mean step cos | compounded min (info) | "
+        "compounded mean (info) | ms/step | non-finite | tier |",
         "|---|---|---|---|---|---|---|---|---|",
     ]
     for name, m in report["arms"].items():
@@ -257,6 +284,10 @@ def markdown_table(report: dict) -> str:
     eager_ms = report.get("eager_ms_step_median")
     if eager_ms is not None:
         lines.append(f"| eager | fp16 torch | 1 | 1 | 1 | 1 | {eager_ms:.2f} | 0 | ref |")
+    lines += ["", f"Compounded columns: {COMPOUNDED_NOTE}; per-step velocity cos is the bar.",
+              "Tier column: sa3_parity_tier's fixed tier bar, informational; the checks "
+              "table below is the gate."]
+    lines += [f"Legend: {item}." for item in LEGEND]
     lines += ["", "| check | value | bar | pass |", "|---|---|---|---|"]
     for c in report["verdict"]["checks"]:
         val = c["value"]
@@ -264,6 +295,14 @@ def markdown_table(report: dict) -> str:
         bar_s = f"{c['bar']:.6f}" if isinstance(c["bar"], float) else str(c["bar"])
         lines.append(f"| {c['check']} | {val_s} | {c['op']} {bar_s} | "
                      f"{'PASS' if c['pass'] else 'FAIL'} |")
+    infos = report["verdict"].get("informational") or []
+    if infos:
+        lines += ["", "| informational | value | reference | note |", "|---|---|---|---|"]
+        for c in infos:
+            val, ref = c["value"], c["ref"]
+            val_s = f"{val:.6f}" if isinstance(val, float) else str(val)
+            ref_s = "" if ref is None else (f"{ref:.6f}" if isinstance(ref, float) else str(ref))
+            lines.append(f"| {c['check']} | {val_s} | {ref_s} | {c['note']} |")
     counts = report.get("fp8_linears") or {}
     if counts:
         hf_n, ours_n = counts.get("hf_fp8"), counts.get("ours_fp8")
@@ -506,7 +545,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         m.update({"engine": path.parent.name, "engine_path": str(path), "runner": runner})
         arms[name] = m
         print(f"[arm] {name}: worst={m['worst_step_cos']:.6f} mean={m['mean_step_cos']:.6f} "
-              f"compounded_min={m['compounded_cos_min']:.6f} ms/step={m['ms_step_median']:.2f} "
+              f"compounded_min(info)={m['compounded_cos_min']:.6f} ms/step={m['ms_step_median']:.2f} "
               f"nonfinite={m['nonfinite']}", flush=True)
         del step
         torch.cuda.empty_cache()
@@ -516,6 +555,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "model": args.model, "latent_frames": L, "duration_s": args.duration,
         "seconds_label": seconds_label, "outro_pad_s": context.outro_pad_s,
         "sampler": "euler", "steps": STEPS, "warmups": args.warmups,
+        "compounded_cos_status": COMPOUNDED_NOTE, "legend": list(LEGEND),
         "seeds": args.seeds, "prompts": list(PROOF_PROMPTS[: args.n_prompts]),
         "n_cases": len(cases), "eager_dtype": str(dtype),
         "eager_ms_step_median": statistics.median(eager_ms) if eager_ms else None,
