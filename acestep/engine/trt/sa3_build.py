@@ -327,6 +327,30 @@ class SA3DiTRefitBuildConfig:
 
 
 @dataclass
+class SA3DiTFp8RefitBuildConfig:
+    """Build parameters for one REFITTABLE sa3-m fp8 DiT engine (fp8 refit
+    investigation, runbook 2026-10-12 Q2a): Stability's ``dit_fp8.onnx``
+    compiled STRONGLY_TYPED with ``BuilderFlag.REFIT``. Separate dataclass
+    for the same metadata-identity reason as the others; the
+    ``_fp8_refit`` marker makes the engine exclusively owned
+    (:func:`acestep.engine.sa3_trt.is_refittable_engine_path`) without
+    entering runtime selection.
+    """
+
+    min_latents: int
+    opt_latents: int
+    max_latents: int
+    workspace_gb: float = 16.0
+    onnx_files: list[str] = field(default_factory=lambda: list(DIT_FP8_ONNX_FILES))
+
+    def engine_name(self) -> str:
+        return (
+            f"sa3_m_dit_fp8_refit_l{self.min_latents}"
+            f"_{self.opt_latents}_{self.max_latents}"
+        )
+
+
+@dataclass
 class SameLWindowBuildConfig:
     """Build parameters for the SAME-L window decoder engine."""
 
@@ -1121,6 +1145,15 @@ def main() -> int:
                              "in-place-refit engines, preferred by "
                              "LoRA-enabled sessions and exclusively owned "
                              "at runtime — never process-cached).")
+    single.add_argument("--fp8-refit", action="store_true",
+                        help="Single mode: also build the REFITTABLE fp8 DiT "
+                             "(dit_fp8.onnx + BuilderFlag.REFIT, "
+                             "sa3_m_dit_fp8_refit_l*). Investigation engine: "
+                             "never selected at runtime.")
+    single.add_argument("--variants-only", action="store_true",
+                        help="Single mode: skip the fp16mixed base DiT and "
+                             "build only the requested --fp8/--refit/"
+                             "--fp8-refit variants.")
     single.add_argument("--fp8-onnx", default=None,
                         help="Path to a producer-built dit_fp8.onnx (with its "
                              ".onnx.data sidecar alongside) to compile instead "
@@ -1139,8 +1172,8 @@ def main() -> int:
     if args.dit_only and (args.same_l_only or args.same_s_only):
         parser.error("--dit-only and --same-l-only/--same-s-only are mutually exclusive")
     if args.model != "medium":
-        if args.fp8 or args.refit:
-            parser.error(f"--fp8/--refit are medium-only (got --model {args.model})")
+        if args.fp8 or args.refit or args.fp8_refit:
+            parser.error(f"--fp8/--refit/--fp8-refit are medium-only (got --model {args.model})")
         if args.same_l_window or args.same_l_only:
             parser.error(f"SAME-L is the medium codec; --model {args.model} "
                          "decodes with SAME-S and has no window engine")
@@ -1153,6 +1186,8 @@ def main() -> int:
 
     os.makedirs(args.output_dir, exist_ok=True)
 
+    if args.all and (args.fp8_refit or args.variants_only):
+        parser.error("--fp8-refit/--variants-only are single-mode (--dit) only")
     if args.all:
         jobs = _matrix_jobs(args)
         _print_matrix(jobs, args.output_dir)
@@ -1236,12 +1271,29 @@ def main() -> int:
         )
         if not (0 < config.min_latents <= config.opt_latents <= config.max_latents):
             parser.error("require 0 < min <= opt <= max latent frames")
-        result = _build_dit_engine(
-            output_dir=args.output_dir, config=config, env=env,
-            force_rebuild=args.force_rebuild,
-            component=dit_component, model_label=dit_label,
-        )
-        built.append(result)
+        if not args.variants_only:
+            result = _build_dit_engine(
+                output_dir=args.output_dir, config=config, env=env,
+                force_rebuild=args.force_rebuild,
+                component=dit_component, model_label=dit_label,
+            )
+            built.append(result)
+        if args.fp8_refit:
+            built.append(_build_dit_engine(
+                output_dir=args.output_dir,
+                config=SA3DiTFp8RefitBuildConfig(
+                    min_latents=config.min_latents,
+                    opt_latents=config.opt_latents,
+                    max_latents=config.max_latents,
+                    workspace_gb=args.workspace_gb,
+                ),
+                env=env,
+                force_rebuild=args.force_rebuild,
+                component="sa3_m_dit_fp8_refit",
+                precision_label="fp8 refit",
+                local_onnx=args.fp8_onnx,
+                refit=True,
+            ))
         if args.fp8:
             fp8_cfg = SA3DiTFp8BuildConfig(
                 min_latents=config.min_latents,

@@ -126,6 +126,13 @@ _DIT_FP8_DIR_RE = re.compile(
 _DIT_REFIT_DIR_RE = re.compile(
     r"^(?P<prefix>.+_dit)_refit_l(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$"
 )
+# Refittable fp8 DiT engines (``sa3_build --fp8-refit``):
+# ``sa3_m_dit_fp8_refit_l{min}_{opt}_{max}``. Exclusively owned like the
+# fp16mixed refit engines, but NOT selected by find_dit_engine: whether a
+# LoRA session may run on fp8 refit is the open D6c/Q3 decision.
+_DIT_FP8_REFIT_DIR_RE = re.compile(
+    r"^(?P<prefix>.+_dit)_fp8_refit_l(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$"
+)
 _SAME_L_DIR_RE = re.compile(
     r"^same_l_decode_window_(?P<tag>[a-z0-9_]+)_t"
     r"(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$"
@@ -205,8 +212,12 @@ def trt_engines_dir() -> Path:
 
 def is_refittable_engine_path(path: Path) -> bool:
     """Whether ``path`` names a refit-built DiT engine (by the naming
-    marker ``sa3_build --refit`` stamps)."""
-    return _DIT_REFIT_DIR_RE.match(Path(path).parent.name) is not None
+    marker ``sa3_build --refit`` / ``--fp8-refit`` stamps)."""
+    name = Path(path).parent.name
+    return (
+        _DIT_REFIT_DIR_RE.match(name) is not None
+        or _DIT_FP8_REFIT_DIR_RE.match(name) is not None
+    )
 
 
 def _deserialize_engine(path: Path, *, exclusive: bool = False):
