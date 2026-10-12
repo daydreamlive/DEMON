@@ -90,6 +90,7 @@ Requirements:
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import sys
@@ -100,6 +101,7 @@ from pathlib import Path
 from loguru import logger
 
 from ._engine_metadata import (
+    _sha256_file,
     expected_metadata as _expected_metadata,
     metadata_matches as _metadata_matches,
     write_metadata as _write_metadata,
@@ -430,6 +432,8 @@ def _build_strongly_typed_engine(
     profile_shapes: dict[str, tuple[tuple, tuple, tuple]],
     refit: bool = False,
     python_plugin_preference: str | None = None,
+    strongly_typed: bool = True,
+    timing_cache: str | None = None,
 ) -> None:
     """Parse + build one STRONGLY_TYPED engine and serialize it to disk.
 
@@ -437,12 +441,19 @@ def _build_strongly_typed_engine(
     per-tensor dtypes (the FP32 islands), so the network must be
     STRONGLY_TYPED with no builder precision flags for TRT to honor
     them instead of auto-promoting.
+
+    ``strongly_typed=False`` (only :func:`build_engine_from_onnx` passes
+    it) builds a weakly typed network with no precision flags.
+    ``timing_cache``: a file loaded when present and rewritten after the
+    build.
     """
     import tensorrt as trt
 
     trt_logger = trt.Logger(trt.Logger.WARNING)
     builder = trt.Builder(trt_logger)
-    network_flags = 1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
+    network_flags = 0
+    if strongly_typed:
+        network_flags |= 1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
     if python_plugin_preference == "aot":
         network_flags |= 1 << int(
             trt.NetworkDefinitionCreationFlag.PREFER_AOT_PYTHON_PLUGINS
@@ -469,6 +480,12 @@ def _build_strongly_typed_engine(
         profile.set_shape(input_name, lo, opt, hi)
     if config.add_optimization_profile(profile) < 0:
         raise RuntimeError("Failed to add optimization profile")
+    if timing_cache:
+        blob = b""
+        if os.path.isfile(timing_cache):
+            with open(timing_cache, "rb") as f:
+                blob = f.read()
+        config.set_timing_cache(config.create_timing_cache(blob), False)
 
     serialized = builder.build_serialized_network(network, config)
     if serialized is None:
@@ -477,6 +494,10 @@ def _build_strongly_typed_engine(
     os.makedirs(os.path.dirname(engine_path), exist_ok=True)
     with open(engine_path, "wb") as f:
         f.write(serialized)
+    if timing_cache:
+        os.makedirs(os.path.dirname(os.path.abspath(timing_cache)), exist_ok=True)
+        with open(timing_cache, "wb") as f:
+            f.write(memoryview(config.get_timing_cache().serialize()))
 
 
 def _build_dit_engine(
@@ -827,6 +848,102 @@ def _build_same_s_decode_engine(
 # ------------------------------------------------------------------
 # Batch mode (--all)
 # ------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Producer-built ONNX -> engine (DEMON's own SA3 export / fp8 graft)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SA3OnnxEngineBuildConfig:
+    """Metadata identity of an engine built by :func:`build_engine_from_onnx`
+    (hashed whole by the sidecar skip gate; JSON-shaped: lists, not tuples)."""
+
+    recipe: str
+    profiles: dict
+    strongly_typed: bool
+    workspace_gb: float
+    onnx_full_sha256: str
+    act_scales_sha256: str | None = None
+    extra: dict = field(default_factory=dict)
+
+
+def _normalise_profiles(profiles) -> dict:
+    out = {}
+    for name, shapes in profiles.items():
+        shapes = [[int(d) for d in s] for s in shapes]
+        if len(shapes) != 3 or len({len(s) for s in shapes}) != 1:
+            raise ValueError(f"profile {name!r}: need (min, opt, max) shapes of one rank, got {shapes}")
+        lo, opt, hi = shapes
+        if any(not (a <= b <= c) for a, b, c in zip(lo, opt, hi)) or min(lo) < 1:
+            raise ValueError(f"profile {name!r}: need 1 <= min <= opt <= max per dim, got {shapes}")
+        out[str(name)] = shapes
+    if not out:
+        raise ValueError("profiles is empty")
+    return out
+
+
+def build_engine_from_onnx(
+    onnx_path,
+    engine_dir,
+    *,
+    profiles: dict,
+    strongly_typed: bool = True,
+    workspace_gb: float = 16,
+    timing_cache=None,
+    recipe: str,
+    extra_metadata: dict | None = None,
+    act_scales_path=None,
+    force_rebuild: bool = False,
+    env: dict | None = None,
+) -> Path:
+    """Compile a producer-built ONNX (``<name>.onnx`` + ``.data``) into
+    ``engine_dir/<engine_dir name>.trt`` with one optimization profile
+    ``{input: (min, opt, max)}`` and write the metadata sidecar (recipe,
+    full ONNX sha256 incl. external data, act-scales sha256, profiles,
+    TRT version, GPU). Skips when an engine with matching metadata exists.
+    ``env``: the build-environment dict (default: :func:`_preflight`).
+    Returns the engine path."""
+    from .sa3_export import onnx_sha256
+
+    onnx_path = Path(onnx_path)
+    engine_dir = Path(engine_dir)
+    if not onnx_path.is_file():
+        raise FileNotFoundError(onnx_path)
+    name = engine_dir.name
+    engine_path = engine_dir / f"{name}.trt"
+    act_sha = None
+    if act_scales_path is not None:
+        act_sha = _sha256_file(str(act_scales_path))
+    extra = json.loads(json.dumps(dict(extra_metadata or {}), default=str, sort_keys=True))
+    if act_sha is None and isinstance(extra.get("act_scales_sha256"), str):
+        act_sha = extra["act_scales_sha256"]
+    config = SA3OnnxEngineBuildConfig(
+        recipe=str(recipe), profiles=_normalise_profiles(profiles), strongly_typed=bool(strongly_typed),
+        workspace_gb=float(workspace_gb), onnx_full_sha256=onnx_sha256(onnx_path),
+        act_scales_sha256=act_sha, extra=extra,
+    )
+    if env is None:
+        env = _preflight("cuda")
+    expected = _expected_metadata(component="sa3_onnx_engine", onnx_path=str(onnx_path), config=config, env=env)
+    if not force_rebuild and engine_path.exists():
+        matches, reason = _metadata_matches(str(engine_path), expected)
+        if matches:
+            logger.info("SKIP {} ({})", name, reason)
+            return engine_path
+        logger.info("REBUILD {} ({})", name, reason)
+    logger.info("SA3 ONNX TRT BUILD: {} recipe={} ({}, workspace {:.0f} GB) from {}", name, recipe,
+                "STRONGLY_TYPED" if strongly_typed else "weakly typed", workspace_gb, onnx_path)
+    t0 = time.time()
+    _build_strongly_typed_engine(
+        onnx_path=str(onnx_path), engine_path=str(engine_path), workspace_gb=float(workspace_gb),
+        profile_shapes={k: tuple(tuple(s) for s in v) for k, v in config.profiles.items()},
+        strongly_typed=bool(strongly_typed), timing_cache=str(timing_cache) if timing_cache else None,
+    )
+    _write_metadata(engine_path=str(engine_path), expected=expected, env=env)
+    logger.info("Built {} in {:.0f}s", name, time.time() - t0)
+    return engine_path
 
 
 def _resolve_dit_profiles(args) -> tuple:
