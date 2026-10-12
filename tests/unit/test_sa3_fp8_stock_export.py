@@ -198,3 +198,52 @@ def test_one_step_required():
         ex.parse_args([])
     with pytest.raises(SystemExit):
         ex.parse_args(["--export", "--build"])
+
+
+def test_signature_defaults_to_hf_and_picks_its_onnx_paths():
+    a = ex.parse_args(["--export"])
+    assert a.signature == "hf"
+    assert a.fp16_onnx == ex.DEFAULT_HF_FP16_ONNX and a.fp8_onnx == ex.DEFAULT_HF_FP8_ONNX
+    b = ex.parse_args(["--export", "--signature", "bare"])
+    assert b.fp16_onnx == ex.DEFAULT_FP16_ONNX and b.fp8_onnx == ex.DEFAULT_FP8_ONNX
+    c = ex.parse_args(["--graft", "--fp8-onnx", "x.onnx"])
+    assert c.fp8_onnx == Path("x.onnx") and c.fp16_onnx == ex.DEFAULT_HF_FP16_ONNX
+
+
+def test_hf_example_inputs_follow_the_engine_contract():
+    b = _bundle()
+    b["cross_attn_cond"] = torch.randn(1, 257, 768)
+    b["cross_attn_mask"] = torch.ones(1, 257, dtype=torch.bool)
+    b["local_add_cond"] = torch.zeros(1, 257, 12)
+    inp = ex.hf_example_inputs(b, 13.0, 256, 12)
+    assert list(inp) == ["x", "t", "t5_hidden", "t5_mask", "seconds_total", "local_add_cond"]
+    assert {k: tuple(v.shape) for k, v in inp.items()} == {
+        "x": (1, 256, 12), "t": (1,), "t5_hidden": (1, 256, 768), "t5_mask": (1, 256),
+        "seconds_total": (1,), "local_add_cond": (1, 257, 12)}
+    assert all(v.dtype == torch.float32 for v in inp.values())
+
+
+def test_build_profile_and_named_engine_dir(monkeypatch, tmp_path):
+    fp8 = tmp_path / "b.onnx"
+    _tiny_onnx(fp8)
+    scales = tmp_path / "s.json"
+    scales.write_text(json.dumps({"model.transformer": 3.5}))
+    calls = []
+
+    def build_engine_from_onnx(onnx_path, engine_dir, **kw):
+        calls.append((onnx_path, engine_dir, kw))
+        return engine_dir / f"{engine_dir.name}.trt"
+
+    _install(monkeypatch, "acestep.engine.trt.sa3_build",
+             build_engine_from_onnx=build_engine_from_onnx)
+    dest = tmp_path / "trt_engines" / "sa3_m_dit_fp8_l1_324_324"
+    args = ex.parse_args(["--build", "--only", "fp8", "--fp8-onnx", str(fp8), "--scales", str(scales),
+                          "--profile", "1", "324", "324", "--engine-dir", str(dest)])
+    assert ex.cmd_build(args) == 0
+    ((_, engine_dir, kw),) = calls
+    assert engine_dir == dest
+    assert kw["profiles"]["x"] == ((1, 4, 1), (1, 4, 324), (1, 4, 324))
+    assert kw["extra_metadata"]["profile"] == [1, 324, 324]
+    assert kw["extra_metadata"]["signature"] == "hf"
+    with pytest.raises(SystemExit):
+        ex.build_jobs(ex.parse_args(["--build", "--engine-dir", str(dest)]))

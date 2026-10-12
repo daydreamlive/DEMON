@@ -32,6 +32,13 @@ The saved graph is Kahn topo-sorted, written with all tensors in one
 ``<name>.onnx.data`` file and reloaded to assert every initializer survived
 byte-identical (onnx external-data saves can silently revert tensors).
 
+:func:`export_hf_signature` exports :class:`HFSignatureDiT`: the trunk behind
+Stability's HF engine signature (``x, t, t5_hidden, t5_mask, seconds_total,
+local_add_cond -> velocity``) with the conditioner tail (learned T5 padding
+embedding, seconds_total number embedder as trailing cross-attn token and
+global cond) in-graph and fp32, so the engine is a drop-in for
+:class:`acestep.engine.sa3_trt.SA3TRTDit`.
+
 The graph helpers (:func:`topo_sort`, :func:`linear_sites`,
 :func:`save_onnx_checked`, :func:`onnx_sha256`) are shared with the graft.
 """
@@ -704,13 +711,157 @@ def export_fp16mixed(
     return report
 
 
+# ---------------------------------------------------------------------------
+# HF engine signature (drop-in for acestep.engine.sa3_trt.SA3TRTDit)
+# ---------------------------------------------------------------------------
+
+#: Input names, in order, of Stability's HF ``onnx/sa3-m/dit_{fp16,fp8}.onnx``
+#: (read at source 2026-10-12): ``x`` [1,256,L], ``t`` [1], ``t5_hidden``
+#: [1,256,768], ``t5_mask`` [1,256], ``seconds_total`` [1],
+#: ``local_add_cond`` [1,257,L], all fp32; output ``velocity`` [1,256,L] fp32.
+#: :class:`~acestep.engine.sa3_trt.SA3TRTDit` binds exactly these names.
+HF_SIGNATURE_INPUTS = ("x", "t", "t5_hidden", "t5_mask", "seconds_total", "local_add_cond")
+HF_SIGNATURE_OUTPUT = "velocity"
+#: L is the only dynamic axis (x, local_add_cond, velocity); batch is fixed 1.
+HF_SIGNATURE_DYNAMIC_AXES = {"x": {2: "L"}, "local_add_cond": {2: "L"}, "velocity": {2: "L"}}
+#: Module attribute holding the baked conditioner tail. Its Linear (the
+#: seconds_total number embedder, 256 -> 768) is weight-backed and eligible
+#: by size, but HF keeps that Gemm fp32 and unquantized, so the fp8 exclude
+#: sets carry ``cond_tail.*`` (:data:`acestep.engine.trt.sa3_fp8.HF_MEDIUM_EXCLUDE`).
+HF_TAIL_ATTR = "cond_tail"
+
+
+class ConditionerTail(nn.Module):
+    """The SA3 conditioner tail HF bakes in-graph: the prompt block's learned
+    padding embedding (``Where(t5_mask, t5_hidden, padding_embedding)``) and
+    the ``seconds_total`` number conditioner (clamp to ``[min_val, max_val]``,
+    normalise, ExpoFourierFeatures, Linear), whose embedding is appended as
+    the trailing cross-attention token and is also the global cond. The
+    tail always runs in fp32 (HF: fp32 Where, Fourier and Gemm)."""
+
+    def __init__(self, padding_embedding: torch.Tensor | None, seconds_embedder: nn.Module,
+                 *, min_val: float, max_val: float, cond_dim: int):
+        super().__init__()
+        if padding_embedding is None:            # padding_mode "zero"
+            padding_embedding = torch.zeros(cond_dim)
+        self.padding_embedding = nn.Parameter(padding_embedding.detach().clone(), requires_grad=False)
+        self.seconds = seconds_embedder
+        self.min_val = float(min_val)
+        self.max_val = float(max_val)
+
+    def forward(self, t5_hidden, t5_mask, seconds_total):
+        keep = t5_mask.unsqueeze(-1).bool()
+        prompt = torch.where(keep, t5_hidden.float(), self.padding_embedding.float())
+        sec = seconds_total.float().clamp(self.min_val, self.max_val)
+        sec = (sec - self.min_val) / (self.max_val - self.min_val)
+        emb = _fp32_forward(self.seconds)(sec).float()
+        emb = emb.reshape(sec.shape[0], -1)                    # [B, cond_dim]
+        cross = torch.cat([prompt, emb.unsqueeze(1)], dim=1)  # [B, T5 + 1, cond_dim]
+        return cross, emb
+
+
+def conditioner_tail_from(conditioner: nn.Module, *, prompt_key: str = "prompt",
+                          seconds_key: str = "seconds_total") -> ConditionerTail:
+    """:class:`ConditionerTail` around a vendored ``MultiConditioner``
+    (``sam.model.conditioner``): the T5Gemma conditioner's padding mode
+    (``learned`` -> its ``padding_embedding``; ``zero`` -> zeros) and the
+    NumberConditioner's embedder and range. ``none`` padding is refused (HF
+    bakes a Where)."""
+    convs = conditioner.conditioners
+    prompt, seconds = convs[prompt_key], convs[seconds_key]
+    mode = getattr(prompt.padding_mode, "value", prompt.padding_mode)
+    if mode == "learned":
+        pad = prompt.padding_embedding
+    elif mode == "zero":
+        pad = None
+    else:
+        raise ValueError(f"prompt padding_mode {mode!r} has no HF-signature tail")
+    return ConditionerTail(pad, seconds.embedder, min_val=seconds.min_val, max_val=seconds.max_val,
+                           cond_dim=int(prompt.output_dim))
+
+
+class HFSignatureDiT(nn.Module):
+    """Positional ``(x, t, t5_hidden, t5_mask, seconds_total, local_add_cond)
+    -> velocity`` module around a ``DiTWrapper``-like ``dit`` (the HF engine
+    contract :class:`~acestep.engine.sa3_trt.SA3TRTDit` binds).
+
+    ``dit.model`` is registered as ``self.model`` (``dit`` itself stays out
+    of the module tree), so trunk parameter names, hence ONNX initializer
+    names, equal calibration keys taken on ``dit``
+    (``model.transformer.layers.N.attn.to_q``). The tail lives under
+    :data:`HF_TAIL_ATTR`. No padding mask (HF treats every frame as valid)
+    and no cross-attention mask (the vendored DiT disables it); ``t`` stays
+    fp32 (the DiT casts it to fp32 itself)."""
+
+    def __init__(self, dit: nn.Module, tail: ConditionerTail, constants: Mapping | None = None):
+        super().__init__()
+        self.model = dit.model
+        object.__setattr__(self, "_dit", dit)
+        setattr(self, HF_TAIL_ATTR, tail)
+        self.constants = dict(constants if constants is not None else {"cfg_scale": 1.0, "batch_cfg": True})
+
+    def forward(self, x, t, t5_hidden, t5_mask, seconds_total, local_add_cond):
+        cross, glob = getattr(self, HF_TAIL_ATTR)(t5_hidden, t5_mask, seconds_total)
+        dtype = next(self.model.parameters()).dtype
+        v = type(self._dit).forward(
+            self._dit, x.to(dtype), t.float(), cross_attn_cond=cross.to(dtype),
+            global_cond=glob.to(dtype), local_add_cond=local_add_cond.to(dtype), **self.constants)
+        return v.float()
+
+
+def hf_inputs_from_bundle(bundle: Mapping, seconds_total: float, x: torch.Tensor, t: torch.Tensor,
+                          *, t5_tokens: int = 256) -> dict[str, torch.Tensor]:
+    """HF-signature inputs from a torch cond bundle, staged exactly as
+    :meth:`acestep.engine.sa3_trt.SA3TRTDit._stage_bundle` does: drop the
+    trailing seconds token from ``cross_attn_cond``/``cross_attn_mask``,
+    zero-pad to ``t5_tokens``, fp32; ``local_add_cond`` zeros [1,257,L] when
+    the bundle has none."""
+    ca = bundle["cross_attn_cond"]
+    mask = bundle["cross_attn_mask"].reshape(1, -1)
+    n = ca.shape[1]
+    if n == t5_tokens + 1:
+        ca, mask, n = ca[:, :t5_tokens], mask[:, :t5_tokens], t5_tokens
+    if n > t5_tokens:
+        raise ValueError(f"cond has {n} tokens > {t5_tokens}")
+    dev, L = x.device, x.shape[-1]
+    t5_hidden = torch.zeros(1, t5_tokens, ca.shape[-1], dtype=torch.float32, device=dev)
+    t5_hidden[:, :n] = ca.float().to(dev)
+    t5_mask = torch.zeros(1, t5_tokens, dtype=torch.float32, device=dev)
+    t5_mask[:, :n] = mask.float().to(dev)
+    lac = bundle.get("local_add_cond")
+    if lac is None:
+        local = torch.zeros(1, 257, L, dtype=torch.float32, device=dev)
+    elif lac.shape[-1] != L:
+        raise ValueError(f"local_add_cond L {lac.shape[-1]} != x L {L}")
+    else:
+        local = lac.float().to(dev)
+    return {"x": x.float(), "t": t.float().reshape(1), "t5_hidden": t5_hidden, "t5_mask": t5_mask,
+            "seconds_total": torch.full((1,), float(seconds_total), dtype=torch.float32, device=dev),
+            "local_add_cond": local}
+
+
+def export_hf_signature(dit: nn.Module, conditioner: nn.Module, example_inputs: Mapping[str, torch.Tensor],
+                        *, out_onnx: str | os.PathLike[str], constants: Mapping | None = None,
+                        islands: str | Iterable[str] = "upstream", **kw) -> ExportReport:
+    """:func:`export_fp16mixed` of :class:`HFSignatureDiT` (conditioner tail
+    from ``conditioner``) with the HF input names and L as the only dynamic
+    axis. ``example_inputs`` is keyed by :data:`HF_SIGNATURE_INPUTS`
+    (:func:`hf_inputs_from_bundle`)."""
+    wrapper = HFSignatureDiT(dit, conditioner_tail_from(conditioner), constants).eval()
+    return export_fp16mixed(
+        wrapper, example_inputs, input_names=HF_SIGNATURE_INPUTS, output_names=[HF_SIGNATURE_OUTPUT],
+        dynamic_axes=HF_SIGNATURE_DYNAMIC_AXES, out_onnx=out_onnx, islands=islands, **kw)
+
+
 def match_patterns(path: str, patterns: Iterable[str]) -> bool:
     """fnmatch ``path`` against ``patterns`` (exact names match too)."""
     return any(path == p or fnmatch.fnmatchcase(path, p) for p in patterns)
 
 
 __all__ = [
-    "ExportReport", "ISLANDS", "ISLAND_SETS", "LinearSite", "export_fp16mixed", "island_nodes_of",
+    "ConditionerTail", "ExportReport", "HFSignatureDiT", "HF_SIGNATURE_DYNAMIC_AXES",
+    "HF_SIGNATURE_INPUTS", "HF_SIGNATURE_OUTPUT", "HF_TAIL_ATTR", "ISLANDS", "conditioner_tail_from",
+    "export_hf_signature", "hf_inputs_from_bundle", "ISLAND_SETS", "LinearSite", "export_fp16mixed", "island_nodes_of",
     "island_patches", "is_topologically_sorted", "linear_sites", "load_onnx", "match_patterns", "onnx_sha256",
     "resolve_islands", "save_onnx_checked", "topo_sort",
 ]

@@ -5,19 +5,33 @@ Three sub-commands, run one at a time by the GPU conductor:
 ``--export``  loads the stock medium DiT through ``SA3Context`` (the same
               module root as ``sa3_fp8_stock_calib.py``: ``sam.model.model``),
               builds example inputs from a production cond bundle at the demo
-              window (10 s + 3 s wrap = L=140) and calls
-              ``acestep.engine.trt.sa3_export.export_fp16mixed`` ->
-              ``H/onnx/stock_fp16mixed.onnx``.
+              window (10 s + 3 s wrap = L=140) and exports it fp16mixed-style.
+              ``--signature hf`` (default): the HF engine signature DEMON's
+              runtime binds (``acestep.engine.sa3_trt.SA3TRTDit``), via
+              ``sa3_export.export_hf_signature`` -> ``H/onnx/stock_hf_fp16mixed.onnx``.
+              ``--signature bare``: the bare trunk signature below, via
+              ``export_fp16mixed`` -> ``H/onnx/stock_fp16mixed.onnx`` (kept to
+              reproduce the L=140 proof engines; the runtime cannot load it).
 ``--graft``   ``acestep.engine.trt.sa3_fp8.graft_fp8`` with
               ``H/calib/stock_act_scales.json`` -> ``H/onnx/stock_fp8.onnx``
               with ``exclude=DEMON_MEDIUM_EXCLUDE`` (the HF medium set minus
               ``to_local_embed.0``: exactly 198 Linears; HF's engine has 222).
 ``--build``   ``acestep.engine.trt.sa3_build.build_engine_from_onnx`` for both
-              graphs at profile (1,140,140) into the fixed engine dirs
-              ``H/engines/stock/sa3_m_dit_ours_{fp16mixed,fp8}_l1_140_140``.
-              The only GPU-heavy step (needs an idle GPU).
+              graphs at ``--profile`` (default 1 140 140) into the fixed engine
+              dirs ``H/engines/stock/sa3_m_dit_ours_{fp16mixed,fp8}_l1_140_140``,
+              or with ``--only`` into ``--engine-dir`` (any name, e.g. the
+              runtime's ``sa3_m_dit_fp8_l1_324_324``). The only GPU-heavy step
+              (needs an idle GPU).
 
-Graph I/O (what ``sa3_fp8_stock_proof.py`` binds by name): inputs ``x``
+HF signature I/O: ``x`` [1,256,L], ``t`` [1], ``t5_hidden`` [1,256,768],
+``t5_mask`` [1,256], ``seconds_total`` [1], ``local_add_cond`` [1,257,L], all
+fp32 -> ``velocity`` [1,256,L] fp32; the conditioner tail (learned T5 padding
+embedding, seconds_total number embedder appended as the trailing cross-attn
+token and used as global cond) is in-graph, kept fp32 and never quantized
+(the fp8 exclude sets carry ``cond_tail.*``). Trunk weight names are the same
+as the bare export's, so the same calibration JSON grafts both.
+
+Bare graph I/O (what ``sa3_fp8_stock_proof.py`` also binds by name): inputs ``x``
 [1,256,L] fp32, ``t`` [1] fp32, then the cond-bundle tensors among
 ``cross_attn_cond, cross_attn_mask, global_cond, padding_mask,
 local_add_cond`` that the bundle actually carries; one output ``velocity``
@@ -45,6 +59,9 @@ if str(REPO) not in sys.path:
 H = Path(r"D:\hot\DEMON\musetimbre\fp8_2026-10-12")
 DEFAULT_FP16_ONNX = H / "onnx" / "stock_fp16mixed.onnx"
 DEFAULT_FP8_ONNX = H / "onnx" / "stock_fp8.onnx"
+DEFAULT_HF_FP16_ONNX = H / "onnx" / "stock_hf_fp16mixed.onnx"
+DEFAULT_HF_FP8_ONNX = H / "onnx" / "stock_hf_fp8.onnx"
+SIGNATURES = ("hf", "bare")
 DEFAULT_SCALES = H / "calib" / "stock_act_scales.json"
 ENGINE_ROOT = H / "engines" / "stock"
 PROFILE = (1, 140, 140)
@@ -184,6 +201,8 @@ def cmd_export(args) -> int:
     if L != DEMO_LATENTS:
         raise SystemExit(f"window L={L}, expected {DEMO_LATENTS}")
     bundle = cond.cond_bundle
+    if args.signature == "hf":
+        return _export_hf(args, context, cond)
     ex, input_names, dyn = export_spec(bundle, context.latent_channels, L,
                                        device=context.device)
     dropped = [n for n in COND_INPUTS if n not in input_names]
@@ -200,6 +219,44 @@ def cmd_export(args) -> int:
     rd = _report_dict(report)
     rd.update({"input_names_requested": input_names, "absent_cond_inputs": dropped,
                "latent_frames": L, "prompt": EXPORT_PROMPT, "module_root": "sam.model.model"})
+    side = args.fp16_onnx.with_suffix(".export.json")
+    side.write_text(json.dumps(rd, indent=2), encoding="utf-8")
+    print(f"[export] {args.fp16_onnx} ({side.name})", flush=True)
+    return 0
+
+
+def hf_example_inputs(bundle: dict, seconds_total: float, latent_channels: int, latent_frames: int,
+                      device="cpu") -> dict:
+    """HF-signature example inputs staged like ``SA3TRTDit._stage_bundle``."""
+    import torch
+
+    from acestep.engine.trt.sa3_export import hf_inputs_from_bundle
+
+    x = torch.randn(1, latent_channels, latent_frames, device=device)
+    t = torch.full((1,), 0.7, device=device)
+    return hf_inputs_from_bundle(bundle, seconds_total, x, t)
+
+
+def _export_hf(args, context, cond) -> int:
+    import torch
+
+    from acestep.engine.trt.sa3_export import HF_SIGNATURE_INPUTS, export_hf_signature
+
+    bundle = cond.cond_bundle
+    L = int(cond.latent_frames)
+    ex = hf_example_inputs(bundle, float(cond.seconds_total), context.latent_channels, L,
+                           device=context.device)
+    constants = bundle_constants(bundle)
+    print(f"[export] signature=hf inputs={list(HF_SIGNATURE_INPUTS)} seconds_total={cond.seconds_total} "
+          f"constants={sorted(constants)}", flush=True)
+    args.fp16_onnx.parent.mkdir(parents=True, exist_ok=True)
+    with torch.no_grad():
+        report = export_hf_signature(context.dit, context.sam.model.conditioner, ex,
+                                     out_onnx=args.fp16_onnx, constants=constants)
+    rd = _report_dict(report)
+    rd.update({"signature": "hf", "latent_frames": L, "prompt": EXPORT_PROMPT,
+               "seconds_total": float(cond.seconds_total), "module_root": "sam.model.model",
+               "tail": "sam.model.conditioner (prompt padding_embedding, seconds_total embedder)"})
     side = args.fp16_onnx.with_suffix(".export.json")
     side.write_text(json.dumps(rd, indent=2), encoding="utf-8")
     print(f"[export] {args.fp16_onnx} ({side.name})", flush=True)
@@ -268,19 +325,29 @@ def onnx_profiles(onnx_path: Path, profile: tuple[int, int, int]) -> dict:
 
 
 def build_jobs(args) -> list[dict]:
+    profile = tuple(getattr(args, "profile", None) or PROFILE)
+    engine_dir = getattr(args, "engine_dir", None)
+    if engine_dir is not None and not args.only:
+        raise SystemExit("--engine-dir names one engine: pass --only fp16mixed|fp8 with it")
+    tag = f"l{profile[0]}_{profile[1]}_{profile[2]}"
+    signature = getattr(args, "signature", "bare")
     jobs = []
-    for which, onnx_path, name, recipe in (
-        ("fp16mixed", args.fp16_onnx, ENGINE_FP16MIXED, "demon_fp16mixed_export"),
-        ("fp8", args.fp8_onnx, ENGINE_FP8, "demon_fp8_graft"),
+    for which, onnx_path, recipe in (
+        ("fp16mixed", args.fp16_onnx, "demon_fp16mixed_export"),
+        ("fp8", args.fp8_onnx, "demon_fp8_graft"),
     ):
         if args.only and which != args.only:
             continue
-        extra = {"arm": f"ours_{which}", "profile": list(PROFILE), "source": "stock medium"}
+        extra = {"arm": f"ours_{which}", "profile": list(profile), "source": "stock medium",
+                 "signature": signature}
         act = args.scales if which == "fp8" else None
         if act is not None and not act.is_file():
             raise SystemExit(f"{act} missing: the fp8 engine records its act-scales sha")
-        jobs.append({"which": which, "onnx": onnx_path, "engine_dir": args.engine_root / name,
-                     "recipe": recipe, "extra_metadata": extra, "act_scales_path": act})
+        out_dir = engine_dir if engine_dir is not None else (
+            args.engine_root / f"sa3_m_dit_ours_{which}_{tag}")
+        jobs.append({"which": which, "onnx": onnx_path, "engine_dir": Path(out_dir),
+                     "recipe": recipe, "extra_metadata": extra, "act_scales_path": act,
+                     "profile": profile})
     return jobs
 
 
@@ -289,7 +356,7 @@ def cmd_build(args) -> int:
     for job in build_jobs(args):
         if not job["onnx"].is_file():
             raise SystemExit(f"{job['onnx']} missing: run --export/--graft first")
-        profiles = onnx_profiles(job["onnx"], PROFILE)
+        profiles = onnx_profiles(job["onnx"], job["profile"])
         print(f"[build] {job['engine_dir'].name} from {job['onnx'].name} profiles={profiles}",
               flush=True)
         job["engine_dir"].mkdir(parents=True, exist_ok=True)
@@ -308,8 +375,17 @@ def parse_args(argv: Sequence[str] | None = None):
     step.add_argument("--export", action="store_true")
     step.add_argument("--graft", action="store_true")
     step.add_argument("--build", action="store_true")
-    ap.add_argument("--fp16-onnx", type=Path, default=DEFAULT_FP16_ONNX)
-    ap.add_argument("--fp8-onnx", type=Path, default=DEFAULT_FP8_ONNX)
+    ap.add_argument("--signature", choices=SIGNATURES, default="hf",
+                    help="hf (default): the engine signature DEMON's runtime binds; "
+                         "bare: x,t,cross_attn_cond,... (the L=140 proof engines)")
+    ap.add_argument("--fp16-onnx", type=Path, default=None,
+                    help="default H/onnx/stock_hf_fp16mixed.onnx (hf) or stock_fp16mixed.onnx (bare)")
+    ap.add_argument("--fp8-onnx", type=Path, default=None,
+                    help="default H/onnx/stock_hf_fp8.onnx (hf) or stock_fp8.onnx (bare)")
+    ap.add_argument("--profile", type=int, nargs=3, metavar=("MIN", "OPT", "MAX"), default=list(PROFILE),
+                    help="--build latent-frame profile for the dynamic L axis")
+    ap.add_argument("--engine-dir", type=Path, default=None,
+                    help="--build into this engine dir (its name is the engine name; needs --only)")
     ap.add_argument("--scales", type=Path, default=DEFAULT_SCALES)
     ap.add_argument("--engine-root", type=Path, default=ENGINE_ROOT)
     ap.add_argument("--only", choices=("fp16mixed", "fp8"), default=None,
@@ -318,7 +394,13 @@ def parse_args(argv: Sequence[str] | None = None):
     ap.add_argument("--workspace-gb", type=float, default=16.0)
     ap.add_argument("--timing-cache", type=Path, default=None)
     ap.add_argument("--device", default="cuda")
-    return ap.parse_args(argv)
+    args = ap.parse_args(argv)
+    hf = args.signature == "hf"
+    if args.fp16_onnx is None:
+        args.fp16_onnx = DEFAULT_HF_FP16_ONNX if hf else DEFAULT_FP16_ONNX
+    if args.fp8_onnx is None:
+        args.fp8_onnx = DEFAULT_HF_FP8_ONNX if hf else DEFAULT_FP8_ONNX
+    return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:

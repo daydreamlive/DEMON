@@ -19,7 +19,8 @@ Linear with no scale is an error unless ``exclude`` names it.
 Stock medium reference (Stability's HF ``onnx/sa3-m/dit_fp8.onnx``, read
 2026-10-12): 222 fp8 Linears = every Linear with min dim >= 128 except
 ``to_timestep_embed.*`` and ``transformer.global_cond_embedder.*``
-(:data:`HF_MEDIUM_EXCLUDE`); per-channel weight scales on 220, per-tensor on 2.
+(:data:`HF_MEDIUM_EXCLUDE`, which also leaves the HF-signature conditioner
+tail ``cond_tail.*`` fp32, as HF does); per-channel weight scales on 220, per-tensor on 2.
 DEMON keeps ``to_local_embed.0`` fp16 as well (:data:`DEMON_MEDIUM_EXCLUDE`,
 198 Linears): its input is always zero in DEMON's conditioning. A 0.0
 activation scale on an included Linear is an error.
@@ -61,7 +62,11 @@ from .sa3_export import (
 E4M3_MAX = 448.0
 SCALE_FLOOR = 1e-4
 GRAFT_OPSET = 19
-HF_MEDIUM_EXCLUDE = ("*to_timestep_embed.*", "*transformer.global_cond_embedder.*")
+# ``cond_tail.*``: the conditioner tail an HF-signature export bakes in
+# (sa3_export.HFSignatureDiT). HF's dit_fp8.onnx keeps that seconds_total
+# Gemm (256 -> 768) fp32 and unquantized; it matches nothing in a bare
+# (cross_attn_cond/global_cond) export, so the counts stay 222 / 198.
+HF_MEDIUM_EXCLUDE = ("*to_timestep_embed.*", "*transformer.global_cond_embedder.*", "cond_tail.*")
 HF_MEDIUM_FP8_LINEARS = 222
 # DEMON's one deviation from the HF set: every ``to_local_embed.0`` stays
 # fp16. DEMON's conditioning feeds local_add_cond as all zeros, so those 24
