@@ -281,3 +281,17 @@ def test_calib_exits_cleanly_without_d1(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         calib._load_capture()
     assert "d1_capture" in str(exc.value)
+
+
+def test_calibration_with_real_d1_capture_round_trips(tmp_path):
+    from acestep.engine.trt.sa3_fp8 import capture_activation_scales, read_act_scales
+
+    dit = TinyDiT()
+    jobs = [{"name": "j", "bundle": {"bias": torch.zeros(1)}, "sched": SCHED,
+             "latent_shape": (1, 4, 10), "seed": 0}]
+    run = calib.make_calibration_run(dit, jobs, device="cpu", dtype=torch.float32,
+                                     log=lambda _m: None)
+    scales = capture_activation_scales(dit, run, min_features=128)
+    assert set(scales) == {"mid"}
+    out, _ = calib.write_scales(scales, tmp_path / "s.json", {})
+    assert read_act_scales(out) == pytest.approx(scales)

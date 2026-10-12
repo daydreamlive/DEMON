@@ -124,18 +124,21 @@ def test_graft_plumbing_and_count_check(monkeypatch, tmp_path):
     calls = []
 
     def graft_fp8(src, dst, act, **kw):
-        calls.append((src, dst, act))
-        return {"linears_total": 176, "linears_fp8": 176, "unmatched": [], "scale_stats": {}}
+        calls.append((src, dst, act, kw))
+        return {"linears_total": 224, "linears_fp8": 222, "unmatched": ["a", "b"], "scale_stats": {}}
 
-    _install(monkeypatch, "acestep.engine.trt.sa3_fp8", graft_fp8=graft_fp8)
+    excl = ("*to_timestep_embed.*", "*transformer.global_cond_embedder.*")
+    _install(monkeypatch, "acestep.engine.trt.sa3_fp8", graft_fp8=graft_fp8,
+             HF_MEDIUM_EXCLUDE=excl)
     out = tmp_path / "stock_fp8.onnx"
     args = ex.parse_args(["--graft", "--fp16-onnx", str(fp16), "--fp8-onnx", str(out),
                           "--scales", str(scales)])
     assert ex.cmd_graft(args) == 0
-    assert calls == [(fp16, out, {"model.transformer": 3.5})]
+    assert calls == [(fp16, out, {"model.transformer": 3.5}, {"exclude": excl})]
     side = json.loads((tmp_path / "stock_fp8.graft.json").read_text())
-    assert side["linears_fp8"] == 176 and len(side["act_scales_sha256"]) == 64
-    args.expect_linears = 175
+    assert side["linears_fp8"] == 222 and len(side["act_scales_sha256"]) == 64
+    assert side["exclude"] == list(excl)
+    args.expect_linears = 176
     with pytest.raises(SystemExit):
         ex.cmd_graft(args)
 
@@ -144,6 +147,8 @@ def test_build_plumbing_fixed_dirs(monkeypatch, tmp_path):
     fp16, fp8 = tmp_path / "a.onnx", tmp_path / "b.onnx"
     _tiny_onnx(fp16)
     _tiny_onnx(fp8)
+    scales = tmp_path / "s.json"
+    scales.write_text(json.dumps({"model.transformer": 3.5}))
     calls = []
 
     def build_engine_from_onnx(onnx_path, engine_dir, **kw):
@@ -154,7 +159,7 @@ def test_build_plumbing_fixed_dirs(monkeypatch, tmp_path):
              build_engine_from_onnx=build_engine_from_onnx)
     args = ex.parse_args(["--build", "--fp16-onnx", str(fp16), "--fp8-onnx", str(fp8),
                           "--engine-root", str(tmp_path / "eng"),
-                          "--scales", str(tmp_path / "none.json")])
+                          "--scales", str(scales)])
     assert ex.cmd_build(args) == 0
     assert [c[1].name for c in calls] == ["sa3_m_dit_ours_fp16mixed_l1_140_140",
                                          "sa3_m_dit_ours_fp8_l1_140_140"]
@@ -162,10 +167,27 @@ def test_build_plumbing_fixed_dirs(monkeypatch, tmp_path):
         assert kw["strongly_typed"] is True and kw["workspace_gb"] == 16.0
         assert kw["profiles"]["x"] == ((1, 4, 1), (1, 4, 140), (1, 4, 140))
     assert "_fp8_" in calls[1][1].name
+    assert calls[0][2]["act_scales_path"] is None and calls[1][2]["act_scales_path"] == scales
     calls.clear()
     args.only = "fp8"
     ex.cmd_build(args)
     assert len(calls) == 1 and calls[0][2]["recipe"] == "demon_fp8_graft"
+
+
+def test_real_d1_signatures_accept_driver_calls():
+    """The real D1 modules expose what the driver calls, with these kwargs."""
+    import inspect
+
+    from acestep.engine.trt import sa3_build, sa3_export, sa3_fp8
+
+    assert len(sa3_fp8.HF_MEDIUM_EXCLUDE) == 2 and sa3_fp8.HF_MEDIUM_FP8_LINEARS == ex.STOCK_LINEARS
+    inspect.signature(sa3_fp8.graft_fp8).bind("a", "b", {}, exclude=())
+    inspect.signature(sa3_fp8.capture_activation_scales).bind(None, lambda: None, min_features=128)
+    inspect.signature(sa3_export.export_fp16mixed).bind(
+        None, {}, input_names=[], output_names=["velocity"], dynamic_axes={}, out_onnx="o")
+    inspect.signature(sa3_build.build_engine_from_onnx).bind(
+        "o", "d", profiles={}, strongly_typed=True, workspace_gb=16.0, timing_cache=None,
+        recipe="r", extra_metadata={}, act_scales_path=None)
 
 
 def test_one_step_required():

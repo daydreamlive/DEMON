@@ -10,7 +10,8 @@ Three sub-commands, run one at a time by the GPU conductor:
               ``H/onnx/stock_fp16mixed.onnx``.
 ``--graft``   ``acestep.engine.trt.sa3_fp8.graft_fp8`` with
               ``H/calib/stock_act_scales.json`` -> ``H/onnx/stock_fp8.onnx``
-              (stock medium must graft exactly 176 Linears).
+              with ``exclude=HF_MEDIUM_EXCLUDE`` (the HF medium fp8 set: exactly
+              222 Linears).
 ``--build``   ``acestep.engine.trt.sa3_build.build_engine_from_onnx`` for both
               graphs at profile (1,140,140) into the fixed engine dirs
               ``H/engines/stock/sa3_m_dit_ours_{fp16mixed,fp8}_l1_140_140``.
@@ -52,7 +53,9 @@ ENGINE_FP8 = f"sa3_m_dit_ours_fp8_l{PROFILE[0]}_{PROFILE[1]}_{PROFILE[2]}"
 COND_INPUTS = ("cross_attn_cond", "cross_attn_mask", "global_cond", "padding_mask",
                "local_add_cond")
 OUTPUT_NAME = "velocity"
-STOCK_LINEARS = 176
+# The HF medium fp8 set (D1, read at source): every Linear with min dim >= 128
+# except to_timestep_embed.* and transformer.global_cond_embedder.*.
+STOCK_LINEARS = 222
 DEMO_DURATION_S = 10.0
 DEMO_LATENTS = 140
 EXPORT_PROMPT = "funky ass shit"
@@ -213,12 +216,14 @@ def load_scales(path: Path) -> dict[str, float]:
 
 def cmd_graft(args) -> int:
     graft_fp8 = _require("acestep.engine.trt.sa3_fp8", "graft_fp8", "d1_graft.ready")
+    exclude = _require("acestep.engine.trt.sa3_fp8", "HF_MEDIUM_EXCLUDE", "d1_graft.ready")
     if not args.fp16_onnx.is_file():
         raise SystemExit(f"{args.fp16_onnx} missing: run --export first")
     scales = load_scales(args.scales)
-    report = graft_fp8(args.fp16_onnx, args.fp8_onnx, scales)
+    report = graft_fp8(args.fp16_onnx, args.fp8_onnx, scales, exclude=tuple(exclude))
     rd = _report_dict(report)
     rd["act_scales_path"] = str(args.scales)
+    rd["exclude"] = list(exclude)
     rd["act_scales_sha256"] = sha256_file(args.scales)
     side = args.fp8_onnx.with_suffix(".graft.json")
     side.write_text(json.dumps(rd, indent=2), encoding="utf-8")
@@ -260,9 +265,6 @@ def onnx_profiles(onnx_path: Path, profile: tuple[int, int, int]) -> dict:
 
 
 def build_jobs(args) -> list[dict]:
-    meta = {}
-    if args.scales.is_file():
-        meta["act_scales_sha256"] = sha256_file(args.scales)
     jobs = []
     for which, onnx_path, name, recipe in (
         ("fp16mixed", args.fp16_onnx, ENGINE_FP16MIXED, "demon_fp16mixed_export"),
@@ -271,10 +273,11 @@ def build_jobs(args) -> list[dict]:
         if args.only and which != args.only:
             continue
         extra = {"arm": f"ours_{which}", "profile": list(PROFILE), "source": "stock medium"}
-        if which == "fp8":
-            extra.update(meta)
+        act = args.scales if which == "fp8" else None
+        if act is not None and not act.is_file():
+            raise SystemExit(f"{act} missing: the fp8 engine records its act-scales sha")
         jobs.append({"which": which, "onnx": onnx_path, "engine_dir": args.engine_root / name,
-                     "recipe": recipe, "extra_metadata": extra})
+                     "recipe": recipe, "extra_metadata": extra, "act_scales_path": act})
     return jobs
 
 
@@ -289,7 +292,8 @@ def cmd_build(args) -> int:
         job["engine_dir"].mkdir(parents=True, exist_ok=True)
         path = build(job["onnx"], job["engine_dir"], profiles=profiles, strongly_typed=True,
                      workspace_gb=args.workspace_gb, timing_cache=args.timing_cache,
-                     recipe=job["recipe"], extra_metadata=job["extra_metadata"])
+                     recipe=job["recipe"], extra_metadata=job["extra_metadata"],
+                     act_scales_path=job["act_scales_path"])
         print(f"[build] -> {path}", flush=True)
     return 0
 
