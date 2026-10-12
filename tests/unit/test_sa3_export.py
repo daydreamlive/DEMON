@@ -260,24 +260,72 @@ def test_topo_sort_kahn():
 
 def test_save_reload_assert_catches_corruption(tmp_path, monkeypatch):
     _, rep = export_tiny(tmp_path)
-    model = onnx.load(rep.onnx_path, load_external_data=True)
-    real_save = onnx.save_model
+    model = X.load_onnx(rep.onnx_path)
+    real_write = X._write_external_binary
 
-    def corrupting_save(m, path, *a, **kw):
-        real_save(m, path, *a, **kw)
-        data = __import__("pathlib").Path(path).parent / kw["location"]
-        raw = bytearray(data.read_bytes())
+    def corrupting_write(m, data_path, location, *a, **kw):
+        real_write(m, data_path, location, *a, **kw)
+        raw = bytearray(data_path.read_bytes())
         raw[-1] ^= 0xFF
-        data.write_bytes(bytes(raw))
+        data_path.write_bytes(bytes(raw))
 
-    monkeypatch.setattr(onnx, "save_model", corrupting_save)
+    monkeypatch.setattr(X, "_write_external_binary", corrupting_write)
     with pytest.raises(RuntimeError, match="changed on disk"):
         X.save_onnx_checked(model, tmp_path / "corrupt.onnx")
 
 
+def _ctrl_z_model():
+    """Two external-size fp16 initializers; the first ends in byte 0x1A
+    (Ctrl-Z) and is followed by another tensor: the exact layout onnx's
+    Windows text-mode writer corrupts."""
+    import numpy as np
+    from onnx import TensorProto, helper, numpy_helper
+
+    a = np.random.default_rng(0).standard_normal(1536).astype(np.float16)
+    a.view(np.uint8)[-1] = 0x1A                   # last byte = Ctrl-Z
+    a.view(np.uint8)[-2] = 0xEB
+    b = np.random.default_rng(1).standard_normal(1536).astype(np.float16)
+    ta, tb = numpy_helper.from_array(a, "a.bias"), numpy_helper.from_array(b, "b.bias")
+    node = helper.make_node("Add", ["a.bias", "b.bias"], ["y"], name="add")
+    g = helper.make_graph([node], "g", [], [helper.make_tensor_value_info("y", TensorProto.FLOAT16, [1536])],
+                          initializer=[ta, tb])
+    return helper.make_model(g, opset_imports=[helper.make_opsetid("", 17)]), a, b
+
+
+def test_save_keeps_trailing_ctrl_z_byte(tmp_path):
+    """Regression (C3, 2026-10-12): a tensor whose last byte is 0x1A must
+    survive save + reload bit-exact, and the next tensor must not shift."""
+    import numpy as np
+    from onnx import numpy_helper
+
+    model, a, b = _ctrl_z_model()
+    X.save_onnx_checked(model, tmp_path / "ctrlz.onnx")
+    back = {t.name: numpy_helper.to_array(t) for t in X.load_onnx(tmp_path / "ctrlz.onnx").graph.initializer}
+    np.testing.assert_array_equal(back["a.bias"].view(np.uint16), a.view(np.uint16))
+    np.testing.assert_array_equal(back["b.bias"].view(np.uint16), b.view(np.uint16))
+    # also through onnx's own loader (what TensorRT-side tooling and the graft see)
+    ref = {t.name: numpy_helper.to_array(t)
+           for t in onnx.load(str(tmp_path / "ctrlz.onnx"), load_external_data=True).graph.initializer}
+    np.testing.assert_array_equal(ref["a.bias"].view(np.uint16), a.view(np.uint16))
+
+
+@pytest.mark.skipif(__import__("sys").platform != "win32", reason="CRT text-mode bug is Windows-only")
+def test_onnx_native_writer_drops_trailing_ctrl_z_on_windows(tmp_path):
+    """Documents the root cause: onnx's own external-data writer loses the
+    0x1A. If this starts failing, onnx fixed it upstream."""
+    import numpy as np
+    from onnx import numpy_helper
+
+    model, a, _ = _ctrl_z_model()
+    onnx.save_model(model, str(tmp_path / "native.onnx"), save_as_external_data=True,
+                    all_tensors_to_one_file=True, location="native.onnx.data", size_threshold=1024)
+    back = {t.name: numpy_helper.to_array(t) for t in X.load_onnx(tmp_path / "native.onnx").graph.initializer}
+    assert not np.array_equal(back["a.bias"].view(np.uint16), a.view(np.uint16))
+
+
 def test_save_replaces_stale_data_file(tmp_path):
     _, rep = export_tiny(tmp_path)
-    model = onnx.load(rep.onnx_path, load_external_data=True)
+    model = X.load_onnx(rep.onnx_path)
     out = tmp_path / "again.onnx"
     (tmp_path / "again.onnx.data").write_bytes(b"\x01" * 4096 * 1024)   # stale, larger
     X.save_onnx_checked(model, out)

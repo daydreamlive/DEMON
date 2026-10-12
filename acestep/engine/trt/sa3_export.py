@@ -446,29 +446,131 @@ def onnx_sha256(path: str | os.PathLike[str]) -> str:
     return h.hexdigest()
 
 
+EXTERNAL_SIZE_THRESHOLD = 1024
+_EXTERNAL_ALIGN = 64
+
+
+def load_onnx(path: str | os.PathLike[str], *, load_external_data: bool = True):
+    """``onnx.load`` with every external tensor read by Python in binary
+    mode into ``raw_data`` and its external-data metadata cleared, so
+    nothing in memory references the old file."""
+    import onnx
+    from onnx.external_data_helper import ExternalDataInfo, uses_external_data
+
+    path = Path(path)
+    model = onnx.load(str(path), load_external_data=False)
+    if not load_external_data:
+        return model
+    handles: dict[str, object] = {}
+    try:
+        for t in _all_tensors(model):
+            if not uses_external_data(t):
+                continue
+            info = ExternalDataInfo(t)
+            loc = (path.parent / info.location).resolve()
+            if path.parent.resolve() not in loc.parents:
+                raise ValueError(f"{t.name}: external data {info.location!r} escapes {path.parent}")
+            fh = handles.get(str(loc))
+            if fh is None:
+                fh = handles[str(loc)] = open(loc, "rb")
+            fh.seek(int(info.offset or 0))
+            data = fh.read() if info.length is None else fh.read(int(info.length))
+            if info.length is not None and len(data) != int(info.length):
+                raise RuntimeError(f"{t.name}: short read {len(data)} of {info.length} from {loc}")
+            t.raw_data = data
+            t.data_location = onnx.TensorProto.DEFAULT
+            del t.external_data[:]
+    finally:
+        for fh in handles.values():
+            fh.close()
+    return model
+
+
+def _all_tensors(model):
+    from onnx.external_data_helper import _get_all_tensors
+
+    return _get_all_tensors(model)
+
+
+def _materialise(model) -> None:
+    """Pull any tensor still pointing at external data into memory (raises
+    if one cannot be resolved: a model to save must hold all its bytes)."""
+    import onnx
+    from onnx.external_data_helper import uses_external_data
+
+    for t in _all_tensors(model):
+        if uses_external_data(t):
+            if not t.HasField("raw_data"):
+                raise RuntimeError(f"{t.name}: external tensor without in-memory data; load with load_onnx()")
+            t.data_location = onnx.TensorProto.DEFAULT
+            del t.external_data[:]
+
+
+def _write_external_binary(model, data_path: Path, location: str,
+                           size_threshold: int = EXTERNAL_SIZE_THRESHOLD) -> None:
+    """Move every initializer with >= ``size_threshold`` raw bytes into
+    ``data_path`` (one file, written by Python in binary mode, 64-byte
+    aligned) and point the tensor at it.
+
+    Not onnx's writer: on Windows ``onnx.external_data_helper.
+    save_external_data`` reopens the data file per tensor with ``os.open``
+    and no ``O_BINARY``; the CRT text-mode open strips a trailing Ctrl-Z
+    (0x1A), so a tensor whose LAST byte is 0x1A loses it and the next
+    tensor is written one byte early (reproduced 2026-10-12 on the stock
+    medium: to_timestep_embed.2.bias and layers.22.to_local_embed.0.weight,
+    the same two tensors as June 2026)."""
+    import onnx
+    from onnx.external_data_helper import set_external_data
+
+    with open(data_path, "wb") as fh:
+        for t in model.graph.initializer:
+            if not t.HasField("raw_data") or len(t.raw_data) < size_threshold:
+                continue
+            pad = (-fh.tell()) % _EXTERNAL_ALIGN
+            if pad:
+                fh.write(b"\x00" * pad)
+            offset = fh.tell()
+            fh.write(t.raw_data)
+            set_external_data(t, location, offset, len(t.raw_data))
+            t.ClearField("raw_data")
+            assert t.data_location == onnx.TensorProto.EXTERNAL
+
+
+def _nonfinite_count(tensor) -> int:
+    import numpy as np
+    from onnx import TensorProto, numpy_helper
+
+    if tensor.data_type not in (TensorProto.FLOAT, TensorProto.FLOAT16, TensorProto.DOUBLE):
+        return 0
+    return int((~np.isfinite(numpy_helper.to_array(tensor))).sum())
+
+
 def save_onnx_checked(model, out_path: str | os.PathLike[str]) -> str:
-    """Save ``model`` to ``out_path`` + ``<name>.data`` (all tensors in one
-    file), replacing any previous pair atomically, then reload and assert
-    every initializer is byte-identical and the graph is topo-sorted.
-    Returns :func:`onnx_sha256` of the result. ``model``'s tensors become
-    external references (the onnx save side effect)."""
+    """Save ``model`` to ``out_path`` + ``<name>.data`` (all tensors >= 1 KiB
+    in one binary-written file, see :func:`_write_external_binary`),
+    replacing any previous pair atomically, then reload (binary,
+    :func:`load_onnx`) and assert every initializer is byte-identical, no
+    new NaN/inf appeared, and the graph is topo-sorted. Returns
+    :func:`onnx_sha256` of the result. ``model``'s large tensors become
+    external references to the new file."""
     import onnx
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if not is_topologically_sorted(model.graph):
         raise RuntimeError("save_onnx_checked: graph is not topologically sorted")
+    _materialise(model)
     expected = {t.name: tensor_sha256(t) for t in model.graph.initializer}
+    nonfinite = {t.name: _nonfinite_count(t) for t in model.graph.initializer}
     n_nodes = len(model.graph.node)
     data_name = out_path.name + ".data"
     with tempfile.TemporaryDirectory(dir=out_path.parent, prefix=".onnx_save_") as tmp:
         tmp_onnx = Path(tmp) / out_path.name
-        onnx.save_model(model, str(tmp_onnx), save_as_external_data=True, all_tensors_to_one_file=True,
-                        location=data_name, size_threshold=1024)
-        if (Path(tmp) / data_name).exists():
-            os.replace(Path(tmp) / data_name, out_path.parent / data_name)
+        _write_external_binary(model, Path(tmp) / data_name, data_name)
+        onnx.save_model(model, str(tmp_onnx), save_as_external_data=False)
+        os.replace(Path(tmp) / data_name, out_path.parent / data_name)
         os.replace(tmp_onnx, out_path)
-    reloaded = onnx.load(str(out_path), load_external_data=True)
+    reloaded = load_onnx(out_path)
     if len(reloaded.graph.node) != n_nodes:
         raise RuntimeError(f"reload: {len(reloaded.graph.node)} nodes != {n_nodes} saved")
     got = {t.name: tensor_sha256(t) for t in reloaded.graph.initializer}
@@ -477,6 +579,9 @@ def save_onnx_checked(model, out_path: str | os.PathLike[str]) -> str:
     bad = [k for k in expected if got[k] != expected[k]]
     if bad:
         raise RuntimeError(f"reload: {len(bad)} initializers changed on disk, e.g. {bad[:3]}")
+    new_nan = [t.name for t in reloaded.graph.initializer if _nonfinite_count(t) > nonfinite[t.name]]
+    if new_nan:
+        raise RuntimeError(f"reload: NaN/inf appeared in {new_nan[:3]}")
     if not is_topologically_sorted(reloaded.graph):
         raise RuntimeError("reload: graph is not topologically sorted")
     del reloaded
@@ -575,7 +680,7 @@ def export_fp16mixed(
                 opset_version=int(opset), do_constant_folding=False, dynamo=False,
                 external_data=True,
             )
-        model = onnx.load(str(raw), load_external_data=True)
+        model = load_onnx(raw)
     topo_sort(model.graph)
     sites = linear_sites(model.graph, min_features=min_features)
     unnamed = [s.init_name for s in sites if not s.init_name.endswith(".weight")]
@@ -606,6 +711,6 @@ def match_patterns(path: str, patterns: Iterable[str]) -> bool:
 
 __all__ = [
     "ExportReport", "ISLANDS", "ISLAND_SETS", "LinearSite", "export_fp16mixed", "island_nodes_of",
-    "island_patches", "is_topologically_sorted", "linear_sites", "match_patterns", "onnx_sha256",
+    "island_patches", "is_topologically_sorted", "linear_sites", "load_onnx", "match_patterns", "onnx_sha256",
     "resolve_islands", "save_onnx_checked", "topo_sort",
 ]

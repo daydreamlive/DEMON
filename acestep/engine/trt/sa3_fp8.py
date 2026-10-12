@@ -49,6 +49,7 @@ from .sa3_export import (
     DEFAULT_MIN_FEATURES,
     elem_types,
     linear_sites,
+    load_onnx,
     match_patterns,
     save_onnx_checked,
     topo_sort,
@@ -260,7 +261,7 @@ def graft_fp8(fp16_onnx: str | os.PathLike[str], out_onnx: str | os.PathLike[str
     if margin <= 0 or scale_floor <= 0:
         raise ValueError("margin and scale_floor must be > 0")
     exclude = tuple(exclude)
-    model = onnx.load(str(fp16_onnx), load_external_data=True)
+    model = load_onnx(fp16_onnx)
     _upgrade_opset(model)
     g = model.graph
     types_ = elem_types(model)
