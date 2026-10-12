@@ -7,6 +7,12 @@ configured target -- but only for callers holding a live session on this
 server (``X-Demon-Session: <ready.session_id>``). A loopback caller may
 hit ``GET /tools/<name>/health`` without the header (local health checks).
 
+Browsers on other origins (Studio posts stems straight to the pod, since
+its site rewrite caps bodies at 4.5 MB) get CORS: ``OPTIONS`` preflights
+answer 204 without a session, and every response carries
+``Access-Control-Allow-Origin: *``. The wildcard is safe because auth is
+the ``X-Demon-Session`` header, never a cookie.
+
 Configured with ``DEMON_TOOL_PROXIES`` / ``--tool-proxies``
 (``name=http://127.0.0.1:PORT,...``). Targets must be http on
 127.0.0.1/localhost.
@@ -35,10 +41,17 @@ SESSION_HEADER = "X-Demon-Session"
 _NAME_RE = re.compile(r"[a-z0-9-]{1,32}")
 _LOCAL_HOSTS = {"127.0.0.1", "localhost"}
 _LOOPBACK_CLIENTS = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
-_TOOL_PREFIXES = (b"GET /tools/", b"POST /tools/")
+_TOOL_PREFIXES = (b"GET /tools/", b"POST /tools/", b"OPTIONS /tools/")
 CONNECT_TIMEOUT_S = 5.0
 HEALTH_POLL_S = 10.0
 HEALTH_FRESH_S = 30.0
+_CORS_HEADERS = (("Access-Control-Allow-Origin", "*"),)
+_PREFLIGHT_HEADERS = (
+    *_CORS_HEADERS,
+    ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
+    ("Access-Control-Allow-Headers", f"Content-Type, {SESSION_HEADER}"),
+    ("Access-Control-Max-Age", "600"),
+)
 
 # Set by configure(); module-global like the session registry.
 _proxies: dict[str, tuple[str, int]] = {}
@@ -143,14 +156,27 @@ class ToolHandler(BaseHTTPRequestHandler):
             "tool_proxy remote={} {}", self.client_address[0], fmt % args,
         )
 
+    def _cors(self, headers=_CORS_HEADERS) -> None:
+        for k, v in headers:
+            self.send_header(k, v)
+
     def _json(self, status: int, payload: dict) -> None:
         body = json.dumps(payload).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self._cors()
         self.end_headers()
         self.wfile.write(body)
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        # CORS preflight: browsers never send custom headers here, so no
+        # session check -- the real request that follows is still gated.
+        self.send_response(204)
+        self._cors(_PREFLIGHT_HEADERS)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
         self._proxy()
@@ -220,6 +246,7 @@ class ToolHandler(BaseHTTPRequestHandler):
             if resp.getheader("Content-Length"):
                 self.send_header("Content-Length", resp.getheader("Content-Length"))
             self.send_header("Cache-Control", "no-store")
+            self._cors()
             self.end_headers()
             shutil.copyfileobj(resp, self.wfile, 1 << 20)
         except socket.timeout:

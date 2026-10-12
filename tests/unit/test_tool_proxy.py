@@ -137,6 +137,45 @@ def test_other_routes_still_reach_websockets(env):
     assert _req(env, "GET", "/api/server-info")[2] == b"ws"
 
 
+def _headers(port, method, path, body=None, headers=None):
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    c.request(method, path, body=body, headers=headers or {})
+    r = c.getresponse()
+    r.read()
+    c.close()
+    return r.status, {k.lower(): v for k, v in r.getheaders()}
+
+
+def test_preflight_204_without_session(env):
+    status, h = _headers(env, "OPTIONS", "/tools/echo/autogain", headers={
+        "Origin": "https://labs.example",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type, x-demon-session",
+    })
+    assert status == 204
+    assert h["access-control-allow-origin"] == "*"
+    assert h["access-control-allow-methods"] == "GET, POST, OPTIONS"
+    assert h["access-control-allow-headers"] == "Content-Type, X-Demon-Session"
+    assert h["access-control-max-age"] == "600"
+    assert h["content-length"] == "0"
+
+
+def test_responses_carry_acao(env):
+    status, h = _headers(env, "POST", "/tools/echo/x", b"{}")
+    assert status == 401 and h["access-control-allow-origin"] == "*"
+    status, h = _headers(env, "POST", "/tools/echo/x", b"{}", SID)
+    assert status == 201 and h["access-control-allow-origin"] == "*"
+    status, h = _headers(env, "GET", "/tools/echo/health")
+    assert status == 200 and h["access-control-allow-origin"] == "*"
+
+
+def test_is_tool_request_heads():
+    assert tool_proxy.is_tool_request(b"OPTIONS /tools/echo/x HTTP/1.1")
+    assert tool_proxy.is_tool_request(b"POST /tools/echo/x HTTP/1.1")
+    assert not tool_proxy.is_tool_request(b"OPTIONS /api/x HTTP/1.1")
+    assert not tool_proxy.is_tool_request(b"GET / HTTP/1.1")
+
+
 @pytest.mark.parametrize("spec", [
     "a=http://10.0.0.1:1330", "a=https://127.0.0.1:1330",
     "a=http://example.com:80", "a=http://127.0.0.1.evil.com:1",
