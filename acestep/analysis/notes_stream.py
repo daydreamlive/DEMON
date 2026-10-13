@@ -8,6 +8,17 @@ start, with the tie prologue for notes sounding at the window start,
 the same thing ``TranscriptionModel.transcribe`` does across chunks), so
 the model only generates the tokens past what is already settled.
 
+The ledger may force a window's prologue only once it has heard the
+model there: the model opens every window cut mid-music with a tie
+section naming the notes already sounding, and forcing an empty one
+contradicts the audio (the model answers EOS at once). So the first hop
+of a take, a window start outside what the ledger covers, and a window
+start where the ledger holds no sounding note all send an EMPTY prompt
+and decode the whole window; the model's own tie section is adopted into
+the ledger as notes sounding since the window start (``tied_in``: never
+reported as onsets, but they get their ends and become the next hop's
+tie keys).
+
 Pure python and torch-free at import. The model sits behind a narrow
 backend (:class:`MuScriptorStreamBackend` wraps a loaded
 ``TranscriptionModel``; tests use a fake that yields scripted tokens),
@@ -44,12 +55,19 @@ WINDOW_S = 5.0
 MODEL_SR = 16000
 #: Most tokens generated past the prompt on one hop. Set from the live run.
 NEW_TOKEN_CAP = 256
+#: Same, for a hop that decodes the whole window from an empty prompt (the
+#: first hop of a take, or a window start the ledger cannot speak for). A
+#: dense 5 s lofi window is ~330 tokens. Set from the live run.
+FULL_TOKEN_CAP = 1024
 #: Onsets later than ``frontier_s - GUARD_S`` are re-decoded next hop
 #: (the model has too little audio after them). Set from the live run.
 GUARD_S = 0.15
 #: Most wall time one hop may take; past it the hop's tail is discarded
 #: and the ledger kept. Set from the live run.
 HOP_WALL_BUDGET_S = 0.5
+#: Wall budget of a whole-window hop (a dense 5 s window took 1.06 s on
+#: the small model, eager). Set from the live run.
+FULL_HOP_WALL_BUDGET_S = 2.0
 #: An open note older than this is closed at the commit point (MuScriptor
 #: training shortens notes over 10 s; keeps the tie prologue bounded).
 MAX_OPEN_NOTE_S = 10.0
@@ -164,6 +182,11 @@ class WindowDecoder:
     def open_keys(self) -> list[tuple[int, int]]:
         return sorted(self._open)
 
+    @property
+    def tie_keys(self) -> list[tuple[int, int]]:
+        """``(program, pitch)`` the chunk's tie prologue declared so far."""
+        return sorted(self._tie_set)
+
     def feed(self, token: int) -> list[Action]:
         etype, value = self._vocab[token]
         if self._in_prologue:
@@ -171,7 +194,10 @@ class WindowDecoder:
                 self._in_prologue = False
                 self._velocity = None
                 ended = sorted(k for k in self._open if k not in self._tie_set)
-                self._open -= set(ended)
+                # Every declared tie is open from here on, including keys
+                # not seeded (a model-stated prologue the caller adopts), so
+                # their offsets decode.
+                self._open = set(self._tie_set)
                 return [Action("end", p, q, 0) for p, q in ended]
             if etype == "shift":
                 self._in_prologue = False
@@ -343,8 +369,9 @@ class MuScriptorStreamBackend:
                 forbidden = torch.tensor(self._tm._tokenizer.forbidden_token_ids(instruments),
                                          device=device, dtype=torch.long)
                 self._forbidden_cache[key] = forbidden
-        prompt = torch.tensor([list(prompt_ids)], device=device, dtype=torch.long)
         n_prompt = len(prompt_ids)
+        prompt = (torch.tensor([list(prompt_ids)], device=device, dtype=torch.long)
+                  if n_prompt else None)
         gen = self._tm._model.generate(
             prompt=prompt, conditions=[attrs], max_gen_len=n_prompt + int(max_new_tokens),
             use_sampling=False, temp=1.0, top_k=0, top_p=0.0, cfg_coef=1.0,
@@ -373,6 +400,7 @@ class _LedgerNote:
     is_drum: bool
     instrument: str
     hop: int  # hop that committed the onset
+    tied_in: bool = False  # adopted from a model tie section; onset = window start
 
 
 @dataclass(frozen=True)
@@ -384,6 +412,8 @@ class StreamNote:
     pitch: int
     instrument: str
     program: int
+    #: Sounding since before ``start_s`` (adopted from a tie section); not an onset.
+    tied_in: bool = False
 
     def item(self, open_end_s: Optional[float] = None) -> dict:
         """The wire ``note`` item; an open note ends at ``open_end_s``."""
@@ -428,11 +458,15 @@ class StreamingNotesDecoder:
 
     def __init__(self, backend: StreamBackend, *, new_token_cap: int = NEW_TOKEN_CAP,
                  guard_s: float = GUARD_S, hop_wall_budget_s: float = HOP_WALL_BUDGET_S,
+                 full_token_cap: int = FULL_TOKEN_CAP,
+                 full_hop_wall_budget_s: float = FULL_HOP_WALL_BUDGET_S,
                  clock: Callable[[], float] = time.perf_counter):
         self.backend = backend
         self.new_token_cap = int(new_token_cap)
         self.guard_s = float(guard_s)
         self.hop_wall_budget_s = float(hop_wall_budget_s)
+        self.full_token_cap = int(full_token_cap)
+        self.full_hop_wall_budget_s = float(full_hop_wall_budget_s)
         self._clock = clock
         self._vocab = list(backend.vocab)
         self._index = {e: i for i, e in enumerate(self._vocab)}
@@ -442,6 +476,8 @@ class StreamingNotesDecoder:
         """Forget the take: a new take, epoch or a backwards frontier."""
         self._ledger: list[_LedgerNote] = []
         self._commit_tick = 0
+        # First canvas tick the ledger is complete from (None: nothing heard).
+        self._known_from: Optional[int] = None
         self._frontier_s: Optional[float] = None
         self._hop = 0
         self._warned = False
@@ -466,16 +502,26 @@ class StreamingNotesDecoder:
                     events.append(WindowEvent(n.onset - ws_tick, True, DRUM_PROGRAM, 1, n.pitch))
                 continue
             key = (n.program, n.pitch)
-            tied = n.onset < ws_tick and (n.end is None or n.end > ws_tick)
+            started = n.onset < ws_tick or (n.tied_in and n.onset <= ws_tick)
+            tied = started and (n.end is None or n.end > ws_tick)
             if tied:
                 ties.append(key)
-            elif ws_tick <= n.onset < c_old:
+            elif not n.tied_in and ws_tick <= n.onset < c_old:
                 events.append(WindowEvent(n.onset - ws_tick, False, n.program, 1, n.pitch))
             else:
                 continue
             if n.end is not None and n.end < c_old:
                 events.append(WindowEvent(n.end - ws_tick, False, n.program, 0, n.pitch))
         return encode_window(ties, events, self._index), sorted(set(ties))
+
+    def _ledger_speaks_for(self, ws_tick: int, ties: Sequence) -> bool:
+        """Whether the ledger may force the window's prologue: it is
+        complete from before ``ws_tick`` up to the commit point and names
+        at least one note sounding there. Otherwise the model states its
+        own tie section (an empty prompt)."""
+        return (self._known_from is not None
+                and self._known_from <= ws_tick <= self._commit_tick
+                and bool(ties))
 
     # -- hop -----------------------------------------------------------
 
@@ -504,6 +550,16 @@ class StreamingNotesDecoder:
 
         t0 = self._clock()
         prompt, ties = self.build_prompt(ws_tick, c_old)
+        full = not self._ledger_speaks_for(ws_tick, ties)
+        if full:
+            # Seed the decoder with the ledger's notes sounding before the
+            # window, so the model's tie section closes the ones it omits.
+            prompt = []
+            ties = sorted({(n.program, n.pitch) for n in self._ledger
+                           if n.end is None and not n.is_drum
+                           and (n.onset < ws_tick or (n.tied_in and n.onset <= ws_tick))})
+        cap = self.full_token_cap if full else self.new_token_cap
+        budget = self.full_hop_wall_budget_s if full else self.hop_wall_budget_s
         dec = WindowDecoder(self._vocab, ties)
         for tok in prompt:
             dec.feed(tok)
@@ -511,7 +567,7 @@ class StreamingNotesDecoder:
         n_new = 0
         reason: Optional[str] = "cap"
         eos = self.backend.eos_id
-        gen = self.backend.generate(prompt, audio, int(sr), instruments, self.new_token_cap)
+        gen = self.backend.generate(prompt, audio, int(sr), instruments, cap)
         try:
             for tok in gen:
                 if tok == eos:
@@ -519,10 +575,10 @@ class StreamingNotesDecoder:
                     break
                 n_new += 1
                 actions.extend(dec.feed(int(tok)))
-                if self._clock() - t0 > self.hop_wall_budget_s:
+                if self._clock() - t0 > budget:
                     reason = "wall"
                     break
-                if n_new >= self.new_token_cap:
+                if n_new >= cap:
                     break  # no EOS within the cap
         finally:
             close = getattr(gen, "close", None)
@@ -541,8 +597,11 @@ class StreamingNotesDecoder:
                               prompt_tokens=len(prompt), new_tokens=n_new,
                               commit_s=self.commit_s, truncated=True, reason=reason)
 
-        new, closed = self._apply(actions, ws_tick, c_old, c_new)
+        adopt = [k for k in dec.tie_keys if k not in set(ties)] if full else []
+        new, closed = self._apply(actions, ws_tick, c_old, c_new, adopt)
         self._commit_tick = max(c_old, c_new)
+        if full:
+            self._known_from = ws_tick
         self._close_stale()
         self._prune(ws_tick)
         revised = tuple(self._out(n) for n in closed if n.hop < self._hop)
@@ -555,20 +614,32 @@ class StreamingNotesDecoder:
             commit_s=self.commit_s,
         )
 
-    def _apply(self, actions: list[Action], ws_tick: int, c_old: int, c_new: int):
-        """Fold one hop's generated actions into the ledger: onsets in
-        ``[c_old, c_new)`` commit, ends before ``c_new`` close open notes,
-        everything later is left for the next hop."""
+    def _apply(self, actions: list[Action], ws_tick: int, c_old: int, c_new: int,
+               adopt: Sequence[tuple[int, int]] = ()):
+        """Fold one hop's generated actions into the ledger: ``adopt``
+        (tie keys the model named that the ledger lacks) become ``tied_in``
+        notes from the window start; onsets in ``[c_old, c_new)`` commit,
+        ends before ``c_new`` close open notes, everything later is left
+        for the next hop."""
         open_by_key = {(n.program, n.pitch): n for n in self._ledger
                        if n.end is None and not n.is_drum}
         new: list[_LedgerNote] = []
         closed: list[_LedgerNote] = []
+        for program, pitch in adopt:
+            if (program, pitch) in open_by_key:
+                continue
+            n = _LedgerNote(ws_tick, None, program, pitch, False,
+                            self.backend.instrument_for_program(program), self._hop, tied_in=True)
+            open_by_key[(program, pitch)] = n
+            self._ledger.append(n)
         for a in actions:
             t = a.tick + ws_tick
             key = (a.program, a.pitch)
             if a.kind == "end":
                 n = open_by_key.get(key)
-                if n is not None and t < c_new:
+                # An end at or before a ledger note's onset belongs to an
+                # earlier note of that key re-decoded from an empty prompt.
+                if n is not None and t < c_new and (t > n.onset or n.tied_in):
                     n.end = max(t, n.onset + 1)
                     del open_by_key[key]
                     closed.append(n)
@@ -577,6 +648,12 @@ class StreamingNotesDecoder:
                     n = _LedgerNote(t, t + DRUM_TICKS, DRUM_PROGRAM, a.pitch, True, "drums", self._hop)
                     closed.append(n)
                 else:
+                    prev = open_by_key.get(key)
+                    if prev is not None:
+                        # A re-decoded window restarted a key the ledger
+                        # holds open: the old note ends here.
+                        prev.end = max(t, prev.onset + 1)
+                        closed.append(prev)
                     n = _LedgerNote(t, None, a.program, a.pitch, False,
                                     self.backend.instrument_for_program(a.program), self._hop)
                     open_by_key[key] = n
@@ -595,16 +672,17 @@ class StreamingNotesDecoder:
 
     def _out(self, n: _LedgerNote) -> StreamNote:
         return StreamNote(n.onset / FRAME_RATE, None if n.end is None else n.end / FRAME_RATE,
-                          n.pitch, n.instrument, n.program)
+                          n.pitch, n.instrument, n.program, n.tied_in)
 
     def _open_notes(self) -> tuple:
         return tuple(self._out(n) for n in self._ledger if n.end is None)
 
     def notes_in(self, lo_s: float, hi_s: float) -> tuple[list[StreamNote], list[StreamNote]]:
         """Ledger notes with onset in ``[lo_s, hi_s)``: ``(closed, open)``,
-        each sorted by ``(start_s, pitch)``."""
+        each sorted by ``(start_s, pitch)``. ``tied_in`` notes have no
+        heard onset and are never reported here."""
         lo, hi = _tick_ceil(lo_s), _tick_ceil(hi_s)
-        picked = sorted((n for n in self._ledger if lo <= n.onset < hi),
+        picked = sorted((n for n in self._ledger if not n.tied_in and lo <= n.onset < hi),
                         key=lambda n: (n.onset, n.pitch))
         closed = [self._out(n) for n in picked if n.end is not None]
         opened = [self._out(n) for n in picked if n.end is None]

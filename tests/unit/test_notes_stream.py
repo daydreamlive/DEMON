@@ -249,7 +249,9 @@ def test_ledger_carries_over_and_matches_truth(seed):
 
 
 def test_prompt_retimes_to_window_start():
-    truth = Truth([(620, 650, 0, 60, False)])
+    # The sustained note keeps a sounding note at every window start, so
+    # the ledger forces the prompt.
+    truth = Truth([(620, 650, 0, 60, False), (100, 2000, 33, 40, False)])
     lm = TruthLM(truth)
     dec = StreamingNotesDecoder(lm, new_token_cap=10_000, hop_wall_budget_s=1e9)
     _stream(dec, lm, 7.5, hop_s=0.5)
@@ -270,6 +272,63 @@ def test_tie_prologue_for_note_sounding_at_window_start():
     assert last[:3] == [("program", 33), ("pitch", 40), ("tie", 0)]
     assert ("shift", 400) in last
     assert _ledger_ticks(dec) == [(100, 700, 33, 40, False)]
+
+
+def _hop(dec, lm, ws, f):
+    lm.ws, lm.frontier = ns._tick_ceil(ws), ns._tick_floor(f)
+    return dec.step(np.zeros(int(round((f - ws) * SR)), np.float32), SR, ws, f)
+
+
+MID_MUSIC = [(100, 450, 26, 48, False), (200, 900, 33, 36, False), (350, 380, 0, 60, False)]
+
+
+def test_first_hop_sends_no_prompt_and_adopts_model_ties():
+    lm = TruthLM(Truth(MID_MUSIC))
+    dec = StreamingNotesDecoder(lm, new_token_cap=10_000, hop_wall_budget_s=1e9)
+    r = _hop(dec, lm, 3.0, 5.0)  # take starts mid-music
+    assert lm.calls[0]["prompt"] == [] and r.prompt_tokens == 0
+    tied = sorted((n.program, n.pitch, n.start_s, n.end_s) for n in dec._open_notes() + r.closed
+                  if n.tied_in)
+    assert tied == [(26, 48, 3.0, 4.5), (33, 36, 3.0, None)]
+    # Tied-in notes are not onsets; their ends are reported.
+    assert [(n.pitch, n.start_s) for n in r.new_notes] == [(60, 3.5)]
+    assert sorted(n.pitch for n in r.closed) == [48, 60]
+    closed, opened = dec.notes_in(0.0, 5.0)
+    assert [n.pitch for n in closed] == [60] and opened == []
+
+
+def test_second_hop_prompt_starts_with_adopted_tie_keys():
+    lm = TruthLM(Truth(MID_MUSIC))
+    dec = StreamingNotesDecoder(lm, new_token_cap=10_000, hop_wall_budget_s=1e9)
+    _hop(dec, lm, 3.0, 5.0)
+    r = _hop(dec, lm, 3.2, 5.2)  # TruthLM asserts the whole prompt is the settled prefix
+    head = [VOCAB[i] for i in lm.calls[1]["prompt"][:5]]
+    assert head == [("program", 26), ("pitch", 48), ("program", 33), ("pitch", 36), ("tie", 0)]
+    assert r.prompt_tokens > 5 and r.new_notes == ()
+    r = _hop(dec, lm, 4.5, 9.5)
+    assert [(n.pitch, n.start_s, n.end_s, n.tied_in) for n in r.revised] == [(36, 3.0, 9.0, True)]
+
+
+def test_window_start_with_no_sounding_note_falls_back_to_empty_prompt():
+    lm = TruthLM(Truth([(10, 40, 0, 60, False), (620, 650, 0, 62, False)]))
+    dec = StreamingNotesDecoder(lm, new_token_cap=10_000, hop_wall_budget_s=1e9)
+    _hop(dec, lm, 0.0, 1.0)
+    _hop(dec, lm, 1.5, 6.5)  # nothing sounds at 1.5 s: never force a bare tie
+    assert lm.calls[-1]["prompt"] == []
+    closed, opened = dec.notes_in(0.0, 7.0)
+    assert closed == [] and [n.start_s for n in opened] == [6.2]  # 0.1-0.4 pruned behind 1.5
+
+
+def test_window_start_past_the_ledger_falls_back_to_empty_prompt():
+    lm = TruthLM(Truth([(0, 2000, 33, 40, False)]))
+    dec = StreamingNotesDecoder(lm, new_token_cap=10_000, hop_wall_budget_s=1e9)
+    _hop(dec, lm, 0.0, 1.0)
+    _hop(dec, lm, 0.5, 1.5)
+    assert lm.calls[-1]["prompt"][:3] == [INDEX[("program", 33)], INDEX[("pitch", 40)], INDEX[("tie", 0)]]
+    _hop(dec, lm, 4.0, 9.0)  # a stall: the window starts past the commit point
+    assert lm.calls[-1]["prompt"] == []
+    # The ledger keeps its own note (not a second, adopted one).
+    assert [(n.start_s, n.tied_in) for n in dec._open_notes()] == [(0.0, False)]
 
 
 def test_guard_holds_late_onsets_for_next_hop():
@@ -318,7 +377,7 @@ def test_token_cap_discards_hop_and_keeps_ledger(caplog):
     before = _ledger_ticks(dec)
     commit = dec._commit_tick
     dec.backend = EndlessLM(truth)
-    dec.new_token_cap = 16
+    dec.new_token_cap = dec.full_token_cap = 16
     r1 = dec.step(np.zeros(2 * SR, np.float32), SR, 0.0, 2.0)
     r2 = dec.step(np.zeros(3 * SR, np.float32), SR, 0.0, 3.0)
     assert r1.truncated and r1.reason == "cap" and r1.new_tokens == 16
@@ -414,7 +473,7 @@ def test_engine_take_change_resets_ledger():
     eng.analyze(_req(0.0, 1.7, 0.0, 0.3, stream={"take": 1}))
     lm.truth = Truth([])
     res = eng.analyze(_req(0.0, 1.7, 0.0, 0.3, stream={"take": 2}))
-    assert res.items == [] and lm.calls[-1]["prompt"] == [INDEX[("tie", 0)]]
+    assert res.items == [] and lm.calls[-1]["prompt"] == []  # new take: empty prompt
 
 
 def test_engine_stream_ids_are_separate_and_options_pass_through():
@@ -426,7 +485,7 @@ def test_engine_stream_ids_are_separate_and_options_pass_through():
     eng.analyze(req)
     eng.analyze(_req(0.0, 1.7, 0.0, 0.3, stream={"take": 1, "id": "b"}))
     assert lm.calls[0]["instruments"] == ["acoustic_piano"]
-    assert lm.calls[1]["prompt"] == [INDEX[("tie", 0)]]  # b starts its own ledger
+    assert lm.calls[1]["prompt"] == []  # b starts its own ledger
     assert set(eng._streams) == {"a", "b"}
 
 
@@ -492,7 +551,26 @@ def test_real_backend_on_tiny_random_lm(pad_mode, frames):
     allowed = {INDEX[("program", 0)]}
     assert not any(VOCAB[t][0] == "program" and t not in allowed for t in out)
     # The decoder runs end to end on it.
-    dec = StreamingNotesDecoder(backend, new_token_cap=8, hop_wall_budget_s=60.0)
+    dec = StreamingNotesDecoder(backend, new_token_cap=8, full_token_cap=8,
+                                hop_wall_budget_s=60.0, full_hop_wall_budget_s=60.0)
     r = dec.step(audio, 48000, 0.0, 2.0, ["acoustic_piano"])
-    assert r.prompt_tokens == 1 and r.new_tokens <= 8
+    assert r.prompt_tokens == 0 and r.new_tokens <= 8  # first hop: empty prompt
 
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_take_starting_mid_music_matches_truth(seed):
+    truth = _random_truth(seed, 1200, n=80)
+    lm = TruthLM(truth)
+    dec = StreamingNotesDecoder(lm, new_token_cap=10_000, hop_wall_budget_s=1e9)
+    f = 3.2
+    while f <= 12.0 + 1e-9:
+        _hop(dec, lm, max(3.0, f - 5.0), f)  # TruthLM checks every forced prefix
+        f = round(f + 0.2, 6)
+    commit, last_ws = dec._commit_tick, ns._tick_ceil(7.0)
+    got = _ledger_ticks(dec)
+    for onset, end, program, pitch, drum in truth.notes:
+        if not 300 <= onset < commit or end <= last_ws:
+            continue
+        assert (onset, end if end < commit else None, program, pitch, drum) in got
+    assert all(n.onset >= 300 for n in dec._ledger)
