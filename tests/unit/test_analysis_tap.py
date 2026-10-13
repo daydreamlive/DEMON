@@ -679,3 +679,333 @@ def test_concurrent_enable_disable_is_safe():
         t.join()
     s._close_analysis_taps()
     assert not s._analysis_taps
+
+
+# ---- stateful follow (streaming engine) -------------------------------------
+
+STUB_STREAM = register(AnalyzerSpec(
+    name="stub_stream",
+    display_name="Stub streaming notes",
+    item_kind="note",
+    make_engine=lambda size, device: None,
+    probe=lambda: None,
+    sizes=("small",),
+    default_size="small",
+    stateful=True,
+    options=(AnalyzerOption("size", "str", default=None, bounds=("small",)),),
+))
+
+
+class FakeStreamEngine:
+    """Scripted stand-in for the notes engine's streaming path: a per-take
+    ledger of ``(start, pitch) -> end or None``; each hop applies the next
+    scripted step (StepResult-like: notes added, notes closed, truncated)
+    and reports the ledger's notes by onset inside the request's cell,
+    closed ones in ``items`` and sounding ones in ``open_items`` ending at
+    the frontier, like ``NotesEngine._analyze_stream``."""
+
+    def __init__(self, script=()):
+        self.script = list(script)
+        self.ledger = {}
+        self.take = None
+        self.resets = 0
+        self.requests = []
+
+    def analyze(self, request):
+        self.requests.append(request)
+        stream = request.options["stream"]
+        if stream["take"] != self.take:
+            if self.take is not None:
+                self.resets += 1
+            self.take = stream["take"]
+            self.ledger = {}
+        ws, frontier = stream["window_start_s"], stream["frontier_s"]
+        step = self.script.pop(0) if self.script else {}
+        truncated = bool(step.get("truncated"))
+        if not truncated:
+            for start, pitch, end in step.get("add", ()):
+                self.ledger[(start, pitch)] = end
+            for start, pitch, end in step.get("close", ()):
+                self.ledger[(start, pitch)] = end
+        self.ledger = {k: e for k, e in self.ledger.items() if e is None or e > ws}
+        lo, hi = request.t0_s, request.t0_s + request.span_s
+        picked = sorted((k, e) for k, e in self.ledger.items() if lo - 1e-9 <= k[0] < hi)
+
+        def item(k, end):
+            return {"start_s": k[0], "end_s": end, "pitch": k[1], "instrument": "piano"}
+
+        return AnalysisResult(
+            kind="note", range_start_s=request.t0_s, span_s=request.span_s,
+            items=[item(k, e) for k, e in picked if e is not None],
+            open_items=tuple(item(k, frontier) for k, e in picked if e is None),
+            source_epoch=request.source_epoch, revision=request.revision,
+            wall_s=0.03, truncated=truncated,
+        )
+
+
+class StreamSubmitter(StubSubmitter):
+    def __init__(self, engine):
+        super().__init__()
+        self.engine = engine
+
+    def run(self):
+        """Answer the oldest request through the fake engine."""
+        request, on_result, _on_error, _tok = self.submitted.pop(0)
+        on_result(self.engine.analyze(request))
+        return request
+
+
+class ClientStore:
+    """Python port of the client AnalysisStore's apply rules."""
+
+    def __init__(self):
+        self.items = []
+        self.epoch = None
+        self.range_seq = {}
+
+    def apply(self, u):
+        if self.epoch is not None and u.source_epoch < self.epoch:
+            return
+        if u.clear:
+            self.items, self.range_seq, self.epoch = [], {}, u.source_epoch
+        else:
+            key = f"{u.range_start_s:.4f}"
+            if key in self.range_seq and u.seq <= self.range_seq[key]:
+                return
+        t0, t1 = u.range_start_s, u.range_start_s + u.span_s
+        kept = [it for it in self.items if it["start_s"] < t0 or it["start_s"] >= t1]
+        self.items = sorted(kept + [dict(it, basis=u.basis) for it in u.items],
+                            key=lambda it: (it["start_s"], it["pitch"]))
+        self.range_seq[f"{t0:.4f}"] = u.seq
+
+
+def _stream_tap(script=(), seconds=30.0):
+    engine = FakeStreamEngine(script)
+    sub = StreamSubmitter(engine)
+    eng = AudioEngine(np.zeros((int(seconds * SR), 2), np.float32), SR)
+    bus = RecordingBus()
+    seq = iter(range(1, 10 ** 6))
+    tap = AnalysisTap(
+        spec=STUB_STREAM, options=STUB_STREAM.validate_options({}),
+        submitter=sub, audio_eng=eng, bus=bus, refines_audio=False,
+        source_epoch=0, next_seq=lambda: next(seq), clock=Clock(),
+        interval_s=3600.0, generates_audio=False,
+    )
+    assert tap.start() and tap._follow and tap.stateful
+    return tap, eng, bus, sub, engine, Capture(eng)
+
+
+def _store_of(bus):
+    store = ClientStore()
+    for e in bus.of(AnalysisUpdate):
+        store.apply(e)
+    return store
+
+
+def test_stream_stride_gating_request_options_and_one_in_flight():
+    from acestep.analysis import scheduler as sch
+
+    assert sch.FOLLOW_STRIDE_STATEFUL_S == 0.15 and sch.FOLLOW_GUARD_STATEFUL_S == 0.15
+    tap, eng, bus, sub, engine, cap = _stream_tap()
+    cap.to(0.29)
+    tap.step()
+    assert not sub.submitted  # 0.14 s past the guard: under a stride
+    cap.to(0.30)
+    tap.step()
+    req = sub.submitted[0][0]
+    stream = req.options["stream"]
+    assert stream["take"] == 0 and stream["id"] == tap._stream_id
+    assert stream["id"].startswith("stub_stream-")
+    assert stream["window_start_s"] == 0.0 and stream["frontier_s"] == pytest.approx(0.3)
+    assert req.t0_s == 0.0 and req.span_s == pytest.approx(0.3)
+    assert req.audio.shape[0] == int(round(0.3 * SR))  # no trailing padding
+    cap.to(0.9)
+    tap.step()
+    assert len(sub.submitted) == 1  # one in flight, however far the frontier ran
+    sub.run()
+    tap.step()  # the engine was slower than the stride: next hop at once
+    req = sub.submitted[0][0]
+    assert req.options["stream"]["frontier_s"] == pytest.approx(0.9)
+    sub.run()
+    cap.to(1.04)
+    tap.step()
+    assert not sub.submitted  # 0.14 s of new audio
+    cap.to(1.05)
+    tap.step()
+    assert len(sub.submitted) == 1
+    sub.run()
+    cap.to(7.0)
+    tap.step()
+    req = sub.submitted[0][0]
+    assert req.options["stream"]["window_start_s"] == pytest.approx(2.0)
+    assert req.audio.shape[0] == int(round(5.0 * SR))
+    # A distinct ledger id per tap: two sessions never share a ledger.
+    other = _stream_tap()[0]
+    assert other._stream_id != tap._stream_id
+    tap.close()
+    other.close()
+
+
+def test_stream_open_note_is_provisional_then_settled_by_a_covering_replace():
+    script = [
+        {"add": [(0.1, 60, None)]},                       # hop 1: 60 starts
+        {},                                               # hop 2: still sounding
+        {"close": [(0.1, 60, 0.4)], "add": [(0.42, 64, 0.5)]},  # hop 3: closes
+    ]
+    tap, eng, bus, sub, engine, cap = _stream_tap(script)
+    cap.to(0.3)
+    tap.step()
+    sub.run()
+    u = bus.of(AnalysisUpdate)[-1]
+    assert u.basis == "provisional" and u.range_start_s == pytest.approx(0.1)
+    assert u.range_start_s + u.span_s == pytest.approx(0.3)
+    assert [(i["start_s"], i["end_s"]) for i in u.items] == [(0.1, pytest.approx(0.3))]
+    cap.to(0.45)
+    tap.step()
+    sub.run()
+    u = bus.of(AnalysisUpdate)[-1]
+    assert u.basis == "provisional" and u.range_start_s == pytest.approx(0.1)
+    assert u.items[0]["end_s"] == pytest.approx(0.45)  # draws to the live edge
+    store = _store_of(bus)
+    assert len(store.items) == 1 and store.items[0]["basis"] == "provisional"
+    n = len(bus.of(AnalysisUpdate))
+    cap.to(0.6)
+    tap.step()
+    sub.run()
+    ups = bus.of(AnalysisUpdate)[n:]
+    assert len(ups) == 1  # one covering replace
+    u = ups[0]
+    assert u.basis == "settled" and u.range_start_s == pytest.approx(0.1)
+    assert u.range_start_s + u.span_s == pytest.approx(0.6)
+    assert [(i["start_s"], i["end_s"], i["pitch"]) for i in u.items] == [
+        (0.1, 0.4, 60), (0.42, 0.5, 64)]
+    store = _store_of(bus)
+    assert [(i["start_s"], i["end_s"], i["basis"]) for i in store.items] == [
+        (0.1, 0.4, "settled"), (0.42, 0.5, "settled")]  # no duplicate
+    # Nothing changed: the next replace only covers the fresh stretch.
+    cap.to(0.75)
+    tap.step()
+    sub.run()
+    u = bus.of(AnalysisUpdate)[-1]
+    assert u.range_start_s == pytest.approx(0.6) and u.items == ()
+    assert len(_store_of(bus).items) == 2
+    assert tap.dropped == 0
+    tap.close()
+
+
+def test_stream_mixed_hop_splits_settled_before_the_sounding_onset():
+    script = [{"add": [(0.05, 60, 0.12), (0.2, 67, None)]}]
+    tap, eng, bus, sub, engine, cap = _stream_tap(script)
+    cap.to(0.3)
+    tap.step()
+    sub.run()
+    settled, prov = bus.of(AnalysisUpdate)[-2:]
+    assert settled.basis == "settled" and settled.range_start_s == 0.0
+    assert settled.span_s == pytest.approx(0.2)
+    assert [i["pitch"] for i in settled.items] == [60]
+    assert prov.basis == "provisional" and prov.range_start_s == pytest.approx(0.2)
+    assert prov.range_start_s + prov.span_s == pytest.approx(0.3)
+    assert [i["pitch"] for i in prov.items] == [67]
+    assert prov.seq > settled.seq
+    store = _store_of(bus)
+    assert [(i["pitch"], i["basis"]) for i in store.items] == [
+        (60, "settled"), (67, "provisional")]
+    tap.close()
+
+
+def test_stream_sounding_note_before_the_window_still_gets_its_end():
+    script = [{"add": [(1.0, 48, None)]}] + [{}] * 3 + [{"close": [(1.0, 48, 6.5)]}]
+    tap, eng, bus, sub, engine, cap = _stream_tap(script)
+    for f in (1.2, 3.0, 5.0, 6.6, 6.8):
+        cap.to(f)
+        tap.step()
+        sub.run()
+    req = engine.requests[-1]
+    assert req.options["stream"]["window_start_s"] == pytest.approx(1.8)
+    assert req.t0_s == pytest.approx(1.0)  # cell reaches back to the onset
+    u = bus.of(AnalysisUpdate)[-1]
+    assert u.basis == "settled" and u.range_start_s == pytest.approx(1.0)
+    store = _store_of(bus)
+    assert [(i["start_s"], i["end_s"], i["basis"]) for i in store.items] == [
+        (1.0, 6.5, "settled")]
+    tap.close()
+
+
+def test_stream_truncated_hop_publishes_the_notes_it_carries():
+    script = [{"add": [(0.1, 60, 0.2)]}, {"truncated": True}]
+    tap, eng, bus, sub, engine, cap = _stream_tap(script)
+    cap.to(0.3)
+    tap.step()
+    eng.patch_window(np.ones((100, 2), np.float32), int(0.25 * SR))  # hop 1 goes stale
+    sub.run()
+    assert tap.dropped == 1 and not _store_of(bus).items
+    cap.to(0.45)
+    tap.step()
+    sub.run()  # truncated: carries the ledger's note, nothing new
+    assert tap.dropped == 2
+    u = bus.of(AnalysisUpdate)[-1]
+    assert u.basis == "settled" and u.range_start_s == 0.0  # nothing published before
+    store = _store_of(bus)
+    assert [(i["start_s"], i["basis"]) for i in store.items] == [(0.1, "settled")]
+    tap.close()
+
+
+def test_stream_stale_result_is_dropped_and_the_next_hop_publishes_it():
+    script = [{"add": [(0.1, 60, 0.2)]}, {}]
+    tap, eng, bus, sub, engine, cap = _stream_tap(script)
+    cap.to(0.3)
+    tap.step()
+    eng.patch_window(np.ones((100, 2), np.float32), int(0.1 * SR))  # behind the frontier
+    n = len(bus.of(AnalysisUpdate))
+    sub.run()
+    assert len(bus.of(AnalysisUpdate)) == n and tap.dropped == 1
+    cap.to(0.45)
+    tap.step()
+    sub.run()
+    store = _store_of(bus)
+    assert [i["start_s"] for i in store.items] == [0.1]
+    tap.close()
+
+
+def test_stream_new_take_resets_ledger_and_clears():
+    script = [{"add": [(0.1, 60, None)]}, {}, {"add": [(0.05, 62, 0.1)]}]
+    tap, eng, bus, sub, engine, cap = _stream_tap(script)
+    cap.to(0.3)
+    tap.step()
+    sub.run()
+    cap.to(0.5)
+    tap.step()
+    stale = sub.submitted[0]
+    eng.swap(np.zeros((int(30.0 * SR), 2), np.float32))
+    bus.deliver(SwapReady(
+        duration=30.0, sample_rate=SR, channels=2, bpm=None, key=None,
+        time_signature=None, fixture_name=None,
+        initial_buffer=np.zeros((1, 2), np.float32), source_epoch=1,
+    ))
+    assert bus.of(AnalysisClear)[-1].source_epoch == 1
+    assert tap._mirror == {} and tap._emit_hi_s == 0.0 and tap._pub_hi_s == 0.0
+    n = len(bus.of(AnalysisUpdate))
+    stale[1](engine.analyze(stale[0]))  # the old take's hop returns late
+    assert len(bus.of(AnalysisUpdate)) == n
+    sub.submitted.clear()
+    cap.frontier = 0
+    cap.to(0.3)
+    tap.step()
+    req = sub.submitted[0][0]
+    assert req.source_epoch == 1 and req.options["stream"]["take"] == 1
+    sub.run()
+    assert engine.resets == 1  # the engine dropped the old take's ledger
+    store = _store_of(bus)
+    assert store.epoch == 1
+    assert [(i["start_s"], i["pitch"]) for i in store.items] == [(0.05, 62)]
+    tap.close()
+
+
+def test_stateless_follow_keeps_the_one_second_policy():
+    tap, eng, bus, sub, clock, cap = _follow_tap()
+    assert not tap.stateful
+    cap.to(1.3)
+    tap.step()
+    req = sub.submitted[0][0]
+    assert "stream" not in req.options and req.span_s == pytest.approx(1.0)
+    tap.close()

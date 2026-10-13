@@ -34,6 +34,26 @@ landed behind the frontier inside its window; otherwise it is dropped and
 the next window covers the stretch again. A new take (epoch) starts the
 reported stretch over at 0. On the wire the mode is still ``confirm``.
 
+A stateful analyzer (``AnalyzerSpec.stateful``: the streaming notes
+decoder) follows the frontier with
+:func:`~acestep.analysis.scheduler.next_stream_window` instead: a hop
+every :data:`~acestep.analysis.scheduler.FOLLOW_STRIDE_STATEFUL_S` of new
+audio, one in flight (a slower engine just starts the next hop when the
+previous returns), the window ``[frontier - 5 s, frontier)`` with
+``options["stream"] = {"take": source_epoch, "id": <this tap>, ...}`` so
+the engine carries its note ledger across hops. The engine reports its
+ledger: closed notes in ``items``, sounding ones in ``open_items``. The
+tap mirrors that ledger and each hop publishes ONE covering range replace
+from the earliest note that changed (new, newly closed, revised, still
+sounding: its end moved with the frontier, or gone) to the frontier, with
+every mirrored note starting in it; a sounding note goes out with
+``end_s`` = frontier and gets its true end through a later hop's replace.
+The wire carries one basis per update, so when the range holds a
+sounding note the replace is split at the earliest sounding onset: the
+part before it ``settled``, the rest ``provisional`` (two updates, each a
+complete replace of its own part). A truncated hop still publishes the
+notes it carries.
+
 State goes out as :class:`~acestep.streaming.events.AnalysisState` on
 enable (followed by a ``clear`` update), on mode change, on error and on
 disable. A swap (new ``source_epoch``) withdraws queued work and sends a
@@ -42,9 +62,10 @@ disable. A swap (new ``source_epoch``) withdraws queued work and sends a
 
 from __future__ import annotations
 
+import itertools
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any, Callable, Mapping, Optional
 
@@ -73,6 +94,7 @@ from acestep.analysis.scheduler import (
     is_late,
     next_cell,
     next_follow_window,
+    next_stream_window,
 )
 from acestep.streaming.events import AnalysisClear, AnalysisState, AnalysisUpdate
 
@@ -89,6 +111,29 @@ MODE_OFF = "off"
 
 #: ``_in_flight`` marker for a frontier-follow request (cells are >= 0).
 _FOLLOW = -1
+
+#: Per-process counter making each tap's streaming ledger id unique: two
+#: sessions running the same analyzer share one engine, so the tap name
+#: alone would let them reset each other's ledger.
+_STREAM_IDS = itertools.count(1)
+
+#: Ledger onsets sit on MuScriptor's 10 ms grid; a note is identified by
+#: start tick, pitch and instrument (the ledger never moves an onset).
+_TICKS_PER_S = 100
+
+
+def _note_key(item: Mapping[str, Any]) -> tuple:
+    return (int(round(float(item["start_s"]) * _TICKS_PER_S)), int(item.get("pitch", 0)),
+            str(item.get("instrument", "")))
+
+
+@dataclass
+class _MirrorNote:
+    """One note of a stateful engine's ledger as the tap last published
+    it: ``closed`` False while it is still sounding."""
+
+    item: dict
+    closed: bool
 
 
 @dataclass
@@ -168,6 +213,12 @@ class AnalysisTap:
         # uses it, and the end of the stretch reported so far this take.
         self._follow = False
         self._emit_hi_s = 0.0
+        # Stateful follow: the engine keeps a note ledger across hops; the
+        # tap mirrors what it published and the end of the last range.
+        self.stateful = bool(getattr(spec, "stateful", False))
+        self._stream_id = f"{self.name}-{next(_STREAM_IDS)}"
+        self._mirror: dict[tuple, _MirrorNote] = {}
+        self._pub_hi_s = 0.0
         self._governor = Governor(self.refines_audio, generates_audio=self.generates_audio)
         self._observer: Optional[CanvasObserver] = None
         self._stop = threading.Event()
@@ -207,7 +258,7 @@ class AnalysisTap:
                 clock=self._clock,
             )
             self._follow = self._follows(self._observer)
-            self._emit_hi_s = 0.0
+            self._reset_follow()
             self.mode = self._compute_mode(self._clock())
             self._publish_state()
             self._publish_clear(self._observer.epoch)
@@ -262,10 +313,16 @@ class AnalysisTap:
         frontier = obs.frontier_s()
         return frontier is None or frontier < obs.duration_s - 1e-6
 
+    def _reset_follow(self) -> None:
+        """Start a take's follow bookkeeping over. Caller holds the lock."""
+        self._emit_hi_s = 0.0
+        self._mirror.clear()
+        self._pub_hi_s = 0.0
+
     def _policy(self) -> str:
         """Scheduling policy name for logs."""
         if self._follow:
-            return "follow"
+            return "follow_stream" if self.stateful else "follow"
         return "lookahead" if self.refines_audio else "confirm"
 
     def _fail(self, message: str) -> None:
@@ -320,11 +377,13 @@ class AnalysisTap:
             self._held.clear()
             self._prev_playhead = None
             follow = self._follows(self._observer)
-            if follow != self._follow:
-                logger.info("analysis_tap_policy tap={} policy={}", self.name,
-                            "follow" if follow else "confirm")
+            changed = follow != self._follow
             self._follow = follow
-            self._emit_hi_s = 0.0
+            if changed:
+                logger.info("analysis_tap_policy tap={} policy={}", self.name, self._policy())
+            # The engine resets its ledger itself when ``stream.take``
+            # (the epoch) changes on the next hop.
+            self._reset_follow()
         if old is not None:
             self.dropped += self._cancel(old)
         self._publish_clear(epoch)
@@ -396,7 +455,15 @@ class AnalysisTap:
             if self._in_flight is not None or not self._governor.may_submit(now):
                 return
             token = self._token
-            if self._follow:
+            if self._follow and self.stateful:
+                window = next_stream_window(FollowState(frontier, self._emit_hi_s))
+                if window is None:
+                    return
+                request = self._stream_request(obs, window)
+                self._in_flight = _FOLLOW
+                on_result = partial(self._on_stream_result, window, token)
+                on_error = partial(self._on_error, None, token)
+            elif self._follow:
                 window = next_follow_window(FollowState(frontier, self._emit_hi_s))
                 if window is None:
                     return
@@ -562,6 +629,143 @@ class AnalysisTap:
             self._publish_result(
                 result, basis, items, obs.playhead_s(self._clock()), obs.duration_s,
             )
+
+    # ---- stateful follow ----------------------------------------------
+
+    def _stream_request(self, obs: CanvasObserver, window: FollowWindow):
+        """The request for one stateful hop. Caller holds the lock.
+
+        The audio is the window ``[window_start_s, frontier)``, named
+        explicitly in ``options["stream"]``. The cell starts there too,
+        or earlier at the onset of a mirrored note that started before
+        the window and is still sounding, so its close is reported (the
+        engine reports ledger notes by onset inside the cell)."""
+        base = obs.snapshot_range(window, None)
+        w0 = base.t0_s - base.context_lead_s
+        w1 = base.t0_s + base.span_s + base.context_tail_s
+        lo = w0
+        for rec in self._mirror.values():
+            if not rec.closed:
+                lo = min(lo, float(rec.item["start_s"]))
+        options = dict(self.options)
+        options["stream"] = {
+            "take": base.source_epoch, "id": self._stream_id,
+            "window_start_s": w0, "frontier_s": w1,
+        }
+        return replace(base, t0_s=lo, span_s=w1 - lo, context_lead_s=0.0,
+                       context_tail_s=0.0, options=options)
+
+    def _on_stream_result(self, window: FollowWindow, token: object,
+                          result: AnalysisResult) -> None:
+        """Fold one stateful hop into the ledger mirror and publish the
+        covering range replace of what changed."""
+        with self._lock:
+            if token is not self._token or not self.enabled:
+                return
+            self._in_flight = None
+            # The engine's ledger moved on whatever the verdict: the next
+            # hop waits a stride from here.
+            self._emit_hi_s = max(self._emit_hi_s, window.emit_hi_s)
+            obs = self._observer
+            verdict = obs.range_verdict(result.source_epoch, result.revision, window.window_end_s)
+            if verdict != VERDICT_CURRENT:
+                # Dropped; the mirror is unchanged, so the next hop's diff
+                # publishes whatever this one changed.
+                self.dropped += 1
+                return
+            if result.truncated:
+                # Still published: the items are notes the ledger already
+                # held, never anything from the discarded tail.
+                self.dropped += 1
+                logger.warning(
+                    "analysis_window_truncated tap={} frontier_s={:.2f} wall_s={:.2f}",
+                    self.name, window.window_end_s, result.wall_s,
+                )
+            frontier = float(result.range_start_s) + float(result.span_s)
+            changed = self._fold(result, window.window_start_s)
+            self._publish_stream(result, changed, frontier, obs.playhead_s(self._clock()))
+            self._prune_mirror(window.window_start_s)
+
+    def _fold(self, result: AnalysisResult, window_start_s: float) -> list:
+        """Merge a hop's ledger report into the mirror; return the onsets
+        (canvas seconds) of every note that changed. Caller holds the
+        lock.
+
+        The report is authoritative for onsets inside its cell, except
+        closed notes that started before the window: the engine has
+        pruned them from its ledger and they are final, so they stay. A
+        sounding note always counts as changed (its end moved with the
+        frontier)."""
+        lo = float(result.range_start_s)
+        hi = lo + float(result.span_s)
+        seen: dict[tuple, _MirrorNote] = {}
+        for it in result.items:
+            item = dict(it)
+            seen[_note_key(item)] = _MirrorNote(item, True)
+        for it in result.open_items:
+            item = dict(it)
+            seen.setdefault(_note_key(item), _MirrorNote(item, False))
+        changed: list = []
+        for key, rec in list(self._mirror.items()):
+            start = float(rec.item["start_s"])
+            if key in seen or not (lo - 1e-9 <= start < hi):
+                continue
+            if rec.closed and start < window_start_s - 1e-9:
+                continue  # pruned by the engine, final
+            del self._mirror[key]  # gone from the ledger (an engine reset)
+            changed.append(start)
+        for key, new in seen.items():
+            old = self._mirror.get(key)
+            if (old is None or not new.closed or not old.closed
+                    or abs(float(old.item["end_s"]) - float(new.item["end_s"])) > 1e-6):
+                changed.append(float(new.item["start_s"]))
+            self._mirror[key] = new
+        return changed
+
+    def _prune_mirror(self, window_start_s: float) -> None:
+        """Forget settled notes no later replace can reach: before the
+        window and before every sounding note. Caller holds the lock."""
+        floor = window_start_s
+        for rec in self._mirror.values():
+            if not rec.closed:
+                floor = min(floor, float(rec.item["start_s"]))
+        for key in [k for k, r in self._mirror.items()
+                    if r.closed and float(r.item["start_s"]) < floor - 1e-9]:
+            del self._mirror[key]
+
+    def _publish_stream(self, result: AnalysisResult, changed: list, frontier: float,
+                        playhead: Optional[float]) -> None:
+        """Publish ``[min(changed onsets, previous range end), frontier)``
+        from the mirror: one ``settled`` replace, or a ``settled`` one up
+        to the earliest sounding onset and a ``provisional`` one from it.
+        Caller holds the lock."""
+        lo = min([self._pub_hi_s, frontier] + changed)
+        notes = sorted(
+            (r for r in self._mirror.values()
+             if lo - 1e-9 <= float(r.item["start_s"]) < frontier),
+            key=lambda r: (float(r.item["start_s"]), int(r.item.get("pitch", 0))),
+        )
+        sounding = [float(r.item["start_s"]) for r in notes if not r.closed]
+        split = min(sounding) if sounding else frontier
+        parts = []
+        if not sounding or split > lo + 1e-9:
+            parts.append((lo, split, BASIS_SETTLED, tuple(
+                dict(r.item) for r in notes if float(r.item["start_s"]) < split - 1e-9)))
+        if sounding:
+            parts.append((split, frontier, BASIS_PROVISIONAL, tuple(
+                dict(r.item) for r in notes if float(r.item["start_s"]) >= split - 1e-9)))
+        for start, end, basis, items in parts:
+            self.bus.publish(AnalysisUpdate(
+                tap=self.name, seq=self._next_seq(), source_epoch=result.source_epoch,
+                range_start_s=start, span_s=max(0.0, end - start), basis=basis,
+                late=is_late(start, end - start, playhead, refines_audio=False),
+                clear=False, kind=result.kind, items=items,
+                playhead_s=playhead, wall_s=float(result.wall_s),
+            ))
+        self._pub_hi_s = max(self._pub_hi_s, frontier)
+        if self.error is not None:
+            self.error = None
+            self._publish_state()
 
     def _on_error(self, i: Optional[int], token: object, exc: BaseException) -> None:
         """Engine error for cell ``i`` (``None``: a frontier-follow window,
