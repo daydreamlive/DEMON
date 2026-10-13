@@ -2,11 +2,24 @@
 
 Torch-free. sounddevice is imported lazily inside ``start`` so headless
 test harnesses and websocket backends can use the buffer without PortAudio.
+
+The buffer is versioned at the write point: every write (``swap``,
+``patch_window``, ``patch``) bumps :attr:`AudioEngine.revision` under the
+lock and, after the lock is released, tells each registered write
+listener which samples changed. Readers that must not trust the bus as a
+record of writes (the analysis observer) use the listener plus
+:meth:`AudioEngine.snapshot`.
 """
 
 import threading
 
 import numpy as np
+from loguru import logger
+
+#: ``kind`` values passed to write listeners.
+WRITE_SWAP = "swap"
+WRITE_PATCH_WINDOW = "patch_window"
+WRITE_PATCH = "patch"
 
 
 # Server-side crossfade length used when ``swap`` is called between
@@ -35,6 +48,10 @@ class AudioEngine:
         # its anchor by this much so delayed reports don't drag the
         # estimate into the past. 0.0 when reports carry no send stamp.
         self.position_staleness_s = 0.0
+        # ``time.monotonic()`` of the last client playhead report that set
+        # ``position`` (0.0 = never). Lets readers tell a live reported
+        # playhead from a stale one when no local output stream runs.
+        self.position_report_wall_s = 0.0
         # Explicit stationary render placement in absolute buffer seconds.
         # None means normal transport-driven placement. The params command
         # owns its sticky absent/value/null lifetime; source swaps hard-clear it.
@@ -70,6 +87,52 @@ class AudioEngine:
         self._fading = False
         self._fade_pos = 0
         self._lock = threading.Lock()
+        # Monotonic canvas revision, bumped under ``_lock`` on every write.
+        self.revision = 0
+        # Write listeners. Replaced (copy-on-write), never mutated in place,
+        # so a writer reads the tuple once without taking a second lock.
+        self._write_listeners: tuple = ()
+        self._listeners_lock = threading.Lock()
+
+    # ---- write listeners + snapshot ----------------------------------------
+
+    def add_write_listener(self, fn) -> None:
+        """Register ``fn(start_sample, end_sample, revision, kind)``.
+
+        Called on the writer's thread AFTER the buffer lock is released,
+        once per write; ``kind`` is ``"swap"``, ``"patch_window"`` or
+        ``"patch"``. A swap reports the whole new buffer. A listener that
+        raises is logged and removed, so a broken observer can never stall
+        the runner."""
+        with self._listeners_lock:
+            if fn not in self._write_listeners:
+                self._write_listeners = self._write_listeners + (fn,)
+
+    def remove_write_listener(self, fn) -> None:
+        """Unregister ``fn``; a no-op when it is not registered."""
+        with self._listeners_lock:
+            self._write_listeners = tuple(f for f in self._write_listeners if f != fn)
+
+    def _notify_write(self, listeners, start, end, revision, kind) -> None:
+        for fn in listeners:
+            try:
+                fn(start, end, revision, kind)
+            except Exception:  # noqa: BLE001 - a listener must never break a write
+                logger.opt(exception=True).error(
+                    "audio_write_listener_failed listener={!r}; removing it", fn,
+                )
+                self.remove_write_listener(fn)
+
+    def snapshot(self, start_sample, end_sample):
+        """``(copy of current[start:end], revision)`` read under the lock.
+
+        Bounds are clipped to the buffer. The copy and the revision are
+        consistent: no write lands between them."""
+        with self._lock:
+            n = len(self.current)
+            s0 = max(0, min(int(start_sample), n))
+            s1 = max(s0, min(int(end_sample), n))
+            return self.current[s0:s1].copy(), self.revision
 
     # ---- render-anchor queue (see __init__) --------------------------------
 
@@ -122,12 +185,17 @@ class AudioEngine:
                 new_data = np.column_stack([new_data, new_data])
             elif self.channels == 1 and new_data.shape[1] == 2:
                 new_data = new_data.mean(axis=1, keepdims=True)
+        listeners = self._write_listeners
         with self._lock:
             self._old = self.current.copy()
             self.current = new_data
             self.swap_count += 1
             self._fading = True
             self._fade_pos = 0
+            self.revision += 1
+            revision = self.revision
+        if listeners:
+            self._notify_write(listeners, 0, len(new_data), revision, WRITE_SWAP)
 
     def patch_window(self, window, start_sample):
         """Write a window of audio into ``self.current`` in place.
@@ -156,8 +224,13 @@ class AudioEngine:
         n = end - start_sample
         if n <= 0:
             return
+        listeners = self._write_listeners
         with self._lock:
             self.current[start_sample:end] = window[:n]
+            self.revision += 1
+            revision = self.revision
+        if listeners:
+            self._notify_write(listeners, start_sample, end, revision, WRITE_PATCH_WINDOW)
 
     def patch(self, data, start_sample):
         """Write audio into the buffer at *start_sample* in-place."""
@@ -183,8 +256,13 @@ class AudioEngine:
             t = np.linspace(1.0, 0.0, xfade).reshape(-1, 1)
             old = self.current[end - xfade:end]
             fragment[-xfade:] = fragment[-xfade:] * t + old * (1.0 - t)
+        listeners = self._write_listeners
         with self._lock:
             self.current[start_sample:end] = fragment
+            self.revision += 1
+            revision = self.revision
+        if listeners:
+            self._notify_write(listeners, start_sample, end, revision, WRITE_PATCH)
 
     def _fill(self, buf, src, pos, frames):
         n = len(src)
