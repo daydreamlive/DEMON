@@ -15,7 +15,6 @@ from acestep.analysis import notes_stream as ns
 from acestep.analysis.engine import AnalysisRequest
 from acestep.analysis.notes_engine import NOTES, NotesEngine
 from acestep.analysis.notes_stream import (
-    FRAME_RATE,
     StreamingNotesDecoder,
     WindowEvent,
     WindowNote,
@@ -428,9 +427,9 @@ def test_wall_budget_keeps_the_tail_up_to_the_last_complete_tick():
         t[0] += 0.1
         return t[0]
 
-    script = lambda prompt: _t(("tie", 0), ("shift", 10), ("drum", 36), ("shift", 20),
-                               ("drum", 38), ("shift", 30), ("drum", 42), ("drum", 46),
-                               ("shift", 40), ("drum", 36))
+    def script(prompt):
+        return _t(("tie", 0), ("shift", 10), ("drum", 36), ("shift", 20), ("drum", 38),
+                  ("shift", 30), ("drum", 42), ("drum", 46), ("shift", 40), ("drum", 36))
     dec = StreamingNotesDecoder(ScriptLM(script), full_hop_wall_budget_s=0.75, clock=clock)
     r = dec.step(np.zeros(3 * SR, np.float32), SR, 0.0, 3.0)
     # The wall trips after the 7th token (drum 42 at tick 30): ticks 10 and 20
@@ -441,8 +440,9 @@ def test_wall_budget_keeps_the_tail_up_to_the_last_complete_tick():
 
 
 def test_backwards_shift_stops_the_hop_and_keeps_what_came_before():
-    script = lambda prompt: _t(("tie", 0), ("shift", 10), ("drum", 36), ("shift", 50),
-                               ("drum", 38), ("shift", 20), ("drum", 36), ("drum", 38))
+    def script(prompt):
+        return _t(("tie", 0), ("shift", 10), ("drum", 36), ("shift", 50), ("drum", 38),
+                  ("shift", 20), ("drum", 36), ("drum", 38))
     dec = StreamingNotesDecoder(ScriptLM(script, eos=False))
     r = dec.step(np.zeros(3 * SR, np.float32), SR, 0.0, 3.0)
     assert not r.truncated
@@ -686,7 +686,8 @@ def _probe_module():
 
 def test_probe_match_and_duplicates():
     probe = _probe_module()
-    n = lambda t, p=60, i="a": {"start_s": t, "pitch": p, "instrument": i}
+    def n(t, p=60, i="a"):
+        return {"start_s": t, "pitch": p, "instrument": i}
     ref = [n(1.0), n(2.0), n(3.0, 62)]
     est = [n(1.04), n(1.05), n(2.2), n(3.0, 62, "b"), n(3.01, 62)]
     m, prec, rec, f1 = probe.match_notes(ref, est, 0.05)
@@ -740,6 +741,23 @@ def test_whole_window_hop_keeps_legit_repeating_hats():
     dec = StreamingNotesDecoder(ScriptLM(script))
     r = dec.step(np.zeros(SR, np.float32), SR, 0.0, 1.0)
     assert not r.truncated and len(r.new_notes) == 6
+
+
+def test_chord_in_a_short_hop_is_a_burst_not_a_runaway():
+    """150 ms of new audio allows 3.75 onsets by rate alone; a six-note
+    chord plus drums must commit on that hop, not be deferred."""
+    def script(prompt):
+        if not prompt:
+            return _t(("tie", 0), ("shift", 50), ("drum", 36))
+        return _t(("shift", 90), ("drum", 36), ("drum", 38), ("drum", 42), ("program", 0),
+                  ("velocity", 1), ("pitch", 60), ("pitch", 64), ("pitch", 67), ("pitch", 72),
+                  ("pitch", 76), ("pitch", 79))
+
+    dec = StreamingNotesDecoder(ScriptLM(script))
+    dec.step(np.zeros(SR, np.float32), SR, 0.0, 1.0)
+    r = dec.step(np.zeros(int(1.15 * SR), np.float32), SR, 0.0, 1.15)
+    assert not r.truncated
+    assert len(r.new_notes) == 9 and dec._commit_tick == 100
 
 
 def test_loop_detect_can_be_disabled():

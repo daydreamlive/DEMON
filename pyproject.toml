@@ -105,6 +105,9 @@ url = "https://download.pytorch.org/whl/cu128"
 
 [tool.uv]
 index-strategy = "unsafe-best-match"
+# Torch 2.9.1 ships no Intel-mac wheels, and muscriptor (analysis-notes) pins
+# torch<2.3 there; keep that platform out of the universal lock.
+environments = ["sys_platform != 'darwin' or platform_machine != 'x86_64'"]
 
 [[tool.uv.index]]
 name = "pypi"
