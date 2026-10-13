@@ -80,19 +80,67 @@ FP8_MANIFEST_VERSION = 2
 # Shared (per-ONNX) manifest filename; the per-engine sidecar
 # ``<engine>.refit_manifest.json`` wins when present.
 SHARED_MANIFEST_NAME = "sa3_m_dit_refit_manifest.json"
+# The fp8 graph's shared manifest: an fp8 refit engine must never fall
+# back to the fp16mixed (v1) shared manifest, nor the reverse.
+FP8_SHARED_MANIFEST_NAME = "sa3_m_dit_fp8_refit_manifest.json"
 
 
 def find_refit_manifest(engine_path: Path) -> Optional[Path]:
     """Manifest lookup: per-engine sidecar first, then the shared
-    per-ONNX manifest in the engines root."""
+    per-ONNX manifest of the engine's graph (fp8 or fp16mixed) in the
+    engines root."""
+    from acestep.engine.sa3_trt import is_fp8_refit_engine_path  # noqa: PLC0415
+
     engine_path = Path(engine_path)
     sidecar = Path(str(engine_path) + ".refit_manifest.json")
     if sidecar.is_file():
         return sidecar
-    shared = engine_path.parent.parent / SHARED_MANIFEST_NAME
+    name = (
+        FP8_SHARED_MANIFEST_NAME if is_fp8_refit_engine_path(engine_path)
+        else SHARED_MANIFEST_NAME
+    )
+    shared = engine_path.parent.parent / name
     if shared.is_file():
         return shared
     return None
+
+
+def make_refit_mirror(dit, model_root: torch.nn.Module, **kwargs):
+    """The session-create hook: an :class:`SA3TRTRefitMirror` over
+    ``dit`` (an :class:`~acestep.engine.sa3_trt.SA3TRTDit` on a
+    refit-built engine), or None with a logged reason, in which case the
+    interim eager-DiT swap covers LoRA. The engine's precision (fp8 refit
+    vs fp16mixed refit, by name) must match the manifest version: an fp8
+    engine is only ever driven through the v2 (fixed baked scale) path.
+    ``kwargs`` pass through to the mirror (test injection)."""
+    from acestep.engine.sa3_trt import is_fp8_refit_engine_path  # noqa: PLC0415
+
+    engine_path = Path(dit.engine_path)
+    fp8 = is_fp8_refit_engine_path(engine_path)
+    manifest = find_refit_manifest(engine_path)
+    if manifest is None:
+        logger.warning(
+            "sa3_refit_manifest_missing engine={} — LoRA will use "
+            "the eager-DiT swap; generate the manifest with "
+            "scripts/sa3/gen_sa3_refit_manifest.py{}",
+            engine_path.parent.name, " --fp8" if fp8 else "",
+        )
+        return None
+    try:
+        mirror = SA3TRTRefitMirror(
+            dit.engine, model_root, manifest, expect_fp8=fp8, **kwargs,
+        )
+    except Exception as exc:
+        logger.warning(
+            "sa3_refit_mirror_init_failed engine={} error={} — LoRA will "
+            "use the eager-DiT swap", engine_path.parent.name, exc,
+        )
+        return None
+    logger.info(
+        "sa3_refit_mirror_engaged engine={} precision={} manifest={}",
+        engine_path.parent.name, "fp8" if fp8 else "fp16mixed", manifest.name,
+    )
+    return mirror
 
 
 class SA3TRTRefitMirror:
@@ -107,6 +155,7 @@ class SA3TRTRefitMirror:
         manifest_path: Path,
         *,
         base_weights: Optional[Callable[[str], torch.Tensor]] = None,
+        expect_fp8: Optional[bool] = None,
         _refitter=None,
         _trt=None,
     ) -> None:
@@ -138,6 +187,12 @@ class SA3TRTRefitMirror:
             raise RuntimeError(
                 f"refit manifest {manifest_path} has version "
                 f"{version}, expected {MANIFEST_VERSION} or {FP8_MANIFEST_VERSION}"
+            )
+        if expect_fp8 is not None and (version == FP8_MANIFEST_VERSION) != bool(expect_fp8):
+            raise RuntimeError(
+                f"refit manifest {manifest_path} is version {version} but the "
+                f"engine is {'fp8' if expect_fp8 else 'fp16mixed'} refit "
+                f"(fp8 engines need version {FP8_MANIFEST_VERSION})"
             )
         # fp8 (v2): fqn -> (scale_init, axis); baked scale values by
         # initializer name; fp32 checkpoint base reader.
@@ -203,8 +258,8 @@ class SA3TRTRefitMirror:
         # leave the stale merged value in the engine.
         self._dirty: set = set()
         logger.info(
-            "sa3_trt_refit_mirror_ready mapped_weights={} manifest={}",
-            len(self._map), manifest_path,
+            "sa3_trt_refit_mirror_ready mapped_weights={} precision={} manifest={}",
+            len(self._map), "fp8" if self._fp8 else "fp16mixed", manifest_path,
         )
 
     def _resolve_module(self, fqn: str):
