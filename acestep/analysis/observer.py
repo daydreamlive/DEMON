@@ -19,7 +19,17 @@ engine) and the playhead.
 
 Cell audio is read with :meth:`AudioEngine.snapshot` under the engine's
 lock, tagged with ``(source_epoch, revision)``; a result is published only
-if both still match (:meth:`CanvasObserver.is_current`).
+if both still match (:meth:`CanvasObserver.result_verdict`).
+
+Ring canvases rewrite every cell on every pass, mostly with the same
+music. A write to a cell that has been analysed therefore only marks it
+*pending*; the tap's worker later fingerprints the cell's audio
+(:func:`content_fingerprint`) and compares it with the fingerprint of the
+audio last analysed (:meth:`CanvasObserver.check_content`). Below
+:data:`CONTENT_CHANGE` the write did not change the content: the cell
+stays clean and its result keeps its revision (and so its settled
+status). At or above it the cell is dirty, as for any write. The write
+hook itself never touches audio.
 """
 
 from __future__ import annotations
@@ -40,6 +50,59 @@ from acestep.streaming.events import AudioReady, SwapReady
 #: Without a client playhead report for this long (and no local output
 #: stream), the session counts as having no playhead.
 PLAYHEAD_STALE_S = 2.0
+
+#: Relative L1 change between two cell fingerprints at or above which a
+#: rewrite counts as new content (the cell is re-analysed). Set from the
+#: live run.
+CONTENT_CHANGE = 0.15
+#: Fingerprint geometry: band count, frame length and band edges.
+FINGERPRINT_BANDS = 24
+FINGERPRINT_FRAME_S = 0.1
+FINGERPRINT_FMIN_HZ = 40.0
+FINGERPRINT_FMAX_HZ = 16000.0
+
+#: Verdicts of :meth:`CanvasObserver.result_verdict`.
+VERDICT_CURRENT = "current"
+VERDICT_STALE = "stale"
+VERDICT_UNCHECKED = "unchecked"
+
+
+def content_fingerprint(audio: np.ndarray, sr: int) -> np.ndarray:
+    """Coarse spectral fingerprint of mono ``audio``: energy in
+    :data:`FINGERPRINT_BANDS` log-spaced bands per
+    :data:`FINGERPRINT_FRAME_S` frame (Hann-windowed, non-overlapping),
+    shape ``(frames, bands)``. Cheap enough to run per cell per tap pass
+    (a 5 s window at 48 kHz is fifty 4800-point FFTs)."""
+    frame = max(1, int(round(FINGERPRINT_FRAME_S * sr)))
+    x = np.asarray(audio, dtype=np.float32).reshape(-1)
+    n_frames = len(x) // frame
+    if n_frames == 0:
+        return np.zeros((0, FINGERPRINT_BANDS))
+    window = np.hanning(frame).astype(np.float32)
+    frames = x[: n_frames * frame].reshape(n_frames, frame) * window
+    power = np.abs(np.fft.rfft(frames, axis=1)) ** 2
+    freqs = np.fft.rfftfreq(frame, 1.0 / sr)
+    fmax = min(FINGERPRINT_FMAX_HZ, sr / 2.0)
+    edges = np.geomspace(FINGERPRINT_FMIN_HZ, fmax, FINGERPRINT_BANDS + 1)
+    band = np.searchsorted(edges, freqs, side="right") - 1
+    out = np.zeros((n_frames, FINGERPRINT_BANDS))
+    for b in range(FINGERPRINT_BANDS):
+        sel = band == b
+        if sel.any():
+            out[:, b] = power[:, sel].sum(axis=1)
+    return out
+
+
+def content_change(a: np.ndarray, b: np.ndarray) -> float:
+    """Relative L1 distance of fingerprint ``a`` from reference ``b``:
+    ``inf`` when the shapes differ, 0 when both are silent."""
+    if a.shape != b.shape:
+        return math.inf
+    ref = float(np.abs(b).sum())
+    diff = float(np.abs(a - b).sum())
+    if ref <= 1e-12:
+        return 0.0 if diff <= 1e-12 else math.inf
+    return diff / ref
 
 
 class CanvasObserver:
@@ -93,9 +156,16 @@ class CanvasObserver:
         self.duration_s = self.n_samples / self.sr if self.sr else 0.0
         n = n_cells_for(self.duration_s, self.cell_s)
         self.cell_revision = [revision] * n
+        # Revision of the newest write that changed the cell's content; a
+        # rewrite the content check finds unchanged does not bump it.
+        self.content_revision = [revision] * n
         self.dirty = [True] * n
         self.dirty_since = [now] * n
         self.last_analysed = [-math.inf] * n
+        # A write landed on an analysed cell; its content is unchecked.
+        self.pending = [False] * n
+        # Fingerprint of the audio last snapshotted for analysis.
+        self.fingerprint: list = [None] * n
 
     @property
     def n_cells(self) -> int:
@@ -105,6 +175,14 @@ class CanvasObserver:
         """``(start_s, end_s)`` of cell ``i`` in canvas seconds."""
         start = i * self.cell_s
         return start, min(start + self.cell_s, self.duration_s)
+
+    def _window_samples(self, i: int) -> tuple:
+        """``(s0, s1, t0, t1)``: cell ``i``'s input window in samples (cell
+        plus context, clipped to the canvas) and the cell in seconds."""
+        t0, t1 = self.cell_bounds_s(i)
+        w0 = max(0.0, t0 - self.context_s)
+        w1 = min(self.duration_s, t1 + self.context_s)
+        return int(round(w0 * self.sr)), int(round(w1 * self.sr)), t0, t1
 
     def _cells_touching(self, start: int, end: int) -> range:
         """Cells whose input window overlaps samples ``[start, end)``."""
@@ -131,10 +209,20 @@ class CanvasObserver:
                 return
             for i in self._cells_touching(start, end):
                 self.cell_revision[i] = max(self.cell_revision[i], revision)
-                if not self.dirty[i]:
-                    self.dirty[i] = True
-                    self.dirty_since[i] = now
+                if self.dirty[i] or self.fingerprint[i] is None:
+                    self._dirty_locked(i, now)
+                else:
+                    self.pending[i] = True
             self.frontier_samples = int(end)
+
+    def _dirty_locked(self, i: int, now: float) -> None:
+        """Cell ``i``'s content changed: adopt its newest revision and put
+        it on the to-do list. Caller holds ``_lock``."""
+        self.content_revision[i] = self.cell_revision[i]
+        self.pending[i] = False
+        if not self.dirty[i]:
+            self.dirty[i] = True
+            self.dirty_since[i] = now
 
     def _on_event(self, event: Any) -> None:
         """Bus listener (subscriber thread): tick telemetry and epoch."""
@@ -243,17 +331,21 @@ class CanvasObserver:
             if i < 0 or i >= self.n_cells:
                 raise IndexError(f"cell {i} out of range ({self.n_cells} cells)")
             epoch = self.epoch
-            t0, t1 = self.cell_bounds_s(i)
+            s0, s1, t0, t1 = self._window_samples(i)
             self.dirty[i] = False
             self.last_analysed[i] = now
-        w0 = max(0.0, t0 - self.context_s)
-        w1 = min(self.duration_s, t1 + self.context_s)
-        s0 = int(round(w0 * self.sr))
-        s1 = int(round(w1 * self.sr))
-        audio, revision = self.audio_eng.snapshot(s0, s1)
-        if audio.ndim == 2:
-            audio = audio.mean(axis=1) if audio.shape[1] > 1 else audio[:, 0]
-        audio = np.ascontiguousarray(audio, dtype=np.float32)
+        audio, revision = self._mono_snapshot(s0, s1)
+        fingerprint = content_fingerprint(audio, self.sr)
+        with self._lock:
+            if epoch == self.epoch and i < self.n_cells:
+                self.fingerprint[i] = fingerprint
+                self.pending[i] = False
+                if self.cell_revision[i] > revision:
+                    # A write landed between clearing the flag and the read.
+                    self._dirty_locked(i, now)
+                else:
+                    self.content_revision[i] = self.cell_revision[i]
+        w0, w1 = s0 / self.sr, s1 / self.sr
         return AnalysisRequest(
             audio=audio,
             sr=self.sr,
@@ -266,27 +358,80 @@ class CanvasObserver:
             options=dict(options or {}),
         )
 
-    def is_current(self, i: int, source_epoch: int, revision: int) -> bool:
-        """True when no swap and no write to cell ``i``'s input window
-        happened after the snapshot that produced ``revision``."""
+    def _mono_snapshot(self, s0: int, s1: int) -> tuple:
+        """``(mono float32 copy of samples [s0, s1), revision)``."""
+        audio, revision = self.audio_eng.snapshot(s0, s1)
+        if audio.ndim == 2:
+            audio = audio.mean(axis=1) if audio.shape[1] > 1 else audio[:, 0]
+        return np.ascontiguousarray(audio, dtype=np.float32), int(revision)
+
+    def check_content(self, now: Optional[float] = None) -> int:
+        """Resolve pending cells: fingerprint each one's current audio and
+        compare it with the audio last analysed. A change of at least
+        :data:`CONTENT_CHANGE` dirties the cell; a smaller one leaves it
+        clean with its content revision, so its result stays current and
+        can settle. Runs on the tap's worker, never on the write hook.
+        Returns the number of cells found changed."""
+        now = self._clock() if now is None else now
+        with self._lock:
+            epoch = self.epoch
+            todo = [i for i, p in enumerate(self.pending) if p]
+        changed = 0
+        for i in todo:
+            with self._lock:
+                if self._closed or epoch != self.epoch or i >= self.n_cells or not self.pending[i]:
+                    continue
+                reference = self.fingerprint[i]
+                s0, s1, _t0, _t1 = self._window_samples(i)
+            audio, revision = self._mono_snapshot(s0, s1)
+            delta = (
+                math.inf if reference is None
+                else content_change(content_fingerprint(audio, self.sr), reference)
+            )
+            with self._lock:
+                if epoch != self.epoch or i >= self.n_cells or not self.pending[i]:
+                    continue
+                if delta >= CONTENT_CHANGE:
+                    self._dirty_locked(i, now)
+                    changed += 1
+                elif self.cell_revision[i] <= revision:
+                    self.pending[i] = False
+                # Otherwise it was written again after this read; the next
+                # pass checks the newer audio.
+        return changed
+
+    def result_verdict(self, i: int, source_epoch: int, revision: int) -> str:
+        """Whether a result computed from the snapshot at ``revision`` may
+        be published: :data:`VERDICT_CURRENT` when no swap and no
+        content-changing write to cell ``i``'s input window happened since,
+        :data:`VERDICT_STALE` when one did, :data:`VERDICT_UNCHECKED` when
+        later writes landed that :meth:`check_content` has not compared
+        yet."""
         with self._lock:
             if source_epoch != self.epoch or i < 0 or i >= self.n_cells:
-                return False
-            return self.cell_revision[i] <= revision
+                return VERDICT_STALE
+            if self.content_revision[i] > revision:
+                return VERDICT_STALE
+            if self.pending[i] and self.cell_revision[i] > revision:
+                return VERDICT_UNCHECKED
+            return VERDICT_CURRENT
+
+    def is_current(self, i: int, source_epoch: int, revision: int) -> bool:
+        """True when :meth:`result_verdict` is :data:`VERDICT_CURRENT`."""
+        return self.result_verdict(i, source_epoch, revision) == VERDICT_CURRENT
 
     def cell_state(self, i: int) -> tuple:
-        """``(revision, dirty)`` of cell ``i``."""
+        """``(content_revision, dirty, pending)`` of cell ``i``."""
         with self._lock:
-            return self.cell_revision[i], self.dirty[i]
+            return self.content_revision[i], self.dirty[i], self.pending[i]
 
     def mark_dirty(self, i: int) -> None:
         """Put cell ``i`` back on the to-do list (dropped or failed result).
         The re-analysis cap still applies from the last submission."""
         now = self._clock()
         with self._lock:
-            if 0 <= i < self.n_cells and not self.dirty[i]:
-                self.dirty[i] = True
-                self.dirty_since[i] = now
+            if 0 <= i < self.n_cells:
+                self._dirty_locked(i, now)
 
     def close(self) -> None:
         """Detach the write listener and the bus subscription. Idempotent."""

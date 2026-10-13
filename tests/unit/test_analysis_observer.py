@@ -6,7 +6,13 @@ import numpy as np
 import pytest
 
 from acestep.analysis import scheduler as sch
-from acestep.analysis.observer import PLAYHEAD_STALE_S, CanvasObserver
+from acestep.analysis.observer import (
+    CONTENT_CHANGE,
+    PLAYHEAD_STALE_S,
+    CanvasObserver,
+    content_change,
+    content_fingerprint,
+)
 from acestep.analysis.scheduler import (
     BASIS_PROVISIONAL,
     BASIS_SETTLED,
@@ -182,10 +188,47 @@ def test_observer_starts_dirty_and_tracks_writes():
     # context (cell 0's window reaches 4.5 s).
     clock.t = 101.0
     eng.patch_window(np.ones((SR // 10, 2), np.float32), int(4.2 * SR))
+    # Analysed cells are only pending until the worker's content check.
+    assert obs.pending == [True, True, False, False] and not any(obs.dirty)
+    assert obs.check_content() == 2
     assert obs.dirty == [True, True, False, False]
+    assert not any(obs.pending)
     assert obs.dirty_since[0] == 101.0
     assert obs.cell_revision[1] == eng.revision
     assert obs.frontier_s() == pytest.approx(4.3)
+
+
+def _noise(seconds, seed=0):
+    rng = np.random.default_rng(seed)
+    return (0.1 * rng.standard_normal((int(seconds * SR), 2))).astype(np.float32)
+
+
+def test_fingerprint_change_scores():
+    a = _noise(5.0, seed=1)[:, 0]
+    fp = content_fingerprint(a, SR)
+    assert fp.shape == (50, 24)
+    assert content_change(content_fingerprint(a, SR), fp) == 0.0
+    assert content_change(content_fingerprint(a * 0.999, SR), fp) < CONTENT_CHANGE
+    assert content_change(content_fingerprint(_noise(5.0, seed=2)[:, 0] * 2.0, SR), fp) > CONTENT_CHANGE
+    silent = content_fingerprint(np.zeros(5 * SR, np.float32), SR)
+    assert content_change(silent, silent) == 0.0
+    assert content_change(fp, silent) == math.inf
+    assert content_change(fp[:10], fp) == math.inf
+
+
+def test_identical_rewrite_keeps_the_cell_clean_and_current():
+    eng, obs, _ = _obs()
+    src = _noise(16.0)
+    eng.patch_window(src, 0)
+    req = obs.snapshot_cell(1)
+    eng.patch_window(src[4 * SR:8 * SR].copy(), 4 * SR)  # same music again
+    assert obs.pending[1] and obs.result_verdict(1, req.source_epoch, req.revision) == "unchecked"
+    assert obs.check_content() == 0
+    assert not obs.dirty[1] and not obs.pending[1]
+    assert obs.is_current(1, req.source_epoch, req.revision)
+    eng.patch_window(_noise(4.0, seed=3) * 3.0, 4 * SR)  # new music
+    assert obs.check_content() >= 1
+    assert obs.dirty[1] and not obs.is_current(1, req.source_epoch, req.revision)
 
 
 def test_observer_snapshot_request_shape_and_staleness():

@@ -12,9 +12,13 @@ with this tap's cancel token. One request per tap is in flight at a time.
 Results arrive on the host's worker thread. A result is published as an
 :class:`~acestep.streaming.events.AnalysisUpdate` only when its
 ``(source_epoch, revision)`` still matches the cell; otherwise it counts
-as ``dropped`` and the cell goes back on the to-do list. On a ring canvas
-a provisional cell is re-published as ``settled`` (same items, no new
-analysis) once the playhead passes it with its revision unchanged.
+as ``dropped`` and the cell goes back on the to-do list. When writes
+landed on the cell after the snapshot and their content is not compared
+yet, the result is held until the worker's next pass has run the
+observer's content check (a ring rewrite with the same music keeps the
+result). On a ring canvas a provisional cell is re-published as
+``settled`` (same items, no new analysis) once the playhead passes it
+with its content unchanged.
 
 State goes out as :class:`~acestep.streaming.events.AnalysisState` on
 enable (followed by a ``clear`` update), on mode change, on error and on
@@ -37,7 +41,11 @@ from acestep.analysis.engine import (
     EngineBusy,
     EngineUnavailable,
 )
-from acestep.analysis.observer import CanvasObserver
+from acestep.analysis.observer import (
+    VERDICT_CURRENT,
+    VERDICT_UNCHECKED,
+    CanvasObserver,
+)
 from acestep.analysis.registry import AnalyzerSpec
 from acestep.analysis.scheduler import (
     BASIS_PROVISIONAL,
@@ -72,6 +80,7 @@ class _Published:
     kind: str
     items: tuple
     basis: str
+    crossed: bool = False
 
 
 class AnalysisTap:
@@ -122,6 +131,8 @@ class AnalysisTap:
         self._token: Optional[object] = None
         self._in_flight: Optional[int] = None
         self._published: dict[int, _Published] = {}
+        # Results waiting for the content check of later writes to the cell.
+        self._held: dict[int, AnalysisResult] = {}
         self._prev_playhead: Optional[float] = None
         self._governor = Governor(self.refines_audio)
         self._observer: Optional[CanvasObserver] = None
@@ -184,6 +195,7 @@ class AnalysisTap:
             self._stop.set()
             token, self._token = self._token, None
             self._in_flight = None
+            self._held.clear()
             if error is not None:
                 self.error = error
             self.mode = MODE_OFF
@@ -252,6 +264,7 @@ class AnalysisTap:
             old, self._token = self._token, object()
             self._in_flight = None
             self._published.clear()
+            self._held.clear()
             self._prev_playhead = None
         if old is not None:
             self.dropped += self._cancel(old)
@@ -294,6 +307,12 @@ class AnalysisTap:
             if not self.enabled:
                 return
             obs = self._observer
+        # Content check of rewritten cells: audio reads and FFTs, outside
+        # the tap lock so host callbacks never wait on it.
+        obs.check_content()
+        with self._lock:
+            if not self.enabled or obs is not self._observer:
+                return
             now = self._clock()
             playhead = obs.playhead_s(now)
             eng = self.audio_eng
@@ -306,6 +325,7 @@ class AnalysisTap:
             if not self.refines_audio and frontier is not None and playhead is not None:
                 self._governor.observe_frontier_lead(frontier - playhead, now)
 
+            self._resolve_held(playhead)
             self._settle_passed(playhead)
             self._prev_playhead = playhead
 
@@ -340,19 +360,24 @@ class AnalysisTap:
         """Re-publish provisional ring cells as settled once the playhead
         has passed them with their revision unchanged. Caller holds the
         lock."""
-        if not self.refines_audio or playhead is None or self._prev_playhead is None:
+        if not self.refines_audio or playhead is None:
             return
         obs = self._observer
         for i, rec in list(self._published.items()):
             if rec.basis != BASIS_PROVISIONAL:
                 continue
-            period, end = self._period_for(rec.range_start_s, rec.range_start_s + rec.span_s)
-            if not crossed(self._prev_playhead, playhead, end, period):
-                continue
-            revision, dirty = obs.cell_state(i)
+            if not rec.crossed:
+                period, end = self._period_for(rec.range_start_s, rec.range_start_s + rec.span_s)
+                rec.crossed = crossed(self._prev_playhead, playhead, end, period)
+                if not rec.crossed:
+                    continue
+            revision, dirty, pending = obs.cell_state(i)
+            if pending:
+                continue  # decided after the next content check
+            rec.crossed = False
             basis = basis_for(
                 refines_audio=True, playhead_passed=True,
-                revision_unchanged=(revision == rec.revision and not dirty),
+                revision_unchanged=(revision <= rec.revision and not dirty),
             )
             if basis != BASIS_SETTLED:
                 continue
@@ -371,42 +396,61 @@ class AnalysisTap:
             if token is not self._token or not self.enabled:
                 return
             self._in_flight = None
-            obs = self._observer
-            if not obs.is_current(i, result.source_epoch, result.revision):
-                self.dropped += 1
-                obs.mark_dirty(i)
+            verdict = self._observer.result_verdict(i, result.source_epoch, result.revision)
+            if verdict == VERDICT_UNCHECKED:
+                self._held[i] = result
                 return
-            now = self._clock()
-            playhead = obs.playhead_s(now)
-            period, _ = self._period_for(result.range_start_s, result.range_start_s + result.span_s)
-            basis = basis_for(
-                refines_audio=self.refines_audio, playhead_passed=False,
-                revision_unchanged=True,
+            self._finish(i, result, verdict, self._observer.playhead_s(self._clock()))
+
+    def _resolve_held(self, playhead: Optional[float]) -> None:
+        """Publish or drop held results now that the content check ran.
+        Caller holds the lock."""
+        obs = self._observer
+        for i, result in list(self._held.items()):
+            verdict = obs.result_verdict(i, result.source_epoch, result.revision)
+            if verdict == VERDICT_UNCHECKED:
+                continue
+            del self._held[i]
+            self._finish(i, result, verdict, playhead)
+
+    def _finish(self, i: int, result: AnalysisResult, verdict: str,
+                playhead: Optional[float]) -> None:
+        """Publish a current result, or count a stale one as dropped and
+        re-dirty its cell. Caller holds the lock."""
+        obs = self._observer
+        if verdict != VERDICT_CURRENT:
+            self.dropped += 1
+            obs.mark_dirty(i)
+            return
+        period, _ = self._period_for(result.range_start_s, result.range_start_s + result.span_s)
+        basis = basis_for(
+            refines_audio=self.refines_audio, playhead_passed=False,
+            revision_unchanged=True,
+        )
+        items = tuple(dict(it) for it in result.items)
+        self._published[i] = _Published(
+            revision=result.revision, range_start_s=float(result.range_start_s),
+            span_s=float(result.span_s), kind=result.kind, items=items, basis=basis,
+        )
+        self.bus.publish(AnalysisUpdate(
+            tap=self.name, seq=self._next_seq(), source_epoch=result.source_epoch,
+            range_start_s=float(result.range_start_s), span_s=float(result.span_s),
+            basis=basis,
+            late=is_late(
+                result.range_start_s, result.span_s, playhead,
+                refines_audio=self.refines_audio, period_len=period,
+            ),
+            clear=False, kind=result.kind, items=items,
+            playhead_s=playhead, wall_s=float(result.wall_s),
+        ))
+        if result.wall_s > result.span_s > 0:
+            logger.warning(
+                "analysis_slower_than_realtime tap={} cell={} wall_s={:.2f} span_s={:.2f}",
+                self.name, i, result.wall_s, result.span_s,
             )
-            items = tuple(dict(it) for it in result.items)
-            self._published[i] = _Published(
-                revision=result.revision, range_start_s=float(result.range_start_s),
-                span_s=float(result.span_s), kind=result.kind, items=items, basis=basis,
-            )
-            self.bus.publish(AnalysisUpdate(
-                tap=self.name, seq=self._next_seq(), source_epoch=result.source_epoch,
-                range_start_s=float(result.range_start_s), span_s=float(result.span_s),
-                basis=basis,
-                late=is_late(
-                    result.range_start_s, result.span_s, playhead,
-                    refines_audio=self.refines_audio, period_len=period,
-                ),
-                clear=False, kind=result.kind, items=items,
-                playhead_s=playhead, wall_s=float(result.wall_s),
-            ))
-            if result.wall_s > result.span_s > 0:
-                logger.warning(
-                    "analysis_slower_than_realtime tap={} cell={} wall_s={:.2f} span_s={:.2f}",
-                    self.name, i, result.wall_s, result.span_s,
-                )
-            if self.error is not None:
-                self.error = None
-                self._publish_state()
+        if self.error is not None:
+            self.error = None
+            self._publish_state()
 
     def _on_error(self, i: int, token: object, exc: BaseException) -> None:
         with self._lock:

@@ -180,6 +180,9 @@ def test_stale_result_is_dropped_and_cell_redirtied():
     n_updates = len(bus.of(AnalysisUpdate))
     sub.answer()
     assert len(bus.of(AnalysisUpdate)) == n_updates
+    assert tap.dropped == 0  # held until the content check has run
+    tap.step()
+    assert len(bus.of(AnalysisUpdate)) == n_updates
     assert tap.dropped == 1
     assert tap._observer.dirty[int(req.t0_s // 4)]
 
@@ -276,6 +279,73 @@ def test_ring_cell_settles_once_the_playhead_passes_it():
     assert len(settled) == 1 and settled[0].range_start_s == 4.0
     assert settled[0].items[0]["pitch"] == 60
     tap.close()
+
+
+def _noise(seconds, seed=0):
+    rng = np.random.default_rng(seed)
+    return (0.1 * rng.standard_normal((int(seconds * SR), 2))).astype(np.float32)
+
+
+def _settle_cell_1(tap, eng, bus, sub, clock):
+    """Analyse cell 1 [4, 8) and walk the playhead past it."""
+    _report_playhead(eng, clock, 3.0)
+    tap.step()
+    sub.answer()
+    _report_playhead(eng, clock, 7.9)
+    tap.step()
+    sub.submitted.clear()
+    tap._in_flight = None
+    _report_playhead(eng, clock, 8.1)
+    tap.step()
+    return [u for u in bus.of(AnalysisUpdate) if u.basis == "settled"]
+
+
+def test_identical_ring_rewrite_keeps_the_settled_result():
+    tap, eng, bus, sub, clock = _make_tap()
+    src = _noise(16.0)
+    eng.patch_window(src, 0)
+    tap.start()
+    assert len(_settle_cell_1(tap, eng, bus, sub, clock)) == 1
+    n = len(bus.events)
+    # The generator re-renders the cell with the same music.
+    eng.patch_window(src[3 * SR:9 * SR].copy(), 3 * SR)
+    sub.submitted.clear()
+    tap._in_flight = None
+    clock.t += 5.0
+    tap.step()
+    assert not tap._observer.dirty[1] and not tap._observer.pending[1]
+    assert all(r[0].t0_s != 4.0 for r in sub.submitted)
+    assert tap._published[1].basis == "settled"
+    assert not [e for e in bus.events[n:] if isinstance(e, AnalysisUpdate) and e.range_start_s == 4.0]
+
+
+def test_changed_ring_rewrite_dirties_the_cell():
+    tap, eng, bus, sub, clock = _make_tap()
+    eng.patch_window(_noise(16.0), 0)
+    tap.start()
+    assert len(_settle_cell_1(tap, eng, bus, sub, clock)) == 1
+    eng.patch_window(_noise(4.0, seed=5) * 3.0, 4 * SR)
+    sub.submitted.clear()
+    tap._in_flight = None
+    tap.step()
+    assert tap._observer.dirty[1]
+
+
+def test_result_held_over_an_identical_rewrite_is_published():
+    tap, eng, bus, sub, clock = _make_tap()
+    src = _noise(16.0)
+    eng.patch_window(src, 0)
+    tap.start()
+    _report_playhead(eng, clock, 3.0)
+    tap.step()
+    req = sub.submitted[0][0]
+    eng.patch_window(src[4 * SR:8 * SR].copy(), 4 * SR)
+    n = len(bus.of(AnalysisUpdate))
+    sub.answer()
+    assert len(bus.of(AnalysisUpdate)) == n  # held
+    tap.step()
+    upd = bus.of(AnalysisUpdate)[-1]
+    assert upd.range_start_s == req.t0_s and upd.items and tap.dropped == 0
 
 
 def test_append_only_confirms_behind_the_frontier():

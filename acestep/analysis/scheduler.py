@@ -20,7 +20,10 @@ Two canvas kinds, from the backend's ``Capabilities.refines_audio``:
   revision unchanged since the analysis, then ``settled``.
 
 A cell is re-analysed at most once per :data:`REANALYSIS_CAP_S`, which
-bounds the cost of continuous denoise churn without a content heuristic.
+bounds the cost of continuous denoise churn. Rewrites that leave a cell's
+music unchanged never reach the scheduler as dirty: the observer's
+content check (:func:`acestep.analysis.observer.content_fingerprint`)
+filters them out first.
 
 The :class:`Governor` holds work back when the session's own health
 degrades. It has no absolute ceiling: it compares the session against
