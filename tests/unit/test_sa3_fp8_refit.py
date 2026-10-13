@@ -309,3 +309,112 @@ def test_manifest_json_roundtrip_has_scales_sidecar(graph):
     out = write_fp8_manifest(manifest, scales, graph.dir / "m.json")
     data = json.loads(out.read_text(encoding="utf-8"))
     assert (graph.dir / data["scales_file"]).is_file()
+
+
+# --- missing-set completion (D4b) -------------------------------------
+# A REFIT-built engine marks every initializer refittable, and TensorRT
+# reports fused non-LoRA weights (on medium fp8: 24 cross_attend_norm.gamma
+# + padding_embedding) missing after the mapped pushes. The mirror must
+# supply each at its build-time base value, in the slot dtype, every commit.
+
+GAMMA = "dit.layers.0.cross_attend_norm.gamma"
+PAD = "padding_embedding"
+
+
+def _extras():
+    g = torch.Generator().manual_seed(9)
+    return torch.randn(3, generator=g) + 1.0, torch.randn(2, 3, generator=g)
+
+
+def _mirror_with_extras(graph, *, extra_dtype, missing=None, ckpt_extras=True):
+    from safetensors.torch import save_file
+
+    gamma, pad = _extras()
+    sd = {"model.model.blk.a.weight": graph.wa.contiguous(),
+          "model.model.blk.b.weight": graph.wb.contiguous()}
+    if ckpt_extras:
+        sd["model.model.layers.0.cross_attend_norm.gamma"] = gamma
+        sd["model.model.padding_embedding"] = pad
+    ckpt = graph.dir / "model_extras.safetensors"
+    save_file(sd, str(ckpt))
+    manifest, scales = build_fp8_manifest(
+        graph.onnx, base_reader=checkpoint_base_reader(ckpt), base_checkpoint=str(ckpt),
+    )
+    mpath = write_fp8_manifest(manifest, scales, graph.dir / "fp8_manifest_x.json")
+    names = [A_INIT, B_INIT, A_SCALE, B_SCALE, GAMMA, PAD, "/Constant_3_output_0"]
+    proto = {A_INIT: "F32", B_INIT: "F32", GAMMA: extra_dtype, PAD: extra_dtype}
+    refitter = _FakeRefitter(
+        names, proto, missing=[A_SCALE, GAMMA, PAD] if missing is None else missing,
+    )
+    root = _model(graph)
+    mirror = SA3TRTRefitMirror(object(), root, mpath, _refitter=refitter, _trt=_FakeTrt())
+    return mirror, refitter, root, gamma, pad
+
+
+@pytest.mark.parametrize("slot,torch_dt", [("F32", torch.float32), ("F16", torch.float16)])
+def test_fp8_mirror_supplies_every_missing_name_from_the_checkpoint(graph, slot, torch_dt):
+    mirror, refitter, root, gamma, pad = _mirror_with_extras(graph, extra_dtype=slot)
+    parametrize.register_parametrization(root.model.blk.a, "weight", _AddDelta(torch.zeros(4, 3)))
+    assert mirror.sync(reason="t") == 1
+    assert {A_SCALE, GAMMA, PAD} <= set(refitter.sets)
+    assert refitter.get_missing_weights() == []
+    assert "/Constant_3_output_0" not in refitter.sets    # refittable, not missing
+    g_buf, _arr, g_dt = mirror._extra_push[GAMMA]
+    p_buf, _arr, p_dt = mirror._extra_push[PAD]
+    assert (g_dt, p_dt) == (slot, slot)
+    assert g_buf.dtype == torch_dt and p_buf.dtype == torch_dt
+    assert torch.equal(g_buf, gamma.to(torch_dt))
+    assert torch.equal(p_buf, pad.to(torch_dt))
+    # Every commit re-supplies them (fresh missing set), from the same buffers.
+    refitter.sets.clear()
+    parametrize.remove_parametrizations(root.model.blk.a, "weight", leave_parametrized=False)
+    assert mirror.sync(reason="t2") == 1
+    assert {GAMMA, PAD} <= set(refitter.sets)
+    assert mirror._extra_push[GAMMA][0] is g_buf
+    assert refitter.commits == 2
+
+
+def test_fp8_mirror_missing_mapped_weight_goes_back_at_base_in_graph_orientation(graph):
+    mirror, refitter, root, _g, _p = _mirror_with_extras(
+        graph, extra_dtype="F32", missing=[B_INIT],
+    )
+    parametrize.register_parametrization(root.model.blk.a, "weight", _AddDelta(torch.ones(4, 3)))
+    mirror.sync()
+    assert B_INIT in refitter.sets
+    assert torch.equal(mirror._extra_push[B_INIT][0], graph.wb.t().contiguous())
+
+
+def test_fp8_mirror_unresolvable_missing_name_raises(graph):
+    mirror, refitter, root, _g, _p = _mirror_with_extras(
+        graph, extra_dtype="F32", ckpt_extras=False,
+    )
+    parametrize.register_parametrization(root.model.blk.a, "weight", _AddDelta(torch.zeros(4, 3)))
+    with pytest.raises(RuntimeError, match="no resolvable base"):
+        mirror.sync()
+    assert refitter.commits == 0
+
+
+@pytest.mark.parametrize("slot,torch_dt", [("F32", torch.float32), ("F16", torch.float16)])
+def test_fp16mixed_mirror_supplies_missing_names_from_eager(tmp_path, slot, torch_dt):
+    """v1 (fp16mixed) path: same latent gap; without a base checkpoint the
+    missing base comes from the live eager parameter, cast to the slot."""
+    model = nn.Module()
+    model.blk = nn.Module()
+    model.blk.lin = nn.Linear(3, 4, bias=False)
+    model.blk.norm = nn.Module()
+    model.blk.norm.gamma = nn.Parameter(torch.randn(3))
+    manifest = tmp_path / "v1.json"
+    manifest.write_text(json.dumps({
+        "version": 1,
+        "weights": {"blk.lin": {"initializer": "onnx::MatMul_7", "transposed": False}},
+    }), encoding="utf-8")
+    name = "dit.blk.norm.gamma"
+    refitter = _FakeRefitter(
+        ["onnx::MatMul_7", name], {"onnx::MatMul_7": "F32", name: slot}, missing=[name],
+    )
+    mirror = SA3TRTRefitMirror(object(), model, manifest, _refitter=refitter, _trt=_FakeTrt())
+    parametrize.register_parametrization(model.blk.lin, "weight", _AddDelta(torch.zeros(4, 3)))
+    assert mirror.sync() == 1
+    assert refitter.sets == ["onnx::MatMul_7", name]
+    buf, _arr, dt = mirror._extra_push[name]
+    assert dt == slot and torch.equal(buf, model.blk.norm.gamma.detach().to(torch_dt))

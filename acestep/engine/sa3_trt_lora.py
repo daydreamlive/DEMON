@@ -37,8 +37,20 @@ from the eager parametrization (the eager model runs fp16; pushing its
 fp16 merged weight would not reproduce the build-time quantization even
 at strength 0), then pushes fp32 when the engine slot is fp32 (TRT
 re-quantizes with its baked scale) or quantizes itself under the FIXED
-baked scale when the slot is fp8. Scale initializers the refit reports
-missing are re-submitted at their baked values.
+baked scale when the slot is fp8.
+
+Missing-set completion (both manifest versions): an engine built with
+``BuilderFlag.REFIT`` marks EVERY initializer refittable (the fp8 medium
+engine exposes 1673 names), and TensorRT's ``get_missing_weights`` counts
+any unsupplied weight it fused with a pushed one as missing (on the fp8
+graph: every baked scale touched, all 24 ``cross_attend_norm.gamma`` and
+``padding_embedding``). After the mapped pushes, every name the refitter
+still reports missing is supplied at its build-time base value, on every
+commit: baked scales from the fp8 sidecar, anything else from the fp32
+base checkpoint (manifest ``base_checkpoint``), else the live eager
+parameter/buffer, cast to the slot dtype. The staged buffers are pinned
+and reused. A name with no resolvable base raises (a refit that silently
+drops a fused weight would corrupt the engine).
 
 Sync stalls are full refits (hundreds of ms class). They are always
 announced before they run: enables/disables ride ``has_pending_refit``
@@ -132,7 +144,15 @@ class SA3TRTRefitMirror:
         self._fp8 = version == FP8_MANIFEST_VERSION
         self._fp8_meta: Dict[str, tuple] = {}
         self._scales: Dict[str, torch.Tensor] = {}
-        self._scale_push: Dict[str, tuple] = {}
+        # Missing-set completion: name -> (buf, ndarray view, trt dtype),
+        # staged once (pinned) and re-pushed on every commit.
+        self._extra_push: Dict[str, tuple] = {}
+        self._ckpt_handle = None
+        self._ckpt_keys: Optional[list] = None
+        self._graph_prefix = manifest.get("graph_prefix", "dit.")
+        self._module_prefix = manifest.get("module_prefix", "model.")
+        ckpt = manifest.get("base_checkpoint")
+        self._base_checkpoint = ckpt if ckpt and Path(ckpt).is_file() else None
         self._base_cache: Dict[str, torch.Tensor] = {}
         self._base_weights = base_weights
         if self._fp8:
@@ -284,7 +304,7 @@ class SA3TRTRefitMirror:
                 np_view_for_push(self._staging[fqn]), trt_dt,
                 context=f"sa3 refit mirror fqn={fqn}",
             )
-        co_pushed = self._push_missing_scales() if self._fp8 else 0
+        co_pushed = self._push_missing()
         commit_refit(self._refitter)
         # Any CUDA graph captured over this engine predates the new
         # weights; SA3TRTDit re-captures on its next step.
@@ -328,25 +348,122 @@ class SA3TRTRefitMirror:
             )
         return base.to(delta.device, non_blocking=True) + delta
 
-    def _push_missing_scales(self) -> int:
-        """Re-submit baked scale initializers the refit reports missing
-        (TRT may count a fused weight's scale as part of its refit set)."""
+    def _push_missing(self) -> int:
+        """Supply every name the refitter reports missing after the mapped
+        pushes, at its build-time base value (see module docstring).
+        Loops until the missing set is empty: supplying one fused weight
+        may pull in another. Raises on a name with no resolvable base."""
         if not hasattr(self._refitter, "get_missing_weights"):
             return 0
-        n = 0
-        for name in list(self._refitter.get_missing_weights()):
+        supplied: set = set()
+        while True:
+            missing = [
+                n for n in self._refitter.get_missing_weights() if n not in supplied
+            ]
+            if not missing:
+                break
+            unresolved = []
+            for name in missing:
+                rec = self._extra_record(name)
+                if rec is None:
+                    unresolved.append(name)
+                    continue
+                _buf, arr, trt_dt = rec
+                set_typed_weights(
+                    self._refitter, self._trt, name, arr, trt_dt,
+                    context="sa3 refit missing-set base value",
+                )
+                supplied.add(name)
+            if unresolved:
+                raise RuntimeError(
+                    f"TRT refit reports {len(unresolved)} missing weights with no "
+                    f"resolvable base value (first: {unresolved[:5]}); record "
+                    f"base_checkpoint in the refit manifest"
+                )
+        return len(supplied)
+
+    def _extra_record(self, name: str):
+        rec = self._extra_push.get(name)
+        if rec is not None:
+            return rec
+        base = self._extra_base(name)
+        if base is None:
+            return None
+        trt_dt, torch_dt = self._prototype(name)
+        if torch_dt == torch.uint8:
             if name not in self._scales:
+                raise RuntimeError(
+                    f"refit missing-set weight {name} has an fp8 slot; only "
+                    f"mapped Linear weights are quantized by the mirror"
+                )
+            torch_dt = torch.float32
+        buf = base.detach().to(device="cpu", dtype=torch_dt).contiguous()
+        try:
+            buf = buf.pin_memory()
+        except RuntimeError:
+            pass
+        rec = (buf, np_view_for_push(buf), trt_dt)
+        self._extra_push[name] = rec
+        return rec
+
+    def _extra_base(self, name: str) -> Optional[torch.Tensor]:
+        """Build-time base value of a non-mapped initializer: fp8 sidecar
+        scale, else fp32 checkpoint, else the live eager tensor."""
+        if name in self._scales:
+            return self._scales[name]
+        for fqn, (init_name, transposed) in self._map.items():
+            if init_name != name:
                 continue
-            trt_dt, torch_dt = self._prototype(name)
-            rec = self._scale_push.get(name)
-            if rec is None:
-                dt = torch.float32 if torch_dt == torch.uint8 else torch_dt
-                buf = self._scales[name].to(dt).contiguous()
-                rec = (buf, np_view_for_push(buf))
-                self._scale_push[name] = rec
-            set_typed_weights(
-                self._refitter, self._trt, name, rec[1], trt_dt,
-                context="sa3 fp8 co-refit baked scale",
-            )
-            n += 1
-        return n
+            # A mapped weight fused with a pushed one but not pushed this
+            # sync: it holds its base (parametrized modules are pushed).
+            if self._fp8:
+                w = self._fp8_base(fqn)
+            else:
+                mod = self._resolve_module(fqn)
+                w = None if mod is None else mod.weight.detach()
+            if w is not None and transposed and w.dim() == 2:
+                w = w.transpose(0, 1)
+            return w
+        gp = self._graph_prefix
+        stripped = name[len(gp):] if gp and name.startswith(gp) else name
+        rel = self._module_prefix + stripped     # relative to model_root
+        if self._base_checkpoint is not None:
+            t = self._ckpt_lookup(rel, stripped)
+            if t is not None:
+                return t.to(torch.float32)
+        t = self._eager_lookup(rel, stripped)
+        if t is not None:
+            if t.dtype != torch.float32:
+                logger.warning(
+                    "sa3_refit_missing_from_eager name={} dtype={} (no base "
+                    "checkpoint; build-time bits may differ)", name, t.dtype,
+                )
+            return t
+        return None
+
+    def _ckpt_lookup(self, rel: str, stripped: str) -> Optional[torch.Tensor]:
+        if self._ckpt_handle is None:
+            from safetensors import safe_open  # noqa: PLC0415
+
+            self._ckpt_handle = safe_open(str(self._base_checkpoint), framework="pt")
+            self._ckpt_keys = list(self._ckpt_handle.keys())
+        keys = self._ckpt_keys
+        # model_root is the checkpoint's ``model.`` subtree (see
+        # sa3_fp8_refit.checkpoint_base_reader).
+        for k in ("model." + rel, rel):
+            if k in keys:
+                return self._ckpt_handle.get_tensor(k)
+        hits = [k for k in keys if k.endswith("." + stripped)]
+        if len(hits) == 1:
+            return self._ckpt_handle.get_tensor(hits[0])
+        return None
+
+    def _eager_lookup(self, rel: str, stripped: str) -> Optional[torch.Tensor]:
+        named = dict(self._model_root.named_parameters())
+        named.update(dict(self._model_root.named_buffers()))
+        if rel in named:
+            return named[rel].detach()
+        hits = [k for k in named if k == stripped or k.endswith("." + stripped)]
+        if len(hits) == 1:
+            return named[hits[0]].detach()
+        return None
