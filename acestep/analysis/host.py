@@ -112,7 +112,11 @@ class AnalysisHost:
         self._closed = False
         self._worker: Optional[threading.Thread] = None
         self._engines: dict[tuple[str, str], AnalysisEngine] = {}
+        # _load_lock serialises loads and is held for a whole model load;
+        # _engines_lock guards the map only and is never held across a
+        # load, so engine_info() and loaded() never wait on one.
         self._load_lock = threading.Lock()
+        self._engines_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # AnalysisSubmitter
@@ -158,7 +162,7 @@ class AnalysisHost:
         reason = spec.probe()
         if reason:
             raise EngineUnavailable(reason)
-        with self._load_lock:
+        with self._engines_lock:
             loaded = (spec.name, resolved) in self._engines
         return {
             "name": spec.name,
@@ -212,7 +216,7 @@ class AnalysisHost:
 
     def loaded(self) -> list[tuple[str, str]]:
         """``(analyzer, size)`` of every loaded engine."""
-        with self._load_lock:
+        with self._engines_lock:
             return sorted(self._engines)
 
     def shutdown(self) -> int:
@@ -237,7 +241,7 @@ class AnalysisHost:
         for job, exc in owed:
             self._call(job.on_error, exc)
 
-        with self._load_lock:
+        with self._load_lock, self._engines_lock:
             engines, self._engines = self._engines, {}
         names = set()
         for (name, size), engine in engines.items():
@@ -340,8 +344,13 @@ class AnalysisHost:
 
     def _engine_for(self, spec, size: str) -> AnalysisEngine:
         key = (spec.name, size)
-        with self._load_lock:
+        with self._engines_lock:
             engine = self._engines.get(key)
+        if engine is not None:
+            return engine
+        with self._load_lock:
+            with self._engines_lock:
+                engine = self._engines.get(key)
             if engine is not None:
                 return engine
             reason = spec.probe()
@@ -373,7 +382,8 @@ class AnalysisHost:
                 captured = buf.getvalue().strip()
                 if captured:
                     logger.debug("analysis_engine_load_stderr analyzer={} text={!r}", spec.name, captured)
-            self._engines[key] = engine
+            with self._engines_lock:
+                self._engines[key] = engine
             logger.info("analysis_engine_loaded analyzer={} size={} device={}", spec.name, size, device)
             return engine
 

@@ -314,3 +314,36 @@ def test_get_host_singleton_and_shutdown_host(monkeypatch):
     b = host_mod.get_host()
     assert b is not a
     host_mod.shutdown_host()
+
+
+def test_engine_info_does_not_wait_on_a_load_in_progress():
+    """A model load holds the load lock for seconds; engine_info and
+    loaded() (the WS receive thread's tap.start) must not wait on it."""
+    import dataclasses
+    import time
+
+    h = Harness()
+    entered, release = threading.Event(), threading.Event()
+    make = h.spec.make_engine
+
+    def slow_make(size, device):
+        entered.set()
+        assert release.wait(WAIT)
+        return make(size, device)
+
+    h.spec = dataclasses.replace(h.spec, make_engine=slow_make)
+    h.submit(1)
+    assert entered.wait(WAIT)
+    try:
+        t0 = time.perf_counter()
+        info = h.host.engine_info("fake", None)
+        assert h.host.loaded() == []
+        assert time.perf_counter() - t0 < 0.5
+        assert info["loaded"] is False
+    finally:
+        release.set()
+    h.wait_for(1)
+    assert h.results == [1]
+    assert h.host.engine_info("fake", None)["loaded"] is True
+    assert h.host.loaded() == [("fake", "s")]
+    h.host.shutdown()
