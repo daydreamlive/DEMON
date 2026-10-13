@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>DEMON Notes</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="plugin" aria-label="Live notes demo">
+        <div class="brand-row">
+          <div class="brand">Daydream</div>
+        </div>
+
+        <div class="source-row">
+          <label class="field-slot">
+            <span>Source</span>
+            <select id="mode">
+              <option value="mic">Microphone</option>
+              <option value="file">File</option>
+              <option value="generator">Generator (SA3)</option>
+            </select>
+          </label>
+          <label class="field-slot">
+            <span>Instruments</span>
+            <input id="instruments" type="text" placeholder="all (e.g. acoustic_piano, drums)" spellcheck="false">
+          </label>
+        </div>
+
+        <div class="roll-wrap">
+          <canvas id="roll" class="roll" aria-label="Piano roll of the analysed canvas"></canvas>
+          <div class="roll-legend">
+            <span><i class="swatch swatch-provisional"></i>provisional</span>
+            <span><i class="swatch swatch-settled"></i>settled</span>
+            <span id="analysis-mode" class="readout">off</span>
+            <span id="analysis-dropped" class="readout"></span>
+            <span id="take" class="readout"></span>
+          </div>
+          <div id="analysis-error" class="analysis-error" hidden></div>
+        </div>
+
+        <div class="controls">
+          <div class="mode-panel" data-mode="mic">
+            <div class="field-slot">
+              <span>Input level</span>
+              <div class="meter" aria-label="Microphone input level">
+                <div id="level-rms" class="meter-rms"></div>
+                <div id="level-peak" class="meter-peak"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="mode-panel" data-mode="file" hidden>
+            <label class="field-slot">
+              <span>Audio file</span>
+              <input id="file" type="file" accept="audio/*">
+            </label>
+          </div>
+
+          <div class="mode-panel" data-mode="generator" hidden>
+            <label class="field-slot">
+              <span>Prompt</span>
+              <textarea id="prompt" rows="2"></textarea>
+            </label>
+            <label class="field-slot">
+              <span>Fixture</span>
+              <select id="fixture"></select>
+            </label>
+          </div>
+
+          <div class="analysis-row">
+            <label class="field-slot">
+              <span>Model</span>
+              <select id="size" aria-label="Notes model size">
+                <option value="small" selected>Small</option>
+                <option value="medium">Medium</option>
+                <option value="large">Large</option>
+              </select>
+            </label>
+            <label class="field-slot range-slot">
+              <span>
+                Horizon
+                <em id="horizon-value" class="range-value">8 s</em>
+              </span>
+              <input id="horizon" type="range" min="4" max="30" step="1" value="8" aria-label="Analysis horizon in seconds">
+            </label>
+          </div>
+
+          <div id="loop-row" class="loop-row">
+            <label class="check-slot">
+              <input id="loop" type="checkbox" disabled>
+              <span>Loop band</span>
+            </label>
+            <label class="field-slot inline-slot">
+              <span>From s</span>
+              <input id="loop-start" type="number" min="0" step="0.5" value="0">
+            </label>
+            <label class="field-slot inline-slot">
+              <span>To s</span>
+              <input id="loop-end" type="number" min="0" step="0.5" value="8">
+            </label>
+          </div>
+        </div>
+
+        <div class="title">notes</div>
+
+        <div class="transport">
+          <button id="transport" type="button" class="power-btn">Start</button>
+          <label class="check-slot notes-toggle">
+            <input id="notes-on" type="checkbox" disabled>
+            <span>Notes</span>
+          </label>
+          <button id="save-midi" type="button" class="send-btn" disabled>Save MIDI</button>
+          <span id="status-dot" class="status-dot status-idle" aria-hidden="true"></span>
+          <span id="status-text" class="status-text">idle</span>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="./notes.js"></script>
+  </body>
+</html>

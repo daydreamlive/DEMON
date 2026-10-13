@@ -161,6 +161,9 @@ class FieldSpec:
     options: tuple = ()        # allowed values for enum fields
     nullable: bool = False     # explicit JSON null is a valid value
     description: str = ""
+    # For ``list`` fields: the registered item union (a key of ITEM_UNIONS)
+    # every element belongs to. "" = untyped elements.
+    of: str = ""
 
 
 @dataclass
@@ -203,6 +206,35 @@ _PCM_FRAME = (
     "JSON header followed by one binary PCM frame: ``<II`` (channels, samples) "
     "then interleaved float32 at 48 kHz."
 )
+
+# ---------------------------------------------------------------------------
+# Analysis item kinds (the ``analysis_update.items`` tagged union)
+# ---------------------------------------------------------------------------
+# One entry per registered item kind; the update's ``kind`` field names the
+# kind every element of ``items`` has. A new kind (beats, chords) is ONE
+# entry here plus the matching name in acestep.analysis.engine.ITEM_KINDS,
+# then a codegen run. Drift-guarded by tests/unit/test_wire_contract.py.
+
+ANALYSIS_ITEM_KINDS: dict = {
+    "note": (
+        FieldSpec("start_s", "float", required=True,
+                  description="Onset in canvas seconds (the frame of "
+                              "params.playback_pos)."),
+        FieldSpec("end_s", "float", required=True,
+                  description="Offset in canvas seconds."),
+        FieldSpec("pitch", "int", required=True,
+                  description="MIDI pitch 0-127."),
+        FieldSpec("instrument", "str", required=True,
+                  description="MuScriptor instrument label (e.g. 'piano', "
+                              "'drums'). No velocity: the model has none."),
+    ),
+}
+
+#: ``FieldSpec.of`` names -> ``{kind: fields}``.
+ITEM_UNIONS: dict = {"analysis_item": ANALYSIS_ITEM_KINDS}
+
+_ANALYSIS_MODES = ("lookahead", "confirm", "no_playhead", "backoff", "off")
+_ANALYSIS_BASES = ("provisional", "settled")
 
 COMMANDS: tuple = (
     CommandSpec(
@@ -553,6 +585,64 @@ COMMANDS: tuple = (
                     + _PCM_FRAME + " Acked by midi_notes / midi_failed.",
     ),
     CommandSpec(
+        "analysis_tap",
+        fields=(
+            FieldSpec("tap", "str", required=True,
+                      description="Analyzer name, one of ready.capabilities."
+                                  "analysis_taps (e.g. 'notes')."),
+            FieldSpec("enabled", "bool", required=True,
+                      description="true enables (or re-configures) the "
+                                  "tap; false disables it."),
+            FieldSpec("options", "dict",
+                      description="Per-analyzer options, validated by the "
+                                  "analyzer. notes: {size: "
+                                  "small|medium|large, instruments: "
+                                  "[MuScriptor names], horizon_s: 4..30 "
+                                  "(default 8; how far ahead of the "
+                                  "playhead ring canvases are analysed)}. "
+                                  "Unknown options fail the enable."),
+        ),
+        description="Turn a live analysis channel on or off: the server "
+                    "listens to the canvas it renders and streams items "
+                    "(notes first) as analysis_update range replaces. "
+                    "Acked by analysis_state; analyzer problems (unknown "
+                    "tap, not available on this pod, bad options) come "
+                    "back as analysis_state.error, never command_failed. "
+                    "Ring canvases are analysed ahead of the playhead, so "
+                    "keep sending params.playback_pos.",
+    ),
+    CommandSpec(
+        "audio_in",
+        fields=(
+            FieldSpec("seq", "int", required=True,
+                      description="Client frame counter, +1 per frame. A "
+                                  "seq that does not advance (the client "
+                                  "restarted its stream) starts a new take; "
+                                  "a skipped seq is a gap."),
+            FieldSpec("start_s", "float", nullable=True,
+                      description="The frame's position on the client's "
+                                  "stream clock, seconds since its capture "
+                                  "started. Optional: without it frames are "
+                                  "contiguous and gaps come from seq. A gap "
+                                  "up to 2 s is filled with silence; a "
+                                  "longer one, or a step back, starts a new "
+                                  "take."),
+        ),
+        binary=True,
+        requires="audio_in",
+        description="Live audio input: append one PCM frame (typically "
+                    "100 ms of microphone audio, mono or stereo) at the "
+                    "canvas write frontier. Only families whose canvas the "
+                    "client feeds declare it (ready.capabilities.audio_in, "
+                    "the live_input family on a session created without a "
+                    "source). The server playhead follows the frontier "
+                    "(0.25 s behind), so no params.playback_pos is needed. "
+                    "When the capture canvas is full a new take starts: "
+                    "swap_ready with a new source_epoch (analysis taps "
+                    "clear). " + _PCM_FRAME + " Acked by audio_in_ack, at "
+                    "most 5 per second.",
+    ),
+    CommandSpec(
         "bounce",
         fields=(
             FieldSpec("request_id", "str", required=True,
@@ -645,7 +735,10 @@ EVENTS: tuple = (
             FieldSpec("capabilities", "dict",
                       description="Backend capability mask: {capability: "
                                   "bool} over the Capabilities fields "
-                                  "(swap, timbre, structure, lora, ...). "
+                                  "(swap, timbre, structure, lora, ...), "
+                                  "plus analysis_taps: the analyzer names "
+                                  "this pod can run as analysis_tap "
+                                  "channels (empty list when none). "
                                   "Client panels and MCP tools gate on it; "
                                   "commands tagged with a matching "
                                   "`requires` fail with command_failed "
@@ -932,6 +1025,95 @@ EVENTS: tuple = (
                     "families or walk mode), or no fresh generation landed "
                     "in time. The session is unaffected.",
     ),
+    EventSpec(
+        "analysis_state",
+        fields=(
+            FieldSpec("tap", "str", required=True,
+                      description="Analyzer name."),
+            FieldSpec("enabled", "bool", required=True),
+            FieldSpec("engine", "str", required=True,
+                      description="Engine that runs the tap (e.g. "
+                                  "'muscriptor'); empty when it never "
+                                  "started."),
+            FieldSpec("size", "str", required=True,
+                      description="Model size loaded (small|medium|large)."),
+            FieldSpec("licence", "str", required=True,
+                      description="Licence text of the model; show it "
+                                  "verbatim."),
+            FieldSpec("mode", "enum", required=True, options=_ANALYSIS_MODES,
+                      description="lookahead: ring canvas, cells ahead of "
+                                  "the playhead first. confirm: append-"
+                                  "only canvas, cells behind the write "
+                                  "frontier. no_playhead: ring canvas "
+                                  "without playhead reports, write order. "
+                                  "backoff: held back to protect "
+                                  "generation. off: disabled."),
+            FieldSpec("error", "str", required=True, nullable=True,
+                      description="User-facing error, or null."),
+            FieldSpec("dropped", "int", required=True,
+                      description="Cumulative live requests withdrawn or "
+                                  "dropped (queue full, stale result, "
+                                  "engine busy)."),
+        ),
+        description="State of one analysis tap: sent on enable, disable, "
+                    "mode change and error.",
+    ),
+    EventSpec(
+        "audio_in_ack",
+        fields=(
+            FieldSpec("seq", "int", required=True,
+                      description="Newest audio_in frame applied."),
+            FieldSpec("frontier_s", "float", required=True,
+                      description="Write frontier after it, canvas seconds "
+                                  "of the current take."),
+        ),
+        description="Acknowledges audio_in frames; coalesced to at most 5 "
+                    "per second (each ack covers every frame up to seq).",
+    ),
+    EventSpec(
+        "analysis_update",
+        fields=(
+            FieldSpec("tap", "str", required=True),
+            FieldSpec("seq", "int", required=True,
+                      description="Monotonic per session; a lower seq for "
+                                  "the same range is ignored."),
+            FieldSpec("source_epoch", "int", required=True,
+                      description="Source generation the items were "
+                                  "analysed from; an update older than the "
+                                  "last clear is ignored."),
+            FieldSpec("range_start_s", "float", required=True,
+                      description="Start of the replaced range, canvas "
+                                  "seconds."),
+            FieldSpec("span_s", "float", required=True,
+                      description="Length of the replaced range."),
+            FieldSpec("basis", "enum", required=True, options=_ANALYSIS_BASES,
+                      description="provisional: the region may still be "
+                                  "rewritten. settled: append-only audio "
+                                  "behind the frontier, or ring audio the "
+                                  "playhead passed unchanged."),
+            FieldSpec("late", "bool", required=True,
+                      description="The playhead had already passed "
+                                  "range_start_s when the items arrived."),
+            FieldSpec("clear", "bool", required=True,
+                      description="Drop every item of this tap first (on "
+                                  "enable and swap; items empty)."),
+            FieldSpec("kind", "enum", required=True,
+                      options=tuple(ANALYSIS_ITEM_KINDS),
+                      description="Item kind of every element of items."),
+            FieldSpec("items", "list", required=True, of="analysis_item",
+                      description="Items whose start_s lies in [range_"
+                                  "start_s, range_start_s + span_s); they "
+                                  "replace the tap's items in that range."),
+            FieldSpec("playhead_s", "float", required=True, nullable=True,
+                      description="Server playhead estimate at publish, or "
+                                  "null without one."),
+            FieldSpec("wall_s", "float", required=True,
+                      description="Engine wall time for this range."),
+        ),
+        description="Range replace for one analysis tap: drop the tap's "
+                    "items starting in [range_start_s, range_start_s + "
+                    "span_s), insert items. Times are canvas seconds.",
+    ),
 )
 
 COMMAND_NAMES = frozenset(c.name for c in COMMANDS)
@@ -1015,6 +1197,8 @@ def _field_payload(f: "FieldSpec") -> dict:
         out["nullable"] = True
     if f.description:
         out["description"] = f.description
+    if f.of:
+        out["of"] = f.of
     return out
 
 
@@ -1151,6 +1335,18 @@ def config_catalog() -> dict:
     return out
 
 
+def item_kinds_catalog() -> dict:
+    """``{union: {kind: {"fields": {...}}}}`` for every registered item
+    union (today ``analysis_item``: the ``analysis_update.items`` kinds)."""
+    return {
+        union: {
+            kind: {"fields": {f.name: _field_payload(f) for f in fields}}
+            for kind, fields in kinds.items()
+        }
+        for union, kinds in ITEM_UNIONS.items()
+    }
+
+
 def handshake_contract() -> dict:
     """The pre-stream handshake sub-protocol: the ``upload_track`` command and
     its ``upload_ok`` / ``upload_failed`` acks. Separate from the streaming
@@ -1174,6 +1370,8 @@ def wire_contract() -> dict:
     * ``commands`` / ``events`` — the per-tick streaming vocabulary.
     * ``config`` — the session-init payload, derived from SessionConfig.
     * ``handshake`` — the init-phase ``upload_track`` sub-protocol.
+    * ``item_kinds`` — element shapes of typed list fields (a field's
+      ``of`` names its union), e.g. ``analysis_update.items``.
     """
     return {
         "version": PROTOCOL_VERSION,
@@ -1181,6 +1379,7 @@ def wire_contract() -> dict:
         "events": event_catalog(),
         "config": config_catalog(),
         "handshake": handshake_contract(),
+        "item_kinds": item_kinds_catalog(),
     }
 
 

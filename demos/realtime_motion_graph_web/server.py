@@ -1186,6 +1186,14 @@ def main():
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("server_shutdown_evict_failed error={}", exc)
+        # Analysis engines (the live notes tap and the MIDI one-shot) live
+        # on a process-wide host; unload them on the same best-effort terms.
+        try:
+            from acestep.analysis.host import shutdown_host
+
+            logger.info("server_shutdown_analysis_engines count={}", shutdown_host())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("server_shutdown_analysis_failed error={}", exc)
         os._exit(0)
 
 

@@ -28,12 +28,20 @@ import {
   type SwapReadyMessage,
 } from "./types/protocol";
 import type { KnobManifestResponse } from "./types/knobs";
+import {
+  ANALYSIS_TAP_COMMAND,
+  analysisTapsAvailable,
+  type AnalysisTapCommandPayload,
+  type AnalysisTapName,
+  type AnalysisTapOptions,
+} from "./analysis/types";
 // Outbound command payloads + the inbound event-name union are GENERATED from
 // the backend wire-contract registry (protocol.py) — see
 // types/wireContract.gen.ts. Typing the senders/ladder against them means a
 // renamed command, a dropped field, or an unregistered event name fails
 // `tsc` instead of silently desyncing from the server.
 import type {
+  AudioInCommand,
   ClearStructureSourceCommand,
   ClearTimbreSourceCommand,
   DisableLoraCommand,
@@ -128,7 +136,7 @@ export function float16ArrayToFloat32(u16: Uint16Array): Float32Array {
 // The one binary upload frame shape in the protocol: `<II` header
 // (channels, samples, little-endian) + interleaved float32 PCM. Shared by
 // the init-handshake upload, the timbre/structure reference uploads, and
-// swap_source.
+// swap_source, and the live audio_in stream.
 
 function packPcmFrame(interleaved: Float32Array, channels: number): Uint8Array {
   const samples = interleaved.length / channels;
@@ -136,7 +144,12 @@ function packPcmFrame(interleaved: Float32Array, channels: number): Uint8Array {
   const dv = new DataView(hdr);
   dv.setUint32(0, channels, true);
   dv.setUint32(4, samples, true);
-  const pcm = new Uint8Array(interleaved.buffer);
+  // The view's own bytes only: a subarray shares a larger buffer.
+  const pcm = new Uint8Array(
+    interleaved.buffer,
+    interleaved.byteOffset,
+    interleaved.byteLength,
+  );
   const combined = new Uint8Array(hdr.byteLength + pcm.byteLength);
   combined.set(new Uint8Array(hdr), 0);
   combined.set(pcm, hdr.byteLength);
@@ -241,6 +254,10 @@ export class RemoteBackend extends EventTarget {
   /** Backend capability mask from `ready.capabilities`. Null = older
    *  server / replay: treat as ungated (everything available). */
   capabilities: CapabilityMask | null = null;
+  /** Analyzer names this pod can run (`ready.capabilities.analysis_taps`);
+   *  empty until ready and on pods without any. Gate `sendAnalysisTap`
+   *  and analysis UI on it. */
+  analysisTaps: string[] = [];
   /** Per-session knob manifest from `ready.knob_manifest` — the same
    *  `{version, knobs}` envelope `GET /api/knobs` serves, but resolved
    *  for THIS session (SDE mode, enabled `lora_str_<id>` knobs). Null
@@ -509,6 +526,7 @@ export class RemoteBackend extends EventTarget {
               (msg.geometry as ReadyGeometry | undefined) ?? null;
             this.capabilities =
               (msg.capabilities as CapabilityMask | undefined) ?? null;
+            this.analysisTaps = analysisTapsAvailable(this.capabilities);
             this.knobManifest =
               (msg.knob_manifest as KnobManifestResponse | undefined) ?? null;
             // Activation-steering surface. Wire-optional like the
@@ -629,6 +647,13 @@ export class RemoteBackend extends EventTarget {
           // (tests/unit/test_wire_contract.py) parses these labels against
           // the registry from its side.
           switch (msg.type) {
+            case "analysis_state":
+            case "analysis_update":
+              // One generic channel for every analyzer: re-dispatched under
+              // their own names with the payload as `detail`, so consumers
+              // (AnalysisStore.attach) never parse the generic `json` event.
+              this.dispatchEvent(new CustomEvent(msg.type, { detail: msg }));
+              return;
             case "params_update":
               this.dispatchEvent(
                 new CustomEvent("params", { detail: msg.params }),
@@ -736,6 +761,13 @@ export class RemoteBackend extends EventTarget {
               // splice would be invisible to the host.
               this.dispatchEvent(
                 new CustomEvent("audio_write_failed", { detail: msg.error }),
+              );
+              break;
+            case "audio_in_ack":
+              // Coalesced ack for the audio_in stream (newest seq applied
+              // + the write frontier of the current take).
+              this.dispatchEvent(
+                new CustomEvent("audio_in_ack", { detail: msg }),
               );
               break;
             case "command_failed":
@@ -1133,6 +1165,64 @@ export class RemoteBackend extends EventTarget {
       };
       this.ws.send(JSON.stringify(msg));
     } catch {}
+  }
+
+  /**
+   * Enable or disable a live analysis tap (`analysis_tap`). `tap` is an
+   * analyzer name from `analysisTaps`; `options` are per analyzer (for
+   * `notes`: size, instruments, horizon_s) and validated server-side.
+   * The server answers with `analysis_state` (carrying `error` when the
+   * enable was refused, never `command_failed`) and, on enable, a
+   * `clear` `analysis_update` followed by range updates. Re-sending with
+   * `enabled: true` and new options replaces the running tap.
+   */
+  sendAnalysisTap<T extends AnalysisTapName>(
+    tap: T,
+    enabled: boolean,
+    options?: AnalysisTapOptions<T>,
+  ): void {
+    if (this.ws?.readyState !== this._wsOpen) return;
+    try {
+      const msg: AnalysisTapCommandPayload = {
+        type: ANALYSIS_TAP_COMMAND,
+        tap,
+        enabled,
+      };
+      if (options !== undefined) {
+        msg.options = options as Record<string, unknown>;
+      }
+      this.ws.send(JSON.stringify(msg));
+    } catch {}
+  }
+
+  /**
+   * Stream one frame of live audio (`audio_in`): the server appends it at
+   * the canvas write frontier. Only sessions whose
+   * `capabilities.audio_in` is true accept it (the `live_input` family
+   * created without a source); others answer `command_failed`. `frame` is
+   * interleaved float32 at 48 kHz (`channels` 1 or 2, default 1), `seq`
+   * the frame counter (+1 per frame; restart from 0 to begin a new take),
+   * `startS` the frame's position on the capture clock when known (the
+   * server fills a gap up to 2 s with silence). Never drops: the server
+   * places frames by `seq`/`startS`, so a skipped send would be read as a
+   * gap. Acked by `audio_in_ack` CustomEvents (at most 5 per second).
+   */
+  sendAudioIn(
+    frame: Float32Array,
+    seq: number,
+    opts: { channels?: number; startS?: number } = {},
+  ): boolean {
+    if (this.ws?.readyState !== this._wsOpen) return false;
+    try {
+      const msg: AudioInCommand = { type: "audio_in", seq };
+      if (opts.startS != null) msg.start_s = opts.startS;
+      this.ws.send(JSON.stringify(msg));
+      this.ws.send(packPcmFrame(frame, opts.channels ?? 1));
+      return true;
+    } catch (e) {
+      console.error("[protocol] audio_in failed:", e);
+      return false;
+    }
   }
 
   /**

@@ -255,3 +255,37 @@ def test_publish_after_close_is_ignored():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def _analysis(cls, seq: int, clear: bool):
+    """An AnalysisUpdate or AnalysisClear for tap ``notes``."""
+    return cls(
+        tap="notes", seq=seq, source_epoch=1, range_start_s=0.0, span_s=0.0,
+        basis="provisional", late=False, clear=clear, kind="note",
+    )
+
+
+def test_analysis_clear_is_never_drop_and_update_is_drop_oldest():
+    """The opening/swap clear must reach every client; range updates may
+    be shed under backpressure."""
+    from acestep.streaming.events import AnalysisClear, AnalysisUpdate, _policy_for
+
+    assert _policy_for(_analysis(AnalysisClear, 0, True), None) is BackpressurePolicy.NEVER_DROP
+    assert _policy_for(_analysis(AnalysisUpdate, 0, False), None) is BackpressurePolicy.DROP_OLDEST
+    assert issubclass(AnalysisClear, AnalysisUpdate)
+
+
+def test_analysis_clear_survives_an_update_flood():
+    from acestep.streaming.events import AnalysisClear, AnalysisUpdate
+
+    bus = EventBus()
+    h = _Harness(bus, queue_size=3)
+    h.park(bus, _audio(-1))
+    bus.publish(_analysis(AnalysisClear, 0, True))
+    for seq in range(1, 20):
+        bus.publish(_analysis(AnalysisUpdate, seq, False))
+    h.release_and_join()
+
+    clears = [e for e in h.received if isinstance(e, AnalysisClear)]
+    assert [e.seq for e in clears] == [0]
+    assert not any(isinstance(e, SubscriberDropped) for e in h.received)

@@ -298,3 +298,15 @@ def yue2_preflight(req: PreflightRequest) -> PreflightResult:
             )
     logger.info("preflight_yue2_ok {} trt_dir={}", msg, trt_dir)
     return PreflightResult.passed()
+
+
+def live_input_preflight(req: PreflightRequest) -> PreflightResult:
+    """The ``live_input`` family's boot check: nothing to verify.
+
+    The family loads no model and needs no GPU (its canvas is fed by the
+    client), so it boots on any machine. A live analysis tap on top of it
+    reports its own availability through ``ready.capabilities.analysis_taps``
+    and ``analysis_state.error``, never through the boot check.
+    """
+    logger.info("preflight_live_input_ok model_id={}", req.model_id)
+    return PreflightResult.passed()

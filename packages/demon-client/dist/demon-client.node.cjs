@@ -709,6 +709,14 @@ var SLICE_FLAG_RAW = 0;
 var SLICE_FLAG_DELTA = 1;
 var PREEMPTED_CLOSE_CODE = 4001;
 
+// analysis/types.ts
+var ANALYSIS_TAP_COMMAND = "analysis_tap";
+function analysisTapsAvailable(capabilities) {
+  const raw = capabilities?.analysis_taps;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((name) => typeof name === "string");
+}
+
 // protocol.ts
 var import_meta = {};
 var PARAMS_BACKPRESSURE_BYTES = 8 * 1024;
@@ -749,7 +757,11 @@ function packPcmFrame(interleaved, channels) {
   const dv = new DataView(hdr);
   dv.setUint32(0, channels, true);
   dv.setUint32(4, samples, true);
-  const pcm = new Uint8Array(interleaved.buffer);
+  const pcm = new Uint8Array(
+    interleaved.buffer,
+    interleaved.byteOffset,
+    interleaved.byteLength
+  );
   const combined = new Uint8Array(hdr.byteLength + pcm.byteLength);
   combined.set(new Uint8Array(hdr), 0);
   combined.set(pcm, hdr.byteLength);
@@ -813,6 +825,10 @@ var RemoteBackend = class extends EventTarget {
   /** Backend capability mask from `ready.capabilities`. Null = older
    *  server / replay: treat as ungated (everything available). */
   capabilities = null;
+  /** Analyzer names this pod can run (`ready.capabilities.analysis_taps`);
+   *  empty until ready and on pods without any. Gate `sendAnalysisTap`
+   *  and analysis UI on it. */
+  analysisTaps = [];
   /** Per-session knob manifest from `ready.knob_manifest` — the same
    *  `{version, knobs}` envelope `GET /api/knobs` serves, but resolved
    *  for THIS session (SDE mode, enabled `lora_str_<id>` knobs). Null
@@ -1020,6 +1036,7 @@ var RemoteBackend = class extends EventTarget {
             this.maxPipelineDepth = typeof msg.max_pipeline_depth === "number" ? msg.max_pipeline_depth : null;
             this.geometry = msg.geometry ?? null;
             this.capabilities = msg.capabilities ?? null;
+            this.analysisTaps = analysisTapsAvailable(this.capabilities);
             this.knobManifest = msg.knob_manifest ?? null;
             this.manualSlotCount = typeof msg.manual_slot_count === "number" ? msg.manual_slot_count : null;
             this.manualSlotCap = typeof msg.manual_slot_cap === "number" ? msg.manual_slot_cap : null;
@@ -1090,6 +1107,10 @@ var RemoteBackend = class extends EventTarget {
             return;
           }
           switch (msg.type) {
+            case "analysis_state":
+            case "analysis_update":
+              this.dispatchEvent(new CustomEvent(msg.type, { detail: msg }));
+              return;
             case "params_update":
               this.dispatchEvent(
                 new CustomEvent("params", { detail: msg.params })
@@ -1179,6 +1200,11 @@ var RemoteBackend = class extends EventTarget {
             case "audio_write_failed":
               this.dispatchEvent(
                 new CustomEvent("audio_write_failed", { detail: msg.error })
+              );
+              break;
+            case "audio_in_ack":
+              this.dispatchEvent(
+                new CustomEvent("audio_in_ack", { detail: msg })
               );
               break;
             case "command_failed":
@@ -1503,6 +1529,55 @@ var RemoteBackend = class extends EventTarget {
     }
   }
   /**
+   * Enable or disable a live analysis tap (`analysis_tap`). `tap` is an
+   * analyzer name from `analysisTaps`; `options` are per analyzer (for
+   * `notes`: size, instruments, horizon_s) and validated server-side.
+   * The server answers with `analysis_state` (carrying `error` when the
+   * enable was refused, never `command_failed`) and, on enable, a
+   * `clear` `analysis_update` followed by range updates. Re-sending with
+   * `enabled: true` and new options replaces the running tap.
+   */
+  sendAnalysisTap(tap, enabled, options) {
+    if (this.ws?.readyState !== this._wsOpen) return;
+    try {
+      const msg = {
+        type: ANALYSIS_TAP_COMMAND,
+        tap,
+        enabled
+      };
+      if (options !== void 0) {
+        msg.options = options;
+      }
+      this.ws.send(JSON.stringify(msg));
+    } catch {
+    }
+  }
+  /**
+   * Stream one frame of live audio (`audio_in`): the server appends it at
+   * the canvas write frontier. Only sessions whose
+   * `capabilities.audio_in` is true accept it (the `live_input` family
+   * created without a source); others answer `command_failed`. `frame` is
+   * interleaved float32 at 48 kHz (`channels` 1 or 2, default 1), `seq`
+   * the frame counter (+1 per frame; restart from 0 to begin a new take),
+   * `startS` the frame's position on the capture clock when known (the
+   * server fills a gap up to 2 s with silence). Never drops: the server
+   * places frames by `seq`/`startS`, so a skipped send would be read as a
+   * gap. Acked by `audio_in_ack` CustomEvents (at most 5 per second).
+   */
+  sendAudioIn(frame, seq, opts = {}) {
+    if (this.ws?.readyState !== this._wsOpen) return false;
+    try {
+      const msg = { type: "audio_in", seq };
+      if (opts.startS != null) msg.start_s = opts.startS;
+      this.ws.send(JSON.stringify(msg));
+      this.ws.send(packPcmFrame(frame, opts.channels ?? 1));
+      return true;
+    } catch (e) {
+      console.error("[protocol] audio_in failed:", e);
+      return false;
+    }
+  }
+  /**
    * Send a typed JSON header followed by a binary audio frame
    * (packPcmFrame). Used by the timbre/structure source uploads and
    * swap_source; the caller builds the typed command so the header is
@@ -1780,6 +1855,7 @@ var COMMAND_NAMES = [
   "set_depth",
   "enable_lora",
   "disable_lora",
+  "add_lora",
   "manual_slot_add",
   "manual_slot_pop",
   "set_timbre_strength",
@@ -1790,7 +1866,11 @@ var COMMAND_NAMES = [
   "set_structure_fixture",
   "clear_structure_source",
   "swap_source",
-  "write_audio"
+  "write_audio",
+  "midi_transcribe",
+  "analysis_tap",
+  "audio_in",
+  "bounce"
 ];
 var EVENT_NAMES = [
   "init_ack",
@@ -1815,7 +1895,14 @@ var EVENT_NAMES = [
   "structure_failed",
   "audio_written",
   "audio_write_failed",
-  "command_failed"
+  "command_failed",
+  "midi_notes",
+  "midi_failed",
+  "bounce_ready",
+  "bounce_failed",
+  "analysis_state",
+  "audio_in_ack",
+  "analysis_update"
 ];
 
 // config/enums.ts

@@ -37,6 +37,14 @@ export * from "./controls";
 export { RemoteBackend, float16ArrayToFloat32 } from "./protocol";
 export type { RemoteBackendOptions, WsTrace, WsTracePhase } from "./protocol";
 
+// Analysis seam: analysis_tap wire shapes, the range-replace item store,
+// the audible-playhead helper and the SMF writer. See ./analysis.
+export * from "./analysis";
+
+// Live audio input: microphone capture + the 48 kHz framer behind
+// RemoteBackend.sendAudioIn (the live_input family). See ./input.
+export * from "./input";
+
 // Realtime audio playback (worklet + ScriptProcessor fallback, loudness
 // matcher, stem overlays).
 export { AudioPlayer } from "./audio/AudioPlayer";

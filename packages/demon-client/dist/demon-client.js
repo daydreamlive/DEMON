@@ -10,6 +10,7 @@ var COMMAND_NAMES = [
   "set_depth",
   "enable_lora",
   "disable_lora",
+  "add_lora",
   "manual_slot_add",
   "manual_slot_pop",
   "set_timbre_strength",
@@ -20,7 +21,11 @@ var COMMAND_NAMES = [
   "set_structure_fixture",
   "clear_structure_source",
   "swap_source",
-  "write_audio"
+  "write_audio",
+  "midi_transcribe",
+  "analysis_tap",
+  "audio_in",
+  "bounce"
 ];
 var EVENT_NAMES = [
   "init_ack",
@@ -45,7 +50,14 @@ var EVENT_NAMES = [
   "structure_failed",
   "audio_written",
   "audio_write_failed",
-  "command_failed"
+  "command_failed",
+  "midi_notes",
+  "midi_failed",
+  "bounce_ready",
+  "bounce_failed",
+  "analysis_state",
+  "audio_in_ack",
+  "analysis_update"
 ];
 
 // types/protocol.ts
@@ -1250,6 +1262,15 @@ function decompress(dat, buf) {
   return cct(bufs, ol);
 }
 
+// analysis/types.ts
+var ANALYSIS_TAP_COMMAND = "analysis_tap";
+var ANALYSIS_EVENT_TYPES = ["analysis_state", "analysis_update"];
+function analysisTapsAvailable(capabilities) {
+  const raw = capabilities?.analysis_taps;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((name) => typeof name === "string");
+}
+
 // protocol.ts
 var PARAMS_BACKPRESSURE_BYTES = 8 * 1024;
 var _fBuf = new ArrayBuffer(4);
@@ -1289,7 +1310,11 @@ function packPcmFrame(interleaved, channels) {
   const dv = new DataView(hdr);
   dv.setUint32(0, channels, true);
   dv.setUint32(4, samples, true);
-  const pcm = new Uint8Array(interleaved.buffer);
+  const pcm = new Uint8Array(
+    interleaved.buffer,
+    interleaved.byteOffset,
+    interleaved.byteLength
+  );
   const combined = new Uint8Array(hdr.byteLength + pcm.byteLength);
   combined.set(new Uint8Array(hdr), 0);
   combined.set(pcm, hdr.byteLength);
@@ -1353,6 +1378,10 @@ var RemoteBackend = class extends EventTarget {
   /** Backend capability mask from `ready.capabilities`. Null = older
    *  server / replay: treat as ungated (everything available). */
   capabilities = null;
+  /** Analyzer names this pod can run (`ready.capabilities.analysis_taps`);
+   *  empty until ready and on pods without any. Gate `sendAnalysisTap`
+   *  and analysis UI on it. */
+  analysisTaps = [];
   /** Per-session knob manifest from `ready.knob_manifest` — the same
    *  `{version, knobs}` envelope `GET /api/knobs` serves, but resolved
    *  for THIS session (SDE mode, enabled `lora_str_<id>` knobs). Null
@@ -1560,6 +1589,7 @@ var RemoteBackend = class extends EventTarget {
             this.maxPipelineDepth = typeof msg.max_pipeline_depth === "number" ? msg.max_pipeline_depth : null;
             this.geometry = msg.geometry ?? null;
             this.capabilities = msg.capabilities ?? null;
+            this.analysisTaps = analysisTapsAvailable(this.capabilities);
             this.knobManifest = msg.knob_manifest ?? null;
             this.manualSlotCount = typeof msg.manual_slot_count === "number" ? msg.manual_slot_count : null;
             this.manualSlotCap = typeof msg.manual_slot_cap === "number" ? msg.manual_slot_cap : null;
@@ -1630,6 +1660,10 @@ var RemoteBackend = class extends EventTarget {
             return;
           }
           switch (msg.type) {
+            case "analysis_state":
+            case "analysis_update":
+              this.dispatchEvent(new CustomEvent(msg.type, { detail: msg }));
+              return;
             case "params_update":
               this.dispatchEvent(
                 new CustomEvent("params", { detail: msg.params })
@@ -1719,6 +1753,11 @@ var RemoteBackend = class extends EventTarget {
             case "audio_write_failed":
               this.dispatchEvent(
                 new CustomEvent("audio_write_failed", { detail: msg.error })
+              );
+              break;
+            case "audio_in_ack":
+              this.dispatchEvent(
+                new CustomEvent("audio_in_ack", { detail: msg })
               );
               break;
             case "command_failed":
@@ -2043,6 +2082,55 @@ var RemoteBackend = class extends EventTarget {
     }
   }
   /**
+   * Enable or disable a live analysis tap (`analysis_tap`). `tap` is an
+   * analyzer name from `analysisTaps`; `options` are per analyzer (for
+   * `notes`: size, instruments, horizon_s) and validated server-side.
+   * The server answers with `analysis_state` (carrying `error` when the
+   * enable was refused, never `command_failed`) and, on enable, a
+   * `clear` `analysis_update` followed by range updates. Re-sending with
+   * `enabled: true` and new options replaces the running tap.
+   */
+  sendAnalysisTap(tap, enabled, options) {
+    if (this.ws?.readyState !== this._wsOpen) return;
+    try {
+      const msg = {
+        type: ANALYSIS_TAP_COMMAND,
+        tap,
+        enabled
+      };
+      if (options !== void 0) {
+        msg.options = options;
+      }
+      this.ws.send(JSON.stringify(msg));
+    } catch {
+    }
+  }
+  /**
+   * Stream one frame of live audio (`audio_in`): the server appends it at
+   * the canvas write frontier. Only sessions whose
+   * `capabilities.audio_in` is true accept it (the `live_input` family
+   * created without a source); others answer `command_failed`. `frame` is
+   * interleaved float32 at 48 kHz (`channels` 1 or 2, default 1), `seq`
+   * the frame counter (+1 per frame; restart from 0 to begin a new take),
+   * `startS` the frame's position on the capture clock when known (the
+   * server fills a gap up to 2 s with silence). Never drops: the server
+   * places frames by `seq`/`startS`, so a skipped send would be read as a
+   * gap. Acked by `audio_in_ack` CustomEvents (at most 5 per second).
+   */
+  sendAudioIn(frame, seq, opts = {}) {
+    if (this.ws?.readyState !== this._wsOpen) return false;
+    try {
+      const msg = { type: "audio_in", seq };
+      if (opts.startS != null) msg.start_s = opts.startS;
+      this.ws.send(JSON.stringify(msg));
+      this.ws.send(packPcmFrame(frame, opts.channels ?? 1));
+      return true;
+    } catch (e) {
+      console.error("[protocol] audio_in failed:", e);
+      return false;
+    }
+  }
+  /**
    * Send a typed JSON header followed by a binary audio frame
    * (packPcmFrame). Used by the timbre/structure source uploads and
    * swap_source; the caller builds the typed command so the header is
@@ -2305,6 +2393,570 @@ var RemoteBackend = class extends EventTarget {
       ev = e;
     }
     this.dispatchEvent(new CustomEvent("close", { detail: ev }));
+  }
+};
+
+// analysis/store.ts
+function rangeKey(startS) {
+  return startS.toFixed(4);
+}
+function compareItems(a, b) {
+  return a.start_s - b.start_s || (a.pitch ?? 0) - (b.pitch ?? 0);
+}
+var AnalysisStore = class {
+  tap;
+  _items = [];
+  _epoch = null;
+  _rangeSeq = /* @__PURE__ */ new Map();
+  _listeners = /* @__PURE__ */ new Set();
+  constructor(tap) {
+    this.tap = tap;
+  }
+  /** Epoch of the last applied clear, or null before the first one. */
+  get epoch() {
+    return this._epoch;
+  }
+  get size() {
+    return this._items.length;
+  }
+  /**
+   * Apply one update. Returns true when the item set changed shape (the
+   * update was accepted), false when it was ignored (other tap, stale
+   * epoch, stale seq).
+   */
+  apply(update) {
+    if (update.tap !== this.tap) return false;
+    const epoch = update.source_epoch;
+    if (this._epoch !== null && epoch < this._epoch) return false;
+    if (update.clear) {
+      this._items = [];
+      this._rangeSeq.clear();
+      this._epoch = epoch;
+    } else {
+      const key = rangeKey(update.range_start_s);
+      const last = this._rangeSeq.get(key);
+      if (last !== void 0 && update.seq <= last) return false;
+    }
+    const t0 = update.range_start_s;
+    const t1 = t0 + update.span_s;
+    const incoming = update.items.map(
+      (item) => ({ ...item, basis: update.basis, late: update.late })
+    );
+    const kept = this._items.filter(
+      (item) => item.start_s < t0 || item.start_s >= t1
+    );
+    this._items = kept.concat(incoming).sort(compareItems);
+    this._rangeSeq.set(rangeKey(t0), update.seq);
+    this._emit();
+    return true;
+  }
+  /** Drop everything and forget the epoch and per-range seqs (on disable,
+   *  session stop or reconnect; the next enable sends a fresh clear). */
+  reset() {
+    this._items = [];
+    this._rangeSeq.clear();
+    this._epoch = null;
+    this._emit();
+  }
+  /** Every item, sorted by start time then pitch. Do not mutate. */
+  items() {
+    return this._items;
+  }
+  /** Items whose basis is `settled`, sorted. */
+  settledItems() {
+    return this._items.filter((item) => item.basis === "settled");
+  }
+  /**
+   * Items sounding anywhere in the window [t0, t1) of play time.
+   *
+   * Without `wrap` the window is taken literally in canvas seconds. With
+   * `wrap` (the loop band, or `{start_s: 0, end_s: duration}` for a
+   * looping canvas) the window is unrolled over the band's period: the
+   * parts of [t0, t1) beyond either band edge read the band's other end,
+   * and each returned item carries the `shift_s` that places it in the
+   * window. Items are ordered by window position.
+   */
+  itemsIn(t0, t1, wrap) {
+    if (!(t1 > t0)) return [];
+    const overlap = (a, b, shift) => {
+      const out2 = [];
+      for (const item of this._items) {
+        if (item.start_s >= b) break;
+        if (item.end_s > a || item.start_s >= a) {
+          out2.push({ item, shift_s: shift });
+        }
+      }
+      return out2;
+    };
+    if (!wrap || !(wrap.end_s > wrap.start_s)) return overlap(t0, t1, 0);
+    const period = wrap.end_s - wrap.start_s;
+    const out = [];
+    const kFirst = Math.floor((t0 - wrap.start_s) / period);
+    const kLast = Math.ceil((t1 - wrap.start_s) / period) - 1;
+    for (let k = kFirst; k <= kLast; k++) {
+      const shift = k * period;
+      const a = Math.max(t0, wrap.start_s + shift) - shift;
+      const b = Math.min(t1, wrap.end_s + shift) - shift;
+      if (b > a) out.push(...overlap(a, b, shift));
+    }
+    return out;
+  }
+  /** Call `listener` after every accepted update or reset. Returns the
+   *  unsubscribe function. */
+  subscribe(listener) {
+    this._listeners.add(listener);
+    return () => {
+      this._listeners.delete(listener);
+    };
+  }
+  /**
+   * Feed this store from a RemoteBackend (or any EventTarget dispatching
+   * `analysis_update` CustomEvents). Returns the detach function.
+   */
+  attach(target) {
+    const onUpdate = (event) => {
+      const detail = event.detail;
+      if (detail) this.apply(detail);
+    };
+    target.addEventListener("analysis_update", onUpdate);
+    return () => target.removeEventListener("analysis_update", onUpdate);
+  }
+  _emit() {
+    for (const listener of this._listeners) {
+      try {
+        listener();
+      } catch (err2) {
+        console.error("[analysis] store listener failed", err2);
+      }
+    }
+  }
+};
+
+// analysis/playhead.ts
+function playheadForNotes(positionSec, outputLatencySec, loopBand, durationSec) {
+  const latency = Number.isFinite(outputLatencySec) && outputLatencySec > 0 ? outputLatencySec : 0;
+  const t = positionSec - latency;
+  if (loopBand && loopBand.end_s > loopBand.start_s && positionSec >= loopBand.start_s && positionSec < loopBand.end_s) {
+    const period = loopBand.end_s - loopBand.start_s;
+    return loopBand.start_s + mod(t - loopBand.start_s, period);
+  }
+  if (durationSec !== void 0 && durationSec > 0) return mod(t, durationSec);
+  return Math.max(0, t);
+}
+function mod(x, m) {
+  return (x % m + m) % m;
+}
+
+// analysis/smf.ts
+var DRUM_INSTRUMENT = "drums";
+var DRUM_CHANNEL = 9;
+var GM_PROGRAM = {
+  acoustic_piano: 0,
+  electric_piano: 2,
+  chromatic_percussion: 8,
+  organ: 16,
+  acoustic_guitar: 24,
+  clean_electric_guitar: 26,
+  distorted_electric_guitar: 29,
+  acoustic_bass: 32,
+  electric_bass: 33,
+  violin: 40,
+  viola: 41,
+  cello: 42,
+  contrabass: 43,
+  orchestral_harp: 46,
+  timpani: 47,
+  string_ensemble: 48,
+  synth_strings: 50,
+  voice: 52,
+  orchestra_hit: 55,
+  trumpet: 56,
+  trombone: 57,
+  tuba: 58,
+  french_horn: 60,
+  brass_section: 61,
+  soprano_and_alto_sax: 64,
+  tenor_sax: 66,
+  baritone_sax: 67,
+  oboe: 68,
+  english_horn: 69,
+  bassoon: 70,
+  clarinet: 71,
+  flutes: 72,
+  synth_lead: 80,
+  synth_pad: 88
+};
+function gmProgramFor(instrument) {
+  if (instrument in GM_PROGRAM) return GM_PROGRAM[instrument];
+  const m = /^program_(\d+)$/.exec(instrument);
+  if (m) {
+    const n = Number(m[1]);
+    if (n >= 0 && n < 128) return n;
+  }
+  return null;
+}
+function vlq(value) {
+  let v = Math.max(0, Math.floor(value));
+  const bytes = [v & 127];
+  v >>>= 7;
+  while (v > 0) {
+    bytes.unshift(v & 127 | 128);
+    v >>>= 7;
+  }
+  return bytes;
+}
+function textMeta(kind, text) {
+  const data = Array.from(new TextEncoder().encode(text));
+  return [255, kind, ...vlq(data.length), ...data];
+}
+function appendChunk(out, tag, body) {
+  const n = body.length;
+  for (let i = 0; i < 4; i++) out.push(tag.charCodeAt(i));
+  out.push(n >>> 24 & 255, n >>> 16 & 255, n >>> 8 & 255, n & 255);
+  for (const b of body) out.push(b);
+}
+function trackBody(header, events) {
+  events.sort((a, b) => a.tick - b.tick || a.rank - b.rank);
+  const body = [...header];
+  let last = 0;
+  for (const ev of events) {
+    body.push(...vlq(ev.tick - last), ...ev.bytes);
+    last = ev.tick;
+  }
+  body.push(0, 255, 47, 0);
+  return body;
+}
+function notesToSmf(notes, options = {}) {
+  const bpm = options.bpm && options.bpm > 0 ? options.bpm : 120;
+  const ppq = Math.max(24, Math.round(options.ppq ?? 480));
+  const velocity = Math.min(127, Math.max(1, Math.round(options.velocity ?? 100)));
+  const origin = options.originS ?? 0;
+  const ticksPerSec = bpm / 60 * ppq;
+  const toTick = (s) => Math.round((s - origin) * ticksPerSec);
+  const byInstrument = /* @__PURE__ */ new Map();
+  for (const note of notes) {
+    if (note.start_s < origin || note.pitch < 0 || note.pitch > 127) continue;
+    const list = byInstrument.get(note.instrument) ?? [];
+    list.push(note);
+    byInstrument.set(note.instrument, list);
+  }
+  const instruments = [...byInstrument.keys()].sort();
+  const usPerQuarter = Math.round(6e7 / bpm);
+  const conductor = trackBody(
+    [
+      0,
+      ...textMeta(3, "tempo"),
+      0,
+      255,
+      81,
+      3,
+      usPerQuarter >>> 16 & 255,
+      usPerQuarter >>> 8 & 255,
+      usPerQuarter & 255,
+      0,
+      255,
+      88,
+      4,
+      4,
+      2,
+      24,
+      8
+    ],
+    []
+  );
+  const tracks = [conductor];
+  let melodic = 0;
+  for (const instrument of instruments) {
+    let channel;
+    if (instrument === DRUM_INSTRUMENT) {
+      channel = DRUM_CHANNEL;
+    } else {
+      channel = melodic % 15;
+      if (channel >= DRUM_CHANNEL) channel += 1;
+      melodic += 1;
+    }
+    const header = [0, ...textMeta(3, instrument)];
+    const program = gmProgramFor(instrument);
+    if (program !== null && channel !== DRUM_CHANNEL) {
+      header.push(0, 192 | channel, program);
+    }
+    const sorted = [...byInstrument.get(instrument) ?? []].sort(
+      (a, b) => a.start_s - b.start_s || a.pitch - b.pitch
+    );
+    const nextOnset = /* @__PURE__ */ new Map();
+    const events = [];
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      const note = sorted[i];
+      const on = toTick(note.start_s);
+      let off = Math.max(on + 1, toTick(note.end_s));
+      const next = nextOnset.get(note.pitch);
+      if (next === on) continue;
+      if (next !== void 0 && next < off) off = Math.max(on + 1, next);
+      nextOnset.set(note.pitch, on);
+      events.push(
+        { tick: on, rank: 1, bytes: [144 | channel, note.pitch, velocity] },
+        { tick: off, rank: 0, bytes: [128 | channel, note.pitch, 0] }
+      );
+    }
+    tracks.push(trackBody(header, events));
+  }
+  const out = [];
+  appendChunk(out, "MThd", [
+    0,
+    1,
+    tracks.length >>> 8 & 255,
+    tracks.length & 255,
+    ppq >>> 8 & 255,
+    ppq & 255
+  ]);
+  for (const body of tracks) appendChunk(out, "MTrk", body);
+  return Uint8Array.from(out);
+}
+
+// input/framer.ts
+var AUDIO_IN_SAMPLE_RATE = 48e3;
+var AUDIO_IN_FRAME_MS = 100;
+var PcmFramer = class {
+  inputRate;
+  frameSamples;
+  step;
+  frame;
+  filled = 0;
+  seq = 0;
+  // Resampler state: unconsumed input (starting at the sample the next
+  // output interpolates from) and the fractional read position into it.
+  carry = new Float32Array(0);
+  pos = 0;
+  constructor(opts) {
+    if (!(opts.inputRate > 0)) throw new Error("inputRate must be > 0");
+    this.inputRate = opts.inputRate;
+    const ms = opts.frameMs ?? AUDIO_IN_FRAME_MS;
+    this.frameSamples = Math.max(1, Math.round(AUDIO_IN_SAMPLE_RATE * ms / 1e3));
+    this.step = this.inputRate / AUDIO_IN_SAMPLE_RATE;
+    this.frame = new Float32Array(this.frameSamples);
+  }
+  /** Feed one block (mono, `inputRate`); returns the frames it completed. */
+  push(block) {
+    const out = [];
+    if (this.step === 1) {
+      for (let i = 0; i < block.length; i++) this.put(block[i], out);
+      return out;
+    }
+    const buf = new Float32Array(this.carry.length + block.length);
+    buf.set(this.carry, 0);
+    buf.set(block, this.carry.length);
+    let t = this.pos;
+    while (t + 1 < buf.length) {
+      const i = Math.floor(t);
+      const f = t - i;
+      this.put(buf[i] * (1 - f) + buf[i + 1] * f, out);
+      t += this.step;
+    }
+    const keep = Math.min(Math.floor(t), buf.length);
+    this.carry = buf.slice(keep);
+    this.pos = t - keep;
+    return out;
+  }
+  /** Drop any partial frame and restart numbering at seq 0 (a new take on
+   *  the server, which reads a seq that did not advance as a restart). */
+  reset() {
+    this.frame = new Float32Array(this.frameSamples);
+    this.filled = 0;
+    this.seq = 0;
+    this.carry = new Float32Array(0);
+    this.pos = 0;
+  }
+  put(sample, out) {
+    this.frame[this.filled++] = sample;
+    if (this.filled < this.frameSamples) return;
+    const pcm = this.frame;
+    let sum = 0;
+    let peak = 0;
+    for (let i = 0; i < pcm.length; i++) {
+      const v = pcm[i];
+      sum += v * v;
+      const a = v < 0 ? -v : v;
+      if (a > peak) peak = a;
+    }
+    out.push({
+      pcm,
+      seq: this.seq,
+      startS: this.seq * this.frameSamples / AUDIO_IN_SAMPLE_RATE,
+      rms: Math.sqrt(sum / pcm.length),
+      peak
+    });
+    this.seq += 1;
+    this.frame = new Float32Array(this.frameSamples);
+    this.filled = 0;
+  }
+};
+
+// input/MicCapture.ts
+var WORKLET_NAME = "demon-mic-tap";
+var WORKLET_SOURCE = `
+class DemonMicTap extends AudioWorkletProcessor {
+  constructor() { super(); this.buf = new Float32Array(1024); this.n = 0; }
+  process(inputs) {
+    const input = inputs[0];
+    if (input && input.length) {
+      const ch = input.length;
+      const len = input[0].length;
+      for (let i = 0; i < len; i++) {
+        let s = 0;
+        for (let c = 0; c < ch; c++) s += input[c][i];
+        this.buf[this.n++] = s / ch;
+        if (this.n === this.buf.length) {
+          this.port.postMessage(this.buf, [this.buf.buffer]);
+          this.buf = new Float32Array(1024);
+          this.n = 0;
+        }
+      }
+    }
+    return true;
+  }
+}
+registerProcessor("${WORKLET_NAME}", DemonMicTap);
+`;
+var SCRIPT_PROCESSOR_BLOCK = 2048;
+var MicCapture = class {
+  opts;
+  ctx = null;
+  stream = null;
+  source = null;
+  tap = null;
+  sink = null;
+  framer = null;
+  _running = false;
+  /** Whether the AudioWorklet path is in use (false = ScriptProcessor). */
+  usingWorklet = false;
+  constructor(opts) {
+    this.opts = opts;
+  }
+  get running() {
+    return this._running;
+  }
+  /** The AudioContext rate in use (48000 unless the browser refused it);
+   *  null while stopped. Frames are always 48 kHz. */
+  get contextSampleRate() {
+    return this.ctx ? this.ctx.sampleRate : null;
+  }
+  /** Open the microphone and start framing. Rejects (and leaves nothing
+   *  open) when permission is denied or no input exists. */
+  async start() {
+    if (this._running) return;
+    const media = this.opts.mediaDevices ?? (typeof navigator !== "undefined" ? navigator.mediaDevices : void 0);
+    if (!media?.getUserMedia) {
+      throw new Error("this browser cannot open a microphone (no getUserMedia)");
+    }
+    const audio = {
+      channelCount: 1,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false
+    };
+    if (this.opts.deviceId) audio.deviceId = { exact: this.opts.deviceId };
+    const stream = await media.getUserMedia({ audio });
+    try {
+      const make = this.opts.audioContextFactory ?? ((o) => new AudioContext(o));
+      const ctx = make({ sampleRate: AUDIO_IN_SAMPLE_RATE, latencyHint: "interactive" });
+      this.ctx = ctx;
+      this.stream = stream;
+      this.framer = new PcmFramer({ inputRate: ctx.sampleRate, frameMs: this.opts.frameMs });
+      this.source = ctx.createMediaStreamSource(stream);
+      const sink = ctx.createGain();
+      sink.gain.value = 0;
+      sink.connect(ctx.destination);
+      this.sink = sink;
+      this.tap = await this.makeTap(ctx);
+      this.source.connect(this.tap);
+      this.tap.connect(sink);
+      if (ctx.state === "suspended") await ctx.resume();
+      this._running = true;
+    } catch (e) {
+      await this.teardown();
+      for (const t of stream.getTracks()) t.stop();
+      throw e;
+    }
+  }
+  /** Stop and release the microphone. The next `start` numbers frames
+   *  from seq 0 again, which the server reads as a new take. A partial
+   *  frame at stop is dropped. */
+  async stop() {
+    if (!this._running && !this.ctx) return;
+    this._running = false;
+    await this.teardown();
+  }
+  async makeTap(ctx) {
+    const worklet = ctx.audioWorklet;
+    const Node = typeof AudioWorkletNode !== "undefined" ? AudioWorkletNode : void 0;
+    if (this.opts.useWorklet !== false && worklet && Node) {
+      const url = URL.createObjectURL(
+        new Blob([WORKLET_SOURCE], { type: "application/javascript" })
+      );
+      try {
+        await worklet.addModule(url);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      const node = new Node(ctx, WORKLET_NAME, {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1]
+      });
+      node.port.onmessage = (ev) => this.feed(ev.data);
+      this.usingWorklet = true;
+      return node;
+    }
+    const proc = ctx.createScriptProcessor(SCRIPT_PROCESSOR_BLOCK, 2, 1);
+    proc.onaudioprocess = (ev) => {
+      const input = ev.inputBuffer;
+      const ch = input.numberOfChannels;
+      const first = input.getChannelData(0);
+      if (ch <= 1) {
+        this.feed(new Float32Array(first));
+        return;
+      }
+      const mono = new Float32Array(first.length);
+      for (let c = 0; c < ch; c++) {
+        const d = input.getChannelData(c);
+        for (let i = 0; i < mono.length; i++) mono[i] += d[i] / ch;
+      }
+      this.feed(mono);
+    };
+    this.usingWorklet = false;
+    return proc;
+  }
+  feed(block) {
+    if (!this._running || !this.framer) return;
+    for (const frame of this.framer.push(block)) {
+      this.opts.onLevel?.({ rms: frame.rms, peak: frame.peak });
+      this.opts.onFrame(frame);
+    }
+  }
+  async teardown() {
+    const tap = this.tap;
+    if (tap && "port" in tap) tap.port.onmessage = null;
+    if (tap && "onaudioprocess" in tap) tap.onaudioprocess = null;
+    for (const node of [this.source, tap, this.sink]) {
+      try {
+        node?.disconnect();
+      } catch {
+      }
+    }
+    this.source = null;
+    this.tap = null;
+    this.sink = null;
+    if (this.stream) for (const t of this.stream.getTracks()) t.stop();
+    this.stream = null;
+    const ctx = this.ctx;
+    this.ctx = null;
+    this.framer = null;
+    if (ctx) {
+      try {
+        await ctx.close();
+      } catch {
+      }
+    }
   }
 };
 
@@ -3356,6 +4008,11 @@ async function fetchKnobManifest(sde = false, toUrl = (p) => p) {
   return { version: json.version, knobs: json.knobs ?? {} };
 }
 export {
+  ANALYSIS_EVENT_TYPES,
+  ANALYSIS_TAP_COMMAND,
+  AUDIO_IN_FRAME_MS,
+  AUDIO_IN_SAMPLE_RATE,
+  AnalysisStore,
   AudioPlayer,
   COMMAND_NAMES,
   CONTROL_DESCRIPTIONS,
@@ -3365,6 +4022,7 @@ export {
   DCW_WAVELETS,
   DEFAULT_CONFIG,
   DEFAULT_TIME_SIGNATURE,
+  DRUM_INSTRUMENT,
   EVENT_NAMES,
   INTERP_PATH_DESCRIPTIONS,
   KNOB_SCHEMA_VERSION,
@@ -3376,8 +4034,10 @@ export {
   MANUAL_LAYER_DESCRIPTION,
   MANUAL_SRC_DESCRIPTION,
   MANUAL_STEP_DESCRIPTION,
+  MicCapture,
   PREEMPTED_CLOSE_CODE,
   PROTOCOL_VERSION,
+  PcmFramer,
   RCFG_MODES,
   RemoteBackend,
   SAMPLE_RATE,
@@ -3395,6 +4055,7 @@ export {
   TIMBRE_REF_DESCRIPTION,
   VALID_TIME_SIGNATURES,
   WsReconnector,
+  analysisTapsAvailable,
   applyConfigToState,
   arrayBufferToBase64,
   base64ToArrayBuffer,
@@ -3408,6 +4069,7 @@ export {
   findLoudestShortTermLoudness,
   float16ArrayToFloat32,
   getUnknownKeys,
+  gmProgramFor,
   isDcwMode,
   isDcwWavelet,
   isLoopGridRes,
@@ -3422,6 +4084,8 @@ export {
   measureLoudness,
   mergeConfig,
   normalizeConfigShape,
+  notesToSmf,
+  playheadForNotes,
   resolveControlDescription,
   resolveLoraCapForSource,
   rtmgConfigToSessionConfig,

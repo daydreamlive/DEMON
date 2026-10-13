@@ -256,7 +256,7 @@ playground.ipynb
 
 # DEMON-specific
 .claude/
-notes/
+/notes/
 # Guard against ACESTEP_MODELS_DIR=. or another repo-local override.
 /sa3/vendor/
 tmp*

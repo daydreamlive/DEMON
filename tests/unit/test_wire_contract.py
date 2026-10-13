@@ -667,3 +667,101 @@ def test_origin_sensitive_matches_session_semantics():
     for name, c in cmds.items():
         if name not in flagged:
             assert "echo_event" not in c, name
+
+
+def test_analysis_item_kinds_match_engine_contract():
+    # The analysis_update.items union is registered once in protocol.py and
+    # must name exactly the engine contract's item kinds, with the same
+    # fields per kind, so engines and clients agree on the element shape.
+    from acestep.analysis.engine import ITEM_KINDS, NOTE_FIELDS
+    from demos.realtime_motion_graph_web.protocol import ANALYSIS_ITEM_KINDS
+
+    assert tuple(ANALYSIS_ITEM_KINDS) == ITEM_KINDS
+    assert tuple(f.name for f in ANALYSIS_ITEM_KINDS["note"]) == NOTE_FIELDS
+    upd = event_catalog()["analysis_update"]["fields"]
+    assert upd["items"]["of"] == "analysis_item"
+    assert tuple(upd["kind"]["options"]) == ITEM_KINDS
+    assert set(wire_contract()["item_kinds"]["analysis_item"]) == set(ITEM_KINDS)
+
+
+def test_analysis_events_mirror_session_dataclasses():
+    # The session-side events and the wire events are field-for-field.
+    from dataclasses import fields as dc_fields
+
+    from acestep.streaming.events import AnalysisState, AnalysisUpdate
+
+    evts = event_catalog()
+    assert {f.name for f in dc_fields(AnalysisState)} == set(evts["analysis_state"]["fields"])
+    assert {f.name for f in dc_fields(AnalysisUpdate)} == set(evts["analysis_update"]["fields"])
+    assert set(command_catalog()["analysis_tap"]["fields"]) == {"tap", "enabled", "options"}
+
+
+def test_generated_types_type_analysis_items():
+    from demos.realtime_motion_graph_web.scripts.gen_wire_types import (
+        render_wire_types_hpp,
+        render_wire_types_ts,
+    )
+    from acestep.streaming.knobs import KNOB_SCHEMA_VERSION
+
+    ts = render_wire_types_ts(wire_contract(), KNOB_SCHEMA_VERSION)
+    assert "export interface NoteAnalysisItem {" in ts
+    assert "items: AnalysisItem[];" in ts
+    assert "export interface AnalysisItemByKind {" in ts
+    hpp = render_wire_types_hpp(wire_contract(), KNOB_SCHEMA_VERSION)
+    assert "namespace analysis_item {" in hpp and "namespace note {" in hpp
+
+
+def test_analysis_taps_capability_is_declared():
+    from dataclasses import fields as dc_fields
+
+    from acestep.streaming.generator_backend import Capabilities
+
+    assert "analysis_taps" in {x.name for x in dc_fields(Capabilities)}
+    assert Capabilities().analysis_taps == ()
+    src = (_DEMO / "ws_adapter.py").read_text(encoding="utf-8")
+    assert "_capabilities_with_analysis(" in src
+
+
+def test_analysis_clear_serializes_as_analysis_update():
+    # The ws_adapter's on_event serializes AnalysisClear through its
+    # isinstance(event, AnalysisUpdate) branch: no earlier branch claims
+    # it, and the emitted frame is analysis_update with clear true.
+    # Source-parsed and evaluated in isolation (no torch-heavy import).
+    from acestep.streaming import events as ev_mod
+    from acestep.streaming.events import AnalysisClear
+
+    src = (_DEMO / "ws_adapter.py").read_text(encoding="utf-8")
+    on_event = next(
+        n for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.FunctionDef) and n.name == "on_event"
+    )
+    branch = next(n for n in on_event.body if isinstance(n, ast.If))
+    event = AnalysisClear(
+        tap="notes", seq=4, source_epoch=2, range_start_s=0.0, span_s=0.0,
+        basis="provisional", late=False, clear=True, kind="note",
+        items=(), playhead_s=None, wall_s=0.0,
+    )
+
+    def claims(test) -> bool:
+        if not (isinstance(test, ast.Call) and getattr(test.func, "id", None) == "isinstance"):
+            return False
+        arg = test.args[1]
+        names = [e.id for e in arg.elts] if isinstance(arg, ast.Tuple) else [arg.id]
+        classes = [getattr(ev_mod, n, None) for n in names]
+        return any(isinstance(c, type) and isinstance(event, c) for c in classes)
+
+    while not claims(branch.test):
+        assert branch.orelse and isinstance(branch.orelse[0], ast.If), "no branch serializes AnalysisClear"
+        branch = branch.orelse[0]
+    assert ast.unparse(branch.test) == "isinstance(event, AnalysisUpdate)"
+    payload = next(
+        n.args[0] for n in ast.walk(ast.Module(body=branch.body, type_ignores=[]))
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_send_json"
+    )
+    frame = eval(  # noqa: S307 - a dict literal from our own source
+        compile(ast.Expression(payload), "<on_event>", "eval"),
+        {"event": event, "_analysis_item_wire": dict, "round": round},
+    )
+    assert frame["type"] == "analysis_update"
+    assert frame["clear"] is True and frame["items"] == []
+    assert (frame["tap"], frame["seq"], frame["source_epoch"]) == ("notes", 4, 2)

@@ -37,6 +37,7 @@ from acestep.streaming.preflight import (
     PreflightRequest,
     PreflightResult,
     acestep_preflight,
+    live_input_preflight,
     mrt2_preflight,
     minimax_preflight,
     sa3_preflight,
@@ -781,6 +782,68 @@ YUE2 = FamilySpec(
 )
 
 
+def _make_live_input(ss):
+    # The canvas shape (clip or capture) comes from the create path's
+    # payload; nothing is loaded.
+    from acestep.streaming.live_input_session import make_live_input_backend
+
+    return make_live_input_backend(ss)
+
+
+def _live_input_knob_universe():
+    # No model, so no knobs.
+    return []
+
+
+def _create_live_input_session(cls, **kwargs):
+    from acestep.streaming.live_input_session import create_live_input_session
+
+    return create_live_input_session(cls, **kwargs)
+
+
+#: live_input's capture bounds (live_input_backend.MIN/MAX_CAPTURE_S),
+#: mirrored for the config field's description without importing numpy
+#: code at registry import; the family's unit test pins them together.
+LIVE_INPUT_CAPTURE_DEFAULT_S = 240.0
+LIVE_INPUT_CAPTURE_MIN_S = 30.0
+LIVE_INPUT_CAPTURE_MAX_S = 1800.0
+
+
+LIVE_INPUT = FamilySpec(
+    name="live_input",
+    display_name="Audio input",
+    make_backend=_make_live_input,
+    knob_universe=_live_input_knob_universe,
+    # ``--checkpoint live-input`` boots a server with this family and
+    # nothing else loaded; the analysis host loads its own engines.
+    checkpoint_aliases={"live-input": "live_input/v1"},
+    create_session=_create_live_input_session,
+    warmup_policy="none",
+    preflight=live_input_preflight,
+    # No prompt reaches anything; the policy only has to be a valid name.
+    prompt_policy="acestep",
+    config_fields=(
+        FamilyConfigField(
+            "live_input_capture_s", "float",
+            "Capture canvas length for live_input sessions created without a "
+            "source, seconds: audio_in frames fill it, and when it is full a "
+            "new take starts (swap_ready, new source_epoch). Clamped to "
+            f"{LIVE_INPUT_CAPTURE_MIN_S:.0f}..{LIVE_INPUT_CAPTURE_MAX_S:.0f}; "
+            f"absent or null = {LIVE_INPUT_CAPTURE_DEFAULT_S:.0f}. Ignored for "
+            "a session created from an uploaded clip (the clip is the canvas).",
+        ),
+    ),
+    # A text-only create is the capture canvas. The anchor the adapter
+    # synthesises from this spec is ignored by the create path (the
+    # capture length is live_input_capture_s), so it is kept at the
+    # minimum rather than allocated at capture length and thrown away.
+    text_only=TextOnlySpec(default_duration_s=1.0, max_duration_s=1.0),
+    # No GPU state per session: the canvas is host memory and the
+    # analysis engines are shared through the process-wide host.
+    max_concurrent_sessions={"live_input/v1": 4},
+)
+
+
 def _register(*specs: FamilySpec) -> dict:
     from dataclasses import fields as _dc_fields
 
@@ -817,7 +880,7 @@ def _register(*specs: FamilySpec) -> dict:
 
 
 #: ``family name -> FamilySpec``. The source of truth.
-FAMILY_SPECS: dict = _register(ACESTEP, SA3, MRT2, MINIMAX, YUE2)
+FAMILY_SPECS: dict = _register(ACESTEP, SA3, MRT2, MINIMAX, YUE2, LIVE_INPUT)
 
 
 def family_config_fields() -> tuple:

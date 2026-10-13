@@ -95,6 +95,14 @@ uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint minimax-
 uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint yue2-3b          # http://localhost:1318/yue2/
 ```
 
+**Live notes (audio to MIDI).** A read-only analysis seam lets a listening model follow any canvas. The first is [MuScriptor](https://github.com/MuScriptor/MuScriptor), streamed through its own LM so notes reach the piano roll about 300 ms after they sound. The `live-input` alias loads no generator: the canvas is your microphone or an uploaded clip.
+
+```bash
+uv sync --extra analysis-notes
+uv run python -u -m demos.realtime_motion_graph_web.run -- --checkpoint live-input
+# open http://localhost:6660/notes/  (Microphone, File, or Generator next to an SA3 server)
+```
+
 ## The streaming engine
 
 Stable Audio 3 and ACE-Step run through one streaming diffusion pipeline ([`acestep/engine/stream.py`](acestep/engine/stream.py)), and YuE2's acoustic stage runs in the same ring. A ring buffer holds several in-flight generations at different denoising stages and advances them together in one batched forward pass per tick. Each slot carries its own seed, denoise strength and schedule, so a change never has to drain the buffer. Per-frame curves (source preservation, velocity, guidance, noise injection, x0 target) are read from shared state on every solver step, which is why a write is heard one tick later at any depth. The DiT and VAE run end to end in TensorRT with a refit-enabled decoder, so a LoRA swap never rebuilds an engine, and the streaming output is bit-identical to a batch run.

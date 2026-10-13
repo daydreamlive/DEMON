@@ -72,7 +72,8 @@ def _ts_field_type(field: dict) -> str:
     if t == "dict":
         return "Record<string, unknown>"
     if t == "list":
-        return "unknown[]"
+        union = field.get("of")
+        return f"{_pascal(union)}[]" if union else "unknown[]"
     if t == "enum":
         opts = field.get("options") or []
         return " | ".join(_ts_lit(o) for o in opts) if opts else "string"
@@ -109,6 +110,25 @@ def _emit_interface(
     return "\n".join(lines)
 
 
+def _item_kind_blocks(item_kinds: dict) -> list:
+    """TS for every registered item union: one interface per kind
+    (``NoteAnalysisItem``), the union type (``AnalysisItem``) that typed
+    list fields reference, and a ``<Union>ByKind`` map from the envelope's
+    ``kind`` value to its element type."""
+    blocks: list = []
+    for union, kinds in item_kinds.items():
+        union_t = _pascal(union)
+        for kind, spec in kinds.items():
+            blocks.append(_emit_interface(_pascal(kind) + union_t, spec["fields"]))
+        blocks.append(
+            f"export type {union_t} =\n"
+            + "\n".join(f"  | {_pascal(k)}{union_t}" for k in kinds) + ";"
+        )
+        body = "\n".join(f"  {k}: {_pascal(k)}{union_t};" for k in kinds)
+        blocks.append(f"export interface {union_t}ByKind {{\n{body}\n}}")
+    return blocks
+
+
 def _name_union(type_name: str, names) -> str:
     body = "\n".join(f"  | {_ts_lit(n)}" for n in names)
     return f"export type {type_name} =\n{body};"
@@ -136,6 +156,7 @@ def render_wire_types_ts(contract: dict, knob_schema_version: int) -> str:
     handshake = contract["handshake"]
     hs_commands = handshake["commands"]
     hs_events = handshake["events"]
+    item_kinds = contract.get("item_kinds") or {}
 
     blocks: list = [
         _HEADER.rstrip(),
@@ -150,6 +171,8 @@ def render_wire_types_ts(contract: dict, knob_schema_version: int) -> str:
         _name_array("EVENT_NAMES", "EventName", events.keys()),
         _name_union("HandshakeCommandName", hs_commands.keys()),
         _name_union("HandshakeEventName", hs_events.keys()),
+        *(["// ── Item kinds (elements of typed list fields) ──"]
+          + _item_kind_blocks(item_kinds) if item_kinds else []),
         "// ── Command payloads (client → server) ──",
         *[
             _emit_interface(_pascal(name) + "Command", spec["fields"],
@@ -324,6 +347,20 @@ def render_wire_types_hpp(contract: dict, knob_schema_version: int) -> str:
         "event",
         [(name, spec["fields"], name) for name, spec in hs_events.items()],
     )
+    item_kinds = contract.get("item_kinds") or {}
+    item_blocks: list = []
+    if item_kinds:
+        unions = "\n\n".join(
+            _emit_cpp_group(
+                union,
+                [(kind, spec["fields"], None) for kind, spec in kinds.items()],
+            )
+            for union, kinds in item_kinds.items()
+        )
+        item_blocks = [
+            "// ── Item kinds (elements of typed list fields) ──",
+            f"namespace item {{\n\n{_indent(unions, 2)}\n\n}}  // namespace item",
+        ]
     handshake_ns = (
         "namespace handshake {\n\n"
         f"{_indent(hs_command_group, 2)}\n\n"
@@ -341,6 +378,7 @@ def render_wire_types_hpp(contract: dict, knob_schema_version: int) -> str:
             f"inline constexpr int kKnobSchemaVersion = {knob_schema_version};",
             "// The JSON discriminator key carried by every command and event.\n"
             'inline constexpr const char* kTypeKey = "type";',
+            *item_blocks,
             "// ── Command payloads (client → server) ──",
             command_group,
             "// ── Event payloads (server → client) ──",

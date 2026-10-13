@@ -76,6 +76,10 @@ __all__ = [
     "SessionReady",
     "SessionError",
     "SubscriberDropped",
+    "AnalysisState",
+    "AnalysisUpdate",
+    "AnalysisClear",
+    "AudioInAck",
 ]
 
 
@@ -399,6 +403,77 @@ class SubscriberDropped:
     reason: str
 
 
+@dataclass(frozen=True)
+class AnalysisState:
+    """State of one analysis tap (wire ``analysis_state``).
+
+    Published on enable, disable, mode change and error. ``mode`` is
+    ``lookahead`` (ring canvas, cells ahead of the playhead first),
+    ``confirm`` (append-only canvas, cells behind the write frontier),
+    ``no_playhead`` (ring canvas without playhead reports, write order),
+    ``backoff`` (the governor is holding work back) or ``off``.
+    ``error`` is a user-facing message or ``None``. ``dropped`` is the
+    cumulative count of live requests the tap withdrew or had dropped.
+    """
+
+    tap: str
+    enabled: bool
+    engine: str
+    size: str
+    licence: str
+    mode: str
+    error: str | None = None
+    dropped: int = 0
+
+
+@dataclass(frozen=True)
+class AnalysisUpdate:
+    """A range replace for one analysis tap (wire ``analysis_update``).
+
+    The consumer drops every item of ``tap`` whose ``start_s`` lies in
+    ``[range_start_s, range_start_s + span_s)`` and inserts ``items``;
+    ``clear`` drops everything for the tap first. ``items`` are mappings
+    of the registered item ``kind``. Times are canvas seconds.
+    """
+
+    tap: str
+    seq: int
+    source_epoch: int
+    range_start_s: float
+    span_s: float
+    basis: str
+    late: bool
+    clear: bool
+    kind: str
+    items: tuple = ()
+    playhead_s: float | None = None   # None when the session has no playhead
+    wall_s: float = 0.0
+
+
+@dataclass(frozen=True)
+class AnalysisClear(AnalysisUpdate):
+    """The ``clear`` :class:`AnalysisUpdate` a tap publishes when it opens
+    and on every source swap (wire ``analysis_update`` with ``clear``).
+
+    Its own type only so the bus never drops it: ``AnalysisUpdate`` is
+    ``DROP_OLDEST``, and a client that missed the clear under backpressure
+    would keep the previous source's items. Not in the default policy map,
+    so it resolves to ``NEVER_DROP``. Subscribers that dispatch on
+    ``isinstance(event, AnalysisUpdate)`` serialize it unchanged.
+    """
+
+
+@dataclass(frozen=True)
+class AudioInAck:
+    """The live-input canvas took ``audio_in`` frames up to ``seq``
+    (wire ``audio_in_ack``). ``frontier_s`` is the write frontier in
+    canvas seconds of the current take. Coalesced by the publisher to a
+    few per second; only the newest matters."""
+
+    seq: int
+    frontier_s: float
+
+
 # ---------------------------------------------------------------------------
 # Event bus
 # ---------------------------------------------------------------------------
@@ -438,6 +513,12 @@ _DEFAULT_POLICY: dict[type, BackpressurePolicy] = {
     ParamsUpdate: BackpressurePolicy.COALESCE,
     ParamsEcho: BackpressurePolicy.COALESCE,
     PromptBlendEcho: BackpressurePolicy.COALESCE,
+    # Updates cover different ranges, so coalescing would lose data; an
+    # evicted update is lost to that subscriber until the cell is next
+    # re-analysed.
+    AnalysisUpdate: BackpressurePolicy.DROP_OLDEST,
+    # Each ack supersedes the last.
+    AudioInAck: BackpressurePolicy.COALESCE,
 }
 
 
