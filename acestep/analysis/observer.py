@@ -19,7 +19,12 @@ engine) and the playhead.
 
 Cell audio is read with :meth:`AudioEngine.snapshot` under the engine's
 lock, tagged with ``(source_epoch, revision)``; a result is published only
-if both still match (:meth:`CanvasObserver.result_verdict`).
+if both still match (:meth:`CanvasObserver.result_verdict`). The
+frontier-follow path reads arbitrary ranges instead
+(:meth:`CanvasObserver.snapshot_range`); on a canvas that only grows at
+the frontier every later write lands past such a range, so its result is
+current unless the epoch changed or a write landed behind the frontier
+inside the range (:meth:`CanvasObserver.range_verdict`).
 
 Ring canvases rewrite every cell on every pass, mostly with the same
 music. A write to a cell that has been analysed therefore only marks it
@@ -37,13 +42,14 @@ from __future__ import annotations
 import math
 import threading
 import time
+from collections import deque
 from typing import Any, Callable, Mapping, Optional
 
 import numpy as np
 from loguru import logger
 
 from acestep.analysis.engine import AnalysisRequest
-from acestep.analysis.scheduler import SchedulerState, n_cells_for
+from acestep.analysis.scheduler import FollowWindow, SchedulerState, n_cells_for
 from acestep.streaming.audio_engine import WRITE_SWAP
 from acestep.streaming.events import AudioReady, SwapReady
 
@@ -60,6 +66,10 @@ FINGERPRINT_BANDS = 24
 FINGERPRINT_FRAME_S = 0.1
 FINGERPRINT_FMIN_HZ = 40.0
 FINGERPRINT_FMAX_HZ = 16000.0
+
+#: Writes behind the frontier remembered for :meth:`CanvasObserver.
+#: range_verdict`; older ones only raise a floor revision.
+BACKWRITE_MEMORY = 64
 
 #: Verdicts of :meth:`CanvasObserver.result_verdict`.
 VERDICT_CURRENT = "current"
@@ -176,6 +186,10 @@ class CanvasObserver:
         self.pending = [False] * n
         # Fingerprint of the audio last snapshotted for analysis.
         self.fingerprint: list = [None] * n
+        # (revision, start sample) of recent writes that began behind the
+        # frontier, and the newest revision forgotten from that record.
+        self._backwrites: deque = deque()
+        self._backwrite_floor = -1
 
     def _seed_frontier(self) -> Optional[int]:
         """The frontier after a grid reset: ``frontier_fn``'s answer in
@@ -240,6 +254,11 @@ class CanvasObserver:
                     self._dirty_locked(i, now)
                 else:
                     self.pending[i] = True
+            if self.frontier_samples is not None and start < self.frontier_samples:
+                if len(self._backwrites) >= BACKWRITE_MEMORY:
+                    forgotten, _ = self._backwrites.popleft()
+                    self._backwrite_floor = max(self._backwrite_floor, forgotten)
+                self._backwrites.append((int(revision), int(start)))
             self.frontier_samples = int(end)
 
     def _dirty_locked(self, i: int, now: float) -> None:
@@ -385,6 +404,52 @@ class CanvasObserver:
             revision=int(revision),
             options=dict(options or {}),
         )
+
+    def snapshot_range(self, window: FollowWindow,
+                       options: Optional[Mapping[str, Any]] = None) -> AnalysisRequest:
+        """Read a frontier-follow window: the audio ``[window_start_s,
+        window_end_s)`` as mono float32, with the reported stretch
+        ``[emit_lo_s, emit_hi_s)`` as the request's cell and the rest as
+        context. Touches no cell bookkeeping."""
+        with self._lock:
+            epoch = self.epoch
+            n = self.n_samples
+        s0 = max(0, min(int(round(window.window_start_s * self.sr)), n))
+        s1 = max(s0, min(int(round(window.window_end_s * self.sr)), n))
+        audio, revision = self._mono_snapshot(s0, s1)
+        w0, w1 = s0 / self.sr, s1 / self.sr
+        t0 = min(max(window.emit_lo_s, w0), w1)
+        t1 = min(max(window.emit_hi_s, t0), w1)
+        return AnalysisRequest(
+            audio=audio,
+            sr=self.sr,
+            t0_s=t0,
+            span_s=t1 - t0,
+            context_lead_s=t0 - w0,
+            context_tail_s=w1 - t1,
+            source_epoch=epoch,
+            revision=int(revision),
+            options=dict(options or {}),
+        )
+
+    def range_verdict(self, source_epoch: int, revision: int, end_s: float) -> str:
+        """Whether a :meth:`snapshot_range` result taken at ``revision`` and
+        reaching ``end_s`` may be published: :data:`VERDICT_STALE` after a
+        swap, or when a write that began behind the frontier and before
+        ``end_s`` landed after the snapshot (or may have: the record of
+        such writes is bounded, and forgetting one newer than the snapshot
+        counts against it); else :data:`VERDICT_CURRENT`. Appends at the
+        frontier never make a range stale."""
+        end = int(round(float(end_s) * self.sr))
+        with self._lock:
+            if source_epoch != self.epoch:
+                return VERDICT_STALE
+            if self._backwrite_floor > revision:
+                return VERDICT_STALE
+            for rev, start in self._backwrites:
+                if rev > revision and start < end:
+                    return VERDICT_STALE
+            return VERDICT_CURRENT
 
     def _mono_snapshot(self, s0: int, s1: int) -> tuple:
         """``(mono float32 copy of samples [s0, s1), revision)``."""

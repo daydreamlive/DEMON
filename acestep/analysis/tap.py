@@ -22,6 +22,18 @@ with its content unchanged. A truncated result (the engine abandoned a
 runaway window) counts as ``dropped``, still replaces its range with no
 items so nothing stale survives, and never settles.
 
+A growing client-fed canvas (``generates_audio`` False, a live capture:
+its frontier is short of the canvas end when the take starts) uses the
+scheduler's frontier-follow policy instead of cells: every
+:data:`~acestep.analysis.scheduler.FOLLOW_STRIDE_S` of new audio it
+analyses the newest window behind the frontier and publishes the stretch
+not reported yet as a ``settled`` range replace, so notes trail the
+player by the stride, the guard and one engine call rather than a whole
+cell. A result is published when its epoch still matches and no write
+landed behind the frontier inside its window; otherwise it is dropped and
+the next window covers the stretch again. A new take (epoch) starts the
+reported stretch over at 0. On the wire the mode is still ``confirm``.
+
 State goes out as :class:`~acestep.streaming.events.AnalysisState` on
 enable (followed by a ``clear`` update), on mode change, on error and on
 disable. A swap (new ``source_epoch``) withdraws queued work and sends a
@@ -33,6 +45,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Callable, Mapping, Optional
 
 from loguru import logger
@@ -53,10 +66,13 @@ from acestep.analysis.scheduler import (
     BASIS_PROVISIONAL,
     BASIS_SETTLED,
     Governor,
+    FollowState,
+    FollowWindow,
     basis_for,
     crossed,
     is_late,
     next_cell,
+    next_follow_window,
 )
 from acestep.streaming.events import AnalysisClear, AnalysisState, AnalysisUpdate
 
@@ -70,6 +86,9 @@ MODE_CONFIRM = "confirm"
 MODE_NO_PLAYHEAD = "no_playhead"
 MODE_BACKOFF = "backoff"
 MODE_OFF = "off"
+
+#: ``_in_flight`` marker for a frontier-follow request (cells are >= 0).
+_FOLLOW = -1
 
 
 @dataclass
@@ -145,6 +164,10 @@ class AnalysisTap:
         # Results waiting for the content check of later writes to the cell.
         self._held: dict[int, AnalysisResult] = {}
         self._prev_playhead: Optional[float] = None
+        # Frontier follow (growing client-fed canvas): whether this take
+        # uses it, and the end of the stretch reported so far this take.
+        self._follow = False
+        self._emit_hi_s = 0.0
         self._governor = Governor(self.refines_audio, generates_audio=self.generates_audio)
         self._observer: Optional[CanvasObserver] = None
         self._stop = threading.Event()
@@ -183,6 +206,8 @@ class AnalysisTap:
                 frontier_fn=self._frontier_fn,
                 clock=self._clock,
             )
+            self._follow = self._follows(self._observer)
+            self._emit_hi_s = 0.0
             self.mode = self._compute_mode(self._clock())
             self._publish_state()
             self._publish_clear(self._observer.epoch)
@@ -191,8 +216,9 @@ class AnalysisTap:
         )
         self._thread.start()
         logger.info(
-            "analysis_tap_enabled tap={} engine={} size={} refines_audio={} horizon_s={}",
-            self.name, self.engine_name, self.size, self.refines_audio, self.horizon_s,
+            "analysis_tap_enabled tap={} engine={} size={} refines_audio={} policy={} horizon_s={}",
+            self.name, self.engine_name, self.size, self.refines_audio,
+            self._policy(), self.horizon_s,
         )
         return True
 
@@ -226,6 +252,21 @@ class AnalysisTap:
         t = self._thread
         if t is not None and t is not threading.current_thread():
             t.join(timeout)
+
+    def _follows(self, obs: CanvasObserver) -> bool:
+        """Frontier follow for this take: a client-fed canvas whose
+        frontier is short of its end when the take starts (a capture). A
+        static clip is final end to end and keeps the cell policy."""
+        if self.generates_audio:
+            return False
+        frontier = obs.frontier_s()
+        return frontier is None or frontier < obs.duration_s - 1e-6
+
+    def _policy(self) -> str:
+        """Scheduling policy name for logs."""
+        if self._follow:
+            return "follow"
+        return "lookahead" if self.refines_audio else "confirm"
 
     def _fail(self, message: str) -> None:
         self.error = message
@@ -278,6 +319,12 @@ class AnalysisTap:
             self._published.clear()
             self._held.clear()
             self._prev_playhead = None
+            follow = self._follows(self._observer)
+            if follow != self._follow:
+                logger.info("analysis_tap_policy tap={} policy={}", self.name,
+                            "follow" if follow else "confirm")
+            self._follow = follow
+            self._emit_hi_s = 0.0
         if old is not None:
             self.dropped += self._cancel(old)
         self._publish_clear(epoch)
@@ -348,25 +395,31 @@ class AnalysisTap:
 
             if self._in_flight is not None or not self._governor.may_submit(now):
                 return
-            state = obs.scheduler_state(
-                now=now, refines_audio=self.refines_audio, horizon_s=self.horizon_s,
-            )
-            i = next_cell(state)
-            if i is None:
-                return
-            request = obs.snapshot_cell(i, self.options, now=now)
             token = self._token
-            self._in_flight = i
+            if self._follow:
+                window = next_follow_window(FollowState(frontier, self._emit_hi_s))
+                if window is None:
+                    return
+                request = obs.snapshot_range(window, self.options)
+                self._in_flight = _FOLLOW
+                on_result = partial(self._on_follow_result, window, token)
+                on_error = partial(self._on_error, None, token)
+            else:
+                state = obs.scheduler_state(
+                    now=now, refines_audio=self.refines_audio, horizon_s=self.horizon_s,
+                )
+                i = next_cell(state)
+                if i is None:
+                    return
+                request = obs.snapshot_cell(i, self.options, now=now)
+                self._in_flight = i
+                on_result = partial(self._on_result, i, token)
+                on_error = partial(self._on_error, i, token)
             self._governor.note_submit(now)
         try:
-            self.submitter.submit(
-                self.name, self.size, request,
-                lambda result, i=i, token=token: self._on_result(i, token, result),
-                lambda exc, i=i, token=token: self._on_error(i, token, exc),
-                token,
-            )
+            self.submitter.submit(self.name, self.size, request, on_result, on_error, token)
         except Exception as exc:  # noqa: BLE001 - treat like an engine error
-            self._on_error(i, token, exc)
+            on_error(exc)
 
     def _settle_passed(self, playhead: Optional[float]) -> None:
         """Re-publish provisional ring cells as settled once the playhead
@@ -454,6 +507,17 @@ class AnalysisTap:
             span_s=float(result.span_s), kind=result.kind, items=items, basis=basis,
             truncated=truncated,
         )
+        self._publish_result(result, basis, items, playhead, period)
+        if result.wall_s > result.span_s > 0:
+            logger.warning(
+                "analysis_slower_than_realtime tap={} cell={} wall_s={:.2f} span_s={:.2f}",
+                self.name, i, result.wall_s, result.span_s,
+            )
+
+    def _publish_result(self, result: AnalysisResult, basis: str, items: tuple,
+                        playhead: Optional[float], period: float) -> None:
+        """Publish ``result``'s range replace and clear a standing engine
+        error. Caller holds the lock."""
         self.bus.publish(AnalysisUpdate(
             tap=self.name, seq=self._next_seq(), source_epoch=result.source_epoch,
             range_start_s=float(result.range_start_s), span_s=float(result.span_s),
@@ -465,16 +529,43 @@ class AnalysisTap:
             clear=False, kind=result.kind, items=items,
             playhead_s=playhead, wall_s=float(result.wall_s),
         ))
-        if result.wall_s > result.span_s > 0:
-            logger.warning(
-                "analysis_slower_than_realtime tap={} cell={} wall_s={:.2f} span_s={:.2f}",
-                self.name, i, result.wall_s, result.span_s,
-            )
         if self.error is not None:
             self.error = None
             self._publish_state()
 
-    def _on_error(self, i: int, token: object, exc: BaseException) -> None:
+    def _on_follow_result(self, window: FollowWindow, token: object,
+                          result: AnalysisResult) -> None:
+        """Publish a frontier-follow result as a settled range replace of
+        its reported stretch and move the reported end up to it; a stale
+        one is dropped and the next window covers the stretch again. A
+        truncated one still replaces its stretch (empty) and moves on, so
+        a runaway window is never retried."""
+        with self._lock:
+            if token is not self._token or not self.enabled:
+                return
+            self._in_flight = None
+            obs = self._observer
+            verdict = obs.range_verdict(result.source_epoch, result.revision, window.window_end_s)
+            if verdict != VERDICT_CURRENT:
+                self.dropped += 1
+                return
+            truncated = bool(result.truncated)
+            if truncated:
+                self.dropped += 1
+                logger.warning(
+                    "analysis_window_truncated tap={} range_start_s={:.2f} wall_s={:.2f}",
+                    self.name, result.range_start_s, result.wall_s,
+                )
+            items = () if truncated else tuple(dict(it) for it in result.items)
+            basis = BASIS_PROVISIONAL if truncated else BASIS_SETTLED
+            self._emit_hi_s = max(self._emit_hi_s, window.emit_hi_s)
+            self._publish_result(
+                result, basis, items, obs.playhead_s(self._clock()), obs.duration_s,
+            )
+
+    def _on_error(self, i: Optional[int], token: object, exc: BaseException) -> None:
+        """Engine error for cell ``i`` (``None``: a frontier-follow window,
+        whose stretch the next window covers again)."""
         with self._lock:
             if token is not self._token or not self.enabled:
                 return
@@ -482,14 +573,16 @@ class AnalysisTap:
             obs = self._observer
             if isinstance(exc, EngineBusy):
                 self.dropped += 1
-                obs.mark_dirty(i)
+                if i is not None:
+                    obs.mark_dirty(i)
                 return
             if isinstance(exc, EngineUnavailable):
                 message = str(exc)
             else:
                 message = f"{type(exc).__name__}: {exc}"
                 logger.warning("analysis_tap_engine_error tap={} cell={} error={}", self.name, i, message)
-                obs.mark_dirty(i)
+                if i is not None:
+                    obs.mark_dirty(i)
                 if message != self.error:
                     self.error = message
                     self._publish_state()

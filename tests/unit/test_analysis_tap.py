@@ -16,7 +16,7 @@ from acestep.analysis.engine import AnalysisResult, EngineBusy, EngineUnavailabl
 from acestep.analysis.registry import AnalyzerOption, AnalyzerSpec, register
 from acestep.analysis.tap import AnalysisTap
 from acestep.streaming.audio_engine import AudioEngine
-from acestep.streaming.events import AnalysisClear, AnalysisState, AnalysisUpdate
+from acestep.streaming.events import AnalysisClear, AnalysisState, AnalysisUpdate, SwapReady
 
 SR = 48000
 
@@ -118,7 +118,8 @@ class RecordingBus:
         return [e for e in self.events if isinstance(e, cls)]
 
 
-def _make_tap(*, refines_audio=True, seconds=16.0, submitter=None, clock=None, options=None):
+def _make_tap(*, refines_audio=True, seconds=16.0, submitter=None, clock=None, options=None,
+              generates_audio=True, frontier_fn=None):
     eng = AudioEngine(np.zeros((int(seconds * SR), 2), np.float32), SR)
     bus = RecordingBus()
     submitter = submitter or StubSubmitter()
@@ -129,6 +130,7 @@ def _make_tap(*, refines_audio=True, seconds=16.0, submitter=None, clock=None, o
         submitter=submitter, audio_eng=eng, bus=bus,
         refines_audio=refines_audio, source_epoch=0,
         next_seq=lambda: next(seq), clock=clock, interval_s=3600.0,
+        generates_audio=generates_audio, frontier_fn=frontier_fn,
     )
     return tap, eng, bus, submitter, clock
 
@@ -387,6 +389,168 @@ def test_append_only_confirms_behind_the_frontier():
     assert req.t0_s == 0.0
     sub.answer()
     assert bus.of(AnalysisUpdate)[-1].basis == "settled"
+
+
+# ---- frontier follow (growing client-fed canvas) ---------------------------
+
+
+class Capture:
+    """Appends to a capture canvas at its frontier, like LiveInputBackend."""
+
+    def __init__(self, eng):
+        self.eng = eng
+        self.frontier = 0
+
+    def to(self, seconds):
+        end = int(round(seconds * SR))
+        self.eng.patch_window(
+            np.full((end - self.frontier, 2), 0.1, np.float32), self.frontier,
+        )
+        self.frontier = end
+
+
+def _follow_tap(seconds=60.0):
+    tap, eng, bus, sub, clock = _make_tap(
+        refines_audio=False, generates_audio=False, seconds=seconds,
+    )
+    assert tap.start() and tap._follow
+    return tap, eng, bus, sub, clock, Capture(eng)
+
+
+def test_follow_publishes_each_fresh_stretch_once():
+    tap, eng, bus, sub, clock, cap = _follow_tap()
+    assert bus.of(AnalysisState)[0].mode == "confirm"
+    tap.step()
+    assert not sub.submitted  # nothing written yet
+    cap.to(1.2)
+    tap.step()
+    assert not sub.submitted  # under a stride past the guard
+    cap.to(1.3)
+    tap.step()
+    req = sub.submitted[0][0]
+    assert req.t0_s == 0.0 and req.span_s == pytest.approx(1.0)
+    assert req.context_lead_s == 0.0 and req.context_tail_s == pytest.approx(0.3)
+    assert req.audio.shape[0] == int(1.3 * SR)
+    cap.to(2.0)
+    tap.step()
+    assert len(sub.submitted) == 1  # one in flight
+    sub.answer()
+    first = bus.of(AnalysisUpdate)[-1]
+    assert first.basis == "settled" and not first.clear
+    assert first.range_start_s == 0.0 and first.span_s == pytest.approx(1.0)
+    assert first.items[0]["start_s"] == pytest.approx(0.1)
+    tap.step()
+    assert not sub.submitted  # 2.0 s: only 0.7 s reportable past 1.0
+    cap.to(2.3)
+    tap.step()
+    req = sub.submitted[0][0]
+    assert req.t0_s == pytest.approx(1.0) and req.span_s == pytest.approx(1.0)
+    assert req.context_lead_s == pytest.approx(1.0)
+    assert req.context_tail_s == pytest.approx(0.3)
+    sub.answer()
+    second = bus.of(AnalysisUpdate)[-1]
+    assert second.range_start_s == pytest.approx(first.range_start_s + first.span_s)
+    assert second.span_s == pytest.approx(1.0) and second.basis == "settled"
+    # Each stretch is published once: nothing more until new audio.
+    n = len(bus.of(AnalysisUpdate))
+    tap.step()
+    assert not sub.submitted and len(bus.of(AnalysisUpdate)) == n
+    assert tap.dropped == 0
+    tap.close()
+
+
+def test_follow_stall_leaves_a_gap_and_slow_engine_widens_the_stretch():
+    tap, eng, bus, sub, clock, cap = _follow_tap()
+    cap.to(1.3)
+    tap.step()
+    cap.to(2.6)  # engine still busy: the next window reports more
+    sub.answer()
+    tap.step()
+    req = sub.submitted[0][0]
+    assert req.t0_s == pytest.approx(1.0) and req.span_s == pytest.approx(1.3)
+    cap.to(12.0)  # a long stall while this one is in flight
+    sub.answer()
+    tap.step()
+    req = sub.submitted[0][0]
+    assert req.t0_s == pytest.approx(7.0)  # window start: 2.3 .. 7.0 never analysed
+    assert req.context_lead_s == 0.0
+    assert req.span_s == pytest.approx(12.0 - 0.3 - 7.0)
+    sub.answer()
+    upd = bus.of(AnalysisUpdate)[-1]
+    assert upd.range_start_s == pytest.approx(7.0)
+    tap.close()
+
+
+def test_follow_drops_a_result_overtaken_by_a_rewrite_and_retries_the_stretch():
+    tap, eng, bus, sub, clock, cap = _follow_tap()
+    cap.to(1.3)
+    tap.step()
+    eng.patch_window(np.ones((100, 2), np.float32), int(0.5 * SR))  # behind the frontier
+    n = len(bus.of(AnalysisUpdate))
+    sub.answer()
+    assert len(bus.of(AnalysisUpdate)) == n and tap.dropped == 1
+    cap.to(1.4)
+    tap.step()
+    req = sub.submitted[0][0]
+    assert req.t0_s == 0.0 and req.span_s == pytest.approx(1.1)
+    tap.close()
+
+
+def test_follow_engine_busy_keeps_the_stretch():
+    tap, eng, bus, sub, clock, cap = _follow_tap()
+    cap.to(1.3)
+    tap.step()
+    _req, _ok, on_error, _tok = sub.submitted.pop()
+    on_error(EngineBusy("held"))
+    assert tap.dropped == 1 and tap.enabled and tap._emit_hi_s == 0.0
+    tap.step()
+    assert sub.submitted[0][0].t0_s == 0.0
+    tap.close()
+
+
+def test_follow_new_take_starts_over():
+    tap, eng, bus, sub, clock, cap = _follow_tap(seconds=30.0)
+    cap.to(5.0)
+    tap.step()
+    sub.answer()
+    assert tap._emit_hi_s == pytest.approx(4.7)
+    cap.to(6.0)
+    tap.step()
+    stale = sub.submitted[0]
+    # The backend opens a new take: silent canvas, new epoch.
+    eng.swap(np.zeros((int(30.0 * SR), 2), np.float32))
+    bus.deliver(SwapReady(
+        duration=30.0, sample_rate=SR, channels=2, bpm=None, key=None,
+        time_signature=None, fixture_name=None,
+        initial_buffer=np.zeros((1, 2), np.float32), source_epoch=1,
+    ))
+    assert tap._emit_hi_s == 0.0 and tap._follow
+    assert bus.of(AnalysisClear)[-1].source_epoch == 1
+    n = len(bus.of(AnalysisUpdate))
+    stale[1](_result_for(stale[0]))  # the old take's result arrives late
+    assert len(bus.of(AnalysisUpdate)) == n
+    cap.frontier = 0
+    cap.to(1.3)
+    tap.step()
+    req = sub.submitted[-1][0]
+    assert req.source_epoch == 1 and req.t0_s == 0.0
+    sub.answer()
+    upd = bus.of(AnalysisUpdate)[-1]
+    assert upd.source_epoch == 1 and upd.range_start_s == 0.0
+    tap.close()
+
+
+def test_static_clip_on_a_client_fed_canvas_keeps_cells():
+    tap, eng, bus, sub, clock = _make_tap(
+        refines_audio=False, generates_audio=False, seconds=16.0,
+        frontier_fn=lambda: 16.0,
+    )
+    tap.start()
+    assert not tap._follow
+    tap.step()
+    req = sub.submitted[0][0]
+    assert req.t0_s == 0.0 and req.span_s == 4.0
+    tap.close()
 
 
 def test_close_is_bounded_and_worker_runs():

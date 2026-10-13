@@ -19,6 +19,14 @@ Two canvas kinds, from the backend's ``Capabilities.refines_audio``:
   ``provisional`` until the playhead has passed the cell with its
   revision unchanged since the analysis, then ``settled``.
 
+A third policy, **frontier follow**, serves a canvas the client fills as
+it goes (``Capabilities.generates_audio`` False, a live capture). Cells
+would hold every note back until a whole cell plus its context lay behind
+the frontier; instead :func:`next_follow_window` analyses the newest
+:data:`FOLLOW_WINDOW_S` behind the frontier every :data:`FOLLOW_STRIDE_S`
+of new audio and reports only the stretch not reported yet, up to
+:data:`FOLLOW_GUARD_S` short of the frontier. It uses no cells.
+
 A cell is re-analysed at most once per :data:`REANALYSIS_CAP_S`, which
 bounds the cost of continuous denoise churn. Rewrites that leave a cell's
 music unchanged never reach the scheduler as dirty: the observer's
@@ -59,6 +67,15 @@ UNKNOWN_HEALTH_INTERVAL_S = 2.0
 #: A buffer-health report (client slice lead) older than this is ignored.
 #: Set from the live run.
 HEALTH_REPORT_FRESH_S = 2.0
+
+#: Frontier follow: seconds of new audio past the last reported point
+#: before the next window is analysed. Set from the live run.
+FOLLOW_STRIDE_S = 1.0
+#: Frontier follow: length of each analysed window, one MuScriptor chunk.
+FOLLOW_WINDOW_S = 5.0
+#: Frontier follow: the reported stretch stops this far short of the
+#: frontier, so an onset is reported only with some audio after it.
+FOLLOW_GUARD_S = 0.3
 
 BASIS_PROVISIONAL = "provisional"
 BASIS_SETTLED = "settled"
@@ -180,6 +197,56 @@ def next_cell(state: SchedulerState) -> Optional[int]:
         return (group, within, d, i)
 
     return min(candidates, key=key)
+
+
+@dataclass(frozen=True)
+class FollowState:
+    """What :func:`next_follow_window` needs: the write frontier (``None``
+    before the take's first write) and the end of the stretch already
+    reported this take (0 at the start of a take), in canvas seconds."""
+
+    frontier_s: Optional[float]
+    emit_hi_s: float = 0.0
+
+
+@dataclass(frozen=True)
+class FollowWindow:
+    """One frontier-follow analysis: the audio ``[window_start_s,
+    window_end_s)`` is analysed and only onsets in ``[emit_lo_s,
+    emit_hi_s)`` are reported. ``window_end_s`` is the frontier."""
+
+    window_start_s: float
+    emit_lo_s: float
+    emit_hi_s: float
+    window_end_s: float
+
+
+def next_follow_window(state: FollowState) -> Optional[FollowWindow]:
+    """The next frontier-follow window, or ``None`` when fewer than
+    :data:`FOLLOW_STRIDE_S` seconds of new audio are reportable yet.
+
+    The window is the newest :data:`FOLLOW_WINDOW_S` behind the frontier;
+    the reported stretch runs from the previous ``emit_hi_s`` to
+    :data:`FOLLOW_GUARD_S` short of the frontier. When the frontier ran
+    more than a window ahead of the last report (a stall, or a tap
+    enabled mid-take), the stretch starts at the window start and the
+    audio in between is never reported: stale audio is not analysed
+    twice over. An engine slower than the stride simply gets a longer
+    stretch next time."""
+    frontier = state.frontier_s
+    if frontier is None:
+        return None
+    emit_hi = frontier - FOLLOW_GUARD_S
+    if emit_hi - state.emit_hi_s < FOLLOW_STRIDE_S - 1e-9:
+        return None
+    window_start = max(0.0, frontier - FOLLOW_WINDOW_S)
+    emit_lo = max(state.emit_hi_s, window_start)
+    if emit_hi <= emit_lo:
+        return None
+    return FollowWindow(
+        window_start_s=window_start, emit_lo_s=emit_lo,
+        emit_hi_s=emit_hi, window_end_s=frontier,
+    )
 
 
 def is_late(

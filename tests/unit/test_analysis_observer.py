@@ -7,8 +7,11 @@ import pytest
 
 from acestep.analysis import scheduler as sch
 from acestep.analysis.observer import (
+    BACKWRITE_MEMORY,
     CONTENT_CHANGE,
     PLAYHEAD_STALE_S,
+    VERDICT_CURRENT,
+    VERDICT_STALE,
     CanvasObserver,
     content_change,
     content_fingerprint,
@@ -20,8 +23,10 @@ from acestep.analysis.scheduler import (
     SchedulerState,
     basis_for,
     crossed,
+    FollowState,
     is_late,
     next_cell,
+    next_follow_window,
 )
 from acestep.streaming.audio_engine import AudioEngine
 from acestep.streaming.events import AudioReady, EventBus, SwapReady
@@ -120,6 +125,47 @@ def test_basis_late_and_crossing():
 
 
 # ---- governor -------------------------------------------------------------
+
+
+def test_follow_waits_for_a_stride_past_the_guard():
+    assert next_follow_window(FollowState(None, 0.0)) is None
+    # A stride of reportable audio needs stride + guard of frontier.
+    edge = sch.FOLLOW_STRIDE_S + sch.FOLLOW_GUARD_S
+    assert next_follow_window(FollowState(edge - 0.01, 0.0)) is None
+    w = next_follow_window(FollowState(edge, 0.0))
+    assert w.window_start_s == 0.0 and w.emit_lo_s == 0.0
+    assert w.emit_hi_s == pytest.approx(sch.FOLLOW_STRIDE_S)
+    assert w.window_end_s == pytest.approx(edge)
+
+
+def test_follow_window_trails_the_frontier_and_reports_the_fresh_stretch():
+    # A stride past 10.7 needs the frontier at 10.7 + stride + guard.
+    assert next_follow_window(FollowState(11.99, 10.7)) is None
+    assert next_follow_window(FollowState(12.0, 10.7)) is not None
+    w = next_follow_window(FollowState(13.0, 11.0))
+    assert w.window_start_s == pytest.approx(13.0 - sch.FOLLOW_WINDOW_S)
+    assert w.emit_lo_s == 11.0
+    assert w.emit_hi_s == pytest.approx(13.0 - sch.FOLLOW_GUARD_S)
+    assert w.window_end_s == 13.0
+    # A slow engine: the next window simply reports a longer stretch.
+    w = next_follow_window(FollowState(14.5, 11.0))
+    assert w.emit_lo_s == 11.0 and w.emit_hi_s == pytest.approx(14.2)
+
+
+def test_follow_clamps_to_the_window_after_a_stall():
+    w = next_follow_window(FollowState(30.0, 11.0))
+    assert w.window_start_s == pytest.approx(30.0 - sch.FOLLOW_WINDOW_S)
+    assert w.emit_lo_s == w.window_start_s  # 11 .. 25 s is never reported
+    assert w.emit_hi_s == pytest.approx(30.0 - sch.FOLLOW_GUARD_S)
+
+
+def test_follow_starts_over_on_a_new_take():
+    # A new take resets the reported end to 0 while the frontier is small.
+    assert next_follow_window(FollowState(0.5, 0.0)) is None
+    w = next_follow_window(FollowState(2.0, 0.0))
+    assert w.emit_lo_s == 0.0 and w.window_start_s == 0.0
+    # A frontier behind the reported end reports nothing.
+    assert next_follow_window(FollowState(5.0, 20.0)) is None
 
 
 def test_governor_tick_baseline_backoff_and_recovery():
@@ -288,6 +334,41 @@ def test_observer_playhead_reports_and_no_playhead():
     assert obs.playhead_s() == pytest.approx(8.3)
     clock.t += PLAYHEAD_STALE_S
     assert obs.playhead_s() is None
+
+
+def test_observer_range_snapshot_and_verdict():
+    eng, obs, clock = _obs(seconds=20.0)
+    eng.patch_window(np.full((int(8.0 * SR), 2), 0.5, np.float32), 0)
+    w = next_follow_window(FollowState(obs.frontier_s(), 6.0))
+    req = obs.snapshot_range(w, {"bounded": True})
+    assert req.audio.ndim == 1 and req.audio.shape[0] == int(5.0 * SR)
+    assert req.t0_s == pytest.approx(6.0)
+    assert req.span_s == pytest.approx(8.0 - sch.FOLLOW_GUARD_S - 6.0)
+    assert req.context_lead_s == pytest.approx(3.0)
+    assert req.context_tail_s == pytest.approx(sch.FOLLOW_GUARD_S)
+    assert req.options == {"bounded": True}
+    # Appends at the frontier never make the range stale.
+    eng.patch_window(np.ones((SR, 2), np.float32), int(8.0 * SR))
+    assert obs.range_verdict(req.source_epoch, req.revision, w.window_end_s) == VERDICT_CURRENT
+    # A write behind the frontier that reaches into the range does.
+    eng.patch_window(np.ones((100, 2), np.float32), int(7.0 * SR))
+    assert obs.range_verdict(req.source_epoch, req.revision, w.window_end_s) == VERDICT_STALE
+    assert obs.range_verdict(req.source_epoch + 1, eng.revision, w.window_end_s) == VERDICT_STALE
+    # One behind the frontier but past the range end does not.
+    req2 = obs.snapshot_range(w)
+    eng.patch_window(np.ones((100, 2), np.float32), int(8.5 * SR))
+    assert obs.range_verdict(req2.source_epoch, req2.revision, w.window_end_s) == VERDICT_CURRENT
+
+
+def test_observer_range_verdict_forgotten_backwrites_count_against():
+    eng, obs, clock = _obs(seconds=20.0)
+    eng.patch_window(np.ones((int(10.0 * SR), 2), np.float32), 0)
+    req = obs.snapshot_range(next_follow_window(FollowState(obs.frontier_s(), 0.0)))
+    for _ in range(BACKWRITE_MEMORY + 2):
+        # Behind the frontier, all past this range's end.
+        eng.patch_window(np.ones((10, 2), np.float32), int(19.0 * SR))
+        eng.patch_window(np.ones((10, 2), np.float32), int(19.5 * SR))
+    assert obs.range_verdict(req.source_epoch, req.revision, 10.0) == VERDICT_STALE
 
 
 def _swap_ready_kwargs(epoch):
