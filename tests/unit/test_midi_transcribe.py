@@ -148,3 +148,33 @@ def test_transcriber_available(monkeypatch):
 def test_to_wire_rounds():
     n = MidiNote(0.123456, 0.987654, 60.0, "drums")
     assert n.to_wire() == {"start_s": 0.1235, "end_s": 0.9877, "pitch": 60, "instrument": "drums"}
+
+
+def test_one_shot_is_unbounded(fake_host, monkeypatch):
+    """The one-shot asks the engine for every note: the runaway guards
+    must not apply even when the clip would trip them."""
+    host, _loads, _models = fake_host
+    monkeypatch.setattr(notes_engine, "NOTE_CAP_PER_WINDOW", 1)
+    monkeypatch.setattr(notes_engine, "WALL_BUDGET_S", 0.0)
+    result = MidiTranscriber("small").transcribe(np.zeros((1, 96000), np.float32))
+    assert [n.to_wire() for n in result.notes] == RECORDED
+
+
+def test_truncated_one_shot_raises(fake_host, monkeypatch):
+    """A truncated result never reaches the client as an empty list."""
+    from acestep.analysis.engine import AnalysisResult
+
+    host, _loads, _models = fake_host
+    seen = []
+
+    def fake_run(name, size, request):
+        seen.append(dict(request.options))
+        return AnalysisResult(
+            kind="note", range_start_s=0.0, span_s=2.0, items=[],
+            source_epoch=0, revision=0, wall_s=0.1, truncated=True,
+        )
+
+    monkeypatch.setattr(host, "run_one_shot", fake_run)
+    with pytest.raises(RuntimeError, match="transcription abandoned"):
+        MidiTranscriber("small").transcribe(np.zeros((1, 96000), np.float32))
+    assert seen == [{"bounded": False}]

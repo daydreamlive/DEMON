@@ -103,7 +103,12 @@ class MidiTranscriber:
     def transcribe(self, waveform, sample_rate: int = SAMPLE_RATE) -> MidiTranscription:
         """``waveform``: float32 array/tensor shaped [channels, samples]
         (what ``_decode_audio_msg`` returns). Returns paired notes in
-        absolute seconds from the start of the buffer."""
+        absolute seconds from the start of the buffer.
+
+        The request is unbounded (no runaway guards): the drag wants every
+        note. Raises ``RuntimeError`` if a result still comes back
+        truncated, so the adapter answers ``midi_failed`` rather than an
+        empty clip."""
         import torch
 
         from acestep.analysis.engine import AnalysisRequest
@@ -124,8 +129,12 @@ class MidiTranscriber:
             context_tail_s=0.0,
             source_epoch=0,
             revision=0,
+            options={"bounded": False},
         )
         result = get_host().run_one_shot("notes", self.size, request)
+        if result.truncated:
+            # An empty list would read as "no notes"; fail the command instead.
+            raise RuntimeError("transcription abandoned")
         notes = [
             MidiNote(float(i["start_s"]), float(i["end_s"]), int(i["pitch"]), str(i["instrument"]))
             for i in result.items

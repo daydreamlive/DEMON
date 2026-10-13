@@ -257,3 +257,48 @@ def test_guards_quiet_on_normal_window():
     events = [ev for i in range(10) for ev in _note(i, 60 + i, 1.0 + i * 0.1, 1.05 + i * 0.1)]
     res = NotesEngine("small", FakeModel(events)).analyze(_window_req())
     assert res.truncated is False and len(res.items) == 10
+
+
+def _dense_events(n):
+    """``n`` note starts (each closed) inside one 5 s chunk."""
+    return [ev for i in range(n) for ev in _note(i, 40 + i % 60, 0.6 + (i % 400) * 0.01, 0.65 + (i % 400) * 0.01)]
+
+
+def test_dense_one_shot_is_not_truncated():
+    """1200 notes in one chunk is a dense legitimate mix: an unbounded
+    (one-shot) request returns all of them."""
+    sr = 16000
+    req = AnalysisRequest(
+        audio=np.zeros(int(5.0 * sr), np.float32), sr=sr, t0_s=0.0, span_s=5.0,
+        context_lead_s=0.0, context_tail_s=0.0, source_epoch=0, revision=0,
+        options={"bounded": False},
+    )
+    res = NotesEngine("small", FakeModel(_dense_events(1200))).analyze(req)
+    assert res.truncated is False and len(res.items) == 1200
+
+
+def test_unbounded_request_ignores_wall_budget(monkeypatch):
+    monkeypatch.setattr(notes_engine, "WALL_BUDGET_S", 0.0)
+    monkeypatch.setattr(notes_engine, "NOTE_CAP_PER_WINDOW", 5)
+    sr = 16000
+    req = AnalysisRequest(
+        audio=np.zeros(int(5.0 * sr), np.float32), sr=sr, t0_s=0.0, span_s=5.0,
+        context_lead_s=0.0, context_tail_s=0.0, source_epoch=0, revision=0,
+        options={"bounded": False},
+    )
+    res = NotesEngine("small", FakeModel(_dense_events(20))).analyze(req)
+    assert res.truncated is False and len(res.items) == 20
+
+
+def test_dense_live_window_over_cap_is_truncated(monkeypatch):
+    """The same density on a bounded (live) window trips the note cap
+    when the cap is below it."""
+    monkeypatch.setattr(notes_engine, "NOTE_CAP_PER_WINDOW", 1000)
+    res = NotesEngine("small", FakeModel(_dense_events(1200))).analyze(_window_req())
+    assert res.truncated is True and list(res.items) == []
+
+
+def test_note_cap_admits_a_dense_legitimate_mix():
+    """The shipped cap sits above the ~1060 notes per chunk a dense mix
+    yields and below the 1888 of the observed runaway."""
+    assert 1060 < notes_engine.NOTE_CAP_PER_WINDOW < 1888

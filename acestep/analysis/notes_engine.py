@@ -36,9 +36,10 @@ UNCLOSED_NOTE_S = 0.25
 
 #: MuScriptor's chunk length; the runaway guards below are per chunk.
 _CHUNK_S = 5.0
-#: Most note events one 5 s window may yield before decoding is abandoned
-#: (a runaway window produced 1888). Set from the live run.
-NOTE_CAP_PER_WINDOW = 400
+#: Most note events one 5 s window may yield before decoding is abandoned.
+#: A dense legitimate mix yields about 1060 per chunk and the runaway window
+#: produced 1888, so this is a backstop; the wall budget is the real guard.
+NOTE_CAP_PER_WINDOW = 1500
 #: Most wall time one 5 s window may take before decoding is abandoned
 #: (a runaway window took 20.7 s). Set from the live run.
 WALL_BUDGET_S = 6.0
@@ -131,6 +132,12 @@ class NotesEngine:
         A side with no context (``context_lead_s`` / ``context_tail_s`` of
         0: a canvas edge, or the one-shot's whole clip) is not filtered,
         so nothing at the very edge of the audio is lost.
+
+        The runaway guards (note cap, wall budget) apply while
+        ``request.options["bounded"]`` is true, the default: a live window
+        that trips one comes back empty with ``truncated`` set. The
+        one-shot passes ``bounded=False`` and gets every note however
+        long the clip takes.
         """
         if self._model is None:
             raise RuntimeError("notes engine is unloaded")
@@ -148,15 +155,15 @@ class NotesEngine:
 
         t0 = time.perf_counter()
         wav = torch.from_numpy(np.ascontiguousarray(audio))[None, :]
-        # Guards scale with the number of 5 s chunks so the one-shot's
-        # whole clip gets the same per-chunk allowance as a live window.
-        chunks = max(1, math.ceil(duration_s / _CHUNK_S - 1e-9))
         events = self._model.transcribe((wav, int(request.sr)), instruments=instruments)
+        stream = events
+        if request.options.get("bounded", True):
+            # Guards scale with the number of 5 s chunks so a window longer
+            # than one chunk gets the same per-chunk allowance.
+            chunks = max(1, math.ceil(duration_s / _CHUNK_S - 1e-9))
+            stream = _guarded(events, NOTE_CAP_PER_WINDOW * chunks, WALL_BUDGET_S * chunks, t0)
         try:
-            notes = pair_events(
-                _guarded(events, NOTE_CAP_PER_WINDOW * chunks, WALL_BUDGET_S * chunks, t0),
-                duration_s,
-            )
+            notes = pair_events(stream, duration_s)
         except _Runaway as why:
             close = getattr(events, "close", None)
             if close is not None:
