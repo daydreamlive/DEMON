@@ -370,14 +370,14 @@ def test_audio_aligned_to_token_grid_and_capped_at_window():
 
 
 class EndlessLM(TruthLM):
-    """Never emits EOS."""
+    """Never emits EOS and never advances time (a stuck model)."""
 
     def generate(self, prompt_ids, audio, sr, instruments, max_new_tokens):
         self.calls.append({"prompt": list(prompt_ids)})
-        i = 0
+        if not prompt_ids:
+            yield INDEX[("tie", 0)]
         while True:
-            i += 1
-            yield INDEX[("shift", min(i, 999))]
+            yield INDEX[("velocity", 1)]
 
 
 def test_token_cap_discards_hop_and_keeps_ledger(caplog):
@@ -396,18 +396,104 @@ def test_token_cap_discards_hop_and_keeps_ledger(caplog):
     assert _ledger_ticks(dec) == before and dec._commit_tick == commit
 
 
-def test_wall_budget_discards_hop():
+class ScriptLM:
+    """Fake backend yielding ``script(prompt_ids)`` (token ids) then EOS."""
+
+    vocab = VOCAB
+    eos_id = EOS
+
+    def __init__(self, script, eos=True):
+        self.script = script
+        self.eos = eos
+        self.calls = []
+
+    def instrument_for_program(self, program):
+        return _inst(program)
+
+    def generate(self, prompt_ids, audio, sr, instruments, max_new_tokens):
+        self.calls.append(list(prompt_ids))
+        yield from self.script(list(prompt_ids))[:max_new_tokens]
+        if self.eos:
+            yield EOS
+
+
+def _t(*events):
+    return [INDEX[e] for e in events]
+
+
+def test_wall_budget_keeps_the_tail_up_to_the_last_complete_tick():
     t = [0.0]
 
     def clock():
         t[0] += 0.1
         return t[0]
 
-    lm = TruthLM(_random_truth(1, 300, n=40))
-    dec = StreamingNotesDecoder(lm, new_token_cap=10_000, hop_wall_budget_s=0.35, clock=clock)
-    lm.ws, lm.frontier = 0, 300
+    script = lambda prompt: _t(("tie", 0), ("shift", 10), ("drum", 36), ("shift", 20),
+                               ("drum", 38), ("shift", 30), ("drum", 42), ("drum", 46),
+                               ("shift", 40), ("drum", 36))
+    dec = StreamingNotesDecoder(ScriptLM(script), full_hop_wall_budget_s=0.75, clock=clock)
     r = dec.step(np.zeros(3 * SR, np.float32), SR, 0.0, 3.0)
-    assert r.truncated and r.reason == "wall" and dec._ledger == []
+    # The wall trips after the 7th token (drum 42 at tick 30): ticks 10 and 20
+    # are whole and commit, tick 30 may be incomplete and waits.
+    assert r.truncated and r.reason == "wall"
+    assert [(n.start_s, n.pitch) for n in r.new_notes] == [(0.1, 36), (0.2, 38)]
+    assert dec._commit_tick == 30
+
+
+def test_backwards_shift_stops_the_hop_and_keeps_what_came_before():
+    script = lambda prompt: _t(("tie", 0), ("shift", 10), ("drum", 36), ("shift", 50),
+                               ("drum", 38), ("shift", 20), ("drum", 36), ("drum", 38))
+    dec = StreamingNotesDecoder(ScriptLM(script, eos=False))
+    r = dec.step(np.zeros(3 * SR, np.float32), SR, 0.0, 3.0)
+    assert not r.truncated
+    assert [(n.start_s, n.pitch) for n in r.new_notes] == [(0.1, 36), (0.5, 38)]
+
+
+def test_decoding_stops_at_the_commit_point():
+    def script(prompt):
+        out = [INDEX[("tie", 0)]]
+        for tick in range(10, 1000, 10):
+            out += _t(("shift", tick), ("drum", 36))
+        return out
+
+    lm = ScriptLM(script, eos=False)
+    dec = StreamingNotesDecoder(lm)  # 0.5 s audio padded to 5 s: the model would ramble on
+    r = dec.step(np.zeros(SR // 2, np.float32), SR, 0.0, 0.5)
+    assert not r.truncated and r.new_tokens == 1 + 2 * 3 + 1  # stops at shift 40 >= c_rel 35
+    assert [n.start_s for n in r.new_notes] == [0.1, 0.2, 0.3]
+
+
+def test_boundary_restatement_is_deduped():
+    """The model re-emits the last settled notes a tick past the commit
+    boundary: a drum hit and an open pitched note (end + start of its key)."""
+    def script(prompt):
+        if not prompt:  # hop 1: tie, both onsets just under the commit point (85)
+            return _t(("tie", 0), ("shift", 84), ("program", 0), ("velocity", 1),
+                      ("pitch", 60), ("drum", 36))
+        return _t(("shift", 85), ("pitch", 60), ("drum", 36))  # restated at 85
+
+    lm = ScriptLM(script)
+    dec = StreamingNotesDecoder(lm)
+    r1 = dec.step(np.zeros(SR, np.float32), SR, 0.0, 1.0)
+    assert sorted((n.start_s, n.pitch) for n in r1.new_notes) == [(0.84, 36), (0.84, 60)]
+    r2 = dec.step(np.zeros(int(1.2 * SR), np.float32), SR, 0.0, 1.2)
+    assert [VOCAB[i] for i in lm.calls[1]] == [("tie", 0), ("shift", 84), ("program", 0),
+                                                ("velocity", 1), ("pitch", 60), ("drum", 36)]
+    assert r2.new_notes == () and r2.closed == ()
+    assert _ledger_ticks(dec) == [(84, None, 0, 60, False), (84, 85, 128, 36, True)]
+
+
+def test_real_retrigger_past_the_dedupe_window_is_kept():
+    def script(prompt):
+        if not prompt:
+            return _t(("tie", 0), ("shift", 84), ("program", 0), ("velocity", 1), ("pitch", 60))
+        return _t(("shift", 95), ("pitch", 60))
+
+    dec = StreamingNotesDecoder(ScriptLM(script))
+    dec.step(np.zeros(SR, np.float32), SR, 0.0, 1.0)
+    r = dec.step(np.zeros(int(1.2 * SR), np.float32), SR, 0.0, 1.2)
+    assert [(n.start_s, n.end_s) for n in r.closed] == [(0.84, 0.95)]
+    assert [n.start_s for n in r.new_notes] == [0.95]
 
 
 def test_warning_once_per_take(monkeypatch):
@@ -585,3 +671,26 @@ def test_take_starting_mid_music_matches_truth(seed):
             continue
         assert (onset, end if end < commit else None, program, pitch, drum) in got
     assert all(n.onset >= 300 for n in dec._ledger)
+
+
+def _probe_module():
+    import importlib.util as iu
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "scripts" / "analysis" / "notes_stream_probe.py"
+    spec = iu.spec_from_file_location("notes_stream_probe", path)
+    mod = iu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_probe_match_and_duplicates():
+    probe = _probe_module()
+    n = lambda t, p=60, i="a": {"start_s": t, "pitch": p, "instrument": i}
+    ref = [n(1.0), n(2.0), n(3.0, 62)]
+    est = [n(1.04), n(1.05), n(2.2), n(3.0, 62, "b"), n(3.01, 62)]
+    m, prec, rec, f1 = probe.match_notes(ref, est, 0.05)
+    assert m == 2 and prec == 2 / 5 and rec == 2 / 3 and abs(f1 - 0.5) < 1e-9
+    assert probe.count_duplicates(est, 0.03) == 1  # 1.04 / 1.05
+    a = probe.parse_args(["--wav", __file__, "--dry-run", "--tol-ms", "40"])
+    assert a.tol_ms == 40 and a.dry_run

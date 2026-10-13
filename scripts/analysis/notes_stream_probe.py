@@ -7,8 +7,11 @@ Loads a MuScriptor model, streams a real wav through
 wall, prompt tokens, new tokens, notes committed, and per note the
 onset-to-emission latency (frontier at commit minus onset, plus the hop's
 wall: what a listener would see if the hop ran in real time). Ends with
-p50/p95 of hop wall and latency and, with ``--compare-batch``, the note
-count of the batch ``transcribe`` on the same file.
+p50/p95 of hop wall and latency and, with ``--compare-batch``, the batch
+``transcribe`` of the same audio: both note lists go to ``--json``, and
+precision / recall / F1 of the stream against batch (same pitch and
+instrument, onsets within ``--tol-ms``) plus the count of stream-internal
+duplicates (same pitch and instrument, onsets within ``--dup-ms``).
 
 ``--dry-run`` reads the wav and prints the hop plan without importing
 torch or loading anything (the CPU check).
@@ -17,12 +20,13 @@ Usage:
   python scripts/analysis/notes_stream_probe.py --wav path.wav [--size small]
       [--frame-ms 100] [--hop-ms 200] [--max-s 30] [--instruments a,b]
       [--pad-mode mask|short] [--guard-s 0.15] [--cap 256] [--budget-s 0.5]
-      [--compare-batch] [--dry-run]
+      [--compare-batch] [--json out.json] [--tol-ms 50] [--dup-ms 30] [--dry-run]
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -50,6 +54,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--cap", type=int, default=ns.NEW_TOKEN_CAP, help="new tokens per hop")
     p.add_argument("--budget-s", type=float, default=ns.HOP_WALL_BUDGET_S, help="wall per hop")
     p.add_argument("--compare-batch", action="store_true", help="also run batch transcribe")
+    p.add_argument("--json", type=Path, default=None,
+                   help="write stream (and batch) notes here; default <wav stem>_notes.json in cwd")
+    p.add_argument("--tol-ms", type=float, default=50.0, help="onset tolerance vs batch")
+    p.add_argument("--dup-ms", type=float, default=30.0, help="stream duplicate window")
     p.add_argument("--dry-run", action="store_true", help="hop plan only, no torch, no model")
     a = p.parse_args(argv)
     if a.frame_ms <= 0 or a.hop_ms <= 0 or a.max_s <= 0:
@@ -86,6 +94,47 @@ def hop_plan(n_samples: int, sr: int, frame_ms: float, hop_ms: float):
             return plan
 
 
+def match_notes(ref, est, tol_s):
+    """Greedy one-to-one onset match of ``est`` against ``ref`` (dicts with
+    ``start_s``, ``pitch``, ``instrument``): same pitch and instrument,
+    ``|onset difference| <= tol_s``. Returns ``(matched, precision,
+    recall, f1)``."""
+    by_key = {}
+    for i, n in enumerate(ref):
+        by_key.setdefault((n["pitch"], n["instrument"]), []).append((n["start_s"], i))
+    used = set()
+    pairs = []
+    for j, n in enumerate(est):
+        for t, i in by_key.get((n["pitch"], n["instrument"]), ()):
+            d = abs(t - n["start_s"])
+            if d <= tol_s:
+                pairs.append((d, i, j))
+    pairs.sort()
+    used_e = set()
+    for d, i, j in pairs:
+        if i not in used and j not in used_e:
+            used.add(i)
+            used_e.add(j)
+    m = len(used)
+    precision = m / len(est) if est else 0.0
+    recall = m / len(ref) if ref else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    return m, precision, recall, f1
+
+
+def count_duplicates(notes, window_s):
+    """Notes whose onset is within ``window_s`` of an earlier note of the
+    same pitch and instrument."""
+    last = {}
+    dups = 0
+    for n in sorted(notes, key=lambda n: n["start_s"]):
+        key = (n["pitch"], n["instrument"])
+        if key in last and n["start_s"] - last[key] <= window_s + 1e-9:
+            dups += 1
+        last[key] = n["start_s"]
+    return dups
+
+
 def pct(xs, q):
     return float(np.percentile(np.asarray(xs), q)) if xs else float("nan")
 
@@ -112,6 +161,7 @@ def main(argv=None) -> int:
                                    hop_wall_budget_s=a.budget_s)
     instruments = a.instruments or None
     walls, latencies, total, truncated = [], [], 0, 0
+    stream_notes: list[dict] = []
     print("hop  frontier  wall_ms  prompt  new  notes  open  trunc")
     for i, (ws, f) in enumerate(plan):
         s0, s1 = int(round(ws * sr)), int(round(f * sr))
@@ -119,6 +169,8 @@ def main(argv=None) -> int:
         walls.append(r.wall_s)
         truncated += int(r.truncated)
         total += len(r.new_notes)
+        stream_notes.extend({"start_s": round(n.start_s, 4), "pitch": n.pitch,
+                             "instrument": n.instrument} for n in r.new_notes)
         for n in r.new_notes:
             latencies.append(f - n.start_s + r.wall_s)
         print(f"{i:4d}  {f:8.2f}  {r.wall_s * 1000:7.1f}  {r.prompt_tokens:6d}  "
@@ -137,9 +189,22 @@ def main(argv=None) -> int:
 
         t0 = time.perf_counter()
         wav = torch.from_numpy(audio)[None, :]
-        n_batch = sum(1 for ev in tm.transcribe((wav, sr), instruments=instruments)
-                      if type(ev).__name__ == "NoteStartEvent")
-        print(f"batch transcribe notes={n_batch} wall_s={time.perf_counter() - t0:.2f}")
+        batch_notes = [{"start_s": round(float(ev.start_time), 4), "pitch": int(ev.pitch),
+                        "instrument": str(ev.instrument)}
+                       for ev in tm.transcribe((wav, sr), instruments=instruments)
+                       if type(ev).__name__ == "NoteStartEvent"]
+        print(f"batch transcribe notes={len(batch_notes)} wall_s={time.perf_counter() - t0:.2f}")
+        m, prec, rec, f1 = match_notes(batch_notes, stream_notes, a.tol_ms / 1000.0)
+        print(f"stream vs batch (tol {a.tol_ms:.0f} ms): matched={m} precision={prec:.3f} "
+              f"recall={rec:.3f} f1={f1:.3f}")
+    else:
+        batch_notes = None
+    print(f"stream duplicates (within {a.dup_ms:.0f} ms): "
+          f"{count_duplicates(stream_notes, a.dup_ms / 1000.0)}")
+    out = a.json or Path(f"{a.wav.stem}_notes.json")
+    out.write_text(json.dumps({"wav": str(a.wav), "stream": stream_notes, "batch": batch_notes},
+                              indent=1))
+    print(f"notes json: {out}")
     return 0
 
 

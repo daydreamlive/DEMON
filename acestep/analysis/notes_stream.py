@@ -20,6 +20,13 @@ the ledger as notes sounding since the window start (``tied_in``: never
 reported as onsets, but they get their ends and become the next hop's
 tie keys).
 
+Each hop stops decoding at the first shift past the commit point (nothing
+later can commit) or at a backwards shift (the model re-transcribing);
+an onset within :data:`DEDUPE_TICKS` of a ledger note of the same key is
+the model restating a settled note across the boundary and is dropped;
+a hop that hits its wall budget or token cap keeps what it decoded up to
+the last complete tick.
+
 Pure python and torch-free at import. The model sits behind a narrow
 backend (:class:`MuScriptorStreamBackend` wraps a loaded
 ``TranscriptionModel``; tests use a fake that yields scripted tokens),
@@ -72,6 +79,9 @@ FULL_HOP_WALL_BUDGET_S = 2.0
 #: An open note older than this is closed at the commit point (MuScriptor
 #: training shortens notes over 10 s; keeps the tie prologue bounded).
 MAX_OPEN_NOTE_S = 10.0
+#: Two onsets of one (program, pitch) this close (ticks, 30 ms) are one
+#: note restated across the commit boundary, never a real retrigger.
+DEDUPE_TICKS = 3
 #: Duration of a drum hit (``MINIMUM_NOTE_DURATION_SEC``), in ticks.
 DRUM_TICKS = 1
 #: MIDI program the tokenizer uses for drums.
@@ -182,6 +192,15 @@ class WindowDecoder:
     @property
     def open_keys(self) -> list[tuple[int, int]]:
         return sorted(self._open)
+
+    @property
+    def tick(self) -> int:
+        """Current window tick (the last shift)."""
+        return self._tick
+
+    @property
+    def in_prologue(self) -> bool:
+        return self._in_prologue
 
     @property
     def tie_keys(self) -> list[tuple[int, int]]:
@@ -568,6 +587,7 @@ class StreamingNotesDecoder:
         n_new = 0
         reason: Optional[str] = "cap"
         eos = self.backend.eos_id
+        c_rel = c_new - ws_tick
         gen = self.backend.generate(prompt, audio, int(sr), instruments, cap)
         try:
             for tok in gen:
@@ -575,6 +595,18 @@ class StreamingNotesDecoder:
                     reason = None
                     break
                 n_new += 1
+                etype, value = self._vocab[int(tok)]
+                if etype == "shift" and value > 0 and not dec.in_prologue:
+                    if value < dec.tick:
+                        # Time went backwards: the model is re-transcribing
+                        # what it already said. Keep what came before.
+                        reason = None
+                        break
+                    if value >= c_rel:
+                        # Nothing at or past the commit point can commit
+                        # this hop: stop decoding (lossless, saves the wall).
+                        reason = None
+                        break
                 actions.extend(dec.feed(int(tok)))
                 if self._clock() - t0 > budget:
                     reason = "wall"
@@ -587,20 +619,26 @@ class StreamingNotesDecoder:
                 close()
         wall_s = self._clock() - t0
 
+        c_eff = c_new
         if reason is not None:
             if not self._warned:
                 self._warned = True
                 logger.warning(
-                    "notes_stream_hop_discarded reason={} new_tokens={} wall_s={:.3f} "
+                    "notes_stream_hop_truncated reason={} new_tokens={} wall_s={:.3f} "
                     "frontier_s={:.2f} (once per take)", reason, n_new, wall_s, frontier_s,
                 )
-            return StepResult(open_notes=self._open_notes(), wall_s=wall_s,
-                              prompt_tokens=len(prompt), new_tokens=n_new,
-                              commit_s=self.commit_s, truncated=True, reason=reason)
+            if dec.in_prologue:
+                return StepResult(open_notes=self._open_notes(), wall_s=wall_s,
+                                  prompt_tokens=len(prompt), new_tokens=n_new,
+                                  commit_s=self.commit_s, truncated=True, reason=reason)
+            # Keep the decoded tail up to the last complete tick: events at
+            # the current tick may still have company the model never got
+            # to emit, everything before it is whole.
+            c_eff = min(c_new, ws_tick + dec.tick)
 
         adopt = [k for k in dec.tie_keys if k not in set(ties)] if full else []
-        new, closed = self._apply(actions, ws_tick, c_old, c_new, adopt)
-        self._commit_tick = max(c_old, c_new)
+        new, closed = self._apply(actions, ws_tick, c_old, c_eff, adopt)
+        self._commit_tick = max(c_old, c_eff)
         if full:
             self._known_from = ws_tick
         self._close_stale()
@@ -612,7 +650,7 @@ class StreamingNotesDecoder:
             revised=revised,
             open_notes=self._open_notes(),
             wall_s=wall_s, prompt_tokens=len(prompt), new_tokens=n_new,
-            commit_s=self.commit_s,
+            commit_s=self.commit_s, truncated=reason is not None, reason=reason,
         )
 
     def _apply(self, actions: list[Action], ws_tick: int, c_old: int, c_new: int,
@@ -633,11 +671,23 @@ class StreamingNotesDecoder:
                             self.backend.instrument_for_program(program), self._hop, tied_in=True)
             open_by_key[(program, pitch)] = n
             self._ledger.append(n)
-        for a in actions:
+        skip_next = False
+        for i, a in enumerate(actions):
+            if skip_next:
+                skip_next = False
+                continue
             t = a.tick + ws_tick
             key = (a.program, a.pitch)
             if a.kind == "end":
                 n = open_by_key.get(key)
+                nxt = actions[i + 1] if i + 1 < len(actions) else None
+                if (n is not None and nxt is not None and nxt.kind == "start"
+                        and (nxt.program, nxt.pitch) == key and nxt.tick == a.tick
+                        and not n.tied_in and abs(n.onset - t) <= DEDUPE_TICKS):
+                    # The model restated an open ledger note a tick or two
+                    # later (end + start of its key): not a retrigger.
+                    skip_next = True
+                    continue
                 # An end at or before a ledger note's onset belongs to an
                 # earlier note of that key re-decoded from an empty prompt.
                 if n is not None and t < c_new and (t > n.onset or n.tied_in):
@@ -645,6 +695,8 @@ class StreamingNotesDecoder:
                     del open_by_key[key]
                     closed.append(n)
             elif c_old <= t < c_new:
+                if self._is_restated(key, t):
+                    continue
                 if a.kind == "drum":
                     n = _LedgerNote(t, t + DRUM_TICKS, DRUM_PROGRAM, a.pitch, True, "drums", self._hop)
                     closed.append(n)
@@ -661,6 +713,13 @@ class StreamingNotesDecoder:
                 self._ledger.append(n)
                 new.append(n)
         return new, closed
+
+    def _is_restated(self, key: tuple[int, int], t: int) -> bool:
+        """A ledger note of ``key`` already has its onset within
+        :data:`DEDUPE_TICKS` of ``t``: the model re-emitting a settled
+        note just past the commit boundary (tick jitter), not a new one."""
+        return any((n.program, n.pitch) == key and not n.tied_in
+                   and abs(n.onset - t) <= DEDUPE_TICKS for n in self._ledger)
 
     def _close_stale(self) -> None:
         limit = int(MAX_OPEN_NOTE_S * FRAME_RATE)
