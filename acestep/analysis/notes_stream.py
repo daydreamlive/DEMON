@@ -12,9 +12,10 @@ The ledger may force a window's prologue only once it has heard the
 model there: the model opens every window cut mid-music with a tie
 section naming the notes already sounding, and forcing an empty one
 contradicts the audio (the model answers EOS at once). So the first hop
-of a take, a window start outside what the ledger covers, and a window
-start where the ledger holds no sounding note all send an EMPTY prompt
-and decode the whole window; the model's own tie section is adopted into
+of a take and a window start beyond what the ledger has analysed (a
+stall gap) send an EMPTY prompt and decode the whole window. A window
+start inside analysed audio where nothing was sounding forces the empty
+tie section: there it is the truth; the model's own tie section is adopted into
 the ledger as notes sounding since the window start (``tied_in``: never
 reported as onsets, but they get their ends and become the next hop's
 tie keys).
@@ -514,14 +515,14 @@ class StreamingNotesDecoder:
                 events.append(WindowEvent(n.end - ws_tick, False, n.program, 0, n.pitch))
         return encode_window(ties, events, self._index), sorted(set(ties))
 
-    def _ledger_speaks_for(self, ws_tick: int, ties: Sequence) -> bool:
-        """Whether the ledger may force the window's prologue: it is
-        complete from before ``ws_tick`` up to the commit point and names
-        at least one note sounding there. Otherwise the model states its
-        own tie section (an empty prompt)."""
+    def _ledger_speaks_for(self, ws_tick: int) -> bool:
+        """Whether the ledger may force the window's prologue: it has
+        analysed ``ws_tick`` (complete from ``known_from`` up to the last
+        successful hop's commit point). An empty tie set is then the truth
+        (silence at the window start) and is forced too. Otherwise the
+        model states its own tie section (an empty prompt)."""
         return (self._known_from is not None
-                and self._known_from <= ws_tick <= self._commit_tick
-                and bool(ties))
+                and self._known_from <= ws_tick <= self._commit_tick)
 
     # -- hop -----------------------------------------------------------
 
@@ -550,7 +551,7 @@ class StreamingNotesDecoder:
 
         t0 = self._clock()
         prompt, ties = self.build_prompt(ws_tick, c_old)
-        full = not self._ledger_speaks_for(ws_tick, ties)
+        full = not self._ledger_speaks_for(ws_tick)
         if full:
             # Seed the decoder with the ledger's notes sounding before the
             # window, so the model's tie section closes the ones it omits.

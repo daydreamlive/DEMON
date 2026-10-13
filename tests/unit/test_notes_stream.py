@@ -309,14 +309,25 @@ def test_second_hop_prompt_starts_with_adopted_tie_keys():
     assert [(n.pitch, n.start_s, n.end_s, n.tied_in) for n in r.revised] == [(36, 3.0, 9.0, True)]
 
 
-def test_window_start_with_no_sounding_note_falls_back_to_empty_prompt():
+def test_window_start_in_covered_silence_forces_the_empty_tie():
     lm = TruthLM(Truth([(10, 40, 0, 60, False), (620, 650, 0, 62, False)]))
     dec = StreamingNotesDecoder(lm, new_token_cap=10_000, hop_wall_budget_s=1e9)
     _hop(dec, lm, 0.0, 1.0)
-    _hop(dec, lm, 1.5, 6.5)  # nothing sounds at 1.5 s: never force a bare tie
-    assert lm.calls[-1]["prompt"] == []
+    _hop(dec, lm, 0.0, 2.0)   # covered through 1.85 s
+    r = _hop(dec, lm, 1.5, 6.5)  # nothing sounds at 1.5 s and it is analysed: [tie] is the truth
+    assert lm.calls[-1]["prompt"] == [INDEX[("tie", 0)]]
+    assert r.prompt_tokens == 1 and r.new_tokens == lm.calls[-1]["tail"] <= 5  # only the tail
+    assert [n.start_s for n in r.new_notes] == [6.2]
     closed, opened = dec.notes_in(0.0, 7.0)
     assert closed == [] and [n.start_s for n in opened] == [6.2]  # 0.1-0.4 pruned behind 1.5
+
+
+def test_window_start_beyond_coverage_sends_empty_prompt():
+    lm = TruthLM(Truth([(10, 40, 0, 60, False), (620, 650, 0, 62, False)]))
+    dec = StreamingNotesDecoder(lm, new_token_cap=10_000, hop_wall_budget_s=1e9)
+    _hop(dec, lm, 0.0, 1.0)      # covered through 0.85 s
+    _hop(dec, lm, 1.5, 6.5)      # a stall gap: 1.5 s was never analysed
+    assert lm.calls[-1]["prompt"] == []
 
 
 def test_window_start_past_the_ledger_falls_back_to_empty_prompt():
