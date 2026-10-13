@@ -31,6 +31,15 @@ on first use.
   :data:`DIT_FP8_ONNX_FILES`); ``--fp8-onnx`` compiles a local graph instead.
   :func:`acestep.engine.sa3_trt.find_dit_engine` prefers an fp8 engine when one
   covers the window, else fp16mixed.
+* **sa3-m DiT (FP8 refit, LoRA sessions)**: ``dit_fp8.onnx`` with its 96
+  attention cores patched to fp16 (derived into ``<engines_dir>/_onnx/``,
+  :mod:`acestep.engine.trt.sa3_fp8_fp16attn`), compiled with
+  ``BuilderFlag.REFIT_INDIVIDUAL`` marking only the 222 fp8 weights
+  refittable, to ``sa3_m_dit_fp8_refit_l*``. Built by ``--all --fp8`` at
+  every DiT profile, or ``--dit --fp8-refit``. With ``DEMON_SA3_FP8_REFIT=1``
+  LoRA sessions prefer a covering one over the fp16mixed refit engine
+  (default off). Stock-graph attention is fp32 and only fuses in a non-refit
+  build; fp16 attention keeps the fused MHA kernel in the refit build.
 * **sa3-sm-music DiT** (``--model small-music``): upstream's
   ``onnx/sa3-sm-music/dit_fp16.onnx`` (same fp16mixed recipe, same IO
   contract as sa3-m; a single proto, the ~0.9 GB of weights inline)
@@ -77,8 +86,9 @@ Usage:
     # SAME-L window decoder (defaults t32_56_96):
     python -m acestep.engine.trt.sa3_build --same-l-window
 
-    # Canonical matrix plus the FP8 DiT variants (HF dit_fp8.onnx, or a
-    # local graph via --fp8-onnx /path/to/dit_fp8.onnx):
+    # Canonical matrix plus the FP8 DiT variants and their LoRA fp8 refit
+    # engines (HF dit_fp8.onnx, or a local graph via --fp8-onnx
+    # /path/to/dit_fp8.onnx):
     python -m acestep.engine.trt.sa3_build --all --fp8
 
 Requirements:
@@ -328,13 +338,26 @@ class SA3DiTRefitBuildConfig:
 
 @dataclass
 class SA3DiTFp8RefitBuildConfig:
-    """Build parameters for one REFITTABLE sa3-m fp8 DiT engine (fp8 refit
-    investigation, runbook 2026-10-12 Q2a): Stability's ``dit_fp8.onnx``
-    compiled STRONGLY_TYPED with ``BuilderFlag.REFIT``. Separate dataclass
-    for the same metadata-identity reason as the others; the
-    ``_fp8_refit`` marker makes the engine exclusively owned
-    (:func:`acestep.engine.sa3_trt.is_refittable_engine_path`) without
-    entering runtime selection.
+    """Build parameters for one REFITTABLE sa3-m fp8 DiT engine (the LoRA
+    fp8 refit engines, ``sa3_m_dit_fp8_refit_l*``).
+
+    Graph: Stability's ``dit_fp8.onnx`` with its 96 attention cores patched
+    to fp16 (:mod:`acestep.engine.trt.sa3_fp8_fp16attn`, derived into
+    ``<engines_dir>/_onnx/dit_fp8_fp16attn.onnx``). The stock graph runs
+    attention in fp32; only a non-refit build finds the fused fp32 MHA
+    tactic for it, so a refittable build of the stock graph runs attention
+    unfused (~2x the step time at 54 s). Built STRONGLY_TYPED with
+    ``BuilderFlag.REFIT_INDIVIDUAL`` marking ONLY the fp8 weight
+    initializers refittable (``fp8_weight_sites``); every scale stays a
+    build-time constant (fixed by design, see
+    :mod:`acestep.engine.trt.sa3_fp8_refit`).
+
+    Separate dataclass for the same metadata-identity reason as the others;
+    ``refit_mode`` / ``attention_dtype`` / ``source_onnx_sha`` land in the
+    metadata ``config`` block, so an engine built from another recipe or
+    another source graph rebuilds. The ``_fp8_refit`` name marker makes the
+    engine exclusively owned
+    (:func:`acestep.engine.sa3_trt.is_refittable_engine_path`).
     """
 
     min_latents: int
@@ -342,6 +365,11 @@ class SA3DiTFp8RefitBuildConfig:
     max_latents: int
     workspace_gb: float = 16.0
     onnx_files: list[str] = field(default_factory=lambda: list(DIT_FP8_ONNX_FILES))
+    refit_mode: str = "individual"
+    attention_dtype: str = "fp16"
+    # sha256 (onnx_sha256: proto + external data) of the source dit_fp8.onnx
+    # the patched graph was derived from; filled in by _build_dit_engine.
+    source_onnx_sha: str = ""
 
     def engine_name(self) -> str:
         return (
@@ -455,6 +483,7 @@ def _build_strongly_typed_engine(
     workspace_gb: float,
     profile_shapes: dict[str, tuple[tuple, tuple, tuple]],
     refit: bool = False,
+    refit_weight_names: list[str] | None = None,
     python_plugin_preference: str | None = None,
     strongly_typed: bool = True,
     timing_cache: str | None = None,
@@ -470,6 +499,9 @@ def _build_strongly_typed_engine(
     it) builds a weakly typed network with no precision flags.
     ``timing_cache``: a file loaded when present and rewritten after the
     build.
+    ``refit_weight_names``: build with ``BuilderFlag.REFIT_INDIVIDUAL`` and
+    mark only these weights refittable (instead of ``BuilderFlag.REFIT``,
+    which marks every constant). Implies a refittable engine.
     """
     import tensorrt as trt
 
@@ -497,7 +529,19 @@ def _build_strongly_typed_engine(
     config.set_memory_pool_limit(
         trt.MemoryPoolType.WORKSPACE, int(workspace_gb * (1 << 30)),
     )
-    if refit:
+    if refit_weight_names is not None:
+        names = list(refit_weight_names)
+        if not names:
+            raise RuntimeError("refit_weight_names is empty")
+        failed = [n for n in names if not network.mark_weights_refittable(n)]
+        if failed:
+            raise RuntimeError(
+                f"mark_weights_refittable failed for {len(failed)}/{len(names)} "
+                f"weights (first: {failed[:3]})"
+            )
+        logger.info("REFIT_INDIVIDUAL: marked {} weights refittable", len(names))
+        config.set_flag(trt.BuilderFlag.REFIT_INDIVIDUAL)
+    elif refit:
         config.set_flag(trt.BuilderFlag.REFIT)
     profile = builder.create_optimization_profile()
     for input_name, (lo, opt, hi) in profile_shapes.items():
@@ -522,6 +566,56 @@ def _build_strongly_typed_engine(
         os.makedirs(os.path.dirname(os.path.abspath(timing_cache)), exist_ok=True)
         with open(timing_cache, "wb") as f:
             f.write(memoryview(config.get_timing_cache().serialize()))
+
+
+FP8_FP16ATTN_ONNX = "dit_fp8_fp16attn.onnx"
+
+
+def _fp8_fp16attn_onnx(source_onnx: str, onnx_dir: str) -> tuple[str, str]:
+    """The fp16-attention variant of ``source_onnx`` (Stability's
+    ``dit_fp8.onnx``) under ``onnx_dir``, derived on first use and reused
+    while its recorded source sha matches. Returns ``(path, source_sha)``."""
+    from .sa3_export import onnx_sha256
+    from .sa3_fp8_fp16attn import patch_fp8_attention_fp16
+
+    source_sha = onnx_sha256(source_onnx)
+    dst = os.path.join(onnx_dir, FP8_FP16ATTN_ONNX)
+    sidecar = dst + ".source.json"
+    if os.path.isfile(dst) and os.path.isfile(sidecar):
+        try:
+            with open(sidecar, encoding="utf-8") as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            rec = {}
+        if rec.get("source_onnx_sha") == source_sha and rec.get("sha256") == onnx_sha256(dst):
+            logger.info("Reusing fp16-attention fp8 ONNX: {}", dst)
+            return dst, source_sha
+    os.makedirs(onnx_dir, exist_ok=True)
+    logger.info("Deriving fp16-attention fp8 ONNX {} from {}", dst, source_onnx)
+    stats = patch_fp8_attention_fp16(source_onnx, dst)
+    logger.info(
+        "fp16 attention: {} softmax cores, {} casts to fp16, {} back to fp32, "
+        "nodes {} -> {}", stats["softmax"], stats["cast_fp16"],
+        stats["cast_fp32"], stats["nodes_before"], stats["nodes_after"],
+    )
+    with open(sidecar, "w", encoding="utf-8") as f:
+        json.dump({"source_onnx": str(Path(source_onnx).resolve()),
+                   "source_onnx_sha": source_sha, **stats}, f, indent=1)
+    return dst, source_sha
+
+
+def _fp8_refit_weight_names(onnx_path: str) -> list[str]:
+    """The fp8 weight initializers of ``onnx_path`` (the only constants an
+    fp8 refit engine marks refittable)."""
+    import onnx
+
+    from .sa3_fp8_refit import fp8_weight_sites
+
+    proto = onnx.load(onnx_path, load_external_data=False)
+    names = [site.initializer for site in fp8_weight_sites(proto)]
+    if not names:
+        raise RuntimeError(f"{onnx_path}: no fp8 weight sites to mark refittable")
+    return names
 
 
 def _build_dit_engine(
@@ -584,6 +678,11 @@ def _build_dit_engine(
                     "('Medium fp8')."
                 ) from exc
             raise
+    refit_individual = refit and isinstance(config, SA3DiTFp8RefitBuildConfig)
+    if refit_individual:
+        onnx_path, config.source_onnx_sha = _fp8_fp16attn_onnx(
+            onnx_path, os.path.join(output_dir, "_onnx"),
+        )
     expected = _expected_metadata(
         component=component, onnx_path=onnx_path, config=config, env=env,
     )
@@ -604,6 +703,9 @@ def _build_dit_engine(
     logger.info("=" * 60)
 
     lo, opt, hi = config.min_latents, config.opt_latents, config.max_latents
+    refit_weight_names = (
+        _fp8_refit_weight_names(onnx_path) if refit_individual else None
+    )
     t0 = time.time()
     _build_strongly_typed_engine(
         onnx_path=onnx_path,
@@ -618,6 +720,7 @@ def _build_dit_engine(
             "local_add_cond": ((1, 257, lo), (1, 257, opt), (1, 257, hi)),
         },
         refit=refit,
+        refit_weight_names=refit_weight_names,
     )
     _write_metadata(engine_path=engine_path, expected=expected, env=env)
     elapsed = time.time() - t0
@@ -1008,6 +1111,13 @@ def _matrix_jobs(args) -> list[tuple[str, str]]:
                     f" (~{hi * SAMPLES_PER_LATENT / SA3_SAMPLE_RATE:.0f}s window)",
                     cfg.engine_name(),
                 ))
+            for lo, opt, hi in dit_profiles:
+                cfg = SA3DiTFp8RefitBuildConfig(lo, opt, hi)
+                jobs.append((
+                    f"SA3-M DiT fp8 refit l{lo}_{opt}_{hi}"
+                    f" (~{hi * SAMPLES_PER_LATENT / SA3_SAMPLE_RATE:.0f}s window)",
+                    cfg.engine_name(),
+                ))
         if args.refit:
             for lo, opt, hi in dit_profiles:
                 cfg = SA3DiTRefitBuildConfig(lo, opt, hi)
@@ -1147,9 +1257,11 @@ def main() -> int:
                              "at runtime — never process-cached).")
     single.add_argument("--fp8-refit", action="store_true",
                         help="Single mode: also build the REFITTABLE fp8 DiT "
-                             "(dit_fp8.onnx + BuilderFlag.REFIT, "
+                             "(dit_fp8.onnx with fp16 attention cores, "
+                             "REFIT_INDIVIDUAL on the fp8 weights only, "
                              "sa3_m_dit_fp8_refit_l*). Selected for LoRA "
-                             "sessions only under DEMON_SA3_FP8_REFIT=1.")
+                             "sessions only under DEMON_SA3_FP8_REFIT=1. "
+                             "--all --fp8 builds it at every profile.")
     single.add_argument("--variants-only", action="store_true",
                         help="Single mode: skip the fp16mixed base DiT and "
                              "build only the requested --fp8/--refit/"
@@ -1222,6 +1334,19 @@ def main() -> int:
                         component="sa3_m_dit_fp8",
                         precision_label="fp8",
                         local_onnx=args.fp8_onnx,
+                    ))
+                # The LoRA fp8 refit variants, same profiles.
+                for lo, opt, hi in dit_profiles:
+                    results.append(_build_dit_engine(
+                        output_dir=args.output_dir,
+                        config=SA3DiTFp8RefitBuildConfig(
+                            lo, opt, hi, workspace_gb=args.workspace_gb),
+                        env=env,
+                        force_rebuild=args.force_rebuild,
+                        component="sa3_m_dit_fp8_refit",
+                        precision_label="fp8 refit",
+                        local_onnx=args.fp8_onnx,
+                        refit=True,
                     ))
             if args.refit:
                 for lo, opt, hi in dit_profiles:
