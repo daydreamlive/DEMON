@@ -34,6 +34,13 @@ The gate is tier-aware (``sa3_parity_tier``): fp8 engines are a speed tier
 judged at upstream's bar (min per-step cos >= 0.90, upstream PR #86), not at
 the fidelity gate; fp16mixed is the fidelity tier (>= 0.9998). The tier is
 inferred from the engine name (``_fp8_`` => fp8); ``--tier`` overrides it.
+
+LoRA (``--lora F --lora-strength 1.0 0.5``): the adapter is applied on the
+eager side through SA3LoRAManager; a refit-built engine (``--engine-path``
+to a ``*_refit_*`` engine, ``--manifest`` or its sidecar manifest) gets the
+same weights through SA3TRTRefitMirror (the deployed refit path, fp16mixed
+or fp8 manifest), and every strength is gated separately. The wall time of
+each mirror sync (one strength change = one refit) is recorded.
 """
 
 from __future__ import annotations
@@ -77,6 +84,16 @@ def main() -> int:
     ap.add_argument("--engine", default=None,
                     help="engine dir name under trt_engines/ to force "
                          "(default: what find_dit_engine selects)")
+    ap.add_argument("--engine-path", default=None,
+                    help="absolute .trt path to force (wins over --engine)")
+    ap.add_argument("--lora", default=None,
+                    help="SA3 LoRA applied on the eager side (and refit onto "
+                         "the engine when it is refit-built)")
+    ap.add_argument("--lora-strength", nargs="+", type=float, default=[1.0],
+                    help="strengths to gate, in order (each change = one refit)")
+    ap.add_argument("--manifest", default=None,
+                    help="refit manifest (default: the engine's sidecar / "
+                         "shared manifest)")
     ap.add_argument("--tier", choices=TIERS, default=None,
                     help="parity tier to judge at (default: inferred from "
                          "the engine name, _fp8_ => fp8, else fp16mixed)")
@@ -111,7 +128,9 @@ def main() -> int:
     valid = int(pad.sum()) if pad is not None else L
     print(f"[cond] padding_mask valid frames {valid}/{L}")
 
-    if args.engine:
+    if args.engine_path:
+        engine_path = Path(args.engine_path)
+    elif args.engine:
         from acestep.engine.sa3_trt import trt_engines_dir
         engine_path = trt_engines_dir() / args.engine / f"{args.engine}.trt"
     else:
@@ -121,8 +140,6 @@ def main() -> int:
     trt_dit = SA3TRTDit(engine_path, latent_frames=L, seconds_total=seconds_label)
 
     dtype = next(sam.model.model.parameters()).dtype
-    g = torch.Generator(device="cuda").manual_seed(1528)
-
     print(f"[engine] {engine_path.parent.name}")
     results = {"model": args.model, "engine": engine_path.parent.name,
                "latent_frames": int(L), "valid_frames": valid,
@@ -130,73 +147,137 @@ def main() -> int:
                "production_cond": bool(args.production),
                "prompt": args.prompt, "eager_ref": "fp32" if args.fp32_ref else "fp16",
                "fixed_t": [], "trajectory": []}
-    for t_val in (1.0, 0.7, 0.4, 0.1):
-        x = torch.randn(1, 256, L, device="cuda", dtype=dtype, generator=g)
-        t_b = torch.tensor([t_val], device="cuda", dtype=dtype)
-        with torch.no_grad():
-            v_eager = sam.model.model(x, t_b, **bundle).float()
-        v_trt = trt_dit.step_bundle(x, t_val, bundle).float().clone()
-        cos = torch.nn.functional.cosine_similarity(
-            v_eager.flatten(), v_trt.flatten(), dim=0,
-        ).item()
-        rel = ((v_trt - v_eager).norm() / v_eager.norm()).item()
-        print(f"t={t_val:.2f}  cos={cos:.6f}  rel_rms={rel:.4e}  "
-              f"|eager|={v_eager.norm().item():.2f} |trt|={v_trt.norm().item():.2f}")
-        results["fixed_t"].append({"t": t_val, "cos": cos, "rel_rms": rel})
 
-    # ---- real trajectory: 8-step pingpong under the session schedule ----
-    import stable_audio_3.inference.sampling as sampling
-
-    sa = dict(cond.sched_args)
-    esl = sa.get("effective_seq_len")
-    if torch.is_tensor(esl):
-        esl = esl.detach().cpu()
-    sched = sampling.build_schedule(
-        steps=STEPS, sigma_max=1.0, dist_shift=sa["dist_shift"],
-        effective_seq_len=esl, fallback_seq_len=sa["fallback_seq_len"],
-        include_endpoint=True, device="cpu",
-    )
-    if sched.dim() == 2:
-        sched = sched[0]
-    sched = sched.float().tolist()
-
-    def velocity(kind, x, t_val):
-        if kind == "eager":
+    def measure(res: dict) -> dict:
+        g = torch.Generator(device="cuda").manual_seed(1528)
+        res.setdefault("fixed_t", [])
+        res.setdefault("trajectory", [])
+        for t_val in (1.0, 0.7, 0.4, 0.1):
+            x = torch.randn(1, 256, L, device="cuda", dtype=dtype, generator=g)
             t_b = torch.tensor([t_val], device="cuda", dtype=dtype)
             with torch.no_grad():
-                return sam.model.model(x.to(dtype), t_b, **bundle).float()
-        return trt_dit.step_bundle(x.to(dtype), t_val, bundle).float().clone()
+                v_eager = sam.model.model(x, t_b, **bundle).float()
+            v_trt = trt_dit.step_bundle(x, t_val, bundle).float().clone()
+            cos = torch.nn.functional.cosine_similarity(
+                v_eager.flatten(), v_trt.flatten(), dim=0,
+            ).item()
+            rel = ((v_trt - v_eager).norm() / v_eager.norm()).item()
+            print(f"t={t_val:.2f}  cos={cos:.6f}  rel_rms={rel:.4e}  "
+                  f"|eager|={v_eager.norm().item():.2f} |trt|={v_trt.norm().item():.2f}")
+            res["fixed_t"].append({"t": t_val, "cos": cos, "rel_rms": rel})
 
-    def run(kind, *, shadow: bool):
-        gen = torch.Generator(device="cuda").manual_seed(7)
-        x = torch.randn(1, 256, L, device="cuda", generator=gen)
-        for i in range(STEPS):
-            t_cur, t_nxt = sched[i], sched[i + 1]
-            v = velocity(kind, x, t_cur)
-            if shadow:
-                v_t = velocity("trt", x, t_cur)
-                cos = torch.nn.functional.cosine_similarity(
-                    v.flatten(), v_t.flatten(), dim=0).item()
-                rel = ((v_t - v).norm() / v.norm()).item()
-                print(f"step {i}  t={t_cur:.4f}  cos={cos:.6f}  rel_rms={rel:.4e}")
-                results["trajectory"].append(
-                    {"step": i, "t": t_cur, "cos": cos, "rel_rms": rel})
-            denoised = x - t_cur * v
-            noise = torch.randn(x.shape, device="cuda", generator=gen)
-            x = (1 - t_nxt) * denoised + t_nxt * noise
-        return x
+        # ---- real trajectory: 8-step pingpong under the session schedule ----
+        import stable_audio_3.inference.sampling as sampling
 
-    print(f"[trajectory] schedule={[round(v, 4) for v in sched]}")
-    x_eager = run("eager", shadow=True)
-    x_trt = run("trt", shadow=False)
-    final_cos = torch.nn.functional.cosine_similarity(
-        x_eager.flatten(), x_trt.flatten(), dim=0).item()
-    results["final_latent_cos"] = final_cos
-    verdict = judge([r["cos"] for r in results["trajectory"]],
-                    infer_tier(engine_path.parent.name, args.tier))
-    results.update(verdict)
-    print(f"[trajectory] {verdict_line(verdict)}; compounded final "
-          f"latent cos={final_cos:.6f}")
+        sa = dict(cond.sched_args)
+        esl = sa.get("effective_seq_len")
+        if torch.is_tensor(esl):
+            esl = esl.detach().cpu()
+        sched = sampling.build_schedule(
+            steps=STEPS, sigma_max=1.0, dist_shift=sa["dist_shift"],
+            effective_seq_len=esl, fallback_seq_len=sa["fallback_seq_len"],
+            include_endpoint=True, device="cpu",
+        )
+        if sched.dim() == 2:
+            sched = sched[0]
+        sched = sched.float().tolist()
+
+        def velocity(kind, x, t_val):
+            if kind == "eager":
+                t_b = torch.tensor([t_val], device="cuda", dtype=dtype)
+                with torch.no_grad():
+                    return sam.model.model(x.to(dtype), t_b, **bundle).float()
+            return trt_dit.step_bundle(x.to(dtype), t_val, bundle).float().clone()
+
+        def run(kind, *, shadow: bool):
+            gen = torch.Generator(device="cuda").manual_seed(7)
+            x = torch.randn(1, 256, L, device="cuda", generator=gen)
+            for i in range(STEPS):
+                t_cur, t_nxt = sched[i], sched[i + 1]
+                v = velocity(kind, x, t_cur)
+                if shadow:
+                    v_t = velocity("trt", x, t_cur)
+                    cos = torch.nn.functional.cosine_similarity(
+                        v.flatten(), v_t.flatten(), dim=0).item()
+                    rel = ((v_t - v).norm() / v.norm()).item()
+                    print(f"step {i}  t={t_cur:.4f}  cos={cos:.6f}  rel_rms={rel:.4e}")
+                    res["trajectory"].append(
+                        {"step": i, "t": t_cur, "cos": cos, "rel_rms": rel})
+                denoised = x - t_cur * v
+                noise = torch.randn(x.shape, device="cuda", generator=gen)
+                x = (1 - t_nxt) * denoised + t_nxt * noise
+            return x
+
+        print(f"[trajectory] schedule={[round(v, 4) for v in sched]}")
+        x_eager = run("eager", shadow=True)
+        x_trt = run("trt", shadow=False)
+        final_cos = torch.nn.functional.cosine_similarity(
+            x_eager.flatten(), x_trt.flatten(), dim=0).item()
+        res["final_latent_cos"] = final_cos
+        verdict = judge([r["cos"] for r in res["trajectory"]],
+                        infer_tier(engine_path.parent.name, args.tier))
+        res.update(verdict)
+        print(f"[trajectory] {verdict_line(verdict)}; compounded final "
+              f"latent cos={final_cos:.6f}")
+        return res
+
+    if not args.lora:
+        measure(results)
+    else:
+        import time
+
+        from acestep.engine.sa3_lora import SA3LoRAManager
+
+        mirror = None
+        if trt_dit.refittable:
+            from acestep.engine.sa3_trt_lora import (
+                SA3TRTRefitMirror,
+                find_refit_manifest,
+            )
+
+            manifest = Path(args.manifest) if args.manifest else find_refit_manifest(engine_path)
+            if manifest is None:
+                raise RuntimeError(f"no refit manifest for {engine_path}")
+            mirror = SA3TRTRefitMirror(trt_dit.engine, sam.model.model, manifest)
+            if getattr(mirror, "_fp8", False):
+                import json as _json
+
+                from acestep.engine.trt.sa3_fp8_refit import refit_inventory
+
+                results["refit_inventory"] = refit_inventory(
+                    mirror._refitter, _json.loads(Path(manifest).read_text(encoding="utf-8")),
+                )
+                print(f"[refit] inventory {results['refit_inventory']}")
+        else:
+            print("[lora] engine is NOT refit-built: TRT runs the base weights "
+                  "(measures LoRA-vs-base divergence, not refit parity)")
+        mgr = SA3LoRAManager(
+            model_root=sam.model.model,
+            conditioner_root=sam.model.conditioner,
+            checkpoint_id=args.model,
+        )
+        lid = mgr.register_lora(args.lora)
+        mgr.prewarm_lora(lid).result(timeout=600)
+        results["lora"] = args.lora
+        results["refit_engine"] = mirror is not None
+        results["by_strength"] = {}
+        for i, s in enumerate(args.lora_strength):
+            if i == 0:
+                mgr.enable_lora(lid, strength=s)
+            else:
+                mgr.set_lora_strength(lid, s)
+            sync_ms = None
+            if mirror is not None:
+                torch.cuda.synchronize()
+                t0 = time.perf_counter()
+                pushed = mirror.sync(reason=f"parity-s{s}")
+                torch.cuda.synchronize()
+                sync_ms = (time.perf_counter() - t0) * 1000
+                print(f"[refit] strength={s} pushed={pushed} sync_ms={sync_ms:.0f}")
+            print(f"\n=== lora strength {s} ===")
+            res = measure({"strength": s, "refit_sync_ms": sync_ms})
+            results["by_strength"][str(s)] = res
+        results["pass"] = all(r["pass"] for r in results["by_strength"].values())
     if args.json:
         import json
         Path(args.json).parent.mkdir(parents=True, exist_ok=True)
