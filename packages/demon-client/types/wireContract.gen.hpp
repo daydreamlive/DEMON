@@ -33,6 +33,27 @@ inline constexpr int kKnobSchemaVersion = 1;
 // The JSON discriminator key carried by every command and event.
 inline constexpr const char* kTypeKey = "type";
 
+// ── Item kinds (elements of typed list fields) ──
+
+namespace item {
+
+  namespace analysis_item {
+
+    namespace note {
+      /** Onset in canvas seconds (the frame of params.playback_pos). */
+      inline constexpr const char* kStartS = "start_s";
+      /** Offset in canvas seconds. */
+      inline constexpr const char* kEndS = "end_s";
+      /** MIDI pitch 0-127. */
+      inline constexpr const char* kPitch = "pitch";
+      /** MuScriptor instrument label (e.g. 'piano', 'drums'). No velocity: the model has none. */
+      inline constexpr const char* kInstrument = "instrument";
+    }  // namespace note
+
+  }  // namespace analysis_item
+
+}  // namespace item
+
 // ── Command payloads (client → server) ──
 
 namespace command {
@@ -231,6 +252,16 @@ namespace command {
     inline constexpr const char* kRequestId = "request_id";
   }  // namespace midi_transcribe
 
+  namespace analysis_tap {
+    inline constexpr const char* kType = "analysis_tap";
+    /** Analyzer name, one of ready.capabilities.analysis_taps (e.g. 'notes'). */
+    inline constexpr const char* kTap = "tap";
+    /** true enables (or re-configures) the tap; false disables it. */
+    inline constexpr const char* kEnabled = "enabled";
+    /** Per-analyzer options, validated by the analyzer. notes: {size: small|medium|large, instruments: [MuScriptor names], horizon_s: 4..30 (default 8; how far ahead of the playhead ring canvases are analysed)}. Unknown options fail the enable. */
+    inline constexpr const char* kOptions = "options";
+  }  // namespace analysis_tap
+
   namespace bounce {
     inline constexpr const char* kType = "bounce";
     /** Client-chosen token echoed on bounce_ready / bounce_failed. */
@@ -276,7 +307,7 @@ namespace event {
     inline constexpr const char* kSourceEpoch = "source_epoch";
     /** Backend-declared audio geometry: {sample_rate, channels, chunk_rate_hz, duration_s|null}. chunk_rate_hz is the generation cadence (latent fps for diffusion, frame rate for AR models); duration_s null is reserved for endless streams. */
     inline constexpr const char* kGeometry = "geometry";
-    /** Backend capability mask: {capability: bool} over the Capabilities fields (swap, timbre, structure, lora, ...). Client panels and MCP tools gate on it; commands tagged with a matching `requires` fail with command_failed when the bit is false. */
+    /** Backend capability mask: {capability: bool} over the Capabilities fields (swap, timbre, structure, lora, ...), plus analysis_taps: the analyzer names this pod can run as analysis_tap channels (empty list when none). Client panels and MCP tools gate on it; commands tagged with a matching `requires` fail with command_failed when the bit is false. */
     inline constexpr const char* kCapabilities = "capabilities";
     /** Names of the localhost side services this server proxies at /tools/<name>/<path> (GET/POST, header X-Demon-Session: <session_id>) whose /health answered 200 recently; empty when none. Absent on older servers. */
     inline constexpr const char* kTools = "tools";
@@ -473,6 +504,69 @@ namespace event {
     inline constexpr const char* kRequestId = "request_id";
     inline constexpr const char* kError = "error";
   }  // namespace bounce_failed
+
+  namespace analysis_state {
+    inline constexpr const char* kType = "analysis_state";
+    /** Analyzer name. */
+    inline constexpr const char* kTap = "tap";
+    inline constexpr const char* kEnabled = "enabled";
+    /** Engine that runs the tap (e.g. 'muscriptor'); empty when it never started. */
+    inline constexpr const char* kEngine = "engine";
+    /** Model size loaded (small|medium|large). */
+    inline constexpr const char* kSize = "size";
+    /** Licence text of the model; show it verbatim. */
+    inline constexpr const char* kLicence = "licence";
+    /** lookahead: ring canvas, cells ahead of the playhead first. confirm: append-only canvas, cells behind the write frontier. no_playhead: ring canvas without playhead reports, write order. backoff: held back to protect generation. off: disabled. */
+    inline constexpr const char* kMode = "mode";
+    /** User-facing error, or null. */
+    inline constexpr const char* kError = "error";
+    /** Cumulative live requests withdrawn or dropped (queue full, stale result, engine busy). */
+    inline constexpr const char* kDropped = "dropped";
+
+    namespace mode {
+      inline constexpr const char* kLookahead = "lookahead";
+      inline constexpr const char* kConfirm = "confirm";
+      inline constexpr const char* kNoPlayhead = "no_playhead";
+      inline constexpr const char* kBackoff = "backoff";
+      inline constexpr const char* kOff = "off";
+    }  // namespace mode
+  }  // namespace analysis_state
+
+  namespace analysis_update {
+    inline constexpr const char* kType = "analysis_update";
+    inline constexpr const char* kTap = "tap";
+    /** Monotonic per session; a lower seq for the same range is ignored. */
+    inline constexpr const char* kSeq = "seq";
+    /** Source generation the items were analysed from; an update older than the last clear is ignored. */
+    inline constexpr const char* kSourceEpoch = "source_epoch";
+    /** Start of the replaced range, canvas seconds. */
+    inline constexpr const char* kRangeStartS = "range_start_s";
+    /** Length of the replaced range. */
+    inline constexpr const char* kSpanS = "span_s";
+    /** provisional: the region may still be rewritten. settled: append-only audio behind the frontier, or ring audio the playhead passed unchanged. */
+    inline constexpr const char* kBasis = "basis";
+    /** The playhead had already passed range_start_s when the items arrived. */
+    inline constexpr const char* kLate = "late";
+    /** Drop every item of this tap first (on enable and swap; items empty). */
+    inline constexpr const char* kClear = "clear";
+    /** Item kind of every element of items. */
+    inline constexpr const char* kKind = "kind";
+    /** Items whose start_s lies in [range_start_s, range_start_s + span_s); they replace the tap's items in that range. */
+    inline constexpr const char* kItems = "items";
+    /** Server playhead estimate at publish, or null without one. */
+    inline constexpr const char* kPlayheadS = "playhead_s";
+    /** Engine wall time for this range. */
+    inline constexpr const char* kWallS = "wall_s";
+
+    namespace basis {
+      inline constexpr const char* kProvisional = "provisional";
+      inline constexpr const char* kSettled = "settled";
+    }  // namespace basis
+
+    namespace kind {
+      inline constexpr const char* kNote = "note";
+    }  // namespace kind
+  }  // namespace analysis_update
 
 }  // namespace event
 

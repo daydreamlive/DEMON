@@ -42,6 +42,7 @@ export type CommandName =
   | "swap_source"
   | "write_audio"
   | "midi_transcribe"
+  | "analysis_tap"
   | "bounce";
 
 export const COMMAND_NAMES: readonly CommandName[] = [
@@ -66,6 +67,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "swap_source",
   "write_audio",
   "midi_transcribe",
+  "analysis_tap",
   "bounce",
 ] as const;
 
@@ -96,7 +98,9 @@ export type EventName =
   | "midi_notes"
   | "midi_failed"
   | "bounce_ready"
-  | "bounce_failed";
+  | "bounce_failed"
+  | "analysis_state"
+  | "analysis_update";
 
 export const EVENT_NAMES: readonly EventName[] = [
   "init_ack",
@@ -126,6 +130,8 @@ export const EVENT_NAMES: readonly EventName[] = [
   "midi_failed",
   "bounce_ready",
   "bounce_failed",
+  "analysis_state",
+  "analysis_update",
 ] as const;
 
 export type HandshakeCommandName =
@@ -134,6 +140,26 @@ export type HandshakeCommandName =
 export type HandshakeEventName =
   | "upload_ok"
   | "upload_failed";
+
+// ── Item kinds (elements of typed list fields) ──
+
+export interface NoteAnalysisItem {
+  /** Onset in canvas seconds (the frame of params.playback_pos). */
+  start_s: number;
+  /** Offset in canvas seconds. */
+  end_s: number;
+  /** MIDI pitch 0-127. */
+  pitch: number;
+  /** MuScriptor instrument label (e.g. 'piano', 'drums'). No velocity: the model has none. */
+  instrument: string;
+}
+
+export type AnalysisItem =
+  | NoteAnalysisItem;
+
+export interface AnalysisItemByKind {
+  note: NoteAnalysisItem;
+}
 
 // ── Command payloads (client → server) ──
 
@@ -303,6 +329,16 @@ export interface MidiTranscribeCommand {
   request_id: string;
 }
 
+export interface AnalysisTapCommand {
+  type: "analysis_tap";
+  /** Analyzer name, one of ready.capabilities.analysis_taps (e.g. 'notes'). */
+  tap: string;
+  /** true enables (or re-configures) the tap; false disables it. */
+  enabled: boolean;
+  /** Per-analyzer options, validated by the analyzer. notes: {size: small|medium|large, instruments: [MuScriptor names], horizon_s: 4..30 (default 8; how far ahead of the playhead ring canvases are analysed)}. Unknown options fail the enable. */
+  options?: Record<string, unknown>;
+}
+
 export interface BounceCommand {
   type: "bounce";
   /** Client-chosen token echoed on bounce_ready / bounce_failed. */
@@ -344,7 +380,7 @@ export interface ReadyEvent {
   source_epoch?: number;
   /** Backend-declared audio geometry: {sample_rate, channels, chunk_rate_hz, duration_s|null}. chunk_rate_hz is the generation cadence (latent fps for diffusion, frame rate for AR models); duration_s null is reserved for endless streams. */
   geometry?: Record<string, unknown>;
-  /** Backend capability mask: {capability: bool} over the Capabilities fields (swap, timbre, structure, lora, ...). Client panels and MCP tools gate on it; commands tagged with a matching `requires` fail with command_failed when the bit is false. */
+  /** Backend capability mask: {capability: bool} over the Capabilities fields (swap, timbre, structure, lora, ...), plus analysis_taps: the analyzer names this pod can run as analysis_tap channels (empty list when none). Client panels and MCP tools gate on it; commands tagged with a matching `requires` fail with command_failed when the bit is false. */
   capabilities?: Record<string, unknown>;
   /** Names of the localhost side services this server proxies at /tools/<name>/<path> (GET/POST, header X-Demon-Session: <session_id>) whose /health answered 200 recently; empty when none. Absent on older servers. */
   tools?: unknown[];
@@ -536,6 +572,52 @@ export interface BounceFailedEvent {
   error?: string;
 }
 
+export interface AnalysisStateEvent {
+  type: "analysis_state";
+  /** Analyzer name. */
+  tap: string;
+  enabled: boolean;
+  /** Engine that runs the tap (e.g. 'muscriptor'); empty when it never started. */
+  engine: string;
+  /** Model size loaded (small|medium|large). */
+  size: string;
+  /** Licence text of the model; show it verbatim. */
+  licence: string;
+  /** lookahead: ring canvas, cells ahead of the playhead first. confirm: append-only canvas, cells behind the write frontier. no_playhead: ring canvas without playhead reports, write order. backoff: held back to protect generation. off: disabled. */
+  mode: "lookahead" | "confirm" | "no_playhead" | "backoff" | "off";
+  /** User-facing error, or null. */
+  error: string | null;
+  /** Cumulative live requests withdrawn or dropped (queue full, stale result, engine busy). */
+  dropped: number;
+}
+
+export interface AnalysisUpdateEvent {
+  type: "analysis_update";
+  tap: string;
+  /** Monotonic per session; a lower seq for the same range is ignored. */
+  seq: number;
+  /** Source generation the items were analysed from; an update older than the last clear is ignored. */
+  source_epoch: number;
+  /** Start of the replaced range, canvas seconds. */
+  range_start_s: number;
+  /** Length of the replaced range. */
+  span_s: number;
+  /** provisional: the region may still be rewritten. settled: append-only audio behind the frontier, or ring audio the playhead passed unchanged. */
+  basis: "provisional" | "settled";
+  /** The playhead had already passed range_start_s when the items arrived. */
+  late: boolean;
+  /** Drop every item of this tap first (on enable and swap; items empty). */
+  clear: boolean;
+  /** Item kind of every element of items. */
+  kind: "note";
+  /** Items whose start_s lies in [range_start_s, range_start_s + span_s); they replace the tap's items in that range. */
+  items: AnalysisItem[];
+  /** Server playhead estimate at publish, or null without one. */
+  playhead_s: number | null;
+  /** Engine wall time for this range. */
+  wall_s: number;
+}
+
 // ── Session-init config (client → server, sent at handshake) ──
 
 export interface SessionConfigPayload {
@@ -638,6 +720,7 @@ export type WireCommand =
   | SwapSourceCommand
   | WriteAudioCommand
   | MidiTranscribeCommand
+  | AnalysisTapCommand
   | BounceCommand;
 
 export type WireEvent =
@@ -667,7 +750,9 @@ export type WireEvent =
   | MidiNotesEvent
   | MidiFailedEvent
   | BounceReadyEvent
-  | BounceFailedEvent;
+  | BounceFailedEvent
+  | AnalysisStateEvent
+  | AnalysisUpdateEvent;
 
 export type HandshakeCommand =
   | UploadTrackCommand;

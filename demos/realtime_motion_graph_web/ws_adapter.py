@@ -61,6 +61,8 @@ from acestep.sidecars import truncate_to_pool
 from acestep.streaming.commands import CommandOrigin
 from acestep.streaming.config import SessionConfig
 from acestep.streaming.events import (
+    AnalysisState,
+    AnalysisUpdate,
     AudioReady,
     AudioWriteFailed,
     AudioWritten,
@@ -733,6 +735,36 @@ def _capabilities_with_midi(caps: dict) -> dict:
     except Exception:  # probe must never break the handshake
         caps["midi_transcribe"] = False
     return caps
+
+
+def _capabilities_with_analysis(caps: dict) -> dict:
+    """Overlay the server-level analysis_taps list onto the backend mask
+    (see Capabilities.analysis_taps): every registered analyzer whose
+    probe says it can run on this pod. Probes never load weights."""
+    try:
+        from acestep.analysis.registry import available_analyzers
+
+        caps["analysis_taps"] = sorted(
+            name for name, reason in available_analyzers().items() if reason is None
+        )
+    except Exception:  # probe must never break the handshake
+        caps["analysis_taps"] = []
+    return caps
+
+
+def _analysis_item_wire(item) -> dict:
+    """One analysis item for the wire: plain JSON scalars, times rounded
+    to 0.1 ms."""
+    out = {}
+    for k, v in dict(item).items():
+        if isinstance(v, float):
+            v = round(v, 4)
+        elif isinstance(v, np.generic):
+            v = v.item()
+            if isinstance(v, float):
+                v = round(v, 4)
+        out[k] = v
+    return out
 
 
 def _run_midi_transcribe(waveform, request_id: str, send_json) -> None:
@@ -1739,6 +1771,37 @@ def _handle_client_body(
                 "fixture_name": event.fixture_name or "",
                 "error": event.error,
             })
+        elif isinstance(event, AnalysisState):
+            _send_json({
+                "type": "analysis_state",
+                "tap": event.tap,
+                "enabled": event.enabled,
+                "engine": event.engine,
+                "size": event.size,
+                "licence": event.licence,
+                "mode": event.mode,
+                "error": event.error,
+                "dropped": event.dropped,
+            })
+        elif isinstance(event, AnalysisUpdate):
+            _send_json({
+                "type": "analysis_update",
+                "tap": event.tap,
+                "seq": event.seq,
+                "source_epoch": event.source_epoch,
+                "range_start_s": round(event.range_start_s, 4),
+                "span_s": round(event.span_s, 4),
+                "basis": event.basis,
+                "late": event.late,
+                "clear": event.clear,
+                "kind": event.kind,
+                "items": [_analysis_item_wire(it) for it in event.items],
+                "playhead_s": (
+                    None if event.playhead_s is None
+                    else round(event.playhead_s, 3)
+                ),
+                "wall_s": round(event.wall_s, 3),
+            })
         elif isinstance(event, SubscriberDropped):
             # Terminal notice from the bus: our subscription overflowed
             # and was force-closed. Outbound delivery is dead; the
@@ -1777,7 +1840,9 @@ def _handle_client_body(
         # fields above stay as-is for old clients; geometry is the
         # backend-declared truth new clients read instead of constants.
         "geometry": streaming.geometry_payload(),
-        "capabilities": _capabilities_with_midi(streaming.capabilities_payload()),
+        "capabilities": _capabilities_with_analysis(
+            _capabilities_with_midi(streaming.capabilities_payload()),
+        ),
         # Localhost side services this server proxies at /tools/<name>/
         # (healthy ones only; cached, no I/O here).
         "tools": tool_proxy.healthy_tools(),
@@ -2223,6 +2288,26 @@ def _handle_client_body(
                     return
                 _MIDI_TRANSCRIBE_POOL.submit(
                     _run_midi_transcribe, wf, request_id, _send_json,
+                )
+            elif mtype == "analysis_tap":
+                # Live analysis channel on/off. Analyzer problems come
+                # back as analysis_state.error from the session; only a
+                # malformed envelope is a command_failed.
+                tap = data.get("tap")
+                options = data.get("options")
+                if (not isinstance(tap, str) or not tap
+                        or (options is not None and not isinstance(options, dict))):
+                    _send_json({
+                        "type": "command_failed",
+                        "command": "analysis_tap",
+                        "requires": "",
+                        "error": "analysis_tap needs a tap name and an "
+                                 "options object (or none)",
+                    })
+                    return
+                streaming.set_analysis_tap(
+                    tap, bool(data.get("enabled", False)), options,
+                    origin=origin,
                 )
         except ConnectionClosed:
             state.running = False
