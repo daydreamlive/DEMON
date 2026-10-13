@@ -188,6 +188,12 @@ class Capabilities:
     # Append-only families leave it False: they have no "whole window"
     # to re-render.
     bounce: bool = False
+    # Server-level, not a backend trait, like ``midi_transcribe``: the
+    # analyzer names (``acestep.analysis.registry``) this pod can run as
+    # live ``analysis_tap`` channels. Backends leave it empty; the WS
+    # adapter fills it from ``registry.available_analyzers()`` when it
+    # builds ``ready.capabilities``.
+    analysis_taps: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

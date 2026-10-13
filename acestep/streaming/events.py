@@ -76,6 +76,8 @@ __all__ = [
     "SessionReady",
     "SessionError",
     "SubscriberDropped",
+    "AnalysisState",
+    "AnalysisUpdate",
 ]
 
 
@@ -399,6 +401,53 @@ class SubscriberDropped:
     reason: str
 
 
+@dataclass(frozen=True)
+class AnalysisState:
+    """State of one analysis tap (wire ``analysis_state``).
+
+    Published on enable, disable, mode change and error. ``mode`` is
+    ``lookahead`` (ring canvas, cells ahead of the playhead first),
+    ``confirm`` (append-only canvas, cells behind the write frontier),
+    ``no_playhead`` (ring canvas without playhead reports, write order),
+    ``backoff`` (the governor is holding work back) or ``off``.
+    ``error`` is a user-facing message or ``None``. ``dropped`` is the
+    cumulative count of live requests the tap withdrew or had dropped.
+    """
+
+    tap: str
+    enabled: bool
+    engine: str
+    size: str
+    licence: str
+    mode: str
+    error: str | None = None
+    dropped: int = 0
+
+
+@dataclass(frozen=True)
+class AnalysisUpdate:
+    """A range replace for one analysis tap (wire ``analysis_update``).
+
+    The consumer drops every item of ``tap`` whose ``start_s`` lies in
+    ``[range_start_s, range_start_s + span_s)`` and inserts ``items``;
+    ``clear`` drops everything for the tap first. ``items`` are mappings
+    of the registered item ``kind``. Times are canvas seconds.
+    """
+
+    tap: str
+    seq: int
+    source_epoch: int
+    range_start_s: float
+    span_s: float
+    basis: str
+    late: bool
+    clear: bool
+    kind: str
+    items: tuple = ()
+    playhead_s: float | None = None   # None when the session has no playhead
+    wall_s: float = 0.0
+
+
 # ---------------------------------------------------------------------------
 # Event bus
 # ---------------------------------------------------------------------------
@@ -438,6 +487,10 @@ _DEFAULT_POLICY: dict[type, BackpressurePolicy] = {
     ParamsUpdate: BackpressurePolicy.COALESCE,
     ParamsEcho: BackpressurePolicy.COALESCE,
     PromptBlendEcho: BackpressurePolicy.COALESCE,
+    # Updates cover different ranges, so coalescing would lose data; an
+    # evicted update is lost to that subscriber until the cell is next
+    # re-analysed.
+    AnalysisUpdate: BackpressurePolicy.DROP_OLDEST,
 }
 
 

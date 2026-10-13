@@ -39,6 +39,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import functools
+import itertools
 import os
 import re
 import threading
@@ -78,6 +79,7 @@ from acestep.streaming.config import SessionConfig
 from acestep.streaming.encode import blend_for_strength, encode_cond_pair
 from acestep.steering import CapacityError, EmptyError
 from acestep.streaming.events import (
+    AnalysisState,
     AudioReady,
     AudioWriteFailed,
     AudioWritten,
@@ -640,6 +642,8 @@ class StreamingSession:
         # (_service_bounces, inside before_tick).
         self._bounces: list = []
 
+        self._init_analysis()
+
         # Set at the end of close(), after GPU state is released. A
         # preempting connection (ws_adapter's single-active-session
         # policy) waits on this before creating its own session so the
@@ -679,6 +683,20 @@ class StreamingSession:
         # from t=0 — add_knob is a no-op for already-seeded names.
         for spec in self._knob_specs_by_name.values():
             self.virtual_knobs.add_knob(spec)
+
+    def _init_analysis(self) -> None:
+        """Analysis-tap bookkeeping (see :meth:`set_analysis_tap`).
+
+        ``_analysis_submitter`` is the process-wide analysis host, bound
+        lazily on the first enable so a session that never enables a tap
+        never imports it; tests inject a stub here."""
+        self._analysis_taps: dict = {}
+        self._analysis_lock = threading.Lock()
+        self._analysis_closed = False
+        self._analysis_submitter = None
+        # Session-wide monotonic ``analysis_update.seq`` (next() on an
+        # itertools.count is atomic under the GIL).
+        self._analysis_seq = itertools.count(1)
 
     def _rebuild_knob_specs(self, lora_ids: list) -> None:
         # Backend-owned manifest: which specs the LoRA set expands to is
@@ -968,6 +986,9 @@ class StreamingSession:
         # and the weights would load. Files and registrations both, because
         # either one alone still leaks.
         self._drop_fetched_loras()
+        # Analysis taps publish on the bus and hold a write listener on
+        # the audio engine: stop them while both still exist.
+        self._close_analysis_taps()
         try:
             self.bus.close()
         except Exception as exc:
@@ -1958,6 +1979,7 @@ class StreamingSession:
                     self.audio_eng.position = int(playback_pos * SAMPLE_RATE) % max(
                         1, len(self.audio_eng.current),
                     )
+                    self.audio_eng.position_report_wall_s = time.monotonic()
                 if render_anchor_s is not _RENDER_ANCHOR_UNSET:
                     self.audio_eng.render_anchor_s = render_anchor_s
                 if render_anchor_queue_s is not _RENDER_ANCHOR_UNSET:
@@ -2000,6 +2022,107 @@ class StreamingSession:
                 self.audio_eng.loop_band = (float(start_sec), float(end_sec))
         except (TypeError, ValueError):
             self.audio_eng.loop_band = None
+
+    def set_analysis_tap(
+        self,
+        tap: str,
+        enabled: bool,
+        options: dict | None = None,
+        *,
+        origin: CommandOrigin = CommandOrigin.PRIMARY,
+    ) -> None:
+        """Enable, re-configure or disable the live analysis tap ``tap``
+        (a registered analyzer name, :mod:`acestep.analysis.registry`).
+
+        Enabling an already-enabled tap replaces it (new options, fresh
+        ``clear``). Analyzer problems (unknown name, unavailable here, bad
+        options, engine refused) never raise: they go out as
+        :class:`AnalysisState` with ``error`` set. Applies identically
+        from any origin. A no-op once the session is closing."""
+        del origin  # not origin-sensitive; accepted for transport symmetry
+        tap = str(tap or "")
+        with self._analysis_lock:
+            if self._analysis_closed:
+                return
+            existing = self._analysis_taps.pop(tap, None)
+            if existing is not None:
+                existing.stop(publish=not enabled)
+            if not enabled:
+                if existing is None:
+                    self.bus.publish(AnalysisState(
+                        tap=tap, enabled=False, engine="", size="",
+                        licence="", mode="off",
+                    ))
+                return
+            new_tap = self._build_analysis_tap(tap, options)
+            if new_tap is not None and new_tap.start():
+                self._analysis_taps[tap] = new_tap
+
+    def _build_analysis_tap(self, tap: str, options):
+        """Validate ``tap`` + ``options`` through the registry and build
+        the tap, or publish the user-facing error and return None."""
+        from acestep.analysis.registry import get_analyzer
+        from acestep.analysis.tap import AnalysisTap
+
+        licence = ""
+        try:
+            spec = get_analyzer(tap)
+            licence = spec.licence
+            reason = spec.probe()
+            if reason is not None:
+                raise ValueError(reason)
+            if options is not None and not isinstance(options, dict):
+                raise ValueError("options must be an object")
+            clean = spec.validate_options(options)
+            spec.resolve_size(clean.get("size"))
+        except KeyError as exc:
+            message = str(exc.args[0]) if exc.args else f"unknown analyzer {tap!r}"
+            return self._analysis_error(tap, licence, message)
+        except Exception as exc:  # noqa: BLE001 - user-facing, never raised
+            return self._analysis_error(tap, licence, str(exc) or type(exc).__name__)
+        submitter = self._analysis_submitter
+        if submitter is None:
+            try:
+                from acestep.analysis.host import get_host
+
+                submitter = self._analysis_submitter = get_host()
+            except Exception as exc:  # noqa: BLE001
+                return self._analysis_error(
+                    tap, licence, f"analysis host unavailable: {exc}",
+                )
+        return AnalysisTap(
+            spec=spec,
+            options=clean,
+            submitter=submitter,
+            audio_eng=self.audio_eng,
+            bus=self.bus,
+            refines_audio=bool(getattr(self.backend.capabilities(), "refines_audio", True)),
+            source_epoch=int(getattr(self.state, "source_epoch", 0) or 0),
+            next_seq=lambda: next(self._analysis_seq),
+        )
+
+    def _analysis_error(self, tap: str, licence: str, message: str) -> None:
+        logger.warning("analysis_tap_rejected tap={} error={}", tap, message)
+        self.bus.publish(AnalysisState(
+            tap=tap, enabled=False, engine="", size="", licence=licence,
+            mode="off", error=message,
+        ))
+        return None
+
+    def _close_analysis_taps(self) -> None:
+        """Stop every analysis tap (bounded join each); later enables are
+        no-ops. Called by :meth:`close` before the bus closes."""
+        if not hasattr(self, "_analysis_lock"):
+            return  # construction failed before the analysis state existed
+        with self._analysis_lock:
+            self._analysis_closed = True
+            taps = list(self._analysis_taps.values())
+            self._analysis_taps.clear()
+        for t in taps:
+            try:
+                t.close()
+            except Exception as exc:  # noqa: BLE001 - teardown must not raise
+                logger.warning("analysis_tap_close_raised tap={} error={}", t.name, exc)
 
     def set_prompt(
         self,
