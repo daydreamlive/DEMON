@@ -231,6 +231,40 @@ textarea {
   grid-template-columns: 1fr 1fr;
 }
 
+.mode-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.mode-panel[hidden],
+.loop-row[hidden] {
+  display: none;
+}
+
+.meter {
+  background: #101112;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 4px;
+  height: 12px;
+  overflow: hidden;
+  position: relative;
+}
+
+.meter-rms {
+  background: #6ba0cd;
+  height: 100%;
+  width: 0;
+}
+
+.meter-peak {
+  background: #f1f1ed;
+  height: 100%;
+  left: 0;
+  position: absolute;
+  top: 0;
+  width: 2px;
+}
+
 .range-slot input {
   appearance: none;
   background: transparent;

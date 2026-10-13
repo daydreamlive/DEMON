@@ -13,6 +13,21 @@
           <div class="brand">Daydream</div>
         </div>
 
+        <div class="source-row">
+          <label class="field-slot">
+            <span>Source</span>
+            <select id="mode">
+              <option value="mic">Microphone</option>
+              <option value="file">File</option>
+              <option value="generator">Generator (SA3)</option>
+            </select>
+          </label>
+          <label class="field-slot">
+            <span>Instruments</span>
+            <input id="instruments" type="text" placeholder="all (e.g. acoustic_piano, drums)" spellcheck="false">
+          </label>
+        </div>
+
         <div class="roll-wrap">
           <canvas id="roll" class="roll" aria-label="Piano roll of the analysed canvas"></canvas>
           <div class="roll-legend">
@@ -20,25 +35,38 @@
             <span><i class="swatch swatch-settled"></i>settled</span>
             <span id="analysis-mode" class="readout">off</span>
             <span id="analysis-dropped" class="readout"></span>
+            <span id="take" class="readout"></span>
           </div>
           <div id="licence" class="licence" hidden></div>
           <div id="analysis-error" class="analysis-error" hidden></div>
         </div>
 
         <div class="controls">
-          <label class="field-slot">
-            <span>Prompt</span>
-            <textarea id="prompt" rows="2"></textarea>
-          </label>
+          <div class="mode-panel" data-mode="mic">
+            <div class="field-slot">
+              <span>Input level</span>
+              <div class="meter" aria-label="Microphone input level">
+                <div id="level-rms" class="meter-rms"></div>
+                <div id="level-peak" class="meter-peak"></div>
+              </div>
+            </div>
+          </div>
 
-          <div class="source-row">
+          <div class="mode-panel" data-mode="file" hidden>
             <label class="field-slot">
-              <span>Source</span>
-              <select id="fixture"></select>
+              <span>Audio file</span>
+              <input id="file" type="file" accept="audio/*">
+            </label>
+          </div>
+
+          <div class="mode-panel" data-mode="generator" hidden>
+            <label class="field-slot">
+              <span>Prompt</span>
+              <textarea id="prompt" rows="2"></textarea>
             </label>
             <label class="field-slot">
-              <span>Instruments</span>
-              <input id="instruments" type="text" placeholder="all (e.g. acoustic_piano, drums)" spellcheck="false">
+              <span>Fixture</span>
+              <select id="fixture"></select>
             </label>
           </div>
 
@@ -50,7 +78,7 @@
             <input id="horizon" type="range" min="4" max="30" step="1" value="8" aria-label="Analysis horizon in seconds">
           </label>
 
-          <div class="loop-row">
+          <div id="loop-row" class="loop-row">
             <label class="check-slot">
               <input id="loop" type="checkbox" disabled>
               <span>Loop band</span>
