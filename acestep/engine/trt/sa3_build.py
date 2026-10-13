@@ -1148,8 +1148,8 @@ def main() -> int:
     single.add_argument("--fp8-refit", action="store_true",
                         help="Single mode: also build the REFITTABLE fp8 DiT "
                              "(dit_fp8.onnx + BuilderFlag.REFIT, "
-                             "sa3_m_dit_fp8_refit_l*). Investigation engine: "
-                             "never selected at runtime.")
+                             "sa3_m_dit_fp8_refit_l*). Selected for LoRA "
+                             "sessions only under DEMON_SA3_FP8_REFIT=1.")
     single.add_argument("--variants-only", action="store_true",
                         help="Single mode: skip the fp16mixed base DiT and "
                              "build only the requested --fp8/--refit/"
