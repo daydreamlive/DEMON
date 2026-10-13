@@ -174,3 +174,14 @@ def test_notes_probe(monkeypatch):
         lambda name, *a: None if name == "muscriptor" else real(name, *a),
     )
     assert "not installed" in spec.probe()
+
+
+def test_broken_builtin_module_raises(monkeypatch):
+    """A built-in analyzer module that fails to import is a bug, not
+    "no analyzers": the error surfaces at lookup time."""
+    monkeypatch.setattr(
+        registry, "_BUILTIN_MODULES",
+        ("acestep.analysis.notes_engine", "acestep.analysis._no_such_analyzer"),
+    )
+    with pytest.raises(ModuleNotFoundError, match="_no_such_analyzer"):
+        registry.list_analyzers()

@@ -213,15 +213,17 @@ def available_analyzers() -> dict[str, Optional[str]]:
     return out
 
 
+#: Modules whose import registers the built-in analyzers.
+_BUILTIN_MODULES = ("acestep.analysis.notes_engine",)
+
+
 def _ensure_builtin() -> None:
     """Import the built-in analyzer modules so their ``register`` calls
-    run. Each module is torch-free at import."""
+    run. Imported here rather than at the top because each imports this
+    module. They are part of DEMON and torch-free at import (a missing
+    optional dependency is reported by the analyzer's probe), so an
+    import error is a real bug and propagates."""
     import importlib
 
-    for mod in ("acestep.analysis.notes_engine",):
-        try:
-            importlib.import_module(mod)
-        except ImportError:
-            # The module itself is part of DEMON; a missing optional
-            # dependency is handled inside its probe, not here.
-            pass
+    for mod in _BUILTIN_MODULES:
+        importlib.import_module(mod)
