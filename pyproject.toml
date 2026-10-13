@@ -94,6 +94,11 @@ dependencies = [
     "mcp>=1.0",
 ]
 
+[project.optional-dependencies]
+# Live and one-shot notes analysis (acestep/analysis/notes_engine.py).
+# The weights are gated on Hugging Face (CC BY-NC 4.0).
+analysis-notes = ["muscriptor==0.3.0"]
+
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
