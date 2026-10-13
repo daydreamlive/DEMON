@@ -1,10 +1,29 @@
 // Wire shapes of the analysis seam: the `analysis_tap` command and the
-// `analysis_state` / `analysis_update` events. Written by hand from the
-// pinned wire contract (protocol.py is the source of truth); they mirror
-// the generated AnalysisTapCommand / AnalysisStateEvent /
-// AnalysisUpdateEvent field for field so either name can be used.
+// `analysis_state` / `analysis_update` events. The payloads are the
+// generated wire types (types/wireContract.gen.ts, projected from
+// protocol.py, the source of truth); this module names them for the
+// analysis surface and adds the per-analyzer option typing the generic
+// `options` record cannot carry.
 //
 // Times are canvas seconds, the same frame as `params.playback_pos`.
+
+import type {
+  AnalysisItem,
+  AnalysisItemByKind,
+  AnalysisStateEvent,
+  AnalysisTapCommand,
+  AnalysisUpdateEvent,
+  NoteAnalysisItem,
+} from "../types/wireContract.gen";
+
+export type {
+  AnalysisItem,
+  AnalysisItemByKind,
+  AnalysisStateEvent,
+  AnalysisTapCommand,
+  AnalysisUpdateEvent,
+  NoteAnalysisItem,
+} from "../types/wireContract.gen";
 
 /** Wire `type` of the client -> server command. */
 export const ANALYSIS_TAP_COMMAND = "analysis_tap" as const;
@@ -41,85 +60,30 @@ export type AnalysisTapOptions<T extends string = string> =
     ? AnalysisTapOptionsByTap[T]
     : Record<string, unknown>;
 
-export interface AnalysisTapCommandPayload {
-  type: typeof ANALYSIS_TAP_COMMAND;
-  tap: string;
-  enabled: boolean;
-  options?: Record<string, unknown>;
-}
+export type AnalysisTapCommandPayload = AnalysisTapCommand;
 
 /** Scheduling mode a tap reports. */
-export type AnalysisMode =
-  | "lookahead"
-  | "confirm"
-  | "no_playhead"
-  | "backoff"
-  | "off";
+export type AnalysisMode = AnalysisStateEvent["mode"];
 
 /** `provisional`: the region may still be rewritten. `settled`: append-only
  *  behind the write frontier, or a ring region the playhead passed whose
  *  audio has not changed since it was analysed. */
-export type AnalysisBasis = "provisional" | "settled";
+export type AnalysisBasis = AnalysisUpdateEvent["basis"];
 
 /** Sent on enable, disable, mode change and error. */
-export interface AnalysisStateEventPayload {
-  type: "analysis_state";
-  tap: string;
-  enabled: boolean;
-  engine: string;
-  size: string;
-  /** Licence terms of the analyzer's weights; clients show it. */
-  licence: string;
-  mode: AnalysisMode;
-  /** User-facing failure, or null. */
-  error: string | null;
-  /** Cumulative live requests withdrawn or dropped by this tap. */
-  dropped: number;
-}
+export type AnalysisStateEventPayload = AnalysisStateEvent;
 
 /** One transcribed note (item kind `note`). */
-export interface NoteItem {
-  start_s: number;
-  end_s: number;
-  /** MIDI pitch 0..127. */
-  pitch: number;
-  /** MuScriptor instrument group name (`drums` for percussion). */
-  instrument: string;
-}
+export type NoteItem = NoteAnalysisItem;
 
-/** Item payload by `kind`. A new kind is one entry here and one in
- *  protocol.py. */
-export interface AnalysisItemByKind {
-  note: NoteItem;
-}
 export type AnalysisItemKind = keyof AnalysisItemByKind;
-export type AnalysisItem = AnalysisItemByKind[AnalysisItemKind];
 
 /** Range replace: the receiver drops every item of `tap` whose `start_s`
  *  lies in [range_start_s, range_start_s + span_s) and inserts `items`.
  *  `clear` drops everything for the tap first (sent on enable and on swap
- *  with the new `source_epoch`). */
-export interface AnalysisUpdateEventPayload<
-  K extends AnalysisItemKind = AnalysisItemKind,
-> {
-  type: "analysis_update";
-  tap: string;
-  /** Monotonic per session. */
-  seq: number;
-  source_epoch: number;
-  range_start_s: number;
-  span_s: number;
-  basis: AnalysisBasis;
-  /** The playhead had already passed `range_start_s` in play order. */
-  late: boolean;
-  clear: boolean;
-  kind: K;
-  items: AnalysisItemByKind[K][];
-  /** Server playhead when the update was published. */
-  playhead_s: number;
-  /** Inference wall time of the analysis, seconds. */
-  wall_s: number;
-}
+ *  with the new `source_epoch`). `playhead_s` is null when the server has
+ *  no playhead report. */
+export type AnalysisUpdateEventPayload = AnalysisUpdateEvent;
 
 export type AnalysisEventPayload =
   | AnalysisStateEventPayload
@@ -131,17 +95,9 @@ export interface LoopBand {
   end_s: number;
 }
 
-/** True when `msg` is one of the analysis events (by `type` only; field
- *  shapes are the server's contract). */
-export function isAnalysisEvent(msg: unknown): msg is AnalysisEventPayload {
-  if (typeof msg !== "object" || msg === null) return false;
-  const t = (msg as { type?: unknown }).type;
-  return t === "analysis_state" || t === "analysis_update";
-}
-
 /** Analyzer names the pod offers, from `ready.capabilities.analysis_taps`.
- *  The capability mask is typed as booleans for the generator bits; this
- *  one is a list, so it is read defensively. Empty when absent. */
+ *  Read defensively (older servers and replays omit it, and the generated
+ *  ready event types the mask as a plain record). Empty when absent. */
 export function analysisTapsAvailable(
   capabilities: Record<string, unknown> | null | undefined,
 ): string[] {

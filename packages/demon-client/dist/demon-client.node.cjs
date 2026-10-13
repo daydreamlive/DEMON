@@ -711,11 +711,6 @@ var PREEMPTED_CLOSE_CODE = 4001;
 
 // analysis/types.ts
 var ANALYSIS_TAP_COMMAND = "analysis_tap";
-function isAnalysisEvent(msg) {
-  if (typeof msg !== "object" || msg === null) return false;
-  const t = msg.type;
-  return t === "analysis_state" || t === "analysis_update";
-}
 function analysisTapsAvailable(capabilities) {
   const raw = capabilities?.analysis_taps;
   if (!Array.isArray(raw)) return [];
@@ -1037,9 +1032,7 @@ var RemoteBackend = class extends EventTarget {
             this.maxPipelineDepth = typeof msg.max_pipeline_depth === "number" ? msg.max_pipeline_depth : null;
             this.geometry = msg.geometry ?? null;
             this.capabilities = msg.capabilities ?? null;
-            this.analysisTaps = analysisTapsAvailable(
-              msg.capabilities
-            );
+            this.analysisTaps = analysisTapsAvailable(this.capabilities);
             this.knobManifest = msg.knob_manifest ?? null;
             this.manualSlotCount = typeof msg.manual_slot_count === "number" ? msg.manual_slot_count : null;
             this.manualSlotCap = typeof msg.manual_slot_cap === "number" ? msg.manual_slot_cap : null;
@@ -1109,12 +1102,11 @@ var RemoteBackend = class extends EventTarget {
           } catch {
             return;
           }
-          const frame = msg;
-          if (isAnalysisEvent(frame)) {
-            this.dispatchEvent(new CustomEvent(frame.type, { detail: frame }));
-            return;
-          }
           switch (msg.type) {
+            case "analysis_state":
+            case "analysis_update":
+              this.dispatchEvent(new CustomEvent(msg.type, { detail: msg }));
+              return;
             case "params_update":
               this.dispatchEvent(
                 new CustomEvent("params", { detail: msg.params })
@@ -1842,6 +1834,7 @@ var COMMAND_NAMES = [
   "swap_source",
   "write_audio",
   "midi_transcribe",
+  "analysis_tap",
   "bounce"
 ];
 var EVENT_NAMES = [
@@ -1871,7 +1864,9 @@ var EVENT_NAMES = [
   "midi_notes",
   "midi_failed",
   "bounce_ready",
-  "bounce_failed"
+  "bounce_failed",
+  "analysis_state",
+  "analysis_update"
 ];
 
 // config/enums.ts

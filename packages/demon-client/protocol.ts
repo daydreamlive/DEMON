@@ -31,7 +31,6 @@ import type { KnobManifestResponse } from "./types/knobs";
 import {
   ANALYSIS_TAP_COMMAND,
   analysisTapsAvailable,
-  isAnalysisEvent,
   type AnalysisTapCommandPayload,
   type AnalysisTapName,
   type AnalysisTapOptions,
@@ -521,9 +520,7 @@ export class RemoteBackend extends EventTarget {
               (msg.geometry as ReadyGeometry | undefined) ?? null;
             this.capabilities =
               (msg.capabilities as CapabilityMask | undefined) ?? null;
-            this.analysisTaps = analysisTapsAvailable(
-              msg.capabilities as Record<string, unknown> | undefined,
-            );
+            this.analysisTaps = analysisTapsAvailable(this.capabilities);
             this.knobManifest =
               (msg.knob_manifest as KnobManifestResponse | undefined) ?? null;
             // Activation-steering surface. Wire-optional like the
@@ -643,16 +640,14 @@ export class RemoteBackend extends EventTarget {
           // fails `tsc`. The Python drift guard
           // (tests/unit/test_wire_contract.py) parses these labels against
           // the registry from its side.
-          // Analysis events are typed by ./analysis/types (one generic
-          // channel for every analyzer); they are re-dispatched under
-          // their own names with the payload as `detail`, so consumers
-          // (AnalysisStore.attach) never parse the generic `json` event.
-          const frame: unknown = msg;
-          if (isAnalysisEvent(frame)) {
-            this.dispatchEvent(new CustomEvent(frame.type, { detail: frame }));
-            return;
-          }
           switch (msg.type) {
+            case "analysis_state":
+            case "analysis_update":
+              // One generic channel for every analyzer: re-dispatched under
+              // their own names with the payload as `detail`, so consumers
+              // (AnalysisStore.attach) never parse the generic `json` event.
+              this.dispatchEvent(new CustomEvent(msg.type, { detail: msg }));
+              return;
             case "params_update":
               this.dispatchEvent(
                 new CustomEvent("params", { detail: msg.params }),

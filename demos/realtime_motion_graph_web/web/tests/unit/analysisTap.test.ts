@@ -166,6 +166,14 @@ describe("RemoteBackend analysis wire", () => {
 });
 
 describe("AnalysisStore", () => {
+  it("applies updates sent without a server playhead", () => {
+    const store = new AnalysisStore<NoteItem>("notes");
+    expect(
+      store.apply(update({ seq: 1, playhead_s: null, items: [note(1)] })),
+    ).toBe(true);
+    expect(starts(store)).toEqual([1]);
+  });
+
   it("ignores other taps", () => {
     const store = new AnalysisStore<NoteItem>("notes");
     expect(

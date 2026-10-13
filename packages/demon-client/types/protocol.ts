@@ -129,10 +129,15 @@ export interface ReadyGeometry {
 
 /** Backend capability mask, carried in `ready.capabilities`. Keys are
  *  the server's Capabilities field names (swap, timbre, structure,
- *  lora, ...); kept as a record so new capabilities don't need client
- *  type churn. A missing mask (older server / recorded replay) means
- *  "ungated" — treat every capability as available. */
-export type CapabilityMask = Record<string, boolean>;
+ *  lora, ...) mapped to booleans; kept as a record so new capabilities
+ *  don't need client type churn. `analysis_taps` is the one list-valued
+ *  entry: the analyzer names this pod can run as `analysis_tap` channels.
+ *  A missing mask (older server / recorded replay) means "ungated" —
+ *  treat every capability as available. */
+export interface CapabilityMask {
+  [capability: string]: boolean | string[] | undefined;
+  analysis_taps?: string[];
+}
 
 // Legacy constants. Since the Phase-2 contract surface, the declared
 // truth for a session's audio shape is the backend-sourced
