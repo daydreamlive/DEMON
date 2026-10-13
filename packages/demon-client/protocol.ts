@@ -41,6 +41,7 @@ import {
 // renamed command, a dropped field, or an unregistered event name fails
 // `tsc` instead of silently desyncing from the server.
 import type {
+  AudioInCommand,
   ClearStructureSourceCommand,
   ClearTimbreSourceCommand,
   DisableLoraCommand,
@@ -135,7 +136,7 @@ export function float16ArrayToFloat32(u16: Uint16Array): Float32Array {
 // The one binary upload frame shape in the protocol: `<II` header
 // (channels, samples, little-endian) + interleaved float32 PCM. Shared by
 // the init-handshake upload, the timbre/structure reference uploads, and
-// swap_source.
+// swap_source, and the live audio_in stream.
 
 function packPcmFrame(interleaved: Float32Array, channels: number): Uint8Array {
   const samples = interleaved.length / channels;
@@ -143,7 +144,12 @@ function packPcmFrame(interleaved: Float32Array, channels: number): Uint8Array {
   const dv = new DataView(hdr);
   dv.setUint32(0, channels, true);
   dv.setUint32(4, samples, true);
-  const pcm = new Uint8Array(interleaved.buffer);
+  // The view's own bytes only: a subarray shares a larger buffer.
+  const pcm = new Uint8Array(
+    interleaved.buffer,
+    interleaved.byteOffset,
+    interleaved.byteLength,
+  );
   const combined = new Uint8Array(hdr.byteLength + pcm.byteLength);
   combined.set(new Uint8Array(hdr), 0);
   combined.set(pcm, hdr.byteLength);
@@ -757,6 +763,13 @@ export class RemoteBackend extends EventTarget {
                 new CustomEvent("audio_write_failed", { detail: msg.error }),
               );
               break;
+            case "audio_in_ack":
+              // Coalesced ack for the audio_in stream (newest seq applied
+              // + the write frontier of the current take).
+              this.dispatchEvent(
+                new CustomEvent("audio_in_ack", { detail: msg }),
+              );
+              break;
             case "command_failed":
               // A `requires`-tagged command was rejected because this
               // session's backend lacks the capability (loud failure, never
@@ -1180,6 +1193,36 @@ export class RemoteBackend extends EventTarget {
       }
       this.ws.send(JSON.stringify(msg));
     } catch {}
+  }
+
+  /**
+   * Stream one frame of live audio (`audio_in`): the server appends it at
+   * the canvas write frontier. Only sessions whose
+   * `capabilities.audio_in` is true accept it (the `live_input` family
+   * created without a source); others answer `command_failed`. `frame` is
+   * interleaved float32 at 48 kHz (`channels` 1 or 2, default 1), `seq`
+   * the frame counter (+1 per frame; restart from 0 to begin a new take),
+   * `startS` the frame's position on the capture clock when known (the
+   * server fills a gap up to 2 s with silence). Never drops: the server
+   * places frames by `seq`/`startS`, so a skipped send would be read as a
+   * gap. Acked by `audio_in_ack` CustomEvents (at most 5 per second).
+   */
+  sendAudioIn(
+    frame: Float32Array,
+    seq: number,
+    opts: { channels?: number; startS?: number } = {},
+  ): boolean {
+    if (this.ws?.readyState !== this._wsOpen) return false;
+    try {
+      const msg: AudioInCommand = { type: "audio_in", seq };
+      if (opts.startS != null) msg.start_s = opts.startS;
+      this.ws.send(JSON.stringify(msg));
+      this.ws.send(packPcmFrame(frame, opts.channels ?? 1));
+      return true;
+    } catch (e) {
+      console.error("[protocol] audio_in failed:", e);
+      return false;
+    }
   }
 
   /**

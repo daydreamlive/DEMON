@@ -24,6 +24,7 @@ var COMMAND_NAMES = [
   "write_audio",
   "midi_transcribe",
   "analysis_tap",
+  "audio_in",
   "bounce"
 ];
 var EVENT_NAMES = [
@@ -55,6 +56,7 @@ var EVENT_NAMES = [
   "bounce_ready",
   "bounce_failed",
   "analysis_state",
+  "audio_in_ack",
   "analysis_update"
 ];
 
@@ -1308,7 +1310,11 @@ function packPcmFrame(interleaved, channels) {
   const dv = new DataView(hdr);
   dv.setUint32(0, channels, true);
   dv.setUint32(4, samples, true);
-  const pcm = new Uint8Array(interleaved.buffer);
+  const pcm = new Uint8Array(
+    interleaved.buffer,
+    interleaved.byteOffset,
+    interleaved.byteLength
+  );
   const combined = new Uint8Array(hdr.byteLength + pcm.byteLength);
   combined.set(new Uint8Array(hdr), 0);
   combined.set(pcm, hdr.byteLength);
@@ -1749,6 +1755,11 @@ var RemoteBackend = class extends EventTarget {
                 new CustomEvent("audio_write_failed", { detail: msg.error })
               );
               break;
+            case "audio_in_ack":
+              this.dispatchEvent(
+                new CustomEvent("audio_in_ack", { detail: msg })
+              );
+              break;
             case "command_failed":
               console.warn(
                 `[protocol] command_failed: ${msg.command} needs backend capability '${msg.requires}'` + (msg.error ? ` \u2014 ${msg.error}` : "")
@@ -2092,6 +2103,31 @@ var RemoteBackend = class extends EventTarget {
       }
       this.ws.send(JSON.stringify(msg));
     } catch {
+    }
+  }
+  /**
+   * Stream one frame of live audio (`audio_in`): the server appends it at
+   * the canvas write frontier. Only sessions whose
+   * `capabilities.audio_in` is true accept it (the `live_input` family
+   * created without a source); others answer `command_failed`. `frame` is
+   * interleaved float32 at 48 kHz (`channels` 1 or 2, default 1), `seq`
+   * the frame counter (+1 per frame; restart from 0 to begin a new take),
+   * `startS` the frame's position on the capture clock when known (the
+   * server fills a gap up to 2 s with silence). Never drops: the server
+   * places frames by `seq`/`startS`, so a skipped send would be read as a
+   * gap. Acked by `audio_in_ack` CustomEvents (at most 5 per second).
+   */
+  sendAudioIn(frame, seq, opts = {}) {
+    if (this.ws?.readyState !== this._wsOpen) return false;
+    try {
+      const msg = { type: "audio_in", seq };
+      if (opts.startS != null) msg.start_s = opts.startS;
+      this.ws.send(JSON.stringify(msg));
+      this.ws.send(packPcmFrame(frame, opts.channels ?? 1));
+      return true;
+    } catch (e) {
+      console.error("[protocol] audio_in failed:", e);
+      return false;
     }
   }
   /**
@@ -2676,6 +2712,253 @@ function notesToSmf(notes, options = {}) {
   for (const body of tracks) appendChunk(out, "MTrk", body);
   return Uint8Array.from(out);
 }
+
+// input/framer.ts
+var AUDIO_IN_SAMPLE_RATE = 48e3;
+var AUDIO_IN_FRAME_MS = 100;
+var PcmFramer = class {
+  inputRate;
+  frameSamples;
+  step;
+  frame;
+  filled = 0;
+  seq = 0;
+  // Resampler state: unconsumed input (starting at the sample the next
+  // output interpolates from) and the fractional read position into it.
+  carry = new Float32Array(0);
+  pos = 0;
+  constructor(opts) {
+    if (!(opts.inputRate > 0)) throw new Error("inputRate must be > 0");
+    this.inputRate = opts.inputRate;
+    const ms = opts.frameMs ?? AUDIO_IN_FRAME_MS;
+    this.frameSamples = Math.max(1, Math.round(AUDIO_IN_SAMPLE_RATE * ms / 1e3));
+    this.step = this.inputRate / AUDIO_IN_SAMPLE_RATE;
+    this.frame = new Float32Array(this.frameSamples);
+  }
+  /** Feed one block (mono, `inputRate`); returns the frames it completed. */
+  push(block) {
+    const out = [];
+    if (this.step === 1) {
+      for (let i = 0; i < block.length; i++) this.put(block[i], out);
+      return out;
+    }
+    const buf = new Float32Array(this.carry.length + block.length);
+    buf.set(this.carry, 0);
+    buf.set(block, this.carry.length);
+    let t = this.pos;
+    while (t + 1 < buf.length) {
+      const i = Math.floor(t);
+      const f = t - i;
+      this.put(buf[i] * (1 - f) + buf[i + 1] * f, out);
+      t += this.step;
+    }
+    const keep = Math.min(Math.floor(t), buf.length);
+    this.carry = buf.slice(keep);
+    this.pos = t - keep;
+    return out;
+  }
+  /** Drop any partial frame and restart numbering at seq 0 (a new take on
+   *  the server, which reads a seq that did not advance as a restart). */
+  reset() {
+    this.frame = new Float32Array(this.frameSamples);
+    this.filled = 0;
+    this.seq = 0;
+    this.carry = new Float32Array(0);
+    this.pos = 0;
+  }
+  put(sample, out) {
+    this.frame[this.filled++] = sample;
+    if (this.filled < this.frameSamples) return;
+    const pcm = this.frame;
+    let sum = 0;
+    let peak = 0;
+    for (let i = 0; i < pcm.length; i++) {
+      const v = pcm[i];
+      sum += v * v;
+      const a = v < 0 ? -v : v;
+      if (a > peak) peak = a;
+    }
+    out.push({
+      pcm,
+      seq: this.seq,
+      startS: this.seq * this.frameSamples / AUDIO_IN_SAMPLE_RATE,
+      rms: Math.sqrt(sum / pcm.length),
+      peak
+    });
+    this.seq += 1;
+    this.frame = new Float32Array(this.frameSamples);
+    this.filled = 0;
+  }
+};
+
+// input/MicCapture.ts
+var WORKLET_NAME = "demon-mic-tap";
+var WORKLET_SOURCE = `
+class DemonMicTap extends AudioWorkletProcessor {
+  constructor() { super(); this.buf = new Float32Array(1024); this.n = 0; }
+  process(inputs) {
+    const input = inputs[0];
+    if (input && input.length) {
+      const ch = input.length;
+      const len = input[0].length;
+      for (let i = 0; i < len; i++) {
+        let s = 0;
+        for (let c = 0; c < ch; c++) s += input[c][i];
+        this.buf[this.n++] = s / ch;
+        if (this.n === this.buf.length) {
+          this.port.postMessage(this.buf, [this.buf.buffer]);
+          this.buf = new Float32Array(1024);
+          this.n = 0;
+        }
+      }
+    }
+    return true;
+  }
+}
+registerProcessor("${WORKLET_NAME}", DemonMicTap);
+`;
+var SCRIPT_PROCESSOR_BLOCK = 2048;
+var MicCapture = class {
+  opts;
+  ctx = null;
+  stream = null;
+  source = null;
+  tap = null;
+  sink = null;
+  framer = null;
+  _running = false;
+  /** Whether the AudioWorklet path is in use (false = ScriptProcessor). */
+  usingWorklet = false;
+  constructor(opts) {
+    this.opts = opts;
+  }
+  get running() {
+    return this._running;
+  }
+  /** The AudioContext rate in use (48000 unless the browser refused it);
+   *  null while stopped. Frames are always 48 kHz. */
+  get contextSampleRate() {
+    return this.ctx ? this.ctx.sampleRate : null;
+  }
+  /** Open the microphone and start framing. Rejects (and leaves nothing
+   *  open) when permission is denied or no input exists. */
+  async start() {
+    if (this._running) return;
+    const media = this.opts.mediaDevices ?? (typeof navigator !== "undefined" ? navigator.mediaDevices : void 0);
+    if (!media?.getUserMedia) {
+      throw new Error("this browser cannot open a microphone (no getUserMedia)");
+    }
+    const audio = {
+      channelCount: 1,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false
+    };
+    if (this.opts.deviceId) audio.deviceId = { exact: this.opts.deviceId };
+    const stream = await media.getUserMedia({ audio });
+    try {
+      const make = this.opts.audioContextFactory ?? ((o) => new AudioContext(o));
+      const ctx = make({ sampleRate: AUDIO_IN_SAMPLE_RATE, latencyHint: "interactive" });
+      this.ctx = ctx;
+      this.stream = stream;
+      this.framer = new PcmFramer({ inputRate: ctx.sampleRate, frameMs: this.opts.frameMs });
+      this.source = ctx.createMediaStreamSource(stream);
+      const sink = ctx.createGain();
+      sink.gain.value = 0;
+      sink.connect(ctx.destination);
+      this.sink = sink;
+      this.tap = await this.makeTap(ctx);
+      this.source.connect(this.tap);
+      this.tap.connect(sink);
+      if (ctx.state === "suspended") await ctx.resume();
+      this._running = true;
+    } catch (e) {
+      await this.teardown();
+      for (const t of stream.getTracks()) t.stop();
+      throw e;
+    }
+  }
+  /** Stop and release the microphone. The next `start` numbers frames
+   *  from seq 0 again, which the server reads as a new take. A partial
+   *  frame at stop is dropped. */
+  async stop() {
+    if (!this._running && !this.ctx) return;
+    this._running = false;
+    await this.teardown();
+  }
+  async makeTap(ctx) {
+    const worklet = ctx.audioWorklet;
+    const Node = typeof AudioWorkletNode !== "undefined" ? AudioWorkletNode : void 0;
+    if (this.opts.useWorklet !== false && worklet && Node) {
+      const url = URL.createObjectURL(
+        new Blob([WORKLET_SOURCE], { type: "application/javascript" })
+      );
+      try {
+        await worklet.addModule(url);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      const node = new Node(ctx, WORKLET_NAME, {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1]
+      });
+      node.port.onmessage = (ev) => this.feed(ev.data);
+      this.usingWorklet = true;
+      return node;
+    }
+    const proc = ctx.createScriptProcessor(SCRIPT_PROCESSOR_BLOCK, 2, 1);
+    proc.onaudioprocess = (ev) => {
+      const input = ev.inputBuffer;
+      const ch = input.numberOfChannels;
+      const first = input.getChannelData(0);
+      if (ch <= 1) {
+        this.feed(new Float32Array(first));
+        return;
+      }
+      const mono = new Float32Array(first.length);
+      for (let c = 0; c < ch; c++) {
+        const d = input.getChannelData(c);
+        for (let i = 0; i < mono.length; i++) mono[i] += d[i] / ch;
+      }
+      this.feed(mono);
+    };
+    this.usingWorklet = false;
+    return proc;
+  }
+  feed(block) {
+    if (!this._running || !this.framer) return;
+    for (const frame of this.framer.push(block)) {
+      this.opts.onLevel?.({ rms: frame.rms, peak: frame.peak });
+      this.opts.onFrame(frame);
+    }
+  }
+  async teardown() {
+    const tap = this.tap;
+    if (tap && "port" in tap) tap.port.onmessage = null;
+    if (tap && "onaudioprocess" in tap) tap.onaudioprocess = null;
+    for (const node of [this.source, tap, this.sink]) {
+      try {
+        node?.disconnect();
+      } catch {
+      }
+    }
+    this.source = null;
+    this.tap = null;
+    this.sink = null;
+    if (this.stream) for (const t of this.stream.getTracks()) t.stop();
+    this.stream = null;
+    const ctx = this.ctx;
+    this.ctx = null;
+    this.framer = null;
+    if (ctx) {
+      try {
+        await ctx.close();
+      } catch {
+      }
+    }
+  }
+};
 
 // audio/lufs.ts
 var PRE_B = [1.53512485958697, -2.69169618940638, 1.19839281085285];
@@ -3727,6 +4010,8 @@ async function fetchKnobManifest(sde = false, toUrl = (p) => p) {
 export {
   ANALYSIS_EVENT_TYPES,
   ANALYSIS_TAP_COMMAND,
+  AUDIO_IN_FRAME_MS,
+  AUDIO_IN_SAMPLE_RATE,
   AnalysisStore,
   AudioPlayer,
   COMMAND_NAMES,
@@ -3749,8 +4034,10 @@ export {
   MANUAL_LAYER_DESCRIPTION,
   MANUAL_SRC_DESCRIPTION,
   MANUAL_STEP_DESCRIPTION,
+  MicCapture,
   PREEMPTED_CLOSE_CODE,
   PROTOCOL_VERSION,
+  PcmFramer,
   RCFG_MODES,
   RemoteBackend,
   SAMPLE_RATE,

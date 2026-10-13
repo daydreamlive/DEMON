@@ -757,7 +757,11 @@ function packPcmFrame(interleaved, channels) {
   const dv = new DataView(hdr);
   dv.setUint32(0, channels, true);
   dv.setUint32(4, samples, true);
-  const pcm = new Uint8Array(interleaved.buffer);
+  const pcm = new Uint8Array(
+    interleaved.buffer,
+    interleaved.byteOffset,
+    interleaved.byteLength
+  );
   const combined = new Uint8Array(hdr.byteLength + pcm.byteLength);
   combined.set(new Uint8Array(hdr), 0);
   combined.set(pcm, hdr.byteLength);
@@ -1198,6 +1202,11 @@ var RemoteBackend = class extends EventTarget {
                 new CustomEvent("audio_write_failed", { detail: msg.error })
               );
               break;
+            case "audio_in_ack":
+              this.dispatchEvent(
+                new CustomEvent("audio_in_ack", { detail: msg })
+              );
+              break;
             case "command_failed":
               console.warn(
                 `[protocol] command_failed: ${msg.command} needs backend capability '${msg.requires}'` + (msg.error ? ` \u2014 ${msg.error}` : "")
@@ -1544,6 +1553,31 @@ var RemoteBackend = class extends EventTarget {
     }
   }
   /**
+   * Stream one frame of live audio (`audio_in`): the server appends it at
+   * the canvas write frontier. Only sessions whose
+   * `capabilities.audio_in` is true accept it (the `live_input` family
+   * created without a source); others answer `command_failed`. `frame` is
+   * interleaved float32 at 48 kHz (`channels` 1 or 2, default 1), `seq`
+   * the frame counter (+1 per frame; restart from 0 to begin a new take),
+   * `startS` the frame's position on the capture clock when known (the
+   * server fills a gap up to 2 s with silence). Never drops: the server
+   * places frames by `seq`/`startS`, so a skipped send would be read as a
+   * gap. Acked by `audio_in_ack` CustomEvents (at most 5 per second).
+   */
+  sendAudioIn(frame, seq, opts = {}) {
+    if (this.ws?.readyState !== this._wsOpen) return false;
+    try {
+      const msg = { type: "audio_in", seq };
+      if (opts.startS != null) msg.start_s = opts.startS;
+      this.ws.send(JSON.stringify(msg));
+      this.ws.send(packPcmFrame(frame, opts.channels ?? 1));
+      return true;
+    } catch (e) {
+      console.error("[protocol] audio_in failed:", e);
+      return false;
+    }
+  }
+  /**
    * Send a typed JSON header followed by a binary audio frame
    * (packPcmFrame). Used by the timbre/structure source uploads and
    * swap_source; the caller builds the typed command so the header is
@@ -1835,6 +1869,7 @@ var COMMAND_NAMES = [
   "write_audio",
   "midi_transcribe",
   "analysis_tap",
+  "audio_in",
   "bounce"
 ];
 var EVENT_NAMES = [
@@ -1866,6 +1901,7 @@ var EVENT_NAMES = [
   "bounce_ready",
   "bounce_failed",
   "analysis_state",
+  "audio_in_ack",
   "analysis_update"
 ];
 
