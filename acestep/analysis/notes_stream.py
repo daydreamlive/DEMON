@@ -25,7 +25,9 @@ later can commit) or at a backwards shift (the model re-transcribing);
 an onset within :data:`DEDUPE_TICKS` of a ledger note of the same key is
 the model restating a settled note across the boundary and is dropped;
 a hop that hits its wall budget or token cap keeps what it decoded up to
-the last complete tick.
+the last complete tick. A loop detector stops a hop whose new onsets
+repeat one key at near-equal spacing or exceed a rate per second of new
+audio, and keeps nothing from where the loop started.
 
 Pure python and torch-free at import. The model sits behind a narrow
 backend (:class:`MuScriptorStreamBackend` wraps a loaded
@@ -79,6 +81,14 @@ FULL_HOP_WALL_BUDGET_S = 2.0
 #: An open note older than this is closed at the commit point (MuScriptor
 #: training shortens notes over 10 s; keeps the tie prologue bounded).
 MAX_OPEN_NOTE_S = 10.0
+#: Loop detector: this many onsets of one (program, pitch) in a hop's
+#: tail at near-equal spacing is the model looping. Set from the live run.
+LOOP_REPEATS = 4
+#: Spacing tolerance of those repeats, in ticks.
+LOOP_SPACING_TOL = 2
+#: Loop detector: more onsets than this per second of new audio in a hop's
+#: tail is a runaway (a dense 5 s lofi window is ~24/s). Set from the live run.
+LOOP_ONSETS_PER_S = 25.0
 #: Two onsets of one (program, pitch) this close (ticks, 30 ms) are one
 #: note restated across the commit boundary, never a real retrigger.
 DEDUPE_TICKS = 3
@@ -339,13 +349,33 @@ class MuScriptorStreamBackend:
     pads with zeros at full length, which decodes the padding as audio);
     ``"short"`` passes the short waveform so fewer mel frames are
     prepended. Neither is the zero-padded batch behaviour.
+
+    Decoding mode, passed straight to ``LMModel.generate``: greedy by
+    default; ``use_sampling`` with ``temperature`` / ``top_k`` / ``top_p``;
+    ``cfg_coef`` (1.0 = no guidance, else a doubled CFG batch).
+
+    ``repeat_breaker`` forbids, for the next step only, the exact token
+    that would restate the onset just emitted at the same tick (the same
+    ``pitch`` with velocity 1, or the same ``drum``). ``generate`` takes
+    one ``forbidden_tokens`` tensor for every step but reads it at each
+    step, so the backend appends one slot to it and rewrites that slot in
+    place between steps (``PAD`` when nothing is forbidden; the model
+    never emits ``PAD``).
     """
 
-    def __init__(self, model: Any, pad_mode: str = "mask"):
+    def __init__(self, model: Any, pad_mode: str = "mask", *, use_sampling: bool = False,
+                 temperature: float = 1.0, top_k: int = 0, top_p: float = 0.0,
+                 cfg_coef: float = 1.0, repeat_breaker: bool = False):
         if pad_mode not in ("mask", "short"):
             raise ValueError(f"pad_mode must be mask or short, got {pad_mode!r}")
         self._tm = model
         self.pad_mode = pad_mode
+        self.use_sampling = bool(use_sampling)
+        self.temperature = float(temperature)
+        self.top_k = int(top_k)
+        self.top_p = float(top_p)
+        self.cfg_coef = float(cfg_coef)
+        self.repeat_breaker = bool(repeat_breaker)
         tok = model._tokenizer
         self.vocab = [(e.type, e.value) for e in tok._vocab]
         self.eos_id = int(tok.eos_id)
@@ -389,21 +419,55 @@ class MuScriptorStreamBackend:
                 forbidden = torch.tensor(self._tm._tokenizer.forbidden_token_ids(instruments),
                                          device=device, dtype=torch.long)
                 self._forbidden_cache[key] = forbidden
+        breaker = None
+        if self.repeat_breaker:
+            pad = torch.zeros(1, device=device, dtype=torch.long)  # PAD id 0
+            forbidden = pad if forbidden is None else torch.cat([forbidden, pad])
+            breaker = _RepeatBreaker(self.vocab)
         n_prompt = len(prompt_ids)
         prompt = (torch.tensor([list(prompt_ids)], device=device, dtype=torch.long)
                   if n_prompt else None)
         gen = self._tm._model.generate(
             prompt=prompt, conditions=[attrs], max_gen_len=n_prompt + int(max_new_tokens),
-            use_sampling=False, temp=1.0, top_k=0, top_p=0.0, cfg_coef=1.0,
+            use_sampling=self.use_sampling, temp=self.temperature, top_k=self.top_k,
+            top_p=self.top_p, cfg_coef=self.cfg_coef,
             early_stop_on_token=self.eos_id, beam_size=1, forbidden_tokens=forbidden,
         )
         try:
             # LMModel.generate yields the prompt's own steps first.
             for i, step in enumerate(gen):
+                tok = int(step[0])
+                if breaker is not None:
+                    # Read by the next step's logits mask only.
+                    forbidden[-1].fill_(breaker.next_forbidden(tok))
                 if i >= n_prompt:
-                    yield int(step[0])
+                    yield tok
         finally:
             gen.close()
+
+
+class _RepeatBreaker:
+    """Tracks the token stream and names the one token to forbid next:
+    the onset just emitted, restated at the same tick (``PAD`` = none)."""
+
+    def __init__(self, vocab: Sequence[tuple[str, int]]):
+        self._vocab = vocab
+        self._velocity: Optional[int] = None
+        self._in_prologue = True
+
+    def next_forbidden(self, token: int) -> int:
+        etype, value = self._vocab[token]
+        if etype == "tie":
+            self._in_prologue = False
+            self._velocity = None
+            return 0
+        if self._in_prologue:
+            return 0
+        if etype == "velocity":
+            self._velocity = value
+        elif etype == "drum" or (etype == "pitch" and self._velocity == 1):
+            return token
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -470,6 +534,41 @@ def _tick_floor(t: float) -> int:
     return int(math.floor(t * FRAME_RATE + 1e-6))
 
 
+class _LoopDetector:
+    """Watches one hop's generated actions for a runaway. Only onsets at
+    or after ``c_old_rel`` (window ticks: the audio not settled yet)
+    count. Trips when one key repeats :data:`LOOP_REPEATS` times at
+    near-equal spacing (only with ``repeats``: a whole-window hop holds
+    legitimately repeating hats and bass lines) or when the onsets exceed
+    :data:`LOOP_ONSETS_PER_S` per second of ``new_audio_s``. ``feed``
+    returns the window tick where the loop started, or ``None``."""
+
+    def __init__(self, c_old_rel: int, new_audio_s: float, repeats: bool = True):
+        self.c_old_rel = c_old_rel
+        self.limit = max(LOOP_REPEATS, LOOP_ONSETS_PER_S * max(new_audio_s, 0.0))
+        self.repeats = repeats
+        self.onsets: list[int] = []
+        self.by_key: dict[tuple[int, int], list[int]] = {}
+
+    def feed(self, actions: Iterable[Action]) -> Optional[int]:
+        for a in actions:
+            if a.kind == "end" or a.tick < self.c_old_rel:
+                continue
+            self.onsets.append(a.tick)
+            if len(self.onsets) > self.limit:
+                return self.onsets[0]
+            if not self.repeats:
+                continue
+            ticks = self.by_key.setdefault((a.program, a.pitch), [])
+            ticks.append(a.tick)
+            if len(ticks) >= LOOP_REPEATS:
+                run = ticks[-LOOP_REPEATS:]
+                gaps = [b - a_ for a_, b in zip(run, run[1:])]
+                if min(gaps) > 0 and max(gaps) - min(gaps) <= LOOP_SPACING_TOL:
+                    return run[0]
+        return None
+
+
 class StreamingNotesDecoder:
     """Per-take streaming transcription over a :class:`StreamBackend`.
 
@@ -480,6 +579,7 @@ class StreamingNotesDecoder:
                  guard_s: float = GUARD_S, hop_wall_budget_s: float = HOP_WALL_BUDGET_S,
                  full_token_cap: int = FULL_TOKEN_CAP,
                  full_hop_wall_budget_s: float = FULL_HOP_WALL_BUDGET_S,
+                 loop_detect: bool = True,
                  clock: Callable[[], float] = time.perf_counter):
         self.backend = backend
         self.new_token_cap = int(new_token_cap)
@@ -487,6 +587,7 @@ class StreamingNotesDecoder:
         self.hop_wall_budget_s = float(hop_wall_budget_s)
         self.full_token_cap = int(full_token_cap)
         self.full_hop_wall_budget_s = float(full_hop_wall_budget_s)
+        self.loop_detect = bool(loop_detect)
         self._clock = clock
         self._vocab = list(backend.vocab)
         self._index = {e: i for i, e in enumerate(self._vocab)}
@@ -501,6 +602,7 @@ class StreamingNotesDecoder:
         self._frontier_s: Optional[float] = None
         self._hop = 0
         self._warned = False
+        self._loop_warned = False
 
     @property
     def commit_s(self) -> float:
@@ -588,6 +690,9 @@ class StreamingNotesDecoder:
         reason: Optional[str] = "cap"
         eos = self.backend.eos_id
         c_rel = c_new - ws_tick
+        loop = _LoopDetector(c_old - ws_tick, frontier_s - c_old / FRAME_RATE,
+                             repeats=not full) if self.loop_detect else None
+        loop_at: Optional[int] = None
         gen = self.backend.generate(prompt, audio, int(sr), instruments, cap)
         try:
             for tok in gen:
@@ -607,7 +712,13 @@ class StreamingNotesDecoder:
                         # this hop: stop decoding (lossless, saves the wall).
                         reason = None
                         break
-                actions.extend(dec.feed(int(tok)))
+                fed = dec.feed(int(tok))
+                actions.extend(fed)
+                if loop is not None:
+                    loop_at = loop.feed(fed)
+                    if loop_at is not None:
+                        reason = "loop"
+                        break
                 if self._clock() - t0 > budget:
                     reason = "wall"
                     break
@@ -621,7 +732,15 @@ class StreamingNotesDecoder:
 
         c_eff = c_new
         if reason is not None:
-            if not self._warned:
+            if reason == "loop":
+                if not self._loop_warned:
+                    self._loop_warned = True
+                    logger.warning(
+                        "notes_stream_loop reason=loop new_tokens={} loop_s={:.2f} "
+                        "frontier_s={:.2f} (once per take)",
+                        n_new, (ws_tick + loop_at) / FRAME_RATE, frontier_s,
+                    )
+            elif not self._warned:
                 self._warned = True
                 logger.warning(
                     "notes_stream_hop_truncated reason={} new_tokens={} wall_s={:.3f} "
@@ -635,6 +754,9 @@ class StreamingNotesDecoder:
             # the current tick may still have company the model never got
             # to emit, everything before it is whole.
             c_eff = min(c_new, ws_tick + dec.tick)
+            if loop_at is not None:
+                # Nothing from where the loop started.
+                c_eff = min(c_eff, ws_tick + loop_at)
 
         adopt = [k for k in dec.tie_keys if k not in set(ties)] if full else []
         new, closed = self._apply(actions, ws_tick, c_old, c_eff, adopt)

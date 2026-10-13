@@ -694,3 +694,103 @@ def test_probe_match_and_duplicates():
     assert probe.count_duplicates(est, 0.03) == 1  # 1.04 / 1.05
     a = probe.parse_args(["--wav", __file__, "--dry-run", "--tol-ms", "40"])
     assert a.tol_ms == 40 and a.dry_run
+
+
+# ---------------------------------------------------------------------------
+# Loop detector, decoding modes, repeat breaker
+# ---------------------------------------------------------------------------
+
+
+def test_loop_of_one_key_stops_the_hop_and_drops_the_loop():
+    def script(prompt):
+        if not prompt:
+            return _t(("tie", 0), ("shift", 50), ("drum", 36))
+        return _t(("shift", 90), ("drum", 38), ("shift", 100), ("drum", 42), ("shift", 105),
+                  ("drum", 42), ("shift", 110), ("drum", 42), ("shift", 116), ("drum", 42),
+                  ("shift", 120), ("drum", 46))
+
+    dec = StreamingNotesDecoder(ScriptLM(script))
+    dec.step(np.zeros(SR, np.float32), SR, 0.0, 1.0)
+    r = dec.step(np.zeros(int(1.6 * SR), np.float32), SR, 0.0, 1.6)
+    assert r.truncated and r.reason == "loop"
+    assert [(n.start_s, n.pitch) for n in r.new_notes] == [(0.9, 38)]  # before the loop only
+    assert dec._commit_tick == 100 and r.new_tokens == 10  # stopped at the 4th repeat
+
+
+def test_onset_rate_runaway_stops_a_whole_window_hop():
+    def script(prompt):
+        out = [INDEX[("tie", 0)]]
+        for i in range(40):
+            out += _t(("shift", 2 + 2 * i), ("drum", 30 + i))
+        return out
+
+    dec = StreamingNotesDecoder(ScriptLM(script))
+    r = dec.step(np.zeros(SR, np.float32), SR, 0.0, 1.0)  # 1 s of audio: at most 25 onsets
+    assert r.truncated and r.reason == "loop" and r.new_notes == ()
+    assert r.new_tokens == 1 + 2 * 26
+
+
+def test_whole_window_hop_keeps_legit_repeating_hats():
+    def script(prompt):
+        out = [INDEX[("tie", 0)]]
+        for i in range(6):
+            out += _t(("shift", 5 + 12 * i), ("drum", 42))
+        return out
+
+    dec = StreamingNotesDecoder(ScriptLM(script))
+    r = dec.step(np.zeros(SR, np.float32), SR, 0.0, 1.0)
+    assert not r.truncated and len(r.new_notes) == 6
+
+
+def test_loop_detect_can_be_disabled():
+    def script(prompt):
+        out = [INDEX[("tie", 0)]]
+        for i in range(40):
+            out += _t(("shift", 2 + 2 * i), ("drum", 30 + i))
+        return out
+
+    dec = StreamingNotesDecoder(ScriptLM(script), loop_detect=False)
+    r = dec.step(np.zeros(SR, np.float32), SR, 0.0, 1.0)
+    assert not r.truncated and len(r.new_notes) == 40
+
+
+def test_repeat_breaker_names_the_restated_onset():
+    rb = ns._RepeatBreaker(VOCAB)
+    seq = [("program", 0), ("pitch", 60), ("tie", 0), ("velocity", 1), ("pitch", 62),
+           ("shift", 10), ("drum", 36), ("velocity", 0), ("pitch", 62)]
+    got = [rb.next_forbidden(INDEX[e]) for e in seq]
+    assert got == [0, 0, 0, 0, INDEX[("pitch", 62)], 0, INDEX[("drum", 36)], 0, 0]
+
+
+@pytest.mark.skipif(not HAS_MUSCRIPTOR, reason="muscriptor not installed")
+def test_backend_decoding_options_and_per_step_breaker_on_tiny_lm():
+    tm = _tiny_transcription_model()
+    seen = []
+    orig_generate = tm._model.generate
+    orig_logits = tm._model._compute_logits
+
+    def generate(*args, **kwargs):
+        seen.append(("kwargs", {k: kwargs[k] for k in ("use_sampling", "temp", "top_k",
+                                                      "top_p", "cfg_coef")}))
+        return orig_generate(*args, **kwargs)
+
+    def compute_logits(*args, forbidden_tokens=None, **kwargs):
+        seen.append(("slot", int(forbidden_tokens[-1])))
+        return orig_logits(*args, forbidden_tokens=forbidden_tokens, **kwargs)
+
+    tm._model.generate = generate
+    tm._model._compute_logits = compute_logits
+    backend = ns.MuScriptorStreamBackend(tm, use_sampling=True, temperature=0.7, top_k=5,
+                                         top_p=0.0, cfg_coef=1.0, repeat_breaker=True)
+    prompt = encode_window([], [WindowEvent(10, False, 0, 1, 60)], INDEX)  # ends on an onset
+    audio = np.zeros(SR, np.float32)
+    out = list(backend.generate(prompt, audio, SR, None, 6))
+    assert seen[0] == ("kwargs", {"use_sampling": True, "temp": 0.7, "top_k": 5,
+                                  "top_p": 0.0, "cfg_coef": 1.0})
+    slots = [v for k, v in seen if k == "slot"]
+    # The first generated step is masked against restating pitch 60 at tick 10;
+    # every later step's slot follows the token before it.
+    assert slots[0] == INDEX[("pitch", 60)]
+    rb = ns._RepeatBreaker(VOCAB)
+    expect = [rb.next_forbidden(t) for t in prompt + out][len(prompt) - 1:]
+    assert slots == expect[: len(slots)]

@@ -20,7 +20,8 @@ Usage:
   python scripts/analysis/notes_stream_probe.py --wav path.wav [--size small]
       [--frame-ms 100] [--hop-ms 200] [--max-s 30] [--instruments a,b]
       [--pad-mode mask|short] [--guard-s 0.15] [--cap 256] [--budget-s 0.5]
-      [--compare-batch] [--json out.json] [--tol-ms 50] [--dup-ms 30] [--dry-run]
+      [--sampling --temperature T --top-k K --top-p P] [--cfg C] [--repeat-breaker]
+      [--no-loop-detect] [--compare-batch] [--json out.json] [--tol-ms 50] [--dup-ms 30] [--dry-run]
 """
 
 from __future__ import annotations
@@ -53,6 +54,14 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--guard-s", type=float, default=ns.GUARD_S)
     p.add_argument("--cap", type=int, default=ns.NEW_TOKEN_CAP, help="new tokens per hop")
     p.add_argument("--budget-s", type=float, default=ns.HOP_WALL_BUDGET_S, help="wall per hop")
+    p.add_argument("--sampling", action="store_true", help="sample instead of greedy")
+    p.add_argument("--temperature", type=float, default=1.0)
+    p.add_argument("--top-k", type=int, default=0)
+    p.add_argument("--top-p", type=float, default=0.0)
+    p.add_argument("--cfg", type=float, default=1.0, help="cfg_coef (1.0 = no guidance)")
+    p.add_argument("--repeat-breaker", action="store_true",
+                   help="forbid restating the last onset at the same tick")
+    p.add_argument("--no-loop-detect", action="store_true", help="disable the hop loop detector")
     p.add_argument("--compare-batch", action="store_true", help="also run batch transcribe")
     p.add_argument("--json", type=Path, default=None,
                    help="write stream (and batch) notes here; default <wav stem>_notes.json in cwd")
@@ -156,9 +165,16 @@ def main(argv=None) -> int:
     t0 = time.perf_counter()
     tm = TranscriptionModel.load_model(a.size, device=a.device, dtype="float16")
     print(f"loaded {a.size} in {time.perf_counter() - t0:.1f}s")
-    backend = ns.MuScriptorStreamBackend(tm, pad_mode=a.pad_mode)
+    backend = ns.MuScriptorStreamBackend(
+        tm, pad_mode=a.pad_mode, use_sampling=a.sampling, temperature=a.temperature,
+        top_k=a.top_k, top_p=a.top_p, cfg_coef=a.cfg, repeat_breaker=a.repeat_breaker,
+    )
     dec = ns.StreamingNotesDecoder(backend, new_token_cap=a.cap, guard_s=a.guard_s,
-                                   hop_wall_budget_s=a.budget_s)
+                                   hop_wall_budget_s=a.budget_s,
+                                   loop_detect=not a.no_loop_detect)
+    print(f"decoding sampling={a.sampling} temperature={a.temperature} top_k={a.top_k} "
+          f"top_p={a.top_p} cfg={a.cfg} repeat_breaker={a.repeat_breaker} "
+          f"loop_detect={not a.no_loop_detect}")
     instruments = a.instruments or None
     walls, latencies, total, truncated = [], [], 0, 0
     stream_notes: list[dict] = []
