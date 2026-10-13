@@ -418,6 +418,11 @@ function buildConfig() {
   if (promptB && promptB !== prompt) config.prompt_b = promptB;
   const durationS = readDuration();
   if (durationS != null) config.sa3_duration_s = durationS;
+  // ?lora=<id> lets a browser session request a LoRA (refit) engine with that LoRA at 1.0.
+  const loraId = new URLSearchParams(window.location.search).get("lora");
+  if (loraId) {
+    Object.assign(config, { lora: true, enabled_loras: [loraId], lora_strengths: { [loraId]: 1.0 } });
+  }
   return config;
 }
 

@@ -7,10 +7,15 @@ Transpose -> MatMul`` (read 2026-10-12: 222 sites, 220 per-output-channel
 scales, 2 per-tensor). The fp32 initializers are bit-equal to the stock
 medium checkpoint's fp32 weights; the baked scales are amax(W)/448 to ~1e-6.
 
-A refit-built engine of that graph therefore exposes (to be confirmed per
-TRT version by :func:`refit_inventory`) either the fp32 weight (TRT
-re-quantizes with the baked scale at refit) or an fp8 weight slot (the
-caller quantizes). The manifest records, per mapped module:
+A refit-built engine of that graph (``sa3_build --fp8-refit``: the graph
+with fp16 attention cores, ``BuilderFlag.REFIT_INDIVIDUAL`` marking only
+these 222 weights) exposes each weight as an **fp32 slot**: the mirror
+pushes fp32 W' = W + dW and TensorRT re-quantizes it with the baked scale
+at refit (TRT 10.16, :func:`refit_inventory`: 222 refittable, prototype
+FLOAT). The weight and activation scales are build-time constants, fixed
+by design: a LoRA delta whose amax exceeds scale * 448 saturates instead
+of rescaling (``scripts/sa3/sa3_fp8_lora_saturation.py`` measures it).
+The manifest records, per mapped module:
 
 * ``initializer``: ONNX weight initializer name (the refit name);
 * ``transposed``: whether the initializer is stored ``[in, out]``;
