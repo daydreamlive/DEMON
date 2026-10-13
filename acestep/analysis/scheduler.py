@@ -25,7 +25,10 @@ would hold every note back until a whole cell plus its context lay behind
 the frontier; instead :func:`next_follow_window` analyses the newest
 :data:`FOLLOW_WINDOW_S` behind the frontier every :data:`FOLLOW_STRIDE_S`
 of new audio and reports only the stretch not reported yet, up to
-:data:`FOLLOW_GUARD_S` short of the frontier. It uses no cells.
+:data:`FOLLOW_GUARD_S` short of the frontier. It uses no cells. A
+stateful engine (the streaming notes decoder) follows with
+:func:`next_stream_window` instead: a hop every
+:data:`FOLLOW_STRIDE_STATEFUL_S`, the engine carrying its own ledger.
 
 A cell is re-analysed at most once per :data:`REANALYSIS_CAP_S`, which
 bounds the cost of continuous denoise churn. Rewrites that leave a cell's
@@ -76,6 +79,17 @@ FOLLOW_WINDOW_S = 5.0
 #: Frontier follow: the reported stretch stops this far short of the
 #: frontier, so an onset is reported only with some audio after it.
 FOLLOW_GUARD_S = 0.3
+
+#: Frontier follow for a stateful engine (``AnalyzerSpec.stateful``, the
+#: streaming notes decoder): seconds of new audio between two hops. The
+#: engine carries its state across hops and decodes only the new tail, so
+#: a hop is cheap and the stride short. Set from the live run.
+FOLLOW_STRIDE_STATEFUL_S = 0.15
+#: Frontier follow for a stateful engine: hops wait until the frontier is
+#: this far past the previous hop's commit point plus the stride. Matches
+#: the streaming decoder's own onset guard
+#: (:data:`acestep.analysis.notes_stream.GUARD_S`). Set from the live run.
+FOLLOW_GUARD_STATEFUL_S = 0.15
 
 BASIS_PROVISIONAL = "provisional"
 BASIS_SETTLED = "settled"
@@ -207,6 +221,7 @@ class FollowState:
 
     frontier_s: Optional[float]
     emit_hi_s: float = 0.0
+    take_start_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -245,6 +260,33 @@ def next_follow_window(state: FollowState) -> Optional[FollowWindow]:
         return None
     return FollowWindow(
         window_start_s=window_start, emit_lo_s=emit_lo,
+        emit_hi_s=emit_hi, window_end_s=frontier,
+    )
+
+
+def next_stream_window(state: FollowState) -> Optional[FollowWindow]:
+    """The next hop for a stateful engine in frontier follow, or ``None``
+    when the frontier has not moved :data:`FOLLOW_STRIDE_STATEFUL_S` past
+    the previous hop (``state.emit_hi_s``, the previous hop's frontier
+    less :data:`FOLLOW_GUARD_STATEFUL_S`; 0 at the start of a take).
+
+    The audio is ``[max(take_start_s, frontier - FOLLOW_WINDOW_S),
+    frontier)`` with no trailing padding; the engine keeps its own ledger,
+    so the whole window is its cell (``emit_lo_s`` = window start) and a
+    stall needs no special case: the engine sees the gap and carries on.
+    ``emit_hi_s`` is the frontier less the guard (the engine's commit
+    point), the stride reference for the next hop."""
+    frontier = state.frontier_s
+    if frontier is None:
+        return None
+    emit_hi = frontier - FOLLOW_GUARD_STATEFUL_S
+    if emit_hi - state.emit_hi_s < FOLLOW_STRIDE_STATEFUL_S - 1e-9:
+        return None
+    window_start = max(float(state.take_start_s), frontier - FOLLOW_WINDOW_S)
+    if frontier <= window_start:
+        return None
+    return FollowWindow(
+        window_start_s=window_start, emit_lo_s=window_start,
         emit_hi_s=emit_hi, window_end_s=frontier,
     )
 

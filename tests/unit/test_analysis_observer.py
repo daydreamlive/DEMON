@@ -27,6 +27,7 @@ from acestep.analysis.scheduler import (
     is_late,
     next_cell,
     next_follow_window,
+    next_stream_window,
 )
 from acestep.streaming.audio_engine import AudioEngine
 from acestep.streaming.events import AudioReady, EventBus, SwapReady
@@ -150,6 +151,24 @@ def test_follow_window_trails_the_frontier_and_reports_the_fresh_stretch():
     # A slow engine: the next window simply reports a longer stretch.
     w = next_follow_window(FollowState(14.5, 11.0))
     assert w.emit_lo_s == 11.0 and w.emit_hi_s == pytest.approx(14.2)
+
+
+def test_stream_window_hops_every_stateful_stride():
+    assert next_stream_window(FollowState(None, 0.0)) is None
+    edge = sch.FOLLOW_STRIDE_STATEFUL_S + sch.FOLLOW_GUARD_STATEFUL_S
+    assert next_stream_window(FollowState(edge - 0.01, 0.0)) is None
+    w = next_stream_window(FollowState(edge, 0.0))
+    assert w.window_start_s == 0.0 and w.emit_lo_s == 0.0
+    assert w.window_end_s == pytest.approx(edge)
+    assert w.emit_hi_s == pytest.approx(sch.FOLLOW_STRIDE_STATEFUL_S)
+    # Trails the frontier by one window; the whole window is the cell.
+    w = next_stream_window(FollowState(30.0, 29.7))
+    assert w.window_start_s == pytest.approx(30.0 - sch.FOLLOW_WINDOW_S)
+    assert w.emit_lo_s == w.window_start_s and w.window_end_s == 30.0
+    assert next_stream_window(FollowState(30.0, 29.75)) is None
+    # Never reaches back before the take start.
+    w = next_stream_window(FollowState(3.0, 0.0, take_start_s=1.0))
+    assert w.window_start_s == 1.0
 
 
 def test_follow_clamps_to_the_window_after_a_stall():
