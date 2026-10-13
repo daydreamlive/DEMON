@@ -77,7 +77,16 @@ class AnalysisResult:
     ``kind`` names the item kind of every entry in ``items``. ``wall_s``
     is the engine's own wall time for telemetry. ``truncated`` marks a
     window the engine abandoned (runaway decode); ``items`` is then empty
-    and the range is still replaced, so nothing stale survives."""
+    and the range is still replaced, so nothing stale survives. A
+    streaming engine (``options["stream"]``) keeps a ledger across hops:
+    on a truncated hop its ``items`` are the notes its ledger already
+    held for the range (possibly none), never anything from the discarded
+    hop.
+
+    ``open_items`` (additive, streaming engines only) are items that have
+    started inside the range but not ended yet, with ``end_s`` set to the
+    frontier; the tap may publish them as provisional. ``items`` then
+    holds only closed ones."""
 
     kind: str
     range_start_s: float
@@ -87,6 +96,7 @@ class AnalysisResult:
     revision: int
     wall_s: float = 0.0
     truncated: bool = False
+    open_items: Sequence[Mapping[str, Any]] = ()
 
 
 @runtime_checkable

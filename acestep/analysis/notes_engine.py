@@ -11,6 +11,23 @@ onset lies inside the cell are reported, in canvas seconds. The same
 engine serves the plugin's one-shot (:mod:`acestep.analysis.midi_transcribe`),
 which sends the whole clip as one cell with no context.
 
+Streaming: a request whose ``options["stream"]`` is a mapping (the tap's
+frontier follow) goes to a per-take
+:class:`~acestep.analysis.notes_stream.StreamingNotesDecoder`, which
+carries a note ledger across hops and decodes only the new tail. The
+contract (all keys optional)::
+
+    options["stream"] = {
+        "take": <int>,            # new value -> ledger reset; default source_epoch
+        "window_start_s": <float>, # default t0_s - context_lead_s
+        "frontier_s": <float>,     # default t0_s + span_s + context_tail_s
+        "id": <str>,               # one ledger per id (one per tap); default "default"
+    }
+
+The reply's ``items`` are the ledger's closed notes with onset in the
+request's cell ``[t0_s, t0_s + span_s)`` and ``open_items`` the ones
+still sounding (``end_s`` = frontier).
+
 Env:
   DEMON_ANALYSIS_NOTES_MODEL  small | medium | large   (default small)
   DEMON_MIDI_DISABLE          set to anything to report the analyzer absent
@@ -22,7 +39,8 @@ import importlib.util
 import math
 import os
 import time
-from typing import Any, Iterable, NamedTuple, Optional
+from collections import OrderedDict
+from typing import Any, Iterable, Mapping, NamedTuple, Optional
 
 import numpy as np
 from loguru import logger
@@ -43,6 +61,9 @@ NOTE_CAP_PER_WINDOW = 1500
 #: Most wall time one 5 s window may take before decoding is abandoned
 #: (a runaway window took 20.7 s). Set from the live run.
 WALL_BUDGET_S = 6.0
+
+#: Most concurrent streaming ledgers (one per tap); the oldest is dropped.
+MAX_STREAMS = 4
 
 LICENCE = "MuScriptor weights are gated on Hugging Face (CC BY-NC 4.0)."
 
@@ -121,9 +142,12 @@ class NotesEngine:
 
     name = "notes"
 
-    def __init__(self, size: str, model: Any):
+    def __init__(self, size: str, model: Any, stream_backend: Any = None):
         self.size = size
         self._model = model
+        # Built lazily from the model on the first streaming request.
+        self._stream_backend = stream_backend
+        self._streams: "OrderedDict[str, tuple[Any, Any]]" = OrderedDict()
 
     def analyze(self, request: AnalysisRequest) -> AnalysisResult:
         """Transcribe the request's window and return the notes whose onset
@@ -141,6 +165,9 @@ class NotesEngine:
         """
         if self._model is None:
             raise RuntimeError("notes engine is unloaded")
+        stream = request.options.get("stream")
+        if isinstance(stream, Mapping):
+            return self._analyze_stream(request, stream)
         import torch
 
         audio = np.asarray(request.audio, dtype=np.float32)
@@ -204,11 +231,62 @@ class NotesEngine:
             wall_s=wall_s,
         )
 
+    def _stream_decoder(self, stream_id: str, take: Any):
+        """The ledger for ``stream_id``, reset when ``take`` changes."""
+        from acestep.analysis.notes_stream import MuScriptorStreamBackend, StreamingNotesDecoder
+
+        if self._stream_backend is None:
+            self._stream_backend = MuScriptorStreamBackend(self._model)
+        entry = self._streams.get(stream_id)
+        if entry is None:
+            entry = (take, StreamingNotesDecoder(self._stream_backend))
+            self._streams[stream_id] = entry
+            while len(self._streams) > MAX_STREAMS:
+                self._streams.popitem(last=False)
+        elif entry[0] != take:
+            entry[1].reset()
+            entry = (take, entry[1])
+            self._streams[stream_id] = entry
+        self._streams.move_to_end(stream_id)
+        return entry[1]
+
+    def _analyze_stream(self, request: AnalysisRequest, stream: Mapping) -> AnalysisResult:
+        """One streaming hop: decode the window's new tail into the
+        take's ledger and report the ledger's notes in the cell."""
+        audio = np.asarray(request.audio, dtype=np.float32)
+        if audio.ndim == 2:
+            audio = audio.mean(axis=0, dtype=np.float32)
+        if audio.ndim != 1:
+            raise ValueError(f"notes engine wants mono audio, got shape {audio.shape}")
+        if request.sr < NOTES.min_sr:
+            raise ValueError(f"notes engine needs sr >= {NOTES.min_sr}, got {request.sr}")
+        window_start = float(stream.get("window_start_s", request.t0_s - request.context_lead_s))
+        frontier = float(stream.get(
+            "frontier_s", request.t0_s + request.span_s + request.context_tail_s))
+        take = stream.get("take", request.source_epoch)
+        dec = self._stream_decoder(str(stream.get("id", "default")), take)
+        instruments = request.options.get("instruments") or None
+        step = dec.step(audio, int(request.sr), window_start, frontier, instruments)
+        closed, opened = dec.notes_in(request.t0_s, request.t0_s + request.span_s)
+        return AnalysisResult(
+            kind="note",
+            range_start_s=request.t0_s,
+            span_s=request.span_s,
+            items=[n.item() for n in closed],
+            open_items=tuple(n.item(open_end_s=frontier) for n in opened),
+            source_epoch=request.source_epoch,
+            revision=request.revision,
+            wall_s=step.wall_s,
+            truncated=step.truncated,
+        )
+
     def unload(self) -> None:
         """Drop the model and return its cached VRAM. Safe to call twice."""
         if self._model is None:
             return
         self._model = None
+        self._stream_backend = None
+        self._streams.clear()
         try:
             import torch
 
@@ -268,6 +346,7 @@ NOTES = register(AnalyzerSpec(
     window_s=4.0,
     context_s=0.5,
     min_sr=16000,
+    stateful=True,
     placement="gpu",
     resident_gb={"small": 0.6, "medium": 1.2, "large": 3.5},
     options=(
