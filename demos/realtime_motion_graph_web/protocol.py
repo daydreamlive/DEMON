@@ -612,6 +612,37 @@ COMMANDS: tuple = (
                     "keep sending params.playback_pos.",
     ),
     CommandSpec(
+        "audio_in",
+        fields=(
+            FieldSpec("seq", "int", required=True,
+                      description="Client frame counter, +1 per frame. A "
+                                  "seq that does not advance (the client "
+                                  "restarted its stream) starts a new take; "
+                                  "a skipped seq is a gap."),
+            FieldSpec("start_s", "float", nullable=True,
+                      description="The frame's position on the client's "
+                                  "stream clock, seconds since its capture "
+                                  "started. Optional: without it frames are "
+                                  "contiguous and gaps come from seq. A gap "
+                                  "up to 2 s is filled with silence; a "
+                                  "longer one, or a step back, starts a new "
+                                  "take."),
+        ),
+        binary=True,
+        requires="audio_in",
+        description="Live audio input: append one PCM frame (typically "
+                    "100 ms of microphone audio, mono or stereo) at the "
+                    "canvas write frontier. Only families whose canvas the "
+                    "client feeds declare it (ready.capabilities.audio_in, "
+                    "the live_input family on a session created without a "
+                    "source). The server playhead follows the frontier "
+                    "(0.25 s behind), so no params.playback_pos is needed. "
+                    "When the capture canvas is full a new take starts: "
+                    "swap_ready with a new source_epoch (analysis taps "
+                    "clear). " + _PCM_FRAME + " Acked by audio_in_ack, at "
+                    "most 5 per second.",
+    ),
+    CommandSpec(
         "bounce",
         fields=(
             FieldSpec("request_id", "str", required=True,
@@ -1026,6 +1057,18 @@ EVENTS: tuple = (
         ),
         description="State of one analysis tap: sent on enable, disable, "
                     "mode change and error.",
+    ),
+    EventSpec(
+        "audio_in_ack",
+        fields=(
+            FieldSpec("seq", "int", required=True,
+                      description="Newest audio_in frame applied."),
+            FieldSpec("frontier_s", "float", required=True,
+                      description="Write frontier after it, canvas seconds "
+                                  "of the current take."),
+        ),
+        description="Acknowledges audio_in frames; coalesced to at most 5 "
+                    "per second (each ack covers every frame up to seq).",
     ),
     EventSpec(
         "analysis_update",

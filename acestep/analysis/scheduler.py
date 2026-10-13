@@ -247,10 +247,15 @@ class Governor:
     paced at one request per :data:`UNKNOWN_HEALTH_INTERVAL_S`. Backoff
     ends after :data:`RECOVERY_S` of continuous health. All methods take
     ``now`` (monotonic seconds) so tests drive time explicitly.
+
+    ``generates_audio`` False (``Capabilities.generates_audio``: a canvas
+    the client feeds, no generator running) leaves nothing to protect:
+    health is known and always good, whatever the signals say.
     """
 
-    def __init__(self, refines_audio: bool):
+    def __init__(self, refines_audio: bool, *, generates_audio: bool = True):
         self.refines_audio = bool(refines_audio)
+        self.generates_audio = bool(generates_audio)
         self._ema: Optional[float] = None
         self._ticks = 0
         self._baseline: Optional[float] = None
@@ -291,6 +296,8 @@ class Governor:
     # ---- verdicts -----------------------------------------------------
 
     def _unhealthy_now(self, now: float) -> bool:
+        if not self.generates_audio:
+            return False
         if (self._slice_lead is not None
                 and now - self._slice_lead_at <= HEALTH_REPORT_FRESH_S
                 and self._slice_lead < 0.0):
@@ -306,6 +313,8 @@ class Governor:
             self._last_unhealthy = now
 
     def known(self) -> bool:
+        if not self.generates_audio:
+            return True
         if self.refines_audio:
             return self._ema is not None
         return self._frontier_lead is not None

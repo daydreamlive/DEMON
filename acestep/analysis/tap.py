@@ -92,6 +92,10 @@ class AnalysisTap:
     ``options`` must already be validated by ``spec.validate_options``.
     ``next_seq`` returns the session-wide monotonic update sequence.
     ``refines_audio`` picks the canvas kind (ring vs append-only).
+    ``generates_audio`` False (a client-fed canvas) means there is no
+    generator for the governor to protect. ``frontier_fn`` is the
+    backend's optional ``analysis_frontier_s`` hook (see
+    :class:`CanvasObserver`).
     """
 
     def __init__(
@@ -105,6 +109,8 @@ class AnalysisTap:
         refines_audio: bool,
         source_epoch: int,
         next_seq: Callable[[], int],
+        generates_audio: bool = True,
+        frontier_fn: Optional[Callable[[], Optional[float]]] = None,
         clock: Callable[[], float] = time.monotonic,
         interval_s: float = TAP_INTERVAL_S,
     ):
@@ -118,6 +124,8 @@ class AnalysisTap:
         self.audio_eng = audio_eng
         self.bus = bus
         self.refines_audio = bool(refines_audio)
+        self.generates_audio = bool(generates_audio)
+        self._frontier_fn = frontier_fn
         self._initial_epoch = int(source_epoch)
         self._next_seq = next_seq
         self._clock = clock
@@ -137,7 +145,7 @@ class AnalysisTap:
         # Results waiting for the content check of later writes to the cell.
         self._held: dict[int, AnalysisResult] = {}
         self._prev_playhead: Optional[float] = None
-        self._governor = Governor(self.refines_audio)
+        self._governor = Governor(self.refines_audio, generates_audio=self.generates_audio)
         self._observer: Optional[CanvasObserver] = None
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -172,6 +180,7 @@ class AnalysisTap:
                 source_epoch=self._initial_epoch,
                 on_tick=self._on_tick,
                 on_epoch=self._on_epoch,
+                frontier_fn=self._frontier_fn,
                 clock=self._clock,
             )
             self.mode = self._compute_mode(self._clock())

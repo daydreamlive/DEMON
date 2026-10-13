@@ -112,6 +112,14 @@ class CanvasObserver:
     (``tick_ms, now``) and ``on_epoch`` (``source_epoch``) are called on the
     bus subscriber's thread; keep them cheap. :meth:`close` detaches the
     write listener and the bus subscription.
+
+    ``frontier_fn`` (the backend's optional ``analysis_frontier_s``) reports
+    how much of the canvas is already final, in seconds, for a canvas that
+    is final without being written (a static clip on an append-only
+    family, whose frontier no write would ever reveal). It is read
+    whenever the grid resets (attach, swap, epoch) and seeds the frontier;
+    writes move it as usual. It is called outside this observer's lock and
+    must not block (it can run inside a writer's notification).
     """
 
     def __init__(
@@ -124,6 +132,7 @@ class CanvasObserver:
         source_epoch: int = 0,
         on_tick: Optional[Callable[[float, float], None]] = None,
         on_epoch: Optional[Callable[[int], None]] = None,
+        frontier_fn: Optional[Callable[[], Optional[float]]] = None,
         clock: Callable[[], float] = time.monotonic,
     ):
         if cell_s <= 0:
@@ -135,13 +144,14 @@ class CanvasObserver:
         self.epoch = int(source_epoch)
         self._on_tick = on_tick
         self._on_epoch = on_epoch
+        self._frontier_fn = frontier_fn
         self._clock = clock
         self._lock = threading.Lock()
         self._closed = False
 
         now = clock()
         self._resize(len(audio_eng.current), int(audio_eng.revision), now)
-        self.frontier_samples: Optional[int] = None
+        self.frontier_samples: Optional[int] = self._seed_frontier()
 
         audio_eng.add_write_listener(self._on_write)
         self._sub = bus.subscribe(self._on_event, name="analysis-observer") if bus is not None else None
@@ -166,6 +176,22 @@ class CanvasObserver:
         self.pending = [False] * n
         # Fingerprint of the audio last snapshotted for analysis.
         self.fingerprint: list = [None] * n
+
+    def _seed_frontier(self) -> Optional[int]:
+        """The frontier after a grid reset: ``frontier_fn``'s answer in
+        samples, clipped to the canvas, or ``None`` (learn it from writes).
+        Called without ``_lock`` held."""
+        fn = self._frontier_fn
+        if fn is None:
+            return None
+        try:
+            seconds = fn()
+        except Exception as exc:  # noqa: BLE001 - a hook must never break the observer
+            logger.warning("analysis_observer_frontier_fn_failed error={}", exc)
+            return None
+        if seconds is None:
+            return None
+        return max(0, min(int(round(float(seconds) * self.sr)), len(self.audio_eng.current)))
 
     @property
     def n_cells(self) -> int:
@@ -200,12 +226,13 @@ class CanvasObserver:
     def _on_write(self, start: int, end: int, revision: int, kind: str) -> None:
         """AudioEngine write listener (writer's thread, outside its lock)."""
         now = self._clock()
+        seeded = self._seed_frontier() if kind == WRITE_SWAP else None
         with self._lock:
             if self._closed:
                 return
             if kind == WRITE_SWAP:
                 self._resize(end, revision, now)
-                self.frontier_samples = None
+                self.frontier_samples = seeded
                 return
             for i in self._cells_touching(start, end):
                 self.cell_revision[i] = max(self.cell_revision[i], revision)
@@ -234,12 +261,13 @@ class CanvasObserver:
         elif isinstance(event, SwapReady):
             epoch = int(getattr(event, "source_epoch", self.epoch + 1))
             now = self._clock()
+            seeded = self._seed_frontier()
             with self._lock:
                 if epoch == self.epoch:
                     return
                 self.epoch = epoch
                 self._resize(len(self.audio_eng.current), int(self.audio_eng.revision), now)
-                self.frontier_samples = None
+                self.frontier_samples = seeded
             if self._on_epoch is not None:
                 self._on_epoch(epoch)
 

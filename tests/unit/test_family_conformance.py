@@ -75,7 +75,14 @@ def test_spec_declares_boot_policy(spec: FamilySpec):
 @pytest.mark.parametrize("spec", SPECS, ids=IDS)
 def test_knob_universe_is_a_list_of_knobspecs(spec: FamilySpec):
     universe = spec.knob_universe()
-    assert isinstance(universe, list) and universe, "empty knob universe"
+    assert isinstance(universe, list)
+    # Only a family that runs no model may have no knobs (live_input: the
+    # client feeds its canvas); for anything else an empty universe means
+    # the registration was forgotten.
+    if spec.name == "live_input":
+        assert universe == []
+        return
+    assert universe, "empty knob universe"
     assert all(isinstance(k, KnobSpec) for k in universe)
     # A name may repeat across a family's own variants (ACE's SDE and
     # non-SDE manifests) only with identical semantics; the homonym guard

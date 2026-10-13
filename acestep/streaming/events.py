@@ -79,6 +79,7 @@ __all__ = [
     "AnalysisState",
     "AnalysisUpdate",
     "AnalysisClear",
+    "AudioInAck",
 ]
 
 
@@ -462,6 +463,17 @@ class AnalysisClear(AnalysisUpdate):
     """
 
 
+@dataclass(frozen=True)
+class AudioInAck:
+    """The live-input canvas took ``audio_in`` frames up to ``seq``
+    (wire ``audio_in_ack``). ``frontier_s`` is the write frontier in
+    canvas seconds of the current take. Coalesced by the publisher to a
+    few per second; only the newest matters."""
+
+    seq: int
+    frontier_s: float
+
+
 # ---------------------------------------------------------------------------
 # Event bus
 # ---------------------------------------------------------------------------
@@ -505,6 +517,8 @@ _DEFAULT_POLICY: dict[type, BackpressurePolicy] = {
     # evicted update is lost to that subscriber until the cell is next
     # re-analysed.
     AnalysisUpdate: BackpressurePolicy.DROP_OLDEST,
+    # Each ack supersedes the last.
+    AudioInAck: BackpressurePolicy.COALESCE,
 }
 
 

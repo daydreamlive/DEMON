@@ -57,9 +57,18 @@ def test_every_family_declares_a_knob_universe():
     assert set(FAMILY_KNOB_UNIVERSES) == set(FAMILIES)
 
 
+#: Families that run no model and so expose no knobs (live_input: the
+#: client feeds the canvas). Any other empty universe is a forgotten
+#: registration.
+_NO_MODEL_FAMILIES = frozenset({"live_input"})
+
+
 def test_family_universes_are_nonempty_and_internally_consistent():
     for name in FAMILY_KNOB_UNIVERSES:
         manifest = _family_manifest(name)
+        if name in _NO_MODEL_FAMILIES:
+            assert manifest == {}, f"no-model family {name!r} declares knobs"
+            continue
         assert manifest, f"family {name!r} declares an empty knob universe"
 
 

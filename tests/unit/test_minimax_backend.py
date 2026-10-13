@@ -115,7 +115,10 @@ def _backend(*, ar_frames=800, window_s=WINDOW_S, start_worker=False):
 
 def test_capabilities_are_all_off():
     caps = _backend().capabilities()
-    on = [k for k, v in vars(caps).items() if v]
+    # generates_audio is the one default-True trait: a model family
+    # generates, it does not opt in to it.
+    assert caps.generates_audio is True
+    on = [k for k, v in vars(caps).items() if v and k != "generates_audio"]
     assert on == [], f"append-only family must claim nothing: {on}"
 
 

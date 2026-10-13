@@ -194,6 +194,18 @@ class Capabilities:
     # adapter fills it from ``registry.available_analyzers()`` when it
     # builds ``ready.capabilities``.
     analysis_taps: tuple[str, ...] = ()
+    # The canvas is written by a generator the platform must protect. True
+    # for every model family; False only for a family whose canvas the
+    # client feeds (``live_input``: microphone stream or an uploaded clip),
+    # where no generation runs at all. The analysis governor reads it: with
+    # no generator to protect, session health is always good and analysis
+    # runs as fast as the engine allows. Defaults True (unlike the opt-in
+    # bits above) so a new model family is protected without declaring it.
+    generates_audio: bool = True
+    # The ``audio_in`` command: the session appends client PCM frames at
+    # its write frontier (the live microphone path). True only for the
+    # ``live_input`` family.
+    audio_in: bool = False
 
 
 @dataclass(frozen=True)

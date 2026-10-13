@@ -262,6 +262,14 @@ namespace command {
     inline constexpr const char* kOptions = "options";
   }  // namespace analysis_tap
 
+  namespace audio_in {
+    inline constexpr const char* kType = "audio_in";
+    /** Client frame counter, +1 per frame. A seq that does not advance (the client restarted its stream) starts a new take; a skipped seq is a gap. */
+    inline constexpr const char* kSeq = "seq";
+    /** The frame's position on the client's stream clock, seconds since its capture started. Optional: without it frames are contiguous and gaps come from seq. A gap up to 2 s is filled with silence; a longer one, or a step back, starts a new take. */
+    inline constexpr const char* kStartS = "start_s";
+  }  // namespace audio_in
+
   namespace bounce {
     inline constexpr const char* kType = "bounce";
     /** Client-chosen token echoed on bounce_ready / bounce_failed. */
@@ -532,6 +540,14 @@ namespace event {
     }  // namespace mode
   }  // namespace analysis_state
 
+  namespace audio_in_ack {
+    inline constexpr const char* kType = "audio_in_ack";
+    /** Newest audio_in frame applied. */
+    inline constexpr const char* kSeq = "seq";
+    /** Write frontier after it, canvas seconds of the current take. */
+    inline constexpr const char* kFrontierS = "frontier_s";
+  }  // namespace audio_in_ack
+
   namespace analysis_update {
     inline constexpr const char* kType = "analysis_update";
     inline constexpr const char* kTap = "tap";
@@ -614,6 +630,8 @@ namespace config {
   inline constexpr const char* kYue2Lyrics = "yue2_lyrics";
   /** Longest song yue2 may compose, seconds (2 to 100, clamped). The model decides the actual length within it. Absent or null allows 100 s. Fixed for the session lifetime. */
   inline constexpr const char* kYue2DurationS = "yue2_duration_s";
+  /** Capture canvas length for live_input sessions created without a source, seconds: audio_in frames fill it, and when it is full a new take starts (swap_ready, new source_epoch). Clamped to 30..1800; absent or null = 600. Ignored for a session created from an uploaded clip (the clip is the canvas). */
+  inline constexpr const char* kLiveInputCaptureS = "live_input_capture_s";
 }  // namespace config
 
 // ── Init-phase upload handshake ──

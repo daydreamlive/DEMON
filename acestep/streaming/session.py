@@ -2090,13 +2090,18 @@ class StreamingSession:
                 return self._analysis_error(
                     tap, licence, f"analysis host unavailable: {exc}",
                 )
+        caps = self.backend.capabilities()
         return AnalysisTap(
             spec=spec,
             options=clean,
             submitter=submitter,
             audio_eng=self.audio_eng,
             bus=self.bus,
-            refines_audio=bool(getattr(self.backend.capabilities(), "refines_audio", True)),
+            refines_audio=bool(getattr(caps, "refines_audio", True)),
+            generates_audio=bool(getattr(caps, "generates_audio", True)),
+            # A canvas that is final without being written (a static clip)
+            # tells the observer its frontier through this optional hook.
+            frontier_fn=getattr(self.backend, "analysis_frontier_s", None),
             source_epoch=int(getattr(self.state, "source_epoch", 0) or 0),
             next_seq=lambda: next(self._analysis_seq),
         )
@@ -2849,6 +2854,30 @@ class StreamingSession:
                 "write_audio_failed origin={} error={}", origin.value, exc,
             )
             self.bus.publish(AudioWriteFailed(error=str(exc)))
+
+    @requires_capability("audio_in", "audio_in")
+    def audio_in(
+        self,
+        audio: Audio,
+        *,
+        seq: int,
+        start_s: float | None = None,
+        origin: CommandOrigin = CommandOrigin.PRIMARY,
+    ) -> None:
+        """Append one client PCM frame (48 kHz) at the canvas write
+        frontier: the live microphone path of a family whose canvas the
+        client feeds (``live_input``). ``seq`` is the client's frame
+        counter and ``start_s`` the frame's position on its stream clock;
+        the backend places the frame, fills short gaps with silence and
+        starts a new take when the stream breaks or the canvas is full
+        (see ``LiveInputBackend.append_input``). Applied on the caller's
+        thread; acked by ``audio_in_ack``. Applies identically from any
+        origin."""
+        del origin  # not origin-sensitive; accepted for transport symmetry
+        self.state.last_activity_ts = time.monotonic()
+        wf = audio.waveform
+        pcm = wf.detach().cpu().numpy().T if hasattr(wf, "detach") else np.asarray(wf).T
+        self.backend.append_input(pcm, seq=int(seq), start_s=start_s)
 
     # ---- Constructor ---------------------------------------------------
 

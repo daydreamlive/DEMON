@@ -43,6 +43,7 @@ export type CommandName =
   | "write_audio"
   | "midi_transcribe"
   | "analysis_tap"
+  | "audio_in"
   | "bounce";
 
 export const COMMAND_NAMES: readonly CommandName[] = [
@@ -68,6 +69,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "write_audio",
   "midi_transcribe",
   "analysis_tap",
+  "audio_in",
   "bounce",
 ] as const;
 
@@ -100,6 +102,7 @@ export type EventName =
   | "bounce_ready"
   | "bounce_failed"
   | "analysis_state"
+  | "audio_in_ack"
   | "analysis_update";
 
 export const EVENT_NAMES: readonly EventName[] = [
@@ -131,6 +134,7 @@ export const EVENT_NAMES: readonly EventName[] = [
   "bounce_ready",
   "bounce_failed",
   "analysis_state",
+  "audio_in_ack",
   "analysis_update",
 ] as const;
 
@@ -337,6 +341,14 @@ export interface AnalysisTapCommand {
   enabled: boolean;
   /** Per-analyzer options, validated by the analyzer. notes: {size: small|medium|large, instruments: [MuScriptor names], horizon_s: 4..30 (default 8; how far ahead of the playhead ring canvases are analysed)}. Unknown options fail the enable. */
   options?: Record<string, unknown>;
+}
+
+export interface AudioInCommand {
+  type: "audio_in";
+  /** Client frame counter, +1 per frame. A seq that does not advance (the client restarted its stream) starts a new take; a skipped seq is a gap. */
+  seq: number;
+  /** The frame's position on the client's stream clock, seconds since its capture started. Optional: without it frames are contiguous and gaps come from seq. A gap up to 2 s is filled with silence; a longer one, or a step back, starts a new take. */
+  start_s?: number | null;
 }
 
 export interface BounceCommand {
@@ -591,6 +603,14 @@ export interface AnalysisStateEvent {
   dropped: number;
 }
 
+export interface AudioInAckEvent {
+  type: "audio_in_ack";
+  /** Newest audio_in frame applied. */
+  seq: number;
+  /** Write frontier after it, canvas seconds of the current take. */
+  frontier_s: number;
+}
+
 export interface AnalysisUpdateEvent {
   type: "analysis_update";
   tap: string;
@@ -662,6 +682,8 @@ export interface SessionConfigPayload {
   yue2_lyrics?: string | null;
   /** Longest song yue2 may compose, seconds (2 to 100, clamped). The model decides the actual length within it. Absent or null allows 100 s. Fixed for the session lifetime. */
   yue2_duration_s?: number | null;
+  /** Capture canvas length for live_input sessions created without a source, seconds: audio_in frames fill it, and when it is full a new take starts (swap_ready, new source_epoch). Clamped to 30..1800; absent or null = 600. Ignored for a session created from an uploaded clip (the clip is the canvas). */
+  live_input_capture_s?: number | null;
   // SessionConfig is permissive; extras pass through.
   [k: string]: unknown;
 }
@@ -721,6 +743,7 @@ export type WireCommand =
   | WriteAudioCommand
   | MidiTranscribeCommand
   | AnalysisTapCommand
+  | AudioInCommand
   | BounceCommand;
 
 export type WireEvent =
@@ -752,6 +775,7 @@ export type WireEvent =
   | BounceReadyEvent
   | BounceFailedEvent
   | AnalysisStateEvent
+  | AudioInAckEvent
   | AnalysisUpdateEvent;
 
 export type HandshakeCommand =

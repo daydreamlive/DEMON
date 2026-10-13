@@ -63,6 +63,7 @@ from acestep.streaming.config import SessionConfig
 from acestep.streaming.events import (
     AnalysisState,
     AnalysisUpdate,
+    AudioInAck,
     AudioReady,
     AudioWriteFailed,
     AudioWritten,
@@ -1802,6 +1803,12 @@ def _handle_client_body(
                 ),
                 "wall_s": round(event.wall_s, 3),
             })
+        elif isinstance(event, AudioInAck):
+            _send_json({
+                "type": "audio_in_ack",
+                "seq": event.seq,
+                "frontier_s": round(event.frontier_s, 4),
+            })
         elif isinstance(event, SubscriberDropped):
             # Terminal notice from the bus: our subscription overflowed
             # and was force-closed. Outbound delivery is dead; the
@@ -2288,6 +2295,36 @@ def _handle_client_body(
                     return
                 _MIDI_TRANSCRIBE_POOL.submit(
                     _run_midi_transcribe, wf, request_id, _send_json,
+                )
+            elif mtype == "audio_in":
+                # Live input: one binary PCM frame always follows, appended
+                # at the canvas frontier (live_input family; other families
+                # answer command_failed through the capability gate after
+                # the frame is consumed, so the stream never desyncs).
+                audio_msg = _recv_binary_payload("command_failed")
+                if audio_msg is None:
+                    return
+                try:
+                    wf = _decode_audio_msg(audio_msg)
+                    seq = int(data.get("seq"))
+                    start_s = data.get("start_s")
+                    start_s = float(start_s) if start_s is not None else None
+                except Exception as exc:
+                    logger.warning(
+                        "audio_in_decode_failed origin={} error={}", origin, exc,
+                    )
+                    _send_json({
+                        "type": "command_failed",
+                        "command": "audio_in",
+                        "requires": "",
+                        "error": f"bad audio_in frame: {exc}",
+                    })
+                    return
+                streaming.audio_in(
+                    Audio(waveform=wf, sample_rate=SAMPLE_RATE),
+                    seq=seq,
+                    start_s=start_s,
+                    origin=origin,
                 )
             elif mtype == "analysis_tap":
                 # Live analysis channel on/off. Analyzer problems come
