@@ -348,6 +348,32 @@ def test_result_held_over_an_identical_rewrite_is_published():
     assert upd.range_start_s == req.t0_s and upd.items and tap.dropped == 0
 
 
+def test_truncated_result_replaces_the_range_and_counts_dropped():
+    tap, eng, bus, sub, clock = _make_tap()
+    tap.start()
+    _report_playhead(eng, clock, 3.0)
+    tap.step()
+    request, on_result, _err, _tok = sub.submitted.pop()
+    on_result(AnalysisResult(
+        kind="note", range_start_s=request.t0_s, span_s=request.span_s,
+        items=[], source_epoch=request.source_epoch, revision=request.revision,
+        wall_s=6.0, truncated=True,
+    ))
+    upd = bus.of(AnalysisUpdate)[-1]
+    assert upd.range_start_s == 4.0 and upd.items == () and not upd.clear
+    assert upd.basis == "provisional" and tap.dropped == 1
+    tap._in_flight = None
+    _report_playhead(eng, clock, 7.9)
+    tap.step()
+    sub.submitted.clear()
+    tap._in_flight = None
+    _report_playhead(eng, clock, 8.1)
+    tap.step()
+    assert not [u for u in bus.of(AnalysisUpdate) if u.basis == "settled"]
+    tap.close()
+    assert bus.of(AnalysisState)[-1].dropped == 1
+
+
 def test_append_only_confirms_behind_the_frontier():
     tap, eng, bus, sub, clock = _make_tap(refines_audio=False)
     tap.start()

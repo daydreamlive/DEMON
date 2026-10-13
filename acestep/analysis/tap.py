@@ -18,7 +18,9 @@ yet, the result is held until the worker's next pass has run the
 observer's content check (a ring rewrite with the same music keeps the
 result). On a ring canvas a provisional cell is re-published as
 ``settled`` (same items, no new analysis) once the playhead passes it
-with its content unchanged.
+with its content unchanged. A truncated result (the engine abandoned a
+runaway window) counts as ``dropped``, still replaces its range with no
+items so nothing stale survives, and never settles.
 
 State goes out as :class:`~acestep.streaming.events.AnalysisState` on
 enable (followed by a ``clear`` update), on mode change, on error and on
@@ -80,6 +82,7 @@ class _Published:
     kind: str
     items: tuple
     basis: str
+    truncated: bool = False
     crossed: bool = False
 
 
@@ -364,7 +367,7 @@ class AnalysisTap:
             return
         obs = self._observer
         for i, rec in list(self._published.items()):
-            if rec.basis != BASIS_PROVISIONAL:
+            if rec.basis != BASIS_PROVISIONAL or rec.truncated:
                 continue
             if not rec.crossed:
                 period, end = self._period_for(rec.range_start_s, rec.range_start_s + rec.span_s)
@@ -422,15 +425,25 @@ class AnalysisTap:
             self.dropped += 1
             obs.mark_dirty(i)
             return
+        truncated = bool(result.truncated)
+        if truncated:
+            # The range is still replaced (empty), so a runaway window
+            # never leaves the previous analysis on screen.
+            self.dropped += 1
+            logger.warning(
+                "analysis_window_truncated tap={} cell={} wall_s={:.2f}",
+                self.name, i, result.wall_s,
+            )
         period, _ = self._period_for(result.range_start_s, result.range_start_s + result.span_s)
-        basis = basis_for(
+        basis = BASIS_PROVISIONAL if truncated else basis_for(
             refines_audio=self.refines_audio, playhead_passed=False,
             revision_unchanged=True,
         )
-        items = tuple(dict(it) for it in result.items)
+        items = () if truncated else tuple(dict(it) for it in result.items)
         self._published[i] = _Published(
             revision=result.revision, range_start_s=float(result.range_start_s),
             span_s=float(result.span_s), kind=result.kind, items=items, basis=basis,
+            truncated=truncated,
         )
         self.bus.publish(AnalysisUpdate(
             tap=self.name, seq=self._next_seq(), source_epoch=result.source_epoch,
