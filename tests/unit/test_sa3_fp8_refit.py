@@ -286,7 +286,7 @@ def test_refit_inventory_reports_refittable_weights_and_scales(graph):
     assert inv["other_refittable_sample"] == ["other"]
 
 
-def test_fp8_refit_engine_is_exclusive_but_never_selected(tmp_path, monkeypatch):
+def test_fp8_refit_engine_is_exclusive_but_not_selected_by_default(tmp_path, monkeypatch):
     import acestep.engine.sa3_trt as sa3_trt
     from acestep.engine.trt.sa3_build import SA3DiTFp8RefitBuildConfig
 
@@ -300,6 +300,7 @@ def test_fp8_refit_engine_is_exclusive_but_never_selected(tmp_path, monkeypatch)
         tmp_path / "sa3_m_dit_fp8_l1_140_140" / "sa3_m_dit_fp8_l1_140_140.trt"
     )
     monkeypatch.setattr(sa3_trt, "trt_engines_dir", lambda: tmp_path)
+    monkeypatch.delenv("DEMON_SA3_FP8_REFIT", raising=False)
     assert sa3_trt.find_dit_engine("medium", 140) is None
     assert sa3_trt.find_dit_engine("medium", 140, want_refittable=True) is None
 

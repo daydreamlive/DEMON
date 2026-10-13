@@ -356,8 +356,9 @@ class SA3Context:
         (compile is already normalized to eager there: SA3 has no
         torch.compile path). ``prefer_refittable`` is the LoRA-session
         preference (notes/SA3_LORA_PLAN.md D6b): pick a refit-built
-        engine when one covers the window, and avoid fp8 (whose refit
-        story is unproven) otherwise."""
+        engine when one covers the window (a refit-built fp8 engine
+        only under ``DEMON_SA3_FP8_REFIT=1``, see ``find_dit_engine``),
+        and avoid the non-refittable fp8 engine otherwise."""
         from acestep.engine.sa3_trt import SA3TRTDit, find_dit_engine
 
         if backend != "tensorrt":
