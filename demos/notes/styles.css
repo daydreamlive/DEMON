@@ -145,12 +145,6 @@ textarea {
   font-variant-numeric: tabular-nums;
 }
 
-.licence {
-  color: #8f938f;
-  font-size: 11px;
-  line-height: 1.4;
-}
-
 .analysis-error {
   color: #e0524d;
   font-size: 12px;
@@ -229,6 +223,13 @@ textarea {
   display: grid;
   gap: 10px;
   grid-template-columns: 1fr 1fr;
+}
+
+.analysis-row {
+  align-items: end;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
 }
 
 .mode-panel {

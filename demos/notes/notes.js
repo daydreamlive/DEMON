@@ -53,7 +53,6 @@ const els = {
   instruments: document.querySelector("#instruments"),
   levelPeak: document.querySelector("#level-peak"),
   levelRms: document.querySelector("#level-rms"),
-  licence: document.querySelector("#licence"),
   loop: document.querySelector("#loop"),
   loopEnd: document.querySelector("#loop-end"),
   loopRow: document.querySelector("#loop-row"),
@@ -64,6 +63,7 @@ const els = {
   prompt: document.querySelector("#prompt"),
   roll: document.querySelector("#roll"),
   saveMidi: document.querySelector("#save-midi"),
+  size: document.querySelector("#size"),
   statusDot: document.querySelector("#status-dot"),
   statusText: document.querySelector("#status-text"),
   take: document.querySelector("#take"),
@@ -84,6 +84,9 @@ const state = {
   detachStore: null,
   notesAvailable: false,
   analysis: null,
+  // Seconds the newest analysis_update trailed the playhead (microphone:
+  // the frontier), or null before the first one.
+  lagS: null,
   loopBand: null,
   // Microphone: the last acknowledged frontier (canvas seconds of the
   // current take), when it arrived, the take's canvas length and number.
@@ -137,7 +140,7 @@ function instrumentList() {
 }
 
 function tapOptions() {
-  const options = { horizon_s: horizonS() };
+  const options = { size: els.size.value, horizon_s: horizonS() };
   const instruments = instrumentList();
   if (instruments.length > 0) options.instruments = instruments;
   return options;
@@ -166,7 +169,12 @@ function renderControls() {
   els.loop.disabled = !ready || m === "mic";
   els.saveMidi.disabled = store.settledItems().length === 0;
   els.statusDot.className = `status-dot status-${state.status}`;
-  els.statusText.textContent = state.message || state.status;
+  let lag = "";
+  if (ready && state.lagS != null) {
+    const word = state.lagS >= 0 ? "lag" : "ahead";
+    lag = ` · ${word} ~${Math.abs(state.lagS).toFixed(1)} s`;
+  }
+  els.statusText.textContent = (state.message || state.status) + lag;
   renderTake();
 }
 
@@ -174,9 +182,6 @@ function renderAnalysisState() {
   const a = state.analysis;
   els.analysisMode.textContent = a && a.enabled ? a.mode : "off";
   els.dropped.textContent = a && a.dropped > 0 ? `dropped ${a.dropped}` : "";
-  const licence = a?.licence ? `${a.engine} ${a.size}: ${a.licence}` : "";
-  els.licence.textContent = licence;
-  els.licence.hidden = !licence;
   els.error.textContent = a?.error ?? "";
   els.error.hidden = !a?.error;
 }
@@ -461,6 +466,7 @@ async function stop() {
   state.remote = null;
   state.notesAvailable = false;
   state.analysis = null;
+  state.lagS = null;
   state.loopBand = null;
   els.notesOn.checked = false;
   els.loop.checked = false;
@@ -559,6 +565,20 @@ function wireEvents(remote) {
   remote.addEventListener("audio_in_ack", (event) => {
     state.frontierS = event.detail.frontier_s;
     state.frontierWall = performance.now();
+  });
+  remote.addEventListener("analysis_update", (event) => {
+    const u = event.detail;
+    if (u?.tap !== TAP || u.clear) return;
+    // How far behind the listener this range arrived: the microphone has
+    // no playback, so measure from the frontier to the range end.
+    if (mode() === "mic") {
+      state.lagS = micFrontier() - (u.range_start_s + u.span_s);
+    } else if (u.playhead_s != null) {
+      state.lagS = u.playhead_s - u.range_start_s;
+    } else {
+      return;
+    }
+    renderControls();
   });
   remote.addEventListener("command_failed", (event) => {
     if (event.detail?.command === "audio_in") {
@@ -686,6 +706,12 @@ els.horizon.addEventListener("input", () => {
   els.horizonValue.textContent = `${horizonS()} s`;
 });
 els.horizon.addEventListener("change", () => {
+  if (els.notesOn.checked) sendTap();
+});
+// A new enable replaces the running tap, so a size change takes effect
+// at once.
+els.size.addEventListener("change", () => {
+  state.lagS = null;
   if (els.notesOn.checked) sendTap();
 });
 els.instruments.addEventListener("change", () => {

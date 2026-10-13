@@ -37,7 +37,6 @@
             <span id="analysis-dropped" class="readout"></span>
             <span id="take" class="readout"></span>
           </div>
-          <div id="licence" class="licence" hidden></div>
           <div id="analysis-error" class="analysis-error" hidden></div>
         </div>
 
@@ -70,13 +69,23 @@
             </label>
           </div>
 
-          <label class="field-slot range-slot">
-            <span>
-              Horizon
-              <em id="horizon-value" class="range-value">8 s</em>
-            </span>
-            <input id="horizon" type="range" min="4" max="30" step="1" value="8" aria-label="Analysis horizon in seconds">
-          </label>
+          <div class="analysis-row">
+            <label class="field-slot">
+              <span>Model</span>
+              <select id="size" aria-label="Notes model size">
+                <option value="small" selected>Small</option>
+                <option value="medium">Medium</option>
+                <option value="large">Large</option>
+              </select>
+            </label>
+            <label class="field-slot range-slot">
+              <span>
+                Horizon
+                <em id="horizon-value" class="range-value">8 s</em>
+              </span>
+              <input id="horizon" type="range" min="4" max="30" step="1" value="8" aria-label="Analysis horizon in seconds">
+            </label>
+          </div>
 
           <div id="loop-row" class="loop-row">
             <label class="check-slot">
