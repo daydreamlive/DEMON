@@ -19,6 +19,7 @@ Env:
 from __future__ import annotations
 
 import importlib.util
+import math
 import os
 import time
 from typing import Any, Iterable, NamedTuple, Optional
@@ -33,7 +34,36 @@ from acestep.analysis.registry import AnalyzerOption, AnalyzerSpec, register
 #: to the audio it saw.
 UNCLOSED_NOTE_S = 0.25
 
+#: MuScriptor's chunk length; the runaway guards below are per chunk.
+_CHUNK_S = 5.0
+#: Most note events one 5 s window may yield before decoding is abandoned
+#: (a runaway window produced 1888). Set from the live run.
+NOTE_CAP_PER_WINDOW = 400
+#: Most wall time one 5 s window may take before decoding is abandoned
+#: (a runaway window took 20.7 s). Set from the live run.
+WALL_BUDGET_S = 6.0
+
 LICENCE = "MuScriptor weights are gated on Hugging Face (CC BY-NC 4.0)."
+
+
+class _Runaway(Exception):
+    """Raised inside the event stream when a guard trips."""
+
+
+def _guarded(events: Iterable[Any], note_cap: int, wall_budget_s: float, t0: float):
+    """Pass ``events`` through, raising :class:`_Runaway` as soon as more
+    than ``note_cap`` note starts have been yielded or ``wall_budget_s``
+    has elapsed since ``t0``. Checked between events, so the model's lazy
+    generator stops decoding at the next yield."""
+    starts = 0
+    for ev in events:
+        if type(ev).__name__ == "NoteStartEvent":
+            starts += 1
+            if starts > note_cap:
+                raise _Runaway(f"more than {note_cap} notes")
+        if time.perf_counter() - t0 > wall_budget_s:
+            raise _Runaway(f"over {wall_budget_s:.1f} s")
+        yield ev
 
 
 class PairedNote(NamedTuple):
@@ -118,8 +148,29 @@ class NotesEngine:
 
         t0 = time.perf_counter()
         wav = torch.from_numpy(np.ascontiguousarray(audio))[None, :]
+        # Guards scale with the number of 5 s chunks so the one-shot's
+        # whole clip gets the same per-chunk allowance as a live window.
+        chunks = max(1, math.ceil(duration_s / _CHUNK_S - 1e-9))
         events = self._model.transcribe((wav, int(request.sr)), instruments=instruments)
-        notes = pair_events(events, duration_s)
+        try:
+            notes = pair_events(
+                _guarded(events, NOTE_CAP_PER_WINDOW * chunks, WALL_BUDGET_S * chunks, t0),
+                duration_s,
+            )
+        except _Runaway as why:
+            close = getattr(events, "close", None)
+            if close is not None:
+                close()
+            wall_s = time.perf_counter() - t0
+            logger.warning(
+                "notes_window_discarded reason={} t0_s={:.2f} span_s={:.2f} wall_s={:.2f}",
+                why, request.t0_s, request.span_s, wall_s,
+            )
+            return AnalysisResult(
+                kind="note", range_start_s=request.t0_s, span_s=request.span_s, items=[],
+                source_epoch=request.source_epoch, revision=request.revision,
+                wall_s=wall_s, truncated=True,
+            )
         wall_s = time.perf_counter() - t0
 
         lo = request.context_lead_s
@@ -211,7 +262,7 @@ NOTES = register(AnalyzerSpec(
     context_s=0.5,
     min_sr=16000,
     placement="gpu",
-    resident_gb={"small": 0.3, "medium": 0.8, "large": 3.0},
+    resident_gb={"small": 0.6, "medium": 1.2, "large": 3.5},
     options=(
         AnalyzerOption(
             "size", "str", default=None, bounds=("small", "medium", "large"),

@@ -75,7 +75,9 @@ class AnalysisResult:
     """Items for ``[range_start_s, range_start_s + span_s)`` in canvas
     seconds, replacing whatever the tap previously held for that range.
     ``kind`` names the item kind of every entry in ``items``. ``wall_s``
-    is the engine's own wall time for telemetry."""
+    is the engine's own wall time for telemetry. ``truncated`` marks a
+    window the engine abandoned (runaway decode); ``items`` is then empty
+    and the range is still replaced, so nothing stale survives."""
 
     kind: str
     range_start_s: float
@@ -84,6 +86,7 @@ class AnalysisResult:
     source_epoch: int
     revision: int
     wall_s: float = 0.0
+    truncated: bool = False
 
 
 @runtime_checkable

@@ -129,7 +129,7 @@ def test_notes_spec_declaration():
     assert spec.size_env == "DEMON_ANALYSIS_NOTES_MODEL"
     assert (spec.window_s, spec.context_s, spec.min_sr) == (4.0, 0.5, 16000)
     assert spec.placement == "gpu"
-    assert dict(spec.resident_gb) == {"small": 0.3, "medium": 0.8, "large": 3.0}
+    assert dict(spec.resident_gb) == {"small": 0.6, "medium": 1.2, "large": 3.5}
     assert "CC BY-NC 4.0" in spec.licence
     assert [o.name for o in spec.options] == ["size", "instruments", "horizon_s"]
 

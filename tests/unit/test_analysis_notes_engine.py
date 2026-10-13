@@ -190,3 +190,70 @@ def test_module_is_torch_free_at_import():
 
     root = Path(__file__).resolve().parents[2]
     assert subprocess.run([sys.executable, "-c", code], cwd=root).returncode == 0
+
+
+class RunawayModel:
+    """A lazy stream of notes that never ends on its own; counts how many
+    events were actually generated."""
+
+    def __init__(self, sleep_s=0.0):
+        self.generated = 0
+        self.closed = False
+        self.sleep_s = sleep_s
+
+    def transcribe(self, audio, instruments=None):
+        import time
+
+        i = 0
+        try:
+            while True:
+                s = NoteStartEvent(60, 0.6 + (i % 300) * 0.01, i, "drums")
+                self.generated += 1
+                yield s
+                yield NoteEndEvent(s.start_time + 0.05, s)
+                i += 1
+                if self.sleep_s:
+                    time.sleep(self.sleep_s)
+        finally:
+            self.closed = True
+
+
+def _window_req(seconds=5.0):
+    sr = 16000
+    return AnalysisRequest(
+        audio=np.zeros(int(seconds * sr), np.float32), sr=sr, t0_s=8.0, span_s=4.0,
+        context_lead_s=0.5, context_tail_s=0.5, source_epoch=2, revision=7,
+    )
+
+
+def test_note_cap_stops_decoding_and_discards_window(monkeypatch):
+    monkeypatch.setattr(notes_engine, "NOTE_CAP_PER_WINDOW", 50)
+    model = RunawayModel()
+    eng = NotesEngine("small", model)
+    res = eng.analyze(_window_req())
+    assert res.truncated is True and list(res.items) == []
+    assert (res.range_start_s, res.span_s, res.source_epoch, res.revision) == (8.0, 4.0, 2, 7)
+    assert model.generated == 51  # stopped on the first start past the cap
+    assert model.closed
+
+
+def test_note_cap_scales_with_clip_length(monkeypatch):
+    monkeypatch.setattr(notes_engine, "NOTE_CAP_PER_WINDOW", 50)
+    model = RunawayModel()
+    NotesEngine("small", model).analyze(_window_req(seconds=12.0))  # 3 chunks
+    assert model.generated == 151
+
+
+def test_wall_budget_stops_decoding_and_discards_window(monkeypatch):
+    monkeypatch.setattr(notes_engine, "WALL_BUDGET_S", 0.05)
+    model = RunawayModel(sleep_s=0.01)
+    res = NotesEngine("small", model).analyze(_window_req())
+    assert res.truncated is True and list(res.items) == []
+    assert model.generated < notes_engine.NOTE_CAP_PER_WINDOW
+    assert model.closed
+
+
+def test_guards_quiet_on_normal_window():
+    events = [ev for i in range(10) for ev in _note(i, 60 + i, 1.0 + i * 0.1, 1.05 + i * 0.1)]
+    res = NotesEngine("small", FakeModel(events)).analyze(_window_req())
+    assert res.truncated is False and len(res.items) == 10
