@@ -804,7 +804,7 @@ def _create_live_input_session(cls, **kwargs):
 #: live_input's capture bounds (live_input_backend.MIN/MAX_CAPTURE_S),
 #: mirrored for the config field's description without importing numpy
 #: code at registry import; the family's unit test pins them together.
-LIVE_INPUT_CAPTURE_DEFAULT_S = 600.0
+LIVE_INPUT_CAPTURE_DEFAULT_S = 240.0
 LIVE_INPUT_CAPTURE_MIN_S = 30.0
 LIVE_INPUT_CAPTURE_MAX_S = 1800.0
 

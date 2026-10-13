@@ -14,10 +14,18 @@ Two shapes, decided by the handshake:
 * **from nothing** (``text_only``, or an upload with no samples, which
   is what a client SDK that always sends a PCM frame sends): a silent
   mono canvas of
-  ``live_input_capture_s`` seconds (default 600, clamped to 30..1800)
+  ``live_input_capture_s`` seconds (default 240, clamped to 30..1800)
   that ``audio_in`` frames fill. The silent anchor the adapter synthesises
   for a text-only create is ignored; the capture length is this family's
   own config field.
+
+The capture canvas is allocated whole at connect, so its length is paid
+up front. Per minute of capture (mono, 48 kHz): 11.5 MB of float32 canvas
+on the server, a 5.8 MB float16 source buffer sent to the client in the
+connect-time ``ready`` (and again in the ``swap_ready`` of every new
+take), and 11.5 MB of float32 once the browser decodes it. The 240 s
+default is 46 MB server-side and 23 MB on the wire per take; the 1800 s
+ceiling is 346 MB and 173 MB.
 """
 
 from __future__ import annotations

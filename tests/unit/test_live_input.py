@@ -177,8 +177,8 @@ def test_capture_bounds_match_the_backend():
     assert LIVE_INPUT_CAPTURE_DEFAULT_S == lib.DEFAULT_CAPTURE_S
     assert LIVE_INPUT_CAPTURE_MIN_S == lib.MIN_CAPTURE_S
     assert LIVE_INPUT_CAPTURE_MAX_S == lib.MAX_CAPTURE_S
-    assert lib.clamp_capture_s(None) == 600.0
-    assert lib.clamp_capture_s("junk") == 600.0
+    assert lib.clamp_capture_s(None) == 240.0
+    assert lib.clamp_capture_s("junk") == 240.0
     assert lib.clamp_capture_s(5) == 30.0
     assert lib.clamp_capture_s(99999) == 1800.0
     assert lib.clamp_capture_s(120) == 120.0
@@ -239,10 +239,10 @@ def test_an_empty_upload_is_a_capture_too():
         ss.close()
 
 
-def test_create_from_nothing_defaults_to_600s():
+def test_create_from_nothing_defaults_to_240s():
     ss, _bus = _create(capture_s=None)
     try:
-        assert ss.audio_eng.current.shape[0] == 600 * SR
+        assert ss.audio_eng.current.shape[0] == 240 * SR
     finally:
         ss.close()
 

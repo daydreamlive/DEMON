@@ -492,7 +492,7 @@ async function sessionSource() {
   const m = mode();
   if (m === "mic") {
     // An empty upload asks a live_input session for a silent capture
-    // canvas (the family's live_input_capture_s, default 600 s).
+    // canvas (the family's live_input_capture_s, default 240 s).
     return {
       interleaved: new Float32Array(0),
       channels: 1,

@@ -62,7 +62,7 @@ SAMPLE_RATE = 48000
 
 #: Capture canvas length when the client does not choose one, and its
 #: bounds (the ``live_input_capture_s`` family config field).
-DEFAULT_CAPTURE_S = 600.0
+DEFAULT_CAPTURE_S = 240.0
 MIN_CAPTURE_S = 30.0
 MAX_CAPTURE_S = 1800.0
 

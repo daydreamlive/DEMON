@@ -630,7 +630,7 @@ namespace config {
   inline constexpr const char* kYue2Lyrics = "yue2_lyrics";
   /** Longest song yue2 may compose, seconds (2 to 100, clamped). The model decides the actual length within it. Absent or null allows 100 s. Fixed for the session lifetime. */
   inline constexpr const char* kYue2DurationS = "yue2_duration_s";
-  /** Capture canvas length for live_input sessions created without a source, seconds: audio_in frames fill it, and when it is full a new take starts (swap_ready, new source_epoch). Clamped to 30..1800; absent or null = 600. Ignored for a session created from an uploaded clip (the clip is the canvas). */
+  /** Capture canvas length for live_input sessions created without a source, seconds: audio_in frames fill it, and when it is full a new take starts (swap_ready, new source_epoch). Clamped to 30..1800; absent or null = 240. Ignored for a session created from an uploaded clip (the clip is the canvas). */
   inline constexpr const char* kLiveInputCaptureS = "live_input_capture_s";
 }  // namespace config
 
