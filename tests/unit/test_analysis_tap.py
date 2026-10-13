@@ -16,7 +16,7 @@ from acestep.analysis.engine import AnalysisResult, EngineBusy, EngineUnavailabl
 from acestep.analysis.registry import AnalyzerOption, AnalyzerSpec, register
 from acestep.analysis.tap import AnalysisTap
 from acestep.streaming.audio_engine import AudioEngine
-from acestep.streaming.events import AnalysisState, AnalysisUpdate
+from acestep.streaming.events import AnalysisClear, AnalysisState, AnalysisUpdate
 
 SR = 48000
 
@@ -141,7 +141,7 @@ def _report_playhead(eng, clock, seconds):
 def test_enable_publishes_state_then_clear():
     tap, eng, bus, sub, clock = _make_tap()
     assert tap.start()
-    assert [type(e) for e in bus.events] == [AnalysisState, AnalysisUpdate]
+    assert [type(e) for e in bus.events] == [AnalysisState, AnalysisClear]
     state, clear = bus.events
     assert state.enabled and state.engine == "stubengine" and state.size == "small"
     assert state.licence == "stub licence" and state.mode == "no_playhead"

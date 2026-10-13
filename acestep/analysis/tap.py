@@ -58,7 +58,7 @@ from acestep.analysis.scheduler import (
     is_late,
     next_cell,
 )
-from acestep.streaming.events import AnalysisState, AnalysisUpdate
+from acestep.streaming.events import AnalysisClear, AnalysisState, AnalysisUpdate
 
 #: Worker loop period (seconds).
 TAP_INTERVAL_S = 0.1
@@ -247,7 +247,7 @@ class AnalysisTap:
         ))
 
     def _publish_clear(self, epoch: int) -> None:
-        self.bus.publish(AnalysisUpdate(
+        self.bus.publish(AnalysisClear(
             tap=self.name, seq=self._next_seq(), source_epoch=epoch,
             range_start_s=0.0, span_s=0.0, basis=BASIS_PROVISIONAL,
             late=False, clear=True, kind=self.spec.item_kind, items=(),

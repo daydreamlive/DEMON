@@ -78,6 +78,7 @@ __all__ = [
     "SubscriberDropped",
     "AnalysisState",
     "AnalysisUpdate",
+    "AnalysisClear",
 ]
 
 
@@ -446,6 +447,19 @@ class AnalysisUpdate:
     items: tuple = ()
     playhead_s: float | None = None   # None when the session has no playhead
     wall_s: float = 0.0
+
+
+@dataclass(frozen=True)
+class AnalysisClear(AnalysisUpdate):
+    """The ``clear`` :class:`AnalysisUpdate` a tap publishes when it opens
+    and on every source swap (wire ``analysis_update`` with ``clear``).
+
+    Its own type only so the bus never drops it: ``AnalysisUpdate`` is
+    ``DROP_OLDEST``, and a client that missed the clear under backpressure
+    would keep the previous source's items. Not in the default policy map,
+    so it resolves to ``NEVER_DROP``. Subscribers that dispatch on
+    ``isinstance(event, AnalysisUpdate)`` serialize it unchanged.
+    """
 
 
 # ---------------------------------------------------------------------------

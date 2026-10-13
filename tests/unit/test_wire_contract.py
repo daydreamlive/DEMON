@@ -720,3 +720,48 @@ def test_analysis_taps_capability_is_declared():
     assert Capabilities().analysis_taps == ()
     src = (_DEMO / "ws_adapter.py").read_text(encoding="utf-8")
     assert "_capabilities_with_analysis(" in src
+
+
+def test_analysis_clear_serializes_as_analysis_update():
+    # The ws_adapter's on_event serializes AnalysisClear through its
+    # isinstance(event, AnalysisUpdate) branch: no earlier branch claims
+    # it, and the emitted frame is analysis_update with clear true.
+    # Source-parsed and evaluated in isolation (no torch-heavy import).
+    from acestep.streaming import events as ev_mod
+    from acestep.streaming.events import AnalysisClear
+
+    src = (_DEMO / "ws_adapter.py").read_text(encoding="utf-8")
+    on_event = next(
+        n for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.FunctionDef) and n.name == "on_event"
+    )
+    branch = next(n for n in on_event.body if isinstance(n, ast.If))
+    event = AnalysisClear(
+        tap="notes", seq=4, source_epoch=2, range_start_s=0.0, span_s=0.0,
+        basis="provisional", late=False, clear=True, kind="note",
+        items=(), playhead_s=None, wall_s=0.0,
+    )
+
+    def claims(test) -> bool:
+        if not (isinstance(test, ast.Call) and getattr(test.func, "id", None) == "isinstance"):
+            return False
+        arg = test.args[1]
+        names = [e.id for e in arg.elts] if isinstance(arg, ast.Tuple) else [arg.id]
+        classes = [getattr(ev_mod, n, None) for n in names]
+        return any(isinstance(c, type) and isinstance(event, c) for c in classes)
+
+    while not claims(branch.test):
+        assert branch.orelse and isinstance(branch.orelse[0], ast.If), "no branch serializes AnalysisClear"
+        branch = branch.orelse[0]
+    assert ast.unparse(branch.test) == "isinstance(event, AnalysisUpdate)"
+    payload = next(
+        n.args[0] for n in ast.walk(ast.Module(body=branch.body, type_ignores=[]))
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_send_json"
+    )
+    frame = eval(  # noqa: S307 - a dict literal from our own source
+        compile(ast.Expression(payload), "<on_event>", "eval"),
+        {"event": event, "_analysis_item_wire": dict, "round": round},
+    )
+    assert frame["type"] == "analysis_update"
+    assert frame["clear"] is True and frame["items"] == []
+    assert (frame["tap"], frame["seq"], frame["source_epoch"]) == ("notes", 4, 2)
