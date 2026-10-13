@@ -743,21 +743,24 @@ def test_whole_window_hop_keeps_legit_repeating_hats():
     assert not r.truncated and len(r.new_notes) == 6
 
 
-def test_chord_in_a_short_hop_is_a_burst_not_a_runaway():
-    """150 ms of new audio allows 3.75 onsets by rate alone; a six-note
-    chord plus drums must commit on that hop, not be deferred."""
+def test_burst_at_the_frontier_waits_for_more_audio_then_commits():
+    """150 ms of new audio allows 4 onsets; a nine-onset chord there is
+    deferred (nothing lost, commit point held before it) and commits once
+    a later hop has heard enough audio past it."""
+    chord = _t(("shift", 90), ("drum", 36), ("drum", 38), ("drum", 42), ("program", 0),
+               ("velocity", 1), ("pitch", 60), ("pitch", 64), ("pitch", 67), ("pitch", 72),
+               ("pitch", 76), ("pitch", 79))
+
     def script(prompt):
-        if not prompt:
-            return _t(("tie", 0), ("shift", 50), ("drum", 36))
-        return _t(("shift", 90), ("drum", 36), ("drum", 38), ("drum", 42), ("program", 0),
-                  ("velocity", 1), ("pitch", 60), ("pitch", 64), ("pitch", 67), ("pitch", 72),
-                  ("pitch", 76), ("pitch", 79))
+        return _t(("tie", 0), ("shift", 50), ("drum", 36)) if not prompt else chord
 
     dec = StreamingNotesDecoder(ScriptLM(script))
     dec.step(np.zeros(SR, np.float32), SR, 0.0, 1.0)
     r = dec.step(np.zeros(int(1.15 * SR), np.float32), SR, 0.0, 1.15)
-    assert not r.truncated
-    assert len(r.new_notes) == 9 and dec._commit_tick == 100
+    assert r.truncated and r.reason == "loop" and r.new_notes == ()
+    assert dec._commit_tick == 90
+    r = dec.step(np.zeros(int(1.45 * SR), np.float32), SR, 0.0, 1.45)  # 0.4 s new: 10 allowed
+    assert not r.truncated and len(r.new_notes) == 9 and dec._commit_tick == 130
 
 
 def test_loop_detect_can_be_disabled():

@@ -89,11 +89,13 @@ LOOP_SPACING_TOL = 2
 #: Loop detector: more onsets than this per second of new audio in a hop's
 #: tail is a runaway (a dense 5 s lofi window is ~24/s). Set from the live run.
 LOOP_ONSETS_PER_S = 25.0
-#: The rate rule never allows fewer onsets than this in one hop's tail: a
-#: chord or a dense fill arriving in a 150 ms hop is a burst, not a runaway
-#: (a runaway emits hundreds), and a dense passage must not stall the
-#: commit point hop after hop.
-LOOP_MIN_ONSETS = 24
+#: The rate rule's floor is :data:`LOOP_REPEATS`, deliberately low: on a
+#: short hop it also defers a burst of onsets at the frontier (a chord, a
+#: fill, or the model guessing with little audio after the onset) until a
+#: later hop has heard more. Measured on the small model: a floor of 24
+#: committed those bursts at once and cut stream-vs-batch F1 from 0.41 to
+#: 0.27 (techno) and 0.30 to 0.25 (lofi), because a wrong commit feeds the
+#: next hop's forced prefix. A deferred burst is not lost, it waits.
 #: Two onsets of one (program, pitch) this close (ticks, 30 ms) are one
 #: note restated across the commit boundary, never a real retrigger.
 DEDUPE_TICKS = 3
@@ -546,13 +548,13 @@ class _LoopDetector:
     count. Trips when one key repeats :data:`LOOP_REPEATS` times at
     near-equal spacing (only with ``repeats``: a whole-window hop holds
     legitimately repeating hats and bass lines) or when the onsets exceed
-    :data:`LOOP_ONSETS_PER_S` per second of ``new_audio_s`` (never fewer
-    than :data:`LOOP_MIN_ONSETS`). ``feed``
+    :data:`LOOP_ONSETS_PER_S` per second of ``new_audio_s`` (floor
+    :data:`LOOP_REPEATS`, see there). ``feed``
     returns the window tick where the loop started, or ``None``."""
 
     def __init__(self, c_old_rel: int, new_audio_s: float, repeats: bool = True):
         self.c_old_rel = c_old_rel
-        self.limit = max(LOOP_MIN_ONSETS, LOOP_ONSETS_PER_S * max(new_audio_s, 0.0))
+        self.limit = max(LOOP_REPEATS, LOOP_ONSETS_PER_S * max(new_audio_s, 0.0))
         self.repeats = repeats
         self.onsets: list[int] = []
         self.by_key: dict[tuple[int, int], list[int]] = {}
