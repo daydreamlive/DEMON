@@ -10,6 +10,7 @@ var COMMAND_NAMES = [
   "set_depth",
   "enable_lora",
   "disable_lora",
+  "add_lora",
   "manual_slot_add",
   "manual_slot_pop",
   "set_timbre_strength",
@@ -20,7 +21,9 @@ var COMMAND_NAMES = [
   "set_structure_fixture",
   "clear_structure_source",
   "swap_source",
-  "write_audio"
+  "write_audio",
+  "midi_transcribe",
+  "bounce"
 ];
 var EVENT_NAMES = [
   "init_ack",
@@ -45,7 +48,11 @@ var EVENT_NAMES = [
   "structure_failed",
   "audio_written",
   "audio_write_failed",
-  "command_failed"
+  "command_failed",
+  "midi_notes",
+  "midi_failed",
+  "bounce_ready",
+  "bounce_failed"
 ];
 
 // types/protocol.ts
@@ -1250,6 +1257,20 @@ function decompress(dat, buf) {
   return cct(bufs, ol);
 }
 
+// analysis/types.ts
+var ANALYSIS_TAP_COMMAND = "analysis_tap";
+var ANALYSIS_EVENT_TYPES = ["analysis_state", "analysis_update"];
+function isAnalysisEvent(msg) {
+  if (typeof msg !== "object" || msg === null) return false;
+  const t = msg.type;
+  return t === "analysis_state" || t === "analysis_update";
+}
+function analysisTapsAvailable(capabilities) {
+  const raw = capabilities?.analysis_taps;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((name) => typeof name === "string");
+}
+
 // protocol.ts
 var PARAMS_BACKPRESSURE_BYTES = 8 * 1024;
 var _fBuf = new ArrayBuffer(4);
@@ -1353,6 +1374,10 @@ var RemoteBackend = class extends EventTarget {
   /** Backend capability mask from `ready.capabilities`. Null = older
    *  server / replay: treat as ungated (everything available). */
   capabilities = null;
+  /** Analyzer names this pod can run (`ready.capabilities.analysis_taps`);
+   *  empty until ready and on pods without any. Gate `sendAnalysisTap`
+   *  and analysis UI on it. */
+  analysisTaps = [];
   /** Per-session knob manifest from `ready.knob_manifest` — the same
    *  `{version, knobs}` envelope `GET /api/knobs` serves, but resolved
    *  for THIS session (SDE mode, enabled `lora_str_<id>` knobs). Null
@@ -1560,6 +1585,9 @@ var RemoteBackend = class extends EventTarget {
             this.maxPipelineDepth = typeof msg.max_pipeline_depth === "number" ? msg.max_pipeline_depth : null;
             this.geometry = msg.geometry ?? null;
             this.capabilities = msg.capabilities ?? null;
+            this.analysisTaps = analysisTapsAvailable(
+              msg.capabilities
+            );
             this.knobManifest = msg.knob_manifest ?? null;
             this.manualSlotCount = typeof msg.manual_slot_count === "number" ? msg.manual_slot_count : null;
             this.manualSlotCap = typeof msg.manual_slot_cap === "number" ? msg.manual_slot_cap : null;
@@ -1627,6 +1655,11 @@ var RemoteBackend = class extends EventTarget {
           try {
             msg = JSON.parse(ev.data);
           } catch {
+            return;
+          }
+          const frame = msg;
+          if (isAnalysisEvent(frame)) {
+            this.dispatchEvent(new CustomEvent(frame.type, { detail: frame }));
             return;
           }
           switch (msg.type) {
@@ -2043,6 +2076,30 @@ var RemoteBackend = class extends EventTarget {
     }
   }
   /**
+   * Enable or disable a live analysis tap (`analysis_tap`). `tap` is an
+   * analyzer name from `analysisTaps`; `options` are per analyzer (for
+   * `notes`: size, instruments, horizon_s) and validated server-side.
+   * The server answers with `analysis_state` (carrying `error` when the
+   * enable was refused, never `command_failed`) and, on enable, a
+   * `clear` `analysis_update` followed by range updates. Re-sending with
+   * `enabled: true` and new options replaces the running tap.
+   */
+  sendAnalysisTap(tap, enabled, options) {
+    if (this.ws?.readyState !== this._wsOpen) return;
+    try {
+      const msg = {
+        type: ANALYSIS_TAP_COMMAND,
+        tap,
+        enabled
+      };
+      if (options !== void 0) {
+        msg.options = options;
+      }
+      this.ws.send(JSON.stringify(msg));
+    } catch {
+    }
+  }
+  /**
    * Send a typed JSON header followed by a binary audio frame
    * (packPcmFrame). Used by the timbre/structure source uploads and
    * swap_source; the caller builds the typed command so the header is
@@ -2307,6 +2364,323 @@ var RemoteBackend = class extends EventTarget {
     this.dispatchEvent(new CustomEvent("close", { detail: ev }));
   }
 };
+
+// analysis/store.ts
+function rangeKey(startS) {
+  return startS.toFixed(4);
+}
+function compareItems(a, b) {
+  return a.start_s - b.start_s || (a.pitch ?? 0) - (b.pitch ?? 0);
+}
+var AnalysisStore = class {
+  tap;
+  _items = [];
+  _epoch = null;
+  _rangeSeq = /* @__PURE__ */ new Map();
+  _listeners = /* @__PURE__ */ new Set();
+  constructor(tap) {
+    this.tap = tap;
+  }
+  /** Epoch of the last applied clear, or null before the first one. */
+  get epoch() {
+    return this._epoch;
+  }
+  get size() {
+    return this._items.length;
+  }
+  /**
+   * Apply one update. Returns true when the item set changed shape (the
+   * update was accepted), false when it was ignored (other tap, stale
+   * epoch, stale seq).
+   */
+  apply(update) {
+    if (update.tap !== this.tap) return false;
+    const epoch = update.source_epoch;
+    if (this._epoch !== null && epoch < this._epoch) return false;
+    if (update.clear) {
+      this._items = [];
+      this._rangeSeq.clear();
+      this._epoch = epoch;
+    } else {
+      const key = rangeKey(update.range_start_s);
+      const last = this._rangeSeq.get(key);
+      if (last !== void 0 && update.seq <= last) return false;
+    }
+    const t0 = update.range_start_s;
+    const t1 = t0 + update.span_s;
+    const incoming = update.items.map(
+      (item) => ({ ...item, basis: update.basis, late: update.late })
+    );
+    const kept = this._items.filter(
+      (item) => item.start_s < t0 || item.start_s >= t1
+    );
+    this._items = kept.concat(incoming).sort(compareItems);
+    this._rangeSeq.set(rangeKey(t0), update.seq);
+    this._emit();
+    return true;
+  }
+  /** Drop everything and forget the epoch and per-range seqs (on disable,
+   *  session stop or reconnect; the next enable sends a fresh clear). */
+  reset() {
+    this._items = [];
+    this._rangeSeq.clear();
+    this._epoch = null;
+    this._emit();
+  }
+  /** Every item, sorted by start time then pitch. Do not mutate. */
+  items() {
+    return this._items;
+  }
+  /** Items whose basis is `settled`, sorted. */
+  settledItems() {
+    return this._items.filter((item) => item.basis === "settled");
+  }
+  /**
+   * Items sounding anywhere in the window [t0, t1) of play time.
+   *
+   * Without `wrap` the window is taken literally in canvas seconds. With
+   * `wrap` (the loop band, or `{start_s: 0, end_s: duration}` for a
+   * looping canvas) the window is unrolled over the band's period: the
+   * parts of [t0, t1) beyond either band edge read the band's other end,
+   * and each returned item carries the `shift_s` that places it in the
+   * window. Items are ordered by window position.
+   */
+  itemsIn(t0, t1, wrap) {
+    if (!(t1 > t0)) return [];
+    const overlap = (a, b, shift) => {
+      const out2 = [];
+      for (const item of this._items) {
+        if (item.start_s >= b) break;
+        if (item.end_s > a || item.start_s >= a) {
+          out2.push({ item, shift_s: shift });
+        }
+      }
+      return out2;
+    };
+    if (!wrap || !(wrap.end_s > wrap.start_s)) return overlap(t0, t1, 0);
+    const period = wrap.end_s - wrap.start_s;
+    const out = [];
+    const kFirst = Math.floor((t0 - wrap.start_s) / period);
+    const kLast = Math.ceil((t1 - wrap.start_s) / period) - 1;
+    for (let k = kFirst; k <= kLast; k++) {
+      const shift = k * period;
+      const a = Math.max(t0, wrap.start_s + shift) - shift;
+      const b = Math.min(t1, wrap.end_s + shift) - shift;
+      if (b > a) out.push(...overlap(a, b, shift));
+    }
+    return out;
+  }
+  /** Call `listener` after every accepted update or reset. Returns the
+   *  unsubscribe function. */
+  subscribe(listener) {
+    this._listeners.add(listener);
+    return () => {
+      this._listeners.delete(listener);
+    };
+  }
+  /**
+   * Feed this store from a RemoteBackend (or any EventTarget dispatching
+   * `analysis_update` CustomEvents). Returns the detach function.
+   */
+  attach(target) {
+    const onUpdate = (event) => {
+      const detail = event.detail;
+      if (detail) this.apply(detail);
+    };
+    target.addEventListener("analysis_update", onUpdate);
+    return () => target.removeEventListener("analysis_update", onUpdate);
+  }
+  _emit() {
+    for (const listener of this._listeners) {
+      try {
+        listener();
+      } catch (err2) {
+        console.error("[analysis] store listener failed", err2);
+      }
+    }
+  }
+};
+
+// analysis/playhead.ts
+function playheadForNotes(positionSec, outputLatencySec, loopBand, durationSec) {
+  const latency = Number.isFinite(outputLatencySec) && outputLatencySec > 0 ? outputLatencySec : 0;
+  const t = positionSec - latency;
+  if (loopBand && loopBand.end_s > loopBand.start_s && positionSec >= loopBand.start_s && positionSec < loopBand.end_s) {
+    const period = loopBand.end_s - loopBand.start_s;
+    return loopBand.start_s + mod(t - loopBand.start_s, period);
+  }
+  if (durationSec !== void 0 && durationSec > 0) return mod(t, durationSec);
+  return Math.max(0, t);
+}
+function mod(x, m) {
+  return (x % m + m) % m;
+}
+
+// analysis/smf.ts
+var DRUM_INSTRUMENT = "drums";
+var DRUM_CHANNEL = 9;
+var GM_PROGRAM = {
+  acoustic_piano: 0,
+  electric_piano: 2,
+  chromatic_percussion: 8,
+  organ: 16,
+  acoustic_guitar: 24,
+  clean_electric_guitar: 26,
+  distorted_electric_guitar: 29,
+  acoustic_bass: 32,
+  electric_bass: 33,
+  violin: 40,
+  viola: 41,
+  cello: 42,
+  contrabass: 43,
+  orchestral_harp: 46,
+  timpani: 47,
+  string_ensemble: 48,
+  synth_strings: 50,
+  voice: 52,
+  orchestra_hit: 55,
+  trumpet: 56,
+  trombone: 57,
+  tuba: 58,
+  french_horn: 60,
+  brass_section: 61,
+  soprano_and_alto_sax: 64,
+  tenor_sax: 66,
+  baritone_sax: 67,
+  oboe: 68,
+  english_horn: 69,
+  bassoon: 70,
+  clarinet: 71,
+  flutes: 72,
+  synth_lead: 80,
+  synth_pad: 88
+};
+function gmProgramFor(instrument) {
+  if (instrument in GM_PROGRAM) return GM_PROGRAM[instrument];
+  const m = /^program_(\d+)$/.exec(instrument);
+  if (m) {
+    const n = Number(m[1]);
+    if (n >= 0 && n < 128) return n;
+  }
+  return null;
+}
+function vlq(value) {
+  let v = Math.max(0, Math.floor(value));
+  const bytes = [v & 127];
+  v >>>= 7;
+  while (v > 0) {
+    bytes.unshift(v & 127 | 128);
+    v >>>= 7;
+  }
+  return bytes;
+}
+function textMeta(kind, text) {
+  const data = Array.from(new TextEncoder().encode(text));
+  return [255, kind, ...vlq(data.length), ...data];
+}
+function appendChunk(out, tag, body) {
+  const n = body.length;
+  for (let i = 0; i < 4; i++) out.push(tag.charCodeAt(i));
+  out.push(n >>> 24 & 255, n >>> 16 & 255, n >>> 8 & 255, n & 255);
+  for (const b of body) out.push(b);
+}
+function trackBody(header, events) {
+  events.sort((a, b) => a.tick - b.tick || a.rank - b.rank);
+  const body = [...header];
+  let last = 0;
+  for (const ev of events) {
+    body.push(...vlq(ev.tick - last), ...ev.bytes);
+    last = ev.tick;
+  }
+  body.push(0, 255, 47, 0);
+  return body;
+}
+function notesToSmf(notes, options = {}) {
+  const bpm = options.bpm && options.bpm > 0 ? options.bpm : 120;
+  const ppq = Math.max(24, Math.round(options.ppq ?? 480));
+  const velocity = Math.min(127, Math.max(1, Math.round(options.velocity ?? 100)));
+  const origin = options.originS ?? 0;
+  const ticksPerSec = bpm / 60 * ppq;
+  const toTick = (s) => Math.round((s - origin) * ticksPerSec);
+  const byInstrument = /* @__PURE__ */ new Map();
+  for (const note of notes) {
+    if (note.start_s < origin || note.pitch < 0 || note.pitch > 127) continue;
+    const list = byInstrument.get(note.instrument) ?? [];
+    list.push(note);
+    byInstrument.set(note.instrument, list);
+  }
+  const instruments = [...byInstrument.keys()].sort();
+  const usPerQuarter = Math.round(6e7 / bpm);
+  const conductor = trackBody(
+    [
+      0,
+      ...textMeta(3, "tempo"),
+      0,
+      255,
+      81,
+      3,
+      usPerQuarter >>> 16 & 255,
+      usPerQuarter >>> 8 & 255,
+      usPerQuarter & 255,
+      0,
+      255,
+      88,
+      4,
+      4,
+      2,
+      24,
+      8
+    ],
+    []
+  );
+  const tracks = [conductor];
+  let melodic = 0;
+  for (const instrument of instruments) {
+    let channel;
+    if (instrument === DRUM_INSTRUMENT) {
+      channel = DRUM_CHANNEL;
+    } else {
+      channel = melodic % 15;
+      if (channel >= DRUM_CHANNEL) channel += 1;
+      melodic += 1;
+    }
+    const header = [0, ...textMeta(3, instrument)];
+    const program = gmProgramFor(instrument);
+    if (program !== null && channel !== DRUM_CHANNEL) {
+      header.push(0, 192 | channel, program);
+    }
+    const sorted = [...byInstrument.get(instrument) ?? []].sort(
+      (a, b) => a.start_s - b.start_s || a.pitch - b.pitch
+    );
+    const nextOnset = /* @__PURE__ */ new Map();
+    const events = [];
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      const note = sorted[i];
+      const on = toTick(note.start_s);
+      let off = Math.max(on + 1, toTick(note.end_s));
+      const next = nextOnset.get(note.pitch);
+      if (next === on) continue;
+      if (next !== void 0 && next < off) off = Math.max(on + 1, next);
+      nextOnset.set(note.pitch, on);
+      events.push(
+        { tick: on, rank: 1, bytes: [144 | channel, note.pitch, velocity] },
+        { tick: off, rank: 0, bytes: [128 | channel, note.pitch, 0] }
+      );
+    }
+    tracks.push(trackBody(header, events));
+  }
+  const out = [];
+  appendChunk(out, "MThd", [
+    0,
+    1,
+    tracks.length >>> 8 & 255,
+    tracks.length & 255,
+    ppq >>> 8 & 255,
+    ppq & 255
+  ]);
+  for (const body of tracks) appendChunk(out, "MTrk", body);
+  return Uint8Array.from(out);
+}
 
 // audio/lufs.ts
 var PRE_B = [1.53512485958697, -2.69169618940638, 1.19839281085285];
@@ -3356,6 +3730,9 @@ async function fetchKnobManifest(sde = false, toUrl = (p) => p) {
   return { version: json.version, knobs: json.knobs ?? {} };
 }
 export {
+  ANALYSIS_EVENT_TYPES,
+  ANALYSIS_TAP_COMMAND,
+  AnalysisStore,
   AudioPlayer,
   COMMAND_NAMES,
   CONTROL_DESCRIPTIONS,
@@ -3365,6 +3742,7 @@ export {
   DCW_WAVELETS,
   DEFAULT_CONFIG,
   DEFAULT_TIME_SIGNATURE,
+  DRUM_INSTRUMENT,
   EVENT_NAMES,
   INTERP_PATH_DESCRIPTIONS,
   KNOB_SCHEMA_VERSION,
@@ -3395,6 +3773,7 @@ export {
   TIMBRE_REF_DESCRIPTION,
   VALID_TIME_SIGNATURES,
   WsReconnector,
+  analysisTapsAvailable,
   applyConfigToState,
   arrayBufferToBase64,
   base64ToArrayBuffer,
@@ -3408,6 +3787,8 @@ export {
   findLoudestShortTermLoudness,
   float16ArrayToFloat32,
   getUnknownKeys,
+  gmProgramFor,
+  isAnalysisEvent,
   isDcwMode,
   isDcwWavelet,
   isLoopGridRes,
@@ -3422,6 +3803,8 @@ export {
   measureLoudness,
   mergeConfig,
   normalizeConfigShape,
+  notesToSmf,
+  playheadForNotes,
   resolveControlDescription,
   resolveLoraCapForSource,
   rtmgConfigToSessionConfig,

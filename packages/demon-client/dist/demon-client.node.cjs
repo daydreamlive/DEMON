@@ -709,6 +709,19 @@ var SLICE_FLAG_RAW = 0;
 var SLICE_FLAG_DELTA = 1;
 var PREEMPTED_CLOSE_CODE = 4001;
 
+// analysis/types.ts
+var ANALYSIS_TAP_COMMAND = "analysis_tap";
+function isAnalysisEvent(msg) {
+  if (typeof msg !== "object" || msg === null) return false;
+  const t = msg.type;
+  return t === "analysis_state" || t === "analysis_update";
+}
+function analysisTapsAvailable(capabilities) {
+  const raw = capabilities?.analysis_taps;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((name) => typeof name === "string");
+}
+
 // protocol.ts
 var import_meta = {};
 var PARAMS_BACKPRESSURE_BYTES = 8 * 1024;
@@ -813,6 +826,10 @@ var RemoteBackend = class extends EventTarget {
   /** Backend capability mask from `ready.capabilities`. Null = older
    *  server / replay: treat as ungated (everything available). */
   capabilities = null;
+  /** Analyzer names this pod can run (`ready.capabilities.analysis_taps`);
+   *  empty until ready and on pods without any. Gate `sendAnalysisTap`
+   *  and analysis UI on it. */
+  analysisTaps = [];
   /** Per-session knob manifest from `ready.knob_manifest` — the same
    *  `{version, knobs}` envelope `GET /api/knobs` serves, but resolved
    *  for THIS session (SDE mode, enabled `lora_str_<id>` knobs). Null
@@ -1020,6 +1037,9 @@ var RemoteBackend = class extends EventTarget {
             this.maxPipelineDepth = typeof msg.max_pipeline_depth === "number" ? msg.max_pipeline_depth : null;
             this.geometry = msg.geometry ?? null;
             this.capabilities = msg.capabilities ?? null;
+            this.analysisTaps = analysisTapsAvailable(
+              msg.capabilities
+            );
             this.knobManifest = msg.knob_manifest ?? null;
             this.manualSlotCount = typeof msg.manual_slot_count === "number" ? msg.manual_slot_count : null;
             this.manualSlotCap = typeof msg.manual_slot_cap === "number" ? msg.manual_slot_cap : null;
@@ -1087,6 +1107,11 @@ var RemoteBackend = class extends EventTarget {
           try {
             msg = JSON.parse(ev.data);
           } catch {
+            return;
+          }
+          const frame = msg;
+          if (isAnalysisEvent(frame)) {
+            this.dispatchEvent(new CustomEvent(frame.type, { detail: frame }));
             return;
           }
           switch (msg.type) {
@@ -1503,6 +1528,30 @@ var RemoteBackend = class extends EventTarget {
     }
   }
   /**
+   * Enable or disable a live analysis tap (`analysis_tap`). `tap` is an
+   * analyzer name from `analysisTaps`; `options` are per analyzer (for
+   * `notes`: size, instruments, horizon_s) and validated server-side.
+   * The server answers with `analysis_state` (carrying `error` when the
+   * enable was refused, never `command_failed`) and, on enable, a
+   * `clear` `analysis_update` followed by range updates. Re-sending with
+   * `enabled: true` and new options replaces the running tap.
+   */
+  sendAnalysisTap(tap, enabled, options) {
+    if (this.ws?.readyState !== this._wsOpen) return;
+    try {
+      const msg = {
+        type: ANALYSIS_TAP_COMMAND,
+        tap,
+        enabled
+      };
+      if (options !== void 0) {
+        msg.options = options;
+      }
+      this.ws.send(JSON.stringify(msg));
+    } catch {
+    }
+  }
+  /**
    * Send a typed JSON header followed by a binary audio frame
    * (packPcmFrame). Used by the timbre/structure source uploads and
    * swap_source; the caller builds the typed command so the header is
@@ -1780,6 +1829,7 @@ var COMMAND_NAMES = [
   "set_depth",
   "enable_lora",
   "disable_lora",
+  "add_lora",
   "manual_slot_add",
   "manual_slot_pop",
   "set_timbre_strength",
@@ -1790,7 +1840,9 @@ var COMMAND_NAMES = [
   "set_structure_fixture",
   "clear_structure_source",
   "swap_source",
-  "write_audio"
+  "write_audio",
+  "midi_transcribe",
+  "bounce"
 ];
 var EVENT_NAMES = [
   "init_ack",
@@ -1815,7 +1867,11 @@ var EVENT_NAMES = [
   "structure_failed",
   "audio_written",
   "audio_write_failed",
-  "command_failed"
+  "command_failed",
+  "midi_notes",
+  "midi_failed",
+  "bounce_ready",
+  "bounce_failed"
 ];
 
 // config/enums.ts

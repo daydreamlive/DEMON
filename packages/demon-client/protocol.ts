@@ -28,6 +28,14 @@ import {
   type SwapReadyMessage,
 } from "./types/protocol";
 import type { KnobManifestResponse } from "./types/knobs";
+import {
+  ANALYSIS_TAP_COMMAND,
+  analysisTapsAvailable,
+  isAnalysisEvent,
+  type AnalysisTapCommandPayload,
+  type AnalysisTapName,
+  type AnalysisTapOptions,
+} from "./analysis/types";
 // Outbound command payloads + the inbound event-name union are GENERATED from
 // the backend wire-contract registry (protocol.py) — see
 // types/wireContract.gen.ts. Typing the senders/ladder against them means a
@@ -241,6 +249,10 @@ export class RemoteBackend extends EventTarget {
   /** Backend capability mask from `ready.capabilities`. Null = older
    *  server / replay: treat as ungated (everything available). */
   capabilities: CapabilityMask | null = null;
+  /** Analyzer names this pod can run (`ready.capabilities.analysis_taps`);
+   *  empty until ready and on pods without any. Gate `sendAnalysisTap`
+   *  and analysis UI on it. */
+  analysisTaps: string[] = [];
   /** Per-session knob manifest from `ready.knob_manifest` — the same
    *  `{version, knobs}` envelope `GET /api/knobs` serves, but resolved
    *  for THIS session (SDE mode, enabled `lora_str_<id>` knobs). Null
@@ -509,6 +521,9 @@ export class RemoteBackend extends EventTarget {
               (msg.geometry as ReadyGeometry | undefined) ?? null;
             this.capabilities =
               (msg.capabilities as CapabilityMask | undefined) ?? null;
+            this.analysisTaps = analysisTapsAvailable(
+              msg.capabilities as Record<string, unknown> | undefined,
+            );
             this.knobManifest =
               (msg.knob_manifest as KnobManifestResponse | undefined) ?? null;
             // Activation-steering surface. Wire-optional like the
@@ -628,6 +643,15 @@ export class RemoteBackend extends EventTarget {
           // fails `tsc`. The Python drift guard
           // (tests/unit/test_wire_contract.py) parses these labels against
           // the registry from its side.
+          // Analysis events are typed by ./analysis/types (one generic
+          // channel for every analyzer); they are re-dispatched under
+          // their own names with the payload as `detail`, so consumers
+          // (AnalysisStore.attach) never parse the generic `json` event.
+          const frame: unknown = msg;
+          if (isAnalysisEvent(frame)) {
+            this.dispatchEvent(new CustomEvent(frame.type, { detail: frame }));
+            return;
+          }
           switch (msg.type) {
             case "params_update":
               this.dispatchEvent(
@@ -1131,6 +1155,34 @@ export class RemoteBackend extends EventTarget {
         type: "set_timbre_strength",
         value: Math.max(0, Math.min(1, value)),
       };
+      this.ws.send(JSON.stringify(msg));
+    } catch {}
+  }
+
+  /**
+   * Enable or disable a live analysis tap (`analysis_tap`). `tap` is an
+   * analyzer name from `analysisTaps`; `options` are per analyzer (for
+   * `notes`: size, instruments, horizon_s) and validated server-side.
+   * The server answers with `analysis_state` (carrying `error` when the
+   * enable was refused, never `command_failed`) and, on enable, a
+   * `clear` `analysis_update` followed by range updates. Re-sending with
+   * `enabled: true` and new options replaces the running tap.
+   */
+  sendAnalysisTap<T extends AnalysisTapName>(
+    tap: T,
+    enabled: boolean,
+    options?: AnalysisTapOptions<T>,
+  ): void {
+    if (this.ws?.readyState !== this._wsOpen) return;
+    try {
+      const msg: AnalysisTapCommandPayload = {
+        type: ANALYSIS_TAP_COMMAND,
+        tap,
+        enabled,
+      };
+      if (options !== undefined) {
+        msg.options = options as Record<string, unknown>;
+      }
       this.ws.send(JSON.stringify(msg));
     } catch {}
   }
