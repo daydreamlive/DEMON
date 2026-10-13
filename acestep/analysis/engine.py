@@ -138,7 +138,8 @@ class AnalysisSubmitter(Protocol):
         ...
 
     def engine_info(self, analyzer: str, size: Optional[str]) -> Mapping[str, Any]:
-        """``{"name", "size", "loaded": bool, "licence"}`` without loading
-        anything. Raises :class:`EngineUnavailable` when the engine cannot
+        """``{"name", "size", "loaded": bool, "licence", "engine",
+        "display_name"}`` without loading anything (``engine`` is
+        ``AnalyzerSpec.engine_id``, for ``analysis_state.engine``). Raises :class:`EngineUnavailable` when the engine cannot
         run here (message user-facing)."""
         ...

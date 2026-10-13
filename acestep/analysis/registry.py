@@ -83,6 +83,14 @@ class AnalyzerSpec:
     resident_gb: Mapping[str, float] = field(default_factory=dict)
     preload: Optional[Callable[..., Any]] = None
     shutdown: Optional[Callable[[], Any]] = None
+    #: Short identifier of the model behind the analyzer (``muscriptor``),
+    #: reported as ``analysis_state.engine``; empty means ``name``.
+    engine_name: str = ""
+
+    @property
+    def engine_id(self) -> str:
+        """``engine_name`` if set, else the analyzer name."""
+        return self.engine_name or self.name
 
     def __post_init__(self):
         if not _NAME_RE.match(self.name):
