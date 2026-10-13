@@ -87,6 +87,10 @@ const state = {
   // Seconds the newest analysis_update trailed the playhead (microphone:
   // the frontier), or null before the first one.
   lagS: null,
+  // End of the newest provisional range: a provisional note ending there
+  // is still sounding (the streaming tap sends it with end_s = frontier),
+  // so the microphone roll draws it to the live edge. Null otherwise.
+  edgeS: null,
   loopBand: null,
   // Microphone: the last acknowledged frontier (canvas seconds of the
   // current take), when it arrived, the take's canvas length and number.
@@ -355,7 +359,12 @@ function drawRoll() {
   ctx.lineWidth = Math.max(1, dpr);
   for (const { item, shift_s } of store.itemsIn(t0, t1, wrap)) {
     const x = xOf(item.start_s + shift_s);
-    const w = Math.max(2 * dpr, xOf(item.end_s + shift_s) - x);
+    let end = item.end_s;
+    if (mode() === "mic" && item.basis !== "settled" && state.edgeS != null
+        && Math.abs(end - state.edgeS) < 1e-3) {
+      end = Math.max(end, ph); // still sounding: draw to the live edge
+    }
+    const w = Math.max(2 * dpr, xOf(end + shift_s) - x);
     const isDrum = item.instrument === "drums";
     const y = isDrum ? rollH - rowH : yOf(item.pitch);
     const h = Math.max(2, rowH - 1);
@@ -467,6 +476,7 @@ async function stop() {
   state.notesAvailable = false;
   state.analysis = null;
   state.lagS = null;
+  state.edgeS = null;
   state.loopBand = null;
   els.notesOn.checked = false;
   els.loop.checked = false;
@@ -568,7 +578,15 @@ function wireEvents(remote) {
   });
   remote.addEventListener("analysis_update", (event) => {
     const u = event.detail;
-    if (u?.tap !== TAP || u.clear) return;
+    if (u?.tap !== TAP) return;
+    // Every sounding note rides in the provisional part of each hop and a
+    // closed one is re-sent settled, so a settled update leaves the edge
+    // alone (it may be the first half of a split hop); a clear resets it.
+    if (u.clear) {
+      state.edgeS = null;
+      return;
+    }
+    if (u.basis === "provisional") state.edgeS = u.range_start_s + u.span_s;
     // How far behind the listener this range arrived: the microphone has
     // no playback, so measure from the frontier to the range end.
     if (mode() === "mic") {
