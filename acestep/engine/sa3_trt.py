@@ -539,6 +539,97 @@ def _trt_dtype_to_torch(trt_mod, dtype):
 
 
 # ---------------------------------------------------------------------------
+# Engines loaded by path (stream layouts)
+# ---------------------------------------------------------------------------
+
+#: Sidecar key (``<engine>.metadata.json``) recording the sha256 of the
+#: weights an engine was built from. A path-loaded engine is refused when
+#: it does not match the weights the caller is about to run.
+ENGINE_WEIGHTS_KEY = "model_sha256"
+
+
+class EngineWeightsMismatch(ValueError):
+    """A path-loaded engine was built from different weights."""
+
+
+def engine_weights_sha256(engine_path) -> Optional[str]:
+    """The ``model_sha256`` recorded in an engine's metadata sidecar, or
+    None when the sidecar is missing, unreadable or lacks the key."""
+    import json
+
+    from acestep.engine.trt._engine_metadata import metadata_path
+
+    meta = metadata_path(engine_path)
+    try:
+        value = json.loads(meta.read_text(encoding="utf-8")).get(ENGINE_WEIGHTS_KEY)
+    except (OSError, ValueError, AttributeError):
+        return None
+    return str(value) if value else None
+
+
+def verify_engine_weights(engine_path, expected_sha256: str) -> tuple[bool, str]:
+    """``(ok, reason)``: does the engine's sidecar name ``expected_sha256``?
+    A missing sidecar or key is a mismatch, never a pass."""
+    if not expected_sha256:
+        return False, "no expected weights sha256 supplied"
+    recorded = engine_weights_sha256(engine_path)
+    if recorded is None:
+        return False, f"engine sidecar has no {ENGINE_WEIGHTS_KEY}"
+    if recorded.lower() != str(expected_sha256).lower():
+        return False, (
+            f"engine built from weights {recorded[:12]}, "
+            f"expected {str(expected_sha256)[:12]}"
+        )
+    return True, "weights match"
+
+
+def is_stock_dit_engine_path(engine_path) -> bool:
+    """True when ``engine_path`` sits where :func:`find_dit_engine` would
+    pick it up: a direct child directory of :func:`trt_engines_dir` named
+    like a stock DiT engine."""
+    path = Path(engine_path)
+    try:
+        inside = path.resolve().parent.parent == trt_engines_dir().resolve()
+    except OSError:
+        return False
+    name = path.parent.name
+    return inside and any(
+        rx.match(name) for rx in (
+            _DIT_DIR_RE, _DIT_FP8_DIR_RE, _DIT_REFIT_DIR_RE, _DIT_FP8_REFIT_DIR_RE,
+        )
+    )
+
+
+def open_dit_engine_at(
+    engine_path, *, expected_weights_sha256: str, exclusive: bool = False,
+):
+    """Deserialize a DiT engine named by PATH, after checking it was built
+    from ``expected_weights_sha256`` (its sidecar's ``model_sha256``).
+
+    For a stream layout's own engine (``StreamLayout.make_dit``): such an
+    engine is built for the stacked geometry, so it must never be found by
+    the stock length-keyed lookup. An engine placed under a stock DiT
+    engine name is refused rather than loaded, and so is one whose sidecar
+    does not match the weights (a new weights step forces a rebuild
+    instead of running stale weights). Process-cached like every other
+    engine unless ``exclusive``.
+    """
+    path = Path(engine_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"TRT engine not found: {path}")
+    if is_stock_dit_engine_path(path):
+        raise ValueError(
+            f"{path} is named like a stock DiT engine under "
+            f"{trt_engines_dir()}; the stock lookup would select it for "
+            "single-stream sessions. Keep path-loaded engines elsewhere."
+        )
+    ok, reason = verify_engine_weights(path, expected_weights_sha256)
+    if not ok:
+        raise EngineWeightsMismatch(f"{path.name}: {reason}; rebuild the engine")
+    return _deserialize_engine(path, exclusive=exclusive)
+
+
+# ---------------------------------------------------------------------------
 # DiT engine wrapper
 # ---------------------------------------------------------------------------
 

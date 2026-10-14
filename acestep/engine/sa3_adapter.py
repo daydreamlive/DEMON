@@ -53,6 +53,7 @@ class SA3Adapter:
         schedule_builder: Callable[[float], torch.Tensor],
         device,
         dtype,
+        make_noise: Optional[Callable] = None,
     ):
         self.dit = dit
         self.schedule_builder = schedule_builder
@@ -70,6 +71,24 @@ class SA3Adapter:
         # The spike's cond stacker (pads cross-attn tensors to the
         # batch max length, concats dim 0, passes scalars through).
         self._stack = import_stream_helpers().stack_sa3_cond_bundles
+        # Optional initial-noise override (a stream layout's per-slot
+        # draw). Bound as an INSTANCE attribute only when supplied: the
+        # pipeline probes ``getattr(adapter, "make_noise", None)``, so a
+        # stock adapter must not carry the name at all.
+        if make_noise is not None:
+            self._noise_fn = make_noise
+            self.make_noise = self._layout_noise
+
+    def _layout_noise(self, request) -> torch.Tensor:
+        """The supplied noise draw, checked against the slot geometry and
+        moved onto the pipeline device/dtype (engine layout ``[1, T, C]``)."""
+        noise = self._noise_fn(request)
+        want = (1, self.request_frames(request), self.latent_channels)
+        if tuple(noise.shape) != want:
+            raise ValueError(
+                f"stream layout noise shape {tuple(noise.shape)} != {want}"
+            )
+        return noise.to(device=self._device, dtype=self._dtype)
 
     # ---- ModelAdapter ------------------------------------------------------
 
