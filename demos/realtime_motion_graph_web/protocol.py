@@ -746,7 +746,7 @@ EVENTS: tuple = (
             FieldSpec("tools", "list",
                       description="Names of the localhost side services "
                                   "this server proxies at "
-                                  "/tools/<name>/<path> (GET/POST, header "
+                                  "/tools/<name>/<path> (GET/POST/PUT/DELETE, header "
                                   "X-Demon-Session: <session_id>) whose "
                                   "/health answered 200 recently; empty "
                                   "when none. Absent on older servers."),

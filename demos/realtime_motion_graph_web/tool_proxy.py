@@ -2,10 +2,11 @@
 
 Deployments can run auxiliary model services on the same machine, bound
 to loopback. Only the DEMON port is reachable from outside, so this
-module forwards ``GET``/``POST /tools/<name>/<path...>`` to the
-configured target -- but only for callers holding a live session on this
-server (``X-Demon-Session: <ready.session_id>``). A loopback caller may
-hit ``GET /tools/<name>/health`` without the header (local health checks).
+module forwards ``GET``/``POST``/``PUT``/``DELETE /tools/<name>/<path...>``
+to the configured target -- but only for callers holding a live session on
+this server (``X-Demon-Session: <ready.session_id>``). A loopback caller
+may hit ``GET /tools/<name>/health`` without the header (local health
+checks).
 
 Browsers on other origins (Studio posts stems straight to the pod, since
 its site rewrite caps bodies at 4.5 MB) get CORS: ``OPTIONS`` preflights
@@ -15,7 +16,16 @@ the ``X-Demon-Session`` header, never a cookie.
 
 Configured with ``DEMON_TOOL_PROXIES`` / ``--tool-proxies``
 (``name=http://127.0.0.1:PORT,...``). Targets must be http on
-127.0.0.1/localhost.
+127.0.0.1/localhost. A target may carry a path prefix
+(``name=http://127.0.0.1:PORT/prefix``): requests go to ``/prefix/<path>``
+and nothing outside it is reachable, so one route of a larger local
+server can be exposed on its own.
+
+A tool that holds state a session put there (an uploaded reference, say)
+can be cleared between sessions: ``DEMON_TOOL_RESETS`` (``name=/path,...``)
+makes the proxy ``POST`` that path on the tool, under its prefix, when the
+last live session on this server ends -- before the next caller can upload
+anything of their own.
 
 The websockets HTTP parser refuses request bodies, so tool requests are
 picked off the socket before websockets sees it (:func:`wrap_server`) and
@@ -34,6 +44,7 @@ import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
+from typing import Mapping, NamedTuple
 
 from acestep.streaming import registry as session_registry
 
@@ -41,30 +52,48 @@ SESSION_HEADER = "X-Demon-Session"
 _NAME_RE = re.compile(r"[a-z0-9-]{1,32}")
 _LOCAL_HOSTS = {"127.0.0.1", "localhost"}
 _LOOPBACK_CLIENTS = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
-_TOOL_PREFIXES = (b"GET /tools/", b"POST /tools/", b"OPTIONS /tools/")
+_TOOL_PREFIXES = (b"GET /tools/", b"POST /tools/", b"PUT /tools/", b"DELETE /tools/",
+                  b"OPTIONS /tools/")
 CONNECT_TIMEOUT_S = 5.0
 HEALTH_POLL_S = 10.0
 HEALTH_FRESH_S = 30.0
 _CORS_HEADERS = (("Access-Control-Allow-Origin", "*"),)
 _PREFLIGHT_HEADERS = (
     *_CORS_HEADERS,
-    ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
+    ("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS"),
     ("Access-Control-Allow-Headers", f"Content-Type, {SESSION_HEADER}"),
     ("Access-Control-Max-Age", "600"),
 )
 
+_PREFIX_RE = re.compile(r"(/[A-Za-z0-9._-]+)+")
+
+
+def _has_dot_segment(path: str) -> bool:
+    """``.``/``..`` anywhere in ``path`` (percent-decoded too): what would let
+    a request step outside a target's prefix on a server that normalizes."""
+    return any(seg in (".", "..") for seg in urllib.parse.unquote(path).split("/"))
+
+
+class Target(NamedTuple):
+    host: str
+    port: int
+    #: Path every forwarded request is put under ("" for the target's root).
+    prefix: str = ""
+
+
 # Set by configure(); module-global like the session registry.
-_proxies: dict[str, tuple[str, int]] = {}
+_proxies: dict[str, Target] = {}
+_resets: dict[str, str] = {}
 _max_body = 256 * 1024 * 1024
 _timeout_s = 120.0
 _last_healthy: dict[str, float] = {}
 
 
-def parse_tool_proxies(spec: str) -> dict[str, tuple[str, int]]:
-    """``"a=http://127.0.0.1:1330,b=http://localhost:1331"`` ->
-    ``{"a": ("127.0.0.1", 1330), ...}``. Raises ValueError on anything
-    that isn't a named http loopback target."""
-    out: dict[str, tuple[str, int]] = {}
+def parse_tool_proxies(spec: str) -> dict[str, Target]:
+    """``"a=http://127.0.0.1:1330,b=http://localhost:1331/sub"`` ->
+    ``{"a": Target("127.0.0.1", 1330, ""), "b": Target("localhost", 1331, "/sub")}``.
+    Raises ValueError on anything that isn't a named http loopback target."""
+    out: dict[str, Target] = {}
     for item in filter(None, (s.strip() for s in spec.split(","))):
         name, sep, url = item.partition("=")
         name, url = name.strip(), url.strip()
@@ -73,25 +102,43 @@ def parse_tool_proxies(spec: str) -> dict[str, tuple[str, int]]:
         if name in out:
             raise ValueError(f"duplicate tool name: {name!r}")
         u = urllib.parse.urlsplit(url)
+        prefix = u.path.rstrip("/")
         if (
             u.scheme != "http" or u.hostname not in _LOCAL_HOSTS
-            or u.username or u.password or u.path not in ("", "/")
-            or u.query or u.fragment
+            or u.username or u.password or u.query or u.fragment
+            or (prefix and (not _PREFIX_RE.fullmatch(prefix) or _has_dot_segment(prefix)))
         ):
             raise ValueError(
-                f"tool {name!r} target must be http://127.0.0.1:<port> "
-                f"or http://localhost:<port>, got {url!r}"
+                f"tool {name!r} target must be http://127.0.0.1:<port>[/prefix] "
+                f"or http://localhost:<port>[/prefix], got {url!r}"
             )
-        out[name] = (u.hostname, u.port or 80)
+        out[name] = Target(u.hostname, u.port or 80, prefix)
     return out
 
 
-def configure(proxies: dict[str, tuple[str, int]], *,
+def parse_tool_resets(spec: str, proxies: Mapping[str, Target]) -> dict[str, str]:
+    """``"a=/reset"`` -> ``{"a": "/reset"}``; every name must be a configured tool."""
+    out: dict[str, str] = {}
+    for item in filter(None, (s.strip() for s in spec.split(","))):
+        name, sep, path = (x.strip() for x in item.partition("="))
+        if not sep or name not in proxies:
+            raise ValueError(f"tool reset must name a configured tool: {item!r}")
+        if not _PREFIX_RE.fullmatch(path) or _has_dot_segment(path):
+            raise ValueError(f"tool reset path must look like /reset, got {path!r}")
+        out[name] = path
+    return out
+
+
+def configure(proxies: Mapping[str, tuple], *,
+              resets: Mapping[str, str] | None = None,
               max_body: int | None = None,
               timeout_s: float | None = None,
               poll_health: bool = True) -> None:
-    global _proxies, _max_body, _timeout_s
-    _proxies = dict(proxies)
+    global _proxies, _resets, _max_body, _timeout_s
+    _proxies = {name: Target(*t) for name, t in proxies.items()}
+    _resets = dict(resets or {})
+    if _resets:
+        session_registry.add_unregister_hook(_reset_after_last_session)
     _last_healthy.clear()
     if max_body is not None:
         _max_body = max_body
@@ -103,13 +150,15 @@ def configure(proxies: dict[str, tuple[str, int]], *,
 
 
 def configure_from_env(cli_spec: str | None = None,
-                       env=os.environ) -> dict[str, tuple[str, int]]:
+                       env=os.environ) -> dict[str, Target]:
     """``--tool-proxies`` (``cli_spec``, wins) or ``DEMON_TOOL_PROXIES``,
-    plus ``DEMON_TOOL_PROXY_MAX_BODY_MB`` / ``DEMON_TOOL_PROXY_TIMEOUT_S``."""
+    plus ``DEMON_TOOL_RESETS``, ``DEMON_TOOL_PROXY_MAX_BODY_MB`` /
+    ``DEMON_TOOL_PROXY_TIMEOUT_S``."""
     spec = cli_spec if cli_spec is not None else env.get("DEMON_TOOL_PROXIES", "")
     proxies = parse_tool_proxies(spec)
     configure(
         proxies,
+        resets=parse_tool_resets(env.get("DEMON_TOOL_RESETS", ""), proxies),
         max_body=int(float(env.get("DEMON_TOOL_PROXY_MAX_BODY_MB", "256")) * 1024 * 1024),
         timeout_s=float(env.get("DEMON_TOOL_PROXY_TIMEOUT_S", "120")),
     )
@@ -118,10 +167,10 @@ def configure_from_env(cli_spec: str | None = None,
 
 def probe_health() -> None:
     """One ``GET /health`` round over every target; records 200s."""
-    for name, (host, port) in list(_proxies.items()):
+    for name, (host, port, prefix) in list(_proxies.items()):
         conn = http.client.HTTPConnection(host, port, timeout=2)
         try:
-            conn.request("GET", "/health")
+            conn.request("GET", prefix + "/health")
             if conn.getresponse().status == 200:
                 _last_healthy[name] = time.monotonic()
         except Exception:
@@ -134,6 +183,32 @@ def _health_loop() -> None:
     while _proxies:
         probe_health()
         time.sleep(HEALTH_POLL_S)
+
+
+def reset_tools() -> None:
+    """``POST`` every configured reset path (``DEMON_TOOL_RESETS``)."""
+    from acestep.engine.obs import logger
+
+    for name, path in list(_resets.items()):
+        target = _proxies.get(name)
+        if target is None:
+            continue
+        conn = http.client.HTTPConnection(target.host, target.port, timeout=_timeout_s)
+        try:
+            conn.request("POST", target.prefix + path, body=b"",
+                         headers={"Content-Length": "0"})
+            status = conn.getresponse().status
+            logger.info("tool_reset tool={} status={}", name, status)
+        except Exception as exc:  # noqa: BLE001 - a tool that is down holds nothing
+            logger.warning("tool_reset_failed tool={} error={}", name, exc)
+        finally:
+            conn.close()
+
+
+def _reset_after_last_session(_session_id: str) -> None:
+    # Only once nobody is left: a pod serving two sessions keeps the other's state.
+    if not session_registry.list_handles():
+        reset_tools()
 
 
 def healthy_tools() -> list[str]:
@@ -184,6 +259,12 @@ class ToolHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         self._proxy()
 
+    def do_PUT(self) -> None:  # noqa: N802
+        self._proxy()
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        self._proxy()
+
     def _proxy(self) -> None:
         path, _, query = self.path.partition("?")
         m = re.fullmatch(r"/tools/([^/]+)(/.*)?", path)
@@ -192,6 +273,9 @@ class ToolHandler(BaseHTTPRequestHandler):
             self._json(404, {"error": "unknown tool"})
             return
         rest = m.group(2) or "/"
+        if _has_dot_segment(rest):
+            self._json(400, {"error": "path must not contain . or .. segments"})
+            return
 
         sid = self.headers.get(SESSION_HEADER)
         local_health = (
@@ -214,7 +298,7 @@ class ToolHandler(BaseHTTPRequestHandler):
             self._json(413, {"error": f"body exceeds {_max_body} bytes"})
             return
 
-        host, port = target
+        host, port, prefix = target
         conn = http.client.HTTPConnection(host, port, timeout=CONNECT_TIMEOUT_S)
         try:
             try:
@@ -224,7 +308,7 @@ class ToolHandler(BaseHTTPRequestHandler):
                 return
             # ponytail: per-socket-op timeout, not a hard wall-clock total.
             conn.sock.settimeout(_timeout_s)
-            conn.putrequest(self.command, rest + (f"?{query}" if query else ""),
+            conn.putrequest(self.command, prefix + rest + (f"?{query}" if query else ""),
                             skip_accept_encoding=True)
             if self.headers.get("Content-Type"):
                 conn.putheader("Content-Type", self.headers["Content-Type"])

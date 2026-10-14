@@ -43,6 +43,7 @@ class SessionHandle:
 
 _sessions: dict[str, SessionHandle] = {}
 _lock = threading.Lock()
+_unregister_hooks: list[Callable[[str], None]] = []
 
 
 def new_session_id() -> str:
@@ -57,7 +58,21 @@ def register(handle: SessionHandle) -> None:
 
 def unregister(session_id: str) -> None:
     with _lock:
-        _sessions.pop(session_id, None)
+        removed = _sessions.pop(session_id, None)
+    if removed is None:
+        return
+    # Outside the lock, on the closing session's thread: a hook may do I/O.
+    for hook in list(_unregister_hooks):
+        try:
+            hook(session_id)
+        except Exception:  # noqa: BLE001 - a hook never breaks session teardown
+            pass
+
+
+def add_unregister_hook(hook: Callable[[str], None]) -> None:
+    """Call ``hook(session_id)`` after a registered session is removed."""
+    if hook not in _unregister_hooks:
+        _unregister_hooks.append(hook)
 
 
 def get(session_id: str) -> Optional[SessionHandle]:

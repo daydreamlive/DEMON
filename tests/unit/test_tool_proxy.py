@@ -25,7 +25,7 @@ class _Echo(BaseHTTPRequestHandler):
 
     def _reply(self):
         body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
-        if self.path == "/health":
+        if self.path.endswith("/health"):
             out, status = b"ok", 200
         else:
             out, status = json.dumps({
@@ -40,7 +40,7 @@ class _Echo(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(out)
 
-    do_GET = do_POST = _reply
+    do_GET = do_POST = do_PUT = do_DELETE = _reply
 
 
 def _free_port() -> int:
@@ -61,6 +61,7 @@ def env():
     srv = ws_serve(lambda ws: None, "127.0.0.1", 0, process_request=process_request)
     tool_proxy.configure(
         {"echo": ("127.0.0.1", target.server_address[1]),
+         "scoped": ("127.0.0.1", target.server_address[1], "/sub"),
          "dead": ("127.0.0.1", dead_port)},
         max_body=1024 * 1024, timeout_s=5, poll_health=False,
     )
@@ -154,7 +155,7 @@ def test_preflight_204_without_session(env):
     })
     assert status == 204
     assert h["access-control-allow-origin"] == "*"
-    assert h["access-control-allow-methods"] == "GET, POST, OPTIONS"
+    assert h["access-control-allow-methods"] == "GET, POST, PUT, DELETE, OPTIONS"
     assert h["access-control-allow-headers"] == "Content-Type, X-Demon-Session"
     assert h["access-control-max-age"] == "600"
     assert h["content-length"] == "0"
@@ -179,7 +180,8 @@ def test_is_tool_request_heads():
 @pytest.mark.parametrize("spec", [
     "a=http://10.0.0.1:1330", "a=https://127.0.0.1:1330",
     "a=http://example.com:80", "a=http://127.0.0.1.evil.com:1",
-    "a=http://u:p@127.0.0.1:1", "a=http://127.0.0.1:1/path",
+    "a=http://u:p@127.0.0.1:1", "a=http://127.0.0.1:1/pa th",
+    "a=http://127.0.0.1:1/x?y=1", "a=http://127.0.0.1:1/x/../y", "a=http://127.0.0.1:1/x#f",
     "Bad=http://127.0.0.1:1", "a=http://127.0.0.1:1,a=http://127.0.0.1:2",
     "noequals",
 ])
@@ -190,12 +192,93 @@ def test_config_rejects(spec):
 
 def test_config_parses():
     assert tool_proxy.parse_tool_proxies(
-        " gain=http://127.0.0.1:1330 , x-2=http://localhost:1331/ ") == {
-        "gain": ("127.0.0.1", 1330), "x-2": ("localhost", 1331)}
+        " gain=http://127.0.0.1:1330 , x-2=http://localhost:1331/ ,"
+        "mt=http://127.0.0.1:1329/musetimbre/ ") == {
+        "gain": ("127.0.0.1", 1330, ""), "x-2": ("localhost", 1331, ""),
+        "mt": ("127.0.0.1", 1329, "/musetimbre")}
     assert tool_proxy.parse_tool_proxies("") == {}
 
 
 def test_healthy_tools_lists_only_healthy(env):
     assert tool_proxy.healthy_tools() == []
     tool_proxy.probe_health()
-    assert tool_proxy.healthy_tools() == ["echo"]
+    assert tool_proxy.healthy_tools() == ["echo", "scoped"]
+
+
+def test_put_and_delete_forwarded(env):
+    status, _, out = _req(env, "PUT", "/tools/echo/reference/0?sample_rate=44100",
+                          b"\0" * 16, {**SID, "Content-Type": "application/octet-stream"})
+    assert status == 201
+    assert json.loads(out)["method"] == "PUT"
+    assert json.loads(out)["path"] == "/reference/0?sample_rate=44100"
+    status, _, out = _req(env, "DELETE", "/tools/echo/reference/0", headers=SID)
+    assert status == 201 and json.loads(out)["method"] == "DELETE"
+    assert _req(env, "DELETE", "/tools/echo/reference/0")[0] == 401
+
+
+def test_prefixed_target_stays_under_its_prefix(env):
+    status, _, out = _req(env, "POST", "/tools/scoped/reference/1?x=1", b"{}", SID)
+    assert status == 201 and json.loads(out)["path"] == "/sub/reference/1?x=1"
+    for path in ("/tools/scoped/../chart", "/tools/scoped/a/%2e%2e/chart", "/tools/echo/./x"):
+        assert _req(env, "GET", path, headers=SID)[0] == 400, path
+
+
+def test_prefixed_health(env):
+    status, _, out = _req(env, "GET", "/tools/scoped/health")
+    assert (status, out) == (200, b"ok")
+    tool_proxy.probe_health()
+    assert "scoped" in tool_proxy.healthy_tools()
+
+
+@pytest.mark.parametrize("spec", ["nope=/reset", "echo", "echo=reset", "echo=/../x"])
+def test_reset_config_rejects(spec):
+    proxies = {"echo": tool_proxy.Target("127.0.0.1", 1)}
+    with pytest.raises(ValueError):
+        tool_proxy.parse_tool_resets(spec, proxies)
+
+
+def test_reset_runs_when_the_last_session_ends():
+    seen = []
+
+    class _Tool(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            seen.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    tool = ThreadingHTTPServer(("127.0.0.1", 0), _Tool)
+    threading.Thread(target=tool.serve_forever, daemon=True).start()
+    try:
+        tool_proxy.configure({"mt": ("127.0.0.1", tool.server_address[1], "/musetimbre")},
+                             resets={"mt": "/reset"}, poll_health=False)
+        for sid in ("a", "b"):
+            registry.register(registry.SessionHandle(sid, time.time(), lambda d, x: None, lambda: {}))
+        registry.unregister("a")
+        assert seen == []                      # "b" is still connected
+        registry.unregister("b")
+        assert seen == ["/musetimbre/reset"]
+        registry.unregister("b")               # already gone: no second reset
+        assert seen == ["/musetimbre/reset"]
+    finally:
+        tool_proxy.configure({}, poll_health=False)
+        tool.shutdown()
+
+
+def test_unregister_hook_errors_never_break_teardown():
+    calls = []
+
+    def boom(sid):
+        calls.append(sid)
+        raise RuntimeError("hook failed")
+
+    registry.add_unregister_hook(boom)
+    try:
+        registry.register(registry.SessionHandle("h", time.time(), lambda d, x: None, lambda: {}))
+        registry.unregister("h")
+        assert calls == ["h"] and registry.get("h") is None
+    finally:
+        registry._unregister_hooks.remove(boom)
