@@ -60,6 +60,23 @@ from .protocol import (
 # ---------------------------------------------------------------------------
 
 
+
+#: Fragment size for large binary sends (audio_codec.chunked_ws_send).
+SEND_FRAGMENT_BYTES = 262144
+
+
+def _send_fragmented(ws, data: bytes, chunk_size: int = SEND_FRAGMENT_BYTES) -> None:
+    """Send ``data`` as one fragmented binary message: websockets-sync
+    releases the protocol mutex between fragments, so this side keeps
+    reading while a large payload goes out (the same rule as the server's
+    audio_codec.chunked_ws_send; inlined here to keep this client free of
+    the server's torch imports)."""
+    if len(data) <= chunk_size:
+        ws.send(data)
+        return
+    mv = memoryview(data)
+    ws.send(mv[i:i + chunk_size] for i in range(0, len(data), chunk_size))
+
 class PlayheadSim:
     """Wall-clock simulation of the browser's audible playhead.
 
@@ -493,7 +510,7 @@ class HeadlessClient:
             if self._waveform is not None:
                 wav = np.ascontiguousarray(self._waveform.T, dtype=np.float32)
                 hdr = struct.pack("<II", wav.shape[1], wav.shape[0])
-                self.ws.send(hdr + wav.tobytes())
+                _send_fragmented(self.ws, hdr + wav.tobytes())
 
             # First JSON must be ready (or a typed error). init_ack only
             # ships when the config carries telemetry_version, which we
@@ -738,6 +755,23 @@ class HeadlessClient:
         control bus."""
         with self._send_lock:
             self.ws.send(json.dumps(data))
+
+    def send_command_with_audio(self, data: dict, waveform: np.ndarray) -> None:
+        """Send a JSON command and its binary PCM follow-up (``swap_source``,
+        ``set_timbre_source``, ...) on the PRIMARY socket. ``waveform`` is
+        ``[channels, samples]``; any channel count is packed as is.
+
+        The payload goes out as a fragmented message (``_send_fragmented``):
+        a single multi-MB websockets-sync send holds the connection's
+        protocol mutex across the whole ``sendall``, so this client stops
+        reading while it sends, and against a server that is itself
+        blocked sending to us both sides wedge (the server never sees the
+        payload and answers ``*_payload_timeout``)."""
+        wav = np.ascontiguousarray(np.asarray(waveform, dtype=np.float32).T)
+        payload = struct.pack("<II", wav.shape[1], wav.shape[0]) + wav.tobytes()
+        with self._send_lock:
+            self.ws.send(json.dumps(data))
+            _send_fragmented(self.ws, payload)
 
     def status(self) -> dict:
         player = self.player
