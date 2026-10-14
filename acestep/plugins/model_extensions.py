@@ -24,7 +24,8 @@ Lifecycle, in order:
    :class:`ModelExtensionRuntime`. The core loads the model; the extension
    only ever receives one that loaded successfully.
 5. Per-session: ``supports_dit_backend`` / ``supports_codec_backend``,
-   ``decorate_conditioning``, ``apply_controls``, ``status`` / ``metrics``.
+   ``stream_layout``, ``decorate_conditioning``, ``apply_controls``,
+   ``status`` / ``metrics``.
 6. ``runtime.close()`` at teardown — idempotent, and responsible for
    removing anything the runtime attached to the shared model.
 
@@ -112,6 +113,8 @@ class SourceView:
     ``latent`` is the encoded anchor in the model's own native layout —
     for the sa3 family, ``[1, C, T]``. It is what most conditioning
     extensions want, and it is what DEMON's own denoising path uses.
+    Under a :class:`StreamLayout` it is the STACKED anchor, ``T =
+    n_streams * L``.
 
     ``waveform`` and ``sample_rate`` are the audio that latent was encoded
     FROM, carried because the core already holds it. An extension whose
@@ -133,6 +136,75 @@ class SourceView:
     latent: Any = None
     waveform: Any = None
     sample_rate: int | None = None
+
+
+@dataclass(frozen=True)
+class StreamLayout:
+    """Several equal-length latent streams stacked on the token axis.
+
+    Returned by :meth:`ModelExtensionRuntime.stream_layout` when an
+    installed extension's model denoises ``n_streams`` parallel streams as
+    one sequence: the ring then carries ``[1, n_streams * L, C]`` latents
+    (engine layout; ``[1, C, n_streams * L]`` SA3-native), where ``L`` is
+    one stream's latent length. Stream ``i`` occupies tokens
+    ``[i * L, (i + 1) * L)``. Every slot, the source anchor, feedback and
+    ``x0_target`` operate on the stacked tensor unchanged; only the core
+    sites that size, encode, decode or accelerate a latent consult this.
+
+    ``n_streams``: number of stacked streams, ``>= 1``.
+
+    ``tokens_per_stream``: pins ``L``. The session's render window is then
+    exactly ``L`` latent frames per stream, whatever the requested
+    duration (a longer request is clamped to it). ``None`` derives ``L``
+    from the requested duration the stock way.
+
+    ``make_dit``: ``(context, latent_frames, seconds_total, backend) ->
+    dit`` where ``latent_frames`` is the STACKED length. Return either a
+    torch callable ``dit(x_bct, t, **cond)`` or an object with
+    ``trt_batch1 = True`` and ``step_bundle(x_1ct, t, bundle)`` (see
+    ``acestep.engine.sa3_trt.SA3TRTDit``); return ``None`` to run the
+    model's own eager DiT. Absent, the eager DiT runs: the stock engine
+    lookup is never consulted under a layout, because stock engines are
+    built for one stream. An accelerated engine for a layout is loaded by
+    path (``acestep.engine.sa3_trt.open_dit_engine_at``), never placed
+    under the stock engine names.
+
+    ``make_noise``: ``(request) -> [1, n_streams * L, C]`` initial noise
+    for one slot (``request.seed`` is the slot seed). Absent, the
+    pipeline's stock single-generator draw at the stacked shape is used.
+
+    ``encode_source``: ``(context, audio_input, audio_sample_size) ->
+    [1, C, n_streams * L]`` stacked source anchor, where ``audio_input``
+    is the ``(sample_rate, waveform)`` pair and ``audio_sample_size`` is
+    ONE stream's window in model-rate samples. Absent, the source is
+    encoded once and repeated into every stream.
+
+    ``mix``: ``(streams) -> audio`` where ``streams`` is a float32 numpy
+    array ``[n_streams, N, channels]`` of per-stream decoded audio at the
+    delivery rate and the return is ``[N, channels]``. Called on every
+    render, so a gain the extension reads from its own knobs (delivered
+    through ``apply_controls``) lands at the next render without
+    regenerating. Absent, the streams are summed. The result is clamped
+    to ``[-1, 1]`` after mixing.
+
+    Each stream is decoded separately: a decoder's receptive field would
+    otherwise bleed across stream boundaries.
+    """
+
+    n_streams: int
+    tokens_per_stream: int | None = None
+    make_dit: Callable | None = None
+    make_noise: Callable | None = None
+    encode_source: Callable | None = None
+    mix: Callable | None = None
+
+    def __post_init__(self):
+        if int(self.n_streams) < 1:
+            raise ValueError(f"n_streams must be >= 1, got {self.n_streams}")
+        if self.tokens_per_stream is not None and int(self.tokens_per_stream) < 1:
+            raise ValueError(
+                f"tokens_per_stream must be >= 1, got {self.tokens_per_stream}"
+            )
 
 
 @dataclass(frozen=True)
@@ -158,6 +230,17 @@ class ModelExtensionRuntime:
 
     def supports_codec_backend(self, backend: str) -> BackendVerdict:
         return BackendVerdict(True)
+
+    def stream_layout(self) -> "StreamLayout | None":
+        """The stacked-stream geometry this model runs, or ``None``.
+
+        ``None`` (the default) is the stock single-stream path, and the
+        core then behaves exactly as if this hook did not exist. Called
+        once per session at construction, after ``install``; return the
+        same layout for the lifetime of the runtime. See
+        :class:`StreamLayout`.
+        """
+        return None
 
     def decorate_conditioning(
         self, bundle: Mapping[str, Any], source: "SourceView | None" = None,
@@ -289,6 +372,39 @@ class ModelExtensionSpec:
     config_schema: Mapping[str, ConfigField] = field(default_factory=dict)
     knob_specs: tuple = ()
     description: str = ""
+
+
+def stream_layout_of(runtime) -> "StreamLayout | None":
+    """The runtime's :class:`StreamLayout`, or ``None``.
+
+    Tolerates ``runtime=None`` and a runtime that is not a subclass (no
+    ``stream_layout`` attribute), so stock sessions never reach plugin
+    code. A layout of one stream with no pinned length and no callables
+    is the stock path and is normalized to ``None``.
+    """
+    if runtime is None:
+        return None
+    hook = getattr(runtime, "stream_layout", None)
+    if hook is None:
+        return None
+    layout = hook()
+    if layout is None:
+        return None
+    if not isinstance(layout, StreamLayout):
+        raise TypeError(
+            f"stream_layout() must return a StreamLayout or None, got "
+            f"{type(layout).__name__}"
+        )
+    if (
+        int(layout.n_streams) == 1
+        and layout.tokens_per_stream is None
+        and layout.make_dit is None
+        and layout.make_noise is None
+        and layout.encode_source is None
+        and layout.mix is None
+    ):
+        return None
+    return layout
 
 
 def decorate_conditioning(runtime, bundle, source=None):
