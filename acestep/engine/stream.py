@@ -1395,6 +1395,7 @@ class StreamPipeline:
         step_ode = self._get_compiled(ode_steps.step_ode_euler)
         step_sde_curve = self._get_compiled(ode_steps.step_sde_curve)
         step_sde_renoise = self._get_compiled(ode_steps.step_sde_renoise)
+        make_renoise = getattr(self.adapter, "make_renoise", None)
 
         for si, slot in enumerate(slots):
             t_curr = slot.t_schedule[slot.step_idx].item()
@@ -1538,16 +1539,24 @@ class StreamPipeline:
                 # transposed order, so torch.randn(shape) would arrange
                 # them differently and silently change every ACE SDE
                 # trajectory (caught by test_ace_adapter_parity).
-                noise = (
-                    req.latent_mask.ensure_noise(xt.device, xt.dtype)
-                    if req.latent_mask is not None
-                    else torch.randn_like(xt)
-                    if slot.sde_generator is None
-                    else torch.randn(
-                        xt.shape, device=xt.device, dtype=xt.dtype,
-                        generator=slot.sde_generator,
+                # An adapter may supply the draw itself (a stream
+                # layout's per-stream noise streams); None = stock draw.
+                noise = None
+                if req.latent_mask is None and make_renoise is not None:
+                    noise = make_renoise(req, slot.step_idx)
+                if noise is None:
+                    noise = (
+                        req.latent_mask.ensure_noise(xt.device, xt.dtype)
+                        if req.latent_mask is not None
+                        else torch.randn_like(xt)
+                        if slot.sde_generator is None
+                        else torch.randn(
+                            xt.shape, device=xt.device, dtype=xt.dtype,
+                            generator=slot.sde_generator,
+                        )
                     )
-                )
+                else:
+                    noise = noise.to(device=xt.device, dtype=xt.dtype)
                 xt_new = step_sde_renoise(xt, x0_pred, t_next, noise)
             else:
                 # ODE with blended x0: synthesize v_blended and reuse
