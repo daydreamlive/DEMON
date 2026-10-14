@@ -265,3 +265,30 @@ def test_emit_trim_never_suppresses_stationary_anchor_window():
     assert runner._should_trim_window_emit(None, anchored=False) is True
     assert runner._should_trim_window_emit(None, anchored=True) is False
     assert runner._should_trim_window_emit(48000, anchored=False) is False
+
+
+def test_preservation_sidecar_validation_retention_and_capability_gate():
+    from acestep.streaming.generator_backend import Capabilities
+    session = _session_for_params()
+    session.backend = SimpleNamespace(capabilities=lambda: Capabilities(source_preservation=True))
+    session.set_knobs({}, sa3_preservation_curve=[0., 1.])
+    assert session.virtual_knobs['sa3_preservation_curve'] == (0., 1.)
+    session.set_knobs({})  # omission retains
+    for bad in ([float('nan'), 0.], [True, 0.], [1.1, 0.], '0,1', [0.], [0.] * 257, [10**500, 0.]):
+        session.set_knobs({}, sa3_preservation_curve=bad)
+        assert session.virtual_knobs['sa3_preservation_curve'] == (0., 1.)
+    session.set_knobs({}, sa3_preservation_curve=None)
+    assert session.virtual_knobs['sa3_preservation_curve'] is None
+    session.backend = SimpleNamespace(capabilities=lambda: Capabilities())
+    session.set_knobs({}, sa3_preservation_curve=[1., 1.])
+    assert session.virtual_knobs['sa3_preservation_curve'] is None
+
+
+def test_preservation_survives_params_coalescing_and_explicit_clear_wins():
+    from demos.realtime_motion_graph_web.ws_adapter import _fold_sticky_params
+    newer = {'raw': {}}
+    _fold_sticky_params({'sa3_preservation_curve': [0., 1.]}, newer)
+    assert newer['sa3_preservation_curve'] == [0., 1.]
+    cleared = {'sa3_preservation_curve': None}
+    _fold_sticky_params(newer, cleared)
+    assert cleared['sa3_preservation_curve'] is None
