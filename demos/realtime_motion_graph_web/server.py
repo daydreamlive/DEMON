@@ -60,6 +60,7 @@ from ..common.static_site import (
     build_static_mounts,
     serve_static_mounts,
 )
+from . import ws_transport
 
 # The generative backend is imported lazily inside main(): in --no-backend
 # mode we skip the import entirely so torch and acestep don't load and the
@@ -1112,10 +1113,12 @@ def main():
         ws_handler,
         host,
         port,
-        # Sized to fit the React UI's MAX_FIXTURE_DURATION_S (240 s)
-        # at 48 kHz stereo Float32 (~88 MiB) with comfortable headroom.
-        # See web/engine/audio/loadFixture.ts.
-        max_size=100 * 1024 * 1024,
+        # Inbound message cap and per-recv read size (ws_transport.py):
+        # sized for the React UI's MAX_FIXTURE_DURATION_S (240 s) at 48 kHz
+        # stereo Float32 (~88 MiB) and for 60 s multichannel uploads; the
+        # large reads keep a big upload inside the payload deadline while
+        # generation threads hold the GIL.
+        **ws_transport.server_options(),
         process_request=_process_request,
         # A generation tick or TRT/VAE setup can hold the GIL long enough to
         # starve the keepalive's recv_events thread past the 20s default, so a
