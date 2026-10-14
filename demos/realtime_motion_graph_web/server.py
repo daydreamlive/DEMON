@@ -869,9 +869,9 @@ def main():
         )
     except ValueError as exc:
         raise SystemExit(f"[Server] invalid tool proxy config: {exc}") from exc
-    for name, (t_host, t_port) in tool_proxies.items():
-        logger.info("tool_proxy_mounted route=/tools/{} target={}:{}",
-                    name, t_host, t_port)
+    for name, (t_host, t_port, t_prefix) in tool_proxies.items():
+        logger.info("tool_proxy_mounted route=/tools/{} target={}:{}{}",
+                    name, t_host, t_port, t_prefix)
 
     kiosk = "--kiosk" in args
     default_mode = "graph"

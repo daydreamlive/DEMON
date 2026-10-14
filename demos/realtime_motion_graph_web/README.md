@@ -311,17 +311,24 @@ of truth that `web/engine/protocol.ts` mirrors):
   Configure them with `DEMON_TOOL_PROXIES` or `--tool-proxies`
   (`name=http://127.0.0.1:1330,other=http://localhost:1331`; targets
   must be `http://127.0.0.1` or `http://localhost`, names
-  `[a-z0-9-]{1,32}`). Then `GET`/`POST /tools/<name>/<path>?<query>` is
-  forwarded to `<target>/<path>?<query>` with its body and
-  `Content-Type`; the upstream status, `Content-Type` and body come
-  back. Every request must carry `X-Demon-Session: <session_id>` (from
+  `[a-z0-9-]{1,32}`). Then `GET`/`POST`/`PUT`/`DELETE
+  /tools/<name>/<path>?<query>` is forwarded to `<target>/<path>?<query>`
+  with its body and `Content-Type`; the upstream status, `Content-Type`
+  and body come back. A target may carry a path prefix
+  (`name=http://127.0.0.1:1329/musetimbre`): requests then go to
+  `<prefix>/<path>` and nothing outside the prefix is reachable, so one
+  route family of a larger local server can be exposed on its own. Every request must carry `X-Demon-Session: <session_id>` (from
   `ready.session_id`) naming a session currently connected to this
   server, else `401`; the one exception is `GET /tools/<name>/health`
   from loopback without the header. Unknown tool `404`, target
   unreachable `503`, upstream timeout `504` (all JSON `{"error": ...}`),
   body over the cap `413`, chunked uploads `411`. `ready.tools` lists the
   configured tools whose `GET /health` answered `200` within the last
-  30 s (polled every 10 s in the background). Env knobs:
+  30 s (polled every 10 s in the background; `GET <prefix>/health` for
+  a prefixed target). `DEMON_TOOL_RESETS` (`name=/reset,...`) clears
+  what a session left on a tool: when the last session connected to
+  this server ends, the server `POST`s each listed path on its tool
+  (under the tool's prefix), so the next caller starts clean. Env knobs:
   `DEMON_TOOL_PROXY_MAX_BODY_MB` (default 256),
   `DEMON_TOOL_PROXY_TIMEOUT_S` (default 120; connect timeout is 5 s).
 
