@@ -1124,9 +1124,9 @@ def config_catalog() -> dict:
     hints = get_type_hints(SessionConfig)
     out: dict = {}
     for f in _dc_fields(SessionConfig):
-        if f.name == "family_config":
-            # Not a wire key: the container the family-declared keys below
-            # are parsed into.
+        if f.name in ("family_config", "plugin_params"):
+            # Not wire keys: containers the family-declared keys below
+            # and the raw ``plugin_*`` keys are parsed into.
             continue
         wire_type, nullable = _project_config_type(hints[f.name])
         entry: dict = {"type": wire_type, "required": False}

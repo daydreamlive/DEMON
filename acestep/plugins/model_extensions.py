@@ -155,11 +155,17 @@ class StreamLayout:
 
     ``tokens_per_stream``: pins ``L``. The session's render window is then
     exactly ``L`` latent frames per stream, whatever the requested
-    duration (a longer request is clamped to it). ``None`` derives ``L``
-    from the requested duration the stock way.
+    duration (a longer request is clamped to it). A callable
+    ``(duration_s) -> L`` derives ``L`` from each session's requested
+    duration with the layout's own rule (the window is then ``L`` frames,
+    the duration clamped onto it). ``None`` derives ``L`` from the
+    requested duration the stock way. Read it through :meth:`stream_tokens`.
 
     ``make_dit``: ``(context, latent_frames, seconds_total, backend) ->
-    dit`` where ``latent_frames`` is the STACKED length. Return either a
+    dit`` where ``latent_frames`` is the STACKED length. ``context`` is
+    the session's view of the model context; its ``session_params`` is
+    the session's ``plugin_*`` config keys (empty when none were sent).
+    Return either a
     torch callable ``dit(x_bct, t, **cond)`` or an object with
     ``trt_batch1 = True`` and ``step_bundle(x_1ct, t, bundle)`` (see
     ``acestep.engine.sa3_trt.SA3TRTDit``); return ``None`` to run the
@@ -209,10 +215,20 @@ class StreamLayout:
     def __post_init__(self):
         if int(self.n_streams) < 1:
             raise ValueError(f"n_streams must be >= 1, got {self.n_streams}")
-        if self.tokens_per_stream is not None and int(self.tokens_per_stream) < 1:
-            raise ValueError(
-                f"tokens_per_stream must be >= 1, got {self.tokens_per_stream}"
-            )
+        tps = self.tokens_per_stream
+        if tps is not None and not callable(tps) and int(tps) < 1:
+            raise ValueError(f"tokens_per_stream must be >= 1, got {tps}")
+
+    def stream_tokens(self, duration_s: float) -> "int | None":
+        """``L`` for a session of ``duration_s``: the pinned count, the
+        callable's answer, or ``None`` (derive it the stock way)."""
+        tps = self.tokens_per_stream
+        if tps is None:
+            return None
+        n = int(tps(float(duration_s)) if callable(tps) else tps)
+        if n < 1:
+            raise ValueError(f"tokens_per_stream must be >= 1, got {n}")
+        return n
 
 
 @dataclass(frozen=True)

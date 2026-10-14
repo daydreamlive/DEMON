@@ -327,7 +327,25 @@ class SA3Context:
         outro pad differ."""
         if song_seconds is not None:
             song_seconds = min(float(song_seconds), SONG_SECONDS_MAX)
-        return SA3LabelView(self, song_seconds, outro_pad_setting(song_seconds))
+        return SA3LabelView(
+            getattr(self, "_base", self), song_seconds,
+            outro_pad_setting(song_seconds),
+            getattr(self, "session_params", {}),
+        )
+
+    #: The session's ``plugin_*`` config keys (see
+    #: :meth:`with_session_params`); empty on the shared context.
+    session_params: Mapping = {}
+
+    def with_session_params(self, params: Mapping) -> "SA3LabelView":
+        """A per-session view of this context carrying the session's
+        ``plugin_*`` config keys as ``session_params`` (read by an
+        extension's stream layout, e.g. in ``make_dit``). The model,
+        engines, caches and label stay shared with this context."""
+        return SA3LabelView(
+            getattr(self, "_base", self), self.song_seconds, self.outro_pad_s,
+            dict(params or {}),
+        )
 
     def close(self) -> None:
         """Release the installed extension. Idempotent.
@@ -457,13 +475,12 @@ class SA3Context:
         layout = self.stream_layout()
         if layout is not None:
             # Stock engine profiles describe one stream and do not apply.
-            # A pinned stream length IS the window: clamp onto it.
-            if layout.tokens_per_stream is None:
+            # A pinned (or layout-derived) stream length IS the window:
+            # clamp onto it.
+            n = layout.stream_tokens(duration_s)
+            if n is None:
                 return duration_s
-            cap = (
-                int(layout.tokens_per_stream) * self.downsampling_ratio
-                / self.sample_rate
-            )
+            cap = n * self.downsampling_ratio / self.sample_rate
             return min(float(duration_s), cap)
         if backend != "tensorrt":
             return duration_s
@@ -495,7 +512,7 @@ class SA3Context:
         if layout is not None:
             extra = {
                 "n_streams": int(layout.n_streams),
-                "tokens_per_stream": layout.tokens_per_stream,
+                "tokens_per_stream": layout.stream_tokens(duration),
             }
         return self._helpers.prepare_sa3_conditioning(
             self.sam, prompt=prompt, duration=duration, steps=steps,
@@ -600,12 +617,14 @@ class SA3LabelView:
     the shared context, so a cache the context fills stays shared.
     """
 
-    _OVERRIDES = ("song_seconds", "outro_pad_s")
+    _OVERRIDES = ("song_seconds", "outro_pad_s", "session_params")
 
-    def __init__(self, base: SA3Context, song_seconds, outro_pad_s: float):
+    def __init__(self, base: SA3Context, song_seconds, outro_pad_s: float,
+                 session_params: Mapping | None = None):
         object.__setattr__(self, "_base", base)
         object.__setattr__(self, "song_seconds", song_seconds)
         object.__setattr__(self, "outro_pad_s", float(outro_pad_s))
+        object.__setattr__(self, "session_params", dict(session_params or {}))
 
     def __getattr__(self, name):
         import inspect
