@@ -65,18 +65,22 @@ def _try_load_sidecar(
     return sc
 
 
-def _decode_audio_msg(audio_msg: bytes) -> torch.Tensor:
-    """Parse a binary audio frame into a [≤2, N] float32 tensor.
+def _decode_audio_msg(audio_msg: bytes, max_channels: int | None = 2) -> torch.Tensor:
+    """Parse a binary audio frame into a [≤max_channels, N] float32 tensor.
 
     Wire format (shared by the init handshake, ``swap_source``,
     ``set_timbre_source``, ``set_structure_source``): little-endian
     ``<II`` header carrying (channels, samples), followed by interleaved
-    float32 PCM. Returns the waveform clipped to stereo (the model only
-    consumes 2 channels).
+    float32 PCM. Returns the waveform clipped to stereo by default (the
+    stock model only consumes 2 channels). ``max_channels=None`` keeps
+    every channel: ``swap_source`` hands the full upload to the session,
+    which clips it to stereo everywhere except a stream layout's own
+    ``encode_source`` (see ``SA3Backend.handle_swap_source``).
     """
     ch, n = struct.unpack("<II", audio_msg[:8])
     arr = np.frombuffer(audio_msg[8:], dtype=np.float32).reshape(n, ch)
-    return torch.from_numpy(arr.T.copy())[:2]
+    wf = torch.from_numpy(arr.T.copy())
+    return wf if max_channels is None else wf[:max_channels]
 
 
 def _load_waveform_from_path(path: str) -> torch.Tensor:

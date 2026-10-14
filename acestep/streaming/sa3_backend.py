@@ -1180,6 +1180,13 @@ class SA3Backend(DiffusionBackend):
                 "SA3Backend was constructed without a resizer; "
                 "swap-resize requires the from_context assembly"
             )
+        # Only a stream layout's own encode_source reads channels past
+        # the first two (the raw upload, e.g. one stereo pair per
+        # stream); everything else encodes the stereo source as before.
+        if (self._layout is None or self._layout.encode_source is None) and (
+            int(waveform.shape[0]) > 2
+        ):
+            waveform = waveform[:2]
         new_geom = None
         dropped_mirror = False
         degraded_to_eager = False

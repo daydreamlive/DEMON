@@ -2142,7 +2142,10 @@ def _handle_client_body(
                     if audio_msg is None:
                         return
                     try:
-                        wf = _decode_audio_msg(audio_msg)
+                        # Every channel: a stream layout's encode_source
+                        # reads them; the session clips to stereo for
+                        # everything else.
+                        wf = _decode_audio_msg(audio_msg, max_channels=None)
                     except Exception as exc:
                         logger.opt(exception=True).error(
                             "swap_source_decode_failed origin={} error={}",

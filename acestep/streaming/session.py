@@ -1260,6 +1260,10 @@ class StreamingSession:
                 handle, new_wf, new_fixture_name, new_duration_s,
             )
             return
+        # The upload may carry more than two channels (only a stream
+        # layout's encode_source reads them); the body below is stereo.
+        if new_wf.shape[0] > 2:
+            new_wf = new_wf[:2]
         if new_duration_s:
             # The ACE body below re-derives its geometry from the new
             # source unconditionally, so a resize request has nothing to
@@ -1560,7 +1564,10 @@ class StreamingSession:
             # geometry — unchanged for a plain swap (the create-time
             # shape, so the wire duration doesn't move), the backend's
             # returned length after a resize.
-            src_np = wf.cpu().numpy().T.copy()   # [N, C] float32
+            # The client buffer is stereo whatever the upload carried
+            # (channels past the first two are for the backend's anchor
+            # encode only; see SA3Backend.handle_swap_source).
+            src_np = wf[:2].cpu().numpy().T.copy()   # [N, C] float32
             with state._lock:
                 if new_playback:
                     state.playback_samples = int(new_playback)
