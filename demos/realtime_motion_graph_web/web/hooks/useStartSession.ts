@@ -430,6 +430,36 @@ async function restoreRefs(remote: RemoteBackend): Promise<void> {
   );
 }
 
+/** Minimum loop-region length in seconds. Mirrors `MIN_BAND_SEC` in
+ *  WaveformScrubBox — below this the band is meaningless and the editor
+ *  never mirrors it to the worklet / server. */
+const MIN_LOOP_BAND_SEC = 0.05;
+
+/**
+ * Re-send the operator's active loop band to a freshly (re)connected
+ * backend. Like timbre / structure refs, the loop band is NOT part of
+ * SessionConfig, and the only other sender (WaveformScrubBox's sync
+ * effect) does not re-run on reconnect — the AudioPlayer persists and
+ * `loopBand` is unchanged. So without this the new server session never
+ * learns the band: it decodes against the full timeline while the
+ * worklet keeps looping locally, drifting into a stale loop at the seam.
+ * Mirrors restoreRefs: read the source-of-truth store and re-apply to
+ * the new remote. The activity gate matches WaveformScrubBox exactly so
+ * we only send a band the listener is actually hearing loop.
+ */
+export function restoreLoopBand(remote: RemoteBackend): void {
+  const perf = usePerformanceStore.getState();
+  const band = perf.loopBand;
+  const active =
+    band !== null &&
+    perf.bandLoopEnabled &&
+    band.end - band.start >= MIN_LOOP_BAND_SEC &&
+    band.start >= 0;
+  if (active) {
+    remote.sendLoopBand(band.start, band.end);
+  }
+}
+
 export function useStartSession() {
   return useCallback(async () => {
     const { setStatus, setSession, reset } = useSessionStore.getState();
@@ -620,6 +650,12 @@ export function useStartSession() {
           // refs aren't carried in buildConfig, so without this a
           // reconnect silently drops them.
           await restoreRefs(remote);
+          // Same story for the active loop band: not in buildConfig, and
+          // WaveformScrubBox's sender effect doesn't re-run on reconnect
+          // (the AudioPlayer persists, loopBand unchanged). Without this
+          // the worklet keeps looping locally while the new server
+          // decodes the full timeline → drift / stale loop at the seam.
+          restoreLoopBand(remote);
         },
         {
           onAttempt: ({ attempt, maxAttempts }) => {
