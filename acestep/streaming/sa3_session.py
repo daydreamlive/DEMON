@@ -231,6 +231,12 @@ def create_sa3_session(
             context.song_seconds, context.outro_pad_s,
         )
 
+    # The session's plugin_* config keys, for an installed extension's
+    # stream layout (SA3Context.with_session_params).
+    plugin_params = dict(getattr(config, "plugin_params", None) or {})
+    if plugin_params:
+        context = context.with_session_params(plugin_params)
+
     # An installed extension may not be runnable under a prebuilt
     # acceleration plan. Resolve that BEFORE component construction so the
     # duration clamp below sees the backend that will actually run: a
