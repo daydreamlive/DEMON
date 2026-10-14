@@ -1,0 +1,97 @@
+---
+title: "Quickstart"
+description: "Install DEMON and run the web demo on your own GPU in minutes"
+icon: "rocket"
+---
+
+This guide takes you from a fresh clone to live, steerable music in the
+browser. If you just want to play without a GPU, skip straight to
+[music.daydream.live](https://music.daydream.live).
+
+<Steps>
+  <Step title="Clone and install">
+    ```bash
+    git clone https://github.com/daydreamlive/DEMON.git
+    cd DEMON
+    uv sync
+    uv run demon-setup
+    ```
+
+    `demon-setup` checks your environment, downloads the ACE-Step v1.5
+    checkpoints and starter LoRA pack, and builds the minimal TensorRT engine
+    set. It is idempotent, so re-running it after a partial download or failed
+    build resumes finished work.
+  </Step>
+
+  <Step title="Launch the demo">
+    ```bash
+    uv run python -u -m demos.realtime_motion_graph_web.run
+    ```
+
+    The launcher starts the Python backend on `:1318` and a Next.js dev server
+    on `:6660`. First run installs `web/node_modules` automatically
+    (Node.js 20+ required). Backend flags go after the `--` separator.
+  </Step>
+
+  <Step title="Need a no-engine path?">
+    If you want to skip TensorRT builds for now, run setup without engines and
+    launch in `compile` mode:
+
+    ```bash
+    uv run demon-setup --skip-engines
+    uv run python -u -m demos.realtime_motion_graph_web.run -- --accel compile
+    ```
+
+    `compile` needs no engines, but the first tick pays a long
+    `torch.compile` warmup. See [TensorRT Engines](/getting-started/tensorrt)
+    for the manual build commands and storage layout.
+  </Step>
+
+  <Step title="Open the app and play">
+    Open **http://localhost:6660** and click **click to begin**. The demo
+    loads the default fixture (`inside_confusion_loop_60s_gsm.wav`) and starts
+    streaming.
+
+    Cold start takes ~15 s while the server loads the model and TRT engines
+    (longer on `--accel compile`, which pays a one-time `torch.compile`
+    warmup). Once ready, the UI switches to the live HUD view.
+  </Step>
+
+  <Step title="Steer it">
+    - Drag the **top ribbon** (or press <kbd>A</kbd> + <kbd>↑</kbd>/<kbd>↓</kbd>)
+      to raise *remix strength* — at 0 you hear the source; push it up and the
+      model takes over.
+    - Edit the prompt and press <kbd>Enter</kbd> to re-encode it live.
+    - Press <kbd>O</kbd> to open the **Full Controls** drawer for everything
+      else: LoRAs, channel faders, guidance, automation curves.
+    - The spectral-control sliders live in the **Experimental** tab. They steer
+      generation itself, so sweep slowly and listen to upcoming audio.
+
+    The full control surface is documented in
+    [The Demo App](/demo/overview).
+  </Step>
+</Steps>
+
+## Common launcher variants
+
+```bash
+# Mix backends — TRT decoder, eager VAE (debugging the decode path):
+uv run python -u -m demos.realtime_motion_graph_web.run -- \
+    --accel tensorrt --vae-accel eager
+
+# Run the XL (5B) checkpoint (requires XL TRT engines — see TensorRT page):
+uv run python -u -m demos.realtime_motion_graph_web.run -- \
+    --accel tensorrt --checkpoint acestep-v15-xl-turbo
+
+# Lower-VRAM GPUs: offload the text encoder between prompt edits:
+uv run python -u -m demos.realtime_motion_graph_web.run -- \
+    --accel tensorrt --offload-text-encoder
+```
+
+The complete flag list is in the [CLI reference](/reference/cli).
+
+## Something not working?
+
+The [Troubleshooting](/reference/troubleshooting) page covers the common
+failure modes: `engine_not_built` errors, WebSocket connection failures,
+silent audio, slow cold starts, and TensorRT version mismatches.

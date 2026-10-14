@@ -1,0 +1,89 @@
+---
+title: "Knob Reference"
+description: "Every operator knob — type, default, range, and semantics"
+icon: "sliders"
+---
+
+The knob registry (`acestep/streaming/knobs.py`) is the single source of
+truth for the operator control surface. It is served live at
+[`GET /api/knobs`](/reference/http-api) and by the
+[`list_knobs` MCP tool](/reference/mcp-tools); the tables below mirror it.
+
+**Validation semantics:** numeric knobs are **clamped** into `[min, max]`
+(ints rounded); invalid enum/bool values are **dropped** (the prior value is
+preserved). The hot 125 Hz parameter path clamps silently; discrete callers
+(MCP tools) surface the errors.
+
+**`bank`** marks knobs the streaming runner reads through `KnobState`
+(continuous params). Non-bank knobs ride the same `params` channel but are
+consumed straight from the raw wire dict — they're in the schema so every
+frontend can render and validate them.
+
+## Core (`core` group)
+
+| Knob | Type | Default | Range | Description |
+|---|---|---|---|---|
+| `denoise` *(ODE mode)* | float | 0.0 | 0–1 | ODE denoise strength — the remix-strength knob |
+| `sde_amp` *(SDE mode)* | float | 0.0 | 0–1 | SDE diffusion amplitude (replaces `denoise` in SDE mode) |
+| `periodicity` *(SDE mode)* | float | 0.0 | 0–12.5 | SDE periodicity |
+| `seed` | int | 0 | 0–4294967295 | Stream seed (passed to `torch.manual_seed`) |
+| `feedback` | float | 0.0 | 0–1 | Feedback amount |
+| `feedback_depth` | int | 1 | 1–8 | Feedback delay-tap depth in ticks (1 = last, N = N ticks back) |
+| `shift` | float | 3.5 | 1–6 | Flow shift (timing/curve shape), passed verbatim to the diffusion solver |
+| `hint_strength` | float | 1.0 | 0–1 | Structure (semantic hint) blend strength |
+| `x0_target` | float | 0.0 | 0–1 | Scalar blend toward the x0 source-lock target (second half of the schedule); requires a source latent |
+| `lora_str_<id>` | float | 0.0 | 0–2 | Strength for enabled LoRA `<id>` — allocated dynamically per enabled LoRA |
+
+## Channels (`groups` / `keystones` groups)
+
+All default 1.0, wire range 0–3 (the demo UI applies tighter per-channel caps
+via [`channel_ranges`](/demo/configuration#channel_ranges)):
+
+| Knob | Description |
+|---|---|
+| `ch_g0` … `ch_g7` | Channel-group amplifiers — each spans 8 of the 64 latent channels |
+| `ch13`, `ch14`, `ch19`, `ch23`, `ch29`, `ch56` | Keystone single-channel amplifiers |
+
+## Guidance (`guidance` group, non-bank)
+
+| Knob | Type | Default | Range | Description |
+|---|---|---|---|---|
+| `guidance_scale` | float | 1.0 | 1–15 | RCFG guidance scale; only applied when `rcfg_mode != "off"` |
+| `cfg_rescale` | float | 0.0 | 0–1 | APG norm rescale toward the positive velocity magnitude |
+| `rcfg_mode` | enum | `off` | `off` / `self` / `initialize` / `full` | Residual-CFG mode. String-valued — set via the `set_rcfg_mode` MCP tool, not `set_knob` |
+
+## DCW corrector (`dcw` group, non-bank)
+
+| Knob | Type | Default | Range | Description |
+|---|---|---|---|---|
+| `dcw_enabled` | bool | `true` | — | Enable the wavelet-domain corrector |
+| `dcw_mode` | enum | `double` | `low` / `high` / `double` / `pix` | Correction band |
+| `dcw_wavelet` | enum | `haar` | `haar` / `db4` / `sym8` / `db8` | Wavelet basis |
+| `dcw_scaler` | float | 0.05 | 0–0.5 | Low-band push strength |
+| `dcw_high_scaler` | float | 0.02 | 0–0.5 | High-band push strength |
+| `dcw_mult_blend` | float | 0.0 | 0–1 | Multiplicative-blend fader (advanced; 0 = upstream behavior) |
+| `dcw_mag_phase` | float | 0.0 | 0–1 | Magnitude+phase fader (advanced; 0 = upstream behavior) |
+| `dcw_soft_thresh` | float | 0.0 | 0–0.3 | Soft-threshold sparsity (advanced; 0 = upstream behavior) |
+
+## Pipeline (non-bank)
+
+| Knob | Type | Default | Range | Description |
+|---|---|---|---|---|
+| `steps_override` | int | 8 | 1–16 | Diffusion step count. Changing it rebuilds the StreamPipeline |
+
+## Steering (`steering` / `manual` groups, when available)
+
+| Knob | Type | Default | Range | Description |
+|---|---|---|---|---|
+| *auto axis knobs* | float | 0.0 | −30…30 | Activation-steering α for a pre-built axis, injected at a fixed DiT layer/step. 0 = off; negative inverts. Useful magnitude ~2–15 by ear |
+| `man_src_<N>` | int | 0 | 0–catalog | Manual slot N: steering-vector catalog index (see `list_manual_steering_vectors`) |
+| `man_layer_<N>` | int | 9 | 0–layer max | Manual slot N: DiT inject layer (verbatim, no offset) |
+| `man_step_<N>` | int | 0 | 0–step max | Manual slot N: diffusion inject step; values past `steps_override − 1` silently no-op |
+| `man_alpha_<N>` | float | 0.0 | −30…30 | Manual slot N: injection strength; 0 = slot off; negative inverts, no sign correction |
+
+## Schema versioning
+
+The manifest carries `KNOB_SCHEMA_VERSION` (currently `1`). It bumps whenever
+the contract changes shape in a way a frontend or agent must notice (knob
+added/removed/retyped, bounds semantics changed) — compare it to detect a
+stale build.

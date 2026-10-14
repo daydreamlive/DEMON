@@ -1,0 +1,68 @@
+---
+title: "HTTP API"
+description: "The backend's HTTP surface — manifests, fixtures, LoRAs, and videos on port 1318"
+icon: "globe"
+---
+
+The backend multiplexes the HTTP API, file serving, and the WebSocket upgrade
+on one TCP port (default `:1318`). In the bundled demo, Next.js rewrites
+`/api/*`, `/fixtures/*`, `/loras/*`, and `/videos/*` from the UI origin to
+the backend.
+
+## Manifests
+
+These two endpoints are the runtime-discoverable contract — build frontends
+against them rather than hardcoding:
+
+### `GET /api/knobs`
+
+The complete knob catalog:
+
+```json
+{
+  "version": 1,
+  "knobs": {
+    "denoise": {
+      "type": "float", "default": 0.0, "min": 0.0, "max": 1.0,
+      "group": "core", "bank": true,
+      "description": "ODE denoise strength"
+    },
+    "rcfg_mode": {
+      "type": "enum", "default": "off", "group": "guidance", "bank": false,
+      "options": ["off", "self", "initialize", "full"]
+    }
+  }
+}
+```
+
+Every entry is fully self-describing — see the
+[knob reference](/reference/knobs) for the catalog contents and the
+clamp/drop validation semantics.
+
+### `GET /api/protocol`
+
+The wire contract: `{version, commands, events, config, handshake}` —
+the machine-readable form of the
+[WebSocket protocol](/reference/websocket-protocol). The same payload backs
+the MCP `describe_protocol` tool, so every transport reads one contract.
+
+## Catalogs & files
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/loras` | LoRA library metadata (ids, names, genre grouping, recommended strengths, base-model scale) plus the active checkpoint scale |
+| `GET /fixtures/<name>` | A built-in fixture `.wav` — lazily downloaded from the `daydreamlive/demon-fixtures-v2` Hugging Face dataset and cached |
+| `GET /loras/<id>` | LoRA `.safetensors` weights |
+| `GET /videos/<name>` | Optional audio-reactive backdrop videos (`.mp4` / `.webm` / `.mov`) dropped into the demo's `videos/` folder |
+
+## WebSocket
+
+`ws://<host>:1318/` — same port; the upgrade hands off to a per-connection
+session coroutine. Wire format in the
+[WebSocket protocol reference](/reference/websocket-protocol).
+
+## Control bus (separate port)
+
+A localhost-only HTTP server on `:1319` accepts commands *into live sessions*
+— it exists for the [MCP server](/advanced/mcp) and is not part of the public
+HTTP surface. See [security notes](/cloud/deployment#control-bus-security).

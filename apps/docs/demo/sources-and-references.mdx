@@ -1,0 +1,88 @@
+---
+title: "Sources & References"
+description: "Swap the source track mid-session and bias the output with timbre and structure references"
+icon: "arrows-rotate"
+---
+
+Three independent audio inputs shape what you hear:
+
+| Input | What it controls |
+|---|---|
+| **Source** | The track being remixed — what the playhead runs over |
+| **Timbre reference** | Instrument character / sound palette |
+| **Structure reference** | Sections, rhythm, and dynamics (the semantic hint) |
+
+All three accept built-in fixtures, uploaded files, or a short microphone
+recording, and all three can be changed mid-session. Mix freely — e.g. a
+thrash-metal source with a lo-fi timbre reference and a prog-rock structure
+reference.
+
+## The source track
+
+The **Core** tab's track picker lists the built-in fixtures plus your
+uploads. The shipped fixtures (streamed on first request from the
+`daydreamlive/demon-fixtures-v2` Hugging Face dataset and cached locally):
+
+- `inside_confusion_loop_60s_gsm.wav` — G♯ minor (the default)
+- `low_fi_Gm_loop_60s_gnm.wav` — G minor
+- `prog_rock_loop_60s_enm.wav` — E minor
+- `thrash_metal_loop_60s_enm.wav` — E minor
+
+Fixtures ship with pre-encoded sidecars (source latent, semantic context,
+BPM, key), so swapping to one skips beat tracking, key classification, and
+the encode round-trip entirely.
+
+**Uploading your own track** triggers the *Almost Ready* dialog:
+
+1. **Inference source** — feed the model the **Full track**, just the
+   **Instruments**, or just the **Vocals**. Stems are ripped automatically on
+   the server either way (a MelBand-RoFormer vocal/instrumental separation);
+   the choice controls what inference hears, not what you can monitor. The
+   default for uploads is *instruments* (configurable via
+   `swap_source_mode`).
+2. **Key & time signature** — auto-detected, or pin them manually.
+
+Uploads are persisted server-side with the same sidecar layout as fixtures,
+so swapping back to a previous upload is instant.
+
+**Swap behavior:** by default the playhead keeps its phase across a swap
+(swapping at 1:30 starts the new track at 1:30). Set
+`restart_song_on_swap: true` in [config.json](/demo/configuration) to restart
+from the top instead. On every swap the remix-strength gate snaps to 0 so you
+hear the new source first.
+
+**Mic as source:** record a 60 s snippet from your microphone and use it as
+the source directly.
+
+## Timbre reference
+
+The timbre control biases *instrument character* toward a reference clip.
+
+- Pick a **fixture**, **upload a clip**, or **record a few seconds of mic
+  audio** (hum a melody, play your guitar at the laptop).
+- The **timbre strength** knob blends between a cached silence baseline (0)
+  and the full reference (1) — it's a free, per-tick blend, so sweep it live.
+- **Clear** the reference to fall back to *self-timbre* (the source's own
+  character).
+
+## Structure reference
+
+The structure reference replaces the source's semantic context — the model
+follows the reference's sections, rhythm, and dynamics while still remixing
+the source's audio.
+
+- Same source options: fixture, upload, or mic. The reference is padded or
+  trimmed to the source's length.
+- The **structure** knob (`hint_strength`) controls how strongly the hint
+  steers generation — 0 ignores it entirely.
+- **Clear** restores the source's own semantic context.
+
+## Writing audio into the live source
+
+Beyond swapping whole tracks, the engine can write audio *into* the playing
+source in place — sample-exact, without restarting the stream: replace or
+overdub (`sum`) a region at any position, optionally tiled across the whole
+source. In the demo this powers the mic workflows; it is also exposed
+directly as the [`write_audio` MCP tool](/reference/mcp-tools) and the
+`write_audio` wire command for programmatic use (live looping, agent-driven
+jamming).

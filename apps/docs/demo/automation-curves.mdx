@@ -1,0 +1,60 @@
+---
+title: "Automation Curves"
+description: "Draw parameter automation over the timeline, and loop a region of the track"
+icon: "chart-line"
+---
+
+## The curve editor
+
+Open the curve editor from the tools cluster in the hero-macros bay (the
+curve glyph next to the Record pill).
+
+<img src="/images/curve-editor.png" alt="The schedule curves overlay" />
+
+Draw parameter automation against the track timeline — as the editor's own
+help puts it, *so the model performs an arrangement instead of a static
+patch*. Schedulable lanes include:
+
+- **Strength** (remix strength / denoise)
+- **Structure** (hint strength)
+- **Feedback**
+- **Shift**
+- **Timbre**
+- **Any enabled LoRA's strength**
+
+Pick a lane along the bottom of the editor, draw, and use **CLEAR** / **OFF**
+to reset or bypass a lane. Lanes can be right-clicked to
+[MIDI-learn](/demo/midi) them like any other control.
+
+Each lane is evaluated against the playhead every frame and feeds the same
+125 Hz parameter channel as the on-screen knobs — a drawn curve and a live
+knob are the same thing to the engine.
+
+**Interpolation modes** per lane: **smooth**, **linear**, or **step**. Step
+mode is the one to reach for on rhythmic gestures (e.g. strength drops on
+section boundaries).
+
+Curve values are clamped to the same per-parameter ranges as the sliders
+(including the per-channel caps from `channel_ranges` in
+[config.json](/demo/configuration)), and drawn curves are included in
+[config export](/demo/configuration#session-snapshots) snapshots.
+
+## Loop band
+
+A playback loop pairs naturally with automation:
+
+| Key | Action |
+|---|---|
+| <kbd>L</kbd> | Toggle the loop — arms drawing a region, or enables the existing one |
+| <kbd>←</kbd> / <kbd>→</kbd> | Nudge the loop by one grid step |
+| <kbd>Shift</kbd>+<kbd>←</kbd> / <kbd>→</kbd> | Move the loop by its own length |
+
+The loop band is sent to the server (`loop_band` command), so generation
+itself follows the loop — the model keeps reworking the looped region rather
+than the playhead simply jumping back.
+
+## Idle reset
+
+For installations: set `reset_seconds` in config.json to revert every
+control (including curves) to defaults after N seconds without pointer, key,
+or MIDI input. `0` (the default) disables it.

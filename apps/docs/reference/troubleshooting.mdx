@@ -1,0 +1,110 @@
+---
+title: "Troubleshooting"
+description: "Common failure modes and their fixes"
+icon: "wrench"
+---
+
+## Demo app
+
+**"WebSocket connection failed"** — verify the backend is reachable on
+`:1318` (firewall, reverse proxy must pass WebSocket upgrades). The launcher
+logs `[backend]` output if the Python side crashed.
+
+**Audio is silent on first connect** — browsers gate audio behind a user
+gesture. *click to begin* counts as one, so this should just work; if it
+doesn't, click anywhere in the HUD view.
+
+**No MIDI devices listed** — Web MIDI requires Chromium on `localhost` or
+HTTPS. Use `http://localhost:6660` (tunnel to it for remote boxes), or serve
+behind TLS.
+
+**Webcam permission denied** — same secure-origin constraint as MIDI. Switch
+to on-screen knobs if the browser blocks the camera.
+
+**Cold start is long** — the GPU server rebuilds the pipeline on every new
+connection (~15 s on TRT; much longer the first time on `--accel compile`,
+which pays a `torch.compile` warmup). Reuse connections when possible.
+
+**Knob feels laggy** — remember the
+[two latency classes](/engine/streaming#the-two-latency-classes): ODE
+`denoise` and `seed` take a few hundred ms by construction, and the adaptive
+playback lead adds ~0.25 s before anything is audible. On a contended GPU the
+lead inflates toward its ceiling; see `lead_floor_s` in
+[config.json](/demo/configuration).
+
+## TensorRT
+
+**Server exits at boot: "TensorRT engines not built" or UI reports
+`engine_not_built`** — run setup, launch without engines, or build the
+smallest profile that fits your source exactly as the error's `build_command`
+suggests:
+
+```bash
+uv run demon-setup
+uv run python -u -m demos.realtime_motion_graph_web.run -- --accel compile
+uv run python -m acestep.engine.trt.build --all --duration 60   # 60 s source
+uv run python -m acestep.engine.trt.build --all --duration 120  # 120 s source
+```
+
+**`DEMON TensorRT builds target TensorRT >=10.16,<10.17`** — the preflight
+rejected your TensorRT version:
+
+```bash
+uv sync --upgrade-package tensorrt
+```
+
+**Crash on the first VAE inference on RTX 5090** — the engine predates the
+Blackwell `builder_optimization_level=1` workaround, or was carried across an
+incompatible TRT/GPU stack. Rebuild:
+
+```bash
+uv run python -m acestep.engine.trt.build --all --vae-only --duration 60 --force-rebuild
+```
+
+**Static-batch / reshape mismatch on XL** (`Static dimension mismatch…` or
+`IShuffleLayer… reshaping failed`) — the XL engine wasn't built from the
+dynamic-batch patched ONNX. Rebuild and check the logs mention
+`*_dynbatch.onnx` with patched `Reshape` constants.
+
+**Unexpected rebuilds** — check `<engine>.metadata.json`; the build script
+rebuilds when the schema, TensorRT version, GPU compute capability, build
+config, or ONNX sha256 changes.
+
+**Out of memory during XL builds** — use `--decoder-only`,
+`--batch-max 4 --batch-opt 4 --builder-optimization-level 5`, start with
+`--duration 60`, and keep `vae_window > 0` with the windowed decode engine.
+
+**`ModuleNotFoundError: onnxscript` during XL export** — `uv add onnxscript`.
+
+**Windows `UnicodeEncodeError` from `torch.onnx`** — set
+`$env:PYTHONIOENCODING = "utf-8"`.
+
+## VRAM
+
+**Cold start uses more VRAM than expected** — prefer the smallest duration
+profile that fits the source (240 s → 60 s engines free ~9 GB across the
+set), keep `vae_window > 0`, add `--offload-text-encoder`, or isolate a
+component with `--decoder-accel` / `--vae-accel`.
+
+## LoRAs
+
+**A LoRA does nothing on XL** — XL TRT LoRA refit is not yet validated;
+runtime logs show `No engine weights matched`. Use the 2B turbo checkpoint
+for hot-LoRA work.
+
+**A LoRA is missing from the library** — check the file is under
+`$ACESTEP_MODELS_DIR/loras/`, and that it isn't hidden by the
+checkpoint-scale filter (`show_incompatible_loras` in
+[config.json](/demo/configuration)).
+
+## MCP
+
+**MCP tools refuse to act** — the MCP server attaches to a *live browser
+session*; open the demo tab first. Verify the control bus is up (`:1319`) and
+wasn't disabled with `--no-control`.
+
+## Engine / scripts
+
+**`import acestep` resolves to the wrong package** — a sibling ACE-Step
+checkout is shadowing the repo. Run from the repo root, or prepend the repo
+root to `sys.path` in standalone scripts.

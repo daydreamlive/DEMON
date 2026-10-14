@@ -1,0 +1,114 @@
+---
+title: "Session API"
+description: "Drive DEMON programmatically — load the model once, then iterate"
+icon: "code"
+---
+
+The Session API (`acestep/engine/session.py`) is the engine's primary
+programmatic surface. Load the model once, then generate, decode, and stream
+without paying setup cost again — after warmup an iteration costs ~310 ms.
+
+## One-shot generation
+
+```python
+from acestep.engine.session import Session
+from acestep.constants import TASK_INSTRUCTIONS
+
+session = Session(
+    decoder_backend="compile",  # or "tensorrt", "eager"
+    vae_backend="compile",
+    vae_window=0.36,            # 0 = full decode; >0 enables windowed decode
+)
+
+# Load audio, encode it, extract semantic context (cache across iterations).
+source = session.prepare_source(audio)
+
+# Encode text once. Reused across generations.
+cond = session.encode_text(
+    tags="deathstep death",
+    instruction=TASK_INSTRUCTIONS["cover"],
+    refer_latent=source.latent,
+    bpm=136, duration=60.0, key="G# minor",
+)
+
+# Generate, decode, save. Cheap after warmup (~310 ms per iteration).
+for seed in [1528, 9999, 42]:
+    latent = session.generate(
+        conditioning=cond,
+        context_latent=source.context_latent,
+        source_latent=source.latent,
+        seed=seed,
+    )
+    save_audio(session.decode(latent), f"out_{seed}.wav")
+```
+
+## The methods
+
+| Method | What it does |
+|---|---|
+| `prepare_source(audio)` | VAE-encodes audio and extracts semantic context. Returns a `PreparedSource` with `.latent` and `.context_latent`. Cache it across iterations. |
+| `encode_text(tags, instruction, refer_latent, bpm, duration, key, ...)` | One text-encoder forward pass. Returns a `Conditioning` reused across generations. |
+| `generate(conditioning, context_latent, source_latent, seed, ...)` | One-shot diffusion inference. Returns a `Latent`. |
+| `decode(latent, t_start=...)` | VAE decode to audio. With `vae_window > 0`, decodes only the requested window starting at `t_start`. |
+| `stream(source, conditioning, pipeline_depth)` | Wraps the same primitives in a `StreamHandle` for continuous generation. |
+| `apply_lora(...)` | Hot LoRA lifecycle — enable / set strength / remove without rebuilding (TRT refit when the decoder is a TRT engine). |
+
+## Streaming
+
+Streaming composes the same pure step primitives as the one-shot path
+(`acestep/engine/ode_steps.py`), so the output is **bit-identical to batch**:
+
+```python
+handle = session.stream(source=source, conditioning=cond, pipeline_depth=4)
+for _ in range(N_TICKS):
+    # Mutate handle.conditioning / handle.context_latent between ticks
+    # to swap prompts or blend semantic hints live.
+    latent = handle.tick()
+    if latent is not None:
+        audio = handle.decode(latent, t_start=window_start_s)
+
+# Per-frame curve overrides bypass the ring buffer (1-tick latency):
+handle.pipeline.set_shared_curve("velocity_scale", 1.2)
+handle.pipeline.set_shared_curve("sde_denoise_curve", torch.tensor([...]))
+```
+
+`handle.tick()` advances every in-flight slot by one denoising step and
+returns a finished latent when one completes (after warmup, every
+`steps/depth` ticks on average). What you can mutate mid-stream — and how fast
+each class of change reaches the audio — is covered in
+[Streaming Pipeline](/engine/streaming).
+
+## TensorRT engines
+
+Pass engine paths explicitly, or use the canonical helper for the default
+checkpoint:
+
+```python
+from acestep.paths import available_trt_engines
+
+engines, picked_duration = available_trt_engines(duration_s=60.0)
+session = Session(
+    decoder_backend="tensorrt",
+    vae_backend="tensorrt",
+    vae_window=0.36,
+    trt_engines=engines,
+)
+```
+
+Explicit paths follow the layout in
+[TensorRT Engines](/getting-started/tensorrt):
+
+```python
+trt_engines={
+    "decoder": "trt_engines/spectral_decoder_mixed_refit_b8_60s/spectral_decoder_mixed_refit_b8_60s.engine",
+    "vae_encode": "trt_engines/vae_encode_fp16_60s/vae_encode_fp16_60s.engine",
+    "vae_decode": "trt_engines/vae_decode_fp16_1s_fixed/vae_decode_fp16_1s_fixed.engine",
+}
+```
+
+<Tip>
+Working examples live in `examples/` — start with `session_demo.py`
+(persistent session, iterate covers with different seeds) and
+`realtime_cover.py` (the full real-time workflow). See
+[Examples](/engine/examples).
+</Tip>
