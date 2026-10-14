@@ -18,7 +18,7 @@ export const PROTOCOL_VERSION = 1;
 // Knob-manifest schema version (the `version` field served by GET
 // /api/knobs and the MCP list_knobs tool). Compare against the live
 // manifest to detect a stale build, exactly like PROTOCOL_VERSION.
-export const KNOB_SCHEMA_VERSION = 1;
+export const KNOB_SCHEMA_VERSION = 2;
 
 export type CommandName =
   | "params"
