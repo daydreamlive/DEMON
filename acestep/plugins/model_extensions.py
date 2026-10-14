@@ -173,6 +173,13 @@ class StreamLayout:
     for one slot (``request.seed`` is the slot seed). Absent, the
     pipeline's stock single-generator draw at the stacked shape is used.
 
+    ``make_renoise``: ``(request, step) -> [1, n_streams * L, C] | None``,
+    the re-noise draw a stochastic (pingpong / SDE) sampler mixes in after
+    step ``step`` of the slot built from ``request``, in place of the
+    slot's own generator draw. Return ``None`` to take the stock draw.
+    Lets per-stream noise streams continue past the initial draw. Absent,
+    the stock draw is used at every step.
+
     ``encode_source``: ``(context, audio_input, audio_sample_size) ->
     [1, C, n_streams * L]`` stacked source anchor, where ``audio_input``
     is the ``(sample_rate, waveform)`` pair and ``audio_sample_size`` is
@@ -197,6 +204,7 @@ class StreamLayout:
     make_noise: Callable | None = None
     encode_source: Callable | None = None
     mix: Callable | None = None
+    make_renoise: Callable | None = None
 
     def __post_init__(self):
         if int(self.n_streams) < 1:

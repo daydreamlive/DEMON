@@ -54,6 +54,7 @@ class SA3Adapter:
         device,
         dtype,
         make_noise: Optional[Callable] = None,
+        make_renoise: Optional[Callable] = None,
     ):
         self.dit = dit
         self.schedule_builder = schedule_builder
@@ -78,6 +79,24 @@ class SA3Adapter:
         if make_noise is not None:
             self._noise_fn = make_noise
             self.make_noise = self._layout_noise
+        # Optional per-step re-noise override, bound the same way (the
+        # pipeline probes ``getattr(adapter, "make_renoise", None)``).
+        if make_renoise is not None:
+            self._renoise_fn = make_renoise
+            self.make_renoise = self._layout_renoise
+
+    def _layout_renoise(self, request, step: int):
+        """The supplied re-noise draw for ``step`` (or None = the stock
+        draw), checked and moved like :meth:`_layout_noise`."""
+        noise = self._renoise_fn(request, int(step))
+        if noise is None:
+            return None
+        want = (1, self.request_frames(request), self.latent_channels)
+        if tuple(noise.shape) != want:
+            raise ValueError(
+                f"stream layout re-noise shape {tuple(noise.shape)} != {want}"
+            )
+        return noise.to(device=self._device, dtype=self._dtype)
 
     def _layout_noise(self, request) -> torch.Tensor:
         """The supplied noise draw, checked against the slot geometry and

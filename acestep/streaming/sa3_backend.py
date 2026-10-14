@@ -557,6 +557,9 @@ class SA3Backend(DiffusionBackend):
             device=context.device,
             dtype=context.dtype,
             make_noise=layout.make_noise if layout is not None else None,
+            make_renoise=(
+                getattr(layout, "make_renoise", None) if layout is not None else None
+            ),
         )
 
         # Phase-2 refit mirror: engaged only when the selected DiT is a
@@ -1889,4 +1892,12 @@ class SA3Backend(DiffusionBackend):
             p["x0_target"] = round(prep["x0_target"], 2)
             p["feedback"] = round(prep["feedback"], 2)
             p["feedback_depth"] = prep["feedback_depth"]
+        # The installed extension's operator status, for pages that read
+        # it from the params telemetry.
+        status = getattr(self._extension_runtime, "status", None)
+        if callable(status):
+            try:
+                p["extension"] = dict(status())
+            except Exception as exc:
+                logger.warning("sa3_extension_status_raised error={}", exc)
         p["_prompt"] = getattr(self.state, "prompt_text", "")
