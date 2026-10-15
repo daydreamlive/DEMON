@@ -1121,6 +1121,7 @@ class StreamPipeline:
             if slot is not None and slot.step_idx >= len(slot.t_schedule) - 1:
                 finished = slot.xt
                 self.last_finished_request = slot.request
+                self._notify_slot_done(slot.request, finished)
                 self._slots[i] = None
                 break
 
@@ -1163,6 +1164,7 @@ class StreamPipeline:
                     # emerged-params echo and the decode-seed pairing
                     # describe the PREVIOUS latent.
                     self.last_finished_request = slot.request
+                    self._notify_slot_done(slot.request, finished)
                     self._slots[i] = None
                     break
 
@@ -1170,6 +1172,21 @@ class StreamPipeline:
         self.ticks += 1
 
         return finished
+
+    def _notify_slot_done(self, request, latent: torch.Tensor) -> None:
+        """Hand a finished slot's latent to the adapter's optional
+        ``on_slot_done(request, latent)`` observer, just before delivery.
+        A raising observer never breaks the tick: it is logged once per
+        pipeline and the latent is delivered regardless."""
+        hook = getattr(self.adapter, "on_slot_done", None)
+        if hook is None:
+            return
+        try:
+            hook(request, latent)
+        except Exception as exc:  # noqa: BLE001 - observer must not kill the tick
+            if not getattr(self, "_slot_done_warned", False):
+                self._slot_done_warned = True
+                logger.warning("on_slot_done raised (ignored): {!r}", exc)
 
     # ------------------------------------------------------------------
     # Unified tick — all features compose via pure ode_steps bricks

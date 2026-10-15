@@ -186,6 +186,12 @@ class StreamLayout:
     Lets per-stream noise streams continue past the initial draw. Absent,
     the stock draw is used at every step.
 
+    ``on_slot_done``: ``(request, latent) -> None``, called once for every
+    slot whose denoise completes, with the finished latent ``[1, T, C]``
+    in the ring layout, before it is delivered; lets a layout observe
+    finished slots (for example to hold a stream at its latest render).
+    Absent, nothing is called.
+
     ``encode_source``: ``(context, audio_input, audio_sample_size) ->
     [1, C, n_streams * L]`` stacked source anchor, where ``audio_input``
     is the ``(sample_rate, waveform)`` pair and ``audio_sample_size`` is
@@ -211,6 +217,7 @@ class StreamLayout:
     encode_source: Callable | None = None
     mix: Callable | None = None
     make_renoise: Callable | None = None
+    on_slot_done: Callable | None = None
 
     def __post_init__(self):
         if int(self.n_streams) < 1:
