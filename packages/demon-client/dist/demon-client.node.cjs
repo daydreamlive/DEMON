@@ -1780,6 +1780,7 @@ var COMMAND_NAMES = [
   "set_depth",
   "enable_lora",
   "disable_lora",
+  "add_lora",
   "manual_slot_add",
   "manual_slot_pop",
   "set_timbre_strength",
@@ -1790,7 +1791,9 @@ var COMMAND_NAMES = [
   "set_structure_fixture",
   "clear_structure_source",
   "swap_source",
-  "write_audio"
+  "write_audio",
+  "midi_transcribe",
+  "bounce"
 ];
 var EVENT_NAMES = [
   "init_ack",
@@ -1815,7 +1818,11 @@ var EVENT_NAMES = [
   "structure_failed",
   "audio_written",
   "audio_write_failed",
-  "command_failed"
+  "command_failed",
+  "midi_notes",
+  "midi_failed",
+  "bounce_ready",
+  "bounce_failed"
 ];
 
 // config/enums.ts
