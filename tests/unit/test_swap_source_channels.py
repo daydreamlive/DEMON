@@ -11,6 +11,7 @@ stereo for the stock encode (no layout, or a layout without its own
 from __future__ import annotations
 
 import struct
+import types
 
 import numpy as np
 import torch
@@ -80,3 +81,21 @@ def test_stock_encodes_stay_stereo():
         seen = _record_encoder(b)
         b.handle_swap_source(torch.randn(10, 1000), SAMPLE_RATE)
         assert seen == [2]
+
+
+class _DeliveringBackend(_StubBackend):
+    """A backend whose geometry declares more than one channel pair."""
+
+    def geometry(self):
+        return types.SimpleNamespace(channels=2 * N_STREAMS)
+
+
+def test_swap_buffer_takes_a_multichannel_delivery_count():
+    backend = _DeliveringBackend(swap_resize=False)
+    sess = _SwapSession(backend)
+    sess.swap(2.0, channels=10)
+    assert backend.calls[-1]["channels"] == 10
+    assert sess.state.n_channels == 2 * N_STREAMS
+    assert sess.audio_eng.current.shape == (OLD_PLAY, 2 * N_STREAMS)
+    assert not sess.audio_eng.current.any()
+    assert sess.bus.events[-1].channels == 2 * N_STREAMS

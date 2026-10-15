@@ -733,3 +733,89 @@ def test_render_stream_returning_none_is_bit_identical_to_no_hook():
         out.append((b.render_full().pcm.copy(), b.render_window(0.05).pcm.copy()))
     assert np.array_equal(out[0][0], out[1][0])
     assert np.array_equal(out[0][1], out[1][1])
+
+
+# ---- side-by-side stream delivery ---------------------------------------------
+
+
+def test_deliver_streams_defaults_to_off():
+    assert StreamLayout(n_streams=2).deliver_streams is False
+
+
+def test_geometry_reports_one_pair_per_delivered_stream():
+    b, _context, _runtime = _layout_backend()
+    assert b.geometry().channels == 2
+    b, _context, _runtime = _layout_backend(
+        runtime=_LayoutRuntime({"deliver_streams": True}),
+    )
+    assert b.geometry().channels == 2 * N_STREAMS
+    assert _stock_backend(None).geometry().channels == 2
+
+
+def test_deliver_streams_full_path_places_each_stream_on_its_own_pair():
+    runtime = _LayoutRuntime({"deliver_streams": True})
+    b, context, _ = _layout_backend(runtime=runtime)
+    latent = _run_until_fresh(b, _knobs(b, sa3_denoise=0.7))
+    full = b.render_full().pcm
+    assert full.shape == (_full_len(), 2 * N_STREAMS)
+    assert full.dtype == np.float32
+    assert context.codec.decodes == N_STREAMS
+    assert runtime.mixed == []                  # mix is ignored while set
+    native = latent.movedim(1, 2)
+    mid = full.shape[0] // 2
+    for k in range(N_STREAMS):
+        m = float(np.clip(float(native[..., k * L:(k + 1) * L].mean()) * 0.1, -1, 1))
+        assert full[mid, 2 * k] == pytest.approx(m, abs=1e-4)
+        assert full[mid, 2 * k + 1] == pytest.approx(m, abs=1e-4)
+
+
+def test_deliver_streams_windowed_path_places_each_stream_on_its_own_pair():
+    codec = _SliceWindowCodec()
+    runtime = _LayoutRuntime({"deliver_streams": True})
+    b, _context, _ = _layout_backend(runtime=runtime, codec=codec)
+    assert b._windowed_codec
+    _run_until_fresh(b, _knobs(b, sa3_denoise=0.7))
+    chunk = b.render_window(0.05)
+    assert chunk.pcm.shape == (round(0.1 * DELIVERY_SAMPLE_RATE), 2 * N_STREAMS)
+    assert len(codec.seen) == N_STREAMS
+    assert runtime.mixed == []
+    for k, seen in enumerate(codec.seen):
+        m = float(np.clip(float(seen.mean()) * 0.1, -1, 1))
+        assert chunk.pcm[100, 2 * k] == pytest.approx(m, abs=1e-4)
+        assert chunk.pcm[100, 2 * k + 1] == pytest.approx(m, abs=1e-4)
+
+
+def test_deliver_streams_keeps_a_held_render_on_its_pair():
+    own = _OwnRender(1, 0.3, _full_len())
+    runtime = _LayoutRuntime({"deliver_streams": True, "render_stream": own})
+    b, context, _ = _layout_backend(runtime=runtime)
+    _run_until_fresh(b, _knobs(b, sa3_denoise=0.7))
+    full = b.render_full().pcm
+    assert context.codec.decodes == N_STREAMS - 1
+    assert np.array_equal(full[:, 2:4], own.audio)
+
+
+def test_deliver_streams_off_is_bit_identical_to_the_default():
+    out = []
+    for kw in ({}, {"deliver_streams": False}):
+        torch.manual_seed(0)
+        b, _context, _runtime = _layout_backend(runtime=_LayoutRuntime(kw))
+        _run_until_fresh(b, _knobs(b, sa3_denoise=0.7))
+        out.append((b.render_full().pcm.copy(), b.render_window(0.05).pcm.copy()))
+    assert np.array_equal(out[0][0], out[1][0])
+    assert np.array_equal(out[0][1], out[1][1])
+
+
+def test_create_buffer_carries_the_delivery_channel_count():
+    from acestep.streaming.sa3_session import _delivery_buffer
+
+    src = np.full((64, 2), 0.5, dtype=np.float32)
+    assert _delivery_buffer(src, object()) is src          # no layout hook
+    stock = _LayoutContext(_NoneRuntime())
+    assert _delivery_buffer(src, stock) is src             # layout None
+    mixing = _LayoutContext(_LayoutRuntime())
+    assert _delivery_buffer(src, mixing) is src            # layout mixes
+    delivering = _LayoutContext(_LayoutRuntime({"deliver_streams": True}))
+    buf = _delivery_buffer(src, delivering)
+    assert buf.shape == (64, 2 * N_STREAMS) and buf.dtype == np.float32
+    assert not buf.any()
