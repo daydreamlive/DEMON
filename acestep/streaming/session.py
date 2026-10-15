@@ -1611,23 +1611,41 @@ class StreamingSession:
                 else:
                     src_np = src_np[:n_play]
                 # A backend delivering more than one channel pair (a
-                # stream layout's side-by-side delivery) gets a silent
-                # buffer at its own channel count; its renders fill it.
+                # stream layout's side-by-side delivery) plays its own
+                # renders, never the upload: the upload only conditions
+                # the next slots. A plain swap therefore leaves the
+                # playing buffer, the playhead and the loop band as they
+                # are (the renders replace the audio slot by slot); only
+                # a buffer that does not fit the delivery geometry yet (a
+                # resize, or a stereo create-time buffer) becomes a silent
+                # one at the delivery channel count, which the renders
+                # fill.
                 geometry = getattr(self.backend, "geometry", None)
                 deliver_ch = int(geometry().channels) if geometry else 2
+                keep = False
                 if deliver_ch > 2:
-                    src_np = np.zeros(
-                        (src_np.shape[0], deliver_ch), dtype=np.float32,
+                    current = self.audio_eng.current
+                    keep = (
+                        not new_playback
+                        and current is not None
+                        and tuple(current.shape) == (n_play, deliver_ch)
                     )
+                    if keep:
+                        src_np = np.array(current, dtype=np.float32)
+                    else:
+                        src_np = np.zeros(
+                            (src_np.shape[0], deliver_ch), dtype=np.float32,
+                        )
                 state.n_channels = int(src_np.shape[1])
                 # Retire anything staged against the old source (ACE
                 # parity; inert for backends without write_audio).
                 state.source_epoch += 1
-                self.audio_eng.swap(src_np)
-                self.audio_eng.position = 0
-                # A loop band from the previous song is meaningless
-                # against the new buffer — drop it.
-                self.audio_eng.loop_band = None
+                if not keep:
+                    self.audio_eng.swap(src_np)
+                    self.audio_eng.position = 0
+                    # A loop band from the previous song is meaningless
+                    # against the new buffer — drop it.
+                    self.audio_eng.loop_band = None
 
             self.bus.publish(SwapReady(
                 duration=len(src_np) / SAMPLE_RATE,
