@@ -99,3 +99,26 @@ def test_swap_buffer_takes_a_multichannel_delivery_count():
     assert sess.audio_eng.current.shape == (OLD_PLAY, 2 * N_STREAMS)
     assert not sess.audio_eng.current.any()
     assert sess.bus.events[-1].channels == 2 * N_STREAMS
+
+
+def test_swap_leaves_a_playing_multichannel_delivery_untouched():
+    """A delivering backend plays its own renders, so an upload (which
+    only conditions the next slots) must not wipe the playing buffer, move
+    the playhead or drop the loop band; the echo carries the same audio."""
+    backend = _DeliveringBackend(swap_resize=False)
+    sess = _SwapSession(backend)
+    playing = np.random.default_rng(0).standard_normal(
+        (OLD_PLAY, 2 * N_STREAMS),
+    ).astype(np.float32)
+    sess.audio_eng.current = playing.copy()
+    sess.state.n_channels = 2 * N_STREAMS
+    sess.swap(2.0, channels=14)
+    assert backend.calls[-1]["channels"] == 14
+    assert np.array_equal(sess.audio_eng.current, playing)
+    assert sess.audio_eng.position == 999
+    assert sess.audio_eng.loop_band == (1.0, 2.0)
+    assert sess.state.n_channels == 2 * N_STREAMS
+    ready = sess.bus.events[-1]
+    assert ready.channels == 2 * N_STREAMS
+    assert np.array_equal(ready.initial_buffer, playing)
+    assert sess.state.source_epoch == 4
