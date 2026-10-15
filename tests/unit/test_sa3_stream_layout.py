@@ -630,3 +630,106 @@ def test_open_dit_engine_at_checks_weights_and_placement(tmp_path, monkeypatch):
     with pytest.raises(ValueError):
         sa3_trt.open_dit_engine_at(stock_named, expected_weights_sha256="ab" * 32)
     assert len(loaded) == 1
+
+
+# ---- render_stream: a layout's own whole-window render of one stream --------------
+
+
+class _OwnRender:
+    """``render_stream`` stand-in: a fixed whole-window render for one
+    stream index, None for the others; records every call."""
+
+    def __init__(self, index, value, n):
+        self.index = index
+        self.audio = np.full((n, 2), value, dtype=np.float32)
+        self.calls: list = []
+
+    def __call__(self, index, latent):
+        self.calls.append((index, tuple(latent.shape)))
+        return self.audio if index == self.index else None
+
+
+def _full_len():
+    return int(math.ceil(N44 * DELIVERY_SAMPLE_RATE / SA3_SAMPLE_RATE))
+
+
+def test_render_stream_defaults_to_none():
+    assert StreamLayout(n_streams=2).render_stream is None
+
+
+def test_render_stream_replaces_one_full_decode():
+    own = _OwnRender(1, 0.3, _full_len())
+    b, context, runtime = _layout_backend(runtime=_LayoutRuntime({"render_stream": own}))
+    latent = _run_until_fresh(b, _knobs(b, sa3_denoise=0.7))
+    codec = context.codec
+
+    full = b.render_full().pcm
+    # Streams 0 and 2 decoded on their own slices; stream 1 never decoded.
+    assert codec.decodes == N_STREAMS - 1
+    native = latent.movedim(1, 2)
+    assert torch.equal(codec.seen[0], native[..., 0:L])
+    assert torch.equal(codec.seen[1], native[..., 2 * L:3 * L])
+    assert [c[0] for c in own.calls] == list(range(N_STREAMS))
+    assert all(shape == (1, C, L) for _, shape in own.calls)
+    mixed = runtime.mixed[-1]
+    assert np.array_equal(mixed[1], own.audio)
+    m0 = float(native[..., 0:L].mean()) * 0.1
+    m2 = float(native[..., 2 * L:3 * L].mean()) * 0.1
+    mid = full.shape[0] // 2
+    assert full[mid, 0] == pytest.approx(float(np.clip(m0 + 0.3 + m2, -1, 1)), abs=1e-4)
+
+
+def test_render_stream_windowed_path_slices_the_whole_window_render():
+    codec = _SliceWindowCodec()
+    n = _full_len()
+    own = _OwnRender(0, 0.0, n)
+    own.audio[:, :] = np.linspace(-0.5, 0.5, n, dtype=np.float32)[:, None]
+    b, _context, runtime = _layout_backend(
+        runtime=_LayoutRuntime({"render_stream": own}), codec=codec,
+    )
+    latent = _run_until_fresh(b, _knobs(b, sa3_denoise=0.7))
+    chunk = b.render_window(0.05)
+    # Only streams 1 and 2 hit the windowed decoder.
+    assert len(codec.seen) == N_STREAMS - 1
+    native = latent.movedim(1, 2)
+    assert torch.equal(torch.cat(codec.seen, dim=-1), native[..., L:])
+    s, w = chunk.start_sample, chunk.pcm.shape[0]
+    assert np.array_equal(runtime.mixed[-1][0], own.audio[s:s + w])
+
+
+def test_render_stream_short_audio_is_padded_in_a_window():
+    codec = _SliceWindowCodec()
+    own = _OwnRender(2, 0.2, 10)          # far shorter than any window
+    b, _context, runtime = _layout_backend(
+        runtime=_LayoutRuntime({"render_stream": own}), codec=codec,
+    )
+    _run_until_fresh(b, _knobs(b, sa3_denoise=0.7))
+    chunk = b.render_window(0.0)
+    stream = runtime.mixed[-1][2]
+    assert stream.shape == chunk.pcm.shape
+    assert np.all(stream[:10] == np.float32(0.2)) and np.all(stream[10:] == 0.0)
+
+
+def test_render_stream_wrong_shapes_raise():
+    own = _OwnRender(0, 0.1, 17)          # not the full-decode length
+    b, _context, _runtime = _layout_backend(runtime=_LayoutRuntime({"render_stream": own}))
+    _run_until_fresh(b, _knobs(b, sa3_denoise=0.7))
+    with pytest.raises(ValueError, match="differ in shape"):
+        b.render_full()
+
+    flat = _LayoutRuntime({"render_stream": lambda i, lat: np.zeros(5, np.float32)})
+    b, _context, _runtime = _layout_backend(runtime=flat)
+    _run_until_fresh(b, _knobs(b, sa3_denoise=0.7))
+    with pytest.raises(ValueError, match=r"expected \[N, channels\]"):
+        b.render_full()
+
+
+def test_render_stream_returning_none_is_bit_identical_to_no_hook():
+    out = []
+    for kw in ({}, {"render_stream": lambda i, lat: None}):
+        torch.manual_seed(0)
+        b, _context, _runtime = _layout_backend(runtime=_LayoutRuntime(kw))
+        _run_until_fresh(b, _knobs(b, sa3_denoise=0.7))
+        out.append((b.render_full().pcm.copy(), b.render_window(0.05).pcm.copy()))
+    assert np.array_equal(out[0][0], out[1][0])
+    assert np.array_equal(out[0][1], out[1][1])
