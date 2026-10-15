@@ -39,8 +39,10 @@ from acestep.streaming.generator_backend import TickContext
 from acestep.streaming.knobs import KnobSpec, KnobState
 from acestep.streaming.sa3_backend import (
     DELIVERY_SAMPLE_RATE,
+    SA3_MAX_DURATION_S,
     SA3_SAMPLE_RATE,
     SA3Backend,
+    max_session_duration_s,
     sa3_knob_specs,
 )
 
@@ -819,3 +821,18 @@ def test_create_buffer_carries_the_delivery_channel_count():
     buf = _delivery_buffer(src, delivering)
     assert buf.shape == (64, 2 * N_STREAMS) and buf.dtype == np.float32
     assert not buf.any()
+
+
+# ---- the layout's own duration ceiling ----------------------------------------
+
+
+def test_layout_max_duration_replaces_the_family_ceiling():
+    assert max_session_duration_s(None) == SA3_MAX_DURATION_S
+    assert max_session_duration_s(StreamLayout(n_streams=2)) == SA3_MAX_DURATION_S
+    assert max_session_duration_s(StreamLayout(n_streams=2, max_duration_s=300.0)) == 300.0
+    with pytest.raises(ValueError):
+        StreamLayout(n_streams=2, max_duration_s=0)
+    b, _, _ = _layout_backend()
+    assert b.max_duration_s() == SA3_MAX_DURATION_S
+    b, _, _ = _layout_backend(_LayoutRuntime({"max_duration_s": 300.0}))
+    assert b.max_duration_s() == 300.0

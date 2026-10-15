@@ -2,9 +2,10 @@
 
 Two knobs, both read from the environment when the server starts:
 
-``DEMON_WS_MAX_MESSAGE_BYTES`` (default 256 MiB): the largest inbound
-message. A multichannel source upload is float32 PCM, so 60 s of 14
-channels at 48 kHz is about 161 MB; the default leaves headroom.
+``DEMON_WS_MAX_MESSAGE_BYTES`` (default 1 GiB): the largest inbound
+message. A multichannel source upload is float32 PCM, so 300 s of 14
+channels at 48 kHz is about 806 MB (60 s about 161 MB); the default
+leaves headroom.
 
 ``DEMON_WS_RECV_BUFSIZE`` (default 4 MiB): bytes read per socket ``recv``
 on each connection. websockets reads 64 KiB per call, and every call
@@ -20,7 +21,7 @@ import os
 
 from websockets.sync.server import ServerConnection
 
-DEFAULT_MAX_MESSAGE_BYTES = 256 * 1024 * 1024
+DEFAULT_MAX_MESSAGE_BYTES = 1024 * 1024 * 1024
 DEFAULT_RECV_BUFSIZE = 4 * 1024 * 1024
 _MIN_RECV_BUFSIZE = 64 * 1024
 

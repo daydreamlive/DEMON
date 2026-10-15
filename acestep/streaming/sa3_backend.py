@@ -93,6 +93,14 @@ SA3_LATENT_RATE_HZ = 44100.0 / 4096.0
 SA3_MAX_DURATION_S = 120.0
 
 
+def max_session_duration_s(layout=None) -> float:
+    """The render ceiling for a session: an installed stream layout's own
+    ``max_duration_s`` when it declares one (it sizes its own streams),
+    else :data:`SA3_MAX_DURATION_S`."""
+    cap = getattr(layout, "max_duration_s", None) if layout is not None else None
+    return float(cap) if cap else SA3_MAX_DURATION_S
+
+
 def delivered_samples(n_44k: int) -> int:
     """48 kHz sample count of the backend's delivery resample for an
     ``n_44k``-sample native decode — mirrors torchaudio's
@@ -601,7 +609,11 @@ class SA3Backend(DiffusionBackend):
             # anywhere in (or after) it leaves the old geometry whole —
             # the backend commits the new duration only once the resize
             # has fully landed.
-            d = min(float(new_duration_s), SA3_MAX_DURATION_S)
+            layout_hook = getattr(context, "stream_layout", None)
+            ceiling = max_session_duration_s(
+                layout_hook() if callable(layout_hook) else None,
+            )
+            d = min(float(new_duration_s), ceiling)
             d = context.clamp_duration_for_trt(d, backend=dit_backend)
             new_cond = context.prepare_cond(
                 prompt=tags_a, duration=d, steps=steps_now,
@@ -995,8 +1007,9 @@ class SA3Backend(DiffusionBackend):
         """The family's render ceiling — small-music generates at most a
         120 s window. Read by the session's swap-resize path so the
         clamp stays backend-owned (the resizer applies the same bound
-        to the request it conditions at)."""
-        return SA3_MAX_DURATION_S
+        to the request it conditions at). An installed stream layout's
+        ``max_duration_s`` replaces it."""
+        return max_session_duration_s(self._layout)
 
     def playable_duration_s(self):
         # The requested loop length, NOT cond.audio_sample_size /
