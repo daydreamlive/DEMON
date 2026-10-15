@@ -560,6 +560,9 @@ class SA3Backend(DiffusionBackend):
             make_renoise=(
                 getattr(layout, "make_renoise", None) if layout is not None else None
             ),
+            on_slot_done=(
+                getattr(layout, "on_slot_done", None) if layout is not None else None
+            ),
         )
 
         # Phase-2 refit mirror: engaged only when the selected DiT is a

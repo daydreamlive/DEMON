@@ -55,6 +55,7 @@ class SA3Adapter:
         dtype,
         make_noise: Optional[Callable] = None,
         make_renoise: Optional[Callable] = None,
+        on_slot_done: Optional[Callable] = None,
     ):
         self.dit = dit
         self.schedule_builder = schedule_builder
@@ -84,6 +85,10 @@ class SA3Adapter:
         if make_renoise is not None:
             self._renoise_fn = make_renoise
             self.make_renoise = self._layout_renoise
+        # Optional finished-slot observer, bound the same way (the
+        # pipeline probes ``getattr(adapter, "on_slot_done", None)``).
+        if on_slot_done is not None:
+            self.on_slot_done = on_slot_done
 
     def _layout_renoise(self, request, step: int):
         """The supplied re-noise draw for ``step`` (or None = the stock
