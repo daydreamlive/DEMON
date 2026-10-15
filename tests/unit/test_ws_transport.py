@@ -10,10 +10,10 @@ from websockets.sync.server import ServerConnection, serve
 from demos.realtime_motion_graph_web import ws_transport as W
 
 
-def test_defaults_fit_a_60s_multichannel_upload(monkeypatch):
+def test_defaults_fit_a_300s_multichannel_upload(monkeypatch):
     monkeypatch.delenv("DEMON_WS_MAX_MESSAGE_BYTES", raising=False)
     monkeypatch.delenv("DEMON_WS_RECV_BUFSIZE", raising=False)
-    assert W.max_message_bytes() == 256 * 1024 * 1024 > 60 * 48000 * 14 * 4
+    assert W.max_message_bytes() == 1024 * 1024 * 1024 > 300 * 48000 * 14 * 4 + 8
     opts = W.server_options()
     assert opts["max_size"] == W.DEFAULT_MAX_MESSAGE_BYTES
     assert issubclass(opts["create_connection"], ServerConnection)

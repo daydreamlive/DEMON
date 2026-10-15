@@ -49,6 +49,7 @@ from acestep.streaming.sa3_backend import (
     SA3_MAX_DURATION_S,
     SA3_SAMPLE_RATE,
     delivered_samples as _delivered_samples,
+    max_session_duration_s,
     sa3_knob_specs,
 )
 from acestep.streaming.source import SAMPLE_RATE
@@ -278,7 +279,10 @@ def create_sa3_session(
         waveform = waveform.repeat(2, 1)
     source_duration_s = waveform.shape[-1] / SAMPLE_RATE
     duration_s = float(config.family_config.get("sa3_duration_s") or 0.0) or source_duration_s
-    duration_s = min(duration_s, SA3_MAX_DURATION_S)
+    layout_hook = getattr(context, "stream_layout", None)
+    duration_s = min(duration_s, max_session_duration_s(
+        layout_hook() if callable(layout_hook) else None,
+    ))
     # Land on the TRT DiT fast path when engines are built:
     # a duration whose padded latent window exceeds every engine
     # profile would silently fall back to the ~5x-slower eager DiT.

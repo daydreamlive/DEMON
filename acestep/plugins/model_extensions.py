@@ -227,6 +227,12 @@ class StreamLayout:
     with its own per-pair gains. ``mix`` is ignored while set. Default
     ``False``: the streams are mixed to one stereo pair as above.
 
+    ``max_duration_s``: the longest session (seconds) the layout serves,
+    in place of the family's own render ceiling (SA3's 120 s). A layout
+    that sizes its own streams (``tokens_per_stream``) knows its model's
+    range; the core still clamps the request onto ``L``. ``None`` keeps
+    the family ceiling.
+
     Each stream is decoded separately: a decoder's receptive field would
     otherwise bleed across stream boundaries.
     """
@@ -241,10 +247,13 @@ class StreamLayout:
     on_slot_done: Callable | None = None
     render_stream: Callable | None = None
     deliver_streams: bool = False
+    max_duration_s: float | None = None
 
     def __post_init__(self):
         if int(self.n_streams) < 1:
             raise ValueError(f"n_streams must be >= 1, got {self.n_streams}")
+        if self.max_duration_s is not None and not float(self.max_duration_s) > 0:
+            raise ValueError(f"max_duration_s must be > 0, got {self.max_duration_s}")
         tps = self.tokens_per_stream
         if tps is not None and not callable(tps) and int(tps) < 1:
             raise ValueError(f"tokens_per_stream must be >= 1, got {tps}")
