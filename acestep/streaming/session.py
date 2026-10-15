@@ -1589,6 +1589,15 @@ class StreamingSession:
                     ])
                 else:
                     src_np = src_np[:n_play]
+                # A backend delivering more than one channel pair (a
+                # stream layout's side-by-side delivery) gets a silent
+                # buffer at its own channel count; its renders fill it.
+                geometry = getattr(self.backend, "geometry", None)
+                deliver_ch = int(geometry().channels) if geometry else 2
+                if deliver_ch > 2:
+                    src_np = np.zeros(
+                        (src_np.shape[0], deliver_ch), dtype=np.float32,
+                    )
                 state.n_channels = int(src_np.shape[1])
                 # Retire anything staged against the old source (ACE
                 # parity; inert for backends without write_audio).

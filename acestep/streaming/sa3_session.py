@@ -185,6 +185,23 @@ def preload_sa3(
     )
 
 
+def _delivery_buffer(src_np: np.ndarray, context) -> np.ndarray:
+    """The initial client buffer at the delivery channel count.
+
+    Stock (and a stream layout that mixes): ``src_np`` unchanged. A stream
+    layout that delivers its streams side by side ships one channel pair
+    per stream (``SA3Backend.geometry``), so the buffer the runner patches
+    starts silent at ``n_streams * 2`` channels whatever the upload
+    carried: the source is the model's input, not a delivered stream."""
+    layout_hook = getattr(context, "stream_layout", None)
+    layout = layout_hook() if callable(layout_hook) else None
+    if layout is None or not layout.deliver_streams:
+        return src_np
+    return np.zeros(
+        (src_np.shape[0], int(layout.n_streams) * 2), dtype=np.float32,
+    )
+
+
 def create_sa3_session(
     cls, *, audio, config, checkpoint, session_id,
     decoder_backend: str = "tensorrt", vae_backend: str = "tensorrt",
@@ -394,6 +411,7 @@ def create_sa3_session(
         )
     else:
         src_np = src_np[:n_48k]
+    src_np = _delivery_buffer(src_np, context)
     n_channels = src_np.shape[1] if src_np.ndim > 1 else 1
 
     # Stock family manifest plus this session's LoRA controls. Extension

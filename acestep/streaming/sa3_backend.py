@@ -795,7 +795,7 @@ class SA3Backend(DiffusionBackend):
     def geometry(self) -> AudioGeometry:
         return AudioGeometry(
             sample_rate=DELIVERY_SAMPLE_RATE,
-            channels=2,
+            channels=self.delivery_channels(),
             chunk_rate_hz=SA3_LATENT_RATE_HZ,
             duration_s=self.playable_duration_s(),
         )
@@ -1687,15 +1687,32 @@ class SA3Backend(DiffusionBackend):
 
     def _mix_streams(self, streams):
         """``[n, N, C]`` per-stream audio -> ``[N, C]`` via the layout's
-        mix (default: sum), clamped to the delivery range."""
-        mix = self._layout.mix
-        out = mix(streams) if mix is not None else streams.sum(axis=0)
-        out = np.asarray(out, dtype=np.float32)
-        if out.shape != streams.shape[1:]:
+        mix (default: sum), clamped to the delivery range. A layout that
+        delivers streams gets them side by side instead: ``[N, n * C]``,
+        stream ``k`` at channels ``[k * C, (k + 1) * C)``."""
+        if self._layout.deliver_streams:
+            n, N, C = streams.shape
+            out = np.concatenate(list(streams), axis=1).astype(
+                np.float32, copy=False,
+            )
+            expected = (N, n * C)
+        else:
+            mix = self._layout.mix
+            out = mix(streams) if mix is not None else streams.sum(axis=0)
+            out = np.asarray(out, dtype=np.float32)
+            expected = streams.shape[1:]
+        if out.shape != expected:
             raise ValueError(
-                f"stream mix returned {out.shape}, expected {streams.shape[1:]}"
+                f"stream mix returned {out.shape}, expected {expected}"
             )
         return np.clip(out, -1.0, 1.0)
+
+    def delivery_channels(self) -> int:
+        """Channel count of the delivered audio: one stereo pair, or one
+        pair per stream when the layout delivers streams side by side."""
+        if self._layout is not None and self._layout.deliver_streams:
+            return int(self._layout.n_streams) * 2
+        return 2
 
     def _stream_render(self, index: int, part: torch.Tensor):
         """The layout's own whole-window render of stream ``index``

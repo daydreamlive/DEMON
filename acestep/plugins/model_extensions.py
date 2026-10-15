@@ -220,6 +220,13 @@ class StreamLayout:
     the render thread, so keep it a lookup; do the decode elsewhere or
     once. Absent, every stream is decoded.
 
+    ``deliver_streams``: when ``True`` the core does not mix. Each
+    stream's audio becomes its own channel pair, side by side in stream
+    order (channels ``[2k, 2k + 1]`` are stream ``k``), so the delivery
+    buffer carries ``n_streams * 2`` channels and a client mixes them
+    with its own per-pair gains. ``mix`` is ignored while set. Default
+    ``False``: the streams are mixed to one stereo pair as above.
+
     Each stream is decoded separately: a decoder's receptive field would
     otherwise bleed across stream boundaries.
     """
@@ -233,6 +240,7 @@ class StreamLayout:
     make_renoise: Callable | None = None
     on_slot_done: Callable | None = None
     render_stream: Callable | None = None
+    deliver_streams: bool = False
 
     def __post_init__(self):
         if int(self.n_streams) < 1:
