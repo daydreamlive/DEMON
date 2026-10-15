@@ -1697,6 +1697,24 @@ class SA3Backend(DiffusionBackend):
             )
         return np.clip(out, -1.0, 1.0)
 
+    def _stream_render(self, index: int, part: torch.Tensor):
+        """The layout's own whole-window render of stream ``index``
+        (``StreamLayout.render_stream``) as float32 ``[N, C]``, or None
+        when the layout has none and the stream is decoded as usual."""
+        hook = self._layout.render_stream
+        if hook is None:
+            return None
+        audio = hook(index, part)
+        if audio is None:
+            return None
+        audio = np.asarray(audio, dtype=np.float32)
+        if audio.ndim != 2:
+            raise ValueError(
+                f"render_stream({index}) returned shape {audio.shape}, "
+                "expected [N, channels]"
+            )
+        return audio
+
     def _rendered_stream_audio(self, latent_btc: torch.Tensor):
         """Per-stream full decode + delivery resample ``[n, N, C]``,
         cached per latent identity (a re-mix is then just a sum)."""
@@ -1706,7 +1724,11 @@ class SA3Backend(DiffusionBackend):
 
         t0 = time.perf_counter()
         streams = []
-        for part in self._stream_slices(latent_btc.movedim(1, 2)):
+        for i, part in enumerate(self._stream_slices(latent_btc.movedim(1, 2))):
+            own_audio = self._stream_render(i, part)
+            if own_audio is not None:
+                streams.append(np.clip(own_audio, -1.0, 1.0))
+                continue
             audio_ct = self.codec.decode_full(part, decode_seed=self._decode_seed)
             audio_48 = torchaudio.functional.resample(
                 audio_ct.float(), SA3_SAMPLE_RATE, DELIVERY_SAMPLE_RATE,
@@ -1715,6 +1737,12 @@ class SA3Backend(DiffusionBackend):
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         self.last_dec_ms += (time.perf_counter() - t0) * 1000
+        if len({a.shape for a in streams}) != 1:
+            raise ValueError(
+                "per-stream renders differ in shape: "
+                f"{[a.shape for a in streams]} (render_stream must return "
+                "the stream's full-decode length at the delivery rate)"
+            )
         self._rendered_streams = np.stack(streams).astype(np.float32, copy=False)
         self._rendered_for = latent_btc
         return self._rendered_streams
@@ -1816,7 +1844,14 @@ class SA3Backend(DiffusionBackend):
         lead48 = (lead44 * DELIVERY_SAMPLE_RATE) // SA3_SAMPLE_RATE
         t0 = time.perf_counter()
         parts = []
-        for part in self._stream_slices(latent_btc.movedim(1, 2)):
+        for i, part in enumerate(self._stream_slices(latent_btc.movedim(1, 2))):
+            own_audio = self._stream_render(i, part)
+            if own_audio is not None:
+                pcm = own_audio[start48:start48 + n48]
+                if pcm.shape[0] < n48:
+                    pcm = np.pad(pcm, ((0, n48 - pcm.shape[0]), (0, 0)))
+                parts.append(np.clip(pcm, -1.0, 1.0))
+                continue
             audio_ct = self.codec.decode_window(part, lo44, total44)
             audio48 = torchaudio.functional.resample(
                 audio_ct.float(), SA3_SAMPLE_RATE, DELIVERY_SAMPLE_RATE,

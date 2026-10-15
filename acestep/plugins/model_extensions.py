@@ -206,6 +206,20 @@ class StreamLayout:
     regenerating. Absent, the streams are summed. The result is clamped
     to ``[-1, 1]`` after mixing.
 
+    ``render_stream``: ``(index, latent) -> audio | None`` where ``latent``
+    is stream ``index``'s slice ``[1, C, L]`` (SA3-native) of the latent
+    being rendered and ``audio`` is that stream's audio for the WHOLE
+    window, a float32 numpy array ``[N, channels]`` at the delivery rate
+    (the length a full decode of the slice resamples to). Consulted for
+    every stream on every render before the stream is decoded: return
+    audio to have the core use it in place of its own decode (a full
+    render the extension made once, for example of a stream it holds
+    fixed, so every window is cut from one decode instead of re-decoded
+    with window seams), or ``None`` to have the stream decoded as usual.
+    Windowed renders slice the returned audio at the window. Called on
+    the render thread, so keep it a lookup; do the decode elsewhere or
+    once. Absent, every stream is decoded.
+
     Each stream is decoded separately: a decoder's receptive field would
     otherwise bleed across stream boundaries.
     """
@@ -218,6 +232,7 @@ class StreamLayout:
     mix: Callable | None = None
     make_renoise: Callable | None = None
     on_slot_done: Callable | None = None
+    render_stream: Callable | None = None
 
     def __post_init__(self):
         if int(self.n_streams) < 1:
