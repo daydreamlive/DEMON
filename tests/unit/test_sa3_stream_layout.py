@@ -823,6 +823,38 @@ def test_create_buffer_carries_the_delivery_channel_count():
     assert not buf.any()
 
 
+
+def test_source_delivered_defaults_to_on():
+    assert StreamLayout(n_streams=2).source_delivered is True
+
+
+def test_create_buffer_is_silent_when_the_layout_withholds_the_source():
+    from acestep.streaming.sa3_session import _delivery_buffer
+
+    src = np.full((64, 2), 0.5, dtype=np.float32)
+    held = _LayoutContext(_LayoutRuntime({"source_delivered": False}))
+    buf = _delivery_buffer(src, held)
+    assert buf.shape == src.shape and buf.dtype == np.float32
+    assert not buf.any()
+    assert src.all()                                       # source untouched
+    # The default (mixing) layout still starts on the source.
+    assert _delivery_buffer(src, _LayoutContext(_LayoutRuntime())) is src
+    # Side by side still starts silent at the delivery channel count.
+    both = _LayoutContext(_LayoutRuntime(
+        {"deliver_streams": True, "source_delivered": False},
+    ))
+    assert _delivery_buffer(src, both).shape == (64, 2 * N_STREAMS)
+
+
+def test_backend_reports_whether_the_source_is_delivered():
+    assert _stock_backend(None).source_delivered() is True
+    b, _, _ = _layout_backend()
+    assert b.source_delivered() is True
+    b, _, _ = _layout_backend(_LayoutRuntime({"source_delivered": False}))
+    assert b.source_delivered() is False
+    b, _, _ = _layout_backend(_LayoutRuntime({"deliver_streams": True}))
+    assert b.source_delivered() is False
+
 # ---- the layout's own duration ceiling ----------------------------------------
 
 

@@ -1590,9 +1590,10 @@ class StreamingSession:
                 else:
                     src_np = src_np[:n_play]
                 # A backend delivering more than one channel pair (a
-                # stream layout's side-by-side delivery) plays its own
-                # renders, never the upload: the upload only conditions
-                # the next slots. A plain swap therefore leaves the
+                # stream layout's side-by-side delivery), or one that
+                # says it never delivers its source (``source_delivered``,
+                # a layout of held renders), plays its own renders, never
+                # the upload: the upload only conditions the next slots. A plain swap therefore leaves the
                 # playing buffer, the playhead and the loop band as they
                 # are (the renders replace the audio slot by slot); only
                 # a buffer that does not fit the delivery geometry yet (a
@@ -1601,8 +1602,10 @@ class StreamingSession:
                 # fill.
                 geometry = getattr(self.backend, "geometry", None)
                 deliver_ch = int(geometry().channels) if geometry else 2
+                delivered = getattr(self.backend, "source_delivered", None)
+                plays_source = bool(delivered()) if delivered else True
                 keep = False
-                if deliver_ch > 2:
+                if deliver_ch > 2 or not plays_source:
                     current = self.audio_eng.current
                     keep = (
                         not new_playback
