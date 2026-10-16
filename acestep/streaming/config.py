@@ -79,6 +79,10 @@ class SessionConfig:
     # field itself; the wire contract projects the family fields flat,
     # next to the platform ones, from the same declarations.
     family_config: dict = field(default_factory=dict)
+    # ``plugin_*`` keys of the raw dict (scalar values only): per-session
+    # parameters for an installed plugin, handed to it by the family's
+    # create path. Not a wire field itself, like ``family_config``.
+    plugin_params: dict = field(default_factory=dict)
 
     # Pure text-to-audio: generate from the prompt alone, with NO source
     # audio uploaded. The client sends no binary PCM frame, so the adapter
@@ -141,6 +145,11 @@ class SessionConfig:
 
         kwargs["family_config"] = {
             cf.name: cf.coerce(d.get(cf.name)) for cf in family_config_fields()
+        }
+        kwargs["plugin_params"] = {
+            k: v for k, v in d.items()
+            if isinstance(k, str) and k.startswith("plugin_")
+            and isinstance(v, (str, int, float, bool))
         }
 
         return cls(**kwargs)

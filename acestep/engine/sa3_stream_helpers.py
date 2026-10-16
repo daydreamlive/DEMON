@@ -91,6 +91,16 @@ class SA3Conditioning:
     # seconds token from this scalar, so it must be handed the same
     # value the eager cond bundle embeds. None on legacy constructions.
     seconds_total: Optional[float] = None
+    # Stacked streams on the token axis (a model extension's
+    # StreamLayout). ``latent_frames`` is then the STACKED length
+    # ``n_streams * L`` the ring carries, while ``audio_sample_size``
+    # stays ONE stream's window. 1 on the stock path.
+    n_streams: int = 1
+
+    @property
+    def stream_frames(self) -> int:
+        """Latent frames of one stream (== ``latent_frames`` when stock)."""
+        return int(self.latent_frames) // max(1, int(self.n_streams))
 
 
 @dataclass(frozen=True)
@@ -130,6 +140,8 @@ def prepare_sa3_conditioning(
     dist_shift=None,
     song_seconds_total: Optional[float] = None,
     schedule_from_window: bool = False,
+    n_streams: int = 1,
+    tokens_per_stream: Optional[int] = None,
 ) -> SA3Conditioning:
     """Build SA3 conditioning without running the sampler.
 
@@ -161,6 +173,16 @@ def prepare_sa3_conditioning(
     ``use_effective_length_for_schedule``), so False is the
     training-consistent default; True is the A/B fallback if the longer
     label moves the denoise dial's feel.
+
+    ``n_streams`` / ``tokens_per_stream`` describe a stacked-stream
+    layout (``acestep.plugins.StreamLayout``): the latent the DiT sees is
+    ``n_streams`` streams of ``L`` frames concatenated on the token axis,
+    ``L`` pinned by ``tokens_per_stream`` (which then also fixes
+    ``audio_sample_size`` to ``L`` frames) or derived from ``duration``.
+    Under a layout every stacked frame is valid to attention and the
+    dist-shift schedule is computed for the full stacked length, so a
+    label cannot shrink it below the sequence the model actually runs.
+    The defaults (1, None) are the stock single-stream path, unchanged.
     """
     from stable_audio_3.data.utils import (
         compute_effective_seq_len_from_conditioning,
@@ -182,7 +204,15 @@ def prepare_sa3_conditioning(
         window_conditioning, sample_size, duration_padding_sec,
     )
     downsampling_ratio = sam.model.pretransform.downsampling_ratio
+    n_streams = int(n_streams)
+    stacked = n_streams != 1 or tokens_per_stream is not None
+    if n_streams < 1:
+        raise ValueError(f"n_streams must be >= 1, got {n_streams}")
+    if tokens_per_stream is not None:
+        audio_sample_size = int(tokens_per_stream) * downsampling_ratio
     latent_frames = audio_sample_size // downsampling_ratio
+    if stacked:
+        latent_frames *= n_streams
 
     conditioning_tensors = sam.model.conditioner(conditioning, device)
 
@@ -217,6 +247,14 @@ def prepare_sa3_conditioning(
         sched_seq_len = compute_effective_seq_len_from_conditioning(
             window_conditioning, sam.model.sample_rate, downsampling_ratio, device,
         )
+    if stacked:
+        # Every stacked frame is real content: all valid to attention,
+        # and the schedule shift follows the full stacked sequence.
+        full = torch.full_like(valid_lengths, latent_frames)
+        padding_mask = create_padding_mask_from_lengths(full, latent_frames)
+        sched_seq_len = torch.full_like(
+            effective_seq_len, float(latent_frames),
+        ) if torch.is_tensor(effective_seq_len) else latent_frames
 
     cond_bundle = {
         **conditioning_inputs,
@@ -240,6 +278,7 @@ def prepare_sa3_conditioning(
         latent_frames=latent_frames,
         audio_sample_size=audio_sample_size,
         seconds_total=label_seconds,
+        n_streams=n_streams if stacked else 1,
     )
 
 

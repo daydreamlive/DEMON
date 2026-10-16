@@ -53,6 +53,9 @@ class SA3Adapter:
         schedule_builder: Callable[[float], torch.Tensor],
         device,
         dtype,
+        make_noise: Optional[Callable] = None,
+        make_renoise: Optional[Callable] = None,
+        on_slot_done: Optional[Callable] = None,
     ):
         self.dit = dit
         self.schedule_builder = schedule_builder
@@ -70,6 +73,46 @@ class SA3Adapter:
         # The spike's cond stacker (pads cross-attn tensors to the
         # batch max length, concats dim 0, passes scalars through).
         self._stack = import_stream_helpers().stack_sa3_cond_bundles
+        # Optional initial-noise override (a stream layout's per-slot
+        # draw). Bound as an INSTANCE attribute only when supplied: the
+        # pipeline probes ``getattr(adapter, "make_noise", None)``, so a
+        # stock adapter must not carry the name at all.
+        if make_noise is not None:
+            self._noise_fn = make_noise
+            self.make_noise = self._layout_noise
+        # Optional per-step re-noise override, bound the same way (the
+        # pipeline probes ``getattr(adapter, "make_renoise", None)``).
+        if make_renoise is not None:
+            self._renoise_fn = make_renoise
+            self.make_renoise = self._layout_renoise
+        # Optional finished-slot observer, bound the same way (the
+        # pipeline probes ``getattr(adapter, "on_slot_done", None)``).
+        if on_slot_done is not None:
+            self.on_slot_done = on_slot_done
+
+    def _layout_renoise(self, request, step: int):
+        """The supplied re-noise draw for ``step`` (or None = the stock
+        draw), checked and moved like :meth:`_layout_noise`."""
+        noise = self._renoise_fn(request, int(step))
+        if noise is None:
+            return None
+        want = (1, self.request_frames(request), self.latent_channels)
+        if tuple(noise.shape) != want:
+            raise ValueError(
+                f"stream layout re-noise shape {tuple(noise.shape)} != {want}"
+            )
+        return noise.to(device=self._device, dtype=self._dtype)
+
+    def _layout_noise(self, request) -> torch.Tensor:
+        """The supplied noise draw, checked against the slot geometry and
+        moved onto the pipeline device/dtype (engine layout ``[1, T, C]``)."""
+        noise = self._noise_fn(request)
+        want = (1, self.request_frames(request), self.latent_channels)
+        if tuple(noise.shape) != want:
+            raise ValueError(
+                f"stream layout noise shape {tuple(noise.shape)} != {want}"
+            )
+        return noise.to(device=self._device, dtype=self._dtype)
 
     # ---- ModelAdapter ------------------------------------------------------
 

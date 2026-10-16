@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 import threading
 from pathlib import Path
 from typing import Callable, Mapping
@@ -309,6 +310,15 @@ class SA3Context:
             return requested, ""
         return "eager", verdict.reason or "extension does not support tensorrt"
 
+    def stream_layout(self):
+        """The installed extension's ``StreamLayout``, or None (stock).
+
+        Every layout-aware site below reads this; when it is None they
+        run the stock single-stream code unchanged."""
+        from acestep.plugins.model_extensions import stream_layout_of
+
+        return stream_layout_of(getattr(self, "extension_runtime", None))
+
     def with_song_seconds(self, song_seconds: float | None) -> "SA3LabelView":
         """A per-session view of this context with its own song-length
         label: ``None`` = the upstream whole-file semantics (label = the
@@ -318,7 +328,25 @@ class SA3Context:
         outro pad differ."""
         if song_seconds is not None:
             song_seconds = min(float(song_seconds), SONG_SECONDS_MAX)
-        return SA3LabelView(self, song_seconds, outro_pad_setting(song_seconds))
+        return SA3LabelView(
+            getattr(self, "_base", self), song_seconds,
+            outro_pad_setting(song_seconds),
+            getattr(self, "session_params", {}),
+        )
+
+    #: The session's ``plugin_*`` config keys (see
+    #: :meth:`with_session_params`); empty on the shared context.
+    session_params: Mapping = {}
+
+    def with_session_params(self, params: Mapping) -> "SA3LabelView":
+        """A per-session view of this context carrying the session's
+        ``plugin_*`` config keys as ``session_params`` (read by an
+        extension's stream layout, e.g. in ``make_dit``). The model,
+        engines, caches and label stay shared with this context."""
+        return SA3LabelView(
+            getattr(self, "_base", self), self.song_seconds, self.outro_pad_s,
+            dict(params or {}),
+        )
 
     def close(self) -> None:
         """Release the installed extension. Idempotent.
@@ -360,6 +388,24 @@ class SA3Context:
         only under ``DEMON_SA3_FP8_REFIT=1``, see ``find_dit_engine``),
         and avoid the non-refittable fp8 engine otherwise."""
         from acestep.engine.sa3_trt import SA3TRTDit, find_dit_engine
+
+        layout = self.stream_layout()
+        if layout is not None:
+            # Stock engines are built for one stream; a stacked layout
+            # brings its own factory (or runs the eager DiT). The stock
+            # lookup is never consulted here.
+            dit = None
+            if layout.make_dit is not None:
+                dit = layout.make_dit(
+                    self, int(latent_frames), float(seconds_total), backend,
+                )
+            logger.info(
+                "sa3_dit_layout model_id={} latent_frames={} n_streams={} "
+                "dit={}",
+                self.model_id, latent_frames, layout.n_streams,
+                "eager" if dit is None else type(dit).__name__,
+            )
+            return self.dit if dit is None else dit
 
         if backend != "tensorrt":
             logger.info(
@@ -403,6 +449,22 @@ class SA3Context:
         scalar — must go through here so they can't disagree."""
         return label_seconds_for(duration_s, self.song_seconds)
 
+    def render_sample_ceiling(self) -> int:
+        """The longest render window (model-rate samples) a capture may
+        size. Upstream's 120 s default, unless an installed stream layout
+        declares a longer ``max_duration_s``: the window then covers that
+        ceiling plus :attr:`outro_pad_s`, aligned, so a session the
+        create clamp admits is rendered (and delivered) whole."""
+        default = int(self._helpers.SA3_DEFAULT_SAMPLE_SIZE)
+        layout = self.stream_layout()
+        cap = getattr(layout, "max_duration_s", None) if layout is not None else None
+        if not cap:
+            return default
+        needed = self.sam._adapt_sample_size(
+            [{"seconds_total": float(cap)}], sys.maxsize, self.outro_pad_s,
+        )
+        return max(default, int(needed))
+
     def window_latent_frames(self, duration_s: float) -> int:
         """Latent frames of the render window for ``duration_s`` (the
         requested length + :attr:`outro_pad_s`, aligned the way
@@ -410,7 +472,7 @@ class SA3Context:
         model config — no model call."""
         audio_samples = self.sam._adapt_sample_size(
             [{"seconds_total": float(duration_s)}],
-            self._helpers.SA3_DEFAULT_SAMPLE_SIZE,
+            self.render_sample_ceiling(),
             self.outro_pad_s,
         )
         return int(audio_samples) // self.downsampling_ratio
@@ -427,6 +489,16 @@ class SA3Context:
         truncating the source for."""
         from acestep.engine.sa3_trt import max_dit_engine_latents
 
+        layout = self.stream_layout()
+        if layout is not None:
+            # Stock engine profiles describe one stream and do not apply.
+            # A pinned (or layout-derived) stream length IS the window:
+            # clamp onto it.
+            n = layout.stream_tokens(duration_s)
+            if n is None:
+                return duration_s
+            cap = n * self.downsampling_ratio / self.sample_rate
+            return min(float(duration_s), cap)
         if backend != "tensorrt":
             return duration_s
         max_l = max_dit_engine_latents(self.model_id)
@@ -449,12 +521,23 @@ class SA3Context:
     def prepare_cond(self, *, prompt: str, duration: float, steps: int):
         """Capture the DiT kwargs + schedule inputs for one prompt and
         fixed render duration (the spike's ``SA3Conditioning``), labelled
-        with :meth:`cond_seconds_total` and padded by :attr:`outro_pad_s`."""
+        with :meth:`cond_seconds_total` and padded by :attr:`outro_pad_s`.
+        Under a stream layout the capture is sized for the stacked
+        streams (see ``prepare_sa3_conditioning``)."""
+        layout = self.stream_layout()
+        extra = {}
+        if layout is not None:
+            extra = {
+                "n_streams": int(layout.n_streams),
+                "tokens_per_stream": layout.stream_tokens(duration),
+            }
         return self._helpers.prepare_sa3_conditioning(
             self.sam, prompt=prompt, duration=duration, steps=steps,
+            sample_size=self.render_sample_ceiling(),
             duration_padding_sec=self.outro_pad_s,
             song_seconds_total=self.song_seconds,
             schedule_from_window=self.schedule_from_window,
+            **extra,
         )
 
     def make_schedule_builder(
@@ -494,7 +577,24 @@ class SA3Context:
         Returns the native ``[1, 256, T]`` latent. Under the song-length
         label the source is tiled to fill the render window (see
         :meth:`tile_loop`); otherwise upstream's ``prepare_audio``
-        zero-pads it."""
+        zero-pads it.
+
+        Under a stream layout the result is the stacked ``[1, 256, n*L]``
+        anchor: the layout's own ``encode_source`` when it has one, else
+        the single-stream encode repeated into every stream.
+        ``audio_sample_size`` is always ONE stream's window."""
+        layout = self.stream_layout()
+        if layout is not None:
+            if layout.encode_source is not None:
+                return layout.encode_source(
+                    self, audio_input, int(audio_sample_size),
+                )
+            one = self._encode_one_stream(audio_input, audio_sample_size)
+            return one.repeat(1, 1, int(layout.n_streams))
+        return self._encode_one_stream(audio_input, audio_sample_size)
+
+    def _encode_one_stream(self, audio_input, audio_sample_size: int) -> torch.Tensor:
+        """The stock single-stream SAME encode (see :meth:`encode_source`)."""
         if self.song_seconds is not None:
             audio_input = self.tile_loop(audio_input, audio_sample_size)
         return self._helpers.encode_sa3_source(
@@ -535,12 +635,14 @@ class SA3LabelView:
     the shared context, so a cache the context fills stays shared.
     """
 
-    _OVERRIDES = ("song_seconds", "outro_pad_s")
+    _OVERRIDES = ("song_seconds", "outro_pad_s", "session_params")
 
-    def __init__(self, base: SA3Context, song_seconds, outro_pad_s: float):
+    def __init__(self, base: SA3Context, song_seconds, outro_pad_s: float,
+                 session_params: Mapping | None = None):
         object.__setattr__(self, "_base", base)
         object.__setattr__(self, "song_seconds", song_seconds)
         object.__setattr__(self, "outro_pad_s", float(outro_pad_s))
+        object.__setattr__(self, "session_params", dict(session_params or {}))
 
     def __getattr__(self, name):
         import inspect
