@@ -255,3 +255,44 @@ def test_backend_failure_publishes_swap_failed_and_moves_nothing():
     assert len(ss.audio_eng.current) == OLD_PLAY
     failed = _ready(ss)
     assert "cuda oom" in failed.error
+
+
+class _HeldRenderBackend(_StubBackend):
+    """A stereo backend whose layout never delivers its source."""
+
+    def source_delivered(self):
+        return False
+
+
+def test_swap_never_hands_a_withheld_source_to_the_client():
+    """A plain swap keeps the buffer the renders are filling (playhead
+    and loop band too); the upload never reaches the client."""
+    be = _HeldRenderBackend()
+    ss = _SwapSession(be)
+    playing = np.full((OLD_PLAY, 2), 0.25, dtype=np.float32)
+    ss.audio_eng.current = playing
+
+    ss.swap(30.0)
+
+    ready = _ready(ss)
+    assert ready.initial_buffer.shape == (OLD_PLAY, 2)
+    assert np.array_equal(ready.initial_buffer, playing)
+    assert ss.audio_eng.position == 999
+    assert ss.audio_eng.loop_band == (1.0, 2.0)
+
+
+def test_resized_swap_of_a_withheld_source_starts_silent():
+    be = _HeldRenderBackend(new_playback=NEW_PLAY)
+    ss = _SwapSession(be)
+
+    ss.swap(30.0, duration_s=30.0)
+
+    buf = _ready(ss).initial_buffer
+    assert buf.shape == (NEW_PLAY, 2) and not buf.any()
+    assert ss.audio_eng.current is buf and ss.audio_eng.position == 0
+
+
+def test_swap_still_hands_a_delivered_source_to_the_client():
+    ss = _SwapSession(_StubBackend())
+    ss.swap(30.0)
+    assert _ready(ss).initial_buffer.all()

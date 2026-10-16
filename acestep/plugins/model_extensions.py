@@ -227,6 +227,13 @@ class StreamLayout:
     with its own per-pair gains. ``mix`` is ignored while set. Default
     ``False``: the streams are mixed to one stereo pair as above.
 
+    ``source_delivered``: when ``False`` the upload is the model's input
+    only and is never played: the client buffer starts silent (at create
+    and on a swap) and the layout's held renders fill it as they land.
+    Default ``True``: a layout that mixes starts the client on the upload
+    and the renders replace it region by region. A layout that sets
+    ``deliver_streams`` always starts silent, whatever this says.
+
     ``max_duration_s``: the longest session (seconds) the layout serves,
     in place of the family's own render ceiling (SA3's 120 s). A layout
     that sizes its own streams (``tokens_per_stream``) knows its model's
@@ -247,6 +254,7 @@ class StreamLayout:
     on_slot_done: Callable | None = None
     render_stream: Callable | None = None
     deliver_streams: bool = False
+    source_delivered: bool = True
     max_duration_s: float | None = None
 
     def __post_init__(self):

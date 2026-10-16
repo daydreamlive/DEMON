@@ -1745,6 +1745,16 @@ class SA3Backend(DiffusionBackend):
             return int(self._layout.n_streams) * 2
         return 2
 
+    def source_delivered(self) -> bool:
+        """Whether the client plays the uploaded source until renders
+        replace it. False under a layout that delivers its streams side
+        by side or declares ``source_delivered = False``: the upload is
+        the model's input only and the client buffer starts silent."""
+        layout = self._layout
+        if layout is None:
+            return True
+        return not layout.deliver_streams and bool(layout.source_delivered)
+
     def _stream_render(self, index: int, part: torch.Tensor):
         """The layout's own whole-window render of stream ``index``
         (``StreamLayout.render_stream``) as float32 ``[N, C]``, or None
