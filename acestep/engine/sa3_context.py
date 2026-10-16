@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 import threading
 from pathlib import Path
 from typing import Callable, Mapping
@@ -447,6 +448,22 @@ class SA3Context:
         scalar — must go through here so they can't disagree."""
         return label_seconds_for(duration_s, self.song_seconds)
 
+    def render_sample_ceiling(self) -> int:
+        """The longest render window (model-rate samples) a capture may
+        size. Upstream's 120 s default, unless an installed stream layout
+        declares a longer ``max_duration_s``: the window then covers that
+        ceiling plus :attr:`outro_pad_s`, aligned, so a session the
+        create clamp admits is rendered (and delivered) whole."""
+        default = int(self._helpers.SA3_DEFAULT_SAMPLE_SIZE)
+        layout = self.stream_layout()
+        cap = getattr(layout, "max_duration_s", None) if layout is not None else None
+        if not cap:
+            return default
+        needed = self.sam._adapt_sample_size(
+            [{"seconds_total": float(cap)}], sys.maxsize, self.outro_pad_s,
+        )
+        return max(default, int(needed))
+
     def window_latent_frames(self, duration_s: float) -> int:
         """Latent frames of the render window for ``duration_s`` (the
         requested length + :attr:`outro_pad_s`, aligned the way
@@ -454,7 +471,7 @@ class SA3Context:
         model config — no model call."""
         audio_samples = self.sam._adapt_sample_size(
             [{"seconds_total": float(duration_s)}],
-            self._helpers.SA3_DEFAULT_SAMPLE_SIZE,
+            self.render_sample_ceiling(),
             self.outro_pad_s,
         )
         return int(audio_samples) // self.downsampling_ratio
@@ -515,6 +532,7 @@ class SA3Context:
             }
         return self._helpers.prepare_sa3_conditioning(
             self.sam, prompt=prompt, duration=duration, steps=steps,
+            sample_size=self.render_sample_ceiling(),
             duration_padding_sec=self.outro_pad_s,
             song_seconds_total=self.song_seconds,
             schedule_from_window=self.schedule_from_window,

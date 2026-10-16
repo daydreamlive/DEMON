@@ -836,3 +836,27 @@ def test_layout_max_duration_replaces_the_family_ceiling():
     assert b.max_duration_s() == SA3_MAX_DURATION_S
     b, _, _ = _layout_backend(_LayoutRuntime({"max_duration_s": 300.0}))
     assert b.max_duration_s() == 300.0
+
+
+def test_layout_max_duration_sizes_the_render_window(stub_vendor):
+    # Upstream's default window ceiling is 120 s; a layout declaring a
+    # longer max_duration_s must render (and so deliver) the whole
+    # session, not a window cut at 120 s.
+    sr = 44100
+    stock = _bare_context(None)
+    capped = stock.prepare_cond(prompt="p", duration=140.0, steps=8)
+    assert capped.audio_sample_size == helpers.SA3_DEFAULT_SAMPLE_SIZE
+
+    c = _bare_context(_LayoutRuntime({"max_duration_s": 300.0}))
+    assert c.render_sample_ceiling() >= 300 * sr
+    cond = c.prepare_cond(prompt="p", duration=140.0, steps=8)
+    assert cond.audio_sample_size >= 140 * sr
+    assert cond.audio_sample_size < helpers.SA3_DEFAULT_SAMPLE_SIZE + 21 * sr
+    assert cond.latent_frames == N_STREAMS * (cond.audio_sample_size // DS)
+    assert c.window_latent_frames(140.0) == cond.audio_sample_size // DS
+    # Requests past the layout's own ceiling stay bounded by it.
+    over = c.prepare_cond(prompt="p", duration=400.0, steps=8)
+    assert over.audio_sample_size == c.render_sample_ceiling()
+    # A layout without a ceiling keeps upstream's.
+    plain = _bare_context(_LayoutRuntime())
+    assert plain.render_sample_ceiling() == helpers.SA3_DEFAULT_SAMPLE_SIZE
