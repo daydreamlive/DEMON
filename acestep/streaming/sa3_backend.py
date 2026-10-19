@@ -1993,6 +1993,9 @@ class SA3Backend(DiffusionBackend):
                     layout.hold_streams(None, None)
         sync()
         t1 = time.perf_counter()
+        dit_obj = self.adapter.dit
+        describe = getattr(dit_obj, "describe", None)
+        dit_label = describe() if callable(describe) else type(dit_obj).__name__
 
         # Decode: every stream (a redo: its stream) of every version through
         # the codec's full decode, then one delivery resample for them all.
@@ -2056,6 +2059,7 @@ class SA3Backend(DiffusionBackend):
             },
             seconds=total / DELIVERY_SAMPLE_RATE,
             redo_of=redo.id if redo is not None else None,
+            dit=dit_label,
         )
 
     def _oneshot_controls(self, knobs: dict) -> None:

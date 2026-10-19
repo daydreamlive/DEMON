@@ -470,3 +470,50 @@ def test_batch_decode_out_of_memory_falls_back_to_one_stream_at_a_time(monkeypat
     res = b.render_oneshot(_req(seeds=(1, 2)), store=KeptLatents())
     assert codec.decodes == 2 * LT.N_STREAMS
     assert res.pcm.shape[:2] == (2, LT.N_STREAMS)
+
+
+# ---- which DiT served each request (song_gen_20261019 lane D) ---------------------------
+
+
+class _DescribedDit(_XDit):
+    """A layout step that says what it runs on (the multistem EngineStep /
+    EagerStep ``describe()``)."""
+
+    def __init__(self, label):
+        super().__init__()
+        self.label = label
+
+    def describe(self):
+        return self.label
+
+
+def test_result_names_the_dit_that_ran():
+    b, _ = _stock()
+    assert b.render_oneshot(_req(seeds=(1,)), store=KeptLatents()).dit == "_XDit"
+    b2, _ = _stock(dit=_DescribedDit("tensorrt:song.trt calls=8"))
+    assert b2.render_oneshot(_req(seeds=(1,)), store=KeptLatents()).dit == "tensorrt:song.trt calls=8"
+
+
+def test_session_logs_the_dit_per_request():
+    from loguru import logger
+
+    backend = _FakeBackend()
+    real = backend.render_oneshot
+
+    def described(req):
+        import dataclasses
+
+        return dataclasses.replace(real(req), dit="eager:plugin_multistem_engine off")
+
+    backend.render_oneshot = described
+    s, events = _session(backend)
+    lines: list = []
+    sink = logger.add(lambda m: lines.append(str(m)), level="INFO", format="{message}")
+    try:
+        s.oneshot({"request_id": "a", "seeds": [1]})
+        s._service_oneshots()
+    finally:
+        logger.remove(sink)
+    gen = [ln for ln in lines if ln.startswith("oneshot_generate")]
+    assert gen and "dit=eager:plugin_multistem_engine off" in gen[0]
+    assert isinstance(events[0], OneshotReady)
