@@ -1281,6 +1281,10 @@ class StreamingSession:
                 handle, new_wf, new_fixture_name, new_duration_s,
             )
             return
+        # The upload may carry more than two channels (only a stream
+        # layout's encode_source reads them); the body below is stereo.
+        if new_wf.shape[0] > 2:
+            new_wf = new_wf[:2]
         if new_duration_s:
             # The ACE body below re-derives its geometry from the new
             # source unconditionally, so a resize request has nothing to
@@ -1581,7 +1585,10 @@ class StreamingSession:
             # geometry — unchanged for a plain swap (the create-time
             # shape, so the wire duration doesn't move), the backend's
             # returned length after a resize.
-            src_np = wf.cpu().numpy().T.copy()   # [N, C] float32
+            # The client buffer is stereo whatever the upload carried
+            # (channels past the first two are for the backend's anchor
+            # encode only; see SA3Backend.handle_swap_source).
+            src_np = wf[:2].cpu().numpy().T.copy()   # [N, C] float32
             with state._lock:
                 if new_playback:
                     state.playback_samples = int(new_playback)
@@ -1603,15 +1610,45 @@ class StreamingSession:
                     ])
                 else:
                     src_np = src_np[:n_play]
+                # A backend delivering more than one channel pair (a
+                # stream layout's side-by-side delivery), or one that
+                # says it never delivers its source (``source_delivered``,
+                # a layout of held renders), plays its own renders, never
+                # the upload: the upload only conditions the next slots. A plain swap therefore leaves the
+                # playing buffer, the playhead and the loop band as they
+                # are (the renders replace the audio slot by slot); only
+                # a buffer that does not fit the delivery geometry yet (a
+                # resize, or a stereo create-time buffer) becomes a silent
+                # one at the delivery channel count, which the renders
+                # fill.
+                geometry = getattr(self.backend, "geometry", None)
+                deliver_ch = int(geometry().channels) if geometry else 2
+                delivered = getattr(self.backend, "source_delivered", None)
+                plays_source = bool(delivered()) if delivered else True
+                keep = False
+                if deliver_ch > 2 or not plays_source:
+                    current = self.audio_eng.current
+                    keep = (
+                        not new_playback
+                        and current is not None
+                        and tuple(current.shape) == (n_play, deliver_ch)
+                    )
+                    if keep:
+                        src_np = np.array(current, dtype=np.float32)
+                    else:
+                        src_np = np.zeros(
+                            (src_np.shape[0], deliver_ch), dtype=np.float32,
+                        )
                 state.n_channels = int(src_np.shape[1])
                 # Retire anything staged against the old source (ACE
                 # parity; inert for backends without write_audio).
                 state.source_epoch += 1
-                self.audio_eng.swap(src_np)
-                self.audio_eng.position = 0
-                # A loop band from the previous song is meaningless
-                # against the new buffer — drop it.
-                self.audio_eng.loop_band = None
+                if not keep:
+                    self.audio_eng.swap(src_np)
+                    self.audio_eng.position = 0
+                    # A loop band from the previous song is meaningless
+                    # against the new buffer — drop it.
+                    self.audio_eng.loop_band = None
 
             self.bus.publish(SwapReady(
                 duration=len(src_np) / SAMPLE_RATE,

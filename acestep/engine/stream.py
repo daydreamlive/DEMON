@@ -1121,6 +1121,7 @@ class StreamPipeline:
             if slot is not None and slot.step_idx >= len(slot.t_schedule) - 1:
                 finished = slot.xt
                 self.last_finished_request = slot.request
+                self._notify_slot_done(slot.request, finished)
                 self._slots[i] = None
                 break
 
@@ -1163,6 +1164,7 @@ class StreamPipeline:
                     # emerged-params echo and the decode-seed pairing
                     # describe the PREVIOUS latent.
                     self.last_finished_request = slot.request
+                    self._notify_slot_done(slot.request, finished)
                     self._slots[i] = None
                     break
 
@@ -1170,6 +1172,21 @@ class StreamPipeline:
         self.ticks += 1
 
         return finished
+
+    def _notify_slot_done(self, request, latent: torch.Tensor) -> None:
+        """Hand a finished slot's latent to the adapter's optional
+        ``on_slot_done(request, latent)`` observer, just before delivery.
+        A raising observer never breaks the tick: it is logged once per
+        pipeline and the latent is delivered regardless."""
+        hook = getattr(self.adapter, "on_slot_done", None)
+        if hook is None:
+            return
+        try:
+            hook(request, latent)
+        except Exception as exc:  # noqa: BLE001 - observer must not kill the tick
+            if not getattr(self, "_slot_done_warned", False):
+                self._slot_done_warned = True
+                logger.warning("on_slot_done raised (ignored): {!r}", exc)
 
     # ------------------------------------------------------------------
     # Unified tick — all features compose via pure ode_steps bricks
@@ -1395,6 +1412,7 @@ class StreamPipeline:
         step_ode = self._get_compiled(ode_steps.step_ode_euler)
         step_sde_curve = self._get_compiled(ode_steps.step_sde_curve)
         step_sde_renoise = self._get_compiled(ode_steps.step_sde_renoise)
+        make_renoise = getattr(self.adapter, "make_renoise", None)
 
         for si, slot in enumerate(slots):
             t_curr = slot.t_schedule[slot.step_idx].item()
@@ -1538,16 +1556,24 @@ class StreamPipeline:
                 # transposed order, so torch.randn(shape) would arrange
                 # them differently and silently change every ACE SDE
                 # trajectory (caught by test_ace_adapter_parity).
-                noise = (
-                    req.latent_mask.ensure_noise(xt.device, xt.dtype)
-                    if req.latent_mask is not None
-                    else torch.randn_like(xt)
-                    if slot.sde_generator is None
-                    else torch.randn(
-                        xt.shape, device=xt.device, dtype=xt.dtype,
-                        generator=slot.sde_generator,
+                # An adapter may supply the draw itself (a stream
+                # layout's per-stream noise streams); None = stock draw.
+                noise = None
+                if req.latent_mask is None and make_renoise is not None:
+                    noise = make_renoise(req, slot.step_idx)
+                if noise is None:
+                    noise = (
+                        req.latent_mask.ensure_noise(xt.device, xt.dtype)
+                        if req.latent_mask is not None
+                        else torch.randn_like(xt)
+                        if slot.sde_generator is None
+                        else torch.randn(
+                            xt.shape, device=xt.device, dtype=xt.dtype,
+                            generator=slot.sde_generator,
+                        )
                     )
-                )
+                else:
+                    noise = noise.to(device=xt.device, dtype=xt.dtype)
                 xt_new = step_sde_renoise(xt, x0_pred, t_next, noise)
             else:
                 # ODE with blended x0: synthesize v_blended and reuse

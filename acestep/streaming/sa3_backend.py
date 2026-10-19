@@ -61,6 +61,7 @@ from contextlib import ExitStack
 from dataclasses import replace
 from typing import Callable, Optional
 
+import numpy as np
 import torch
 
 from acestep.engine.obs import logger
@@ -90,6 +91,14 @@ SA3_LATENT_RATE_HZ = 44100.0 / 4096.0
 # here (not sa3_session, which imports this module) so the swap-resize
 # path can clamp a requested window without an import cycle.
 SA3_MAX_DURATION_S = 120.0
+
+
+def max_session_duration_s(layout=None) -> float:
+    """The render ceiling for a session: an installed stream layout's own
+    ``max_duration_s`` when it declares one (it sizes its own streams),
+    else :data:`SA3_MAX_DURATION_S`."""
+    cap = getattr(layout, "max_duration_s", None) if layout is not None else None
+    return float(cap) if cap else SA3_MAX_DURATION_S
 
 
 def delivered_samples(n_44k: int) -> int:
@@ -303,8 +312,17 @@ class SA3Backend(DiffusionBackend):
         # behave exactly as if the plugin system did not exist.
         model_extension=None,
         extension_runtime=None,
+        # A model extension's StreamLayout (acestep.plugins): the ring
+        # carries n_streams stacked streams on the token axis, each
+        # decoded separately and mixed to one delivery stream. None on
+        # every stock session, whose render path is then untouched.
+        stream_layout=None,
     ):
         super().__init__(adapter=adapter, codec=codec)
+        self._layout = stream_layout
+        self._n_streams = (
+            int(stream_layout.n_streams) if stream_layout is not None else 1
+        )
         self._extension = model_extension
         self._extension_runtime = extension_runtime
         self._extension_knob_names = tuple(
@@ -449,6 +467,10 @@ class SA3Backend(DiffusionBackend):
         # the cache and decode per render instead — see render_window.
         self._rendered_for = None     # latent tensor identity
         self._rendered_48k = None     # np.ndarray [N, C] float32
+        # Stream layouts cache the per-stream decodes instead
+        # ([n_streams, N, C]); the mix runs on every render so a gain
+        # change lands without a re-decode.
+        self._rendered_streams = None
         # Seed pinning the SAME decoder's inference-time noise for the
         # latest emerged latent (stamped in _after_produce), so repeated
         # decodes — and re-runs of the same session inputs — produce
@@ -500,6 +522,8 @@ class SA3Backend(DiffusionBackend):
         engines plus the SAME-S full-decode engine)."""
         from acestep.engine.sa3_adapter import SA3Adapter
 
+        layout_hook = getattr(context, "stream_layout", None)
+        layout = layout_hook() if callable(layout_hook) else None
         steps = int(kwargs.get("steps", 8))
         if cond is None:
             cond = context.prepare_cond(
@@ -540,6 +564,13 @@ class SA3Backend(DiffusionBackend):
             schedule_builder=context.make_schedule_builder(cond, steps),
             device=context.device,
             dtype=context.dtype,
+            make_noise=layout.make_noise if layout is not None else None,
+            make_renoise=(
+                getattr(layout, "make_renoise", None) if layout is not None else None
+            ),
+            on_slot_done=(
+                getattr(layout, "on_slot_done", None) if layout is not None else None
+            ),
         )
 
         # Phase-2 refit mirror: engaged only when the selected DiT is a
@@ -547,29 +578,11 @@ class SA3Backend(DiffusionBackend):
         # otherwise the interim eager swap (D6a) covers LoRA.
         refit_mirror = None
         if want_lora and getattr(adapter.dit, "refittable", False):
-            from acestep.engine.sa3_trt_lora import (
-                SA3TRTRefitMirror,
-                find_refit_manifest,
-            )
+            from acestep.engine.sa3_trt_lora import make_refit_mirror
 
-            manifest = find_refit_manifest(adapter.dit.engine_path)
-            if manifest is None:
-                logger.warning(
-                    "sa3_refit_manifest_missing engine={} — LoRA will use "
-                    "the eager-DiT swap; generate the manifest with "
-                    "scripts/sa3/gen_sa3_refit_manifest.py",
-                    adapter.dit.engine_path.parent.name,
-                )
-            else:
-                try:
-                    refit_mirror = SA3TRTRefitMirror(
-                        adapter.dit.engine, context.sam.model.model, manifest,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "sa3_refit_mirror_init_failed error={} — LoRA will "
-                        "use the eager-DiT swap", exc,
-                    )
+            # fp16mixed refit engine -> v1 manifest; fp8 refit engine
+            # (DEMON_SA3_FP8_REFIT=1) -> v2 manifest, fixed baked scales.
+            refit_mirror = make_refit_mirror(adapter.dit, context.sam.model.model)
 
         def _prompt_rebuilder(tags: str, steps_now: int, duration_now: float):
             # Per-prompt re-conditioning (handle_set_prompt): a fresh
@@ -596,7 +609,11 @@ class SA3Backend(DiffusionBackend):
             # anywhere in (or after) it leaves the old geometry whole —
             # the backend commits the new duration only once the resize
             # has fully landed.
-            d = min(float(new_duration_s), SA3_MAX_DURATION_S)
+            layout_hook = getattr(context, "stream_layout", None)
+            ceiling = max_session_duration_s(
+                layout_hook() if callable(layout_hook) else None,
+            )
+            d = min(float(new_duration_s), ceiling)
             d = context.clamp_duration_for_trt(d, backend=dit_backend)
             new_cond = context.prepare_cond(
                 prompt=tags_a, duration=d, steps=steps_now,
@@ -658,7 +675,12 @@ class SA3Backend(DiffusionBackend):
             prompt_tags=prompt,
             prompt_tags_b=prompt_b,
             source_encoder=_source_encoder,
-            resizer=_resizer,
+            # A stream layout fixes its own geometry (the stacked window
+            # and its accelerated engine are built together), so the
+            # swap-resize path is off there: a swap re-encodes the
+            # source at the fixed geometry instead.
+            resizer=_resizer if layout is None else None,
+            stream_layout=layout,
             # D6a: the eager DiT module stays resident on the context
             # even when make_dit returned a TRT wrapper — the interim
             # LoRA fallback swaps to it.
@@ -785,7 +807,7 @@ class SA3Backend(DiffusionBackend):
     def geometry(self) -> AudioGeometry:
         return AudioGeometry(
             sample_rate=DELIVERY_SAMPLE_RATE,
-            channels=2,
+            channels=self.delivery_channels(),
             chunk_rate_hz=SA3_LATENT_RATE_HZ,
             duration_s=self.playable_duration_s(),
         )
@@ -985,8 +1007,9 @@ class SA3Backend(DiffusionBackend):
         """The family's render ceiling — small-music generates at most a
         120 s window. Read by the session's swap-resize path so the
         clamp stays backend-owned (the resizer applies the same bound
-        to the request it conditions at)."""
-        return SA3_MAX_DURATION_S
+        to the request it conditions at). An installed stream layout's
+        ``max_duration_s`` replaces it."""
+        return max_session_duration_s(self._layout)
 
     def playable_duration_s(self):
         # The requested loop length, NOT cond.audio_sample_size /
@@ -1176,6 +1199,13 @@ class SA3Backend(DiffusionBackend):
                 "SA3Backend was constructed without a resizer; "
                 "swap-resize requires the from_context assembly"
             )
+        # Only a stream layout's own encode_source reads channels past
+        # the first two (the raw upload, e.g. one stereo pair per
+        # stream); everything else encodes the stereo source as before.
+        if (self._layout is None or self._layout.encode_source is None) and (
+            int(waveform.shape[0]) > 2
+        ):
+            waveform = waveform[:2]
         new_geom = None
         dropped_mirror = False
         degraded_to_eager = False
@@ -1308,6 +1338,7 @@ class SA3Backend(DiffusionBackend):
                     # new window.
                     self._rendered_for = None
                     self._rendered_48k = None
+                    self._rendered_streams = None
                     # Rebuild the ring at the new schedule/geometry — this
                     # also structurally drops every in-flight old-geometry
                     # slot (their latents have the wrong shape for the new
@@ -1655,8 +1686,111 @@ class SA3Backend(DiffusionBackend):
 
     # ---- rendering -------------------------------------------------------------
 
+    def _stream_slices(self, latent_bct: torch.Tensor) -> list:
+        """SA3-native per-stream views ``[1, C, L]`` of a stacked latent."""
+        n = self._n_streams
+        total = int(latent_bct.shape[-1])
+        if total % n:
+            raise ValueError(
+                f"stacked latent length {total} is not a multiple of "
+                f"n_streams={n}"
+            )
+        L = total // n
+        return [latent_bct[..., i * L:(i + 1) * L] for i in range(n)]
+
+    def _mix_streams(self, streams):
+        """``[n, N, C]`` per-stream audio -> ``[N, C]`` via the layout's
+        mix (default: sum), clamped to the delivery range. A layout that
+        delivers streams gets them side by side instead: ``[N, n * C]``,
+        stream ``k`` at channels ``[k * C, (k + 1) * C)``."""
+        if self._layout.deliver_streams:
+            n, N, C = streams.shape
+            out = np.concatenate(list(streams), axis=1).astype(
+                np.float32, copy=False,
+            )
+            expected = (N, n * C)
+        else:
+            mix = self._layout.mix
+            out = mix(streams) if mix is not None else streams.sum(axis=0)
+            out = np.asarray(out, dtype=np.float32)
+            expected = streams.shape[1:]
+        if out.shape != expected:
+            raise ValueError(
+                f"stream mix returned {out.shape}, expected {expected}"
+            )
+        return np.clip(out, -1.0, 1.0)
+
+    def delivery_channels(self) -> int:
+        """Channel count of the delivered audio: one stereo pair, or one
+        pair per stream when the layout delivers streams side by side."""
+        if self._layout is not None and self._layout.deliver_streams:
+            return int(self._layout.n_streams) * 2
+        return 2
+
+    def source_delivered(self) -> bool:
+        """Whether the client plays the uploaded source until renders
+        replace it. False under a layout that delivers its streams side
+        by side or declares ``source_delivered = False``: the upload is
+        the model's input only and the client buffer starts silent."""
+        layout = self._layout
+        if layout is None:
+            return True
+        return not layout.deliver_streams and bool(layout.source_delivered)
+
+    def _stream_render(self, index: int, part: torch.Tensor):
+        """The layout's own whole-window render of stream ``index``
+        (``StreamLayout.render_stream``) as float32 ``[N, C]``, or None
+        when the layout has none and the stream is decoded as usual."""
+        hook = self._layout.render_stream
+        if hook is None:
+            return None
+        audio = hook(index, part)
+        if audio is None:
+            return None
+        audio = np.asarray(audio, dtype=np.float32)
+        if audio.ndim != 2:
+            raise ValueError(
+                f"render_stream({index}) returned shape {audio.shape}, "
+                "expected [N, channels]"
+            )
+        return audio
+
+    def _rendered_stream_audio(self, latent_btc: torch.Tensor):
+        """Per-stream full decode + delivery resample ``[n, N, C]``,
+        cached per latent identity (a re-mix is then just a sum)."""
+        if self._rendered_for is latent_btc and self._rendered_streams is not None:
+            return self._rendered_streams
+        import torchaudio
+
+        t0 = time.perf_counter()
+        streams = []
+        for i, part in enumerate(self._stream_slices(latent_btc.movedim(1, 2))):
+            own_audio = self._stream_render(i, part)
+            if own_audio is not None:
+                streams.append(np.clip(own_audio, -1.0, 1.0))
+                continue
+            audio_ct = self.codec.decode_full(part, decode_seed=self._decode_seed)
+            audio_48 = torchaudio.functional.resample(
+                audio_ct.float(), SA3_SAMPLE_RATE, DELIVERY_SAMPLE_RATE,
+            )
+            streams.append(audio_48.clamp(-1, 1).cpu().numpy().T)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        self.last_dec_ms += (time.perf_counter() - t0) * 1000
+        if len({a.shape for a in streams}) != 1:
+            raise ValueError(
+                "per-stream renders differ in shape: "
+                f"{[a.shape for a in streams]} (render_stream must return "
+                "the stream's full-decode length at the delivery rate)"
+            )
+        self._rendered_streams = np.stack(streams).astype(np.float32, copy=False)
+        self._rendered_for = latent_btc
+        return self._rendered_streams
+
     def _rendered_audio(self, latent_btc: torch.Tensor):
         """Full decode + delivery resample, cached per latent identity."""
+        if self._layout is not None:
+            return self._mix_streams(self._rendered_stream_audio(latent_btc))
         if self._rendered_for is latent_btc and self._rendered_48k is not None:
             return self._rendered_48k
         import torchaudio
@@ -1718,6 +1852,11 @@ class SA3Backend(DiffusionBackend):
         lead44 = start44 - lo44
         total44 = lead44 + n44 + m44
 
+        if self._layout is not None:
+            return self._render_stream_windows(
+                latent_btc, start48, n48, lo44, lead44, total44,
+            )
+
         t0 = time.perf_counter()
         audio_ct = self.codec.decode_window(
             latent_btc.movedim(1, 2), lo44, total44,
@@ -1734,6 +1873,37 @@ class SA3Backend(DiffusionBackend):
         if pcm48.shape[-1] < n48:
             pcm48 = torch.nn.functional.pad(pcm48, (0, n48 - pcm48.shape[-1]))
         pcm = pcm48.clamp(-1, 1).cpu().numpy().T  # [N, C]
+        return AudioChunk(pcm=pcm, start_sample=start48)
+
+    def _render_stream_windows(self, latent_btc, start48, n48, lo44, lead44, total44):
+        """:meth:`_render_window_via_codec` under a stream layout: the same
+        window geometry, decoded once PER STREAM (a decoder's receptive
+        field must never straddle a stream boundary), then mixed."""
+        import torchaudio
+
+        lead48 = (lead44 * DELIVERY_SAMPLE_RATE) // SA3_SAMPLE_RATE
+        t0 = time.perf_counter()
+        parts = []
+        for i, part in enumerate(self._stream_slices(latent_btc.movedim(1, 2))):
+            own_audio = self._stream_render(i, part)
+            if own_audio is not None:
+                pcm = own_audio[start48:start48 + n48]
+                if pcm.shape[0] < n48:
+                    pcm = np.pad(pcm, ((0, n48 - pcm.shape[0]), (0, 0)))
+                parts.append(np.clip(pcm, -1.0, 1.0))
+                continue
+            audio_ct = self.codec.decode_window(part, lo44, total44)
+            audio48 = torchaudio.functional.resample(
+                audio_ct.float(), SA3_SAMPLE_RATE, DELIVERY_SAMPLE_RATE,
+            )
+            pcm48 = audio48[:, lead48:lead48 + n48]
+            if pcm48.shape[-1] < n48:
+                pcm48 = torch.nn.functional.pad(pcm48, (0, n48 - pcm48.shape[-1]))
+            parts.append(pcm48.clamp(-1, 1).cpu().numpy().T)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        self.last_dec_ms += (time.perf_counter() - t0) * 1000
+        pcm = self._mix_streams(np.stack(parts).astype(np.float32, copy=False))
         return AudioChunk(pcm=pcm, start_sample=start48)
 
     def render_full(self):
@@ -1782,4 +1952,12 @@ class SA3Backend(DiffusionBackend):
             p["x0_target"] = round(prep["x0_target"], 2)
             p["feedback"] = round(prep["feedback"], 2)
             p["feedback_depth"] = prep["feedback_depth"]
+        # The installed extension's operator status, for pages that read
+        # it from the params telemetry.
+        status = getattr(self._extension_runtime, "status", None)
+        if callable(status):
+            try:
+                p["extension"] = dict(status())
+            except Exception as exc:
+                logger.warning("sa3_extension_status_raised error={}", exc)
         p["_prompt"] = getattr(self.state, "prompt_text", "")
