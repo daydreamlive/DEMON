@@ -58,3 +58,78 @@ def test_same_l_plugin_kind_is_part_of_identity(monkeypatch):
 
     assert aot != jit
     assert jit.startswith("jit_jit_v")
+
+
+def test_window_and_full_same_l_engines_coexist(monkeypatch, tmp_path):
+    """The ring's window engine (t..96) and the one-shot full-song engine
+    (t..3230) live in the same directory; each finder picks its own,
+    whatever the directory listing order."""
+    monkeypatch.setenv("ACESTEP_MODELS_DIR", str(tmp_path))
+    monkeypatch.delenv("SA3_SWA_AOT", raising=False)
+    tag = sa3_trt.same_l_plugin_build_tag()
+    full = _engine(tmp_path, f"same_l_decode_window_{tag}_t32_1292_3230")
+    window = _engine(tmp_path, f"same_l_decode_window_{tag}_t32_56_96")
+    _engine(tmp_path, "same_l_decode_window_othertag_t32_1292_9000")      # another plugin build
+
+    assert sa3_trt.find_same_l_window_engine() == (window, 32, 96)
+    assert sa3_trt.find_same_l_full_engine() == (full, 32, 3230)
+    assert [e[0] for e in sa3_trt.find_same_l_engines()] == [window, full]
+
+
+def test_full_same_l_engine_absent_alone_window(monkeypatch, tmp_path):
+    monkeypatch.setenv("ACESTEP_MODELS_DIR", str(tmp_path))
+    monkeypatch.delenv("SA3_SWA_AOT", raising=False)
+    tag = sa3_trt.same_l_plugin_build_tag()
+    _engine(tmp_path, f"same_l_decode_window_{tag}_t32_56_96")
+    assert sa3_trt.find_same_l_full_engine() is None
+    tmp2 = tmp_path / "only_full"
+    monkeypatch.setenv("ACESTEP_MODELS_DIR", str(tmp2))
+    full = _engine(tmp2, f"same_l_decode_window_{tag}_t32_1292_3230")
+    assert sa3_trt.find_same_l_window_engine() is None
+    assert sa3_trt.find_same_l_full_engine() == (full, 32, 3230)
+
+
+def test_full_decode_routes_by_frames_one_latent_per_call():
+    """decode_full / decode_full_batch on the full-song engine when the
+    frame count is inside its profile (items one at a time, the latent
+    scaled like the window path); eager outside it."""
+    import contextlib
+    from types import SimpleNamespace
+
+    import torch
+
+    from acestep.engine.sa3_context import SA3SAMEWindowCodec
+
+    calls = {"trt": [], "eager": []}
+
+    class FakeTRT:
+        def decode(self, lat):
+            calls["trt"].append(tuple(lat.shape))
+            return lat[0, :2].repeat_interleave(4, dim=-1) * 10.0     # [2, 4T], out of [-1, 1]
+
+    def eager(_sam, lat):
+        calls["eager"].append(tuple(lat.shape))
+        return torch.zeros(lat.shape[0], 2, lat.shape[-1] * 4)
+
+    codec = SA3SAMEWindowCodec.__new__(SA3SAMEWindowCodec)
+    codec._context = SimpleNamespace(sam=None)
+    codec._helpers = SimpleNamespace(
+        sa3_decode_rng=lambda *_a, **_k: contextlib.nullcontext(), decode_sa3_latent=eager,
+    )
+    codec._scale = 0.5
+    codec._full_found = ("x.trt", 32, 3230)
+    codec._full_trt = FakeTRT()
+
+    lat = torch.full((5, 256, 40), 0.1)
+    out = codec.decode_full_batch(lat, decode_seed=3)
+    assert calls["trt"] == [(1, 256, 40)] * 5 and calls["eager"] == []
+    assert out.shape == (5, 2, 160)
+    assert torch.allclose(out, torch.full_like(out, 0.5))           # 0.1 x scale 0.5 x 10, clamped
+    one = codec.decode_full(lat[:1])
+    assert one.shape == (2, 160) and len(calls["trt"]) == 6
+    codec.decode_full_batch(torch.zeros(2, 256, 20))                 # under the profile min: eager
+    codec.decode_full(torch.zeros(1, 256, 4000))                     # over the max: eager
+    assert calls["eager"] == [(2, 256, 20), (1, 256, 4000)] and len(calls["trt"]) == 6
+    codec._full_found = None
+    codec.decode_full_batch(lat)
+    assert calls["eager"][-1] == (5, 256, 40)
