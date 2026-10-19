@@ -749,6 +749,11 @@ class SA3SAMECodec:
         return audio[0]
 
 
+#: engine file -> the shared full-song SAME-L decoder (SA3SAMEWindowCodec._full_decoder).
+_FULL_DECODERS: dict = {}
+_FULL_DECODERS_LOCK = threading.Lock()
+
+
 class SA3SAMEWindowCodec:
     """The SAME-L (medium) family codec: windowed latent decode.
 
@@ -822,16 +827,28 @@ class SA3SAMEWindowCodec:
         return f is not None and f[1] <= int(frames) <= f[2]
 
     def _full_decoder(self):
+        """The process-wide decoder of the full-song engine: ONE execution
+        context per engine file (its context is sized for the profile max,
+        4.4 GB at t..3230), shared by every session's codec rather than one
+        per session."""
         if self._full_trt is None:
             from acestep.engine.sa3_trt import SameLWindowTRTDecoder
 
-            self._full_trt = SameLWindowTRTDecoder(self._full_found[0])
+            key = str(self._full_found[0])
+            with _FULL_DECODERS_LOCK:
+                dec = _FULL_DECODERS.get(key)
+                if dec is None:
+                    dec = SameLWindowTRTDecoder(self._full_found[0])
+                    _FULL_DECODERS[key] = dec
+            self._full_trt = dec
         return self._full_trt
 
     def _decode_full_trt(self, latent_bct: torch.Tensor) -> torch.Tensor:
         """One ``[1, 256, T]`` latent on the full-song engine -> ``[C, N]``,
         clamped to [-1, 1] as the eager full decode."""
-        audio = self._full_decoder().decode(latent_bct * self._scale)
+        dec = self._full_decoder()
+        with _FULL_DECODERS_LOCK:
+            audio = dec.decode(latent_bct * self._scale)
         return audio.float().clamp(-1.0, 1.0)
 
     def _decode_window_eager(self, latent_bct, start: int, num: int) -> torch.Tensor:
