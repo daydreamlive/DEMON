@@ -440,21 +440,47 @@ def max_dit_engine_latents(model_id: str) -> Optional[int]:
     return max(his) if his else None
 
 
-def find_same_l_window_engine() -> Optional[tuple]:
-    """``(path, min_t, max_t)`` of the built SAME-L window decoder, or
-    None (caller falls back to eager windowed decode)."""
+#: A SAME-L engine whose profile max reaches this many latent frames is a
+#: FULL-song decoder (one-shot ``decode_full``), not the per-tick window
+#: decoder (whose profile caps at 96 by choice). 1 s = ~10.8 frames.
+SAME_L_FULL_MIN_MAX_T = 256
+
+
+def find_same_l_engines() -> list:
+    """``[(path, min_t, max_t), ...]`` of every built SAME-L decoder for
+    the running plugin build tag, sorted by ``max_t`` (narrowest first)."""
     base = trt_engines_dir()
     if not base.is_dir():
-        return None
+        return []
     expected_tag = same_l_plugin_build_tag()
+    out = []
     for sub in base.iterdir():
         m = _SAME_L_DIR_RE.match(sub.name)
         if not m or m.group("tag") != expected_tag:
             continue
         f = sub / f"{sub.name}.trt"
         if f.is_file():
-            return f, int(m.group("lo")), int(m.group("hi"))
+            out.append((f, int(m.group("lo")), int(m.group("hi"))))
+    return sorted(out, key=lambda e: (e[2], e[1], str(e[0])))
+
+
+def find_same_l_window_engine() -> Optional[tuple]:
+    """``(path, min_t, max_t)`` of the built SAME-L WINDOW decoder (the
+    narrowest profile under :data:`SAME_L_FULL_MIN_MAX_T`), or None (caller
+    falls back to eager windowed decode). A full-song engine beside it is
+    never picked here: its context is sized for thousands of frames."""
+    for e in find_same_l_engines():
+        if e[2] < SAME_L_FULL_MIN_MAX_T:
+            return e
     return None
+
+
+def find_same_l_full_engine() -> Optional[tuple]:
+    """``(path, min_t, max_t)`` of the widest built SAME-L FULL-song
+    decoder (profile max >= :data:`SAME_L_FULL_MIN_MAX_T`), or None (the
+    one-shot full decode stays eager)."""
+    full = [e for e in find_same_l_engines() if e[2] >= SAME_L_FULL_MIN_MAX_T]
+    return full[-1] if full else None
 
 
 _CODEC_SHA_CACHE: dict = {}

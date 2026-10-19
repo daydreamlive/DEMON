@@ -767,7 +767,13 @@ class SA3SAMEWindowCodec:
     * **Eager** fallback: the spike's ``decode_sa3_latent_window``
       (deterministic), ~16 ms per window — still per-tick viable.
 
-    ``decode_full`` (legacy full-buffer path only) stays eager.
+    ``decode_full`` / ``decode_full_batch`` (the one-shot render) run on
+    the FULL-song SAME-L engine (``same_l_decode_window_<plugin_tag>_t*``
+    with a profile max >= ``SAME_L_FULL_MIN_MAX_T``, e.g. t32_1292_3230)
+    when it is built and the latent's frame count is inside its profile,
+    one latent per call (the graph is batch 1); eager otherwise. The TRT
+    full decode is the deterministic decode (no decode-RNG draws), rel_rms
+    0.5-2.5 % vs eager per stem (song_gen_20261019 lane C).
     """
 
     #: Decode context on each side of the kept region. The spike swept
@@ -778,6 +784,7 @@ class SA3SAMEWindowCodec:
     def __init__(self, context: SA3Context, *, use_trt: bool = True):
         from acestep.engine.sa3_trt import (
             SameLWindowTRTDecoder,
+            find_same_l_full_engine,
             find_same_l_window_engine,
         )
 
@@ -795,6 +802,38 @@ class SA3SAMEWindowCodec:
         else:
             path, self._min_t, self._max_t = found
             self._trt = SameLWindowTRTDecoder(path)
+        # The full-song engine is loaded on the first full decode (a ring
+        # session never pays its context).
+        self._full_found = find_same_l_full_engine() if use_trt else None
+        self._full_trt = None
+        if self._full_found is None:
+            logger.info(
+                "sa3_same_l_full_decode mode=eager reason={}",
+                "no_trt_engine" if use_trt else "backend",
+            )
+        else:
+            logger.info(
+                "sa3_same_l_full_decode mode=tensorrt engine={} t={}..{}",
+                self._full_found[0].parent.name, self._full_found[1], self._full_found[2],
+            )
+
+    def full_trt_serves(self, frames: int) -> bool:
+        """The full-song engine is built and ``frames`` is inside its profile."""
+        f = self._full_found
+        return f is not None and f[1] <= int(frames) <= f[2]
+
+    def _full_decoder(self):
+        if self._full_trt is None:
+            from acestep.engine.sa3_trt import SameLWindowTRTDecoder
+
+            self._full_trt = SameLWindowTRTDecoder(self._full_found[0])
+        return self._full_trt
+
+    def _decode_full_trt(self, latent_bct: torch.Tensor) -> torch.Tensor:
+        """One ``[1, 256, T]`` latent on the full-song engine -> ``[C, N]``,
+        clamped to [-1, 1] as the eager full decode."""
+        audio = self._full_decoder().decode(latent_bct * self._scale)
+        return audio.float().clamp(-1.0, 1.0)
 
     def _decode_window_eager(self, latent_bct, start: int, num: int) -> torch.Tensor:
         result = self._helpers.decode_sa3_latent_window(
@@ -854,7 +893,10 @@ class SA3SAMEWindowCodec:
     ) -> torch.Tensor:
         """Eager full decode (legacy full-buffer mode only; the hot path
         never calls this for windowed-codec families). ``decode_seed``
-        pins the decode RNG exactly as on :class:`SA3SAMECodec`."""
+        pins the decode RNG exactly as on :class:`SA3SAMECodec` (the TRT
+        full-song engine ignores it: it is the deterministic decode)."""
+        if self.full_trt_serves(int(latent_bct.shape[-1])):
+            return self._decode_full_trt(latent_bct)
         with self._helpers.sa3_decode_rng(decode_seed, device=latent_bct.device):
             audio = self._helpers.decode_sa3_latent(self._context.sam, latent_bct)
         return audio[0]
@@ -866,6 +908,13 @@ class SA3SAMEWindowCodec:
         render's streams of one version) in ONE decoder call ->
         [B, C, N]. The decode RNG is pinned once for the batch, so the
         same latents and seed give bit-identical audio (not the per-latent
-        draws of :meth:`decode_full`)."""
+        draws of :meth:`decode_full`). On the full-song TRT engine the
+        latents are decoded one at a time (its graph is batch 1; a batch
+        opened on dim 0 is not item-correct, lane C)."""
+        if self.full_trt_serves(int(latents_bct.shape[-1])):
+            return torch.stack([
+                self._decode_full_trt(latents_bct[i:i + 1])
+                for i in range(int(latents_bct.shape[0]))
+            ])
         with self._helpers.sa3_decode_rng(decode_seed, device=latents_bct.device):
             return self._helpers.decode_sa3_latent(self._context.sam, latents_bct)
