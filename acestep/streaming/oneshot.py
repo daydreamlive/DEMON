@@ -183,6 +183,10 @@ class OneshotResult:
     ms: dict
     seconds: float
     redo_of: Optional[str] = None
+    #: What the denoise ran on, for the host log: the DiT's ``describe()``
+    #: (a stream layout's step: its engine file, or eager and why), else its
+    #: class name.
+    dit: str = ""
 
 
 def to_int16(audio) -> np.ndarray:

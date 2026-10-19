@@ -1133,14 +1133,16 @@ class StreamingSession:
             if req.redo is not None:
                 logger.info(
                     "oneshot_redo id={} of={} stream={} seed={} seconds={:.1f} "
-                    "generate_ms={:.0f} decode_ms={:.0f} pack_ms={:.0f} new={}",
+                    "generate_ms={:.0f} decode_ms={:.0f} pack_ms={:.0f} new={} dit={}",
                     req.request_id, req.redo.id, req.redo.stream, req.redo.seed,
                     res.seconds, ms["generate"], ms["decode"], ms["pack"], res.ids[0],
+                    getattr(res, "dit", "") or "?",
                 )
             else:
                 logger.info(
-                    "oneshot_generate id={} versions={} seconds={:.1f} ms={:.0f}",
+                    "oneshot_generate id={} versions={} seconds={:.1f} ms={:.0f} dit={}",
                     req.request_id, len(res.seeds), res.seconds, ms["generate"],
+                    getattr(res, "dit", "") or "?",
                 )
                 logger.info(
                     "oneshot_decode id={} versions={} streams={} ms={:.0f}",
