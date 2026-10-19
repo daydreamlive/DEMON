@@ -58,11 +58,13 @@ __export(node_exports, {
   arrayBufferToBase64: () => arrayBufferToBase64,
   base64ToArrayBuffer: () => base64ToArrayBuffer,
   captureConfigFromState: () => captureConfigFromState,
+  decodeOneshot: () => decodeOneshot,
   describeControl: () => describeControl,
   displayNameFor: () => displayNameFor,
   encodeWavInterleaved: () => encodeWavInterleaved,
   float16ArrayToFloat32: () => float16ArrayToFloat32,
   getUnknownKeys: () => getUnknownKeys,
+  int16ToFloat32: () => int16ToFloat32,
   isDcwMode: () => isDcwMode,
   isDcwWavelet: () => isDcwWavelet,
   isLoopGridRes: () => isLoopGridRes,
@@ -71,6 +73,8 @@ __export(node_exports, {
   isTimeSignature: () => isTimeSignature,
   mergeConfig: () => mergeConfig,
   normalizeConfigShape: () => normalizeConfigShape,
+  oneshotCommand: () => oneshotCommand,
+  renderOneshot: () => renderOneshot,
   resolveControlDescription: () => resolveControlDescription,
   resolveLoraCapForSource: () => resolveLoraCapForSource,
   rtmgConfigToSessionConfig: () => rtmgConfigToSessionConfig,
@@ -709,6 +713,84 @@ var SLICE_FLAG_RAW = 0;
 var SLICE_FLAG_DELTA = 1;
 var PREEMPTED_CLOSE_CODE = 4001;
 
+// analysis/types.ts
+var ANALYSIS_TAP_COMMAND = "analysis_tap";
+function analysisTapsAvailable(capabilities) {
+  const raw = capabilities?.analysis_taps;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((name) => typeof name === "string");
+}
+
+// oneshot.ts
+var _seq = 0;
+function oneshotCommand(req) {
+  const msg = {
+    type: "oneshot",
+    request_id: req.requestId ?? `oneshot-${++_seq}-${Date.now()}`
+  };
+  if (req.redo) msg.redo = { id: req.redo.id, stream: req.redo.stream, seed: req.redo.seed };
+  else msg.seeds = [...req.seeds ?? []];
+  if (req.knobs) msg.knobs = { ...req.knobs };
+  return msg;
+}
+function decodeOneshot(meta, data) {
+  const streams = meta.streams.map(Number);
+  const ids = meta.ids.map(String);
+  const seeds = meta.seeds.map(Number);
+  const block = meta.frames * meta.channels;
+  const want = ids.length * streams.length * block * 2;
+  if (data.byteLength !== want)
+    throw new Error(`oneshot: ${data.byteLength} bytes, expected ${want} (${ids.length} x ${streams.length} x ${meta.frames} x ${meta.channels} int16)`);
+  const versions = ids.map((id, v) => {
+    const audio = {};
+    streams.forEach((k, j) => {
+      audio[k] = new Int16Array(data, (v * streams.length + j) * block * 2, block);
+    });
+    return { id, seed: seeds[v], audio };
+  });
+  const ms = {};
+  for (const [k, v] of Object.entries(meta.ms ?? {})) ms[k] = Number(v);
+  return {
+    requestId: meta.request_id,
+    sampleRate: meta.sample_rate,
+    channels: meta.channels,
+    frames: meta.frames,
+    streams,
+    versions,
+    ms,
+    redoOf: meta.redo_of ?? null
+  };
+}
+function int16ToFloat32(a) {
+  const out = new Float32Array(a.length);
+  for (let i = 0; i < a.length; i++) out[i] = a[i] / 32768;
+  return out;
+}
+function renderOneshot(remote, req, timeoutMs = 12e4) {
+  return new Promise((resolve, reject) => {
+    const id = req.requestId ?? `oneshot-${++_seq}-${Date.now()}`;
+    const off = () => {
+      clearTimeout(timer);
+      remote.removeEventListener("oneshot", on);
+      remote.removeEventListener("oneshot_failed", on);
+      remote.removeEventListener("close", gone);
+    };
+    const on = (e) => {
+      const d = e.detail;
+      if ((e.type === "oneshot" ? d?.requestId : d?.request_id) !== id) return;
+      off();
+      if (e.type === "oneshot_failed") reject(new Error(d?.error || "oneshot failed"));
+      else resolve(d);
+    };
+    const gone = () => (off(), reject(new Error("connection lost")));
+    const timer = setTimeout(() => (off(), reject(new Error("oneshot timed out"))), timeoutMs);
+    remote.addEventListener("oneshot", on);
+    remote.addEventListener("oneshot_failed", on);
+    remote.addEventListener("close", gone);
+    if (remote.sendOneshot({ ...req, requestId: id }) === null) off(), reject(new Error("connection not open"));
+  });
+}
+
 // protocol.ts
 var import_meta = {};
 var PARAMS_BACKPRESSURE_BYTES = 8 * 1024;
@@ -749,7 +831,11 @@ function packPcmFrame(interleaved, channels) {
   const dv = new DataView(hdr);
   dv.setUint32(0, channels, true);
   dv.setUint32(4, samples, true);
-  const pcm = new Uint8Array(interleaved.buffer);
+  const pcm = new Uint8Array(
+    interleaved.buffer,
+    interleaved.byteOffset,
+    interleaved.byteLength
+  );
   const combined = new Uint8Array(hdr.byteLength + pcm.byteLength);
   combined.set(new Uint8Array(hdr), 0);
   combined.set(pcm, hdr.byteLength);
@@ -813,6 +899,10 @@ var RemoteBackend = class extends EventTarget {
   /** Backend capability mask from `ready.capabilities`. Null = older
    *  server / replay: treat as ungated (everything available). */
   capabilities = null;
+  /** Analyzer names this pod can run (`ready.capabilities.analysis_taps`);
+   *  empty until ready and on pods without any. Gate `sendAnalysisTap`
+   *  and analysis UI on it. */
+  analysisTaps = [];
   /** Per-session knob manifest from `ready.knob_manifest` — the same
    *  `{version, knobs}` envelope `GET /api/knobs` serves, but resolved
    *  for THIS session (SDE mode, enabled `lora_str_<id>` knobs). Null
@@ -836,6 +926,8 @@ var RemoteBackend = class extends EventTarget {
   backendClientId = null;
   _pending;
   _pendingSwap = null;
+  // A `oneshot_ready` header waiting for its one binary frame.
+  _pendingOneshot = null;
   _pendingStemAssets = null;
   _pendingStemBuffers = {};
   // Slice decoder runs in a worker so fzstd.decompress + float16→float32
@@ -1020,6 +1112,7 @@ var RemoteBackend = class extends EventTarget {
             this.maxPipelineDepth = typeof msg.max_pipeline_depth === "number" ? msg.max_pipeline_depth : null;
             this.geometry = msg.geometry ?? null;
             this.capabilities = msg.capabilities ?? null;
+            this.analysisTaps = analysisTapsAvailable(this.capabilities);
             this.knobManifest = msg.knob_manifest ?? null;
             this.manualSlotCount = typeof msg.manual_slot_count === "number" ? msg.manual_slot_count : null;
             this.manualSlotCap = typeof msg.manual_slot_cap === "number" ? msg.manual_slot_cap : null;
@@ -1060,6 +1153,22 @@ var RemoteBackend = class extends EventTarget {
           );
           return;
         }
+        if (this._pendingOneshot && ev.data instanceof ArrayBuffer) {
+          const meta = this._pendingOneshot;
+          this._pendingOneshot = null;
+          try {
+            this.dispatchEvent(
+              new CustomEvent("oneshot", { detail: decodeOneshot(meta, ev.data) })
+            );
+          } catch (e) {
+            this.dispatchEvent(
+              new CustomEvent("oneshot_failed", {
+                detail: { request_id: meta.request_id, error: String(e) }
+              })
+            );
+          }
+          return;
+        }
         if (this._pendingStemAssets && ev.data instanceof ArrayBuffer) {
           const meta = this._pendingStemAssets;
           const stem = meta.stems[Object.keys(this._pendingStemBuffers).length];
@@ -1090,6 +1199,10 @@ var RemoteBackend = class extends EventTarget {
             return;
           }
           switch (msg.type) {
+            case "analysis_state":
+            case "analysis_update":
+              this.dispatchEvent(new CustomEvent(msg.type, { detail: msg }));
+              return;
             case "params_update":
               this.dispatchEvent(
                 new CustomEvent("params", { detail: msg.params })
@@ -1179,6 +1292,19 @@ var RemoteBackend = class extends EventTarget {
             case "audio_write_failed":
               this.dispatchEvent(
                 new CustomEvent("audio_write_failed", { detail: msg.error })
+              );
+              break;
+            case "audio_in_ack":
+              this.dispatchEvent(
+                new CustomEvent("audio_in_ack", { detail: msg })
+              );
+              break;
+            case "oneshot_ready":
+              this._pendingOneshot = msg;
+              break;
+            case "oneshot_failed":
+              this.dispatchEvent(
+                new CustomEvent("oneshot_failed", { detail: msg })
               );
               break;
             case "command_failed":
@@ -1446,6 +1572,23 @@ var RemoteBackend = class extends EventTarget {
     } catch {
     }
   }
+  /**
+   * Ask for a one-shot render (``ready.capabilities.oneshot``): one whole
+   * version per seed, or a redo of one stream of a kept version. Answered
+   * by a ``oneshot`` event (detail: OneshotResult) or ``oneshot_failed``
+   * ({request_id, error}). Returns the request id, or null when the socket
+   * isn't open. ``renderOneshot`` (./oneshot) wraps it in a promise.
+   */
+  sendOneshot(req) {
+    if (this.ws?.readyState !== this._wsOpen) return null;
+    const msg = oneshotCommand(req);
+    try {
+      this.ws.send(JSON.stringify(msg));
+    } catch {
+      return null;
+    }
+    return msg.request_id;
+  }
   sendEnableLora(id, strength) {
     if (this.ws?.readyState !== this._wsOpen) return;
     try {
@@ -1500,6 +1643,55 @@ var RemoteBackend = class extends EventTarget {
       };
       this.ws.send(JSON.stringify(msg));
     } catch {
+    }
+  }
+  /**
+   * Enable or disable a live analysis tap (`analysis_tap`). `tap` is an
+   * analyzer name from `analysisTaps`; `options` are per analyzer (for
+   * `notes`: size, instruments, horizon_s) and validated server-side.
+   * The server answers with `analysis_state` (carrying `error` when the
+   * enable was refused, never `command_failed`) and, on enable, a
+   * `clear` `analysis_update` followed by range updates. Re-sending with
+   * `enabled: true` and new options replaces the running tap.
+   */
+  sendAnalysisTap(tap, enabled, options) {
+    if (this.ws?.readyState !== this._wsOpen) return;
+    try {
+      const msg = {
+        type: ANALYSIS_TAP_COMMAND,
+        tap,
+        enabled
+      };
+      if (options !== void 0) {
+        msg.options = options;
+      }
+      this.ws.send(JSON.stringify(msg));
+    } catch {
+    }
+  }
+  /**
+   * Stream one frame of live audio (`audio_in`): the server appends it at
+   * the canvas write frontier. Only sessions whose
+   * `capabilities.audio_in` is true accept it (the `live_input` family
+   * created without a source); others answer `command_failed`. `frame` is
+   * interleaved float32 at 48 kHz (`channels` 1 or 2, default 1), `seq`
+   * the frame counter (+1 per frame; restart from 0 to begin a new take),
+   * `startS` the frame's position on the capture clock when known (the
+   * server fills a gap up to 2 s with silence). Never drops: the server
+   * places frames by `seq`/`startS`, so a skipped send would be read as a
+   * gap. Acked by `audio_in_ack` CustomEvents (at most 5 per second).
+   */
+  sendAudioIn(frame, seq, opts = {}) {
+    if (this.ws?.readyState !== this._wsOpen) return false;
+    try {
+      const msg = { type: "audio_in", seq };
+      if (opts.startS != null) msg.start_s = opts.startS;
+      this.ws.send(JSON.stringify(msg));
+      this.ws.send(packPcmFrame(frame, opts.channels ?? 1));
+      return true;
+    } catch (e) {
+      console.error("[protocol] audio_in failed:", e);
+      return false;
     }
   }
   /**
@@ -1793,7 +1985,10 @@ var COMMAND_NAMES = [
   "swap_source",
   "write_audio",
   "midi_transcribe",
-  "bounce"
+  "analysis_tap",
+  "audio_in",
+  "bounce",
+  "oneshot"
 ];
 var EVENT_NAMES = [
   "init_ack",
@@ -1822,7 +2017,12 @@ var EVENT_NAMES = [
   "midi_notes",
   "midi_failed",
   "bounce_ready",
-  "bounce_failed"
+  "bounce_failed",
+  "oneshot_ready",
+  "oneshot_failed",
+  "analysis_state",
+  "audio_in_ack",
+  "analysis_update"
 ];
 
 // config/enums.ts
@@ -2423,11 +2623,13 @@ function resolveControlDescription(param, manifest) {
   arrayBufferToBase64,
   base64ToArrayBuffer,
   captureConfigFromState,
+  decodeOneshot,
   describeControl,
   displayNameFor,
   encodeWavInterleaved,
   float16ArrayToFloat32,
   getUnknownKeys,
+  int16ToFloat32,
   isDcwMode,
   isDcwWavelet,
   isLoopGridRes,
@@ -2436,6 +2638,8 @@ function resolveControlDescription(param, manifest) {
   isTimeSignature,
   mergeConfig,
   normalizeConfigShape,
+  oneshotCommand,
+  renderOneshot,
   resolveControlDescription,
   resolveLoraCapForSource,
   rtmgConfigToSessionConfig,

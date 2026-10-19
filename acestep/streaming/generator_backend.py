@@ -188,6 +188,12 @@ class Capabilities:
     # Append-only families leave it False: they have no "whole window"
     # to re-render.
     bounce: bool = False
+    # The ``oneshot`` command: the backend renders N whole versions of its
+    # fixed window in one go, outside the ring (``render_oneshot``), keeps
+    # each version's latent by id and re-denoises streams of a kept one
+    # (redo, when its stream layout has ``hold_streams``). Required for a
+    # ``render_only`` session.
+    oneshot: bool = False
     # Server-level, not a backend trait, like ``midi_transcribe``: the
     # analyzer names (``acestep.analysis.registry``) this pod can run as
     # live ``analysis_tap`` channels. Backends leave it empty; the WS

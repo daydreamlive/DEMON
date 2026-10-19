@@ -11,6 +11,18 @@
 // format cjs). The bridge `require()`s that artifact; see build.mjs.
 
 export { RemoteBackend, float16ArrayToFloat32 } from "./protocol";
+export {
+  renderOneshot,
+  decodeOneshot,
+  oneshotCommand,
+  int16ToFloat32,
+} from "./oneshot";
+export type {
+  OneshotRequest,
+  OneshotResult,
+  OneshotVersion,
+  OneshotTarget,
+} from "./oneshot";
 export type {
   RemoteBackendOptions,
   WsTrace,

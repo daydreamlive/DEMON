@@ -88,6 +88,8 @@ from acestep.streaming.events import (
     CommandFailed,
     DepthApplied,
     EventBus,
+    OneshotFailed,
+    OneshotReady,
     LoraCatalogUpdate,
     ManualSlotCount,
     ParamsEcho,
@@ -641,6 +643,11 @@ class StreamingSession:
         # Appended by the dispatch thread, serviced on the runner thread
         # (_service_bounces, inside before_tick).
         self._bounces: list = []
+        # Queued one-shot requests (OneshotRequest), served on the session
+        # thread (_service_oneshots): inside before_tick on a ring session,
+        # by the render-only loop otherwise. The event wakes that loop.
+        self._oneshots: list = []
+        self._oneshot_wake = threading.Event()
 
         self._init_analysis()
 
@@ -907,6 +914,24 @@ class StreamingSession:
         event bus.
         """
         try:
+            if self.render_only():
+                try:
+                    self._run_render_only()
+                except Exception as exc:
+                    logger.opt(exception=True).error("render_only_error error={}", exc)
+                    try:
+                        self.bus.publish(SessionError(
+                            code="pipeline_error",
+                            message=f"Session stopped: {type(exc).__name__}: {exc}",
+                        ))
+                    except Exception:
+                        pass
+                return
+            if getattr(self.config, "render_only", False):
+                logger.warning(
+                    "render_only_unsupported backend={} (running the ring)",
+                    self.backend.name,
+                )
             # Runner construction stays inside the try so a setup
             # failure still reaches the finally's close(), but it is
             # NOT inside the run() swallow-path below: constructor
@@ -1070,6 +1095,71 @@ class StreamingSession:
         self._apply_swap_if_pending()
         self._apply_depth_pending()
         self._service_bounces()
+        self._service_oneshots()
+
+    def _service_oneshots(self) -> None:
+        """Answer queued ``oneshot`` requests, one at a time, in order
+        (session thread: the runner's before_tick or the render-only
+        loop). Each is a whole render outside the ring
+        (``backend.render_oneshot``); the answer is :class:`OneshotReady`
+        or :class:`OneshotFailed` on the bus."""
+        if not self._oneshots:
+            return
+        from acestep.streaming.oneshot import OneshotError
+
+        state = self.state
+        state.last_activity_ts = time.monotonic()
+        while True:
+            with state._lock:
+                if not self._oneshots:
+                    return
+                req = self._oneshots.pop(0)
+            t0 = time.perf_counter()
+            try:
+                res = self.backend.render_oneshot(req)
+            except OneshotError as exc:
+                logger.info("oneshot_failed id={} error={}", req.request_id, exc)
+                self.bus.publish(OneshotFailed(req.request_id, str(exc)))
+                continue
+            except Exception as exc:  # noqa: BLE001 - one bad render never ends the session
+                logger.opt(exception=True).error(
+                    "oneshot_failed id={} error={!r}", req.request_id, exc,
+                )
+                self.bus.publish(OneshotFailed(
+                    req.request_id, f"{type(exc).__name__}: {exc}",
+                ))
+                continue
+            ms = res.ms
+            if req.redo is not None:
+                logger.info(
+                    "oneshot_redo id={} of={} stream={} seed={} seconds={:.1f} "
+                    "generate_ms={:.0f} decode_ms={:.0f} pack_ms={:.0f} new={}",
+                    req.request_id, req.redo.id, req.redo.stream, req.redo.seed,
+                    res.seconds, ms["generate"], ms["decode"], ms["pack"], res.ids[0],
+                )
+            else:
+                logger.info(
+                    "oneshot_generate id={} versions={} seconds={:.1f} ms={:.0f}",
+                    req.request_id, len(res.seeds), res.seconds, ms["generate"],
+                )
+                logger.info(
+                    "oneshot_decode id={} versions={} streams={} ms={:.0f}",
+                    req.request_id, len(res.seeds), len(res.streams), ms["decode"],
+                )
+                logger.info(
+                    "oneshot_pack id={} bytes={} ms={:.0f}",
+                    req.request_id, int(res.pcm.nbytes), ms["pack"],
+                )
+            self.bus.publish(OneshotReady(
+                request_id=req.request_id,
+                pcm=res.pcm,
+                sample_rate=int(res.sample_rate),
+                ids=tuple(res.ids),
+                seeds=tuple(res.seeds),
+                streams=tuple(res.streams),
+                ms={**ms, "total": round((time.perf_counter() - t0) * 1000.0, 1)},
+                redo_of=res.redo_of,
+            ))
 
     def _service_bounces(self) -> None:
         """Answer queued ``bounce`` requests (runner thread).
@@ -2491,6 +2581,58 @@ class StreamingSession:
                 [request_id, None, time.monotonic() + BOUNCE_TIMEOUT_S],
             )
         logger.info("bounce_requested origin={} id={}", origin.value, request_id)
+
+    def oneshot(
+        self,
+        data: dict,
+        *,
+        origin: CommandOrigin = CommandOrigin.PRIMARY,
+    ) -> None:
+        """Queue a one-shot render (the wire ``oneshot`` frame as a dict):
+        N whole versions of the window, or a redo of one stream of a kept
+        version. Answered on the bus with :class:`OneshotReady` or
+        :class:`OneshotFailed`. Served after every command sent before it
+        (same session thread as the pending drains)."""
+        from acestep.streaming.oneshot import OneshotError, parse_request
+
+        state = self.state
+        state.last_activity_ts = time.monotonic()
+        request_id = str((data or {}).get("request_id") or "")
+        if not self.backend.capabilities().oneshot:
+            self.bus.publish(OneshotFailed(
+                request_id, f"backend {self.backend.name!r} cannot render one-shot",
+            ))
+            return
+        try:
+            req = parse_request(data or {})
+        except OneshotError as exc:
+            self.bus.publish(OneshotFailed(request_id, str(exc)))
+            return
+        with state._lock:
+            self._oneshots.append(req)
+        self._oneshot_wake.set()
+        logger.info(
+            "oneshot_requested origin={} id={} versions={} redo={}",
+            origin.value, req.request_id, req.versions,
+            req.redo.id if req.redo is not None else None,
+        )
+
+    def render_only(self) -> bool:
+        """This session runs no ring: config.render_only on a backend that
+        renders one-shot."""
+        return bool(getattr(self.config, "render_only", False)) and bool(
+            self.backend.capabilities().oneshot
+        )
+
+    def _run_render_only(self) -> None:
+        """The render-only session loop: no PipelineRunner, no ticks. Drain
+        the pending queues (LoRA, depth, swap) and serve one-shot requests
+        until ``state.running`` flips False."""
+        logger.info("render_only_running")
+        while self.state.running:
+            self._oneshot_wake.wait(0.05)
+            self._oneshot_wake.clear()
+            self.apply_pending()
 
     @requires_capability("steering", "manual_slot_add")
     def manual_slot_add(

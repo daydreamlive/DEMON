@@ -240,6 +240,19 @@ class StreamLayout:
     range; the core still clamps the request onto ``L``. ``None`` keeps
     the family ceiling.
 
+    ``version_controls(seed) -> Mapping[str, float]``: the one-shot render
+    (the ``oneshot`` command) makes one version per seed; this returns the
+    layout's own knob values that make version ``seed`` (applied over the
+    request's knobs before the version's noise is drawn). ``None``: the
+    request seed alone tells the versions apart.
+
+    ``hold_streams(latent, held)``: a one-shot redo re-denoises some streams
+    against the others of a kept version. ``latent`` is that version's
+    SA3-native ``[1, C, n_streams * L]`` latent and ``held`` a tuple of
+    ``n_streams`` 0/1 flags (1 = given from ``latent``, 0 = denoised from
+    noise); the layout holds them for the denoise that follows. Called with
+    ``(None, None)`` afterwards to release. ``None``: the layout cannot redo.
+
     Each stream is decoded separately: a decoder's receptive field would
     otherwise bleed across stream boundaries.
     """
@@ -256,6 +269,8 @@ class StreamLayout:
     deliver_streams: bool = False
     source_delivered: bool = True
     max_duration_s: float | None = None
+    version_controls: Callable | None = None
+    hold_streams: Callable | None = None
 
     def __post_init__(self):
         if int(self.n_streams) < 1:

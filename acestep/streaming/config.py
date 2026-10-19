@@ -96,6 +96,14 @@ class SessionConfig:
     # reading. See the adapter's session_init for the full handshake.
     text_only: bool = False
 
+    # One-shot renders only: the session never starts the streaming ring
+    # (no pipeline ticks, no slices). It answers ``oneshot`` requests, each
+    # a whole render of N versions, on the session thread; commands that
+    # set prompt, knobs and LoRAs still apply. The ``ready`` initial buffer
+    # is a single silent frame (the client plays nothing). Honoured only by
+    # backends whose capabilities declare ``oneshot``.
+    render_only: bool = False
+
     # Opt-in to the ``init_ack`` telemetry/capability ack (any truthy value).
     # Read straight off the raw config dict by the adapter; declared here so
     # it reaches the generated wire contract that the C++ and TS clients

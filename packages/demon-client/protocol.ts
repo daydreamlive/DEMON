@@ -49,6 +49,7 @@ import type {
   LoopBandCommand,
   ManualSlotAddCommand,
   ManualSlotPopCommand,
+  OneshotReadyEvent,
   ParamsCommand,
   PromptCommand,
   SetDepthCommand,
@@ -63,6 +64,7 @@ import type {
   WireEvent,
   WriteAudioCommand,
 } from "./types/wireContract.gen";
+import { decodeOneshot, oneshotCommand, type OneshotRequest } from "./oneshot";
 
 /** Optional behaviors the host app injects into RemoteBackend. */
 export interface RemoteBackendOptions {
@@ -282,6 +284,8 @@ export class RemoteBackend extends EventTarget {
 
   private _pending: PendingPayload | null;
   private _pendingSwap: SwapReadyMessage | null = null;
+  // A `oneshot_ready` header waiting for its one binary frame.
+  private _pendingOneshot: OneshotReadyEvent | null = null;
   private _pendingStemAssets: StemAssetsMessage | null = null;
   private _pendingStemBuffers: Partial<Record<"vocals" | "instruments", Float32Array>> = {};
   // Slice decoder runs in a worker so fzstd.decompress + float16→float32
@@ -601,6 +605,26 @@ export class RemoteBackend extends EventTarget {
           return;
         }
 
+        // A one-shot render is ONE int16 frame after its `oneshot_ready`
+        // header: decoded into per-version, per-stream views and
+        // dispatched as `oneshot` ({...OneshotResult}).
+        if (this._pendingOneshot && ev.data instanceof ArrayBuffer) {
+          const meta = this._pendingOneshot;
+          this._pendingOneshot = null;
+          try {
+            this.dispatchEvent(
+              new CustomEvent("oneshot", { detail: decodeOneshot(meta, ev.data) }),
+            );
+          } catch (e) {
+            this.dispatchEvent(
+              new CustomEvent("oneshot_failed", {
+                detail: { request_id: meta.request_id, error: String(e) },
+              }),
+            );
+          }
+          return;
+        }
+
         // Stem assets are sent as a JSON header followed by one float16
         // binary buffer per listed stem. Consume them before the generic
         // audio-slice path so overlay buffers never get parsed as slices.
@@ -768,6 +792,14 @@ export class RemoteBackend extends EventTarget {
               // + the write frontier of the current take).
               this.dispatchEvent(
                 new CustomEvent("audio_in_ack", { detail: msg }),
+              );
+              break;
+            case "oneshot_ready":
+              this._pendingOneshot = msg;
+              break;
+            case "oneshot_failed":
+              this.dispatchEvent(
+                new CustomEvent("oneshot_failed", { detail: msg }),
               );
               break;
             case "command_failed":
@@ -1109,6 +1141,24 @@ export class RemoteBackend extends EventTarget {
       };
       this.ws.send(JSON.stringify(msg));
     } catch {}
+  }
+
+  /**
+   * Ask for a one-shot render (``ready.capabilities.oneshot``): one whole
+   * version per seed, or a redo of one stream of a kept version. Answered
+   * by a ``oneshot`` event (detail: OneshotResult) or ``oneshot_failed``
+   * ({request_id, error}). Returns the request id, or null when the socket
+   * isn't open. ``renderOneshot`` (./oneshot) wraps it in a promise.
+   */
+  sendOneshot(req: OneshotRequest): string | null {
+    if (this.ws?.readyState !== this._wsOpen) return null;
+    const msg = oneshotCommand(req);
+    try {
+      this.ws.send(JSON.stringify(msg));
+    } catch {
+      return null;
+    }
+    return msg.request_id;
   }
 
   sendEnableLora(id: string, strength?: number): void {

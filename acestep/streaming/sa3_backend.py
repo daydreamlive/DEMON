@@ -820,6 +820,7 @@ class SA3Backend(DiffusionBackend):
             render_anchor_queue=True,
             lora=bool(self._use_lora and self._lora_mgr is not None),
             bounce=True,
+            oneshot=True,
         )
 
     def geometry(self) -> AudioGeometry:
@@ -1930,6 +1931,255 @@ class SA3Backend(DiffusionBackend):
         return AudioChunk(
             pcm=self._rendered_audio(self._current_result), start_sample=0,
         )
+
+    # ---- one-shot renders (Capabilities.oneshot) -------------------------------
+
+    def render_oneshot(self, request, *, store=None):
+        """Whole renders outside the ring: ONE denoise per version (the
+        ring's pingpong step math and the layout's noise hooks, no
+        StreamPipeline tick), a full decode of every stream, int16 at the
+        delivery rate. ``request`` is an
+        :class:`~acestep.streaming.oneshot.OneshotRequest`; returns an
+        :class:`~acestep.streaming.oneshot.OneshotResult`. Each version's
+        latent is kept in ``store`` (default the process store) by id.
+
+        A redo (``request.redo``) re-denoises one stream of a kept version
+        from its seed, every other stream given from the kept latent (the
+        layout's ``hold_streams``), and returns that stream only, under a
+        new id for the new version.
+
+        Session-thread only (the runner's, or a render-only session's)."""
+        from acestep.streaming.oneshot import KEPT, OneshotError, OneshotResult, to_int16
+
+        store = KEPT if store is None else store
+        layout = self._layout
+        n = self._n_streams
+        redo = request.redo
+        kept = None
+        if redo is not None:
+            if layout is None or getattr(layout, "hold_streams", None) is None:
+                raise OneshotError("this session's model cannot redo a stream")
+            if not 0 <= int(redo.stream) < n:
+                raise OneshotError(
+                    f"redo.stream must be in 0..{n - 1}, got {redo.stream}"
+                )
+            kept = store.get(redo.id)
+            with self._control_lock:
+                frames = int(self._cond.latent_frames)
+            if kept.n_streams != n or int(kept.latent.shape[-1]) != frames:
+                raise OneshotError(
+                    f"kept version {redo.id!r} has another geometry "
+                    f"({kept.n_streams} streams, {int(kept.latent.shape[-1])} "
+                    f"frames; this session: {n}, {frames}): redo on a "
+                    "session of the same length"
+                )
+        base = dict(self.read_knobs())
+        base.update(request.knobs or {})
+        seeds = tuple(int(s) for s in request.seeds)
+        version_controls = (
+            getattr(layout, "version_controls", None) if layout is not None else None
+        )
+
+        sync = torch.cuda.synchronize if torch.cuda.is_available() else (lambda: None)
+        t0 = time.perf_counter()
+        latents = []          # engine layout [1, T, C] per version
+        batchable = (
+            layout is None and redo is None
+            and not getattr(self.adapter.dit, "trt_batch1", False)
+        )
+        if batchable:
+            controls = dict(base)
+            self._oneshot_controls(controls)
+            latents = list(self._oneshot_denoise(seeds, controls).split(1, dim=0))
+        else:
+            for seed in seeds:
+                controls = dict(base)
+                if version_controls is not None:
+                    controls.update(version_controls(int(seed)))
+                self._oneshot_controls(controls)
+                if redo is None:
+                    latents.append(self._oneshot_denoise((seed,), controls))
+                    continue
+                held = tuple(0 if k == int(redo.stream) else 1 for k in range(n))
+                kept_dev = kept.latent.to(
+                    device=self.adapter._device, dtype=self.adapter._dtype,
+                )
+                layout.hold_streams(kept_dev, held)
+                try:
+                    latents.append(self._oneshot_denoise((seed,), controls))
+                finally:
+                    layout.hold_streams(None, None)
+        sync()
+        t1 = time.perf_counter()
+
+        # Decode: every stream (a redo: its stream) of every version through
+        # the codec's full decode, then one delivery resample for them all.
+        import torchaudio
+
+        streams = (int(redo.stream),) if redo is not None else tuple(range(n))
+        decode_batch = getattr(self.codec, "decode_full_batch", None)
+        rows = []
+        for seed, lat in zip(seeds, latents):
+            parts = self._stream_slices(lat.movedim(1, 2))
+            parts = [parts[k] for k in streams]
+            if decode_batch is not None and len(parts) > 1:
+                try:
+                    audio = decode_batch(torch.cat(parts, dim=0), decode_seed=int(seed))
+                    rows.extend(audio.unbind(0))
+                    continue
+                except torch.cuda.OutOfMemoryError:
+                    # One decoder call for every stream did not fit: the
+                    # streams one at a time instead (and from now on).
+                    logger.warning("oneshot_decode_batch_oom streams={}", len(parts))
+                    decode_batch = None
+                    torch.cuda.empty_cache()
+                rows.extend(
+                    self.codec.decode_full(p, decode_seed=int(seed)) for p in parts
+                )
+            else:
+                rows.extend(
+                    self.codec.decode_full(p, decode_seed=int(seed)) for p in parts
+                )
+        audio_ct = torch.stack([r.float() for r in rows])          # [R, C, N44]
+        audio48 = torchaudio.functional.resample(
+            audio_ct, SA3_SAMPLE_RATE, DELIVERY_SAMPLE_RATE,
+        )
+        total = int(round(float(self.playable_duration_s() or 0.0) * DELIVERY_SAMPLE_RATE))
+        if total <= 0 or total > audio48.shape[-1]:
+            total = int(audio48.shape[-1])
+        audio48 = audio48[..., :total]
+        sync()
+        t2 = time.perf_counter()
+
+        pcm = to_int16(audio48)                                    # [R, C, N]
+        pcm = np.ascontiguousarray(
+            pcm.reshape(len(seeds), len(streams), pcm.shape[1], pcm.shape[2])
+            .transpose(0, 1, 3, 2)
+        )                                                          # [V, S, N, C]
+        ids = tuple(
+            store.put(lat.movedim(1, 2), n_streams=n, seed=int(seed))
+            for seed, lat in zip(seeds, latents)
+        )
+        t3 = time.perf_counter()
+        return OneshotResult(
+            pcm=pcm,
+            sample_rate=DELIVERY_SAMPLE_RATE,
+            ids=ids,
+            seeds=seeds,
+            streams=streams,
+            ms={
+                "generate": round((t1 - t0) * 1000.0, 1),
+                "decode": round((t2 - t1) * 1000.0, 1),
+                "pack": round((t3 - t2) * 1000.0, 1),
+            },
+            seconds=total / DELIVERY_SAMPLE_RATE,
+            redo_of=redo.id if redo is not None else None,
+        )
+
+    def _oneshot_controls(self, knobs: dict) -> None:
+        """The per-version share of :meth:`_prepare_tick`: the schedule
+        warp, LoRA strengths and the extension's own knobs."""
+        shift = float(knobs.get("sa3_shift", 1.0))
+        if abs(shift - float(self.adapter.shift_alpha)) > 1e-3:
+            with self._control_lock:
+                self.adapter.shift_alpha = shift
+                self.pipeline.invalidate_schedule_cache()
+        if self._use_lora and self._lora_mgr is not None:
+            if self._refit_mirror is not None:
+                self._apply_pending_lora_strengths()
+            else:
+                for desc in self._lora_mgr.list_loras():
+                    if desc.state != "enabled":
+                        continue
+                    try:
+                        s = float(knobs.get(f"lora_str_{desc.id}", desc.strength))
+                    except (TypeError, ValueError):
+                        continue
+                    if abs(s - desc.strength) > 0.02:
+                        self.set_lora_strength(desc.id, s)
+        self._apply_extension_controls(knobs)
+
+    @torch.no_grad()
+    def _oneshot_denoise(self, seeds, knobs: dict) -> torch.Tensor:
+        """ONE full denoise of the session window per seed, batched on dim 0
+        (engine layout ``[B, T, C]``). The ring's per-step math verbatim
+        (``x0 = x - v t``; pingpong re-noise ``t' n + (1 - t') x0``; Euler
+        under the ODE sampler), the layout's ``make_noise`` /
+        ``make_renoise`` per request and its ``on_slot_done`` at the end."""
+        from acestep.engine import ode_steps
+        from acestep.engine.stream import SlotRequest
+
+        steps = int(knobs.get("steps_override", self._steps))
+        if steps != self._steps:
+            self._steps = steps
+            self.pipeline = self._build_pipeline(steps)
+        denoise = float(knobs.get("sa3_denoise", 1.0))
+        with self._control_lock:
+            aux = self._active_bundle
+            frames = int(self._cond.latent_frames)
+        source = self._source_latent_btc
+        reqs = [
+            SlotRequest(
+                seed=int(s), denoise=denoise, source_latents=source,
+                aux_cond=aux, latent_frames=frames, sde_noise_seeded=True,
+            )
+            for s in seeds
+        ]
+        device, dtype = self.adapter.request_device_dtype(reqs[0])
+        pipe = self.pipeline
+        pipe._ensure_device(device, dtype)
+        sched = self.adapter.build_schedule(pipe.config, denoise, device, dtype).cpu()
+        noise = torch.cat([pipe._make_noise(r) for r in reqs], dim=0)
+        t_start = sched[0].item()
+        if source is not None and denoise < 1.0:
+            xt = t_start * noise + (1.0 - t_start) * source
+        else:
+            xt = noise.clone()
+        renoise = getattr(self.adapter, "make_renoise", None)
+        gens = []
+        for s in seeds:
+            g = torch.Generator(device=device)
+            g.manual_seed(int(s))
+            gens.append(g)
+        sde = self._sampler in ("sde", "pingpong")
+        B = len(reqs)
+        lora_cached = self._lora_mgr is not None and self._lora_mgr.has_active_loras
+        with ExitStack() as stack:
+            if lora_cached:
+                import torch.nn.utils.parametrize as parametrize
+
+                stack.enter_context(parametrize.cached())
+            for i in range(sched.numel() - 1):
+                t = sched[i].item()
+                t_next = sched[i + 1].item()
+                vt = self.adapter.batched_forward(
+                    xt, [t] * B, [None] * B, [None] * B, [None] * B, [aux] * B,
+                )
+                x0 = ode_steps.x0_from_vel(xt, vt, t)
+                if t_next <= 0:
+                    xt = x0
+                    break
+                if not sde:
+                    xt = xt + (t_next - t) * vt
+                    continue
+                rows = []
+                for b, r in enumerate(reqs):
+                    nz = renoise(r, i) if renoise is not None else None
+                    if nz is None:
+                        nz = torch.randn(
+                            (1,) + tuple(xt.shape[1:]), device=xt.device,
+                            dtype=xt.dtype, generator=gens[b],
+                        )
+                    rows.append(nz.to(device=xt.device, dtype=xt.dtype))
+                xt = ode_steps.step_sde_renoise(xt, x0, t_next, torch.cat(rows, dim=0))
+        done = getattr(self.adapter, "on_slot_done", None)
+        if done is not None:
+            for b, r in enumerate(reqs):
+                try:
+                    done(r, xt[b:b + 1])
+                except Exception as exc:  # noqa: BLE001 - an observer never fails the render
+                    logger.warning("oneshot on_slot_done raised (ignored): {!r}", exc)
+        return xt
 
     # ---- teardown ----------------------------------------------------------------
 

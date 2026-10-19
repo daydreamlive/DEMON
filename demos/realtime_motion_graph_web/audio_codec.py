@@ -188,3 +188,41 @@ def send_bounce_payload(
         "num_gens": int(num_gens),
     }))
     chunked_ws_send(ws, pcm.tobytes())
+
+
+def send_oneshot_payload(
+    ws,
+    *,
+    request_id: str,
+    pcm: np.ndarray,
+    sample_rate: int,
+    ids,
+    seeds,
+    streams,
+    ms: dict,
+    redo_of=None,
+) -> None:
+    """Serialize a ``oneshot_ready`` JSON header + ONE binary frame: int16
+    little-endian ``[versions, streams, frames, channels]`` (version-major,
+    then stream, each block interleaved ``[frames, channels]``).
+
+    Caller must hold the per-WS ``send_lock`` so the header and its binary
+    follow-up can't interleave with other frames.
+    """
+    a = np.ascontiguousarray(pcm, dtype="<i2")
+    if a.ndim != 4:
+        raise ValueError(f"oneshot pcm must be [V, S, N, C], got {a.shape}")
+    ws.send(json.dumps({
+        "type": "oneshot_ready",
+        "request_id": request_id,
+        "ids": [str(i) for i in ids],
+        "seeds": [int(x) for x in seeds],
+        "streams": [int(x) for x in streams],
+        "sample_rate": int(sample_rate),
+        "channels": int(a.shape[3]),
+        "frames": int(a.shape[2]),
+        "encoding": "pcm_s16le",
+        "ms": {str(k): float(v) for k, v in (ms or {}).items()},
+        "redo_of": redo_of,
+    }))
+    chunked_ws_send(ws, a.tobytes())
