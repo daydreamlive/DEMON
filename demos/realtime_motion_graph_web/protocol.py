@@ -662,6 +662,40 @@ COMMANDS: tuple = (
                     "30 s, answered with bounce_failed. Acked by "
                     "bounce_ready (+ binary) / bounce_failed.",
     ),
+    CommandSpec(
+        "oneshot",
+        fields=(
+            FieldSpec("request_id", "str", required=True,
+                      description="Client-chosen token echoed on "
+                                  "oneshot_ready / oneshot_failed."),
+            FieldSpec("seeds", "list",
+                      description="One version per seed (integers >= 0, at "
+                                  "most 16). Required unless redo is set."),
+            FieldSpec("knobs", "dict",
+                      description="Knob values for these renders (same names "
+                                  "as params), over the session's current "
+                                  "ones. A stream layout adds its own per-"
+                                  "version values on top (multistem: every "
+                                  "stem's seed knob = the version seed)."),
+            FieldSpec("redo", "dict", nullable=True,
+                      description="{id, stream, seed}: re-denoise stream "
+                                  "`stream` (0-based) of kept version `id` "
+                                  "(an id from oneshot_ready) from `seed`, "
+                                  "every other stream given from that "
+                                  "version. seeds is ignored. The reply "
+                                  "carries that stream only, under a new id."),
+        ),
+        description="Render whole versions of the session's window in one "
+                    "go, outside the streaming ring: one denoise per "
+                    "version, a full decode of every stream, int16 audio "
+                    "back. Each version's latent is kept on the server by "
+                    "id (15 min, 32 at most) for a redo. Available when "
+                    "ready.capabilities.oneshot is true; best on a session "
+                    "created with config.render_only (no ring runs "
+                    "beside it). Served after every command sent before "
+                    "it. Acked by oneshot_ready (+ binary) / "
+                    "oneshot_failed.",
+    ),
 )
 
 EVENTS: tuple = (
@@ -1024,6 +1058,54 @@ EVENTS: tuple = (
                     "(ready.capabilities.bounce false, e.g. append-only "
                     "families or walk mode), or no fresh generation landed "
                     "in time. The session is unaffected.",
+    ),
+    EventSpec(
+        "oneshot_ready",
+        fields=(
+            FieldSpec("request_id", "str", required=True,
+                      description="Echo of the oneshot request_id."),
+            FieldSpec("ids", "list", required=True,
+                      description="Per version: the id of its kept latent "
+                                  "(the handle a redo names)."),
+            FieldSpec("seeds", "list", required=True,
+                      description="Per version: its seed."),
+            FieldSpec("streams", "list", required=True,
+                      description="The stream indices carried per version "
+                                  "(every stream, or a redo's one)."),
+            FieldSpec("sample_rate", "int", required=True),
+            FieldSpec("channels", "int", required=True,
+                      description="Channels per stream (2)."),
+            FieldSpec("frames", "int", required=True,
+                      description="Samples per channel per stream (the "
+                                  "playable duration)."),
+            FieldSpec("encoding", "str", required=True,
+                      description="Sample format of the binary frame: "
+                                  "pcm_s16le."),
+            FieldSpec("ms", "dict", required=True,
+                      description="Server wall time per phase: generate, "
+                                  "decode, pack, total."),
+            FieldSpec("redo_of", "str", nullable=True,
+                      description="The kept id a redo started from; null "
+                                  "for a plain render."),
+        ),
+        binary_follow=True,
+        description="Answer to oneshot. ONE binary frame follows: int16 "
+                    "little-endian, blocks version-major then stream (in "
+                    "`streams` order), each block [frames, channels] "
+                    "interleaved (versions x streams x frames x channels "
+                    "x 2 bytes).",
+    ),
+    EventSpec(
+        "oneshot_failed",
+        fields=(
+            FieldSpec("request_id", "str", required=True,
+                      description="Echo of the oneshot request_id."),
+            FieldSpec("error", "str"),
+        ),
+        description="oneshot not served: the backend cannot render one-shot "
+                    "(ready.capabilities.oneshot false), a bad request, an "
+                    "unknown or expired redo id, or a render error. The "
+                    "session is unaffected.",
     ),
     EventSpec(
         "analysis_state",

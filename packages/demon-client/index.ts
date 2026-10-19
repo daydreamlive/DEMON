@@ -35,6 +35,18 @@ export * from "./controls";
 // WebSocket session client (binary slice stream, swap/stem state
 // machines, typed senders).
 export { RemoteBackend, float16ArrayToFloat32 } from "./protocol";
+export {
+  renderOneshot,
+  decodeOneshot,
+  oneshotCommand,
+  int16ToFloat32,
+} from "./oneshot";
+export type {
+  OneshotRequest,
+  OneshotResult,
+  OneshotVersion,
+  OneshotTarget,
+} from "./oneshot";
 export type { RemoteBackendOptions, WsTrace, WsTracePhase } from "./protocol";
 
 // Analysis seam: analysis_tap wire shapes, the range-replace item store,

@@ -337,6 +337,31 @@ class BounceFailed:
 
 
 @dataclass(frozen=True)
+class OneshotReady:
+    """Answer to ``oneshot``: whole renders, one per version.
+
+    ``pcm`` is int16 ``[versions, len(streams), frames, channels]`` at
+    ``sample_rate``; ``ids`` names each version's kept latent (a redo's
+    handle), ``seeds`` its seed, ``streams`` the stream indices carried
+    (every stream, or a redo's one). ``ms`` is the per-phase wall time
+    (generate, decode, pack)."""
+    request_id: str
+    pcm: np.ndarray
+    sample_rate: int
+    ids: tuple
+    seeds: tuple
+    streams: tuple
+    ms: dict
+    redo_of: str | None = None
+
+
+@dataclass(frozen=True)
+class OneshotFailed:
+    request_id: str
+    error: str
+
+
+@dataclass(frozen=True)
 class CommandFailed:
     """A capability-gated command was rejected because the session's
     backend doesn't declare the required capability (plan §3.4: loud

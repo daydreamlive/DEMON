@@ -44,7 +44,8 @@ export type CommandName =
   | "midi_transcribe"
   | "analysis_tap"
   | "audio_in"
-  | "bounce";
+  | "bounce"
+  | "oneshot";
 
 export const COMMAND_NAMES: readonly CommandName[] = [
   "params",
@@ -71,6 +72,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "analysis_tap",
   "audio_in",
   "bounce",
+  "oneshot",
 ] as const;
 
 export type EventName =
@@ -101,6 +103,8 @@ export type EventName =
   | "midi_failed"
   | "bounce_ready"
   | "bounce_failed"
+  | "oneshot_ready"
+  | "oneshot_failed"
   | "analysis_state"
   | "audio_in_ack"
   | "analysis_update";
@@ -133,6 +137,8 @@ export const EVENT_NAMES: readonly EventName[] = [
   "midi_failed",
   "bounce_ready",
   "bounce_failed",
+  "oneshot_ready",
+  "oneshot_failed",
   "analysis_state",
   "audio_in_ack",
   "analysis_update",
@@ -357,6 +363,18 @@ export interface BounceCommand {
   request_id: string;
 }
 
+export interface OneshotCommand {
+  type: "oneshot";
+  /** Client-chosen token echoed on oneshot_ready / oneshot_failed. */
+  request_id: string;
+  /** One version per seed (integers >= 0, at most 16). Required unless redo is set. */
+  seeds?: unknown[];
+  /** Knob values for these renders (same names as params), over the session's current ones. A stream layout adds its own per-version values on top (multistem: every stem's seed knob = the version seed). */
+  knobs?: Record<string, unknown>;
+  /** {id, stream, seed}: re-denoise stream `stream` (0-based) of kept version `id` (an id from oneshot_ready) from `seed`, every other stream given from that version. seeds is ignored. The reply carries that stream only, under a new id. */
+  redo?: Record<string, unknown> | null;
+}
+
 // ── Event payloads (server → client) ──
 
 export interface InitAckEvent {
@@ -394,7 +412,7 @@ export interface ReadyEvent {
   geometry?: Record<string, unknown>;
   /** Backend capability mask: {capability: bool} over the Capabilities fields (swap, timbre, structure, lora, ...), plus analysis_taps: the analyzer names this pod can run as analysis_tap channels (empty list when none). Client panels and MCP tools gate on it; commands tagged with a matching `requires` fail with command_failed when the bit is false. */
   capabilities?: Record<string, unknown>;
-  /** Names of the localhost side services this server proxies at /tools/<name>/<path> (GET/POST, header X-Demon-Session: <session_id>) whose /health answered 200 recently; empty when none. Absent on older servers. */
+  /** Names of the localhost side services this server proxies at /tools/<name>/<path> (GET/POST/PUT/DELETE, header X-Demon-Session: <session_id>) whose /health answered 200 recently; empty when none. Absent on older servers. */
   tools?: unknown[];
   /** Per-session knob manifest: the same {version, knobs} envelope GET /api/knobs serves, but backend-owned and session-resolved (SDE mode, enabled lora_str_<id> knobs). /api/knobs remains the static pre-session probe. */
   knob_manifest?: Record<string, unknown>;
@@ -584,6 +602,36 @@ export interface BounceFailedEvent {
   error?: string;
 }
 
+export interface OneshotReadyEvent {
+  type: "oneshot_ready";
+  /** Echo of the oneshot request_id. */
+  request_id: string;
+  /** Per version: the id of its kept latent (the handle a redo names). */
+  ids: unknown[];
+  /** Per version: its seed. */
+  seeds: unknown[];
+  /** The stream indices carried per version (every stream, or a redo's one). */
+  streams: unknown[];
+  sample_rate: number;
+  /** Channels per stream (2). */
+  channels: number;
+  /** Samples per channel per stream (the playable duration). */
+  frames: number;
+  /** Sample format of the binary frame: pcm_s16le. */
+  encoding: string;
+  /** Server wall time per phase: generate, decode, pack, total. */
+  ms: Record<string, unknown>;
+  /** The kept id a redo started from; null for a plain render. */
+  redo_of?: string | null;
+}
+
+export interface OneshotFailedEvent {
+  type: "oneshot_failed";
+  /** Echo of the oneshot request_id. */
+  request_id: string;
+  error?: string;
+}
+
 export interface AnalysisStateEvent {
   type: "analysis_state";
   /** Analyzer name. */
@@ -665,6 +713,7 @@ export interface SessionConfigPayload {
   client_id?: string | null;
   backend?: string;
   text_only?: boolean;
+  render_only?: boolean;
   telemetry_version?: number | null;
   /** Fixed generation duration for sa3 sessions, seconds. Absent or null derives it from the uploaded source audio length (the audio-to-audio anchor); SA3 conditioning is captured per (prompt, duration), so this is fixed for the session lifetime. */
   sa3_duration_s?: number | null;
@@ -744,7 +793,8 @@ export type WireCommand =
   | MidiTranscribeCommand
   | AnalysisTapCommand
   | AudioInCommand
-  | BounceCommand;
+  | BounceCommand
+  | OneshotCommand;
 
 export type WireEvent =
   | InitAckEvent
@@ -774,6 +824,8 @@ export type WireEvent =
   | MidiFailedEvent
   | BounceReadyEvent
   | BounceFailedEvent
+  | OneshotReadyEvent
+  | OneshotFailedEvent
   | AnalysisStateEvent
   | AudioInAckEvent
   | AnalysisUpdateEvent;

@@ -858,3 +858,14 @@ class SA3SAMEWindowCodec:
         with self._helpers.sa3_decode_rng(decode_seed, device=latent_bct.device):
             audio = self._helpers.decode_sa3_latent(self._context.sam, latent_bct)
         return audio[0]
+
+    def decode_full_batch(
+        self, latents_bct: torch.Tensor, *, decode_seed: int | None = None,
+    ) -> torch.Tensor:
+        """Eager full decode of a batch [B, 256, T] (the one-shot
+        render's streams of one version) in ONE decoder call ->
+        [B, C, N]. The decode RNG is pinned once for the batch, so the
+        same latents and seed give bit-identical audio (not the per-latent
+        draws of :meth:`decode_full`)."""
+        with self._helpers.sa3_decode_rng(decode_seed, device=latents_bct.device):
+            return self._helpers.decode_sa3_latent(self._context.sam, latents_bct)

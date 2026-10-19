@@ -69,6 +69,8 @@ from acestep.streaming.events import (
     AudioWritten,
     BounceFailed,
     BounceReady,
+    OneshotFailed,
+    OneshotReady,
     CommandFailed,
     DepthApplied,
     LoraCatalogUpdate,
@@ -121,6 +123,7 @@ from .audio_codec import (
     SliceCodec,
     chunked_ws_send,
     send_bounce_payload,
+    send_oneshot_payload,
     send_stem_payload,
 )
 from .protocol import COMMAND_NAMES, SAMPLE_RATE, coerce_command_payload
@@ -1750,6 +1753,28 @@ def _handle_client_body(
                 "request_id": event.request_id,
                 "error": event.error,
             })
+        elif isinstance(event, OneshotReady):
+            try:
+                with send_lock:
+                    send_oneshot_payload(
+                        ws,
+                        request_id=event.request_id,
+                        pcm=event.pcm,
+                        sample_rate=event.sample_rate,
+                        ids=event.ids,
+                        seeds=event.seeds,
+                        streams=event.streams,
+                        ms=event.ms,
+                        redo_of=event.redo_of,
+                    )
+            except ConnectionClosed:
+                state.running = False
+        elif isinstance(event, OneshotFailed):
+            _send_json({
+                "type": "oneshot_failed",
+                "request_id": event.request_id,
+                "error": event.error,
+            })
         elif isinstance(event, StemAssets):
             # Late background-rip delivery (upload path): same wire
             # shape the init/swap paths send inline. send_lock keeps
@@ -1825,9 +1850,14 @@ def _handle_client_body(
     # synchronously by ``StreamingSession.create`` and have nothing to
     # fan out yet. After this block the bus subscriber takes over.
     src_np = streaming.initial_buffer
+    duration_s = len(src_np) / SAMPLE_RATE
+    if streaming.render_only():
+        # A render-only session plays nothing: one silent frame stands in
+        # for the window (a 2:00 multistem window is ~115 MB of float16).
+        src_np = np.zeros((1, src_np.shape[1]), dtype=np.float32)
     ws.send(json.dumps({
         "type": "ready",
-        "duration": len(src_np) / SAMPLE_RATE,
+        "duration": duration_s,
         "sample_rate": SAMPLE_RATE,
         "channels": state.n_channels,
         "lora_dir": str(loras_dir()),
@@ -1874,7 +1904,7 @@ def _handle_client_body(
         }))
     logger.info(
         "initial_buffer_sent duration_s={:.1f}",
-        len(src_np) / SAMPLE_RATE,
+        duration_s,
     )
     _ms("initial_buffer_sent")
 
@@ -2267,6 +2297,8 @@ def _handle_client_body(
                 streaming.bounce(
                     str(data.get("request_id") or ""), origin=origin,
                 )
+            elif mtype == "oneshot":
+                streaming.oneshot(dict(data), origin=origin)
             elif mtype == "midi_transcribe":
                 # "Drag MIDI out": the binary PCM frame is the clip the
                 # client is about to export. Stateless — decode here on

@@ -25,7 +25,8 @@ var COMMAND_NAMES = [
   "midi_transcribe",
   "analysis_tap",
   "audio_in",
-  "bounce"
+  "bounce",
+  "oneshot"
 ];
 var EVENT_NAMES = [
   "init_ack",
@@ -55,6 +56,8 @@ var EVENT_NAMES = [
   "midi_failed",
   "bounce_ready",
   "bounce_failed",
+  "oneshot_ready",
+  "oneshot_failed",
   "analysis_state",
   "audio_in_ack",
   "analysis_update"
@@ -1271,6 +1274,76 @@ function analysisTapsAvailable(capabilities) {
   return raw.filter((name) => typeof name === "string");
 }
 
+// oneshot.ts
+var _seq = 0;
+function oneshotCommand(req) {
+  const msg = {
+    type: "oneshot",
+    request_id: req.requestId ?? `oneshot-${++_seq}-${Date.now()}`
+  };
+  if (req.redo) msg.redo = { id: req.redo.id, stream: req.redo.stream, seed: req.redo.seed };
+  else msg.seeds = [...req.seeds ?? []];
+  if (req.knobs) msg.knobs = { ...req.knobs };
+  return msg;
+}
+function decodeOneshot(meta, data) {
+  const streams = meta.streams.map(Number);
+  const ids = meta.ids.map(String);
+  const seeds = meta.seeds.map(Number);
+  const block = meta.frames * meta.channels;
+  const want = ids.length * streams.length * block * 2;
+  if (data.byteLength !== want)
+    throw new Error(`oneshot: ${data.byteLength} bytes, expected ${want} (${ids.length} x ${streams.length} x ${meta.frames} x ${meta.channels} int16)`);
+  const versions = ids.map((id, v) => {
+    const audio = {};
+    streams.forEach((k, j) => {
+      audio[k] = new Int16Array(data, (v * streams.length + j) * block * 2, block);
+    });
+    return { id, seed: seeds[v], audio };
+  });
+  const ms = {};
+  for (const [k, v] of Object.entries(meta.ms ?? {})) ms[k] = Number(v);
+  return {
+    requestId: meta.request_id,
+    sampleRate: meta.sample_rate,
+    channels: meta.channels,
+    frames: meta.frames,
+    streams,
+    versions,
+    ms,
+    redoOf: meta.redo_of ?? null
+  };
+}
+function int16ToFloat32(a) {
+  const out = new Float32Array(a.length);
+  for (let i = 0; i < a.length; i++) out[i] = a[i] / 32768;
+  return out;
+}
+function renderOneshot(remote, req, timeoutMs = 12e4) {
+  return new Promise((resolve, reject) => {
+    const id = req.requestId ?? `oneshot-${++_seq}-${Date.now()}`;
+    const off = () => {
+      clearTimeout(timer);
+      remote.removeEventListener("oneshot", on);
+      remote.removeEventListener("oneshot_failed", on);
+      remote.removeEventListener("close", gone);
+    };
+    const on = (e) => {
+      const d = e.detail;
+      if ((e.type === "oneshot" ? d?.requestId : d?.request_id) !== id) return;
+      off();
+      if (e.type === "oneshot_failed") reject(new Error(d?.error || "oneshot failed"));
+      else resolve(d);
+    };
+    const gone = () => (off(), reject(new Error("connection lost")));
+    const timer = setTimeout(() => (off(), reject(new Error("oneshot timed out"))), timeoutMs);
+    remote.addEventListener("oneshot", on);
+    remote.addEventListener("oneshot_failed", on);
+    remote.addEventListener("close", gone);
+    if (remote.sendOneshot({ ...req, requestId: id }) === null) off(), reject(new Error("connection not open"));
+  });
+}
+
 // protocol.ts
 var PARAMS_BACKPRESSURE_BYTES = 8 * 1024;
 var _fBuf = new ArrayBuffer(4);
@@ -1405,6 +1478,8 @@ var RemoteBackend = class extends EventTarget {
   backendClientId = null;
   _pending;
   _pendingSwap = null;
+  // A `oneshot_ready` header waiting for its one binary frame.
+  _pendingOneshot = null;
   _pendingStemAssets = null;
   _pendingStemBuffers = {};
   // Slice decoder runs in a worker so fzstd.decompress + float16→float32
@@ -1630,6 +1705,22 @@ var RemoteBackend = class extends EventTarget {
           );
           return;
         }
+        if (this._pendingOneshot && ev.data instanceof ArrayBuffer) {
+          const meta = this._pendingOneshot;
+          this._pendingOneshot = null;
+          try {
+            this.dispatchEvent(
+              new CustomEvent("oneshot", { detail: decodeOneshot(meta, ev.data) })
+            );
+          } catch (e) {
+            this.dispatchEvent(
+              new CustomEvent("oneshot_failed", {
+                detail: { request_id: meta.request_id, error: String(e) }
+              })
+            );
+          }
+          return;
+        }
         if (this._pendingStemAssets && ev.data instanceof ArrayBuffer) {
           const meta = this._pendingStemAssets;
           const stem = meta.stems[Object.keys(this._pendingStemBuffers).length];
@@ -1758,6 +1849,14 @@ var RemoteBackend = class extends EventTarget {
             case "audio_in_ack":
               this.dispatchEvent(
                 new CustomEvent("audio_in_ack", { detail: msg })
+              );
+              break;
+            case "oneshot_ready":
+              this._pendingOneshot = msg;
+              break;
+            case "oneshot_failed":
+              this.dispatchEvent(
+                new CustomEvent("oneshot_failed", { detail: msg })
               );
               break;
             case "command_failed":
@@ -2024,6 +2123,23 @@ var RemoteBackend = class extends EventTarget {
       this.ws.send(JSON.stringify(msg));
     } catch {
     }
+  }
+  /**
+   * Ask for a one-shot render (``ready.capabilities.oneshot``): one whole
+   * version per seed, or a redo of one stream of a kept version. Answered
+   * by a ``oneshot`` event (detail: OneshotResult) or ``oneshot_failed``
+   * ({request_id, error}). Returns the request id, or null when the socket
+   * isn't open. ``renderOneshot`` (./oneshot) wraps it in a promise.
+   */
+  sendOneshot(req) {
+    if (this.ws?.readyState !== this._wsOpen) return null;
+    const msg = oneshotCommand(req);
+    try {
+      this.ws.send(JSON.stringify(msg));
+    } catch {
+      return null;
+    }
+    return msg.request_id;
   }
   sendEnableLora(id, strength) {
     if (this.ws?.readyState !== this._wsOpen) return;
@@ -4250,6 +4366,7 @@ export {
   arrayBufferToBase64,
   base64ToArrayBuffer,
   captureConfigFromState,
+  decodeOneshot,
   describeControl,
   displayNameFor,
   encodeWavInterleaved,
@@ -4260,6 +4377,7 @@ export {
   float16ArrayToFloat32,
   getUnknownKeys,
   gmProgramFor,
+  int16ToFloat32,
   isDcwMode,
   isDcwWavelet,
   isLoopGridRes,
@@ -4275,7 +4393,9 @@ export {
   mergeConfig,
   normalizeConfigShape,
   notesToSmf,
+  oneshotCommand,
   playheadForNotes,
+  renderOneshot,
   resolveControlDescription,
   resolveLoraCapForSource,
   rtmgConfigToSessionConfig,
