@@ -39,6 +39,8 @@ export {
   renderOneshot,
   decodeOneshot,
   oneshotCommand,
+  oneshotLatentFrame,
+  OneshotFrames,
   int16ToFloat32,
 } from "./oneshot";
 export type {
@@ -46,6 +48,9 @@ export type {
   OneshotResult,
   OneshotVersion,
   OneshotTarget,
+  OneshotRedo,
+  OneshotLatent,
+  OneshotLatentHeader,
 } from "./oneshot";
 export type { RemoteBackendOptions, WsTrace, WsTracePhase } from "./protocol";
 
