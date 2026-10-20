@@ -678,13 +678,33 @@ COMMANDS: tuple = (
                                   "version values on top (multistem: every "
                                   "stem's seed knob = the version seed)."),
             FieldSpec("redo", "dict", nullable=True,
-                      description="{id, stream, seed}: re-denoise stream "
-                                  "`stream` (0-based) of kept version `id` "
-                                  "(an id from oneshot_ready) from `seed`, "
-                                  "every other stream given from that "
-                                  "version. seeds is ignored. The reply "
-                                  "carries that stream only, under a new id."),
+                      description="{id?, stream?, streams?, seed, denoise?, "
+                                  "latent?}: re-denoise streams `streams` "
+                                  "(0-based; `stream` is the single form, "
+                                  "both given must agree) of a held version "
+                                  "from `seed`, every other stream given "
+                                  "from it. The held version is kept "
+                                  "version `id` (an id from oneshot_ready) "
+                                  "or `latent` {dtype: 'float16', shape: "
+                                  "[n_streams, C, L]}: client-held state, "
+                                  "sent as ONE binary frame after this "
+                                  "header (raw little-endian float16, "
+                                  "C-order); never both. `denoise` (0 < d "
+                                  "<= 1, default 1): a number for every "
+                                  "regenerated stream or a list in "
+                                  "`streams` order; d < 1 adjusts that "
+                                  "stream from its own held slice. seeds is "
+                                  "ignored. The reply carries the "
+                                  "regenerated streams only (ascending), "
+                                  "under a new id."),
+            FieldSpec("return_latents", "bool", default=False,
+                      description="Also return every version's full latent "
+                                  "(every stream, also on a redo): a second "
+                                  "binary frame after the PCM, announced by "
+                                  "oneshot_ready.latents."),
         ),
+        binary=True,
+        binary_optional=True,
         description="Render whole versions of the session's window in one "
                     "go, outside the streaming ring: one denoise per "
                     "version, a full decode of every stream, int16 audio "
@@ -693,7 +713,9 @@ COMMANDS: tuple = (
                     "ready.capabilities.oneshot is true; best on a session "
                     "created with config.render_only (no ring runs "
                     "beside it). Served after every command sent before "
-                    "it. Acked by oneshot_ready (+ binary) / "
+                    "it. A redo with `latent` is followed by ONE binary "
+                    "frame (the held latent); every other request has "
+                    "none. Acked by oneshot_ready (+ binary) / "
                     "oneshot_failed.",
     ),
 )
@@ -1086,14 +1108,27 @@ EVENTS: tuple = (
                                   "decode, pack, total."),
             FieldSpec("redo_of", "str", nullable=True,
                       description="The kept id a redo started from; null "
-                                  "for a plain render."),
+                                  "for a plain render and for a redo from "
+                                  "a client-held latent."),
+            FieldSpec("latent_header", "dict",
+                      description="{n_streams, channels, frames, seconds}: "
+                                  "the geometry a held latent must match "
+                                  "(shape [n_streams, channels, frames], "
+                                  "frames per stream)."),
+            FieldSpec("latents", "dict",
+                      description="{dtype: 'float16', shape: [V, n_streams, "
+                                  "C, L], bytes}: present when the request "
+                                  "set return_latents; a second binary "
+                                  "frame follows the PCM."),
         ),
         binary_follow=True,
         description="Answer to oneshot. ONE binary frame follows: int16 "
                     "little-endian, blocks version-major then stream (in "
                     "`streams` order), each block [frames, channels] "
                     "interleaved (versions x streams x frames x channels "
-                    "x 2 bytes).",
+                    "x 2 bytes). When `latents` is on the header, a SECOND "
+                    "frame follows it: raw little-endian float16, C-order "
+                    "[V, n_streams, C, L] (every stream of every version).",
     ),
     EventSpec(
         "oneshot_failed",

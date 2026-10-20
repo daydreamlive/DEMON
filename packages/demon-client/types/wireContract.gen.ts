@@ -371,8 +371,10 @@ export interface OneshotCommand {
   seeds?: unknown[];
   /** Knob values for these renders (same names as params), over the session's current ones. A stream layout adds its own per-version values on top (multistem: every stem's seed knob = the version seed). */
   knobs?: Record<string, unknown>;
-  /** {id, stream, seed}: re-denoise stream `stream` (0-based) of kept version `id` (an id from oneshot_ready) from `seed`, every other stream given from that version. seeds is ignored. The reply carries that stream only, under a new id. */
+  /** {id?, stream?, streams?, seed, denoise?, latent?}: re-denoise streams `streams` (0-based; `stream` is the single form, both given must agree) of a held version from `seed`, every other stream given from it. The held version is kept version `id` (an id from oneshot_ready) or `latent` {dtype: 'float16', shape: [n_streams, C, L]}: client-held state, sent as ONE binary frame after this header (raw little-endian float16, C-order); never both. `denoise` (0 < d <= 1, default 1): a number for every regenerated stream or a list in `streams` order; d < 1 adjusts that stream from its own held slice. seeds is ignored. The reply carries the regenerated streams only (ascending), under a new id. */
   redo?: Record<string, unknown> | null;
+  /** Also return every version's full latent (every stream, also on a redo): a second binary frame after the PCM, announced by oneshot_ready.latents. */
+  return_latents?: boolean;
 }
 
 // ── Event payloads (server → client) ──
@@ -621,8 +623,12 @@ export interface OneshotReadyEvent {
   encoding: string;
   /** Server wall time per phase: generate, decode, pack, total. */
   ms: Record<string, unknown>;
-  /** The kept id a redo started from; null for a plain render. */
+  /** The kept id a redo started from; null for a plain render and for a redo from a client-held latent. */
   redo_of?: string | null;
+  /** {n_streams, channels, frames, seconds}: the geometry a held latent must match (shape [n_streams, channels, frames], frames per stream). */
+  latent_header?: Record<string, unknown>;
+  /** {dtype: 'float16', shape: [V, n_streams, C, L], bytes}: present when the request set return_latents; a second binary frame follows the PCM. */
+  latents?: Record<string, unknown>;
 }
 
 export interface OneshotFailedEvent {

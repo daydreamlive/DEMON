@@ -284,8 +284,10 @@ namespace command {
     inline constexpr const char* kSeeds = "seeds";
     /** Knob values for these renders (same names as params), over the session's current ones. A stream layout adds its own per-version values on top (multistem: every stem's seed knob = the version seed). */
     inline constexpr const char* kKnobs = "knobs";
-    /** {id, stream, seed}: re-denoise stream `stream` (0-based) of kept version `id` (an id from oneshot_ready) from `seed`, every other stream given from that version. seeds is ignored. The reply carries that stream only, under a new id. */
+    /** {id?, stream?, streams?, seed, denoise?, latent?}: re-denoise streams `streams` (0-based; `stream` is the single form, both given must agree) of a held version from `seed`, every other stream given from it. The held version is kept version `id` (an id from oneshot_ready) or `latent` {dtype: 'float16', shape: [n_streams, C, L]}: client-held state, sent as ONE binary frame after this header (raw little-endian float16, C-order); never both. `denoise` (0 < d <= 1, default 1): a number for every regenerated stream or a list in `streams` order; d < 1 adjusts that stream from its own held slice. seeds is ignored. The reply carries the regenerated streams only (ascending), under a new id. */
     inline constexpr const char* kRedo = "redo";
+    /** Also return every version's full latent (every stream, also on a redo): a second binary frame after the PCM, announced by oneshot_ready.latents. */
+    inline constexpr const char* kReturnLatents = "return_latents";
   }  // namespace oneshot
 
 }  // namespace command
@@ -544,8 +546,12 @@ namespace event {
     inline constexpr const char* kEncoding = "encoding";
     /** Server wall time per phase: generate, decode, pack, total. */
     inline constexpr const char* kMs = "ms";
-    /** The kept id a redo started from; null for a plain render. */
+    /** The kept id a redo started from; null for a plain render and for a redo from a client-held latent. */
     inline constexpr const char* kRedoOf = "redo_of";
+    /** {n_streams, channels, frames, seconds}: the geometry a held latent must match (shape [n_streams, channels, frames], frames per stream). */
+    inline constexpr const char* kLatentHeader = "latent_header";
+    /** {dtype: 'float16', shape: [V, n_streams, C, L], bytes}: present when the request set return_latents; a second binary frame follows the PCM. */
+    inline constexpr const char* kLatents = "latents";
   }  // namespace oneshot_ready
 
   namespace oneshot_failed {

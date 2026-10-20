@@ -1198,6 +1198,42 @@ def handle_client(
             torch.cuda.empty_cache()
 
 
+def _dispatch_oneshot(data, streaming, recv_binary, send_json, origin) -> None:
+    """The ``oneshot`` command. A redo with ``redo.latent`` (client-held
+    state) is followed by ONE binary frame, raw float16 of the declared
+    shape: read it first (so the stream stays in step whatever the header
+    says), check its byte length, and hand it to the session; a mismatch
+    answers ``oneshot_failed``. Every other request goes straight through.
+    ``recv_binary(fail_type, **extra)`` is the handler's
+    ``_recv_binary_payload``."""
+    redo = data.get("redo")
+    latent_spec = redo.get("latent") if isinstance(redo, dict) else None
+    if latent_spec is None:
+        streaming.oneshot(dict(data), origin=origin)
+        return
+    from acestep.streaming.oneshot import OneshotError, latent_nbytes
+
+    request_id = str(data.get("request_id") or "")
+    blob = recv_binary("oneshot_failed", request_id=request_id)
+    if blob is None:
+        return
+    try:
+        want = latent_nbytes(latent_spec)
+    except OneshotError as exc:
+        error = str(exc)
+    else:
+        error = None if len(blob) == want else (
+            f"redo.latent frame is {len(blob)} bytes, expected {want} "
+            f"(float16 {list(latent_spec.get('shape'))})"
+        )
+    if error is not None:
+        send_json({
+            "type": "oneshot_failed", "request_id": request_id, "error": error,
+        })
+        return
+    streaming.oneshot(dict(data), origin=origin, latent=bytes(blob))
+
+
 def _handle_client_body(
     ws,
     ctx_stack: contextlib.ExitStack,
@@ -1766,6 +1802,8 @@ def _handle_client_body(
                         streams=event.streams,
                         ms=event.ms,
                         redo_of=event.redo_of,
+                        latent_header=getattr(event, "latent_header", None),
+                        latents=getattr(event, "latents", None),
                     )
             except ConnectionClosed:
                 state.running = False
@@ -1983,7 +2021,7 @@ def _handle_client_body(
                     source, mtype, coerce_errors,
                 )
 
-        def _recv_binary_payload(fail_type: str):
+        def _recv_binary_payload(fail_type: str, **extra):
             """Read the binary frame that must follow ``mtype``.
 
             Bounded (``_BINARY_PAYLOAD_TIMEOUT_S``) and type-checked,
@@ -1996,7 +2034,8 @@ def _handle_client_body(
 
             The bound is a transfer deadline for multi-MB frames, not
             just an orphan-header guard — see the constant for why it is
-            sized the way it is.
+            sized the way it is. ``extra`` fields (a ``request_id``) go on
+            the failure answer.
             """
             try:
                 audio_msg = recv_audio(timeout=_BINARY_PAYLOAD_TIMEOUT_S)
@@ -2007,6 +2046,7 @@ def _handle_client_body(
                 )
                 _send_json({
                     "type": fail_type,
+                    **extra,
                     "error": (
                         "binary payload not received within "
                         f"{_BINARY_PAYLOAD_TIMEOUT_S:.0f}s"
@@ -2025,6 +2065,7 @@ def _handle_client_body(
                 )
                 _send_json({
                     "type": fail_type,
+                    **extra,
                     "error": f"expected binary payload after {mtype}",
                 })
                 return None
@@ -2298,7 +2339,9 @@ def _handle_client_body(
                     str(data.get("request_id") or ""), origin=origin,
                 )
             elif mtype == "oneshot":
-                streaming.oneshot(dict(data), origin=origin)
+                _dispatch_oneshot(
+                    data, streaming, _recv_binary_payload, _send_json, origin,
+                )
             elif mtype == "midi_transcribe":
                 # "Drag MIDI out": the binary PCM frame is the clip the
                 # client is about to export. Stateless — decode here on
