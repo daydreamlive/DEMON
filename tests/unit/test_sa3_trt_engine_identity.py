@@ -90,10 +90,10 @@ def test_full_same_l_engine_absent_alone_window(monkeypatch, tmp_path):
     assert sa3_trt.find_same_l_full_engine(1292) == (full, 32, 3230)
 
 
-def test_full_decode_routes_by_frames_one_latent_per_call():
-    """decode_full / decode_full_batch on the full-song engine when the
-    frame count is inside its profile (items one at a time, the latent
-    scaled like the window path); eager outside it."""
+def test_full_decode_routes_by_frames_one_latent_per_call(monkeypatch):
+    """decode_full / decode_full_batch go through decode_window on the
+    engine covering the frame count (items one at a time, the latent scaled
+    like any window); eager when no engine covers it."""
     import contextlib
     from types import SimpleNamespace
 
@@ -112,14 +112,20 @@ def test_full_decode_routes_by_frames_one_latent_per_call():
         calls["eager"].append(tuple(lat.shape))
         return torch.zeros(lat.shape[0], 2, lat.shape[-1] * 4)
 
+    import threading
+
+    from acestep.engine import sa3_context, sa3_stream_helpers
+
     codec = SA3SAMEWindowCodec.__new__(SA3SAMEWindowCodec)
-    codec._context = SimpleNamespace(sam=None)
+    codec._context = SimpleNamespace(sam=None, sample_rate=4, downsampling_ratio=4)
     codec._helpers = SimpleNamespace(
         sa3_decode_rng=lambda *_a, **_k: contextlib.nullcontext(), decode_sa3_latent=eager,
+        resolve_sa3_decode_window=sa3_stream_helpers.resolve_sa3_decode_window,
     )
     codec._scale = 0.5
-    codec._full_found = ("x.trt", 32, 3230)
-    codec._full_trt = FakeTRT()
+    codec._engines = [("x.trt", 32, 3230)]
+    monkeypatch.setattr(
+        sa3_context, "_SAME_L_DECODERS", {"x.trt": (FakeTRT(), threading.Lock())})
 
     lat = torch.full((5, 256, 40), 0.1)
     out = codec.decode_full_batch(lat, decode_seed=3)
@@ -131,6 +137,6 @@ def test_full_decode_routes_by_frames_one_latent_per_call():
     codec.decode_full_batch(torch.zeros(2, 256, 20))                 # under the profile min: eager
     codec.decode_full(torch.zeros(1, 256, 4000))                     # over the max: eager
     assert calls["eager"] == [(2, 256, 20), (1, 256, 4000)] and len(calls["trt"]) == 6
-    codec._full_found = None
+    codec._engines = []
     codec.decode_full_batch(lat)
     assert calls["eager"][-1] == (5, 256, 40)
