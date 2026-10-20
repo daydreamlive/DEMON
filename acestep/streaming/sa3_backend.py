@@ -2173,6 +2173,11 @@ class SA3Backend(DiffusionBackend):
         it returns that slot's latent (engine layout ``[1, T, C]``). Not
         ``pipeline.flush()``: its bound (depth * 2 ticks) assumes depth ==
         steps."""
+        # Under the refit mirror a LoRA strength change is stashed by
+        # ``rebuild_imminent``, the runner's announcement point; a
+        # render-only session has no runner, so the one-shot detects it
+        # here and ``_prepare_tick`` applies it before the request exists.
+        self._detect_pending_lora_strengths(knobs)
         prep = self._prepare_tick(knobs, None)
         try:
             self._submit(prep)
