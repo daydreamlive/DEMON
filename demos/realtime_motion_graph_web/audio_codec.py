@@ -201,10 +201,17 @@ def send_oneshot_payload(
     streams,
     ms: dict,
     redo_of=None,
+    latent_header=None,
+    latents=None,
 ) -> None:
     """Serialize a ``oneshot_ready`` JSON header + ONE binary frame: int16
     little-endian ``[versions, streams, frames, channels]`` (version-major,
     then stream, each block interleaved ``[frames, channels]``).
+
+    ``latent_header`` (when given) goes on the header as is. ``latents``
+    (float16 ``[V, n_streams, C, L]``, when given) is announced on the
+    header as ``latents: {dtype, shape, bytes}`` and sent as a SECOND
+    binary frame after the PCM: raw little-endian float16, C-order.
 
     Caller must hold the per-WS ``send_lock`` so the header and its binary
     follow-up can't interleave with other frames.
@@ -212,7 +219,12 @@ def send_oneshot_payload(
     a = np.ascontiguousarray(pcm, dtype="<i2")
     if a.ndim != 4:
         raise ValueError(f"oneshot pcm must be [V, S, N, C], got {a.shape}")
-    ws.send(json.dumps({
+    lat = None
+    if latents is not None:
+        lat = np.ascontiguousarray(latents, dtype="<f2")
+        if lat.ndim != 4:
+            raise ValueError(f"oneshot latents must be [V, S, C, L], got {lat.shape}")
+    head = {
         "type": "oneshot_ready",
         "request_id": request_id,
         "ids": [str(i) for i in ids],
@@ -224,5 +236,21 @@ def send_oneshot_payload(
         "encoding": "pcm_s16le",
         "ms": {str(k): float(v) for k, v in (ms or {}).items()},
         "redo_of": redo_of,
-    }))
+    }
+    if latent_header is not None:
+        head["latent_header"] = {
+            "n_streams": int(latent_header["n_streams"]),
+            "channels": int(latent_header["channels"]),
+            "frames": int(latent_header["frames"]),
+            "seconds": float(latent_header["seconds"]),
+        }
+    if lat is not None:
+        head["latents"] = {
+            "dtype": "float16",
+            "shape": [int(x) for x in lat.shape],
+            "bytes": int(lat.nbytes),
+        }
+    ws.send(json.dumps(head))
     chunked_ws_send(ws, a.tobytes())
+    if lat is not None:
+        chunked_ws_send(ws, lat.tobytes())

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import threading
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -29,6 +30,8 @@ from acestep.streaming.oneshot import (
     KeptLatents,
     OneshotError,
     OneshotResult,
+    latent_from_bytes,
+    latent_nbytes,
     parse_request,
     to_int16,
 )
@@ -40,6 +43,7 @@ from acestep.streaming.sa3_backend import (
 from acestep.streaming.session import StreamingSession
 from demos.realtime_motion_graph_web import protocol
 from demos.realtime_motion_graph_web.audio_codec import send_oneshot_payload
+from demos.realtime_motion_graph_web.ws_adapter import _dispatch_oneshot
 
 from tests.unit.test_sa3_backend import (
     CTX,
@@ -443,14 +447,20 @@ def test_oneshot_payload_framing():
     assert np.array_equal(body, pcm.reshape(-1))
     # Block (version 1, stream 2) starts at (1 * 3 + 2) * frames * channels.
     assert body[(1 * 3 + 2) * 8] == pcm[1, 2, 0, 0]
-    # Every header key is a registered field of the event.
+    # Every header key is a registered field of the event; the new optional
+    # ones only when given.
     spec = next(e for e in protocol.EVENTS if e.name == "oneshot_ready")
-    assert set(head) - {"type"} == {f.name for f in spec.fields}
+    assert set(head) - {"type"} == (
+        {f.name for f in spec.fields} - {"latent_header", "latents"}
+    )
 
 
 def test_command_and_config_are_registered():
     cmd = next(c for c in protocol.COMMANDS if c.name == "oneshot")
-    assert {f.name for f in cmd.fields} == {"request_id", "seeds", "knobs", "redo"}
+    assert {f.name for f in cmd.fields} == {
+        "request_id", "seeds", "knobs", "redo", "return_latents",
+    }
+    assert cmd.binary and cmd.binary_optional         # only a redo with latent
     assert "render_only" in protocol.config_catalog()
 
 
@@ -517,3 +527,268 @@ def test_session_logs_the_dit_per_request():
     gen = [ln for ln in lines if ln.startswith("oneshot_generate")]
     assert gen and "dit=eager:plugin_multistem_engine off" in gen[0]
     assert isinstance(events[0], OneshotReady)
+
+
+# ---- slow DEMON: several streams, adjust at a denoise, client-held latents ---------
+
+
+def _denoise_runtime():
+    calls = []
+
+    def hold(lat, held, denoise=None):
+        calls.append((None if lat is None else lat.clone(), held, denoise))
+
+    return LT._LayoutRuntime({"hold_streams": hold}), calls
+
+
+def _client_latent(store, key):
+    """A kept version as the client holds it: float16 [n_streams, C, L]."""
+    kept = store.get(key).latent                       # [1, C, n * L]
+    return torch.stack(kept[0].split(LT.L, dim=-1)).to(torch.float16).numpy()
+
+
+def test_parse_streams_denoise_and_latent():
+    r = parse_request({"redo": {"id": "k", "streams": [2, 0], "seed": 1}})
+    assert r.redo.streams == (0, 2) and r.redo.denoise == (1.0, 1.0)
+    assert r.redo.stream == 0 and r.versions == 1 and r.return_latents is False
+    # stream and streams are the same thing when they agree
+    a = parse_request({"redo": {"id": "k", "stream": 1, "seed": 1}}).redo
+    b = parse_request({"redo": {"id": "k", "streams": [1], "stream": 1, "seed": 1}}).redo
+    assert a == b and a.streams == (1,)
+    # scalar denoise: every regenerated stream; list: per stream, kept paired
+    r = parse_request({"redo": {"id": "k", "streams": [0, 2], "seed": 1, "denoise": 0.4}})
+    assert r.redo.denoise == (0.4, 0.4)
+    r = parse_request({"redo": {"id": "k", "streams": [2, 0], "seed": 1, "denoise": [0.3, 1]}})
+    assert r.redo.streams == (0, 2) and r.redo.denoise == (1.0, 0.3)
+    # client-held latent in place of id
+    r = parse_request({
+        "return_latents": True,
+        "redo": {"streams": [1], "seed": 1,
+                 "latent": {"dtype": "float16", "shape": [3, 4, 5]}},
+    })
+    assert r.return_latents and r.redo.id is None and r.redo.latent_shape == (3, 4, 5)
+    assert latent_nbytes({"dtype": "float16", "shape": [3, 4, 5]}) == 120
+    lat = {"dtype": "float16", "shape": [3, 4, 5]}
+    for bad in (
+        {"redo": {"id": "k", "stream": 0, "streams": [1], "seed": 1}},
+        {"redo": {"id": "k", "streams": [], "seed": 1}},
+        {"redo": {"id": "k", "streams": [1, 1], "seed": 1}},
+        {"redo": {"id": "k", "seed": 1}},
+        {"redo": {"id": "k", "streams": [0, 1], "seed": 1, "denoise": [0.5]}},
+        {"redo": {"id": "k", "stream": 0, "seed": 1, "denoise": 0}},
+        {"redo": {"id": "k", "stream": 0, "seed": 1, "denoise": 1.5}},
+        {"redo": {"id": "k", "stream": 0, "seed": 1, "denoise": True}},
+        {"redo": {"id": "k", "stream": 0, "seed": 1, "latent": lat}},
+        {"redo": {"stream": 0, "seed": 1, "latent": {"dtype": "float32", "shape": [3, 4, 5]}}},
+        {"redo": {"stream": 0, "seed": 1, "latent": {"dtype": "float16", "shape": [3, 4]}}},
+        {"redo": {"stream": 0, "seed": 1, "latent": {"dtype": "float16", "shape": [3, 0, 5]}}},
+        {"seeds": [1], "return_latents": "yes"},
+    ):
+        with pytest.raises(OneshotError):
+            parse_request(bad)
+
+
+def test_latent_from_bytes_checks_the_length():
+    r = parse_request({"redo": {"stream": 0, "seed": 1,
+                                "latent": {"dtype": "float16", "shape": [2, 3, 4]}}})
+    data = np.arange(24, dtype="<f2").reshape(2, 3, 4)
+    out = latent_from_bytes(r.redo, data.tobytes())
+    assert out.latent.dtype == np.float16 and np.array_equal(out.latent, data)
+    with pytest.raises(OneshotError, match="bytes"):
+        latent_from_bytes(r.redo, data.tobytes()[:-2])
+
+
+def test_redo_several_streams_returns_them_ascending():
+    rt, calls = _denoise_runtime()
+    b, ctx, _ = LT._layout_backend(runtime=rt)
+    store = KeptLatents()
+    first = b.render_oneshot(_req(seeds=(1,)), store=store)
+    ctx.codec.decodes = 0
+    redo = b.render_oneshot(
+        _req(redo={"id": first.ids[0], "streams": [2, 0], "seed": 5}), store=store,
+    )
+    # every regenerated d == 1.0: called exactly as before (no denoise kwarg)
+    assert calls[0][1] == (0, 1, 0) and calls[0][2] is None
+    assert calls[1] == (None, None, None)
+    assert redo.streams == (0, 2) and redo.pcm.shape[:2] == (1, 2)
+    assert ctx.codec.decodes == 2
+    assert redo.latent_header == {
+        "n_streams": LT.N_STREAMS, "channels": LT.C, "frames": LT.L,
+        "seconds": pytest.approx(first.seconds),
+    }
+    assert redo.latents is None
+
+
+def test_adjust_passes_the_per_stream_denoise():
+    rt, calls = _denoise_runtime()
+    b, _, _ = LT._layout_backend(runtime=rt)
+    store = KeptLatents()
+    first = b.render_oneshot(_req(seeds=(1,)), store=store)
+    kept = store.get(first.ids[0]).latent
+    b.render_oneshot(
+        _req(redo={"id": first.ids[0], "streams": [0, 1], "seed": 5,
+                   "denoise": [0.4, 1.0]}), store=store,
+    )
+    lat, held, denoise = calls[0]
+    assert torch.equal(lat, kept)
+    assert denoise == (0.4, 1.0, 0.0)
+    assert held == (1, 0, 1)                           # derived for old callers
+    assert calls[1] == (None, None, None)
+
+
+def test_a_layout_without_denoise_cannot_adjust():
+    rt, calls = _hold_runtime()                        # hold_streams(lat, held)
+    b, _, _ = LT._layout_backend(runtime=rt)
+    store = KeptLatents()
+    first = b.render_oneshot(_req(seeds=(1,)), store=store)
+    with pytest.raises(OneshotError, match="cannot adjust a stem"):
+        b.render_oneshot(
+            _req(redo={"id": first.ids[0], "stream": 0, "seed": 2, "denoise": 0.5}),
+            store=store,
+        )
+    assert calls == []                                 # refused before any work
+    # a re-roll (d == 1.0) still works on it
+    b.render_oneshot(_req(redo={"id": first.ids[0], "stream": 0, "seed": 2}), store=store)
+    assert calls[0][1] == (0, 1, 1)
+
+
+def _client_redo(latent_np, **redo):
+    shape = list(latent_np.shape)
+    req = parse_request({"request_id": "c", "redo": {
+        "seed": 3, "latent": {"dtype": "float16", "shape": shape}, **redo}})
+    return replace(req, redo=latent_from_bytes(req.redo, latent_np.astype("<f2").tobytes()))
+
+
+def test_client_latent_stands_in_for_a_kept_id():
+    rt, calls = _denoise_runtime()
+    b, _, _ = LT._layout_backend(runtime=rt)
+    store = KeptLatents()
+    first = b.render_oneshot(_req(seeds=(1,)), store=store)
+    held_np = _client_latent(store, first.ids[0])
+    res = b.render_oneshot(_client_redo(held_np, streams=[1]), store=store)
+    want = torch.from_numpy(held_np).float()
+    assert torch.equal(calls[0][0], torch.cat(list(want.unbind(0)), dim=-1).unsqueeze(0))
+    assert calls[0][1] == (1, 0, 1)
+    assert res.streams == (1,) and res.redo_of is None
+
+
+def test_client_latent_geometry_and_finiteness_are_checked_first():
+    rt, calls = _denoise_runtime()
+    b, _, _ = LT._layout_backend(runtime=rt)
+    store = KeptLatents()
+    good = np.zeros((LT.N_STREAMS, LT.C, LT.L), np.float16)
+    for bad in (
+        np.zeros((LT.N_STREAMS - 1, LT.C, LT.L), np.float16),
+        np.zeros((LT.N_STREAMS, LT.C - 1, LT.L), np.float16),
+        np.zeros((LT.N_STREAMS, LT.C, LT.L + 1), np.float16),
+    ):
+        with pytest.raises(OneshotError, match="this session needs"):
+            b.render_oneshot(_client_redo(bad, stream=0), store=store)
+    nan = good.copy()
+    nan[1, 2, 3] = np.inf
+    with pytest.raises(OneshotError, match="non-finite"):
+        b.render_oneshot(_client_redo(nan, stream=0), store=store)
+    assert calls == [] and len(store) == 0
+
+
+def test_return_latents_stacks_every_version_and_stream():
+    b, _, _ = LT._layout_backend()
+    store = KeptLatents()
+    res = b.render_oneshot(
+        parse_request({"seeds": [1, 2], "return_latents": True}), store=store,
+    )
+    assert res.latents.dtype == np.float16
+    assert res.latents.shape == (2, LT.N_STREAMS, LT.C, LT.L)
+    for v, key in enumerate(res.ids):
+        assert np.array_equal(res.latents[v], _client_latent(store, key))
+    # a redo returns the full latent of its one version, every stream
+    rt, _ = _denoise_runtime()
+    b2, _, _ = LT._layout_backend(runtime=rt)
+    redo = b2.render_oneshot(parse_request({
+        "return_latents": True, "redo": {"id": res.ids[0], "stream": 1, "seed": 4}}),
+        store=store)
+    assert redo.latents.shape == (1, LT.N_STREAMS, LT.C, LT.L)
+    assert redo.pcm.shape[1] == 1
+
+
+def test_stock_result_carries_the_header_and_latents_on_request():
+    b, _ = _stock()
+    plain = b.render_oneshot(_req(seeds=(1,)), store=KeptLatents())
+    assert plain.latents is None
+    assert plain.latent_header["n_streams"] == 1 and plain.latent_header["channels"] == C
+    asked = b.render_oneshot(parse_request({"seeds": [1], "return_latents": True}),
+                             store=KeptLatents())
+    assert asked.latents.shape == (1, 1, C, plain.latent_header["frames"])
+    assert np.array_equal(asked.pcm, plain.pcm)        # asking changes no sound
+
+
+def test_session_hands_the_latent_frame_to_the_redo():
+    backend = _FakeBackend()
+    s, events = _session(backend)
+    blob = np.ones((2, 3, 4), "<f2")
+    head = {"request_id": "a", "redo": {"stream": 0, "seed": 1,
+            "latent": {"dtype": "float16", "shape": [2, 3, 4]}}}
+    s.oneshot(head, latent=blob.tobytes())
+    assert np.array_equal(s._oneshots[0].redo.latent, blob)
+    s.oneshot({**head, "request_id": "b"}, latent=blob.tobytes()[:4])
+    assert isinstance(events[-1], OneshotFailed) and events[-1].request_id == "b"
+    assert len(s._oneshots) == 1
+
+
+def test_latents_frame_follows_the_pcm():
+    sent: list = []
+    ws = SimpleNamespace(
+        send=lambda m: sent.append(m if isinstance(m, (str, bytes)) else b"".join(m)),
+    )
+    pcm = np.zeros((1, 1, 4, 2), np.int16)
+    lat = np.arange(1 * 2 * 3 * 4, dtype=np.float16).reshape(1, 2, 3, 4)
+    header = {"n_streams": 2, "channels": 3, "frames": 4, "seconds": 1.5}
+    send_oneshot_payload(
+        ws, request_id="r", pcm=pcm, sample_rate=48000, ids=("a",), seeds=(1,),
+        streams=(0,), ms={}, redo_of=None, latent_header=header, latents=lat,
+    )
+    head = json.loads(sent[0])
+    assert head["latent_header"] == header
+    assert head["latents"] == {"dtype": "float16", "shape": [1, 2, 3, 4], "bytes": 48}
+    assert len(sent) == 3 and len(sent[1]) == pcm.nbytes
+    assert np.array_equal(np.frombuffer(sent[2], "<f2"), lat.reshape(-1))
+    spec = next(e for e in protocol.EVENTS if e.name == "oneshot_ready")
+    assert set(head) - {"type"} == {f.name for f in spec.fields}
+
+
+class _Recorder:
+    def __init__(self):
+        self.calls = []
+
+    def oneshot(self, data, *, origin, latent=None):
+        self.calls.append((data, latent))
+
+
+def test_adapter_reads_the_latent_frame_and_checks_its_length():
+    head = {"type": "oneshot", "request_id": "q", "redo": {
+        "stream": 0, "seed": 1, "latent": {"dtype": "float16", "shape": [2, 3, 4]}}}
+    frames = [b"\0" * 48]
+    sent = []
+    rec = _Recorder()
+    reads = []
+
+    def recv(fail_type, **extra):
+        reads.append((fail_type, extra))
+        return frames.pop(0)
+
+    _dispatch_oneshot(head, rec, recv, sent.append, "ws")
+    assert reads == [("oneshot_failed", {"request_id": "q"})]
+    assert rec.calls[0][1] == b"\0" * 48 and sent == []
+    # a frame of the wrong length: answered, never queued
+    frames.append(b"\0" * 46)
+    _dispatch_oneshot(head, rec, recv, sent.append, "ws")
+    assert len(rec.calls) == 1
+    assert sent[0]["type"] == "oneshot_failed" and sent[0]["request_id"] == "q"
+    assert "46 bytes" in sent[0]["error"]
+    # no latent: no frame read, straight to the session
+    _dispatch_oneshot({"type": "oneshot", "request_id": "p", "seeds": [1]},
+                      rec, recv, sent.append, "ws")
+    assert len(reads) == 2 and rec.calls[-1][1] is None
+    # the recv failed (timeout / not binary): it answered; nothing queued
+    _dispatch_oneshot(head, rec, lambda *a, **k: None, sent.append, "ws")
+    assert len(rec.calls) == 2
