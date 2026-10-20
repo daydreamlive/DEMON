@@ -10,7 +10,7 @@
 // Built by `npm run build` → dist/demon-client.node.cjs (platform node,
 // format cjs). The bridge `require()`s that artifact; see build.mjs.
 
-export { RemoteBackend, float16ArrayToFloat32 } from "./protocol";
+export { RemoteBackend, float16ArrayToFloat32, packCompactPcmFrame } from "./protocol";
 export {
   renderOneshot,
   decodeOneshot,

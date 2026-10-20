@@ -111,6 +111,16 @@ class SessionConfig:
     # each call site.
     telemetry_version: int | None = None
 
+    # The client builds the windows it can derive itself instead of
+    # receiving them: ``ready`` then leaves out the initial-buffer frame when
+    # that buffer is silent, and ``swap_ready`` leaves out its frame when the
+    # new buffer is silent or the swap keeps the playing buffer as it is
+    # (each says which in its ``window`` field, with ``frames``). Read off
+    # the raw config dict by the adapter, like ``telemetry_version``; a
+    # server without it sends every frame, and a client that asked must
+    # handle either (``window`` absent = a frame follows, as always).
+    derived_windows: bool = False
+
     @classmethod
     def from_dict(cls, data: dict) -> "SessionConfig":
         """Parse a raw config dict (as the WS adapter received it from
