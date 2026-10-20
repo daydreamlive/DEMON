@@ -126,6 +126,14 @@ _DIT_FP8_DIR_RE = re.compile(
 _DIT_REFIT_DIR_RE = re.compile(
     r"^(?P<prefix>.+_dit)_refit_l(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$"
 )
+# Refittable fp8 DiT engines (``sa3_build --fp8-refit``):
+# ``sa3_m_dit_fp8_refit_l{min}_{opt}_{max}``. Exclusively owned like the
+# fp16mixed refit engines. find_dit_engine selects one for LoRA sessions
+# ONLY under the ``DEMON_SA3_FP8_REFIT=1`` opt-in: whether fp8 refit
+# replaces fp16mixed refit by default is the open D6c/Q3 decision.
+_DIT_FP8_REFIT_DIR_RE = re.compile(
+    r"^(?P<prefix>.+_dit)_fp8_refit_l(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$"
+)
 _SAME_L_DIR_RE = re.compile(
     r"^same_l_decode_window_(?P<tag>[a-z0-9_]+)_t"
     r"(?P<lo>\d+)_(?P<opt>\d+)_(?P<hi>\d+)$"
@@ -199,14 +207,36 @@ def same_s_decode_build_tag() -> str:
     return f"fp16mixed_{SAME_S_FP32_ISLANDS}_tail32_v{SA3_SAME_S_DECODE_REVISION[:12]}"
 
 
+#: Opt-in for LoRA sessions on a refittable fp8 DiT engine
+#: (``sa3_m_dit_fp8_refit_l*``). Off by default: LoRA sessions keep the
+#: fp16mixed refit engine (or fp16mixed + eager swap) until D6c/Q3 lands.
+FP8_REFIT_ENV = "DEMON_SA3_FP8_REFIT"
+
+
+def fp8_refit_enabled() -> bool:
+    """Whether ``DEMON_SA3_FP8_REFIT`` opts LoRA sessions into fp8 refit
+    engines (``1``/``true``/``yes``/``on``, case-insensitive)."""
+    v = os.environ.get(FP8_REFIT_ENV, "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def is_fp8_refit_engine_path(path: Path) -> bool:
+    """Whether ``path`` names a refit-built fp8 DiT engine."""
+    return _DIT_FP8_REFIT_DIR_RE.match(Path(path).parent.name) is not None
+
+
 def trt_engines_dir() -> Path:
     return paths.models_dir() / "sa3" / "trt_engines"
 
 
 def is_refittable_engine_path(path: Path) -> bool:
     """Whether ``path`` names a refit-built DiT engine (by the naming
-    marker ``sa3_build --refit`` stamps)."""
-    return _DIT_REFIT_DIR_RE.match(Path(path).parent.name) is not None
+    marker ``sa3_build --refit`` / ``--fp8-refit`` stamps)."""
+    name = Path(path).parent.name
+    return (
+        _DIT_REFIT_DIR_RE.match(name) is not None
+        or _DIT_FP8_REFIT_DIR_RE.match(name) is not None
+    )
 
 
 def _deserialize_engine(path: Path, *, exclusive: bool = False):
@@ -286,10 +316,16 @@ def find_dit_engine(
       serve at higher fidelity than the fp16mixed one), logged, and the
       interim eager swap covers actual enables.
 
-    Without it, selection is unchanged: fp8 preferred when covering,
-    else fp16mixed; refit-built engines are ignored (their refit
-    support costs a little optimization freedom, and non-LoRA sessions
-    shouldn't pay it).
+    Refit-built **fp8** engines (``sa3_m_dit_fp8_refit_l*``) are only
+    considered under the ``DEMON_SA3_FP8_REFIT=1`` opt-in
+    (:func:`fp8_refit_enabled`): then a covering one wins over the
+    fp16mixed refit engine for ``want_refittable``; without the opt-in
+    they are skipped (logged) and selection is exactly as above.
+
+    Without ``want_refittable``, selection is unchanged: fp8 preferred
+    when covering, else fp16mixed; refit-built engines are ignored
+    (their refit support costs a little optimization freedom, and
+    non-LoRA sessions shouldn't pay it).
     """
     prefix = DIT_ENGINE_PREFIX.get(model_id)
     base = trt_engines_dir()
@@ -298,9 +334,18 @@ def find_dit_engine(
     best = None        # smallest-covering fp16mixed engine
     best_fp8 = None    # smallest-covering fp8 engine
     best_refit = None  # smallest-covering refit-built engine
+    best_fp8_refit = None  # smallest-covering refit-built fp8 engine
     for sub in base.iterdir():
         f = sub / f"{sub.name}.trt"
         if not f.is_file():
+            continue
+        mfr = _DIT_FP8_REFIT_DIR_RE.match(sub.name)
+        if mfr and mfr.group("prefix") == prefix:
+            lo, hi = int(mfr.group("lo")), int(mfr.group("hi"))
+            if lo <= latent_frames <= hi and (
+                best_fp8_refit is None or hi < best_fp8_refit[0]
+            ):
+                best_fp8_refit = (hi, f)
             continue
         mr = _DIT_REFIT_DIR_RE.match(sub.name)
         if mr and mr.group("prefix") == prefix:
@@ -320,9 +365,30 @@ def find_dit_engine(
             if lo <= latent_frames <= hi and (best is None or hi < best[0]):
                 best = (hi, f)
     if want_refittable:
+        if best_fp8_refit is not None:
+            if fp8_refit_enabled():
+                logger.info(
+                    "sa3_dit_refit_selected engine={} latent_frames={} "
+                    "precision=fp8 reason=fp8_refit_opt_in env={}=1",
+                    best_fp8_refit[1].parent.name, latent_frames,
+                    FP8_REFIT_ENV,
+                )
+                return best_fp8_refit[1]
+            logger.info(
+                "sa3_dit_fp8_refit_skipped engine={} latent_frames={} "
+                "reason=opt_in_off env={} unset",
+                best_fp8_refit[1].parent.name, latent_frames, FP8_REFIT_ENV,
+            )
+        elif fp8_refit_enabled():
+            logger.info(
+                "sa3_dit_fp8_refit_unavailable latent_frames={} "
+                "reason=no_covering_fp8_refit_engine (falling back)",
+                latent_frames,
+            )
         if best_refit is not None:
             logger.info(
-                "sa3_dit_refit_selected engine={} latent_frames={}",
+                "sa3_dit_refit_selected engine={} latent_frames={} "
+                "precision=fp16mixed reason=refit_covering",
                 best_refit[1].parent.name, latent_frames,
             )
             return best_refit[1]
@@ -361,6 +427,9 @@ def max_dit_engine_latents(model_id: str) -> Optional[int]:
             _DIT_REFIT_DIR_RE.match(sub.name)
             or _DIT_DIR_RE.match(sub.name)
             or _DIT_FP8_DIR_RE.match(sub.name)
+            # fp8 refit engines are selectable only under the opt-in.
+            or (_DIT_FP8_REFIT_DIR_RE.match(sub.name)
+                if fp8_refit_enabled() else None)
         )
         if (
             m

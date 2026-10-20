@@ -27,6 +27,18 @@ Run:
     .venv/Scripts/python.exe scripts/sa3/gen_sa3_refit_manifest.py \
         --onnx <...> --validate-engine <...>/sa3_m_dit_refit_l1_646_646.trt
 
+fp8 (``--fp8``, manifest version 2): maps the weight-QuantizeLinear sites
+of Stability's ``dit_fp8.onnx`` by name (``dit.<path>.weight`` <->
+``model.<path>``), records each baked scale (values in a
+``.scales.safetensors`` sidecar) and verifies every fp32 initializer is
+bit-equal to the stock checkpoint the mirror composes on. CPU only; no
+model load unless ``--validate-engine`` is given. See
+``acestep.engine.trt.sa3_fp8_refit``.
+
+    .venv/Scripts/python.exe scripts/sa3/gen_sa3_refit_manifest.py --fp8 \
+        --fetch --out <dir>/sa3_m_dit_fp8_refit_manifest.json \
+        [--validate-engine <...>/sa3_m_dit_fp8_refit_l1_140_140.trt]
+
 The ONNX ships on HF (stabilityai/stable-audio-3-optimized,
 onnx/sa3-m/dit_fp16mixed.onnx + .data). Pass --fetch to download it via
 huggingface_hub (cached; ~3 GB on first use), or point --onnx at an
@@ -133,7 +145,9 @@ def build_manifest(model_root, onnx_path: Path) -> dict:
     }
 
 
-def validate_engine(manifest_path: Path, engine_path: Path, ctx) -> bool:
+def validate_engine(
+    manifest_path: Path, engine_path: Path, ctx, *, duration: float = 20.0,
+) -> bool:
     """Refit every mapped weight with its own base value; the engine
     output must stay bit-identical."""
     from acestep.engine.sa3_trt import SA3TRTDit
@@ -141,10 +155,11 @@ def validate_engine(manifest_path: Path, engine_path: Path, ctx) -> bool:
     from acestep.engine.sa3_stream_helpers import stack_sa3_cond_bundles
 
     cond = ctx.prepare_cond(
-        prompt="warm analog house groove, 124 bpm", duration=20.0, steps=8,
+        prompt="warm analog house groove, 124 bpm", duration=duration, steps=8,
     )
     dit = SA3TRTDit(
-        engine_path, latent_frames=cond.latent_frames, seconds_total=20.0,
+        engine_path, latent_frames=cond.latent_frames,
+        seconds_total=duration,
     )
     if not dit.refittable:
         print(f"FAIL: {engine_path} is not a refit-built engine")
@@ -157,6 +172,13 @@ def validate_engine(manifest_path: Path, engine_path: Path, ctx) -> bool:
     ref = dit.step_bundle(x, 0.5, stacked).clone()
 
     mirror = SA3TRTRefitMirror(dit.engine, ctx.sam.model.model, manifest_path)
+    if getattr(mirror, "_fp8", False):
+        from acestep.engine.trt.sa3_fp8_refit import refit_inventory
+
+        inv = refit_inventory(
+            mirror._refitter, json.loads(manifest_path.read_text(encoding="utf-8")),
+        )
+        print("refit inventory: " + json.dumps(inv))
     # Force-push every mapped weight at its BASE value: mark all dirty
     # so sync pushes them even though nothing is parametrized.
     mirror._dirty = set(mirror._map.keys())
@@ -184,6 +206,14 @@ def main() -> int:
     ap.add_argument("--out", default=None,
                     help="manifest output path (default: "
                          "<sa3 engines dir>/sa3_m_dit_refit_manifest.json)")
+    ap.add_argument("--fp8", action="store_true",
+                    help="fp8 manifest (v2) for Stability's dit_fp8.onnx")
+    ap.add_argument("--checkpoint", default=None,
+                    help="--fp8: stock fp32 checkpoint (default: the "
+                         "medium model.safetensors)")
+    ap.add_argument("--validate-duration", type=float, default=20.0,
+                    help="seconds for the validation cond (must land in the "
+                         "engine's latent profile)")
     ap.add_argument("--validate-engine", default=None,
                     help="refit-built engine to bit-identity-validate against")
     args = ap.parse_args()
@@ -195,9 +225,13 @@ def main() -> int:
     if args.onnx:
         onnx_path = Path(args.onnx)
     elif args.fetch:
-        from acestep.engine.trt.sa3_build import DIT_ONNX_FILES, _fetch_onnx
+        from acestep.engine.trt.sa3_build import (
+            DIT_FP8_ONNX_FILES,
+            DIT_ONNX_FILES,
+            _fetch_onnx,
+        )
 
-        onnx_path = Path(_fetch_onnx(DIT_ONNX_FILES))
+        onnx_path = Path(_fetch_onnx(DIT_FP8_ONNX_FILES if args.fp8 else DIT_ONNX_FILES))
     else:
         ap.error("pass --onnx <path> or --fetch")
     if not onnx_path.is_file():
@@ -206,6 +240,38 @@ def main() -> int:
     out = Path(args.out) if args.out else (
         trt_engines_dir() / SHARED_MANIFEST_NAME
     )
+
+    if args.fp8:
+        from acestep.engine.sa3_helpers import sa3_checkpoint_dir
+        from acestep.engine.trt.sa3_fp8_refit import (
+            build_fp8_manifest,
+            checkpoint_base_reader,
+            write_fp8_manifest,
+        )
+
+        if not args.out:
+            ap.error("--fp8 needs an explicit --out")
+        ckpt = Path(args.checkpoint) if args.checkpoint else (
+            sa3_checkpoint_dir(args.model) / "model.safetensors"
+        )
+        t0 = time.perf_counter()
+        manifest, scales = build_fp8_manifest(
+            onnx_path, base_reader=checkpoint_base_reader(ckpt),
+            base_checkpoint=str(ckpt),
+        )
+        write_fp8_manifest(manifest, scales, out)
+        print(f"fp8 manifest written: {out} ({len(manifest['weights'])} weights, "
+              f"{len(manifest['activation_scales'])} activation scales, base "
+              f"verified bit-equal to {ckpt.name}) in "
+              f"{time.perf_counter() - t0:.1f}s")
+        if not args.validate_engine:
+            return 0
+        print(f"loading SA3Context({args.model!r})...")
+        ctx = SA3Context(model_id=args.model)
+        ok = validate_engine(
+            out, Path(args.validate_engine), ctx, duration=args.validate_duration,
+        )
+        return 0 if ok else 1
 
     print(f"loading SA3Context({args.model!r})...")
     ctx = SA3Context(model_id=args.model)
@@ -220,7 +286,9 @@ def main() -> int:
     print(f"manifest written: {out} ({len(manifest['weights'])} weights)")
 
     if args.validate_engine:
-        ok = validate_engine(out, Path(args.validate_engine), ctx)
+        ok = validate_engine(
+            out, Path(args.validate_engine), ctx, duration=args.validate_duration,
+        )
         return 0 if ok else 1
     print("NOTE: run again with --validate-engine <refit-built .trt> to "
           "complete the bit-identity gate before first production use.")

@@ -547,29 +547,11 @@ class SA3Backend(DiffusionBackend):
         # otherwise the interim eager swap (D6a) covers LoRA.
         refit_mirror = None
         if want_lora and getattr(adapter.dit, "refittable", False):
-            from acestep.engine.sa3_trt_lora import (
-                SA3TRTRefitMirror,
-                find_refit_manifest,
-            )
+            from acestep.engine.sa3_trt_lora import make_refit_mirror
 
-            manifest = find_refit_manifest(adapter.dit.engine_path)
-            if manifest is None:
-                logger.warning(
-                    "sa3_refit_manifest_missing engine={} — LoRA will use "
-                    "the eager-DiT swap; generate the manifest with "
-                    "scripts/sa3/gen_sa3_refit_manifest.py",
-                    adapter.dit.engine_path.parent.name,
-                )
-            else:
-                try:
-                    refit_mirror = SA3TRTRefitMirror(
-                        adapter.dit.engine, context.sam.model.model, manifest,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "sa3_refit_mirror_init_failed error={} — LoRA will "
-                        "use the eager-DiT swap", exc,
-                    )
+            # fp16mixed refit engine -> v1 manifest; fp8 refit engine
+            # (DEMON_SA3_FP8_REFIT=1) -> v2 manifest, fixed baked scales.
+            refit_mirror = make_refit_mirror(adapter.dit, context.sam.model.model)
 
         def _prompt_rebuilder(tags: str, steps_now: int, duration_now: float):
             # Per-prompt re-conditioning (handle_set_prompt): a fresh
