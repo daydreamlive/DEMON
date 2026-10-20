@@ -750,107 +750,93 @@ class SA3SAMECodec:
         return audio[0]
 
 
-#: engine file -> the shared full-song SAME-L decoder (SA3SAMEWindowCodec._full_decoder).
-_FULL_DECODERS: dict = {}
-_FULL_DECODERS_LOCK = threading.Lock()
+#: engine file -> (decoder, lock): the process-wide SAME-L decoders. ONE
+#: execution context per engine file per process (a wide profile's context
+#: is sized for its max, 4.4 GB at t..3230), shared by every session's
+#: codec; the lock serializes decodes on that context.
+_SAME_L_DECODERS: dict = {}
+_SAME_L_DECODERS_LOCK = threading.Lock()
+
+
+def _same_l_decoder(path) -> tuple:
+    """``(decoder, lock)`` of the SAME-L engine at ``path``, deserialized
+    on first use and then shared process-wide."""
+    key = str(path)
+    with _SAME_L_DECODERS_LOCK:
+        entry = _SAME_L_DECODERS.get(key)
+        if entry is None:
+            from acestep.engine.sa3_trt import SameLWindowTRTDecoder
+
+            entry = (SameLWindowTRTDecoder(Path(path)), threading.Lock())
+            _SAME_L_DECODERS[key] = entry
+    return entry
 
 
 class SA3SAMEWindowCodec:
-    """The SAME-L (medium) family codec: windowed latent decode.
+    """The SAME-L (medium) family codec: latent-range decode.
 
-    Per render-tick decode of a small latent window around the playhead
-    (the same geometry the spike validated:
-    ``resolve_sa3_decode_window`` with 2 s context, ``slice_align=1`` —
-    SAME-L's sliding-window attention needs no chunk-phase snapping).
-    Two execution paths, identical interface:
+    ONE decode entry, :meth:`decode_window`: samples ``[start, start+num)``
+    of the full decode, from the latent slice
+    ``resolve_sa3_decode_window`` gives with 2 s of context
+    (``slice_align=1``: SAME-L's sliding-window attention needs no
+    chunk-phase snapping). The ring calls it per render tick with ~1 s
+    windows; a whole-song decode is ``decode_window(latent, 0, T*4096)``
+    (:meth:`decode_full`). Two execution paths, identical interface:
 
-    * **TRT** when ``use_trt`` and the built window engine exists
-      (``same_l_decode_window_<plugin_tag>_t*``): ~9-10 ms per ~1 s
-      window, latent
-      scaled by ``pretransform.scale`` before the call (spike
-      ``scale_mode="pretransform"``, rel_rms ~8e-3 vs eager full).
-    * **Eager** fallback: the spike's ``decode_sa3_latent_window``
-      (deterministic), ~16 ms per window — still per-tick viable.
-
-    ``decode_full`` / ``decode_full_batch`` (the one-shot render) run on
-    the FULL-song SAME-L engine (``same_l_decode_window_<plugin_tag>_t*``
-    with a profile max >= ``SAME_L_FULL_MIN_MAX_T``, e.g. t32_1292_3230)
-    when it is built and the latent's frame count is inside its profile,
-    one latent per call (the graph is batch 1); eager otherwise. The TRT
-    full decode is the deterministic decode (no decode-RNG draws), rel_rms
-    0.5-2.5 % vs eager per stem (song_gen_20261019 lane C).
+    * **TRT**: the narrowest built SAME-L engine
+      (``same_l_decode_window_<plugin_tag>_t*``) whose profile covers the
+      resolved slice (:func:`acestep.engine.sa3_trt.select_same_l_engine`),
+      so ring windows land on the window engine (t32_56_96) and a whole
+      song on a wide one (e.g. t32_1292_3230). Decoders come from one
+      process-wide cache keyed by engine path, the wide ones loaded on
+      first use (a ring session never pays their context). Latent scaled
+      by ``pretransform.scale`` before the call (spike
+      ``scale_mode="pretransform"``, rel_rms ~8e-3 vs eager full). The
+      TRT decode is the deterministic decode (no decode-RNG draws).
+    * **Eager** when no engine covers the slice: the spike's
+      ``decode_sa3_latent_window`` (deterministic), ~16 ms per window;
+      :meth:`decode_full` keeps the seeded eager full decode.
     """
 
     #: Decode context on each side of the kept region. The spike swept
-    #: ctx1/ctx2/ctx4; 2 s is the validated default (window T ~50 ≤ the
-    #: engine's 96-frame max, parity rel_rms ~8e-3).
+    #: ctx1/ctx2/ctx4; 2 s is the validated default (window T ~50 within
+    #: the window engine's 96-frame max, parity rel_rms ~8e-3).
     context_sec = 2.0
 
     def __init__(self, context: SA3Context, *, use_trt: bool = True):
-        from acestep.engine.sa3_trt import (
-            SameLWindowTRTDecoder,
-            find_same_l_full_engine,
-            find_same_l_window_engine,
-        )
+        from acestep.engine.sa3_trt import find_same_l_engines, find_same_l_window_engine
 
         self._context = context
         self._helpers = context._helpers
         self._scale = float(getattr(context.sam.model.pretransform, "scale", 1.0))
-        found = find_same_l_window_engine() if use_trt else None
-        if found is None:
+        # Narrowest first; selection reads this listing, never the disk.
+        self._engines = list(find_same_l_engines()) if use_trt else []
+        if not self._engines:
             logger.info(
-                "sa3_same_l_window_decode mode=eager reason={}",
+                "sa3_same_l_decode mode=eager reason={}",
                 "no_trt_engine" if use_trt else "backend",
             )
-            self._trt = None
-            self._min_t = self._max_t = 0
-        else:
-            path, self._min_t, self._max_t = found
-            self._trt = SameLWindowTRTDecoder(path)
-        # The full-song engine is loaded on the first full decode (a ring
-        # session never pays its context).
-        self._full_found = find_same_l_full_engine() if use_trt else None
-        self._full_trt = None
-        if self._full_found is None:
-            logger.info(
-                "sa3_same_l_full_decode mode=eager reason={}",
-                "no_trt_engine" if use_trt else "backend",
-            )
-        else:
-            logger.info(
-                "sa3_same_l_full_decode mode=tensorrt engine={} t={}..{}",
-                self._full_found[0].parent.name, self._full_found[1], self._full_found[2],
-            )
+            return
+        logger.info(
+            "sa3_same_l_decode mode=tensorrt engines={}",
+            ",".join(f"t{lo}..{hi}" for _, lo, hi in self._engines),
+        )
+        # The ring's window engine is loaded now so its first render tick
+        # does not pay the deserialization.
+        window = find_same_l_window_engine()
+        if window is not None:
+            _same_l_decoder(window[0])
 
-    def full_trt_serves(self, frames: int) -> bool:
-        """The full-song engine is built and ``frames`` is inside its profile."""
-        f = self._full_found
-        return f is not None and f[1] <= int(frames) <= f[2]
+    @property
+    def uses_trt(self) -> bool:
+        return bool(self._engines)
 
-    def _full_decoder(self):
-        """The process-wide decoder of the full-song engine: ONE execution
-        context per engine file (its context is sized for the profile max,
-        4.4 GB at t..3230), shared by every session's codec rather than one
-        per session."""
-        if self._full_trt is None:
-            from acestep.engine.sa3_trt import SameLWindowTRTDecoder
+    def engine_for(self, frames: int):
+        """``(path, min_t, max_t)`` of the engine that decodes a
+        ``frames``-frame slice, or None (eager)."""
+        from acestep.engine.sa3_trt import select_same_l_engine
 
-            key = str(self._full_found[0])
-            with _FULL_DECODERS_LOCK:
-                dec = _FULL_DECODERS.get(key)
-                if dec is None:
-                    dec = SameLWindowTRTDecoder(self._full_found[0])
-                    _FULL_DECODERS[key] = dec
-            self._full_trt = dec
-        return self._full_trt
-
-    def _decode_full_trt(self, latent_bct: torch.Tensor) -> torch.Tensor:
-        """One ``[1, 256, T]`` latent on the full-song engine -> ``[C, N]``,
-        clamped to [-1, 1] as the eager full decode."""
-        dec = self._full_decoder()
-        with _FULL_DECODERS_LOCK:
-            audio = dec.decode(latent_bct * self._scale)
-        return audio.float().clamp(-1.0, 1.0)
+        return select_same_l_engine(self._engines, frames, frames)
 
     def _decode_window_eager(self, latent_bct, start: int, num: int) -> torch.Tensor:
         result = self._helpers.decode_sa3_latent_window(
@@ -863,43 +849,55 @@ class SA3SAMEWindowCodec:
         )
         return result.audio_ct
 
+    def _place(self, slice_start: int, slice_end: int, crop_start: int, total_t: int):
+        """The first engine (narrowest first) that serves the resolved
+        slice, with the slice grown to that engine's profile minimum near
+        the song edges (right first, then left, shifting the crop offset):
+        ``(path, slice_start, slice_end, crop_start)``, or None."""
+        ds = self._context.downsampling_ratio
+        for path, min_t, max_t in self._engines:
+            s0, s1, crop = slice_start, slice_end, crop_start
+            need = min_t - (s1 - s0)
+            if need > 0:
+                grow_r = min(need, total_t - s1)
+                s1 += grow_r
+                need -= grow_r
+            if need > 0:
+                grow_l = min(need, s0)
+                s0 -= grow_l
+                crop += grow_l * ds
+                need -= grow_l
+            if need <= 0 and (s1 - s0) <= max_t:
+                return path, s0, s1, crop
+        return None
+
     def decode_window(self, latent_bct: torch.Tensor, start: int, num: int) -> torch.Tensor:
         """``[1, 256, T]`` latent -> ``[C, num]`` float 44.1 kHz audio
         covering samples ``[start, start+num)`` of the full decode."""
-        if self._trt is None:
+        if not self._engines:
             return self._decode_window_eager(latent_bct, start, num)
-        ds = self._context.downsampling_ratio
         window = self._helpers.resolve_sa3_decode_window(
             latent_bct,
             target_start_sample=int(start),
             target_num_samples=int(num),
             context_sec=self.context_sec,
             sample_rate=self._context.sample_rate,
-            downsampling_ratio=ds,
+            downsampling_ratio=self._context.downsampling_ratio,
             slice_align_latents=1,
         )
-        slice_start, slice_end = window.slice_start, window.slice_end
-        crop_start = window.crop_start
-        total_t = latent_bct.shape[-1]
-        # Engine floor: near the song edges the resolved slice can drop
-        # under the profile minimum — grow it (right first, then left,
-        # shifting the crop offset) rather than fall off the TRT path.
-        need = self._min_t - (slice_end - slice_start)
-        if need > 0:
-            grow_r = min(need, total_t - slice_end)
-            slice_end += grow_r
-            need -= grow_r
-        if need > 0:
-            grow_l = min(need, slice_start)
-            slice_start -= grow_l
-            crop_start += grow_l * ds
-            need -= grow_l
-        if need > 0 or (slice_end - slice_start) > self._max_t:
-            # Latent shorter than the engine minimum, or a window the
-            # profile can't serve: decode eagerly rather than guess.
+        placed = self._place(
+            window.slice_start, window.slice_end, window.crop_start,
+            int(latent_bct.shape[-1]),
+        )
+        if placed is None:
+            # Latent shorter than every engine minimum, or a slice no
+            # profile serves: decode eagerly rather than guess.
             return self._decode_window_eager(latent_bct, start, num)
+        path, slice_start, slice_end, crop_start = placed
         latent_window = latent_bct[..., slice_start:slice_end].contiguous()
-        audio_ct = self._trt.decode(latent_window * self._scale)
+        dec, lock = _same_l_decoder(path)
+        with lock:
+            audio_ct = dec.decode(latent_window * self._scale)
         out = audio_ct[:, crop_start:crop_start + int(num)]
         if out.shape[-1] < int(num):
             out = torch.nn.functional.pad(out, (0, int(num) - out.shape[-1]))
@@ -908,12 +906,17 @@ class SA3SAMEWindowCodec:
     def decode_full(
         self, latent_bct: torch.Tensor, *, decode_seed: int | None = None,
     ) -> torch.Tensor:
-        """Eager full decode (legacy full-buffer mode only; the hot path
-        never calls this for windowed-codec families). ``decode_seed``
-        pins the decode RNG exactly as on :class:`SA3SAMECodec` (the TRT
-        full-song engine ignores it: it is the deterministic decode)."""
-        if self.full_trt_serves(int(latent_bct.shape[-1])):
-            return self._decode_full_trt(latent_bct)
+        """Whole-song decode ``[1, 256, T]`` -> ``[C, T*4096]``: exactly
+        ``decode_window(latent, 0, T*downsampling_ratio)`` when an engine
+        covers T (``decode_seed`` unused: the TRT decode is the
+        deterministic one). With no covering engine it stays the eager
+        full decode, ``decode_seed`` pinning the decode RNG exactly as on
+        :class:`SA3SAMECodec`."""
+        frames = int(latent_bct.shape[-1])
+        if self.engine_for(frames) is not None:
+            return self.decode_window(
+                latent_bct, 0, frames * self._context.downsampling_ratio,
+            )
         with self._helpers.sa3_decode_rng(decode_seed, device=latent_bct.device):
             audio = self._helpers.decode_sa3_latent(self._context.sam, latent_bct)
         return audio[0]
@@ -921,16 +924,14 @@ class SA3SAMEWindowCodec:
     def decode_full_batch(
         self, latents_bct: torch.Tensor, *, decode_seed: int | None = None,
     ) -> torch.Tensor:
-        """Eager full decode of a batch [B, 256, T] (the one-shot
-        render's streams of one version) in ONE decoder call ->
-        [B, C, N]. The decode RNG is pinned once for the batch, so the
-        same latents and seed give bit-identical audio (not the per-latent
-        draws of :meth:`decode_full`). On the full-song TRT engine the
-        latents are decoded one at a time (its graph is batch 1; a batch
-        opened on dim 0 is not item-correct, lane C)."""
-        if self.full_trt_serves(int(latents_bct.shape[-1])):
+        """Whole-song decode of ``[B, 256, T]`` -> ``[B, C, N]``. On TRT the
+        latents go one at a time through :meth:`decode_full` (the engine
+        graph is batch 1). Eager decodes the batch in ONE call with the
+        decode RNG pinned once for it, so the same latents and seed give
+        bit-identical audio."""
+        if self.engine_for(int(latents_bct.shape[-1])) is not None:
             return torch.stack([
-                self._decode_full_trt(latents_bct[i:i + 1])
+                self.decode_full(latents_bct[i:i + 1])
                 for i in range(int(latents_bct.shape[0]))
             ])
         with self._helpers.sa3_decode_rng(decode_seed, device=latents_bct.device):
