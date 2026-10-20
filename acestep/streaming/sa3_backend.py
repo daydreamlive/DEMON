@@ -85,7 +85,8 @@ from acestep.streaming.knobs import (
 # rate. See module docstring / round_3 decision 2.
 DELIVERY_SAMPLE_RATE = 48000
 SA3_SAMPLE_RATE = 44100
-SA3_LATENT_RATE_HZ = 44100.0 / 4096.0
+SA3_SAMPLES_PER_LATENT = 4096
+SA3_LATENT_RATE_HZ = 44100.0 / SA3_SAMPLES_PER_LATENT
 
 # small-music generates at most a 120 s window (sample_size 5292032 at
 # 44.1 kHz); longer sources are anchored by their first 120 s. Defined
@@ -822,6 +823,10 @@ class SA3Backend(DiffusionBackend):
             lora=bool(self._use_lora and self._lora_mgr is not None),
             bounce=True,
             oneshot=True,
+            oneshot_redo=bool(
+                self._layout is not None
+                and getattr(self._layout, "hold_streams", None) is not None
+            ),
         )
 
     def geometry(self) -> AudioGeometry:
@@ -1558,6 +1563,28 @@ class SA3Backend(DiffusionBackend):
         }
 
     def _generate(self, prep: dict):
+        self._submit(prep)
+        latent = self._tick_pipeline()  # engine-layout [1, T, 256] | None
+        if latent is not None:
+            # The request this latent was generated from (valid only
+            # right after a finishing tick — see StreamPipeline).
+            req = getattr(self.pipeline, "last_finished_request", None)
+            # A slot submitted before a source swap was initialised from
+            # the old anchor and its latent is a cover of the previous
+            # source; it must not be rendered into the new one. Every
+            # request carries the anchor object it was built against as
+            # x0_target, so identity against the live anchor is the test
+            # (handle_swap_source replaces the object).
+            if req is not None and req.x0_target is not self._source_latent_btc:
+                logger.info("sa3_gen_discarded reason=source_swapped")
+                return None
+            self._emerged_request = req
+        return latent
+
+    def _submit(self, prep: dict) -> None:
+        """Submit one :class:`SlotRequest` for ``prep`` (the output of
+        :meth:`_prepare_tick`): the ring's per-tick request and a one-shot
+        version's are this same request."""
         from acestep.engine.stream import SlotRequest
 
         if prep["steps"] != self._steps:
@@ -1620,6 +1647,10 @@ class SA3Backend(DiffusionBackend):
             # realizations (incoherent audio). See SlotRequest.
             sde_noise_seeded=True,
         ))
+
+    def _tick_pipeline(self):
+        """One :meth:`StreamPipeline.tick` (engine-layout ``[1, T, 256]``
+        when a slot finished, else None)."""
         # With LoRAs active, wrap the tick in parametrize.cached():
         # without it, every weight ACCESS recomputes W + scaled delta,
         # and the measured overhead is +49% per step at 1 LoRA / +114%
@@ -1632,24 +1663,8 @@ class SA3Backend(DiffusionBackend):
             import torch.nn.utils.parametrize as parametrize
 
             with parametrize.cached():
-                latent = self.pipeline.tick()
-        else:
-            latent = self.pipeline.tick()  # engine-layout [1, T, 256] | None
-        if latent is not None:
-            # The request this latent was generated from (valid only
-            # right after a finishing tick — see StreamPipeline).
-            req = getattr(self.pipeline, "last_finished_request", None)
-            # A slot submitted before a source swap was initialised from
-            # the old anchor and its latent is a cover of the previous
-            # source; it must not be rendered into the new one. Every
-            # request carries the anchor object it was built against as
-            # x0_target, so identity against the live anchor is the test
-            # (handle_swap_source replaces the object).
-            if req is not None and req.x0_target is not self._source_latent_btc:
-                logger.info("sa3_gen_discarded reason=source_swapped")
-                return None
-            self._emerged_request = req
-        return latent
+                return self.pipeline.tick()
+        return self.pipeline.tick()
 
     def _cond_meta_for(self, bundle) -> tuple:
         """(epoch, tags) for a request's aux_cond, by identity."""
@@ -1761,7 +1776,7 @@ class SA3Backend(DiffusionBackend):
         """The layout's own whole-window render of stream ``index``
         (``StreamLayout.render_stream``) as float32 ``[N, C]``, or None
         when the layout has none and the stream is decoded as usual."""
-        hook = self._layout.render_stream
+        hook = self._layout.render_stream if self._layout is not None else None
         if hook is None:
             return None
         audio = hook(index, part)
@@ -1899,32 +1914,73 @@ class SA3Backend(DiffusionBackend):
         """:meth:`_render_window_via_codec` under a stream layout: the same
         window geometry, decoded once PER STREAM (a decoder's receptive
         field must never straddle a stream boundary), then mixed."""
-        import torchaudio
-
         lead48 = (lead44 * DELIVERY_SAMPLE_RATE) // SA3_SAMPLE_RATE
         t0 = time.perf_counter()
-        parts = []
-        for i, part in enumerate(self._stream_slices(latent_btc.movedim(1, 2))):
-            own_audio = self._stream_render(i, part)
+        streams = self._render_stream_audio(
+            latent_btc, lo44, total44, start48=start48, n48=n48, lead48=lead48,
+            decode_seed=self._decode_seed,
+        )
+        streams = streams.cpu().numpy()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        self.last_dec_ms += (time.perf_counter() - t0) * 1000
+        pcm = self._mix_streams(streams.astype(np.float32, copy=False))
+        return AudioChunk(pcm=pcm, start_sample=start48)
+
+    def _render_stream_audio(
+        self, latent_btc: torch.Tensor, start44: int, n44: int, *,
+        start48: int, n48: int, lead48: int = 0, streams=None,
+        decode_seed=None,
+    ) -> torch.Tensor:
+        """THE per-stream audio producer of a stacked latent: the ring's
+        window (``render_window``) and a one-shot version (the whole song)
+        are both this call. Returns float32 ``[S, n48, C]`` in [-1, 1] at
+        the delivery rate, one row per stream of ``streams`` (default all).
+
+        A stream the layout renders itself (``render_stream``, a held take)
+        is that render's ``[start48, start48 + n48)``. Every other stream is
+        ``codec.decode_window(part, start44, n44)`` at 44.1 kHz (a codec
+        without ``decode_window`` decodes the whole stream and crops),
+        clamped, then ONE delivery resample for all of them, kept from
+        ``lead48`` (the guard margin before ``start48``) for ``n48``.
+        ``decode_seed`` pins the decode RNG of a codec that takes it."""
+        import torchaudio
+
+        parts = self._stream_slices(latent_btc.movedim(1, 2))
+        index = tuple(range(len(parts))) if streams is None else tuple(streams)
+        rows: list = [None] * len(index)
+        decoded, decoded_at = [], []
+        window = getattr(self.codec, "decode_window", None)
+        for j, k in enumerate(index):
+            own_audio = self._stream_render(k, parts[k])
             if own_audio is not None:
                 pcm = own_audio[start48:start48 + n48]
                 if pcm.shape[0] < n48:
                     pcm = np.pad(pcm, ((0, n48 - pcm.shape[0]), (0, 0)))
-                parts.append(np.clip(pcm, -1.0, 1.0))
+                rows[j] = torch.from_numpy(np.clip(pcm, -1.0, 1.0))
                 continue
-            audio_ct = self.codec.decode_window(part, lo44, total44)
+            if window is not None:
+                audio_ct = window(parts[k], int(start44), int(n44))
+            else:
+                full = self.codec.decode_full(parts[k], decode_seed=decode_seed)
+                audio_ct = full[:, int(start44):int(start44) + int(n44)]
+            decoded.append(audio_ct.float().clamp(-1.0, 1.0))
+            decoded_at.append(j)
+        if decoded:
             audio48 = torchaudio.functional.resample(
-                audio_ct.float(), SA3_SAMPLE_RATE, DELIVERY_SAMPLE_RATE,
-            )
-            pcm48 = audio48[:, lead48:lead48 + n48]
-            if pcm48.shape[-1] < n48:
-                pcm48 = torch.nn.functional.pad(pcm48, (0, n48 - pcm48.shape[-1]))
-            parts.append(pcm48.clamp(-1, 1).cpu().numpy().T)
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        self.last_dec_ms += (time.perf_counter() - t0) * 1000
-        pcm = self._mix_streams(np.stack(parts).astype(np.float32, copy=False))
-        return AudioChunk(pcm=pcm, start_sample=start48)
+                torch.stack(decoded), SA3_SAMPLE_RATE, DELIVERY_SAMPLE_RATE,
+            )[..., lead48:lead48 + n48]
+            if audio48.shape[-1] < n48:
+                audio48 = torch.nn.functional.pad(
+                    audio48, (0, n48 - audio48.shape[-1]),
+                )
+            audio48 = audio48.clamp(-1.0, 1.0).transpose(1, 2)    # [D, n48, C]
+            for j, row in zip(decoded_at, audio48.unbind(0)):
+                rows[j] = row
+        device = next(
+            (r.device for r in rows if r.device.type != "cpu"), torch.device("cpu"),
+        )
+        return torch.stack([r.to(device=device, dtype=torch.float32) for r in rows])
 
     def render_full(self):
         if self._current_result is None:
@@ -1936,10 +1992,11 @@ class SA3Backend(DiffusionBackend):
     # ---- one-shot renders (Capabilities.oneshot) -------------------------------
 
     def render_oneshot(self, request, *, store=None):
-        """Whole renders outside the ring: ONE denoise per version (the
-        ring's pingpong step math and the layout's noise hooks, no
-        StreamPipeline tick), a full decode of every stream, int16 at the
-        delivery rate. ``request`` is an
+        """Whole renders of a render-only session: per version, the ring's
+        own generation (:meth:`_prepare_tick` + the ring's SlotRequest on a
+        depth-1 StreamPipeline, ticked to completion), the ring's per-stream
+        audio producer (:meth:`_render_stream_audio`) over the whole song,
+        int16 at the delivery rate. ``request`` is an
         :class:`~acestep.streaming.oneshot.OneshotRequest`; returns an
         :class:`~acestep.streaming.oneshot.OneshotResult`. Each version's
         latent is kept in ``store`` (default the process store) by id.
@@ -2007,85 +2064,58 @@ class SA3Backend(DiffusionBackend):
 
         sync = torch.cuda.synchronize if torch.cuda.is_available() else (lambda: None)
         t0 = time.perf_counter()
+        # Denoise = the ring: one SlotRequest per version on a depth-1
+        # StreamPipeline, ticked to completion (the DiT is batch 1 under a
+        # layout; batching was measured dead, 306 vs 2 x 146 ms).
+        self._oneshot_pipeline_ready()
         latents = []          # engine layout [1, T, C] per version
-        batchable = (
-            layout is None and redo is None
-            and not getattr(self.adapter.dit, "trt_batch1", False)
-        )
-        if batchable:
+        for seed in seeds:
             controls = dict(base)
-            self._oneshot_controls(controls)
-            latents = list(self._oneshot_denoise(seeds, controls).split(1, dim=0))
-        else:
-            for seed in seeds:
-                controls = dict(base)
-                if version_controls is not None:
-                    controls.update(version_controls(int(seed)))
-                self._oneshot_controls(controls)
-                if redo is None:
-                    latents.append(self._oneshot_denoise((seed,), controls))
-                    continue
-                kept_dev = held_latent.to(
-                    device=self.adapter._device, dtype=self.adapter._dtype,
-                )
-                layout.hold_streams(kept_dev, held, **hold_kw)
-                try:
-                    latents.append(self._oneshot_denoise((seed,), controls))
-                finally:
-                    layout.hold_streams(None, None)
+            if version_controls is not None:
+                controls.update(version_controls(int(seed)))
+            controls["seed"] = float(seed)
+            if redo is None:
+                latents.append(self._oneshot_latent(controls))
+                continue
+            kept_dev = held_latent.to(
+                device=self.adapter._device, dtype=self.adapter._dtype,
+            )
+            layout.hold_streams(kept_dev, held, **hold_kw)
+            try:
+                latents.append(self._oneshot_latent(controls))
+            finally:
+                layout.hold_streams(None, None)
         sync()
         t1 = time.perf_counter()
         dit_obj = self.adapter.dit
         describe = getattr(dit_obj, "describe", None)
         dit_label = describe() if callable(describe) else type(dit_obj).__name__
 
-        # Decode: every stream (a redo: its streams) of every version through
-        # the codec's full decode, then one delivery resample for them all.
-        import torchaudio
-
+        # Decode = the ring's producer over the whole song: every stream (a
+        # redo: its streams) of every version, at the delivery rate.
         streams = (
             tuple(sorted(int(k) for k in redo.streams))
             if redo is not None else tuple(range(n))
         )
-        decode_batch = getattr(self.codec, "decode_full_batch", None)
-        rows = []
-        for seed, lat in zip(seeds, latents):
-            parts = self._stream_slices(lat.movedim(1, 2))
-            parts = [parts[k] for k in streams]
-            if decode_batch is not None and len(parts) > 1:
-                try:
-                    audio = decode_batch(torch.cat(parts, dim=0), decode_seed=int(seed))
-                    rows.extend(audio.unbind(0))
-                    continue
-                except torch.cuda.OutOfMemoryError:
-                    # One decoder call for every stream did not fit: the
-                    # streams one at a time instead (and from now on).
-                    logger.warning("oneshot_decode_batch_oom streams={}", len(parts))
-                    decode_batch = None
-                    torch.cuda.empty_cache()
-                rows.extend(
-                    self.codec.decode_full(p, decode_seed=int(seed)) for p in parts
-                )
-            else:
-                rows.extend(
-                    self.codec.decode_full(p, decode_seed=int(seed)) for p in parts
-                )
-        audio_ct = torch.stack([r.float() for r in rows])          # [R, C, N44]
-        audio48 = torchaudio.functional.resample(
-            audio_ct, SA3_SAMPLE_RATE, DELIVERY_SAMPLE_RATE,
-        )
+        whole44 = (frames // n) * SA3_SAMPLES_PER_LATENT
+        whole48 = -(-whole44 * DELIVERY_SAMPLE_RATE // SA3_SAMPLE_RATE)
         total = int(round(float(self.playable_duration_s() or 0.0) * DELIVERY_SAMPLE_RATE))
-        if total <= 0 or total > audio48.shape[-1]:
-            total = int(audio48.shape[-1])
-        audio48 = audio48[..., :total]
+        if total <= 0 or total > whole48:
+            total = whole48
+        audio48 = torch.stack([
+            self._render_stream_audio(
+                lat, 0, whole44, start48=0, n48=total, streams=streams,
+                decode_seed=int(seed),
+            )
+            for seed, lat in zip(seeds, latents)
+        ])                                                         # [V, S, N, C]
         sync()
         t2 = time.perf_counter()
 
         # Interleave the channels on the device before the one copy to the
         # host: the CPU transpose of the int16 block (230 MB at 2:00, two
         # versions) was the pack time.
-        pcm = to_int16(audio48.transpose(1, 2).contiguous())      # [R, N, C]
-        pcm = pcm.reshape(len(seeds), len(streams), pcm.shape[1], pcm.shape[2])  # [V, S, N, C]
+        pcm = to_int16(audio48.contiguous())                       # [V, S, N, C]
         ids = tuple(
             store.put(lat.movedim(1, 2), n_streams=n, seed=int(seed))
             for seed, lat in zip(seeds, latents)
@@ -2141,110 +2171,40 @@ class SA3Backend(DiffusionBackend):
             raise OneshotError("redo.latent has non-finite values")
         return torch.cat(list(t.unbind(0)), dim=-1).unsqueeze(0)
 
-    def _oneshot_controls(self, knobs: dict) -> None:
-        """The per-version share of :meth:`_prepare_tick`: the schedule
-        warp, LoRA strengths and the extension's own knobs."""
-        shift = float(knobs.get("sa3_shift", 1.0))
-        if abs(shift - float(self.adapter.shift_alpha)) > 1e-3:
-            with self._control_lock:
-                self.adapter.shift_alpha = shift
-                self.pipeline.invalidate_schedule_cache()
-        if self._use_lora and self._lora_mgr is not None:
-            if self._refit_mirror is not None:
-                self._apply_pending_lora_strengths()
-            else:
-                for desc in self._lora_mgr.list_loras():
-                    if desc.state != "enabled":
-                        continue
-                    try:
-                        s = float(knobs.get(f"lora_str_{desc.id}", desc.strength))
-                    except (TypeError, ValueError):
-                        continue
-                    if abs(s - desc.strength) > 0.02:
-                        self.set_lora_strength(desc.id, s)
-        self._apply_extension_controls(knobs)
+    def _oneshot_pipeline_ready(self) -> None:
+        """A one-shot runs on the session's own StreamPipeline at depth 1
+        (one slot: a version is ticked to completion before the next is
+        submitted). A pipeline that still holds a slot or a request (a
+        render that raised mid-denoise) is rebuilt empty."""
+        if self._depth != 1:
+            self._depth = 1
+            self.pipeline.set_depth(1)
+        pipe = self.pipeline
+        if pipe.active_slots or pipe._queue:
+            self.pipeline = self._build_pipeline(self._steps)
 
     @torch.no_grad()
-    def _oneshot_denoise(self, seeds, knobs: dict) -> torch.Tensor:
-        """ONE full denoise of the session window per seed, batched on dim 0
-        (engine layout ``[B, T, C]``). The ring's per-step math verbatim
-        (``x0 = x - v t``; pingpong re-noise ``t' n + (1 - t') x0``; Euler
-        under the ODE sampler), the layout's ``make_noise`` /
-        ``make_renoise`` per request and its ``on_slot_done`` at the end."""
-        from acestep.engine import ode_steps
-        from acestep.engine.stream import SlotRequest
-
-        steps = int(knobs.get("steps_override", self._steps))
-        if steps != self._steps:
-            self._steps = steps
-            self.pipeline = self._build_pipeline(steps)
-        denoise = float(knobs.get("sa3_denoise", 1.0))
-        with self._control_lock:
-            aux = self._active_bundle
-            frames = int(self._cond.latent_frames)
-        source = self._source_latent_btc
-        reqs = [
-            SlotRequest(
-                seed=int(s), denoise=denoise, source_latents=source,
-                aux_cond=aux, latent_frames=frames, sde_noise_seeded=True,
-            )
-            for s in seeds
-        ]
-        device, dtype = self.adapter.request_device_dtype(reqs[0])
-        pipe = self.pipeline
-        pipe._ensure_device(device, dtype)
-        sched = self.adapter.build_schedule(pipe.config, denoise, device, dtype).cpu()
-        noise = torch.cat([pipe._make_noise(r) for r in reqs], dim=0)
-        t_start = sched[0].item()
-        if source is not None and denoise < 1.0:
-            xt = t_start * noise + (1.0 - t_start) * source
-        else:
-            xt = noise.clone()
-        renoise = getattr(self.adapter, "make_renoise", None)
-        gens = []
-        for s in seeds:
-            g = torch.Generator(device=device)
-            g.manual_seed(int(s))
-            gens.append(g)
-        sde = self._sampler in ("sde", "pingpong")
-        B = len(reqs)
-        lora_cached = self._lora_mgr is not None and self._lora_mgr.has_active_loras
-        with ExitStack() as stack:
-            if lora_cached:
-                import torch.nn.utils.parametrize as parametrize
-
-                stack.enter_context(parametrize.cached())
-            for i in range(sched.numel() - 1):
-                t = sched[i].item()
-                t_next = sched[i + 1].item()
-                vt = self.adapter.batched_forward(
-                    xt, [t] * B, [None] * B, [None] * B, [None] * B, [aux] * B,
-                )
-                x0 = ode_steps.x0_from_vel(xt, vt, t)
-                if t_next <= 0:
-                    xt = x0
-                    break
-                if not sde:
-                    xt = xt + (t_next - t) * vt
-                    continue
-                rows = []
-                for b, r in enumerate(reqs):
-                    nz = renoise(r, i) if renoise is not None else None
-                    if nz is None:
-                        nz = torch.randn(
-                            (1,) + tuple(xt.shape[1:]), device=xt.device,
-                            dtype=xt.dtype, generator=gens[b],
-                        )
-                    rows.append(nz.to(device=xt.device, dtype=xt.dtype))
-                xt = ode_steps.step_sde_renoise(xt, x0, t_next, torch.cat(rows, dim=0))
-        done = getattr(self.adapter, "on_slot_done", None)
-        if done is not None:
-            for b, r in enumerate(reqs):
-                try:
-                    done(r, xt[b:b + 1])
-                except Exception as exc:  # noqa: BLE001 - an observer never fails the render
-                    logger.warning("oneshot on_slot_done raised (ignored): {!r}", exc)
-        return xt
+    def _oneshot_latent(self, knobs: dict) -> torch.Tensor:
+        """One version: :meth:`_prepare_tick` applies ``knobs`` (schedule
+        warp, LoRA strengths, the extension's controls, the x0 lock), the
+        ring's own request is submitted, and the pipeline is ticked until
+        it returns that slot's latent (engine layout ``[1, T, C]``). Not
+        ``pipeline.flush()``: its bound (depth * 2 ticks) assumes depth ==
+        steps."""
+        prep = self._prepare_tick(knobs, None)
+        try:
+            self._submit(prep)
+            for _ in range(int(prep["steps"]) + 2):
+                latent = self._tick_pipeline()
+                if latent is not None:
+                    return latent
+        except BaseException:
+            self.pipeline = self._build_pipeline(self._steps)
+            raise
+        self.pipeline = self._build_pipeline(self._steps)
+        raise RuntimeError(
+            f"one-shot: no latent after {int(prep['steps']) + 2} ticks"
+        )
 
     # ---- teardown ----------------------------------------------------------------
 

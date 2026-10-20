@@ -5,8 +5,10 @@ test_sa3_backend / test_sa3_stream_layout helpers) for the render; a bare
 StreamingSession for the request lifecycle; the wire framing by bytes.
 
 The load-bearing property: a one-shot version IS the ring's generation for
-the same seed and knobs (depth 1, the same step math and noise hooks), so
-the one-shot path changes no sound, only the cost.
+the same seed and knobs: the same SlotRequest on the same StreamPipeline at
+depth 1, so the one-shot path changes no sound, only the cost. The deleted
+hand-written denoise loop is kept below as the oracle the pipeline-driven
+render must match bit for bit.
 """
 
 from __future__ import annotations
@@ -26,7 +28,10 @@ from acestep.streaming.config import SessionConfig
 from acestep.streaming.events import OneshotFailed, OneshotReady
 from acestep.streaming.generator_backend import Capabilities
 from acestep.streaming.knobs import KnobState
+from acestep.engine import ode_steps
+from acestep.engine.stream import SlotRequest
 from acestep.streaming.oneshot import (
+    QUEUE_MAX,
     KeptLatents,
     OneshotError,
     OneshotResult,
@@ -95,6 +100,89 @@ def _ring_latent(b, knobs, ticks=12):
     pytest.fail("the ring produced nothing")
 
 
+@torch.no_grad()
+def _old_oneshot_denoise(b, seeds, knobs):
+    """ORACLE: the hand-written one-shot denoise loop (and its knob prep,
+    ``_oneshot_controls``) as they stood at ff880d47, before the one-shot
+    became the ring's own pipeline. Kept verbatim (``self`` -> ``b``; the
+    LoRA branches dropped: these fakes carry no LoRA manager)."""
+    shift = float(knobs.get("sa3_shift", 1.0))
+    if abs(shift - float(b.adapter.shift_alpha)) > 1e-3:
+        with b._control_lock:
+            b.adapter.shift_alpha = shift
+            b.pipeline.invalidate_schedule_cache()
+    b._apply_extension_controls(knobs)
+
+    steps = int(knobs.get("steps_override", b._steps))
+    if steps != b._steps:
+        b._steps = steps
+        b.pipeline = b._build_pipeline(steps)
+    denoise = float(knobs.get("sa3_denoise", 1.0))
+    with b._control_lock:
+        aux = b._active_bundle
+        frames = int(b._cond.latent_frames)
+    source = b._source_latent_btc
+    reqs = [
+        SlotRequest(
+            seed=int(s), denoise=denoise, source_latents=source,
+            aux_cond=aux, latent_frames=frames, sde_noise_seeded=True,
+        )
+        for s in seeds
+    ]
+    device, dtype = b.adapter.request_device_dtype(reqs[0])
+    pipe = b.pipeline
+    pipe._ensure_device(device, dtype)
+    sched = b.adapter.build_schedule(pipe.config, denoise, device, dtype).cpu()
+    noise = torch.cat([pipe._make_noise(r) for r in reqs], dim=0)
+    t_start = sched[0].item()
+    if source is not None and denoise < 1.0:
+        xt = t_start * noise + (1.0 - t_start) * source
+    else:
+        xt = noise.clone()
+    renoise = getattr(b.adapter, "make_renoise", None)
+    gens = []
+    for s in seeds:
+        g = torch.Generator(device=device)
+        g.manual_seed(int(s))
+        gens.append(g)
+    sde = b._sampler in ("sde", "pingpong")
+    B = len(reqs)
+    for i in range(sched.numel() - 1):
+        t = sched[i].item()
+        t_next = sched[i + 1].item()
+        vt = b.adapter.batched_forward(
+            xt, [t] * B, [None] * B, [None] * B, [None] * B, [aux] * B,
+        )
+        x0 = ode_steps.x0_from_vel(xt, vt, t)
+        if t_next <= 0:
+            xt = x0
+            break
+        if not sde:
+            xt = xt + (t_next - t) * vt
+            continue
+        rows = []
+        for bi, r in enumerate(reqs):
+            nz = renoise(r, i) if renoise is not None else None
+            if nz is None:
+                nz = torch.randn(
+                    (1,) + tuple(xt.shape[1:]), device=xt.device,
+                    dtype=xt.dtype, generator=gens[bi],
+                )
+            rows.append(nz.to(device=xt.device, dtype=xt.dtype))
+        xt = ode_steps.step_sde_renoise(xt, x0, t_next, torch.cat(rows, dim=0))
+    done = getattr(b.adapter, "on_slot_done", None)
+    if done is not None:
+        for bi, r in enumerate(reqs):
+            done(r, xt[bi:bi + 1])
+    return xt
+
+
+def _one(b, seed, knobs):
+    """One one-shot version through the production path (engine layout)."""
+    b._oneshot_pipeline_ready()
+    return b._oneshot_latent({**knobs, "seed": float(seed)})
+
+
 def _req(seeds=(3,), knobs=None, redo=None):
     data = {"request_id": "r", "seeds": list(seeds), "knobs": knobs or {}}
     if redo is not None:
@@ -110,24 +198,52 @@ def test_stock_oneshot_is_the_rings_generation():
     knobs = {**ring.read_knobs(), "steps_override": 4, "seed": 11}
     want = _ring_latent(ring, knobs)
     one, _ = _stock()
-    got = one._oneshot_denoise((11,), {**one.read_knobs(), "steps_override": 4})
+    got = _one(one, 11, {**one.read_knobs(), "steps_override": 4})
     assert torch.equal(got, want)
 
 
-def test_stock_versions_batch_on_dim0_and_match_single_renders():
+def test_pipeline_oneshot_is_the_deleted_loop_bit_for_bit():
+    """The oracle: the pipeline-driven version equals the old hand-written
+    loop exactly, stock and under a stream layout (its noise hooks), at
+    several seeds and denoise levels (a partial denoise starts from the
+    source)."""
+    for seed in (0, 5, 123):
+        for denoise in (1.0, 0.6):
+            old, _ = _stock()
+            want = _old_oneshot_denoise(old, (seed,), {**old.read_knobs(), "sa3_denoise": denoise})
+            new, _ = _stock()
+            got = _one(new, seed, {**new.read_knobs(), "sa3_denoise": denoise})
+            assert torch.equal(got, want), (seed, denoise)
+            torch.manual_seed(99)                     # the fixture's random source
+            lo, _c, _r = LT._layout_backend()
+            lo.adapter.dit = _XDit()
+            want = _old_oneshot_denoise(lo, (seed,), LT._knobs(lo, sa3_denoise=denoise))
+            torch.manual_seed(99)
+            ln, _c, _r = LT._layout_backend()
+            ln.adapter.dit = _XDit()
+            got = _one(ln, seed, LT._knobs(ln, sa3_denoise=denoise))
+            assert torch.equal(got, want), ("layout", seed, denoise)
+
+
+def test_render_oneshot_keeps_the_oracle_latent_per_version():
     b, dit = _stock()
     store = KeptLatents()
     res = b.render_oneshot(_req(seeds=(1, 2, 3)), store=store)
-    assert max(dit.batches) == 3                      # one call per step for all three
-    singles = []
-    for s in (1, 2, 3):
-        b1, _ = _stock()
-        singles.append(b1._oneshot_denoise((s,), b1.read_knobs()))
+    assert set(dit.batches) == {1}                    # one slot: depth 1, batch 1
+    assert b.pipeline.depth == 1
     for i, key in enumerate(res.ids):
-        kept = store.get(key).latent
-        np.testing.assert_allclose(
-            kept.numpy(), singles[i].movedim(1, 2).numpy(), rtol=1e-5, atol=1e-6,
-        )
+        ref, _ = _stock()
+        want = _old_oneshot_denoise(ref, (res.seeds[i],), ref.read_knobs())
+        assert torch.equal(store.get(key).latent, want.movedim(1, 2))
+
+
+def test_oneshot_runs_at_depth_one_and_a_steps_change_rebuilds_the_pipeline():
+    b, _ = _stock(depth=3)
+    before = b.pipeline
+    b.render_oneshot(_req(seeds=(1,), knobs={"steps_override": 4}), store=KeptLatents())
+    assert b.pipeline is before and b.pipeline.depth == 1
+    b.render_oneshot(_req(seeds=(1,), knobs={"steps_override": 2}), store=KeptLatents())
+    assert b._steps == 2 and b.pipeline is not before and b.pipeline.depth == 1
 
 
 def test_layout_oneshot_is_the_rings_generation():
@@ -138,7 +254,7 @@ def test_layout_oneshot_is_the_rings_generation():
     want = _ring_latent(ring, LT._knobs(ring, seed=5, sa3_denoise=1.0))
     one, _ctx, _ = LT._layout_backend()
     one.adapter.dit = _XDit()
-    got = one._oneshot_denoise((5,), LT._knobs(one, sa3_denoise=1.0))
+    got = _one(one, 5, LT._knobs(one, sa3_denoise=1.0))
     assert torch.equal(got, want)
 
 
@@ -157,7 +273,7 @@ def test_layout_renoise_hook_drives_every_step():
     calls.clear()
     rt2 = LT._LayoutRuntime({"make_renoise": renoise})
     one, _, _ = LT._layout_backend(runtime=rt2)
-    got = one._oneshot_denoise((4,), LT._knobs(one, sa3_denoise=1.0))
+    got = _one(one, 4, LT._knobs(one, sa3_denoise=1.0))
     assert torch.equal(got, want)
     assert calls == ring_calls == [(4, 0)]           # steps=2: one re-noise
 
@@ -192,25 +308,57 @@ def test_result_is_int16_versions_by_streams_trimmed_to_the_playable_window():
     assert len(set(res.ids)) == 2 and len(store) == 2
 
 
-def test_batch_decode_is_used_when_the_codec_has_it():
-    class _Batch(LT._SliceCodec):
-        def __init__(self):
-            super().__init__()
-            self.batches = []
+class _WindowSliceCodec(LT._SliceCodec):
+    """A windowed codec (SAME-L): records every decode_window call; its
+    full decodes must never be reached from the one-shot."""
 
-        def decode_full_batch(self, latents, *, decode_seed=None):
-            self.batches.append((tuple(latents.shape), decode_seed))
-            return torch.stack([
-                torch.full((2, LT.N44), float(latents[i].mean()) * 0.1)
-                for i in range(latents.shape[0])
-            ])
+    def __init__(self):
+        super().__init__()
+        self.windows: list = []
 
-    codec = _Batch()
+    def decode_window(self, latent_bct, start, n):
+        self.windows.append((int(start), int(n)))
+        return torch.full((2, int(n)), float(latent_bct.mean()) * 0.1)
+
+    def decode_full(self, latent_bct, *, decode_seed=None):
+        raise AssertionError("one-shot called decode_full")
+
+    def decode_full_batch(self, latents, *, decode_seed=None):
+        raise AssertionError("one-shot called decode_full_batch")
+
+
+def test_oneshot_decodes_through_decode_window_over_the_whole_song():
+    codec = _WindowSliceCodec()
     b, _, _ = LT._layout_backend(codec=codec)
-    res = b.render_oneshot(_req(seeds=(8, 9)), store=KeptLatents())
-    assert codec.batches == [((3, LT.C, LT.L), 8), ((3, LT.C, LT.L), 9)]
-    assert codec.decodes == 0
-    assert res.pcm.shape[:2] == (2, 3)
+    store = KeptLatents()
+    res = b.render_oneshot(_req(seeds=(8, 9)), store=store)
+    assert codec.windows == [(0, LT.L * 4096)] * (2 * LT.N_STREAMS)
+    total = round(b.playable_duration_s() * DELIVERY_SAMPLE_RATE)
+    assert res.pcm.shape == (2, LT.N_STREAMS, total, 2)
+    lat = store.get(res.ids[0]).latent
+    mean = float(lat[..., LT.L:2 * LT.L].mean()) * 0.1
+    # a constant through the 44.1 -> 48 kHz filter: within one LSB
+    assert abs(int(res.pcm[0, 1, 100, 0]) - int(to_int16(np.float32(mean)))) <= 1
+
+
+def test_held_streams_come_from_the_layouts_render_stream_in_both_paths():
+    """A stream the layout renders itself (a held take) is that render, in
+    a ring window and in a one-shot alike: the codec decodes the others."""
+    take = np.full((10 ** 6, 2), 0.25, np.float32)
+    rt = LT._LayoutRuntime({"render_stream": lambda k, part: take if k == 0 else None})
+    codec = _WindowSliceCodec()
+    b, _, _ = LT._layout_backend(runtime=rt, codec=codec)
+    res = b.render_oneshot(_req(seeds=(1,)), store=KeptLatents())
+    assert len(codec.windows) == LT.N_STREAMS - 1
+    assert (res.pcm[0, 0] == to_int16(np.float32(0.25))).all()
+    codec.windows.clear()
+    audio = b._render_stream_audio(
+        torch.zeros(1, LT.N_STREAMS * LT.L, LT.C), 588, 4096,
+        start48=0, n48=480, lead48=640,
+    )
+    assert codec.windows == [(588, 4096)] * (LT.N_STREAMS - 1)
+    assert audio.shape == (LT.N_STREAMS, 480, 2)
+    assert torch.equal(audio[0], torch.full((480, 2), 0.25))
 
 
 def test_version_controls_set_each_versions_knobs():
@@ -346,10 +494,11 @@ class _FakeBackend:
                                                  "pack": 0.1}, 10 / 48000)
 
 
-def _session(backend, render_only=False):
+def _session(backend, render_only=True):
     s = StreamingSession.__new__(StreamingSession)
     s.backend = backend
     s.config = SessionConfig(render_only=render_only)
+    s._knob_specs_by_name = {k.name: k for k in sa3_knob_specs()}
     s._bounces = []
     s._oneshots = []
     s._oneshot_wake = threading.Event()
@@ -467,19 +616,84 @@ def test_command_and_config_are_registered():
 def test_sa3_declares_oneshot():
     b, _ = _stock()
     assert b.capabilities().oneshot is True
+    assert b.capabilities().oneshot_redo is False      # no layout, no hold_streams
+    rt, _ = _hold_runtime()
+    lb, _, _ = LT._layout_backend(runtime=rt)
+    assert lb.capabilities().oneshot_redo is True
+    lb2, _, _ = LT._layout_backend()
+    assert lb2.capabilities().oneshot_redo is False
 
 
-def test_batch_decode_out_of_memory_falls_back_to_one_stream_at_a_time(monkeypatch):
-    class _Oom(LT._SliceCodec):
-        def decode_full_batch(self, latents, *, decode_seed=None):
-            raise torch.cuda.OutOfMemoryError("too big")
+# ---- render-only only, knob contract, bounded queue -----------------------------------
 
-    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
-    codec = _Oom()
-    b, _, _ = LT._layout_backend(codec=codec)
-    res = b.render_oneshot(_req(seeds=(1, 2)), store=KeptLatents())
-    assert codec.decodes == 2 * LT.N_STREAMS
-    assert res.pcm.shape[:2] == (2, LT.N_STREAMS)
+
+def test_a_ring_session_refuses_oneshot_and_does_not_advertise_it():
+    backend = _FakeBackend()
+    backend._caps = Capabilities(oneshot=True, oneshot_redo=True)
+    ring, events = _session(backend, render_only=False)
+    ring.oneshot({"request_id": "a", "seeds": [1]})
+    assert isinstance(events[0], OneshotFailed) and "render_only" in events[0].error
+    assert ring._oneshots == [] and backend.seen == []
+    caps = ring.capabilities_payload()
+    assert caps["oneshot"] is False and caps["oneshot_redo"] is False
+    ro, _ = _session(backend, render_only=True)
+    caps = ro.capabilities_payload()
+    assert caps["oneshot"] is True and caps["oneshot_redo"] is True
+
+
+def test_unclamped_knobs_are_clamped_by_the_rings_contract():
+    backend = _FakeBackend()
+    s, events = _session(backend)
+    s.oneshot({"request_id": "a", "seeds": [1],
+               "knobs": {"steps_override": 99, "sa3_shift": 0.01, "sa3_denoise": 3.0}})
+    s._service_oneshots()
+    assert isinstance(events[0], OneshotReady)
+    knobs = backend.seen[0].knobs
+    assert knobs["steps_override"] == 16.0              # the ring's steps_override max
+    assert knobs["sa3_shift"] == 0.25 and knobs["sa3_denoise"] == 1.0
+    s.oneshot({"request_id": "b", "seeds": [1], "knobs": {"steps_override": 0.2}})
+    s._service_oneshots()
+    assert backend.seen[1].knobs["steps_override"] == 1.0
+
+
+def test_unknown_knobs_are_refused():
+    backend = _FakeBackend()
+    s, events = _session(backend)
+    s.oneshot({"request_id": "a", "seeds": [1], "knobs": {"no_such_knob": 1}})
+    assert isinstance(events[0], OneshotFailed) and "no_such_knob" in events[0].error
+    assert s._oneshots == []
+
+
+def test_a_full_queue_refuses_with_queue_full_never_a_silent_drop():
+    backend = _FakeBackend()
+    s, events = _session(backend)
+    for i in range(QUEUE_MAX):
+        s.oneshot({"request_id": f"r{i}", "seeds": [1]})
+    assert events == [] and len(s._oneshots) == QUEUE_MAX == 4
+    s.oneshot({"request_id": "late", "seeds": [1]})
+    assert len(events) == 1 and isinstance(events[0], OneshotFailed)
+    assert events[0].request_id == "late" and events[0].reason == "queue_full"
+    assert [r.request_id for r in s._oneshots] == ["r0", "r1", "r2", "r3"]
+    s._service_oneshots()
+    assert [e.request_id for e in events[1:]] == ["r0", "r1", "r2", "r3"]
+    s.oneshot({"request_id": "again", "seeds": [1]})   # room again after answers
+    assert s._oneshots[0].request_id == "again"
+
+
+def test_close_clears_the_queue():
+    backend = _FakeBackend()
+    s, _ = _session(backend)
+    s.oneshot({"request_id": "a", "seeds": [1]})
+    assert len(s._oneshots) == 1
+    s._drop_fetched_loras = lambda: None
+    s._close_analysis_taps = lambda: None
+    s.bus.close = lambda: None
+    s.audio_eng = SimpleNamespace(stop=lambda: None)
+    s.stream = None
+    s.session = None
+    s.closed = threading.Event()
+    s.close()
+    assert s._oneshots == []
 
 
 # ---- which DiT served each request (song_gen_20261019 lane D) ---------------------------
