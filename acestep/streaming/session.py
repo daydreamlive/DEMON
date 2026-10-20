@@ -1769,6 +1769,7 @@ class StreamingSession:
                 fixture_name=fixture_name,
                 initial_buffer=src_np,
                 source_epoch=state.source_epoch,
+                kept=keep,
             ))
             logger.info(
                 "source_swap_complete backend_owned duration_s={:.1f}",

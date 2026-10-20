@@ -512,6 +512,19 @@ COMMANDS: tuple = (
                                   "duration + buffer. Absent/ignored = the "
                                   "legacy fixed-geometry swap (source padded/"
                                   "truncated into the old window)."),
+            FieldSpec("pcm", "dict",
+                      description="Describes a compact binary frame: "
+                                  "{encoding: f32le|s16le, channels: the "
+                                  "full channel count, present: the "
+                                  "channels the frame carries, in its "
+                                  "order (default all)}. The frame's <II "
+                                  "header gives its own channel count, "
+                                  "which must equal len(present); every "
+                                  "other channel is silence, and s16le "
+                                  "samples read as value / 32768. Honored "
+                                  "only when ready's capabilities declare "
+                                  "compact_pcm. Absent = the full float32 "
+                                  "frame."),
         ),
         binary=True,
         binary_optional=True,
@@ -832,10 +845,20 @@ EVENTS: tuple = (
                                   "false hides the steering surface (the "
                                   "steer_*/man_* knobs are absent from "
                                   "the manifest too)."),
+            FieldSpec("window", "enum", options=("silent",),
+                      description="Present only for a config with "
+                                  "derived_windows: the initial buffer is "
+                                  "silent, so NO binary frame follows and "
+                                  "the client builds frames × channels of "
+                                  "zeros itself."),
+            FieldSpec("frames", "int",
+                      description="The initial buffer's frame count, sent "
+                                  "with window."),
         ),
         binary_follow=True,
         description="First JSON after the upload handshake, followed by the "
-                    "binary float16 initial buffer.",
+                    "binary float16 initial buffer (unless window says the "
+                    "client builds it).",
     ),
     EventSpec(
         "error",
@@ -900,10 +923,21 @@ EVENTS: tuple = (
                       description="Source generation counter after this swap; "
                                   "write_audio sends targeting the old source "
                                   "are rejected."),
+            FieldSpec("window", "enum", options=("silent", "kept"),
+                      description="Present only for a config with "
+                                  "derived_windows: NO binary frame follows. "
+                                  "silent = the new buffer is frames × "
+                                  "channels of zeros; kept = the swap left "
+                                  "the playing buffer as it is, so the "
+                                  "client keeps its own."),
+            FieldSpec("frames", "int",
+                      description="The new buffer's frame count, sent with "
+                                  "window."),
         ),
         binary_follow=True,
         description="Swap accepted; a binary float16 replacement buffer follows "
-                    "the JSON.",
+                    "the JSON (unless window says the client builds or keeps "
+                    "it).",
     ),
     EventSpec(
         "swap_failed",

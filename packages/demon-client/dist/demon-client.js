@@ -1470,6 +1470,29 @@ function packPcmFrame(interleaved, channels) {
   combined.set(pcm, hdr.byteLength);
   return combined;
 }
+function packCompactPcmFrame(interleaved, channels) {
+  const samples = interleaved.length / channels;
+  const present = [];
+  for (let c = 0; c < channels; c++)
+    for (let i = c; i < interleaved.length; i += channels)
+      if (interleaved[i] !== 0) {
+        present.push(c);
+        break;
+      }
+  if (!present.length) present.push(0);
+  const k = present.length;
+  const frame = new Uint8Array(8 + samples * k * 2);
+  const dv = new DataView(frame.buffer);
+  dv.setUint32(0, k, true);
+  dv.setUint32(4, samples, true);
+  const pcm = new Int16Array(frame.buffer, 8, samples * k);
+  for (let f = 0; f < samples; f++)
+    for (let j = 0; j < k; j++) {
+      const v = Math.round(interleaved[f * channels + present[j]] * 32768);
+      pcm[f * k + j] = v > 32767 ? 32767 : v < -32768 ? -32768 : v;
+    }
+  return { frame, present };
+}
 function makeAttemptId() {
   try {
     if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -1690,6 +1713,16 @@ var RemoteBackend = class extends EventTarget {
         closeReason: ""
       });
       let phase = "config";
+      const begin = (initial) => {
+        this.initialBuffer = initial;
+        this.ready = true;
+        this._updateTrace({ readyAt: Date.now(), phase: "ready" });
+        phase = "streaming";
+        this._pending = null;
+        resolve(this);
+        this.dispatchEvent(new CustomEvent("ready"));
+        this._updateTrace({ phase: "streaming" });
+      };
       ws.onopen = () => {
         if (!this._pending) return;
         this._updateTrace({ openAt: Date.now(), phase: "open" });
@@ -1749,6 +1782,8 @@ var RemoteBackend = class extends EventTarget {
             if (typeof msg.source_epoch === "number")
               this._sliceEpoch = msg.source_epoch;
             phase = "initial-buffer";
+            if (msg.window === "silent")
+              begin(new Float32Array((msg.frames ?? 0) * this.channels));
           } catch (e) {
             this._updateTrace({ errorAt: Date.now(), phase: "error" });
             reject(e);
@@ -1756,30 +1791,13 @@ var RemoteBackend = class extends EventTarget {
           return;
         }
         if (phase === "initial-buffer") {
-          const u162 = new Uint16Array(ev.data);
-          this.initialBuffer = float16ArrayToFloat32(u162);
-          this.ready = true;
-          this._updateTrace({ readyAt: Date.now(), phase: "ready" });
-          phase = "streaming";
-          this._pending = null;
-          resolve(this);
-          this.dispatchEvent(new CustomEvent("ready"));
-          this._updateTrace({ phase: "streaming" });
+          begin(float16ArrayToFloat32(new Uint16Array(ev.data)));
           return;
         }
         if (this._pendingSwap && ev.data instanceof ArrayBuffer) {
-          const u162 = new Uint16Array(ev.data);
-          const interleaved = float16ArrayToFloat32(u162);
           const meta = this._pendingSwap;
           this._pendingSwap = null;
-          this.duration = meta.duration;
-          this.channels = meta.channels;
-          this._sliceEpoch = meta.source_epoch ?? this._sliceEpoch + 1;
-          this.dispatchEvent(
-            new CustomEvent("swap_ready", {
-              detail: { ...meta, interleaved }
-            })
-          );
+          this._swapped(meta, float16ArrayToFloat32(new Uint16Array(ev.data)));
           return;
         }
         if (this._pendingOneshot.waiting && ev.data instanceof ArrayBuffer) {
@@ -1856,7 +1874,10 @@ var RemoteBackend = class extends EventTarget {
               );
               break;
             case "swap_ready":
-              this._pendingSwap = msg;
+              if (msg.window === "silent")
+                this._swapped(msg, new Float32Array((msg.frames ?? 0) * msg.channels));
+              else if (msg.window === "kept") this._swapped(msg, null);
+              else this._pendingSwap = msg;
               break;
             case "swap_failed":
               this.dispatchEvent(
@@ -2329,6 +2350,37 @@ var RemoteBackend = class extends EventTarget {
    * swap_source; the caller builds the typed command so the header is
    * contract-checked at compile time.
    */
+  /** A swap landed: the new geometry and source epoch, then `swap_ready`
+   *  with the new buffer (null: the swap kept the playing one). */
+  _swapped(meta, interleaved) {
+    this.duration = meta.duration;
+    this.channels = meta.channels;
+    this._sliceEpoch = meta.source_epoch ?? this._sliceEpoch + 1;
+    this.dispatchEvent(
+      new CustomEvent("swap_ready", { detail: { ...meta, interleaved } })
+    );
+  }
+  /**
+   * `sendSwapSource` as a compact frame where the server takes one
+   * (`ready.capabilities.compact_pcm`): only the channels with audio, as
+   * 16-bit samples, which the server expands back to the same full
+   * source. On a server without it, the full float32 frame. Same reply.
+   */
+  sendSwapSourceCompact(interleaved, channels, tags) {
+    if (!this.capabilities?.compact_pcm) return this.sendSwapSource(interleaved, channels, tags);
+    if (this.ws?.readyState !== this._wsOpen) return false;
+    const { frame, present } = packCompactPcmFrame(interleaved, channels);
+    const msg = { type: "swap_source", pcm: { encoding: "s16le", channels, present } };
+    if (tags) msg.tags = tags;
+    try {
+      this.ws.send(JSON.stringify(msg));
+      this.ws.send(frame);
+      return true;
+    } catch (e) {
+      console.error("[protocol] swap_source failed:", e);
+      return false;
+    }
+  }
   sendAudioFrame(msg, interleaved, channels) {
     if (this.ws?.readyState !== this._wsOpen) return false;
     try {
@@ -4473,6 +4525,7 @@ export {
   notesToSmf,
   oneshotCommand,
   oneshotLatentFrame,
+  packCompactPcmFrame,
   playheadForNotes,
   renderOneshot,
   resolveControlDescription,

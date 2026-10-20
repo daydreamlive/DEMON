@@ -180,6 +180,12 @@ class Capabilities:
     # when it builds ``ready.capabilities``, so clients gate the "drag MIDI
     # out" affordance on what THIS pod can actually do.
     midi_transcribe: bool = False
+    # Server-level as well: the WS adapter decodes a ``swap_source`` frame
+    # described by its ``pcm`` field (16-bit samples, and only the channels
+    # that carry audio; the rest are silence), so a client holding one
+    # stereo pair of a wide layout sends that pair, not every channel as
+    # float32. Backends leave it False; the adapter sets the wire bit.
+    compact_pcm: bool = False
     # The ``bounce`` command: the backend regenerates its whole fixed
     # window every generation and can hand back a full-window render of
     # a generation that started after a given point. A backend that

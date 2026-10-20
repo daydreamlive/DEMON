@@ -317,6 +317,8 @@ export interface SwapSourceCommand {
   use_server_source?: boolean;
   /** Opt-in swap-resize: the render window (s) to re-derive for the new source, on backends whose geometry is otherwise frozen at session create (SA3). Honored only when ready's capabilities declare swap_resize — the session then re-conditions at the new duration and swap_ready carries the RESIZED duration + buffer. Absent/ignored = the legacy fixed-geometry swap (source padded/truncated into the old window). */
   duration_s?: number | null;
+  /** Describes a compact binary frame: {encoding: f32le|s16le, channels: the full channel count, present: the channels the frame carries, in its order (default all)}. The frame's <II header gives its own channel count, which must equal len(present); every other channel is silence, and s16le samples read as value / 32768. Honored only when ready's capabilities declare compact_pcm. Absent = the full float32 frame. */
+  pcm?: Record<string, unknown>;
 }
 
 export interface WriteAudioCommand {
@@ -424,6 +426,10 @@ export interface ReadyEvent {
   manual_slot_cap?: number;
   /** True when the session's checkpoint has a reachable steering-vector bundle; false hides the steering surface (the steer_*\/man_* knobs are absent from the manifest too). */
   steering_available?: boolean;
+  /** Present only for a config with derived_windows: the initial buffer is silent, so NO binary frame follows and the client builds frames × channels of zeros itself. */
+  window?: "silent";
+  /** The initial buffer's frame count, sent with window. */
+  frames?: number;
 }
 
 export interface ErrorEvent {
@@ -473,6 +479,10 @@ export interface SwapReadyEvent {
   fixture_name?: string | null;
   /** Source generation counter after this swap; write_audio sends targeting the old source are rejected. */
   source_epoch?: number;
+  /** Present only for a config with derived_windows: NO binary frame follows. silent = the new buffer is frames × channels of zeros; kept = the swap left the playing buffer as it is, so the client keeps its own. */
+  window?: "silent" | "kept";
+  /** The new buffer's frame count, sent with window. */
+  frames?: number;
 }
 
 export interface SwapFailedEvent {
@@ -721,6 +731,7 @@ export interface SessionConfigPayload {
   text_only?: boolean;
   render_only?: boolean;
   telemetry_version?: number | null;
+  derived_windows?: boolean;
   /** Fixed generation duration for sa3 sessions, seconds. Absent or null derives it from the uploaded source audio length (the audio-to-audio anchor); SA3 conditioning is captured per (prompt, duration), so this is fixed for the session lifetime. */
   sa3_duration_s?: number | null;
   /** Song-length label (seconds_total) for this sa3 session. Absent or null keeps the server default (a label longer than the loop: a crop of a longer file, so the loop never composes an ending). 0 labels the render with its own length, the upstream whole-file semantics: a one-shot decays to silence inside the loop. Fixed for the session lifetime. */
