@@ -1,5 +1,5 @@
-"""SAME-L full-song decoder graph: the FP16 attention-projection rewrite and
-the builder's routing between it and upstream's window graph.
+"""SAME-L decoder graph: the FP16 attention-projection rewrite and the
+builder applying it to every SAME-L profile.
 
 CPU-only: a small synthetic graph with upstream's per-block attention shape
 (Cast(FP32) -> to_qkv MatMul ... Reshape -> to_out MatMul -> Cast(FP16)).
@@ -147,31 +147,29 @@ def test_derived_graph_is_cached_by_recipe_and_source_hash(tmp_path, monkeypatch
     src = tmp_path / "dec_fp16.onnx"
     onnx.save(_model(), str(src))
     sha = "ab" * 32
-    out = sa3_build._derive_same_l_full_onnx(str(src), str(tmp_path / "eng"), sha)
-    assert out.endswith(f"same_l_dec_{sa3_build.SAME_L_FULL_RECIPE}_{sha[:12]}.onnx")
+    out = sa3_build._derive_same_l_onnx(str(src), str(tmp_path / "eng"), sha)
+    assert out.endswith(f"same_l_dec_{sa3_build.SAME_L_DECODE_RECIPE}_{sha[:12]}.onnx")
     derived = onnx.load(out)
     assert any(n.name.endswith("demon_cast_fp32") for n in derived.graph.node)
     assert sorted(p.name for p in (tmp_path / "eng" / "_onnx").iterdir()) == [
-        f"same_l_dec_{sa3_build.SAME_L_FULL_RECIPE}_{sha[:12]}.onnx"]
+        f"same_l_dec_{sa3_build.SAME_L_DECODE_RECIPE}_{sha[:12]}.onnx"]
 
     def boom(_model):
         raise AssertionError("cached graph must not be re-derived")
 
     monkeypatch.setattr(sa3_build, "_same_l_attn_proj_fp16", boom)
-    assert sa3_build._derive_same_l_full_onnx(str(src), str(tmp_path / "eng"), sha) == out
+    assert sa3_build._derive_same_l_onnx(str(src), str(tmp_path / "eng"), sha) == out
 
 
-@pytest.mark.parametrize("profile, full", [((32, 56, 96), False), ((32, 1292, 3230), True)])
-def test_builder_routes_only_full_song_profiles_through_the_rewrite(
-    tmp_path, monkeypatch, profile, full,
-):
+@pytest.mark.parametrize("profile", [(32, 56, 96), (32, 1292, 3230)])
+def test_builder_routes_every_profile_through_the_rewrite(tmp_path, monkeypatch, profile):
     upstream = tmp_path / "dec_fp16.onnx"
     upstream.write_bytes(b"upstream graph bytes")
     calls = {}
     monkeypatch.setattr(sa3_build, "_fetch_onnx", lambda files: str(upstream))
     monkeypatch.setattr(sa3_build, "_register_same_plugin", lambda: None)
     monkeypatch.setattr(
-        sa3_build, "_derive_same_l_full_onnx",
+        sa3_build, "_derive_same_l_onnx",
         lambda src, out_dir, sha: calls.setdefault("derived", (src, sha)) and "derived.onnx",
     )
     monkeypatch.setattr(
@@ -188,41 +186,46 @@ def test_builder_routes_only_full_song_profiles_through_the_rewrite(
         output_dir=str(tmp_path / "eng"), config=cfg, env=env,
     )
     assert status == "OK"
-    # the directory name the runtime finders match is unchanged
+    # the directory name the runtime finder matches is unchanged
     assert path.endswith(f"{cfg.engine_name()}.trt")
-    # identity hashes upstream's graph in both cases
+    # identity hashes upstream's graph; the build compiles the derived one
     assert calls["meta"]["onnx_path"] == str(upstream.resolve())
-    if full:
-        assert calls["build"]["onnx_path"] == "derived.onnx"
-        assert calls["derived"][0] == str(upstream)
-        assert calls["derived"][1] == calls["meta"]["onnx_sha256"]
-        assert calls["meta"]["component"] == (
-            f"same_l_decode_full_{sa3_build.SAME_L_FULL_RECIPE}")
-        assert "full-song" in label
-    else:
-        assert calls["build"]["onnx_path"] == str(upstream)
-        assert "derived" not in calls
-        assert calls["meta"]["component"] == "same_l_decode_window"
+    assert calls["build"]["onnx_path"] == "derived.onnx"
+    assert calls["derived"][0] == str(upstream)
+    assert calls["derived"][1] == calls["meta"]["onnx_sha256"]
+    assert calls["meta"]["component"] == f"same_l_decode_{sa3_build.SAME_L_DECODE_RECIPE}"
+    assert "fp16 attn projections" in label
 
 
-def test_full_engine_built_before_the_rewrite_is_rebuilt(tmp_path, monkeypatch):
-    """An engine whose sidecar names the plain window component (built from
-    upstream's graph as published) no longer matches at a full profile."""
+def test_no_window_or_full_class_remains():
+    assert not hasattr(sa3_build, "SAME_L_FULL_MIN_MAX_T")
+    assert not hasattr(sa3_build, "SAME_L_FULL_RECIPE")
+    assert not hasattr(sa3_build, "_derive_same_l_full_onnx")
+
+
+@pytest.mark.parametrize("profile", [(32, 56, 96), (32, 1292, 3230)])
+@pytest.mark.parametrize(
+    "old_component", ["same_l_decode_window", "same_l_decode_full_fp16proj1"])
+def test_engine_built_with_an_older_component_is_rebuilt(
+    tmp_path, monkeypatch, profile, old_component,
+):
+    """An engine whose sidecar names an older component (upstream's graph as
+    published, or the full-only rewrite) no longer matches, at any profile."""
     upstream = tmp_path / "dec_fp16.onnx"
     upstream.write_bytes(b"upstream graph bytes")
     env = {"packages": {"tensorrt": "10.x"}, "active_gpu": {}}
-    cfg = sa3_build.SameLWindowBuildConfig(32, 1292, 3230)
+    cfg = sa3_build.SameLWindowBuildConfig(*profile)
     name = cfg.engine_name()
     eng = tmp_path / name / f"{name}.trt"
     eng.parent.mkdir(parents=True)
     eng.write_bytes(b"")
     old = sa3_build._expected_metadata(
-        component="same_l_decode_window", onnx_path=str(upstream), config=cfg, env=env)
+        component=old_component, onnx_path=str(upstream), config=cfg, env=env)
     sa3_build._write_metadata(engine_path=str(eng), expected=old, env=env)
     built = []
     monkeypatch.setattr(sa3_build, "_fetch_onnx", lambda files: str(upstream))
     monkeypatch.setattr(sa3_build, "_register_same_plugin", lambda: None)
-    monkeypatch.setattr(sa3_build, "_derive_same_l_full_onnx", lambda *a: "derived.onnx")
+    monkeypatch.setattr(sa3_build, "_derive_same_l_onnx", lambda *a: "derived.onnx")
     monkeypatch.setattr(sa3_build, "_build_strongly_typed_engine", lambda **kw: built.append(kw))
     *_, status = sa3_build._build_same_l_window_engine(
         output_dir=str(tmp_path), config=cfg, env=env)
