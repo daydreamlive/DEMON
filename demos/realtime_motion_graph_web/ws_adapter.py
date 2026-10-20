@@ -95,6 +95,7 @@ from acestep.streaming import registry as session_registry
 from acestep.streaming.config import DEFAULT_FAMILY
 from acestep.streaming.source import (
     _decode_audio_msg,
+    _decode_compact_pcm,
     _load_clip_waveform,
     _load_known_fixture_waveform,
     _normalize_time_signature,
@@ -724,15 +725,29 @@ _MIDI_TRANSCRIBE_POOL = ThreadPoolExecutor(
 )
 
 
-def _capabilities_with_midi(caps: dict) -> dict:
-    """Overlay the server-level midi_transcribe bit onto the backend mask
-    (see Capabilities.midi_transcribe)."""
+def _server_capabilities(caps: dict) -> dict:
+    """Overlay the server-level bits onto the backend mask: midi_transcribe
+    (the transcriber probe) and compact_pcm (this adapter decodes a
+    ``swap_source`` frame described by ``pcm``). See Capabilities."""
+    caps["compact_pcm"] = True
     try:
         from acestep.analysis.midi_transcribe import transcriber_available
         caps["midi_transcribe"] = bool(transcriber_available())
     except Exception:  # probe must never break the handshake
         caps["midi_transcribe"] = False
     return caps
+
+
+def _derived_window(config_dict: dict, buf: np.ndarray, kept: bool = False) -> str | None:
+    """The window frame a ``derived_windows`` client builds itself instead
+    of receiving: "kept" (a swap that leaves the playing buffer as it is),
+    "silent" (all zeros, built as ``frames`` × channels of silence), or None
+    (send it). Without ``derived_windows`` in the config, always None."""
+    if not config_dict.get("derived_windows"):
+        return None
+    if kept:
+        return "kept"
+    return None if np.any(buf) else "silent"
 
 
 def _run_midi_transcribe(waveform, request_id: str, send_json) -> None:
@@ -1604,6 +1619,7 @@ def _handle_client_body(
         # Mirror the new buffer on this subscriber so subsequent
         # slices delta against the right basis.
         new_src_np = event.initial_buffer
+        window = _derived_window(config_dict, new_src_np, kept=event.kept)
         try:
             with send_lock:
                 ws.send(json.dumps({
@@ -1616,9 +1632,14 @@ def _handle_client_body(
                     "time_signature": event.time_signature,
                     "fixture_name": event.fixture_name,
                     "source_epoch": event.source_epoch,
+                    **({"window": window, "frames": len(new_src_np)} if window else {}),
                 }))
-                chunked_ws_send(ws, new_src_np.astype(np.float16).tobytes())
-                codec.replace_mirror(new_src_np)
+                if window is None:
+                    chunked_ws_send(ws, new_src_np.astype(np.float16).tobytes())
+                # A kept buffer is the one the client plays and this mirror
+                # already tracks; any other becomes the new delta basis.
+                if window != "kept":
+                    codec.replace_mirror(new_src_np)
                 if event.stems is not None:
                     send_stem_payload(
                         ws,
@@ -1755,6 +1776,7 @@ def _handle_client_body(
     # synchronously by ``StreamingSession.create`` and have nothing to
     # fan out yet. After this block the bus subscriber takes over.
     src_np = streaming.initial_buffer
+    window = _derived_window(config_dict, src_np)
     ws.send(json.dumps({
         "type": "ready",
         "duration": len(src_np) / SAMPLE_RATE,
@@ -1777,7 +1799,7 @@ def _handle_client_body(
         # fields above stay as-is for old clients; geometry is the
         # backend-declared truth new clients read instead of constants.
         "geometry": streaming.geometry_payload(),
-        "capabilities": _capabilities_with_midi(streaming.capabilities_payload()),
+        "capabilities": _server_capabilities(streaming.capabilities_payload()),
         # Localhost side services this server proxies at /tools/<name>/
         # (healthy ones only; cached, no I/O here).
         "tools": tool_proxy.healthy_tools(),
@@ -1785,8 +1807,10 @@ def _handle_client_body(
         # Activation-steering surface (manual_slot_count /
         # manual_slot_cap / steering_available).
         **streaming.steering_payload(),
+        **({"window": window, "frames": len(src_np)} if window else {}),
     }))
-    chunked_ws_send(ws, src_np.astype(np.float16).tobytes())
+    if window is None:
+        chunked_ws_send(ws, src_np.astype(np.float16).tobytes())
     if streaming.initial_upload_stems is not None:
         send_stem_payload(
             ws,
@@ -2144,8 +2168,14 @@ def _handle_client_body(
                     try:
                         # Every channel: a stream layout's encode_source
                         # reads them; the session clips to stereo for
-                        # everything else.
-                        wf = _decode_audio_msg(audio_msg, max_channels=None)
+                        # everything else. A ``pcm`` field describes a
+                        # compact frame (16-bit, only the channels with
+                        # audio), expanded here to the same full tensor.
+                        pcm = data.get("pcm")
+                        wf = (
+                            _decode_compact_pcm(audio_msg, pcm) if pcm is not None
+                            else _decode_audio_msg(audio_msg, max_channels=None)
+                        )
                     except Exception as exc:
                         logger.opt(exception=True).error(
                             "swap_source_decode_failed origin={} error={}",

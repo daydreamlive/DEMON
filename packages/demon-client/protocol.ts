@@ -143,6 +143,35 @@ function packPcmFrame(interleaved: Float32Array, channels: number): Uint8Array {
   return combined;
 }
 
+/** A compact frame (the server's `compact_pcm`): only the channels with
+ *  audio, as 16-bit samples (value × 32768, clamped), behind the same `<II`
+ *  header carrying the frame's own channel count. `present` lists those
+ *  channels, for the command's `pcm` field. A silent buffer sends its first
+ *  channel, so the frame is never empty. */
+export function packCompactPcmFrame(interleaved: Float32Array, channels: number): { frame: Uint8Array; present: number[] } {
+  const samples = interleaved.length / channels;
+  const present: number[] = [];
+  for (let c = 0; c < channels; c++)
+    for (let i = c; i < interleaved.length; i += channels)
+      if (interleaved[i] !== 0) {
+        present.push(c);
+        break;
+      }
+  if (!present.length) present.push(0);
+  const k = present.length;
+  const frame = new Uint8Array(8 + samples * k * 2);
+  const dv = new DataView(frame.buffer);
+  dv.setUint32(0, k, true);
+  dv.setUint32(4, samples, true);
+  const pcm = new Int16Array(frame.buffer, 8, samples * k);
+  for (let f = 0; f < samples; f++)
+    for (let j = 0; j < k; j++) {
+      const v = Math.round(interleaved[f * channels + present[j]] * 32768);
+      pcm[f * k + j] = v > 32767 ? 32767 : v < -32768 ? -32768 : v;
+    }
+  return { frame, present };
+}
+
 // ── RemoteBackend ──────────────────────────────────────────────────────
 
 type Phase = "config" | "ready" | "initial-buffer" | "streaming";
@@ -427,6 +456,19 @@ export class RemoteBackend extends EventTarget {
       });
 
       let phase: Phase = "config";
+      // The initial buffer: off the binary frame after `ready`, or built
+      // here when a derived_windows config's buffer is silent (ready.window
+      // "silent": frames × channels of zeros, and no frame follows).
+      const begin = (initial: Float32Array) => {
+        this.initialBuffer = initial;
+        this.ready = true;
+        this._updateTrace({ readyAt: Date.now(), phase: "ready" });
+        phase = "streaming";
+        this._pending = null;
+        resolve(this);
+        this.dispatchEvent(new CustomEvent("ready"));
+        this._updateTrace({ phase: "streaming" });
+      };
 
       ws.onopen = () => {
         if (!this._pending) return;
@@ -536,6 +578,8 @@ export class RemoteBackend extends EventTarget {
             if (typeof msg.source_epoch === "number")
               this._sliceEpoch = msg.source_epoch;
             phase = "initial-buffer";
+            if (msg.window === "silent")
+              begin(new Float32Array((msg.frames ?? 0) * this.channels));
           } catch (e) {
             this._updateTrace({ errorAt: Date.now(), phase: "error" });
             reject(e);
@@ -544,42 +588,16 @@ export class RemoteBackend extends EventTarget {
         }
 
         if (phase === "initial-buffer") {
-          const u16 = new Uint16Array(ev.data as ArrayBuffer);
-          this.initialBuffer = float16ArrayToFloat32(u16);
-          this.ready = true;
-          this._updateTrace({ readyAt: Date.now(), phase: "ready" });
-          phase = "streaming";
-          this._pending = null;
-          resolve(this);
-          this.dispatchEvent(new CustomEvent("ready"));
-          this._updateTrace({ phase: "streaming" });
+          begin(float16ArrayToFloat32(new Uint16Array(ev.data as ArrayBuffer)));
           return;
         }
 
         // The pending-swap state turns the next binary frame into a full
         // buffer replacement (sent right after the swap_ready JSON).
         if (this._pendingSwap && ev.data instanceof ArrayBuffer) {
-          const u16 = new Uint16Array(ev.data);
-          const interleaved = float16ArrayToFloat32(u16);
           const meta = this._pendingSwap;
           this._pendingSwap = null;
-          this.duration = meta.duration;
-          this.channels = meta.channels;
-          // Adopt the server's authoritative source_epoch BEFORE the
-          // dispatch so that the synchronous `player.swap()` call inside the
-          // listener (which bumps AudioPlayer.swapCount in lockstep) and any
-          // subsequent binary slice the WS hands us are all aligned on the
-          // new buffer. Stale slices already queued in the worker still carry
-          // the previous epoch and will be dropped by the listener. Reading
-          // the wire value (rather than a blind ++) keeps the write_audio pin
-          // exact even if a swap_ready is ever missed or duplicated; older
-          // servers omit it, so fall back to the local increment.
-          this._sliceEpoch = meta.source_epoch ?? this._sliceEpoch + 1;
-          this.dispatchEvent(
-            new CustomEvent("swap_ready", {
-              detail: { ...meta, interleaved },
-            }),
-          );
+          this._swapped(meta, float16ArrayToFloat32(new Uint16Array(ev.data)));
           return;
         }
 
@@ -664,7 +682,12 @@ export class RemoteBackend extends EventTarget {
               );
               break;
             case "swap_ready":
-              this._pendingSwap = msg;
+              // A derived_windows config: no frame follows a silent buffer
+              // (built here) or a kept one (the listener keeps its own).
+              if (msg.window === "silent")
+                this._swapped(msg, new Float32Array((msg.frames ?? 0) * msg.channels));
+              else if (msg.window === "kept") this._swapped(msg, null);
+              else this._pendingSwap = msg;
               break;
             case "swap_failed":
               this.dispatchEvent(
@@ -1141,6 +1164,48 @@ export class RemoteBackend extends EventTarget {
    * swap_source; the caller builds the typed command so the header is
    * contract-checked at compile time.
    */
+  /** A swap landed: the new geometry and source epoch, then `swap_ready`
+   *  with the new buffer (null: the swap kept the playing one). */
+  private _swapped(meta: SwapReadyMessage, interleaved: Float32Array | null): void {
+    this.duration = meta.duration;
+    this.channels = meta.channels;
+    // Adopt the server's authoritative source_epoch BEFORE the
+    // dispatch so that the synchronous `player.swap()` call inside the
+    // listener (which bumps AudioPlayer.swapCount in lockstep) and any
+    // subsequent binary slice the WS hands us are all aligned on the
+    // new buffer. Stale slices already queued in the worker still carry
+    // the previous epoch and will be dropped by the listener. Reading
+    // the wire value (rather than a blind ++) keeps the write_audio pin
+    // exact even if a swap_ready is ever missed or duplicated; older
+    // servers omit it, so fall back to the local increment.
+    this._sliceEpoch = meta.source_epoch ?? this._sliceEpoch + 1;
+    this.dispatchEvent(
+      new CustomEvent("swap_ready", { detail: { ...meta, interleaved } }),
+    );
+  }
+
+  /**
+   * `sendSwapSource` as a compact frame where the server takes one
+   * (`ready.capabilities.compact_pcm`): only the channels with audio, as
+   * 16-bit samples, which the server expands back to the same full
+   * source. On a server without it, the full float32 frame. Same reply.
+   */
+  sendSwapSourceCompact(interleaved: Float32Array, channels: number, tags?: string): boolean {
+    if (!this.capabilities?.compact_pcm) return this.sendSwapSource(interleaved, channels, tags);
+    if (this.ws?.readyState !== this._wsOpen) return false;
+    const { frame, present } = packCompactPcmFrame(interleaved, channels);
+    const msg: SwapSourceCommand = { type: "swap_source", pcm: { encoding: "s16le", channels, present } };
+    if (tags) msg.tags = tags;
+    try {
+      this.ws.send(JSON.stringify(msg));
+      this.ws.send(frame);
+      return true;
+    } catch (e) {
+      console.error("[protocol] swap_source failed:", e);
+      return false;
+    }
+  }
+
   private sendAudioFrame(
     msg: SetTimbreSourceCommand | SetStructureSourceCommand | SwapSourceCommand,
     interleaved: Float32Array,

@@ -34,7 +34,7 @@ export * from "./controls";
 
 // WebSocket session client (binary slice stream, swap/stem state
 // machines, typed senders).
-export { RemoteBackend, float16ArrayToFloat32 } from "./protocol";
+export { RemoteBackend, float16ArrayToFloat32, packCompactPcmFrame } from "./protocol";
 export type { RemoteBackendOptions, WsTrace, WsTracePhase } from "./protocol";
 
 // Realtime audio playback (worklet + ScriptProcessor fallback, loudness

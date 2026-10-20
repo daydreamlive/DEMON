@@ -99,6 +99,7 @@ def test_swap_buffer_takes_a_multichannel_delivery_count():
     assert sess.audio_eng.current.shape == (OLD_PLAY, 2 * N_STREAMS)
     assert not sess.audio_eng.current.any()
     assert sess.bus.events[-1].channels == 2 * N_STREAMS
+    assert not sess.bus.events[-1].kept, "a new silent buffer, not the playing one"
 
 
 def test_swap_leaves_a_playing_multichannel_delivery_untouched():
@@ -121,4 +122,5 @@ def test_swap_leaves_a_playing_multichannel_delivery_untouched():
     ready = sess.bus.events[-1]
     assert ready.channels == 2 * N_STREAMS
     assert np.array_equal(ready.initial_buffer, playing)
+    assert ready.kept, "the client may keep its own buffer"
     assert sess.state.source_epoch == 4

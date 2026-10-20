@@ -220,6 +220,9 @@ class SwapReady:
     # Canvas generation after this swap (write_audio targets must match;
     # see SessionState.source_epoch).
     source_epoch: int = 0
+    # The swap left the playing buffer as it was: ``initial_buffer`` is a
+    # copy of it, so a client that keeps its own needs no new one.
+    kept: bool = False
 
 
 @dataclass(frozen=True)
