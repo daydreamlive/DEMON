@@ -192,8 +192,12 @@ class Capabilities:
     # fixed window in one go, outside the ring (``render_oneshot``), keeps
     # each version's latent by id and re-denoises streams of a kept one
     # (redo, when its stream layout has ``hold_streams``). Required for a
-    # ``render_only`` session.
+    # ``render_only`` session; the session advertises it only there.
     oneshot: bool = False
+    # A one-shot ``redo`` (re-denoise streams of a held version) is served:
+    # the backend's stream layout has ``hold_streams``. Only alongside
+    # ``oneshot``; the session clears both on a ring session.
+    oneshot_redo: bool = False
     # Server-level, not a backend trait, like ``midi_transcribe``: the
     # analyzer names (``acestep.analysis.registry``) this pod can run as
     # live ``analysis_tap`` channels. Backends leave it empty; the WS

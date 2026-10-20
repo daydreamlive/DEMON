@@ -1808,11 +1808,14 @@ def _handle_client_body(
             except ConnectionClosed:
                 state.running = False
         elif isinstance(event, OneshotFailed):
-            _send_json({
+            failed = {
                 "type": "oneshot_failed",
                 "request_id": event.request_id,
                 "error": event.error,
-            })
+            }
+            if getattr(event, "reason", None):
+                failed["reason"] = event.reason
+            _send_json(failed)
         elif isinstance(event, StemAssets):
             # Late background-rip delivery (upload path): same wire
             # shape the init/swap paths send inline. send_lock keeps

@@ -751,7 +751,14 @@ class StreamingSession:
         """Wire-shaped capability mask (plan §3.1), declared by the
         backend. Consumed by client panel gating and the session's own
         capability gate (:func:`requires_capability`)."""
-        return asdict(self.backend.capabilities())
+        caps = asdict(self.backend.capabilities())
+        # One-shot renders run on render-only sessions only: a ring session
+        # never advertises them (its pipeline and knobs belong to the ring).
+        if not self.render_only():
+            caps["oneshot"] = False
+            if "oneshot_redo" in caps:
+                caps["oneshot_redo"] = False
+        return caps
 
     def knob_manifest_payload(self) -> dict:
         """The per-session knob manifest (plan §3.3): the same
@@ -1005,6 +1012,12 @@ class StreamingSession:
         # actually destroys the engine + ModelContext.
         # session.close() ends with gc.collect() + cuda.empty_cache().
         self.state.running = False
+        # Queued one-shots die with the session (they hold request knobs
+        # and, for a client-held redo, a latent array).
+        queued = getattr(self, "_oneshots", None)
+        if queued:
+            with self.state._lock:
+                queued.clear()
         # Drop anything this session fetched. A pool pod is handed to a
         # stranger next: without this their catalog would list the previous
         # user's styles by name, under "Catalog" where they read as stock,
@@ -2605,7 +2618,9 @@ class StreamingSession:
         from dataclasses import replace
 
         from acestep.streaming.oneshot import (
+            QUEUE_MAX,
             OneshotError,
+            clamp_knobs,
             latent_from_bytes,
             parse_request,
         )
@@ -2618,15 +2633,33 @@ class StreamingSession:
                 request_id, f"backend {self.backend.name!r} cannot render one-shot",
             ))
             return
+        if not self.render_only():
+            self.bus.publish(OneshotFailed(
+                request_id,
+                "oneshot needs a render_only session (this session runs the "
+                "live ring); open one with config.render_only",
+            ))
+            return
         try:
             req = parse_request(data or {})
+            req = replace(req, knobs=clamp_knobs(req.knobs, self._knob_specs_by_name))
             if req.redo is not None and req.redo.latent_shape is not None:
                 req = replace(req, redo=latent_from_bytes(req.redo, latent))
         except OneshotError as exc:
             self.bus.publish(OneshotFailed(request_id, str(exc)))
             return
         with state._lock:
-            self._oneshots.append(req)
+            full = len(self._oneshots) >= QUEUE_MAX
+            if not full:
+                self._oneshots.append(req)
+        if full:
+            logger.info("oneshot_refused id={} reason=queue_full", req.request_id)
+            self.bus.publish(OneshotFailed(
+                request_id,
+                f"{QUEUE_MAX} one-shot requests are already queued; retry after an answer",
+                reason="queue_full",
+            ))
+            return
         self._oneshot_wake.set()
         logger.info(
             "oneshot_requested origin={} id={} versions={} redo={}",

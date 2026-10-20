@@ -30,6 +30,8 @@ KEEP_TTL_S = 15 * 60.0
 KEEP_MAX = 32
 #: Versions one request may ask for.
 MAX_VERSIONS = 16
+#: Requests a session holds queued; one more is refused (``queue_full``).
+QUEUE_MAX = 4
 
 
 class OneshotError(ValueError):
@@ -122,6 +124,25 @@ def parse_request(data: Mapping[str, Any]) -> OneshotRequest:
     if any(s < 0 for s in seeds):
         raise OneshotError("seeds must be >= 0")
     return OneshotRequest(request_id, seeds, knobs, None, return_latents)
+
+
+def clamp_knobs(knobs: Mapping[str, float], specs_by_name: Mapping) -> dict:
+    """A request's knobs through the ring's own knob contract
+    (:func:`~acestep.streaming.knobs.coerce_knob_values`, the clamp the
+    params channel applies): numerics clamped to their spec's range, ints
+    rounded (``steps_override`` therefore within the ring's bounds). A key
+    the session's knob manifest does not hold is refused with
+    :class:`OneshotError`, never passed through."""
+    from acestep.streaming.knobs import coerce_knob_values
+
+    unknown = sorted(k for k in knobs if k not in specs_by_name)
+    if unknown:
+        raise OneshotError(f"unknown knob(s) {unknown}")
+    clean, _errors = coerce_knob_values(dict(knobs), specs_by_name)
+    dropped = sorted(k for k in knobs if k not in clean)
+    if dropped:
+        raise OneshotError(f"invalid knob value(s) for {dropped}")
+    return clean
 
 
 def latent_shape(spec) -> tuple:

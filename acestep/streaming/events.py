@@ -365,6 +365,9 @@ class OneshotReady:
 class OneshotFailed:
     request_id: str
     error: str
+    #: A machine-readable cause when the client should act on it
+    #: (``"queue_full"``: retry after an answer), else None.
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
