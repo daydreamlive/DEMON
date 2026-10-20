@@ -49,7 +49,6 @@ import type {
   LoopBandCommand,
   ManualSlotAddCommand,
   ManualSlotPopCommand,
-  OneshotReadyEvent,
   ParamsCommand,
   PromptCommand,
   SetDepthCommand,
@@ -64,7 +63,7 @@ import type {
   WireEvent,
   WriteAudioCommand,
 } from "./types/wireContract.gen";
-import { decodeOneshot, oneshotCommand, type OneshotRequest } from "./oneshot";
+import { OneshotFrames, oneshotCommand, oneshotLatentFrame, type OneshotRequest } from "./oneshot";
 
 /** Optional behaviors the host app injects into RemoteBackend. */
 export interface RemoteBackendOptions {
@@ -284,8 +283,8 @@ export class RemoteBackend extends EventTarget {
 
   private _pending: PendingPayload | null;
   private _pendingSwap: SwapReadyMessage | null = null;
-  // A `oneshot_ready` header waiting for its one binary frame.
-  private _pendingOneshot: OneshotReadyEvent | null = null;
+  // A `oneshot_ready` header waiting for its binary frame(s).
+  private _pendingOneshot = new OneshotFrames();
   private _pendingStemAssets: StemAssetsMessage | null = null;
   private _pendingStemBuffers: Partial<Record<"vocals" | "instruments", Float32Array>> = {};
   // Slice decoder runs in a worker so fzstd.decompress + float16→float32
@@ -606,19 +605,17 @@ export class RemoteBackend extends EventTarget {
         }
 
         // A one-shot render is ONE int16 frame after its `oneshot_ready`
-        // header: decoded into per-version, per-stream views and
+        // header (TWO when the header carries `latents`: the PCM, then the
+        // float16 latents): decoded into per-version, per-stream views and
         // dispatched as `oneshot` ({...OneshotResult}).
-        if (this._pendingOneshot && ev.data instanceof ArrayBuffer) {
-          const meta = this._pendingOneshot;
-          this._pendingOneshot = null;
-          try {
-            this.dispatchEvent(
-              new CustomEvent("oneshot", { detail: decodeOneshot(meta, ev.data) }),
-            );
-          } catch (e) {
+        if (this._pendingOneshot.waiting && ev.data instanceof ArrayBuffer) {
+          const done = this._pendingOneshot.push(ev.data);
+          if (done?.result) {
+            this.dispatchEvent(new CustomEvent("oneshot", { detail: done.result }));
+          } else if (done) {
             this.dispatchEvent(
               new CustomEvent("oneshot_failed", {
-                detail: { request_id: meta.request_id, error: String(e) },
+                detail: { request_id: done.meta.request_id, error: done.error },
               }),
             );
           }
@@ -795,7 +792,7 @@ export class RemoteBackend extends EventTarget {
               );
               break;
             case "oneshot_ready":
-              this._pendingOneshot = msg;
+              this._pendingOneshot.begin(msg);
               break;
             case "oneshot_failed":
               this.dispatchEvent(
@@ -1145,7 +1142,8 @@ export class RemoteBackend extends EventTarget {
 
   /**
    * Ask for a one-shot render (``ready.capabilities.oneshot``): one whole
-   * version per seed, or a redo of one stream of a kept version. Answered
+   * version per seed, or a redo of streams of a held version (a redo with
+   * ``latent`` sends it as one binary frame after the header). Answered
    * by a ``oneshot`` event (detail: OneshotResult) or ``oneshot_failed``
    * ({request_id, error}). Returns the request id, or null when the socket
    * isn't open. ``renderOneshot`` (./oneshot) wraps it in a promise.
@@ -1153,8 +1151,10 @@ export class RemoteBackend extends EventTarget {
   sendOneshot(req: OneshotRequest): string | null {
     if (this.ws?.readyState !== this._wsOpen) return null;
     const msg = oneshotCommand(req);
+    const frame = oneshotLatentFrame(req);
     try {
       this.ws.send(JSON.stringify(msg));
+      if (frame) this.ws.send(frame);
     } catch {
       return null;
     }
