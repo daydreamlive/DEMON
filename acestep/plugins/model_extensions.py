@@ -252,6 +252,12 @@ class StreamLayout:
     ``n_streams`` 0/1 flags (1 = given from ``latent``, 0 = denoised from
     noise); the layout holds them for the denoise that follows. Called with
     ``(None, None)`` afterwards to release. ``None``: the layout cannot redo.
+    A layout that also takes ``denoise=`` (a tuple of ``n_streams`` floats
+    in [0, 1]) can adjust a stream: stream ``k`` starts from its slice of
+    ``latent`` when ``denoise[k] < 1.0`` (0.0 = held as is), from noise at
+    1.0; ``held`` is then derived from it. The core passes ``denoise`` only
+    when some regenerated stream is below 1.0 (checked by signature); a
+    layout without it serves re-rolls only.
 
     Each stream is decoded separately: a decoder's receptive field would
     otherwise bleed across stream boundaries.

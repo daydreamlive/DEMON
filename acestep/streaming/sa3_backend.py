@@ -53,6 +53,7 @@ plan Phase 5).
 
 from __future__ import annotations
 
+import inspect
 import math
 import threading
 import time
@@ -1925,10 +1926,17 @@ class SA3Backend(DiffusionBackend):
         :class:`~acestep.streaming.oneshot.OneshotResult`. Each version's
         latent is kept in ``store`` (default the process store) by id.
 
-        A redo (``request.redo``) re-denoises one stream of a kept version
-        from its seed, every other stream given from the kept latent (the
-        layout's ``hold_streams``), and returns that stream only, under a
-        new id for the new version.
+        A redo (``request.redo``) re-denoises streams ``redo.streams`` of a
+        held version, every other stream given from the held latent (the
+        layout's ``hold_streams``), and returns those streams only
+        (ascending), under a new id for the new version. The held version
+        is kept version ``redo.id`` or the client's ``redo.latent`` (float16
+        ``[n_streams, C, L]``). A stream whose ``redo.denoise`` is below 1.0
+        is adjusted from its own held slice; that needs a layout whose
+        ``hold_streams`` takes ``denoise``.
+
+        ``request.return_latents``: every version's full latent comes back
+        as float16 ``[V, n_streams, C, L]`` in ``latents``.
 
         Session-thread only (the runner's, or a render-only session's)."""
         from acestep.streaming.oneshot import KEPT, OneshotError, OneshotResult, to_int16
@@ -1937,24 +1945,41 @@ class SA3Backend(DiffusionBackend):
         layout = self._layout
         n = self._n_streams
         redo = request.redo
-        kept = None
+        held_latent = None    # SA3-native [1, C, n * L] (CPU or device)
+        hold_kw = {}
+        with self._control_lock:
+            frames = int(self._cond.latent_frames)
         if redo is not None:
             if layout is None or getattr(layout, "hold_streams", None) is None:
                 raise OneshotError("this session's model cannot redo a stream")
-            if not 0 <= int(redo.stream) < n:
-                raise OneshotError(
-                    f"redo.stream must be in 0..{n - 1}, got {redo.stream}"
-                )
-            kept = store.get(redo.id)
-            with self._control_lock:
-                frames = int(self._cond.latent_frames)
-            if kept.n_streams != n or int(kept.latent.shape[-1]) != frames:
-                raise OneshotError(
-                    f"kept version {redo.id!r} has another geometry "
-                    f"({kept.n_streams} streams, {int(kept.latent.shape[-1])} "
-                    f"frames; this session: {n}, {frames}): redo on a "
-                    "session of the same length"
-                )
+            for k in redo.streams:
+                if not 0 <= int(k) < n:
+                    raise OneshotError(
+                        f"redo.stream must be in 0..{n - 1}, got {k}"
+                    )
+            if redo.latent is not None:
+                held_latent = self._held_from_client(redo.latent, frames)
+            else:
+                kept = store.get(redo.id)
+                if kept.n_streams != n or int(kept.latent.shape[-1]) != frames:
+                    raise OneshotError(
+                        f"kept version {redo.id!r} has another geometry "
+                        f"({kept.n_streams} streams, {int(kept.latent.shape[-1])} "
+                        f"frames; this session: {n}, {frames}): redo on a "
+                        "session of the same length"
+                    )
+                held_latent = kept.latent
+            per_stem = dict(zip((int(k) for k in redo.streams), redo.denoise))
+            stem_denoise = tuple(float(per_stem.get(k, 0.0)) for k in range(n))
+            held = tuple(1 if d < 1.0 else 0 for d in stem_denoise)
+            if any(per_stem[k] < 1.0 for k in per_stem):
+                try:
+                    params = inspect.signature(layout.hold_streams).parameters
+                except (TypeError, ValueError):
+                    params = {}
+                if "denoise" not in params:
+                    raise OneshotError("this model cannot adjust a stem")
+                hold_kw = {"denoise": stem_denoise}
         base = dict(self.read_knobs())
         base.update(request.knobs or {})
         seeds = tuple(int(s) for s in request.seeds)
@@ -1982,11 +2007,10 @@ class SA3Backend(DiffusionBackend):
                 if redo is None:
                     latents.append(self._oneshot_denoise((seed,), controls))
                     continue
-                held = tuple(0 if k == int(redo.stream) else 1 for k in range(n))
-                kept_dev = kept.latent.to(
+                kept_dev = held_latent.to(
                     device=self.adapter._device, dtype=self.adapter._dtype,
                 )
-                layout.hold_streams(kept_dev, held)
+                layout.hold_streams(kept_dev, held, **hold_kw)
                 try:
                     latents.append(self._oneshot_denoise((seed,), controls))
                 finally:
@@ -1997,11 +2021,14 @@ class SA3Backend(DiffusionBackend):
         describe = getattr(dit_obj, "describe", None)
         dit_label = describe() if callable(describe) else type(dit_obj).__name__
 
-        # Decode: every stream (a redo: its stream) of every version through
+        # Decode: every stream (a redo: its streams) of every version through
         # the codec's full decode, then one delivery resample for them all.
         import torchaudio
 
-        streams = (int(redo.stream),) if redo is not None else tuple(range(n))
+        streams = (
+            tuple(sorted(int(k) for k in redo.streams))
+            if redo is not None else tuple(range(n))
+        )
         decode_batch = getattr(self.codec, "decode_full_batch", None)
         rows = []
         for seed, lat in zip(seeds, latents):
@@ -2045,6 +2072,14 @@ class SA3Backend(DiffusionBackend):
             store.put(lat.movedim(1, 2), n_streams=n, seed=int(seed))
             for seed, lat in zip(seeds, latents)
         )
+        all_latents = None
+        if getattr(request, "return_latents", False):
+            # [1, T, C] engine layout -> [n, C, L] per version, float16 CPU.
+            all_latents = np.stack([
+                torch.stack(self._stream_slices(lat.movedim(1, 2)), dim=0)[:, 0]
+                .to(device="cpu", dtype=torch.float16).numpy()
+                for lat in latents
+            ])
         t3 = time.perf_counter()
         return OneshotResult(
             pcm=pcm,
@@ -2060,7 +2095,33 @@ class SA3Backend(DiffusionBackend):
             seconds=total / DELIVERY_SAMPLE_RATE,
             redo_of=redo.id if redo is not None else None,
             dit=dit_label,
+            latents=all_latents,
+            latent_header={
+                "n_streams": n,
+                "channels": int(getattr(self.adapter, "latent_channels", 256)),
+                "frames": frames // n,
+                "seconds": total / DELIVERY_SAMPLE_RATE,
+            },
         )
+
+    def _held_from_client(self, latent, frames: int) -> torch.Tensor:
+        """A client's held latent (float16 ``[n_streams, C, L]``) as the
+        SA3-native ``[1, C, n_streams * L]`` a kept latent is, on the CPU,
+        after the geometry and finiteness checks (no GPU work)."""
+        from acestep.streaming.oneshot import OneshotError
+
+        n = self._n_streams
+        C = int(getattr(self.adapter, "latent_channels", 256))
+        L = frames // n
+        t = torch.as_tensor(np.asarray(latent))
+        if tuple(t.shape) != (n, C, L):
+            raise OneshotError(
+                f"redo.latent is {list(t.shape)}, this session needs "
+                f"[{n}, {C}, {L}] (n_streams, channels, frames)"
+            )
+        if not bool(torch.isfinite(t).all()):
+            raise OneshotError("redo.latent has non-finite values")
+        return torch.cat(list(t.unbind(0)), dim=-1).unsqueeze(0)
 
     def _oneshot_controls(self, knobs: dict) -> None:
         """The per-version share of :meth:`_prepare_tick`: the schedule

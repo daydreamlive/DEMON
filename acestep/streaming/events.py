@@ -344,7 +344,11 @@ class OneshotReady:
     ``sample_rate``; ``ids`` names each version's kept latent (a redo's
     handle), ``seeds`` its seed, ``streams`` the stream indices carried
     (every stream, or a redo's one). ``ms`` is the per-phase wall time
-    (generate, decode, pack)."""
+    (generate, decode, pack). ``latents`` is every version's full latent,
+    float16 ``[versions, n_streams, C, L]`` (``return_latents``), else
+    None; ``latent_header`` the geometry a held latent must match
+    (``{n_streams, channels, frames, seconds}``), None when the backend
+    gives none."""
     request_id: str
     pcm: np.ndarray
     sample_rate: int
@@ -353,6 +357,8 @@ class OneshotReady:
     streams: tuple
     ms: dict
     redo_of: str | None = None
+    latents: np.ndarray | None = None
+    latent_header: dict | None = None
 
 
 @dataclass(frozen=True)

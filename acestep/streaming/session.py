@@ -1132,9 +1132,11 @@ class StreamingSession:
             ms = res.ms
             if req.redo is not None:
                 logger.info(
-                    "oneshot_redo id={} of={} stream={} seed={} seconds={:.1f} "
+                    "oneshot_redo id={} of={} streams={} denoise={} seed={} seconds={:.1f} "
                     "generate_ms={:.0f} decode_ms={:.0f} pack_ms={:.0f} new={} dit={}",
-                    req.request_id, req.redo.id, req.redo.stream, req.redo.seed,
+                    req.request_id,
+                    req.redo.id if req.redo.id is not None else "client",
+                    list(req.redo.streams), list(req.redo.denoise), req.redo.seed,
                     res.seconds, ms["generate"], ms["decode"], ms["pack"], res.ids[0],
                     getattr(res, "dit", "") or "?",
                 )
@@ -1161,6 +1163,8 @@ class StreamingSession:
                 streams=tuple(res.streams),
                 ms={**ms, "total": round((time.perf_counter() - t0) * 1000.0, 1)},
                 redo_of=res.redo_of,
+                latents=getattr(res, "latents", None),
+                latent_header=getattr(res, "latent_header", None),
             ))
 
     def _service_bounces(self) -> None:
@@ -2589,13 +2593,22 @@ class StreamingSession:
         data: dict,
         *,
         origin: CommandOrigin = CommandOrigin.PRIMARY,
+        latent: bytes | None = None,
     ) -> None:
         """Queue a one-shot render (the wire ``oneshot`` frame as a dict):
-        N whole versions of the window, or a redo of one stream of a kept
-        version. Answered on the bus with :class:`OneshotReady` or
+        N whole versions of the window, or a redo of streams of a held
+        version. ``latent`` is the binary frame that followed a header with
+        ``redo.latent`` (raw float16, the shape the header declares).
+        Answered on the bus with :class:`OneshotReady` or
         :class:`OneshotFailed`. Served after every command sent before it
         (same session thread as the pending drains)."""
-        from acestep.streaming.oneshot import OneshotError, parse_request
+        from dataclasses import replace
+
+        from acestep.streaming.oneshot import (
+            OneshotError,
+            latent_from_bytes,
+            parse_request,
+        )
 
         state = self.state
         state.last_activity_ts = time.monotonic()
@@ -2607,6 +2620,8 @@ class StreamingSession:
             return
         try:
             req = parse_request(data or {})
+            if req.redo is not None and req.redo.latent_shape is not None:
+                req = replace(req, redo=latent_from_bytes(req.redo, latent))
         except OneshotError as exc:
             self.bus.publish(OneshotFailed(request_id, str(exc)))
             return
@@ -2616,7 +2631,7 @@ class StreamingSession:
         logger.info(
             "oneshot_requested origin={} id={} versions={} redo={}",
             origin.value, req.request_id, req.versions,
-            req.redo.id if req.redo is not None else None,
+            (req.redo.id or "client") if req.redo is not None else None,
         )
 
     def render_only(self) -> bool:
