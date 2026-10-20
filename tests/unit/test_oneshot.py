@@ -1006,3 +1006,36 @@ def test_adapter_reads_the_latent_frame_and_checks_its_length():
     # the recv failed (timeout / not binary): it answered; nothing queued
     _dispatch_oneshot(head, rec, lambda *a, **k: None, sent.append, "ws")
     assert len(rec.calls) == 2
+
+
+def test_oneshot_applies_a_lora_strength_under_the_refit_mirror():
+    """A one-shot's ``lora_str_<id>`` reaches the engine under the refit
+    mirror, where the ring stashes a change from ``rebuild_imminent`` (a
+    runner call a render-only session never makes): the one-shot detects
+    it itself and the strength lands, mirror synced, before the DiT runs."""
+    from types import SimpleNamespace
+
+    b, dit = _stock()
+    order: list = []
+    desc = SimpleNamespace(id="x", state="enabled", strength=0.5)
+
+    def set_strength(lora_id, s):
+        desc.strength = s
+        order.append(("strength", lora_id, s))
+
+    b._use_lora = True
+    b._lora_mgr = SimpleNamespace(
+        list_loras=lambda: [desc], set_lora_strength=set_strength,
+        touches_conditioner=lambda lora_id: False, has_active_loras=False,
+    )
+    b._refit_mirror = SimpleNamespace(sync=lambda reason: order.append(("sync", reason)))
+    forward = dit.forward
+    dit.forward = lambda x, t, **kw: (order.append(("dit",)), forward(x, t, **kw))[1]
+    b.render_oneshot(_req(seeds=(1,), knobs={"lora_str_x": 1.0}), store=KeptLatents())
+    assert order[:2] == [("strength", "x", 1.0), ("sync", "strength")]
+    assert order[2] == ("dit",) and desc.strength == 1.0
+    # unchanged strength: nothing stashed, no refit
+    order.clear()
+    b.render_oneshot(_req(seeds=(2,), knobs={"lora_str_x": 1.0}), store=KeptLatents())
+    assert order and all(o == ("dit",) for o in order)
+
