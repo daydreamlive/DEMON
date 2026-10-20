@@ -19,7 +19,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping, Optional
 
 import numpy as np
@@ -39,12 +39,29 @@ class OneshotError(ValueError):
 
 @dataclass(frozen=True)
 class Redo:
-    """Re-denoise stream ``stream`` of kept version ``id`` from seed
-    ``seed``, every other stream given from the kept latent."""
+    """Re-denoise streams ``streams`` of a held version from seed ``seed``,
+    every other stream given from the held latent.
 
-    id: str
+    The held version is kept version ``id``, or ``latent``: client-held
+    state, a float16 ``[n_streams, C, L]`` array (SA3-native per stream)
+    the wire adapter reads from the binary frame that follows the header
+    (``latent_shape`` is the shape the header declared). ``denoise[i]`` is
+    stream ``streams[i]``'s denoise: 1.0 re-rolls it from noise, below 1.0
+    adjusts it from its own held slice. ``streams`` is ascending."""
+
+    id: Optional[str]
     stream: int
     seed: int
+    streams: tuple = ()
+    denoise: tuple = ()
+    latent: Any = None
+    latent_shape: Optional[tuple] = None
+
+    def __post_init__(self):
+        if not self.streams:
+            object.__setattr__(self, "streams", (int(self.stream),))
+        if not self.denoise:
+            object.__setattr__(self, "denoise", (1.0,) * len(self.streams))
 
 
 @dataclass(frozen=True)
@@ -53,6 +70,8 @@ class OneshotRequest:
     seeds: tuple
     knobs: dict
     redo: Optional[Redo] = None
+    #: Also return every version's full latent (float16 ``[V, S, C, L]``).
+    return_latents: bool = False
 
     @property
     def versions(self) -> int:
@@ -83,18 +102,17 @@ def parse_request(data: Mapping[str, Any]) -> OneshotRequest:
         if isinstance(v, bool) or not isinstance(v, (int, float)):
             raise OneshotError(f"knob {k!r} must be a number, got {v!r}")
         knobs[str(k)] = float(v)
+    return_latents = data.get("return_latents", False)
+    if return_latents is None:
+        return_latents = False
+    if not isinstance(return_latents, bool):
+        raise OneshotError(f"return_latents must be a boolean, got {return_latents!r}")
     redo_raw = data.get("redo")
     if redo_raw is not None:
-        if not isinstance(redo_raw, Mapping):
-            raise OneshotError("redo must be an object {id, stream, seed}")
-        rid = str(redo_raw.get("id") or "")
-        if not rid:
-            raise OneshotError("redo.id is required")
-        stream = _int(redo_raw.get("stream"), "redo.stream")
-        seed = _int(redo_raw.get("seed"), "redo.seed")
-        if seed < 0:
-            raise OneshotError("redo.seed must be >= 0")
-        return OneshotRequest(request_id, (seed,), knobs, Redo(rid, stream, seed))
+        redo = _parse_redo(redo_raw)
+        return OneshotRequest(
+            request_id, (redo.seed,), knobs, redo, return_latents,
+        )
     seeds_raw = data.get("seeds")
     if not isinstance(seeds_raw, (list, tuple)) or not seeds_raw:
         raise OneshotError("seeds must be a non-empty list of integers")
@@ -103,7 +121,112 @@ def parse_request(data: Mapping[str, Any]) -> OneshotRequest:
     seeds = tuple(_int(s, "seed") for s in seeds_raw)
     if any(s < 0 for s in seeds):
         raise OneshotError("seeds must be >= 0")
-    return OneshotRequest(request_id, seeds, knobs, None)
+    return OneshotRequest(request_id, seeds, knobs, None, return_latents)
+
+
+def latent_shape(spec) -> tuple:
+    """The ``[n_streams, C, L]`` shape a ``redo.latent`` header declares.
+    Raises :class:`OneshotError` on anything but float16 and three
+    positive integers."""
+    if not isinstance(spec, Mapping):
+        raise OneshotError("redo.latent must be an object {dtype, shape}")
+    if spec.get("dtype", "float16") != "float16":
+        raise OneshotError(
+            f"redo.latent.dtype must be 'float16', got {spec.get('dtype')!r}"
+        )
+    shape = spec.get("shape")
+    if not isinstance(shape, (list, tuple)) or len(shape) != 3:
+        raise OneshotError("redo.latent.shape must be [n_streams, C, L]")
+    dims = tuple(_int(d, "redo.latent.shape") for d in shape)
+    if any(d < 1 for d in dims):
+        raise OneshotError(f"redo.latent.shape must be positive, got {list(dims)}")
+    return dims
+
+
+def latent_nbytes(spec) -> int:
+    """Byte length of the binary frame a ``redo.latent`` header announces."""
+    n, c, length = latent_shape(spec)
+    return n * c * length * 2
+
+
+def latent_from_bytes(redo: Redo, payload) -> Redo:
+    """``redo`` with its ``latent`` read from the binary frame ``payload``
+    (raw little-endian float16, C-order ``latent_shape``)."""
+    shape = redo.latent_shape
+    if shape is None:
+        raise OneshotError("redo has no latent header")
+    want = shape[0] * shape[1] * shape[2] * 2
+    if payload is None or len(payload) != want:
+        got = 0 if payload is None else len(payload)
+        raise OneshotError(
+            f"redo.latent frame is {got} bytes, expected {want} "
+            f"(float16 {list(shape)})"
+        )
+    arr = np.frombuffer(payload, dtype="<f2").reshape(shape).copy()
+    return replace(redo, latent=arr)
+
+
+def _parse_redo(redo_raw) -> Redo:
+    if not isinstance(redo_raw, Mapping):
+        raise OneshotError("redo must be an object {id, stream, seed}")
+    rid = redo_raw.get("id")
+    rid = str(rid) if rid not in (None, "") else None
+    latent_raw = redo_raw.get("latent")
+    if rid is not None and latent_raw is not None:
+        raise OneshotError("redo takes id or latent, not both")
+    if rid is None and latent_raw is None:
+        raise OneshotError("redo.id (or redo.latent) is required")
+    shape = latent_shape(latent_raw) if latent_raw is not None else None
+    one = redo_raw.get("stream")
+    many = redo_raw.get("streams")
+    if many is not None:
+        if not isinstance(many, (list, tuple)) or not many:
+            raise OneshotError("redo.streams must be a non-empty list of integers")
+        streams = tuple(_int(k, "redo.streams") for k in many)
+        if len(set(streams)) != len(streams):
+            raise OneshotError(f"redo.streams has a repeat: {list(streams)}")
+        if one is not None and (_int(one, "redo.stream"),) != streams:
+            raise OneshotError(
+                f"redo.stream {one!r} and redo.streams {list(streams)} disagree"
+            )
+    elif one is not None:
+        streams = (_int(one, "redo.stream"),)
+    else:
+        raise OneshotError("redo.stream (or redo.streams) is required")
+    if any(k < 0 for k in streams):
+        raise OneshotError("redo.streams must be >= 0")
+    d_raw = redo_raw.get("denoise")
+    if d_raw is None:
+        denoise = (1.0,) * len(streams)
+    elif isinstance(d_raw, (list, tuple)):
+        if len(d_raw) != len(streams):
+            raise OneshotError(
+                f"redo.denoise has {len(d_raw)} values for {len(streams)} streams"
+            )
+        denoise = tuple(_denoise(d) for d in d_raw)
+    else:
+        denoise = (_denoise(d_raw),) * len(streams)
+    seed = _int(redo_raw.get("seed"), "redo.seed")
+    if seed < 0:
+        raise OneshotError("redo.seed must be >= 0")
+    pairs = sorted(zip(streams, denoise))
+    return Redo(
+        id=rid,
+        stream=pairs[0][0],
+        seed=seed,
+        streams=tuple(k for k, _ in pairs),
+        denoise=tuple(d for _, d in pairs),
+        latent_shape=shape,
+    )
+
+
+def _denoise(value) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise OneshotError(f"redo.denoise must be a number, got {value!r}")
+    d = float(value)
+    if not 0.0 < d <= 1.0:
+        raise OneshotError(f"redo.denoise must be in (0, 1], got {value!r}")
+    return d
 
 
 @dataclass
@@ -187,6 +310,12 @@ class OneshotResult:
     #: (a stream layout's step: its engine file, or eager and why), else its
     #: class name.
     dit: str = ""
+    #: Every version's full latent, float16 ``[V, S, C, L]`` on the CPU
+    #: (``return_latents``), else None.
+    latents: Optional[np.ndarray] = None
+    #: The geometry a held latent must match:
+    #: ``{n_streams, channels, frames, seconds}``.
+    latent_header: Optional[dict] = None
 
 
 def to_int16(audio) -> np.ndarray:
