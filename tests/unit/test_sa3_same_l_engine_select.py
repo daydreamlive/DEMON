@@ -58,8 +58,8 @@ def test_narrowest_covering_engine_wins_in_either_listing_order(models, listing_
     assert sa3_trt.find_same_l_window_engine() == (window, 32, 96)
     assert sa3_trt.find_same_l_engine(50, 50) == (window, 32, 96)
     assert sa3_trt.find_same_l_engine(97, 1292) == (full, 32, 3230)
-    assert sa3_trt.find_same_l_full_engine(1292) == (full, 32, 3230)
-    assert sa3_trt.find_same_l_full_engine(90) == (window, 32, 96)
+    assert sa3_trt.find_same_l_engine(1292, 1292) == (full, 32, 3230)
+    assert sa3_trt.find_same_l_engine(90, 90) == (window, 32, 96)
     assert [e[0] for e in sa3_trt.find_same_l_engines()] == [window, full]
 
 
@@ -69,7 +69,7 @@ def test_a_range_no_engine_covers_returns_none(models, listing_order):
 
     assert sa3_trt.find_same_l_engine(16, 50) is None  # under every min
     assert sa3_trt.find_same_l_engine(1000, 4000) is None  # over every max
-    assert sa3_trt.find_same_l_full_engine(3231) is None
+    assert sa3_trt.find_same_l_engine(3231, 3231) is None
 
 
 def test_window_finder_does_not_fall_back_to_a_wide_engine(models):

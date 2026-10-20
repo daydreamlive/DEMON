@@ -495,13 +495,6 @@ def find_same_l_window_engine() -> Optional[tuple]:
     return find_same_l_engine(lo, hi)
 
 
-def find_same_l_full_engine(frames: int) -> Optional[tuple]:
-    """The SAME-L decoder for a whole-song decode of ``frames`` latent
-    frames: the narrowest engine covering that length, or None (the
-    decode stays eager)."""
-    return find_same_l_engine(frames, frames)
-
-
 _CODEC_SHA_CACHE: dict = {}
 
 
