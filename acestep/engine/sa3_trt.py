@@ -371,15 +371,17 @@ def max_dit_engine_latents(model_id: str) -> Optional[int]:
     return max(his) if his else None
 
 
-#: A SAME-L engine whose profile max reaches this many latent frames is a
-#: FULL-song decoder (one-shot ``decode_full``), not the per-tick window
-#: decoder (whose profile caps at 96 by choice). 1 s = ~10.8 frames.
-SAME_L_FULL_MIN_MAX_T = 256
+#: The ring's SAME-L window decode profile ``(min, opt, max)`` frames:
+#: ~1 s windows with 2 s of context keep T inside [32, 96], steady state
+#: 56. The canonical window build (``sa3_build``) and
+#: :func:`find_same_l_window_engine` both read it.
+CANONICAL_SAME_L_WINDOW: tuple[int, int, int] = (32, 56, 96)
 
 
 def find_same_l_engines() -> list:
     """``[(path, min_t, max_t), ...]`` of every built SAME-L decoder for
-    the running plugin build tag, sorted by ``max_t`` (narrowest first)."""
+    the running plugin build tag, narrowest profile first (``max_t``, then
+    ``min_t``, then path: independent of directory listing order)."""
     base = trt_engines_dir()
     if not base.is_dir():
         return []
@@ -395,23 +397,40 @@ def find_same_l_engines() -> list:
     return sorted(out, key=lambda e: (e[2], e[1], str(e[0])))
 
 
-def find_same_l_window_engine() -> Optional[tuple]:
-    """``(path, min_t, max_t)`` of the built SAME-L WINDOW decoder (the
-    narrowest profile under :data:`SAME_L_FULL_MIN_MAX_T`), or None (caller
-    falls back to eager windowed decode). A full-song engine beside it is
-    never picked here: its context is sized for thousands of frames."""
-    for e in find_same_l_engines():
-        if e[2] < SAME_L_FULL_MIN_MAX_T:
+def find_same_l_engine(frames_min: int, frames_max: int) -> Optional[tuple]:
+    """``(path, min_t, max_t)`` of the NARROWEST built SAME-L decoder whose
+    profile covers ``[frames_min, frames_max]`` latent frames, or None (no
+    engine covers it; the caller decodes eagerly). Every SAME-L decode
+    (the ring's windows, a whole-song one-shot) selects through this: an
+    engine is picked by what it covers, never by a window/full class."""
+    return select_same_l_engine(find_same_l_engines(), frames_min, frames_max)
+
+
+def select_same_l_engine(engines, frames_min: int, frames_max: int) -> Optional[tuple]:
+    """The first entry of ``engines`` (a :func:`find_same_l_engines`
+    listing, narrowest first) whose profile covers
+    ``[frames_min, frames_max]``, or None."""
+    lo, hi = int(frames_min), int(frames_max)
+    for e in engines:
+        if e[1] <= lo and hi <= e[2]:
             return e
     return None
 
 
-def find_same_l_full_engine() -> Optional[tuple]:
-    """``(path, min_t, max_t)`` of the widest built SAME-L FULL-song
-    decoder (profile max >= :data:`SAME_L_FULL_MIN_MAX_T`), or None (the
-    one-shot full decode stays eager)."""
-    full = [e for e in find_same_l_engines() if e[2] >= SAME_L_FULL_MIN_MAX_T]
-    return full[-1] if full else None
+def find_same_l_window_engine() -> Optional[tuple]:
+    """The SAME-L decoder for the ring's windows: the narrowest engine
+    covering :data:`CANONICAL_SAME_L_WINDOW` (min..max), or None (caller
+    falls back to eager windowed decode). A wider engine beside it is
+    never picked while a window engine is built."""
+    lo, _, hi = CANONICAL_SAME_L_WINDOW
+    return find_same_l_engine(lo, hi)
+
+
+def find_same_l_full_engine(frames: int) -> Optional[tuple]:
+    """The SAME-L decoder for a whole-song decode of ``frames`` latent
+    frames: the narrowest engine covering that length, or None (the
+    decode stays eager)."""
+    return find_same_l_engine(frames, frames)
 
 
 _CODEC_SHA_CACHE: dict = {}

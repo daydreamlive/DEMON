@@ -72,7 +72,7 @@ def test_window_and_full_same_l_engines_coexist(monkeypatch, tmp_path):
     _engine(tmp_path, "same_l_decode_window_othertag_t32_1292_9000")      # another plugin build
 
     assert sa3_trt.find_same_l_window_engine() == (window, 32, 96)
-    assert sa3_trt.find_same_l_full_engine() == (full, 32, 3230)
+    assert sa3_trt.find_same_l_full_engine(1292) == (full, 32, 3230)
     assert [e[0] for e in sa3_trt.find_same_l_engines()] == [window, full]
 
 
@@ -81,12 +81,13 @@ def test_full_same_l_engine_absent_alone_window(monkeypatch, tmp_path):
     monkeypatch.delenv("SA3_SWA_AOT", raising=False)
     tag = sa3_trt.same_l_plugin_build_tag()
     _engine(tmp_path, f"same_l_decode_window_{tag}_t32_56_96")
-    assert sa3_trt.find_same_l_full_engine() is None
+    assert sa3_trt.find_same_l_full_engine(1292) is None
     tmp2 = tmp_path / "only_full"
     monkeypatch.setenv("ACESTEP_MODELS_DIR", str(tmp2))
     full = _engine(tmp2, f"same_l_decode_window_{tag}_t32_1292_3230")
-    assert sa3_trt.find_same_l_window_engine() is None
-    assert sa3_trt.find_same_l_full_engine() == (full, 32, 3230)
+    # selection is by coverage: a lone wide engine covers the window range too
+    assert sa3_trt.find_same_l_window_engine() == (full, 32, 3230)
+    assert sa3_trt.find_same_l_full_engine(1292) == (full, 32, 3230)
 
 
 def test_full_decode_routes_by_frames_one_latent_per_call():
