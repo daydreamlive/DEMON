@@ -2081,11 +2081,11 @@ class SA3Backend(DiffusionBackend):
         sync()
         t2 = time.perf_counter()
 
-        pcm = to_int16(audio48)                                    # [R, C, N]
-        pcm = np.ascontiguousarray(
-            pcm.reshape(len(seeds), len(streams), pcm.shape[1], pcm.shape[2])
-            .transpose(0, 1, 3, 2)
-        )                                                          # [V, S, N, C]
+        # Interleave the channels on the device before the one copy to the
+        # host: the CPU transpose of the int16 block (230 MB at 2:00, two
+        # versions) was the pack time.
+        pcm = to_int16(audio48.transpose(1, 2).contiguous())      # [R, N, C]
+        pcm = pcm.reshape(len(seeds), len(streams), pcm.shape[1], pcm.shape[2])  # [V, S, N, C]
         ids = tuple(
             store.put(lat.movedim(1, 2), n_streams=n, seed=int(seed))
             for seed, lat in zip(seeds, latents)
