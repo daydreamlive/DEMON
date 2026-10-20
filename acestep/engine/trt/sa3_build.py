@@ -128,6 +128,7 @@ from .build import _preflight, _save_build_report, _verify_engines
 
 from acestep.engine.sa3_helpers import require_sa3_vendor
 from acestep.engine.sa3_trt import (
+    CANONICAL_SAME_L_WINDOW,
     COND_DIM,
     IO_CHANNELS,
     SA3_SAMPLE_RATE,
@@ -212,9 +213,8 @@ CANONICAL_DIT_PROFILES: tuple[tuple[int, int, int], ...] = (
 # clamp would cut every >54 s small session down to the 646 engine.
 # Medium never gets it (its sessions are clamped to 646 by design).
 SMALL_EXTRA_DIT_PROFILES: tuple[tuple[int, int, int], ...] = ((1, 1292, 1292),)
-# SAME-L windowed decode profile: DEMON decodes ~1 s windows with 2 s of
-# context, so T stays inside [32, 96] with the steady state at 56.
-CANONICAL_SAME_L_WINDOW: tuple[int, int, int] = (32, 56, 96)
+# SAME-L windowed decode profile: CANONICAL_SAME_L_WINDOW (sa3_trt, imported
+# above; the runtime window finder reads the same range).
 # A SAME-L engine whose profile max reaches this many frames is a full-song
 # decoder (one-shot renders decode the whole latent in one call; e.g.
 # t32_1292_3230), not the ring's window decoder. Full-song engines are
