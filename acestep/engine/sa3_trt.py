@@ -564,7 +564,7 @@ def is_stock_dit_engine_path(engine_path) -> bool:
     name = path.parent.name
     return inside and any(
         rx.match(name) for rx in (
-            _DIT_DIR_RE, _DIT_FP8_DIR_RE, _DIT_REFIT_DIR_RE, _DIT_FP8_REFIT_DIR_RE,
+            _DIT_DIR_RE, _DIT_FP8_DIR_RE, _DIT_REFIT_DIR_RE,
         )
     )
 
