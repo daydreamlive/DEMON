@@ -56,10 +56,17 @@ def test_compact_frame_expands_to_the_plain_one():
     assert np.array_equal(whole.numpy(), plain.numpy())
 
 
+def test_compact_frame_expands_to_a_thirty_channel_layout():
+    a = np.zeros((8, 30), np.float32)
+    a[:, 12], a[:, 13] = 0.25, -0.25
+    out = _decode_compact_pcm(_compact(a, [12, 13]), {"encoding": "s16le", "channels": 30, "present": [12, 13]})
+    assert out.shape == (30, 8) and np.array_equal(out.numpy(), a.T)
+
+
 @pytest.mark.parametrize("pcm, frame_ch", [
     ({"encoding": "s24le", "channels": 10, "present": [4, 5]}, 2),
     ({"encoding": "s16le", "channels": 0, "present": [0]}, 1),
-    ({"encoding": "s16le", "channels": 17, "present": [0]}, 1),
+    ({"encoding": "s16le", "channels": 65, "present": [0]}, 1),
     ({"encoding": "s16le", "channels": True, "present": [0]}, 1),
     ({"encoding": "s16le", "channels": 10, "present": []}, 0),
     ({"encoding": "s16le", "channels": 10, "present": [4, 10]}, 2),
