@@ -1,9 +1,12 @@
-"""A stream layout's per-time hard keep (``StreamLayout.keep_mask``) and the
+"""A stream layout's per-time keep (``StreamLayout.keep_mask``) and the
 swap's ``keep`` field. Tier 1, no GPU.
 
-* ``keep_mask`` returning ``(mask, target)`` puts ``target`` on the kept
-  frames of every step's x0 (the finished latent holds it exactly); None,
-  or a layout without the hook, is bit-identical to no hook.
+* ``keep_mask`` returning ``(mask, target)`` drives SA3's native inpaint
+  conditioning: every forward of the slot gets ``local_add_cond = [mask,
+  target * mask]`` ``[1, 1 + C, T]``; the x0 is NOT overwritten unless the
+  layout's ``keep_overwrite`` is on, which puts ``target`` on the kept frames
+  of every step's x0 (the finished latent holds it exactly). None, or a
+  layout without the hook, is bit-identical to no hook.
 * ``swap_source(keep=...)`` reaches the layout's ``encode_source`` as
   ``keep=``; a swap without it calls every hook exactly as before.
 """
@@ -30,19 +33,36 @@ T = N_STREAMS * L
 
 
 class _KeepRuntime(_LayoutRuntime):
-    def __init__(self, keep=None):
+    def __init__(self, keep=None, overwrite=None):
         self.keep_calls = 0
         self.keep = keep
-        super().__init__({"keep_mask": self._keep})
+        kw = {"keep_mask": self._keep}
+        if overwrite is not None:
+            kw["keep_overwrite"] = overwrite
+        super().__init__(kw)
 
     def _keep(self, request):
         self.keep_calls += 1
         return self.keep
 
 
-def _final(runtime):
+class _RecDit(_StackDit):
+    """The stack DiT, recording every call's ``local_add_cond`` (None when
+    the bundle has none)."""
+
+    def __init__(self):
+        super().__init__()
+        self.lacs: list = []
+
+    def forward(self, x, t, **kwargs):
+        lac = kwargs.get("local_add_cond")
+        self.lacs.append(None if lac is None else lac.detach().clone())
+        return super().forward(x, t, **kwargs)
+
+
+def _final(runtime, dit=None):
     torch.manual_seed(0)
-    b, _context, _ = _layout_backend(runtime=runtime)
+    b, context, _ = _layout_backend(runtime=runtime, dit=dit)
     return _run_until_fresh(b, _knobs(b, sa3_denoise=0.7, seed=7))
 
 
@@ -80,14 +100,66 @@ def test_no_keep_is_bit_identical():
     assert torch.equal(none, stock)            # ... and None = no hook, bit-exact
 
 
-def test_kept_frames_hold_the_target_and_the_rest_moves():
+def test_no_keep_passes_the_bundle_untouched():
+    dit = _RecDit()
+    _final(_KeepRuntime(None), dit=dit)
+    assert dit.lacs and all(lac is None for lac in dit.lacs)
+
+
+def test_keep_drives_the_native_inpaint_conditioning_without_overwrite():
     stock = _final(_LayoutRuntime())
     a, b = L + 2, L + 7                        # inside stream 1
     mask, target = _keep(a, b)
-    out = _final(_KeepRuntime((mask, target)))
+    dit = _RecDit()
+    rt = _KeepRuntime((mask, target))
+    out = _final(rt, dit=dit)
+    assert dit.lacs
+    for lac in dit.lacs:
+        assert lac.shape == (1, 1 + C, T)
+        assert torch.equal(lac[:, :1], mask.float())
+        assert torch.equal(lac[:, 1:], target * mask)
+    # the stack DiT ignores the conditioning, and no overwrite is on by
+    # default: the step math is the stock step
+    assert torch.equal(out, stock)
+    # once per slot per step, never twice (forward and overwrite share it)
+    assert rt.keep_calls == len(dit.lacs)
+
+
+def test_keep_cond_follows_the_bundle_dtype_and_checks_channels():
+    a = SA3Adapter(_StackDit(), schedule_builder=_schedule_builder_factory(2),
+                   device="cpu", dtype=torch.float32)
+    m, t = _keep(3, 9)
+    keep = (m.movedim(1, 2), t.movedim(1, 2))
+    aux = {"local_add_cond": torch.zeros(1, 1 + C, T, dtype=torch.float16), "x": 1}
+    out = a.keep_cond(aux, keep)
+    assert out is not aux and aux["local_add_cond"].abs().sum() == 0
+    assert out["x"] == 1 and out["local_add_cond"].dtype == torch.float16
+    assert torch.equal(out["local_add_cond"][:, 0], m[:, 0].half())
+    with pytest.raises(ValueError):
+        a.keep_cond({"local_add_cond": torch.zeros(1, 9, T)}, keep)
+    assert a.keep_cond(None, keep)["local_add_cond"].shape == (1, 1 + C, T)
+
+
+def test_overwrite_option_holds_the_kept_frames_and_the_rest_moves():
+    stock = _final(_LayoutRuntime())
+    a, b = L + 2, L + 7                        # inside stream 1
+    mask, target = _keep(a, b)
+    out = _final(_KeepRuntime((mask, target), overwrite=True))
     want = target.movedim(1, 2)
     assert torch.equal(out[:, a:b], want[:, a:b])
     assert not torch.equal(out, stock)
+    # the flag is read every step: a callable returning False is no overwrite
+    off = _final(_KeepRuntime((mask, target), overwrite=lambda: False))
+    assert torch.equal(off, stock)
+
+
+def test_layout_keep_overwrite_defaults_off():
+    from acestep.plugins.model_extensions import StreamLayout
+
+    assert StreamLayout(n_streams=2).keep_overwrite is False
+    a = SA3Adapter(_StackDit(), schedule_builder=_schedule_builder_factory(2),
+                   device="cpu", dtype=torch.float32, keep_mask=lambda r: None)
+    assert a.keep_overwrite is False
 
 
 def test_backend_hands_keep_to_the_layout_encode_only_when_given():

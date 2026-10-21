@@ -576,6 +576,9 @@ class SA3Backend(DiffusionBackend):
             keep_mask=(
                 getattr(layout, "keep_mask", None) if layout is not None else None
             ),
+            keep_overwrite=(
+                getattr(layout, "keep_overwrite", False) if layout is not None else False
+            ),
         )
 
         # Phase-2 refit mirror: engaged only when the selected DiT is a
