@@ -56,6 +56,7 @@ class SA3Adapter:
         make_noise: Optional[Callable] = None,
         make_renoise: Optional[Callable] = None,
         on_slot_done: Optional[Callable] = None,
+        keep_mask: Optional[Callable] = None,
     ):
         self.dit = dit
         self.schedule_builder = schedule_builder
@@ -89,6 +90,30 @@ class SA3Adapter:
         # pipeline probes ``getattr(adapter, "on_slot_done", None)``).
         if on_slot_done is not None:
             self.on_slot_done = on_slot_done
+        # Optional per-time hard keep, bound the same way (the pipeline
+        # probes ``getattr(adapter, "keep_mask", None)``).
+        if keep_mask is not None:
+            self._keep_fn = keep_mask
+            self.keep_mask = self._layout_keep
+
+    def _layout_keep(self, request):
+        """The layout's keep for ``request``'s slot in the engine layout:
+        ``(mask [1, T, 1] bool, target [1, T, C])`` on the pipeline device
+        and dtype, or None (no keep)."""
+        keep = self._keep_fn(request)
+        if keep is None:
+            return None
+        mask, target = keep
+        T = self.request_frames(request)
+        if tuple(mask.shape) != (1, 1, T) or tuple(target.shape) != (1, self.latent_channels, T):
+            raise ValueError(
+                f"stream layout keep shapes {tuple(mask.shape)}, {tuple(target.shape)} "
+                f"!= (1, 1, {T}), (1, {self.latent_channels}, {T})"
+            )
+        return (
+            mask.to(device=self._device, dtype=torch.bool).movedim(1, 2),
+            target.to(device=self._device, dtype=self._dtype).movedim(1, 2),
+        )
 
     def _layout_renoise(self, request, step: int):
         """The supplied re-noise draw for ``step`` (or None = the stock

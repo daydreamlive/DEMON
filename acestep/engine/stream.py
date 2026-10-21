@@ -1413,6 +1413,7 @@ class StreamPipeline:
         step_sde_curve = self._get_compiled(ode_steps.step_sde_curve)
         step_sde_renoise = self._get_compiled(ode_steps.step_sde_renoise)
         make_renoise = getattr(self.adapter, "make_renoise", None)
+        keep_mask = getattr(self.adapter, "keep_mask", None)
 
         for si, slot in enumerate(slots):
             t_curr = slot.t_schedule[slot.step_idx].item()
@@ -1478,11 +1479,15 @@ class StreamPipeline:
 
             # Any blend that needs x0_pred pushes us out of the fast
             # direct-ODE path. SDE (curve or bare) also needs x0_pred.
+            # A stream layout's per-time hard keep (RePaint): the kept
+            # frames' x0 is the layout's target at every step.
+            keep = keep_mask(req) if keep_mask is not None else None
             needs_x0 = (
                 has_complex_features
                 or scalar_x0_target
                 or use_sde
                 or t_next <= 0
+                or keep is not None
             )
 
             if not needs_x0:
@@ -1523,6 +1528,9 @@ class StreamPipeline:
             elif scalar_x0_target:
                 alpha = eff_strength.to(device=x0_pred.device, dtype=x0_pred.dtype)
                 x0_pred = (1.0 - alpha) * x0_pred + alpha * req.x0_target
+
+            if keep is not None:
+                x0_pred = torch.where(keep[0], keep[1], x0_pred)
 
             if t_next <= 0:
                 # Final step. ODE and bare-SDE return the clean x0

@@ -42,6 +42,9 @@ def _default_swap_pending() -> dict:
         # Opt-in swap-resize request (wire ``duration_s``): the render
         # window to re-derive for the new source, None = keep geometry.
         "duration_s": None,
+        # Optional per-stream keep (wire ``keep``) for a stream layout's
+        # encode_source; None = the field was absent.
+        "keep": None,
     }
 
 

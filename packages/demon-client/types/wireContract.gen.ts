@@ -319,6 +319,8 @@ export interface SwapSourceCommand {
   duration_s?: number | null;
   /** Describes a compact binary frame: {encoding: f32le|s16le, channels: the full channel count, present: the channels the frame carries, in its order (default all)}. The frame's <II header gives its own channel count, which must equal len(present); every other channel is silence, and s16le samples read as value / 32768. Honored only when ready's capabilities declare compact_pcm. Absent = the full float32 frame. */
   pcm?: Record<string, unknown>;
+  /** Optional per-stream keep for a stream layout, e.g. {drums: [start_s, end_s]}: the stream keeps its upload on that range and the layout generates around it. Handed to the layout's encode_source as keep=; the layout validates it. Absent = no change. */
+  keep?: Record<string, unknown>;
 }
 
 export interface WriteAudioCommand {

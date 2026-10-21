@@ -525,6 +525,14 @@ COMMANDS: tuple = (
                                   "only when ready's capabilities declare "
                                   "compact_pcm. Absent = the full float32 "
                                   "frame."),
+            FieldSpec("keep", "dict",
+                      description="Optional per-stream keep for a stream "
+                                  "layout, e.g. {drums: [start_s, end_s]}: "
+                                  "the stream keeps its upload on that range "
+                                  "and the layout generates around it. Handed "
+                                  "to the layout's encode_source as keep=; "
+                                  "the layout validates it. Absent = no "
+                                  "change."),
         ),
         binary=True,
         binary_optional=True,
