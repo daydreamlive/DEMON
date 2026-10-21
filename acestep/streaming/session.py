@@ -2922,7 +2922,7 @@ class StreamingSession:
         legacy pod and a new client stay compatible in both directions.
 
         ``keep`` (wire field of the same name) is an opaque per-stream keep
-        mapping for a stream layout (e.g. ``{"drums": [start_s, end_s]}``),
+        mapping for a stream layout (e.g. ``{"drums": [[s0, e0], [s1, e1]]}``),
         handed to the backend's swap hook; the layout validates it.
         """
         state = self.state

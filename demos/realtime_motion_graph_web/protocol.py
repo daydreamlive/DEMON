@@ -527,9 +527,11 @@ COMMANDS: tuple = (
                                   "frame."),
             FieldSpec("keep", "dict",
                       description="Optional per-stream keep for a stream "
-                                  "layout, e.g. {drums: [start_s, end_s]}: "
-                                  "the stream keeps its upload on that range "
-                                  "and the layout generates around it. Handed "
+                                  "layout, e.g. {drums: [[s0, e0], [s1, e1]]} "
+                                  "(a list of [start_s, end_s] ranges; a "
+                                  "single [start_s, end_s] is one range): "
+                                  "the stream keeps its upload on those ranges "
+                                  "and the layout generates around them. Handed "
                                   "to the layout's encode_source as keep=; "
                                   "the layout validates it. Absent = no "
                                   "change."),
