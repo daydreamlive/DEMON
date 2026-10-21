@@ -216,6 +216,9 @@ def prepare_sa3_conditioning(
 
     conditioning_tensors = sam.model.conditioner(conditioning, device)
 
+    # Zeros = nothing known. A stream layout's per-time keep replaces the
+    # resulting local_add_cond per slot (SA3Adapter.keep_cond, driven by
+    # StreamLayout.keep_mask); the session bundle itself stays zeros.
     mask = torch.zeros((1, 1, latent_frames), device=device)
     inpaint_input = torch.zeros(
         (1, sam.model.io_channels, latent_frames), device=device,
