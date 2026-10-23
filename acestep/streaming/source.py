@@ -85,9 +85,11 @@ def _decode_audio_msg(audio_msg: bytes, max_channels: int | None = 2) -> torch.T
 
 #: Sample encodings a compact ``swap_source`` frame may carry.
 PCM_ENCODINGS = {"f32le": np.float32, "s16le": np.int16}
-#: The widest layout a compact frame expands to, and the most memory the
-#: expansion may take (what a float32 frame at the inbound limit takes).
-PCM_MAX_CHANNELS = 16
+#: The widest layout a compact frame expands to (a stacked-stream source
+#: with a song per stream per condition runs to 30 channels), and the most
+#: memory the expansion may take (what a float32 frame at the inbound limit
+#: takes).
+PCM_MAX_CHANNELS = 64
 PCM_MAX_BYTES = 1 << 30
 
 
