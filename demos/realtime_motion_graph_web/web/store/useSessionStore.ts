@@ -37,6 +37,15 @@ interface SessionState {
   /** Server-issued WS URL (from /api/queue/join). Null when no queue is in
    *  use — useStartSession falls back to defaultWsUrl(). */
   wsUrl: string | null;
+  /** Fixture name the LIVE session is actually bound to server-side.
+   *  Distinct from usePerformanceStore.fixture (what the UI shows
+   *  selected): the two diverge when the user picks a different track
+   *  while the socket is down. The reconnect path rebinds to the
+   *  fixture snapshotted at session start, so without reconciling
+   *  against the current selection the recovered session keeps playing
+   *  the stale track. useFixtureSwap reads this to detect and heal that
+   *  divergence on reconnect. Null until the first session binds. */
+  boundFixture: string | null;
   /** Active checkpoint's model-scale label ("2B" | "5B" | null). Set
    *  from the WS ready message and from /api/loras. Null when unknown.
    *  The LoRA library uses this to hide LoRAs whose trained
@@ -78,6 +87,7 @@ interface SessionState {
   setMonitor: (monitor: NetworkMonitor | null) => void;
   setReconnector: (reconnector: WsReconnector | null) => void;
   setWsUrl: (wsUrl: string | null) => void;
+  setBoundFixture: (fixture: string | null) => void;
   setCheckpointScale: (scale: string | null) => void;
   setPipelineDepth: (depth: number | null) => void;
   setMaxPipelineDepth: (max: number | null) => void;
@@ -99,6 +109,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   monitor: null,
   reconnector: null,
   wsUrl: null,
+  boundFixture: null,
   checkpointScale: null,
   pipelineDepth: null,
   maxPipelineDepth: null,
@@ -115,6 +126,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setMonitor: (monitor) => set({ monitor }),
   setReconnector: (reconnector) => set({ reconnector }),
   setWsUrl: (wsUrl) => set({ wsUrl }),
+  setBoundFixture: (fixture) => set({ boundFixture: fixture }),
   setCheckpointScale: (scale) => set({ checkpointScale: scale }),
   setPipelineDepth: (depth) => set({ pipelineDepth: depth }),
   setMaxPipelineDepth: (max) => set({ maxPipelineDepth: max }),
@@ -139,6 +151,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       player: null,
       monitor: null,
       reconnector: null,
+      // Per-session truth: the next session rebinds its own fixture.
+      boundFixture: null,
       pipelineDepth: null,
       maxPipelineDepth: null,
       // Capability mask is per-session truth (the next session may pick
