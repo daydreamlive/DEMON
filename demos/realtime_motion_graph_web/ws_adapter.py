@@ -2338,6 +2338,7 @@ def _handle_client_body(
                     fixture_name=data.get("fixture_name"),
                     stem_source_mode=data.get("stem_source_mode"),
                     duration_s=data.get("duration_s"),
+                    keep=data.get("keep"),
                     origin=origin,
                 )
             elif mtype == "write_audio":

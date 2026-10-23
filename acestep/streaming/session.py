@@ -46,6 +46,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import asdict
 
 import numpy as np
@@ -1367,6 +1368,7 @@ class StreamingSession:
                 known_fixtures=KNOWN_FIXTURES,
             )
             new_duration_s = state.swap_pending.get("duration_s")
+            new_keep = state.swap_pending.get("keep")
             if new_wf is None:
                 return
             state.swap_pending["waveform"] = None
@@ -1377,6 +1379,7 @@ class StreamingSession:
             state.swap_pending["fixture_name"] = None
             state.swap_pending["stem_source_mode"] = None
             state.swap_pending["duration_s"] = None
+            state.swap_pending["keep"] = None
 
         # Backend control hook (universal op, family-specific
         # implementation, the handle_set_prompt convention): a backend
@@ -1387,7 +1390,7 @@ class StreamingSession:
         handle = getattr(self.backend, "handle_swap_source", None)
         if handle is not None:
             self._apply_swap_backend_owned(
-                handle, new_wf, new_fixture_name, new_duration_s,
+                handle, new_wf, new_fixture_name, new_duration_s, new_keep,
             )
             return
         # The upload may carry more than two channels (only a stream
@@ -1627,7 +1630,7 @@ class StreamingSession:
                     pass
 
     def _apply_swap_backend_owned(
-        self, handle, new_wf, fixture_name, duration_s=None,
+        self, handle, new_wf, fixture_name, duration_s=None, keep=None,
     ) -> None:
         """Swap for backends that own their source anchor (the
         ``handle_swap_source`` hook — SA3). None of the ACE body
@@ -1644,6 +1647,9 @@ class StreamingSession:
         pipeline at the new window); the hook then returns the new
         playback length and the session's duration/buffer follow it, so
         ``SwapReady`` carries the RESIZED geometry to the client.
+        ``keep`` (the wire's optional per-stream keep) is passed to the
+        hook as ``keep=`` only when present.
+
         Publishes :class:`SwapReady` / :class:`SwapFailed` like the ACE
         body. Runner thread (before_tick), like everything above."""
         state = self.state
@@ -1684,10 +1690,10 @@ class StreamingSession:
                 self.backend.name, wf.shape[-1] / SAMPLE_RATE,
                 wf.shape[0], fixture_name, resize_s,
             )
-            new_playback = (
-                handle(wf, SAMPLE_RATE, duration_s=resize_s)
-                if resize_s is not None else handle(wf, SAMPLE_RATE)
-            )
+            hook_kw = {} if resize_s is None else {"duration_s": resize_s}
+            if keep is not None:
+                hook_kw["keep"] = keep
+            new_playback = handle(wf, SAMPLE_RATE, **hook_kw)
 
             # Fresh client buffer: the (truncated) new source at the
             # delivery rate, zero-padded out to the session's render
@@ -2901,6 +2907,7 @@ class StreamingSession:
         fixture_name: str | None = None,
         stem_source_mode: str | None = None,
         duration_s: float | int | None = None,
+        keep: Mapping | None = None,
         origin: CommandOrigin = CommandOrigin.PRIMARY,
     ) -> None:
         """Stage a source swap. The runner applies it inside
@@ -2913,6 +2920,10 @@ class StreamingSession:
         padding/truncating it into the session-create window. Ignored —
         loudly — when the backend doesn't declare the capability, so a
         legacy pod and a new client stay compatible in both directions.
+
+        ``keep`` (wire field of the same name) is an opaque per-stream keep
+        mapping for a stream layout (e.g. ``{"drums": [[s0, e0], [s1, e1]]}``),
+        handed to the backend's swap hook; the layout validates it.
         """
         state = self.state
         state.last_activity_ts = time.monotonic()
@@ -2939,6 +2950,7 @@ class StreamingSession:
             except (TypeError, ValueError):
                 dur = None
             state.swap_pending["duration_s"] = dur if dur and dur > 0 else None
+            state.swap_pending["keep"] = dict(keep) if isinstance(keep, Mapping) else None
 
     @requires_capability("write_audio", "write_audio")
     def write_audio(

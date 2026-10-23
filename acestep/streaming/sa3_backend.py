@@ -573,6 +573,12 @@ class SA3Backend(DiffusionBackend):
             on_slot_done=(
                 getattr(layout, "on_slot_done", None) if layout is not None else None
             ),
+            keep_mask=(
+                getattr(layout, "keep_mask", None) if layout is not None else None
+            ),
+            keep_overwrite=(
+                getattr(layout, "keep_overwrite", False) if layout is not None else False
+            ),
         )
 
         # Phase-2 refit mirror: engaged only when the selected DiT is a
@@ -652,14 +658,14 @@ class SA3Backend(DiffusionBackend):
                 lambda s, _c=new_cond: context.make_schedule_builder(_c, s)
             )
 
-        def _source_encoder(waveform, sample_rate, sample_size):
+        def _source_encoder(waveform, sample_rate, sample_size, **kw):
             # Source re-anchor (handle_swap_source): the same
             # SAME-encode the create path ran for the initial upload —
             # the (sample_rate, waveform) tuple rides prepare_audio's
             # resample, and sample_size (the session's fixed
             # cond.audio_sample_size) pins the latent geometry.
             return context.encode_source(
-                (int(sample_rate), waveform), int(sample_size),
+                (int(sample_rate), waveform), int(sample_size), **kw,
             )
 
         # Sampler follows the loaded checkpoint's training objective.
@@ -1180,7 +1186,8 @@ class SA3Backend(DiffusionBackend):
         )
 
     def handle_swap_source(self, waveform, sample_rate,
-                           duration_s: Optional[float] = None) -> Optional[int]:
+                           duration_s: Optional[float] = None,
+                           keep=None) -> Optional[int]:
         """Re-anchor the session on a new source (the session's
         backend-owned ``swap_source`` hook, dispatched from
         ``_apply_swap_if_pending`` on the runner thread). SAME-encodes
@@ -1201,6 +1208,10 @@ class SA3Backend(DiffusionBackend):
         the session resizes its buffer/state from that. Absent
         ``duration_s`` (legacy clients) the geometry stays frozen at its
         session-create value, byte-identical to the old behavior.
+
+        ``keep`` (the wire's optional ``keep`` field) is handed to a stream
+        layout's ``encode_source`` as ``keep=`` (the layout parses it; see
+        ``StreamLayout.keep_mask``). Absent, the encode call is unchanged.
 
         In-flight pipeline slots were initialised from the old anchor
         and finish on it; what emerges from them is a cover of the
@@ -1294,7 +1305,11 @@ class SA3Backend(DiffusionBackend):
             # session layer publishes SwapFailed and nothing moved). The
             # resizer is pure, so there is nothing of the new geometry to
             # roll back here.
-            latent_bct = self._source_encoder(waveform, sample_rate, sample_size)
+            latent_bct = (
+                self._source_encoder(waveform, sample_rate, sample_size)
+                if keep is None
+                else self._source_encoder(waveform, sample_rate, sample_size, keep=keep)
+            )
             encode_ms = (time.perf_counter() - t0) * 1000
             latent_btc = latent_bct.movedim(1, 2).contiguous()
             # Publish atomically w.r.t. the command thread's conditioning

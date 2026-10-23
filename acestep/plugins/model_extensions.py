@@ -259,6 +259,24 @@ class StreamLayout:
     when some regenerated stream is below 1.0 (checked by signature); a
     layout without it serves re-rolls only.
 
+    ``keep_mask(request) -> (mask, target) | None``: a per-time keep for
+    the slot built from ``request``, asked once per slot per step. ``mask``
+    is a bool ``[1, 1, n_streams * L]`` (SA3-native, True = kept frame) and
+    ``target`` the clean ``[1, C, n_streams * L]`` latent those frames
+    hold. It drives SA3's NATIVE inpaint conditioning: every forward of the
+    slot (ring and one-shot) gets ``local_add_cond = [mask, target * mask]``
+    instead of zeros, per (stream, frame) token, so mask only the known
+    stream's rows (a mask on every stream tells the others "known
+    silence"). ``None`` (or the field absent) leaves the step exactly as it
+    was. A layout that takes a ``keep=`` keyword in ``encode_source``
+    receives the swap's ``keep`` field there (an opaque mapping the layout
+    parses, e.g. per-stream lists of ``[start_s, end_s]`` ranges).
+
+    ``keep_overwrite`` (bool, or a no-argument callable read every step;
+    default False): the kept frames' predicted x0 is ALSO replaced by
+    ``target`` after every other blend (RePaint), for A/B against the
+    native conditioning alone.
+
     Each stream is decoded separately: a decoder's receptive field would
     otherwise bleed across stream boundaries.
     """
@@ -277,6 +295,8 @@ class StreamLayout:
     max_duration_s: float | None = None
     version_controls: Callable | None = None
     hold_streams: Callable | None = None
+    keep_mask: Callable | None = None
+    keep_overwrite: Callable | bool = False
 
     def __post_init__(self):
         if int(self.n_streams) < 1:

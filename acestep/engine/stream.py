@@ -1269,6 +1269,25 @@ class StreamPipeline:
             else:
                 xt_decoder_list.append(xt)
 
+        # --- A stream layout's per-time keep, once per slot per step ---
+        # ``(mask [1, T, 1] bool, target [1, T, C])`` or None. It drives the
+        # adapter's native inpaint conditioning for the slot's forwards
+        # (``adapter.keep_cond``) and, only when the adapter's
+        # ``keep_overwrite`` is on, the RePaint x0 overwrite below. No hook,
+        # or None for a slot, leaves that slot's step exactly as before.
+        keep_mask = getattr(self.adapter, "keep_mask", None)
+        slot_keeps = [
+            keep_mask(slot.request) if keep_mask is not None else None
+            for slot in slots
+        ]
+
+        def _slot_aux(si: int):
+            aux = slots[si].request.aux_cond
+            keep = slot_keeps[si]
+            if keep is None:
+                return aux
+            return self.adapter.keep_cond(aux, keep)
+
         # --- Active pos/neg conditions per slot ---
         # ``neg_conds_per_slot[si]`` is non-empty only when slot ``si``
         # needs an actual uncond forward pass *this step*. RCFG modes
@@ -1307,9 +1326,7 @@ class StreamPipeline:
                 ctx_list=[
                     slots[si].request.context_latents for si in pair_slot_idx
                 ],
-                aux_list=[
-                    slots[si].request.aux_cond for si in pair_slot_idx
-                ],
+                aux_list=[_slot_aux(si) for si in pair_slot_idx],
             )
 
         # --- Positive pass: one call across all slots' pos conditions ---
@@ -1413,6 +1430,9 @@ class StreamPipeline:
         step_sde_curve = self._get_compiled(ode_steps.step_sde_curve)
         step_sde_renoise = self._get_compiled(ode_steps.step_sde_renoise)
         make_renoise = getattr(self.adapter, "make_renoise", None)
+        keep_overwrite = keep_mask is not None and bool(
+            getattr(self.adapter, "keep_overwrite", False)
+        )
 
         for si, slot in enumerate(slots):
             t_curr = slot.t_schedule[slot.step_idx].item()
@@ -1478,11 +1498,17 @@ class StreamPipeline:
 
             # Any blend that needs x0_pred pushes us out of the fast
             # direct-ODE path. SDE (curve or bare) also needs x0_pred.
+            # A stream layout's per-time keep as a RePaint overwrite (the
+            # kept frames' x0 is the layout's target at every step): only
+            # when the adapter's keep_overwrite is on (A/B against the
+            # native conditioning alone).
+            keep = slot_keeps[si] if keep_overwrite else None
             needs_x0 = (
                 has_complex_features
                 or scalar_x0_target
                 or use_sde
                 or t_next <= 0
+                or keep is not None
             )
 
             if not needs_x0:
@@ -1523,6 +1549,9 @@ class StreamPipeline:
             elif scalar_x0_target:
                 alpha = eff_strength.to(device=x0_pred.device, dtype=x0_pred.dtype)
                 x0_pred = (1.0 - alpha) * x0_pred + alpha * req.x0_target
+
+            if keep is not None:
+                x0_pred = torch.where(keep[0], keep[1], x0_pred)
 
             if t_next <= 0:
                 # Final step. ODE and bare-SDE return the clean x0

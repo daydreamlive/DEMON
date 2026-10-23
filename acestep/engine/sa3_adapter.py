@@ -56,6 +56,8 @@ class SA3Adapter:
         make_noise: Optional[Callable] = None,
         make_renoise: Optional[Callable] = None,
         on_slot_done: Optional[Callable] = None,
+        keep_mask: Optional[Callable] = None,
+        keep_overwrite=None,
     ):
         self.dit = dit
         self.schedule_builder = schedule_builder
@@ -89,6 +91,74 @@ class SA3Adapter:
         # pipeline probes ``getattr(adapter, "on_slot_done", None)``).
         if on_slot_done is not None:
             self.on_slot_done = on_slot_done
+        # Optional per-time keep, bound the same way (the pipeline probes
+        # ``getattr(adapter, "keep_mask", None)``). It drives SA3's native
+        # inpaint conditioning (:meth:`keep_cond`); ``keep_overwrite`` (a
+        # bool or a no-argument callable read every step, default off)
+        # adds the RePaint x0 overwrite on the kept frames for A/B.
+        if keep_mask is not None:
+            self._keep_fn = keep_mask
+            self.keep_mask = self._layout_keep
+        self._keep_overwrite = keep_overwrite
+
+    @property
+    def keep_overwrite(self) -> bool:
+        """The layout's keep also overwrites the kept frames' x0 (RePaint)
+        on top of the native conditioning. Off unless configured."""
+        flag = self._keep_overwrite
+        if callable(flag):
+            flag = flag()
+        return bool(flag)
+
+    def keep_cond(self, aux: Optional[dict], keep) -> dict:
+        """``aux`` (a slot's cond bundle) with SA3's native inpaint
+        conditioning set from ``keep`` (engine-layout ``(mask [1, T, 1]
+        bool, target [1, T, C])``, as :meth:`keep_mask` returns it):
+        ``local_add_cond`` = ``[inpaint_mask (1 ch, 1 = keep),
+        inpaint_masked_input (C ch, target * mask)]`` ``[1, 1 + C, T]``,
+        the tensor ``prepare_sa3_conditioning`` builds from zeros and every
+        block's ``to_local_embed`` adds per token (per (stream, frame) token
+        under a stream layout, so a mask on one stream's rows tells only
+        that stream its frames are known). A NEW dict; ``aux`` is left as
+        it is. The dtype and device follow ``aux``'s own ``local_add_cond``
+        (the adapter's when it has none)."""
+        mask, target = keep
+        m = mask.movedim(1, 2).to(dtype=torch.float32)          # [1, 1, T]
+        tgt = target.movedim(1, 2).to(dtype=torch.float32)      # [1, C, T]
+        lac = torch.cat([m, tgt * m], dim=1)
+        out = dict(aux) if aux is not None else {}
+        ref = out.get("local_add_cond")
+        if torch.is_tensor(ref):
+            if tuple(ref.shape[1:]) != tuple(lac.shape[1:]):
+                raise ValueError(
+                    f"keep local_add_cond {tuple(lac.shape)} does not match the "
+                    f"bundle's {tuple(ref.shape)}"
+                )
+            lac = lac.to(device=ref.device, dtype=ref.dtype)
+        else:
+            lac = lac.to(device=self._device, dtype=self._dtype)
+        out["local_add_cond"] = lac
+        return out
+
+    def _layout_keep(self, request):
+        """The layout's keep for ``request``'s slot in the engine layout:
+        ``(mask [1, T, 1] bool, target [1, T, C])`` on the pipeline device
+        and dtype, or None (no keep). The pipeline calls it once per slot
+        per step."""
+        keep = self._keep_fn(request)
+        if keep is None:
+            return None
+        mask, target = keep
+        T = self.request_frames(request)
+        if tuple(mask.shape) != (1, 1, T) or tuple(target.shape) != (1, self.latent_channels, T):
+            raise ValueError(
+                f"stream layout keep shapes {tuple(mask.shape)}, {tuple(target.shape)} "
+                f"!= (1, 1, {T}), (1, {self.latent_channels}, {T})"
+            )
+        return (
+            mask.to(device=self._device, dtype=torch.bool).movedim(1, 2),
+            target.to(device=self._device, dtype=self._dtype).movedim(1, 2),
+        )
 
     def _layout_renoise(self, request, step: int):
         """The supplied re-noise draw for ``step`` (or None = the stock

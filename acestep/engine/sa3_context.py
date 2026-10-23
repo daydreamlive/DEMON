@@ -571,7 +571,7 @@ class SA3Context:
 
         return _builder
 
-    def encode_source(self, audio_input, audio_sample_size: int) -> torch.Tensor:
+    def encode_source(self, audio_input, audio_sample_size: int, keep=None) -> torch.Tensor:
         """SAME-encode an audio source for audio-to-audio streaming.
         Returns the native ``[1, 256, T]`` latent. Under the song-length
         label the source is tiled to fill the render window (see
@@ -581,10 +581,16 @@ class SA3Context:
         Under a stream layout the result is the stacked ``[1, 256, n*L]``
         anchor: the layout's own ``encode_source`` when it has one, else
         the single-stream encode repeated into every stream.
-        ``audio_sample_size`` is always ONE stream's window."""
+        ``audio_sample_size`` is always ONE stream's window. ``keep`` (a
+        swap's keep field) reaches the layout's ``encode_source`` as
+        ``keep=`` only when given; nothing else reads it."""
         layout = self.stream_layout()
         if layout is not None:
             if layout.encode_source is not None:
+                if keep is not None:
+                    return layout.encode_source(
+                        self, audio_input, int(audio_sample_size), keep=keep,
+                    )
                 return layout.encode_source(
                     self, audio_input, int(audio_sample_size),
                 )

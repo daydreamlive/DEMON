@@ -196,9 +196,11 @@ class _LayoutContext(_StockContext):
         return torch.randn(1, C, N_STREAMS * L)
 
 
-def _layout_backend(runtime=None, codec=None, **kw):
+def _layout_backend(runtime=None, codec=None, dit=None, **kw):
     runtime = runtime if runtime is not None else _LayoutRuntime()
     context = _LayoutContext(runtime, codec=codec)
+    if dit is not None:
+        context.dit_made = dit
     ext = _selected()
     b = SA3Backend.from_context(
         context,
