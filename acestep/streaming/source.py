@@ -65,18 +65,76 @@ def _try_load_sidecar(
     return sc
 
 
-def _decode_audio_msg(audio_msg: bytes) -> torch.Tensor:
-    """Parse a binary audio frame into a [≤2, N] float32 tensor.
+def _decode_audio_msg(audio_msg: bytes, max_channels: int | None = 2) -> torch.Tensor:
+    """Parse a binary audio frame into a [≤max_channels, N] float32 tensor.
 
     Wire format (shared by the init handshake, ``swap_source``,
     ``set_timbre_source``, ``set_structure_source``): little-endian
     ``<II`` header carrying (channels, samples), followed by interleaved
-    float32 PCM. Returns the waveform clipped to stereo (the model only
-    consumes 2 channels).
+    float32 PCM. Returns the waveform clipped to stereo by default (the
+    stock model only consumes 2 channels). ``max_channels=None`` keeps
+    every channel: ``swap_source`` hands the full upload to the session,
+    which clips it to stereo everywhere except a stream layout's own
+    ``encode_source`` (see ``SA3Backend.handle_swap_source``).
     """
     ch, n = struct.unpack("<II", audio_msg[:8])
     arr = np.frombuffer(audio_msg[8:], dtype=np.float32).reshape(n, ch)
-    return torch.from_numpy(arr.T.copy())[:2]
+    wf = torch.from_numpy(arr.T.copy())
+    return wf if max_channels is None else wf[:max_channels]
+
+
+#: Sample encodings a compact ``swap_source`` frame may carry.
+PCM_ENCODINGS = {"f32le": np.float32, "s16le": np.int16}
+#: The widest layout a compact frame expands to (a stacked-stream source
+#: with a song per stream per condition runs to 30 channels), and the most
+#: memory the expansion may take (what a float32 frame at the inbound limit
+#: takes).
+PCM_MAX_CHANNELS = 64
+PCM_MAX_BYTES = 1 << 30
+
+
+def _decode_compact_pcm(audio_msg: bytes, pcm: dict) -> torch.Tensor:
+    """Parse a binary frame described by a ``pcm`` field into the full
+    ``[pcm.channels, N]`` float32 tensor.
+
+    The frame has the usual ``<II`` header (the frame's own channel count
+    and samples) and then interleaved samples in ``pcm.encoding``
+    (``f32le``, or ``s16le`` read as value / 32768). It carries only the
+    channels listed in ``pcm.present`` (positions in the full layout, in
+    the frame's order); every other channel of the ``pcm.channels`` the
+    result has is silence. ``present`` defaults to all of them. The result
+    is what ``_decode_audio_msg(max_channels=None)`` returns for the same
+    audio sent whole.
+    """
+    if not isinstance(pcm, dict):
+        raise ValueError("pcm must be an object")
+    enc = pcm.get("encoding", "f32le")
+    if enc not in PCM_ENCODINGS:
+        raise ValueError(f"pcm.encoding {enc!r} is not one of {sorted(PCM_ENCODINGS)}")
+    total = pcm.get("channels")
+    if not isinstance(total, int) or isinstance(total, bool) or not 1 <= total <= PCM_MAX_CHANNELS:
+        raise ValueError(f"pcm.channels must be an integer in 1..{PCM_MAX_CHANNELS}")
+    present = pcm.get("present", list(range(total)))
+    if (
+        not isinstance(present, list) or not present
+        or any(not isinstance(c, int) or isinstance(c, bool) or not 0 <= c < total for c in present)
+        or len(set(present)) != len(present)
+    ):
+        raise ValueError(f"pcm.present must list distinct channels in 0..{total - 1}")
+    if len(audio_msg) < 8:
+        raise ValueError("pcm frame has no header")
+    ch, n = struct.unpack("<II", audio_msg[:8])
+    if ch != len(present):
+        raise ValueError(f"pcm frame carries {ch} channels, pcm.present lists {len(present)}")
+    if n * total * 4 > PCM_MAX_BYTES:
+        raise ValueError("pcm frame expands past the upload limit")
+    dtype = np.dtype(PCM_ENCODINGS[enc])
+    if len(audio_msg) - 8 != n * ch * dtype.itemsize:
+        raise ValueError(f"pcm frame is {len(audio_msg) - 8} bytes, expected {n * ch * dtype.itemsize}")
+    arr = np.frombuffer(audio_msg[8:], dtype=dtype).reshape(n, ch)
+    out = np.zeros((total, n), dtype=np.float32)
+    out[present] = arr.T if enc == "f32le" else arr.T.astype(np.float32) / 32768.0
+    return torch.from_numpy(out)
 
 
 def _load_waveform_from_path(path: str) -> torch.Tensor:

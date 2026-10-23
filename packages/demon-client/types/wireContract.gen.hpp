@@ -214,6 +214,10 @@ namespace command {
     inline constexpr const char* kUseServerSource = "use_server_source";
     /** Opt-in swap-resize: the render window (s) to re-derive for the new source, on backends whose geometry is otherwise frozen at session create (SA3). Honored only when ready's capabilities declare swap_resize — the session then re-conditions at the new duration and swap_ready carries the RESIZED duration + buffer. Absent/ignored = the legacy fixed-geometry swap (source padded/truncated into the old window). */
     inline constexpr const char* kDurationS = "duration_s";
+    /** Describes a compact binary frame: {encoding: f32le|s16le, channels: the full channel count, present: the channels the frame carries, in its order (default all)}. The frame's <II header gives its own channel count, which must equal len(present); every other channel is silence, and s16le samples read as value / 32768. Honored only when ready's capabilities declare compact_pcm. Absent = the full float32 frame. */
+    inline constexpr const char* kPcm = "pcm";
+    /** Optional per-stream keep for a stream layout, e.g. {drums: [[s0, e0], [s1, e1]]} (a list of [start_s, end_s] ranges; a single [start_s, end_s] is one range): the stream keeps its upload on those ranges and the layout generates around them. Handed to the layout's encode_source as keep=; the layout validates it. Absent = no change. */
+    inline constexpr const char* kKeep = "keep";
 
     namespace stem_source_mode {
       inline constexpr const char* kFull = "full";
@@ -276,6 +280,20 @@ namespace command {
     inline constexpr const char* kRequestId = "request_id";
   }  // namespace bounce
 
+  namespace oneshot {
+    inline constexpr const char* kType = "oneshot";
+    /** Client-chosen token echoed on oneshot_ready / oneshot_failed. */
+    inline constexpr const char* kRequestId = "request_id";
+    /** One version per seed (integers >= 0, at most 16). Required unless redo is set. */
+    inline constexpr const char* kSeeds = "seeds";
+    /** Knob values for these renders (same names as params), over the session's current ones. A stream layout adds its own per-version values on top (multistem: every stem's seed knob = the version seed). */
+    inline constexpr const char* kKnobs = "knobs";
+    /** {id?, stream?, streams?, seed, denoise?, latent?}: re-denoise streams `streams` (0-based; `stream` is the single form, both given must agree) of a held version from `seed`, every other stream given from it. The held version is kept version `id` (an id from oneshot_ready) or `latent` {dtype: 'float16', shape: [n_streams, C, L]}: client-held state, sent as ONE binary frame after this header (raw little-endian float16, C-order); never both. `denoise` (0 < d <= 1, default 1): a number for every regenerated stream or a list in `streams` order; d < 1 adjusts that stream from its own held slice. seeds is ignored. The reply carries the regenerated streams only (ascending), under a new id. */
+    inline constexpr const char* kRedo = "redo";
+    /** Also return every version's full latent (every stream, also on a redo): a second binary frame after the PCM, announced by oneshot_ready.latents. */
+    inline constexpr const char* kReturnLatents = "return_latents";
+  }  // namespace oneshot
+
 }  // namespace command
 
 // ── Event payloads (server → client) ──
@@ -317,7 +335,7 @@ namespace event {
     inline constexpr const char* kGeometry = "geometry";
     /** Backend capability mask: {capability: bool} over the Capabilities fields (swap, timbre, structure, lora, ...), plus analysis_taps: the analyzer names this pod can run as analysis_tap channels (empty list when none). Client panels and MCP tools gate on it; commands tagged with a matching `requires` fail with command_failed when the bit is false. */
     inline constexpr const char* kCapabilities = "capabilities";
-    /** Names of the localhost side services this server proxies at /tools/<name>/<path> (GET/POST, header X-Demon-Session: <session_id>) whose /health answered 200 recently; empty when none. Absent on older servers. */
+    /** Names of the localhost side services this server proxies at /tools/<name>/<path> (GET/POST/PUT/DELETE, header X-Demon-Session: <session_id>) whose /health answered 200 recently; empty when none. Absent on older servers. */
     inline constexpr const char* kTools = "tools";
     /** Per-session knob manifest: the same {version, knobs} envelope GET /api/knobs serves, but backend-owned and session-resolved (SDE mode, enabled lora_str_<id> knobs). /api/knobs remains the static pre-session probe. */
     inline constexpr const char* kKnobManifest = "knob_manifest";
@@ -327,6 +345,14 @@ namespace event {
     inline constexpr const char* kManualSlotCap = "manual_slot_cap";
     /** True when the session's checkpoint has a reachable steering-vector bundle; false hides the steering surface (the steer_*\/man_* knobs are absent from the manifest too). */
     inline constexpr const char* kSteeringAvailable = "steering_available";
+    /** Present only for a config with derived_windows: the initial buffer is silent, so NO binary frame follows and the client builds frames × channels of zeros itself. */
+    inline constexpr const char* kWindow = "window";
+    /** The initial buffer's frame count, sent with window. */
+    inline constexpr const char* kFrames = "frames";
+
+    namespace window {
+      inline constexpr const char* kSilent = "silent";
+    }  // namespace window
   }  // namespace ready
 
   namespace error {
@@ -376,6 +402,15 @@ namespace event {
     inline constexpr const char* kFixtureName = "fixture_name";
     /** Source generation counter after this swap; write_audio sends targeting the old source are rejected. */
     inline constexpr const char* kSourceEpoch = "source_epoch";
+    /** Present only for a config with derived_windows: NO binary frame follows. silent = the new buffer is frames × channels of zeros; kept = the swap left the playing buffer as it is, so the client keeps its own. */
+    inline constexpr const char* kWindow = "window";
+    /** The new buffer's frame count, sent with window. */
+    inline constexpr const char* kFrames = "frames";
+
+    namespace window {
+      inline constexpr const char* kSilent = "silent";
+      inline constexpr const char* kKept = "kept";
+    }  // namespace window
   }  // namespace swap_ready
 
   namespace swap_failed {
@@ -513,6 +548,40 @@ namespace event {
     inline constexpr const char* kError = "error";
   }  // namespace bounce_failed
 
+  namespace oneshot_ready {
+    inline constexpr const char* kType = "oneshot_ready";
+    /** Echo of the oneshot request_id. */
+    inline constexpr const char* kRequestId = "request_id";
+    /** Per version: the id of its kept latent (the handle a redo names). */
+    inline constexpr const char* kIds = "ids";
+    /** Per version: its seed. */
+    inline constexpr const char* kSeeds = "seeds";
+    /** The stream indices carried per version (every stream, or a redo's one). */
+    inline constexpr const char* kStreams = "streams";
+    inline constexpr const char* kSampleRate = "sample_rate";
+    /** Channels per stream (2). */
+    inline constexpr const char* kChannels = "channels";
+    /** Samples per channel per stream (the playable duration). */
+    inline constexpr const char* kFrames = "frames";
+    /** Sample format of the binary frame: pcm_s16le. */
+    inline constexpr const char* kEncoding = "encoding";
+    /** Server wall time per phase: generate, decode, pack, total. */
+    inline constexpr const char* kMs = "ms";
+    /** The kept id a redo started from; null for a plain render and for a redo from a client-held latent. */
+    inline constexpr const char* kRedoOf = "redo_of";
+    /** {n_streams, channels, frames, seconds}: the geometry a held latent must match (shape [n_streams, channels, frames], frames per stream). */
+    inline constexpr const char* kLatentHeader = "latent_header";
+    /** {dtype: 'float16', shape: [V, n_streams, C, L], bytes}: present when the request set return_latents; a second binary frame follows the PCM. */
+    inline constexpr const char* kLatents = "latents";
+  }  // namespace oneshot_ready
+
+  namespace oneshot_failed {
+    inline constexpr const char* kType = "oneshot_failed";
+    /** Echo of the oneshot request_id. */
+    inline constexpr const char* kRequestId = "request_id";
+    inline constexpr const char* kError = "error";
+  }  // namespace oneshot_failed
+
   namespace analysis_state {
     inline constexpr const char* kType = "analysis_state";
     /** Analyzer name. */
@@ -613,7 +682,9 @@ namespace config {
   inline constexpr const char* kClientId = "client_id";
   inline constexpr const char* kBackend = "backend";
   inline constexpr const char* kTextOnly = "text_only";
+  inline constexpr const char* kRenderOnly = "render_only";
   inline constexpr const char* kTelemetryVersion = "telemetry_version";
+  inline constexpr const char* kDerivedWindows = "derived_windows";
   /** Fixed generation duration for sa3 sessions, seconds. Absent or null derives it from the uploaded source audio length (the audio-to-audio anchor); SA3 conditioning is captured per (prompt, duration), so this is fixed for the session lifetime. */
   inline constexpr const char* kSa3DurationS = "sa3_duration_s";
   /** Song-length label (seconds_total) for this sa3 session. Absent or null keeps the server default (a label longer than the loop: a crop of a longer file, so the loop never composes an ending). 0 labels the render with its own length, the upstream whole-file semantics: a one-shot decays to silence inside the loop. Fixed for the session lifetime. */

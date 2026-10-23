@@ -24,7 +24,8 @@ Lifecycle, in order:
    :class:`ModelExtensionRuntime`. The core loads the model; the extension
    only ever receives one that loaded successfully.
 5. Per-session: ``supports_dit_backend`` / ``supports_codec_backend``,
-   ``decorate_conditioning``, ``apply_controls``, ``status`` / ``metrics``.
+   ``stream_layout``, ``decorate_conditioning``, ``apply_controls``,
+   ``status`` / ``metrics``.
 6. ``runtime.close()`` at teardown — idempotent, and responsible for
    removing anything the runtime attached to the shared model.
 
@@ -112,6 +113,8 @@ class SourceView:
     ``latent`` is the encoded anchor in the model's own native layout —
     for the sa3 family, ``[1, C, T]``. It is what most conditioning
     extensions want, and it is what DEMON's own denoising path uses.
+    Under a :class:`StreamLayout` it is the STACKED anchor, ``T =
+    n_streams * L``.
 
     ``waveform`` and ``sample_rate`` are the audio that latent was encoded
     FROM, carried because the core already holds it. An extension whose
@@ -133,6 +136,187 @@ class SourceView:
     latent: Any = None
     waveform: Any = None
     sample_rate: int | None = None
+
+
+@dataclass(frozen=True)
+class StreamLayout:
+    """Several equal-length latent streams stacked on the token axis.
+
+    Returned by :meth:`ModelExtensionRuntime.stream_layout` when an
+    installed extension's model denoises ``n_streams`` parallel streams as
+    one sequence: the ring then carries ``[1, n_streams * L, C]`` latents
+    (engine layout; ``[1, C, n_streams * L]`` SA3-native), where ``L`` is
+    one stream's latent length. Stream ``i`` occupies tokens
+    ``[i * L, (i + 1) * L)``. Every slot, the source anchor, feedback and
+    ``x0_target`` operate on the stacked tensor unchanged; only the core
+    sites that size, encode, decode or accelerate a latent consult this.
+
+    ``n_streams``: number of stacked streams, ``>= 1``.
+
+    ``tokens_per_stream``: pins ``L``. The session's render window is then
+    exactly ``L`` latent frames per stream, whatever the requested
+    duration (a longer request is clamped to it). A callable
+    ``(duration_s) -> L`` derives ``L`` from each session's requested
+    duration with the layout's own rule (the window is then ``L`` frames,
+    the duration clamped onto it). ``None`` derives ``L`` from the
+    requested duration the stock way. Read it through :meth:`stream_tokens`.
+
+    ``make_dit``: ``(context, latent_frames, seconds_total, backend) ->
+    dit`` where ``latent_frames`` is the STACKED length. ``context`` is
+    the session's view of the model context; its ``session_params`` is
+    the session's ``plugin_*`` config keys (empty when none were sent).
+    Return either a
+    torch callable ``dit(x_bct, t, **cond)`` or an object with
+    ``trt_batch1 = True`` and ``step_bundle(x_1ct, t, bundle)`` (see
+    ``acestep.engine.sa3_trt.SA3TRTDit``); return ``None`` to run the
+    model's own eager DiT. Absent, the eager DiT runs: the stock engine
+    lookup is never consulted under a layout, because stock engines are
+    built for one stream. An accelerated engine for a layout is loaded by
+    path (``acestep.engine.sa3_trt.open_dit_engine_at``), never placed
+    under the stock engine names.
+
+    ``make_noise``: ``(request) -> [1, n_streams * L, C]`` initial noise
+    for one slot (``request.seed`` is the slot seed). Absent, the
+    pipeline's stock single-generator draw at the stacked shape is used.
+
+    ``make_renoise``: ``(request, step) -> [1, n_streams * L, C] | None``,
+    the re-noise draw a stochastic (pingpong / SDE) sampler mixes in after
+    step ``step`` of the slot built from ``request``, in place of the
+    slot's own generator draw. Return ``None`` to take the stock draw.
+    Lets per-stream noise streams continue past the initial draw. Absent,
+    the stock draw is used at every step.
+
+    ``on_slot_done``: ``(request, latent) -> None``, called once for every
+    slot whose denoise completes, with the finished latent ``[1, T, C]``
+    in the ring layout, before it is delivered; lets a layout observe
+    finished slots (for example to hold a stream at its latest render).
+    Absent, nothing is called.
+
+    ``encode_source``: ``(context, audio_input, audio_sample_size) ->
+    [1, C, n_streams * L]`` stacked source anchor, where ``audio_input``
+    is the ``(sample_rate, waveform)`` pair and ``audio_sample_size`` is
+    ONE stream's window in model-rate samples. Absent, the source is
+    encoded once and repeated into every stream.
+
+    ``mix``: ``(streams) -> audio`` where ``streams`` is a float32 numpy
+    array ``[n_streams, N, channels]`` of per-stream decoded audio at the
+    delivery rate and the return is ``[N, channels]``. Called on every
+    render, so a gain the extension reads from its own knobs (delivered
+    through ``apply_controls``) lands at the next render without
+    regenerating. Absent, the streams are summed. The result is clamped
+    to ``[-1, 1]`` after mixing.
+
+    ``render_stream``: ``(index, latent) -> audio | None`` where ``latent``
+    is stream ``index``'s slice ``[1, C, L]`` (SA3-native) of the latent
+    being rendered and ``audio`` is that stream's audio for the WHOLE
+    window, a float32 numpy array ``[N, channels]`` at the delivery rate
+    (the length a full decode of the slice resamples to). Consulted for
+    every stream on every render before the stream is decoded: return
+    audio to have the core use it in place of its own decode (a full
+    render the extension made once, for example of a stream it holds
+    fixed, so every window is cut from one decode instead of re-decoded
+    with window seams), or ``None`` to have the stream decoded as usual.
+    Windowed renders slice the returned audio at the window. Called on
+    the render thread, so keep it a lookup; do the decode elsewhere or
+    once. Absent, every stream is decoded.
+
+    ``deliver_streams``: when ``True`` the core does not mix. Each
+    stream's audio becomes its own channel pair, side by side in stream
+    order (channels ``[2k, 2k + 1]`` are stream ``k``), so the delivery
+    buffer carries ``n_streams * 2`` channels and a client mixes them
+    with its own per-pair gains. ``mix`` is ignored while set. Default
+    ``False``: the streams are mixed to one stereo pair as above.
+
+    ``source_delivered``: when ``False`` the upload is the model's input
+    only and is never played: the client buffer starts silent (at create
+    and on a swap) and the layout's held renders fill it as they land.
+    Default ``True``: a layout that mixes starts the client on the upload
+    and the renders replace it region by region. A layout that sets
+    ``deliver_streams`` always starts silent, whatever this says.
+
+    ``max_duration_s``: the longest session (seconds) the layout serves,
+    in place of the family's own render ceiling (SA3's 120 s). A layout
+    that sizes its own streams (``tokens_per_stream``) knows its model's
+    range; the core still clamps the request onto ``L``. ``None`` keeps
+    the family ceiling.
+
+    ``version_controls(seed) -> Mapping[str, float]``: the one-shot render
+    (the ``oneshot`` command) makes one version per seed; this returns the
+    layout's own knob values that make version ``seed`` (applied over the
+    request's knobs before the version's noise is drawn). ``None``: the
+    request seed alone tells the versions apart.
+
+    ``hold_streams(latent, held)``: a one-shot redo re-denoises some streams
+    against the others of a kept version. ``latent`` is that version's
+    SA3-native ``[1, C, n_streams * L]`` latent and ``held`` a tuple of
+    ``n_streams`` 0/1 flags (1 = given from ``latent``, 0 = denoised from
+    noise); the layout holds them for the denoise that follows. Called with
+    ``(None, None)`` afterwards to release. ``None``: the layout cannot redo.
+    A layout that also takes ``denoise=`` (a tuple of ``n_streams`` floats
+    in [0, 1]) can adjust a stream: stream ``k`` starts from its slice of
+    ``latent`` when ``denoise[k] < 1.0`` (0.0 = held as is), from noise at
+    1.0; ``held`` is then derived from it. The core passes ``denoise`` only
+    when some regenerated stream is below 1.0 (checked by signature); a
+    layout without it serves re-rolls only.
+
+    ``keep_mask(request) -> (mask, target) | None``: a per-time keep for
+    the slot built from ``request``, asked once per slot per step. ``mask``
+    is a bool ``[1, 1, n_streams * L]`` (SA3-native, True = kept frame) and
+    ``target`` the clean ``[1, C, n_streams * L]`` latent those frames
+    hold. It drives SA3's NATIVE inpaint conditioning: every forward of the
+    slot (ring and one-shot) gets ``local_add_cond = [mask, target * mask]``
+    instead of zeros, per (stream, frame) token, so mask only the known
+    stream's rows (a mask on every stream tells the others "known
+    silence"). ``None`` (or the field absent) leaves the step exactly as it
+    was. A layout that takes a ``keep=`` keyword in ``encode_source``
+    receives the swap's ``keep`` field there (an opaque mapping the layout
+    parses, e.g. per-stream lists of ``[start_s, end_s]`` ranges).
+
+    ``keep_overwrite`` (bool, or a no-argument callable read every step;
+    default False): the kept frames' predicted x0 is ALSO replaced by
+    ``target`` after every other blend (RePaint), for A/B against the
+    native conditioning alone.
+
+    Each stream is decoded separately: a decoder's receptive field would
+    otherwise bleed across stream boundaries.
+    """
+
+    n_streams: int
+    tokens_per_stream: int | None = None
+    make_dit: Callable | None = None
+    make_noise: Callable | None = None
+    encode_source: Callable | None = None
+    mix: Callable | None = None
+    make_renoise: Callable | None = None
+    on_slot_done: Callable | None = None
+    render_stream: Callable | None = None
+    deliver_streams: bool = False
+    source_delivered: bool = True
+    max_duration_s: float | None = None
+    version_controls: Callable | None = None
+    hold_streams: Callable | None = None
+    keep_mask: Callable | None = None
+    keep_overwrite: Callable | bool = False
+
+    def __post_init__(self):
+        if int(self.n_streams) < 1:
+            raise ValueError(f"n_streams must be >= 1, got {self.n_streams}")
+        if self.max_duration_s is not None and not float(self.max_duration_s) > 0:
+            raise ValueError(f"max_duration_s must be > 0, got {self.max_duration_s}")
+        tps = self.tokens_per_stream
+        if tps is not None and not callable(tps) and int(tps) < 1:
+            raise ValueError(f"tokens_per_stream must be >= 1, got {tps}")
+
+    def stream_tokens(self, duration_s: float) -> "int | None":
+        """``L`` for a session of ``duration_s``: the pinned count, the
+        callable's answer, or ``None`` (derive it the stock way)."""
+        tps = self.tokens_per_stream
+        if tps is None:
+            return None
+        n = int(tps(float(duration_s)) if callable(tps) else tps)
+        if n < 1:
+            raise ValueError(f"tokens_per_stream must be >= 1, got {n}")
+        return n
 
 
 @dataclass(frozen=True)
@@ -158,6 +342,17 @@ class ModelExtensionRuntime:
 
     def supports_codec_backend(self, backend: str) -> BackendVerdict:
         return BackendVerdict(True)
+
+    def stream_layout(self) -> "StreamLayout | None":
+        """The stacked-stream geometry this model runs, or ``None``.
+
+        ``None`` (the default) is the stock single-stream path, and the
+        core then behaves exactly as if this hook did not exist. Called
+        once per session at construction, after ``install``; return the
+        same layout for the lifetime of the runtime. See
+        :class:`StreamLayout`.
+        """
+        return None
 
     def decorate_conditioning(
         self, bundle: Mapping[str, Any], source: "SourceView | None" = None,
@@ -289,6 +484,39 @@ class ModelExtensionSpec:
     config_schema: Mapping[str, ConfigField] = field(default_factory=dict)
     knob_specs: tuple = ()
     description: str = ""
+
+
+def stream_layout_of(runtime) -> "StreamLayout | None":
+    """The runtime's :class:`StreamLayout`, or ``None``.
+
+    Tolerates ``runtime=None`` and a runtime that is not a subclass (no
+    ``stream_layout`` attribute), so stock sessions never reach plugin
+    code. A layout of one stream with no pinned length and no callables
+    is the stock path and is normalized to ``None``.
+    """
+    if runtime is None:
+        return None
+    hook = getattr(runtime, "stream_layout", None)
+    if hook is None:
+        return None
+    layout = hook()
+    if layout is None:
+        return None
+    if not isinstance(layout, StreamLayout):
+        raise TypeError(
+            f"stream_layout() must return a StreamLayout or None, got "
+            f"{type(layout).__name__}"
+        )
+    if (
+        int(layout.n_streams) == 1
+        and layout.tokens_per_stream is None
+        and layout.make_dit is None
+        and layout.make_noise is None
+        and layout.encode_source is None
+        and layout.mix is None
+    ):
+        return None
+    return layout
 
 
 def decorate_conditioning(runtime, bundle, source=None):

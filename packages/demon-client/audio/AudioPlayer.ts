@@ -14,6 +14,11 @@ import {
   measureLoudness,
   type LoudnessMetric,
 } from "./lufs";
+import {
+  mixChannelPairs,
+  sanitizeChannelGains,
+  smoothPairGains,
+} from "./channelPairs";
 
 /** Loudness-matcher tuning, structurally compatible with the shipped app's
  *  `config.json` `audio` block. All fields optional; absent values fall
@@ -40,10 +45,11 @@ export interface AudioPlayerOptions {
 
 // Bumped manually when the worklet behaviour or message surface changes
 // (v2 = setLoopBand, v3 = stem overlays inside the worklet, v4 = band-loop
-// seam crossfade, v5 = band loop at the buffer end no longer freezes). The
+// seam crossfade, v5 = band loop at the buffer end no longer freezes, v6 =
+// channel-pair mix with per-pair gains for multichannel buffers). The
 // browser caches worklet bytes per-URL and hard refresh doesn't always
 // invalidate.
-const DEFAULT_WORKLET_URL = "/audio-worklet.js?v=5";
+const DEFAULT_WORKLET_URL = "/audio-worklet.js?v=6";
 
 type MirrorListener = () => void;
 type StemOverlayKind = "vocals" | "instruments";
@@ -140,6 +146,11 @@ export class AudioPlayer {
   // gracefully (no flashes on beats) rather than blocking the main thread
   // with a per-frame RMS loop. See PERFORMANCE.md.
   kick = 0;
+  /** Multichannel buffers only (channels > 2, stereo pairs side by side):
+   *  latest pre-gain RMS per channel pair, posted by the worklet with each
+   *  position report (computed per callback on the ScriptProcessor
+   *  fallback). Null until the first report, and for stereo buffers. */
+  channelLevels: Float32Array | null = null;
 
   private _listeners: Set<MirrorListener> = new Set();
   // Trailing-throttle handle for mirror-change notifications. Slices
@@ -163,6 +174,11 @@ export class AudioPlayer {
     instruments: { interleaved: null, channels: 2, frameCount: 0, targetVolume: 0, volume: 0 },
   };
   private _spOverlayVolAlpha = 0;
+  // Per-pair gains for multichannel buffers (see setChannelGains). The
+  // worklet smooths its own copy; _spPairLive is the SP fallback's.
+  private _channelGains: number[] = [];
+  private _spPairLive: Float32Array = new Float32Array(0);
+  private _gainRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Loop + seek state. The worklet path owns its own copy of `loop` (set
   // via postMessage); these fields are the main-thread mirror so the SP
@@ -241,7 +257,8 @@ export class AudioPlayer {
       const node = new AudioWorkletNode(this.ctx, "realtime-buffer", {
         numberOfInputs: 0,
         numberOfOutputs: 1,
-        outputChannelCount: [channels],
+        // A multichannel buffer is mixed to stereo inside the worklet.
+        outputChannelCount: [Math.min(channels, 2)],
       });
       this.node = node;
 
@@ -251,11 +268,13 @@ export class AudioPlayer {
           positionSec?: number;
           swapCount?: number;
           kick?: number;
+          pairLevels?: Float32Array;
         };
         if (msg.type === "position") {
           this.positionSec = msg.positionSec ?? 0;
           this.swapCount = msg.swapCount ?? this.swapCount;
           if (typeof msg.kick === "number") this.kick = msg.kick;
+          if (msg.pairLevels) this.channelLevels = msg.pairLevels;
         } else if (msg.type === "endOfBuffer") {
           for (const fn of this._endOfBufferListeners) fn();
         }
@@ -266,6 +285,12 @@ export class AudioPlayer {
         { type: "init", buffer: send, channels },
         [send.buffer],
       );
+      if (this._channelGains.length > 0) {
+        node.port.postMessage({
+          type: "setChannelGains",
+          gains: this._channelGains.slice(),
+        });
+      }
     } else {
       // ScriptProcessorNode fallback for non-secure contexts.
       console.warn(
@@ -274,7 +299,11 @@ export class AudioPlayer {
       this._spBuffer = initialBufferInterleaved.slice();
       this._spPosition = 0;
       const BUFFER_SIZE = 4096;
-      const sp = this.ctx.createScriptProcessor(BUFFER_SIZE, 0, channels);
+      const sp = this.ctx.createScriptProcessor(
+        BUFFER_SIZE,
+        0,
+        Math.min(channels, 2),
+      );
       this.node = sp;
       sp.onaudioprocess = (e: AudioProcessingEvent) => this._spProcess(e);
     }
@@ -433,6 +462,34 @@ export class AudioPlayer {
     }
     // SP fallback uses state.volume which is smoothed inside _spProcess
     // against state.targetVolume, so no immediate write is needed here.
+  }
+
+  /**
+   * Per-pair gains for a multichannel buffer (channels > 2, stereo pairs
+   * side by side: channels [2k, 2k+1] = pair k). The player mixes the
+   * pairs to stereo as sum_k gains[k] * pair k; missing entries play at
+   * unity. Changes are smoothed per frame (no zipper). No effect on
+   * stereo or mono buffers. Persists across swap().
+   */
+  setChannelGains(gains: ArrayLike<number>): void {
+    this._channelGains = sanitizeChannelGains(gains);
+    if (this._useWorklet && this.node) {
+      (this.node as AudioWorkletNode).port.postMessage({
+        type: "setChannelGains",
+        gains: this._channelGains.slice(),
+      });
+    }
+    // The loudness matcher measures the gain-weighted mix; re-measure
+    // the chunk map once the gains settle rather than on every drag step.
+    if (this.channels > 2 && this._lufsEnabled && this._mirror) {
+      if (this._gainRefreshTimer !== null) clearTimeout(this._gainRefreshTimer);
+      this._gainRefreshTimer = setTimeout(() => {
+        this._gainRefreshTimer = null;
+        if (this._mirror) {
+          this._refreshChunks(0, (this._mirror.length / this.channels) | 0);
+        }
+      }, 250);
+    }
   }
 
   /** Read-only view of the current buffer (for waveform rendering). */
@@ -620,6 +677,10 @@ export class AudioPlayer {
       clearTimeout(this._notifyTimer);
       this._notifyTimer = null;
     }
+    if (this._gainRefreshTimer !== null) {
+      clearTimeout(this._gainRefreshTimer);
+      this._gainRefreshTimer = null;
+    }
     this.clearStemOverlays();
     try {
       this.node?.disconnect();
@@ -692,12 +753,21 @@ export class AudioPlayer {
     // the same units as _sourceTarget for the rest of the session.
     this._loudnessMetric = metric;
 
-    const { value, peak } = measureLoudness(
-      this._mirror,
-      this.channels,
-      SAMPLE_RATE,
-      metric,
-    );
+    // Multichannel: measure what plays, the gain-weighted pair mix.
+    const { value, peak } =
+      this.channels > 2
+        ? measureLoudness(
+            mixChannelPairs(this._mirror, this.channels, this._channelGains),
+            2,
+            SAMPLE_RATE,
+            metric,
+          )
+        : measureLoudness(
+            this._mirror,
+            this.channels,
+            SAMPLE_RATE,
+            metric,
+          );
     this._sourceTarget = value;
 
     const cfgHeadroom = audioCfg.lufs_peak_headroom ?? NaN;
@@ -748,7 +818,14 @@ export class AudioPlayer {
       const cStart = c * LUFS_CHUNK_FRAMES;
       const cEnd = Math.min(cStart + LUFS_CHUNK_FRAMES, totalFrames);
       const slice = this._mirror.subarray(cStart * ch, cEnd * ch);
-      const { loudness, peak } = measureBlock(slice, ch, this._loudnessMetric);
+      const { loudness, peak } =
+        ch > 2
+          ? measureBlock(
+              mixChannelPairs(slice, ch, this._channelGains),
+              2,
+              this._loudnessMetric,
+            )
+          : measureBlock(slice, ch, this._loudnessMetric);
       this._chunkLoudness[c] = loudness;
       this._chunkPeak[c] = peak;
     }
@@ -916,6 +993,10 @@ export class AudioPlayer {
       }
       return;
     }
+    if (ch > 2 && ch > output.numberOfChannels) {
+      this._spProcessPairs(output, buf);
+      return;
+    }
     const nFrames = this.frameCount;
     // Mirror the worklet's loop-seam crossfade so non-secure-context playback
     // (ScriptProcessor fallback) gets the same smooth wrap.
@@ -995,5 +1076,97 @@ export class AudioPlayer {
     }
     this._spPosition = pos;
     this.positionSec = this._spPosition / SAMPLE_RATE;
+  }
+
+  /** ScriptProcessor fallback for multichannel buffers: same playhead,
+   *  seam, end-of-buffer stop and overlay handling as _spProcess, with
+   *  the per-pair gain sum of the worklet's _processPairs. Also fills channelLevels
+   *  (pre-gain RMS per pair over this callback). */
+  private _spProcessPairs(output: AudioBuffer, buf: Float32Array): void {
+    const frames = output.length;
+    const ch = this.channels;
+    const nPairs = ch >> 1;
+    const nFrames = this.frameCount;
+    const sr = this.ctx ? this.ctx.sampleRate : SAMPLE_RATE;
+    const seamFadeLen = Math.max(1, Math.floor(sr * 0.05));
+    const seam = Math.min(seamFadeLen, Math.floor(nFrames / 4));
+    const outChs: Float32Array[] = [];
+    for (let c = 0; c < output.numberOfChannels; c++) {
+      outChs.push(output.getChannelData(c));
+    }
+    if (this._spPairLive.length < nPairs) {
+      const grown = new Float32Array(nPairs).fill(1);
+      grown.set(this._spPairLive);
+      this._spPairLive = grown;
+    }
+    const live = this._spPairLive;
+    const targets = this._channelGains;
+    const alpha = this._spOverlayVolAlpha;
+    const sumSq = new Float64Array(nPairs);
+    let counted = 0;
+    const overlays: StemOverlayState[] = [];
+    for (const kind of ["vocals", "instruments"] as StemOverlayKind[]) {
+      const ov = this._stemOverlays[kind];
+      if (ov.interleaved && ov.frameCount > 0) overlays.push(ov);
+    }
+    let pos = this._spPosition;
+    for (let i = 0; i < frames; i++) {
+      if (!this._loop && pos >= nFrames - 1) {
+        for (let c = 0; c < outChs.length; c++) outChs[c][i] = 0;
+        if (!this._spEndSignaled) {
+          this._spEndSignaled = true;
+          for (const fn of this._endOfBufferListeners) fn();
+        }
+        continue;
+      }
+      const inSeam = this._loop && seam > 0 && nFrames - pos <= seam;
+      const distFromEnd = inSeam ? nFrames - pos : 0;
+      const seamT = inSeam ? (seam - distFromEnd) / seam : 0;
+      const headPos = inSeam ? seam - distFromEnd : 0;
+      smoothPairGains(live, targets, alpha);
+      for (let c = 0; c < outChs.length; c++) outChs[c][i] = 0;
+      for (let k = 0; k < nPairs; k++) {
+        const g = live[k];
+        const base = pos * ch + 2 * k;
+        const hBase = headPos * ch + 2 * k;
+        let e = 0;
+        for (let c = 0; c < 2; c++) {
+          let s = buf[base + c];
+          if (inSeam) s = s * (1 - seamT) + buf[hBase + c] * seamT;
+          e += s * s;
+          if (c < outChs.length) outChs[c][i] += g * s;
+        }
+        sumSq[k] += e * 0.5;
+      }
+      counted++;
+      for (let oi = 0; oi < overlays.length; oi++) {
+        const ov = overlays[oi];
+        ov.volume += (ov.targetVolume - ov.volume) * alpha;
+        const ovBuf = ov.interleaved!;
+        if (ov.volume < 1e-4) continue;
+        if (pos >= ov.frameCount) continue;
+        const ovCh = ov.channels;
+        const ovVol = ov.volume;
+        for (let c = 0; c < outChs.length; c++) {
+          const cc = Math.min(c, ovCh - 1);
+          let s = ovBuf[pos * ovCh + cc];
+          if (inSeam && headPos < ov.frameCount) {
+            s = s * (1 - seamT) + ovBuf[headPos * ovCh + cc] * seamT;
+          }
+          outChs[c][i] += s * ovVol;
+        }
+      }
+      pos++;
+      if (pos >= nFrames) pos = this._loop ? seam : nFrames;
+    }
+    this._spPosition = pos;
+    this.positionSec = this._spPosition / SAMPLE_RATE;
+    if (counted > 0) {
+      const levels = new Float32Array(nPairs);
+      for (let k = 0; k < nPairs; k++) {
+        levels[k] = Math.sqrt(sumSq[k] / counted);
+      }
+      this.channelLevels = levels;
+    }
   }
 }

@@ -14,14 +14,23 @@
 //   {type:'setOverlayBuffer',   kind:string, buffer:Float32Array, channels:int}
 //   {type:'clearOverlayBuffer', kind:string}
 //   {type:'setOverlayVolume',   kind:string, volume:float}
+//   {type:'setChannelGains',    gains:number[]}  // one gain per channel pair
 //
+// Multichannel buffers: when the buffer carries more channels than the
+// output (e.g. several streams delivered side by side as stereo pairs,
+// channels [2k, 2k+1] = pair k), the processor mixes the pairs down to the
+// output with per-pair gains (default 1, smoothed like overlay volumes) and
+// posts each pair's pre-gain RMS as `pairLevels` on the position message.
+// Buffers whose channel count does not exceed the output take the plain
+// read loop with no extra per-frame work.
 // Stem overlays (vocals / instruments) live in the worklet so they share
 // the main buffer's playhead and seam-crossfade loop point — playing them
 // as standalone AudioBufferSourceNodes on the main thread drifted because
 // their hard-loop didn't match the seam fade and the two clocks ran free.
 //
 // Messages to main thread:
-//   {type:'position',    positionSec:float, swapCount:int, kick:float}
+//   {type:'position',    positionSec:float, swapCount:int, kick:float,
+//                        pairLevels?:Float32Array}  // multichannel only
 //   {type:'endOfBuffer'} // one-shot when loop=false and playhead reaches end
 
 const CROSSFADE_SECONDS = 0.025;
@@ -102,6 +111,14 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
     this._kickSumSq = 0;
     this._lastKick = 0;
     this._kickFramesSinceRefresh = 0;
+
+    // Channel-pair mix state (multichannel buffers only). Targets come
+    // from setChannelGains; live gains follow them per frame with the
+    // same IIR as overlay volumes. Missing entries play at unity.
+    this._pairTargets = new Float32Array(0);
+    this._pairLive = new Float32Array(0);
+    this._pairSumSq = new Float64Array(0);
+    this._pairFrames = 0;
 
     this.port.onmessage = (e) => this._onmessage(e.data);
   }
@@ -220,6 +237,20 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
       this.overlays[kind].targetVolume = v;
       return;
     }
+    if (type === "setChannelGains") {
+      const gains = Array.isArray(msg.gains) || ArrayBuffer.isView(msg.gains)
+        ? msg.gains
+        : [];
+      const n = Math.max(gains.length, this._pairLive.length);
+      const targets = new Float32Array(n).fill(1);
+      for (let k = 0; k < gains.length; k++) {
+        const g = Number(gains[k]);
+        targets[k] = Number.isFinite(g) ? Math.max(0, g) : 1;
+      }
+      this._pairTargets = targets;
+      this._ensurePairState(n);
+      return;
+    }
     if (type === "patch" || type === "add") {
       if (!this.current) return;
       const start = msg.start | 0;
@@ -246,6 +277,27 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
     }
   }
 
+  // Grow the per-pair arrays to `n` pairs. New pairs start at unity so a
+  // buffer that gains channels plays them at full level until told
+  // otherwise; existing live gains are kept so nothing pops.
+  _ensurePairState(n) {
+    if (this._pairLive.length < n) {
+      const live = new Float32Array(n).fill(1);
+      live.set(this._pairLive);
+      this._pairLive = live;
+    }
+    if (this._pairTargets.length < n) {
+      const t = new Float32Array(n).fill(1);
+      t.set(this._pairTargets);
+      this._pairTargets = t;
+    }
+    if (this._pairSumSq.length < n) {
+      const acc = new Float64Array(n);
+      acc.set(this._pairSumSq);
+      this._pairSumSq = acc;
+    }
+  }
+
   _refreshOverlayList() {
     const list = [];
     for (const k in this.overlays) list.push(this.overlays[k]);
@@ -259,6 +311,11 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
 
     if (!this.current || this.frameCount === 0) {
       for (let c = 0; c < outChannels; c++) output[c].fill(0);
+      return true;
+    }
+
+    if (this.channels > 2 && this.channels > outChannels) {
+      this._processPairs(output, frames, outChannels);
       return true;
     }
 
@@ -455,6 +512,182 @@ class RealtimeBufferProcessor extends AudioWorkletProcessor {
     }
 
     return true;
+  }
+
+  // Multichannel read path: the buffer holds more channels than the
+  // output, laid out as stereo pairs. Same playhead, seam crossfade,
+  // swap crossfade, end-of-buffer stop, overlay mix, kick and advance as
+  // process(); only the per-frame read differs: output[c] =
+  // sum_k gain_k * frame[2k + c]. Kept separate so the plain loop above
+  // stays as it was.
+  _processPairs(output, frames, outChannels) {
+    const ch = this.channels;
+    const nCur = this.frameCount;
+    const nPairs = ch >> 1;
+    this._ensurePairState(nPairs);
+    const live = this._pairLive;
+    const targets = this._pairTargets;
+    const sumSq = this._pairSumSq;
+    const alpha = this._volRampAlpha;
+
+    const bandActive =
+      this.loopBandStart >= 0 && this.loopBandEnd > this.loopBandStart;
+    const regionStart = bandActive ? this.loopBandStart : 0;
+    const regionEnd = bandActive ? this.loopBandEnd : nCur;
+    const regionLen = regionEnd - regionStart;
+    const wrapping = bandActive || this.loop;
+    const seam = Math.min(this.seamFadeLen, Math.floor(regionLen / 4));
+
+    for (let i = 0; i < frames; i++) {
+      const pos = this.position;
+
+      if (!wrapping && pos >= nCur - 1) {
+        for (let c = 0; c < outChannels; c++) output[c][i] = 0;
+        if (!this._endSignaled) {
+          this.port.postMessage({ type: "endOfBuffer" });
+          this._endSignaled = true;
+        }
+        continue;
+      }
+
+      let seamActive = false;
+      let seamT = 0;
+      let headPos = 0;
+      {
+        const distFromEnd = regionEnd - pos;
+        if (wrapping && seam > 0 && distFromEnd > 0 && distFromEnd <= seam) {
+          seamActive = true;
+          seamT = (seam - distFromEnd) / seam;
+          headPos = regionStart + (seam - distFromEnd);
+        }
+      }
+
+      for (let k = 0; k < nPairs; k++) {
+        live[k] += (targets[k] - live[k]) * alpha;
+      }
+
+      // Current buffer, pair-summed, with the seam blend applied per
+      // sample. Pre-gain energy per pair feeds the level meters.
+      const cur = this.current;
+      for (let c = 0; c < outChannels; c++) output[c][i] = 0;
+      for (let k = 0; k < nPairs; k++) {
+        const g = live[k];
+        const base = pos * ch + 2 * k;
+        const hBase = headPos * ch + 2 * k;
+        let e = 0;
+        for (let c = 0; c < 2; c++) {
+          let s = cur[base + c];
+          if (seamActive) s = s * (1 - seamT) + cur[hBase + c] * seamT;
+          e += s * s;
+          if (c < outChannels) output[c][i] += g * s;
+        }
+        sumSq[k] += e * 0.5;
+      }
+
+      // Swap crossfade: blend from the previous buffer, read with its
+      // own channel count (a swap may change the layout).
+      if (this.fading && this.oldBuffer) {
+        const fadeT = Math.min(1, this.fadePos / this.crossfadeLen);
+        const oldBuf = this.oldBuffer;
+        const oldCh = (oldBuf.length / this.oldFrameCount) | 0;
+        const oldPos = this.position % this.oldFrameCount;
+        for (let c = 0; c < outChannels; c++) {
+          let sOld = 0;
+          if (oldCh > outChannels) {
+            const oldPairs = oldCh >> 1;
+            for (let k = 0; k < oldPairs; k++) {
+              const g = k < nPairs ? live[k] : 1;
+              sOld += g * oldBuf[oldPos * oldCh + 2 * k + c];
+            }
+          } else {
+            sOld = oldBuf[oldPos * oldCh + Math.min(c, oldCh - 1)];
+          }
+          output[c][i] = sOld * (1 - fadeT) + output[c][i] * fadeT;
+        }
+        this.fadePos++;
+        if (this.fadePos >= this.crossfadeLen) {
+          this.fading = false;
+          this.oldBuffer = null;
+        }
+      }
+
+      // Overlays mix after the pair sum, exactly as in process().
+      const overlays = this._overlayList;
+      const volAlpha = this._volRampAlpha;
+      for (let oi = 0; oi < overlays.length; oi++) {
+        const ov = overlays[oi];
+        ov.volume += (ov.targetVolume - ov.volume) * volAlpha;
+        const buf = ov.buffer;
+        if (!buf || ov.volume < 1e-4) continue;
+        if (pos >= ov.frameCount) continue;
+        const ovCh = ov.channels;
+        const ovVol = ov.volume;
+        if (seamActive && headPos < ov.frameCount) {
+          for (let c = 0; c < outChannels; c++) {
+            const cc = Math.min(c, ovCh - 1);
+            const sTail = buf[pos * ovCh + cc];
+            const sHead = buf[headPos * ovCh + cc];
+            output[c][i] += (sTail * (1 - seamT) + sHead * seamT) * ovVol;
+          }
+        } else {
+          for (let c = 0; c < outChannels; c++) {
+            const cc = Math.min(c, ovCh - 1);
+            output[c][i] += buf[pos * ovCh + cc] * ovVol;
+          }
+        }
+      }
+
+      let frameEnergy = 0;
+      for (let c = 0; c < outChannels; c++) frameEnergy += output[c][i];
+      frameEnergy /= outChannels;
+      const sq = Number.isFinite(frameEnergy) ? frameEnergy * frameEnergy : 0;
+      const oldSq = this._kickRing[this._kickHead];
+      this._kickSumSq += sq - oldSq;
+      this._kickRing[this._kickHead] = sq;
+      this._kickHead = (this._kickHead + 1) % KICK_WINDOW;
+      if (this._kickFilled < KICK_WINDOW) this._kickFilled++;
+      this._pairFrames++;
+
+      this.position++;
+      if (this.position >= regionEnd) {
+        this.position = wrapping ? regionStart + seam : nCur;
+      }
+    }
+
+    this._kickFramesSinceRefresh += frames;
+    if (this._kickFramesSinceRefresh >= KICK_REFRESH) {
+      this._kickFramesSinceRefresh = 0;
+      let s = 0;
+      for (let i = 0; i < this._kickFilled; i++) s += this._kickRing[i];
+      this._kickSumSq = s;
+    }
+    const denom = this._kickFilled || 1;
+    const rms = Math.sqrt(Math.max(0, this._kickSumSq) / denom);
+    const scaled = rms * KICK_SOFT_GAIN;
+    this._lastKick = Number.isFinite(scaled)
+      ? Math.max(0, Math.min(1, scaled))
+      : 0;
+
+    this._framesSinceReport += frames;
+    if (this._framesSinceReport >= REPORT_EVERY) {
+      this._framesSinceReport = 0;
+      // Pre-gain RMS per pair over the frames since the last report.
+      const n = this._pairFrames || 1;
+      const levels = new Float32Array(nPairs);
+      for (let k = 0; k < nPairs; k++) {
+        const v = Math.sqrt(sumSq[k] / n);
+        levels[k] = Number.isFinite(v) ? v : 0;
+        sumSq[k] = 0;
+      }
+      this._pairFrames = 0;
+      this.port.postMessage({
+        type: "position",
+        positionSec: this.position / sampleRate,
+        swapCount: this.swapCount,
+        kick: this._lastKick,
+        pairLevels: levels,
+      });
+    }
   }
 }
 

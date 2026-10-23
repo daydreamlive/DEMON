@@ -512,6 +512,29 @@ COMMANDS: tuple = (
                                   "duration + buffer. Absent/ignored = the "
                                   "legacy fixed-geometry swap (source padded/"
                                   "truncated into the old window)."),
+            FieldSpec("pcm", "dict",
+                      description="Describes a compact binary frame: "
+                                  "{encoding: f32le|s16le, channels: the "
+                                  "full channel count, present: the "
+                                  "channels the frame carries, in its "
+                                  "order (default all)}. The frame's <II "
+                                  "header gives its own channel count, "
+                                  "which must equal len(present); every "
+                                  "other channel is silence, and s16le "
+                                  "samples read as value / 32768. Honored "
+                                  "only when ready's capabilities declare "
+                                  "compact_pcm. Absent = the full float32 "
+                                  "frame."),
+            FieldSpec("keep", "dict",
+                      description="Optional per-stream keep for a stream "
+                                  "layout, e.g. {drums: [[s0, e0], [s1, e1]]} "
+                                  "(a list of [start_s, end_s] ranges; a "
+                                  "single [start_s, end_s] is one range): "
+                                  "the stream keeps its upload on those ranges "
+                                  "and the layout generates around them. Handed "
+                                  "to the layout's encode_source as keep=; "
+                                  "the layout validates it. Absent = no "
+                                  "change."),
         ),
         binary=True,
         binary_optional=True,
@@ -662,6 +685,62 @@ COMMANDS: tuple = (
                     "30 s, answered with bounce_failed. Acked by "
                     "bounce_ready (+ binary) / bounce_failed.",
     ),
+    CommandSpec(
+        "oneshot",
+        fields=(
+            FieldSpec("request_id", "str", required=True,
+                      description="Client-chosen token echoed on "
+                                  "oneshot_ready / oneshot_failed."),
+            FieldSpec("seeds", "list",
+                      description="One version per seed (integers >= 0, at "
+                                  "most 16). Required unless redo is set."),
+            FieldSpec("knobs", "dict",
+                      description="Knob values for these renders (same names "
+                                  "as params), over the session's current "
+                                  "ones. A stream layout adds its own per-"
+                                  "version values on top (multistem: every "
+                                  "stem's seed knob = the version seed)."),
+            FieldSpec("redo", "dict", nullable=True,
+                      description="{id?, stream?, streams?, seed, denoise?, "
+                                  "latent?}: re-denoise streams `streams` "
+                                  "(0-based; `stream` is the single form, "
+                                  "both given must agree) of a held version "
+                                  "from `seed`, every other stream given "
+                                  "from it. The held version is kept "
+                                  "version `id` (an id from oneshot_ready) "
+                                  "or `latent` {dtype: 'float16', shape: "
+                                  "[n_streams, C, L]}: client-held state, "
+                                  "sent as ONE binary frame after this "
+                                  "header (raw little-endian float16, "
+                                  "C-order); never both. `denoise` (0 < d "
+                                  "<= 1, default 1): a number for every "
+                                  "regenerated stream or a list in "
+                                  "`streams` order; d < 1 adjusts that "
+                                  "stream from its own held slice. seeds is "
+                                  "ignored. The reply carries the "
+                                  "regenerated streams only (ascending), "
+                                  "under a new id."),
+            FieldSpec("return_latents", "bool", default=False,
+                      description="Also return every version's full latent "
+                                  "(every stream, also on a redo): a second "
+                                  "binary frame after the PCM, announced by "
+                                  "oneshot_ready.latents."),
+        ),
+        binary=True,
+        binary_optional=True,
+        description="Render whole versions of the session's window in one "
+                    "go, outside the streaming ring: one denoise per "
+                    "version, a full decode of every stream, int16 audio "
+                    "back. Each version's latent is kept on the server by "
+                    "id (15 min, 32 at most) for a redo. Available when "
+                    "ready.capabilities.oneshot is true; best on a session "
+                    "created with config.render_only (no ring runs "
+                    "beside it). Served after every command sent before "
+                    "it. A redo with `latent` is followed by ONE binary "
+                    "frame (the held latent); every other request has "
+                    "none. Acked by oneshot_ready (+ binary) / "
+                    "oneshot_failed.",
+    ),
 )
 
 EVENTS: tuple = (
@@ -776,10 +855,20 @@ EVENTS: tuple = (
                                   "false hides the steering surface (the "
                                   "steer_*/man_* knobs are absent from "
                                   "the manifest too)."),
+            FieldSpec("window", "enum", options=("silent",),
+                      description="Present only for a config with "
+                                  "derived_windows: the initial buffer is "
+                                  "silent, so NO binary frame follows and "
+                                  "the client builds frames × channels of "
+                                  "zeros itself."),
+            FieldSpec("frames", "int",
+                      description="The initial buffer's frame count, sent "
+                                  "with window."),
         ),
         binary_follow=True,
         description="First JSON after the upload handshake, followed by the "
-                    "binary float16 initial buffer.",
+                    "binary float16 initial buffer (unless window says the "
+                    "client builds it).",
     ),
     EventSpec(
         "error",
@@ -844,10 +933,21 @@ EVENTS: tuple = (
                       description="Source generation counter after this swap; "
                                   "write_audio sends targeting the old source "
                                   "are rejected."),
+            FieldSpec("window", "enum", options=("silent", "kept"),
+                      description="Present only for a config with "
+                                  "derived_windows: NO binary frame follows. "
+                                  "silent = the new buffer is frames × "
+                                  "channels of zeros; kept = the swap left "
+                                  "the playing buffer as it is, so the "
+                                  "client keeps its own."),
+            FieldSpec("frames", "int",
+                      description="The new buffer's frame count, sent with "
+                                  "window."),
         ),
         binary_follow=True,
         description="Swap accepted; a binary float16 replacement buffer follows "
-                    "the JSON.",
+                    "the JSON (unless window says the client builds or keeps "
+                    "it).",
     ),
     EventSpec(
         "swap_failed",
@@ -1024,6 +1124,67 @@ EVENTS: tuple = (
                     "(ready.capabilities.bounce false, e.g. append-only "
                     "families or walk mode), or no fresh generation landed "
                     "in time. The session is unaffected.",
+    ),
+    EventSpec(
+        "oneshot_ready",
+        fields=(
+            FieldSpec("request_id", "str", required=True,
+                      description="Echo of the oneshot request_id."),
+            FieldSpec("ids", "list", required=True,
+                      description="Per version: the id of its kept latent "
+                                  "(the handle a redo names)."),
+            FieldSpec("seeds", "list", required=True,
+                      description="Per version: its seed."),
+            FieldSpec("streams", "list", required=True,
+                      description="The stream indices carried per version "
+                                  "(every stream, or a redo's one)."),
+            FieldSpec("sample_rate", "int", required=True),
+            FieldSpec("channels", "int", required=True,
+                      description="Channels per stream (2)."),
+            FieldSpec("frames", "int", required=True,
+                      description="Samples per channel per stream (the "
+                                  "playable duration)."),
+            FieldSpec("encoding", "str", required=True,
+                      description="Sample format of the binary frame: "
+                                  "pcm_s16le."),
+            FieldSpec("ms", "dict", required=True,
+                      description="Server wall time per phase: generate, "
+                                  "decode, pack, total."),
+            FieldSpec("redo_of", "str", nullable=True,
+                      description="The kept id a redo started from; null "
+                                  "for a plain render and for a redo from "
+                                  "a client-held latent."),
+            FieldSpec("latent_header", "dict",
+                      description="{n_streams, channels, frames, seconds}: "
+                                  "the geometry a held latent must match "
+                                  "(shape [n_streams, channels, frames], "
+                                  "frames per stream)."),
+            FieldSpec("latents", "dict",
+                      description="{dtype: 'float16', shape: [V, n_streams, "
+                                  "C, L], bytes}: present when the request "
+                                  "set return_latents; a second binary "
+                                  "frame follows the PCM."),
+        ),
+        binary_follow=True,
+        description="Answer to oneshot. ONE binary frame follows: int16 "
+                    "little-endian, blocks version-major then stream (in "
+                    "`streams` order), each block [frames, channels] "
+                    "interleaved (versions x streams x frames x channels "
+                    "x 2 bytes). When `latents` is on the header, a SECOND "
+                    "frame follows it: raw little-endian float16, C-order "
+                    "[V, n_streams, C, L] (every stream of every version).",
+    ),
+    EventSpec(
+        "oneshot_failed",
+        fields=(
+            FieldSpec("request_id", "str", required=True,
+                      description="Echo of the oneshot request_id."),
+            FieldSpec("error", "str"),
+        ),
+        description="oneshot not served: the backend cannot render one-shot "
+                    "(ready.capabilities.oneshot false), a bad request, an "
+                    "unknown or expired redo id, or a render error. The "
+                    "session is unaffected.",
     ),
     EventSpec(
         "analysis_state",
@@ -1308,9 +1469,9 @@ def config_catalog() -> dict:
     hints = get_type_hints(SessionConfig)
     out: dict = {}
     for f in _dc_fields(SessionConfig):
-        if f.name == "family_config":
-            # Not a wire key: the container the family-declared keys below
-            # are parsed into.
+        if f.name in ("family_config", "plugin_params"):
+            # Not wire keys: containers the family-declared keys below
+            # and the raw ``plugin_*`` keys are parsed into.
             continue
         wire_type, nullable = _project_config_type(hints[f.name])
         entry: dict = {"type": wire_type, "required": False}

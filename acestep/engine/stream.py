@@ -1121,6 +1121,7 @@ class StreamPipeline:
             if slot is not None and slot.step_idx >= len(slot.t_schedule) - 1:
                 finished = slot.xt
                 self.last_finished_request = slot.request
+                self._notify_slot_done(slot.request, finished)
                 self._slots[i] = None
                 break
 
@@ -1163,6 +1164,7 @@ class StreamPipeline:
                     # emerged-params echo and the decode-seed pairing
                     # describe the PREVIOUS latent.
                     self.last_finished_request = slot.request
+                    self._notify_slot_done(slot.request, finished)
                     self._slots[i] = None
                     break
 
@@ -1170,6 +1172,21 @@ class StreamPipeline:
         self.ticks += 1
 
         return finished
+
+    def _notify_slot_done(self, request, latent: torch.Tensor) -> None:
+        """Hand a finished slot's latent to the adapter's optional
+        ``on_slot_done(request, latent)`` observer, just before delivery.
+        A raising observer never breaks the tick: it is logged once per
+        pipeline and the latent is delivered regardless."""
+        hook = getattr(self.adapter, "on_slot_done", None)
+        if hook is None:
+            return
+        try:
+            hook(request, latent)
+        except Exception as exc:  # noqa: BLE001 - observer must not kill the tick
+            if not getattr(self, "_slot_done_warned", False):
+                self._slot_done_warned = True
+                logger.warning("on_slot_done raised (ignored): {!r}", exc)
 
     # ------------------------------------------------------------------
     # Unified tick — all features compose via pure ode_steps bricks
@@ -1252,6 +1269,25 @@ class StreamPipeline:
             else:
                 xt_decoder_list.append(xt)
 
+        # --- A stream layout's per-time keep, once per slot per step ---
+        # ``(mask [1, T, 1] bool, target [1, T, C])`` or None. It drives the
+        # adapter's native inpaint conditioning for the slot's forwards
+        # (``adapter.keep_cond``) and, only when the adapter's
+        # ``keep_overwrite`` is on, the RePaint x0 overwrite below. No hook,
+        # or None for a slot, leaves that slot's step exactly as before.
+        keep_mask = getattr(self.adapter, "keep_mask", None)
+        slot_keeps = [
+            keep_mask(slot.request) if keep_mask is not None else None
+            for slot in slots
+        ]
+
+        def _slot_aux(si: int):
+            aux = slots[si].request.aux_cond
+            keep = slot_keeps[si]
+            if keep is None:
+                return aux
+            return self.adapter.keep_cond(aux, keep)
+
         # --- Active pos/neg conditions per slot ---
         # ``neg_conds_per_slot[si]`` is non-empty only when slot ``si``
         # needs an actual uncond forward pass *this step*. RCFG modes
@@ -1290,9 +1326,7 @@ class StreamPipeline:
                 ctx_list=[
                     slots[si].request.context_latents for si in pair_slot_idx
                 ],
-                aux_list=[
-                    slots[si].request.aux_cond for si in pair_slot_idx
-                ],
+                aux_list=[_slot_aux(si) for si in pair_slot_idx],
             )
 
         # --- Positive pass: one call across all slots' pos conditions ---
@@ -1395,6 +1429,10 @@ class StreamPipeline:
         step_ode = self._get_compiled(ode_steps.step_ode_euler)
         step_sde_curve = self._get_compiled(ode_steps.step_sde_curve)
         step_sde_renoise = self._get_compiled(ode_steps.step_sde_renoise)
+        make_renoise = getattr(self.adapter, "make_renoise", None)
+        keep_overwrite = keep_mask is not None and bool(
+            getattr(self.adapter, "keep_overwrite", False)
+        )
 
         for si, slot in enumerate(slots):
             t_curr = slot.t_schedule[slot.step_idx].item()
@@ -1460,11 +1498,17 @@ class StreamPipeline:
 
             # Any blend that needs x0_pred pushes us out of the fast
             # direct-ODE path. SDE (curve or bare) also needs x0_pred.
+            # A stream layout's per-time keep as a RePaint overwrite (the
+            # kept frames' x0 is the layout's target at every step): only
+            # when the adapter's keep_overwrite is on (A/B against the
+            # native conditioning alone).
+            keep = slot_keeps[si] if keep_overwrite else None
             needs_x0 = (
                 has_complex_features
                 or scalar_x0_target
                 or use_sde
                 or t_next <= 0
+                or keep is not None
             )
 
             if not needs_x0:
@@ -1506,6 +1550,9 @@ class StreamPipeline:
                 alpha = eff_strength.to(device=x0_pred.device, dtype=x0_pred.dtype)
                 x0_pred = (1.0 - alpha) * x0_pred + alpha * req.x0_target
 
+            if keep is not None:
+                x0_pred = torch.where(keep[0], keep[1], x0_pred)
+
             if t_next <= 0:
                 # Final step. ODE and bare-SDE return the clean x0
                 # directly. SDE-with-curve keeps the per-frame source
@@ -1538,16 +1585,24 @@ class StreamPipeline:
                 # transposed order, so torch.randn(shape) would arrange
                 # them differently and silently change every ACE SDE
                 # trajectory (caught by test_ace_adapter_parity).
-                noise = (
-                    req.latent_mask.ensure_noise(xt.device, xt.dtype)
-                    if req.latent_mask is not None
-                    else torch.randn_like(xt)
-                    if slot.sde_generator is None
-                    else torch.randn(
-                        xt.shape, device=xt.device, dtype=xt.dtype,
-                        generator=slot.sde_generator,
+                # An adapter may supply the draw itself (a stream
+                # layout's per-stream noise streams); None = stock draw.
+                noise = None
+                if req.latent_mask is None and make_renoise is not None:
+                    noise = make_renoise(req, slot.step_idx)
+                if noise is None:
+                    noise = (
+                        req.latent_mask.ensure_noise(xt.device, xt.dtype)
+                        if req.latent_mask is not None
+                        else torch.randn_like(xt)
+                        if slot.sde_generator is None
+                        else torch.randn(
+                            xt.shape, device=xt.device, dtype=xt.dtype,
+                            generator=slot.sde_generator,
+                        )
                     )
-                )
+                else:
+                    noise = noise.to(device=xt.device, dtype=xt.dtype)
                 xt_new = step_sde_renoise(xt, x0_pred, t_next, noise)
             else:
                 # ODE with blended x0: synthesize v_blended and reuse

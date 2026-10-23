@@ -48,11 +48,16 @@ on first use.
   ``same_s_decode_<recipe tag>_t{min}_{opt}_{max}``
   (:func:`acestep.engine.sa3_trt.same_s_decode_build_tag`). The converted
   graph is cached under ``<engines_dir>/_onnx/``.
-* **SAME-L window decoder**: ``dec_fp16.onnx`` (upstream renamed it from
-  ``dec_dynamic_triton_swa.onnx`` on 2026-08-28, same bytes),
-  STRONGLY_TYPED; needs the ``samel::diff_attn_swa`` plugin registered
-  before the ONNX parse (vendored tree, via
-  :func:`acestep.engine.sa3_trt._register_same_plugin`).
+* **SAME-L decoder** (any profile: the ring's window engine t32_56_96, a
+  whole-song engine such as t32_1292_3230): ``dec_fp16.onnx`` (upstream
+  renamed it from ``dec_dynamic_triton_swa.onnx`` on 2026-08-28, same
+  bytes), STRONGLY_TYPED; needs the ``samel::diff_attn_swa`` plugin
+  registered before the ONNX parse (vendored tree, via
+  :func:`acestep.engine.sa3_trt._register_same_plugin`). Every profile
+  compiles a derived graph with the attention ``to_qkv`` / ``to_out``
+  MatMuls in FP16 (upstream runs them in FP32, i.e. TF32 GEMMs), cached
+  under ``<engines_dir>/_onnx/`` (:data:`SAME_L_DECODE_RECIPE`). The
+  runtime picks the narrowest engine covering each decoded slice.
 
 Usage:
     # Canonical matrix (DiT latent profiles 324 + 646, SAME-L window):
@@ -77,6 +82,9 @@ Usage:
     # SAME-L window decoder (defaults t32_56_96):
     python -m acestep.engine.trt.sa3_build --same-l-window
 
+    # SAME-L whole-song decoder (one-shot decode of a whole 2:00 latent):
+    python -m acestep.engine.trt.sa3_build --same-l-window --min-latents 32 --opt-latents 1292 --max-latents 3230 --workspace-gb 24
+
     # Canonical matrix plus the FP8 DiT variants (HF dit_fp8.onnx, or a
     # local graph via --fp8-onnx /path/to/dit_fp8.onnx):
     python -m acestep.engine.trt.sa3_build --all --fp8
@@ -92,6 +100,7 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -108,6 +117,7 @@ from .build import _preflight, _save_build_report, _verify_engines
 
 from acestep.engine.sa3_helpers import require_sa3_vendor
 from acestep.engine.sa3_trt import (
+    CANONICAL_SAME_L_WINDOW,
     COND_DIM,
     IO_CHANNELS,
     SA3_SAMPLE_RATE,
@@ -192,9 +202,13 @@ CANONICAL_DIT_PROFILES: tuple[tuple[int, int, int], ...] = (
 # clamp would cut every >54 s small session down to the 646 engine.
 # Medium never gets it (its sessions are clamped to 646 by design).
 SMALL_EXTRA_DIT_PROFILES: tuple[tuple[int, int, int], ...] = ((1, 1292, 1292),)
-# SAME-L windowed decode profile: DEMON decodes ~1 s windows with 2 s of
-# context, so T stays inside [32, 96] with the steady state at 56.
-CANONICAL_SAME_L_WINDOW: tuple[int, int, int] = (32, 56, 96)
+# SAME-L windowed decode profile: CANONICAL_SAME_L_WINDOW (sa3_trt, imported
+# above; the runtime window finder reads the same range).
+# Revision of the SAME-L decoder graph rewrite (attention projections in
+# FP16, :func:`_same_l_attn_proj_fp16`), applied to every SAME-L profile.
+# It names the derived ONNX and the engine metadata component, so bumping
+# it rebuilds every SAME-L engine on the next build run.
+SAME_L_DECODE_RECIPE = "fp16proj1"
 # SAME-S full-decode profile: small decodes the whole canvas latent per
 # fresh generation (no windowing), so the profile spans the session
 # windows: opt 646 (the 54 s canvas class; production L = 614), max 1292
@@ -326,7 +340,9 @@ class SA3DiTRefitBuildConfig:
 
 @dataclass
 class SameLWindowBuildConfig:
-    """Build parameters for the SAME-L window decoder engine."""
+    """Build parameters for one SAME-L decoder engine (any profile; the
+    ``same_l_decode_window_`` directory prefix is kept for every profile,
+    the name the runtime finder matches)."""
 
     min_latents: int
     opt_latents: int
@@ -587,19 +603,28 @@ def _build_same_l_window_engine(
     env: dict,
     force_rebuild: bool = False,
 ) -> tuple[str, str, float, str]:
-    """Build the SAME-L window decoder. Returns (label, path, elapsed, status)."""
+    """Build one SAME-L decoder engine (any profile). Returns (label, path,
+    elapsed, status)."""
     name = config.engine_name()
     engine_path = os.path.join(output_dir, name, f"{name}.trt")
+    # Identity = upstream's source graph (its hash) + the rewrite revision
+    # in the component; the derived graph is rebuilt from those. The
+    # engine directory name is unchanged, so an engine built before the
+    # rewrite (component ``same_l_decode_window`` or
+    # ``same_l_decode_full_fp16proj1``) stays usable at runtime (same
+    # output within fp16 rounding) until the next build run sees the
+    # component change and rebuilds it in place.
+    component = f"same_l_decode_{SAME_L_DECODE_RECIPE}"
     label = (
-        f"SAME-L window decoder t{config.min_latents}"
-        f"_{config.opt_latents}_{config.max_latents}"
+        "SAME-L decoder (fp16 attn projections)"
+        f" t{config.min_latents}_{config.opt_latents}_{config.max_latents}"
     )
 
     try:
         onnx_path = _fetch_onnx(config.onnx_files)
     except Exception as exc:
         kept = _engine_survives_missing_onnx(
-            engine_path=engine_path, component="same_l_decode_window",
+            engine_path=engine_path, component=component,
             config=config, env=env, force_rebuild=force_rebuild,
         )
         if not kept:
@@ -612,7 +637,7 @@ def _build_same_l_window_engine(
         )
         return (label, engine_path, 0.0, "SKIPPED")
     expected = _expected_metadata(
-        component="same_l_decode_window", onnx_path=onnx_path, config=config, env=env,
+        component=component, onnx_path=onnx_path, config=config, env=env,
     )
 
     if not force_rebuild and os.path.exists(engine_path):
@@ -637,8 +662,9 @@ def _build_same_l_window_engine(
 
     lo, opt, hi = config.min_latents, config.opt_latents, config.max_latents
     t0 = time.time()
+    build_onnx = _derive_same_l_onnx(onnx_path, output_dir, expected["onnx_sha256"])
     _build_strongly_typed_engine(
-        onnx_path=onnx_path,
+        onnx_path=build_onnx,
         engine_path=engine_path,
         workspace_gb=config.workspace_gb,
         profile_shapes={
@@ -652,6 +678,152 @@ def _build_same_l_window_engine(
     elapsed = time.time() - t0
     logger.info("Built in {:.0f}s", elapsed)
     return (label, engine_path, elapsed, "OK")
+
+
+def _derive_same_l_onnx(source_onnx: str, output_dir: str, source_sha256: str) -> str:
+    """Upstream SAME-L decoder ONNX -> the graph every SAME-L engine builds
+    (:func:`_same_l_attn_proj_fp16`), cached under ``<output_dir>/_onnx/``
+    keyed on the rewrite revision and the source graph's hash. Returns the
+    derived graph's path."""
+    import onnx
+
+    out = (
+        Path(output_dir) / "_onnx"
+        / f"same_l_dec_{SAME_L_DECODE_RECIPE}_{source_sha256[:12]}.onnx"
+    )
+    if out.is_file():
+        logger.info("SAME-L decoder ONNX cached: {}", out)
+        return str(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    model = onnx.load(source_onnx)
+    blocks = _same_l_attn_proj_fp16(model)
+    tmp = out.with_name(out.stem + ".partial.onnx")
+    onnx.save(model, str(tmp))
+    del model
+    onnx.checker.check_model(str(tmp))
+    inferred = tmp.with_name(tmp.stem + ".inferred.onnx")
+    try:
+        onnx.shape_inference.infer_shapes_path(str(tmp), str(inferred), strict_mode=True)
+    finally:
+        if inferred.exists():
+            inferred.unlink()
+    os.replace(tmp, out)
+    logger.info("SAME-L decoder ONNX: {} attention blocks in fp16 -> {}", blocks, out)
+    return str(out)
+
+
+_SAME_L_ATTN_QKV_RE = re.compile(r"^/dec/blocks\.(\d+)/attn/to_qkv/MatMul$")
+
+
+def _same_l_attn_proj_fp16(model) -> int:
+    """Run the SAME-L decoder's attention projections in FP16 (in place).
+
+    Upstream's graph is FP16 except that each block's attention casts its
+    input to FP32 and runs ``to_qkv`` and ``to_out`` as FP32 MatMuls
+    against FP32 weights; strongly typed, TensorRT honours that with TF32
+    GEMMs, the largest kernel cost of a SAME-L decode. Per block:
+
+    * ``to_qkv``: the MatMul reads the FP16 activation from before the
+      ``Cast(FP32)`` (the Cast stays while its Shape consumers read it),
+      its weight is FP16, and a new ``Cast(FP32)`` restores the FP32
+      tensor the Slices / attention plugin downstream consume;
+    * ``to_out``: a new ``Cast(FP16)`` feeds the MatMul, its weight is
+      FP16; its only consumer is already a ``Cast(FP16)``.
+
+    Weights must be finite and fit FP16. Returns the number of blocks
+    rewritten; raises when upstream's graph no longer has this shape.
+    """
+    import numpy as np
+    from onnx import NodeProto, TensorProto, helper, numpy_helper
+
+    graph = model.graph
+    inits = {i.name: i for i in graph.initializer}
+    by_out = {o: n for n in graph.node for o in n.output}
+    by_name = {n.name: n for n in graph.node}
+    consumers: dict[str, list] = {}
+    for n in graph.node:
+        for i in n.input:
+            consumers.setdefault(i, []).append(n)
+
+    def _cast_to(node) -> int | None:
+        if node is None or node.op_type != "Cast":
+            return None
+        return next((a.i for a in node.attribute if a.name == "to"), None)
+
+    def _weight_to_fp16(matmul) -> None:
+        tr = by_out.get(matmul.input[1])
+        if tr is None or tr.op_type != "Transpose" or tr.input[0] not in inits:
+            raise RuntimeError(f"{matmul.name}: weight is not Transpose(initializer)")
+        if len(consumers[tr.input[0]]) != 1 or len(consumers[tr.output[0]]) != 1:
+            raise RuntimeError(f"{matmul.name}: weight {tr.input[0]} is shared")
+        init = inits[tr.input[0]]
+        if init.data_type != TensorProto.FLOAT:
+            raise RuntimeError(f"{matmul.name}: weight is not FP32")
+        arr = numpy_helper.to_array(init)
+        if not np.isfinite(arr).all() or float(np.abs(arr).max()) >= 65504.0:
+            raise RuntimeError(f"{matmul.name}: weight does not fit FP16")
+        init.CopyFrom(numpy_helper.from_array(arr.astype(np.float16), init.name))
+
+    after: dict[str, NodeProto] = {}
+    before: dict[str, NodeProto] = {}
+    drop: set[str] = set()
+    retyped: set[str] = set()
+    blocks = sorted(
+        int(m.group(1)) for m in (_SAME_L_ATTN_QKV_RE.match(n.name) for n in graph.node) if m
+    )
+    if not blocks:
+        raise RuntimeError("no SAME-L attention to_qkv MatMuls; upstream graph changed")
+    for b in blocks:
+        p = f"/dec/blocks.{b}/attn/"
+        qkv, out = by_name[p + "to_qkv/MatMul"], by_name.get(p + "to_out/MatMul")
+        if out is None:
+            raise RuntimeError(f"block {b}: no to_out MatMul; upstream graph changed")
+        cast_in = by_out.get(qkv.input[0])
+        if _cast_to(cast_in) != TensorProto.FLOAT:
+            raise RuntimeError(f"block {b}: to_qkv input is not a Cast(FP32)")
+        out_cons = consumers.get(out.output[0], [])
+        if not out_cons or any(_cast_to(c) != TensorProto.FLOAT16 for c in out_cons):
+            raise RuntimeError(f"block {b}: to_out output is not consumed by Cast(FP16)")
+
+        _weight_to_fp16(qkv)
+        qkv.input[0] = cast_in.input[0]
+        if len(consumers[cast_in.output[0]]) == 1:  # only to_qkv read it
+            drop.add(cast_in.name)
+        f32 = qkv.output[0]
+        qkv.output[0] = f32 + "_fp16"
+        after[qkv.name] = helper.make_node(
+            "Cast", [qkv.output[0]], [f32], name=p + "to_qkv/demon_cast_fp32",
+            to=TensorProto.FLOAT,
+        )
+
+        _weight_to_fp16(out)
+        src = out.input[0]
+        out.input[0] = src + "_fp16"
+        before[out.name] = helper.make_node(
+            "Cast", [src], [out.input[0]], name=p + "to_out/demon_cast_fp16",
+            to=TensorProto.FLOAT16,
+        )
+        retyped.add(out.output[0])
+
+    nodes = []
+    for n in graph.node:
+        if n.name in drop:
+            continue
+        if n.name in before:
+            nodes.append(before[n.name])
+        copy = NodeProto()
+        copy.CopyFrom(n)
+        nodes.append(copy)
+        if n.name in after:
+            nodes.append(after[n.name])
+    del graph.node[:]
+    graph.node.extend(nodes)
+    # value_info recorded the FP32 dtype of the to_out results; drop it
+    # rather than leave a contradiction for shape inference to trip on.
+    keep = [v for v in graph.value_info if v.name not in retyped]
+    del graph.value_info[:]
+    graph.value_info.extend(keep)
+    return len(blocks)
 
 
 def _convert_same_s_fp16mixed(source_onnx: str, output_dir: str, tag: str) -> str:
@@ -879,7 +1051,7 @@ def _matrix_jobs(args) -> list[tuple[str, str]]:
         if args.model == "medium":
             lo, opt, hi = CANONICAL_SAME_L_WINDOW
             cfg = SameLWindowBuildConfig(lo, opt, hi)
-            jobs.append((f"SAME-L window decoder t{lo}_{opt}_{hi}", cfg.engine_name()))
+            jobs.append((f"SAME-L decoder t{lo}_{opt}_{hi}", cfg.engine_name()))
         else:
             lo, opt, hi = CANONICAL_SAME_S_DECODE
             cfg = SameSDecodeBuildConfig(lo, opt, hi)
@@ -963,7 +1135,7 @@ def main() -> int:
     batch.add_argument("--dit-only", action="store_true",
                        help="Only build DiT engines (skip SAME-L)")
     batch.add_argument("--same-l-only", action="store_true",
-                       help="Only build the SAME-L window decoder (skip DiT)")
+                       help="Only build the SAME-L window decoder t32_56_96 (skip DiT)")
     batch.add_argument("--same-s-only", action="store_true",
                        help="small models: only build the SAME-S decoder (skip DiT)")
 
@@ -980,8 +1152,10 @@ def main() -> int:
                         help="Build one DiT engine (size via --seconds or "
                              "the latent flags)")
     single.add_argument("--same-l-window", action="store_true",
-                        help="Build the SAME-L window decoder (size via the "
-                             "latent flags; defaults t32_56_96)")
+                        help="Build one SAME-L decoder: the ring's window "
+                             "engine by default (t32_56_96), any other "
+                             "profile (e.g. a whole-song t32_1292_3230) via "
+                             "the latent flags")
     single.add_argument("--same-s-decode", action="store_true",
                         help="Build the SAME-S full decoder (size via the "
                              "latent flags; defaults t32_646_1292)")

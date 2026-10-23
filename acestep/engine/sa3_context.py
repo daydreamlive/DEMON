@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 import threading
 from pathlib import Path
 from typing import Callable, Mapping
@@ -309,6 +310,15 @@ class SA3Context:
             return requested, ""
         return "eager", verdict.reason or "extension does not support tensorrt"
 
+    def stream_layout(self):
+        """The installed extension's ``StreamLayout``, or None (stock).
+
+        Every layout-aware site below reads this; when it is None they
+        run the stock single-stream code unchanged."""
+        from acestep.plugins.model_extensions import stream_layout_of
+
+        return stream_layout_of(getattr(self, "extension_runtime", None))
+
     def with_song_seconds(self, song_seconds: float | None) -> "SA3LabelView":
         """A per-session view of this context with its own song-length
         label: ``None`` = the upstream whole-file semantics (label = the
@@ -318,7 +328,25 @@ class SA3Context:
         outro pad differ."""
         if song_seconds is not None:
             song_seconds = min(float(song_seconds), SONG_SECONDS_MAX)
-        return SA3LabelView(self, song_seconds, outro_pad_setting(song_seconds))
+        return SA3LabelView(
+            getattr(self, "_base", self), song_seconds,
+            outro_pad_setting(song_seconds),
+            getattr(self, "session_params", {}),
+        )
+
+    #: The session's ``plugin_*`` config keys (see
+    #: :meth:`with_session_params`); empty on the shared context.
+    session_params: Mapping = {}
+
+    def with_session_params(self, params: Mapping) -> "SA3LabelView":
+        """A per-session view of this context carrying the session's
+        ``plugin_*`` config keys as ``session_params`` (read by an
+        extension's stream layout, e.g. in ``make_dit``). The model,
+        engines, caches and label stay shared with this context."""
+        return SA3LabelView(
+            getattr(self, "_base", self), self.song_seconds, self.outro_pad_s,
+            dict(params or {}),
+        )
 
     def close(self) -> None:
         """Release the installed extension. Idempotent.
@@ -359,6 +387,24 @@ class SA3Context:
         engine when one covers the window, and avoid fp8 (whose refit
         story is unproven) otherwise."""
         from acestep.engine.sa3_trt import SA3TRTDit, find_dit_engine
+
+        layout = self.stream_layout()
+        if layout is not None:
+            # Stock engines are built for one stream; a stacked layout
+            # brings its own factory (or runs the eager DiT). The stock
+            # lookup is never consulted here.
+            dit = None
+            if layout.make_dit is not None:
+                dit = layout.make_dit(
+                    self, int(latent_frames), float(seconds_total), backend,
+                )
+            logger.info(
+                "sa3_dit_layout model_id={} latent_frames={} n_streams={} "
+                "dit={}",
+                self.model_id, latent_frames, layout.n_streams,
+                "eager" if dit is None else type(dit).__name__,
+            )
+            return self.dit if dit is None else dit
 
         if backend != "tensorrt":
             logger.info(
@@ -402,6 +448,22 @@ class SA3Context:
         scalar — must go through here so they can't disagree."""
         return label_seconds_for(duration_s, self.song_seconds)
 
+    def render_sample_ceiling(self) -> int:
+        """The longest render window (model-rate samples) a capture may
+        size. Upstream's 120 s default, unless an installed stream layout
+        declares a longer ``max_duration_s``: the window then covers that
+        ceiling plus :attr:`outro_pad_s`, aligned, so a session the
+        create clamp admits is rendered (and delivered) whole."""
+        default = int(self._helpers.SA3_DEFAULT_SAMPLE_SIZE)
+        layout = self.stream_layout()
+        cap = getattr(layout, "max_duration_s", None) if layout is not None else None
+        if not cap:
+            return default
+        needed = self.sam._adapt_sample_size(
+            [{"seconds_total": float(cap)}], sys.maxsize, self.outro_pad_s,
+        )
+        return max(default, int(needed))
+
     def window_latent_frames(self, duration_s: float) -> int:
         """Latent frames of the render window for ``duration_s`` (the
         requested length + :attr:`outro_pad_s`, aligned the way
@@ -409,7 +471,7 @@ class SA3Context:
         model config — no model call."""
         audio_samples = self.sam._adapt_sample_size(
             [{"seconds_total": float(duration_s)}],
-            self._helpers.SA3_DEFAULT_SAMPLE_SIZE,
+            self.render_sample_ceiling(),
             self.outro_pad_s,
         )
         return int(audio_samples) // self.downsampling_ratio
@@ -426,6 +488,16 @@ class SA3Context:
         truncating the source for."""
         from acestep.engine.sa3_trt import max_dit_engine_latents
 
+        layout = self.stream_layout()
+        if layout is not None:
+            # Stock engine profiles describe one stream and do not apply.
+            # A pinned (or layout-derived) stream length IS the window:
+            # clamp onto it.
+            n = layout.stream_tokens(duration_s)
+            if n is None:
+                return duration_s
+            cap = n * self.downsampling_ratio / self.sample_rate
+            return min(float(duration_s), cap)
         if backend != "tensorrt":
             return duration_s
         max_l = max_dit_engine_latents(self.model_id)
@@ -448,12 +520,23 @@ class SA3Context:
     def prepare_cond(self, *, prompt: str, duration: float, steps: int):
         """Capture the DiT kwargs + schedule inputs for one prompt and
         fixed render duration (the spike's ``SA3Conditioning``), labelled
-        with :meth:`cond_seconds_total` and padded by :attr:`outro_pad_s`."""
+        with :meth:`cond_seconds_total` and padded by :attr:`outro_pad_s`.
+        Under a stream layout the capture is sized for the stacked
+        streams (see ``prepare_sa3_conditioning``)."""
+        layout = self.stream_layout()
+        extra = {}
+        if layout is not None:
+            extra = {
+                "n_streams": int(layout.n_streams),
+                "tokens_per_stream": layout.stream_tokens(duration),
+            }
         return self._helpers.prepare_sa3_conditioning(
             self.sam, prompt=prompt, duration=duration, steps=steps,
+            sample_size=self.render_sample_ceiling(),
             duration_padding_sec=self.outro_pad_s,
             song_seconds_total=self.song_seconds,
             schedule_from_window=self.schedule_from_window,
+            **extra,
         )
 
     def make_schedule_builder(
@@ -488,12 +571,35 @@ class SA3Context:
 
         return _builder
 
-    def encode_source(self, audio_input, audio_sample_size: int) -> torch.Tensor:
+    def encode_source(self, audio_input, audio_sample_size: int, keep=None) -> torch.Tensor:
         """SAME-encode an audio source for audio-to-audio streaming.
         Returns the native ``[1, 256, T]`` latent. Under the song-length
         label the source is tiled to fill the render window (see
         :meth:`tile_loop`); otherwise upstream's ``prepare_audio``
-        zero-pads it."""
+        zero-pads it.
+
+        Under a stream layout the result is the stacked ``[1, 256, n*L]``
+        anchor: the layout's own ``encode_source`` when it has one, else
+        the single-stream encode repeated into every stream.
+        ``audio_sample_size`` is always ONE stream's window. ``keep`` (a
+        swap's keep field) reaches the layout's ``encode_source`` as
+        ``keep=`` only when given; nothing else reads it."""
+        layout = self.stream_layout()
+        if layout is not None:
+            if layout.encode_source is not None:
+                if keep is not None:
+                    return layout.encode_source(
+                        self, audio_input, int(audio_sample_size), keep=keep,
+                    )
+                return layout.encode_source(
+                    self, audio_input, int(audio_sample_size),
+                )
+            one = self._encode_one_stream(audio_input, audio_sample_size)
+            return one.repeat(1, 1, int(layout.n_streams))
+        return self._encode_one_stream(audio_input, audio_sample_size)
+
+    def _encode_one_stream(self, audio_input, audio_sample_size: int) -> torch.Tensor:
+        """The stock single-stream SAME encode (see :meth:`encode_source`)."""
         if self.song_seconds is not None:
             audio_input = self.tile_loop(audio_input, audio_sample_size)
         return self._helpers.encode_sa3_source(
@@ -534,12 +640,14 @@ class SA3LabelView:
     the shared context, so a cache the context fills stays shared.
     """
 
-    _OVERRIDES = ("song_seconds", "outro_pad_s")
+    _OVERRIDES = ("song_seconds", "outro_pad_s", "session_params")
 
-    def __init__(self, base: SA3Context, song_seconds, outro_pad_s: float):
+    def __init__(self, base: SA3Context, song_seconds, outro_pad_s: float,
+                 session_params: Mapping | None = None):
         object.__setattr__(self, "_base", base)
         object.__setattr__(self, "song_seconds", song_seconds)
         object.__setattr__(self, "outro_pad_s", float(outro_pad_s))
+        object.__setattr__(self, "session_params", dict(session_params or {}))
 
     def __getattr__(self, name):
         import inspect
@@ -647,51 +755,93 @@ class SA3SAMECodec:
         return audio[0]
 
 
+#: engine file -> (decoder, lock): the process-wide SAME-L decoders. ONE
+#: execution context per engine file per process (a wide profile's context
+#: is sized for its max, 4.4 GB at t..3230), shared by every session's
+#: codec; the lock serializes decodes on that context.
+_SAME_L_DECODERS: dict = {}
+_SAME_L_DECODERS_LOCK = threading.Lock()
+
+
+def _same_l_decoder(path) -> tuple:
+    """``(decoder, lock)`` of the SAME-L engine at ``path``, deserialized
+    on first use and then shared process-wide."""
+    key = str(path)
+    with _SAME_L_DECODERS_LOCK:
+        entry = _SAME_L_DECODERS.get(key)
+        if entry is None:
+            from acestep.engine.sa3_trt import SameLWindowTRTDecoder
+
+            entry = (SameLWindowTRTDecoder(Path(path)), threading.Lock())
+            _SAME_L_DECODERS[key] = entry
+    return entry
+
+
 class SA3SAMEWindowCodec:
-    """The SAME-L (medium) family codec: windowed latent decode.
+    """The SAME-L (medium) family codec: latent-range decode.
 
-    Per render-tick decode of a small latent window around the playhead
-    (the same geometry the spike validated:
-    ``resolve_sa3_decode_window`` with 2 s context, ``slice_align=1`` —
-    SAME-L's sliding-window attention needs no chunk-phase snapping).
-    Two execution paths, identical interface:
+    ONE decode entry, :meth:`decode_window`: samples ``[start, start+num)``
+    of the full decode, from the latent slice
+    ``resolve_sa3_decode_window`` gives with 2 s of context
+    (``slice_align=1``: SAME-L's sliding-window attention needs no
+    chunk-phase snapping). The ring calls it per render tick with ~1 s
+    windows; a whole-song decode is ``decode_window(latent, 0, T*4096)``
+    (:meth:`decode_full`). Two execution paths, identical interface:
 
-    * **TRT** when ``use_trt`` and the built window engine exists
-      (``same_l_decode_window_<plugin_tag>_t*``): ~9-10 ms per ~1 s
-      window, latent
-      scaled by ``pretransform.scale`` before the call (spike
-      ``scale_mode="pretransform"``, rel_rms ~8e-3 vs eager full).
-    * **Eager** fallback: the spike's ``decode_sa3_latent_window``
-      (deterministic), ~16 ms per window — still per-tick viable.
-
-    ``decode_full`` (legacy full-buffer path only) stays eager.
+    * **TRT**: the narrowest built SAME-L engine
+      (``same_l_decode_window_<plugin_tag>_t*``) whose profile covers the
+      resolved slice (:func:`acestep.engine.sa3_trt.select_same_l_engine`),
+      so ring windows land on the window engine (t32_56_96) and a whole
+      song on a wide one (e.g. t32_1292_3230). Decoders come from one
+      process-wide cache keyed by engine path, the wide ones loaded on
+      first use (a ring session never pays their context). Latent scaled
+      by ``pretransform.scale`` before the call (spike
+      ``scale_mode="pretransform"``, rel_rms ~8e-3 vs eager full). The
+      TRT decode is the deterministic decode (no decode-RNG draws).
+    * **Eager** when no engine covers the slice: the spike's
+      ``decode_sa3_latent_window`` (deterministic), ~16 ms per window;
+      :meth:`decode_full` keeps the seeded eager full decode.
     """
 
     #: Decode context on each side of the kept region. The spike swept
-    #: ctx1/ctx2/ctx4; 2 s is the validated default (window T ~50 ≤ the
-    #: engine's 96-frame max, parity rel_rms ~8e-3).
+    #: ctx1/ctx2/ctx4; 2 s is the validated default (window T ~50 within
+    #: the window engine's 96-frame max, parity rel_rms ~8e-3).
     context_sec = 2.0
 
     def __init__(self, context: SA3Context, *, use_trt: bool = True):
-        from acestep.engine.sa3_trt import (
-            SameLWindowTRTDecoder,
-            find_same_l_window_engine,
-        )
+        from acestep.engine.sa3_trt import find_same_l_engines, find_same_l_window_engine
 
         self._context = context
         self._helpers = context._helpers
         self._scale = float(getattr(context.sam.model.pretransform, "scale", 1.0))
-        found = find_same_l_window_engine() if use_trt else None
-        if found is None:
+        # Narrowest first; selection reads this listing, never the disk.
+        self._engines = list(find_same_l_engines()) if use_trt else []
+        if not self._engines:
             logger.info(
-                "sa3_same_l_window_decode mode=eager reason={}",
+                "sa3_same_l_decode mode=eager reason={}",
                 "no_trt_engine" if use_trt else "backend",
             )
-            self._trt = None
-            self._min_t = self._max_t = 0
-        else:
-            path, self._min_t, self._max_t = found
-            self._trt = SameLWindowTRTDecoder(path)
+            return
+        logger.info(
+            "sa3_same_l_decode mode=tensorrt engines={}",
+            ",".join(f"t{lo}..{hi}" for _, lo, hi in self._engines),
+        )
+        # The ring's window engine is loaded now so its first render tick
+        # does not pay the deserialization.
+        window = find_same_l_window_engine()
+        if window is not None:
+            _same_l_decoder(window[0])
+
+    @property
+    def uses_trt(self) -> bool:
+        return bool(self._engines)
+
+    def engine_for(self, frames: int):
+        """``(path, min_t, max_t)`` of the engine that decodes a
+        ``frames``-frame slice, or None (eager)."""
+        from acestep.engine.sa3_trt import select_same_l_engine
+
+        return select_same_l_engine(self._engines, frames, frames)
 
     def _decode_window_eager(self, latent_bct, start: int, num: int) -> torch.Tensor:
         result = self._helpers.decode_sa3_latent_window(
@@ -704,43 +854,55 @@ class SA3SAMEWindowCodec:
         )
         return result.audio_ct
 
+    def _place(self, slice_start: int, slice_end: int, crop_start: int, total_t: int):
+        """The first engine (narrowest first) that serves the resolved
+        slice, with the slice grown to that engine's profile minimum near
+        the song edges (right first, then left, shifting the crop offset):
+        ``(path, slice_start, slice_end, crop_start)``, or None."""
+        ds = self._context.downsampling_ratio
+        for path, min_t, max_t in self._engines:
+            s0, s1, crop = slice_start, slice_end, crop_start
+            need = min_t - (s1 - s0)
+            if need > 0:
+                grow_r = min(need, total_t - s1)
+                s1 += grow_r
+                need -= grow_r
+            if need > 0:
+                grow_l = min(need, s0)
+                s0 -= grow_l
+                crop += grow_l * ds
+                need -= grow_l
+            if need <= 0 and (s1 - s0) <= max_t:
+                return path, s0, s1, crop
+        return None
+
     def decode_window(self, latent_bct: torch.Tensor, start: int, num: int) -> torch.Tensor:
         """``[1, 256, T]`` latent -> ``[C, num]`` float 44.1 kHz audio
         covering samples ``[start, start+num)`` of the full decode."""
-        if self._trt is None:
+        if not self._engines:
             return self._decode_window_eager(latent_bct, start, num)
-        ds = self._context.downsampling_ratio
         window = self._helpers.resolve_sa3_decode_window(
             latent_bct,
             target_start_sample=int(start),
             target_num_samples=int(num),
             context_sec=self.context_sec,
             sample_rate=self._context.sample_rate,
-            downsampling_ratio=ds,
+            downsampling_ratio=self._context.downsampling_ratio,
             slice_align_latents=1,
         )
-        slice_start, slice_end = window.slice_start, window.slice_end
-        crop_start = window.crop_start
-        total_t = latent_bct.shape[-1]
-        # Engine floor: near the song edges the resolved slice can drop
-        # under the profile minimum — grow it (right first, then left,
-        # shifting the crop offset) rather than fall off the TRT path.
-        need = self._min_t - (slice_end - slice_start)
-        if need > 0:
-            grow_r = min(need, total_t - slice_end)
-            slice_end += grow_r
-            need -= grow_r
-        if need > 0:
-            grow_l = min(need, slice_start)
-            slice_start -= grow_l
-            crop_start += grow_l * ds
-            need -= grow_l
-        if need > 0 or (slice_end - slice_start) > self._max_t:
-            # Latent shorter than the engine minimum, or a window the
-            # profile can't serve: decode eagerly rather than guess.
+        placed = self._place(
+            window.slice_start, window.slice_end, window.crop_start,
+            int(latent_bct.shape[-1]),
+        )
+        if placed is None:
+            # Latent shorter than every engine minimum, or a slice no
+            # profile serves: decode eagerly rather than guess.
             return self._decode_window_eager(latent_bct, start, num)
+        path, slice_start, slice_end, crop_start = placed
         latent_window = latent_bct[..., slice_start:slice_end].contiguous()
-        audio_ct = self._trt.decode(latent_window * self._scale)
+        dec, lock = _same_l_decoder(path)
+        with lock:
+            audio_ct = dec.decode(latent_window * self._scale)
         out = audio_ct[:, crop_start:crop_start + int(num)]
         if out.shape[-1] < int(num):
             out = torch.nn.functional.pad(out, (0, int(num) - out.shape[-1]))
@@ -749,9 +911,33 @@ class SA3SAMEWindowCodec:
     def decode_full(
         self, latent_bct: torch.Tensor, *, decode_seed: int | None = None,
     ) -> torch.Tensor:
-        """Eager full decode (legacy full-buffer mode only; the hot path
-        never calls this for windowed-codec families). ``decode_seed``
-        pins the decode RNG exactly as on :class:`SA3SAMECodec`."""
+        """Whole-song decode ``[1, 256, T]`` -> ``[C, T*4096]``: exactly
+        ``decode_window(latent, 0, T*downsampling_ratio)`` when an engine
+        covers T (``decode_seed`` unused: the TRT decode is the
+        deterministic one). With no covering engine it stays the eager
+        full decode, ``decode_seed`` pinning the decode RNG exactly as on
+        :class:`SA3SAMECodec`."""
+        frames = int(latent_bct.shape[-1])
+        if self.engine_for(frames) is not None:
+            return self.decode_window(
+                latent_bct, 0, frames * self._context.downsampling_ratio,
+            )
         with self._helpers.sa3_decode_rng(decode_seed, device=latent_bct.device):
             audio = self._helpers.decode_sa3_latent(self._context.sam, latent_bct)
         return audio[0]
+
+    def decode_full_batch(
+        self, latents_bct: torch.Tensor, *, decode_seed: int | None = None,
+    ) -> torch.Tensor:
+        """Whole-song decode of ``[B, 256, T]`` -> ``[B, C, N]``. On TRT the
+        latents go one at a time through :meth:`decode_full` (the engine
+        graph is batch 1). Eager decodes the batch in ONE call with the
+        decode RNG pinned once for it, so the same latents and seed give
+        bit-identical audio."""
+        if self.engine_for(int(latents_bct.shape[-1])) is not None:
+            return torch.stack([
+                self.decode_full(latents_bct[i:i + 1])
+                for i in range(int(latents_bct.shape[0]))
+            ])
+        with self._helpers.sa3_decode_rng(decode_seed, device=latents_bct.device):
+            return self._helpers.decode_sa3_latent(self._context.sam, latents_bct)

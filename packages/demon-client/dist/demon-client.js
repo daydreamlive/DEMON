@@ -25,7 +25,8 @@ var COMMAND_NAMES = [
   "midi_transcribe",
   "analysis_tap",
   "audio_in",
-  "bounce"
+  "bounce",
+  "oneshot"
 ];
 var EVENT_NAMES = [
   "init_ack",
@@ -55,6 +56,8 @@ var EVENT_NAMES = [
   "midi_failed",
   "bounce_ready",
   "bounce_failed",
+  "oneshot_ready",
+  "oneshot_failed",
   "analysis_state",
   "audio_in_ack",
   "analysis_update"
@@ -1271,6 +1274,153 @@ function analysisTapsAvailable(capabilities) {
   return raw.filter((name) => typeof name === "string");
 }
 
+// oneshot.ts
+var _seq = 0;
+function oneshotCommand(req) {
+  const msg = {
+    type: "oneshot",
+    request_id: req.requestId ?? `oneshot-${++_seq}-${Date.now()}`
+  };
+  if (req.redo) {
+    const r = req.redo;
+    const redo = {};
+    if (r.id !== void 0) redo.id = r.id;
+    if (r.stream !== void 0) redo.stream = r.stream;
+    if (r.streams !== void 0) redo.streams = [...r.streams];
+    redo.seed = r.seed;
+    if (r.denoise !== void 0) redo.denoise = Array.isArray(r.denoise) ? [...r.denoise] : r.denoise;
+    if (r.latent) {
+      const { data, nStreams, channels, frames } = r.latent;
+      if (data.length !== nStreams * channels * frames)
+        throw new Error(`oneshot: redo.latent has ${data.length} values, expected ${nStreams} x ${channels} x ${frames}`);
+      redo.latent = { dtype: "float16", shape: [nStreams, channels, frames] };
+    }
+    msg.redo = redo;
+  } else msg.seeds = [...req.seeds ?? []];
+  if (req.knobs) msg.knobs = { ...req.knobs };
+  if (req.returnLatents) msg.return_latents = true;
+  return msg;
+}
+function oneshotLatentFrame(req) {
+  const lat = req.redo?.latent;
+  if (!lat) return null;
+  const d = lat.data;
+  return d.buffer.slice(d.byteOffset, d.byteOffset + d.byteLength);
+}
+function decodeOneshot(meta, data, latents) {
+  const streams = meta.streams.map(Number);
+  const ids = meta.ids.map(String);
+  const seeds = meta.seeds.map(Number);
+  const block = meta.frames * meta.channels;
+  const want = ids.length * streams.length * block * 2;
+  if (data.byteLength !== want)
+    throw new Error(`oneshot: ${data.byteLength} bytes, expected ${want} (${ids.length} x ${streams.length} x ${meta.frames} x ${meta.channels} int16)`);
+  const versions = ids.map((id, v) => {
+    const audio = {};
+    streams.forEach((k, j) => {
+      audio[k] = new Int16Array(data, (v * streams.length + j) * block * 2, block);
+    });
+    return { id, seed: seeds[v], audio };
+  });
+  const ms = {};
+  for (const [k, v] of Object.entries(meta.ms ?? {})) ms[k] = Number(v);
+  const lh = meta.latent_header ?? {};
+  const latentHeader = {
+    nStreams: Number(lh.n_streams ?? 0),
+    channels: Number(lh.channels ?? 0),
+    frames: Number(lh.frames ?? 0),
+    seconds: Number(lh.seconds ?? meta.frames / meta.sample_rate)
+  };
+  let lat;
+  const lm = meta.latents;
+  if (lm) {
+    const shape = (lm.shape ?? []).map(Number);
+    if (shape.length !== 4) throw new Error(`oneshot: latents shape ${JSON.stringify(lm.shape)} is not [V, S, C, L]`);
+    const per = shape[1] * shape[2] * shape[3];
+    const wantLat = shape[0] * per * 2;
+    if (!latents) throw new Error("oneshot: the latents frame is missing");
+    if (latents.byteLength !== wantLat)
+      throw new Error(`oneshot: latents ${latents.byteLength} bytes, expected ${wantLat} (${shape.join(" x ")} float16)`);
+    const bits = new Uint16Array(latents);
+    lat = { shape, data: bits };
+    versions.forEach((ver, v) => {
+      if (v < shape[0]) ver.latent = bits.subarray(v * per, (v + 1) * per);
+    });
+  }
+  return {
+    requestId: meta.request_id,
+    sampleRate: meta.sample_rate,
+    channels: meta.channels,
+    frames: meta.frames,
+    streams,
+    versions,
+    ms,
+    redoOf: meta.redo_of ?? null,
+    latentHeader,
+    ...lat ? { latents: lat } : {}
+  };
+}
+var OneshotFrames = class {
+  meta = null;
+  pcm = null;
+  /** A header is in and its frames are not all here yet. */
+  get waiting() {
+    return this.meta !== null;
+  }
+  /** A new `oneshot_ready` header (drops any half-received one). */
+  begin(meta) {
+    this.meta = meta;
+    this.pcm = null;
+  }
+  /** One binary frame. Returns the assembled answer once the last frame is in, else null. */
+  push(frame) {
+    const meta = this.meta;
+    if (meta === null) return null;
+    if (meta.latents && this.pcm === null) {
+      this.pcm = frame;
+      return null;
+    }
+    const pcm = this.pcm ?? frame;
+    const latents = this.pcm !== null ? frame : void 0;
+    this.meta = null;
+    this.pcm = null;
+    try {
+      return { meta, result: decodeOneshot(meta, pcm, latents) };
+    } catch (e) {
+      return { meta, error: String(e) };
+    }
+  }
+};
+function int16ToFloat32(a) {
+  const out = new Float32Array(a.length);
+  for (let i = 0; i < a.length; i++) out[i] = a[i] / 32768;
+  return out;
+}
+function renderOneshot(remote, req, timeoutMs = 12e4) {
+  return new Promise((resolve, reject) => {
+    const id = req.requestId ?? `oneshot-${++_seq}-${Date.now()}`;
+    const off = () => {
+      clearTimeout(timer);
+      remote.removeEventListener("oneshot", on);
+      remote.removeEventListener("oneshot_failed", on);
+      remote.removeEventListener("close", gone);
+    };
+    const on = (e) => {
+      const d = e.detail;
+      if ((e.type === "oneshot" ? d?.requestId : d?.request_id) !== id) return;
+      off();
+      if (e.type === "oneshot_failed") reject(new Error(d?.error || "oneshot failed"));
+      else resolve(d);
+    };
+    const gone = () => (off(), reject(new Error("connection lost")));
+    const timer = setTimeout(() => (off(), reject(new Error("oneshot timed out"))), timeoutMs);
+    remote.addEventListener("oneshot", on);
+    remote.addEventListener("oneshot_failed", on);
+    remote.addEventListener("close", gone);
+    if (remote.sendOneshot({ ...req, requestId: id }) === null) off(), reject(new Error("connection not open"));
+  });
+}
+
 // protocol.ts
 var PARAMS_BACKPRESSURE_BYTES = 8 * 1024;
 var _fBuf = new ArrayBuffer(4);
@@ -1319,6 +1469,29 @@ function packPcmFrame(interleaved, channels) {
   combined.set(new Uint8Array(hdr), 0);
   combined.set(pcm, hdr.byteLength);
   return combined;
+}
+function packCompactPcmFrame(interleaved, channels) {
+  const samples = interleaved.length / channels;
+  const present = [];
+  for (let c = 0; c < channels; c++)
+    for (let i = c; i < interleaved.length; i += channels)
+      if (interleaved[i] !== 0) {
+        present.push(c);
+        break;
+      }
+  if (!present.length) present.push(0);
+  const k = present.length;
+  const frame = new Uint8Array(8 + samples * k * 2);
+  const dv = new DataView(frame.buffer);
+  dv.setUint32(0, k, true);
+  dv.setUint32(4, samples, true);
+  const pcm = new Int16Array(frame.buffer, 8, samples * k);
+  for (let f = 0; f < samples; f++)
+    for (let j = 0; j < k; j++) {
+      const v = Math.round(interleaved[f * channels + present[j]] * 32768);
+      pcm[f * k + j] = v > 32767 ? 32767 : v < -32768 ? -32768 : v;
+    }
+  return { frame, present };
 }
 function makeAttemptId() {
   try {
@@ -1405,6 +1578,8 @@ var RemoteBackend = class extends EventTarget {
   backendClientId = null;
   _pending;
   _pendingSwap = null;
+  // A `oneshot_ready` header waiting for its binary frame(s).
+  _pendingOneshot = new OneshotFrames();
   _pendingStemAssets = null;
   _pendingStemBuffers = {};
   // Slice decoder runs in a worker so fzstd.decompress + float16→float32
@@ -1538,6 +1713,16 @@ var RemoteBackend = class extends EventTarget {
         closeReason: ""
       });
       let phase = "config";
+      const begin = (initial) => {
+        this.initialBuffer = initial;
+        this.ready = true;
+        this._updateTrace({ readyAt: Date.now(), phase: "ready" });
+        phase = "streaming";
+        this._pending = null;
+        resolve(this);
+        this.dispatchEvent(new CustomEvent("ready"));
+        this._updateTrace({ phase: "streaming" });
+      };
       ws.onopen = () => {
         if (!this._pending) return;
         this._updateTrace({ openAt: Date.now(), phase: "open" });
@@ -1597,6 +1782,8 @@ var RemoteBackend = class extends EventTarget {
             if (typeof msg.source_epoch === "number")
               this._sliceEpoch = msg.source_epoch;
             phase = "initial-buffer";
+            if (msg.window === "silent")
+              begin(new Float32Array((msg.frames ?? 0) * this.channels));
           } catch (e) {
             this._updateTrace({ errorAt: Date.now(), phase: "error" });
             reject(e);
@@ -1604,30 +1791,26 @@ var RemoteBackend = class extends EventTarget {
           return;
         }
         if (phase === "initial-buffer") {
-          const u162 = new Uint16Array(ev.data);
-          this.initialBuffer = float16ArrayToFloat32(u162);
-          this.ready = true;
-          this._updateTrace({ readyAt: Date.now(), phase: "ready" });
-          phase = "streaming";
-          this._pending = null;
-          resolve(this);
-          this.dispatchEvent(new CustomEvent("ready"));
-          this._updateTrace({ phase: "streaming" });
+          begin(float16ArrayToFloat32(new Uint16Array(ev.data)));
           return;
         }
         if (this._pendingSwap && ev.data instanceof ArrayBuffer) {
-          const u162 = new Uint16Array(ev.data);
-          const interleaved = float16ArrayToFloat32(u162);
           const meta = this._pendingSwap;
           this._pendingSwap = null;
-          this.duration = meta.duration;
-          this.channels = meta.channels;
-          this._sliceEpoch = meta.source_epoch ?? this._sliceEpoch + 1;
-          this.dispatchEvent(
-            new CustomEvent("swap_ready", {
-              detail: { ...meta, interleaved }
-            })
-          );
+          this._swapped(meta, float16ArrayToFloat32(new Uint16Array(ev.data)));
+          return;
+        }
+        if (this._pendingOneshot.waiting && ev.data instanceof ArrayBuffer) {
+          const done = this._pendingOneshot.push(ev.data);
+          if (done?.result) {
+            this.dispatchEvent(new CustomEvent("oneshot", { detail: done.result }));
+          } else if (done) {
+            this.dispatchEvent(
+              new CustomEvent("oneshot_failed", {
+                detail: { request_id: done.meta.request_id, error: done.error }
+              })
+            );
+          }
           return;
         }
         if (this._pendingStemAssets && ev.data instanceof ArrayBuffer) {
@@ -1691,7 +1874,10 @@ var RemoteBackend = class extends EventTarget {
               );
               break;
             case "swap_ready":
-              this._pendingSwap = msg;
+              if (msg.window === "silent")
+                this._swapped(msg, new Float32Array((msg.frames ?? 0) * msg.channels));
+              else if (msg.window === "kept") this._swapped(msg, null);
+              else this._pendingSwap = msg;
               break;
             case "swap_failed":
               this.dispatchEvent(
@@ -1758,6 +1944,14 @@ var RemoteBackend = class extends EventTarget {
             case "audio_in_ack":
               this.dispatchEvent(
                 new CustomEvent("audio_in_ack", { detail: msg })
+              );
+              break;
+            case "oneshot_ready":
+              this._pendingOneshot.begin(msg);
+              break;
+            case "oneshot_failed":
+              this.dispatchEvent(
+                new CustomEvent("oneshot_failed", { detail: msg })
               );
               break;
             case "command_failed":
@@ -2025,6 +2219,26 @@ var RemoteBackend = class extends EventTarget {
     } catch {
     }
   }
+  /**
+   * Ask for a one-shot render (``ready.capabilities.oneshot``): one whole
+   * version per seed, or a redo of streams of a held version (a redo with
+   * ``latent`` sends it as one binary frame after the header). Answered
+   * by a ``oneshot`` event (detail: OneshotResult) or ``oneshot_failed``
+   * ({request_id, error}). Returns the request id, or null when the socket
+   * isn't open. ``renderOneshot`` (./oneshot) wraps it in a promise.
+   */
+  sendOneshot(req) {
+    if (this.ws?.readyState !== this._wsOpen) return null;
+    const msg = oneshotCommand(req);
+    const frame = oneshotLatentFrame(req);
+    try {
+      this.ws.send(JSON.stringify(msg));
+      if (frame) this.ws.send(frame);
+    } catch {
+      return null;
+    }
+    return msg.request_id;
+  }
   sendEnableLora(id, strength) {
     if (this.ws?.readyState !== this._wsOpen) return;
     try {
@@ -2136,6 +2350,37 @@ var RemoteBackend = class extends EventTarget {
    * swap_source; the caller builds the typed command so the header is
    * contract-checked at compile time.
    */
+  /** A swap landed: the new geometry and source epoch, then `swap_ready`
+   *  with the new buffer (null: the swap kept the playing one). */
+  _swapped(meta, interleaved) {
+    this.duration = meta.duration;
+    this.channels = meta.channels;
+    this._sliceEpoch = meta.source_epoch ?? this._sliceEpoch + 1;
+    this.dispatchEvent(
+      new CustomEvent("swap_ready", { detail: { ...meta, interleaved } })
+    );
+  }
+  /**
+   * `sendSwapSource` as a compact frame where the server takes one
+   * (`ready.capabilities.compact_pcm`): only the channels with audio, as
+   * 16-bit samples, which the server expands back to the same full
+   * source. On a server without it, the full float32 frame. Same reply.
+   */
+  sendSwapSourceCompact(interleaved, channels, tags) {
+    if (!this.capabilities?.compact_pcm) return this.sendSwapSource(interleaved, channels, tags);
+    if (this.ws?.readyState !== this._wsOpen) return false;
+    const { frame, present } = packCompactPcmFrame(interleaved, channels);
+    const msg = { type: "swap_source", pcm: { encoding: "s16le", channels, present } };
+    if (tags) msg.tags = tags;
+    try {
+      this.ws.send(JSON.stringify(msg));
+      this.ws.send(frame);
+      return true;
+    } catch (e) {
+      console.error("[protocol] swap_source failed:", e);
+      return false;
+    }
+  }
   sendAudioFrame(msg, interleaved, channels) {
     if (this.ws?.readyState !== this._wsOpen) return false;
     try {
@@ -3167,8 +3412,43 @@ function measureBlock(interleaved, channels, metric) {
   return { loudness: offset + 10 * Math.log10(weightedMs), peak };
 }
 
+// audio/channelPairs.ts
+function pairGain(gains, k) {
+  return k < gains.length ? gains[k] : 1;
+}
+function sanitizeChannelGains(gains) {
+  const out = [];
+  for (let k = 0; k < gains.length; k++) {
+    const g = Number(gains[k]);
+    out.push(Number.isFinite(g) ? Math.max(0, g) : 1);
+  }
+  return out;
+}
+function mixChannelPairs(interleaved, channels, gains) {
+  const frames = interleaved.length / channels | 0;
+  const nPairs = channels >> 1;
+  const out = new Float32Array(frames * 2);
+  for (let k = 0; k < nPairs; k++) {
+    const g = pairGain(gains, k);
+    if (g === 0) continue;
+    const off = 2 * k;
+    for (let f = 0; f < frames; f++) {
+      const src = f * channels + off;
+      out[2 * f] += g * interleaved[src];
+      out[2 * f + 1] += g * interleaved[src + 1];
+    }
+  }
+  return out;
+}
+function smoothPairGains(live, targets, alpha) {
+  for (let k = 0; k < live.length; k++) {
+    live[k] += (pairGain(targets, k) - live[k]) * alpha;
+  }
+  return live;
+}
+
 // audio/AudioPlayer.ts
-var DEFAULT_WORKLET_URL = "/audio-worklet.js?v=5";
+var DEFAULT_WORKLET_URL = "/audio-worklet.js?v=6";
 var SP_OVERLAY_VOL_RAMP_S = 0.025;
 var LUFS_PEAK_CEILING = 0.891;
 var LUFS_PEAK_HEADROOM_DEFAULT = 4;
@@ -3199,6 +3479,11 @@ var AudioPlayer = class {
   // gracefully (no flashes on beats) rather than blocking the main thread
   // with a per-frame RMS loop. See PERFORMANCE.md.
   kick = 0;
+  /** Multichannel buffers only (channels > 2, stereo pairs side by side):
+   *  latest pre-gain RMS per channel pair, posted by the worklet with each
+   *  position report (computed per callback on the ScriptProcessor
+   *  fallback). Null until the first report, and for stereo buffers. */
+  channelLevels = null;
   _listeners = /* @__PURE__ */ new Set();
   // Trailing-throttle handle for mirror-change notifications. Slices
   // stream in at up to ~40-50/s and every patch used to fire the full
@@ -3221,6 +3506,11 @@ var AudioPlayer = class {
     instruments: { interleaved: null, channels: 2, frameCount: 0, targetVolume: 0, volume: 0 }
   };
   _spOverlayVolAlpha = 0;
+  // Per-pair gains for multichannel buffers (see setChannelGains). The
+  // worklet smooths its own copy; _spPairLive is the SP fallback's.
+  _channelGains = [];
+  _spPairLive = new Float32Array(0);
+  _gainRefreshTimer = null;
   // Loop + seek state. The worklet path owns its own copy of `loop` (set
   // via postMessage); these fields are the main-thread mirror so the SP
   // fallback path can read them directly. _spEndSignaled is the SP-path
@@ -3285,7 +3575,8 @@ var AudioPlayer = class {
       const node = new AudioWorkletNode(this.ctx, "realtime-buffer", {
         numberOfInputs: 0,
         numberOfOutputs: 1,
-        outputChannelCount: [channels]
+        // A multichannel buffer is mixed to stereo inside the worklet.
+        outputChannelCount: [Math.min(channels, 2)]
       });
       this.node = node;
       node.port.onmessage = (e) => {
@@ -3294,6 +3585,7 @@ var AudioPlayer = class {
           this.positionSec = msg.positionSec ?? 0;
           this.swapCount = msg.swapCount ?? this.swapCount;
           if (typeof msg.kick === "number") this.kick = msg.kick;
+          if (msg.pairLevels) this.channelLevels = msg.pairLevels;
         } else if (msg.type === "endOfBuffer") {
           for (const fn of this._endOfBufferListeners) fn();
         }
@@ -3303,6 +3595,12 @@ var AudioPlayer = class {
         { type: "init", buffer: send, channels },
         [send.buffer]
       );
+      if (this._channelGains.length > 0) {
+        node.port.postMessage({
+          type: "setChannelGains",
+          gains: this._channelGains.slice()
+        });
+      }
     } else {
       console.warn(
         "[AudioPlayer] AudioWorklet unavailable (non-secure context). Using ScriptProcessor fallback."
@@ -3310,7 +3608,11 @@ var AudioPlayer = class {
       this._spBuffer = initialBufferInterleaved.slice();
       this._spPosition = 0;
       const BUFFER_SIZE = 4096;
-      const sp = this.ctx.createScriptProcessor(BUFFER_SIZE, 0, channels);
+      const sp = this.ctx.createScriptProcessor(
+        BUFFER_SIZE,
+        0,
+        Math.min(channels, 2)
+      );
       this.node = sp;
       sp.onaudioprocess = (e) => this._spProcess(e);
     }
@@ -3429,6 +3731,31 @@ var AudioPlayer = class {
         kind,
         volume: v
       });
+    }
+  }
+  /**
+   * Per-pair gains for a multichannel buffer (channels > 2, stereo pairs
+   * side by side: channels [2k, 2k+1] = pair k). The player mixes the
+   * pairs to stereo as sum_k gains[k] * pair k; missing entries play at
+   * unity. Changes are smoothed per frame (no zipper). No effect on
+   * stereo or mono buffers. Persists across swap().
+   */
+  setChannelGains(gains) {
+    this._channelGains = sanitizeChannelGains(gains);
+    if (this._useWorklet && this.node) {
+      this.node.port.postMessage({
+        type: "setChannelGains",
+        gains: this._channelGains.slice()
+      });
+    }
+    if (this.channels > 2 && this._lufsEnabled && this._mirror) {
+      if (this._gainRefreshTimer !== null) clearTimeout(this._gainRefreshTimer);
+      this._gainRefreshTimer = setTimeout(() => {
+        this._gainRefreshTimer = null;
+        if (this._mirror) {
+          this._refreshChunks(0, this._mirror.length / this.channels | 0);
+        }
+      }, 250);
     }
   }
   /** Read-only view of the current buffer (for waveform rendering). */
@@ -3582,6 +3909,10 @@ var AudioPlayer = class {
       clearTimeout(this._notifyTimer);
       this._notifyTimer = null;
     }
+    if (this._gainRefreshTimer !== null) {
+      clearTimeout(this._gainRefreshTimer);
+      this._gainRefreshTimer = null;
+    }
     this.clearStemOverlays();
     try {
       this.node?.disconnect();
@@ -3640,7 +3971,12 @@ var AudioPlayer = class {
     const audioCfg = this._loudnessConfig();
     const metric = audioCfg.lufs_metric === "dba" ? "dba" : "lufs";
     this._loudnessMetric = metric;
-    const { value, peak } = measureLoudness(
+    const { value, peak } = this.channels > 2 ? measureLoudness(
+      mixChannelPairs(this._mirror, this.channels, this._channelGains),
+      2,
+      SAMPLE_RATE,
+      metric
+    ) : measureLoudness(
       this._mirror,
       this.channels,
       SAMPLE_RATE,
@@ -3682,7 +4018,11 @@ var AudioPlayer = class {
       const cStart = c * LUFS_CHUNK_FRAMES;
       const cEnd = Math.min(cStart + LUFS_CHUNK_FRAMES, totalFrames);
       const slice = this._mirror.subarray(cStart * ch, cEnd * ch);
-      const { loudness, peak } = measureBlock(slice, ch, this._loudnessMetric);
+      const { loudness, peak } = ch > 2 ? measureBlock(
+        mixChannelPairs(slice, ch, this._channelGains),
+        2,
+        this._loudnessMetric
+      ) : measureBlock(slice, ch, this._loudnessMetric);
       this._chunkLoudness[c] = loudness;
       this._chunkPeak[c] = peak;
     }
@@ -3809,6 +4149,10 @@ var AudioPlayer = class {
       }
       return;
     }
+    if (ch > 2 && ch > output.numberOfChannels) {
+      this._spProcessPairs(output, buf);
+      return;
+    }
     const nFrames = this.frameCount;
     const seamFadeLen = Math.max(1, Math.floor(this.ctx.sampleRate * 0.05));
     const seam = Math.min(seamFadeLen, Math.floor(nFrames / 4));
@@ -3880,6 +4224,97 @@ var AudioPlayer = class {
     }
     this._spPosition = pos;
     this.positionSec = this._spPosition / SAMPLE_RATE;
+  }
+  /** ScriptProcessor fallback for multichannel buffers: same playhead,
+   *  seam, end-of-buffer stop and overlay handling as _spProcess, with
+   *  the per-pair gain sum of the worklet's _processPairs. Also fills channelLevels
+   *  (pre-gain RMS per pair over this callback). */
+  _spProcessPairs(output, buf) {
+    const frames = output.length;
+    const ch = this.channels;
+    const nPairs = ch >> 1;
+    const nFrames = this.frameCount;
+    const sr = this.ctx ? this.ctx.sampleRate : SAMPLE_RATE;
+    const seamFadeLen = Math.max(1, Math.floor(sr * 0.05));
+    const seam = Math.min(seamFadeLen, Math.floor(nFrames / 4));
+    const outChs = [];
+    for (let c = 0; c < output.numberOfChannels; c++) {
+      outChs.push(output.getChannelData(c));
+    }
+    if (this._spPairLive.length < nPairs) {
+      const grown = new Float32Array(nPairs).fill(1);
+      grown.set(this._spPairLive);
+      this._spPairLive = grown;
+    }
+    const live = this._spPairLive;
+    const targets = this._channelGains;
+    const alpha = this._spOverlayVolAlpha;
+    const sumSq = new Float64Array(nPairs);
+    let counted = 0;
+    const overlays = [];
+    for (const kind of ["vocals", "instruments"]) {
+      const ov = this._stemOverlays[kind];
+      if (ov.interleaved && ov.frameCount > 0) overlays.push(ov);
+    }
+    let pos = this._spPosition;
+    for (let i = 0; i < frames; i++) {
+      if (!this._loop && pos >= nFrames - 1) {
+        for (let c = 0; c < outChs.length; c++) outChs[c][i] = 0;
+        if (!this._spEndSignaled) {
+          this._spEndSignaled = true;
+          for (const fn of this._endOfBufferListeners) fn();
+        }
+        continue;
+      }
+      const inSeam = this._loop && seam > 0 && nFrames - pos <= seam;
+      const distFromEnd = inSeam ? nFrames - pos : 0;
+      const seamT = inSeam ? (seam - distFromEnd) / seam : 0;
+      const headPos = inSeam ? seam - distFromEnd : 0;
+      smoothPairGains(live, targets, alpha);
+      for (let c = 0; c < outChs.length; c++) outChs[c][i] = 0;
+      for (let k = 0; k < nPairs; k++) {
+        const g = live[k];
+        const base = pos * ch + 2 * k;
+        const hBase = headPos * ch + 2 * k;
+        let e = 0;
+        for (let c = 0; c < 2; c++) {
+          let s = buf[base + c];
+          if (inSeam) s = s * (1 - seamT) + buf[hBase + c] * seamT;
+          e += s * s;
+          if (c < outChs.length) outChs[c][i] += g * s;
+        }
+        sumSq[k] += e * 0.5;
+      }
+      counted++;
+      for (let oi = 0; oi < overlays.length; oi++) {
+        const ov = overlays[oi];
+        ov.volume += (ov.targetVolume - ov.volume) * alpha;
+        const ovBuf = ov.interleaved;
+        if (ov.volume < 1e-4) continue;
+        if (pos >= ov.frameCount) continue;
+        const ovCh = ov.channels;
+        const ovVol = ov.volume;
+        for (let c = 0; c < outChs.length; c++) {
+          const cc = Math.min(c, ovCh - 1);
+          let s = ovBuf[pos * ovCh + cc];
+          if (inSeam && headPos < ov.frameCount) {
+            s = s * (1 - seamT) + ovBuf[headPos * ovCh + cc] * seamT;
+          }
+          outChs[c][i] += s * ovVol;
+        }
+      }
+      pos++;
+      if (pos >= nFrames) pos = this._loop ? seam : nFrames;
+    }
+    this._spPosition = pos;
+    this.positionSec = this._spPosition / SAMPLE_RATE;
+    if (counted > 0) {
+      const levels = new Float32Array(nPairs);
+      for (let k = 0; k < nPairs; k++) {
+        levels[k] = Math.sqrt(sumSq[k] / counted);
+      }
+      this.channelLevels = levels;
+    }
   }
 };
 
@@ -4035,6 +4470,7 @@ export {
   MANUAL_SRC_DESCRIPTION,
   MANUAL_STEP_DESCRIPTION,
   MicCapture,
+  OneshotFrames,
   PREEMPTED_CLOSE_CODE,
   PROTOCOL_VERSION,
   PcmFramer,
@@ -4060,6 +4496,7 @@ export {
   arrayBufferToBase64,
   base64ToArrayBuffer,
   captureConfigFromState,
+  decodeOneshot,
   describeControl,
   displayNameFor,
   encodeWavInterleaved,
@@ -4070,6 +4507,7 @@ export {
   float16ArrayToFloat32,
   getUnknownKeys,
   gmProgramFor,
+  int16ToFloat32,
   isDcwMode,
   isDcwWavelet,
   isLoopGridRes,
@@ -4085,7 +4523,11 @@ export {
   mergeConfig,
   normalizeConfigShape,
   notesToSmf,
+  oneshotCommand,
+  oneshotLatentFrame,
+  packCompactPcmFrame,
   playheadForNotes,
+  renderOneshot,
   resolveControlDescription,
   resolveLoraCapForSource,
   rtmgConfigToSessionConfig,
