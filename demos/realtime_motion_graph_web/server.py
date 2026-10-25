@@ -94,7 +94,26 @@ _DEFAULT_MODE = "graph"
 _STREAM_LAYOUT = None
 
 
-def _stream_layout_info(selected) -> dict | None:
+def _stream_layout_from_module(qualified_id: str | None) -> dict | None:
+    """Boot-time fallback: before install the selection is a spec with no
+    runtime, so read the extension MODULE (the qualified id doubles as the
+    module path for the multistem extension): ``N_STREAMS`` and ``STEMS``."""
+    if not qualified_id:
+        return None
+    try:
+        import importlib
+        mod = importlib.import_module(qualified_id)
+    except Exception as exc:
+        logger.warning("stream_layout_module_unavailable id={} error={!r}", qualified_id, exc)
+        return None
+    stems = getattr(mod, "STEMS", None)
+    n = getattr(mod, "N_STREAMS", None)
+    if not stems and not n:
+        return None
+    return {"n_streams": int(n or len(stems)), "stems": [str(x) for x in (stems or ())]}
+
+
+def _stream_layout_info(selected, qualified_id: str | None = None) -> dict | None:
     """The public stacked-stream layout of a selected model extension.
 
     ``n_streams`` comes from the runtime's ``stream_layout()`` contract;
@@ -107,7 +126,7 @@ def _stream_layout_info(selected) -> dict | None:
     runtime = getattr(selected, "extension", selected)
     hook = getattr(runtime, "stream_layout", None)
     if hook is None:
-        return None
+        return _stream_layout_from_module(qualified_id)
     try:
         layout = hook()
     except Exception as exc:
@@ -999,7 +1018,7 @@ def main():
                 print(f"  {exc}")
                 print("=" * 64)
                 raise SystemExit(1) from exc
-            _STREAM_LAYOUT = _stream_layout_info(model_extension)
+            _STREAM_LAYOUT = _stream_layout_info(model_extension, model_extension_id)
 
         # Defer the heavy import until we know we need it. Pulling this in
         # loads torch + acestep + TRT machinery; in --no-backend we never
