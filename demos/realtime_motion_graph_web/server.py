@@ -89,15 +89,19 @@ _KIOSK = False
 _DEFAULT_MODE = "graph"
 # Set in main() once the model extension is selected (before the server
 # listens): ``{"n_streams": N, "stems": [...]}`` for an extension whose
-# runtime declares a stacked-stream layout, else ``None``. Advertised on
+# module declares a stacked-stream layout, else ``None``. Advertised on
 # /api/server-info so a page can size its tracks before opening its WS.
 _STREAM_LAYOUT = None
 
 
-def _stream_layout_from_module(qualified_id: str | None) -> dict | None:
-    """Boot-time fallback: before install the selection is a spec with no
-    runtime, so read the extension MODULE (the qualified id doubles as the
-    module path for the multistem extension): ``N_STREAMS`` and ``STEMS``."""
+def _stream_layout_info(qualified_id: str | None) -> dict | None:
+    """The public stacked-stream layout of the selected model extension.
+
+    At boot the selection is a spec with no runtime, so this reads the
+    extension MODULE (the qualified id doubles as the module path):
+    ``STEMS`` and ``N_STREAMS``. ``None`` when the id is empty, the module
+    cannot be imported, or it declares neither.
+    """
     if not qualified_id:
         return None
     try:
@@ -113,31 +117,6 @@ def _stream_layout_from_module(qualified_id: str | None) -> dict | None:
     return {"n_streams": int(n or len(stems)), "stems": [str(x) for x in (stems or ())]}
 
 
-def _stream_layout_info(selected, qualified_id: str | None = None) -> dict | None:
-    """The public stacked-stream layout of a selected model extension.
-
-    ``n_streams`` comes from the runtime's ``stream_layout()`` contract;
-    the stem names from the ``STEMS`` tuple of the module that defines
-    the runtime class (empty when that module declares none). ``None``
-    when nothing is selected or the runtime runs the stock single stream.
-    """
-    if selected is None:
-        return None
-    runtime = getattr(selected, "extension", selected)
-    hook = getattr(runtime, "stream_layout", None)
-    if hook is None:
-        return _stream_layout_from_module(qualified_id)
-    try:
-        layout = hook()
-    except Exception as exc:
-        logger.warning("stream_layout_unavailable error={!r}", exc)
-        return None
-    if layout is None:
-        return None
-    n_streams = int(getattr(layout, "n_streams", 1))
-    module = sys.modules.get(type(runtime).__module__)
-    stems = getattr(module, "STEMS", None) or getattr(runtime, "STEMS", None) or ()
-    return {"n_streams": n_streams, "stems": [str(s) for s in stems]}
 # Set by main() once CLI args are parsed; the HTTP /api/loras and
 # /api/* meta endpoints read it so the UI can label the active
 # checkpoint scale (2B / 5B) without waiting for the WS ready frame.
@@ -1018,7 +997,7 @@ def main():
                 print(f"  {exc}")
                 print("=" * 64)
                 raise SystemExit(1) from exc
-            _STREAM_LAYOUT = _stream_layout_info(model_extension, model_extension_id)
+            _STREAM_LAYOUT = _stream_layout_info(model_extension_id)
 
         # Defer the heavy import until we know we need it. Pulling this in
         # loads torch + acestep + TRT machinery; in --no-backend we never
