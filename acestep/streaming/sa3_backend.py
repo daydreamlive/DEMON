@@ -343,8 +343,10 @@ class SA3Backend(DiffusionBackend):
             (int(source_audio[0]), source_audio[1])
             if source_audio is not None else (None, None)
         )
-        cond = self._decorate(cond, self._source_view())
-        cond_b = self._decorate(cond_b, self._source_view())
+        cond = self._decorate(cond, self._source_view(), text=prompt_tags)
+        cond_b = self._decorate(
+            cond_b, self._source_view(), text=prompt_tags_b or prompt_tags,
+        )
         self._cond = cond
         self._cond_b = cond_b if cond_b is not None else cond
         # Live A↔B crossfade value and the bundle the next submit
@@ -742,7 +744,7 @@ class SA3Backend(DiffusionBackend):
             latent=latent_bct, waveform=waveform, sample_rate=sample_rate,
         )
 
-    def _decorate(self, cond, source):
+    def _decorate(self, cond, source, text=None):
         """Apply the extension's conditioning contribution to a capture.
 
         Always builds a FRESH bundle: an in-flight SlotRequest holds a
@@ -750,15 +752,45 @@ class SA3Backend(DiffusionBackend):
         seeing that one across a prompt or source swap. The extension is
         handed a copy, so even one that mutates its argument in place
         cannot reach a bundle anyone else is holding.
-        """
-        if cond is None or self._extension_runtime is None:
-            return cond
-        from acestep.plugins.model_extensions import decorate_conditioning
 
-        decorated = decorate_conditioning(
-            self._extension_runtime, dict(cond.cond_bundle), source,
-        )
+        ``text`` is the exact prompt string ``cond`` was encoded from. It
+        is passed as ``text=`` only to an extension whose
+        ``decorate_conditioning`` declares a ``text`` parameter; every
+        other extension gets the original two-argument call.
+        """
+        runtime = self._extension_runtime
+        if cond is None or runtime is None:
+            return cond
+        bundle = dict(cond.cond_bundle)
+        if self._decorate_accepts_text(runtime):
+            decorated = runtime.decorate_conditioning(bundle, source, text=text)
+            if decorated is None:
+                decorated = bundle
+        else:
+            from acestep.plugins.model_extensions import decorate_conditioning
+
+            decorated = decorate_conditioning(runtime, bundle, source)
         return replace(cond, cond_bundle=dict(decorated))
+
+    def _decorate_accepts_text(self, runtime) -> bool:
+        """Whether ``runtime.decorate_conditioning`` takes ``text``.
+
+        Inspected once per runtime object and cached on the backend.
+        """
+        cached = getattr(self, "_decorate_text_cache", None)
+        if cached is not None and cached[0] is runtime:
+            return cached[1]
+        try:
+            params = inspect.signature(runtime.decorate_conditioning).parameters
+        except (TypeError, ValueError):
+            params = {}
+        param = params.get("text")
+        accepts = param is not None and param.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        )
+        self._decorate_text_cache = (runtime, accepts)
+        return accepts
 
     def _apply_extension_controls(self, knobs: dict) -> None:
         """Hand the extension its own namespaced knob values.
@@ -1163,8 +1195,16 @@ class SA3Backend(DiffusionBackend):
             # it, a prompt overlapping a swap would republish conditioning
             # derived from the OLD source, after the swap re-decorated.
             view = self._source_view()
-            cond = self._decorate(cond, view)
-            cond_b = cond if cond_b is cond else self._decorate(cond_b, view)
+            # Compare BEFORE decorating A: decoration builds a new capture,
+            # so after it ``cond_b is cond`` would never hold and B would
+            # become a separate copy of A (losing the blend's identity
+            # short-circuit and decorating it with no B text).
+            b_is_a = cond_b is cond
+            cond = self._decorate(cond, view, text=tags)
+            cond_b = (
+                cond if b_is_a
+                else self._decorate(cond_b, view, text=tags_b)
+            )
             self._cond = cond
             self._cond_b = cond_b
             self._active_bundle = self._blend_bundles(self._blend)
@@ -1333,10 +1373,14 @@ class SA3Backend(DiffusionBackend):
                             audio=(int(sample_rate), waveform),
                         )
                         old_a, old_b = self._cond, self._cond_b
-                        self._cond = self._decorate(old_a, view)
+                        self._cond = self._decorate(
+                            old_a, view, text=self._tags_a,
+                        )
                         self._cond_b = (
                             self._cond if old_b is old_a
-                            else self._decorate(old_b, view)
+                            else self._decorate(
+                                old_b, view, text=self._tags_b,
+                            )
                         )
                     self._active_bundle = self._blend_bundles(self._blend)
                     self._schedule_builder_factory = new_geom["sched_factory"]
@@ -1404,10 +1448,10 @@ class SA3Backend(DiffusionBackend):
                         latent_bct=latent_bct, audio=(int(sample_rate), waveform),
                     )
                     old_a, old_b = self._cond, self._cond_b
-                    self._cond = self._decorate(old_a, view)
+                    self._cond = self._decorate(old_a, view, text=self._tags_a)
                     self._cond_b = (
                         self._cond if old_b is old_a
-                        else self._decorate(old_b, view)
+                        else self._decorate(old_b, view, text=self._tags_b)
                     )
                     self._active_bundle = self._blend_bundles(self._blend)
                     self._cond_epoch += 1
