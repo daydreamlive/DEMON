@@ -87,6 +87,38 @@ _ACCEL = "tensorrt"
 # idle settings reset) and the initial display mode can be CLI-driven.
 _KIOSK = False
 _DEFAULT_MODE = "graph"
+# Set in main() once the model extension is selected (before the server
+# listens): ``{"n_streams": N, "stems": [...]}`` for an extension whose
+# runtime declares a stacked-stream layout, else ``None``. Advertised on
+# /api/server-info so a page can size its tracks before opening its WS.
+_STREAM_LAYOUT = None
+
+
+def _stream_layout_info(selected) -> dict | None:
+    """The public stacked-stream layout of a selected model extension.
+
+    ``n_streams`` comes from the runtime's ``stream_layout()`` contract;
+    the stem names from the ``STEMS`` tuple of the module that defines
+    the runtime class (empty when that module declares none). ``None``
+    when nothing is selected or the runtime runs the stock single stream.
+    """
+    if selected is None:
+        return None
+    runtime = getattr(selected, "extension", selected)
+    hook = getattr(runtime, "stream_layout", None)
+    if hook is None:
+        return None
+    try:
+        layout = hook()
+    except Exception as exc:
+        logger.warning("stream_layout_unavailable error={!r}", exc)
+        return None
+    if layout is None:
+        return None
+    n_streams = int(getattr(layout, "n_streams", 1))
+    module = sys.modules.get(type(runtime).__module__)
+    stems = getattr(module, "STEMS", None) or getattr(runtime, "STEMS", None) or ()
+    return {"n_streams": n_streams, "stems": [str(s) for s in stems]}
 # Set by main() once CLI args are parsed; the HTTP /api/loras and
 # /api/* meta endpoints read it so the UI can label the active
 # checkpoint scale (2B / 5B) without waiting for the WS ready frame.
@@ -269,6 +301,10 @@ def _process_request(connection, request):
             # UI only opts in against a backend that supports it (the UI
             # ships via Vercel instantly; the backend via bake, lagged).
             "server_side_fixtures": sorted(KNOWN_FIXTURES),
+            # Stacked-stream geometry of the loaded model extension
+            # ({"n_streams", "stems"}), or null on the stock path. Known
+            # at boot, so a page can read it before any session exists.
+            "stream_layout": _STREAM_LAYOUT,
         }).encode()
         _log_http(remote, 200, "GET", url)
         return Response(
@@ -885,6 +921,7 @@ def main():
         )
 
     global _NO_BACKEND, _ACCEL, _KIOSK, _DEFAULT_MODE, _CHECKPOINT, _STATIC_MOUNTS
+    global _STREAM_LAYOUT
     global _BACKEND_FAMILY
     _NO_BACKEND = no_backend
     _ACCEL = accel
@@ -962,6 +999,7 @@ def main():
                 print(f"  {exc}")
                 print("=" * 64)
                 raise SystemExit(1) from exc
+            _STREAM_LAYOUT = _stream_layout_info(model_extension)
 
         # Defer the heavy import until we know we need it. Pulling this in
         # loads torch + acestep + TRT machinery; in --no-backend we never
