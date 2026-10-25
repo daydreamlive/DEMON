@@ -660,3 +660,9 @@ def test_decorate_conditioning_helper_passes_text_only_where_declared():
     }
     bundle = {"a": 1}
     assert decorate_conditioning(_SilentText(), bundle, text="p") is bundle
+
+
+def test_default_blend_conditioning_declines():
+    # None lets the core slerp: a runtime without its own blend is unchanged.
+    runtime = ModelExtensionRuntime()
+    assert runtime.blend_conditioning({"a": 1}, {"b": 2}, 0.5) is None

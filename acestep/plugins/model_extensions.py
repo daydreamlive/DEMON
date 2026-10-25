@@ -387,6 +387,21 @@ class ModelExtensionRuntime:
         """
         return bundle
 
+    def blend_conditioning(
+        self, a: Mapping[str, Any], b: Mapping[str, Any], v: float,
+    ) -> "Mapping[str, Any] | None":
+        """Blend two decorated bundles, or decline.
+
+        a and b are two bundles this runtime decorated; return the bundle
+        for blend v in (0, 1), or None to let the core slerp. Called on the
+        command thread; must return a fresh mapping.
+
+        The endpoints never reach this hook: the core returns ``a`` at
+        v <= 0.001 (or when both sides are the same bundle) and ``b`` at
+        v >= 0.999. The default returns None, which keeps the core slerp.
+        """
+        return None
+
     def apply_controls(self, values: Mapping[str, float]) -> None:
         """Apply this extension's namespaced knob values.
 

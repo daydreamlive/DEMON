@@ -1519,6 +1519,20 @@ class SA3Backend(DiffusionBackend):
             return a
         if v >= 0.999:
             return b
+        hook = getattr(self._extension_runtime, "blend_conditioning", None)
+        if hook is not None:
+            try:
+                out = hook(a, b, v)
+            except Exception as exc:
+                if not getattr(self, "_blend_hook_warned", False):
+                    self._blend_hook_warned = True
+                    logger.warning(
+                        "sa3_blend_conditioning_failed error={!r}; falling "
+                        "back to the core slerp", exc,
+                    )
+                out = None
+            if out is not None:
+                return dict(out)
         ca, cb = a["cross_attn_cond"], b["cross_attn_cond"]
         if ca.shape != cb.shape:
             # Both captures are max-length-padded by the conditioner;

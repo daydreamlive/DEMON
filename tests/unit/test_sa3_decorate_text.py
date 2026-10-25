@@ -116,3 +116,86 @@ def test_helper_without_weakref_still_dispatches_on_the_signature():
     assert decorate_conditioning(_SlottedLegacy(), {}, text="t") == {
         "probe_legacy": True,
     }
+
+
+class _BlendRuntime(ModelExtensionRuntime):
+    """Returns a marker mapping from blend_conditioning and records calls."""
+
+    def __init__(self, raises=False, returns_none=False):
+        self.calls = []
+        self.raises = raises
+        self.returns_none = returns_none
+
+    def blend_conditioning(self, a, b, v):
+        self.calls.append((a, b, v))
+        if self.raises:
+            raise RuntimeError("probe blend failure")
+        if self.returns_none:
+            return None
+        return {**a, "probe_blend": v}
+
+
+def _two_prompt_backend(runtime):
+    b = _backend(
+        extension=_selected(), runtime=runtime,
+        prompt_tags="start prompt", prompt_rebuilder=_rebuilder,
+    )
+    b.handle_set_prompt("prompt A", tags_b="prompt B")
+    assert b._cond_b is not b._cond
+    return b
+
+
+def test_blend_conditioning_mapping_is_the_active_bundle():
+    runtime = _BlendRuntime()
+    b = _two_prompt_backend(runtime)
+    b.handle_set_prompt_blend(0.5)
+    a_bundle = b._cond.cond_bundle
+    b_bundle = b._cond_b.cond_bundle
+    assert runtime.calls[-1] == (a_bundle, b_bundle, 0.5)
+    active = b._active_bundle
+    assert active["probe_blend"] == 0.5
+    assert type(active) is dict
+    assert active is not a_bundle and active is not b_bundle
+
+
+def test_blend_endpoints_skip_the_hook():
+    runtime = _BlendRuntime()
+    b = _two_prompt_backend(runtime)
+    runtime.calls.clear()
+    b.handle_set_prompt_blend(0.0)
+    assert b._active_bundle is b._cond.cond_bundle
+    b.handle_set_prompt_blend(1.0)
+    assert b._active_bundle is b._cond_b.cond_bundle
+    assert runtime.calls == []
+
+
+def test_runtime_without_the_hook_keeps_the_slerp():
+    # _TextRuntime inherits the default (None); returns_none declines too.
+    for runtime in (_TextRuntime(), _BlendRuntime(returns_none=True)):
+        b = _two_prompt_backend(runtime)
+        b.handle_set_prompt_blend(0.5)
+        active = b._active_bundle
+        assert "probe_blend" not in active
+        assert active is not b._cond.cond_bundle
+        assert torch.equal(
+            active["cross_attn_cond"], b._cond.cond_bundle["cross_attn_cond"],
+        )
+
+
+def test_blend_hook_exception_falls_back_and_logs_once():
+    from acestep.engine.obs import logger
+
+    messages = []
+    sink = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+    try:
+        runtime = _BlendRuntime(raises=True)
+        b = _two_prompt_backend(runtime)
+        b.handle_set_prompt_blend(0.5)
+        b.handle_set_prompt_blend(0.4)
+    finally:
+        logger.remove(sink)
+    assert len(runtime.calls) == 2
+    assert "probe_blend" not in b._active_bundle
+    assert "cross_attn_cond" in b._active_bundle
+    hits = [m for m in messages if "sa3_blend_conditioning_failed" in m]
+    assert len(hits) == 1
