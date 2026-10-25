@@ -74,20 +74,45 @@ def test_legacy_extension_keeps_the_two_argument_call():
     assert "probe_text" not in b._cond.cond_bundle
 
 
-def test_signature_is_inspected_once_per_runtime(monkeypatch):
+def test_helper_inspects_the_signature_once_per_runtime(monkeypatch):
     import inspect as _inspect
 
+    from acestep.plugins.model_extensions import decorate_conditioning
+
     runtime = _TextRuntime()
-    b = _backend(
-        extension=_selected(), runtime=runtime,
-        prompt_tags="p", prompt_rebuilder=_rebuilder,
-    )
     seen = []
     real = _inspect.signature
     monkeypatch.setattr(
         _inspect, "signature", lambda f, *a, **k: seen.append(f) or real(f, *a, **k),
     )
-    b.handle_set_prompt("q")
-    b.handle_set_prompt("r")
-    assert seen == []
+    for t in ("p", "q", "r"):
+        decorate_conditioning(runtime, {}, None, text=t)
+    assert len(seen) == 1
     assert runtime.calls == ["p", "q", "r"]
+
+    legacy = _LegacyRuntime()
+    decorate_conditioning(legacy, {}, None, text="x")
+    decorate_conditioning(legacy, {}, None, text="y")
+    assert len(seen) == 2
+    assert legacy.calls == 2
+
+
+def test_helper_without_weakref_still_dispatches_on_the_signature():
+    from acestep.plugins.model_extensions import decorate_conditioning
+
+    class _Slotted:
+        __slots__ = ()
+
+        def decorate_conditioning(self, bundle, source=None, text=None):
+            return {**bundle, "probe_text": text}
+
+    class _SlottedLegacy:
+        __slots__ = ()
+
+        def decorate_conditioning(self, bundle, source=None):
+            return {**bundle, "probe_legacy": True}
+
+    assert decorate_conditioning(_Slotted(), {}, text="t") == {"probe_text": "t"}
+    assert decorate_conditioning(_SlottedLegacy(), {}, text="t") == {
+        "probe_legacy": True,
+    }

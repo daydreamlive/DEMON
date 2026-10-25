@@ -36,6 +36,8 @@ produced, and boot aborts. A half-hooked model must never serve traffic.
 
 from __future__ import annotations
 
+import inspect
+import weakref
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
@@ -356,6 +358,7 @@ class ModelExtensionRuntime:
 
     def decorate_conditioning(
         self, bundle: Mapping[str, Any], source: "SourceView | None" = None,
+        text: str | None = None,
     ) -> Mapping[str, Any]:
         """Return conditioning for the extension's own use.
 
@@ -363,6 +366,8 @@ class ModelExtensionRuntime:
         anchor, or ``None`` when the session has no source at all. Its
         fields are individually optional — read
         :class:`SourceView` before depending on any of them.
+
+        ``text`` is the exact prompt string ``bundle`` was encoded from; may be None.
 
         MUST return a fresh mapping rather than mutating ``bundle``: the
         bundle passed in may already be referenced by in-flight requests,
@@ -519,13 +524,52 @@ def stream_layout_of(runtime) -> "StreamLayout | None":
     return layout
 
 
-def decorate_conditioning(runtime, bundle, source=None):
+_DECORATE_TEXT_CACHE: "weakref.WeakKeyDictionary[Any, bool]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _decorate_accepts_text(runtime) -> bool:
+    """Whether ``runtime.decorate_conditioning`` declares a ``text`` parameter.
+
+    Inspected once per runtime object and cached by weak reference; a
+    runtime that cannot be weakly referenced is inspected on every call.
+    """
+    try:
+        return _DECORATE_TEXT_CACHE[runtime]
+    except (KeyError, TypeError):
+        pass
+    try:
+        params = inspect.signature(runtime.decorate_conditioning).parameters
+    except (TypeError, ValueError):
+        params = {}
+    param = params.get("text")
+    accepts = param is not None and param.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    )
+    try:
+        _DECORATE_TEXT_CACHE[runtime] = accepts
+    except TypeError:
+        pass
+    return accepts
+
+
+def decorate_conditioning(runtime, bundle, source=None, text=None):
     """Call the runtime's conditioning hook, normalizing a ``None`` return.
 
     The one contract detail a subclass can still get wrong: returning
     nothing from ``decorate_conditioning`` reads as "I made no changes",
     not as "the conditioning is now None". Every other hook has a total
     default on the base class, so the core calls those directly.
+
+    ``text`` (the exact prompt string ``bundle`` was encoded from) is
+    passed as ``text=`` only to a runtime whose ``decorate_conditioning``
+    declares a ``text`` parameter; every other runtime gets the
+    two-argument call.
     """
-    decorated = runtime.decorate_conditioning(bundle, source)
+    if _decorate_accepts_text(runtime):
+        decorated = runtime.decorate_conditioning(bundle, source, text=text)
+    else:
+        decorated = runtime.decorate_conditioning(bundle, source)
     return bundle if decorated is None else decorated

@@ -345,7 +345,7 @@ class SA3Backend(DiffusionBackend):
         )
         cond = self._decorate(cond, self._source_view(), text=prompt_tags)
         cond_b = self._decorate(
-            cond_b, self._source_view(), text=prompt_tags_b or prompt_tags,
+            cond_b, self._source_view(), text=prompt_tags_b,
         )
         self._cond = cond
         self._cond_b = cond_b if cond_b is not None else cond
@@ -753,44 +753,19 @@ class SA3Backend(DiffusionBackend):
         handed a copy, so even one that mutates its argument in place
         cannot reach a bundle anyone else is holding.
 
-        ``text`` is the exact prompt string ``cond`` was encoded from. It
-        is passed as ``text=`` only to an extension whose
-        ``decorate_conditioning`` declares a ``text`` parameter; every
-        other extension gets the original two-argument call.
+        ``text`` is the exact prompt string ``cond`` was encoded from;
+        the public helper passes it on only to an extension that
+        declares it.
         """
         runtime = self._extension_runtime
         if cond is None or runtime is None:
             return cond
-        bundle = dict(cond.cond_bundle)
-        if self._decorate_accepts_text(runtime):
-            decorated = runtime.decorate_conditioning(bundle, source, text=text)
-            if decorated is None:
-                decorated = bundle
-        else:
-            from acestep.plugins.model_extensions import decorate_conditioning
+        from acestep.plugins.model_extensions import decorate_conditioning
 
-            decorated = decorate_conditioning(runtime, bundle, source)
-        return replace(cond, cond_bundle=dict(decorated))
-
-    def _decorate_accepts_text(self, runtime) -> bool:
-        """Whether ``runtime.decorate_conditioning`` takes ``text``.
-
-        Inspected once per runtime object and cached on the backend.
-        """
-        cached = getattr(self, "_decorate_text_cache", None)
-        if cached is not None and cached[0] is runtime:
-            return cached[1]
-        try:
-            params = inspect.signature(runtime.decorate_conditioning).parameters
-        except (TypeError, ValueError):
-            params = {}
-        param = params.get("text")
-        accepts = param is not None and param.kind in (
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            inspect.Parameter.KEYWORD_ONLY,
+        decorated = decorate_conditioning(
+            runtime, dict(cond.cond_bundle), source, text=text,
         )
-        self._decorate_text_cache = (runtime, accepts)
-        return accepts
+        return replace(cond, cond_bundle=dict(decorated))
 
     def _apply_extension_controls(self, knobs: dict) -> None:
         """Hand the extension its own namespaced knob values.
@@ -1527,9 +1502,12 @@ class SA3Backend(DiffusionBackend):
         id()-keyed staging cache warm on the common path), otherwise a
         NEW dict with the cross-attn conditioning slerped and the token
         masks unioned. Slerp runs in float32 (norm math degrades in
-        bf16) and degenerates to linear per token where either side is
-        zero-padding, so A-only / B-only token positions survive at
-        scaled strength under the unioned mask.
+        bf16). Its linear fallback fires only where a side is truly
+        zero; SA3 medium pads with a LEARNED vector (model_config.json
+        padding_mode "learned", norm 0.48), so pad positions are slerped
+        like any token, and the stock DiT attends pad positions anyway
+        (the vendor dit.py :414 discards the cond mask), so the unioned
+        mask does not gate them there.
 
         Everything else (padding_mask, cfg/apg scalars, local_add_cond)
         comes from A: both captures share the session's fixed duration,
