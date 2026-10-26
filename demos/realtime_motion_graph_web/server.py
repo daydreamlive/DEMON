@@ -92,6 +92,32 @@ _DEFAULT_MODE = "graph"
 # module declares a stacked-stream layout, else ``None``. Advertised on
 # /api/server-info so a page can size its tracks before opening its WS.
 _STREAM_LAYOUT = None
+# Set in main() beside _STREAM_LAYOUT from the selected extension's
+# ``server_info()``: JSON-safe facts a page may need before any session
+# exists, or ``None``. Advertised on /api/server-info as model_extension.
+_MODEL_EXTENSION_INFO = None
+
+
+def _model_extension_info(extension) -> dict | None:
+    """The selected extension's ``server_info()``, or ``None``.
+
+    A missing hook, a non-dict return, or an exception yields ``None``
+    (the last two with one warning); never a boot failure.
+    """
+    hook = getattr(extension, "server_info", None)
+    if hook is None:
+        return None
+    try:
+        info = hook()
+    except Exception as exc:
+        logger.warning("model_extension_server_info_failed error={!r}", exc)
+        return None
+    if info is None:
+        return None
+    if not isinstance(info, dict):
+        logger.warning("model_extension_server_info_not_dict type={}", type(info).__name__)
+        return None
+    return info
 
 
 def _stream_layout_info(qualified_id: str | None) -> dict | None:
@@ -303,6 +329,9 @@ def _process_request(connection, request):
             # ({"n_streams", "stems"}), or null on the stock path. Known
             # at boot, so a page can read it before any session exists.
             "stream_layout": _STREAM_LAYOUT,
+            # The loaded model extension's server_info() facts (e.g. its
+            # checkpoint list), or null. Known at boot, before any session.
+            "model_extension": _MODEL_EXTENSION_INFO,
         }).encode()
         _log_http(remote, 200, "GET", url)
         return Response(
@@ -919,7 +948,7 @@ def main():
         )
 
     global _NO_BACKEND, _ACCEL, _KIOSK, _DEFAULT_MODE, _CHECKPOINT, _STATIC_MOUNTS
-    global _STREAM_LAYOUT
+    global _STREAM_LAYOUT, _MODEL_EXTENSION_INFO
     global _BACKEND_FAMILY
     _NO_BACKEND = no_backend
     _ACCEL = accel
@@ -998,6 +1027,8 @@ def main():
                 print("=" * 64)
                 raise SystemExit(1) from exc
             _STREAM_LAYOUT = _stream_layout_info(model_extension_id)
+            if model_extension is not None:
+                _MODEL_EXTENSION_INFO = _model_extension_info(model_extension.extension)
 
         # Defer the heavy import until we know we need it. Pulling this in
         # loads torch + acestep + TRT machinery; in --no-backend we never

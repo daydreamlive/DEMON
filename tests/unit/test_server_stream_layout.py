@@ -55,3 +55,45 @@ def test_layout_from_extension_module(monkeypatch):
 def test_n_streams_falls_back_to_stem_count(monkeypatch):
     qid = _fake_module(monkeypatch, STEMS=("drums", "bass"))
     assert server._stream_layout_info(qid) == {"n_streams": 2, "stems": ["drums", "bass"]}
+
+
+# ---- model_extension: the selected extension's server_info() at boot ----
+
+
+class _InfoExt:
+    def server_info(self):
+        return {"checkpoints": ["fs1_s012000", "s064000"]}
+
+
+class _RaisingExt:
+    def server_info(self):
+        raise RuntimeError("boom")
+
+
+def test_model_extension_info_published(monkeypatch):
+    monkeypatch.setattr(server, "_MODEL_EXTENSION_INFO", server._model_extension_info(_InfoExt()))
+    assert _server_info()["model_extension"] == {"checkpoints": ["fs1_s012000", "s064000"]}
+
+
+def test_model_extension_info_null_without_hook(monkeypatch):
+    from acestep.plugins.model_extensions import ModelExtension
+
+    assert server._model_extension_info(ModelExtension()) is None
+    assert server._model_extension_info(object()) is None
+    monkeypatch.setattr(server, "_MODEL_EXTENSION_INFO", server._model_extension_info(None))
+    assert _server_info()["model_extension"] is None
+
+
+def test_model_extension_info_exception_is_null(monkeypatch):
+    monkeypatch.setattr(server, "_MODEL_EXTENSION_INFO", server._model_extension_info(_RaisingExt()))
+    info = _server_info()
+    assert info["model_extension"] is None
+    assert "stream_layout" in info
+
+
+def test_model_extension_info_non_dict_is_null():
+    class _ListExt:
+        def server_info(self):
+            return ["fs1_s012000"]
+
+    assert server._model_extension_info(_ListExt()) is None

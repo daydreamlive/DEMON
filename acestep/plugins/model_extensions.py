@@ -471,6 +471,14 @@ class ModelExtension:
         """
         return ""
 
+    def server_info(self) -> dict | None:
+        """JSON-safe facts a page may need before any session exists.
+
+        Published once on ``/api/server-info`` under ``model_extension``;
+        ``None`` = nothing.
+        """
+        return None
+
     def install(self, model: Any, model_config: Mapping[str, Any]) -> ModelExtensionRuntime:
         """Attach to the freshly loaded model and return the runtime."""
         return ModelExtensionRuntime()
