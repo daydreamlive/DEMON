@@ -24,6 +24,13 @@ identical suite at the refactored build.
 | `test_golden.py` | Audio matches the canonical reference |
 | `test_latency.py` | Coarse latency ceilings + per-build report artifact |
 
+The manifest's per-scenario `env` block is provenance only. The golden
+contract reads the bundle location/hashes and calibrated thresholds; it
+does not gate pass/fail on `env`, nor does it attempt to recreate a run
+from those fields. This matters for queued production-pod captures,
+where metadata like `server_info`, `gpu`, or the exact signed pod URL
+may be unavailable or intentionally normalized.
+
 ## Running
 
 On a local GPU box the suite is self-contained: it spawns the server
