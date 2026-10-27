@@ -15,7 +15,7 @@
     "fzstd": "^0.1.1"
   },
   "devDependencies": {
-    "esbuild": "^0.25.0",
+    "esbuild": "^0.28.1",
     "fzstd": "^0.1.1"
   },
   "//": [
