@@ -632,3 +632,37 @@ def test_decorate_conditioning_helper_treats_none_as_no_change():
 
     bundle = {"a": 1}
     assert decorate_conditioning(_Silent(), bundle, SourceView()) is bundle
+
+
+def test_decorate_conditioning_helper_passes_text_only_where_declared():
+    class _Text(ModelExtensionRuntime):
+        def decorate_conditioning(self, bundle, source=None, text=None):
+            return {**bundle, "text": text}
+
+    class _KwOnly(ModelExtensionRuntime):
+        def decorate_conditioning(self, bundle, source=None, *, text=None):
+            return {**bundle, "text": text}
+
+    class _TwoArg(ModelExtensionRuntime):
+        def decorate_conditioning(self, bundle, source=None):
+            return {**bundle, "two": True}
+
+    class _SilentText(ModelExtensionRuntime):
+        def decorate_conditioning(self, bundle, source=None, text=None):
+            return None
+
+    assert decorate_conditioning(_Text(), {"a": 1}, None, text="p") == {
+        "a": 1, "text": "p",
+    }
+    assert decorate_conditioning(_KwOnly(), {"a": 1}, text="p")["text"] == "p"
+    assert decorate_conditioning(_TwoArg(), {"a": 1}, None, text="p") == {
+        "a": 1, "two": True,
+    }
+    bundle = {"a": 1}
+    assert decorate_conditioning(_SilentText(), bundle, text="p") is bundle
+
+
+def test_default_blend_conditioning_declines():
+    # None lets the core slerp: a runtime without its own blend is unchanged.
+    runtime = ModelExtensionRuntime()
+    assert runtime.blend_conditioning({"a": 1}, {"b": 2}, 0.5) is None

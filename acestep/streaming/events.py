@@ -224,6 +224,9 @@ class SwapReady:
     # Canvas generation after this swap (write_audio targets must match;
     # see SessionState.source_epoch).
     source_epoch: int = 0
+    # The swap left the playing buffer as it was: ``initial_buffer`` is a
+    # copy of it, so a client that keeps its own needs no new one.
+    kept: bool = False
 
 
 @dataclass(frozen=True)
@@ -334,6 +337,40 @@ class BounceReady:
 class BounceFailed:
     request_id: str
     error: str
+
+
+@dataclass(frozen=True)
+class OneshotReady:
+    """Answer to ``oneshot``: whole renders, one per version.
+
+    ``pcm`` is int16 ``[versions, len(streams), frames, channels]`` at
+    ``sample_rate``; ``ids`` names each version's kept latent (a redo's
+    handle), ``seeds`` its seed, ``streams`` the stream indices carried
+    (every stream, or a redo's one). ``ms`` is the per-phase wall time
+    (generate, decode, pack). ``latents`` is every version's full latent,
+    float16 ``[versions, n_streams, C, L]`` (``return_latents``), else
+    None; ``latent_header`` the geometry a held latent must match
+    (``{n_streams, channels, frames, seconds}``), None when the backend
+    gives none."""
+    request_id: str
+    pcm: np.ndarray
+    sample_rate: int
+    ids: tuple
+    seeds: tuple
+    streams: tuple
+    ms: dict
+    redo_of: str | None = None
+    latents: np.ndarray | None = None
+    latent_header: dict | None = None
+
+
+@dataclass(frozen=True)
+class OneshotFailed:
+    request_id: str
+    error: str
+    #: A machine-readable cause when the client should act on it
+    #: (``"queue_full"``: retry after an answer), else None.
+    reason: str | None = None
 
 
 @dataclass(frozen=True)

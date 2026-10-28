@@ -37,6 +37,7 @@ __export(node_exports, {
   MANUAL_LAYER_DESCRIPTION: () => MANUAL_LAYER_DESCRIPTION,
   MANUAL_SRC_DESCRIPTION: () => MANUAL_SRC_DESCRIPTION,
   MANUAL_STEP_DESCRIPTION: () => MANUAL_STEP_DESCRIPTION,
+  OneshotFrames: () => OneshotFrames,
   PREEMPTED_CLOSE_CODE: () => PREEMPTED_CLOSE_CODE,
   PROTOCOL_VERSION: () => PROTOCOL_VERSION,
   RCFG_MODES: () => RCFG_MODES,
@@ -58,11 +59,13 @@ __export(node_exports, {
   arrayBufferToBase64: () => arrayBufferToBase64,
   base64ToArrayBuffer: () => base64ToArrayBuffer,
   captureConfigFromState: () => captureConfigFromState,
+  decodeOneshot: () => decodeOneshot,
   describeControl: () => describeControl,
   displayNameFor: () => displayNameFor,
   encodeWavInterleaved: () => encodeWavInterleaved,
   float16ArrayToFloat32: () => float16ArrayToFloat32,
   getUnknownKeys: () => getUnknownKeys,
+  int16ToFloat32: () => int16ToFloat32,
   isDcwMode: () => isDcwMode,
   isDcwWavelet: () => isDcwWavelet,
   isLoopGridRes: () => isLoopGridRes,
@@ -71,6 +74,10 @@ __export(node_exports, {
   isTimeSignature: () => isTimeSignature,
   mergeConfig: () => mergeConfig,
   normalizeConfigShape: () => normalizeConfigShape,
+  oneshotCommand: () => oneshotCommand,
+  oneshotLatentFrame: () => oneshotLatentFrame,
+  packCompactPcmFrame: () => packCompactPcmFrame,
+  renderOneshot: () => renderOneshot,
   resolveControlDescription: () => resolveControlDescription,
   resolveLoraCapForSource: () => resolveLoraCapForSource,
   rtmgConfigToSessionConfig: () => rtmgConfigToSessionConfig,
@@ -717,6 +724,153 @@ function analysisTapsAvailable(capabilities) {
   return raw.filter((name) => typeof name === "string");
 }
 
+// oneshot.ts
+var _seq = 0;
+function oneshotCommand(req) {
+  const msg = {
+    type: "oneshot",
+    request_id: req.requestId ?? `oneshot-${++_seq}-${Date.now()}`
+  };
+  if (req.redo) {
+    const r = req.redo;
+    const redo = {};
+    if (r.id !== void 0) redo.id = r.id;
+    if (r.stream !== void 0) redo.stream = r.stream;
+    if (r.streams !== void 0) redo.streams = [...r.streams];
+    redo.seed = r.seed;
+    if (r.denoise !== void 0) redo.denoise = Array.isArray(r.denoise) ? [...r.denoise] : r.denoise;
+    if (r.latent) {
+      const { data, nStreams, channels, frames } = r.latent;
+      if (data.length !== nStreams * channels * frames)
+        throw new Error(`oneshot: redo.latent has ${data.length} values, expected ${nStreams} x ${channels} x ${frames}`);
+      redo.latent = { dtype: "float16", shape: [nStreams, channels, frames] };
+    }
+    msg.redo = redo;
+  } else msg.seeds = [...req.seeds ?? []];
+  if (req.knobs) msg.knobs = { ...req.knobs };
+  if (req.returnLatents) msg.return_latents = true;
+  return msg;
+}
+function oneshotLatentFrame(req) {
+  const lat = req.redo?.latent;
+  if (!lat) return null;
+  const d = lat.data;
+  return d.buffer.slice(d.byteOffset, d.byteOffset + d.byteLength);
+}
+function decodeOneshot(meta, data, latents) {
+  const streams = meta.streams.map(Number);
+  const ids = meta.ids.map(String);
+  const seeds = meta.seeds.map(Number);
+  const block = meta.frames * meta.channels;
+  const want = ids.length * streams.length * block * 2;
+  if (data.byteLength !== want)
+    throw new Error(`oneshot: ${data.byteLength} bytes, expected ${want} (${ids.length} x ${streams.length} x ${meta.frames} x ${meta.channels} int16)`);
+  const versions = ids.map((id, v) => {
+    const audio = {};
+    streams.forEach((k, j) => {
+      audio[k] = new Int16Array(data, (v * streams.length + j) * block * 2, block);
+    });
+    return { id, seed: seeds[v], audio };
+  });
+  const ms = {};
+  for (const [k, v] of Object.entries(meta.ms ?? {})) ms[k] = Number(v);
+  const lh = meta.latent_header ?? {};
+  const latentHeader = {
+    nStreams: Number(lh.n_streams ?? 0),
+    channels: Number(lh.channels ?? 0),
+    frames: Number(lh.frames ?? 0),
+    seconds: Number(lh.seconds ?? meta.frames / meta.sample_rate)
+  };
+  let lat;
+  const lm = meta.latents;
+  if (lm) {
+    const shape = (lm.shape ?? []).map(Number);
+    if (shape.length !== 4) throw new Error(`oneshot: latents shape ${JSON.stringify(lm.shape)} is not [V, S, C, L]`);
+    const per = shape[1] * shape[2] * shape[3];
+    const wantLat = shape[0] * per * 2;
+    if (!latents) throw new Error("oneshot: the latents frame is missing");
+    if (latents.byteLength !== wantLat)
+      throw new Error(`oneshot: latents ${latents.byteLength} bytes, expected ${wantLat} (${shape.join(" x ")} float16)`);
+    const bits = new Uint16Array(latents);
+    lat = { shape, data: bits };
+    versions.forEach((ver, v) => {
+      if (v < shape[0]) ver.latent = bits.subarray(v * per, (v + 1) * per);
+    });
+  }
+  return {
+    requestId: meta.request_id,
+    sampleRate: meta.sample_rate,
+    channels: meta.channels,
+    frames: meta.frames,
+    streams,
+    versions,
+    ms,
+    redoOf: meta.redo_of ?? null,
+    latentHeader,
+    ...lat ? { latents: lat } : {}
+  };
+}
+var OneshotFrames = class {
+  meta = null;
+  pcm = null;
+  /** A header is in and its frames are not all here yet. */
+  get waiting() {
+    return this.meta !== null;
+  }
+  /** A new `oneshot_ready` header (drops any half-received one). */
+  begin(meta) {
+    this.meta = meta;
+    this.pcm = null;
+  }
+  /** One binary frame. Returns the assembled answer once the last frame is in, else null. */
+  push(frame) {
+    const meta = this.meta;
+    if (meta === null) return null;
+    if (meta.latents && this.pcm === null) {
+      this.pcm = frame;
+      return null;
+    }
+    const pcm = this.pcm ?? frame;
+    const latents = this.pcm !== null ? frame : void 0;
+    this.meta = null;
+    this.pcm = null;
+    try {
+      return { meta, result: decodeOneshot(meta, pcm, latents) };
+    } catch (e) {
+      return { meta, error: String(e) };
+    }
+  }
+};
+function int16ToFloat32(a) {
+  const out = new Float32Array(a.length);
+  for (let i = 0; i < a.length; i++) out[i] = a[i] / 32768;
+  return out;
+}
+function renderOneshot(remote, req, timeoutMs = 12e4) {
+  return new Promise((resolve, reject) => {
+    const id = req.requestId ?? `oneshot-${++_seq}-${Date.now()}`;
+    const off = () => {
+      clearTimeout(timer);
+      remote.removeEventListener("oneshot", on);
+      remote.removeEventListener("oneshot_failed", on);
+      remote.removeEventListener("close", gone);
+    };
+    const on = (e) => {
+      const d = e.detail;
+      if ((e.type === "oneshot" ? d?.requestId : d?.request_id) !== id) return;
+      off();
+      if (e.type === "oneshot_failed") reject(new Error(d?.error || "oneshot failed"));
+      else resolve(d);
+    };
+    const gone = () => (off(), reject(new Error("connection lost")));
+    const timer = setTimeout(() => (off(), reject(new Error("oneshot timed out"))), timeoutMs);
+    remote.addEventListener("oneshot", on);
+    remote.addEventListener("oneshot_failed", on);
+    remote.addEventListener("close", gone);
+    if (remote.sendOneshot({ ...req, requestId: id }) === null) off(), reject(new Error("connection not open"));
+  });
+}
+
 // protocol.ts
 var import_meta = {};
 var PARAMS_BACKPRESSURE_BYTES = 8 * 1024;
@@ -766,6 +920,29 @@ function packPcmFrame(interleaved, channels) {
   combined.set(new Uint8Array(hdr), 0);
   combined.set(pcm, hdr.byteLength);
   return combined;
+}
+function packCompactPcmFrame(interleaved, channels) {
+  const samples = interleaved.length / channels;
+  const present = [];
+  for (let c = 0; c < channels; c++)
+    for (let i = c; i < interleaved.length; i += channels)
+      if (interleaved[i] !== 0) {
+        present.push(c);
+        break;
+      }
+  if (!present.length) present.push(0);
+  const k = present.length;
+  const frame = new Uint8Array(8 + samples * k * 2);
+  const dv = new DataView(frame.buffer);
+  dv.setUint32(0, k, true);
+  dv.setUint32(4, samples, true);
+  const pcm = new Int16Array(frame.buffer, 8, samples * k);
+  for (let f = 0; f < samples; f++)
+    for (let j = 0; j < k; j++) {
+      const v = Math.round(interleaved[f * channels + present[j]] * 32768);
+      pcm[f * k + j] = v > 32767 ? 32767 : v < -32768 ? -32768 : v;
+    }
+  return { frame, present };
 }
 function makeAttemptId() {
   try {
@@ -852,6 +1029,8 @@ var RemoteBackend = class extends EventTarget {
   backendClientId = null;
   _pending;
   _pendingSwap = null;
+  // A `oneshot_ready` header waiting for its binary frame(s).
+  _pendingOneshot = new OneshotFrames();
   _pendingStemAssets = null;
   _pendingStemBuffers = {};
   // Slice decoder runs in a worker so fzstd.decompress + float16→float32
@@ -985,6 +1164,16 @@ var RemoteBackend = class extends EventTarget {
         closeReason: ""
       });
       let phase = "config";
+      const begin = (initial) => {
+        this.initialBuffer = initial;
+        this.ready = true;
+        this._updateTrace({ readyAt: Date.now(), phase: "ready" });
+        phase = "streaming";
+        this._pending = null;
+        resolve(this);
+        this.dispatchEvent(new CustomEvent("ready"));
+        this._updateTrace({ phase: "streaming" });
+      };
       ws.onopen = () => {
         if (!this._pending) return;
         this._updateTrace({ openAt: Date.now(), phase: "open" });
@@ -1044,6 +1233,8 @@ var RemoteBackend = class extends EventTarget {
             if (typeof msg.source_epoch === "number")
               this._sliceEpoch = msg.source_epoch;
             phase = "initial-buffer";
+            if (msg.window === "silent")
+              begin(new Float32Array((msg.frames ?? 0) * this.channels));
           } catch (e) {
             this._updateTrace({ errorAt: Date.now(), phase: "error" });
             reject(e);
@@ -1051,30 +1242,26 @@ var RemoteBackend = class extends EventTarget {
           return;
         }
         if (phase === "initial-buffer") {
-          const u162 = new Uint16Array(ev.data);
-          this.initialBuffer = float16ArrayToFloat32(u162);
-          this.ready = true;
-          this._updateTrace({ readyAt: Date.now(), phase: "ready" });
-          phase = "streaming";
-          this._pending = null;
-          resolve(this);
-          this.dispatchEvent(new CustomEvent("ready"));
-          this._updateTrace({ phase: "streaming" });
+          begin(float16ArrayToFloat32(new Uint16Array(ev.data)));
           return;
         }
         if (this._pendingSwap && ev.data instanceof ArrayBuffer) {
-          const u162 = new Uint16Array(ev.data);
-          const interleaved = float16ArrayToFloat32(u162);
           const meta = this._pendingSwap;
           this._pendingSwap = null;
-          this.duration = meta.duration;
-          this.channels = meta.channels;
-          this._sliceEpoch = meta.source_epoch ?? this._sliceEpoch + 1;
-          this.dispatchEvent(
-            new CustomEvent("swap_ready", {
-              detail: { ...meta, interleaved }
-            })
-          );
+          this._swapped(meta, float16ArrayToFloat32(new Uint16Array(ev.data)));
+          return;
+        }
+        if (this._pendingOneshot.waiting && ev.data instanceof ArrayBuffer) {
+          const done = this._pendingOneshot.push(ev.data);
+          if (done?.result) {
+            this.dispatchEvent(new CustomEvent("oneshot", { detail: done.result }));
+          } else if (done) {
+            this.dispatchEvent(
+              new CustomEvent("oneshot_failed", {
+                detail: { request_id: done.meta.request_id, error: done.error }
+              })
+            );
+          }
           return;
         }
         if (this._pendingStemAssets && ev.data instanceof ArrayBuffer) {
@@ -1138,7 +1325,10 @@ var RemoteBackend = class extends EventTarget {
               );
               break;
             case "swap_ready":
-              this._pendingSwap = msg;
+              if (msg.window === "silent")
+                this._swapped(msg, new Float32Array((msg.frames ?? 0) * msg.channels));
+              else if (msg.window === "kept") this._swapped(msg, null);
+              else this._pendingSwap = msg;
               break;
             case "swap_failed":
               this.dispatchEvent(
@@ -1205,6 +1395,14 @@ var RemoteBackend = class extends EventTarget {
             case "audio_in_ack":
               this.dispatchEvent(
                 new CustomEvent("audio_in_ack", { detail: msg })
+              );
+              break;
+            case "oneshot_ready":
+              this._pendingOneshot.begin(msg);
+              break;
+            case "oneshot_failed":
+              this.dispatchEvent(
+                new CustomEvent("oneshot_failed", { detail: msg })
               );
               break;
             case "command_failed":
@@ -1472,6 +1670,26 @@ var RemoteBackend = class extends EventTarget {
     } catch {
     }
   }
+  /**
+   * Ask for a one-shot render (``ready.capabilities.oneshot``): one whole
+   * version per seed, or a redo of streams of a held version (a redo with
+   * ``latent`` sends it as one binary frame after the header). Answered
+   * by a ``oneshot`` event (detail: OneshotResult) or ``oneshot_failed``
+   * ({request_id, error}). Returns the request id, or null when the socket
+   * isn't open. ``renderOneshot`` (./oneshot) wraps it in a promise.
+   */
+  sendOneshot(req) {
+    if (this.ws?.readyState !== this._wsOpen) return null;
+    const msg = oneshotCommand(req);
+    const frame = oneshotLatentFrame(req);
+    try {
+      this.ws.send(JSON.stringify(msg));
+      if (frame) this.ws.send(frame);
+    } catch {
+      return null;
+    }
+    return msg.request_id;
+  }
   sendEnableLora(id, strength) {
     if (this.ws?.readyState !== this._wsOpen) return;
     try {
@@ -1583,6 +1801,37 @@ var RemoteBackend = class extends EventTarget {
    * swap_source; the caller builds the typed command so the header is
    * contract-checked at compile time.
    */
+  /** A swap landed: the new geometry and source epoch, then `swap_ready`
+   *  with the new buffer (null: the swap kept the playing one). */
+  _swapped(meta, interleaved) {
+    this.duration = meta.duration;
+    this.channels = meta.channels;
+    this._sliceEpoch = meta.source_epoch ?? this._sliceEpoch + 1;
+    this.dispatchEvent(
+      new CustomEvent("swap_ready", { detail: { ...meta, interleaved } })
+    );
+  }
+  /**
+   * `sendSwapSource` as a compact frame where the server takes one
+   * (`ready.capabilities.compact_pcm`): only the channels with audio, as
+   * 16-bit samples, which the server expands back to the same full
+   * source. On a server without it, the full float32 frame. Same reply.
+   */
+  sendSwapSourceCompact(interleaved, channels, tags) {
+    if (!this.capabilities?.compact_pcm) return this.sendSwapSource(interleaved, channels, tags);
+    if (this.ws?.readyState !== this._wsOpen) return false;
+    const { frame, present } = packCompactPcmFrame(interleaved, channels);
+    const msg = { type: "swap_source", pcm: { encoding: "s16le", channels, present } };
+    if (tags) msg.tags = tags;
+    try {
+      this.ws.send(JSON.stringify(msg));
+      this.ws.send(frame);
+      return true;
+    } catch (e) {
+      console.error("[protocol] swap_source failed:", e);
+      return false;
+    }
+  }
   sendAudioFrame(msg, interleaved, channels) {
     if (this.ws?.readyState !== this._wsOpen) return false;
     try {
@@ -1870,7 +2119,8 @@ var COMMAND_NAMES = [
   "midi_transcribe",
   "analysis_tap",
   "audio_in",
-  "bounce"
+  "bounce",
+  "oneshot"
 ];
 var EVENT_NAMES = [
   "init_ack",
@@ -1900,6 +2150,8 @@ var EVENT_NAMES = [
   "midi_failed",
   "bounce_ready",
   "bounce_failed",
+  "oneshot_ready",
+  "oneshot_failed",
   "analysis_state",
   "audio_in_ack",
   "analysis_update"
@@ -2482,6 +2734,7 @@ function resolveControlDescription(param, manifest) {
   MANUAL_LAYER_DESCRIPTION,
   MANUAL_SRC_DESCRIPTION,
   MANUAL_STEP_DESCRIPTION,
+  OneshotFrames,
   PREEMPTED_CLOSE_CODE,
   PROTOCOL_VERSION,
   RCFG_MODES,
@@ -2503,11 +2756,13 @@ function resolveControlDescription(param, manifest) {
   arrayBufferToBase64,
   base64ToArrayBuffer,
   captureConfigFromState,
+  decodeOneshot,
   describeControl,
   displayNameFor,
   encodeWavInterleaved,
   float16ArrayToFloat32,
   getUnknownKeys,
+  int16ToFloat32,
   isDcwMode,
   isDcwWavelet,
   isLoopGridRes,
@@ -2516,6 +2771,10 @@ function resolveControlDescription(param, manifest) {
   isTimeSignature,
   mergeConfig,
   normalizeConfigShape,
+  oneshotCommand,
+  oneshotLatentFrame,
+  packCompactPcmFrame,
+  renderOneshot,
   resolveControlDescription,
   resolveLoraCapForSource,
   rtmgConfigToSessionConfig,

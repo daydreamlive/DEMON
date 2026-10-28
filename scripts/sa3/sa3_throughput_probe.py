@@ -123,7 +123,11 @@ def probe_depth(context, *, depth, steps, duration_s, source, backend,
                        codec_backend=decode if dec else None)
     codec_kind = type(be.codec).__name__
     if getattr(be.codec, "uses_trt", False):
-        codec_kind += ":" + be.codec._trt.engine_path.parent.name
+        trt = getattr(be.codec, "_trt", None)
+        if trt is not None:  # SAME-S: one engine
+            codec_kind += ":" + trt.engine_path.parent.name
+        else:  # SAME-L: every built engine, narrowest first
+            codec_kind += ":" + ",".join(p.parent.name for p, _, _ in be.codec._engines)
     dit_kind = type(be.adapter.dit).__name__
     engine = getattr(getattr(be.adapter.dit, "engine_path", None), "parent", None)
     if engine is not None:

@@ -231,6 +231,52 @@ every swap.
 Keep per-tick control state on the object you own (your model wrapper, for
 example). Do not expect DEMON to carry your values through its hot path.
 
+### Stacked streams (`stream_layout`)
+
+A model that denoises several equal-length streams as one sequence returns
+a `StreamLayout` from `ModelExtensionRuntime.stream_layout()`. The default
+returns `None`, and then nothing below applies: the stock path runs
+unchanged.
+
+```python
+from acestep.plugins import StreamLayout
+
+class MyRuntime(ModelExtensionRuntime):
+    def stream_layout(self):
+        return StreamLayout(
+            n_streams=4,             # stacked on the token axis
+            tokens_per_stream=None,  # pin L; None derives it from duration
+            make_dit=None,           # (context, latent_frames, seconds_total, backend) -> dit | None
+            make_noise=None,         # (request) -> [1, n*L, C]
+            encode_source=None,      # (context, (sr, wav), one_stream_samples) -> [1, C, n*L]
+            mix=None,                # (streams [n, N, ch] float32) -> [N, ch]; default sum
+        )
+```
+
+What the core does under a layout:
+
+- The ring, the source anchor, feedback and `x0_target` carry the stacked
+  `[1, n*L, C]` latent; stream `i` is tokens `[i*L, (i+1)*L)`. `SourceView.latent`
+  is the stacked anchor.
+- Conditioning is captured at `n*L`: every frame valid to attention, and the
+  schedule shift computed for `n*L` (a longer song label cannot shrink it).
+  With `tokens_per_stream` set, the session duration is clamped to `L` frames.
+- `make_dit` replaces the DiT for the session; `None` (or no factory) runs
+  the model's eager DiT. Stock TensorRT engines are never looked up, since
+  they are built for one stream. Load your own engine by path with
+  `acestep.engine.sa3_trt.open_dit_engine_at(path, expected_weights_sha256=...)`:
+  it refuses an engine whose `<engine>.metadata.json` `model_sha256` does not
+  match, and one placed under a stock DiT engine name.
+- Without `encode_source`, an uploaded source is encoded once and repeated
+  into every stream.
+- Each stream is decoded on its own slice (a decoder's receptive field must
+  not cross a stream boundary), then `mix` combines them into the delivered
+  stereo stream, clamped to `[-1, 1]`. `mix` runs on every render, so gains
+  you read from your own knobs (declared in `knob_specs`, delivered through
+  `apply_controls`) land at the next render without regenerating.
+- `playable_duration_s` and the wire geometry describe ONE stream. Swap
+  re-encodes at the fixed geometry; swap-resize is off.
+
 ### Telemetry
 
 `status()` is operator-visible and must contain no filesystem paths,

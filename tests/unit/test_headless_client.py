@@ -235,3 +235,40 @@ def test_slice_roundtrip_overlapping_windows_converge():
 def test_decode_rejects_short_frame():
     with pytest.raises(ValueError):
         decode_slice_frame(b"\x01\x02")
+
+
+class _RecordingWS:
+    def __init__(self):
+        self.sent = []
+
+    def send(self, msg):
+        if isinstance(msg, (str, bytes, bytearray, memoryview)):
+            self.sent.append(("whole", msg))
+        else:
+            self.sent.append(("fragmented", [bytes(m) for m in msg]))
+
+
+def test_command_with_audio_sends_the_payload_fragmented():
+    import json
+    import struct
+    import threading
+
+    import numpy as np
+
+    from demos.realtime_motion_graph_web import headless_client as H
+
+    c = H.HeadlessClient.__new__(H.HeadlessClient)
+    c.ws, c._send_lock = _RecordingWS(), threading.Lock()
+    wave = np.arange(14 * 30000, dtype=np.float32).reshape(14, 30000)
+    c.send_command_with_audio({"type": "swap_source"}, wave)
+    (k0, head), (k1, frags) = c.ws.sent
+    assert k0 == "whole" and json.loads(head) == {"type": "swap_source"}
+    assert k1 == "fragmented" and len(frags) > 1
+    assert all(len(f) <= H.SEND_FRAGMENT_BYTES for f in frags)
+    payload = b"".join(frags)
+    assert struct.unpack("<II", payload[:8]) == (14, 30000)
+    body = np.frombuffer(payload[8:], dtype=np.float32).reshape(30000, 14)
+    assert np.array_equal(body.T, wave)                 # interleaved, every channel
+    small = _RecordingWS()
+    H._send_fragmented(small, b"abc")
+    assert small.sent == [("whole", b"abc")]

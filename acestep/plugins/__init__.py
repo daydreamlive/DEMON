@@ -59,6 +59,7 @@ from acestep.plugins.model_extensions import (
     ModelExtensionSpec,
     Rejection,
     SourceView,
+    StreamLayout,
 )
 # Re-exported, not re-declared: extension controls ARE core knobs, and
 # routing them through a parallel type would be the second schema this
@@ -83,6 +84,7 @@ __all__ = [
     "PluginRegistry",
     "Rejection",
     "SourceView",
+    "StreamLayout",
     "PluginError",
     "PluginIncompatibleError",
     "PluginLoadError",

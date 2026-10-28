@@ -69,6 +69,8 @@ from acestep.streaming.events import (
     AudioWritten,
     BounceFailed,
     BounceReady,
+    OneshotFailed,
+    OneshotReady,
     CommandFailed,
     DepthApplied,
     LoraCatalogUpdate,
@@ -98,6 +100,7 @@ from acestep.streaming import registry as session_registry
 from acestep.streaming.config import DEFAULT_FAMILY
 from acestep.streaming.source import (
     _decode_audio_msg,
+    _decode_compact_pcm,
     _load_clip_waveform,
     _load_known_fixture_waveform,
     _normalize_time_signature,
@@ -121,6 +124,7 @@ from .audio_codec import (
     SliceCodec,
     chunked_ws_send,
     send_bounce_payload,
+    send_oneshot_payload,
     send_stem_payload,
 )
 from .protocol import COMMAND_NAMES, SAMPLE_RATE, coerce_command_payload
@@ -727,9 +731,11 @@ _MIDI_TRANSCRIBE_POOL = ThreadPoolExecutor(
 )
 
 
-def _capabilities_with_midi(caps: dict) -> dict:
-    """Overlay the server-level midi_transcribe bit onto the backend mask
-    (see Capabilities.midi_transcribe)."""
+def _server_capabilities(caps: dict) -> dict:
+    """Overlay the server-level bits onto the backend mask: midi_transcribe
+    (the transcriber probe) and compact_pcm (this adapter decodes a
+    ``swap_source`` frame described by ``pcm``). See Capabilities."""
+    caps["compact_pcm"] = True
     try:
         from acestep.analysis.midi_transcribe import transcriber_available
         caps["midi_transcribe"] = bool(transcriber_available())
@@ -766,6 +772,18 @@ def _analysis_item_wire(item) -> dict:
                 v = round(v, 4)
         out[k] = v
     return out
+
+
+def _derived_window(config_dict: dict, buf: np.ndarray, kept: bool = False) -> str | None:
+    """The window frame a ``derived_windows`` client builds itself instead
+    of receiving: "kept" (a swap that leaves the playing buffer as it is),
+    "silent" (all zeros, built as ``frames`` × channels of silence), or None
+    (send it). Without ``derived_windows`` in the config, always None."""
+    if not config_dict.get("derived_windows"):
+        return None
+    if kept:
+        return "kept"
+    return None if np.any(buf) else "silent"
 
 
 def _run_midi_transcribe(waveform, request_id: str, send_json) -> None:
@@ -1193,6 +1211,42 @@ def handle_client(
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+
+def _dispatch_oneshot(data, streaming, recv_binary, send_json, origin) -> None:
+    """The ``oneshot`` command. A redo with ``redo.latent`` (client-held
+    state) is followed by ONE binary frame, raw float16 of the declared
+    shape: read it first (so the stream stays in step whatever the header
+    says), check its byte length, and hand it to the session; a mismatch
+    answers ``oneshot_failed``. Every other request goes straight through.
+    ``recv_binary(fail_type, **extra)`` is the handler's
+    ``_recv_binary_payload``."""
+    redo = data.get("redo")
+    latent_spec = redo.get("latent") if isinstance(redo, dict) else None
+    if latent_spec is None:
+        streaming.oneshot(dict(data), origin=origin)
+        return
+    from acestep.streaming.oneshot import OneshotError, latent_nbytes
+
+    request_id = str(data.get("request_id") or "")
+    blob = recv_binary("oneshot_failed", request_id=request_id)
+    if blob is None:
+        return
+    try:
+        want = latent_nbytes(latent_spec)
+    except OneshotError as exc:
+        error = str(exc)
+    else:
+        error = None if len(blob) == want else (
+            f"redo.latent frame is {len(blob)} bytes, expected {want} "
+            f"(float16 {list(latent_spec.get('shape'))})"
+        )
+    if error is not None:
+        send_json({
+            "type": "oneshot_failed", "request_id": request_id, "error": error,
+        })
+        return
+    streaming.oneshot(dict(data), origin=origin, latent=bytes(blob))
 
 
 def _handle_client_body(
@@ -1637,6 +1691,7 @@ def _handle_client_body(
         # Mirror the new buffer on this subscriber so subsequent
         # slices delta against the right basis.
         new_src_np = event.initial_buffer
+        window = _derived_window(config_dict, new_src_np, kept=event.kept)
         try:
             with send_lock:
                 ws.send(json.dumps({
@@ -1649,9 +1704,14 @@ def _handle_client_body(
                     "time_signature": event.time_signature,
                     "fixture_name": event.fixture_name,
                     "source_epoch": event.source_epoch,
+                    **({"window": window, "frames": len(new_src_np)} if window else {}),
                 }))
-                chunked_ws_send(ws, new_src_np.astype(np.float16).tobytes())
-                codec.replace_mirror(new_src_np)
+                if window is None:
+                    chunked_ws_send(ws, new_src_np.astype(np.float16).tobytes())
+                # A kept buffer is the one the client plays and this mirror
+                # already tracks; any other becomes the new delta basis.
+                if window != "kept":
+                    codec.replace_mirror(new_src_np)
                 if event.stems is not None:
                     send_stem_payload(
                         ws,
@@ -1750,6 +1810,33 @@ def _handle_client_body(
                 "request_id": event.request_id,
                 "error": event.error,
             })
+        elif isinstance(event, OneshotReady):
+            try:
+                with send_lock:
+                    send_oneshot_payload(
+                        ws,
+                        request_id=event.request_id,
+                        pcm=event.pcm,
+                        sample_rate=event.sample_rate,
+                        ids=event.ids,
+                        seeds=event.seeds,
+                        streams=event.streams,
+                        ms=event.ms,
+                        redo_of=event.redo_of,
+                        latent_header=getattr(event, "latent_header", None),
+                        latents=getattr(event, "latents", None),
+                    )
+            except ConnectionClosed:
+                state.running = False
+        elif isinstance(event, OneshotFailed):
+            failed = {
+                "type": "oneshot_failed",
+                "request_id": event.request_id,
+                "error": event.error,
+            }
+            if getattr(event, "reason", None):
+                failed["reason"] = event.reason
+            _send_json(failed)
         elif isinstance(event, StemAssets):
             # Late background-rip delivery (upload path): same wire
             # shape the init/swap paths send inline. send_lock keeps
@@ -1825,9 +1912,15 @@ def _handle_client_body(
     # synchronously by ``StreamingSession.create`` and have nothing to
     # fan out yet. After this block the bus subscriber takes over.
     src_np = streaming.initial_buffer
+    duration_s = len(src_np) / SAMPLE_RATE
+    if streaming.render_only():
+        # A render-only session plays nothing: one silent frame stands in
+        # for the window (a 2:00 multistem window is ~115 MB of float16).
+        src_np = np.zeros((1, src_np.shape[1]), dtype=np.float32)
+    window = _derived_window(config_dict, src_np)
     ws.send(json.dumps({
         "type": "ready",
-        "duration": len(src_np) / SAMPLE_RATE,
+        "duration": duration_s,
         "sample_rate": SAMPLE_RATE,
         "channels": state.n_channels,
         "lora_dir": str(loras_dir()),
@@ -1848,7 +1941,7 @@ def _handle_client_body(
         # backend-declared truth new clients read instead of constants.
         "geometry": streaming.geometry_payload(),
         "capabilities": _capabilities_with_analysis(
-            _capabilities_with_midi(streaming.capabilities_payload()),
+            _server_capabilities(streaming.capabilities_payload()),
         ),
         # Localhost side services this server proxies at /tools/<name>/
         # (healthy ones only; cached, no I/O here).
@@ -1857,8 +1950,10 @@ def _handle_client_body(
         # Activation-steering surface (manual_slot_count /
         # manual_slot_cap / steering_available).
         **streaming.steering_payload(),
+        **({"window": window, "frames": len(src_np)} if window else {}),
     }))
-    chunked_ws_send(ws, src_np.astype(np.float16).tobytes())
+    if window is None:
+        chunked_ws_send(ws, src_np.astype(np.float16).tobytes())
     if streaming.initial_upload_stems is not None:
         send_stem_payload(
             ws,
@@ -1874,7 +1969,7 @@ def _handle_client_body(
         }))
     logger.info(
         "initial_buffer_sent duration_s={:.1f}",
-        len(src_np) / SAMPLE_RATE,
+        duration_s,
     )
     _ms("initial_buffer_sent")
 
@@ -1953,7 +2048,7 @@ def _handle_client_body(
                     source, mtype, coerce_errors,
                 )
 
-        def _recv_binary_payload(fail_type: str):
+        def _recv_binary_payload(fail_type: str, **extra):
             """Read the binary frame that must follow ``mtype``.
 
             Bounded (``_BINARY_PAYLOAD_TIMEOUT_S``) and type-checked,
@@ -1966,7 +2061,8 @@ def _handle_client_body(
 
             The bound is a transfer deadline for multi-MB frames, not
             just an orphan-header guard — see the constant for why it is
-            sized the way it is.
+            sized the way it is. ``extra`` fields (a ``request_id``) go on
+            the failure answer.
             """
             try:
                 audio_msg = recv_audio(timeout=_BINARY_PAYLOAD_TIMEOUT_S)
@@ -1977,6 +2073,7 @@ def _handle_client_body(
                 )
                 _send_json({
                     "type": fail_type,
+                    **extra,
                     "error": (
                         "binary payload not received within "
                         f"{_BINARY_PAYLOAD_TIMEOUT_S:.0f}s"
@@ -1995,6 +2092,7 @@ def _handle_client_body(
                 )
                 _send_json({
                     "type": fail_type,
+                    **extra,
                     "error": f"expected binary payload after {mtype}",
                 })
                 return None
@@ -2214,7 +2312,16 @@ def _handle_client_body(
                     if audio_msg is None:
                         return
                     try:
-                        wf = _decode_audio_msg(audio_msg)
+                        # Every channel: a stream layout's encode_source
+                        # reads them; the session clips to stereo for
+                        # everything else. A ``pcm`` field describes a
+                        # compact frame (16-bit, only the channels with
+                        # audio), expanded here to the same full tensor.
+                        pcm = data.get("pcm")
+                        wf = (
+                            _decode_compact_pcm(audio_msg, pcm) if pcm is not None
+                            else _decode_audio_msg(audio_msg, max_channels=None)
+                        )
                     except Exception as exc:
                         logger.opt(exception=True).error(
                             "swap_source_decode_failed origin={} error={}",
@@ -2231,6 +2338,7 @@ def _handle_client_body(
                     fixture_name=data.get("fixture_name"),
                     stem_source_mode=data.get("stem_source_mode"),
                     duration_s=data.get("duration_s"),
+                    keep=data.get("keep"),
                     origin=origin,
                 )
             elif mtype == "write_audio":
@@ -2263,6 +2371,10 @@ def _handle_client_body(
             elif mtype == "bounce":
                 streaming.bounce(
                     str(data.get("request_id") or ""), origin=origin,
+                )
+            elif mtype == "oneshot":
+                _dispatch_oneshot(
+                    data, streaming, _recv_binary_payload, _send_json, origin,
                 )
             elif mtype == "midi_transcribe":
                 # "Drag MIDI out": the binary PCM frame is the clip the

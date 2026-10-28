@@ -60,6 +60,7 @@ from ..common.static_site import (
     build_static_mounts,
     serve_static_mounts,
 )
+from . import ws_transport
 
 # The generative backend is imported lazily inside main(): in --no-backend
 # mode we skip the import entirely so torch and acestep don't load and the
@@ -86,6 +87,62 @@ _ACCEL = "tensorrt"
 # idle settings reset) and the initial display mode can be CLI-driven.
 _KIOSK = False
 _DEFAULT_MODE = "graph"
+# Set in main() once the model extension is selected (before the server
+# listens): ``{"n_streams": N, "stems": [...]}`` for an extension whose
+# module declares a stacked-stream layout, else ``None``. Advertised on
+# /api/server-info so a page can size its tracks before opening its WS.
+_STREAM_LAYOUT = None
+# Set in main() beside _STREAM_LAYOUT from the selected extension's
+# ``server_info()``: JSON-safe facts a page may need before any session
+# exists, or ``None``. Advertised on /api/server-info as model_extension.
+_MODEL_EXTENSION_INFO = None
+
+
+def _model_extension_info(extension) -> dict | None:
+    """The selected extension's ``server_info()``, or ``None``.
+
+    A missing hook, a non-dict return, or an exception yields ``None``
+    (the last two with one warning); never a boot failure.
+    """
+    hook = getattr(extension, "server_info", None)
+    if hook is None:
+        return None
+    try:
+        info = hook()
+    except Exception as exc:
+        logger.warning("model_extension_server_info_failed error={!r}", exc)
+        return None
+    if info is None:
+        return None
+    if not isinstance(info, dict):
+        logger.warning("model_extension_server_info_not_dict type={}", type(info).__name__)
+        return None
+    return info
+
+
+def _stream_layout_info(qualified_id: str | None) -> dict | None:
+    """The public stacked-stream layout of the selected model extension.
+
+    At boot the selection is a spec with no runtime, so this reads the
+    extension MODULE (the qualified id doubles as the module path):
+    ``STEMS`` and ``N_STREAMS``. ``None`` when the id is empty, the module
+    cannot be imported, or it declares neither.
+    """
+    if not qualified_id:
+        return None
+    try:
+        import importlib
+        mod = importlib.import_module(qualified_id)
+    except Exception as exc:
+        logger.warning("stream_layout_module_unavailable id={} error={!r}", qualified_id, exc)
+        return None
+    stems = getattr(mod, "STEMS", None)
+    n = getattr(mod, "N_STREAMS", None)
+    if not stems and not n:
+        return None
+    return {"n_streams": int(n or len(stems)), "stems": [str(x) for x in (stems or ())]}
+
+
 # Set by main() once CLI args are parsed; the HTTP /api/loras and
 # /api/* meta endpoints read it so the UI can label the active
 # checkpoint scale (2B / 5B) without waiting for the WS ready frame.
@@ -268,6 +325,13 @@ def _process_request(connection, request):
             # UI only opts in against a backend that supports it (the UI
             # ships via Vercel instantly; the backend via bake, lagged).
             "server_side_fixtures": sorted(KNOWN_FIXTURES),
+            # Stacked-stream geometry of the loaded model extension
+            # ({"n_streams", "stems"}), or null on the stock path. Known
+            # at boot, so a page can read it before any session exists.
+            "stream_layout": _STREAM_LAYOUT,
+            # The loaded model extension's server_info() facts (e.g. its
+            # checkpoint list), or null. Known at boot, before any session.
+            "model_extension": _MODEL_EXTENSION_INFO,
         }).encode()
         _log_http(remote, 200, "GET", url)
         return Response(
@@ -884,6 +948,7 @@ def main():
         )
 
     global _NO_BACKEND, _ACCEL, _KIOSK, _DEFAULT_MODE, _CHECKPOINT, _STATIC_MOUNTS
+    global _STREAM_LAYOUT, _MODEL_EXTENSION_INFO
     global _BACKEND_FAMILY
     _NO_BACKEND = no_backend
     _ACCEL = accel
@@ -961,6 +1026,9 @@ def main():
                 print(f"  {exc}")
                 print("=" * 64)
                 raise SystemExit(1) from exc
+            _STREAM_LAYOUT = _stream_layout_info(model_extension_id)
+            if model_extension is not None:
+                _MODEL_EXTENSION_INFO = _model_extension_info(model_extension.extension)
 
         # Defer the heavy import until we know we need it. Pulling this in
         # loads torch + acestep + TRT machinery; in --no-backend we never
@@ -1112,10 +1180,12 @@ def main():
         ws_handler,
         host,
         port,
-        # Sized to fit the React UI's MAX_FIXTURE_DURATION_S (240 s)
-        # at 48 kHz stereo Float32 (~88 MiB) with comfortable headroom.
-        # See web/engine/audio/loadFixture.ts.
-        max_size=100 * 1024 * 1024,
+        # Inbound message cap and per-recv read size (ws_transport.py):
+        # sized for the React UI's MAX_FIXTURE_DURATION_S (240 s) at 48 kHz
+        # stereo Float32 (~88 MiB) and for 60 s multichannel uploads; the
+        # large reads keep a big upload inside the payload deadline while
+        # generation threads hold the GIL.
+        **ws_transport.server_options(),
         process_request=_process_request,
         # A generation tick or TRT/VAE setup can hold the GIL long enough to
         # starve the keepalive's recv_events thread past the 20s default, so a

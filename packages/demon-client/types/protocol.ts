@@ -107,9 +107,11 @@ export interface AudioSlice {
   epoch: number;
 }
 
-/** Detail payload for `swap_ready` events on RemoteBackend. */
+/** Detail payload for `swap_ready` events on RemoteBackend. `interleaved`
+ *  is the new buffer, or null when `window` is "kept" (a `derived_windows`
+ *  config only): the swap left the playing buffer as it was, so keep it. */
 export interface SwapReadyDetail extends SwapReadyEvent {
-  interleaved: Float32Array;
+  interleaved: Float32Array | null;
 }
 
 /** Backend-declared audio geometry, carried in `ready.geometry` (the

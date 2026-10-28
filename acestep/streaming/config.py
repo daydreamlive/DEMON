@@ -79,6 +79,10 @@ class SessionConfig:
     # field itself; the wire contract projects the family fields flat,
     # next to the platform ones, from the same declarations.
     family_config: dict = field(default_factory=dict)
+    # ``plugin_*`` keys of the raw dict (scalar values only): per-session
+    # parameters for an installed plugin, handed to it by the family's
+    # create path. Not a wire field itself, like ``family_config``.
+    plugin_params: dict = field(default_factory=dict)
 
     # Pure text-to-audio: generate from the prompt alone, with NO source
     # audio uploaded. The client sends no binary PCM frame, so the adapter
@@ -92,12 +96,30 @@ class SessionConfig:
     # reading. See the adapter's session_init for the full handshake.
     text_only: bool = False
 
+    # One-shot renders only: the session never starts the streaming ring
+    # (no pipeline ticks, no slices). It answers ``oneshot`` requests, each
+    # a whole render of N versions, on the session thread; commands that
+    # set prompt, knobs and LoRAs still apply. The ``ready`` initial buffer
+    # is a single silent frame (the client plays nothing). Honoured only by
+    # backends whose capabilities declare ``oneshot``.
+    render_only: bool = False
+
     # Opt-in to the ``init_ack`` telemetry/capability ack (any truthy value).
     # Read straight off the raw config dict by the adapter; declared here so
     # it reaches the generated wire contract that the C++ and TS clients
     # build their key constants from, rather than being spelled by hand at
     # each call site.
     telemetry_version: int | None = None
+
+    # The client builds the windows it can derive itself instead of
+    # receiving them: ``ready`` then leaves out the initial-buffer frame when
+    # that buffer is silent, and ``swap_ready`` leaves out its frame when the
+    # new buffer is silent or the swap keeps the playing buffer as it is
+    # (each says which in its ``window`` field, with ``frames``). Read off
+    # the raw config dict by the adapter, like ``telemetry_version``; a
+    # server without it sends every frame, and a client that asked must
+    # handle either (``window`` absent = a frame follows, as always).
+    derived_windows: bool = False
 
     @classmethod
     def from_dict(cls, data: dict) -> "SessionConfig":
@@ -141,6 +163,11 @@ class SessionConfig:
 
         kwargs["family_config"] = {
             cf.name: cf.coerce(d.get(cf.name)) for cf in family_config_fields()
+        }
+        kwargs["plugin_params"] = {
+            k: v for k, v in d.items()
+            if isinstance(k, str) and k.startswith("plugin_")
+            and isinstance(v, (str, int, float, bool))
         }
 
         return cls(**kwargs)

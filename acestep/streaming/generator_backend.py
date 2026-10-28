@@ -180,6 +180,12 @@ class Capabilities:
     # when it builds ``ready.capabilities``, so clients gate the "drag MIDI
     # out" affordance on what THIS pod can actually do.
     midi_transcribe: bool = False
+    # Server-level as well: the WS adapter decodes a ``swap_source`` frame
+    # described by its ``pcm`` field (16-bit samples, and only the channels
+    # that carry audio; the rest are silence), so a client holding one
+    # stereo pair of a wide layout sends that pair, not every channel as
+    # float32. Backends leave it False; the adapter sets the wire bit.
+    compact_pcm: bool = False
     # The ``bounce`` command: the backend regenerates its whole fixed
     # window every generation and can hand back a full-window render of
     # a generation that started after a given point. A backend that
@@ -188,6 +194,16 @@ class Capabilities:
     # Append-only families leave it False: they have no "whole window"
     # to re-render.
     bounce: bool = False
+    # The ``oneshot`` command: the backend renders N whole versions of its
+    # fixed window in one go, outside the ring (``render_oneshot``), keeps
+    # each version's latent by id and re-denoises streams of a kept one
+    # (redo, when its stream layout has ``hold_streams``). Required for a
+    # ``render_only`` session; the session advertises it only there.
+    oneshot: bool = False
+    # A one-shot ``redo`` (re-denoise streams of a held version) is served:
+    # the backend's stream layout has ``hold_streams``. Only alongside
+    # ``oneshot``; the session clears both on a ring session.
+    oneshot_redo: bool = False
     # Server-level, not a backend trait, like ``midi_transcribe``: the
     # analyzer names (``acestep.analysis.registry``) this pod can run as
     # live ``analysis_tap`` channels. Backends leave it empty; the WS

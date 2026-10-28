@@ -49,6 +49,7 @@ from acestep.streaming.sa3_backend import (
     SA3_MAX_DURATION_S,
     SA3_SAMPLE_RATE,
     delivered_samples as _delivered_samples,
+    max_session_duration_s,
     sa3_knob_specs,
 )
 from acestep.streaming.source import SAMPLE_RATE
@@ -185,6 +186,30 @@ def preload_sa3(
     )
 
 
+def _delivery_buffer(src_np: np.ndarray, context) -> np.ndarray:
+    """The initial client buffer at the delivery channel count.
+
+    Stock (and a stream layout that mixes): ``src_np`` unchanged. A stream
+    layout that delivers its streams side by side ships one channel pair
+    per stream (``SA3Backend.geometry``), so the buffer the runner patches
+    starts silent at ``n_streams * 2`` channels whatever the upload
+    carried: the source is the model's input, not a delivered stream. A
+    layout that mixes but declares ``source_delivered = False`` starts
+    silent at the source's shape for the same reason: its held renders
+    fill the buffer, the upload is never played."""
+    layout_hook = getattr(context, "stream_layout", None)
+    layout = layout_hook() if callable(layout_hook) else None
+    if layout is None:
+        return src_np
+    if layout.deliver_streams:
+        return np.zeros(
+            (src_np.shape[0], int(layout.n_streams) * 2), dtype=np.float32,
+        )
+    if not layout.source_delivered:
+        return np.zeros(src_np.shape, dtype=np.float32)
+    return src_np
+
+
 def create_sa3_session(
     cls, *, audio, config, checkpoint, session_id,
     decoder_backend: str = "tensorrt", vae_backend: str = "tensorrt",
@@ -231,6 +256,12 @@ def create_sa3_session(
             context.song_seconds, context.outro_pad_s,
         )
 
+    # The session's plugin_* config keys, for an installed extension's
+    # stream layout (SA3Context.with_session_params).
+    plugin_params = dict(getattr(config, "plugin_params", None) or {})
+    if plugin_params:
+        context = context.with_session_params(plugin_params)
+
     # An installed extension may not be runnable under a prebuilt
     # acceleration plan. Resolve that BEFORE component construction so the
     # duration clamp below sees the backend that will actually run: a
@@ -255,7 +286,10 @@ def create_sa3_session(
         waveform = waveform.repeat(2, 1)
     source_duration_s = waveform.shape[-1] / SAMPLE_RATE
     duration_s = float(config.family_config.get("sa3_duration_s") or 0.0) or source_duration_s
-    duration_s = min(duration_s, SA3_MAX_DURATION_S)
+    layout_hook = getattr(context, "stream_layout", None)
+    duration_s = min(duration_s, max_session_duration_s(
+        layout_hook() if callable(layout_hook) else None,
+    ))
     # Land on the TRT DiT fast path when engines are built:
     # a duration whose padded latent window exceeds every engine
     # profile would silently fall back to the ~5x-slower eager DiT.
@@ -388,6 +422,7 @@ def create_sa3_session(
         )
     else:
         src_np = src_np[:n_48k]
+    src_np = _delivery_buffer(src_np, context)
     n_channels = src_np.shape[1] if src_np.ndim > 1 else 1
 
     # Stock family manifest plus this session's LoRA controls. Extension

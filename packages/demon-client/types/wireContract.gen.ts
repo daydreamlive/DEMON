@@ -44,7 +44,8 @@ export type CommandName =
   | "midi_transcribe"
   | "analysis_tap"
   | "audio_in"
-  | "bounce";
+  | "bounce"
+  | "oneshot";
 
 export const COMMAND_NAMES: readonly CommandName[] = [
   "params",
@@ -71,6 +72,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "analysis_tap",
   "audio_in",
   "bounce",
+  "oneshot",
 ] as const;
 
 export type EventName =
@@ -101,6 +103,8 @@ export type EventName =
   | "midi_failed"
   | "bounce_ready"
   | "bounce_failed"
+  | "oneshot_ready"
+  | "oneshot_failed"
   | "analysis_state"
   | "audio_in_ack"
   | "analysis_update";
@@ -133,6 +137,8 @@ export const EVENT_NAMES: readonly EventName[] = [
   "midi_failed",
   "bounce_ready",
   "bounce_failed",
+  "oneshot_ready",
+  "oneshot_failed",
   "analysis_state",
   "audio_in_ack",
   "analysis_update",
@@ -311,6 +317,10 @@ export interface SwapSourceCommand {
   use_server_source?: boolean;
   /** Opt-in swap-resize: the render window (s) to re-derive for the new source, on backends whose geometry is otherwise frozen at session create (SA3). Honored only when ready's capabilities declare swap_resize — the session then re-conditions at the new duration and swap_ready carries the RESIZED duration + buffer. Absent/ignored = the legacy fixed-geometry swap (source padded/truncated into the old window). */
   duration_s?: number | null;
+  /** Describes a compact binary frame: {encoding: f32le|s16le, channels: the full channel count, present: the channels the frame carries, in its order (default all)}. The frame's <II header gives its own channel count, which must equal len(present); every other channel is silence, and s16le samples read as value / 32768. Honored only when ready's capabilities declare compact_pcm. Absent = the full float32 frame. */
+  pcm?: Record<string, unknown>;
+  /** Optional per-stream keep for a stream layout, e.g. {drums: [[s0, e0], [s1, e1]]} (a list of [start_s, end_s] ranges; a single [start_s, end_s] is one range): the stream keeps its upload on those ranges and the layout generates around them. Handed to the layout's encode_source as keep=; the layout validates it. Absent = no change. */
+  keep?: Record<string, unknown>;
 }
 
 export interface WriteAudioCommand {
@@ -357,6 +367,20 @@ export interface BounceCommand {
   request_id: string;
 }
 
+export interface OneshotCommand {
+  type: "oneshot";
+  /** Client-chosen token echoed on oneshot_ready / oneshot_failed. */
+  request_id: string;
+  /** One version per seed (integers >= 0, at most 16). Required unless redo is set. */
+  seeds?: unknown[];
+  /** Knob values for these renders (same names as params), over the session's current ones. A stream layout adds its own per-version values on top (multistem: every stem's seed knob = the version seed). */
+  knobs?: Record<string, unknown>;
+  /** {id?, stream?, streams?, seed, denoise?, latent?}: re-denoise streams `streams` (0-based; `stream` is the single form, both given must agree) of a held version from `seed`, every other stream given from it. The held version is kept version `id` (an id from oneshot_ready) or `latent` {dtype: 'float16', shape: [n_streams, C, L]}: client-held state, sent as ONE binary frame after this header (raw little-endian float16, C-order); never both. `denoise` (0 < d <= 1, default 1): a number for every regenerated stream or a list in `streams` order; d < 1 adjusts that stream from its own held slice. seeds is ignored. The reply carries the regenerated streams only (ascending), under a new id. */
+  redo?: Record<string, unknown> | null;
+  /** Also return every version's full latent (every stream, also on a redo): a second binary frame after the PCM, announced by oneshot_ready.latents. */
+  return_latents?: boolean;
+}
+
 // ── Event payloads (server → client) ──
 
 export interface InitAckEvent {
@@ -394,7 +418,7 @@ export interface ReadyEvent {
   geometry?: Record<string, unknown>;
   /** Backend capability mask: {capability: bool} over the Capabilities fields (swap, timbre, structure, lora, ...), plus analysis_taps: the analyzer names this pod can run as analysis_tap channels (empty list when none). Client panels and MCP tools gate on it; commands tagged with a matching `requires` fail with command_failed when the bit is false. */
   capabilities?: Record<string, unknown>;
-  /** Names of the localhost side services this server proxies at /tools/<name>/<path> (GET/POST, header X-Demon-Session: <session_id>) whose /health answered 200 recently; empty when none. Absent on older servers. */
+  /** Names of the localhost side services this server proxies at /tools/<name>/<path> (GET/POST/PUT/DELETE, header X-Demon-Session: <session_id>) whose /health answered 200 recently; empty when none. Absent on older servers. */
   tools?: unknown[];
   /** Per-session knob manifest: the same {version, knobs} envelope GET /api/knobs serves, but backend-owned and session-resolved (SDE mode, enabled lora_str_<id> knobs). /api/knobs remains the static pre-session probe. */
   knob_manifest?: Record<string, unknown>;
@@ -404,6 +428,10 @@ export interface ReadyEvent {
   manual_slot_cap?: number;
   /** True when the session's checkpoint has a reachable steering-vector bundle; false hides the steering surface (the steer_*\/man_* knobs are absent from the manifest too). */
   steering_available?: boolean;
+  /** Present only for a config with derived_windows: the initial buffer is silent, so NO binary frame follows and the client builds frames × channels of zeros itself. */
+  window?: "silent";
+  /** The initial buffer's frame count, sent with window. */
+  frames?: number;
 }
 
 export interface ErrorEvent {
@@ -453,6 +481,10 @@ export interface SwapReadyEvent {
   fixture_name?: string | null;
   /** Source generation counter after this swap; write_audio sends targeting the old source are rejected. */
   source_epoch?: number;
+  /** Present only for a config with derived_windows: NO binary frame follows. silent = the new buffer is frames × channels of zeros; kept = the swap left the playing buffer as it is, so the client keeps its own. */
+  window?: "silent" | "kept";
+  /** The new buffer's frame count, sent with window. */
+  frames?: number;
 }
 
 export interface SwapFailedEvent {
@@ -584,6 +616,40 @@ export interface BounceFailedEvent {
   error?: string;
 }
 
+export interface OneshotReadyEvent {
+  type: "oneshot_ready";
+  /** Echo of the oneshot request_id. */
+  request_id: string;
+  /** Per version: the id of its kept latent (the handle a redo names). */
+  ids: unknown[];
+  /** Per version: its seed. */
+  seeds: unknown[];
+  /** The stream indices carried per version (every stream, or a redo's one). */
+  streams: unknown[];
+  sample_rate: number;
+  /** Channels per stream (2). */
+  channels: number;
+  /** Samples per channel per stream (the playable duration). */
+  frames: number;
+  /** Sample format of the binary frame: pcm_s16le. */
+  encoding: string;
+  /** Server wall time per phase: generate, decode, pack, total. */
+  ms: Record<string, unknown>;
+  /** The kept id a redo started from; null for a plain render and for a redo from a client-held latent. */
+  redo_of?: string | null;
+  /** {n_streams, channels, frames, seconds}: the geometry a held latent must match (shape [n_streams, channels, frames], frames per stream). */
+  latent_header?: Record<string, unknown>;
+  /** {dtype: 'float16', shape: [V, n_streams, C, L], bytes}: present when the request set return_latents; a second binary frame follows the PCM. */
+  latents?: Record<string, unknown>;
+}
+
+export interface OneshotFailedEvent {
+  type: "oneshot_failed";
+  /** Echo of the oneshot request_id. */
+  request_id: string;
+  error?: string;
+}
+
 export interface AnalysisStateEvent {
   type: "analysis_state";
   /** Analyzer name. */
@@ -665,7 +731,9 @@ export interface SessionConfigPayload {
   client_id?: string | null;
   backend?: string;
   text_only?: boolean;
+  render_only?: boolean;
   telemetry_version?: number | null;
+  derived_windows?: boolean;
   /** Fixed generation duration for sa3 sessions, seconds. Absent or null derives it from the uploaded source audio length (the audio-to-audio anchor); SA3 conditioning is captured per (prompt, duration), so this is fixed for the session lifetime. */
   sa3_duration_s?: number | null;
   /** Song-length label (seconds_total) for this sa3 session. Absent or null keeps the server default (a label longer than the loop: a crop of a longer file, so the loop never composes an ending). 0 labels the render with its own length, the upstream whole-file semantics: a one-shot decays to silence inside the loop. Fixed for the session lifetime. */
@@ -744,7 +812,8 @@ export type WireCommand =
   | MidiTranscribeCommand
   | AnalysisTapCommand
   | AudioInCommand
-  | BounceCommand;
+  | BounceCommand
+  | OneshotCommand;
 
 export type WireEvent =
   | InitAckEvent
@@ -774,6 +843,8 @@ export type WireEvent =
   | MidiFailedEvent
   | BounceReadyEvent
   | BounceFailedEvent
+  | OneshotReadyEvent
+  | OneshotFailedEvent
   | AnalysisStateEvent
   | AudioInAckEvent
   | AnalysisUpdateEvent;

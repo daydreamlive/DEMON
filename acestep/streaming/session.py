@@ -46,6 +46,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import asdict
 
 import numpy as np
@@ -88,6 +89,8 @@ from acestep.streaming.events import (
     CommandFailed,
     DepthApplied,
     EventBus,
+    OneshotFailed,
+    OneshotReady,
     LoraCatalogUpdate,
     ManualSlotCount,
     ParamsEcho,
@@ -641,6 +644,11 @@ class StreamingSession:
         # Appended by the dispatch thread, serviced on the runner thread
         # (_service_bounces, inside before_tick).
         self._bounces: list = []
+        # Queued one-shot requests (OneshotRequest), served on the session
+        # thread (_service_oneshots): inside before_tick on a ring session,
+        # by the render-only loop otherwise. The event wakes that loop.
+        self._oneshots: list = []
+        self._oneshot_wake = threading.Event()
 
         self._init_analysis()
 
@@ -744,7 +752,14 @@ class StreamingSession:
         """Wire-shaped capability mask (plan §3.1), declared by the
         backend. Consumed by client panel gating and the session's own
         capability gate (:func:`requires_capability`)."""
-        return asdict(self.backend.capabilities())
+        caps = asdict(self.backend.capabilities())
+        # One-shot renders run on render-only sessions only: a ring session
+        # never advertises them (its pipeline and knobs belong to the ring).
+        if not self.render_only():
+            caps["oneshot"] = False
+            if "oneshot_redo" in caps:
+                caps["oneshot_redo"] = False
+        return caps
 
     def knob_manifest_payload(self) -> dict:
         """The per-session knob manifest (plan §3.3): the same
@@ -907,6 +922,24 @@ class StreamingSession:
         event bus.
         """
         try:
+            if self.render_only():
+                try:
+                    self._run_render_only()
+                except Exception as exc:
+                    logger.opt(exception=True).error("render_only_error error={}", exc)
+                    try:
+                        self.bus.publish(SessionError(
+                            code="pipeline_error",
+                            message=f"Session stopped: {type(exc).__name__}: {exc}",
+                        ))
+                    except Exception:
+                        pass
+                return
+            if getattr(self.config, "render_only", False):
+                logger.warning(
+                    "render_only_unsupported backend={} (running the ring)",
+                    self.backend.name,
+                )
             # Runner construction stays inside the try so a setup
             # failure still reaches the finally's close(), but it is
             # NOT inside the run() swallow-path below: constructor
@@ -980,6 +1013,12 @@ class StreamingSession:
         # actually destroys the engine + ModelContext.
         # session.close() ends with gc.collect() + cuda.empty_cache().
         self.state.running = False
+        # Queued one-shots die with the session (they hold request knobs
+        # and, for a client-held redo, a latent array).
+        queued = getattr(self, "_oneshots", None)
+        if queued:
+            with self.state._lock:
+                queued.clear()
         # Drop anything this session fetched. A pool pod is handed to a
         # stranger next: without this their catalog would list the previous
         # user's styles by name, under "Catalog" where they read as stock,
@@ -1070,6 +1109,77 @@ class StreamingSession:
         self._apply_swap_if_pending()
         self._apply_depth_pending()
         self._service_bounces()
+        self._service_oneshots()
+
+    def _service_oneshots(self) -> None:
+        """Answer queued ``oneshot`` requests, one at a time, in order
+        (session thread: the runner's before_tick or the render-only
+        loop). Each is a whole render outside the ring
+        (``backend.render_oneshot``); the answer is :class:`OneshotReady`
+        or :class:`OneshotFailed` on the bus."""
+        if not self._oneshots:
+            return
+        from acestep.streaming.oneshot import OneshotError
+
+        state = self.state
+        state.last_activity_ts = time.monotonic()
+        while True:
+            with state._lock:
+                if not self._oneshots:
+                    return
+                req = self._oneshots.pop(0)
+            t0 = time.perf_counter()
+            try:
+                res = self.backend.render_oneshot(req)
+            except OneshotError as exc:
+                logger.info("oneshot_failed id={} error={}", req.request_id, exc)
+                self.bus.publish(OneshotFailed(req.request_id, str(exc)))
+                continue
+            except Exception as exc:  # noqa: BLE001 - one bad render never ends the session
+                logger.opt(exception=True).error(
+                    "oneshot_failed id={} error={!r}", req.request_id, exc,
+                )
+                self.bus.publish(OneshotFailed(
+                    req.request_id, f"{type(exc).__name__}: {exc}",
+                ))
+                continue
+            ms = res.ms
+            if req.redo is not None:
+                logger.info(
+                    "oneshot_redo id={} of={} streams={} denoise={} seed={} seconds={:.1f} "
+                    "generate_ms={:.0f} decode_ms={:.0f} pack_ms={:.0f} new={} dit={}",
+                    req.request_id,
+                    req.redo.id if req.redo.id is not None else "client",
+                    list(req.redo.streams), list(req.redo.denoise), req.redo.seed,
+                    res.seconds, ms["generate"], ms["decode"], ms["pack"], res.ids[0],
+                    getattr(res, "dit", "") or "?",
+                )
+            else:
+                logger.info(
+                    "oneshot_generate id={} versions={} seconds={:.1f} ms={:.0f} dit={}",
+                    req.request_id, len(res.seeds), res.seconds, ms["generate"],
+                    getattr(res, "dit", "") or "?",
+                )
+                logger.info(
+                    "oneshot_decode id={} versions={} streams={} ms={:.0f}",
+                    req.request_id, len(res.seeds), len(res.streams), ms["decode"],
+                )
+                logger.info(
+                    "oneshot_pack id={} bytes={} ms={:.0f}",
+                    req.request_id, int(res.pcm.nbytes), ms["pack"],
+                )
+            self.bus.publish(OneshotReady(
+                request_id=req.request_id,
+                pcm=res.pcm,
+                sample_rate=int(res.sample_rate),
+                ids=tuple(res.ids),
+                seeds=tuple(res.seeds),
+                streams=tuple(res.streams),
+                ms={**ms, "total": round((time.perf_counter() - t0) * 1000.0, 1)},
+                redo_of=res.redo_of,
+                latents=getattr(res, "latents", None),
+                latent_header=getattr(res, "latent_header", None),
+            ))
 
     def _service_bounces(self) -> None:
         """Answer queued ``bounce`` requests (runner thread).
@@ -1258,6 +1368,7 @@ class StreamingSession:
                 known_fixtures=KNOWN_FIXTURES,
             )
             new_duration_s = state.swap_pending.get("duration_s")
+            new_keep = state.swap_pending.get("keep")
             if new_wf is None:
                 return
             state.swap_pending["waveform"] = None
@@ -1268,6 +1379,7 @@ class StreamingSession:
             state.swap_pending["fixture_name"] = None
             state.swap_pending["stem_source_mode"] = None
             state.swap_pending["duration_s"] = None
+            state.swap_pending["keep"] = None
 
         # Backend control hook (universal op, family-specific
         # implementation, the handle_set_prompt convention): a backend
@@ -1278,9 +1390,13 @@ class StreamingSession:
         handle = getattr(self.backend, "handle_swap_source", None)
         if handle is not None:
             self._apply_swap_backend_owned(
-                handle, new_wf, new_fixture_name, new_duration_s,
+                handle, new_wf, new_fixture_name, new_duration_s, new_keep,
             )
             return
+        # The upload may carry more than two channels (only a stream
+        # layout's encode_source reads them); the body below is stereo.
+        if new_wf.shape[0] > 2:
+            new_wf = new_wf[:2]
         if new_duration_s:
             # The ACE body below re-derives its geometry from the new
             # source unconditionally, so a resize request has nothing to
@@ -1514,7 +1630,7 @@ class StreamingSession:
                     pass
 
     def _apply_swap_backend_owned(
-        self, handle, new_wf, fixture_name, duration_s=None,
+        self, handle, new_wf, fixture_name, duration_s=None, keep=None,
     ) -> None:
         """Swap for backends that own their source anchor (the
         ``handle_swap_source`` hook — SA3). None of the ACE body
@@ -1531,6 +1647,9 @@ class StreamingSession:
         pipeline at the new window); the hook then returns the new
         playback length and the session's duration/buffer follow it, so
         ``SwapReady`` carries the RESIZED geometry to the client.
+        ``keep`` (the wire's optional per-stream keep) is passed to the
+        hook as ``keep=`` only when present.
+
         Publishes :class:`SwapReady` / :class:`SwapFailed` like the ACE
         body. Runner thread (before_tick), like everything above."""
         state = self.state
@@ -1571,17 +1690,20 @@ class StreamingSession:
                 self.backend.name, wf.shape[-1] / SAMPLE_RATE,
                 wf.shape[0], fixture_name, resize_s,
             )
-            new_playback = (
-                handle(wf, SAMPLE_RATE, duration_s=resize_s)
-                if resize_s is not None else handle(wf, SAMPLE_RATE)
-            )
+            hook_kw = {} if resize_s is None else {"duration_s": resize_s}
+            if keep is not None:
+                hook_kw["keep"] = keep
+            new_playback = handle(wf, SAMPLE_RATE, **hook_kw)
 
             # Fresh client buffer: the (truncated) new source at the
             # delivery rate, zero-padded out to the session's render
             # geometry — unchanged for a plain swap (the create-time
             # shape, so the wire duration doesn't move), the backend's
             # returned length after a resize.
-            src_np = wf.cpu().numpy().T.copy()   # [N, C] float32
+            # The client buffer is stereo whatever the upload carried
+            # (channels past the first two are for the backend's anchor
+            # encode only; see SA3Backend.handle_swap_source).
+            src_np = wf[:2].cpu().numpy().T.copy()   # [N, C] float32
             with state._lock:
                 if new_playback:
                     state.playback_samples = int(new_playback)
@@ -1603,15 +1725,45 @@ class StreamingSession:
                     ])
                 else:
                     src_np = src_np[:n_play]
+                # A backend delivering more than one channel pair (a
+                # stream layout's side-by-side delivery), or one that
+                # says it never delivers its source (``source_delivered``,
+                # a layout of held renders), plays its own renders, never
+                # the upload: the upload only conditions the next slots. A plain swap therefore leaves the
+                # playing buffer, the playhead and the loop band as they
+                # are (the renders replace the audio slot by slot); only
+                # a buffer that does not fit the delivery geometry yet (a
+                # resize, or a stereo create-time buffer) becomes a silent
+                # one at the delivery channel count, which the renders
+                # fill.
+                geometry = getattr(self.backend, "geometry", None)
+                deliver_ch = int(geometry().channels) if geometry else 2
+                delivered = getattr(self.backend, "source_delivered", None)
+                plays_source = bool(delivered()) if delivered else True
+                keep = False
+                if deliver_ch > 2 or not plays_source:
+                    current = self.audio_eng.current
+                    keep = (
+                        not new_playback
+                        and current is not None
+                        and tuple(current.shape) == (n_play, deliver_ch)
+                    )
+                    if keep:
+                        src_np = np.array(current, dtype=np.float32)
+                    else:
+                        src_np = np.zeros(
+                            (src_np.shape[0], deliver_ch), dtype=np.float32,
+                        )
                 state.n_channels = int(src_np.shape[1])
                 # Retire anything staged against the old source (ACE
                 # parity; inert for backends without write_audio).
                 state.source_epoch += 1
-                self.audio_eng.swap(src_np)
-                self.audio_eng.position = 0
-                # A loop band from the previous song is meaningless
-                # against the new buffer — drop it.
-                self.audio_eng.loop_band = None
+                if not keep:
+                    self.audio_eng.swap(src_np)
+                    self.audio_eng.position = 0
+                    # A loop band from the previous song is meaningless
+                    # against the new buffer — drop it.
+                    self.audio_eng.loop_band = None
 
             self.bus.publish(SwapReady(
                 duration=len(src_np) / SAMPLE_RATE,
@@ -1623,6 +1775,7 @@ class StreamingSession:
                 fixture_name=fixture_name,
                 initial_buffer=src_np,
                 source_epoch=state.source_epoch,
+                kept=keep,
             ))
             logger.info(
                 "source_swap_complete backend_owned duration_s={:.1f}",
@@ -2455,6 +2608,89 @@ class StreamingSession:
             )
         logger.info("bounce_requested origin={} id={}", origin.value, request_id)
 
+    def oneshot(
+        self,
+        data: dict,
+        *,
+        origin: CommandOrigin = CommandOrigin.PRIMARY,
+        latent: bytes | None = None,
+    ) -> None:
+        """Queue a one-shot render (the wire ``oneshot`` frame as a dict):
+        N whole versions of the window, or a redo of streams of a held
+        version. ``latent`` is the binary frame that followed a header with
+        ``redo.latent`` (raw float16, the shape the header declares).
+        Answered on the bus with :class:`OneshotReady` or
+        :class:`OneshotFailed`. Served after every command sent before it
+        (same session thread as the pending drains)."""
+        from dataclasses import replace
+
+        from acestep.streaming.oneshot import (
+            QUEUE_MAX,
+            OneshotError,
+            clamp_knobs,
+            latent_from_bytes,
+            parse_request,
+        )
+
+        state = self.state
+        state.last_activity_ts = time.monotonic()
+        request_id = str((data or {}).get("request_id") or "")
+        if not self.backend.capabilities().oneshot:
+            self.bus.publish(OneshotFailed(
+                request_id, f"backend {self.backend.name!r} cannot render one-shot",
+            ))
+            return
+        if not self.render_only():
+            self.bus.publish(OneshotFailed(
+                request_id,
+                "oneshot needs a render_only session (this session runs the "
+                "live ring); open one with config.render_only",
+            ))
+            return
+        try:
+            req = parse_request(data or {})
+            req = replace(req, knobs=clamp_knobs(req.knobs, self._knob_specs_by_name))
+            if req.redo is not None and req.redo.latent_shape is not None:
+                req = replace(req, redo=latent_from_bytes(req.redo, latent))
+        except OneshotError as exc:
+            self.bus.publish(OneshotFailed(request_id, str(exc)))
+            return
+        with state._lock:
+            full = len(self._oneshots) >= QUEUE_MAX
+            if not full:
+                self._oneshots.append(req)
+        if full:
+            logger.info("oneshot_refused id={} reason=queue_full", req.request_id)
+            self.bus.publish(OneshotFailed(
+                request_id,
+                f"{QUEUE_MAX} one-shot requests are already queued; retry after an answer",
+                reason="queue_full",
+            ))
+            return
+        self._oneshot_wake.set()
+        logger.info(
+            "oneshot_requested origin={} id={} versions={} redo={}",
+            origin.value, req.request_id, req.versions,
+            (req.redo.id or "client") if req.redo is not None else None,
+        )
+
+    def render_only(self) -> bool:
+        """This session runs no ring: config.render_only on a backend that
+        renders one-shot."""
+        return bool(getattr(self.config, "render_only", False)) and bool(
+            self.backend.capabilities().oneshot
+        )
+
+    def _run_render_only(self) -> None:
+        """The render-only session loop: no PipelineRunner, no ticks. Drain
+        the pending queues (LoRA, depth, swap) and serve one-shot requests
+        until ``state.running`` flips False."""
+        logger.info("render_only_running")
+        while self.state.running:
+            self._oneshot_wake.wait(0.05)
+            self._oneshot_wake.clear()
+            self.apply_pending()
+
     @requires_capability("steering", "manual_slot_add")
     def manual_slot_add(
         self,
@@ -2671,6 +2907,7 @@ class StreamingSession:
         fixture_name: str | None = None,
         stem_source_mode: str | None = None,
         duration_s: float | int | None = None,
+        keep: Mapping | None = None,
         origin: CommandOrigin = CommandOrigin.PRIMARY,
     ) -> None:
         """Stage a source swap. The runner applies it inside
@@ -2683,6 +2920,10 @@ class StreamingSession:
         padding/truncating it into the session-create window. Ignored —
         loudly — when the backend doesn't declare the capability, so a
         legacy pod and a new client stay compatible in both directions.
+
+        ``keep`` (wire field of the same name) is an opaque per-stream keep
+        mapping for a stream layout (e.g. ``{"drums": [[s0, e0], [s1, e1]]}``),
+        handed to the backend's swap hook; the layout validates it.
         """
         state = self.state
         state.last_activity_ts = time.monotonic()
@@ -2709,6 +2950,7 @@ class StreamingSession:
             except (TypeError, ValueError):
                 dur = None
             state.swap_pending["duration_s"] = dur if dur and dur > 0 else None
+            state.swap_pending["keep"] = dict(keep) if isinstance(keep, Mapping) else None
 
     @requires_capability("write_audio", "write_audio")
     def write_audio(

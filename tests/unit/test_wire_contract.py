@@ -459,7 +459,7 @@ def test_config_payload_matches_dataclass():
     from acestep.streaming.families import family_config_fields
 
     cat = config_catalog()
-    platform = {f.name for f in dc_fields(SessionConfig)} - {"family_config"}
+    platform = {f.name for f in dc_fields(SessionConfig)} - {"family_config", "plugin_params"}
     family = {cf.name for cf in family_config_fields()}
     assert set(cat) == platform | family
     assert not (platform & family), "a family field shadows a platform field"
