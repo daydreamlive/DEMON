@@ -2535,6 +2535,11 @@ body.drawer-open .hud-help-readout {
   gap: 8px;
   align-items: center;
 }
+.operator-help {
+  margin: 0;
+  font-size: 0.7em;
+  color: var(--text-dim);
+}
 /* Visually hidden on desktop rather than display:none, so the
    aria-describedby targets stay in the accessibility tree (the visible
    affordance on desktop is the hover tooltip). The mobile sheet promotes
