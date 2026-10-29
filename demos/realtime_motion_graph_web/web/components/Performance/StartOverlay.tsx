@@ -5,6 +5,8 @@ import { useState } from "react";
 import { START_MARK_PALETTE } from "@/engine/render/ribbons";
 import { useIsMobile } from "@/hooks/useIsMobile";
 
+import { StartModelPicker } from "./ModelPicker";
+
 interface Props {
   onPlay: () => void;
   hidden?: boolean;
@@ -126,6 +128,9 @@ export function StartOverlay({ onPlay, hidden }: Props) {
         </span>
         <span className="start-whisper">{whisper}</span>
       </button>
+      {/* Model choice for the first session; hidden below two served
+          checkpoints and once the launch starts. */}
+      {!launching && <StartModelPicker />}
     </div>
   );
 }

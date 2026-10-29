@@ -154,3 +154,56 @@ describe("boot-time server-info population", () => {
     expect(useSessionStore.getState().servedCheckpoints).toEqual(TWO);
   });
 });
+
+describe("start-overlay Model select", () => {
+  beforeEach(() => useSessionStore.setState(pristine, true));
+
+  async function render(): Promise<string> {
+    const { createElement } = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { StartOverlay } = await import("@/components/Performance/StartOverlay");
+    // Static rendering reads zustand's server snapshot, i.e. the store's
+    // initial-state object; copy the live picker fields onto it for the
+    // render and put the originals back after.
+    const snap = useSessionStore.getInitialState();
+    const saved = {
+      servedCheckpoints: snap.servedCheckpoints,
+      selectedCheckpoint: snap.selectedCheckpoint,
+    };
+    const live = useSessionStore.getState();
+    Object.assign(snap, {
+      servedCheckpoints: live.servedCheckpoints,
+      selectedCheckpoint: live.selectedCheckpoint,
+    });
+    try {
+      return renderToStaticMarkup(createElement(StartOverlay, { onPlay: () => {} }));
+    } finally {
+      Object.assign(snap, saved);
+    }
+  }
+
+  it("is absent below two served checkpoints", async () => {
+    expect(await render()).not.toContain("start-checkpoint-select");
+    useSessionStore.getState().setServedCheckpoints([TWO[0]]);
+    expect(await render()).not.toContain("start-checkpoint-select");
+  });
+
+  it("lists every served checkpoint, default marked, bound to the store value", async () => {
+    useSessionStore.getState().setServedCheckpoints(TWO);
+    let html = await render();
+    expect(html).toContain('id="start-checkpoint-select"');
+    expect(html).toContain("sa3-medium (default)");
+    expect(html).toMatch(/<option value="sa3-medium" selected="">/);
+    useSessionStore.getState().setSelectedCheckpoint("sa3-small");
+    html = await render();
+    expect(html).toMatch(/<option value="sa3-small" selected="">/);
+  });
+
+  it("an idle pick is recorded for the first Start", async () => {
+    const { swapCheckpointWhileLive } = await import("@/hooks/useStartSession");
+    useSessionStore.getState().setServedCheckpoints(TWO);
+    await swapCheckpointWhileLive("sa3-small");
+    expect(useSessionStore.getState().selectedCheckpoint).toBe("sa3-small");
+    expect(useSessionStore.getState().status).toBe("idle");
+  });
+});
