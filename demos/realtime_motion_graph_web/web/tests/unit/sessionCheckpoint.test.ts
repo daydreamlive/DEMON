@@ -102,3 +102,14 @@ describe("picker visibility", () => {
     expect(showCheckpointPicker(TWO)).toBe(true);
   });
 });
+
+describe("lorasPath", () => {
+  beforeEach(() => useSessionStore.setState(pristine, true));
+
+  it("is the bare path with no pick, and carries the pick otherwise", async () => {
+    const { lorasPath } = await import("@/engine/lora/listLoras");
+    expect(lorasPath()).toBe("/api/loras");
+    useSessionStore.getState().setSelectedCheckpoint("sa3-small");
+    expect(lorasPath()).toBe("/api/loras?checkpoint=sa3-small");
+  });
+});
