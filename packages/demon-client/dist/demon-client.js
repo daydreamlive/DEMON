@@ -372,7 +372,8 @@ function rtmgConfigToSessionConfig(cfg, runtime) {
     fixture_name: runtime.fixtureName,
     ...runtime.stemSourceMode ? { stem_source_mode: runtime.stemSourceMode } : {},
     use_server_fixture: runtime.useServerFixture,
-    ...runtime.clientId ? { client_id: runtime.clientId } : {}
+    ...runtime.clientId ? { client_id: runtime.clientId } : {},
+    ...runtime.checkpoint ? { checkpoint: runtime.checkpoint } : {}
   };
 }
 function applyConfigToState(cfg, scale) {

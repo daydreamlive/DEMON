@@ -22,6 +22,7 @@ import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore, type RefSource } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 import { isTimeSignature } from "@/types/engine";
+import { fetchServerInfo } from "@/lib/servedCheckpoints";
 import type { AudioSlice, SessionConfig, WsTrace } from "@demon/client";
 
 /**
@@ -50,34 +51,25 @@ function resolveWsUrl(serverWsUrl: string | null): string {
  * Returns the advertised `server_side_fixtures` list, or `[]` on any
  * failure / old backend. Never throws.
  *
+ * The same server-info response carries the pod's served `checkpoints`
+ * (per-session model choice); fetchServerInfo writes them to the session
+ * store, refreshing what the boot-time fetch found. Old pods and failures
+ * leave the list empty, which hides the picker.
+ *
  * This is what makes the server-side-fixture path safe across a mixed
  * fleet and ANY deploy/merge order: an old backend doesn't advertise
  * the capability, so the UI falls back to the (unchanged) upload path
  * instead of omitting the audio frame and hanging the old pod's recv.
  */
 async function probeServerSideFixtures(wsUrl: string): Promise<string[]> {
-  try {
-    const u = new URL(wsUrl);
-    u.protocol = u.protocol === "wss:" ? "https:" : "http:";
-    const basePath = u.pathname.replace(/\/+$/, "");
-    u.pathname = `${basePath}/api/server-info`;
-    u.search = "";
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 4000);
-    let res: Response;
-    try {
-      res = await fetch(u.toString(), { signal: ctrl.signal });
-    } finally {
-      clearTimeout(timer);
-    }
-    if (!res.ok) return [];
-    const info = (await res.json()) as { server_side_fixtures?: unknown };
-    return Array.isArray(info.server_side_fixtures)
-      ? (info.server_side_fixtures as string[])
-      : [];
-  } catch {
-    return [];
-  }
+  // fetchServerInfo also refreshes the store's served checkpoints (the
+  // boot-time fetch populated them first; this keeps them current).
+  const info = (await fetchServerInfo(wsUrl)) as
+    | { server_side_fixtures?: unknown }
+    | null;
+  return Array.isArray(info?.server_side_fixtures)
+    ? (info.server_side_fixtures as string[])
+    : [];
 }
 
 // Drives the whole "click Play" flow:
@@ -132,6 +124,9 @@ function buildConfig(
     stemSourceMode: sourceMode,
     useServerFixture,
     clientId,
+    // Null (pod default) omits the key, so the wire is unchanged unless
+    // the operator picked a model in the Config tab.
+    checkpoint: useSessionStore.getState().selectedCheckpoint,
   });
 }
 
@@ -430,9 +425,49 @@ async function restoreRefs(remote: RemoteBackend): Promise<void> {
   );
 }
 
+/** The live session's in-place restart (close the remote, rebind a fresh
+ *  one onto the surviving player through the reconnect path's
+ *  `rebindOntoPlayer`). Set once a session reaches "ready", cleared when a
+ *  new Start begins. */
+let liveRestart: (() => Promise<void>) | null = null;
+
+/**
+ * Model picker entry point. Records the choice; when a session is live,
+ * restarts it on the new checkpoint with the same track, prompt, knobs,
+ * LoRAs and refs (the reconnect orchestration, not a fresh Start: a fresh
+ * Start would drop the refs and re-arm the denoise gate). On refusal
+ * (e.g. `checkpoint_unavailable`) the server's message lands in the
+ * error status and the selection reverts to its previous value.
+ */
+export async function swapCheckpointWhileLive(next: string | null): Promise<void> {
+  const s = useSessionStore.getState();
+  const prev = s.selectedCheckpoint;
+  if (next === prev) return;
+  s.setSelectedCheckpoint(next);
+  // Not live (idle, error, mid-start, reconnecting): the pick takes effect
+  // at the next Start / reconnect attempt, which read the store.
+  if (s.status !== "ready" || s.reconnector || !liveRestart) return;
+  try {
+    await liveRestart();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const after = useSessionStore.getState();
+    after.setSelectedCheckpoint(prev);
+    // Same end state as a refused Start: no player looping raw source
+    // behind an error.
+    try {
+      await after.player?.close();
+    } catch {}
+    after.reset();
+    liveRestart = null;
+    useSessionStore.getState().setStatus("error", msg);
+  }
+}
+
 export function useStartSession() {
   return useCallback(async () => {
     const { setStatus, setSession, reset } = useSessionStore.getState();
+    liveRestart = null;
 
     // Tear down any in-flight session.
     const prev = useSessionStore.getState();
@@ -527,6 +562,88 @@ export function useStartSession() {
     }
 
     /**
+     * Open a fresh session with the current store state and rebind it
+     * onto the SURVIVING AudioPlayer: same track, prompt, LoRA set and
+     * strengths (buildConfig), knobs (the params tick keeps sending the
+     * perf store), timbre/structure refs (restoreRefs). The reconnect
+     * loop runs this per attempt; a live model swap runs it once after
+     * closing the current remote.
+     */
+    async function rebindOntoPlayer(): Promise<void> {
+      // Each call builds a completely fresh RemoteBackend; the
+      // previous one is already orphaned (its socket is closed, its
+      // worker is terminated by its own close() flow when ws.close()
+      // landed, or by GC otherwise — the slice listener path
+      // gracefully handles the empty case via getState().player).
+      const remote = await buildAndConnect();
+      if (!remote.initialBuffer) {
+        throw new Error("Reconnected but server sent no initial buffer");
+      }
+      const player = useSessionStore.getState().player;
+      if (!player) {
+        // Player was torn down between the failure and recovery —
+        // a user-initiated session start cancelled the loop, but
+        // we got here anyway because the cancel raced the promise
+        // resolution. Close the new remote and bail.
+        remote.close();
+        throw new Error("Session was reset during reconnect");
+      }
+      // Reset the player's buffer to the fresh server-side source
+      // before swapping in the new remote. Slices are encoded as
+      // deltas against the server's `client_mirror`, which the new
+      // session re-initializes to the clean source. Without this
+      // swap the player's mirror still has accumulated generation
+      // from the previous session, so `addDelta(generated -
+      // source)` lands as `prev_generated + (new_gen - source)` —
+      // audible noise. The worklet's swap message preserves the
+      // playhead position and crossfades the buffer, so the
+      // listener hears a brief return to clean source then the
+      // new session's slices stream in normally.
+      player.swap(remote.initialBuffer, remote.channels);
+      // `player.swap()` bumped `swapCount`, but a fresh
+      // RemoteBackend's `_sliceEpoch` starts at 0. The slice
+      // listener drops anything where `detail.epoch !==
+      // player.swapCount`, so without this realignment every
+      // slice from the recovered session would be filtered out
+      // — symptom on the user side: source plays, controls
+      // appear dead, denoised audio never returns.
+      remote.setSliceEpoch(player.swapCount);
+
+      const rawTs = remote.detectedTimeSignature;
+      const detectedTs =
+        rawTs != null && isTimeSignature(rawTs) ? rawTs : null;
+      usePerformanceStore
+        .getState()
+        .setDetected(remote.detectedBpm, remote.detectedKey, detectedTs);
+      if (remote.loraCatalog.length > 0) {
+        useLoraStore.getState().setCatalog(remote.loraCatalog);
+      }
+      // Recompute the duration-aware LoRA cap against the (re)bound
+      // source. The reconnect path may land on a different-duration
+      // source than the prior session — tiers swap to match.
+      // Uses the server-syncing helper so any over-cap LoRAs from
+      // the prior session also get a WS disable_lora (avoids
+      // ghost-LoRA leak when the reconnected source's tier is
+      // tighter than what was previously enabled).
+      applyLoraCapWithServerSync(resolveLoraCapForSource(remote.duration));
+      useSessionStore.getState().setSession(remote, player);
+      // Rebuild the network-quality monitor against the new
+      // remote — the old one was bound to the dropped backend's
+      // `slice` events and is dead now.
+      try {
+        useSessionStore.getState().monitor?.stop();
+      } catch {}
+      useSessionStore
+        .getState()
+        .setMonitor(createNetworkMonitor(remote, player));
+      // Re-apply the timbre / structure references the operator
+      // had active. The fresh server session boots with none and
+      // refs aren't carried in buildConfig, so without this a
+      // reconnect silently drops them.
+      await restoreRefs(remote);
+    }
+
+    /**
      * Kick off a reconnect attempt. Idempotent: if a reconnector is
      * already running (e.g. the new connection dropped immediately
      * during recovery), this no-ops so we don't stack backoff loops.
@@ -548,79 +665,7 @@ export function useStartSession() {
       state.setStatus("reconnecting", `Connection lost (${reasonStr}). Reconnecting…`);
 
       const reconnector = new WsReconnector(
-        async () => {
-          // Each attempt builds a completely fresh RemoteBackend; the
-          // dropped one is already orphaned (its socket is closed, its
-          // worker is terminated by its own close() flow when ws.close()
-          // landed, or by GC otherwise — the slice listener path
-          // gracefully handles the empty case via getState().player).
-          const remote = await buildAndConnect();
-          if (!remote.initialBuffer) {
-            throw new Error("Reconnected but server sent no initial buffer");
-          }
-          const player = useSessionStore.getState().player;
-          if (!player) {
-            // Player was torn down between the failure and recovery —
-            // a user-initiated session start cancelled the loop, but
-            // we got here anyway because the cancel raced the promise
-            // resolution. Close the new remote and bail.
-            remote.close();
-            throw new Error("Session was reset during reconnect");
-          }
-          // Reset the player's buffer to the fresh server-side source
-          // before swapping in the new remote. Slices are encoded as
-          // deltas against the server's `client_mirror`, which the new
-          // session re-initializes to the clean source. Without this
-          // swap the player's mirror still has accumulated generation
-          // from the previous session, so `addDelta(generated -
-          // source)` lands as `prev_generated + (new_gen - source)` —
-          // audible noise. The worklet's swap message preserves the
-          // playhead position and crossfades the buffer, so the
-          // listener hears a brief return to clean source then the
-          // new session's slices stream in normally.
-          player.swap(remote.initialBuffer, remote.channels);
-          // `player.swap()` bumped `swapCount`, but a fresh
-          // RemoteBackend's `_sliceEpoch` starts at 0. The slice
-          // listener drops anything where `detail.epoch !==
-          // player.swapCount`, so without this realignment every
-          // slice from the recovered session would be filtered out
-          // — symptom on the user side: source plays, controls
-          // appear dead, denoised audio never returns.
-          remote.setSliceEpoch(player.swapCount);
-
-          const rawTs = remote.detectedTimeSignature;
-          const detectedTs =
-            rawTs != null && isTimeSignature(rawTs) ? rawTs : null;
-          usePerformanceStore
-            .getState()
-            .setDetected(remote.detectedBpm, remote.detectedKey, detectedTs);
-          if (remote.loraCatalog.length > 0) {
-            useLoraStore.getState().setCatalog(remote.loraCatalog);
-          }
-          // Recompute the duration-aware LoRA cap against the (re)bound
-          // source. The reconnect path may land on a different-duration
-          // source than the prior session — tiers swap to match.
-          // Uses the server-syncing helper so any over-cap LoRAs from
-          // the prior session also get a WS disable_lora (avoids
-          // ghost-LoRA leak when the reconnected source's tier is
-          // tighter than what was previously enabled).
-          applyLoraCapWithServerSync(resolveLoraCapForSource(remote.duration));
-          useSessionStore.getState().setSession(remote, player);
-          // Rebuild the network-quality monitor against the new
-          // remote — the old one was bound to the dropped backend's
-          // `slice` events and is dead now.
-          try {
-            useSessionStore.getState().monitor?.stop();
-          } catch {}
-          useSessionStore
-            .getState()
-            .setMonitor(createNetworkMonitor(remote, player));
-          // Re-apply the timbre / structure references the operator
-          // had active. The fresh server session boots with none and
-          // refs aren't carried in buildConfig, so without this a
-          // reconnect silently drops them.
-          await restoreRefs(remote);
-        },
+        rebindOntoPlayer,
         {
           onAttempt: ({ attempt, maxAttempts }) => {
             useSessionStore
@@ -742,6 +787,23 @@ export function useStartSession() {
 
     setSession(remote, player);
     setStatus("ready", "Playing");
+
+    // Live model swap: close this session's remote (closedByUser, so the
+    // close listener does not start a reconnect) and rebind a fresh one on
+    // the surviving player exactly as a reconnect attempt does.
+    liveRestart = async () => {
+      const st = useSessionStore.getState();
+      try {
+        st.monitor?.stop();
+      } catch {}
+      st.setMonitor(null);
+      try {
+        st.remote?.close();
+      } catch {}
+      st.setStatus("connecting", "Starting…");
+      await rebindOntoPlayer();
+      useSessionStore.getState().setStatus("ready", "Playing");
+    };
 
     // Start the network-quality monitor now that the WS is "ready".
     // Lives on the session store so reset() (called at next session

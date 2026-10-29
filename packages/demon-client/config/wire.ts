@@ -46,6 +46,10 @@ export interface SessionConfigRuntime {
   useServerFixture: boolean;
   /** Opaque per-browser identifier — omitted when null/undefined. */
   clientId?: string | null;
+  /** Checkpoint to serve this session (a `--checkpoint`-style name from
+   *  server-info `checkpoints`). Omitted when null/undefined/empty, so the
+   *  pod serves its default and the payload is byte-identical to before. */
+  checkpoint?: string | null;
 }
 
 /** Build the handshake `SessionConfig` from the operator config's engine
@@ -85,6 +89,7 @@ export function rtmgConfigToSessionConfig(
       : {}),
     use_server_fixture: runtime.useServerFixture,
     ...(runtime.clientId ? { client_id: runtime.clientId } : {}),
+    ...(runtime.checkpoint ? { checkpoint: runtime.checkpoint } : {}),
   };
 }
 

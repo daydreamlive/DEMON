@@ -35,6 +35,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import Sequence
 
 import torch
 from websockets.exceptions import ConnectionClosed
@@ -646,6 +647,63 @@ def _effective_family(config_dict: dict, backend_family: str) -> str:
     return str(requested) if requested else backend_family
 
 
+def _resolve_session_checkpoint(
+    config_dict: dict,
+    *,
+    default: str,
+    backend_family: str,
+    served: Sequence = (),
+) -> tuple:
+    """The model id this session runs, and an error message or None.
+
+    No ``checkpoint`` key (or null) is the pod default. A named checkpoint
+    must be on the pod's allow-list (``served``: ServedCheckpoint entries,
+    matched by their --checkpoint name OR their model id, so a client may
+    echo back a ready frame's value) and of the session's family. An empty
+    ``served`` means the pod serves its default only (every caller that
+    predates allow-lists): then only the default's own model id is accepted.
+    """
+    requested = config_dict.get("checkpoint")
+    if requested is None:
+        return default, None
+    names = [e.name for e in served] or [default]
+    unavailable = (
+        f"checkpoint {requested!r} is not served by this pod; served: {names}"
+    )
+    if not isinstance(requested, str) or not requested.strip():
+        return default, unavailable
+    requested = requested.strip()
+    if not served:
+        return (default, None) if requested == default else (default, unavailable)
+    entry = next(
+        (e for e in served if requested in (e.name, e.model_id)), None,
+    )
+    if entry is None:
+        return default, unavailable
+    family = _effective_family(config_dict, backend_family)
+    if entry.family != family:
+        return default, (
+            f"checkpoint {requested!r} is family {entry.family!r}, not this "
+            f"session's {family!r}; served: {names}"
+        )
+    return entry.model_id, None
+
+
+def _preempt_keep(cap: int, model_id: str) -> int:
+    """How many live sessions may stay while one on ``model_id`` is created:
+    ``cap - 1`` when every live session runs the same model, else 0 (a model
+    switch preempts everything, so two models never share the GPU)."""
+    with _ACTIVE_SLOT_LOCK:
+        mixed = any(
+            getattr(a.streaming, "checkpoint", model_id) != model_id
+            for a in _ACTIVE_SESSIONS
+        )
+    if mixed:
+        logger.info("session_preempt_model_switch model={}", model_id)
+        return 0
+    return cap - 1
+
+
 def _text_only_spec(config_dict: dict, backend_family: str):
     """The family's :class:`TextOnlySpec`, or ``None`` when the family
     cannot serve a session without a source. An unknown family also yields
@@ -1176,6 +1234,7 @@ def handle_client(
     offload_text_encoder: bool = False,
     checkpoint_dir: str | None = None,
     model_extension=None,
+    served_checkpoints: Sequence = (),
 ):
     """Connection entrypoint. The body lives in ``_handle_client_body``;
     this wrapper exists only to own a single ``ExitStack`` so the
@@ -1192,6 +1251,7 @@ def handle_client(
                 offload_text_encoder=offload_text_encoder,
                 checkpoint_dir=checkpoint_dir,
                 model_extension=model_extension,
+                served_checkpoints=served_checkpoints,
             )
     finally:
         # Final allocator trim, AFTER the body frame (the last holder of
@@ -1260,6 +1320,7 @@ def _handle_client_body(
     offload_text_encoder: bool,
     checkpoint_dir: str | None,
     model_extension,
+    served_checkpoints: Sequence = (),
 ):
     logger.info(
         "client_connected decoder={} vae={} checkpoint={} family={} text_encoder={}",
@@ -1384,6 +1445,38 @@ def _handle_client_body(
             pass
         ws.close(1008, "text-only unsupported by family")
         return
+    # Per-session checkpoint: a client may name any allow-listed model of
+    # its family; absent keeps the pod default. Resolved before the source
+    # recv so a refused session neither uploads nor preempts anything.
+    if config_dict.get("checkpoint") is not None:
+        resolved, checkpoint_error = _resolve_session_checkpoint(
+            config_dict, default=checkpoint, backend_family=backend_family,
+            served=served_checkpoints,
+        )
+        if checkpoint_error is not None:
+            logger.warning(
+                "checkpoint_unavailable requested={!r}",
+                config_dict.get("checkpoint"),
+            )
+            try:
+                ws.send(json.dumps({
+                    "type": "error",
+                    "code": "checkpoint_unavailable",
+                    "message": checkpoint_error,
+                }))
+            except Exception:
+                pass
+            ws.close(1008, "checkpoint unavailable")
+            return
+        if resolved != checkpoint:
+            # The operator's base checkpoint directory belongs to the
+            # default model; any other loads from the catalog.
+            logger.info(
+                "session_checkpoint requested={} model={} default={}",
+                config_dict.get("checkpoint"), resolved, checkpoint,
+            )
+            checkpoint = resolved
+            checkpoint_dir = None
     if _text_only_requested(config_dict):
         waveform = _silent_source_waveform(config_dict, text_only_spec)
         logger.info(
@@ -1463,7 +1556,9 @@ def _handle_client_body(
         cap = family_spec.session_cap(checkpoint) if family_spec else 1
         logger.info("session_cap model={} cap={}", checkpoint, cap)
         with _SESSION_LIFECYCLE_LOCK:
-            _preempt_active_session(session_id, keep=cap - 1)
+            _preempt_active_session(
+                session_id, keep=_preempt_keep(cap, checkpoint),
+            )
             _log_session_vram("create_start")
             streaming = StreamingSession.create(
                 audio=audio_in,

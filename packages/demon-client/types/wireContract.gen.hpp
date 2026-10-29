@@ -681,6 +681,7 @@ namespace config {
   inline constexpr const char* kLoraPaths = "lora_paths";
   inline constexpr const char* kClientId = "client_id";
   inline constexpr const char* kBackend = "backend";
+  inline constexpr const char* kCheckpoint = "checkpoint";
   inline constexpr const char* kTextOnly = "text_only";
   inline constexpr const char* kRenderOnly = "render_only";
   inline constexpr const char* kTelemetryVersion = "telemetry_version";

@@ -41,6 +41,7 @@ import { INTERP_PATH_DESCRIPTIONS } from "@demon/client";
 
 import { ExportDialog } from "./ExportDialog";
 import { MidiBadge } from "./MidiBadge";
+import { ModelPicker } from "./ModelPicker";
 import { RefSelect } from "./RefSelect";
 
 // Exported file shape: an RtmgConfig plus the optional embedded inputs.
@@ -237,6 +238,7 @@ export function OperatorStrip() {
   // The pod's WS URL is allocated by the queue and not user-editable.
   return (
     <div className="operator-strip">
+      <ModelPicker />
       {/* ── Key & Time ──────────────────────────────────────────────
           The "what's playing" group: key + time signature. Track
           dropdown + upload now live in the CORE tab via <TrackPicker/>. */}

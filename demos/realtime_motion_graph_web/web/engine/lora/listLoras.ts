@@ -3,6 +3,14 @@ import { podHttp } from "@/engine/podUrl";
 import { useSessionStore } from "@/store/useSessionStore";
 import type { LoraCatalogEntry } from "@demon/client";
 
+/** `/api/loras`, with `?checkpoint=<name>` when the operator picked a
+ *  non-default model so the `compatible` verdict and `checkpoint_scale`
+ *  follow the picker. No pick = the bare path, unchanged. */
+export function lorasPath(): string {
+  const sel = useSessionStore.getState().selectedCheckpoint;
+  return sel ? `/api/loras?checkpoint=${encodeURIComponent(sel)}` : "/api/loras";
+}
+
 /** Fetch /api/loras and return the LoRA catalog.
  *
  *  Side effect: writes the server-reported ``checkpoint_scale`` into
@@ -16,7 +24,7 @@ import type { LoraCatalogEntry } from "@demon/client";
  *  catalog empty until the operator refreshes.
  */
 export async function listLoras(): Promise<LoraCatalogEntry[]> {
-  const res = await fetchWithRetry(podHttp("/api/loras"));
+  const res = await fetchWithRetry(podHttp(lorasPath()));
   if (!res.ok) throw new Error(`/api/loras failed: ${res.status}`);
   const json = (await res.json()) as {
     dir: string;

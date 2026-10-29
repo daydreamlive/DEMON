@@ -331,6 +331,16 @@ body.cursor-idle .cursor-canvas { opacity: 0; }
 
 /* Whisper line beneath the icon — quiet mono caps. Lives inside the same
    <button> as the halo, so a click on the copy fires onPlay too. */
+/* Model select under the Start mark (only on pods serving 2+ models). */
+.start-model {
+  position: absolute;
+  top: calc(50% + 150px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .start-whisper {
   font-family: var(--font-mono);
   font-size: 0.72em;
@@ -2534,6 +2544,11 @@ body.drawer-open .hud-help-readout {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+.operator-help {
+  margin: 0;
+  font-size: 0.7em;
+  color: var(--text-dim);
 }
 /* Visually hidden on desktop rather than display:none, so the
    aria-describedby targets stay in the accessibility tree (the visible

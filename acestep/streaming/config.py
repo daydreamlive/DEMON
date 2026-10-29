@@ -73,6 +73,12 @@ class SessionConfig:
     # create-time, never hot-swapped. When absent on the wire, the
     # server's resolved --checkpoint family is the default.
     backend: str = DEFAULT_FAMILY
+    # Checkpoint for this session, named as the operator would on
+    # ``--checkpoint`` (an alias such as ``xl`` / ``sa3-small``, or an ACE
+    # checkpoint directory), or the model id a ready frame reported.
+    # Must be on the pod's allow-list and of the session's family; the
+    # adapter refuses anything else. Absent or null = the pod default.
+    checkpoint: str | None = None
     # Family-declared keys (FamilySpec.config_fields), parsed off the raw
     # dict by name and coerced to the declared type: ``{name: value or
     # None}`` for every field of every registered family. Not a wire

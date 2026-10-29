@@ -158,6 +158,16 @@ _VALID_MODES = ("graph", "video")
 # not sniff the checkpoint string. Defaults to acestep for --no-backend.
 _BACKEND_FAMILY: str = DEFAULT_FAMILY
 
+# The default checkpoint's name exactly as typed on --checkpoint (e.g.
+# "sa3-medium"), next to _CHECKPOINT's resolved model id ("medium").
+_CHECKPOINT_NAME: str = "acestep-v15-turbo"
+
+# The pod's checkpoint allow-list (acestep.streaming.families.ServedCheckpoint
+# entries, one family, first = default), from a comma-separated --checkpoint
+# at CLI parse. A client may name any of them in its session config; empty
+# until main() runs (and advertised empty on --no-backend).
+_SERVED_CHECKPOINTS: list = []
+
 # --checkpoint aliases live in acestep.streaming.families
 # (CHECKPOINT_ALIASES / resolve_checkpoint): each alias names a
 # (backend family, model id) pair, e.g. "xl" -> acestep, "sa3-small"
@@ -235,6 +245,56 @@ def checkpoint_arg(args: list[str]) -> str | None:
     """The ``--checkpoint`` value, as ``--checkpoint X`` or
     ``--checkpoint=X`` (last one wins), or None when absent."""
     return _single_arg(args, "--checkpoint")
+
+
+def served_checkpoints_arg(args: list[str]) -> list | None:
+    """The ``--checkpoint`` allow-list as ServedCheckpoint entries (first =
+    pod default), or None when the flag is absent. A comma-separated value
+    lists several checkpoints of ONE family; a single name is a one-entry
+    list. A mixed-family list exits with the offending pair."""
+    value = checkpoint_arg(args)
+    if value is None:
+        return None
+    from acestep.streaming.families import resolve_served, split_checkpoint_list
+
+    try:
+        return resolve_served(split_checkpoint_list(value))
+    except ValueError as exc:
+        raise SystemExit(f"[Server] {exc}") from exc
+
+
+def _find_served_checkpoint(name: str):
+    """The served entry named ``name`` (by its --checkpoint name or its
+    model id), or None."""
+    for entry in _SERVED_CHECKPOINTS:
+        if name in (entry.name, entry.model_id):
+            return entry
+    return None
+
+
+def _default_checkpoint_scale() -> str | None:
+    from acestep.paths import checkpoint_scale
+
+    return checkpoint_scale(_CHECKPOINT)
+
+
+def _served_checkpoints_info() -> list:
+    """server-info's ``checkpoints`` list: every served model, default
+    first. Empty on --no-backend (nothing can be served)."""
+    if _NO_BACKEND:
+        return []
+    from acestep.paths import checkpoint_scale
+
+    return [
+        {
+            "name": entry.name,
+            "family": entry.family,
+            "model_id": entry.model_id,
+            "scale": checkpoint_scale(entry.model_id),
+            "default": i == 0,
+        }
+        for i, entry in enumerate(_SERVED_CHECKPOINTS)
+    ]
 
 
 def _resolve_video(name: str) -> Path | None:
@@ -332,6 +392,12 @@ def _process_request(connection, request):
             # The loaded model extension's server_info() facts (e.g. its
             # checkpoint list), or null. Known at boot, before any session.
             "model_extension": _MODEL_EXTENSION_INFO,
+            # The default checkpoint (as typed on --checkpoint) and the
+            # pod's allow-list: a client may name any entry's ``name`` (or
+            # ``model_id``) as its session config's ``checkpoint``.
+            "checkpoint": _CHECKPOINT_NAME,
+            "checkpoint_scale": _default_checkpoint_scale(),
+            "checkpoints": _served_checkpoints_info(),
         }).encode()
         _log_http(remote, 200, "GET", url)
         return Response(
@@ -483,13 +549,43 @@ def _process_request(connection, request):
             extra_lora_dirs,
             loras_dir,
         )
+        # ``?checkpoint=<name or model id>`` judges compatibility against
+        # that served model instead of the default (a pre-Start picker).
+        query = url.split("?", 1)[1] if "?" in url else ""
+        requested = (
+            urllib.parse.parse_qs(query).get("checkpoint", [""])[0] or ""
+        ).strip()
+        lora_checkpoint = _CHECKPOINT
+        if requested:
+            entry = _find_served_checkpoint(requested)
+            if entry is None:
+                served = [e.name for e in _SERVED_CHECKPOINTS]
+                body = json.dumps({
+                    "type": "error",
+                    "code": "checkpoint_unavailable",
+                    "message": (
+                        f"checkpoint {requested!r} is not served by this pod; "
+                        f"served: {served}"
+                    ),
+                }).encode()
+                _log_http(remote, 400, "GET", url)
+                return Response(
+                    400, "Bad Request",
+                    Headers([
+                        ("Content-Type", "application/json; charset=utf-8"),
+                        ("Content-Length", str(len(body))),
+                        *_PUBLIC_HTTP_HEADERS,
+                    ]),
+                    body,
+                )
+            lora_checkpoint = entry.model_id
         try:
             # Recursive across the primary library AND every directory
             # in ACESTEP_EXTRA_LORA_DIRS, matching the engine's own
             # register_library() scan so the HTTP catalog and the
             # engine-side catalog stay in lockstep.
             entries = []
-            scale = checkpoint_scale(_CHECKPOINT)
+            scale = checkpoint_scale(lora_checkpoint)
             for p, lora_id in assign_lora_ids(discover_all_loras()):
                 # Same stem-collision disambiguation as the engine's
                 # register_library() scan so the UI sees exactly the
@@ -526,8 +622,8 @@ def _process_request(connection, request):
         body = json.dumps({
             "dir": str(loras_dir()),
             "extra_dirs": [str(p) for p in extra_lora_dirs()],
-            "checkpoint": _CHECKPOINT,
-            "checkpoint_scale": checkpoint_scale(_CHECKPOINT),
+            "checkpoint": lora_checkpoint,
+            "checkpoint_scale": checkpoint_scale(lora_checkpoint),
             "loras": entries,
         }).encode()
         _log_http(remote, 200, "GET", url)
@@ -884,17 +980,25 @@ def main():
             f"[Server] --vae-accel must be one of {_VALID_ACCEL}, got {vae_accel!r}"
         )
     backend_family = DEFAULT_FAMILY
-    checkpoint_alias = checkpoint_arg(args)
-    if checkpoint_alias is not None:
-        checkpoint = checkpoint_alias
-        # Aliases resolve to (backend family, model id) pairs (plan
-        # §3.5): "xl" stays an ACE checkpoint name, "sa3-small" selects
-        # the sa3 family with model id "small-music". Plain directory
-        # names pass through as ACE checkpoints, as before. The import
-        # is lazy/light (no torch) so --no-backend stays cheap.
-        from acestep.streaming.families import resolve_checkpoint
+    checkpoint_name = checkpoint
+    # Aliases resolve to (backend family, model id) pairs (plan
+    # §3.5): "xl" stays an ACE checkpoint name, "sa3-small" selects
+    # the sa3 family with model id "small-music". Plain directory
+    # names pass through as ACE checkpoints, as before. A
+    # comma-separated value is an allow-list of one family's models
+    # (first = default) a client may pick per session. The import
+    # is lazy/light (no torch) so --no-backend stays cheap.
+    from acestep.streaming.families import ServedCheckpoint
 
-        backend_family, checkpoint = resolve_checkpoint(checkpoint)
+    served_checkpoints = served_checkpoints_arg(args)
+    if served_checkpoints is None:
+        served_checkpoints = [ServedCheckpoint(
+            name=checkpoint, family=backend_family, model_id=checkpoint,
+        )]
+    else:
+        checkpoint_name = served_checkpoints[0].name
+        backend_family = served_checkpoints[0].family
+        checkpoint = served_checkpoints[0].model_id
     # Operator-supplied SA3 base checkpoint directory: evaluates a
     # non-catalog checkpoint without installing it into the managed
     # models tree. Startup-only and never accepted from a client.
@@ -916,6 +1020,15 @@ def main():
         raise SystemExit(
             "[Server] --model-extension-config requires --model-extension"
         )
+    # An extension is installed on ONE model's context: the allow-list
+    # shrinks to the default and any other requested checkpoint is refused.
+    if model_extension_id and len(served_checkpoints) > 1:
+        logger.warning(
+            "checkpoint_allowlist_truncated reason=model_extension kept={} dropped={}",
+            served_checkpoints[0].name,
+            [e.name for e in served_checkpoints[1:]],
+        )
+        served_checkpoints = served_checkpoints[:1]
     if "--control-host" in args:
         idx = args.index("--control-host")
         control_host = args[idx + 1]
@@ -949,13 +1062,15 @@ def main():
 
     global _NO_BACKEND, _ACCEL, _KIOSK, _DEFAULT_MODE, _CHECKPOINT, _STATIC_MOUNTS
     global _STREAM_LAYOUT, _MODEL_EXTENSION_INFO
-    global _BACKEND_FAMILY
+    global _BACKEND_FAMILY, _CHECKPOINT_NAME, _SERVED_CHECKPOINTS
     _NO_BACKEND = no_backend
     _ACCEL = accel
     _KIOSK = kiosk
     _DEFAULT_MODE = default_mode
     _CHECKPOINT = checkpoint
     _BACKEND_FAMILY = backend_family
+    _CHECKPOINT_NAME = checkpoint_name
+    _SERVED_CHECKPOINTS = list(served_checkpoints)
 
     try:
         _STATIC_MOUNTS = build_static_mounts(static_demo_paths)
@@ -989,16 +1104,19 @@ def main():
         # the checkpoint download here, visibly, when needed. The check
         # is the family's own: each resolves its own model tree, so a
         # third family boots with ITS preflight rather than none.
+        # Every allow-listed model is checked; the operator's base
+        # checkpoint directory applies to the default only.
         if "--skip-preflight" not in args:
-            _run_family_preflight(
-                family_spec,
-                PreflightRequest(
-                    model_id=checkpoint,
-                    decoder_accel=decoder_accel,
-                    vae_accel=vae_accel,
-                    checkpoint_dir=base_checkpoint_dir,
-                ),
-            )
+            for i, entry in enumerate(served_checkpoints):
+                _run_family_preflight(
+                    family_spec,
+                    PreflightRequest(
+                        model_id=entry.model_id,
+                        decoder_accel=decoder_accel,
+                        vae_accel=vae_accel,
+                        checkpoint_dir=base_checkpoint_dir if i == 0 else None,
+                    ),
+                )
 
         # Resolve the selected model extension at boot, before any
         # session exists. Startup-only is a safety property AND a
@@ -1051,6 +1169,7 @@ def main():
                 offload_text_encoder=offload_text_encoder,
                 checkpoint_dir=base_checkpoint_dir,
                 model_extension=model_extension,
+                served_checkpoints=served_checkpoints,
             )
 
         # Pay the one-time cold-start cost (TRT decoder-engine load,
@@ -1074,6 +1193,13 @@ def main():
         if family_spec.warmup_policy == "ace_trt" and startup_warmup:
             from acestep.streaming.warmup import run_startup_warmup
 
+            # The synthetic warmup session warms the default only; any
+            # other allow-listed ACE checkpoint pays the cold path on its
+            # first session.
+            if len(served_checkpoints) > 1:
+                logger.info(
+                    "warmup_default_only served={}", len(served_checkpoints),
+                )
             run_startup_warmup(
                 decoder_backend=decoder_accel,
                 vae_backend=vae_accel,
@@ -1090,6 +1216,17 @@ def main():
                 checkpoint_dir=base_checkpoint_dir,
                 model_extension=model_extension,
             )
+            # Startup warmup preloads every allow-listed model; the base
+            # checkpoint directory and the extension belong to the default.
+            if startup_warmup:
+                for entry in served_checkpoints[1:]:
+                    family_spec.preload(
+                        entry.model_id,
+                        decoder_backend=decoder_accel,
+                        vae_backend=vae_accel,
+                        checkpoint_dir=None,
+                        model_extension=None,
+                    )
         elif startup_warmup:
             logger.info(
                 "startup_warmup_skipped family={} policy={}",

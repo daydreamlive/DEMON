@@ -1,13 +1,18 @@
 "use client";
 
+import { useEffect } from "react";
+
 import { installDemonDebug } from "@/engine/debugReconnect";
 import { fetchKnobManifest } from "@demon/client";
 import { listLoras } from "@/engine/lora/listLoras";
-import { podHttp } from "@/engine/podUrl";
+import { defaultWsUrl, podHttp } from "@/engine/podUrl";
 import { setEngineUrlBuilder } from "@/engine/rtmgConfig";
 import { installTestHooks } from "@/engine/testHooks";
 import { fetchWireContract } from "@demon/client";
 import { applyConfig, loadConfig } from "@/lib/config";
+import { LOCAL_MODE } from "@/lib/runtime";
+import { fetchServerInfo, shouldFetchServerInfoAtBoot } from "@/lib/servedCheckpoints";
+import { useSessionStore } from "@/store/useSessionStore";
 import { useKnobManifestStore } from "@/store/useKnobManifestStore";
 import { useLoraStore } from "@/store/useLoraStore";
 import { useWireContractStore } from "@/store/useWireContractStore";
@@ -112,5 +117,14 @@ if (typeof window !== "undefined") {
 }
 
 export function RTMGBoot() {
+  // Served checkpoints for the Model picker, fetched before any Start so
+  // the operator can pick a model up front. Same gate as LibraryTile's
+  // pre-Start /api/loras fetch; re-runs when the queue issues a wsUrl.
+  // Start refreshes the list through its own server-info probe.
+  const wsUrl = useSessionStore((s) => s.wsUrl);
+  useEffect(() => {
+    if (!shouldFetchServerInfoAtBoot(wsUrl, LOCAL_MODE)) return;
+    void fetchServerInfo(wsUrl ?? defaultWsUrl());
+  }, [wsUrl]);
   return null;
 }

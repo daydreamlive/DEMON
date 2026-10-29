@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from acestep.engine.obs import logger
 from acestep.streaming.config import DEFAULT_FAMILY, SessionConfig
@@ -380,6 +380,53 @@ def resolve_checkpoint(name: str) -> tuple:
     an unaliased name is a :data:`DEFAULT_FAMILY` checkpoint directory.
     """
     return CHECKPOINT_ALIASES.get(name, (DEFAULT_FAMILY, name))
+
+
+@dataclass(frozen=True)
+class ServedCheckpoint:
+    """One checkpoint a pod serves: the ``--checkpoint`` name as the
+    operator typed it, and what it resolves to."""
+
+    name: str
+    family: str
+    model_id: str
+
+
+def split_checkpoint_list(value: str) -> list:
+    """A ``--checkpoint`` value -> its names: split on commas, strip,
+    drop empties, dedupe keeping first-seen order. A single name (the
+    only form before allow-lists) comes back as a one-element list."""
+    names: list = []
+    for part in str(value).split(","):
+        name = part.strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def resolve_served(names: Sequence[str]) -> list:
+    """Resolve an allow-list of ``--checkpoint`` names to
+    :class:`ServedCheckpoint` entries; the first is the pod default.
+
+    Every name must resolve to ONE family (a pod serves one family;
+    pools cover the others), else ``ValueError`` naming the offending
+    pair. Two names that resolve to the same model keep the first.
+    """
+    served: list = []
+    for name in names:
+        family, model_id = resolve_checkpoint(name)
+        if served and family != served[0].family:
+            raise ValueError(
+                f"--checkpoint {name!r} is family {family!r} but "
+                f"{served[0].name!r} is family {served[0].family!r}; "
+                "one pod serves one family"
+            )
+        if any(s.model_id == model_id for s in served):
+            continue
+        served.append(ServedCheckpoint(name=name, family=family, model_id=model_id))
+    if not served:
+        raise ValueError("--checkpoint names no checkpoint")
+    return served
 
 
 def warmup_policy(family: str) -> str:

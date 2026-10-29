@@ -730,6 +730,7 @@ export interface SessionConfigPayload {
   lora_paths?: unknown[];
   client_id?: string | null;
   backend?: string;
+  checkpoint?: string | null;
   text_only?: boolean;
   render_only?: boolean;
   telemetry_version?: number | null;
