@@ -22,7 +22,7 @@ import { useLoraStore } from "@/store/useLoraStore";
 import { usePerformanceStore, type RefSource } from "@/store/usePerformanceStore";
 import { useSessionStore } from "@/store/useSessionStore";
 import { isTimeSignature } from "@/types/engine";
-import { parseServedCheckpoints } from "@/lib/servedCheckpoints";
+import { fetchServerInfo } from "@/lib/servedCheckpoints";
 import type { AudioSlice, SessionConfigWithCheckpoint, WsTrace } from "@demon/client";
 
 /**
@@ -52,9 +52,9 @@ function resolveWsUrl(serverWsUrl: string | null): string {
  * failure / old backend. Never throws.
  *
  * The same server-info response carries the pod's served `checkpoints`
- * (per-session model choice); they are written to the session store here
- * so the Model picker reads them without a second fetch. Old pods and
- * failures leave the list empty, which hides the picker.
+ * (per-session model choice); fetchServerInfo writes them to the session
+ * store, refreshing what the boot-time fetch found. Old pods and failures
+ * leave the list empty, which hides the picker.
  *
  * This is what makes the server-side-fixture path safe across a mixed
  * fleet and ANY deploy/merge order: an old backend doesn't advertise
@@ -62,31 +62,14 @@ function resolveWsUrl(serverWsUrl: string | null): string {
  * instead of omitting the audio frame and hanging the old pod's recv.
  */
 async function probeServerSideFixtures(wsUrl: string): Promise<string[]> {
-  try {
-    const u = new URL(wsUrl);
-    u.protocol = u.protocol === "wss:" ? "https:" : "http:";
-    const basePath = u.pathname.replace(/\/+$/, "");
-    u.pathname = `${basePath}/api/server-info`;
-    u.search = "";
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 4000);
-    let res: Response;
-    try {
-      res = await fetch(u.toString(), { signal: ctrl.signal });
-    } finally {
-      clearTimeout(timer);
-    }
-    if (!res.ok) return [];
-    const info = (await res.json()) as { server_side_fixtures?: unknown };
-    useSessionStore
-      .getState()
-      .setServedCheckpoints(parseServedCheckpoints(info));
-    return Array.isArray(info.server_side_fixtures)
-      ? (info.server_side_fixtures as string[])
-      : [];
-  } catch {
-    return [];
-  }
+  // fetchServerInfo also refreshes the store's served checkpoints (the
+  // boot-time fetch populated them first; this keeps them current).
+  const info = (await fetchServerInfo(wsUrl)) as
+    | { server_side_fixtures?: unknown }
+    | null;
+  return Array.isArray(info?.server_side_fixtures)
+    ? (info.server_side_fixtures as string[])
+    : [];
 }
 
 // Drives the whole "click Play" flow:

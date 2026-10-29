@@ -4,7 +4,7 @@
 // picked (every current pod and client), and carry `checkpoint` only when
 // one is.
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   DEFAULT_CONFIG,
@@ -111,5 +111,46 @@ describe("lorasPath", () => {
     expect(lorasPath()).toBe("/api/loras");
     useSessionStore.getState().setSelectedCheckpoint("sa3-small");
     expect(lorasPath()).toBe("/api/loras?checkpoint=sa3-small");
+  });
+});
+
+describe("boot-time server-info population", () => {
+  beforeEach(() => useSessionStore.setState(pristine, true));
+
+  it("gates like the pre-Start LoRA fetch", async () => {
+    const { shouldFetchServerInfoAtBoot } = await import("@/lib/servedCheckpoints");
+    expect(shouldFetchServerInfoAtBoot(null, false)).toBe(false);
+    expect(shouldFetchServerInfoAtBoot(null, true)).toBe(true);
+    expect(shouldFetchServerInfoAtBoot("ws://pod:1/", false)).toBe(true);
+  });
+
+  it("writes servedCheckpoints to the store from server-info, no Start needed", async () => {
+    const { fetchServerInfo, serverInfoUrl } = await import("@/lib/servedCheckpoints");
+    const seen: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      seen.push(String(url));
+      return new Response(JSON.stringify({ checkpoints: TWO }), { status: 200 });
+    });
+    try {
+      await fetchServerInfo("wss://pod.example/session/?token=x");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(seen).toEqual([serverInfoUrl("wss://pod.example/session/?token=x")]);
+    expect(seen[0]).toBe("https://pod.example/session/api/server-info");
+    expect(useSessionStore.getState().servedCheckpoints).toEqual(TWO);
+    expect(useSessionStore.getState().status).toBe("idle");
+  });
+
+  it("a failed fetch leaves the store alone", async () => {
+    const { fetchServerInfo } = await import("@/lib/servedCheckpoints");
+    useSessionStore.getState().setServedCheckpoints(TWO);
+    vi.stubGlobal("fetch", async () => { throw new Error("down"); });
+    try {
+      expect(await fetchServerInfo("ws://pod/")).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(useSessionStore.getState().servedCheckpoints).toEqual(TWO);
   });
 });
