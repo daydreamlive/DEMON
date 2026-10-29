@@ -46,7 +46,19 @@ export interface SessionConfigRuntime {
   useServerFixture: boolean;
   /** Opaque per-browser identifier — omitted when null/undefined. */
   clientId?: string | null;
+  /** Checkpoint to serve this session (a `--checkpoint`-style name from
+   *  server-info `checkpoints`). Omitted when null/undefined/empty, so the
+   *  pod serves its default and the payload is byte-identical to before. */
+  checkpoint?: string | null;
 }
+
+/** Handshake config plus the optional per-session `checkpoint` field.
+ *  LOCAL TYPING: the server half adds `checkpoint` to the SessionConfig
+ *  registry; once the regenerated wireContract.gen.ts carries it, this
+ *  intersection collapses to plain `SessionConfig` and should be dropped. */
+export type SessionConfigWithCheckpoint = SessionConfig & {
+  checkpoint?: string | null;
+};
 
 /** Build the handshake `SessionConfig` from the operator config's engine
  *  block plus the live runtime bits. The single place the engine fields are
@@ -59,7 +71,7 @@ export interface SessionConfigRuntime {
 export function rtmgConfigToSessionConfig(
   cfg: RtmgConfig,
   runtime: SessionConfigRuntime,
-): SessionConfig {
+): SessionConfigWithCheckpoint {
   const e = cfg.engine;
   return {
     telemetry_version: 1,
@@ -85,6 +97,7 @@ export function rtmgConfigToSessionConfig(
       : {}),
     use_server_fixture: runtime.useServerFixture,
     ...(runtime.clientId ? { client_id: runtime.clientId } : {}),
+    ...(runtime.checkpoint ? { checkpoint: runtime.checkpoint } : {}),
   };
 }
 

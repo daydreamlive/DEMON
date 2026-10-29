@@ -77,6 +77,7 @@ export {
 } from "./config/wire";
 export type {
   SessionConfigRuntime,
+  SessionConfigWithCheckpoint,
   ConfigStateSnapshot,
   ConfigApplyPatch,
 } from "./config/wire";
