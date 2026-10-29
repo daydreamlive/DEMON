@@ -97,3 +97,84 @@ def test_model_extension_info_non_dict_is_null():
             return ["fs1_s012000"]
 
     assert server._model_extension_info(_ListExt()) is None
+
+
+# ---- checkpoint allow-list on server-info and /api/loras ----
+
+from acestep.streaming.families import resolve_served
+
+
+def _serve(monkeypatch, names, *, no_backend=False):
+    served = resolve_served(names)
+    monkeypatch.setattr(server, "_SERVED_CHECKPOINTS", served)
+    monkeypatch.setattr(server, "_CHECKPOINT", served[0].model_id)
+    monkeypatch.setattr(server, "_CHECKPOINT_NAME", served[0].name)
+    monkeypatch.setattr(server, "_BACKEND_FAMILY", served[0].family)
+    monkeypatch.setattr(server, "_NO_BACKEND", no_backend)
+
+
+def test_server_info_lists_served_checkpoints(monkeypatch):
+    _serve(monkeypatch, ["sa3-medium", "sa3-small"])
+    info = _server_info()
+    assert info["checkpoint"] == "sa3-medium"
+    assert info["checkpoint_scale"] is None
+    assert info["checkpoints"] == [
+        {"name": "sa3-medium", "family": "sa3", "model_id": "medium", "scale": None, "default": True},
+        {"name": "sa3-small", "family": "sa3", "model_id": "small-music", "scale": None, "default": False},
+    ]
+
+
+def test_server_info_single_value_keeps_existing_keys(monkeypatch):
+    _serve(monkeypatch, ["xl"])
+    info = _server_info()
+    for key in ("no_backend", "kiosk", "default_mode", "warmup",
+                "server_side_fixtures", "stream_layout", "model_extension"):
+        assert key in info
+    assert info["checkpoint"] == "xl"
+    assert info["checkpoint_scale"] == "5B"
+    assert [c["model_id"] for c in info["checkpoints"]] == ["acestep-v15-xl-turbo"]
+
+
+def test_server_info_no_backend_lists_nothing(monkeypatch):
+    _serve(monkeypatch, ["acestep-v15-turbo"], no_backend=True)
+    info = _server_info()
+    assert info["checkpoints"] == []
+    assert info["checkpoint"] == "acestep-v15-turbo"
+
+
+def _loras(monkeypatch, query=""):
+    import acestep.paths as paths
+
+    monkeypatch.setattr(paths, "discover_all_loras", lambda: [])
+    response = server._process_request(
+        SimpleNamespace(remote_address=("127.0.0.1", 0)),
+        SimpleNamespace(headers={}, path="/api/loras" + query),
+    )
+    return response.status_code, json.loads(response.body)
+
+
+def test_loras_default_checkpoint_unchanged(monkeypatch):
+    _serve(monkeypatch, ["acestep-v15-turbo", "xl"])
+    status, body = _loras(monkeypatch)
+    assert status == 200
+    assert body["checkpoint"] == "acestep-v15-turbo"
+    assert body["checkpoint_scale"] == "2B"
+
+
+def test_loras_query_selects_served_model(monkeypatch):
+    _serve(monkeypatch, ["acestep-v15-turbo", "xl"])
+    for q in ("?checkpoint=xl", "?checkpoint=acestep-v15-xl-turbo"):
+        status, body = _loras(monkeypatch, q)
+        assert status == 200
+        assert body["checkpoint"] == "acestep-v15-xl-turbo"
+        assert body["checkpoint_scale"] == "5B"
+
+
+def test_loras_query_unknown_is_400(monkeypatch):
+    _serve(monkeypatch, ["acestep-v15-turbo"])
+    status, body = _loras(monkeypatch, "?checkpoint=xl")
+    assert status == 400
+    assert body["code"] == "checkpoint_unavailable"
+    assert body["message"] == (
+        "checkpoint 'xl' is not served by this pod; served: ['acestep-v15-turbo']"
+    )
