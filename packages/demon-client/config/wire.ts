@@ -52,14 +52,6 @@ export interface SessionConfigRuntime {
   checkpoint?: string | null;
 }
 
-/** Handshake config plus the optional per-session `checkpoint` field.
- *  LOCAL TYPING: the server half adds `checkpoint` to the SessionConfig
- *  registry; once the regenerated wireContract.gen.ts carries it, this
- *  intersection collapses to plain `SessionConfig` and should be dropped. */
-export type SessionConfigWithCheckpoint = SessionConfig & {
-  checkpoint?: string | null;
-};
-
 /** Build the handshake `SessionConfig` from the operator config's engine
  *  block plus the live runtime bits. The single place the engine fields are
  *  mapped onto the wire, so every frontend negotiates an identical session.
@@ -71,7 +63,7 @@ export type SessionConfigWithCheckpoint = SessionConfig & {
 export function rtmgConfigToSessionConfig(
   cfg: RtmgConfig,
   runtime: SessionConfigRuntime,
-): SessionConfigWithCheckpoint {
+): SessionConfig {
   const e = cfg.engine;
   return {
     telemetry_version: 1,

@@ -23,7 +23,7 @@ import { usePerformanceStore, type RefSource } from "@/store/usePerformanceStore
 import { useSessionStore } from "@/store/useSessionStore";
 import { isTimeSignature } from "@/types/engine";
 import { fetchServerInfo } from "@/lib/servedCheckpoints";
-import type { AudioSlice, SessionConfigWithCheckpoint, WsTrace } from "@demon/client";
+import type { AudioSlice, SessionConfig, WsTrace } from "@demon/client";
 
 /**
  * Resolve the WS URL for this session. Preference order:
@@ -92,7 +92,7 @@ async function probeServerSideFixtures(wsUrl: string): Promise<string[]> {
 function buildConfig(
   fixtureName: string,
   useServerFixture: boolean,
-): SessionConfigWithCheckpoint {
+): SessionConfig {
   const perf = usePerformanceStore.getState();
   const lora = useLoraStore.getState();
   const enabledLoras = Array.from(lora.enabled);
