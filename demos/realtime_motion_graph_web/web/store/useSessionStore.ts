@@ -11,6 +11,17 @@ import type { WsReconnector } from "@demon/client";
 // AudioPlayer instances live here so React components and hooks can react
 // to state changes (status, errors) without owning the lifecycle directly.
 
+/** One entry of server-info `checkpoints`: a model this pod serves, in the
+ *  pod's family. `name` is what the client sends back as the session
+ *  config's `checkpoint`. */
+export interface ServedCheckpoint {
+  name: string;
+  family: string;
+  model_id: string;
+  scale: string | null;
+  default: boolean;
+}
+
 export type SessionStatus =
   | "idle"
   | "loading-fixture"
@@ -72,6 +83,14 @@ interface SessionState {
   /** Whether the session's checkpoint has steering vectors. When false,
    *  ModTile hides both steering tiles. Null until ready. */
   steeringAvailable: boolean | null;
+  /** Checkpoints the pod serves (server-info `checkpoints`). Empty on pods
+   *  that predate per-session checkpoints or serve one model; the Model
+   *  picker renders only with two or more. Survives reset(). */
+  servedCheckpoints: ServedCheckpoint[];
+  /** Checkpoint the next session asks for, by `name`. Null = pod default
+   *  (the key is omitted from the wire). Survives reset(); not persisted
+   *  across reloads. */
+  selectedCheckpoint: string | null;
 
   setStatus: (status: SessionStatus, message?: string) => void;
   setSession: (remote: RemoteBackend | null, player: AudioPlayer | null) => void;
@@ -88,6 +107,8 @@ interface SessionState {
   setManualSlotCount: (count: number | null) => void;
   setManualSlotCap: (cap: number | null) => void;
   setSteeringAvailable: (available: boolean | null) => void;
+  setServedCheckpoints: (list: ServedCheckpoint[]) => void;
+  setSelectedCheckpoint: (name: string | null) => void;
   reset: () => void;
 }
 
@@ -109,6 +130,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   manualSlotCount: null,
   manualSlotCap: null,
   steeringAvailable: null,
+  servedCheckpoints: [],
+  selectedCheckpoint: null,
 
   setStatus: (status, message = "") => set({ status, message }),
   setSession: (remote, player) => set({ remote, player }),
@@ -125,6 +148,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setManualSlotCount: (count) => set({ manualSlotCount: count }),
   setManualSlotCap: (cap) => set({ manualSlotCap: cap }),
   setSteeringAvailable: (available) => set({ steeringAvailable: available }),
+  setServedCheckpoints: (list) => {
+    // Drop a selection the pod no longer serves so the next session
+    // falls back to the default instead of being refused.
+    const sel = get().selectedCheckpoint;
+    const keep = sel !== null && list.some((c) => c.name === sel);
+    set({
+      servedCheckpoints: list,
+      selectedCheckpoint: keep ? sel : null,
+    });
+  },
+  setSelectedCheckpoint: (name) => set({ selectedCheckpoint: name }),
   reset: () => {
     try {
       get().monitor?.stop();
@@ -153,7 +187,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // checkpointScale survives reset on purpose: the server's
       // checkpoint doesn't change across sessions, and pre-fetching
       // it from /api/loras lets the library filter render correctly
-      // even before the first session starts.
+      // even before the first session starts. servedCheckpoints and
+      // selectedCheckpoint survive for the same reason: the pod's list
+      // doesn't change, and the operator's pick carries to the next Start.
     });
   },
 }));
