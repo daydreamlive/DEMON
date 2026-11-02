@@ -366,8 +366,10 @@ class OneshotReady:
 
 @dataclass(frozen=True)
 class OneshotSlice:
-    """One window of a one-shot version under ``render_decode`` "windows",
-    published the moment its streams are decoded, in song order.
+    """One window of a one-shot version under ``render_decode`` "windows"
+    (or "hybrid"), published the moment its streams are decoded, in song
+    order per version (under "hybrid" the first windows of every version
+    come before any version's rest).
 
     ``version`` is the version's kept id (the id OneshotReady would carry);
     ``index`` counts 0 .. ``count - 1``. ``pcm`` is float16 ``[frames,
@@ -389,11 +391,12 @@ class OneshotSlice:
 
 @dataclass(frozen=True)
 class OneshotDone:
-    """The end of a one-shot version under ``render_decode`` "windows" (in
-    place of OneshotReady). ``frames`` is the song's length, ``sha256`` the
+    """The end of a one-shot version under ``render_decode`` "windows" or
+    "hybrid" (in place of OneshotReady). ``frames`` is the song's length, ``sha256`` the
     hex digest of the assembled song (``oneshot.oneshot_pcm_sha256``), ``ms``
     the version's phases (generate, first_slice, decode, pack,
-    windows_wall), ``latents`` float16 ``[1, n_streams, C, L]`` when the
+    windows_wall; "hybrid" adds first_audio, all_out, starve_slack_ms,
+    first_windows, whole_song), ``latents`` float16 ``[1, n_streams, C, L]`` when the
     request set return_latents."""
     request_id: str
     version: str

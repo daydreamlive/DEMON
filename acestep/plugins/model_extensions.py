@@ -279,14 +279,18 @@ class StreamLayout:
     ``target`` after every other blend (RePaint), for A/B against the
     native conditioning alone.
 
-    ``render_decode`` (``"song"`` | ``"windows"``, or a no-argument
-    callable returning one, read per one-shot request; default None =
-    "song"): how a one-shot version is decoded and delivered. "song":
-    one whole-song decode per stream, answered as one ``oneshot_ready``.
-    "windows": the ring's windows in song order (kept 3 s, decode context
-    0.75 s per side, the ring's edge clamp), each sent as an
-    ``oneshot_slice`` the moment it lands, then ``oneshot_done``. A redo
-    always takes "song".
+    ``render_decode`` (``"song"`` | ``"windows"`` | ``"hybrid"``, or a
+    no-argument callable returning one, read per one-shot request; default
+    None = "song"): how a one-shot version is decoded and delivered.
+    "song": one whole-song decode per stream, answered as one
+    ``oneshot_ready``. "windows": the ring's windows in song order (kept
+    6 s, decode context 0.75 s per side, the ring's edge clamp), each sent
+    as an ``oneshot_slice`` the moment it lands, then ``oneshot_done``.
+    "hybrid" (``"hybrid:<seconds>"``): the same messages and windows on a
+    two-version schedule: each version's DiT then its first windows
+    (covering ``seconds``, default 15), the DiTs back to back, then each
+    version's rest cut from one whole-song decode (windowed when no engine
+    decodes the whole song). A redo always takes "song".
 
     Each stream is decoded separately: a decoder's receptive field would
     otherwise bleed across stream boundaries.

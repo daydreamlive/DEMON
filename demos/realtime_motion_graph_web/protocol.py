@@ -1204,9 +1204,11 @@ EVENTS: tuple = (
         ),
         binary_follow=True,
         description="One window of a one-shot version under the session's "
-                    "render_decode \"windows\" (a plugin_* key the model "
-                    "extension reads). Sent as each window's streams finish, "
-                    "in index order; written at start_frame in index order, "
+                    "render_decode \"windows\" or \"hybrid\" (a plugin_* key "
+                    "the model extension reads). Sent as each window's "
+                    "streams finish, in index order per version (\"hybrid\" "
+                    "sends every version's first windows before any "
+                    "version's rest); written at start_frame in index order, "
                     "later over earlier, they tile the song (the last "
                     "window is clamped to the song's end as the ring "
                     "clamps). ONE binary frame follows. A version ends with "
@@ -1234,7 +1236,11 @@ EVENTS: tuple = (
             FieldSpec("ms", "dict", required=True,
                       description="Server wall time: generate, "
                                   "first_slice (DiT end to the first "
-                                  "slice), decode, pack, windows_wall."),
+                                  "slice), decode, pack, windows_wall; "
+                                  "\"hybrid\" adds first_audio and "
+                                  "all_out (from the request's first DiT), "
+                                  "starve_slack_ms, first_windows, "
+                                  "whole_song."),
             FieldSpec("latent_header", "dict",
                       description="As on oneshot_ready."),
             FieldSpec("latents", "dict",
@@ -1245,7 +1251,7 @@ EVENTS: tuple = (
         ),
         binary_follow=True,
         description="The end of a one-shot version under render_decode "
-                    "\"windows\", in place of oneshot_ready. A binary "
+                    "\"windows\" or \"hybrid\", in place of oneshot_ready. A binary "
                     "frame follows only when `latents` is on the header.",
     ),
     EventSpec(
