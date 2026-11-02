@@ -279,6 +279,15 @@ class StreamLayout:
     ``target`` after every other blend (RePaint), for A/B against the
     native conditioning alone.
 
+    ``render_decode`` (``"song"`` | ``"windows"``, or a no-argument
+    callable returning one, read per one-shot request; default None =
+    "song"): how a one-shot version is decoded and delivered. "song":
+    one whole-song decode per stream, answered as one ``oneshot_ready``.
+    "windows": the ring's windows in song order (kept 3 s, decode context
+    0.75 s per side, the ring's edge clamp), each sent as an
+    ``oneshot_slice`` the moment it lands, then ``oneshot_done``. A redo
+    always takes "song".
+
     Each stream is decoded separately: a decoder's receptive field would
     otherwise bleed across stream boundaries.
     """
@@ -299,6 +308,7 @@ class StreamLayout:
     hold_streams: Callable | None = None
     keep_mask: Callable | None = None
     keep_overwrite: Callable | bool = False
+    render_decode: Callable | str | None = None
 
     def __post_init__(self):
         if int(self.n_streams) < 1:

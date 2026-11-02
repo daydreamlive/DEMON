@@ -44,6 +44,7 @@ torch.set_grad_enabled(False)
 torch._dynamo.config.disable = True
 
 import numpy as np
+import zstandard as zstd
 
 from acestep.audio.key_detection import detect_key
 from acestep.engine.obs import logger, spawn_thread
@@ -70,8 +71,10 @@ from acestep.streaming.events import (
     AudioWritten,
     BounceFailed,
     BounceReady,
+    OneshotDone,
     OneshotFailed,
     OneshotReady,
+    OneshotSlice,
     CommandFailed,
     DepthApplied,
     LoraCatalogUpdate,
@@ -125,7 +128,9 @@ from .audio_codec import (
     SliceCodec,
     chunked_ws_send,
     send_bounce_payload,
+    send_oneshot_done,
     send_oneshot_payload,
+    send_oneshot_slice,
     send_stem_payload,
 )
 from .protocol import COMMAND_NAMES, SAMPLE_RATE, coerce_command_payload
@@ -1645,6 +1650,9 @@ def _handle_client_body(
 
     send_lock = threading.Lock()
     codec = SliceCodec(streaming.initial_buffer)
+    # The one-shot's windowed slices (render_decode "windows"): raw frames,
+    # no mirror, so one compressor serves every version of this socket.
+    oneshot_zctx = zstd.ZstdCompressor(level=1)
 
     # ---- Event subscriber: serializer to WS ----
     #
@@ -1921,6 +1929,18 @@ def _handle_client_body(
                         latent_header=getattr(event, "latent_header", None),
                         latents=getattr(event, "latents", None),
                     )
+            except ConnectionClosed:
+                state.running = False
+        elif isinstance(event, OneshotSlice):
+            try:
+                with send_lock:
+                    send_oneshot_slice(ws, event=event, zctx=oneshot_zctx)
+            except ConnectionClosed:
+                state.running = False
+        elif isinstance(event, OneshotDone):
+            try:
+                with send_lock:
+                    send_oneshot_done(ws, event=event)
             except ConnectionClosed:
                 state.running = False
         elif isinstance(event, OneshotFailed):

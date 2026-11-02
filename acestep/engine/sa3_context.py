@@ -843,12 +843,19 @@ class SA3SAMEWindowCodec:
 
         return select_same_l_engine(self._engines, frames, frames)
 
-    def _decode_window_eager(self, latent_bct, start: int, num: int) -> torch.Tensor:
+    def _context_of(self, context_sec) -> float:
+        """The decode context per side: ``context_sec`` when given, else the
+        class default (the ring always passes none)."""
+        return self.context_sec if context_sec is None else float(context_sec)
+
+    def _decode_window_eager(
+        self, latent_bct, start: int, num: int, context_sec=None,
+    ) -> torch.Tensor:
         result = self._helpers.decode_sa3_latent_window(
             self._context.sam, latent_bct,
             target_start_sample=int(start),
             target_num_samples=int(num),
-            context_sec=self.context_sec,
+            context_sec=self._context_of(context_sec),
             chunked=False,
             deterministic=True,
         )
@@ -876,16 +883,22 @@ class SA3SAMEWindowCodec:
                 return path, s0, s1, crop
         return None
 
-    def decode_window(self, latent_bct: torch.Tensor, start: int, num: int) -> torch.Tensor:
+    def decode_window(
+        self, latent_bct: torch.Tensor, start: int, num: int, *,
+        context_sec: float | None = None,
+    ) -> torch.Tensor:
         """``[1, 256, T]`` latent -> ``[C, num]`` float 44.1 kHz audio
-        covering samples ``[start, start+num)`` of the full decode."""
+        covering samples ``[start, start+num)`` of the full decode.
+        ``context_sec``: decode context per side (default
+        :attr:`context_sec`, the ring's; the one-shot's windowed decode
+        passes its own)."""
         if not self._engines:
-            return self._decode_window_eager(latent_bct, start, num)
+            return self._decode_window_eager(latent_bct, start, num, context_sec)
         window = self._helpers.resolve_sa3_decode_window(
             latent_bct,
             target_start_sample=int(start),
             target_num_samples=int(num),
-            context_sec=self.context_sec,
+            context_sec=self._context_of(context_sec),
             sample_rate=self._context.sample_rate,
             downsampling_ratio=self._context.downsampling_ratio,
             slice_align_latents=1,
@@ -897,7 +910,7 @@ class SA3SAMEWindowCodec:
         if placed is None:
             # Latent shorter than every engine minimum, or a slice no
             # profile serves: decode eagerly rather than guess.
-            return self._decode_window_eager(latent_bct, start, num)
+            return self._decode_window_eager(latent_bct, start, num, context_sec)
         path, slice_start, slice_end, crop_start = placed
         latent_window = latent_bct[..., slice_start:slice_end].contiguous()
         dec, lock = _same_l_decoder(path)

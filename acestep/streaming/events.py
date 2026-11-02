@@ -365,6 +365,50 @@ class OneshotReady:
 
 
 @dataclass(frozen=True)
+class OneshotSlice:
+    """One window of a one-shot version under ``render_decode`` "windows",
+    published the moment its streams are decoded, in song order.
+
+    ``version`` is the version's kept id (the id OneshotReady would carry);
+    ``index`` counts 0 .. ``count - 1``. ``pcm`` is float16 ``[frames,
+    channels]``: the kept slice at ``start_frame`` (delivery rate), stream
+    ``k`` on channels ``2k, 2k + 1``. Written in index order, later over
+    earlier (the last window is clamped to the song's end and overlaps its
+    predecessor, as the ring clamps a window), they tile the song."""
+    request_id: str
+    version: str
+    seed: int
+    index: int
+    count: int
+    start_frame: int
+    frames: int
+    channels: int
+    sample_rate: int
+    pcm: np.ndarray
+
+
+@dataclass(frozen=True)
+class OneshotDone:
+    """The end of a one-shot version under ``render_decode`` "windows" (in
+    place of OneshotReady). ``frames`` is the song's length, ``sha256`` the
+    hex digest of the assembled song (``oneshot.oneshot_pcm_sha256``), ``ms``
+    the version's phases (generate, first_slice, decode, pack,
+    windows_wall), ``latents`` float16 ``[1, n_streams, C, L]`` when the
+    request set return_latents."""
+    request_id: str
+    version: str
+    seed: int
+    frames: int
+    channels: int
+    sample_rate: int
+    windows: int
+    sha256: str
+    ms: dict
+    latent_header: dict | None = None
+    latents: np.ndarray | None = None
+
+
+@dataclass(frozen=True)
 class OneshotFailed:
     request_id: str
     error: str

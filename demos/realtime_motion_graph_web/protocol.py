@@ -1175,6 +1175,80 @@ EVENTS: tuple = (
                     "[V, n_streams, C, L] (every stream of every version).",
     ),
     EventSpec(
+        "oneshot_slice",
+        fields=(
+            FieldSpec("request_id", "str", required=True,
+                      description="Echo of the oneshot request_id."),
+            FieldSpec("version", "str", required=True,
+                      description="The version's kept id (the id "
+                                  "oneshot_ready would carry)."),
+            FieldSpec("seed", "int", required=True),
+            FieldSpec("index", "int", required=True,
+                      description="Window index from 0, in song order."),
+            FieldSpec("count", "int", required=True,
+                      description="Windows in this version."),
+            FieldSpec("start_frame", "int", required=True,
+                      description="First delivery-rate frame of the kept "
+                                  "slice."),
+            FieldSpec("frames", "int", required=True),
+            FieldSpec("channels", "int", required=True,
+                      description="2 x n_streams; stream k on channels "
+                                  "2k, 2k + 1."),
+            FieldSpec("sample_rate", "int", required=True),
+            FieldSpec("encoding", "str", required=True,
+                      description="slice_f16_zstd: the binary frame is a "
+                                  "ring slice frame (SLICE_HDR_FMT header, "
+                                  "flags SLICE_FLAG_DELTA against a zero "
+                                  "basis, num_gens = index) + zstd of the "
+                                  "float16 [frames, channels] samples."),
+        ),
+        binary_follow=True,
+        description="One window of a one-shot version under the session's "
+                    "render_decode \"windows\" (a plugin_* key the model "
+                    "extension reads). Sent as each window's streams finish, "
+                    "in index order; written at start_frame in index order, "
+                    "later over earlier, they tile the song (the last "
+                    "window is clamped to the song's end as the ring "
+                    "clamps). ONE binary frame follows. A version ends with "
+                    "oneshot_done; oneshot_failed drops its slices.",
+    ),
+    EventSpec(
+        "oneshot_done",
+        fields=(
+            FieldSpec("request_id", "str", required=True,
+                      description="Echo of the oneshot request_id."),
+            FieldSpec("version", "str", required=True),
+            FieldSpec("seed", "int", required=True),
+            FieldSpec("frames", "int", required=True,
+                      description="The song's length (delivery-rate "
+                                  "frames)."),
+            FieldSpec("channels", "int", required=True),
+            FieldSpec("sample_rate", "int", required=True),
+            FieldSpec("windows", "int", required=True),
+            FieldSpec("sha256", "str", required=True,
+                      description="Hex sha256 of the assembled song as "
+                                  "int16 floor(x * 32767 + 0.5) (float64, "
+                                  "clamped), laid out as one oneshot_ready "
+                                  "version: stream-major, each stream "
+                                  "[frames, 2] interleaved, little-endian."),
+            FieldSpec("ms", "dict", required=True,
+                      description="Server wall time: generate, "
+                                  "first_slice (DiT end to the first "
+                                  "slice), decode, pack, windows_wall."),
+            FieldSpec("latent_header", "dict",
+                      description="As on oneshot_ready."),
+            FieldSpec("latents", "dict",
+                      description="{dtype: 'float16', shape: [1, "
+                                  "n_streams, C, L], bytes}: present when "
+                                  "the request set return_latents; ONE "
+                                  "binary frame follows."),
+        ),
+        binary_follow=True,
+        description="The end of a one-shot version under render_decode "
+                    "\"windows\", in place of oneshot_ready. A binary "
+                    "frame follows only when `latents` is on the header.",
+    ),
+    EventSpec(
         "oneshot_failed",
         fields=(
             FieldSpec("request_id", "str", required=True,
