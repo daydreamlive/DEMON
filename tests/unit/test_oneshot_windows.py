@@ -413,3 +413,20 @@ def test_done_wire_frame_with_and_without_latents():
     ws2, sent2 = _ws()
     send_oneshot_done(ws2, event=OneshotDone("r", "v", 0, 1, 10, 48000, 1, "00", {}))
     assert len(sent2) == 1 and "latents" not in json.loads(sent2[0])
+
+
+def test_default_kept_window_is_aligned_and_fits_the_window_engine():
+    """The default kept slice keeps the 147:160 bookkeeping exact and every
+    window of a 2:00 one-shot within the window engine's profile (96)."""
+    import math
+
+    from acestep.engine.sa3_trt import CANONICAL_SAME_L_WINDOW
+
+    n48 = int(round(SB.ONESHOT_WINDOW_S * DELIVERY_SAMPLE_RATE))
+    assert n48 % 160 == 0
+    frames_total, total48 = 1292, 5760000
+    ctx = math.ceil(ONESHOT_WINDOW_CONTEXT_S * 44100 / 4096)
+    for start48, _kept in oneshot_window_plan(total48, n48):
+        lo44, t44, _lead = window_decode_span(start48, n48)
+        span = min(frames_total, math.ceil((lo44 + t44) / 4096) + ctx) - max(0, lo44 // 4096 - ctx)
+        assert span <= CANONICAL_SAME_L_WINDOW[2]

@@ -94,10 +94,16 @@ SA3_LATENT_RATE_HZ = 44100.0 / SA3_SAMPLES_PER_LATENT
 # path can clamp a requested window without an import cycle.
 SA3_MAX_DURATION_S = 120.0
 
-#: The one-shot's windowed decode (``render_decode`` "windows"): the ring's
-#: kept slice (SA3_VAE_WINDOW_S) and a decode context per side sized to the
-#: SAME-L decoder's measured ~0.5 s effective field (the ring keeps its 2 s).
-ONESHOT_WINDOW_S = 3.0
+#: The one-shot's windowed decode (``render_decode`` "windows"): a 6 s kept
+#: slice (20 windows over 2:00 instead of 40: decode about 0.61 s vs 0.86 s,
+#: per-stem SNR vs the whole-song decode within 0.05 dB of 3 s kept) and a
+#: decode context per side sized to the SAME-L decoder's measured ~0.5 s
+#: effective field (the ring keeps its 2 s). Two limits: kept * 48000 must
+#: be a multiple of 160 (the exact 147:160 bookkeeping of window_decode_span;
+#: 7.125 s puts every other window half a sample off, 16 dB), and kept plus
+#: context must stay within the window engine's 96 frames (7.5 s needs 100
+#: and lands on the whole-song engine, eager on a pod; 7.12 s is the max).
+ONESHOT_WINDOW_S = 6.0
 ONESHOT_WINDOW_CONTEXT_S = 0.75
 #: ``StreamLayout.render_decode`` values: one whole-song decode per stream,
 #: answered as one ``OneshotReady``; or the ring's windows in song order,
