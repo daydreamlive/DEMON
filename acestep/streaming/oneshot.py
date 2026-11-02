@@ -369,6 +369,175 @@ def oneshot_pcm_sha256(song_f16, n_streams: int) -> str:
     return hashlib.sha256(np.ascontiguousarray(blocks).tobytes()).hexdigest()
 
 
+_PCM16_LUT: Optional[np.ndarray] = None
+
+
+def pcm16_lut() -> np.ndarray:
+    """:func:`pcm16_from_f16` of every float16 bit pattern: ``lut[x.view(
+    uint16)] == pcm16_from_f16(x)`` for any float16 ``x``, bit for bit (the
+    table IS the rule, evaluated once over all 65536 inputs). About 6x
+    faster than the float64 rule on a 2:00 song."""
+    global _PCM16_LUT
+    if _PCM16_LUT is None:
+        with np.errstate(invalid="ignore"):
+            lut = pcm16_from_f16(np.arange(65536, dtype=np.uint16).view(np.float16))
+        lut.setflags(write=False)
+        _PCM16_LUT = lut
+    return _PCM16_LUT
+
+
+#: Frames per conversion task of :class:`OneshotPcmHasher` (a 6 s window at
+#: 48 kHz is 288000 frames: 4-5 tasks).
+_PCM16_CHUNK = 65536
+_PCM16_POOL = None
+_PCM16_POOL_LOCK = threading.Lock()
+
+
+def _pcm16_pool():
+    """The shared converter threads of :class:`OneshotPcmHasher` (numpy's
+    gather releases the GIL, so a slice converts in parallel)."""
+    global _PCM16_POOL
+    if _PCM16_POOL is None:
+        with _PCM16_POOL_LOCK:
+            if _PCM16_POOL is None:
+                import os
+                from concurrent.futures import ThreadPoolExecutor
+
+                workers = max(1, min(8, (os.cpu_count() or 2) // 2))
+                _PCM16_POOL = ThreadPoolExecutor(workers, thread_name_prefix="oneshot-pcm16")
+    return _PCM16_POOL
+
+
+def _pcm16_tasks(lut, u, blocks, start, stream) -> list:
+    """Futures converting stream ``stream`` of slice ``u`` (float16 bit
+    patterns ``[frames, 2 * n]``) to int16 into the stream-major
+    ``blocks[stream, start:start + frames]`` through :func:`pcm16_lut`, in
+    row chunks on :func:`_pcm16_pool`."""
+    k = u.shape[0]
+    src = u[:, 2 * stream:2 * stream + 2]
+    dst = blocks[stream, start:start + k]
+
+    def rows(a, b):
+        dst[a:b] = lut[src[a:b]]
+
+    pool = _pcm16_pool()
+    return [pool.submit(rows, a, min(a + _PCM16_CHUNK, k)) for a in range(0, k, _PCM16_CHUNK)]
+
+
+class OneshotPcmHasher:
+    """:func:`oneshot_pcm_sha256` of one version, fed slice by slice and
+    computed off the caller's thread, so the digest is ready about one
+    slice after the last one is fed and the GPU work never waits on it.
+
+    ``feed(start_frame, pcm)`` takes each slice's float16 ``[frames, 2 *
+    n_streams]`` (the slice's own array, which must not change afterwards)
+    and returns at once; a worker thread converts it with :func:`pcm16_lut`
+    into the stream-major int16 block and hashes stream 0 as far as the
+    slices cover it contiguously from frame 0. When every frame of the song
+    is covered it hashes streams 1.. in order: the same bytes as
+    :func:`oneshot_pcm_sha256` of the assembled song, so the same digest.
+    Slices may arrive in any order; overlapping or out-of-range slices are
+    an error, reported by :meth:`digest`. :meth:`close` ends the thread
+    early (an aborted render); the digest is then unavailable."""
+
+    def __init__(self, total_frames: int, n_streams: int):
+        import hashlib
+        import queue
+
+        self.total = int(total_frames)
+        self.n = int(n_streams)
+        if self.total <= 0 or self.n <= 0:
+            raise ValueError(f"need frames > 0 and streams > 0, got {self.total}, {self.n}")
+        self._blocks = np.empty((self.n, self.total, 2), dtype="<i2")
+        self._sha = hashlib.sha256()
+        self._q: "queue.SimpleQueue" = queue.SimpleQueue()
+        self._spans: dict = {}            # start -> end of converted spans past the frontier
+        self._frontier = 0                # stream 0 is hashed up to here
+        self._done = threading.Event()
+        self._digest: Optional[str] = None
+        self._error: Optional[BaseException] = None
+        #: perf_counter stamp when the digest was ready (None until then).
+        self.ready_t: Optional[float] = None
+        self._thread = threading.Thread(target=self._run, name="oneshot-sha", daemon=True)
+        self._thread.start()
+
+    def feed(self, start_frame: int, pcm) -> None:
+        a = np.asarray(pcm)
+        if a.dtype != np.float16 or a.ndim != 2 or a.shape[1] != 2 * self.n:
+            raise ValueError(f"slice must be float16 [frames, {2 * self.n}], got {a.dtype} {a.shape}")
+        self._q.put((int(start_frame), a))
+
+    def close(self) -> None:
+        self._q.put(None)
+
+    @property
+    def ready(self) -> bool:
+        return self._done.is_set()
+
+    def digest(self, timeout: Optional[float] = None) -> str:
+        if not self._done.wait(timeout):
+            raise TimeoutError("oneshot sha not ready")
+        if self._error is not None:
+            raise self._error
+        return self._digest
+
+    def _run(self) -> None:
+        import queue
+
+        lut = pcm16_lut()
+        try:
+            while True:
+                batch = [self._q.get()]
+                while True:  # every slice already queued converts in one pass
+                    try:
+                        batch.append(self._q.get_nowait())
+                    except queue.Empty:
+                        break
+                items = []
+                for item in batch:
+                    if item is None:
+                        break
+                    start, a = item
+                    end = start + a.shape[0]
+                    if start < self._frontier or end > self.total or end <= start:
+                        raise ValueError(
+                            f"slice [{start}, {end}) outside the open song [{self._frontier}, {self.total})")
+                    for s0, e0 in self._spans.items():
+                        if start < e0 and s0 < end:
+                            raise ValueError(f"slice [{start}, {end}) overlaps [{s0}, {e0})")
+                    self._spans[start] = end
+                    items.append((start, np.ascontiguousarray(a).view(np.uint16)))
+                # Stream-major: the pool converts stream 0 of every slice first,
+                # so hashing stream s overlaps converting stream s + 1.
+                tasks = [[f for start, u in items for f in _pcm16_tasks(lut, u, self._blocks, start, s)]
+                         for s in range(self.n)]
+                lo = self._frontier
+                while self._frontier in self._spans:
+                    self._frontier = self._spans.pop(self._frontier)
+                for f in tasks[0]:
+                    f.result()
+                if self._frontier > lo:
+                    self._sha.update(memoryview(self._blocks[0, lo:self._frontier]).cast("B"))
+                if self._frontier == self.total:
+                    for s in range(1, self.n):
+                        for f in tasks[s]:
+                            f.result()
+                        self._sha.update(memoryview(self._blocks[s]).cast("B"))
+                    self._digest = self._sha.hexdigest()
+                    self._blocks = None
+                    self.ready_t = time.perf_counter()
+                    self._done.set()
+                    return
+                for f in (f for t in tasks[1:] for f in t):
+                    f.result()
+                if len(items) < len(batch):
+                    raise RuntimeError("oneshot sha closed before the song was complete")
+        except BaseException as exc:  # noqa: BLE001 - reported by digest()
+            self._error = exc
+            self._blocks = None
+            self._done.set()
+
+
 def to_int16(audio) -> np.ndarray:
     """float audio (torch or numpy, any shape) in [-1, 1] -> int16 numpy,
     rounded to nearest. Torch tensors are converted on their device."""

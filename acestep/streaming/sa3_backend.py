@@ -187,16 +187,20 @@ def oneshot_starvation_slack_ms(plan, emit_ms, sample_rate: int = DELIVERY_SAMPL
 
 class _OneshotOut:
     """One one-shot version in flight under "windows" / "hybrid": its kept
-    id, seed, engine-layout latent ``[1, T, C]``, the assembled float16 song
-    ``[total, channels]`` and the perf_counter stamp of every slice sent."""
+    id, seed, engine-layout latent ``[1, T, C]``, the running sha of its
+    slices (:class:`~acestep.streaming.oneshot.OneshotPcmHasher`, fed as
+    each slice is published, so the digest is ready about one slice after
+    the last one) and the perf_counter stamp of every slice sent."""
 
-    __slots__ = ("vid", "seed", "lat", "total", "channels", "song", "emit_t",
+    __slots__ = ("vid", "seed", "lat", "total", "channels", "hasher", "emit_t",
                  "pack_s", "dec_s", "generate_ms", "dit_end")
 
     def __init__(self, vid, seed, lat, total, channels):
+        from acestep.streaming.oneshot import OneshotPcmHasher
+
         self.vid, self.seed, self.lat = vid, int(seed), lat
         self.total, self.channels = int(total), int(channels)
-        self.song = np.zeros((self.total, self.channels), dtype=np.float16)
+        self.hasher = OneshotPcmHasher(self.total, self.channels // 2)
         self.emit_t: list = []
         self.pack_s = 0.0
         self.dec_s = 0.0
@@ -2432,15 +2436,20 @@ class SA3Backend(DiffusionBackend):
         side by side as the ring's channels (stream ``k`` on ``2k, 2k +
         1``), float16, published as an :class:`OneshotSlice` the moment it
         lands. Then one :class:`OneshotDone` carrying the sha256 of the
-        assembled song (:func:`~acestep.streaming.oneshot.oneshot_pcm_sha256`).
+        assembled song (:func:`~acestep.streaming.oneshot.oneshot_pcm_sha256`,
+        hashed off this thread as the slices go out).
         Returns the version's ms (generate, first_slice, decode, pack,
         windows_wall)."""
         n48 = int(round(ONESHOT_WINDOW_S * DELIVERY_SAMPLE_RATE))
         plan = oneshot_window_plan(total, n48)
         out = _OneshotOut(vid, int(seed), lat, total, 2 * self._n_streams)
         t1 = time.perf_counter()
-        self._emit_windowed(request, out, plan, range(len(plan)), n48, emit)
-        sync()
+        try:
+            self._emit_windowed(request, out, plan, range(len(plan)), n48, emit)
+            sync()
+        except BaseException:
+            out.hasher.close()
+            raise
         t2 = time.perf_counter()
         sha, latents = self._oneshot_version_tail(request, out)
         t3 = time.perf_counter()
@@ -2480,7 +2489,6 @@ class SA3Backend(DiffusionBackend):
                 audio[:, :kept].permute(1, 0, 2).reshape(kept, ch)
                 .to(torch.float16).cpu().numpy()
             )
-            out.song[start48:start48 + kept] = pcm
             out.pack_s += time.perf_counter() - tp
             self._publish_oneshot_slice(request, out, plan, index, pcm, emit)
 
@@ -2503,16 +2511,18 @@ class SA3Backend(DiffusionBackend):
         out.pack_s += time.perf_counter() - tp
         for index in indices:
             start48, kept = plan[index]
-            pcm = song[start48:start48 + kept]
-            tp = time.perf_counter()
-            out.song[start48:start48 + kept] = pcm
-            out.pack_s += time.perf_counter() - tp
-            self._publish_oneshot_slice(request, out, plan, index, pcm, emit)
+            self._publish_oneshot_slice(request, out, plan, index, song[start48:start48 + kept], emit)
 
     def _publish_oneshot_slice(self, request, out, plan, index, pcm, emit) -> None:
         from acestep.streaming.events import OneshotSlice
 
         start48, kept = plan[index]
+        # The sha's song is the slices written in index order, later over
+        # earlier: hash only the part of this one no later window rewrites
+        # (the last window overlaps its predecessor), so the parts tile it.
+        own = kept if index + 1 >= len(plan) else min(kept, plan[index + 1][0] - start48)
+        if own > 0:
+            out.hasher.feed(start48, pcm[:own])
         emit(OneshotSlice(
             request_id=request.request_id,
             version=out.vid,
@@ -2529,11 +2539,11 @@ class SA3Backend(DiffusionBackend):
 
     def _oneshot_version_tail(self, request, out) -> tuple:
         """``(sha256, latents)`` of a finished version: the assembled
-        song's sha (:func:`~acestep.streaming.oneshot.oneshot_pcm_sha256`)
-        and its float16 ``[1, S, C, L]`` latent when the request asked."""
-        from acestep.streaming.oneshot import oneshot_pcm_sha256
-
-        sha = oneshot_pcm_sha256(out.song, self._n_streams)
+        song's sha (:func:`~acestep.streaming.oneshot.oneshot_pcm_sha256`,
+        from the version's running hasher: by now it waits on at most the
+        last slice and streams 1.. of the hash) and its float16 ``[1, S, C,
+        L]`` latent when the request asked."""
+        sha = out.hasher.digest()
         latents = None
         if getattr(request, "return_latents", False):
             latents = np.stack([
@@ -2579,9 +2589,10 @@ class SA3Backend(DiffusionBackend):
         (:meth:`_emit_from_whole_song`, the "song" path's call), or, when
         no engine decodes the whole song (a pod bakes only the window
         engine), windowed like the first ones (never the eager whole-song
-        decode). Phase 3: every version's ``OneshotDone`` (its sha is a CPU
-        pass over the whole song: it waits until every slice is out). The
-        slices, their boundaries,
+        decode). Phase 3: every version's ``OneshotDone`` (its sha runs on
+        the hasher's thread as the slices go out, so it is ready about one
+        slice after its last one; version 1's overlaps version 2's rest).
+        The slices, their boundaries,
         the sha rule and the messages are the "windows" path's. Returns an
         ``OneshotResult`` without PCM (``delivered``).
 
@@ -2606,36 +2617,41 @@ class SA3Backend(DiffusionBackend):
         self._oneshot_pipeline_ready()
         t_req = time.perf_counter()
         outs = []
-        # Phase 1: DiT, then the first W windows, per version.
-        for seed in seeds:
-            controls = dict(base)
-            if version_controls is not None:
-                controls.update(version_controls(int(seed)))
-            controls["seed"] = float(seed)
-            t0 = time.perf_counter()
-            lat = self._oneshot_latent(controls)
-            sync()
-            t1 = time.perf_counter()
-            vid = store.put(lat.movedim(1, 2), n_streams=n, seed=int(seed))
-            out = _OneshotOut(vid, int(seed), lat, total, 2 * n)
-            out.generate_ms = (t1 - t0) * 1000.0
-            out.dit_end = t1
-            self._emit_windowed(request, out, plan, range(w), n48, emit)
-            sync()
-            out.dec_s += time.perf_counter() - t1
-            outs.append(out)
-        # Phase 2: each version's rest, in order: every slice is out before
-        # any version's sha (a CPU pass over the whole song) runs.
-        rest = range(w, len(plan))
-        for out in outs:
-            t2 = time.perf_counter()
-            if len(rest):
-                if whole:
-                    self._emit_from_whole_song(request, out, plan, rest, whole44, emit, sync)
-                else:
-                    self._emit_windowed(request, out, plan, rest, n48, emit)
-            sync()
-            out.dec_s += time.perf_counter() - t2
+        try:
+            # Phase 1: DiT, then the first W windows, per version.
+            for seed in seeds:
+                controls = dict(base)
+                if version_controls is not None:
+                    controls.update(version_controls(int(seed)))
+                controls["seed"] = float(seed)
+                t0 = time.perf_counter()
+                lat = self._oneshot_latent(controls)
+                sync()
+                t1 = time.perf_counter()
+                vid = store.put(lat.movedim(1, 2), n_streams=n, seed=int(seed))
+                out = _OneshotOut(vid, int(seed), lat, total, 2 * n)
+                out.generate_ms = (t1 - t0) * 1000.0
+                out.dit_end = t1
+                outs.append(out)
+                self._emit_windowed(request, out, plan, range(w), n48, emit)
+                sync()
+                out.dec_s += time.perf_counter() - t1
+            # Phase 2: each version's rest, in order (each version's sha
+            # finishes on its hasher's thread meanwhile).
+            rest = range(w, len(plan))
+            for out in outs:
+                t2 = time.perf_counter()
+                if len(rest):
+                    if whole:
+                        self._emit_from_whole_song(request, out, plan, rest, whole44, emit, sync)
+                    else:
+                        self._emit_windowed(request, out, plan, rest, n48, emit)
+                sync()
+                out.dec_s += time.perf_counter() - t2
+        except BaseException:
+            for o in outs:
+                o.hasher.close()
+            raise
         # Phase 3: each version's OneshotDone, in order.
         gen_ms = dec_ms = pack_ms = 0.0
         for out in outs:
