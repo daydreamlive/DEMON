@@ -609,7 +609,7 @@ namespace event {
     inline constexpr const char* kWindows = "windows";
     /** Hex sha256 of the assembled song as int16 floor(x * 32767 + 0.5) (float64, clamped), laid out as one oneshot_ready version: stream-major, each stream [frames, 2] interleaved, little-endian. */
     inline constexpr const char* kSha256 = "sha256";
-    /** Server wall time: generate, first_slice (DiT end to the first slice), decode, pack, windows_wall. */
+    /** Server wall time: generate, first_slice (DiT end to the first slice), decode, pack, windows_wall; "hybrid" adds first_audio and all_out (from the request's first DiT), starve_slack_ms, first_windows, whole_song. */
     inline constexpr const char* kMs = "ms";
     /** As on oneshot_ready. */
     inline constexpr const char* kLatentHeader = "latent_header";

@@ -681,7 +681,7 @@ export interface OneshotDoneEvent {
   windows: number;
   /** Hex sha256 of the assembled song as int16 floor(x * 32767 + 0.5) (float64, clamped), laid out as one oneshot_ready version: stream-major, each stream [frames, 2] interleaved, little-endian. */
   sha256: string;
-  /** Server wall time: generate, first_slice (DiT end to the first slice), decode, pack, windows_wall. */
+  /** Server wall time: generate, first_slice (DiT end to the first slice), decode, pack, windows_wall; "hybrid" adds first_audio and all_out (from the request's first DiT), starve_slack_ms, first_windows, whole_song. */
   ms: Record<string, unknown>;
   /** As on oneshot_ready. */
   latent_header?: Record<string, unknown>;
