@@ -470,3 +470,33 @@ def test_preload_loads_the_session_context_and_its_codec_engine(monkeypatch):
     assert calls["context"] == ("medium", "/ckpt", ext)
     assert calls["codec"] == "tensorrt"
     assert "dit_engine" not in calls  # extension forced the DiT eager
+
+
+def test_preload_skips_the_stock_dit_engine_under_a_stream_layout(monkeypatch):
+    """A stream layout brings its own DiT, so boot never deserializes the
+    stock single-stream engine for it; without one it still does."""
+    from acestep.engine import sa3_trt
+    from acestep.streaming import sa3_session
+
+    for layout, warmed in ((object(), False), (None, True)):
+        loaded = []
+
+        class _Ctx:
+            def effective_dit_backend(self, requested):
+                return requested, ""
+
+            def effective_codec_backend(self, requested):
+                return requested, ""
+
+            def make_codec(self, *, backend):
+                pass
+
+            def stream_layout(self):
+                return layout
+
+        monkeypatch.setattr(sa3_session, "get_sa3_context", lambda *a, **k: _Ctx())
+        monkeypatch.setattr(sa3_trt, "max_dit_engine_latents", lambda model_id: 646)
+        monkeypatch.setattr(sa3_trt, "find_dit_engine", lambda model_id, n, **k: "/stock.trt")
+        monkeypatch.setattr(sa3_trt, "_deserialize_engine", loaded.append)
+        sa3_session.preload_sa3("medium", decoder_backend="tensorrt", vae_backend="tensorrt")
+        assert loaded == (["/stock.trt"] if warmed else [])
