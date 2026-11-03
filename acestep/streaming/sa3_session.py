@@ -170,7 +170,9 @@ def preload_sa3(
     # Construct-and-drop: the codec deserializes its engine into the
     # shared cache; the per-session execution context is discarded.
     context.make_codec(backend=codec_backend)
-    if dit_backend == "tensorrt":
+    # A stream layout brings its own DiT (SA3Context.make_dit never looks up
+    # the stock engines then): warming the stock one only takes GPU memory.
+    if dit_backend == "tensorrt" and context.stream_layout() is None:
         # ponytail: warms only the engine covering the longest window;
         # a shorter session may pick a smaller profile and load it then.
         max_l = max_dit_engine_latents(model_id)
