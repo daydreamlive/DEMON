@@ -348,8 +348,19 @@ def pcm16_from_f16(f16) -> np.ndarray:
     ``floor(x * 32767 + 0.5)`` in float64 (exact for every float16),
     clamped to the int16 range. The one rounding rule ``oneshot_done.sha256``
     is taken under, so a client in any language reproduces it bit for bit."""
+    return _PCM16_OF_F16[np.asarray(f16, dtype="<f2").view(np.uint16)]
+
+
+def _pcm16_rule(f16) -> np.ndarray:
     a = np.asarray(f16, dtype=np.float16).astype(np.float64)
     return np.clip(np.floor(a * 32767.0 + 0.5), -32768, 32767).astype("<i2")
+
+
+# The rule applied to every float16 bit pattern once, so a song is one lookup
+# instead of a float64 copy of it (seconds for a long song on some hosts). NaN
+# patterns cast to whatever int16 the rule gives them, as before, without the warning.
+with np.errstate(invalid="ignore"):
+    _PCM16_OF_F16 = _pcm16_rule(np.arange(65536, dtype=np.uint16).view(np.float16))
 
 
 def oneshot_pcm_sha256(song_f16, n_streams: int) -> str:

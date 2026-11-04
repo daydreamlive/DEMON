@@ -335,6 +335,15 @@ def test_pcm16_rule_and_sha_layout():
         oneshot_pcm_sha256(song, 2)
 
 
+def test_pcm16_lookup_matches_the_rule_for_every_float16():
+    from acestep.streaming.oneshot import _pcm16_rule
+
+    every = np.arange(65536, dtype=np.uint16).view(np.float16)
+    every = every[~np.isnan(every)]
+    assert np.array_equal(pcm16_from_f16(every), _pcm16_rule(every))
+    assert pcm16_from_f16(np.float16(0.5)).shape == ()
+
+
 # ---- session and wire ------------------------------------------------------------
 
 
