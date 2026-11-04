@@ -288,7 +288,7 @@ def send_oneshot_slice(ws, *, event, zctx) -> None:
         event.pcm, start_sample=event.start_frame, zctx=zctx,
         num_gens=event.index,
     )
-    ws.send(json.dumps({
+    head = {
         "type": "oneshot_slice",
         "request_id": event.request_id,
         "version": str(event.version),
@@ -300,7 +300,11 @@ def send_oneshot_slice(ws, *, event, zctx) -> None:
         "channels": int(event.channels),
         "sample_rate": int(event.sample_rate),
         "encoding": "slice_f16_zstd",
-    }))
+    }
+    peaks = getattr(event, "peaks", None)
+    if peaks is not None:
+        head["peaks"] = {"mix": float(peaks["mix"]), "streams": [float(v) for v in peaks["streams"]]}
+    ws.send(json.dumps(head))
     chunked_ws_send(ws, frame)
 
 

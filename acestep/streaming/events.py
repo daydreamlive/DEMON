@@ -374,7 +374,12 @@ class OneshotSlice:
     channels]``: the kept slice at ``start_frame`` (delivery rate), stream
     ``k`` on channels ``2k, 2k + 1``. Written in index order, later over
     earlier (the last window is clamped to the song's end and overlaps its
-    predecessor, as the ring clamps a window), they tile the song."""
+    predecessor, as the ring clamps a window), they tile the song.
+
+    ``peaks`` (the first slice of a request that set ``mix``, else None):
+    the whole version's peaks over its float16 samples, ``{"mix": max |L|,
+    |R| of the streams summed at the request's weights, "streams": [max |x|
+    of each stream]}``."""
     request_id: str
     version: str
     seed: int
@@ -385,6 +390,7 @@ class OneshotSlice:
     channels: int
     sample_rate: int
     pcm: np.ndarray
+    peaks: dict | None = None
 
 
 @dataclass(frozen=True)

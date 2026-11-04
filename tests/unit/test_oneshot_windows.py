@@ -74,10 +74,12 @@ class _NoWindowCodec(LT._SliceCodec):
     """SAME-S stand-in: full decode only."""
 
 
-def _req(seeds=(3,), return_latents=False, redo=None):
+def _req(seeds=(3,), return_latents=False, redo=None, mix=None):
     data = {"request_id": "r", "seeds": list(seeds), "return_latents": return_latents}
     if redo is not None:
         data["redo"] = redo
+    if mix is not None:
+        data["mix"] = mix
     return parse_request(data)
 
 
@@ -396,13 +398,65 @@ def test_slice_wire_frame_is_a_ring_slice_against_zeros():
         "sample_rate": 48000, "encoding": "slice_f16_zstd",
     }
     spec = next(e for e in protocol.EVENTS if e.name == "oneshot_slice")
-    assert set(head) - {"type"} == {f.name for f in spec.fields} and spec.binary_follow
+    assert set(head) - {"type"} == {f.name for f in spec.fields} - {"peaks"} and spec.binary_follow
     frame = sent[1]
     flags, start, frames, ch, tick_ms, dec_ms, num_gens = struct.unpack(
         protocol.SLICE_HDR_FMT, frame[:protocol.SLICE_HDR_SIZE])
     assert (flags, start, frames, ch, num_gens) == (protocol.SLICE_FLAG_DELTA, 288000, 300, 10, 2)
     body = zstd.ZstdDecompressor().decompress(frame[protocol.SLICE_HDR_SIZE:])
     assert body == pcm.astype("<f2").tobytes()
+
+
+def test_mix_holds_the_slices_and_the_first_carries_the_peaks(small_windows):
+    """With ``mix`` the slices are the same bytes in the same order; the
+    first carries the whole version's peaks (its float16 samples: the
+    streams summed at the weights, and each stream)."""
+    weights = [1.0, 0.35, 0.0][:LT.N_STREAMS]
+    plain, mixed = [], []
+    _backend("windows")[0].render_oneshot(_req(seeds=(4, 5)), store=KeptLatents(), emit=plain.append)
+    _backend("windows")[0].render_oneshot(_req(seeds=(4, 5), mix=weights), store=KeptLatents(), emit=mixed.append)
+    assert [type(e).__name__ for e in mixed] == [type(e).__name__ for e in plain]
+    for a, b in zip(plain, mixed):
+        if isinstance(a, OneshotSlice):
+            assert (a.index, a.start_frame, a.frames, a.version[:0]) == (b.index, b.start_frame, b.frames, "")
+            assert np.array_equal(a.pcm, b.pcm)
+            assert a.peaks is None and (b.peaks is None) == (b.index != 0)
+        else:
+            assert a.sha256 == b.sha256
+    for v in range(2):
+        part = mixed[v * 5:(v + 1) * 5]
+        total = part[-1].frames
+        song = np.zeros((total, 2 * LT.N_STREAMS), np.float16)
+        for sl in part[:-1]:
+            song[sl.start_frame:sl.start_frame + sl.frames] = sl.pcm
+        x = song.astype(np.float64).reshape(total, LT.N_STREAMS, 2)
+        want_mix = np.abs((x * np.array(weights)[None, :, None]).sum(1)).max()
+        want_streams = np.abs(x).max(axis=(0, 2))
+        peaks = part[0].peaks
+        assert peaks["mix"] == pytest.approx(want_mix, rel=1e-6)
+        assert peaks["streams"] == pytest.approx(list(want_streams), rel=1e-6)
+        assert part[-1].ms["first_slice"] >= 0
+
+
+def test_mix_is_checked():
+    for bad in ([], "1,1", [1, -1], [1, True], [float("nan")], [1, "a"]):
+        with pytest.raises(OneshotError):
+            _req(mix=bad)
+    assert _req(mix=[1, 0.5, 0]).mix == (1.0, 0.5, 0.0) and _req().mix is None
+    b, _ = _backend("windows")
+    with pytest.raises(OneshotError, match="weights"):
+        b.render_oneshot(_req(mix=[1.0] * (LT.N_STREAMS + 1)), store=KeptLatents(), emit=lambda e: None)
+
+
+def test_slice_wire_frame_carries_the_peaks_when_set():
+    pcm = np.zeros((4, 10), np.float16)
+    ev = OneshotSlice("r", "v", 3, 0, 5, 0, 4, 10, 48000, pcm, peaks={"mix": 0.9, "streams": [0.5, 0.25, 0, 0, 1]})
+    ws, sent = _ws()
+    send_oneshot_slice(ws, event=ev, zctx=zstd.ZstdCompressor(level=1))
+    head = json.loads(sent[0])
+    assert head["peaks"] == {"mix": 0.9, "streams": [0.5, 0.25, 0.0, 0.0, 1.0]}
+    spec = next(e for e in protocol.EVENTS if e.name == "oneshot_slice")
+    assert set(head) - {"type"} == {f.name for f in spec.fields}
 
 
 def test_done_wire_frame_with_and_without_latents():

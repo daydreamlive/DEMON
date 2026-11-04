@@ -607,7 +607,7 @@ def test_oneshot_payload_framing():
 def test_command_and_config_are_registered():
     cmd = next(c for c in protocol.COMMANDS if c.name == "oneshot")
     assert {f.name for f in cmd.fields} == {
-        "request_id", "seeds", "knobs", "redo", "return_latents",
+        "request_id", "seeds", "knobs", "redo", "return_latents", "mix",
     }
     assert cmd.binary and cmd.binary_optional         # only a redo with latent
     assert "render_only" in protocol.config_catalog()

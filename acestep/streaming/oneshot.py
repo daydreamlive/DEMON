@@ -74,6 +74,12 @@ class OneshotRequest:
     redo: Optional[Redo] = None
     #: Also return every version's full latent (float16 ``[V, S, C, L]``).
     return_latents: bool = False
+    #: Per-stream weights (``render_decode`` "windows"): each version is
+    #: decoded whole before its first slice goes out, and that slice carries
+    #: the song's peaks (``OneshotSlice.peaks``), so a client playing the
+    #: slices as they come can level them from the first one. None: slices
+    #: go out as each window lands, without peaks.
+    mix: Optional[tuple] = None
 
     @property
     def versions(self) -> int:
@@ -109,11 +115,12 @@ def parse_request(data: Mapping[str, Any]) -> OneshotRequest:
         return_latents = False
     if not isinstance(return_latents, bool):
         raise OneshotError(f"return_latents must be a boolean, got {return_latents!r}")
+    mix = _parse_mix(data.get("mix"))
     redo_raw = data.get("redo")
     if redo_raw is not None:
         redo = _parse_redo(redo_raw)
         return OneshotRequest(
-            request_id, (redo.seed,), knobs, redo, return_latents,
+            request_id, (redo.seed,), knobs, redo, return_latents, mix,
         )
     seeds_raw = data.get("seeds")
     if not isinstance(seeds_raw, (list, tuple)) or not seeds_raw:
@@ -123,7 +130,22 @@ def parse_request(data: Mapping[str, Any]) -> OneshotRequest:
     seeds = tuple(_int(s, "seed") for s in seeds_raw)
     if any(s < 0 for s in seeds):
         raise OneshotError("seeds must be >= 0")
-    return OneshotRequest(request_id, seeds, knobs, None, return_latents)
+    return OneshotRequest(request_id, seeds, knobs, None, return_latents, mix)
+
+
+def _parse_mix(raw) -> Optional[tuple]:
+    """``mix``: a non-empty list of finite weights >= 0, one per stream (the
+    backend checks the count), or None."""
+    if raw is None:
+        return None
+    if not isinstance(raw, (list, tuple)) or not raw:
+        raise OneshotError("mix must be a non-empty list of numbers, one per stream")
+    out = []
+    for w in raw:
+        if isinstance(w, bool) or not isinstance(w, (int, float)) or not np.isfinite(w) or w < 0:
+            raise OneshotError(f"mix weights must be finite numbers >= 0, got {w!r}")
+        out.append(float(w))
+    return tuple(out)
 
 
 def clamp_knobs(knobs: Mapping[str, float], specs_by_name: Mapping) -> dict:
