@@ -40,6 +40,7 @@ from collections.abc import Callable
 
 import functools
 import itertools
+import inspect
 import os
 import re
 import threading
@@ -1130,7 +1131,12 @@ class StreamingSession:
                 req = self._oneshots.pop(0)
             t0 = time.perf_counter()
             try:
-                res = self.backend.render_oneshot(req)
+                if self._oneshot_takes_emit():
+                    # render_decode "windows": the backend publishes the
+                    # version's slices and its OneshotDone as they land.
+                    res = self.backend.render_oneshot(req, emit=self.bus.publish)
+                else:
+                    res = self.backend.render_oneshot(req)
             except OneshotError as exc:
                 logger.info("oneshot_failed id={} error={}", req.request_id, exc)
                 self.bus.publish(OneshotFailed(req.request_id, str(exc)))
@@ -1144,6 +1150,15 @@ class StreamingSession:
                 ))
                 continue
             ms = res.ms
+            if getattr(res, "delivered", False):
+                logger.info(
+                    "oneshot_delivered id={} versions={} seconds={:.1f} generate_ms={:.0f} "
+                    "decode_ms={:.0f} pack_ms={:.0f} total_ms={:.0f} dit={}",
+                    req.request_id, len(res.seeds), res.seconds, ms["generate"],
+                    ms["decode"], ms["pack"], (time.perf_counter() - t0) * 1000.0,
+                    getattr(res, "dit", "") or "?",
+                )
+                continue
             if req.redo is not None:
                 logger.info(
                     "oneshot_redo id={} of={} streams={} denoise={} seed={} seconds={:.1f} "
@@ -1180,6 +1195,21 @@ class StreamingSession:
                 latents=getattr(res, "latents", None),
                 latent_header=getattr(res, "latent_header", None),
             ))
+
+    def _oneshot_takes_emit(self) -> bool:
+        """The backend's ``render_oneshot`` accepts ``emit=`` (it can answer
+        progressively); checked once per backend object."""
+        backend = self.backend
+        cached = getattr(self, "_oneshot_emit_for", None)
+        if cached is not None and cached[0] is backend:
+            return cached[1]
+        try:
+            params = inspect.signature(backend.render_oneshot).parameters
+            takes = "emit" in params
+        except (TypeError, ValueError):
+            takes = False
+        self._oneshot_emit_for = (backend, takes)
+        return takes
 
     def _service_bounces(self) -> None:
         """Answer queued ``bounce`` requests (runner thread).

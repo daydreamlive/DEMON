@@ -254,3 +254,92 @@ def send_oneshot_payload(
     chunked_ws_send(ws, a.tobytes())
     if lat is not None:
         chunked_ws_send(ws, lat.tobytes())
+
+
+def encode_oneshot_slice(
+    pcm: np.ndarray, *, start_sample: int, zctx, dec_ms: float = 0.0,
+    num_gens: int = 0,
+) -> bytes:
+    """One binary slice frame in the ring's codec for a one-shot window:
+    the ring's header (``SLICE_HDR_FMT``: flags, start_sample, frames,
+    channels, tick_ms, dec_ms, num_gens) + zstd of float16 ``[frames,
+    channels]``. The ring's codec compresses only its DELTA form (a RAW
+    frame is uncompressed, and every client parser decompresses only
+    DELTA), so this is the DELTA form against a zero basis: the payload is
+    the samples themselves (``x - 0`` is exact in float16), and any ring
+    slice parser decodes it to them."""
+    a = np.ascontiguousarray(pcm, dtype="<f2")
+    if a.ndim != 2:
+        raise ValueError(f"slice pcm must be [frames, channels], got {a.shape}")
+    hdr = struct.pack(
+        SLICE_HDR_FMT,
+        SLICE_FLAG_DELTA,
+        int(start_sample), int(a.shape[0]), int(a.shape[1]),
+        0.0, float(dec_ms), int(num_gens),
+    )
+    return hdr + zctx.compress(a.tobytes())
+
+
+def send_oneshot_slice(ws, *, event, zctx) -> None:
+    """Serialize a ``oneshot_slice`` JSON header + ONE binary frame (the
+    window as :func:`encode_oneshot_slice`, ``num_gens`` = the window index).
+    Caller holds the per-WS ``send_lock``."""
+    frame = encode_oneshot_slice(
+        event.pcm, start_sample=event.start_frame, zctx=zctx,
+        num_gens=event.index,
+    )
+    ws.send(json.dumps({
+        "type": "oneshot_slice",
+        "request_id": event.request_id,
+        "version": str(event.version),
+        "seed": int(event.seed),
+        "index": int(event.index),
+        "count": int(event.count),
+        "start_frame": int(event.start_frame),
+        "frames": int(event.frames),
+        "channels": int(event.channels),
+        "sample_rate": int(event.sample_rate),
+        "encoding": "slice_f16_zstd",
+    }))
+    chunked_ws_send(ws, frame)
+
+
+def send_oneshot_done(ws, *, event) -> None:
+    """Serialize a ``oneshot_done`` JSON header; with ``latents`` on it, ONE
+    binary frame follows (raw little-endian float16 ``[1, n_streams, C,
+    L]``, C-order, as ``oneshot_ready``'s second frame). Caller holds the
+    per-WS ``send_lock``."""
+    lat = None
+    if event.latents is not None:
+        lat = np.ascontiguousarray(event.latents, dtype="<f2")
+        if lat.ndim != 4:
+            raise ValueError(f"oneshot latents must be [1, S, C, L], got {lat.shape}")
+    head = {
+        "type": "oneshot_done",
+        "request_id": event.request_id,
+        "version": str(event.version),
+        "seed": int(event.seed),
+        "frames": int(event.frames),
+        "channels": int(event.channels),
+        "sample_rate": int(event.sample_rate),
+        "windows": int(event.windows),
+        "sha256": str(event.sha256),
+        "ms": {str(k): float(v) for k, v in (event.ms or {}).items()},
+    }
+    h = event.latent_header
+    if h is not None:
+        head["latent_header"] = {
+            "n_streams": int(h["n_streams"]),
+            "channels": int(h["channels"]),
+            "frames": int(h["frames"]),
+            "seconds": float(h["seconds"]),
+        }
+    if lat is not None:
+        head["latents"] = {
+            "dtype": "float16",
+            "shape": [int(x) for x in lat.shape],
+            "bytes": int(lat.nbytes),
+        }
+    ws.send(json.dumps(head))
+    if lat is not None:
+        chunked_ws_send(ws, lat.tobytes())

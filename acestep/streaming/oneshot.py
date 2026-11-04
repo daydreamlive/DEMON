@@ -337,6 +337,36 @@ class OneshotResult:
     #: The geometry a held latent must match:
     #: ``{n_streams, channels, frames, seconds}``.
     latent_header: Optional[dict] = None
+    #: True when the render went out progressively (``render_decode``
+    #: "windows": OneshotSlice + OneshotDone on the bus); ``pcm`` is then
+    #: None and no OneshotReady follows.
+    delivered: bool = False
+
+
+def pcm16_from_f16(f16) -> np.ndarray:
+    """The int16 a client makes of float16 slice samples, exactly:
+    ``floor(x * 32767 + 0.5)`` in float64 (exact for every float16),
+    clamped to the int16 range. The one rounding rule ``oneshot_done.sha256``
+    is taken under, so a client in any language reproduces it bit for bit."""
+    a = np.asarray(f16, dtype=np.float16).astype(np.float64)
+    return np.clip(np.floor(a * 32767.0 + 0.5), -32768, 32767).astype("<i2")
+
+
+def oneshot_pcm_sha256(song_f16, n_streams: int) -> str:
+    """``oneshot_done.sha256``: hex sha256 of the assembled song (float16
+    ``[frames, 2 * n_streams]``, stream ``k`` on channels ``2k, 2k + 1``,
+    the slices written in index order) as int16 (:func:`pcm16_from_f16`) in
+    the ``oneshot_ready`` block layout of one version: stream-major, each
+    stream ``[frames, 2]`` interleaved L then R, little-endian. A worker
+    that assembles the slices into that block hashes the same bytes."""
+    import hashlib
+
+    a = np.asarray(song_f16)
+    n = int(n_streams)
+    if a.ndim != 2 or a.shape[1] != 2 * n:
+        raise ValueError(f"song must be [frames, {2 * n}], got {a.shape}")
+    blocks = pcm16_from_f16(a).reshape(a.shape[0], n, 2).transpose(1, 0, 2)
+    return hashlib.sha256(np.ascontiguousarray(blocks).tobytes()).hexdigest()
 
 
 def to_int16(audio) -> np.ndarray:

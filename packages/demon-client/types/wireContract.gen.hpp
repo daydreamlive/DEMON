@@ -575,6 +575,48 @@ namespace event {
     inline constexpr const char* kLatents = "latents";
   }  // namespace oneshot_ready
 
+  namespace oneshot_slice {
+    inline constexpr const char* kType = "oneshot_slice";
+    /** Echo of the oneshot request_id. */
+    inline constexpr const char* kRequestId = "request_id";
+    /** The version's kept id (the id oneshot_ready would carry). */
+    inline constexpr const char* kVersion = "version";
+    inline constexpr const char* kSeed = "seed";
+    /** Window index from 0, in song order. */
+    inline constexpr const char* kIndex = "index";
+    /** Windows in this version. */
+    inline constexpr const char* kCount = "count";
+    /** First delivery-rate frame of the kept slice. */
+    inline constexpr const char* kStartFrame = "start_frame";
+    inline constexpr const char* kFrames = "frames";
+    /** 2 x n_streams; stream k on channels 2k, 2k + 1. */
+    inline constexpr const char* kChannels = "channels";
+    inline constexpr const char* kSampleRate = "sample_rate";
+    /** slice_f16_zstd: the binary frame is a ring slice frame (SLICE_HDR_FMT header, flags SLICE_FLAG_DELTA against a zero basis, num_gens = index) + zstd of the float16 [frames, channels] samples. */
+    inline constexpr const char* kEncoding = "encoding";
+  }  // namespace oneshot_slice
+
+  namespace oneshot_done {
+    inline constexpr const char* kType = "oneshot_done";
+    /** Echo of the oneshot request_id. */
+    inline constexpr const char* kRequestId = "request_id";
+    inline constexpr const char* kVersion = "version";
+    inline constexpr const char* kSeed = "seed";
+    /** The song's length (delivery-rate frames). */
+    inline constexpr const char* kFrames = "frames";
+    inline constexpr const char* kChannels = "channels";
+    inline constexpr const char* kSampleRate = "sample_rate";
+    inline constexpr const char* kWindows = "windows";
+    /** Hex sha256 of the assembled song as int16 floor(x * 32767 + 0.5) (float64, clamped), laid out as one oneshot_ready version: stream-major, each stream [frames, 2] interleaved, little-endian. */
+    inline constexpr const char* kSha256 = "sha256";
+    /** Server wall time: generate, first_slice (DiT end to the first slice), decode, pack, windows_wall. */
+    inline constexpr const char* kMs = "ms";
+    /** As on oneshot_ready. */
+    inline constexpr const char* kLatentHeader = "latent_header";
+    /** {dtype: 'float16', shape: [1, n_streams, C, L], bytes}: present when the request set return_latents; ONE binary frame follows. */
+    inline constexpr const char* kLatents = "latents";
+  }  // namespace oneshot_done
+
   namespace oneshot_failed {
     inline constexpr const char* kType = "oneshot_failed";
     /** Echo of the oneshot request_id. */

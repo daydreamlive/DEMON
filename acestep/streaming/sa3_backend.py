@@ -94,6 +94,66 @@ SA3_LATENT_RATE_HZ = 44100.0 / SA3_SAMPLES_PER_LATENT
 # path can clamp a requested window without an import cycle.
 SA3_MAX_DURATION_S = 120.0
 
+#: The one-shot's windowed decode (``render_decode`` "windows"): a 6 s kept
+#: slice (20 windows over 2:00 instead of 40: decode about 0.61 s vs 0.86 s,
+#: per-stem SNR vs the whole-song decode within 0.05 dB of 3 s kept) and a
+#: decode context per side sized to the SAME-L decoder's measured ~0.5 s
+#: effective field (the ring keeps its 2 s). Two limits: kept * 48000 must
+#: be a multiple of 160 (the exact 147:160 bookkeeping of window_decode_span;
+#: 7.125 s puts every other window half a sample off, 16 dB), and kept plus
+#: context must stay within the window engine's 96 frames (7.5 s needs 100
+#: and lands on the whole-song engine, eager on a pod; 7.12 s is the max).
+ONESHOT_WINDOW_S = 6.0
+ONESHOT_WINDOW_CONTEXT_S = 0.75
+#: ``StreamLayout.render_decode`` values: one whole-song decode per stream,
+#: answered as one ``OneshotReady``; or the ring's windows in song order,
+#: each emitted as it lands (``OneshotSlice``), then ``OneshotDone``.
+RENDER_DECODE_MODES = ("song", "windows")
+#: Guard margin of a windowed decode request (44.1 kHz samples): the
+#: resampler's filter edges land outside the kept slice; 588 * 160 / 147 = 640.
+WINDOW_GUARD_44 = 588
+
+
+def clamp_window_start(start48: int, n48: int, dur48: int) -> int:
+    """The ring's clamp of a window start (delivery rate): inside
+    ``[0, dur48 - n48]``, and 0 when the song is shorter than a window."""
+    return max(0, min(int(start48), max(0, int(dur48) - int(n48))))
+
+
+def window_decode_span(start48: int, n48: int) -> tuple:
+    """The ring's decode request for the kept slice ``[start48, start48 +
+    n48)`` (delivery rate): ``(lo44, total44, lead48)``, the 44.1 kHz
+    start and length handed to the codec (the kept slice plus the guard
+    margin each side, clamped at 0) and the delivery-rate offset of the
+    kept slice inside the resampled request. The 44.1 k <-> 48 k
+    bookkeeping uses the exact 147:160 ratio."""
+    start44 = (int(start48) * SA3_SAMPLE_RATE) // DELIVERY_SAMPLE_RATE
+    n44 = -(-int(n48) * 147 // 160)              # ceil to cover n48 after resample
+    lo44 = max(0, start44 - WINDOW_GUARD_44)
+    lead44 = start44 - lo44
+    total44 = lead44 + n44 + WINDOW_GUARD_44
+    lead48 = (lead44 * DELIVERY_SAMPLE_RATE) // SA3_SAMPLE_RATE
+    return lo44, total44, lead48
+
+
+def oneshot_window_plan(total48: int, n48: int) -> list:
+    """The one-shot's windows over a song of ``total48`` delivery-rate
+    frames, in song order: ``[(start48, frames), ...]``. Window ``i``
+    starts at ``i * n48`` clamped exactly as the ring clamps a window
+    (:func:`clamp_window_start`, so the last one ends at the song's end
+    and overlaps its predecessor), and keeps ``min(n48, total48 -
+    start48)`` frames. Written in order, later over earlier, they tile
+    ``[0, total48)``."""
+    total48, n48 = int(total48), int(n48)
+    if total48 < 1 or n48 < 1:
+        raise ValueError(f"window plan needs total48, n48 >= 1, got {total48}, {n48}")
+    count = -(-total48 // n48)
+    plan = []
+    for i in range(count):
+        s = clamp_window_start(i * n48, n48, total48)
+        plan.append((s, min(n48, total48 - s)))
+    return plan
+
 
 def max_session_duration_s(layout=None) -> float:
     """The render ceiling for a session: an installed stream layout's own
@@ -1928,19 +1988,14 @@ class SA3Backend(DiffusionBackend):
 
         n48 = int(round(self.vae_window * DELIVERY_SAMPLE_RATE))
         dur48 = int(round((self.playable_duration_s() or 0.0) * DELIVERY_SAMPLE_RATE))
-        start48 = int(round(t_start_s * DELIVERY_SAMPLE_RATE))
-        start48 = max(0, min(start48, max(0, dur48 - n48)))
-
-        m44 = 588                                # guard margin; 588*160/147 == 640
-        start44 = (start48 * SA3_SAMPLE_RATE) // DELIVERY_SAMPLE_RATE
-        n44 = -(-n48 * 147 // 160)               # ceil to cover n48 after resample
-        lo44 = max(0, start44 - m44)
-        lead44 = start44 - lo44
-        total44 = lead44 + n44 + m44
+        start48 = clamp_window_start(
+            int(round(t_start_s * DELIVERY_SAMPLE_RATE)), n48, dur48,
+        )
+        lo44, total44, lead48 = window_decode_span(start48, n48)
 
         if self._layout is not None:
             return self._render_stream_windows(
-                latent_btc, start48, n48, lo44, lead44, total44,
+                latent_btc, start48, n48, lo44, lead48, total44,
             )
 
         t0 = time.perf_counter()
@@ -1954,18 +2009,16 @@ class SA3Backend(DiffusionBackend):
             torch.cuda.synchronize()
         self.last_dec_ms += (time.perf_counter() - t0) * 1000
 
-        lead48 = (lead44 * DELIVERY_SAMPLE_RATE) // SA3_SAMPLE_RATE
         pcm48 = audio48[:, lead48:lead48 + n48]
         if pcm48.shape[-1] < n48:
             pcm48 = torch.nn.functional.pad(pcm48, (0, n48 - pcm48.shape[-1]))
         pcm = pcm48.clamp(-1, 1).cpu().numpy().T  # [N, C]
         return AudioChunk(pcm=pcm, start_sample=start48)
 
-    def _render_stream_windows(self, latent_btc, start48, n48, lo44, lead44, total44):
+    def _render_stream_windows(self, latent_btc, start48, n48, lo44, lead48, total44):
         """:meth:`_render_window_via_codec` under a stream layout: the same
         window geometry, decoded once PER STREAM (a decoder's receptive
         field must never straddle a stream boundary), then mixed."""
-        lead48 = (lead44 * DELIVERY_SAMPLE_RATE) // SA3_SAMPLE_RATE
         t0 = time.perf_counter()
         streams = self._render_stream_audio(
             latent_btc, lo44, total44, start48=start48, n48=n48, lead48=lead48,
@@ -1981,7 +2034,7 @@ class SA3Backend(DiffusionBackend):
     def _render_stream_audio(
         self, latent_btc: torch.Tensor, start44: int, n44: int, *,
         start48: int, n48: int, lead48: int = 0, streams=None,
-        decode_seed=None,
+        decode_seed=None, context_sec=None,
     ) -> torch.Tensor:
         """THE per-stream audio producer of a stacked latent: the ring's
         window (``render_window``) and a one-shot version (the whole song)
@@ -1994,10 +2047,14 @@ class SA3Backend(DiffusionBackend):
         without ``decode_window`` decodes the whole stream and crops),
         clamped, then ONE delivery resample for all of them, kept from
         ``lead48`` (the guard margin before ``start48``) for ``n48``.
-        ``decode_seed`` pins the decode RNG of a codec that takes it."""
+        ``decode_seed`` pins the decode RNG of a codec that takes it.
+        ``context_sec`` (the one-shot's windows) is handed to
+        ``decode_window`` as its decode context per side; None (the ring,
+        and the whole-song one-shot) calls it exactly as before."""
         import torchaudio
 
         parts = self._stream_slices(latent_btc.movedim(1, 2))
+        window_kw = {} if context_sec is None else {"context_sec": float(context_sec)}
         index = tuple(range(len(parts))) if streams is None else tuple(streams)
         rows: list = [None] * len(index)
         decoded, decoded_at = [], []
@@ -2011,7 +2068,7 @@ class SA3Backend(DiffusionBackend):
                 rows[j] = torch.from_numpy(np.clip(pcm, -1.0, 1.0))
                 continue
             if window is not None:
-                audio_ct = window(parts[k], int(start44), int(n44))
+                audio_ct = window(parts[k], int(start44), int(n44), **window_kw)
             else:
                 full = self.codec.decode_full(parts[k], decode_seed=decode_seed)
                 audio_ct = full[:, int(start44):int(start44) + int(n44)]
@@ -2042,7 +2099,25 @@ class SA3Backend(DiffusionBackend):
 
     # ---- one-shot renders (Capabilities.oneshot) -------------------------------
 
-    def render_oneshot(self, request, *, store=None):
+    def render_decode_mode(self) -> str:
+        """The one-shot's decode: the layout's ``render_decode`` (a value or
+        a no-argument callable read per request); "song" without a layout
+        or a value. Anything else is refused loudly."""
+        layout = self._layout
+        value = getattr(layout, "render_decode", None) if layout is not None else None
+        if callable(value):
+            value = value()
+        mode = "song" if value is None else str(value).strip().lower()
+        if mode not in RENDER_DECODE_MODES:
+            from acestep.streaming.oneshot import OneshotError
+
+            raise OneshotError(
+                f"render_decode must be one of {', '.join(RENDER_DECODE_MODES)}, "
+                f"got {value!r}"
+            )
+        return mode
+
+    def render_oneshot(self, request, *, store=None, emit=None):
         """Whole renders of a render-only session: per version, the ring's
         own generation (:meth:`_prepare_tick` + the ring's SlotRequest on a
         depth-1 StreamPipeline, ticked to completion), the ring's per-stream
@@ -2063,6 +2138,14 @@ class SA3Backend(DiffusionBackend):
 
         ``request.return_latents``: every version's full latent comes back
         as float16 ``[V, n_streams, C, L]`` in ``latents``.
+
+        ``emit`` (the session's bus publish) with :meth:`render_decode_mode`
+        "windows" on a plain render: each version is denoised, then decoded
+        in the ring's windows in song order (:meth:`_emit_oneshot_windows`),
+        each window published as an :class:`OneshotSlice` as its streams
+        land and the version closed by an :class:`OneshotDone`; the result
+        then carries no PCM (``delivered``). A redo, or no ``emit``, takes
+        the whole-song path.
 
         Session-thread only (the runner's, or a render-only session's)."""
         from acestep.streaming.oneshot import KEPT, OneshotError, OneshotResult, to_int16
@@ -2114,6 +2197,10 @@ class SA3Backend(DiffusionBackend):
         )
 
         sync = torch.cuda.synchronize if torch.cuda.is_available() else (lambda: None)
+        if emit is not None and redo is None and self.render_decode_mode() == "windows":
+            return self._oneshot_windows(
+                request, store, base, seeds, version_controls, frames, emit, sync,
+            )
         t0 = time.perf_counter()
         # Denoise = the ring: one SlotRequest per version on a depth-1
         # StreamPipeline, ticked to completion (the DiT is batch 1 under a
@@ -2202,6 +2289,161 @@ class SA3Backend(DiffusionBackend):
                 "seconds": total / DELIVERY_SAMPLE_RATE,
             },
         )
+
+    def _oneshot_windows(
+        self, request, store, base, seeds, version_controls, frames, emit, sync,
+    ):
+        """:meth:`render_oneshot` under ``render_decode`` "windows": per
+        version, the ring's denoise, its kept id, then its windows
+        (:meth:`_emit_oneshot_windows`) before the next version denoises.
+        Returns an ``OneshotResult`` without PCM (``delivered``): every
+        byte went out on ``emit``."""
+        from acestep.streaming.oneshot import OneshotError, OneshotResult
+
+        if getattr(self.codec, "decode_window", None) is None:
+            raise OneshotError(
+                "render_decode windows needs a windowed codec (decode_window); "
+                f"this session's is {type(self.codec).__name__}"
+            )
+        n = self._n_streams
+        whole44 = (frames // n) * SA3_SAMPLES_PER_LATENT
+        whole48 = -(-whole44 * DELIVERY_SAMPLE_RATE // SA3_SAMPLE_RATE)
+        total = int(round(float(self.playable_duration_s() or 0.0) * DELIVERY_SAMPLE_RATE))
+        if total <= 0 or total > whole48:
+            total = whole48
+        header = {
+            "n_streams": n,
+            "channels": int(getattr(self.adapter, "latent_channels", 256)),
+            "frames": frames // n,
+            "seconds": total / DELIVERY_SAMPLE_RATE,
+        }
+        self._oneshot_pipeline_ready()
+        ids, gen_ms, dec_ms, pack_ms = [], 0.0, 0.0, 0.0
+        for seed in seeds:
+            controls = dict(base)
+            if version_controls is not None:
+                controls.update(version_controls(int(seed)))
+            controls["seed"] = float(seed)
+            t0 = time.perf_counter()
+            lat = self._oneshot_latent(controls)
+            sync()
+            t1 = time.perf_counter()
+            vid = store.put(lat.movedim(1, 2), n_streams=n, seed=int(seed))
+            ids.append(vid)
+            ms = self._emit_oneshot_windows(
+                request, vid, int(seed), lat, total, header, emit, sync,
+                generate_ms=(t1 - t0) * 1000.0,
+            )
+            gen_ms += (t1 - t0) * 1000.0
+            dec_ms += ms["decode"]
+            pack_ms += ms["pack"]
+        dit_obj = self.adapter.dit
+        describe = getattr(dit_obj, "describe", None)
+        return OneshotResult(
+            pcm=None,
+            sample_rate=DELIVERY_SAMPLE_RATE,
+            ids=tuple(ids),
+            seeds=tuple(seeds),
+            streams=tuple(range(n)),
+            ms={
+                "generate": round(gen_ms, 1),
+                "decode": round(dec_ms, 1),
+                "pack": round(pack_ms, 1),
+            },
+            seconds=total / DELIVERY_SAMPLE_RATE,
+            dit=describe() if callable(describe) else type(dit_obj).__name__,
+            latent_header=header,
+            delivered=True,
+        )
+
+    def _emit_oneshot_windows(
+        self, request, vid, seed, lat, total, header, emit, sync, *, generate_ms,
+    ) -> dict:
+        """One version's windowed decode: :func:`oneshot_window_plan` over
+        the song (kept ONESHOT_WINDOW_S, the ring's clamp), each window the
+        ring's per-stream producer (:meth:`_render_stream_audio` with the
+        guard margins of :func:`window_decode_span`, decode context
+        ONESHOT_WINDOW_CONTEXT_S per side), its streams side by side as the
+        ring's channels (stream ``k`` on ``2k, 2k + 1``), float16, published
+        as an :class:`OneshotSlice` the moment it lands. Then one
+        :class:`OneshotDone` carrying the sha256 of the assembled song
+        (:func:`~acestep.streaming.oneshot.oneshot_pcm_sha256`). Returns the
+        version's ms (generate, first_slice, decode, pack, windows_wall)."""
+        from acestep.streaming.events import OneshotDone, OneshotSlice
+        from acestep.streaming.oneshot import oneshot_pcm_sha256
+
+        n = self._n_streams
+        ch = 2 * n
+        n48 = int(round(ONESHOT_WINDOW_S * DELIVERY_SAMPLE_RATE))
+        plan = oneshot_window_plan(total, n48)
+        song = np.zeros((total, ch), dtype=np.float16)
+        t1 = time.perf_counter()
+        first_ms = None
+        pack_s = 0.0
+        for index, (start48, kept) in enumerate(plan):
+            lo44, total44, lead48 = window_decode_span(start48, n48)
+            audio = self._render_stream_audio(
+                lat, lo44, total44, start48=start48, n48=n48, lead48=lead48,
+                decode_seed=int(seed), context_sec=ONESHOT_WINDOW_CONTEXT_S,
+            )                                                      # [S, n48, 2]
+            tp = time.perf_counter()
+            pcm = np.ascontiguousarray(
+                audio[:, :kept].permute(1, 0, 2).reshape(kept, ch)
+                .to(torch.float16).cpu().numpy()
+            )
+            song[start48:start48 + kept] = pcm
+            pack_s += time.perf_counter() - tp
+            emit(OneshotSlice(
+                request_id=request.request_id,
+                version=vid,
+                seed=int(seed),
+                index=index,
+                count=len(plan),
+                start_frame=int(start48),
+                frames=int(kept),
+                channels=ch,
+                sample_rate=DELIVERY_SAMPLE_RATE,
+                pcm=pcm,
+            ))
+            if first_ms is None:
+                first_ms = (time.perf_counter() - t1) * 1000.0
+        sync()
+        t2 = time.perf_counter()
+        sha = oneshot_pcm_sha256(song, n)
+        latents = None
+        if getattr(request, "return_latents", False):
+            latents = np.stack([
+                torch.stack(self._stream_slices(lat.movedim(1, 2)), dim=0)[:, 0]
+                .to(device="cpu", dtype=torch.float16).numpy()
+            ])                                                     # [1, S, C, L]
+        t3 = time.perf_counter()
+        ms = {
+            "generate": round(generate_ms, 1),
+            "first_slice": round(first_ms or 0.0, 1),
+            "decode": round((t2 - t1 - pack_s) * 1000.0, 1),
+            "pack": round((pack_s + (t3 - t2)) * 1000.0, 1),
+            "windows_wall": round((t2 - t1) * 1000.0, 1),
+        }
+        emit(OneshotDone(
+            request_id=request.request_id,
+            version=vid,
+            seed=int(seed),
+            frames=int(total),
+            channels=ch,
+            sample_rate=DELIVERY_SAMPLE_RATE,
+            windows=len(plan),
+            sha256=sha,
+            ms=ms,
+            latent_header=dict(header),
+            latents=latents,
+        ))
+        logger.info(
+            "oneshot_windows id={} version={} windows={} generate_ms={:.0f} "
+            "first_slice_ms={:.1f} decode_ms={:.0f} wall_ms={:.0f}",
+            request.request_id, vid, len(plan), generate_ms, ms["first_slice"],
+            ms["decode"], ms["windows_wall"],
+        )
+        return ms
 
     def _held_from_client(self, latent, frames: int) -> torch.Tensor:
         """A client's held latent (float16 ``[n_streams, C, L]``) as the

@@ -104,6 +104,8 @@ export type EventName =
   | "bounce_ready"
   | "bounce_failed"
   | "oneshot_ready"
+  | "oneshot_slice"
+  | "oneshot_done"
   | "oneshot_failed"
   | "analysis_state"
   | "audio_in_ack"
@@ -138,6 +140,8 @@ export const EVENT_NAMES: readonly EventName[] = [
   "bounce_ready",
   "bounce_failed",
   "oneshot_ready",
+  "oneshot_slice",
+  "oneshot_done",
   "oneshot_failed",
   "analysis_state",
   "audio_in_ack",
@@ -643,6 +647,48 @@ export interface OneshotReadyEvent {
   latents?: Record<string, unknown>;
 }
 
+export interface OneshotSliceEvent {
+  type: "oneshot_slice";
+  /** Echo of the oneshot request_id. */
+  request_id: string;
+  /** The version's kept id (the id oneshot_ready would carry). */
+  version: string;
+  seed: number;
+  /** Window index from 0, in song order. */
+  index: number;
+  /** Windows in this version. */
+  count: number;
+  /** First delivery-rate frame of the kept slice. */
+  start_frame: number;
+  frames: number;
+  /** 2 x n_streams; stream k on channels 2k, 2k + 1. */
+  channels: number;
+  sample_rate: number;
+  /** slice_f16_zstd: the binary frame is a ring slice frame (SLICE_HDR_FMT header, flags SLICE_FLAG_DELTA against a zero basis, num_gens = index) + zstd of the float16 [frames, channels] samples. */
+  encoding: string;
+}
+
+export interface OneshotDoneEvent {
+  type: "oneshot_done";
+  /** Echo of the oneshot request_id. */
+  request_id: string;
+  version: string;
+  seed: number;
+  /** The song's length (delivery-rate frames). */
+  frames: number;
+  channels: number;
+  sample_rate: number;
+  windows: number;
+  /** Hex sha256 of the assembled song as int16 floor(x * 32767 + 0.5) (float64, clamped), laid out as one oneshot_ready version: stream-major, each stream [frames, 2] interleaved, little-endian. */
+  sha256: string;
+  /** Server wall time: generate, first_slice (DiT end to the first slice), decode, pack, windows_wall. */
+  ms: Record<string, unknown>;
+  /** As on oneshot_ready. */
+  latent_header?: Record<string, unknown>;
+  /** {dtype: 'float16', shape: [1, n_streams, C, L], bytes}: present when the request set return_latents; ONE binary frame follows. */
+  latents?: Record<string, unknown>;
+}
+
 export interface OneshotFailedEvent {
   type: "oneshot_failed";
   /** Echo of the oneshot request_id. */
@@ -845,6 +891,8 @@ export type WireEvent =
   | BounceReadyEvent
   | BounceFailedEvent
   | OneshotReadyEvent
+  | OneshotSliceEvent
+  | OneshotDoneEvent
   | OneshotFailedEvent
   | AnalysisStateEvent
   | AudioInAckEvent
