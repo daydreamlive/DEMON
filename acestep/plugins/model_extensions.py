@@ -288,6 +288,15 @@ class StreamLayout:
     ``oneshot_slice`` the moment it lands, then ``oneshot_done``. A redo
     always takes "song".
 
+    ``carried_latent() -> [1, C, n_streams * L] | None``: asked once after
+    every swap's ``encode_source``. A tensor (SA3-native, at the swap's
+    geometry) becomes the latent the runner renders until the first slot
+    of the new source finishes, in place of nothing (for example the
+    finished latent a grown session already had, continued over its new
+    span). ``None`` (or the field absent) keeps today's swap: nothing is
+    rendered until a new slot lands. A layout returns it once and clears
+    it.
+
     Each stream is decoded separately: a decoder's receptive field would
     otherwise bleed across stream boundaries.
     """
@@ -309,6 +318,7 @@ class StreamLayout:
     keep_mask: Callable | None = None
     keep_overwrite: Callable | bool = False
     render_decode: Callable | str | None = None
+    carried_latent: Callable | None = None
 
     def __post_init__(self):
         if int(self.n_streams) < 1:

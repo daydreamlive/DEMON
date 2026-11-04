@@ -535,6 +535,13 @@ COMMANDS: tuple = (
                                   "to the layout's encode_source as keep=; "
                                   "the layout validates it. Absent = no "
                                   "change."),
+            FieldSpec("grow", "dict",
+                      description="Optional in-place grow for a stream "
+                                  "layout, e.g. {from_s: 16.0} (the session "
+                                  "grows to duration_s from that point, "
+                                  "keeping what it already made). Handed to "
+                                  "the layout's encode_source as grow=; the "
+                                  "layout validates it. Absent = no change."),
         ),
         binary=True,
         binary_optional=True,

@@ -763,11 +763,10 @@ class SA3Backend(DiffusionBackend):
             prompt_tags=prompt,
             prompt_tags_b=prompt_b,
             source_encoder=_source_encoder,
-            # A stream layout fixes its own geometry (the stacked window
-            # and its accelerated engine are built together), so the
-            # swap-resize path is off there: a swap re-encodes the
-            # source at the fixed geometry instead.
-            resizer=_resizer if layout is None else None,
+            # Swap-resize runs under a stream layout too: the resizer's
+            # make_dit reaches the layout's own make_dit at the new
+            # stacked length, which picks the engine for it.
+            resizer=_resizer,
             stream_layout=layout,
             # D6a: the eager DiT module stays resident on the context
             # even when make_dit returned a TRT wrapper — the interim
@@ -1262,7 +1261,7 @@ class SA3Backend(DiffusionBackend):
 
     def handle_swap_source(self, waveform, sample_rate,
                            duration_s: Optional[float] = None,
-                           keep=None) -> Optional[int]:
+                           keep=None, grow=None) -> Optional[int]:
         """Re-anchor the session on a new source (the session's
         backend-owned ``swap_source`` hook, dispatched from
         ``_apply_swap_if_pending`` on the runner thread). SAME-encodes
@@ -1287,6 +1286,11 @@ class SA3Backend(DiffusionBackend):
         ``keep`` (the wire's optional ``keep`` field) is handed to a stream
         layout's ``encode_source`` as ``keep=`` (the layout parses it; see
         ``StreamLayout.keep_mask``). Absent, the encode call is unchanged.
+        ``grow`` (the wire's optional ``grow`` field) reaches it the same
+        way, as ``grow=``. After the encode a layout's ``carried_latent``
+        is asked once: a tensor at the new stacked length becomes the
+        cached latent the runner renders until the first new slot lands
+        (instead of nothing).
 
         In-flight pipeline slots were initialised from the old anchor
         and finish on it; what emerges from them is a cover of the
@@ -1380,13 +1384,40 @@ class SA3Backend(DiffusionBackend):
             # session layer publishes SwapFailed and nothing moved). The
             # resizer is pure, so there is nothing of the new geometry to
             # roll back here.
-            latent_bct = (
-                self._source_encoder(waveform, sample_rate, sample_size)
-                if keep is None
-                else self._source_encoder(waveform, sample_rate, sample_size, keep=keep)
+            enc_kw = {}
+            if keep is not None:
+                enc_kw["keep"] = keep
+            if grow is not None:
+                enc_kw["grow"] = grow
+            latent_bct = self._source_encoder(
+                waveform, sample_rate, sample_size, **enc_kw,
             )
             encode_ms = (time.perf_counter() - t0) * 1000
             latent_btc = latent_bct.movedim(1, 2).contiguous()
+            # The layout's carried latent (asked once per swap, it clears
+            # itself): the latent the session already had, at the swap's
+            # stacked length. Accepted only at the geometry this swap
+            # publishes; anything else keeps today's nothing-to-render.
+            carried_btc = None
+            carried_hook = getattr(self._layout, "carried_latent", None)
+            if callable(carried_hook):
+                carried = carried_hook()
+                want = int(
+                    (new_geom["cond"] if new_geom else self._cond).latent_frames
+                )
+                if (
+                    isinstance(carried, torch.Tensor)
+                    and carried.dim() == 3
+                    and int(carried.shape[0]) == 1
+                    and int(carried.shape[-1]) == want
+                    and int(carried.shape[1]) == int(latent_bct.shape[1])
+                ):
+                    carried_btc = carried.movedim(1, 2).contiguous()
+                elif carried is not None:
+                    logger.warning(
+                        "sa3_swap_grow_carried_dropped shape={} want_frames={}",
+                        tuple(getattr(carried, "shape", ())), want,
+                    )
             # Publish atomically w.r.t. the command thread's conditioning
             # swaps (same lock discipline as handle_set_prompt); the runner
             # reads the anchor on its own thread, which is also the thread
@@ -1499,8 +1530,13 @@ class SA3Backend(DiffusionBackend):
                 # would play the previous song over the new one until the
                 # first new-anchor slot emerges; without it the runner writes
                 # nothing and the client plays the swapped-in source instead.
-                self._last_result_latent = None
+                # A layout's carried latent IS this session's own song at
+                # the new geometry, so it is rendered until the first new
+                # slot lands.
+                self._last_result_latent = carried_btc
                 self._current_result = None
+                if carried_btc is not None:
+                    self._rendered_for = None
             if new_geom is not None:
                 # Re-assert the D6a preference against the NEW accelerated
                 # DiT (LoRA active -> eager module, which is size-agnostic).
@@ -1508,6 +1544,11 @@ class SA3Backend(DiffusionBackend):
                 # can't be read half-swapped by a LoRA rendezvous.
                 self._sync_dit_for_lora()
 
+        if grow is not None or carried_btc is not None:
+            logger.info(
+                "sa3_swap_grow carried={} latent_frames={}",
+                int(carried_btc is not None), int(self._cond.latent_frames),
+            )
         if dropped_mirror:
             logger.warning(
                 "sa3_refit_mirror_dropped reason=swap_resize (LoRA falls "

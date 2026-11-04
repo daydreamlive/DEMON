@@ -218,6 +218,8 @@ namespace command {
     inline constexpr const char* kPcm = "pcm";
     /** Optional per-stream keep for a stream layout, e.g. {drums: [[s0, e0], [s1, e1]]} (a list of [start_s, end_s] ranges; a single [start_s, end_s] is one range): the stream keeps its upload on those ranges and the layout generates around them. Handed to the layout's encode_source as keep=; the layout validates it. Absent = no change. */
     inline constexpr const char* kKeep = "keep";
+    /** Optional in-place grow for a stream layout, e.g. {from_s: 16.0} (the session grows to duration_s from that point, keeping what it already made). Handed to the layout's encode_source as grow=; the layout validates it. Absent = no change. */
+    inline constexpr const char* kGrow = "grow";
 
     namespace stem_source_mode {
       inline constexpr const char* kFull = "full";

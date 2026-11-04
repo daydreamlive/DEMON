@@ -2463,6 +2463,7 @@ def _handle_client_body(
                     stem_source_mode=data.get("stem_source_mode"),
                     duration_s=data.get("duration_s"),
                     keep=data.get("keep"),
+                    grow=data.get("grow"),
                     origin=origin,
                 )
             elif mtype == "write_audio":
