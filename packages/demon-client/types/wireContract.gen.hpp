@@ -598,6 +598,8 @@ namespace event {
     inline constexpr const char* kEncoding = "encoding";
     /** On the first slice of a request that set `mix`: {mix, streams} over the whole version's float16 samples: mix = max |L|, |R| of the streams summed at the mix weights; streams = max |x| of each stream, in stream order. */
     inline constexpr const char* kPeaks = "peaks";
+    /** A request that set `mix`: this slice is the version's mix (the streams summed at the weights, stereo, channels 2, not clamped), sent over the whole window plan before the streams' slices; index counts the mix's own windows. */
+    inline constexpr const char* kMix = "mix";
   }  // namespace oneshot_slice
 
   namespace oneshot_done {

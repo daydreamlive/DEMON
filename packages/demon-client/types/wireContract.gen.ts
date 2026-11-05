@@ -670,6 +670,8 @@ export interface OneshotSliceEvent {
   encoding: string;
   /** On the first slice of a request that set `mix`: {mix, streams} over the whole version's float16 samples: mix = max |L|, |R| of the streams summed at the mix weights; streams = max |x| of each stream, in stream order. */
   peaks?: Record<string, unknown>;
+  /** A request that set `mix`: this slice is the version's mix (the streams summed at the weights, stereo, channels 2, not clamped), sent over the whole window plan before the streams' slices; index counts the mix's own windows. */
+  mix?: boolean;
 }
 
 export interface OneshotDoneEvent {

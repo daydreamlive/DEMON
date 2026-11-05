@@ -304,6 +304,8 @@ def send_oneshot_slice(ws, *, event, zctx) -> None:
     peaks = getattr(event, "peaks", None)
     if peaks is not None:
         head["peaks"] = {"mix": float(peaks["mix"]), "streams": [float(v) for v in peaks["streams"]]}
+    if getattr(event, "mix", False):
+        head["mix"] = True
     ws.send(json.dumps(head))
     chunked_ws_send(ws, frame)
 
