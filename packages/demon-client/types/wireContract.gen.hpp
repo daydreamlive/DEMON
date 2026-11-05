@@ -292,6 +292,8 @@ namespace command {
     inline constexpr const char* kRedo = "redo";
     /** Also return every version's full latent (every stream, also on a redo): a second binary frame after the PCM, announced by oneshot_ready.latents. */
     inline constexpr const char* kReturnLatents = "return_latents";
+    /** Per-stream weights (numbers >= 0, one per stream), under render_decode "windows": each version is decoded whole before its first oneshot_slice goes out, and that slice carries the version's `peaks`. Ignored by the song path. */
+    inline constexpr const char* kMix = "mix";
   }  // namespace oneshot
 
 }  // namespace command
@@ -594,6 +596,8 @@ namespace event {
     inline constexpr const char* kSampleRate = "sample_rate";
     /** slice_f16_zstd: the binary frame is a ring slice frame (SLICE_HDR_FMT header, flags SLICE_FLAG_DELTA against a zero basis, num_gens = index) + zstd of the float16 [frames, channels] samples. */
     inline constexpr const char* kEncoding = "encoding";
+    /** On the first slice of a request that set `mix`: {mix, streams} over the whole version's float16 samples: mix = max |L|, |R| of the streams summed at the mix weights; streams = max |x| of each stream, in stream order. */
+    inline constexpr const char* kPeaks = "peaks";
   }  // namespace oneshot_slice
 
   namespace oneshot_done {

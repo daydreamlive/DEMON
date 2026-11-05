@@ -383,6 +383,8 @@ export interface OneshotCommand {
   redo?: Record<string, unknown> | null;
   /** Also return every version's full latent (every stream, also on a redo): a second binary frame after the PCM, announced by oneshot_ready.latents. */
   return_latents?: boolean;
+  /** Per-stream weights (numbers >= 0, one per stream), under render_decode "windows": each version is decoded whole before its first oneshot_slice goes out, and that slice carries the version's `peaks`. Ignored by the song path. */
+  mix?: unknown[] | null;
 }
 
 // ── Event payloads (server → client) ──
@@ -666,6 +668,8 @@ export interface OneshotSliceEvent {
   sample_rate: number;
   /** slice_f16_zstd: the binary frame is a ring slice frame (SLICE_HDR_FMT header, flags SLICE_FLAG_DELTA against a zero basis, num_gens = index) + zstd of the float16 [frames, channels] samples. */
   encoding: string;
+  /** On the first slice of a request that set `mix`: {mix, streams} over the whole version's float16 samples: mix = max |L|, |R| of the streams summed at the mix weights; streams = max |x| of each stream, in stream order. */
+  peaks?: Record<string, unknown>;
 }
 
 export interface OneshotDoneEvent {

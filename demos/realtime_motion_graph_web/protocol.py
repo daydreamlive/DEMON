@@ -725,6 +725,13 @@ COMMANDS: tuple = (
                                   "(every stream, also on a redo): a second "
                                   "binary frame after the PCM, announced by "
                                   "oneshot_ready.latents."),
+            FieldSpec("mix", "list", nullable=True,
+                      description="Per-stream weights (numbers >= 0, one per "
+                                  "stream), under render_decode \"windows\": "
+                                  "each version is decoded whole before its "
+                                  "first oneshot_slice goes out, and that "
+                                  "slice carries the version's `peaks`. "
+                                  "Ignored by the song path."),
         ),
         binary=True,
         binary_optional=True,
@@ -1201,6 +1208,13 @@ EVENTS: tuple = (
                                   "flags SLICE_FLAG_DELTA against a zero "
                                   "basis, num_gens = index) + zstd of the "
                                   "float16 [frames, channels] samples."),
+            FieldSpec("peaks", "dict",
+                      description="On the first slice of a request that set "
+                                  "`mix`: {mix, streams} over the whole "
+                                  "version's float16 samples: mix = max |L|, "
+                                  "|R| of the streams summed at the mix "
+                                  "weights; streams = max |x| of each "
+                                  "stream, in stream order."),
         ),
         binary_follow=True,
         description="One window of a one-shot version under the session's "

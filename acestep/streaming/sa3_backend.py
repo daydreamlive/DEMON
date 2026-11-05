@@ -2306,6 +2306,9 @@ class SA3Backend(DiffusionBackend):
                 f"this session's is {type(self.codec).__name__}"
             )
         n = self._n_streams
+        mix = getattr(request, "mix", None)
+        if mix is not None and len(mix) != n:
+            raise OneshotError(f"mix has {len(mix)} weights, this session has {n} streams")
         whole44 = (frames // n) * SA3_SAMPLES_PER_LATENT
         whole48 = -(-whole44 * DELIVERY_SAMPLE_RATE // SA3_SAMPLE_RATE)
         total = int(round(float(self.playable_duration_s() or 0.0) * DELIVERY_SAMPLE_RATE))
@@ -2368,7 +2371,12 @@ class SA3Backend(DiffusionBackend):
         as an :class:`OneshotSlice` the moment it lands. Then one
         :class:`OneshotDone` carrying the sha256 of the assembled song
         (:func:`~acestep.streaming.oneshot.oneshot_pcm_sha256`). Returns the
-        version's ms (generate, first_slice, decode, pack, windows_wall)."""
+        version's ms (generate, first_slice, decode, pack, windows_wall).
+
+        With ``request.mix`` every window is decoded before the first goes
+        out, and the first carries the version's peaks (``OneshotSlice.peaks``:
+        its float16 samples, the streams summed at the mix's weights, and each
+        stream), taken on the device as the windows land."""
         from acestep.streaming.events import OneshotDone, OneshotSlice
         from acestep.streaming.oneshot import oneshot_pcm_sha256
 
@@ -2377,6 +2385,9 @@ class SA3Backend(DiffusionBackend):
         n48 = int(round(ONESHOT_WINDOW_S * DELIVERY_SAMPLE_RATE))
         plan = oneshot_window_plan(total, n48)
         song = np.zeros((total, ch), dtype=np.float16)
+        mix = getattr(request, "mix", None)
+        held: list = []       # with mix: the slices, out once the peaks are known
+        peak_mix = peak_streams = weights = None
         t1 = time.perf_counter()
         first_ms = None
         pack_s = 0.0
@@ -2393,7 +2404,7 @@ class SA3Backend(DiffusionBackend):
             )
             song[start48:start48 + kept] = pcm
             pack_s += time.perf_counter() - tp
-            emit(OneshotSlice(
+            sl = OneshotSlice(
                 request_id=request.request_id,
                 version=vid,
                 seed=int(seed),
@@ -2404,9 +2415,30 @@ class SA3Backend(DiffusionBackend):
                 channels=ch,
                 sample_rate=DELIVERY_SAMPLE_RATE,
                 pcm=pcm,
-            ))
-            if first_ms is None:
-                first_ms = (time.perf_counter() - t1) * 1000.0
+            )
+            if mix is None:
+                emit(sl)
+                if first_ms is None:
+                    first_ms = (time.perf_counter() - t1) * 1000.0
+                continue
+            # The window as it goes out (float16), on the device: [S, kept, 2].
+            a = audio[:, :kept].to(torch.float16).float()
+            if weights is None:
+                weights = torch.tensor(mix, dtype=torch.float32, device=a.device).view(n, 1, 1)
+            m = (a * weights).sum(0).abs().amax()
+            st = a.abs().amax(dim=(1, 2))
+            peak_mix = m if peak_mix is None else torch.maximum(peak_mix, m)
+            peak_streams = st if peak_streams is None else torch.maximum(peak_streams, st)
+            held.append(sl)
+        if held:
+            peaks = {
+                "mix": float(peak_mix),
+                "streams": [float(v) for v in peak_streams.cpu()],
+            }
+            emit(replace(held[0], peaks=peaks))
+            first_ms = (time.perf_counter() - t1) * 1000.0
+            for sl in held[1:]:
+                emit(sl)
         sync()
         t2 = time.perf_counter()
         sha = oneshot_pcm_sha256(song, n)
