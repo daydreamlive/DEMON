@@ -837,6 +837,15 @@ def _analysis_item_wire(item) -> dict:
     return out
 
 
+def _codec_basis(buf: np.ndarray, render_only: bool) -> np.ndarray:
+    """The buffer a session's SliceCodec copies as its delta basis. A
+    render-only session sends no ring slices (its one-shots go out as
+    oneshot_slice frames), so the basis is never read: one frame stands in
+    for the window (a 2:00 multistem window is 230 MB of float32, and the
+    copy held the GIL while the session opened)."""
+    return buf[:1] if render_only else buf
+
+
 def _derived_window(config_dict: dict, buf: np.ndarray, kept: bool = False) -> str | None:
     """The window frame a ``derived_windows`` client builds itself instead
     of receiving: "kept" (a swap that leaves the playing buffer as it is),
@@ -1649,7 +1658,7 @@ def _handle_client_body(
     # ---- Per-subscriber transport state ----
 
     send_lock = threading.Lock()
-    codec = SliceCodec(streaming.initial_buffer)
+    codec = SliceCodec(_codec_basis(streaming.initial_buffer, streaming.render_only()))
     # The one-shot's windowed slices (render_decode "windows"): raw frames,
     # no mirror, so one compressor serves every version of this socket.
     oneshot_zctx = zstd.ZstdCompressor(level=1)
@@ -1814,7 +1823,7 @@ def _handle_client_body(
                 # A kept buffer is the one the client plays and this mirror
                 # already tracks; any other becomes the new delta basis.
                 if window != "kept":
-                    codec.replace_mirror(new_src_np)
+                    codec.replace_mirror(_codec_basis(new_src_np, streaming.render_only()))
                 if event.stems is not None:
                     send_stem_payload(
                         ws,
