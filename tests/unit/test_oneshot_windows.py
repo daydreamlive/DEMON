@@ -398,7 +398,7 @@ def test_slice_wire_frame_is_a_ring_slice_against_zeros():
         "sample_rate": 48000, "encoding": "slice_f16_zstd",
     }
     spec = next(e for e in protocol.EVENTS if e.name == "oneshot_slice")
-    assert set(head) - {"type"} == {f.name for f in spec.fields} - {"peaks"} and spec.binary_follow
+    assert set(head) - {"type"} == {f.name for f in spec.fields} - {"peaks", "mix"} and spec.binary_follow
     frame = sent[1]
     flags, start, frames, ch, tick_ms, dec_ms, num_gens = struct.unpack(
         protocol.SLICE_HDR_FMT, frame[:protocol.SLICE_HDR_SIZE])
@@ -407,35 +407,47 @@ def test_slice_wire_frame_is_a_ring_slice_against_zeros():
     assert body == pcm.astype("<f2").tobytes()
 
 
-def test_mix_holds_the_slices_and_the_first_carries_the_peaks(small_windows):
-    """With ``mix`` the slices are the same bytes in the same order; the
-    first carries the whole version's peaks (its float16 samples: the
-    streams summed at the weights, and each stream)."""
+def test_mix_sends_the_mix_first_then_the_whole_song_streams(small_windows):
+    """With ``mix`` each version is decoded whole (the song path's producer)
+    and goes out as its mix first (stereo, the streams summed at the weights,
+    the first slice carrying the whole version's peaks), then its streams,
+    over the windowed path's plan, with the assembled song's sha."""
     weights = [1.0, 0.35, 0.0][:LT.N_STREAMS]
     plain, mixed = [], []
     _backend("windows")[0].render_oneshot(_req(seeds=(4, 5)), store=KeptLatents(), emit=plain.append)
     _backend("windows")[0].render_oneshot(_req(seeds=(4, 5), mix=weights), store=KeptLatents(), emit=mixed.append)
-    assert [type(e).__name__ for e in mixed] == [type(e).__name__ for e in plain]
-    for a, b in zip(plain, mixed):
-        if isinstance(a, OneshotSlice):
-            assert (a.index, a.start_frame, a.frames, a.version[:0]) == (b.index, b.start_frame, b.frames, "")
-            assert np.array_equal(a.pcm, b.pcm)
-            assert a.peaks is None and (b.peaks is None) == (b.index != 0)
-        else:
-            assert a.sha256 == b.sha256
+    per = len(plain) // 2                                   # a version: its slices, then its done
+    n = per - 1
+    refs = _backend("song")[0].render_oneshot(_req(seeds=(4, 5)), store=KeptLatents()).pcm  # [V, S, N, 2] int16
     for v in range(2):
-        part = mixed[v * 5:(v + 1) * 5]
-        total = part[-1].frames
+        p = plain[v * per:(v + 1) * per]
+        m = mixed[v * (2 * per - 1):(v + 1) * (2 * per - 1)]
+        mix, streams, done = m[:n], m[n:2 * n], m[-1]
+        assert all(isinstance(sl, OneshotSlice) and sl.mix and sl.channels == 2 for sl in mix)
+        assert [sl.index for sl in mix] == list(range(n)) and all(sl.count == n for sl in mix)
+        for a, b, c in zip(p[:n], streams, mix):
+            assert not b.mix and b.peaks is None
+            assert (a.index, a.start_frame, a.frames, a.channels) == (b.index, b.start_frame, b.frames, b.channels)
+            assert (c.start_frame, c.frames) == (b.start_frame, b.frames)
+        total = done.frames
         song = np.zeros((total, 2 * LT.N_STREAMS), np.float16)
-        for sl in part[:-1]:
+        for sl in streams:
             song[sl.start_frame:sl.start_frame + sl.frames] = sl.pcm
+        assert done.sha256 == oneshot_pcm_sha256(song, LT.N_STREAMS) and done.windows == n
+        # The streams are the song path's render (to its float16 step: 8 LSB of rounding at |x| < 1).
+        got = pcm16_from_f16(song).reshape(total, LT.N_STREAMS, 2).transpose(1, 0, 2)
+        assert np.abs(got.astype(np.int32) - refs[v].astype(np.int32)).max() <= 16
+        # The mix is the streams it precedes, summed at the weights.
+        for a, sl in zip(streams, mix):
+            x = a.pcm.astype(np.float32).reshape(a.frames, LT.N_STREAMS, 2)
+            want = (x * np.array(weights, np.float32)[None, :, None]).sum(1)
+            assert np.allclose(sl.pcm.astype(np.float32), want, atol=2e-3)
         x = song.astype(np.float64).reshape(total, LT.N_STREAMS, 2)
-        want_mix = np.abs((x * np.array(weights)[None, :, None]).sum(1)).max()
-        want_streams = np.abs(x).max(axis=(0, 2))
-        peaks = part[0].peaks
-        assert peaks["mix"] == pytest.approx(want_mix, rel=1e-6)
-        assert peaks["streams"] == pytest.approx(list(want_streams), rel=1e-6)
-        assert part[-1].ms["first_slice"] >= 0
+        peaks = mix[0].peaks
+        assert all(sl.peaks is None for sl in mix[1:])
+        assert peaks["mix"] == pytest.approx(np.abs((x * np.array(weights)[None, :, None]).sum(1)).max(), rel=1e-3)
+        assert peaks["streams"] == pytest.approx(list(np.abs(x).max(axis=(0, 2))), rel=1e-6)
+        assert done.ms["first_slice"] >= 0
 
 
 def test_mix_is_checked():
@@ -448,13 +460,14 @@ def test_mix_is_checked():
         b.render_oneshot(_req(mix=[1.0] * (LT.N_STREAMS + 1)), store=KeptLatents(), emit=lambda e: None)
 
 
-def test_slice_wire_frame_carries_the_peaks_when_set():
-    pcm = np.zeros((4, 10), np.float16)
-    ev = OneshotSlice("r", "v", 3, 0, 5, 0, 4, 10, 48000, pcm, peaks={"mix": 0.9, "streams": [0.5, 0.25, 0, 0, 1]})
+def test_slice_wire_frame_carries_the_peaks_and_the_mix_flag_when_set():
+    pcm = np.zeros((4, 2), np.float16)
+    ev = OneshotSlice("r", "v", 3, 0, 5, 0, 4, 2, 48000, pcm, peaks={"mix": 0.9, "streams": [0.5, 0.25, 0, 0, 1]},
+                      mix=True)
     ws, sent = _ws()
     send_oneshot_slice(ws, event=ev, zctx=zstd.ZstdCompressor(level=1))
     head = json.loads(sent[0])
-    assert head["peaks"] == {"mix": 0.9, "streams": [0.5, 0.25, 0.0, 0.0, 1.0]}
+    assert head["peaks"] == {"mix": 0.9, "streams": [0.5, 0.25, 0.0, 0.0, 1.0]} and head["mix"] is True
     spec = next(e for e in protocol.EVENTS if e.name == "oneshot_slice")
     assert set(head) - {"type"} == {f.name for f in spec.fields}
 

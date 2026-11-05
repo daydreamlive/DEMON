@@ -2373,10 +2373,7 @@ class SA3Backend(DiffusionBackend):
         (:func:`~acestep.streaming.oneshot.oneshot_pcm_sha256`). Returns the
         version's ms (generate, first_slice, decode, pack, windows_wall).
 
-        With ``request.mix`` every window is decoded before the first goes
-        out, and the first carries the version's peaks (``OneshotSlice.peaks``:
-        its float16 samples, the streams summed at the mix's weights, and each
-        stream), taken on the device as the windows land."""
+        With ``request.mix``: :meth:`_emit_oneshot_mix_first` instead."""
         from acestep.streaming.events import OneshotDone, OneshotSlice
         from acestep.streaming.oneshot import oneshot_pcm_sha256
 
@@ -2384,10 +2381,13 @@ class SA3Backend(DiffusionBackend):
         ch = 2 * n
         n48 = int(round(ONESHOT_WINDOW_S * DELIVERY_SAMPLE_RATE))
         plan = oneshot_window_plan(total, n48)
-        song = np.zeros((total, ch), dtype=np.float16)
         mix = getattr(request, "mix", None)
-        held: list = []       # with mix: the slices, out once the peaks are known
-        peak_mix = peak_streams = weights = None
+        if mix is not None:
+            return self._emit_oneshot_mix_first(
+                request, vid, seed, lat, total, header, emit, sync, plan, mix,
+                generate_ms=generate_ms,
+            )
+        song = np.zeros((total, ch), dtype=np.float16)
         t1 = time.perf_counter()
         first_ms = None
         pack_s = 0.0
@@ -2416,31 +2416,84 @@ class SA3Backend(DiffusionBackend):
                 sample_rate=DELIVERY_SAMPLE_RATE,
                 pcm=pcm,
             )
-            if mix is None:
-                emit(sl)
-                if first_ms is None:
-                    first_ms = (time.perf_counter() - t1) * 1000.0
-                continue
-            # The window as it goes out (float16), on the device: [S, kept, 2].
-            a = audio[:, :kept].to(torch.float16).float()
-            if weights is None:
-                weights = torch.tensor(mix, dtype=torch.float32, device=a.device).view(n, 1, 1)
-            m = (a * weights).sum(0).abs().amax()
-            st = a.abs().amax(dim=(1, 2))
-            peak_mix = m if peak_mix is None else torch.maximum(peak_mix, m)
-            peak_streams = st if peak_streams is None else torch.maximum(peak_streams, st)
-            held.append(sl)
-        if held:
-            peaks = {
-                "mix": float(peak_mix),
-                "streams": [float(v) for v in peak_streams.cpu()],
-            }
-            emit(replace(held[0], peaks=peaks))
-            first_ms = (time.perf_counter() - t1) * 1000.0
-            for sl in held[1:]:
-                emit(sl)
+            emit(sl)
+            if first_ms is None:
+                first_ms = (time.perf_counter() - t1) * 1000.0
         sync()
         t2 = time.perf_counter()
+        return self._finish_oneshot_version(
+            request, vid, seed, lat, total, header, emit, plan, song,
+            generate_ms=generate_ms, first_ms=first_ms, t1=t1, t2=t2, pack_s=pack_s,
+        )
+
+    def _emit_oneshot_mix_first(
+        self, request, vid, seed, lat, total, header, emit, sync, plan, mix, *, generate_ms,
+    ) -> dict:
+        """One version for a client that plays the mix as it comes (the
+        request's ``mix`` weights): the whole song decoded at once (the
+        whole-song producer :meth:`render_oneshot` uses: about half the
+        windowed decode's time, and the peaks need every sample before the
+        first slice anyway), then the mix (the streams summed at the weights,
+        stereo, float16) as ``OneshotSlice(mix=True)`` over the window plan,
+        the first carrying the version's peaks, then the streams over the same
+        plan as the windowed path sends them. The mix is a fifth of a window's
+        bytes: on a slow link the first audio is in that much sooner."""
+        from acestep.streaming.events import OneshotSlice
+
+        n = self._n_streams
+        ch = 2 * n
+        whole44 = (int(header["frames"])) * SA3_SAMPLES_PER_LATENT
+        t1 = time.perf_counter()
+        audio = self._render_stream_audio(
+            lat, 0, whole44, start48=0, n48=total, decode_seed=int(seed),
+        )                                                          # [S, N, 2]
+        a16 = audio.to(torch.float16)
+        weights = torch.tensor(mix, dtype=torch.float32, device=a16.device).view(n, 1, 1)
+        mixed = (a16.float() * weights).sum(0)                     # [N, 2], not clamped
+        peaks = {
+            "mix": float(mixed.abs().amax()),
+            "streams": [float(v) for v in a16.float().abs().amax(dim=(1, 2)).cpu()],
+        }
+        sync()
+        tp = time.perf_counter()
+        mix16 = mixed.to(torch.float16).cpu().numpy()
+        song = np.ascontiguousarray(a16.permute(1, 0, 2).reshape(total, ch).cpu().numpy())
+        pack_s = time.perf_counter() - tp
+        first_ms = None
+
+        def slice_of(index, start48, kept, pcm, channels, **extra):
+            return OneshotSlice(
+                request_id=request.request_id, version=vid, seed=int(seed),
+                index=index, count=len(plan), start_frame=int(start48),
+                frames=int(kept), channels=channels,
+                sample_rate=DELIVERY_SAMPLE_RATE, pcm=pcm, **extra,
+            )
+
+        for index, (start48, kept) in enumerate(plan):
+            emit(slice_of(index, start48, kept, mix16[start48:start48 + kept], 2, mix=True,
+                          peaks=peaks if index == 0 else None))
+            if first_ms is None:
+                first_ms = (time.perf_counter() - t1) * 1000.0
+        for index, (start48, kept) in enumerate(plan):
+            emit(slice_of(index, start48, kept, song[start48:start48 + kept], ch))
+        t2 = time.perf_counter()
+        return self._finish_oneshot_version(
+            request, vid, seed, lat, total, header, emit, plan, song,
+            generate_ms=generate_ms, first_ms=first_ms, t1=t1, t2=t2, pack_s=pack_s,
+        )
+
+    def _finish_oneshot_version(
+        self, request, vid, seed, lat, total, header, emit, plan, song, *,
+        generate_ms, first_ms, t1, t2, pack_s,
+    ) -> dict:
+        """A progressively sent version's end: the assembled song's sha256,
+        its latents when asked, one OneshotDone, the log line. Returns the
+        version's ms (generate, first_slice, decode, pack, windows_wall)."""
+        from acestep.streaming.events import OneshotDone
+        from acestep.streaming.oneshot import oneshot_pcm_sha256
+
+        n = self._n_streams
+        ch = 2 * n
         sha = oneshot_pcm_sha256(song, n)
         latents = None
         if getattr(request, "return_latents", False):

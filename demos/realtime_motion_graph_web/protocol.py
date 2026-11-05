@@ -1215,6 +1215,13 @@ EVENTS: tuple = (
                                   "|R| of the streams summed at the mix "
                                   "weights; streams = max |x| of each "
                                   "stream, in stream order."),
+            FieldSpec("mix", "bool",
+                      description="A request that set `mix`: this slice is "
+                                  "the version's mix (the streams summed at "
+                                  "the weights, stereo, channels 2, not "
+                                  "clamped), sent over the whole window plan "
+                                  "before the streams' slices; index counts "
+                                  "the mix's own windows."),
         ),
         binary_follow=True,
         description="One window of a one-shot version under the session's "

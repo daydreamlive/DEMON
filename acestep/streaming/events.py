@@ -379,7 +379,12 @@ class OneshotSlice:
     ``peaks`` (the first slice of a request that set ``mix``, else None):
     the whole version's peaks over its float16 samples, ``{"mix": max |L|,
     |R| of the streams summed at the request's weights, "streams": [max |x|
-    of each stream]}``."""
+    of each stream]}``.
+
+    ``mix`` (a request that set ``mix``): this slice is the version's mix,
+    the streams summed at the request's weights, stereo (``channels`` 2, not
+    clamped), sent over the whole window plan before the streams' slices;
+    its index counts the mix's own 0 .. ``count - 1``."""
     request_id: str
     version: str
     seed: int
@@ -391,6 +396,7 @@ class OneshotSlice:
     sample_rate: int
     pcm: np.ndarray
     peaks: dict | None = None
+    mix: bool = False
 
 
 @dataclass(frozen=True)
