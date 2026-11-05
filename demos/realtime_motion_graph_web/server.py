@@ -16,6 +16,7 @@ Usage:
     python -u -m demos.realtime_motion_graph_web.server --no-backend
 """
 
+import gc
 import json
 import mimetypes
 import os
@@ -1376,6 +1377,14 @@ def main():
         browsable_host, port, mode, no_backend, kiosk,
         default_mode, checkpoint, decoder_accel, vae_accel,
     )
+    # What boot loaded (models, engines and their Python objects) lives as
+    # long as the server. Frozen, the gc.collect() calls a session runs when
+    # it opens and closes no longer walk it: on a multistem host ~750k
+    # objects, ~300 ms a collection before and ~2 ms after, each one holding
+    # the GIL.
+    gc.collect()
+    gc.freeze()
+    logger.info("gc_frozen objects={}", gc.get_freeze_count())
 
     try:
         while True:
