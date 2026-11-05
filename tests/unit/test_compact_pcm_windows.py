@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from acestep.streaming.config import SessionConfig
 from acestep.streaming.source import _decode_audio_msg, _decode_compact_pcm
-from demos.realtime_motion_graph_web.ws_adapter import _derived_window, _server_capabilities
+from demos.realtime_motion_graph_web.ws_adapter import _codec_basis, _derived_window, _server_capabilities
 
 
 def _wide(n: int = 480, ch: int = 10, live=(4, 5)) -> np.ndarray:
@@ -99,6 +99,13 @@ def test_derived_windows_is_opt_in_and_names_what_the_client_builds():
     assert _derived_window(on, silent) == "silent"
     assert _derived_window(on, loud) is None, "audio the client can't derive goes"
     assert _derived_window(on, loud, kept=True) == "kept"
+
+
+def test_a_render_only_codec_holds_one_frame_not_the_window():
+    buf = _wide(n=48)
+    assert _codec_basis(buf, render_only=False) is buf, "a ring session's basis is the window"
+    one = _codec_basis(buf, render_only=True)
+    assert one.shape == (1, 10) and np.shares_memory(one, buf), "a render-only one: a frame, no copy"
 
 
 def test_server_capabilities_advertise_compact_pcm():
