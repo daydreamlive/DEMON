@@ -17,8 +17,8 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 
-InjectFn = Callable[[dict, Optional[bytes]], None]
-"""Push a control message into a session.
+InjectFn = Callable[..., None]
+"""Push a control message into a session: ``inject(data, audio, reply=None)``.
 
 Args:
     data: parsed JSON message in the same shape the browser would send
@@ -26,6 +26,9 @@ Args:
     audio: optional binary frame (channels/samples header + interleaved
         float32 PCM) for messages that need it (``set_timbre_source``,
         ``set_structure_source``, ``swap_source``).
+    reply: optional ``callable(dict)`` that receives the command's direct
+        answer (``extension_tool`` -> ``tool_result``) instead of the
+        session's socket, so the control bus can return it to its caller.
 """
 
 
