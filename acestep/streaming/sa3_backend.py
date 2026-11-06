@@ -54,10 +54,12 @@ plan Phase 5).
 from __future__ import annotations
 
 import inspect
+import json
 import math
 import threading
 import time
 from collections import deque
+from collections.abc import Mapping
 from contextlib import ExitStack
 from dataclasses import replace
 from typing import Callable, Optional
@@ -390,6 +392,12 @@ class SA3Backend(DiffusionBackend):
         self._extension_knob_names = tuple(
             spec.name for spec in (
                 model_extension.knob_specs if model_extension is not None else ()
+            )
+        )
+        self._extension_tool_names = tuple(
+            spec.name for spec in (
+                getattr(model_extension, "tool_specs", ())
+                if model_extension is not None else ()
             )
         )
         # Source anchor for audio-to-audio: engine layout [1, T, 256].
@@ -847,6 +855,62 @@ class SA3Backend(DiffusionBackend):
         }
         if values:
             self._extension_runtime.apply_controls(values)
+
+    def call_extension_tool(self, name: str, args: dict) -> dict:
+        """Hand one tool call to the extension runtime's ``call_tool``.
+
+        The tool counterpart of :meth:`_apply_extension_controls`: only a
+        name the extension registered in ``tool_specs`` reaches the
+        runtime, the way only registered knob names reach
+        ``apply_controls``. Runs on the command (dispatch) thread and
+        returns ``{"ok", "message", "state"}``; a refusal or a raising
+        runtime answers ok False and the caller hears why. ``state`` is
+        dropped to None unless it is a JSON object, since it goes on the
+        wire.
+        """
+        runtime = self._extension_runtime
+        call = getattr(runtime, "call_tool", None)
+        if runtime is None or not callable(call):
+            return {
+                "ok": False,
+                "message": "this session's model has no extension tools",
+                "state": None,
+            }
+        if name not in self._extension_tool_names:
+            known = ", ".join(self._extension_tool_names) or "none"
+            return {
+                "ok": False,
+                "message": f"unknown tool {name!r} (known: {known})",
+                "state": None,
+            }
+        try:
+            out = call(name, dict(args))
+        except Exception as exc:
+            logger.opt(exception=True).warning(
+                "sa3_extension_tool_raised name={} error={}", name, exc,
+            )
+            return {
+                "ok": False,
+                "message": f"tool {name!r} failed: {exc}",
+                "state": None,
+            }
+        if not isinstance(out, Mapping):
+            return {
+                "ok": False,
+                "message": f"tool {name!r} returned no result",
+                "state": None,
+            }
+        state = out.get("state")
+        if state is not None:
+            try:
+                state = json.loads(json.dumps(dict(state)))
+            except (TypeError, ValueError):
+                state = None
+        return {
+            "ok": bool(out.get("ok")),
+            "message": str(out.get("message") or ""),
+            "state": state,
+        }
 
     def _build_pipeline(self, steps: int):
         from acestep.engine.diffusion import DiffusionConfig

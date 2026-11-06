@@ -2645,6 +2645,39 @@ class StreamingSession:
             )
         logger.info("bounce_requested origin={} id={}", origin.value, request_id)
 
+    def call_extension_tool(
+        self,
+        name: str,
+        args: dict,
+        *,
+        origin: CommandOrigin = CommandOrigin.PRIMARY,
+    ) -> dict:
+        """Apply one call of the model extension's tool ``name`` now.
+
+        Applies identically from both origins: a tool is a discrete call,
+        not a knob snapshot, so an EXTERNAL (control bus) call is applied,
+        not echoed. Runs on the dispatch thread and returns the answer
+        ``{"ok", "message", "state"}``; the caller sends it back as
+        ``tool_result``. A backend without extension tools refuses.
+        """
+        self.state.last_activity_ts = time.monotonic()
+        call = getattr(self.backend, "call_extension_tool", None)
+        if not callable(call):
+            result = {
+                "ok": False,
+                "message": (
+                    f"backend {self.backend.name!r} has no extension tools"
+                ),
+                "state": None,
+            }
+        else:
+            result = call(name, args)
+        logger.info(
+            "extension_tool origin={} name={} ok={} message={}",
+            origin.value, name, result.get("ok"), result.get("message"),
+        )
+        return result
+
     def oneshot(
         self,
         data: dict,
