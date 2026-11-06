@@ -48,6 +48,10 @@ class SelectedExtension:
     def knob_specs(self) -> tuple:
         return tuple(self.spec.knob_specs or ())
 
+    @property
+    def tool_specs(self) -> tuple:
+        return tuple(getattr(self.spec, "tool_specs", ()) or ())
+
     def public_status(self) -> dict:
         """Safe-to-publish identity. Never the configuration values."""
         return {
@@ -248,9 +252,10 @@ def select_model_extension(
 
     logger.info(
         "model_extension_selected id={} plugin_version={} family={} "
-        "knobs={} config_keys={}",
+        "knobs={} tools={} config_keys={}",
         qualified_id, plugin.manifest.version, spec.family,
-        [s.name for s in spec.knob_specs or ()], sorted(config),
+        [s.name for s in spec.knob_specs or ()],
+        [t.name for t in getattr(spec, "tool_specs", ()) or ()], sorted(config),
     )
     return SelectedExtension(
         qualified_id=qualified_id,
