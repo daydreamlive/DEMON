@@ -298,6 +298,16 @@ namespace command {
     inline constexpr const char* kMix = "mix";
   }  // namespace oneshot
 
+  namespace extension_tool {
+    inline constexpr const char* kType = "extension_tool";
+    /** Tool name, one the session's model extension declares in its tool_specs. */
+    inline constexpr const char* kName = "name";
+    /** The tool's arguments, an object matching the tool's schema. The extension validates them; the server does not read them. */
+    inline constexpr const char* kArgs = "args";
+    /** Caller's correlation id, echoed on tool_result. */
+    inline constexpr const char* kToken = "token";
+  }  // namespace extension_tool
+
 }  // namespace command
 
 // ── Event payloads (server → client) ──
@@ -702,6 +712,20 @@ namespace event {
       inline constexpr const char* kNote = "note";
     }  // namespace kind
   }  // namespace analysis_update
+
+  namespace tool_result {
+    inline constexpr const char* kType = "tool_result";
+    /** Echo of the extension_tool token. */
+    inline constexpr const char* kToken = "token";
+    /** Echo of the tool name. */
+    inline constexpr const char* kName = "name";
+    /** true when the call applied; false when it was refused (nothing changed). */
+    inline constexpr const char* kOk = "ok";
+    /** One line for the caller: what applied, or why it was refused. */
+    inline constexpr const char* kMessage = "message";
+    /** Tool-defined JSON state after the call, or null. */
+    inline constexpr const char* kState = "state";
+  }  // namespace tool_result
 
 }  // namespace event
 

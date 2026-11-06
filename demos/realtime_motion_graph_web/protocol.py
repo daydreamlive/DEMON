@@ -755,6 +755,30 @@ COMMANDS: tuple = (
                     "none. Acked by oneshot_ready (+ binary) / "
                     "oneshot_failed.",
     ),
+    CommandSpec(
+        "extension_tool",
+        fields=(
+            FieldSpec("name", "str", required=True,
+                      description="Tool name, one the session's model "
+                                  "extension declares in its tool_specs."),
+            FieldSpec("args", "dict", required=True,
+                      description="The tool's arguments, an object matching "
+                                  "the tool's schema. The extension "
+                                  "validates them; the server does not "
+                                  "read them."),
+            FieldSpec("token", "str", required=True,
+                      description="Caller's correlation id, echoed on "
+                                  "tool_result."),
+        ),
+        description="Call one tool of the session's model extension. A "
+                    "tool is a discrete call, not a knob: it applies once, "
+                    "on arrival, from either origin (the page WebSocket or "
+                    "the control bus), and is never re-sent with params. "
+                    "Answered with tool_result to the caller only (the "
+                    "page's socket, or the control bus request). An unknown "
+                    "tool, a session without an extension, or a refused "
+                    "call answers ok false and changes nothing.",
+    ),
 )
 
 EVENTS: tuple = (
@@ -1376,6 +1400,25 @@ EVENTS: tuple = (
         description="Range replace for one analysis tap: drop the tap's "
                     "items starting in [range_start_s, range_start_s + "
                     "span_s), insert items. Times are canvas seconds.",
+    ),
+    EventSpec(
+        "tool_result",
+        fields=(
+            FieldSpec("token", "str", required=True,
+                      description="Echo of the extension_tool token."),
+            FieldSpec("name", "str", required=True,
+                      description="Echo of the tool name."),
+            FieldSpec("ok", "bool", required=True,
+                      description="true when the call applied; false when "
+                                  "it was refused (nothing changed)."),
+            FieldSpec("message", "str", required=True,
+                      description="One line for the caller: what applied, "
+                                  "or why it was refused."),
+            FieldSpec("state", "dict", required=True, nullable=True,
+                      description="Tool-defined JSON state after the call, "
+                                  "or null."),
+        ),
+        description="Answer to extension_tool, sent to the caller only.",
     ),
 )
 
