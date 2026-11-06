@@ -593,6 +593,37 @@ async def get_knob(name: str, session_id: Optional[str] = None) -> dict:
     return {"name": name, "value": kv.get(name)}
 
 
+# ---------------------------------------------------------------------------
+# Tools: model-extension tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def call_tool(name: str, args: Optional[dict[str, Any]] = None,
+                    session_id: Optional[str] = None) -> dict:
+    """Call one tool of the session's model extension (``extension_tool``).
+
+    Unlike set_knob, this APPLIES from the control bus: a tool is a
+    discrete call, not a knob snapshot, so it is not echoed to the page.
+    ``args`` is the tool's argument object (see the tool's schema in the
+    extension status). Returns the session's ``tool_result``: ``{type,
+    token, name, ok, message, state}``; ``ok`` False means the call was
+    refused and nothing changed.
+    """
+    import secrets
+
+    resp = _send_cmd(session_id, {
+        "type": "extension_tool",
+        "name": name,
+        "args": dict(args or {}),
+        "token": secrets.token_hex(6),
+    })
+    result = resp.get("result") if isinstance(resp, dict) else None
+    if not isinstance(result, dict):
+        raise RuntimeError(f"no tool_result from the session: {resp!r}")
+    return result
+
+
 @mcp.tool()
 async def set_rcfg_mode(mode: str, session_id: Optional[str] = None) -> dict:
     """Set the RCFG (Residual CFG) mode. String-valued, so it can't ride
