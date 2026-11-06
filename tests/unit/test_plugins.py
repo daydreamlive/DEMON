@@ -666,3 +666,52 @@ def test_default_blend_conditioning_declines():
     # None lets the core slerp: a runtime without its own blend is unchanged.
     runtime = ModelExtensionRuntime()
     assert runtime.blend_conditioning({"a": 1}, {"b": 2}, 0.5) is None
+
+
+# ---- tool_specs ---------------------------------------------------------------
+
+
+def _tool(name="dynamics_curve", **kw):
+    from acestep.plugins import ToolSpec
+
+    kw.setdefault("schema", {
+        "type": "object",
+        "properties": {"stem": {"type": "string"}},
+        "required": ["stem"],
+    })
+    kw.setdefault("summary", "Set a stem's level curve over bars.")
+    return ToolSpec(name=name, **kw)
+
+
+def test_spec_with_tool_specs_registers():
+    registry = _registry()
+    registry.add_model_extension(_spec(tool_specs=(_tool(),)))
+    spec = registry.model_extensions["demo"]
+    assert [t.name for t in spec.tool_specs] == ["dynamics_curve"]
+
+
+def test_tool_specs_default_to_none_and_a_list_is_accepted():
+    assert _spec().tool_specs == ()
+    _registry().add_model_extension(_spec(tool_specs=[_tool()]))
+
+
+@pytest.mark.parametrize("bad, match", [
+    (lambda: ({"name": "dynamics_curve"},), "ToolSpec instances"),
+    (lambda: (_tool(name="Bad Name"),), "invalid tool name"),
+    (lambda: (_tool(), _tool()), "duplicate tool"),
+    (lambda: (_tool(schema=["not", "a", "dict"]),), "schema must be a dict"),
+    (lambda: (_tool(schema={"type": "array"}),), "describe an object"),
+    (lambda: (_tool(schema={"type": "object", "x": object()}),), "not JSON"),
+    (lambda: (_tool(summary=""),), "one-line summary"),
+    (lambda: (_tool(summary="two\nlines"),), "must be one line"),
+    (lambda: _tool(), "must be a list"),
+])
+def test_bad_tool_spec_is_refused(bad, match):
+    with pytest.raises(PluginRegistrationError, match=match):
+        _registry().add_model_extension(_spec(tool_specs=bad()))
+
+
+def test_runtime_call_tool_default_refuses():
+    out = ModelExtensionRuntime().call_tool("anything", {})
+    assert out["ok"] is False and "anything" in out["message"]
+    assert out["state"] is None

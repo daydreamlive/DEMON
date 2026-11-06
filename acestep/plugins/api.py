@@ -9,6 +9,7 @@ place to make it loud is registration.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
@@ -18,6 +19,7 @@ from acestep.plugins.model_extensions import (
     EXTENSION_KNOB_TYPES,
     ConfigField,
     ModelExtensionSpec,
+    ToolSpec,
 )
 
 #: Shape version of the plugin API. A plugin declares the version it was
@@ -31,6 +33,9 @@ PLUGIN_API_VERSION = 2
 
 _PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _CAPABILITY_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
+#: Tool names: scoped by the extension that declares them (a session has
+#: one extension), so no plugin_ prefix; the same shape as a capability.
+_TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
 
 
 def _knob_name_pattern(plugin_id: str) -> re.Pattern:
@@ -109,6 +114,7 @@ class PluginRegistry:
         self._check_family(qualified, spec.family)
         self._check_config_schema(qualified, spec.config_schema)
         self._check_knob_specs(qualified, plugin_id, spec.knob_specs)
+        self._check_tool_specs(qualified, spec.tool_specs)
 
         self._model_extensions[spec.name] = spec
         self._seen.add(qualified)
@@ -202,6 +208,58 @@ class PluginRegistry:
                     "(the browser panel has no generic binding for the rest)"
                 )
             self._check_knob_bounds(qualified, spec)
+
+    def _check_tool_specs(self, qualified: str, specs) -> None:
+        if not isinstance(specs, (tuple, list)):
+            raise PluginRegistrationError(
+                f"{qualified}: tool_specs must be a list of ToolSpec"
+            )
+        seen: set[str] = set()
+        for spec in specs:
+            if not isinstance(spec, ToolSpec):
+                raise PluginRegistrationError(
+                    f"{qualified}: tool specs must be ToolSpec instances, "
+                    f"got {type(spec).__name__}"
+                )
+            name = spec.name
+            if not isinstance(name, str) or not _TOOL_NAME_RE.match(name):
+                raise PluginRegistrationError(
+                    f"{qualified}: invalid tool name {name!r}: expected "
+                    f"{_TOOL_NAME_RE.pattern}"
+                )
+            if name in seen:
+                raise PluginRegistrationError(
+                    f"{qualified}: duplicate tool {name!r}"
+                )
+            seen.add(name)
+            schema = spec.schema
+            if not isinstance(schema, dict):
+                raise PluginRegistrationError(
+                    f"{qualified}: tool {name!r} schema must be a dict "
+                    f"(a JSON schema), got {type(schema).__name__}"
+                )
+            # args always arrive as a JSON object, so the schema describes
+            # one; and it is sent to callers, so it must serialize.
+            if schema.get("type", "object") != "object":
+                raise PluginRegistrationError(
+                    f"{qualified}: tool {name!r} schema must describe an "
+                    f"object (type 'object'), got {schema.get('type')!r}"
+                )
+            try:
+                json.dumps(schema)
+            except (TypeError, ValueError) as exc:
+                raise PluginRegistrationError(
+                    f"{qualified}: tool {name!r} schema is not JSON ({exc})"
+                ) from exc
+            summary = spec.summary
+            if not isinstance(summary, str) or not summary.strip():
+                raise PluginRegistrationError(
+                    f"{qualified}: tool {name!r} needs a one-line summary"
+                )
+            if "\n" in summary or "\r" in summary:
+                raise PluginRegistrationError(
+                    f"{qualified}: tool {name!r} summary must be one line"
+                )
 
     def _check_knob_bounds(self, qualified: str, spec) -> None:
         name = spec.name
