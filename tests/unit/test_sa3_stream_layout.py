@@ -513,9 +513,9 @@ def test_layout_rides_the_ring_at_the_stacked_length():
     assert b.playable_duration_s() == pytest.approx(N44 / SA3_SAMPLE_RATE)
     assert b.geometry().duration_s == pytest.approx(N44 / SA3_SAMPLE_RATE)
     assert b.geometry().channels == 2
-    # The layout fixes geometry: swap stays, swap-resize is off.
+    # Swap and swap-resize are both on under a layout (extend in place).
     caps = b.capabilities()
-    assert caps.swap is True and caps.swap_resize is False
+    assert caps.swap is True and caps.swap_resize is True
 
     latent = _run_until_fresh(b, _knobs(b, sa3_denoise=0.7))
     assert tuple(latent.shape) == (1, N_STREAMS * L, C)
@@ -588,8 +588,9 @@ def test_layout_swap_reencodes_at_the_fixed_geometry():
     assert b.handle_swap_source(torch.zeros(2, 1000), 44100) is None
     assert context.encodes == 1
     assert tuple(b._source_latent_btc.shape) == (1, N_STREAMS * L, C)
-    with pytest.raises(RuntimeError):
-        b.handle_swap_source(torch.zeros(2, 1000), 44100, duration_s=5.0)
+    # A swap WITH duration_s resizes under a layout now (extend in place;
+    # tests/unit/test_stream_layout_grow.py), so the resizer is wired.
+    assert b._resizer is not None
 
 
 # ---- path-loaded engines ------------------------------------------------------------

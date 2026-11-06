@@ -1399,6 +1399,7 @@ class StreamingSession:
             )
             new_duration_s = state.swap_pending.get("duration_s")
             new_keep = state.swap_pending.get("keep")
+            new_grow = state.swap_pending.get("grow")
             if new_wf is None:
                 return
             state.swap_pending["waveform"] = None
@@ -1410,6 +1411,7 @@ class StreamingSession:
             state.swap_pending["stem_source_mode"] = None
             state.swap_pending["duration_s"] = None
             state.swap_pending["keep"] = None
+            state.swap_pending["grow"] = None
 
         # Backend control hook (universal op, family-specific
         # implementation, the handle_set_prompt convention): a backend
@@ -1421,6 +1423,7 @@ class StreamingSession:
         if handle is not None:
             self._apply_swap_backend_owned(
                 handle, new_wf, new_fixture_name, new_duration_s, new_keep,
+                new_grow,
             )
             return
         # The upload may carry more than two channels (only a stream
@@ -1661,6 +1664,7 @@ class StreamingSession:
 
     def _apply_swap_backend_owned(
         self, handle, new_wf, fixture_name, duration_s=None, keep=None,
+        grow=None,
     ) -> None:
         """Swap for backends that own their source anchor (the
         ``handle_swap_source`` hook — SA3). None of the ACE body
@@ -1678,7 +1682,8 @@ class StreamingSession:
         playback length and the session's duration/buffer follow it, so
         ``SwapReady`` carries the RESIZED geometry to the client.
         ``keep`` (the wire's optional per-stream keep) is passed to the
-        hook as ``keep=`` only when present.
+        hook as ``keep=`` only when present; ``grow`` (the wire's optional
+        grow field) likewise as ``grow=``.
 
         Publishes :class:`SwapReady` / :class:`SwapFailed` like the ACE
         body. Runner thread (before_tick), like everything above."""
@@ -1723,6 +1728,8 @@ class StreamingSession:
             hook_kw = {} if resize_s is None else {"duration_s": resize_s}
             if keep is not None:
                 hook_kw["keep"] = keep
+            if grow is not None:
+                hook_kw["grow"] = grow
             new_playback = handle(wf, SAMPLE_RATE, **hook_kw)
 
             # Fresh client buffer: the (truncated) new source at the
@@ -2638,6 +2645,39 @@ class StreamingSession:
             )
         logger.info("bounce_requested origin={} id={}", origin.value, request_id)
 
+    def call_extension_tool(
+        self,
+        name: str,
+        args: dict,
+        *,
+        origin: CommandOrigin = CommandOrigin.PRIMARY,
+    ) -> dict:
+        """Apply one call of the model extension's tool ``name`` now.
+
+        Applies identically from both origins: a tool is a discrete call,
+        not a knob snapshot, so an EXTERNAL (control bus) call is applied,
+        not echoed. Runs on the dispatch thread and returns the answer
+        ``{"ok", "message", "state"}``; the caller sends it back as
+        ``tool_result``. A backend without extension tools refuses.
+        """
+        self.state.last_activity_ts = time.monotonic()
+        call = getattr(self.backend, "call_extension_tool", None)
+        if not callable(call):
+            result = {
+                "ok": False,
+                "message": (
+                    f"backend {self.backend.name!r} has no extension tools"
+                ),
+                "state": None,
+            }
+        else:
+            result = call(name, args)
+        logger.info(
+            "extension_tool origin={} name={} ok={} message={}",
+            origin.value, name, result.get("ok"), result.get("message"),
+        )
+        return result
+
     def oneshot(
         self,
         data: dict,
@@ -2938,6 +2978,7 @@ class StreamingSession:
         stem_source_mode: str | None = None,
         duration_s: float | int | None = None,
         keep: Mapping | None = None,
+        grow: Mapping | None = None,
         origin: CommandOrigin = CommandOrigin.PRIMARY,
     ) -> None:
         """Stage a source swap. The runner applies it inside
@@ -2954,6 +2995,11 @@ class StreamingSession:
         ``keep`` (wire field of the same name) is an opaque per-stream keep
         mapping for a stream layout (e.g. ``{"drums": [[s0, e0], [s1, e1]]}``),
         handed to the backend's swap hook; the layout validates it.
+
+        ``grow`` (wire field of the same name) is an opaque mapping handed to
+        the backend's swap hook exactly like ``keep`` (e.g. ``{"from_s":
+        16.0}``: the session grows in place from that point); the layout
+        validates it.
         """
         state = self.state
         state.last_activity_ts = time.monotonic()
@@ -2981,6 +3027,7 @@ class StreamingSession:
                 dur = None
             state.swap_pending["duration_s"] = dur if dur and dur > 0 else None
             state.swap_pending["keep"] = dict(keep) if isinstance(keep, Mapping) else None
+            state.swap_pending["grow"] = dict(grow) if isinstance(grow, Mapping) else None
 
     @requires_capability("write_audio", "write_audio")
     def write_audio(

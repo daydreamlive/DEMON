@@ -1323,6 +1323,45 @@ def _dispatch_oneshot(data, streaming, recv_binary, send_json, origin) -> None:
     streaming.oneshot(dict(data), origin=origin, latent=bytes(blob))
 
 
+def _dispatch_extension_tool(data, streaming, reply, origin) -> None:
+    """The ``extension_tool`` command: one call of a model-extension tool.
+
+    Applies from both origins (a tool is not a params snapshot) and
+    answers ``tool_result`` through ``reply``: the page socket's
+    ``_send_json`` for a WebSocket call, the waiting control-bus request
+    for an injected one. Every path answers exactly once, so a caller
+    keyed on ``token`` never hangs.
+    """
+    name = data.get("name")
+    args = data.get("args")
+    token = str(data.get("token") or "")
+    if not isinstance(name, str) or not name:
+        result = {"ok": False, "message": "extension_tool needs a tool name",
+                  "state": None}
+    elif not isinstance(args, dict):
+        result = {"ok": False, "message": "extension_tool args must be an object",
+                  "state": None}
+    else:
+        try:
+            result = streaming.call_extension_tool(name, args, origin=origin)
+        except Exception as exc:
+            logger.opt(exception=True).error(
+                "extension_tool_failed origin={} name={} error={}",
+                origin, name, exc,
+            )
+            result = {"ok": False, "message": f"tool {name!r} failed: {exc}",
+                      "state": None}
+    state = result.get("state")
+    reply({
+        "type": "tool_result",
+        "token": token,
+        "name": name if isinstance(name, str) else "",
+        "ok": bool(result.get("ok")),
+        "message": str(result.get("message") or ""),
+        "state": state if isinstance(state, dict) else None,
+    })
+
+
 def _handle_client_body(
     ws,
     ctx_stack: contextlib.ExitStack,
@@ -2108,8 +2147,13 @@ def _handle_client_body(
     # handler thread.
     control_queue: queue.Queue = queue.Queue()
 
-    def inject_control(data: dict, audio: bytes | None = None) -> None:
-        control_queue.put((data, audio))
+    def inject_control(
+        data: dict, audio: bytes | None = None, reply=None,
+    ) -> None:
+        # ``reply`` (optional) receives the command's direct answer, for
+        # the commands that have one (extension_tool -> tool_result), so
+        # the control bus request can return it to its caller.
+        control_queue.put((data, audio, reply))
 
     def snapshot_session() -> dict:
         snap = streaming.snapshot()
@@ -2128,6 +2172,7 @@ def _handle_client_body(
         data: dict,
         recv_audio,
         source: str,
+        reply=None,
     ) -> None:
         """Route one parsed message into a typed session call.
 
@@ -2139,6 +2184,10 @@ def _handle_client_body(
         ``source`` is ``"ws"`` for the browser's own WebSocket and
         ``"control"`` for control-bus messages. Maps to
         ``CommandOrigin`` for the two origin-dependent verbs.
+
+        ``reply`` is where a command's direct answer goes (tool_result):
+        the control bus request's callback when it supplied one, else
+        this session's socket.
 
         Inbound envelopes are validated against the wire-contract registry
         before dispatch: unknown command names are rejected up front
@@ -2463,6 +2512,7 @@ def _handle_client_body(
                     stem_source_mode=data.get("stem_source_mode"),
                     duration_s=data.get("duration_s"),
                     keep=data.get("keep"),
+                    grow=data.get("grow"),
                     origin=origin,
                 )
             elif mtype == "write_audio":
@@ -2582,6 +2632,13 @@ def _handle_client_body(
                     tap, bool(data.get("enabled", False)), options,
                     origin=origin,
                 )
+            elif mtype == "extension_tool":
+                # A discrete call: applies from both origins, answered
+                # with tool_result to the caller only.
+                _dispatch_extension_tool(
+                    data, streaming,
+                    reply if reply is not None else _send_json, origin,
+                )
         except ConnectionClosed:
             state.running = False
 
@@ -2662,7 +2719,7 @@ def _handle_client_body(
             # Drain the MCP / external control bus.
             while True:
                 try:
-                    cdata, caudio = control_queue.get_nowait()
+                    cdata, caudio, creply = control_queue.get_nowait()
                 except queue.Empty:
                     break
                 _audio_buf = caudio if caudio is not None else b""
@@ -2674,6 +2731,7 @@ def _handle_client_body(
                         cdata,
                         lambda timeout=None, _b=_audio_buf: _b,
                         "control",
+                        reply=creply,
                     )
                 except Exception as exc:
                     logger.exception(

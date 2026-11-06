@@ -45,7 +45,8 @@ export type CommandName =
   | "analysis_tap"
   | "audio_in"
   | "bounce"
-  | "oneshot";
+  | "oneshot"
+  | "extension_tool";
 
 export const COMMAND_NAMES: readonly CommandName[] = [
   "params",
@@ -73,6 +74,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "audio_in",
   "bounce",
   "oneshot",
+  "extension_tool",
 ] as const;
 
 export type EventName =
@@ -109,7 +111,8 @@ export type EventName =
   | "oneshot_failed"
   | "analysis_state"
   | "audio_in_ack"
-  | "analysis_update";
+  | "analysis_update"
+  | "tool_result";
 
 export const EVENT_NAMES: readonly EventName[] = [
   "init_ack",
@@ -146,6 +149,7 @@ export const EVENT_NAMES: readonly EventName[] = [
   "analysis_state",
   "audio_in_ack",
   "analysis_update",
+  "tool_result",
 ] as const;
 
 export type HandshakeCommandName =
@@ -325,6 +329,8 @@ export interface SwapSourceCommand {
   pcm?: Record<string, unknown>;
   /** Optional per-stream keep for a stream layout, e.g. {drums: [[s0, e0], [s1, e1]]} (a list of [start_s, end_s] ranges; a single [start_s, end_s] is one range): the stream keeps its upload on those ranges and the layout generates around them. Handed to the layout's encode_source as keep=; the layout validates it. Absent = no change. */
   keep?: Record<string, unknown>;
+  /** Optional in-place grow for a stream layout, e.g. {from_s: 16.0} (the session grows to duration_s from that point, keeping what it already made). Handed to the layout's encode_source as grow=; the layout validates it. Absent = no change. */
+  grow?: Record<string, unknown>;
 }
 
 export interface WriteAudioCommand {
@@ -385,6 +391,16 @@ export interface OneshotCommand {
   return_latents?: boolean;
   /** Per-stream weights (numbers >= 0, one per stream), under render_decode "windows": each version is decoded whole before its first oneshot_slice goes out, and that slice carries the version's `peaks`. Ignored by the song path. */
   mix?: unknown[] | null;
+}
+
+export interface ExtensionToolCommand {
+  type: "extension_tool";
+  /** Tool name, one the session's model extension declares in its tool_specs. */
+  name: string;
+  /** The tool's arguments, an object matching the tool's schema. The extension validates them; the server does not read them. */
+  args: Record<string, unknown>;
+  /** Caller's correlation id, echoed on tool_result. */
+  token: string;
 }
 
 // ── Event payloads (server → client) ──
@@ -756,6 +772,20 @@ export interface AnalysisUpdateEvent {
   wall_s: number;
 }
 
+export interface ToolResultEvent {
+  type: "tool_result";
+  /** Echo of the extension_tool token. */
+  token: string;
+  /** Echo of the tool name. */
+  name: string;
+  /** true when the call applied; false when it was refused (nothing changed). */
+  ok: boolean;
+  /** One line for the caller: what applied, or why it was refused. */
+  message: string;
+  /** Tool-defined JSON state after the call, or null. */
+  state: Record<string, unknown> | null;
+}
+
 // ── Session-init config (client → server, sent at handshake) ──
 
 export interface SessionConfigPayload {
@@ -866,7 +896,8 @@ export type WireCommand =
   | AnalysisTapCommand
   | AudioInCommand
   | BounceCommand
-  | OneshotCommand;
+  | OneshotCommand
+  | ExtensionToolCommand;
 
 export type WireEvent =
   | InitAckEvent
@@ -902,7 +933,8 @@ export type WireEvent =
   | OneshotFailedEvent
   | AnalysisStateEvent
   | AudioInAckEvent
-  | AnalysisUpdateEvent;
+  | AnalysisUpdateEvent
+  | ToolResultEvent;
 
 export type HandshakeCommand =
   | UploadTrackCommand;

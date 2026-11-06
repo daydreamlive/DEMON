@@ -218,6 +218,8 @@ namespace command {
     inline constexpr const char* kPcm = "pcm";
     /** Optional per-stream keep for a stream layout, e.g. {drums: [[s0, e0], [s1, e1]]} (a list of [start_s, end_s] ranges; a single [start_s, end_s] is one range): the stream keeps its upload on those ranges and the layout generates around them. Handed to the layout's encode_source as keep=; the layout validates it. Absent = no change. */
     inline constexpr const char* kKeep = "keep";
+    /** Optional in-place grow for a stream layout, e.g. {from_s: 16.0} (the session grows to duration_s from that point, keeping what it already made). Handed to the layout's encode_source as grow=; the layout validates it. Absent = no change. */
+    inline constexpr const char* kGrow = "grow";
 
     namespace stem_source_mode {
       inline constexpr const char* kFull = "full";
@@ -295,6 +297,16 @@ namespace command {
     /** Per-stream weights (numbers >= 0, one per stream), under render_decode "windows": each version is decoded whole before its first oneshot_slice goes out, and that slice carries the version's `peaks`. Ignored by the song path. */
     inline constexpr const char* kMix = "mix";
   }  // namespace oneshot
+
+  namespace extension_tool {
+    inline constexpr const char* kType = "extension_tool";
+    /** Tool name, one the session's model extension declares in its tool_specs. */
+    inline constexpr const char* kName = "name";
+    /** The tool's arguments, an object matching the tool's schema. The extension validates them; the server does not read them. */
+    inline constexpr const char* kArgs = "args";
+    /** Caller's correlation id, echoed on tool_result. */
+    inline constexpr const char* kToken = "token";
+  }  // namespace extension_tool
 
 }  // namespace command
 
@@ -700,6 +712,20 @@ namespace event {
       inline constexpr const char* kNote = "note";
     }  // namespace kind
   }  // namespace analysis_update
+
+  namespace tool_result {
+    inline constexpr const char* kType = "tool_result";
+    /** Echo of the extension_tool token. */
+    inline constexpr const char* kToken = "token";
+    /** Echo of the tool name. */
+    inline constexpr const char* kName = "name";
+    /** true when the call applied; false when it was refused (nothing changed). */
+    inline constexpr const char* kOk = "ok";
+    /** One line for the caller: what applied, or why it was refused. */
+    inline constexpr const char* kMessage = "message";
+    /** Tool-defined JSON state after the call, or null. */
+    inline constexpr const char* kState = "state";
+  }  // namespace tool_result
 
 }  // namespace event
 
