@@ -1,0 +1,100 @@
+---
+title: "Configuration"
+description: "config.json — every default in the demo — plus session snapshots"
+icon: "gear"
+---
+
+All demo defaults live in one file:
+
+```text
+demos/realtime_motion_graph_web/web/public/config.json
+```
+
+Edit, refresh the browser, done — no rebuild. The file is heavily commented
+inline (`_*_help` keys); this page summarizes the sections.
+
+<Note>
+Selected fields carry an `_xl` sibling (`depth_xl`, `enabled_loras_xl`,
+`a_xl` / `b_xl` / `blend_xl`). When the active checkpoint is the 5B XL model,
+the `_xl` value wins; other scales use the base value. Slider max/step is
+*not* configured here — only starting values are (ranges live in the
+frontend's `SLIDER_META` and the server's knob registry).
+</Note>
+
+## `engine`
+
+Pipeline geometry and playback tuning:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `sde` | `false` | SDE vs ODE core mode (SDE swaps `denoise` for `sde_amp` + `periodicity`, and makes strength changes an order of magnitude faster) |
+| `depth` / `depth_xl` | 4 / 2 | Ring buffer depth |
+| `steps` | 8 | Diffusion steps |
+| `vae_window` | 0.36 | Windowed VAE decode length (seconds) |
+| `walk_window` / `walk_window_s` | `true` / 60 | Cut sources longer than 60 s into 60 s latents and swap at boundaries, keeping the faster 60 s engine on multi-minute tracks |
+| `lead_floor_s` / `lead_ceiling_s` / `lead_release_tau_s` | 0.25 / 1.35 / 1.5 | The adaptive playback-lead controller: floor is the latency/robustness trade (~0.05 is snappy but sawtooths under GPU contention; ~0.5 reproduces the old fixed behavior), ceiling caps contention inflation, tau is the release decay |
+| `key`, `time_signature` | `G# minor`, `4` | Seeds for live uploads (fixture sidecars win) |
+| `enabled_loras` / `enabled_loras_xl` | Ambient 0.7 + Deep House 0.75 | LoRAs auto-enabled at boot, by name with optional strength |
+| `auto_prepend_lora_triggers` | `true` | Prepend a LoRA's trigger word to the prompts on enable |
+| `show_incompatible_loras` | `false` | Show LoRAs trained for the other checkpoint scale |
+
+## `prompts`
+
+Default prompt A, prompt B, and blend position (per checkpoint scale).
+
+## `controls`
+
+The starting value for every knob: `denoise`, `hint_strength`, `feedback`,
+`feedback_depth`, `shift`, the RCFG block (`rcfg_mode: "initialize"`,
+`guidance_scale: 2.5`, `cfg_rescale: 0`), all 14 channel faders, and the DCW
+block. `lora_default_strength` (0.7) seeds any LoRA fader the server reports
+at 0.
+
+## `channel_ranges`
+
+Per-channel fader caps and direction for the
+[Experimental tab](/demo/controls#channel-faders-experimental). `{min, max}` caps what the
+slider / MIDI / keyboard / drawn curves can drive into the engine;
+`reverse: true` flips the input mapping for channels that sound better turned
+down — dragging *up* sends a *lower* value, so the operator's instinct to
+push up produces the desired result. Stored values stay in `[min, max]`;
+reverse changes only the input mapping, never the wire range.
+
+## `audio` — LUFS loudness matching
+
+An optional output loudness matcher (off by default; toggleable in-session
+via the LUFS button):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `lufs_enabled` | `false` | Engage the matcher at boot |
+| `lufs_window_sec` | 1.5 | Metering window (3 s is broadcast standard; lower = faster but noisier; practical floor ~1.5 s) |
+| `lufs_metric` | `lufs` | `lufs` (BS.1770 K-weighted) or `dba` (IEC 61672 A-weighted — closer to perceived loudness on bright/distorted content) |
+| `lufs_peak_headroom` | 4.0 | Peak headroom (dB) |
+| `lufs_silence_floor_db` / `..._hysteresis_db` | 30 / 6 | Disengage on silence (so quiet model output isn't amplified into noise), with a Schmitt-trigger band to prevent flapping |
+
+The matcher seeds its high-water mark from the source's loudest short-term
+window at session start, so the louder of source vs. denoised output defines
+the target from t = 0.
+
+## `effects`
+
+Audio-reactive shader intensities for [video mode](/demo/recording):
+`parallax_strength`, `bloom_on_kick`, `bloom_threshold`, `warp_strength`.
+
+## Behavior toggles
+
+| Field | Default | Meaning |
+|---|---|---|
+| `reset_seconds` | 0 | Idle timeout — revert all controls to defaults after N seconds without input (0 disables; built for installations) |
+| `denoise_session_gate` | enabled, 700 ms glide | On session start and song swap, snap remix strength to 0 with a visual-only glide — a "hear the source first" cue that also hints the top ribbon is a slider |
+| `restart_song_on_swap` | `false` | `true` restarts the new track from 0:00; `false` keeps the playhead phase across swaps |
+| `swap_source_mode` | `instruments` | Default inference source for uploaded-track swaps (`full` / `instruments` / `vocals`) |
+| `seed` | 42 | Initial stream seed |
+
+## Session snapshots
+
+Independent of config.json, the **Config** drawer tab can export and import
+the *live session state* — every knob, prompt, enabled LoRA, and drawn curve
+— as a JSON snapshot. Use it to save a performance patch, share a sound, or
+restore a setup after a restart.

@@ -1,0 +1,102 @@
+---
+title: "Controls"
+description: "Every knob in the demo — what it does, its range, and how fast it reacts"
+icon: "sliders"
+---
+
+Every control in the demo is backed by the server's **knob registry** — a
+self-describing catalog served at `/api/knobs`. This page explains the knobs
+by group, with the operator's view; exact types, defaults, and bounds for all
+of them are in the [knob reference](/reference/knobs).
+
+<Tip>
+Two latency classes apply (see
+[Streaming Pipeline](/engine/streaming#the-two-latency-classes)): most knobs
+reach the audio within one tick (~40 ms), but **remix strength (ODE mode) and
+seed** are per-slot parameters that take a few hundred milliseconds to fully
+land. The playback lead adds ~0.25 s on top of either class before you *hear*
+the change.
+</Tip>
+
+## Core
+
+| Knob | What it does |
+|---|---|
+| **Remix strength** (`denoise`, 0–1) | How far the model departs from the source. 0 = pass-through, 1 = full regeneration. In SDE mode this becomes `sde_amp` (diffusion amplitude) with a companion `periodicity` knob, and reacts an order of magnitude faster. |
+| **Structure** (`hint_strength`, 0–1, default 1) | Blend strength of the semantic hint — how strongly the source's (or the [structure reference's](/demo/sources-and-references)) sections, rhythm, and dynamics steer the output. |
+| **Timbre** | Blend between a silence baseline and the timbre reference (instrument character). See [Sources & References](/demo/sources-and-references). |
+| **Seed** (uint32) | The stream seed. Press <kbd>F</kbd> to randomize — each seed is a different "take". |
+| **Feedback** (`feedback`, 0–1) | Blends finished output latents back into the source — self-reinforcing drift. |
+| **Feedback depth** (`feedback_depth`, 1–8) | Delay-tap for feedback: 1 blends the most recent finished latent; N reaches N ticks back for an echo / ghost effect. |
+| **Shift** (`shift`, 1–6, default 3.5) | Flow shift — passed verbatim to the diffusion solver; reshapes the timing curve of the denoise schedule. |
+| **x0 target** (`x0_target`, 0–1) | Scalar blend toward the source-lock target in the second half of the schedule. Requires a source latent. |
+| **Steps** (`steps_override`, 1–16, default 8) | Diffusion step count. Lower = faster/rougher, higher = more latency. Changing it rebuilds the stream pipeline. |
+
+## Channel faders (Experimental)
+
+<img src="/images/drawer-experimental.png" alt="Channel faders and steering in the Experimental tab" />
+
+ACE-Step's VAE has 64 latent channels, and channels carry meaning — boosting
+or cutting them reshapes the music. The engine applies your fader settings as
+a per-channel gain on the latent before every forward pass, so these react
+within one tick. As the tab's warning puts it: *these are not traditional
+audio channels and gains — they manipulate dimensions of the model's latent
+space, and produce results ranging from nuanced and beautiful to abrupt and
+discordant. Use at your own risk.*
+
+- **Channel highlights** (keystones) `CH13, CH14, CH19, CH23, CH29, CH56` —
+  six individual channels with outsized, characterful effects
+  (<kbd>Shift</kbd>+<kbd>1</kbd>–<kbd>6</kbd>).
+- **Channel groups** `G0`–`G7` — eight faders, each spanning 8 of the 64
+  channels (<kbd>0</kbd>–<kbd>7</kbd> + <kbd>↑</kbd>/<kbd>↓</kbd>).
+
+All default to 1.0 (neutral). The UI caps each fader's usable range per
+channel (and *reverses* the drag direction on a few channels that sound
+better turned down) via `channel_ranges` in
+[config.json](/demo/configuration) — the wire range stays 0–3 regardless.
+
+## Guidance (CFG)
+
+Residual classifier-free guidance, off by default in the engine but set to
+`initialize` in the demo's shipped config:
+
+| Knob | What it does |
+|---|---|
+| `rcfg_mode` | `off` (free), `self` (virtual uncond from initial noise, ~1.06× cost), `initialize` (uncond run once per slot then cached, ~1.07×), `full` (standard two-pass CFG, ~2×) |
+| `guidance_scale` (1–15) | Guidance strength. Only applies when `rcfg_mode != off`. |
+| `cfg_rescale` (0–1) | APG norm rescale toward the positive velocity's magnitude — tames over-guidance artifacts. |
+
+## DCW corrector
+
+A wavelet-domain post-step correction (Yu et al., CVPR 2026) that sharpens
+detail. On by default in `double` mode.
+
+| Knob | What it does |
+|---|---|
+| `dcw_enabled` | Toggle the corrector (<kbd>T</kbd>) |
+| `dcw_mode` | Correction band: `low`, `high`, `double`, `pix` (<kbd>Shift</kbd>+<kbd>T</kbd> cycles) |
+| `dcw_wavelet` | Basis: `haar`, `db4`, `sym8`, `db8` (<kbd>Shift</kbd>+<kbd>W</kbd> cycles) |
+| `dcw_scaler` / `dcw_high_scaler` | Low / high band push strength (<kbd>W</kbd> / <kbd>Y</kbd> + arrows) |
+| `dcw_mult_blend`, `dcw_mag_phase`, `dcw_soft_thresh` | Advanced surface — at 0 (default) the corrector is byte-identical to the upstream ACE-Step reference |
+
+## Activation steering (when available)
+
+When steering vectors are present on the server, a **Steering** section
+appears in the Experimental tab:
+
+- **Auto-path steering axes** — named, bipolar knobs (e.g. *bright*, *warm*,
+  *rough*, *density*; range −30…30) that inject a pre-built steering vector
+  at a fixed DiT layer/step. Useful magnitude is roughly 2–15 by ear; expect
+  breakage above that. Negative inverts the axis.
+- **Manual steering slots** — fully manual injection, each slot with four
+  controls: **SRC** (vector catalog index), **LAYER** (DiT inject layer),
+  **STEP** (diffusion step), and **STRENGTH** (bipolar α; 0 = slot off).
+  Slots are added/removed LIFO, including via the
+  [MCP tools](/reference/mcp-tools) `add_manual_slot` / `pop_manual_slot`.
+
+## Pipeline depth
+
+The drawer's engine section exposes live ring-buffer depth (`set_depth`,
+1–8). Higher depth = smoother parameter glides, more VRAM and per-tick
+compute; lower = snappier, more discrete response. The starting value comes
+from `engine.depth` in config.json (4 by default, 2 on the XL checkpoint).

@@ -1,0 +1,99 @@
+---
+title: "What is DEMON?"
+description: "DEMON — Diffusion Engine for Musical Orchestrated Noise — is a streaming diffusion engine for real-time music generation"
+icon: "music"
+---
+
+DEMON (**D**iffusion **E**ngine for **M**usical **O**rchestrated **N**oise) is a
+streaming diffusion engine for [ACE-Step v1.5](https://github.com/ace-step/ACE-Step)
+music generation. Think StreamDiffusion, for audio: a ring buffer holds several
+in-flight generations at different denoising stages, advanced together on every
+tick. After warmup, finished latents stream out at a steady rate while you steer
+the music live — prompts, knobs, automation curves, LoRAs, timbre and structure
+references — and the output plays back continuously with no render queue.
+
+<Card title="Try it now — no GPU required" icon="play" href="https://music.daydream.live">
+  A hosted instance runs at **music.daydream.live**. Open it in a browser, click
+  to begin, and start twisting knobs.
+</Card>
+
+---
+
+## The system at a glance
+
+DEMON is one Python process that loads the model once and exposes a small set of
+primitives. Everything else — the bundled web demo, the MCP server, your own
+client — drives those same primitives.
+
+<CardGroup cols={2}>
+  <Card title="Streaming diffusion engine" icon="gauge-high">
+    A ring buffer of in-flight generations advanced together per tick. Depth is
+    hot-resizable; per-frame modulation knobs accept scalars or curves and are
+    mutable mid-stream. Streaming output is bit-identical to batch.
+  </Card>
+  <Card title="The demo app" icon="sliders" href="/demo/overview">
+    A browser performance surface: live prompt blending, a LoRA library,
+    automation curves, MIDI learn, timbre/structure references, recording, and
+    an audio-reactive HUD.
+  </Card>
+  <Card title="TensorRT end-to-end" icon="bolt" href="/getting-started/tensorrt">
+    The DiT decoder, VAE encode, and VAE decode each pick
+    `tensorrt | compile | eager` independently. TRT decoder engines are
+    refit-enabled, so LoRA swaps don't rebuild anything.
+  </Card>
+  <Card title="Session API" icon="code" href="/engine/session-api">
+    `prepare_source`, `encode_text`, `generate`, `decode`, `stream` — load the
+    model once, then iterate at ~310 ms per generation after warmup.
+  </Card>
+</CardGroup>
+
+---
+
+## Headline numbers
+
+Measured on an RTX 5090 with ACE-Step v1.5 turbo (2B), all-TRT, ring depth 4,
+8 diffusion steps, the fixed 1 s windowed VAE decode engine, and a 60 s source:
+
+| Metric | Value |
+|---|---|
+| Tick (decoder forward, depth 4) | ~43 ms |
+| Decode (windowed VAE) | 4.5 ms |
+| Throughput | 11.3 generations/second |
+| Parameter convergence | ~248 ms |
+| Per-frame control resolution | 25 Hz (40 ms latent steps) |
+| Streaming vs. batch quality | bit-identical output |
+
+---
+
+## Where to go next
+
+<CardGroup cols={2}>
+  <Card title="Run it locally" icon="rocket" href="/getting-started/quickstart">
+    `uv sync`, `uv run demon-setup`, then the launcher on your own GPU.
+  </Card>
+  <Card title="Tour the demo app" icon="compass" href="/demo/interface">
+    The HUD, the hero macros, the Full Controls drawer, and the start flow.
+  </Card>
+  <Card title="Deploy to the cloud" icon="cloud" href="/cloud/deployment">
+    Bootstrap a GPU pod the same way the hosted Daydream instance is deployed.
+  </Card>
+  <Card title="Understand the engine" icon="microchip" href="/engine/architecture">
+    The streaming pipeline, the typed node graph, and the contract-first control
+    surface.
+  </Card>
+</CardGroup>
+
+---
+
+## Credits & license
+
+DEMON is built on top of [ACE-Step](https://github.com/ace-step/ACE-Step) — the
+base diffusion model, VAE, text encoder, and 5 Hz LM are all ACE-Step's work,
+released under MIT. DEMON was originally created by
+[Ryan Fosdick](https://ryanontheinside.com) and is maintained by
+[Daydream Live](https://daydream.live) and contributors.
+
+DEMON is distributed under **AGPL-3.0-or-later**. Among other things, modified
+versions made available to users over a network must offer those users the
+corresponding source code (AGPL §13). The ACE-Step portions remain available
+under MIT on their own terms.

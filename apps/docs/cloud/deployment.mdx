@@ -1,0 +1,93 @@
+---
+title: "Cloud Deployment"
+description: "Run DEMON on a rented GPU pod — the same way the Daydream hosted instance is deployed"
+icon: "cloud"
+---
+
+DEMON deploys to bare-metal GPU pods (the hosted instance runs on H100s via
+Vast.ai) with a pair of idempotent bootstrap scripts — no Docker image
+required. The same flow works on any CUDA Linux box.
+
+## Bootstrap a pod
+
+`scripts/deploy/bootstrap_h100.sh` takes a fresh pod to a ready repo:
+
+1. Installs system deps (`git`, `git-lfs`, `curl`, `build-essential`, …).
+2. Installs [uv](https://docs.astral.sh/uv/).
+3. Clones the repo to `/root/acestep` via a GitHub deploy key (expected at
+   `/root/.ssh/deploy_key`) — use HTTPS clone instead for a public checkout.
+4. Runs `uv sync` and verifies the critical imports (torch + CUDA device,
+   TensorRT, transformers, websockets, zstandard).
+
+```bash
+# on the pod
+export HF_TOKEN=hf_...   # optional; public models download without it
+bash scripts/deploy/bootstrap_h100.sh
+```
+
+Stage 2 (`scripts/deploy/stage2_models_engines.sh`) downloads models into
+`/root/.daydream-scope/models/demon` and builds the TensorRT engines on the
+pod's own GPU/driver stack — remember,
+[engines are not portable](/getting-started/tensorrt) across GPU
+architectures, so always build on the hardware that will serve.
+
+Validate with the smoke test before exposing anything:
+
+```bash
+uv run python scripts/deploy/smoketest_demo.py
+```
+
+## Serving
+
+Run the backend bound to the pod's interface and put the UI in front of it:
+
+```bash
+uv run python -u -m demos.realtime_motion_graph_web.run -- \
+    --accel tensorrt --host 0.0.0.0
+```
+
+Operational notes for remote serving:
+
+- **One GPU session per connected browser tab.** The backend builds a
+  `StreamingSession` per WebSocket; size your expectations (and GPU count)
+  accordingly.
+- **WebSockets must pass through** any reverse proxy — the UI and the stream
+  share one backend port (`:1318`). The web app reads the backend origin from
+  `NEXT_PUBLIC_POD_BASE_URL` (the launcher sets it for local runs).
+- **Use TLS** for anything public: browsers require a secure context for Web
+  MIDI and microphone/webcam access, and gate audio autoplay less
+  aggressively.
+- **Lead tuning:** on a shared/contended GPU, raise `lead_floor_s` in
+  [config.json](/demo/configuration) for underrun robustness at the cost of
+  knob-to-ear latency.
+
+## Control bus security
+
+The MCP control bus (`:1319`) accepts **writes into live sessions** and binds
+to `127.0.0.1` by default. Leave it that way on anything public.
+
+| Flag | Effect |
+|---|---|
+| `--control-host <host>` | Bind the control bus to a non-localhost interface — use sparingly; this lets remote clients write into a live session |
+| `--control-port <port>` | Move the control bus off `:1319` |
+| `--no-control` | Disable the control bus entirely (recommended for public deployments that don't need [MCP control](/advanced/mcp)) |
+
+## Model & cache layout on the pod
+
+```text
+/root/.daydream-scope/models/demon/
+  checkpoints/          # ACE-Step v1.5 checkpoints
+  trt_engines/          # engines built on this pod
+  loras/                # your .safetensors LoRA library
+  fixtures/             # local fixture overrides (optional)
+  user_uploads/         # persisted listener uploads + sidecars
+```
+
+Fixtures stream from the `daydreamlive/demon-fixtures-v2` Hugging Face
+dataset on first request and cache locally, so a fresh pod needs no manual
+fixture step.
+
+<Note>
+DEMON is AGPL-3.0-or-later: if you offer a modified DEMON to users over a
+network, you must offer those users the corresponding source (AGPL §13).
+</Note>
