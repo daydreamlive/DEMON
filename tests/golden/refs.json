@@ -28,31 +28,20 @@
     },
     "knob_step": {
       "file": "knob_step.tar.gz",
-      "sha256": "5289d21984edbf0b0a52f7716802da5944ef4d250dd78e755bfea6a4b3283a6c",
-      "canonical_sha256": "0b2eac2a326cea51f36c277771adf0de333401a1af026ccce8ab39d81c63e238",
+      "sha256": "21db75608bf7e2d6d9212108eab6334c72fda79359b28e8f44ad50c9f6d9e1ec",
+      "canonical_sha256": "95e92b12dd2e6a95052395fc9aeae7c013c4110cfb1442fdac6f283b4338d808",
       "thresholds": {
-        "_note": "Calibrated 2026-06-09. knob_step carries a stable, benign cross-build mel offset vs the 06-04 canonical (mel_l2 floor 0.0953, bit-stable across runs; win_cos_min 0.9999, rms 0 dB), distinct from peers because the knob legitimately alters generation after it fires. mel_l2 relaxed above that floor with margin; the cosine/level gates keep their strict defaults so a real regression still trips them.",
-        "mel_l2": 0.13,
-        "rms_db_diff": 0.5,
-        "win_cos_min": 0.995
+        "_note": "Refreshed 2026-06-25 from DEMON main after the 06-04 canonical drifted. Same-pod repeat-3 noise stayed tiny (mel_l2 0.00165), while fresh-pod verification runs against the new canonical landed at mel_l2 0.00143 and 0.051. mel_l2 is tightened to cover that observed cross-pod spread with margin; cosine and level gates are reset near their strict defaults.",
+        "mel_l2": 0.08,
+        "rms_db_diff": 0.1,
+        "win_cos_min": 0.999
       },
       "env": {
-        "harness_git_sha": "96c57bb",
-        "pod_url": "ws://127.0.0.1:49676",
-        "gpu": "NVIDIA GeForce RTX 5090",
-        "server_info": {
-          "no_backend": false,
-          "kiosk": false,
-          "default_mode": "graph",
-          "warmup": null,
-          "server_side_fixtures": [
-            "inside_confusion_loop_60s_gsm.wav",
-            "low_fi_Gm_loop_60s_gnm.wav",
-            "prog_rock_loop_60s_enm.wav",
-            "thrash_metal_loop_60s_enm.wav"
-          ]
-        },
-        "captured_at": "2026-06-04T13:18:37.202829+00:00"
+        "harness_git_sha": "778caa4",
+        "pod_url": "wss://pod-a40a4cd3d6fc.daydream.live/",
+        "gpu": "unknown",
+        "server_info": {},
+        "captured_at": "2026-06-25T17:11:53.497956+00:00"
       }
     },
     "lora_enable": {
