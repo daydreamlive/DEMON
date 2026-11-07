@@ -10,10 +10,18 @@
 //
 //   types/configContract.gen.hpp    — config field-key/enum/version constants
 //                                      (demon::config::*) the VST keys its
-//                                      DemonExport (de)serialization off of.
+//                                      DemonExport (de)serialization off of,
+//                                      plus the DEFAULT_CONFIG VALUES as typed
+//                                      constexpr facts (demon::config::defaults)
+//                                      so C++ hosts consume the defaults instead
+//                                      of re-declaring them.
 //   types/controlsContract.gen.hpp  — TERMS + CONTROL_DISPLAY_NAMES +
 //                                      CONTROL_DESCRIPTIONS (demon::controls::*)
 //                                      the VST APVTS param names key off of.
+//   types/configDefaults.gen.json   — serializeConfig(DEFAULT_CONFIG), the same
+//                                      value facts as one machine-readable JSON
+//                                      artifact for JS/TS consumers (a web UI's
+//                                      hand-synced tables, test fixtures).
 //
 // Both headers are CONSTANTS-ONLY and JSON-library-agnostic, exactly like the
 // wire header: no structs, no nlohmann. The VST keeps its own juce::var
@@ -91,6 +99,27 @@ function strConst(name, value) {
   return `inline constexpr const char* ${kName(name)} = ${cppStr(value)};`;
 }
 
+/** A C++ `double` literal from a JS number. JSON has one number type, so every
+ *  numeric default is emitted as double (no int/double flip when a default
+ *  moves between integral and fractional); integral values get a `.0` so the
+ *  literal reads as floating-point. */
+function cppNum(value) {
+  const s = String(value);
+  return Number.isInteger(value) && !/[eE.]/.test(s) ? `${s}.0` : s;
+}
+
+/** One typed `inline constexpr <bool|double|const char*> kFoo = ...;` line,
+ *  the C++ type picked from the JS scalar's runtime type. */
+function typedConst(name, value) {
+  if (typeof value === "boolean") {
+    return `inline constexpr bool ${kName(name)} = ${value};`;
+  }
+  if (typeof value === "number") {
+    return `inline constexpr double ${kName(name)} = ${cppNum(value)};`;
+  }
+  return strConst(name, value);
+}
+
 /** A flat namespace of string-key constants from an array of names, each
  *  constant's VALUE being the name itself (field-key vocabulary). */
 function keyNamespace(name, keys) {
@@ -113,6 +142,104 @@ function valueNamespace(name, entries) {
 // here, so the drift guard genuinely fails if any option set changes upstream
 // without a regenerate.
 
+// ── demon::config::defaults — DEFAULT_CONFIG value facts ────────────────────
+
+/** The `defaults` namespace body: DEFAULT_CONFIG's VALUES as typed constexpr
+ *  constants (bool / double / const char* by runtime type), plus two constexpr
+ *  POD tables — the ordered controls list and the channel_ranges rows — so a
+ *  consumer can iterate the facts as well as reference them by name. Coverage:
+ *  engine scalars, prompts, controls, channel_ranges, and the top-level
+ *  seed / swap_source_mode. Not emitted: web.* (the browser demo's own block)
+ *  and enabled_loras (empty array in DEFAULT_CONFIG). */
+function renderDefaultsNamespace(cfg) {
+  const controlEntries = Object.entries(cfg.controls);
+  const controlRow = ([key, value]) => {
+    if (typeof value === "boolean") {
+      return `    { ${cppStr(key)}, ValueKind::Boolean, 0.0, ${value}, nullptr },`;
+    }
+    if (typeof value === "number") {
+      return `    { ${cppStr(key)}, ValueKind::Number, ${cppNum(value)}, false, nullptr },`;
+    }
+    return `    { ${cppStr(key)}, ValueKind::String, 0.0, false, ${cppStr(value)} },`;
+  };
+
+  const controls = ns(
+    "controls",
+    [
+      "// DEFAULT_CONFIG.controls values, one typed constant per knob.",
+      ...controlEntries.map(([k, v]) => typedConst(k, v)),
+      "",
+      "// The same values as one ordered table (DEFAULT_CONFIG insertion order,",
+      "// which is also JSON.stringify emission order), for consumers that",
+      "// iterate the control set instead of naming each constant.",
+      "enum class ValueKind { Number, Boolean, String };",
+      "struct ControlValue {",
+      "  const char* key;",
+      "  ValueKind kind;",
+      "  double number;       // valid when kind == Number",
+      "  bool boolean;        // valid when kind == Boolean",
+      "  const char* string;  // valid when kind == String",
+      "};",
+      `inline constexpr ControlValue kValues[] = {\n${controlEntries
+        .map(controlRow)
+        .join("\n")}\n};`,
+      `inline constexpr int kValueCount = ${controlEntries.length};`,
+    ].join("\n"),
+  );
+
+  const rangeEntries = Object.entries(cfg.channel_ranges);
+  const channelRanges = ns(
+    "channel_ranges",
+    [
+      "// DEFAULT_CONFIG.channel_ranges rows ({ min, max, reverse } per channel),",
+      "// in DEFAULT_CONFIG insertion order.",
+      "struct ChannelRange {",
+      "  const char* channel;",
+      "  double min;",
+      "  double max;",
+      "  bool reverse;",
+      "};",
+      `inline constexpr ChannelRange kRanges[] = {\n${rangeEntries
+        .map(
+          ([ch, r]) =>
+            `    { ${cppStr(ch)}, ${cppNum(r.min)}, ${cppNum(r.max)}, ${r.reverse} },`,
+        )
+        .join("\n")}\n};`,
+      `inline constexpr int kRangeCount = ${rangeEntries.length};`,
+    ].join("\n"),
+  );
+
+  return ns(
+    "defaults",
+    [
+      "// Top-level scalar defaults.",
+      typedConst("seed", cfg.seed),
+      typedConst("swap_source_mode", cfg.swap_source_mode),
+      "",
+      "// engine.* scalar defaults (enabled_loras is [] in DEFAULT_CONFIG; an",
+      "// empty array has no value constant).",
+      ns(
+        "engine",
+        Object.entries(cfg.engine)
+          .filter(([, v]) => !Array.isArray(v))
+          .map(([k, v]) => typedConst(k, v))
+          .join("\n"),
+      ),
+      "",
+      ns(
+        "prompts",
+        Object.entries(cfg.prompts)
+          .map(([k, v]) => typedConst(k, v))
+          .join("\n"),
+      ),
+      "",
+      controls,
+      "",
+      channelRanges,
+    ].join("\n"),
+  );
+}
+
 // ── configContract.gen.hpp ──────────────────────────────────────────────────
 
 const CONFIG_HPP_HEADER = `\
@@ -127,11 +254,16 @@ const CONFIG_HPP_HEADER = `\
 // Drift-guarded by web/tests/unit/configContractDrift.test.ts
 // (a stale copy fails CI).
 //
-// Constants-ONLY and JSON-library-agnostic: this header declares NO structs and
-// pulls in NO JSON dependency. It provides the config VOCABULARY as string
-// constants — JSON field keys, enum option values, and the schema version — so a
-// C++ client (the rtmg-vst plugin) references generated names instead of
-// hand-copied literals while keeping its own juce::var (de)serialization.
+// Constants-ONLY and JSON-library-agnostic: this header pulls in NO JSON
+// dependency and declares no serialization machinery. It provides the config
+// VOCABULARY as string constants — JSON field keys, enum option values, and the
+// schema version — so a C++ client (the rtmg-vst plugin) references generated
+// names instead of hand-copied literals while keeping its own juce::var
+// (de)serialization. It also provides the DEFAULT_CONFIG VALUES as typed
+// constexpr facts (demon::config::defaults), including two small constexpr POD
+// tables for iteration, so C++ hosts consume the defaults instead of
+// re-declaring them. The same value facts ship as machine-readable JSON in
+// types/configDefaults.gen.json for JS/TS consumers.
 //
 // The preset file IS a web DemonExport: an RtmgConfig plus an optional top-level
 // \`inputs\` (SerializedInputs). Field-key coverage of NESTED objects mirrors
@@ -254,6 +386,11 @@ function renderConfigContractHpp(sdk) {
         ),
       ].join("\n"),
     ),
+    "// ── DEFAULT_CONFIG values (defaults::*) ──\n" +
+      "// The VALUE facts of DEFAULT_CONFIG — control defaults, prompts, engine\n" +
+      "// scalars, channel-range min/max/reverse — as typed constexpr constants,\n" +
+      "// so a C++ host CONSUMES the defaults instead of re-declaring them.",
+    renderDefaultsNamespace(cfg),
   ];
 
   const body = blocks.join("\n\n");
@@ -348,6 +485,17 @@ function renderControlsContractHpp(sdk) {
   ).replace(/\r\n/g, "\n");
 }
 
+// ── configDefaults.gen.json ─────────────────────────────────────────────────
+
+/** The DEFAULT_CONFIG value facts as one machine-readable JSON artifact:
+ *  exactly `JSON.stringify(serializeConfig(DEFAULT_CONFIG))` + newline — the
+ *  same bytes a frontend captures when it serializes an untouched default
+ *  config, so downstream repos can use one file as BOTH a consumable defaults
+ *  table (web UIs) and a byte-exact serialization fixture (drift tests). */
+function renderConfigDefaultsJson(sdk) {
+  return JSON.stringify(sdk.serializeConfig(sdk.DEFAULT_CONFIG)) + "\n";
+}
+
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
 function typesDir() {
@@ -368,9 +516,18 @@ function main() {
   const controlsPath = join(out, "controlsContract.gen.hpp");
   writeFileSync(controlsPath, controlsText, { encoding: "utf-8" });
   console.log(`wrote ${controlsPath} (${controlsText.length} bytes)`);
+
+  const defaultsText = renderConfigDefaultsJson(sdk);
+  const defaultsPath = join(out, "configDefaults.gen.json");
+  writeFileSync(defaultsPath, defaultsText, { encoding: "utf-8" });
+  console.log(`wrote ${defaultsPath} (${defaultsText.length} bytes)`);
 }
 
-export { renderConfigContractHpp, renderControlsContractHpp };
+export {
+  renderConfigContractHpp,
+  renderControlsContractHpp,
+  renderConfigDefaultsJson,
+};
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   main();
