@@ -127,6 +127,13 @@ class SessionConfig:
     # handle either (``window`` absent = a frame follows, as always).
     derived_windows: bool = False
 
+    # The client hears one stereo pair: on a session that delivers streams
+    # side by side (multistem), slices, windows and swaps go out as the
+    # streams summed, and ``ready``/``swap_ready`` say 2 channels. Read off
+    # the raw config dict by the adapter, like ``derived_windows``; a
+    # stereo session ignores it.
+    stereo_mix: bool = False
+
     @classmethod
     def from_dict(cls, data: dict) -> "SessionConfig":
         """Parse a raw config dict (as the WS adapter received it from
