@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from acestep.streaming.config import SessionConfig
 from acestep.streaming.source import _decode_audio_msg, _decode_compact_pcm
-from demos.realtime_motion_graph_web.ws_adapter import _codec_basis, _derived_window, _server_capabilities
+from demos.realtime_motion_graph_web.ws_adapter import _codec_basis, _derived_window, _server_capabilities, _stereo_mix
 
 
 def _wide(n: int = 480, ch: int = 10, live=(4, 5)) -> np.ndarray:
@@ -106,6 +106,17 @@ def test_a_render_only_codec_holds_one_frame_not_the_window():
     assert _codec_basis(buf, render_only=False) is buf, "a ring session's basis is the window"
     one = _codec_basis(buf, render_only=True)
     assert one.shape == (1, 10) and np.shares_memory(one, buf), "a render-only one: a frame, no copy"
+
+
+def test_stereo_mix_sums_the_streams_pairwise_and_leaves_stereo_alone():
+    buf = np.random.default_rng(2).uniform(-0.9, 0.9, (48, 10)).astype(np.float32)
+    mix = _stereo_mix(buf[8:40])  # a slice of the window, as a slice event carries
+    assert mix.shape == (32, 2) and mix.dtype == np.float32
+    np.testing.assert_allclose(mix[:, 0], buf[8:40, 0::2].sum(axis=1), rtol=1e-6)
+    np.testing.assert_allclose(mix[:, 1], buf[8:40, 1::2].sum(axis=1), rtol=1e-6)
+    assert np.abs(mix).max() > 1.0, "not clamped, like a one-shot's mix"
+    stereo = buf[:, :2]
+    assert _stereo_mix(stereo) is stereo
 
 
 def test_server_capabilities_advertise_compact_pcm():

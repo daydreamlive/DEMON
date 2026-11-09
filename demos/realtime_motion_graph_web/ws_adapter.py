@@ -846,6 +846,14 @@ def _codec_basis(buf: np.ndarray, render_only: bool) -> np.ndarray:
     return buf[:1] if render_only else buf
 
 
+def _stereo_mix(buf: np.ndarray) -> np.ndarray:
+    """``[N, 2k]`` stereo streams side by side -> their ``[N, 2]`` sum, not
+    clamped (like a one-shot's mix). A ``stereo_mix`` session's wire carries
+    this instead of the streams: a fifth of a multistem session's bytes."""
+    n, ch = buf.shape
+    return buf if ch <= 2 else buf.reshape(n, ch // 2, 2).sum(axis=1, dtype=np.float32)
+
+
 def _derived_window(config_dict: dict, buf: np.ndarray, kept: bool = False) -> str | None:
     """The window frame a ``derived_windows`` client builds itself instead
     of receiving: "kept" (a swap that leaves the playing buffer as it is),
@@ -1658,7 +1666,11 @@ def _handle_client_body(
     # ---- Per-subscriber transport state ----
 
     send_lock = threading.Lock()
-    codec = SliceCodec(_codec_basis(streaming.initial_buffer, streaming.render_only()))
+    # A stereo_mix client hears one stereo pair, the streams summed on the
+    # way out; the session itself keeps every stream.
+    mix = bool(config_dict.get("stereo_mix")) and state.n_channels > 2
+    wire = _stereo_mix if mix else (lambda buf: buf)
+    codec = SliceCodec(wire(_codec_basis(streaming.initial_buffer, streaming.render_only())))
     # The one-shot's windowed slices (render_decode "windows"): raw frames,
     # no mirror, so one compressor serves every version of this socket.
     oneshot_zctx = zstd.ZstdCompressor(level=1)
@@ -1766,9 +1778,9 @@ def _handle_client_body(
                 _note_slice_drop(*drop)
                 return
         frame = codec.encode(
-            event.audio,
+            wire(event.audio),
             start_sample=event.start_sample,
-            channels=event.channels,
+            channels=2 if mix else event.channels,
             tick_ms=event.tick_ms,
             dec_ms=event.dec_ms,
             num_gens=event.num_gens,
@@ -1810,7 +1822,7 @@ def _handle_client_body(
                     "type": "swap_ready",
                     "duration": event.duration,
                     "sample_rate": event.sample_rate,
-                    "channels": event.channels,
+                    "channels": 2 if mix else event.channels,
                     "bpm": event.bpm,
                     "key": event.key,
                     "time_signature": event.time_signature,
@@ -1819,11 +1831,11 @@ def _handle_client_body(
                     **({"window": window, "frames": len(new_src_np)} if window else {}),
                 }))
                 if window is None:
-                    chunked_ws_send(ws, new_src_np.astype(np.float16).tobytes())
+                    chunked_ws_send(ws, wire(new_src_np).astype(np.float16).tobytes())
                 # A kept buffer is the one the client plays and this mirror
                 # already tracks; any other becomes the new delta basis.
                 if window != "kept":
-                    codec.replace_mirror(_codec_basis(new_src_np, streaming.render_only()))
+                    codec.replace_mirror(wire(_codec_basis(new_src_np, streaming.render_only())))
                 if event.stems is not None:
                     send_stem_payload(
                         ws,
@@ -2041,12 +2053,13 @@ def _handle_client_body(
         # A render-only session plays nothing: one silent frame stands in
         # for the window (a 2:00 multistem window is ~115 MB of float16).
         src_np = np.zeros((1, src_np.shape[1]), dtype=np.float32)
+    src_np = wire(src_np)
     window = _derived_window(config_dict, src_np)
     ws.send(json.dumps({
         "type": "ready",
         "duration": duration_s,
         "sample_rate": SAMPLE_RATE,
-        "channels": state.n_channels,
+        "channels": 2 if mix else state.n_channels,
         "lora_dir": str(loras_dir()),
         "lora_catalog": streaming.lora_catalog_payload(),
         "lora_pending_enable": list(streaming.initial_enable_ids),
@@ -2063,7 +2076,7 @@ def _handle_client_body(
         # (plan §3.1–3.3). The legacy flat duration/sample_rate/channels
         # fields above stay as-is for old clients; geometry is the
         # backend-declared truth new clients read instead of constants.
-        "geometry": streaming.geometry_payload(),
+        "geometry": {**streaming.geometry_payload(), **({"channels": 2} if mix else {})},
         "capabilities": _capabilities_with_analysis(
             _server_capabilities(streaming.capabilities_payload()),
         ),
