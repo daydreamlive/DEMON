@@ -45,6 +45,9 @@ def _default_swap_pending() -> dict:
         # Optional per-stream keep (wire ``keep``) for a stream layout's
         # encode_source; None = the field was absent.
         "keep": None,
+        # Optional in-place grow (wire ``grow``) for a stream layout's
+        # encode_source; None = the field was absent.
+        "grow": None,
     }
 
 

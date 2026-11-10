@@ -80,6 +80,26 @@ class ConfigField:
 
 
 @dataclass(frozen=True)
+class ToolSpec:
+    """One discrete call an extension accepts, declared at registration.
+
+    A tool is not a knob. A knob is a value the page re-sends in every
+    ``params`` snapshot; a tool is a call that applies once, on arrival,
+    with structured ``args`` a float knob cannot carry. The core routes a
+    tool call to :meth:`ModelExtensionRuntime.call_tool` by ``name`` and
+    never reads ``args`` itself.
+
+    ``schema`` is the JSON schema of ``args`` (an object schema), carried
+    to callers so a client or a chat can build a valid call; ``summary``
+    is one line saying what the tool does.
+    """
+
+    name: str
+    schema: dict
+    summary: str
+
+
+@dataclass(frozen=True)
 class Rejection:
     """An extension's refusal to run against a base model."""
 
@@ -288,6 +308,15 @@ class StreamLayout:
     ``oneshot_slice`` the moment it lands, then ``oneshot_done``. A redo
     always takes "song".
 
+    ``carried_latent() -> [1, C, n_streams * L] | None``: asked once after
+    every swap's ``encode_source``. A tensor (SA3-native, at the swap's
+    geometry) becomes the latent the runner renders until the first slot
+    of the new source finishes, in place of nothing (for example the
+    finished latent a grown session already had, continued over its new
+    span). ``None`` (or the field absent) keeps today's swap: nothing is
+    rendered until a new slot lands. A layout returns it once and clears
+    it.
+
     Each stream is decoded separately: a decoder's receptive field would
     otherwise bleed across stream boundaries.
     """
@@ -309,6 +338,7 @@ class StreamLayout:
     keep_mask: Callable | None = None
     keep_overwrite: Callable | bool = False
     render_decode: Callable | str | None = None
+    carried_latent: Callable | None = None
 
     def __post_init__(self):
         if int(self.n_streams) < 1:
@@ -427,6 +457,20 @@ class ModelExtensionRuntime:
         entirely.
         """
 
+    def call_tool(self, name: str, args: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Apply one call of a tool this extension declared in ``tool_specs``.
+
+        Returns ``{"ok": bool, "message": str, "state": dict | None}``.
+        ``message`` is shown to the caller; ``state`` is JSON-safe and
+        optional. A refused call returns ``ok`` False and changes nothing.
+
+        The core only routes names the extension registered, so ``name``
+        is always one of them. Called on the COMMAND thread, like
+        ``decorate_conditioning``: anything the streaming runner also
+        reads is this extension's to synchronize. Do not block.
+        """
+        return {"ok": False, "message": f"unknown tool {name!r}", "state": None}
+
     def status(self) -> Mapping[str, Any]:
         """Operator-visible state. Must not contain paths or secrets."""
         return {}
@@ -514,6 +558,12 @@ class ModelExtensionSpec:
     (``plugin_<plugin_id>_<control>``); the registry enforces that, along
     with shadowing, type and bounds checks, at registration time so a bad
     declaration fails at boot rather than per connection.
+
+    ``tool_specs`` are :class:`ToolSpec` values: discrete calls the
+    runtime's ``call_tool`` accepts by name (the ``extension_tool``
+    command). The registry checks their names, schemas and summaries the
+    same way, at boot. Kept last so positional construction of the
+    earlier fields is unchanged.
     """
 
     name: str
@@ -522,6 +572,7 @@ class ModelExtensionSpec:
     config_schema: Mapping[str, ConfigField] = field(default_factory=dict)
     knob_specs: tuple = ()
     description: str = ""
+    tool_specs: tuple = ()
 
 
 def stream_layout_of(runtime) -> "StreamLayout | None":

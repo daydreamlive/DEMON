@@ -16,6 +16,9 @@ Routes (default port 1319):
                                set_timbre_source / set_structure_source
                                / swap_source: ``<II`` channels+samples
                                header followed by interleaved float32 PCM.
+                               A command with a direct answer
+                               (``extension_tool``) waits for it and
+                               returns it under ``result``.
 
 Bound to ``127.0.0.1`` by default so accidentally-exposed services don't
 let arbitrary clients write into a running browser session. Override
@@ -39,6 +42,27 @@ from acestep.streaming import registry as session_registry
 
 _CMD_PATH = re.compile(r"^/sessions/([A-Za-z0-9_-]{1,64})/cmd$")
 _GET_ONE = re.compile(r"^/sessions/([A-Za-z0-9_-]{1,64})$")
+
+#: Commands whose answer goes back to the control bus caller instead of
+#: the session's page (tools are discrete calls; the caller wants the
+#: outcome). The request waits for it on the session's dispatch thread.
+_ANSWERED_COMMANDS = frozenset({"extension_tool"})
+_ANSWER_TIMEOUT_S = 10.0
+
+
+class _Answer:
+    """One command's direct answer, handed across from the dispatch thread."""
+
+    def __init__(self) -> None:
+        self._done = threading.Event()
+        self.value: Optional[dict] = None
+
+    def put(self, payload: dict) -> None:
+        self.value = payload
+        self._done.set()
+
+    def wait(self, timeout: float) -> Optional[dict]:
+        return self.value if self._done.wait(timeout) else None
 
 
 def _serialise_handle(h: session_registry.SessionHandle) -> dict:
@@ -132,8 +156,16 @@ class _ControlHandler(BaseHTTPRequestHandler):
             return
         audio: Optional[bytes] = body[4 + json_len:] or None
 
+        answer = (
+            _Answer()
+            if isinstance(data, dict) and data.get("type") in _ANSWERED_COMMANDS
+            else None
+        )
         try:
-            handle.inject(data, audio)
+            if answer is None:
+                handle.inject(data, audio)
+            else:
+                handle.inject(data, audio, reply=answer.put)
         except Exception as e:
             self._send_json(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
@@ -141,8 +173,21 @@ class _ControlHandler(BaseHTTPRequestHandler):
             )
             return
 
-        self._send_json(HTTPStatus.OK, {"sent": True, "session_id": sid,
-                                        "audio_bytes": len(audio) if audio else 0})
+        payload = {"sent": True, "session_id": sid,
+                   "audio_bytes": len(audio) if audio else 0}
+        if answer is not None:
+            result = answer.wait(_ANSWER_TIMEOUT_S)
+            if result is None:
+                self._send_json(HTTPStatus.GATEWAY_TIMEOUT, {
+                    "error": (
+                        f"no answer to {data.get('type')} within "
+                        f"{_ANSWER_TIMEOUT_S:.0f} s"
+                    ),
+                    "session_id": sid,
+                })
+                return
+            payload["result"] = result
+        self._send_json(HTTPStatus.OK, payload)
 
 
 def start_control_server(host: str, port: int) -> ThreadingHTTPServer:
