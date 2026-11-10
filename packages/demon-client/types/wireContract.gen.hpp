@@ -735,6 +735,7 @@ namespace config {
   inline constexpr const char* kTelemetryVersion = "telemetry_version";
   inline constexpr const char* kDerivedWindows = "derived_windows";
   inline constexpr const char* kStereoMix = "stereo_mix";
+  inline constexpr const char* kSliceEmitTrim = "slice_emit_trim";
   /** Fixed generation duration for sa3 sessions, seconds. Absent or null derives it from the uploaded source audio length (the audio-to-audio anchor); SA3 conditioning is captured per (prompt, duration), so this is fixed for the session lifetime. */
   inline constexpr const char* kSa3DurationS = "sa3_duration_s";
   /** Song-length label (seconds_total) for this sa3 session. Absent or null keeps the server default (a label longer than the loop: a crop of a longer file, so the loop never composes an ending). 0 labels the render with its own length, the upstream whole-file semantics: a one-shot decays to silence inside the loop. Fixed for the session lifetime. */

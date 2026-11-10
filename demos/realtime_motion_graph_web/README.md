@@ -181,7 +181,8 @@ deployments (SSH/IDE tunnels, weak uplinks):
   sent-minus-acked exceeds this, so a slow link gets fresh slices at
   link rate instead of an ever-staler backlog. Reactive backpressure.
 
-- `DEMON_SLICE_EMIT_TRIM` (default off; set `1` to enable) — transmit
+- `DEMON_SLICE_EMIT_TRIM` (default off; set `1` to enable for every
+  session; one session asks with `slice_emit_trim` in its config) — transmit
   only the region the frontier just **finalized** each tick, instead of
   re-sending the full overlapping window. Every overlapping copy lands
   ~lead *before* the playhead reaches the region, so only the last is

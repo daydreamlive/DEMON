@@ -134,6 +134,15 @@ class SessionConfig:
     # stereo session ignores it.
     stereo_mix: bool = False
 
+    # Send each region of audio once: the runner still renders and writes
+    # its full window every tick, but transmits only the part its frontier
+    # just passed (``PipelineRunner`` emit trim), instead of the whole
+    # overlapping window again. For a client that reports ``slice_lead_s``:
+    # a region now arrives only about the playback lead ahead of the
+    # playhead, and those reports are what keep it ahead on a slow link.
+    # ``DEMON_SLICE_EMIT_TRIM`` still turns it on for every session.
+    slice_emit_trim: bool = False
+
     @classmethod
     def from_dict(cls, data: dict) -> "SessionConfig":
         """Parse a raw config dict (as the WS adapter received it from

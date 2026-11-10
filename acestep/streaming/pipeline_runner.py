@@ -225,6 +225,7 @@ class PipelineRunner:
         lead_floor_s=None,
         lead_ceiling_s=None,
         lead_release_tau_s=None,
+        emit_trim=False,
     ):
         self.backend = backend
         self.audio_eng = audio_eng
@@ -470,8 +471,10 @@ class PipelineRunner:
         # Each region goes out once, at its freshest, ~lead ahead of the
         # playhead — identical latency (generation/lead are untouched; this
         # is purely a transmission change), ~Nx less wire. Contiguous buffer
-        # slices => no new seams. Off by default; opt in for measurement.
-        self._emit_trim = (
+        # slices => no new seams. Off by default: a session asks for it
+        # (``emit_trim``, its config's ``slice_emit_trim``), or the env var
+        # turns it on for every session.
+        self._emit_trim = bool(emit_trim) or (
             os.environ.get("DEMON_SLICE_EMIT_TRIM", "") not in ("", "0")
         )
         # Highest sample whose finalized content we've already emitted.

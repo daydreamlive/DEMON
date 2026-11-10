@@ -92,3 +92,32 @@ def test_trim_resume_after_untrimmed_fallback_reanchors_frontier():
 
     assert [(ss, se) for ss, se, _ in calls] == [(540, 580)]
     np.testing.assert_array_equal(calls[0][2], buf[540:580])
+
+
+def test_a_session_asks_for_trim_in_its_config(monkeypatch):
+    from acestep.streaming.audio_engine import AudioEngine
+    from acestep.streaming.config import SessionConfig
+    from acestep.streaming.generator_backend import LeadProfile
+
+    class _Backend:
+        name = "fake"
+        playable_duration_s = staticmethod(lambda: 1.0)
+        lead_profile = staticmethod(LeadProfile)
+
+    class _State:
+        running = False
+        params = {}
+        last_activity_ts = 0.0
+
+    monkeypatch.delenv("DEMON_SLICE_EMIT_TRIM", raising=False)
+    assert SessionConfig.from_dict({}).slice_emit_trim is False
+    assert SessionConfig.from_dict({"slice_emit_trim": True}).slice_emit_trim is True
+
+    def runner(**kw):
+        eng = AudioEngine(np.zeros((48000, 2), dtype=np.float32), 48000)
+        return PipelineRunner(_Backend(), eng, state=_State(), vae_window=0.36, **kw)
+
+    assert runner()._emit_trim is False
+    assert runner(emit_trim=True)._emit_trim is True
+    monkeypatch.setenv("DEMON_SLICE_EMIT_TRIM", "1")
+    assert runner()._emit_trim is True
