@@ -959,6 +959,7 @@ class StreamingSession:
                 lead_floor_s=self.config.lead_floor_s,
                 lead_ceiling_s=self.config.lead_ceiling_s,
                 lead_release_tau_s=self.config.lead_release_tau_s,
+                emit_trim=self.config.slice_emit_trim,
             )
             self.runner_holder[0] = runner
             logger.info("pipeline_running")
