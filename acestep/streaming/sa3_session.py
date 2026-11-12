@@ -9,9 +9,10 @@ catalog), :func:`create_sa3_session` builds the SA3 one:
 * **SA3Context, process-cached.** One loaded model (DiT + SAME +
   conditioner) at a time, shared across sessions; asking for another
   takes the loaded one out first. The SA3 analog of the engine-state
-  reuse the ACE startup warmup exists to exploit. :func:`preload_sa3` pays the load (and the
-  TRT engine deserialization) at server boot when the server opts in;
-  otherwise the first session pays it and the rest get it warm.
+  reuse the ACE startup warmup exists to exploit. :func:`preload_sa3`
+  pays the load (and the TRT engine deserialization) at server boot when
+  the server opts in; otherwise the first session pays it and the rest
+  get it warm.
 * **Source anchor.** The uploaded 48 kHz source is SAME-encoded once as
   the audio-to-audio anchor (the spike-proven continuity mechanism:
   every emit is a partial-denoise cover of this latent). The 48 → 44.1
@@ -139,24 +140,20 @@ def evict_sa3_contexts() -> int:
 
     from acestep.engine import sa3_trt
 
-    count = _close_contexts()
+    with _CONTEXTS_LOCK:
+        contexts = list(_CONTEXTS.values())
+        _CONTEXTS.clear()
+    count = len(contexts)
+    for context in contexts:
+        close = getattr(context, "close", None)
+        if close is not None:
+            close()
+    contexts = context = close = None
     with sa3_trt._ENGINE_CACHE_LOCK:
         sa3_trt._ENGINE_CACHE.clear()
     gc.collect()
     torch.cuda.empty_cache()
     return count
-
-
-def _close_contexts() -> int:
-    """Drop and close every cached SA3 context. Returns how many."""
-    with _CONTEXTS_LOCK:
-        contexts = list(_CONTEXTS.values())
-        _CONTEXTS.clear()
-    for context in contexts:
-        close = getattr(context, "close", None)
-        if close is not None:
-            close()
-    return len(contexts)
 
 
 def _resolve_accel(value: str, component: str) -> str:
