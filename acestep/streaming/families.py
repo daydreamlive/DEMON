@@ -385,11 +385,13 @@ def resolve_checkpoint(name: str) -> tuple:
 @dataclass(frozen=True)
 class ServedCheckpoint:
     """One checkpoint a pod serves: the ``--checkpoint`` name as the
-    operator typed it, and what it resolves to."""
+    operator typed it, what it resolves to, and the qualified id of the
+    model extension installed on it (``alias+extension_id``), if any."""
 
     name: str
     family: str
     model_id: str
+    extension: Optional[str] = None
 
 
 def split_checkpoint_list(value: str) -> list:
@@ -410,20 +412,25 @@ def resolve_served(names: Sequence[str]) -> list:
 
     Every name must resolve to ONE family (a pod serves one family;
     pools cover the others), else ``ValueError`` naming the offending
-    pair. Two names that resolve to the same model keep the first.
+    pair. A name may carry an extension as ``alias+extension_id``. Two
+    names that resolve to the same model and extension keep the first.
     """
     served: list = []
     for name in names:
-        family, model_id = resolve_checkpoint(name)
+        alias, _, extension = name.partition("+")
+        extension = extension or None
+        family, model_id = resolve_checkpoint(alias)
         if served and family != served[0].family:
             raise ValueError(
                 f"--checkpoint {name!r} is family {family!r} but "
                 f"{served[0].name!r} is family {served[0].family!r}; "
                 "one pod serves one family"
             )
-        if any(s.model_id == model_id for s in served):
+        if any((s.model_id, s.extension) == (model_id, extension) for s in served):
             continue
-        served.append(ServedCheckpoint(name=name, family=family, model_id=model_id))
+        served.append(ServedCheckpoint(
+            name=name, family=family, model_id=model_id, extension=extension,
+        ))
     if not served:
         raise ValueError("--checkpoint names no checkpoint")
     return served
