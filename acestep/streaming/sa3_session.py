@@ -156,6 +156,18 @@ def evict_sa3_contexts() -> int:
     return count
 
 
+def release_sa3() -> int:
+    """Take SA3 off the card entirely: the shared SAME-L window decoders
+    too, then :func:`evict_sa3_contexts`. The next decode rebuilds a
+    decoder by itself (``sa3_context._same_l_decoder``). Returns how many
+    contexts were dropped."""
+    from acestep.engine import sa3_context
+
+    with sa3_context._SAME_L_DECODERS_LOCK:
+        sa3_context._SAME_L_DECODERS.clear()
+    return evict_sa3_contexts()
+
+
 def _resolve_accel(value: str, component: str) -> str:
     """Map the serving layer's accel value onto SA3's two execution
     modes. SA3 has no torch.compile path, so "compile" (the ACE server

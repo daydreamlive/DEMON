@@ -25,7 +25,9 @@ A tool that holds state a session put there (an uploaded reference, say)
 can be cleared between sessions: ``DEMON_TOOL_RESETS`` (``name=/path,...``)
 makes the proxy ``POST`` that path on the tool, under its prefix, when the
 last live session on this server ends -- before the next caller can upload
-anything of their own.
+anything of their own. ``DEMON_TOOL_YIELDS`` (same form) is the mirror: the
+proxy ``POST``s that path before a model session is created, so a tool that
+holds the card leaves it first.
 
 The websockets HTTP parser refuses request bodies, so tool requests are
 picked off the socket before websockets sees it (:func:`wrap_server`) and
@@ -84,6 +86,7 @@ class Target(NamedTuple):
 # Set by configure(); module-global like the session registry.
 _proxies: dict[str, Target] = {}
 _resets: dict[str, str] = {}
+_yields: dict[str, str] = {}
 _max_body = 256 * 1024 * 1024
 _timeout_s = 120.0
 _last_healthy: dict[str, float] = {}
@@ -131,12 +134,14 @@ def parse_tool_resets(spec: str, proxies: Mapping[str, Target]) -> dict[str, str
 
 def configure(proxies: Mapping[str, tuple], *,
               resets: Mapping[str, str] | None = None,
+              yields: Mapping[str, str] | None = None,
               max_body: int | None = None,
               timeout_s: float | None = None,
               poll_health: bool = True) -> None:
-    global _proxies, _resets, _max_body, _timeout_s
+    global _proxies, _resets, _yields, _max_body, _timeout_s
     _proxies = {name: Target(*t) for name, t in proxies.items()}
     _resets = dict(resets or {})
+    _yields = dict(yields or {})
     if _resets:
         session_registry.add_unregister_hook(_reset_after_last_session)
     _last_healthy.clear()
@@ -152,13 +157,15 @@ def configure(proxies: Mapping[str, tuple], *,
 def configure_from_env(cli_spec: str | None = None,
                        env=os.environ) -> dict[str, Target]:
     """``--tool-proxies`` (``cli_spec``, wins) or ``DEMON_TOOL_PROXIES``,
-    plus ``DEMON_TOOL_RESETS``, ``DEMON_TOOL_PROXY_MAX_BODY_MB`` /
+    plus ``DEMON_TOOL_RESETS``, ``DEMON_TOOL_YIELDS``,
+    ``DEMON_TOOL_PROXY_MAX_BODY_MB`` /
     ``DEMON_TOOL_PROXY_TIMEOUT_S``."""
     spec = cli_spec if cli_spec is not None else env.get("DEMON_TOOL_PROXIES", "")
     proxies = parse_tool_proxies(spec)
     configure(
         proxies,
         resets=parse_tool_resets(env.get("DEMON_TOOL_RESETS", ""), proxies),
+        yields=parse_tool_resets(env.get("DEMON_TOOL_YIELDS", ""), proxies),
         max_body=int(float(env.get("DEMON_TOOL_PROXY_MAX_BODY_MB", "256")) * 1024 * 1024),
         timeout_s=float(env.get("DEMON_TOOL_PROXY_TIMEOUT_S", "120")),
     )
@@ -185,11 +192,11 @@ def _health_loop() -> None:
         time.sleep(HEALTH_POLL_S)
 
 
-def reset_tools() -> None:
-    """``POST`` every configured reset path (``DEMON_TOOL_RESETS``)."""
+def _post_paths(paths: Mapping[str, str], event: str) -> None:
+    """``POST`` (empty body) each tool's path; log ``<event> tool= status=``."""
     from acestep.engine.obs import logger
 
-    for name, path in list(_resets.items()):
+    for name, path in list(paths.items()):
         target = _proxies.get(name)
         if target is None:
             continue
@@ -198,11 +205,22 @@ def reset_tools() -> None:
             conn.request("POST", target.prefix + path, body=b"",
                          headers={"Content-Length": "0"})
             status = conn.getresponse().status
-            logger.info("tool_reset tool={} status={}", name, status)
+            logger.info("{} tool={} status={}", event, name, status)
         except Exception as exc:  # noqa: BLE001 - a tool that is down holds nothing
-            logger.warning("tool_reset_failed tool={} error={}", name, exc)
+            logger.warning("{}_failed tool={} error={}", event, name, exc)
         finally:
             conn.close()
+
+
+def reset_tools() -> None:
+    """``POST`` every configured reset path (``DEMON_TOOL_RESETS``)."""
+    _post_paths(_resets, "tool_reset")
+
+
+def yield_tools() -> None:
+    """``POST`` every configured yield path (``DEMON_TOOL_YIELDS``): called
+    before a model session is created. Nothing when unset."""
+    _post_paths(_yields, "tool_yield")
 
 
 def _reset_after_last_session(_session_id: str) -> None:

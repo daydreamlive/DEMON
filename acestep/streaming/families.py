@@ -190,6 +190,10 @@ class FamilySpec:
     first-session cost (model load, extension install, TRT engine
     deserialization) at server boot, before the pod accepts traffic.
 
+    ``release()`` takes the family's model off the card entirely (a
+    scoring request hands the card to another tool); ``None`` when the
+    family cannot.
+
     ``supports_extensions`` says whether ``--model-extension`` may
     target this family: the family's context must offer the install /
     decorate / controls hooks (see ``docs/PLUGINS.md``). Selection
@@ -220,6 +224,7 @@ class FamilySpec:
     config_fields: tuple = ()
     shutdown: Optional[Callable[[], Any]] = None
     preload: Optional[Callable[..., Any]] = None
+    release: Optional[Callable[[], Any]] = None
     supports_extensions: bool = False
     max_concurrent_sessions: Mapping[str, int] = field(default_factory=dict)
 
@@ -539,6 +544,12 @@ def _preload_sa3(model_id, **kwargs):
     return preload_sa3(model_id, **kwargs)
 
 
+def _release_sa3():
+    from acestep.streaming.sa3_session import release_sa3
+
+    return release_sa3()
+
+
 def _create_acestep_session(cls, **kwargs):
     from acestep.streaming.ace_session import create_acestep_session
 
@@ -657,6 +668,7 @@ SA3 = FamilySpec(
     ),
     shutdown=_shutdown_sa3,
     preload=_preload_sa3,
+    release=_release_sa3,
     # SA3Context offers the model-extension veto/install/close hooks.
     supports_extensions=True,
     # Small-class sessions share the loaded model and the deserialized TRT

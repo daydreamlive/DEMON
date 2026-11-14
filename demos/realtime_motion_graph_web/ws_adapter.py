@@ -1370,6 +1370,55 @@ def _dispatch_extension_tool(data, streaming, reply, origin) -> None:
     })
 
 
+def _score_request_takes_no_commands(data, audio=None, reply=None) -> None:
+    raise RuntimeError("a score request takes no commands")
+
+
+def _handle_score_request(ws, backend_family: str) -> None:
+    """A scoring request: a socket with no model behind it that holds the
+    card for another tool. Every live session is preempted and the family
+    released at open (then ``ready``) and again at close; registered first
+    and unregistered last, so the registry is never empty while the card
+    changes hands and the unregister fires the tool resets."""
+    from acestep.streaming.families import FAMILY_SPECS
+
+    family_spec = FAMILY_SPECS.get(backend_family)
+    if family_spec is None or family_spec.release is None:
+        try:
+            ws.send(json.dumps({
+                "type": "error",
+                "code": "score_request_unsupported",
+                "message": f"family {backend_family!r} cannot release its model",
+            }))
+        finally:
+            ws.close(1008, "score_request unsupported")
+        return
+    session_id = session_registry.new_session_id()
+    session_registry.register(session_registry.SessionHandle(
+        id=session_id,
+        started_at=time.time(),
+        inject=_score_request_takes_no_commands,
+        snapshot=dict,
+    ))
+    try:
+        with _SESSION_LIFECYCLE_LOCK:
+            _preempt_active_session(session_id)
+            family_spec.release()
+        logger.info("score_request_ready session_id={}", session_id)
+        ws.send(json.dumps({"type": "ready", "session_id": session_id}))
+        with contextlib.suppress(ConnectionClosed):
+            for _ in ws:
+                pass
+    finally:
+        try:
+            with _SESSION_LIFECYCLE_LOCK:
+                _preempt_active_session(session_id)
+                family_spec.release()
+        finally:
+            session_registry.unregister(session_id)
+            logger.info("score_request_closed session_id={}", session_id)
+
+
 def _handle_client_body(
     ws,
     ctx_stack: contextlib.ExitStack,
@@ -1411,6 +1460,9 @@ def _handle_client_body(
                 ws.close()
             except Exception:
                 pass
+        return
+    if isinstance(config_dict, dict) and config_dict.get("type") == "score_request":
+        _handle_score_request(ws, backend_family)
         return
 
     # Mint session_id immediately and bind it (plus the client's
@@ -1622,6 +1674,7 @@ def _handle_client_body(
                 session_id, keep=_preempt_keep(cap, entry),
             )
             _log_session_vram("create_start")
+            tool_proxy.yield_tools()
             streaming = StreamingSession.create(
                 audio=audio_in,
                 config=cfg,
