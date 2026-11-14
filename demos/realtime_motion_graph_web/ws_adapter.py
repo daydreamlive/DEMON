@@ -35,7 +35,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import torch
 from websockets.exceptions import ConnectionClosed
@@ -498,12 +498,13 @@ def _fold_sticky_params(pending: dict, newer: dict) -> dict:
 
 
 class _ActiveSession:
-    __slots__ = ("session_id", "streaming", "ws")
+    __slots__ = ("session_id", "streaming", "ws", "entry")
 
-    def __init__(self, session_id: str, streaming, ws):
+    def __init__(self, session_id: str, streaming, ws, entry=None):
         self.session_id = session_id
         self.streaming = streaming
         self.ws = ws
+        self.entry = entry
 
 
 def _preempt_active_session(new_session_id: str, keep: int = 0) -> None:
@@ -659,52 +660,51 @@ def _resolve_session_checkpoint(
     backend_family: str,
     served: Sequence = (),
 ) -> tuple:
-    """The model id this session runs, and an error message or None.
+    """The served entry this session runs, and an error message or None.
 
-    No ``checkpoint`` key (or null) is the pod default. A named checkpoint
+    No ``checkpoint`` key (or null) is the pod default (``served[0]``, or
+    None on a pod without an allow-list). A named checkpoint
     must be on the pod's allow-list (``served``: ServedCheckpoint entries,
     matched by their --checkpoint name OR their model id, so a client may
     echo back a ready frame's value) and of the session's family. An empty
     ``served`` means the pod serves its default only (every caller that
     predates allow-lists): then only the default's own model id is accepted.
     """
+    default_entry = served[0] if served else None
     requested = config_dict.get("checkpoint")
     if requested is None:
-        return default, None
+        return default_entry, None
     names = [e.name for e in served] or [default]
     unavailable = (
         f"checkpoint {requested!r} is not served by this pod; served: {names}"
     )
     if not isinstance(requested, str) or not requested.strip():
-        return default, unavailable
+        return default_entry, unavailable
     requested = requested.strip()
     if not served:
-        return (default, None) if requested == default else (default, unavailable)
+        return None, (None if requested == default else unavailable)
     entry = next(
         (e for e in served if requested in (e.name, e.model_id)), None,
     )
     if entry is None:
-        return default, unavailable
+        return default_entry, unavailable
     family = _effective_family(config_dict, backend_family)
     if entry.family != family:
-        return default, (
+        return default_entry, (
             f"checkpoint {requested!r} is family {entry.family!r}, not this "
             f"session's {family!r}; served: {names}"
         )
-    return entry.model_id, None
+    return entry, None
 
 
-def _preempt_keep(cap: int, model_id: str) -> int:
-    """How many live sessions may stay while one on ``model_id`` is created:
-    ``cap - 1`` when every live session runs the same model, else 0 (a model
-    switch preempts everything, so two models never share the GPU)."""
+def _preempt_keep(cap: int, entry) -> int:
+    """How many live sessions may stay while one on served ``entry`` is
+    created: ``cap - 1`` when every live session runs the same entry, else 0
+    (a switch preempts everything, so two models never share the GPU)."""
     with _ACTIVE_SLOT_LOCK:
-        mixed = any(
-            getattr(a.streaming, "checkpoint", model_id) != model_id
-            for a in _ACTIVE_SESSIONS
-        )
+        mixed = any(a.entry != entry for a in _ACTIVE_SESSIONS)
     if mixed:
-        logger.info("session_preempt_model_switch model={}", model_id)
+        logger.info("session_preempt_model_switch entry={}", entry)
         return 0
     return cap - 1
 
@@ -1255,7 +1255,7 @@ def handle_client(
     backend_family: str = DEFAULT_FAMILY,
     offload_text_encoder: bool = False,
     checkpoint_dir: str | None = None,
-    model_extension=None,
+    model_extensions: Mapping,
     served_checkpoints: Sequence = (),
 ):
     """Connection entrypoint. The body lives in ``_handle_client_body``;
@@ -1272,7 +1272,7 @@ def handle_client(
                 backend_family=backend_family,
                 offload_text_encoder=offload_text_encoder,
                 checkpoint_dir=checkpoint_dir,
-                model_extension=model_extension,
+                model_extensions=model_extensions,
                 served_checkpoints=served_checkpoints,
             )
     finally:
@@ -1370,6 +1370,55 @@ def _dispatch_extension_tool(data, streaming, reply, origin) -> None:
     })
 
 
+def _score_request_takes_no_commands(data, audio=None, reply=None) -> None:
+    raise RuntimeError("a score request takes no commands")
+
+
+def _handle_score_request(ws, backend_family: str) -> None:
+    """A scoring request: a socket with no model behind it that holds the
+    card for another tool. Every live session is preempted and the family
+    released at open (then ``ready``) and again at close; registered first
+    and unregistered last, so the registry is never empty while the card
+    changes hands and the unregister fires the tool resets."""
+    from acestep.streaming.families import FAMILY_SPECS
+
+    family_spec = FAMILY_SPECS.get(backend_family)
+    if family_spec is None or family_spec.release is None:
+        try:
+            ws.send(json.dumps({
+                "type": "error",
+                "code": "score_request_unsupported",
+                "message": f"family {backend_family!r} cannot release its model",
+            }))
+        finally:
+            ws.close(1008, "score_request unsupported")
+        return
+    session_id = session_registry.new_session_id()
+    session_registry.register(session_registry.SessionHandle(
+        id=session_id,
+        started_at=time.time(),
+        inject=_score_request_takes_no_commands,
+        snapshot=dict,
+    ))
+    try:
+        with _SESSION_LIFECYCLE_LOCK:
+            _preempt_active_session(session_id)
+            family_spec.release()
+        logger.info("score_request_ready session_id={}", session_id)
+        ws.send(json.dumps({"type": "ready", "session_id": session_id}))
+        with contextlib.suppress(ConnectionClosed):
+            for _ in ws:
+                pass
+    finally:
+        try:
+            with _SESSION_LIFECYCLE_LOCK:
+                _preempt_active_session(session_id)
+                family_spec.release()
+        finally:
+            session_registry.unregister(session_id)
+            logger.info("score_request_closed session_id={}", session_id)
+
+
 def _handle_client_body(
     ws,
     ctx_stack: contextlib.ExitStack,
@@ -1380,7 +1429,7 @@ def _handle_client_body(
     backend_family: str,
     offload_text_encoder: bool,
     checkpoint_dir: str | None,
-    model_extension,
+    model_extensions: Mapping,
     served_checkpoints: Sequence = (),
 ):
     logger.info(
@@ -1411,6 +1460,9 @@ def _handle_client_body(
                 ws.close()
             except Exception:
                 pass
+        return
+    if isinstance(config_dict, dict) and config_dict.get("type") == "score_request":
+        _handle_score_request(ws, backend_family)
         return
 
     # Mint session_id immediately and bind it (plus the client's
@@ -1509,8 +1561,9 @@ def _handle_client_body(
     # Per-session checkpoint: a client may name any allow-listed model of
     # its family; absent keeps the pod default. Resolved before the source
     # recv so a refused session neither uploads nor preempts anything.
+    entry = served_checkpoints[0] if served_checkpoints else None
     if config_dict.get("checkpoint") is not None:
-        resolved, checkpoint_error = _resolve_session_checkpoint(
+        entry, checkpoint_error = _resolve_session_checkpoint(
             config_dict, default=checkpoint, backend_family=backend_family,
             served=served_checkpoints,
         )
@@ -1529,14 +1582,14 @@ def _handle_client_body(
                 pass
             ws.close(1008, "checkpoint unavailable")
             return
-        if resolved != checkpoint:
+        if entry is not None and entry != served_checkpoints[0]:
             # The operator's base checkpoint directory belongs to the
-            # default model; any other loads from the catalog.
+            # default entry; any other loads from the catalog.
             logger.info(
-                "session_checkpoint requested={} model={} default={}",
-                config_dict.get("checkpoint"), resolved, checkpoint,
+                "session_checkpoint requested={} entry={} default={}",
+                config_dict.get("checkpoint"), entry.name, checkpoint,
             )
-            checkpoint = resolved
+            checkpoint = entry.model_id
             checkpoint_dir = None
     if _text_only_requested(config_dict):
         waveform = _silent_source_waveform(config_dict, text_only_spec)
@@ -1618,9 +1671,10 @@ def _handle_client_body(
         logger.info("session_cap model={} cap={}", checkpoint, cap)
         with _SESSION_LIFECYCLE_LOCK:
             _preempt_active_session(
-                session_id, keep=_preempt_keep(cap, checkpoint),
+                session_id, keep=_preempt_keep(cap, entry),
             )
             _log_session_vram("create_start")
+            tool_proxy.yield_tools()
             streaming = StreamingSession.create(
                 audio=audio_in,
                 config=cfg,
@@ -1629,11 +1683,16 @@ def _handle_client_body(
                 vae_backend=vae_backend,
                 offload_text_encoder=offload_text_encoder,
                 checkpoint_dir=checkpoint_dir,
-                model_extension=model_extension,
+                model_extension=(
+                    model_extensions[entry.extension]
+                    if entry is not None and entry.extension else None
+                ),
                 session_id=session_id,
             )
             with _ACTIVE_SLOT_LOCK:
-                _ACTIVE_SESSIONS.append(_ActiveSession(session_id, streaming, ws))
+                _ACTIVE_SESSIONS.append(
+                    _ActiveSession(session_id, streaming, ws, entry),
+                )
             _log_session_vram("create_done")
     except UnsupportedTrtCheckpointError as exc:
         try:
