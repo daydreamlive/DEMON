@@ -81,3 +81,13 @@ def test_mixed_family_list_exits_with_the_pair():
 def test_empty_list_exits():
     with pytest.raises(SystemExit):
         served_checkpoints_arg(["--checkpoint", " , "])
+
+
+def test_entry_carries_an_extension():
+    entries = served_checkpoints_arg([
+        "--checkpoint", "sa3-medium+plugin.band,sa3-medium,sa3-medium+plugin.band",
+    ])
+    assert [(e.name, e.model_id, e.extension) for e in entries] == [
+        ("sa3-medium+plugin.band", "medium", "plugin.band"),
+        ("sa3-medium", "medium", None),
+    ]

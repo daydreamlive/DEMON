@@ -7,11 +7,12 @@ ACE stack (TRT profiles, engine ``Session``, conditioning pairs, LoRA
 catalog), :func:`create_sa3_session` builds the SA3 one:
 
 * **SA3Context, process-cached.** One loaded model (DiT + SAME +
-  conditioner) per ``model_id`` for the process lifetime, shared across
-  sessions — the SA3 analog of the engine-state reuse the ACE startup
-  warmup exists to exploit. :func:`preload_sa3` pays the load (and the
-  TRT engine deserialization) at server boot when the server opts in;
-  otherwise the first session pays it and the rest get it warm.
+  conditioner) at a time, shared across sessions; asking for another
+  takes the loaded one out first. The SA3 analog of the engine-state
+  reuse the ACE startup warmup exists to exploit. :func:`preload_sa3`
+  pays the load (and the TRT engine deserialization) at server boot when
+  the server opts in; otherwise the first session pays it and the rest
+  get it warm.
 * **Source anchor.** The uploaded 48 kHz source is SAME-encoded once as
   the audio-to-audio anchor (the spike-proven continuity mechanism:
   every emit is a partial-denoise cover of this latent). The 48 → 44.1
@@ -38,7 +39,9 @@ consumes the construction payload this module stashes via
 
 from __future__ import annotations
 
+import gc
 import threading
+import time
 
 import numpy as np
 
@@ -66,11 +69,12 @@ SA3_MAX_PIPELINE_DEPTH = 8
 # geometry and must not leak in here.
 SA3_VAE_WINDOW_S = 3.0
 
-# One loaded SA3 model per model_id per process (module docstring).
+# One loaded SA3 model per process (module docstring).
 # Lock held across the load on purpose: a second concurrent first
 # session should wait for the shared context, not load a duplicate.
+# Reentrant: a load evicts through evict_sa3_contexts under it.
 _CONTEXTS: dict = {}
-_CONTEXTS_LOCK = threading.Lock()
+_CONTEXTS_LOCK = threading.RLock()
 
 
 def sa3_context_key(model_id: str, *, checkpoint_dir=None, extension=None) -> tuple:
@@ -96,7 +100,11 @@ def sa3_context_key(model_id: str, *, checkpoint_dir=None, extension=None) -> tu
 
 
 def get_sa3_context(model_id: str, *, checkpoint_dir=None, extension=None):
-    """Load-or-reuse the process-cached SA3Context for one exact model."""
+    """Load-or-reuse the process-cached SA3Context for one exact model.
+
+    One model is loaded at a time: loading another evicts the loaded one
+    first, so two models never share the card.
+    """
     from acestep.engine.sa3_context import SA3Context
 
     key = sa3_context_key(
@@ -105,6 +113,14 @@ def get_sa3_context(model_id: str, *, checkpoint_dir=None, extension=None):
     with _CONTEXTS_LOCK:
         context = _CONTEXTS.get(key)
         if context is None:
+            if _CONTEXTS:
+                outgoing = list(_CONTEXTS)
+                start = time.perf_counter()
+                evict_sa3_contexts()
+                logger.info(
+                    "sa3_context_swap out={} in={} evict_ms={:.0f}",
+                    outgoing, key, (time.perf_counter() - start) * 1000,
+                )
             context = SA3Context(
                 model_id, checkpoint_dir=checkpoint_dir, extension=extension,
             )
@@ -113,19 +129,43 @@ def get_sa3_context(model_id: str, *, checkpoint_dir=None, extension=None):
 
 
 def evict_sa3_contexts() -> int:
-    """Drop and close every cached SA3 context. Returns how many.
+    """Drop and close every cached SA3 context and free what they held on
+    the card. Returns how many.
 
-    Server shutdown path: an installed extension may have attached itself
-    to the shared model, and ``close()`` is what detaches it.
+    ``close()`` detaches an installed extension, which frees what it owns.
+    DEMON's DiT engine cache is cleared with them; the shared SAME-L
+    window decoder (``sa3_context._SAME_L_DECODERS``) stays.
     """
+    import torch
+
+    from acestep.engine import sa3_trt
+
     with _CONTEXTS_LOCK:
         contexts = list(_CONTEXTS.values())
         _CONTEXTS.clear()
+    count = len(contexts)
     for context in contexts:
         close = getattr(context, "close", None)
         if close is not None:
             close()
-    return len(contexts)
+    contexts = context = close = None
+    with sa3_trt._ENGINE_CACHE_LOCK:
+        sa3_trt._ENGINE_CACHE.clear()
+    gc.collect()
+    torch.cuda.empty_cache()
+    return count
+
+
+def release_sa3() -> int:
+    """Take SA3 off the card entirely: the shared SAME-L window decoders
+    too, then :func:`evict_sa3_contexts`. The next decode rebuilds a
+    decoder by itself (``sa3_context._same_l_decoder``). Returns how many
+    contexts were dropped."""
+    from acestep.engine import sa3_context
+
+    with sa3_context._SAME_L_DECODERS_LOCK:
+        sa3_context._SAME_L_DECODERS.clear()
+    return evict_sa3_contexts()
 
 
 def _resolve_accel(value: str, component: str) -> str:

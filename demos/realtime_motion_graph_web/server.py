@@ -16,6 +16,7 @@ Usage:
     python -u -m demos.realtime_motion_graph_web.server --no-backend
 """
 
+import dataclasses
 import gc
 import json
 import mimetypes
@@ -1015,21 +1016,27 @@ def main():
             )
     # Model extension selection is startup-only and operator-controlled:
     # a client can never name a plugin, a module, or a config path.
+    # --model-extension is the default entry's extension when that entry
+    # names none (``alias+extension_id`` on --checkpoint names it per entry).
     model_extension_id = _single_arg(args, "--model-extension")
+    if model_extension_id:
+        default_entry = served_checkpoints[0]
+        if default_entry.extension not in (None, model_extension_id):
+            raise SystemExit(
+                f"[Server] --model-extension {model_extension_id!r} differs "
+                f"from --checkpoint {default_entry.name!r}"
+            )
+        served_checkpoints[0] = dataclasses.replace(
+            default_entry, extension=model_extension_id,
+        )
+    model_extension_ids = list(dict.fromkeys(
+        e.extension for e in served_checkpoints if e.extension
+    ))
     model_extension_config = _single_arg(args, "--model-extension-config")
-    if model_extension_config and not model_extension_id:
+    if model_extension_config and not model_extension_ids:
         raise SystemExit(
-            "[Server] --model-extension-config requires --model-extension"
+            "[Server] --model-extension-config requires a model extension"
         )
-    # An extension is installed on ONE model's context: the allow-list
-    # shrinks to the default and any other requested checkpoint is refused.
-    if model_extension_id and len(served_checkpoints) > 1:
-        logger.warning(
-            "checkpoint_allowlist_truncated reason=model_extension kept={} dropped={}",
-            served_checkpoints[0].name,
-            [e.name for e in served_checkpoints[1:]],
-        )
-        served_checkpoints = served_checkpoints[:1]
     if "--control-host" in args:
         idx = args.index("--control-host")
         control_host = args[idx + 1]
@@ -1123,17 +1130,23 @@ def main():
         # session exists. Startup-only is a safety property AND a
         # mechanical necessity: the knob manifest is published once on the
         # ready frame, so an extension's controls must exist before the
-        # first client connects for them to ever be visible.
-        if model_extension_id:
+        # first client connects for them to ever be visible. Every listed
+        # extension is selected here; each is installed only when its
+        # model loads.
+        model_extensions = {}
+        if model_extension_ids:
             from acestep.plugins.errors import PluginError
             from acestep.plugins.selection import select_model_extension
 
             try:
-                model_extension = select_model_extension(
-                    model_extension_id,
-                    family=backend_family,
-                    config_path=model_extension_config,
-                )
+                model_extensions = {
+                    qualified_id: select_model_extension(
+                        qualified_id,
+                        family=backend_family,
+                        config_path=model_extension_config,
+                    )
+                    for qualified_id in model_extension_ids
+                }
             except PluginError as exc:
                 # Fail closed. Running stock after the operator explicitly
                 # asked for an extension would generate with a different
@@ -1145,7 +1158,8 @@ def main():
                 print(f"  {exc}")
                 print("=" * 64)
                 raise SystemExit(1) from exc
-            _STREAM_LAYOUT = _stream_layout_info(model_extension_id)
+            _STREAM_LAYOUT = _stream_layout_info(served_checkpoints[0].extension)
+            model_extension = model_extensions.get(served_checkpoints[0].extension)
             if model_extension is not None:
                 _MODEL_EXTENSION_INFO = _model_extension_info(model_extension.extension)
 
@@ -1169,7 +1183,7 @@ def main():
                 backend_family=backend_family,
                 offload_text_encoder=offload_text_encoder,
                 checkpoint_dir=base_checkpoint_dir,
-                model_extension=model_extension,
+                model_extensions=model_extensions,
                 served_checkpoints=served_checkpoints,
             )
 
@@ -1217,17 +1231,6 @@ def main():
                 checkpoint_dir=base_checkpoint_dir,
                 model_extension=model_extension,
             )
-            # Startup warmup preloads every allow-listed model; the base
-            # checkpoint directory and the extension belong to the default.
-            if startup_warmup:
-                for entry in served_checkpoints[1:]:
-                    family_spec.preload(
-                        entry.model_id,
-                        decoder_backend=decoder_accel,
-                        vae_backend=vae_accel,
-                        checkpoint_dir=None,
-                        model_extension=None,
-                    )
         elif startup_warmup:
             logger.info(
                 "startup_warmup_skipped family={} policy={}",
