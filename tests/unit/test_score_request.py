@@ -4,7 +4,9 @@ Covers ``release_sa3`` (decoders dropped, then the eviction), the SA3
 family's ``release``, the ``score_request`` socket (register before the
 release, release at open and at close, a live session preempted and waited
 for, the tool route accepting the request's id, unregister last so it fires
-the reset), and ``DEMON_TOOL_YIELDS`` (POSTed before a model session is
+the reset), scoring requests taking turns (a waiter is told ``queued``,
+stays out of the registry and touches nothing until the holder has
+unregistered; a waiter that goes leaves the line), and ``DEMON_TOOL_YIELDS`` (POSTed before a model session is
 created, nothing when unset). No GPU.
 """
 
@@ -13,6 +15,7 @@ from __future__ import annotations
 import http.client
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
@@ -31,7 +34,11 @@ def _isolated():
     with wa._ACTIVE_SLOT_LOCK:
         prev = list(wa._ACTIVE_SESSIONS)
         wa._ACTIVE_SESSIONS.clear()
+    with wa._SCORE_TURN:
+        wa._SCORE_LINE.clear()
     yield
+    with wa._SCORE_TURN:
+        wa._SCORE_LINE.clear()
     with wa._ACTIVE_SLOT_LOCK:
         wa._ACTIVE_SESSIONS[:] = prev
     tool_proxy.configure({}, poll_health=False)
@@ -231,6 +238,155 @@ def test_tool_route_accepts_the_request_id(monkeypatch, tool):
         srv.shutdown()
     assert statuses == [200]
     assert seen == [("POST", "/work")]
+
+
+# ---------------------------------------------------------------------------
+# Scoring requests take turns
+# ---------------------------------------------------------------------------
+
+
+class _HeldWs(_ScoreWs):
+    """A score socket that stays open until ``done`` is set; ``state`` and
+    ``fail_send`` stand in for a socket that has gone away."""
+
+    def __init__(self):
+        super().__init__(during=lambda ws: ws.done.wait(10))
+        self.done = threading.Event()
+        self.state = None
+        self.fail_send = False
+
+    def send(self, text):
+        if self.fail_send:
+            raise ConnectionError("gone")
+        super().send(text)
+
+
+def _wait_until(pred, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while not pred():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.005)
+
+
+def _start(ws, family="fake-sa3"):
+    t = threading.Thread(target=wa._handle_score_request, args=(ws, family),
+                         daemon=True)
+    t.start()
+    return t
+
+
+def _types(ws):
+    return [m["type"] for m in ws.sent]
+
+
+def test_second_request_waits_its_turn(monkeypatch, tool):
+    port, seen = tool
+    tool_proxy.configure({"other": ("127.0.0.1", port)},
+                         resets={"other": "/load"}, poll_health=False)
+    log: list = []
+    _sa3_release(monkeypatch, log)
+    a, b = _HeldWs(), _HeldWs()
+    ta = _start(a)
+    _wait_until(lambda: _types(a) == ["ready"])
+    tb = _start(b)
+    _wait_until(lambda: b.sent)
+    time.sleep(0.05)
+    sid_a = a.sent[0]["session_id"]
+    assert b.sent == [{"type": "queued", "position": 1}]
+    # Nothing ran for the waiter: one release (the first's open), the
+    # waiter is not in the registry, no reset yet.
+    assert log == [("release", [sid_a])]
+    assert [h.id for h in registry.list_handles()] == [sid_a]
+    assert seen == []
+    b.done.set()  # the waiter's socket has nothing to say yet
+    a.done.set()
+    ta.join(5)
+    tb.join(5)
+    assert _types(b) == ["queued", "ready"]
+    sid_b = b.sent[1]["session_id"]
+    # The registry was empty between the runs: the second registered only
+    # after the first unregistered, and the reset fired once per run.
+    assert log == [("release", [sid_a]), ("release", [sid_a]),
+                   ("release", [sid_b]), ("release", [sid_b])]
+    assert seen == [("POST", "/load"), ("POST", "/load")]
+    assert registry.get(sid_a) is None and registry.get(sid_b) is None
+
+
+def test_three_requests_run_in_order(monkeypatch):
+    log: list = []
+    _sa3_release(monkeypatch, log)
+    a, b, c = _HeldWs(), _HeldWs(), _HeldWs()
+    ta = _start(a)
+    _wait_until(lambda: _types(a) == ["ready"])
+    tb = _start(b)
+    _wait_until(lambda: b.sent)
+    tc = _start(c)
+    _wait_until(lambda: c.sent)
+    assert b.sent == [{"type": "queued", "position": 1}]
+    assert c.sent == [{"type": "queued", "position": 2}]
+    a.done.set()
+    ta.join(5)
+    _wait_until(lambda: _types(b) == ["queued", "ready"])
+    _wait_until(lambda: len(c.sent) == 2)
+    assert c.sent[1] == {"type": "queued", "position": 1}
+    assert "ready" not in _types(c)
+    b.done.set()
+    tb.join(5)
+    c.done.set()
+    tc.join(5)
+    assert _types(c) == ["queued", "queued", "ready"]
+    sids = [ws.sent[-1]["session_id"] for ws in (a, b, c)]
+    assert [e[1] for e in log] == [[sids[0]]] * 2 + [[sids[1]]] * 2 + [[sids[2]]] * 2
+
+
+@pytest.mark.parametrize("how", ["closed", "failed_send"])
+def test_a_waiter_that_goes_leaves_the_line(monkeypatch, how):
+    from websockets.protocol import State
+
+    monkeypatch.setattr(wa, "_SCORE_QUEUE_PING_S", 0.05)
+    log: list = []
+    _sa3_release(monkeypatch, log)
+    a, b, c = _HeldWs(), _HeldWs(), _HeldWs()
+    ta = _start(a)
+    _wait_until(lambda: _types(a) == ["ready"])
+    tb = _start(b)
+    _wait_until(lambda: b.sent)
+    tc = _start(c)
+    _wait_until(lambda: c.sent)
+    if how == "closed":
+        b.state = State.CLOSED
+    else:
+        b.fail_send = True
+    tb.join(5)
+    assert not tb.is_alive()  # left the line without a turn
+    _wait_until(lambda: {"type": "queued", "position": 1} in c.sent)
+    a.done.set()
+    ta.join(5)
+    _wait_until(lambda: "ready" in _types(c))
+    c.done.set()
+    tc.join(5)
+    assert "ready" not in _types(b)
+    sid_a, sid_c = a.sent[0]["session_id"], c.sent[-1]["session_id"]
+    assert [e[1] for e in log] == [[sid_a]] * 2 + [[sid_c]] * 2
+    with wa._SCORE_TURN:
+        assert wa._SCORE_LINE == []
+
+
+def test_waiter_is_pinged_while_its_position_holds(monkeypatch):
+    monkeypatch.setattr(wa, "_SCORE_QUEUE_PING_S", 0.02)
+    log: list = []
+    _sa3_release(monkeypatch, log)
+    a, b = _HeldWs(), _HeldWs()
+    ta = _start(a)
+    _wait_until(lambda: _types(a) == ["ready"])
+    tb = _start(b)
+    _wait_until(lambda: len(b.sent) >= 3)
+    assert all(m == {"type": "queued", "position": 1} for m in b.sent)
+    a.done.set()
+    b.done.set()
+    ta.join(5)
+    tb.join(5)
+    assert _types(b)[-1] == "ready"
 
 
 # ---------------------------------------------------------------------------

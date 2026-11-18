@@ -1374,12 +1374,75 @@ def _score_request_takes_no_commands(data, audio=None, reply=None) -> None:
     raise RuntimeError("a score request takes no commands")
 
 
+# Scoring requests take turns, first come first served. ``_SCORE_LINE[0]``
+# holds the turn; everyone behind it waits, unregistered, and is told
+# ``{"type":"queued","position":n}`` (1 = next) at once, on every change of
+# position and at least every ``_SCORE_QUEUE_PING_S``. A waiter whose
+# socket is gone (failed send or closed socket) leaves the line and never
+# gets a turn. No timeout on a turn: the holder gives it up in its
+# ``finally``, after its unregister.
+_SCORE_TURN = threading.Condition()
+_SCORE_LINE: list = []  # [ticket], head = holder
+_SCORE_QUEUE_PING_S = 2.0
+
+
+def _score_socket_closed(ws) -> bool:
+    from websockets.protocol import State
+
+    try:
+        return getattr(ws, "state", None) in (State.CLOSING, State.CLOSED)
+    except Exception:
+        return True
+
+
+def _leave_score_line(ticket) -> None:
+    with _SCORE_TURN:
+        with contextlib.suppress(ValueError):
+            _SCORE_LINE.remove(ticket)
+        _SCORE_TURN.notify_all()
+
+
+def _await_score_turn(ws):
+    """Join the line and return the ticket once it holds the turn, or None
+    when the socket went away while waiting (already out of the line)."""
+    ticket = object()
+    with _SCORE_TURN:
+        _SCORE_LINE.append(ticket)
+    told = None
+    told_at = 0.0
+    while True:
+        with _SCORE_TURN:
+            position = _SCORE_LINE.index(ticket)
+            if position == 0:
+                return ticket
+            if position == told:
+                wait_s = _SCORE_QUEUE_PING_S - (time.monotonic() - told_at)
+                if wait_s > 0:
+                    _SCORE_TURN.wait(wait_s)
+                    continue
+        # Tell the waiter (outside the lock: a send can block).
+        gone = _score_socket_closed(ws)
+        if not gone:
+            try:
+                ws.send(json.dumps({"type": "queued", "position": position}))
+            except Exception:
+                gone = True
+        if gone:
+            _leave_score_line(ticket)
+            logger.info("score_request_left_line position={}", position)
+            return None
+        told, told_at = position, time.monotonic()
+
+
 def _handle_score_request(ws, backend_family: str) -> None:
     """A scoring request: a socket with no model behind it that holds the
-    card for another tool. Every live session is preempted and the family
-    released at open (then ``ready``) and again at close; registered first
-    and unregistered last, so the registry is never empty while the card
-    changes hands and the unregister fires the tool resets."""
+    card for another tool. Requests take turns (``_SCORE_LINE``): a request
+    waits for its turn before it registers, preempts or releases anything,
+    and gives the turn up only after its unregister. Every live session is
+    preempted and the family released at open (then ``ready``) and again at
+    close; registered first and unregistered last, so the registry is never
+    empty while the card changes hands and the unregister fires the tool
+    resets."""
     from acestep.streaming.families import FAMILY_SPECS
 
     family_spec = FAMILY_SPECS.get(backend_family)
@@ -1393,30 +1456,36 @@ def _handle_score_request(ws, backend_family: str) -> None:
         finally:
             ws.close(1008, "score_request unsupported")
         return
-    session_id = session_registry.new_session_id()
-    session_registry.register(session_registry.SessionHandle(
-        id=session_id,
-        started_at=time.time(),
-        inject=_score_request_takes_no_commands,
-        snapshot=dict,
-    ))
+    ticket = _await_score_turn(ws)
+    if ticket is None:
+        return
     try:
-        with _SESSION_LIFECYCLE_LOCK:
-            _preempt_active_session(session_id)
-            family_spec.release()
-        logger.info("score_request_ready session_id={}", session_id)
-        ws.send(json.dumps({"type": "ready", "session_id": session_id}))
-        with contextlib.suppress(ConnectionClosed):
-            for _ in ws:
-                pass
-    finally:
+        session_id = session_registry.new_session_id()
+        session_registry.register(session_registry.SessionHandle(
+            id=session_id,
+            started_at=time.time(),
+            inject=_score_request_takes_no_commands,
+            snapshot=dict,
+        ))
         try:
             with _SESSION_LIFECYCLE_LOCK:
                 _preempt_active_session(session_id)
                 family_spec.release()
+            logger.info("score_request_ready session_id={}", session_id)
+            ws.send(json.dumps({"type": "ready", "session_id": session_id}))
+            with contextlib.suppress(ConnectionClosed):
+                for _ in ws:
+                    pass
         finally:
-            session_registry.unregister(session_id)
-            logger.info("score_request_closed session_id={}", session_id)
+            try:
+                with _SESSION_LIFECYCLE_LOCK:
+                    _preempt_active_session(session_id)
+                    family_spec.release()
+            finally:
+                session_registry.unregister(session_id)
+                logger.info("score_request_closed session_id={}", session_id)
+    finally:
+        _leave_score_line(ticket)
 
 
 def _handle_client_body(
