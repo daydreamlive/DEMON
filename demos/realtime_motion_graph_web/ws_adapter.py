@@ -134,7 +134,7 @@ from .audio_codec import (
     send_stem_payload,
 )
 from .protocol import COMMAND_NAMES, SAMPLE_RATE, coerce_command_payload
-from . import tool_proxy
+from . import presets, tool_proxy
 
 
 # ---------------------------------------------------------------------------
@@ -1461,6 +1461,8 @@ def _handle_score_request(ws, backend_family: str) -> None:
         return
     try:
         session_id = session_registry.new_session_id()
+        if presets.current() is not None:
+            presets.bind(session_id, presets.REQUEST)
         session_registry.register(session_registry.SessionHandle(
             id=session_id,
             started_at=time.time(),
@@ -1483,6 +1485,7 @@ def _handle_score_request(ws, backend_family: str) -> None:
                     family_spec.release()
             finally:
                 session_registry.unregister(session_id)
+                presets.unbind(session_id)
                 logger.info("score_request_closed session_id={}", session_id)
     finally:
         _leave_score_line(ticket)
@@ -1516,6 +1519,28 @@ def _handle_client_body(
 
     # ---- Init handshake ----
     config_dict = json.loads(ws.recv())
+    # Session presets (--presets): a config naming a preset is built from
+    # the operator's table, and its socket is filtered both ways from here
+    # on (presets.PresetSocket). On a sealed table nothing else opens.
+    preset = None
+    table = presets.current()
+    if table is not None:
+        is_request = (isinstance(config_dict, dict)
+                      and config_dict.get("type") == "score_request")
+        if is_request:
+            ws = presets.PresetSocket(ws, None)
+        elif table.sealed or (isinstance(config_dict, dict) and "preset" in config_dict):
+            try:
+                preset, config_dict = presets.expand(table, config_dict)
+            except presets.Refused as refused:
+                sock = presets.PresetSocket(ws, None)
+                try:
+                    sock.refuse(refused)
+                except Exception:
+                    pass
+                sock.close(1008)
+                return
+            ws = presets.PresetSocket(ws, preset)
     if isinstance(config_dict, dict) and config_dict.get("type") == "upload_track":
         try:
             _handle_upload_track(
@@ -1538,6 +1563,9 @@ def _handle_client_body(
     # optional client_id) into loguru's contextvars so every log record
     # on this connection carries the correlation IDs.
     session_id = session_registry.new_session_id()
+    if preset is not None:
+        presets.bind(session_id, preset)
+        ctx_stack.callback(presets.unbind, session_id)
     _client_id = config_dict.get("client_id") or None
     ctx_stack.enter_context(logger.contextualize(
         session_id=session_id,
@@ -1677,6 +1705,13 @@ def _handle_client_body(
                 "fallback=client_upload",
                 fixture_name, exc,
             )
+            if preset is not None:
+                # A preset session never reads an audio frame.
+                with contextlib.suppress(Exception):
+                    ws.send(json.dumps({"type": "error", "code": "fixture_unavailable",
+                                        "message": str(exc)}))
+                ws.close(1011)
+                return
             audio_bytes = ws.recv()
             waveform = _decode_audio_msg(audio_bytes)
             _ms("audio_recv_decoded")
@@ -1804,6 +1839,17 @@ def _handle_client_body(
         except Exception:
             pass
         ws.close(1011, "stem extraction failed")
+        return
+    except Exception as exc:
+        if preset is None:
+            raise
+        # A preset session answers every refusal in words: its socket
+        # turns this into the fixed sentence and logs the detail.
+        logger.exception("preset_session_create_failed")
+        with contextlib.suppress(Exception):
+            ws.send(json.dumps({"type": "error", "code": "session_create_failed",
+                                "message": str(exc)}))
+        ws.close(1011)
         return
     _ms("resolve_source_done")
 
@@ -2209,6 +2255,42 @@ def _handle_client_body(
 
     streaming.bus.subscribe(on_event, name="ws")
 
+    # --- Control bus ---
+    # External commands (from the demo's onboard MCP server) land here
+    # and get dispatched through the same router as live WS frames.
+    # The single-dispatch-thread invariant (control + WS messages
+    # serialize through one recv loop) is preserved by enqueueing
+    # rather than calling session methods directly from the HTTP
+    # handler thread.
+    control_queue: queue.Queue = queue.Queue()
+
+    def inject_control(
+        data: dict, audio: bytes | None = None, reply=None,
+    ) -> None:
+        # ``reply`` (optional) receives the command's direct answer, for
+        # the commands that have one (extension_tool -> tool_result), so
+        # the control bus request can return it to its caller.
+        control_queue.put((data, audio, reply))
+
+    def snapshot_session() -> dict:
+        snap = streaming.snapshot()
+        snap["fixture_name"] = fixture_name
+        return snap
+
+    # Register with the process-global session registry (the demo's
+    # onboard MCP server drives this session through it, and /tools/
+    # checks it) BEFORE ``ready``: a client may call /tools/ the moment
+    # ``ready`` arrives. Commands that land before the recv loop starts
+    # wait in ``control_queue``.
+    session_registry.register(session_registry.SessionHandle(
+        id=session_id,
+        started_at=time.time(),
+        inject=inject_control,
+        snapshot=snapshot_session,
+    ))
+    session_registered = True
+    logger.info("session_registered")
+
     # ---- Init handshake: ready + binary initial buffer + optional stems ----
     #
     # These ship inline (not through the bus) because they're produced
@@ -2278,28 +2360,6 @@ def _handle_client_body(
     _ms("initial_buffer_sent")
 
     # ---- Streaming ----
-
-    # --- Control bus ---
-    # External commands (from the demo's onboard MCP server) land here
-    # and get dispatched through the same router as live WS frames.
-    # The single-dispatch-thread invariant (control + WS messages
-    # serialize through one recv loop) is preserved by enqueueing
-    # rather than calling session methods directly from the HTTP
-    # handler thread.
-    control_queue: queue.Queue = queue.Queue()
-
-    def inject_control(
-        data: dict, audio: bytes | None = None, reply=None,
-    ) -> None:
-        # ``reply`` (optional) receives the command's direct answer, for
-        # the commands that have one (extension_tool -> tool_result), so
-        # the control bus request can return it to its caller.
-        control_queue.put((data, audio, reply))
-
-    def snapshot_session() -> dict:
-        snap = streaming.snapshot()
-        snap["fixture_name"] = fixture_name
-        return snap
 
     # Throttle state for coercion warnings, keyed (source, mtype). The
     # params channel runs at ~125 Hz; a client that trips coercion on
@@ -2972,18 +3032,6 @@ def _handle_client_body(
     # friends.
     recv_t = spawn_thread(recv_loop, name="recv_loop")
     spawn_thread(dead_client_watchdog, name="dead_client_watchdog")
-
-    # Register with the process-global session registry so the demo's
-    # onboard MCP server can drive this session via the HTTP control
-    # bus.
-    session_registry.register(session_registry.SessionHandle(
-        id=session_id,
-        started_at=time.time(),
-        inject=inject_control,
-        snapshot=snapshot_session,
-    ))
-    session_registered = True
-    logger.info("session_registered")
 
     # Stage the initial enable set so they get applied on the runner
     # thread before the first tick. Each entry carries its target

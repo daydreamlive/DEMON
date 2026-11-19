@@ -377,6 +377,11 @@ def _process_request(connection, request):
     except Exception:
         remote = "?"
 
+    # A sealed preset table (--presets): only the socket and /tools/ exist.
+    from . import presets
+    if presets.sealed():
+        return _not_found(remote, url)
+
     path_only = url.split("?", 1)[0].split("#", 1)[0]
 
     # API: server-info — lets the client know whether the backend is up.
@@ -883,6 +888,10 @@ def _process_request(connection, request):
         _log_http(remote, resp.status_code, "GET", url)
         return resp
 
+    return _not_found(remote, url)
+
+
+def _not_found(remote, url: str) -> "Response":
     body = b"404 not found\n"
     _log_http(remote, 404, "GET", url)
     return Response(
@@ -1080,7 +1089,20 @@ def main():
         logger.info("tool_proxy_mounted route=/tools/{} target={}:{}{}",
                     name, t_host, t_port, t_prefix)
 
-    kiosk = "--kiosk" in args
+    # Session presets: an operator's table of named session configs
+    # (see presets.py). Off when unset; a bad file fails the boot.
+    from . import presets
+    presets_path = _single_arg(args, "--presets")
+    if presets_path:
+        try:
+            table = presets.load_table(presets_path, proxies=tool_proxies)
+        except presets.TableError as exc:
+            raise SystemExit(f"[Server] invalid --presets file: {exc}") from exc
+        presets.configure(table)
+        logger.info("presets_loaded count={} sealed={}",
+                    len(table.presets), table.sealed)
+
+    kiosk ="--kiosk" in args
     default_mode = "graph"
     if "--mode" in args:
         idx = args.index("--mode")

@@ -6,7 +6,9 @@ module forwards ``GET``/``POST``/``PUT``/``DELETE /tools/<name>/<path...>``
 to the configured target -- but only for callers holding a live session on
 this server (``X-Demon-Session: <ready.session_id>``). A loopback caller
 may hit ``GET /tools/<name>/health`` without the header (local health
-checks).
+checks), except with a preset table loaded: a tunnel on the same machine
+makes every remote caller loopback, so there a tool's health is read on
+the tool's own port.
 
 Browsers on other origins (Studio posts stems straight to the pod, since
 its site rewrite caps bodies at 4.5 MB) get CORS: ``OPTIONS`` preflights
@@ -49,6 +51,8 @@ from http.server import BaseHTTPRequestHandler
 from typing import Mapping, NamedTuple
 
 from acestep.streaming import registry as session_registry
+
+from . import presets
 
 SESSION_HEADER = "X-Demon-Session"
 _NAME_RE = re.compile(r"[a-z0-9-]{1,32}")
@@ -283,37 +287,74 @@ class ToolHandler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:  # noqa: N802
         self._proxy()
 
+    def _discard_body(self) -> None:
+        """Read a refused request's body (up to the body cap) before
+        answering: closing a socket with unread input sends a reset, which
+        can destroy the answer before the client reads it."""
+        try:
+            left = min(int(self.headers.get("Content-Length") or 0), _max_body)
+            while left > 0:
+                chunk = self.rfile.read(min(left, 1 << 16))
+                if not chunk:
+                    break
+                left -= len(chunk)
+        except (ValueError, OSError):
+            pass
+
+    def _fail(self, status: int, payload: dict, code: str) -> None:
+        """The proxy's own error answer: today's ``payload``, or with a
+        preset table loaded the fixed ``{code, message, ref}``."""
+        if presets.current() is not None:
+            payload = presets.error_body(code, json.dumps(payload))
+        self._json(status, payload)
+
     def _proxy(self) -> None:
         path, _, query = self.path.partition("?")
         m = re.fullmatch(r"/tools/([^/]+)(/.*)?", path)
         target = _proxies.get(m.group(1)) if m else None
-        if target is None:
-            self._json(404, {"error": "unknown tool"})
-            return
-        rest = m.group(2) or "/"
-        if _has_dot_segment(rest):
-            self._json(400, {"error": "path must not contain . or .. segments"})
-            return
-
         sid = self.headers.get(SESSION_HEADER)
-        local_health = (
-            sid is None and self.command == "GET" and rest == "/health"
-            and self.client_address[0] in _LOOPBACK_CLIENTS
-        )
-        if not local_health and not (sid and session_registry.get(sid)):
-            self._json(401, {"error": f"{SESSION_HEADER} must name a live session"})
-            return
+        if presets.current() is not None:
+            # With a preset table an unknown tool, a missing session and a
+            # route the session may not call all answer the same 404, so
+            # nothing can be probed. No loopback exemption here: behind a
+            # tunnel on the same machine every caller is loopback.
+            rest = (m.group(2) or "/") if m else ""
+            if (
+                target is None or _has_dot_segment(rest)
+                or not (sid and session_registry.get(sid))
+                or not presets.tool_allowed(sid, m.group(1), self.command, rest)
+            ):
+                self._discard_body()
+                self._fail(404, {"error": "no such route", "path": path},
+                           "bad_request")
+                return
+        else:
+            if target is None:
+                self._json(404, {"error": "unknown tool"})
+                return
+            rest = m.group(2) or "/"
+            if _has_dot_segment(rest):
+                self._json(400, {"error": "path must not contain . or .. segments"})
+                return
+
+            local_health = (
+                sid is None and self.command == "GET" and rest == "/health"
+                and self.client_address[0] in _LOOPBACK_CLIENTS
+            )
+            if not local_health and not (sid and session_registry.get(sid)):
+                self._json(401, {"error": f"{SESSION_HEADER} must name a live session"})
+                return
 
         if "Transfer-Encoding" in self.headers:
-            self._json(411, {"error": "Content-Length required"})
+            self._fail(411, {"error": "Content-Length required"}, "bad_request")
             return
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
-            self._json(400, {"error": "bad Content-Length"})
+            self._fail(400, {"error": "bad Content-Length"}, "bad_request")
             return
         if length < 0 or length > _max_body:
-            self._json(413, {"error": f"body exceeds {_max_body} bytes"})
+            self._fail(413, {"error": f"body exceeds {_max_body} bytes"}, "too_long")
             return
 
         host, port, prefix = target
@@ -322,7 +363,8 @@ class ToolHandler(BaseHTTPRequestHandler):
             try:
                 conn.connect()
             except OSError as exc:
-                self._json(503, {"error": "tool unavailable", "detail": str(exc)})
+                self._fail(503, {"error": "tool unavailable", "detail": str(exc)},
+                           "unavailable")
                 return
             # ponytail: per-socket-op timeout, not a hard wall-clock total.
             conn.sock.settimeout(_timeout_s)
@@ -352,17 +394,18 @@ class ToolHandler(BaseHTTPRequestHandler):
             self.end_headers()
             shutil.copyfileobj(resp, self.wfile, 1 << 20)
         except socket.timeout:
-            self._safe_json(504, {"error": "tool timed out"})
+            self._safe_json(504, {"error": "tool timed out"}, "failed")
         except (ConnectionError, http.client.HTTPException) as exc:
-            self._safe_json(503, {"error": "tool unavailable", "detail": str(exc)})
+            self._safe_json(503, {"error": "tool unavailable", "detail": str(exc)},
+                            "unavailable")
         finally:
             conn.close()
 
-    def _safe_json(self, status: int, payload: dict) -> None:
+    def _safe_json(self, status: int, payload: dict, code: str) -> None:
         # Headers may already be out if the upstream died mid-response;
         # then the truncated body is all the client gets.
         try:
-            self._json(status, payload)
+            self._fail(status, payload, code)
         except OSError:
             pass
 
@@ -393,17 +436,37 @@ def _peek_head(sock: socket.socket) -> bytes:
     return head
 
 
+class _NotFound(ToolHandler):
+    """Any method but GET outside ``/tools/``: no such route exists, and
+    websockets would drop the connection without an answer when a body
+    follows the request. Reads the body and answers the server's plain 404."""
+
+    def handle_one_request(self) -> None:
+        self.raw_requestline = self.rfile.readline(65537)
+        if not self.raw_requestline or not self.parse_request():
+            return
+        self._discard_body()
+        from .server import _not_found
+        resp = _not_found(self.client_address[0], self.path)
+        head = f"HTTP/1.1 {resp.status_code} {resp.reason_phrase}\r\n" + "".join(
+            f"{k}: {v}\r\n" for k, v in resp.headers.raw_items()) + "\r\n"
+        self.wfile.write(head.encode("latin-1") + resp.body)
+        self.wfile.flush()
+
+
 def wrap_server(srv) -> None:
     """Route tool requests on a websockets ``sync.server.Server`` to
     :class:`ToolHandler`; everything else goes to websockets unchanged."""
     ws_handler = srv.handler
 
     def handler(sock, addr):
-        if not is_tool_request(_peek_head(sock)):
+        head = _peek_head(sock)
+        tool = is_tool_request(head)
+        if not tool and head.startswith(b"GET "):  # only a GET can become a websocket
             ws_handler(sock, addr)
             return
         try:
-            ToolHandler(sock, addr, srv)
+            (ToolHandler if tool else _NotFound)(sock, addr, srv)
         except Exception:
             pass
         finally:
