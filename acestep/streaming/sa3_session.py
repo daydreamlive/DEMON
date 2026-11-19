@@ -134,7 +134,8 @@ def evict_sa3_contexts() -> int:
 
     ``close()`` detaches an installed extension, which frees what it owns.
     DEMON's DiT engine cache is cleared with them; the shared SAME-L
-    window decoder (``sa3_context._SAME_L_DECODERS``) stays.
+    window decoder (``sa3_context._SAME_L_DECODERS``) stays. A context
+    the server froze at boot goes too (:func:`_collect_through_freeze`).
     """
     import torch
 
@@ -151,9 +152,28 @@ def evict_sa3_contexts() -> int:
     contexts = context = close = None
     with sa3_trt._ENGINE_CACHE_LOCK:
         sa3_trt._ENGINE_CACHE.clear()
-    gc.collect()
+    _collect_through_freeze()
     torch.cuda.empty_cache()
     return count
+
+
+def _collect_through_freeze() -> None:
+    """``gc.collect()`` that also reaches what the server froze at boot.
+
+    The server freezes everything boot loaded (``gc.freeze()`` once
+    ready) so a session's collections skip it. A model preloaded at boot
+    is in that set, and its modules form reference cycles: frozen, no
+    collection ever frees them, so an evicted boot model stayed on the
+    card for the life of the process (4.8 GiB for SA3 medium). Thaw,
+    collect, then freeze what is still alive again so sessions keep
+    their cheap collections.
+    """
+    frozen = gc.get_freeze_count() > 0
+    if frozen:
+        gc.unfreeze()
+    gc.collect()
+    if frozen:
+        gc.freeze()
 
 
 def release_sa3() -> int:
