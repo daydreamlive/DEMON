@@ -1840,6 +1840,17 @@ def _handle_client_body(
             pass
         ws.close(1011, "stem extraction failed")
         return
+    except Exception as exc:
+        if preset is None:
+            raise
+        # A preset session answers every refusal in words: its socket
+        # turns this into the fixed sentence and logs the detail.
+        logger.exception("preset_session_create_failed")
+        with contextlib.suppress(Exception):
+            ws.send(json.dumps({"type": "error", "code": "session_create_failed",
+                                "message": str(exc)}))
+        ws.close(1011)
+        return
     _ms("resolve_source_done")
 
     streaming_entered_run = False

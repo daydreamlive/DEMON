@@ -415,6 +415,32 @@ def _oneshot(rid, version, **kw):
     return json.dumps({"type": "oneshot", "request_id": rid, "version": version, **kw})
 
 
+def test_preset_session_that_cannot_open_answers_in_words(table, run_session, monkeypatch):
+    # Any failure while the session is built still reaches a preset client
+    # as an error frame with the fixed sentence, never a wordless close.
+    # (run_session is requested for its patches; create is replaced here.)
+    def create(**kw):
+        raise RuntimeError("secret_engine.plan serves 1..9 frames")
+
+    frames = [json.dumps({"telemetry_version": 1, "preset": "q9x", "values": {"seconds": 2}})]
+    ws = FakeWs(frames)
+    monkeypatch.setattr(wa, "StreamingSession", SimpleNamespace(create=create))
+    with contextlib.ExitStack() as stack:
+        wa._handle_client_body(
+            ws, stack,
+            decoder_backend="eager", vae_backend="eager",
+            checkpoint=SERVED[0].model_id, backend_family="sa3",
+            offload_text_encoder=False, checkpoint_dir=None,
+            model_extensions={}, served_checkpoints=SERVED,
+        )
+    sent = ws.json_sent()
+    assert sent[-1]["type"] == "error" and sent[-1]["code"] == "failed"
+    assert sent[-1]["message"] == presets.SENTENCES["failed"]
+    assert set(sent[-1]) == {"type", "code", "message", "ref"}
+    assert ws.closed is not None and ws.closed[1] == ""
+    assert "secret" not in json.dumps(sent)
+
+
 def test_preset_session_end_to_end(table, run_session):
     frames = [
         json.dumps({"telemetry_version": 1, "preset": "q9x", "values": {"seconds": 2}}),
