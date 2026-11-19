@@ -306,6 +306,13 @@ of truth that `web/engine/protocol.ts` mirrors):
   and requests not served within 30 s get
   `{"type": "bounce_failed", "request_id": ..., "error": ...}`.
   Streaming carries on throughout.
+- **Session token** (optional): with `DEMON_SESSION_TOKEN_SECRET` set, a
+  socket is expected to carry `?t=<id>|<expires_at_ms>|<nonce>.<sig>`, where
+  `sig` is the unpadded base64url HMAC-SHA256 of the part before the dot.
+  `DEMON_SESSION_TOKEN_MODE` is `log` by default (a missing, malformed,
+  wrongly signed or expired token is logged as `ws_token_rejected` and the
+  socket is let in), `enforce` (refused with 401) or `off`. Tool routes need
+  a live session, so they follow the socket.
 - **Tool proxy** (optional): side services running on the server's own
   machine, bound to localhost, can be reached through the main port.
   Configure them with `DEMON_TOOL_PROXIES` or `--tool-proxies`
