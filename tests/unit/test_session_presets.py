@@ -205,6 +205,23 @@ def run_session(monkeypatch):
     return run
 
 
+def test_session_is_registered_before_ready(run_session, monkeypatch):
+    # A client may call /tools/ (which checks the registry) the moment
+    # ``ready`` arrives, so the session must already be registered then.
+    seen = []
+    send = FakeWs.send
+
+    def watch(self, data):
+        if isinstance(data, str) and json.loads(data).get("type") == "ready":
+            seen.append(session_registry.get(json.loads(data)["session_id"]) is not None)
+        send(self, data)
+
+    monkeypatch.setattr(FakeWs, "send", watch)
+    config = {"telemetry_version": 1, "text_only": True, "sa3_duration_s": 2.0, "prompt": "x"}
+    run_session([json.dumps(config)])
+    assert seen == [True]
+
+
 # ---- 8: without --presets nothing changes ----
 
 

@@ -2244,6 +2244,42 @@ def _handle_client_body(
 
     streaming.bus.subscribe(on_event, name="ws")
 
+    # --- Control bus ---
+    # External commands (from the demo's onboard MCP server) land here
+    # and get dispatched through the same router as live WS frames.
+    # The single-dispatch-thread invariant (control + WS messages
+    # serialize through one recv loop) is preserved by enqueueing
+    # rather than calling session methods directly from the HTTP
+    # handler thread.
+    control_queue: queue.Queue = queue.Queue()
+
+    def inject_control(
+        data: dict, audio: bytes | None = None, reply=None,
+    ) -> None:
+        # ``reply`` (optional) receives the command's direct answer, for
+        # the commands that have one (extension_tool -> tool_result), so
+        # the control bus request can return it to its caller.
+        control_queue.put((data, audio, reply))
+
+    def snapshot_session() -> dict:
+        snap = streaming.snapshot()
+        snap["fixture_name"] = fixture_name
+        return snap
+
+    # Register with the process-global session registry (the demo's
+    # onboard MCP server drives this session through it, and /tools/
+    # checks it) BEFORE ``ready``: a client may call /tools/ the moment
+    # ``ready`` arrives. Commands that land before the recv loop starts
+    # wait in ``control_queue``.
+    session_registry.register(session_registry.SessionHandle(
+        id=session_id,
+        started_at=time.time(),
+        inject=inject_control,
+        snapshot=snapshot_session,
+    ))
+    session_registered = True
+    logger.info("session_registered")
+
     # ---- Init handshake: ready + binary initial buffer + optional stems ----
     #
     # These ship inline (not through the bus) because they're produced
@@ -2313,28 +2349,6 @@ def _handle_client_body(
     _ms("initial_buffer_sent")
 
     # ---- Streaming ----
-
-    # --- Control bus ---
-    # External commands (from the demo's onboard MCP server) land here
-    # and get dispatched through the same router as live WS frames.
-    # The single-dispatch-thread invariant (control + WS messages
-    # serialize through one recv loop) is preserved by enqueueing
-    # rather than calling session methods directly from the HTTP
-    # handler thread.
-    control_queue: queue.Queue = queue.Queue()
-
-    def inject_control(
-        data: dict, audio: bytes | None = None, reply=None,
-    ) -> None:
-        # ``reply`` (optional) receives the command's direct answer, for
-        # the commands that have one (extension_tool -> tool_result), so
-        # the control bus request can return it to its caller.
-        control_queue.put((data, audio, reply))
-
-    def snapshot_session() -> dict:
-        snap = streaming.snapshot()
-        snap["fixture_name"] = fixture_name
-        return snap
 
     # Throttle state for coercion warnings, keyed (source, mtype). The
     # params channel runs at ~125 Hz; a client that trips coercion on
@@ -3007,18 +3021,6 @@ def _handle_client_body(
     # friends.
     recv_t = spawn_thread(recv_loop, name="recv_loop")
     spawn_thread(dead_client_watchdog, name="dead_client_watchdog")
-
-    # Register with the process-global session registry so the demo's
-    # onboard MCP server can drive this session via the HTTP control
-    # bus.
-    session_registry.register(session_registry.SessionHandle(
-        id=session_id,
-        started_at=time.time(),
-        inject=inject_control,
-        snapshot=snapshot_session,
-    ))
-    session_registered = True
-    logger.info("session_registered")
 
     # Stage the initial enable set so they get applied on the runner
     # thread before the first tick. Each entry carries its target
