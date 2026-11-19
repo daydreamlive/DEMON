@@ -415,3 +415,47 @@ def test_a_refused_or_down_yield_never_raises(tool):
     tool_proxy.configure({"other": ("127.0.0.1", 1)}, yields={"other": "/park"},
                          poll_health=False, timeout_s=1)
     tool_proxy.yield_tools()  # nothing listening: logged, create goes on
+
+
+# ---------------------------------------------------------------------------
+# an evicted model the server froze at boot is collected
+# ---------------------------------------------------------------------------
+
+class _Cycle:
+    """A module-like object in a reference cycle (as a model's modules are)."""
+
+    def __init__(self):
+        self.me = self
+
+
+def test_evict_collects_a_context_frozen_at_boot(monkeypatch):
+    import gc
+    import weakref
+
+    from acestep.streaming import sa3_session
+
+    monkeypatch.setattr(sa3_session, "_CONTEXTS", {})
+    gc.collect()
+    model = _Cycle()
+    ref = weakref.ref(model)
+    gc.freeze()  # the server, once ready: boot's objects never collected again
+    try:
+        del model
+        gc.collect()
+        assert ref() is not None  # frozen: a plain collection cannot free it
+        assert sa3_session.evict_sa3_contexts() == 0
+        assert ref() is None  # the eviction reached it
+        assert gc.get_freeze_count() > 0  # and what is still alive is frozen again
+    finally:
+        gc.unfreeze()
+
+
+def test_evict_leaves_an_unfrozen_process_unfrozen(monkeypatch):
+    import gc
+
+    from acestep.streaming import sa3_session
+
+    monkeypatch.setattr(sa3_session, "_CONTEXTS", {})
+    gc.unfreeze()
+    sa3_session.evict_sa3_contexts()
+    assert gc.get_freeze_count() == 0
