@@ -62,7 +62,7 @@ from ..common.static_site import (
     build_static_mounts,
     serve_static_mounts,
 )
-from . import ws_transport
+from . import ws_auth, ws_transport
 
 # The generative backend is imported lazily inside main(): in --no-backend
 # mode we skip the import entirely so torch and acestep don't load and the
@@ -78,6 +78,9 @@ _VIDEO_EXTS = {".mp4", ".webm", ".mov"}
 # origin/port; no Next.js involved. Built in main() after CLI parsing so
 # external demo manifest errors fail clearly at startup.
 _STATIC_MOUNTS = {}
+
+# (mode, secret) for the socket handshake token (ws_auth.py); set in main().
+_WS_AUTH: tuple[str, str] = ("off", "")
 
 # Set in main() based on --no-backend; read by _process_request when the
 # client polls /api/server-info on startup.
@@ -354,7 +357,19 @@ def _process_request(connection, request):
     # If this looks like a websocket upgrade, defer to the WS handshake.
     upgrade = request.headers.get("Upgrade", "") or ""
     if upgrade.lower() == "websocket":
-        return None
+        try:
+            remote = request.headers.get("CF-Connecting-IP") or str(connection.remote_address[0])
+        except Exception:
+            remote = "?"
+        reason = ws_auth.handshake_refusal(request.path, *_WS_AUTH, remote, logger.warning)
+        if reason is None:
+            return None
+        body = json.dumps({"error": "session token required", "reason": reason}).encode()
+        return Response(401, "Unauthorized", Headers([
+            ("Content-Type", "application/json; charset=utf-8"),
+            ("Content-Length", str(len(body))),
+            *_NO_CACHE_HEADERS,
+        ]), body)
 
     url = request.path
     try:
@@ -1044,6 +1059,13 @@ def main():
         idx = args.index("--control-port")
         control_port = int(args[idx + 1])
     control_disabled = "--no-control" in args
+
+    global _WS_AUTH
+    try:
+        _WS_AUTH = ws_auth.config()
+    except ValueError as exc:
+        raise SystemExit(f"[Server] {exc}") from exc
+    logger.info("ws_session_token mode={}", _WS_AUTH[0])
 
     # Localhost side services reachable at /tools/<name>/... for clients
     # holding a live session (see tool_proxy.py). Off when unset.
