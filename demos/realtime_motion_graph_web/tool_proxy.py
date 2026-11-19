@@ -50,6 +50,8 @@ from typing import Mapping, NamedTuple
 
 from acestep.streaming import registry as session_registry
 
+from . import presets
+
 SESSION_HEADER = "X-Demon-Session"
 _NAME_RE = re.compile(r"[a-z0-9-]{1,32}")
 _LOCAL_HOSTS = {"127.0.0.1", "localhost"}
@@ -283,37 +285,62 @@ class ToolHandler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:  # noqa: N802
         self._proxy()
 
+    def _fail(self, status: int, payload: dict, code: str) -> None:
+        """The proxy's own error answer: today's ``payload``, or with a
+        preset table loaded the fixed ``{code, message, ref}``."""
+        if presets.current() is not None:
+            payload = presets.error_body(code, json.dumps(payload))
+        self._json(status, payload)
+
     def _proxy(self) -> None:
         path, _, query = self.path.partition("?")
         m = re.fullmatch(r"/tools/([^/]+)(/.*)?", path)
         target = _proxies.get(m.group(1)) if m else None
-        if target is None:
-            self._json(404, {"error": "unknown tool"})
-            return
-        rest = m.group(2) or "/"
-        if _has_dot_segment(rest):
-            self._json(400, {"error": "path must not contain . or .. segments"})
-            return
-
         sid = self.headers.get(SESSION_HEADER)
-        local_health = (
-            sid is None and self.command == "GET" and rest == "/health"
-            and self.client_address[0] in _LOOPBACK_CLIENTS
-        )
-        if not local_health and not (sid and session_registry.get(sid)):
-            self._json(401, {"error": f"{SESSION_HEADER} must name a live session"})
-            return
+        if presets.current() is not None:
+            # With a preset table an unknown tool, a missing session and a
+            # route the session may not call all answer the same 404, so
+            # nothing can be probed.
+            rest = (m.group(2) or "/") if m else ""
+            local_health = (
+                target is not None and sid is None and self.command == "GET"
+                and rest == "/health" and self.client_address[0] in _LOOPBACK_CLIENTS
+            )
+            if not local_health and (
+                target is None or _has_dot_segment(rest)
+                or not (sid and session_registry.get(sid))
+                or not presets.tool_allowed(sid, m.group(1), self.command, rest)
+            ):
+                self._fail(404, {"error": "no such route", "path": path},
+                           "bad_request")
+                return
+        else:
+            if target is None:
+                self._json(404, {"error": "unknown tool"})
+                return
+            rest = m.group(2) or "/"
+            if _has_dot_segment(rest):
+                self._json(400, {"error": "path must not contain . or .. segments"})
+                return
+
+            local_health = (
+                sid is None and self.command == "GET" and rest == "/health"
+                and self.client_address[0] in _LOOPBACK_CLIENTS
+            )
+            if not local_health and not (sid and session_registry.get(sid)):
+                self._json(401, {"error": f"{SESSION_HEADER} must name a live session"})
+                return
 
         if "Transfer-Encoding" in self.headers:
-            self._json(411, {"error": "Content-Length required"})
+            self._fail(411, {"error": "Content-Length required"}, "bad_request")
             return
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
-            self._json(400, {"error": "bad Content-Length"})
+            self._fail(400, {"error": "bad Content-Length"}, "bad_request")
             return
         if length < 0 or length > _max_body:
-            self._json(413, {"error": f"body exceeds {_max_body} bytes"})
+            self._fail(413, {"error": f"body exceeds {_max_body} bytes"}, "too_long")
             return
 
         host, port, prefix = target
@@ -322,7 +349,8 @@ class ToolHandler(BaseHTTPRequestHandler):
             try:
                 conn.connect()
             except OSError as exc:
-                self._json(503, {"error": "tool unavailable", "detail": str(exc)})
+                self._fail(503, {"error": "tool unavailable", "detail": str(exc)},
+                           "unavailable")
                 return
             # ponytail: per-socket-op timeout, not a hard wall-clock total.
             conn.sock.settimeout(_timeout_s)
@@ -352,17 +380,18 @@ class ToolHandler(BaseHTTPRequestHandler):
             self.end_headers()
             shutil.copyfileobj(resp, self.wfile, 1 << 20)
         except socket.timeout:
-            self._safe_json(504, {"error": "tool timed out"})
+            self._safe_json(504, {"error": "tool timed out"}, "failed")
         except (ConnectionError, http.client.HTTPException) as exc:
-            self._safe_json(503, {"error": "tool unavailable", "detail": str(exc)})
+            self._safe_json(503, {"error": "tool unavailable", "detail": str(exc)},
+                            "unavailable")
         finally:
             conn.close()
 
-    def _safe_json(self, status: int, payload: dict) -> None:
+    def _safe_json(self, status: int, payload: dict, code: str) -> None:
         # Headers may already be out if the upstream died mid-response;
         # then the truncated body is all the client gets.
         try:
-            self._json(status, payload)
+            self._fail(status, payload, code)
         except OSError:
             pass
 
