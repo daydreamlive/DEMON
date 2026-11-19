@@ -622,11 +622,27 @@ def test_proxy_allows_only_listed_routes_of_the_sessions_tools(proxy):
         ("POST", "/tools/nope/run", None),            # unknown tool
         ("POST", "/tools/nope/run", "r-sid"),
         ("GET", "/tools/kiwi/job/%2e%2e/x", "r-sid"),
+        ("GET", "/tools/kiwi/health", None),          # loopback, no session: no exemption
     ]
     for method, path, sid in denied:
         status, out = proxy(method, path, sid)
         assert status == 404, (method, path, sid)
         _fixed(out, "bad_request")
+
+
+def test_refused_requests_with_a_body_still_get_their_answer(proxy):
+    # A refusal must read the body it never forwards; an unread body makes
+    # the close a reset that can destroy the answer. A non-GET request
+    # outside /tools/ (never a websocket) gets the server's plain 404.
+    body = b"x" * (256 << 10)
+    for _ in range(10):
+        status, out = proxy("POST", "/tools/nope/run", None, body)
+        assert status == 404
+        _fixed(out, "bad_request")
+        assert proxy("PUT", "/tools/kiwi/run", "p-sid", body)[0] == 404
+        assert proxy("POST", "/elsewhere", None, body) == (404, b"404 not found\n")
+        assert proxy("DELETE", "/elsewhere") == (404, b"404 not found\n")
+    assert proxy("GET", "/elsewhere") == (200, b"ws")  # a GET still reaches the websocket server
 
 
 def test_proxy_own_errors_are_fixed_sentences(proxy):
