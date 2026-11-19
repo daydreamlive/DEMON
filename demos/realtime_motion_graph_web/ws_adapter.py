@@ -134,7 +134,7 @@ from .audio_codec import (
     send_stem_payload,
 )
 from .protocol import COMMAND_NAMES, SAMPLE_RATE, coerce_command_payload
-from . import tool_proxy
+from . import presets, tool_proxy
 
 
 # ---------------------------------------------------------------------------
@@ -1461,6 +1461,8 @@ def _handle_score_request(ws, backend_family: str) -> None:
         return
     try:
         session_id = session_registry.new_session_id()
+        if presets.current() is not None:
+            presets.bind(session_id, presets.REQUEST)
         session_registry.register(session_registry.SessionHandle(
             id=session_id,
             started_at=time.time(),
@@ -1483,6 +1485,7 @@ def _handle_score_request(ws, backend_family: str) -> None:
                     family_spec.release()
             finally:
                 session_registry.unregister(session_id)
+                presets.unbind(session_id)
                 logger.info("score_request_closed session_id={}", session_id)
     finally:
         _leave_score_line(ticket)
@@ -1516,6 +1519,28 @@ def _handle_client_body(
 
     # ---- Init handshake ----
     config_dict = json.loads(ws.recv())
+    # Session presets (--presets): a config naming a preset is built from
+    # the operator's table, and its socket is filtered both ways from here
+    # on (presets.PresetSocket). On a sealed table nothing else opens.
+    preset = None
+    table = presets.current()
+    if table is not None:
+        is_request = (isinstance(config_dict, dict)
+                      and config_dict.get("type") == "score_request")
+        if is_request:
+            ws = presets.PresetSocket(ws, None)
+        elif table.sealed or (isinstance(config_dict, dict) and "preset" in config_dict):
+            try:
+                preset, config_dict = presets.expand(table, config_dict)
+            except presets.Refused as refused:
+                sock = presets.PresetSocket(ws, None)
+                try:
+                    sock.refuse(refused)
+                except Exception:
+                    pass
+                sock.close(1008)
+                return
+            ws = presets.PresetSocket(ws, preset)
     if isinstance(config_dict, dict) and config_dict.get("type") == "upload_track":
         try:
             _handle_upload_track(
@@ -1538,6 +1563,9 @@ def _handle_client_body(
     # optional client_id) into loguru's contextvars so every log record
     # on this connection carries the correlation IDs.
     session_id = session_registry.new_session_id()
+    if preset is not None:
+        presets.bind(session_id, preset)
+        ctx_stack.callback(presets.unbind, session_id)
     _client_id = config_dict.get("client_id") or None
     ctx_stack.enter_context(logger.contextualize(
         session_id=session_id,
@@ -1677,6 +1705,13 @@ def _handle_client_body(
                 "fallback=client_upload",
                 fixture_name, exc,
             )
+            if preset is not None:
+                # A preset session never reads an audio frame.
+                with contextlib.suppress(Exception):
+                    ws.send(json.dumps({"type": "error", "code": "fixture_unavailable",
+                                        "message": str(exc)}))
+                ws.close(1011)
+                return
             audio_bytes = ws.recv()
             waveform = _decode_audio_msg(audio_bytes)
             _ms("audio_recv_decoded")
