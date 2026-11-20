@@ -1,0 +1,99 @@
+---
+title: "WebSocket Protocol"
+description: "The wire format — handshake, commands, events, and binary audio framing"
+icon: "plug"
+---
+
+One WebSocket connection per client, multiplexing JSON control messages and
+binary audio. The Python source of truth is
+`demos/realtime_motion_graph_web/protocol.py`; the machine-readable contract
+is served at [`GET /api/protocol`](/reference/http-api), and TypeScript types
+are generated from it (`web/sdk/types/wireContract.gen.ts`).
+
+## Handshake
+
+1. **Client → server (JSON):** the session config — fixture name or upload
+   intent, BPM/key/time-signature overrides, engine geometry (depth, steps,
+   VAE window), and capability opts.
+2. **Client → server (binary, uploads only):**
+   `<uint32 channels><uint32 samples>` + float32 PCM. Skipped when using a
+   server fixture.
+3. **Server → client (JSON `ready`):** `session_id`, duration, channels,
+   sample rate, BPM, key, time signature, checkpoint, pipeline depth, the
+   LoRA catalog, capability flags, the per-session **knob manifest**, manual
+   steering slot count/cap, and steering availability.
+4. **Server → client (binary):** the float16 initial buffer that bootstraps
+   playback.
+
+A pre-stream `upload_track` command can persist + encode an upload *without*
+starting a stream (acked by `upload_ok` / `upload_failed`) — this powers the
+upload library.
+
+## Client → server commands
+
+| Command | Purpose |
+|---|---|
+| `params` | Continuous knob update (~125 Hz): full raw knob dict + `playback_pos` clock |
+| `prompt` | Re-encode the live prompt (prompt A, optional B, key, time signature) |
+| `set_prompt_blend` | Lerp the cached A/B encodings (0.0 = A, 1.0 = B); no re-encode |
+| `set_interp_method` | Switch blend interpolation (slerp / linear) for prompt, timbre, structure, feedback |
+| `set_depth` | Live ring-depth retune, clamped to `[1, max_pipeline_depth]` |
+| `loop_band` | Arm / move / clear the playback loop region |
+| `enable_lora` / `disable_lora` | Toggle a LoRA; allocates / drops its `lora_str_<id>` knob |
+| `manual_slot_add` / `manual_slot_pop` | LIFO manual steering slots; allocate / drop `man_*_<N>` knobs |
+| `set_timbre_strength` | Blend the cached (silence, full) timbre pair |
+| `set_timbre_source` / `set_timbre_fixture` / `clear_timbre_source` | Timbre reference: upload (+ binary PCM frame), server fixture, or revert to self-timbre |
+| `set_structure_source` / `set_structure_fixture` / `clear_structure_source` | Structure reference: upload (+ binary PCM frame), fixture, or restore the source's own context |
+| `swap_source` | Replace the playback source in-flight (+ optional binary PCM frame) |
+| `write_audio` | Write audio into the live source in place — sample-exact, no restart (+ binary PCM frame) |
+
+## Server → client events
+
+| Event | Purpose |
+|---|---|
+| `ready` | Handshake completion (see above) |
+| `error` | Structured init failure — `code`, `message`, and a `build_command` when an engine is missing |
+| `params_update` | Periodic echo of the live param snapshot + telemetry (`num_gens`, `tick_ms`, `dec_ms`) |
+| `params_echo` / `prompt_blend_echo` | Mirror channel for [MCP-driven](/advanced/mcp) changes — the browser re-sends through its own param path |
+| `prompt_applied` | Prompt re-encode landed |
+| `lora_catalog` | Refreshed catalog after enable/disable |
+| `swap_ready` / `swap_failed` | Source swap accepted (+ binary replacement buffer) or rejected |
+| `stem_assets` / `stem_failed` | Stem overlay buffers (+ one binary float16 frame per stem) or extraction failure |
+| `depth_applied` | Ack for `set_depth` |
+| `manual_slot_count` | Ack for manual slot add/pop |
+| `timbre_set` / `timbre_cleared` / `timbre_failed` | Timbre reference acks |
+| `structure_set` / `structure_cleared` / `structure_failed` | Structure reference acks |
+| `audio_written` / `audio_write_failed` | `write_audio` acks (`start_s`, `end_s`, `source_epoch`) |
+| `command_failed` | A capability-gated command was rejected (`command`, required capability, reason) |
+
+## Binary slice framing
+
+Audio streams server → client as slices:
+
+```text
+<flags:1><start:4><samples:4><channels:2><tick_ms:4><dec_ms:4><num_gens:4><payload>
+```
+
+- `flags = 0`: raw float16. `flags = 1`: **zstd-compressed float16 delta**
+  against the client's current buffer.
+- Large payloads are chunked so bulk sends never starve the read loop.
+- The client decompresses, applies the delta in place to a shared ring
+  buffer, and an `AudioWorklet` plays it — 50 ms crossfades on swaps,
+  in-place delta adds otherwise.
+- Sample rate is 48 kHz (fixed by ACE-Step); playback is float32 after
+  decompression.
+
+## Epoch guard
+
+Every slice carries an `epoch`. On `swap_ready`, the backend bumps the epoch
+and the player bumps its swap count in lockstep; slices from a previous epoch
+are dropped, so audio from a replaced track can never bleed into the new one.
+The `write_audio` command accepts a `source_epoch` for the same reason —
+a write aimed at an already-swapped source is rejected.
+
+## Validation semantics
+
+Knob values in `params` are validated against the
+[knob registry](/reference/knobs): numerics **clamp**, invalid enums/bools
+**drop**. Command-envelope fields are different by design: they carry no
+bounds and **drop on type mismatch**. The divergence is the contract.

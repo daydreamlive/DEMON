@@ -1,0 +1,84 @@
+---
+title: "MCP Tools"
+description: "Every tool exposed by the onboard MCP server"
+icon: "robot"
+---
+
+The stdio MCP server (`demos/realtime_motion_graph_web/mcp_server.py`)
+exposes the demo's full control surface to LLM agents. Setup and architecture
+are covered in [MCP Control](/advanced/mcp).
+
+Most tools take an optional `session_id` and default to the most recently
+started session. Knob writes are validated against the
+[knob registry](/reference/knobs) and **raise on errors** (unlike the
+browser's hot path, which clamps silently) so the agent gets feedback.
+
+## Discovery
+
+| Tool | Signature | Returns |
+|---|---|---|
+| `list_sessions` | `()` | Active sessions, newest first |
+| `session_state` | `(session_id?)` | Full snapshot of one session — knobs, prompts, LoRAs, references |
+| `list_fixtures` | `()` | The canonical fixture names |
+| `list_loras` | `()` | Every LoRA in the server library (id, name, state, strength, metadata) |
+| `get_lora_metadata` | `(lora_id)` | Full sidecar metadata for one LoRA |
+| `list_knobs` | `(session_id?)` | The knob catalog + the session's current values |
+| `list_manual_steering_vectors` | `()` | The steering-vector catalog (index, axis, build layer/step, filename) |
+| `describe_protocol` | `()` | The full wire contract (same payload as `GET /api/protocol`) |
+
+## Prompts
+
+| Tool | Signature |
+|---|---|
+| `set_prompt` | `(prompt, prompt_b?, key?, time_signature?, session_id?)` — re-encodes live; accepts A and optional B |
+| `set_prompt_blend` | `(value, session_id?)` — 0.0 = A, 1.0 = B; free (no re-encode) |
+
+## Knobs
+
+| Tool | Signature |
+|---|---|
+| `set_knob` | `(name, value, session_id?)` |
+| `set_knobs` | `(values: dict, session_id?)` — bulk update |
+| `get_knob` | `(name, session_id?)` |
+| `set_rcfg_mode` | `(mode, session_id?)` — `off` / `self` / `initialize` / `full` (enums are not settable via `set_knob`) |
+
+## LoRAs & steering
+
+| Tool | Signature |
+|---|---|
+| `enable_lora` | `(lora_id, strength?, session_id?)` — hot TRT refit; allocates `lora_str_<id>` |
+| `disable_lora` | `(lora_id, session_id?)` |
+| `add_manual_slot` | `(session_id?)` — LIFO; allocates `man_src/layer/step/alpha_<N>` knobs; returns count + cap |
+| `pop_manual_slot` | `(session_id?)` — removes the highest-numbered slot |
+
+## Timbre & structure references
+
+| Tool | Signature |
+|---|---|
+| `set_timbre_strength` | `(value, session_id?)` — 0.0 = silence baseline, 1.0 = full reference |
+| `set_timbre_fixture` | `(name, session_id?)` |
+| `set_timbre_audio` | `(audio_file, name?, session_id?)` — local file, resampled to 48 kHz, ≤ 2 channels |
+| `clear_timbre` | `(session_id?)` — revert to self-timbre |
+| `set_structure_fixture` | `(name, session_id?)` |
+| `set_structure_audio` | `(audio_file, name?, session_id?)` — padded/trimmed to source length |
+| `clear_structure` | `(session_id?)` — restore the source's own context |
+
+## Sources & live audio input
+
+| Tool | Signature |
+|---|---|
+| `swap_to_fixture` | `(name, prompt?, key?, time_signature?, session_id?)` |
+| `swap_to_audio` | `(audio_file, name?, prompt?, key?, time_signature?, session_id?)` |
+| `write_audio` | `(audio_file, at_s=0.0, mix="replace", repeat="none", source_epoch?, refresh_timbre=false, session_id?)` |
+
+`write_audio` writes a clip into the *playing* source in place, sample-exact,
+without restarting the stream:
+
+- `at_s` — write position in playback seconds.
+- `mix` — `replace` (declicked) or `sum` (overdub).
+- `repeat` — `none` (write once) or `fill` (tile across the whole source,
+  phase-anchored at `at_s`).
+- `source_epoch` — reject the write if the source was swapped in the
+  meantime.
+- `refresh_timbre` — re-encode self-timbre afterward (~+50 ms); ignored when
+  a timbre override is active.

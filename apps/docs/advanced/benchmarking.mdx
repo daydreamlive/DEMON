@@ -1,0 +1,114 @@
+---
+title: "Benchmarking & Latency"
+description: "Headless throughput benchmarks, the e2e latency suite, and the knob-to-ear path"
+icon: "stopwatch"
+---
+
+## Headless benchmark
+
+The browser HUD shows `tick_ms` / `dec_ms` live, but for comparing
+accelerators, checkpoints, TRT profiles, or VAE settings without browser and
+audio-device overhead, use the headless benchmark — it mirrors the backend
+inference path exactly (fixture defaults, engine selection, `Session`,
+`prepare_source`, `encode_text`, `stream`, repeated ticks, optional decode):
+
+```bash
+uv run python -u -m demos.realtime_motion_graph_web.benchmark \
+    --accel tensorrt --checkpoint acestep-v15-turbo
+```
+
+It reports setup timings, per-generation `tick` / `decode` / `tick+decode`
+mean, P50/P90/P95, min/max, skip counts, and peak CUDA memory.
+
+Useful variants:
+
+```bash
+# Compare torch.compile on the same workload:
+uv run python -u -m demos.realtime_motion_graph_web.benchmark --accel compile
+
+# Mixed backends, same flags as the server:
+uv run python -u -m demos.realtime_motion_graph_web.benchmark \
+    --decoder-accel tensorrt --vae-accel eager
+
+# Persist raw samples + summary:
+uv run python -u -m demos.realtime_motion_graph_web.benchmark \
+    --accel tensorrt --json runs/trt-bench.json
+
+# Mirror the runner's decode-skip behavior / decoder-only throughput:
+uv run python -u -m demos.realtime_motion_graph_web.benchmark --skip-threshold 1e-3
+uv run python -u -m demos.realtime_motion_graph_web.benchmark --no-decode
+```
+
+## The knob-to-ear path
+
+A knob change traverses, in order:
+
+| Stage | Typical cost |
+|---|---|
+| Client knob smoothing + 125 Hz param send | 0–smoothing window |
+| WebSocket transport (LAN) | ~0–2 ms |
+| Next runner iteration | 0–1 tick |
+| **Shared-curve params** (SDE strength, velocity, x0, channel gains…) | **1 tick** (~36–43 ms TRT) |
+| **Per-slot params** (ODE denoise, seed) | up to `steps` ticks (~280–460 ms at depth 4 / steps 8) |
+| Windowed VAE decode + emit | ~5–8 ms |
+| **Playback lead** (decode buffer ahead of the playhead) | **0.12–1.35 s adaptive** |
+| Browser AudioWorklet buffer | ~10–30 ms |
+
+Two structural facts dominate: **parameter class decides engine latency**
+(shared-curve is an order of magnitude faster than per-slot — see
+[Streaming Pipeline](/engine/streaming#the-two-latency-classes)), and **the
+playback lead is the dominant audible term** — the engine converges in
+~300 ms while the listener waits for the playhead to reach the rewritten
+region. The lead floor/ceiling/release are tunable in
+[config.json](/demo/configuration#engine).
+
+## Measured numbers
+
+RTX 5090, 2B turbo, all-TRT, depth 4, steps 8 (the README configuration):
+~43 ms tick, 4.5 ms windowed decode, **11.3 generations/s**, ~248 ms
+parameter convergence.
+
+RTX 4090 (shared GPU), TRT, depth 4, steps 8 — from the latency review in
+`docs/LATENCY.md`:
+
+| Metric | Measured |
+|---|---|
+| tick p50 | ~36 ms |
+| `denoise` knob first audible change | 8 ticks / ~282 ms |
+| shared-curve first change | 1 tick / ~37 ms |
+| knob → fresh generation (full stack) | ~172 ms |
+| generations/s | ~7.3 |
+
+## The e2e latency suite
+
+`tests/e2e_latency/` measures the same things reproducibly, black-box at
+public API boundaries (GPU required):
+
+```bash
+# engine-level: knob -> finished latent (ticks + ms), determinism guard
+uv run pytest tests/e2e_latency/test_knob_to_latent.py -v -s
+
+# full stack: headless StreamingSession with a simulated client heartbeat
+uv run pytest tests/e2e_latency/test_streaming_session.py -v -s
+```
+
+Environment knobs: `DEMON_E2E_ACCEL=tensorrt|eager|compile`,
+`DEMON_E2E_GPU`, `DEMON_E2E_DEPTH`, `DEMON_E2E_STEPS`. Reports land in
+`runs/latency-reports/e2e-*.json` for build-to-build diffing — **treat the
+diff, not the pass/fail, as the output**; the assertions are coarse
+architectural ceilings only.
+
+## VRAM: engine duration matters
+
+Per-engine peak workspace measured in isolation on an RTX 5090:
+
+| Component | 60 s engine | 240 s engine | Δ |
+|---|---:|---:|---:|
+| Decoder (refit) | 13,511 MB | 15,911 MB | +2,400 MB |
+| VAE decode | 10,547 MB | 10,814 MB | +267 MB |
+| VAE encode | 4,178 MB | 10,614 MB | +6,436 MB |
+
+These are per-engine peaks, not a live-runtime sum — at inference time the
+decoder peak dominates, which is why the live demo fits on a 24 GB card. The
+takeaway: switching the three engines from 240 s to 60 s frees ~9 GB.
+Reproduce with `uv run python -m scripts.benchmarks.bench_vram_60s_vs_240s`.

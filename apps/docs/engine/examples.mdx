@@ -1,0 +1,50 @@
+---
+title: "Examples"
+description: "Runnable scripts covering every engine feature, one at a time"
+icon: "flask"
+---
+
+The repository ships standalone example scripts under `examples/`. Each one is
+a complete, runnable program — the fastest way to learn one feature in
+isolation.
+
+```bash
+uv run python examples/session_demo.py
+```
+
+## Entry points
+
+| Script | What it shows |
+|---|---|
+| `examples/session_demo.py` | Persistent session; iterate covers with different seeds (~310 ms per iteration after warmup) |
+| `examples/realtime_cover.py` | The full real-time cover workflow: dual prompts, dual LoRAs, timbre/hint references, temporal masking, engine-exclusive per-frame curves |
+| `demos/test_stream_cover_graph.py` | A streaming cover graph driven from Python |
+
+## Per-feature scripts (`examples/covers/`)
+
+| Script | Feature |
+|---|---|
+| `cover_basic.py` | Standard cover pipeline (encode, condition, generate, decode) |
+| `prompt_blend.py` | Two prompts blended with a temporal curve |
+| `sde_denoise_curve.py` | Per-frame SDE re-noise modulation |
+| `velocity_scaling.py` | Per-frame transformation rate control |
+| `lora_generation.py` | LoRA-conditioned generation |
+| `x0_target_blend.py` | Two-pass morphing toward a target latent |
+| `conditioning_average.py` | Fuse two conditionings |
+| `guidance_curve.py` | Per-frame CFG scale |
+| `latent_noise_mask.py` | Latent-space inpainting |
+| `initial_noise_curve.py` | Per-frame noise / source init mix |
+| `ode_noise_injection.py` | Stochastic ODE step |
+| `cover_semantic_blend.py` | Blend semantic hints from two sources |
+| `x0_target_from_reference.py` | Pre-generate a target latent, morph toward it |
+
+<Note>
+Standalone scripts must run from the repo root (or prepend the repo root to
+`sys.path`) so the local `acestep` package wins over any sibling ACE-Step
+checkout.
+</Note>
+
+Each script maps directly onto an engine concept from
+[Streaming Pipeline](/engine/streaming) — curves, conditioning compositing,
+masks, x0 targets — so they double as executable documentation for the
+[Session API](/engine/session-api).

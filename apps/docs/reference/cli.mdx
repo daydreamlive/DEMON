@@ -1,0 +1,114 @@
+---
+title: "CLI Reference"
+description: "Every command-line entry point — launcher, server, benchmark, TRT builds, and utilities"
+icon: "terminal"
+---
+
+All commands run from the repo root with `uv run`.
+
+## Demo launcher
+
+```bash
+uv run python -u -m demos.realtime_motion_graph_web.run [options] [-- backend-args]
+```
+
+Starts the backend and the Next.js dev server together. Anything after `--`
+is forwarded to the backend.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--port` | 1318 | Backend port |
+| `--host` | 127.0.0.1 | Backend bind host |
+| `--web-port` | 6660 | Next.js dev port |
+| `--no-install` | — | Skip the `npm install` check |
+
+## Backend server
+
+```bash
+uv run python -u -m demos.realtime_motion_graph_web.server [options]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--host` | 0.0.0.0 | Bind host |
+| `--port` | 1318 | HTTP + WebSocket port |
+| `--accel {tensorrt,compile,eager}` | tensorrt | Sets both decoder and VAE backends |
+| `--decoder-accel` / `--vae-accel` | — | Override one component (wins over `--accel`) |
+| `--checkpoint <name>` | acestep-v15-turbo | DiT checkpoint directory name (`xl` is an alias for `acestep-v15-xl-turbo`) |
+| `--offload-text-encoder` | off | Offload the text encoder to CPU between prompt edits (lower VRAM, slower prompt swaps) |
+| `--control-host` | 127.0.0.1 | Control-bus bind host (see [security note](/cloud/deployment#control-bus-security)) |
+| `--control-port` | 1319 | Control-bus port |
+| `--no-control` | — | Disable the control bus |
+| `--no-backend` / `--ui-only` | — | Serve the UI with no generative backend |
+| `--kiosk` | — | Kiosk mode (auto-hide cursor, idle reset) |
+| `--mode {graph,video}` | graph | Initial display mode |
+
+## Headless benchmark
+
+```bash
+uv run python -u -m demos.realtime_motion_graph_web.benchmark [options]
+```
+
+Takes the same `--accel` / `--decoder-accel` / `--vae-accel` /
+`--checkpoint` flags as the server, plus:
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--json <path>` | — | Persist raw samples + summary stats |
+| `--skip-threshold <x>` | −1 (off) | Mirror the runner's decode-skip behavior |
+| `--no-decode` | — | Decoder-only throughput |
+
+## TensorRT builds
+
+```bash
+uv run python -m acestep.engine.trt.build [options]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--all` | Build the full set for the duration(s) |
+| `--duration {60,120,240}` | Restrict to one profile duration |
+| `--decoder-only` / `--vae-only` | Build one component class |
+| `--checkpoint <name>` | Target checkpoint (decoder ONNX is checkpoint-specific) |
+| `--dry-run` | Preview the build matrix |
+| `--force-rebuild` / `--force-onnx` | Rebuild engines / re-export ONNX |
+| `--export-locally` / `--skip-onnx` | ONNX from local weights / fail if missing |
+| `--decoder-precision {auto,fp32,fp16_mixed,bf16_mixed,fp8_mixed}` | Precision recipe (see [TensorRT](/getting-started/tensorrt)) |
+| `--batch-max`, `--batch-opt`, `--workspace-gb`, `--builder-optimization-level` | Builder tuning (XL uses `4 / 4 / 20 / 5`) |
+| `--activation-absmax-json <path>` | FP8 W8A8 calibration input |
+
+## Model downloads
+
+```bash
+uv run acestep-download --model acestep-v15-xl-turbo --skip-main
+```
+
+Checkpoints otherwise auto-download on first use.
+
+## Setup doctor
+
+```bash
+uv run demon-setup [--skip-engines] [--skip-models] [--skip-loras] [--duration 60 120]
+```
+
+Runs the local setup workflow: doctor checks, checkpoint download, optional
+starter LoRA pack, and TensorRT engine builds. Managed deployments can set
+`DEMON_SKIP_STARTER_LORAS=1` instead of passing `--skip-loras`.
+
+## Fixture sidecar precompute
+
+```bash
+uv run python -m scripts.calibration.precompute_fixture_sidecars [--with-stems] [--force] [--only <fixture.wav>]
+```
+
+Pre-encodes fixture latents and metadata so session start skips beat
+tracking, key classification, and `prepare_source`. Re-run after editing a
+fixture's `track.json`; pinned `bpm` / `key` / `time_signature` values are
+preserved unless `--force`.
+
+## Tests
+
+```bash
+uv run pytest tests/unit -v                  # no GPU
+uv run pytest tests/e2e_latency/ -v -s       # GPU; DEMON_E2E_ACCEL=... to pick backend
+```

@@ -1,0 +1,100 @@
+---
+title: "Architecture"
+description: "How DEMON is layered — from the streaming pipeline to the web demo"
+icon: "sitemap"
+---
+
+One Python process loads the ACE-Step model once and exposes a small set of
+primitives. Every consumer — the bundled web demo, the MCP server, a notebook,
+your own client — drives those same primitives. The library does not know or
+care which one you use.
+
+## The layers
+
+```text
+┌────────────────────────────────────────────────────────────┐
+│  Clients: browser UI · MCP (LLM) · your own frontend / SDK │
+└──────────────┬─────────────────────────────────────────────┘
+               │  WebSocket + HTTP (:1318)  ·  control bus (:1319)
+┌──────────────▼─────────────────────────────────────────────┐
+│  demos/realtime_motion_graph_web — server.py, ws_adapter,  │
+│  protocol.py (wire contract), audio_codec, mcp_server      │
+└──────────────┬─────────────────────────────────────────────┘
+┌──────────────▼─────────────────────────────────────────────┐
+│  acestep/streaming — StreamingSession, PipelineRunner,     │
+│  KnobState + knob registry (knobs.py), backends            │
+└──────────────┬─────────────────────────────────────────────┘
+┌──────────────▼─────────────────────────────────────────────┐
+│  acestep/engine — Session API, StreamPipeline (ring        │
+│  buffer), LoRA manager, TRT build + runtime, ode_steps     │
+│  acestep/nodes — typed node graph (32 operations)          │
+└────────────────────────────────────────────────────────────┘
+```
+
+### `acestep/engine` — the engine
+
+- **`Session`** ([session-api](/engine/session-api)) — the primary programmatic
+  surface: `prepare_source`, `encode_text`, `generate`, `decode`, `stream`,
+  `apply_lora`.
+- **`StreamPipeline`** ([streaming](/engine/streaming)) — the ring buffer of
+  in-flight generations, advanced together per tick.
+- **TRT runtime** — the decoder dispatches to TensorRT or PyTorch through the
+  same code path; engines are refit-enabled for hot LoRA swaps.
+- **`ode_steps`** — pure step primitives shared by the streaming and one-shot
+  paths, which is why streaming output is bit-identical to batch.
+
+### `acestep/nodes` — the typed node graph
+
+32 composable operations (latent / audio / conditioning / curve / mask /
+solver / config / DCW / channel guidance) wired through `NodeDefinition` /
+`NodePort` / `NodeParam`, with kwarg validation at registration.
+
+### `acestep/streaming` — session orchestration
+
+- **`StreamingSession`** wraps the node graph, model context, and audio
+  engine into a full-stack session.
+- **`PipelineRunner`** owns the main loop: tick scheduling, parameter merging,
+  the adaptive playback-lead controller, and decode-skip optimization.
+- **`knobs.py`** is the **knob registry** — the single source of truth for
+  every operator control (see below).
+
+### `demos/realtime_motion_graph_web` — the web demo
+
+A single TCP port (`:1318`) multiplexes the JSON HTTP API, fixture/LoRA/video
+file serving, and the WebSocket upgrade. Each browser tab gets a
+`ws_adapter` coroutine wrapping its own `StreamingSession`. A separate
+**control bus** on `:1319` lets the [MCP server](/advanced/mcp) inject
+commands into a live browser session.
+
+## Contract-first control surface
+
+Two Python registries are the single source of truth for everything a client
+can do. Frontends discover them at runtime instead of hardcoding:
+
+| Registry | Served at | Contains |
+|---|---|---|
+| `acestep/streaming/knobs.py` | `GET /api/knobs` | Every operator knob: type, default, bounds, group, description |
+| `demos/realtime_motion_graph_web/protocol.py` | `GET /api/protocol` | The wire contract: commands, events, config schema, handshake |
+
+A generator script projects both into TypeScript
+(`web/sdk/types/wireContract.gen.ts`), and contract-drift unit tests guard the
+projection. The demo's **AUTO** drawer tab renders its entire panel from the
+`/api/knobs` manifest with zero hardcoded knobs — it doubles as the reference
+implementation for building your own frontend. See
+[Development](/advanced/development).
+
+## Ports & processes
+
+| Port | What |
+|---|---|
+| `:6660` | Next.js dev server (the UI you open in a browser) |
+| `:1318` | Backend — HTTP API + WebSocket multiplex |
+| `:1319` | Control bus (localhost-only by default) — used by the MCP server |
+
+## Daydream Scope
+
+DEMON ships a plugin skeleton (`scope_plugin/`, registered via a
+`[project.entry-points.scope]` entry point) for
+[Daydream Scope](https://docs.daydream.live/scope/introduction). When Scope
+integrates DEMON, Scope's session management replaces the demo's — DEMON's
+`Session` is designed as a bridge for exactly that kind of host.

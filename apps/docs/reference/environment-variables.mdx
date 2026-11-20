@@ -1,0 +1,56 @@
+---
+title: "Environment Variables"
+description: "Every environment variable DEMON reads"
+icon: "list"
+---
+
+Copy `.env.example` to `.env` in the repo root and edit as needed. Variables
+keep the `ACESTEP_` prefix because they configure the underlying ACE-Step
+model that DEMON wraps.
+
+## Model & device
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ACESTEP_MODELS_DIR` | `~/.daydream-scope/models/demon/` | Root for checkpoints, TRT engines, LoRAs, fixtures, uploads |
+| `ACESTEP_CONFIG_PATH` | `acestep-v15-turbo` | DiT checkpoint name (`acestep-v15-xl-turbo` for XL) |
+| `ACESTEP_DEVICE` | `auto` | `auto` / `cuda` / `cpu` / `xpu` |
+| `ACESTEP_DOWNLOAD_SOURCE` | `auto` | Preferred download source: `auto` / `huggingface` / `modelscope` |
+| `HF_TOKEN` | — | Hugging Face token (optional; public models download without it) |
+| `DEMON_SKIP_STARTER_LORAS` | unset | When set, `demon-setup` skips the starter LoRA pack unless `--skip-loras` already did |
+
+## Language model (5 Hz LM)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ACESTEP_INIT_LLM` | `auto` | Whether to load the 5 Hz LM: `auto` (GPU VRAM detection decides), `true` (force enable; may OOM), `false` (pure DiT mode, faster) |
+| `ACESTEP_LM_MODEL_PATH` | `acestep-5Hz-lm-1.7B` | LM variant: `acestep-5Hz-lm-0.6B` / `1.7B` / `4B` |
+| `ACESTEP_LM_BACKEND` | `vllm` | `vllm` (faster) or `pt` (PyTorch native) |
+
+With the LLM disabled, thinking mode, chain-of-thought caption/language
+detection, sample mode (generate from description), and LLM-enhanced format
+mode are unavailable. GPU optimizations (offload, quantization, batch limits)
+are applied regardless — `ACESTEP_INIT_LLM` only overrides the load decision.
+
+## Demo / MCP networking
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DEMON_HOST` / `DEMON_PORT` | `127.0.0.1` / `1318` | Where the MCP server finds the backend |
+| `DEMON_CONTROL_HOST` / `DEMON_CONTROL_PORT` | `127.0.0.1` / `1319` | Where the MCP server finds the control bus |
+| `NEXT_PUBLIC_POD_BASE_URL` | set by the launcher | Backend origin the web app connects its WebSocket to |
+
+## Test suites
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DEMON_E2E_ACCEL` | `tensorrt` when engines exist | Backend for `tests/e2e_latency/`: `tensorrt` / `eager` / `compile` |
+| `DEMON_E2E_GPU` | most free VRAM | GPU index for the e2e suite |
+| `DEMON_E2E_DEPTH` / `DEMON_E2E_STEPS` | — | Pipeline geometry overrides for the e2e suite |
+
+## Misc
+
+| Variable | Meaning |
+|---|---|
+| `ACESTEP_API_KEY` | Optional API-server auth key |
+| `PYTHONIOENCODING=utf-8` | Workaround for Windows Unicode failures in external ONNX-export scripts |
