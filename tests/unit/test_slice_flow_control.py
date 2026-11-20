@@ -69,3 +69,23 @@ def test_window_checked_before_age():
     # before the age backstop is even consulted).
     reason, _ = _decide(acked=0, sent=_WINDOW + 1, age_s=_MAX_AGE + 5.0)
     assert reason == "window"
+
+
+def test_anchored_slice_is_never_shed():
+    # A pad-prewarm / pad-pin render is the only write its region gets
+    # until the pad is re-warmed; both layers tripped must still send it.
+    assert _windowed_slice_drop_reason(
+        acked=0,
+        sent=10 * _WINDOW,
+        window_bytes=_WINDOW,
+        age_s=_MAX_AGE + 5.0,
+        max_age_s=_MAX_AGE,
+        anchored=True,
+    ) is None
+
+
+def test_anchored_default_false_keeps_shedding():
+    # Callers that don't know about the flag get the old behaviour.
+    reason, _ = _decide(acked=0, sent=_WINDOW + 1)
+    assert reason == "window"
+
