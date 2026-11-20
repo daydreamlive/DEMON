@@ -161,6 +161,9 @@ class Capabilities:
     loop_band: bool = False
     depth: bool = False
     curves: bool = False
+    # A circular envelope over source time, applied as an X0 preservation
+    # floor. Distinct from ACE's generic time/step curve command surface.
+    source_preservation: bool = False
     notes_conditioning: bool = False
     # Activation steering (per-layer residual shifts driven by the
     # steer_* / man_*_<N> knobs and the manual_slot_add/pop commands).
