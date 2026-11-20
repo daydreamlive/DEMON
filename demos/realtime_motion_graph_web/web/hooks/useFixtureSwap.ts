@@ -245,6 +245,14 @@ export function useFixtureSwap() {
       // stem feeding inference — skip the new-track gate entirely so the
       // performer's denoise / remix-started state is left untouched.
       if (!force) {
+        // A different track invalidates the old loop region: its frame
+        // coordinates were measured against the previous source and would
+        // index the new (possibly shorter) buffer out of bounds — pops /
+        // NaN when shorter, musically misaligned when longer. Clearing the
+        // store band makes WaveformScrubBox's sync effect fire, which sends
+        // clearLoopBand to the worklet and sendLoopBand(null, null) to the
+        // server. Source-mode hotswaps use `force` and keep the loop.
+        usePerformanceStore.getState().setLoopBand(null);
         // Each new track re-enters the "hear source first" gate when
         // enabled in config: snap engine denoise to 0 (user hears the
         // source from frame 1) and play a visual-only glide on the ribbon
