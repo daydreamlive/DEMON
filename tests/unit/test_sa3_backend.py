@@ -15,6 +15,7 @@ import numpy as np
 import torch
 
 from acestep.engine.sa3_adapter import SA3Adapter
+from acestep.engine.sa3_placement import pinned_part
 from acestep.streaming.generator_backend import TickContext
 from acestep.streaming.knobs import KnobState
 from acestep.streaming.sa3_backend import (
@@ -63,6 +64,9 @@ class _FakeCodec:
         assert latent_bct.shape == (1, C, T), latent_bct.shape
         ramp = torch.linspace(-0.5, 0.5, N44)
         return torch.stack([ramp, -ramp])  # [2, N44]
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def _schedule_builder_factory(steps: int):
@@ -160,6 +164,7 @@ class _SamplerProbeContext:
     # from_context reads both for the LoRA surface: the resident eager
     # DiT (None => the TRT->eager swap is a no-op) and the lineage id.
     dit = None
+    torch_dit = pinned_part("dit")
     model_id = ""
 
     def __init__(self, objective):

@@ -68,6 +68,7 @@ import numpy as np
 import torch
 
 from acestep.engine.obs import logger
+from acestep.engine.sa3_placement import pinned_part
 from acestep.nodes.interpolation import INTERPOLATIONS, slerp
 from acestep.streaming.diffusion_backend import DiffusionBackend
 from acestep.streaming.generator_backend import (
@@ -356,6 +357,11 @@ class SA3Backend(DiffusionBackend):
         # disables it swaps back. None/identical when the session is
         # already eager (swap becomes a no-op).
         eager_dit=None,
+        # The context's holder for that eager module
+        # (acestep.engine.sa3_placement.CardPart): the backend holds it
+        # on the card while it runs or reads it, and releases its holds
+        # on close. None = a part that never moves (test backends).
+        torch_dit=None,
         # Runtime checkpoint id ("medium"/"small-music"/…) for the
         # lineage axis of lora_compatible.
         model_id: str = "",
@@ -523,6 +529,19 @@ class SA3Backend(DiffusionBackend):
         # flips adapter.dit between them by LoRA activity.
         self._dit_accel = adapter.dit if adapter is not None else None
         self._dit_eager = eager_dit if eager_dit is not None else self._dit_accel
+        self._torch_dit = (
+            torch_dit if torch_dit is not None else pinned_part("dit", eager_dit)
+        )
+        # The context's make_dit takes a hold when it hands out the eager
+        # module; this session owns that hold while that is its DiT.
+        self._holds_torch_dit = (
+            eager_dit is not None and self._dit_accel is eager_dit
+        )
+        # The hold the D6a LoRA swap takes while the eager DiT stands in
+        # for the engine.
+        self._lora_holds_torch_dit = False
+        # Whether close() already ended the session DiT (release_session).
+        self._dit_session_released = False
         self._refit_mirror = refit_mirror
         # Knob-driven strength changes stashed by rebuild_imminent under
         # the refit mirror (a strength change is a full engine refit
@@ -623,169 +642,189 @@ class SA3Backend(DiffusionBackend):
         want_lora = bool(kwargs.get("use_lora")) and (
             kwargs.get("lora_manager") is not None
         )
-        adapter = SA3Adapter(
-            context.make_dit(
-                latent_frames=cond.latent_frames,
-                # The song-length LABEL (not the render length): the
-                # TRT DiT rebuilds its seconds token from this scalar
-                # and must embed what the eager cond bundle embeds.
-                seconds_total=context.cond_seconds_total(duration_s),
-                backend=dit_backend,
-                prefer_refittable=want_lora,
-            ),
-            schedule_builder=context.make_schedule_builder(cond, steps),
-            device=context.device,
-            dtype=context.dtype,
-            make_noise=layout.make_noise if layout is not None else None,
-            make_renoise=(
-                getattr(layout, "make_renoise", None) if layout is not None else None
-            ),
-            on_slot_done=(
-                getattr(layout, "on_slot_done", None) if layout is not None else None
-            ),
-            keep_mask=(
-                getattr(layout, "keep_mask", None) if layout is not None else None
-            ),
-            keep_overwrite=(
-                getattr(layout, "keep_overwrite", False) if layout is not None else False
-            ),
+        session_dit = context.make_dit(
+            latent_frames=cond.latent_frames,
+            # The song-length LABEL (not the render length): the
+            # TRT DiT rebuilds its seconds token from this scalar
+            # and must embed what the eager cond bundle embeds.
+            seconds_total=context.cond_seconds_total(duration_s),
+            backend=dit_backend,
+            prefer_refittable=want_lora,
         )
-
-        # Phase-2 refit mirror: engaged only when the selected DiT is a
-        # refit-built engine AND its validated manifest exists;
-        # otherwise the interim eager swap (D6a) covers LoRA.
-        refit_mirror = None
-        if want_lora and getattr(adapter.dit, "refittable", False):
-            from acestep.engine.sa3_trt_lora import (
-                SA3TRTRefitMirror,
-                find_refit_manifest,
+        # A session that fails to assemble never installs its DiT: end it.
+        try:
+            adapter = SA3Adapter(
+                session_dit,
+                schedule_builder=context.make_schedule_builder(cond, steps),
+                device=context.device,
+                dtype=context.dtype,
+                make_noise=layout.make_noise if layout is not None else None,
+                make_renoise=(
+                    getattr(layout, "make_renoise", None) if layout is not None else None
+                ),
+                on_slot_done=(
+                    getattr(layout, "on_slot_done", None) if layout is not None else None
+                ),
+                keep_mask=(
+                    getattr(layout, "keep_mask", None) if layout is not None else None
+                ),
+                keep_overwrite=(
+                    getattr(layout, "keep_overwrite", False) if layout is not None else False
+                ),
             )
 
-            manifest = find_refit_manifest(adapter.dit.engine_path)
-            if manifest is None:
-                logger.warning(
-                    "sa3_refit_manifest_missing engine={} — LoRA will use "
-                    "the eager-DiT swap; generate the manifest with "
-                    "scripts/sa3/gen_sa3_refit_manifest.py",
-                    adapter.dit.engine_path.parent.name,
+            # Phase-2 refit mirror: engaged only when the selected DiT is a
+            # refit-built engine AND its validated manifest exists;
+            # otherwise the interim eager swap (D6a) covers LoRA.
+            refit_mirror = None
+            if want_lora and getattr(adapter.dit, "refittable", False):
+                from acestep.engine.sa3_trt_lora import (
+                    SA3TRTRefitMirror,
+                    find_refit_manifest,
                 )
-            else:
-                try:
-                    refit_mirror = SA3TRTRefitMirror(
-                        adapter.dit.engine, context.sam.model.model, manifest,
-                    )
-                except Exception as exc:
+
+                manifest = find_refit_manifest(adapter.dit.engine_path)
+                if manifest is None:
                     logger.warning(
-                        "sa3_refit_mirror_init_failed error={} — LoRA will "
-                        "use the eager-DiT swap", exc,
+                        "sa3_refit_manifest_missing engine={} — LoRA will use "
+                        "the eager-DiT swap; generate the manifest with "
+                        "scripts/sa3/gen_sa3_refit_manifest.py",
+                        adapter.dit.engine_path.parent.name,
                     )
+                else:
+                    try:
+                        refit_mirror = SA3TRTRefitMirror(
+                            adapter.dit.engine, context.sam.model.model, manifest,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "sa3_refit_mirror_init_failed error={} — LoRA will "
+                            "use the eager-DiT swap", exc,
+                        )
 
-        def _prompt_rebuilder(tags: str, steps_now: int, duration_now: float):
-            # Per-prompt re-conditioning (handle_set_prompt): a fresh
-            # T5Gemma capture at the duration the BACKEND says is live
-            # (create-time, or whatever a swap-resize committed) + a
-            # schedule-builder factory closed over the NEW cond's
-            # sched_args. The duration is passed in rather than closed
-            # over so the backend stays the single owner of the live
-            # geometry — a resize that fails downstream of its captures
-            # can then leave nothing behind to retarget later rebuilds.
-            new_cond = context.prepare_cond(
-                prompt=tags, duration=float(duration_now), steps=steps_now,
-            )
-            return new_cond, (
-                lambda s, _c=new_cond: context.make_schedule_builder(_c, s)
+            def _prompt_rebuilder(tags: str, steps_now: int, duration_now: float):
+                # Per-prompt re-conditioning (handle_set_prompt): a fresh
+                # T5Gemma capture at the duration the BACKEND says is live
+                # (create-time, or whatever a swap-resize committed) + a
+                # schedule-builder factory closed over the NEW cond's
+                # sched_args. The duration is passed in rather than closed
+                # over so the backend stays the single owner of the live
+                # geometry — a resize that fails downstream of its captures
+                # can then leave nothing behind to retarget later rebuilds.
+                new_cond = context.prepare_cond(
+                    prompt=tags, duration=float(duration_now), steps=steps_now,
+                )
+                return new_cond, (
+                    lambda s, _c=new_cond: context.make_schedule_builder(_c, s)
+                )
+
+            def _resizer(new_duration_s: float, tags_a: str,
+                         tags_b: Optional[str], steps_now: int):
+                # Render-geometry rebuild (handle_swap_source's resize path):
+                # the same clamp + capture + DiT-selection recipe the create
+                # path runs (sa3_session), against the live prompt pair.
+                # PURE: nothing here mutates session state, so a failure
+                # anywhere in (or after) it leaves the old geometry whole —
+                # the backend commits the new duration only once the resize
+                # has fully landed.
+                layout_hook = getattr(context, "stream_layout", None)
+                ceiling = max_session_duration_s(
+                    layout_hook() if callable(layout_hook) else None,
+                )
+                d = min(float(new_duration_s), ceiling)
+                d = context.clamp_duration_for_trt(d, backend=dit_backend)
+                new_cond = context.prepare_cond(
+                    prompt=tags_a, duration=d, steps=steps_now,
+                )
+                new_cond_b = (
+                    context.prepare_cond(prompt=tags_b, duration=d, steps=steps_now)
+                    if tags_b and tags_b != tags_a else None
+                )
+                new_dit = context.make_dit(
+                    latent_frames=new_cond.latent_frames,
+                    seconds_total=context.cond_seconds_total(d),
+                    backend=dit_backend,
+                    prefer_refittable=want_lora,
+                )
+                return d, new_cond, new_cond_b, new_dit, (
+                    lambda s, _c=new_cond: context.make_schedule_builder(_c, s)
+                )
+
+            def _source_encoder(waveform, sample_rate, sample_size, **kw):
+                # Source re-anchor (handle_swap_source): the same
+                # SAME-encode the create path ran for the initial upload —
+                # the (sample_rate, waveform) tuple rides prepare_audio's
+                # resample, and sample_size (the session's fixed
+                # cond.audio_sample_size) pins the latent geometry.
+                return context.encode_source(
+                    (int(sample_rate), waveform), int(sample_size), **kw,
+                )
+
+            # Sampler follows the loaded checkpoint's training objective.
+            # Post-trained SA3 releases ("rf_denoiser") were trained and
+            # evaluated with deterministic ping-pong; a plain rectified-flow
+            # base wants Euler ODE. Assuming the post-trained objective for
+            # every SA3 checkpoint silently mis-samples the other family.
+            # An explicit caller-supplied ``sampler`` still wins.
+            kwargs.setdefault(
+                "sampler",
+                "ode"
+                if getattr(context, "diffusion_objective", None) == "rectified_flow"
+                else "pingpong",
             )
 
-        def _resizer(new_duration_s: float, tags_a: str,
-                     tags_b: Optional[str], steps_now: int):
-            # Render-geometry rebuild (handle_swap_source's resize path):
-            # the same clamp + capture + DiT-selection recipe the create
-            # path runs (sa3_session), against the live prompt pair.
-            # PURE: nothing here mutates session state, so a failure
-            # anywhere in (or after) it leaves the old geometry whole —
-            # the backend commits the new duration only once the resize
-            # has fully landed.
-            layout_hook = getattr(context, "stream_layout", None)
-            ceiling = max_session_duration_s(
-                layout_hook() if callable(layout_hook) else None,
+            return cls(
+                adapter=adapter,
+                codec=context.make_codec(backend=codec_backend),
+                cond=cond,
+                cond_b=cond_b,
+                playable_duration_s=duration_s,
+                schedule_builder_factory=(
+                    lambda s: context.make_schedule_builder(cond, s)
+                ),
+                knob_state=knob_state,
+                state=state,
+                source_latent_bct=source_latent,
+                # Carried for the extension conditioning hook only; see the
+                # ctor arg. ``source_audio`` is already the ``(sample_rate,
+                # waveform)`` pair ``context.encode_source`` consumes.
+                source_audio=source_audio,
+                prompt_rebuilder=_prompt_rebuilder,
+                prompt_tags=prompt,
+                prompt_tags_b=prompt_b,
+                source_encoder=_source_encoder,
+                # Swap-resize runs under a stream layout too: the resizer's
+                # make_dit reaches the layout's own make_dit at the new
+                # stacked length, which picks the engine for it.
+                resizer=_resizer,
+                stream_layout=layout,
+                # D6a: the eager DiT module stays resident on the context
+                # even when make_dit returned a TRT wrapper — the interim
+                # LoRA fallback swaps to it.
+                eager_dit=context.dit,
+                torch_dit=context.torch_dit,
+                model_id=str(context.model_id),
+                refit_mirror=refit_mirror,
+                model_extension=model_extension,
+                extension_runtime=getattr(context, "extension_runtime", None),
+                **kwargs,
             )
-            d = min(float(new_duration_s), ceiling)
-            d = context.clamp_duration_for_trt(d, backend=dit_backend)
-            new_cond = context.prepare_cond(
-                prompt=tags_a, duration=d, steps=steps_now,
-            )
-            new_cond_b = (
-                context.prepare_cond(prompt=tags_b, duration=d, steps=steps_now)
-                if tags_b and tags_b != tags_a else None
-            )
-            new_dit = context.make_dit(
-                latent_frames=new_cond.latent_frames,
-                seconds_total=context.cond_seconds_total(d),
-                backend=dit_backend,
-                prefer_refittable=want_lora,
-            )
-            return d, new_cond, new_cond_b, new_dit, (
-                lambda s, _c=new_cond: context.make_schedule_builder(_c, s)
-            )
+        except BaseException:
+            cls._release_session_dit(session_dit)
+            raise
 
-        def _source_encoder(waveform, sample_rate, sample_size, **kw):
-            # Source re-anchor (handle_swap_source): the same
-            # SAME-encode the create path ran for the initial upload —
-            # the (sample_rate, waveform) tuple rides prepare_audio's
-            # resample, and sample_size (the session's fixed
-            # cond.audio_sample_size) pins the latent geometry.
-            return context.encode_source(
-                (int(sample_rate), waveform), int(sample_size), **kw,
-            )
-
-        # Sampler follows the loaded checkpoint's training objective.
-        # Post-trained SA3 releases ("rf_denoiser") were trained and
-        # evaluated with deterministic ping-pong; a plain rectified-flow
-        # base wants Euler ODE. Assuming the post-trained objective for
-        # every SA3 checkpoint silently mis-samples the other family.
-        # An explicit caller-supplied ``sampler`` still wins.
-        kwargs.setdefault(
-            "sampler",
-            "ode"
-            if getattr(context, "diffusion_objective", None) == "rectified_flow"
-            else "pingpong",
-        )
-
-        return cls(
-            adapter=adapter,
-            codec=context.make_codec(backend=codec_backend),
-            cond=cond,
-            cond_b=cond_b,
-            playable_duration_s=duration_s,
-            schedule_builder_factory=(
-                lambda s: context.make_schedule_builder(cond, s)
-            ),
-            knob_state=knob_state,
-            state=state,
-            source_latent_bct=source_latent,
-            # Carried for the extension conditioning hook only; see the
-            # ctor arg. ``source_audio`` is already the ``(sample_rate,
-            # waveform)`` pair ``context.encode_source`` consumes.
-            source_audio=source_audio,
-            prompt_rebuilder=_prompt_rebuilder,
-            prompt_tags=prompt,
-            prompt_tags_b=prompt_b,
-            source_encoder=_source_encoder,
-            # Swap-resize runs under a stream layout too: the resizer's
-            # make_dit reaches the layout's own make_dit at the new
-            # stacked length, which picks the engine for it.
-            resizer=_resizer,
-            stream_layout=layout,
-            # D6a: the eager DiT module stays resident on the context
-            # even when make_dit returned a TRT wrapper — the interim
-            # LoRA fallback swaps to it.
-            eager_dit=context.dit,
-            model_id=str(context.model_id),
-            refit_mirror=refit_mirror,
-            model_extension=model_extension,
-            extension_runtime=getattr(context, "extension_runtime", None),
-            **kwargs,
-        )
+    @staticmethod
+    def _release_session_dit(dit) -> None:
+        """End a session's use of a DiT made for it: call its optional
+        ``release_session()`` (a model extension's step object gives back
+        whatever it holds there). Teardown never raises."""
+        release = getattr(dit, "release_session", None)
+        if not callable(release):
+            return
+        try:
+            release()
+        except Exception as exc:  # noqa: BLE001 - teardown must not raise
+            logger.error("sa3_dit_release_session_failed error={}", exc)
 
     def _source_view(self, latent_bct=None, audio=None):
         """The session source as an extension sees it, or None if absent.
@@ -1040,7 +1079,7 @@ class SA3Backend(DiffusionBackend):
             mgr.enable_lora(lora_id, strength=strength)
         self._sync_dit_for_lora()
         if self._refit_mirror is not None:
-            self._refit_mirror.sync(reason="enable_lora")
+            self._mirror_sync("enable_lora")
         if mgr.touches_conditioner(lora_id):
             self._rebuild_conditioning_after_lora("enable_lora", lora_id)
 
@@ -1055,7 +1094,7 @@ class SA3Backend(DiffusionBackend):
         if self._refit_mirror is not None:
             # The mirror's dirty-set pushes this adapter's base weights
             # back — the engine must not keep the merged values.
-            self._refit_mirror.sync(reason="disable_lora")
+            self._mirror_sync("disable_lora")
         self._pending_lora_strengths.pop(lora_id, None)
         if touched:
             self._rebuild_conditioning_after_lora("disable_lora", lora_id)
@@ -1068,7 +1107,7 @@ class SA3Backend(DiffusionBackend):
             # Direct facade calls sync immediately; the knob-driven path
             # batches instead (_apply_pending_lora_strengths calls the
             # manager directly and syncs once for the whole stash).
-            self._refit_mirror.sync(reason="set_lora_strength")
+            self._mirror_sync("set_lora_strength")
         # A strength change on a conditioner-targeting LoRA changes the
         # conditioner's output too — the cached cond bundle must follow.
         # (Per-tick slider sweeps on such files pay a T5Gemma capture
@@ -1101,7 +1140,19 @@ class SA3Backend(DiffusionBackend):
                     lora_id, exc,
                 )
         if self._refit_mirror is not None:
-            self._refit_mirror.sync(reason="strength")
+            self._mirror_sync("strength")
+
+    def _mirror_sync(self, reason: str) -> None:
+        """One refit-mirror sync. The merged weights are computed from
+        the eager modules, so they are held on the card for the merge:
+        the pushed values are the same bits as with a resident model."""
+        with self._torch_dit.held("lora_refit"):
+            self._refit_mirror.sync(reason=reason)
+
+    def _release_lora_hold(self) -> None:
+        if self._lora_holds_torch_dit:
+            self._lora_holds_torch_dit = False
+            self._torch_dit.release()
 
     def _sync_dit_for_lora(self) -> None:
         """D6a interim: LoRA weights live on the eager torch modules, so
@@ -1109,19 +1160,28 @@ class SA3Backend(DiffusionBackend):
         active and back when the last disables. Loud log both ways;
         no-op for sessions already on the eager DiT — and for refit-
         mirror sessions, where the engine itself carries the LoRA
-        weights (the Phase-2 endgame) and must NOT be swapped away."""
+        weights (the Phase-2 endgame) and must NOT be swapped away.
+
+        Any session with an active LoRA, refit or not, holds the eager
+        DiT on the card for as long as the LoRA is active: a refit
+        session then pays no move per strength change."""
+        active = bool(self._lora_mgr is not None and self._lora_mgr.has_active_loras)
+        if active and not self._lora_holds_torch_dit:
+            self._torch_dit.hold("lora_active")
+            self._lora_holds_torch_dit = True
+        elif not active:
+            self._release_lora_hold()
         if self._refit_mirror is not None:
             return
         if self.adapter is None or self._dit_eager is None:
             return
         if self._dit_accel is self._dit_eager:
             return  # eager session; nothing to swap
-        active = bool(self._lora_mgr is not None and self._lora_mgr.has_active_loras)
         if active and self.adapter.dit is not self._dit_eager:
             self.adapter.dit = self._dit_eager
             logger.warning(
-                "sa3_dit_swap reason=lora_active dit=eager (TRT engine "
-                "cannot serve LoRA weights until the refit path lands)"
+                "sa3_dit_swap reason=lora_active dit=eager (no refit engine "
+                "or refit manifest serves this session's LoRA weights)"
             )
         elif not active and self.adapter.dit is not self._dit_accel:
             self.adapter.dit = self._dit_accel
@@ -1410,6 +1470,25 @@ class SA3Backend(DiffusionBackend):
                     float(duration_s), self._tags_a or "",
                     self._tags_b, self._steps,
                 )
+                # make_dit took a hold if it handed out the eager module;
+                # a resize that does not publish it gives that hold back.
+                # A DiT the resize does not publish is never the session's:
+                # it is ended here too (a published one is ended when it is
+                # replaced, or at close).
+                new_dit_hold = {
+                    "open": self._dit_eager is not None and dit is self._dit_eager,
+                    "unpublished": dit is not self._dit_accel,
+                }
+
+                def _drop_unpublished_hold(_h=new_dit_hold, _dit=dit):
+                    if _h["open"]:
+                        _h["open"] = False
+                        self._torch_dit.release()
+                    if _h["unpublished"]:
+                        _h["unpublished"] = False
+                        self._release_session_dit(_dit)
+
+                resize_guard.callback(_drop_unpublished_hold)
                 resize_ms = (time.perf_counter() - t0) * 1000
                 if int(cond.latent_frames) == int(self._cond.latent_frames):
                     # The request lands on the geometry we already have
@@ -1529,8 +1608,20 @@ class SA3Backend(DiffusionBackend):
                         and new_geom["dit"] is self._dit_eager
                         and self._dit_accel is not self._dit_eager
                     )
+                    old_dit = self._dit_accel
                     self._dit_accel = new_geom["dit"]
                     self.adapter.dit = new_geom["dit"]
+                    # The new DiT is live: its hold (if it is the eager
+                    # module) is now the session's, and the old one's goes.
+                    old_held = self._holds_torch_dit
+                    self._holds_torch_dit = new_dit_hold["open"]
+                    new_dit_hold["open"] = False
+                    new_dit_hold["unpublished"] = False
+                    if old_held:
+                        self._torch_dit.release()
+                    # The outgoing DiT is no longer the session's: end it.
+                    if old_dit is not new_geom["dit"]:
+                        self._release_session_dit(old_dit)
                     if self._refit_mirror is not None:
                         self._refit_mirror = None
                         dropped_mirror = True
@@ -2204,14 +2295,21 @@ class SA3Backend(DiffusionBackend):
 
     # ---- one-shot renders (Capabilities.oneshot) -------------------------------
 
-    def render_decode_mode(self) -> str:
-        """The one-shot's decode: the layout's ``render_decode`` (a value or
-        a no-argument callable read per request); "song" without a layout
-        or a value. Anything else is refused loudly."""
+    def _layout_render_decode(self):
+        """The layout's ``render_decode`` (a value, or a no-argument
+        callable read per request), or None without a layout or a value."""
         layout = self._layout
         value = getattr(layout, "render_decode", None) if layout is not None else None
-        if callable(value):
-            value = value()
+        return value() if callable(value) else value
+
+    def render_decode_mode(self) -> str:
+        """The one-shot's decode: the layout's ``render_decode`` when it
+        gives one, else the codec's (a codec whose engines cannot hold a
+        whole song says "windows"), else "song". Anything else is refused
+        loudly."""
+        value = self._layout_render_decode()
+        if value is None:
+            value = getattr(self.codec, "render_decode", None)
         mode = "song" if value is None else str(value).strip().lower()
         if mode not in RENDER_DECODE_MODES:
             from acestep.streaming.oneshot import OneshotError
@@ -2250,7 +2348,8 @@ class SA3Backend(DiffusionBackend):
         each window published as an :class:`OneshotSlice` as its streams
         land and the version closed by an :class:`OneshotDone`; the result
         then carries no PCM (``delivered``). A redo, or no ``emit``, takes
-        the whole-song path.
+        the whole-song path, except where "windows" is the codec's own (no
+        layout value): that is refused with an ``OneshotError``.
 
         Session-thread only (the runner's, or a render-only session's)."""
         from acestep.streaming.oneshot import KEPT, OneshotError, OneshotResult, to_int16
@@ -2305,6 +2404,17 @@ class SA3Backend(DiffusionBackend):
         if emit is not None and redo is None and self.render_decode_mode() == "windows":
             return self._oneshot_windows(
                 request, store, base, seeds, version_controls, frames, emit, sync,
+            )
+        if (
+            self._layout_render_decode() is None
+            and getattr(self.codec, "render_decode", None) == "windows"
+        ):
+            # The codec's engines cannot hold a whole song: the whole-song
+            # path would decode it eagerly. Refused, never run.
+            raise OneshotError(
+                f"this session's codec ({type(self.codec).__name__}) decodes a "
+                "one-shot only in windows, which needs the session's slice "
+                "publisher (emit); the whole-song decode would run off the engine"
             )
         t0 = time.perf_counter()
         # Denoise = the ring: one SlotRequest per version on a depth-1
@@ -2714,6 +2824,19 @@ class SA3Backend(DiffusionBackend):
         # because refittable engines are never process-cached).
         self._refit_mirror = None
         self._pending_lora_strengths.clear()
+        # Give back every hold this session has on the PyTorch parts; the
+        # last holder's release sends a part back to system memory.
+        self._release_lora_hold()
+        if self._holds_torch_dit:
+            self._holds_torch_dit = False
+            self._torch_dit.release()
+        # The session's DiT may hold PyTorch parts of its own.
+        if not self._dit_session_released:
+            self._dit_session_released = True
+            self._release_session_dit(self._dit_accel)
+        codec_close = getattr(self.codec, "close", None)
+        if callable(codec_close):
+            codec_close()
 
     # ---- bookkeeping -------------------------------------------------------------
 

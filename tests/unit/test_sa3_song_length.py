@@ -12,6 +12,7 @@ import pytest
 import torch
 
 from acestep.engine import sa3_context as ctx_mod
+from acestep.engine.sa3_placement import pinned_part
 from acestep.engine import sa3_stream_helpers as helpers
 
 SR = 44100
@@ -222,6 +223,8 @@ def test_schedule_from_window_decouples_the_shift(stub_vendor):
 
 def _bare_context(song_seconds, outro_pad_s):
     c = ctx_mod.SA3Context.__new__(ctx_mod.SA3Context)
+    c.torch_dit = pinned_part("dit")
+    c.torch_decoder = pinned_part("decoder")
     c.model_id = "medium"
     c.sam = _Sam()
     c.downsampling_ratio = DS

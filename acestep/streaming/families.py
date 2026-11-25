@@ -391,12 +391,18 @@ def resolve_checkpoint(name: str) -> tuple:
 class ServedCheckpoint:
     """One checkpoint a pod serves: the ``--checkpoint`` name as the
     operator typed it, what it resolves to, and the qualified id of the
-    model extension installed on it (``alias+extension_id``), if any."""
+    model extension installed on it (``alias+extension_id``), if any.
+    ``companion`` marks an entry named by ``--companion-checkpoint``: it
+    stays loaded beside the main model instead of replacing it. ``path``
+    is a companion's socket path (``NAME@/path``): a session on that path
+    that names no checkpoint gets this entry."""
 
     name: str
     family: str
     model_id: str
     extension: Optional[str] = None
+    companion: bool = False
+    path: Optional[str] = None
 
 
 def split_checkpoint_list(value: str) -> list:
@@ -411,7 +417,7 @@ def split_checkpoint_list(value: str) -> list:
     return names
 
 
-def resolve_served(names: Sequence[str]) -> list:
+def resolve_served(names: Sequence[str], companions: Sequence[str] = ()) -> list:
     """Resolve an allow-list of ``--checkpoint`` names to
     :class:`ServedCheckpoint` entries; the first is the pod default.
 
@@ -419,25 +425,60 @@ def resolve_served(names: Sequence[str]) -> list:
     pools cover the others), else ``ValueError`` naming the offending
     pair. A name may carry an extension as ``alias+extension_id``. Two
     names that resolve to the same model and extension keep the first.
+
+    ``companions`` (``--companion-checkpoint``, same grammar and family
+    rule) become entries with ``companion=True`` after the main ones, so
+    the default entry is unchanged. A companion may carry a socket path
+    as ``NAME@/path``. A companion that resolves to the same model and
+    extension as a main entry, a path without a leading slash, or two
+    companions with one path is a ``ValueError``.
     """
     served: list = []
-    for name in names:
-        alias, _, extension = name.partition("+")
-        extension = extension or None
-        family, model_id = resolve_checkpoint(alias)
-        if served and family != served[0].family:
-            raise ValueError(
-                f"--checkpoint {name!r} is family {family!r} but "
-                f"{served[0].name!r} is family {served[0].family!r}; "
-                "one pod serves one family"
-            )
-        if any((s.model_id, s.extension) == (model_id, extension) for s in served):
-            continue
-        served.append(ServedCheckpoint(
-            name=name, family=family, model_id=model_id, extension=extension,
-        ))
-    if not served:
-        raise ValueError("--checkpoint names no checkpoint")
+    for companion, group in ((False, names), (True, companions)):
+        flag = "--companion-checkpoint" if companion else "--checkpoint"
+        for name in group:
+            path = None
+            if companion and "@" in name:
+                name, _, path = name.partition("@")
+                name = name.strip()
+                path = path.strip()
+                if not path.startswith("/"):
+                    raise ValueError(
+                        f"--companion-checkpoint {name!r}: path {path!r} "
+                        "must start with /"
+                    )
+                taken = next((s for s in served if s.path == path), None)
+                if taken is not None:
+                    raise ValueError(
+                        f"--companion-checkpoint {name!r} and {taken.name!r} "
+                        f"share the path {path!r}"
+                    )
+            alias, _, extension = name.partition("+")
+            extension = extension or None
+            family, model_id = resolve_checkpoint(alias)
+            if served and family != served[0].family:
+                raise ValueError(
+                    f"{flag} {name!r} is family {family!r} but "
+                    f"{served[0].name!r} is family {served[0].family!r}; "
+                    "one pod serves one family"
+                )
+            same = [
+                s for s in served
+                if (s.model_id, s.extension) == (model_id, extension)
+            ]
+            if companion and any(not s.companion for s in same):
+                raise ValueError(
+                    f"--companion-checkpoint {name!r} is also served by "
+                    f"--checkpoint {same[0].name!r}; name it in one list"
+                )
+            if same:
+                continue
+            served.append(ServedCheckpoint(
+                name=name, family=family, model_id=model_id,
+                extension=extension, companion=companion, path=path,
+            ))
+        if not served:
+            raise ValueError("--checkpoint names no checkpoint")
     return served
 
 

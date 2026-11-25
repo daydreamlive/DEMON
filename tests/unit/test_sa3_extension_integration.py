@@ -15,6 +15,7 @@ from __future__ import annotations
 import torch
 
 from acestep.engine.sa3_adapter import SA3Adapter
+from acestep.engine.sa3_placement import pinned_part
 from acestep.engine.sa3_stream_helpers import SA3Conditioning
 from acestep.plugins import (
     BackendVerdict,
@@ -120,6 +121,7 @@ class _Context:
     diffusion_objective = "rf_denoiser"
     # See _SamplerProbeContext: from_context reads both for the LoRA surface.
     dit = None
+    torch_dit = pinned_part("dit")
     model_id = ""
 
     def __init__(self, runtime=None):
@@ -452,6 +454,7 @@ def test_preload_loads_the_session_context_and_its_codec_engine(monkeypatch):
 
         def make_codec(self, *, backend):
             calls["codec"] = backend
+            return _FakeCodec()
 
     def _get(model_id, *, checkpoint_dir=None, extension=None):
         calls["context"] = (model_id, checkpoint_dir, extension)
@@ -482,6 +485,8 @@ def test_preload_skips_the_stock_dit_engine_under_a_stream_layout(monkeypatch):
         loaded = []
 
         class _Ctx:
+            torch_dit = pinned_part("dit")
+
             def effective_dit_backend(self, requested):
                 return requested, ""
 
@@ -489,7 +494,7 @@ def test_preload_skips_the_stock_dit_engine_under_a_stream_layout(monkeypatch):
                 return requested, ""
 
             def make_codec(self, *, backend):
-                pass
+                return _FakeCodec()
 
             def stream_layout(self):
                 return layout

@@ -195,7 +195,12 @@ class StreamLayout:
     lookup is never consulted under a layout, because stock engines are
     built for one stream. An accelerated engine for a layout is loaded by
     path (``acestep.engine.sa3_trt.open_dit_engine_at``), never placed
-    under the stock engine names.
+    under the stock engine names. The returned object may define
+    ``release_session()``: the core calls it once when the session stops
+    using that DiT (the session closes, a resize replaces it, or it was
+    made for a session that never installed it), so it can give back
+    anything it holds for the session (for example a hold on
+    ``context.torch_dit``). Absent, nothing is called.
 
     ``make_noise``: ``(request) -> [1, n_streams * L, C]`` initial noise
     for one slot (``request.seed`` is the slot seed). Absent, the
@@ -377,7 +382,25 @@ class ModelExtensionRuntime:
     Every method has a safe default, so an extension implements only the
     hooks it actually uses. The core calls these through the module-level
     helpers below, which tolerate a runtime that is not a subclass.
+
+    ``transformer_on_demand``: when ``True`` the base model's PyTorch
+    transformer is not pinned on the card for this extension. It waits in
+    system memory (from boot) and is on the card only while something
+    holds it (``context.torch_dit.hold`` / ``release`` / ``held``); the
+    extension takes a hold before it runs the transformer itself. Default
+    ``False``: both PyTorch parts stay pinned, as the extension reads them
+    live. The decoder stays pinned either way.
+
+    ``card_keep() -> iterable of modules``: read once after ``install``
+    when ``transformer_on_demand`` is ``True``. The modules under the
+    transformer that stay on the card when it moves (for example tables an
+    engine step reads, or modules the install added under it); their
+    tensors are never touched by a move. Absent, the whole transformer
+    moves.
     """
+
+    #: See the class docstring.
+    transformer_on_demand: bool = False
 
     def supports_dit_backend(self, backend: str) -> BackendVerdict:
         return BackendVerdict(True)

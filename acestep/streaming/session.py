@@ -3213,6 +3213,7 @@ class StreamingSession:
         offload_text_encoder: bool = False,
         checkpoint_dir: str | None = None,
         model_extension=None,
+        companion: bool = False,
         session_id: str,
     ) -> "StreamingSession":
         """Build a ready-to-run session for one connection.
@@ -3251,4 +3252,7 @@ class StreamingSession:
             # family's catalog location (FamilySpec.accepts_checkpoint_dir).
             checkpoint_dir=checkpoint_dir,
             model_extension=model_extension,
+            # A --companion-checkpoint entry: its model loads beside the
+            # main one instead of replacing it (sa3_session.get_sa3_context).
+            companion=companion,
         )

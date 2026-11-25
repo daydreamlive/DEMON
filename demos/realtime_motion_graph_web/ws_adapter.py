@@ -507,9 +507,26 @@ class _ActiveSession:
         self.entry = entry
 
 
-def _preempt_active_session(new_session_id: str, keep: int = 0) -> None:
+#: The session group of every main (non-companion) served entry.
+_MAIN_GROUP = "main"
+
+
+def _session_group(entry):
+    """The group a session on served ``entry`` belongs to: each companion
+    entry is its own group; every main entry (and a pod without an
+    allow-list, ``entry`` None) is the one main group."""
+    if entry is not None and getattr(entry, "companion", False):
+        return entry
+    return _MAIN_GROUP
+
+
+def _preempt_active_session(
+    new_session_id: str, keep: int = 0, group=None,
+) -> None:
     """Stop and drain the oldest active sessions until at most ``keep``
     remain (0 = the one-session policy: drain whatever is active).
+    ``group`` (see :func:`_session_group`) counts and stops only that
+    group's sessions; None means every session.
 
     Caller must hold ``_SESSION_LIFECYCLE_LOCK``. Returns once each
     preempted session has released its GPU state (or after a bounded wait
@@ -517,9 +534,13 @@ def _preempt_active_session(new_session_id: str, keep: int = 0) -> None:
     downstream are the backstop)."""
     while True:
         with _ACTIVE_SLOT_LOCK:
-            if len(_ACTIVE_SESSIONS) <= keep:
+            live = [
+                a for a in _ACTIVE_SESSIONS
+                if group is None or _session_group(a.entry) == group
+            ]
+            if len(live) <= keep:
                 return
-            prev = _ACTIVE_SESSIONS[0]
+            prev = live[0]
         if keep == 0:
             logger.info(
                 "session_preempt prev={} new={} reason=single_session_policy",
@@ -659,11 +680,14 @@ def _resolve_session_checkpoint(
     default: str,
     backend_family: str,
     served: Sequence = (),
+    path: str | None = None,
 ) -> tuple:
     """The served entry this session runs, and an error message or None.
 
-    No ``checkpoint`` key (or null) is the pod default (``served[0]``, or
-    None on a pod without an allow-list). A named checkpoint
+    No ``checkpoint`` key (or null) is the companion whose socket path
+    (``ServedCheckpoint.path``) equals the socket's request ``path``, else
+    the pod default (``served[0]``, or None on a pod without an
+    allow-list). A named checkpoint
     must be on the pod's allow-list (``served``: ServedCheckpoint entries,
     matched by their --checkpoint name OR their model id, so a client may
     echo back a ready frame's value) and of the session's family. An empty
@@ -673,7 +697,12 @@ def _resolve_session_checkpoint(
     default_entry = served[0] if served else None
     requested = config_dict.get("checkpoint")
     if requested is None:
-        return default_entry, None
+        by_path = next(
+            (e for e in served
+             if path is not None and getattr(e, "path", None) == path),
+            None,
+        )
+        return (by_path or default_entry), None
     names = [e.name for e in served] or [default]
     unavailable = (
         f"checkpoint {requested!r} is not served by this pod; served: {names}"
@@ -697,12 +726,29 @@ def _resolve_session_checkpoint(
     return entry, None
 
 
+def _socket_path(ws) -> str | None:
+    """The socket's request path without its query (``/companion`` for
+    ``/companion?token=...``), or None when the socket does not carry
+    its handshake request."""
+    path = getattr(getattr(ws, "request", None), "path", None)
+    if not isinstance(path, str):
+        return None
+    return path.split("?", 1)[0]
+
+
 def _preempt_keep(cap: int, entry) -> int:
-    """How many live sessions may stay while one on served ``entry`` is
-    created: ``cap - 1`` when every live session runs the same entry, else 0
-    (a switch preempts everything, so two models never share the GPU)."""
+    """How many live sessions of ``entry``'s group (:func:`_session_group`)
+    may stay while one on served ``entry`` is created: ``cap - 1`` when
+    every live session in the group runs the same entry, else 0 (a switch
+    between main models preempts every main session, so two main models
+    never share the GPU; a companion sits beside them and is never
+    counted against them)."""
+    group = _session_group(entry)
     with _ACTIVE_SLOT_LOCK:
-        mixed = any(a.entry != entry for a in _ACTIVE_SESSIONS)
+        mixed = any(
+            a.entry != entry for a in _ACTIVE_SESSIONS
+            if _session_group(a.entry) == group
+        )
     if mixed:
         logger.info("session_preempt_model_switch entry={}", entry)
         return 0
@@ -1658,11 +1704,19 @@ def _handle_client_body(
     # Per-session checkpoint: a client may name any allow-listed model of
     # its family; absent keeps the pod default. Resolved before the source
     # recv so a refused session neither uploads nor preempts anything.
+    # A session that names none may still reach a companion by its socket
+    # path (``--companion-checkpoint NAME@/path``).
     entry = served_checkpoints[0] if served_checkpoints else None
-    if config_dict.get("checkpoint") is not None:
+    request_path = _socket_path(ws)
+    if config_dict.get("checkpoint") is not None or (
+        request_path is not None and any(
+            getattr(e, "path", None) == request_path
+            for e in served_checkpoints
+        )
+    ):
         entry, checkpoint_error = _resolve_session_checkpoint(
             config_dict, default=checkpoint, backend_family=backend_family,
-            served=served_checkpoints,
+            served=served_checkpoints, path=request_path,
         )
         if checkpoint_error is not None:
             logger.warning(
@@ -1776,6 +1830,7 @@ def _handle_client_body(
         with _SESSION_LIFECYCLE_LOCK:
             _preempt_active_session(
                 session_id, keep=_preempt_keep(cap, entry),
+                group=_session_group(entry),
             )
             _log_session_vram("create_start")
             tool_proxy.yield_tools()
@@ -1791,6 +1846,7 @@ def _handle_client_body(
                     model_extensions[entry.extension]
                     if entry is not None and entry.extension else None
                 ),
+                companion=bool(getattr(entry, "companion", False)),
                 session_id=session_id,
             )
             with _ACTIVE_SLOT_LOCK:
