@@ -6,9 +6,10 @@ The serving-layer create path (canonical SA3 plan Phase 3; round_3 plan
 ACE stack (TRT profiles, engine ``Session``, conditioning pairs, LoRA
 catalog), :func:`create_sa3_session` builds the SA3 one:
 
-* **SA3Context, process-cached.** One loaded model (DiT + SAME +
+* **SA3Context, process-cached.** One loaded main model (DiT + SAME +
   conditioner) at a time, shared across sessions; asking for another
-  takes the loaded one out first. The SA3 analog of the engine-state
+  takes the loaded one out first. A companion model (served by
+  ``--companion-checkpoint``) stays loaded beside it. The SA3 analog of the engine-state
   reuse the ACE startup warmup exists to exploit. :func:`preload_sa3`
   pays the load (and the TRT engine deserialization) at server boot when
   the server opts in; otherwise the first session pays it and the rest
@@ -69,10 +70,10 @@ SA3_MAX_PIPELINE_DEPTH = 8
 # geometry and must not leak in here.
 SA3_VAE_WINDOW_S = 3.0
 
-# One loaded SA3 model per process (module docstring).
-# Lock held across the load on purpose: a second concurrent first
-# session should wait for the shared context, not load a duplicate.
-# Reentrant: a load evicts through evict_sa3_contexts under it.
+# One loaded main SA3 model per process, plus any companion models
+# (module docstring). Lock held across the load on purpose: a second
+# concurrent first session should wait for the shared context, not load
+# a duplicate. Reentrant: a load evicts through evict_sa3_contexts under it.
 _CONTEXTS: dict = {}
 _CONTEXTS_LOCK = threading.RLock()
 
@@ -99,11 +100,16 @@ def sa3_context_key(model_id: str, *, checkpoint_dir=None, extension=None) -> tu
     return (model_id, checkpoint, ext_key)
 
 
-def get_sa3_context(model_id: str, *, checkpoint_dir=None, extension=None):
+def get_sa3_context(
+    model_id: str, *, checkpoint_dir=None, extension=None, companion=False,
+):
     """Load-or-reuse the process-cached SA3Context for one exact model.
 
-    One model is loaded at a time: loading another evicts the loaded one
-    first, so two models never share the card.
+    One main model is loaded at a time: loading another evicts the loaded
+    main model first, so two main models never share the card. A
+    ``companion`` model (a ``--companion-checkpoint`` entry) evicts
+    nothing when it loads, and a main load leaves it in place; the
+    context remembers which it is.
     """
     from acestep.engine.sa3_context import SA3Context
 
@@ -113,37 +119,49 @@ def get_sa3_context(model_id: str, *, checkpoint_dir=None, extension=None):
     with _CONTEXTS_LOCK:
         context = _CONTEXTS.get(key)
         if context is None:
-            if _CONTEXTS:
-                outgoing = list(_CONTEXTS)
+            outgoing = [
+                k for k, c in _CONTEXTS.items()
+                if not getattr(c, "companion", False)
+            ]
+            if outgoing and not companion:
                 start = time.perf_counter()
-                evict_sa3_contexts()
+                evict_sa3_contexts(companions=False)
                 logger.info(
                     "sa3_context_swap out={} in={} evict_ms={:.0f}",
                     outgoing, key, (time.perf_counter() - start) * 1000,
                 )
             context = SA3Context(
                 model_id, checkpoint_dir=checkpoint_dir, extension=extension,
+                companion=companion,
             )
             _CONTEXTS[key] = context
         return context
 
 
-def evict_sa3_contexts() -> int:
+def evict_sa3_contexts(companions: bool = True) -> int:
     """Drop and close every cached SA3 context and free what they held on
     the card. Returns how many.
 
+    ``companions=False`` leaves companion contexts loaded (a main model
+    switch); the default drops them too.
+
     ``close()`` detaches an installed extension, which frees what it owns.
-    DEMON's DiT engine cache is cleared with them; the shared SAME-L
-    window decoder (``sa3_context._SAME_L_DECODERS``) stays. A context
-    the server froze at boot goes too (:func:`_collect_through_freeze`).
+    DEMON's DiT engine cache is cleared with them, every model's: a live
+    session holds its own engine, and an idle companion re-reads its
+    engine at its next session. The shared SAME-L window decoder
+    (``sa3_context._SAME_L_DECODERS``) stays. A context the server froze
+    at boot goes too (:func:`_collect_through_freeze`).
     """
     import torch
 
     from acestep.engine import sa3_trt
 
     with _CONTEXTS_LOCK:
-        contexts = list(_CONTEXTS.values())
-        _CONTEXTS.clear()
+        keys = [
+            k for k, c in _CONTEXTS.items()
+            if companions or not getattr(c, "companion", False)
+        ]
+        contexts = [_CONTEXTS.pop(k) for k in keys]
     count = len(contexts)
     for context in contexts:
         close = getattr(context, "close", None)
@@ -228,8 +246,9 @@ def preload_sa3(
         _resolve_accel(vae_backend, "codec"),
     )
     # Construct-and-drop: the codec deserializes its engine into the
-    # shared cache; the per-session execution context is discarded.
-    context.make_codec(backend=codec_backend)
+    # shared cache; the per-session execution context is discarded. Closing
+    # it gives back any hold it took on the PyTorch decoder.
+    context.make_codec(backend=codec_backend).close()
     # A stream layout brings its own DiT (SA3Context.make_dit never looks up
     # the stock engines then): warming the stock one only takes GPU memory.
     if dit_backend == "tensorrt" and context.stream_layout() is None:
@@ -239,6 +258,8 @@ def preload_sa3(
         path = find_dit_engine(model_id, max_l) if max_l else None
         if path is not None:
             _deserialize_engine(path)
+            # The engine serves: the PyTorch DiT waits in system memory.
+            context.torch_dit.park_if_free()
     logger.info(
         "sa3_preload_done model_id={} dit_backend={} codec_backend={} "
         "extension={} duration_s={:.1f}",
@@ -277,6 +298,7 @@ def create_sa3_session(
     decoder_backend: str = "tensorrt", vae_backend: str = "tensorrt",
     checkpoint_dir=None,
     model_extension=None,
+    companion: bool = False,
     **_unused,
 ):
     """Build a ready-to-run sa3 :class:`StreamingSession` (``cls``). See
@@ -289,7 +311,8 @@ def create_sa3_session(
     when none covers the session), "compile" degrades to eager (no SA3
     torch.compile path), "eager" is fully eager. ``checkpoint`` is the
     family model id by this point (families.resolve_checkpoint mapped
-    the server alias, e.g. "sa3-small" -> "small-music")."""
+    the server alias, e.g. "sa3-small" -> "small-music"). ``companion``
+    loads the model beside the main one (:func:`get_sa3_context`)."""
     from contextlib import ExitStack
 
     from acestep.streaming.audio_engine import AudioEngine
@@ -302,6 +325,7 @@ def create_sa3_session(
         model_id,
         checkpoint_dir=checkpoint_dir,
         extension=model_extension,
+        companion=companion,
     )
 
     # Per-session song-length label (the sa3_song_seconds config field):

@@ -99,6 +99,7 @@ def fake_cuda(monkeypatch):
     monkeypatch.setattr(
         torch.cuda, "Stream", lambda *a, **k: _FakeStream(events, name="dedicated")
     )
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *a, **k: events.append("device_sync"))
     return {"events": events, "caller": caller, "graphs": _FakeGraph}
 
 
@@ -178,6 +179,53 @@ def test_capture_failure_disables_and_warmup_stands(monkeypatch, fake_cuda):
     assert ctx.executes == 1
     lt.launch()
     assert ctx.executes == 2  # plain execute from now on
+
+
+def test_two_threads_launching_one_key_capture_once_and_never_overlap(monkeypatch, fake_cuda):
+    """Two threads launch one key at once: one captures (after a device
+    synchronize), the other replays that graph, and no thread's launch
+    runs inside the other's."""
+    import threading
+    import time
+
+    lt, ctx, x, y = _launch()
+    seen = []
+
+    def execute(stream):
+        seen.append((threading.current_thread().name, "execute"))
+        time.sleep(0.02)
+        ctx.executes += 1
+        return True
+
+    def replay(self):
+        seen.append((threading.current_thread().name, "replay"))
+        self.replays += 1
+
+    ctx.execute_async_v3 = execute
+    monkeypatch.setattr(_FakeGraph, "replay", replay)
+    monkeypatch.setattr(
+        torch.cuda, "synchronize",
+        lambda *a, **k: seen.append((threading.current_thread().name, "device_sync")),
+    )
+    barrier = threading.Barrier(2)
+
+    def run():
+        barrier.wait(10)
+        lt.launch()
+
+    threads = [threading.Thread(target=run, name=n, daemon=True) for n in ("a", "b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert not any(t.is_alive() for t in threads)
+    assert lt.graphs.captures == 1 and ctx.executes == 2
+    first, second = seen[0][0], seen[-1][0]
+    assert first != second
+    assert seen == [
+        (first, "execute"), (first, "device_sync"), (first, "execute"),
+        (first, "replay"), (second, "replay"),
+    ]
 
 
 def test_cuda_graph_false_never_captures(fake_cuda):

@@ -259,6 +259,7 @@ def fake_cuda(monkeypatch):
     monkeypatch.setattr(torch.cuda, "CUDAGraph", _FakeGraph)
     monkeypatch.setattr(torch.cuda, "current_stream", lambda *a, **k: _FakeStream())
     monkeypatch.setattr(torch.cuda, "stream", lambda s: contextlib.nullcontext())
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *a, **k: None)
     return _FakeGraph
 
 

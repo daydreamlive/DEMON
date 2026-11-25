@@ -115,9 +115,11 @@ def test_full_decode_routes_by_frames_one_latent_per_call(monkeypatch):
     import threading
 
     from acestep.engine import sa3_context, sa3_stream_helpers
+    from acestep.engine.sa3_placement import pinned_part
 
     codec = SA3SAMEWindowCodec.__new__(SA3SAMEWindowCodec)
     codec._context = SimpleNamespace(sam=None, sample_rate=4, downsampling_ratio=4)
+    codec._part = pinned_part("decoder")
     codec._helpers = SimpleNamespace(
         sa3_decode_rng=lambda *_a, **_k: contextlib.nullcontext(), decode_sa3_latent=eager,
         resolve_sa3_decode_window=sa3_stream_helpers.resolve_sa3_decode_window,

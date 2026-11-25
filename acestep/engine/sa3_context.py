@@ -28,6 +28,7 @@ import math
 import os
 import sys
 import threading
+import weakref
 from pathlib import Path
 from typing import Callable, Mapping
 
@@ -175,6 +176,97 @@ def _read_model_config(checkpoint_dir: Path) -> dict:
         return {}
 
 
+# ---- One text encoder per process -----------------------------------------
+# The T5Gemma text encoder ships with every SA3 checkpoint
+# (``<checkpoint>/t5gemma-b-b-ul2/``); the music and sound effects models
+# bundle the same weights. Two loaded models with an equal weight file use
+# one module. The registry holds each live encoder with the checkpoint it
+# came from, unhashed and weakly, so the encoder leaves with the last
+# context that uses it. A file is hashed only when another encoder is
+# live to compare it with: a process holding one model reads nothing.
+# The small projection after the encoder stays per model.
+TEXT_ENCODER_SUBDIR = "t5gemma-b-b-ul2"
+_TEXT_ENCODER_SHA_CACHE: dict = {}
+_SHARED_TEXT_ENCODERS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+_SHARED_TEXT_ENCODERS_LOCK = threading.Lock()
+
+
+def _text_encoder_file(checkpoint_dir) -> Path:
+    return Path(checkpoint_dir) / TEXT_ENCODER_SUBDIR / "model.safetensors"
+
+
+def text_encoder_weights_sha256(checkpoint_dir) -> str | None:
+    """sha256 of a checkpoint's text encoder weight file
+    (``<checkpoint>/t5gemma-b-b-ul2/model.safetensors``), or None when it
+    is missing. Cached per (path, size, mtime)."""
+    path = _text_encoder_file(checkpoint_dir)
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    key = (str(path), st.st_size, st.st_mtime_ns)
+    if key in _TEXT_ENCODER_SHA_CACHE:
+        return _TEXT_ENCODER_SHA_CACHE[key]
+    import hashlib
+
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 24), b""):
+            h.update(block)
+    digest = h.hexdigest()
+    _TEXT_ENCODER_SHA_CACHE[key] = digest
+    return digest
+
+
+def _text_encoder_conditioners(sam) -> list:
+    """The conditioners of a loaded model that keep a T5Gemma encoder
+    outside the module tree (``conditioner.__dict__["model"]``, the
+    vendor's no-grad layout; LoRA and ``.to()`` never walk it)."""
+    conditioner = getattr(getattr(sam, "model", None), "conditioner", None)
+    children = getattr(conditioner, "conditioners", None)
+    if children is None:
+        return []
+    return [
+        c for c in children.values()
+        if type(c).__name__ == "T5GemmaConditioner" and "model" in vars(c)
+    ]
+
+
+def _share_text_encoder(sam, checkpoint_dir, model_id: str) -> None:
+    """Point ``sam``'s text encoder at a live encoder loaded from equal
+    weights, or register its own. Hashes only when another encoder is
+    live (its own file and that one's); with none it registers and reads
+    nothing. Its own copy is still in system memory here (the vendor moves
+    it to the card at its first prompt), so dropping it never touches the
+    card."""
+    conditioners = _text_encoder_conditioners(sam)
+    if not conditioners or not _text_encoder_file(checkpoint_dir).is_file():
+        return
+    with _SHARED_TEXT_ENCODERS_LOCK:
+        live = list(_SHARED_TEXT_ENCODERS.items())
+        shared = None
+        sha = None
+        if live:
+            sha = text_encoder_weights_sha256(checkpoint_dir)
+            shared = next(
+                (module for module, other_dir in live
+                 if sha is not None
+                 and text_encoder_weights_sha256(other_dir) == sha),
+                None,
+            )
+        live = None
+        for cond in conditioners:
+            if shared is None:
+                shared = cond.__dict__["model"]
+                _SHARED_TEXT_ENCODERS[shared] = checkpoint_dir
+            elif cond.__dict__["model"] is not shared:
+                cond.__dict__["model"] = shared
+                logger.info(
+                    "sa3_text_encoder_shared sha={} model_id={}",
+                    (sha or "")[:12], model_id,
+                )
+
+
 class SA3Context:
     """Loaded SA3 model + family-private operations. See module docstring."""
 
@@ -186,8 +278,12 @@ class SA3Context:
         model_half: bool = True,
         checkpoint_dir: str | Path | None = None,
         extension=None,
+        companion: bool = False,
     ):
-        """``checkpoint_dir`` overrides the catalog location for
+        """``companion`` records that this model was loaded beside the
+        main one (``sa3_session.get_sa3_context``).
+
+        ``checkpoint_dir`` overrides the catalog location for
         ``model_id`` with an operator-supplied directory in the same
         layout (``model_config.json`` + ``model.safetensors``). It exists
         so a non-catalog SA3 checkpoint can be evaluated without being
@@ -206,6 +302,7 @@ class SA3Context:
         self._helpers = import_stream_helpers()
 
         self.model_id = model_id
+        self.companion = bool(companion)
         ckpt = (
             Path(checkpoint_dir).expanduser().resolve()
             if checkpoint_dir is not None
@@ -235,6 +332,19 @@ class SA3Context:
         self.sam = loader.load_local_model(ckpt, device=device, model_half=model_half)
         self.device = torch.device(self.sam.device)
         self.dtype = next(self.sam.model.model.parameters()).dtype
+        # The PyTorch parts an engine can replace wait in system memory
+        # while the engine serves (see sa3_placement). A model extension
+        # owns its model and reads it live, so both stay pinned there.
+        from acestep.engine.sa3_placement import CardPart
+
+        pinned = extension is not None
+        self.torch_dit = CardPart(
+            "dit", self.sam.model.model, self.device, pinned=pinned,
+        )
+        self.torch_decoder = CardPart(
+            "decoder", self.sam.model.pretransform.model.decoder, self.device,
+            pinned=pinned,
+        )
         self.sample_rate = int(self.sam.model.sample_rate)          # 44100
         self.downsampling_ratio = int(
             self.sam.model.pretransform.downsampling_ratio          # 4096
@@ -258,6 +368,8 @@ class SA3Context:
             self.song_seconds, "window" if self.schedule_from_window else "song",
             self.outro_pad_s, self.diffusion_objective,
         )
+        # Two loaded models with the same text encoder weights use one copy.
+        _share_text_encoder(self.sam, self.checkpoint_dir, model_id)
 
         # Install last, so every derived attribute above describes the
         # stock model and the extension sees a fully-formed context.
@@ -267,6 +379,16 @@ class SA3Context:
                 "sa3_extension_installed id={} model_id={}",
                 extension.qualified_id, model_id,
             )
+            # An extension that asks for its transformer on demand gets an
+            # ordinary holder: parked from boot, its keep modules left on
+            # the card. The decoder stays pinned.
+            runtime = self.extension_runtime
+            if getattr(runtime, "transformer_on_demand", False) is True:
+                card_keep = getattr(runtime, "card_keep", None)
+                if callable(card_keep):
+                    self.torch_dit.keep = tuple(card_keep())
+                self.torch_dit.pinned = False
+                self.torch_dit.park_if_free()
 
     @property
     def dit(self):
@@ -404,13 +526,23 @@ class SA3Context:
                 self.model_id, latent_frames, layout.n_streams,
                 "eager" if dit is None else type(dit).__name__,
             )
-            return self.dit if dit is None else dit
+            # The PyTorch DiT handed out carries a hold for the caller, as
+            # below; a layout's own DiT lets it wait in system memory.
+            # Both are no-ops while the part is pinned.
+            if dit is None:
+                self.torch_dit.hold("layout_eager")
+                return self.dit
+            self.torch_dit.park_if_free()
+            return dit
 
+        # Returning the PyTorch DiT takes a hold on it for the caller
+        # (the backend releases it when it stops using that DiT).
         if backend != "tensorrt":
             logger.info(
                 "sa3_dit_eager model_id={} latent_frames={} reason=backend_{}",
                 self.model_id, latent_frames, backend,
             )
+            self.torch_dit.hold("backend_eager")
             return self.dit
 
         engine_path = find_dit_engine(
@@ -422,12 +554,15 @@ class SA3Context:
                 "sa3_dit_eager model_id={} latent_frames={} reason=no_trt_engine",
                 self.model_id, latent_frames,
             )
+            self.torch_dit.hold("no_trt_engine")
             return self.dit
-        return SA3TRTDit(
+        dit = SA3TRTDit(
             engine_path,
             latent_frames=int(latent_frames),
             seconds_total=float(seconds_total),
         )
+        self.torch_dit.park_if_free()
+        return dit
 
     def make_codec(self, *, backend: str = "eager"):
         """The family codec for one session: SAME-S full decode for
@@ -435,10 +570,21 @@ class SA3Context:
         ~80 ms per call — too slow to run per render tick). Under
         ``backend="tensorrt"`` each runs its built TRT engine (SAME-S
         full decoder / SAME-L window decoder) and falls back to eager
-        when the engine is missing or cannot serve the latent."""
+        when the engine is missing or cannot serve the latent.
+
+        A companion of the full-decode kind under ``backend="tensorrt"``
+        on a machine with the SAME-L window engine built decodes on that
+        engine (:class:`SA3CompanionWindowCodec`) instead of loading its
+        own decoder engine beside it. The choice reads the machine's
+        built engines, never what happens to be loaded."""
         use_trt = backend == "tensorrt"
         if self.model_id in WINDOWED_DECODE_MODELS:
             return SA3SAMEWindowCodec(self, use_trt=use_trt)
+        if getattr(self, "companion", False) and use_trt:
+            from acestep.engine.sa3_trt import find_same_l_window_engine
+
+            if find_same_l_window_engine() is not None:
+                return SA3CompanionWindowCodec(self)
         return SA3SAMECodec(self, use_trt=use_trt)
 
     def cond_seconds_total(self, duration_s: float) -> float:
@@ -670,7 +816,28 @@ class SA3LabelView:
             setattr(self._base, name, value)
 
 
-class SA3SAMECodec:
+class _DecoderHold:
+    """A codec's one hold on the PyTorch SAME decoder: taken when the
+    codec first needs the eager decode (or at construction when it can
+    only decode eagerly), kept until :meth:`close`."""
+
+    _part = None
+    _holding = False
+
+    def _hold_decoder(self, reason: str) -> None:
+        if self._holding:
+            return
+        self._part.hold(reason)
+        self._holding = True
+
+    def close(self) -> None:
+        """Release this codec's hold on the PyTorch decoder. Idempotent."""
+        if self._holding:
+            self._holding = False
+            self._part.release()
+
+
+class SA3SAMECodec(_DecoderHold):
     """The SA3 family codec: SAME latent -> 44.1 kHz stereo audio.
 
     Decodes the FULL latent per fresh generation rather than a window,
@@ -694,9 +861,11 @@ class SA3SAMECodec:
         self._context = context
         self._helpers = context._helpers
         self._scale = float(getattr(context.sam.model.pretransform, "scale", 1.0))
+        self._part = context.torch_decoder
         self._trt = None
         self._min_t = self._max_t = 0
         if not use_trt:
+            self._hold_decoder("codec_eager")
             return
         from acestep.engine.sa3_trt import (
             SAME_S_UPSTREAM_DECODER_SHA256,
@@ -717,9 +886,11 @@ class SA3SAMECodec:
                 "no_trt_engine" if known else "codec_weights_have_no_engine",
                 (sha or "unknown")[:12],
             )
+            self._hold_decoder("codec_eager")
             return
         path, self._min_t, self._max_t = found
         self._trt = SameSTRTDecoder(path)
+        self._part.park_if_free()
 
     @property
     def uses_trt(self) -> bool:
@@ -751,6 +922,7 @@ class SA3SAMECodec:
         """
         if self._trt is not None and self.trt_serves(int(latent_bct.shape[-1])):
             return self._trt.decode(latent_bct * self._scale)
+        self._hold_decoder("frames_outside_engine")
         with _SAM_DECODE_LOCK, self._helpers.sa3_decode_rng(
             decode_seed, device=latent_bct.device,
         ):
@@ -780,7 +952,7 @@ def _same_l_decoder(path) -> tuple:
     return entry
 
 
-class SA3SAMEWindowCodec:
+class SA3SAMEWindowCodec(_DecoderHold):
     """The SAME-L (medium) family codec: latent-range decode.
 
     ONE decode entry, :meth:`decode_window`: samples ``[start, start+num)``
@@ -817,6 +989,7 @@ class SA3SAMEWindowCodec:
         self._context = context
         self._helpers = context._helpers
         self._scale = float(getattr(context.sam.model.pretransform, "scale", 1.0))
+        self._part = context.torch_decoder
         # Narrowest first; selection reads this listing, never the disk.
         self._engines = list(find_same_l_engines()) if use_trt else []
         if not self._engines:
@@ -829,6 +1002,7 @@ class SA3SAMEWindowCodec:
             "sa3_same_l_decode mode=tensorrt engines={}",
             ",".join(f"t{lo}..{hi}" for _, lo, hi in self._engines),
         )
+        self._part.park_if_free()
         # The ring's window engine is loaded now so its first render tick
         # does not pay the deserialization.
         window = find_same_l_window_engine()
@@ -854,6 +1028,7 @@ class SA3SAMEWindowCodec:
     def _decode_window_eager(
         self, latent_bct, start: int, num: int, context_sec=None,
     ) -> torch.Tensor:
+        self._hold_decoder("frames_outside_engine")
         result = self._helpers.decode_sa3_latent_window(
             self._context.sam, latent_bct,
             target_start_sample=int(start),
@@ -938,6 +1113,7 @@ class SA3SAMEWindowCodec:
             return self.decode_window(
                 latent_bct, 0, frames * self._context.downsampling_ratio,
             )
+        self._hold_decoder("frames_outside_engine")
         with self._helpers.sa3_decode_rng(decode_seed, device=latent_bct.device):
             audio = self._helpers.decode_sa3_latent(self._context.sam, latent_bct)
         return audio[0]
@@ -955,5 +1131,74 @@ class SA3SAMEWindowCodec:
                 self.decode_full(latents_bct[i:i + 1])
                 for i in range(int(latents_bct.shape[0]))
             ])
+        self._hold_decoder("frames_outside_engine")
         with self._helpers.sa3_decode_rng(decode_seed, device=latents_bct.device):
             return self._helpers.decode_sa3_latent(self._context.sam, latents_bct)
+
+
+class SA3CompanionWindowCodec(SA3SAMEWindowCodec):
+    """A companion's codec when its own decoder is the full-decode kind
+    (:class:`SA3SAMECodec`) and the SAME-L window engine is built: it
+    decodes on that window engine, which the main model beside it already
+    holds, instead of loading a second decoder engine.
+
+    * Its engine list is ONLY the engine the main model's ring windows
+      run on (:func:`acestep.engine.sa3_trt.find_same_l_window_engine`),
+      so no decode of a companion loads an engine of its own: a
+      whole-song decode does not reach for a wider one.
+    * A slice the window engine cannot hold (a latent shorter than its
+      minimum, about 3 s, or wider than its maximum) is not decoded in
+      windows: the model's own decoder windowed has chunk-phase artifacts
+      (see :class:`SA3SAMECodec`). The WHOLE latent is decoded once,
+      deterministically (no seed reaches :meth:`decode_window`), and
+      ``[start, start+num)`` cropped from it.
+    * :meth:`decode_full` and :meth:`decode_full_batch` are inherited: T
+      inside the window engine's profile goes to the engine, anything
+      else to the model's own seeded eager full decode.
+
+    Its sound is the SAME-L decode, so its bits differ from the same model
+    in a process of its own. Beside a main model of the full-decode kind
+    on a machine that has the window engine built it would still load
+    that engine (about 0.9 GB) for nothing; no such host exists.
+    """
+
+    #: The one-shot's decode on this codec (the backend's
+    #: ``render_decode_mode`` reads it when the layout gives none): its only
+    #: engine is the window engine, which cannot hold a whole song, so a
+    #: one-shot is decoded in the ring's windows.
+    render_decode = "windows"
+
+    def __init__(self, context: SA3Context, *, use_trt: bool = True):
+        from acestep.engine.sa3_trt import find_same_l_window_engine
+
+        self._context = context
+        self._helpers = context._helpers
+        self._scale = float(getattr(context.sam.model.pretransform, "scale", 1.0))
+        self._part = context.torch_decoder
+        window = find_same_l_window_engine() if use_trt else None
+        self._engines = [window] if window is not None else []
+        if not self._engines:
+            logger.info(
+                "sa3_companion_decode mode=eager reason={}",
+                "no_trt_engine" if use_trt else "backend",
+            )
+            return
+        logger.info(
+            "sa3_companion_decode mode=window_engine engine={}",
+            Path(window[0]).parent.name,
+        )
+        self._part.park_if_free()
+        _same_l_decoder(window[0])
+
+    def _decode_window_eager(
+        self, latent_bct, start: int, num: int, context_sec=None,
+    ) -> torch.Tensor:
+        self._hold_decoder("frames_outside_engine")
+        sam = self._context.sam
+        with torch.no_grad(), _SAM_DECODE_LOCK, \
+                self._helpers.sa3_decode_noise_mode(sam, enabled=False):
+            audio = self._helpers.decode_sa3_latent(sam, latent_bct)
+        out = audio[0][:, int(start):int(start) + int(num)]
+        if out.shape[-1] < int(num):
+            out = torch.nn.functional.pad(out, (0, int(num) - out.shape[-1]))
+        return out

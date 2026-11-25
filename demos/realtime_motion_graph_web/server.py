@@ -256,14 +256,26 @@ def served_checkpoints_arg(args: list[str]) -> list | None:
     """The ``--checkpoint`` allow-list as ServedCheckpoint entries (first =
     pod default), or None when the flag is absent. A comma-separated value
     lists several checkpoints of ONE family; a single name is a one-entry
-    list. A mixed-family list exits with the offending pair."""
+    list. A mixed-family list exits with the offending pair.
+
+    ``--companion-checkpoint`` (same grammar) appends companion entries:
+    models loaded beside the main one rather than in its place. It needs
+    ``--checkpoint``, and a name in both lists exits."""
     value = checkpoint_arg(args)
+    companions = _single_arg(args, "--companion-checkpoint")
     if value is None:
+        if companions is not None:
+            raise SystemExit(
+                "[Server] --companion-checkpoint requires --checkpoint"
+            )
         return None
     from acestep.streaming.families import resolve_served, split_checkpoint_list
 
     try:
-        return resolve_served(split_checkpoint_list(value))
+        return resolve_served(
+            split_checkpoint_list(value),
+            split_checkpoint_list(companions) if companions else (),
+        )
     except ValueError as exc:
         raise SystemExit(f"[Server] {exc}") from exc
 

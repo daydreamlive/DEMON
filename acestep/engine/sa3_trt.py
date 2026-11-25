@@ -66,6 +66,7 @@ from acestep.engine.obs import logger
 # Re-exported here so ``sa3_trt.<name>`` keeps working for the refit
 # mirror, the decoders below and their callers.
 from acestep.engine.trt.launch import (  # noqa: F401
+    LAUNCH_LOCK,
     TRT_CUDA_GRAPH_ENV,
     _REFIT_EPOCH,
     _REFIT_EPOCH_LOCK,
@@ -901,53 +902,60 @@ class _SameTRTDecoder:
         :class:`~acestep.engine.trt.launch.TrtLaunch`: one plain execute precedes each
         capture (TensorRT's lazy first-enqueue setup must not land inside
         it), capture uses thread_local mode, and a capture failure logs
-        once and falls back to plain execute without failing the decode."""
-        slot = self._slot_for(tuple(lat.shape))
-        in_buf, out_buf = slot
-        for name, buf in self._slot_bindings(slot):
-            self._ctx.set_tensor_address(name, buf.data_ptr())
-        in_buf.copy_(lat)  # caller's stream, ordered by the wait below
-        key = self._slot_key(slot)
-        caller_stream = torch.cuda.current_stream()
-        with torch.cuda.stream(self._stream):
-            self._stream.wait_stream(caller_stream)
-            graph = self._graphs.lookup(key)
-            if graph is None:
-                if not self._ctx.execute_async_v3(self._stream.cuda_stream):
-                    raise RuntimeError(f"SA3 TRT {self._err_name} decode failed")
-                self._stream.synchronize()
-                # capture_begin/end directly, as the DiT does (no
-                # device-wide sync / gc / empty_cache around the capture).
-                g = torch.cuda.CUDAGraph()
-                try:
-                    g.capture_begin(capture_error_mode="thread_local")
+        once and falls back to plain execute without failing the decode.
+        The whole body runs under ``LAUNCH_LOCK`` (see
+        :meth:`~acestep.engine.trt.launch.TrtLaunch._launch_graph`): the
+        lookup is made once it is held, and a capture starts only after a
+        device synchronize."""
+        with LAUNCH_LOCK:
+            slot = self._slot_for(tuple(lat.shape))
+            in_buf, out_buf = slot
+            for name, buf in self._slot_bindings(slot):
+                self._ctx.set_tensor_address(name, buf.data_ptr())
+            in_buf.copy_(lat)  # caller's stream, ordered by the wait below
+            key = self._slot_key(slot)
+            caller_stream = torch.cuda.current_stream()
+            with torch.cuda.stream(self._stream):
+                self._stream.wait_stream(caller_stream)
+                graph = self._graphs.lookup(key)
+                if graph is None:
+                    if not self._ctx.execute_async_v3(self._stream.cuda_stream):
+                        raise RuntimeError(f"SA3 TRT {self._err_name} decode failed")
+                    self._stream.synchronize()
+                    # capture_begin/end directly, as the DiT does (no
+                    # gc / empty_cache around the capture; one device
+                    # synchronize so other threads' earlier launches finish).
+                    torch.cuda.synchronize()
+                    g = torch.cuda.CUDAGraph()
                     try:
-                        ok = self._ctx.execute_async_v3(self._stream.cuda_stream)
-                    finally:
-                        g.capture_end()
-                    if not ok:
-                        raise RuntimeError(
-                            f"SA3 TRT {self._err_name} capture enqueue failed"
+                        g.capture_begin(capture_error_mode="thread_local")
+                        try:
+                            ok = self._ctx.execute_async_v3(self._stream.cuda_stream)
+                        finally:
+                            g.capture_end()
+                        if not ok:
+                            raise RuntimeError(
+                                f"SA3 TRT {self._err_name} capture enqueue failed"
+                            )
+                    except Exception as exc:  # noqa: BLE001 - fall back, never fail a decode
+                        self._graphs.disable(f"capture_failed: {exc}")
+                        self._slots.clear()
+                        logger.warning(
+                            "sa3_trt_{}_graph_disabled engine={} T={} error={}",
+                            self._label, self.engine_path.parent.name,
+                            tuple(lat.shape)[-1], exc,
                         )
-                except Exception as exc:  # noqa: BLE001 - fall back, never fail a decode
-                    self._graphs.disable(f"capture_failed: {exc}")
-                    self._slots.clear()
-                    logger.warning(
-                        "sa3_trt_{}_graph_disabled engine={} T={} error={}",
+                        # The warm-up execute above already decoded this call
+                        # into out_buf (a replay would only overwrite it).
+                        return out_buf
+                    self._graphs.store(key, g)
+                    graph = g
+                    logger.info(
+                        "sa3_trt_{}_graph_captured engine={} T={} captures={}",
                         self._label, self.engine_path.parent.name,
-                        tuple(lat.shape)[-1], exc,
+                        tuple(lat.shape)[-1], self._graphs.captures,
                     )
-                    # The warm-up execute above already decoded this call
-                    # into out_buf (a replay would only overwrite it).
-                    return out_buf
-                self._graphs.store(key, g)
-                graph = g
-                logger.info(
-                    "sa3_trt_{}_graph_captured engine={} T={} captures={}",
-                    self._label, self.engine_path.parent.name,
-                    tuple(lat.shape)[-1], self._graphs.captures,
-                )
-            graph.replay()
+                graph.replay()
         self._stream.synchronize()
         return out_buf
 

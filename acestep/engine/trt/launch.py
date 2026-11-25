@@ -40,6 +40,13 @@ TRT_CUDA_GRAPH_ENV = "DEMON_SA3_TRT_CUDA_GRAPH"
 _REFIT_EPOCH: dict = {}
 _REFIT_EPOCH_LOCK = threading.Lock()
 
+#: Held around the whole body of every graph launch of a TensorRT context
+#: (:meth:`TrtLaunch._launch_graph`, the SA3 decoder's graph decode, and
+#: wrappers outside this tree that launch through :class:`TrtLaunch`), so
+#: no thread replays, plain-executes or captures while another thread is
+#: inside one. Reentrant; never held across a wait on another thread.
+LAUNCH_LOCK = threading.RLock()
+
 
 def cuda_graph_enabled() -> bool:
     """Whether TensorRT launches are captured
@@ -228,39 +235,48 @@ class TrtLaunch:
         launch on the current inputs, and the replay right after recomputes
         the same values from the same buffers, so it is just overwritten.
         thread_local capture mode keeps CUDA calls on other server threads
-        from being flagged as capture violations."""
-        key = self.key()
-        graph = self.graphs.lookup(key)
-        if graph is None:
-            if not self.ctx.execute_async_v3(self.stream.cuda_stream):
-                raise RuntimeError(f"{self.label} launch failed")
-            self.stream.synchronize()
-            # capture_begin/end directly rather than the torch.cuda.graph
-            # context manager, which adds a device-wide synchronize,
-            # gc.collect() and empty_cache() around every capture. We are
-            # already inside the dedicated stream context, and the capture
-            # allocates nothing through torch (TensorRT's scratch belongs to
-            # the execution context).
-            g = torch.cuda.CUDAGraph()
-            try:
-                g.capture_begin(capture_error_mode="thread_local")
+        from being flagged as capture violations.
+
+        The whole body runs under :data:`LAUNCH_LOCK`, so the lookup is made
+        once the lock is held (another thread may have captured this key
+        while this one waited), and a capture starts only after a device
+        synchronize, so launches other threads enqueued earlier have
+        finished."""
+        with LAUNCH_LOCK:
+            key = self.key()
+            graph = self.graphs.lookup(key)
+            if graph is None:
+                if not self.ctx.execute_async_v3(self.stream.cuda_stream):
+                    raise RuntimeError(f"{self.label} launch failed")
+                self.stream.synchronize()
+                # capture_begin/end directly rather than the torch.cuda.graph
+                # context manager, which adds a device-wide synchronize,
+                # gc.collect() and empty_cache() around every capture. We are
+                # already inside the dedicated stream context, and the capture
+                # allocates nothing through torch (TensorRT's scratch belongs to
+                # the execution context). The one device synchronize here lets
+                # launches other threads enqueued earlier finish first.
+                torch.cuda.synchronize()
+                g = torch.cuda.CUDAGraph()
                 try:
-                    ok = self.ctx.execute_async_v3(self.stream.cuda_stream)
-                finally:
-                    g.capture_end()
-                if not ok:
-                    raise RuntimeError(f"{self.label} capture enqueue failed")
-            except Exception as exc:  # noqa: BLE001 - fall back, never fail the launch
-                self.graphs.disable(f"capture_failed: {exc}")
-                logger.warning(
-                    "trt_launch_graph_disabled label={} error={}", self.label, exc,
+                    g.capture_begin(capture_error_mode="thread_local")
+                    try:
+                        ok = self.ctx.execute_async_v3(self.stream.cuda_stream)
+                    finally:
+                        g.capture_end()
+                    if not ok:
+                        raise RuntimeError(f"{self.label} capture enqueue failed")
+                except Exception as exc:  # noqa: BLE001 - fall back, never fail the launch
+                    self.graphs.disable(f"capture_failed: {exc}")
+                    logger.warning(
+                        "trt_launch_graph_disabled label={} error={}", self.label, exc,
+                    )
+                    # The warm-up execute above already produced this launch.
+                    return
+                self.graphs.store(key, g)
+                graph = g
+                logger.info(
+                    "trt_launch_graph_captured label={} refit_epoch={} captures={}",
+                    self.label, key[1], self.graphs.captures,
                 )
-                # The warm-up execute above already produced this launch.
-                return
-            self.graphs.store(key, g)
-            graph = g
-            logger.info(
-                "trt_launch_graph_captured label={} refit_epoch={} captures={}",
-                self.label, key[1], self.graphs.captures,
-            )
-        graph.replay()
+            graph.replay()

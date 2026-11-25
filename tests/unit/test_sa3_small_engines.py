@@ -12,6 +12,7 @@ import pytest
 import torch
 
 from acestep.engine import sa3_trt
+from acestep.engine.sa3_placement import pinned_part
 from acestep.engine.trt import sa3_build
 
 
@@ -201,6 +202,7 @@ def _codec_with_fake_trt(monkeypatch):
 
     codec._helpers = _Helpers()
     codec._context = type("Ctx", (), {"sam": None})()
+    codec._part = pinned_part("decoder")
     return codec, eager_calls
 
 

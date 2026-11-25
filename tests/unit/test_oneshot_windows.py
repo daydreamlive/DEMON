@@ -204,10 +204,12 @@ class _Helpers:
 
 def _window_codec(engines):
     from acestep.engine.sa3_context import SA3SAMEWindowCodec
+    from acestep.engine.sa3_placement import pinned_part
 
     c = SA3SAMEWindowCodec.__new__(SA3SAMEWindowCodec)
     c._helpers = _Helpers()
     c._context = SimpleNamespace(sam=None, sample_rate=44100, downsampling_ratio=4096)
+    c._part = pinned_part("decoder")
     c._scale = 1.0
     c._engines = engines
     return c
@@ -506,3 +508,99 @@ def test_default_kept_window_is_aligned_and_fits_the_window_engine():
         lo44, t44, _lead = window_decode_span(start48, n48)
         span = min(frames_total, math.ceil((lo44 + t44) / 4096) + ctx) - max(0, lo44 // 4096 - ctx)
         assert span <= CANONICAL_SAME_L_WINDOW[2]
+
+
+# ---- the codec's own "windows" (a session with no layout) ------------------------
+
+
+class _CodecWindows(_RampWindowCodec):
+    """A windowed codec whose engines cannot hold a whole song: it says
+    "windows" itself, as the companion codec does."""
+
+    render_decode = "windows"
+
+
+def _plain_backend(codec):
+    """A backend with no layout (a sound session) on ``codec``."""
+    from acestep.engine.sa3_adapter import SA3Adapter
+    from acestep.streaming.knobs import KnobState
+    from acestep.streaming.sa3_backend import SA3Backend, sa3_knob_specs
+
+    from tests.unit.test_sa3_backend import _FakeCond, _schedule_builder_factory
+
+    class _Dit(torch.nn.Module):
+        def forward(self, x, t, **kwargs):
+            return 0.3 * x + 0.1 * t.reshape(-1, 1, 1).to(x.dtype)
+
+    adapter = SA3Adapter(
+        _Dit(), schedule_builder=_schedule_builder_factory(4),
+        device="cpu", dtype=torch.float32,
+    )
+    return SA3Backend(
+        adapter=adapter, codec=codec, cond=_FakeCond(),
+        schedule_builder_factory=_schedule_builder_factory,
+        knob_state=KnobState(sa3_knob_specs()), steps=4, depth=1,
+        vae_window_s=0.1,
+    )
+
+
+def test_render_decode_mode_reads_the_layout_then_the_codec_then_song():
+    # The layout's value: a layout with "song" on a codec that says "windows"
+    # keeps the layout's.
+    b, _ = _backend("song", codec=_CodecWindows())
+    assert b.render_decode_mode() == "song"
+    b, _ = _backend("windows", codec=_RampWindowCodec())
+    assert b.render_decode_mode() == "windows"
+    # A layout without a value: the codec's.
+    b, _ = _backend(None, codec=_CodecWindows())
+    assert b.render_decode_mode() == "windows"
+    # Neither: "song".
+    b, _ = _backend(None, codec=_RampWindowCodec())
+    assert b.render_decode_mode() == "song"
+    # No layout: the codec's, else "song".
+    assert _plain_backend(_CodecWindows()).render_decode_mode() == "windows"
+    assert _plain_backend(_RampWindowCodec()).render_decode_mode() == "song"
+
+
+def test_the_companion_codec_says_windows():
+    from acestep.engine.sa3_context import SA3CompanionWindowCodec, SA3SAMEWindowCodec
+
+    assert SA3CompanionWindowCodec.render_decode == "windows"
+    assert getattr(SA3SAMEWindowCodec, "render_decode", None) is None
+
+
+def test_a_codec_windows_oneshot_takes_the_windowed_path(small_windows, monkeypatch):
+    n48 = small_windows
+    codec = _CodecWindows()
+    b = _plain_backend(codec)
+    taken = []
+    real = b._oneshot_windows
+    monkeypatch.setattr(b, "_oneshot_windows", lambda *a, **k: taken.append(1) or real(*a, **k))
+    events: list = []
+    res = b.render_oneshot(_req(seeds=(6,)), store=KeptLatents(), emit=events.append)
+    assert taken == [1] and res.delivered and res.pcm is None
+    total = round(b.playable_duration_s() * DELIVERY_SAMPLE_RATE)
+    plan = oneshot_window_plan(total, n48)
+    assert [type(e).__name__ for e in events] == ["OneshotSlice"] * len(plan) + ["OneshotDone"]
+    slices, done = events[:-1], events[-1]
+    assert [(s.start_frame, s.frames) for s in slices] == plan
+    assert all(s.channels == 2 and s.pcm.shape == (s.frames, 2) for s in slices)
+    song = np.zeros((total, 2), np.float16)
+    for s in slices:
+        song[s.start_frame:s.start_frame + s.frames] = s.pcm
+    assert done.frames == total and done.sha256 == oneshot_pcm_sha256(song, 1)
+    # Every decode is a window with the one-shot's context, never the whole song.
+    assert len(codec.calls) == len(plan)
+    assert all(kw == {"context_sec": ONESHOT_WINDOW_CONTEXT_S} for _s, _n, kw in codec.calls)
+    assert [c[0] for c in codec.calls] == [window_decode_span(s, n48)[0] for s, _ in plan]
+
+
+def test_a_codec_windows_oneshot_without_emit_is_refused():
+    codec = _CodecWindows()
+    b = _plain_backend(codec)
+    with pytest.raises(OneshotError, match="only in windows"):
+        b.render_oneshot(_req(), store=KeptLatents())
+    assert codec.calls == []                                   # nothing decoded
+    # A codec without its own value keeps the whole-song path with no emit.
+    plain = _plain_backend(_RampWindowCodec())
+    assert plain.render_oneshot(_req(), store=KeptLatents()).pcm is not None

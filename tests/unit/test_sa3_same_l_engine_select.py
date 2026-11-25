@@ -14,6 +14,7 @@ import pytest
 import torch
 
 from acestep.engine import sa3_context, sa3_stream_helpers, sa3_trt
+from acestep.engine.sa3_placement import pinned_part
 
 DS = 4096
 SR = 44100
@@ -134,6 +135,7 @@ def codec_factory(models, monkeypatch):
         sam=SimpleNamespace(model=SimpleNamespace(pretransform=SimpleNamespace(scale=1.0))),
         sample_rate=SR,
         downsampling_ratio=DS,
+        torch_decoder=pinned_part("decoder"),
     )
 
     def make(use_trt=True):

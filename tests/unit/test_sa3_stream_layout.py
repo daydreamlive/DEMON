@@ -22,6 +22,7 @@ import pytest
 import torch
 
 from acestep.engine import sa3_context as ctx_mod
+from acestep.engine.sa3_placement import pinned_part
 from acestep.engine import sa3_stream_helpers as helpers
 from acestep.engine import sa3_trt
 from acestep.engine.sa3_adapter import SA3Adapter
@@ -337,6 +338,8 @@ def test_layout_without_a_pinned_length_derives_it_from_duration(stub_vendor):
 
 def _bare_context(runtime=None):
     c = ctx_mod.SA3Context.__new__(ctx_mod.SA3Context)
+    c.torch_dit = pinned_part("dit")
+    c.torch_decoder = pinned_part("decoder")
     c.model_id = "medium"
     c.sam = _Sam()
     c.downsampling_ratio = DS
