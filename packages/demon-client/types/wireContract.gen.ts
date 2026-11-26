@@ -45,6 +45,7 @@ export type CommandName =
   | "analysis_tap"
   | "audio_in"
   | "bounce"
+  | "result_latent"
   | "oneshot"
   | "extension_tool";
 
@@ -73,6 +74,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "analysis_tap",
   "audio_in",
   "bounce",
+  "result_latent",
   "oneshot",
   "extension_tool",
 ] as const;
@@ -104,6 +106,7 @@ export type EventName =
   | "midi_notes"
   | "midi_failed"
   | "bounce_ready"
+  | "result_latent"
   | "bounce_failed"
   | "oneshot_ready"
   | "oneshot_slice"
@@ -141,6 +144,7 @@ export const EVENT_NAMES: readonly EventName[] = [
   "midi_notes",
   "midi_failed",
   "bounce_ready",
+  "result_latent",
   "bounce_failed",
   "oneshot_ready",
   "oneshot_slice",
@@ -331,6 +335,8 @@ export interface SwapSourceCommand {
   keep?: Record<string, unknown>;
   /** Optional in-place grow for a stream layout, e.g. {from_s: 16.0} (the session grows to duration_s from that point, keeping what it already made). Handed to the layout's encode_source as grow=; the layout validates it. Absent = no change. */
   grow?: Record<string, unknown>;
+  /** Optional streams given as latents: {dtype: 'float16', shape: [P, C, L], streams: [k0, k1, ...]} (P streams, indices ascending, no repeats). ONE more binary frame follows the PCM frame: raw little-endian float16, P x C x L values, stream streams[i] at [i]. Each such stream takes its latent as its input as it is (no encode); its PCM channels are ignored. Honored only when ready's capabilities declare swap_latent; otherwise, or on any mismatch (frame length, shape, streams, L not the session's), the swap is refused with swap_failed. Absent = every stream from its PCM. */
+  latent?: Record<string, unknown>;
 }
 
 export interface WriteAudioCommand {
@@ -375,6 +381,12 @@ export interface BounceCommand {
   type: "bounce";
   /** Client-chosen token echoed on bounce_ready / bounce_failed. */
   request_id: string;
+}
+
+export interface ResultLatentCommand {
+  type: "result_latent";
+  /** Caller's correlation id, echoed on the result_latent answer. */
+  token: string;
 }
 
 export interface OneshotCommand {
@@ -629,6 +641,20 @@ export interface BounceReadyEvent {
   frames: number;
   /** Generation counter at render time (same counter as params_update.num_gens). */
   num_gens: number;
+}
+
+export interface ResultLatentEvent {
+  type: "result_latent";
+  /** Echo of the result_latent token. */
+  token: string;
+  /** true when a latent follows; false when there is none yet (nothing rendered since the session or the last swap began) or the backend has none. */
+  ok: boolean;
+  /** Why ok is false; empty when ok. */
+  message: string;
+  /** Present when ok: {dtype: 'float16', shape: [S, C, L], bytes} (S = every stream, in order). */
+  latent?: Record<string, unknown>;
+  /** The session's source_epoch at the copy (as on ready / swap_ready). */
+  source_epoch: number;
 }
 
 export interface BounceFailedEvent {
@@ -898,6 +924,7 @@ export type WireCommand =
   | AnalysisTapCommand
   | AudioInCommand
   | BounceCommand
+  | ResultLatentCommand
   | OneshotCommand
   | ExtensionToolCommand;
 
@@ -928,6 +955,7 @@ export type WireEvent =
   | MidiNotesEvent
   | MidiFailedEvent
   | BounceReadyEvent
+  | ResultLatentEvent
   | BounceFailedEvent
   | OneshotReadyEvent
   | OneshotSliceEvent

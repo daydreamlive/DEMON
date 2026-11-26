@@ -82,6 +82,7 @@ from acestep.streaming.events import (
     ParamsEcho,
     PromptApplied,
     PromptBlendEcho,
+    ResultLatent,
     SessionError,
     StemAssets,
     StemFailed,
@@ -108,6 +109,7 @@ from acestep.streaming.source import (
     _load_clip_waveform,
     _load_known_fixture_waveform,
     _normalize_time_signature,
+    swap_latent_streams,
 )
 from acestep.streaming.stems import (
     extract_upload_stems,
@@ -131,6 +133,7 @@ from .audio_codec import (
     send_oneshot_done,
     send_oneshot_payload,
     send_oneshot_slice,
+    send_result_latent,
     send_stem_payload,
 )
 from .protocol import COMMAND_NAMES, SAMPLE_RATE, coerce_command_payload
@@ -1354,27 +1357,109 @@ def _dispatch_oneshot(data, streaming, recv_binary, send_json, origin) -> None:
     if latent_spec is None:
         streaming.oneshot(dict(data), origin=origin)
         return
-    from acestep.streaming.oneshot import OneshotError, latent_nbytes
+    from acestep.streaming.oneshot import OneshotError, latent_shape, read_latent
 
     request_id = str(data.get("request_id") or "")
     blob = recv_binary("oneshot_failed", request_id=request_id)
     if blob is None:
         return
     try:
-        want = latent_nbytes(latent_spec)
+        read_latent(latent_shape(latent_spec), blob)
     except OneshotError as exc:
-        error = str(exc)
-    else:
-        error = None if len(blob) == want else (
-            f"redo.latent frame is {len(blob)} bytes, expected {want} "
-            f"(float16 {list(latent_spec.get('shape'))})"
-        )
-    if error is not None:
         send_json({
-            "type": "oneshot_failed", "request_id": request_id, "error": error,
+            "type": "oneshot_failed", "request_id": request_id, "error": str(exc),
         })
         return
     streaming.oneshot(dict(data), origin=origin, latent=bytes(blob))
+
+
+def _dispatch_swap_source(data, streaming, recv_binary, send_json, origin) -> None:
+    """The ``swap_source`` command: read its frames, decode, stage the swap.
+    ``recv_binary(fail_type, **extra)`` is the handler's
+    ``_recv_binary_payload``; every failure answers ``swap_failed``.
+
+    Server-side source load: when the user picks a track that already lives
+    on the pod (a built-in fixture or a persisted upload), the client sends
+    the name alone with ``use_server_source`` set and NO binary PCM frame.
+    We read the waveform straight off disk by name, so the sidecar + stem
+    caches hit (no prepare_source, no Mel-Band RoFormer re-rip) instead of
+    treating a re-decoded, re-uploaded PCM buffer as a brand-new source.
+
+    The frames are read first, all of them, before anything is checked, so
+    the stream stays in step whatever fails: the PCM (absent with
+    ``use_server_source``), then, with a ``latent`` field, ONE more frame
+    holding the streams the swap gives as latents (``swap_latent_streams``).
+    """
+    audio_msg = None
+    if not data.get("use_server_source"):
+        audio_msg = recv_binary("swap_failed")
+        if audio_msg is None:
+            return
+    latent_spec = data.get("latent")
+    latent_msg = None
+    if latent_spec is not None:
+        latent_msg = recv_binary("swap_failed")
+        if latent_msg is None:
+            return
+    if audio_msg is None:
+        name = data.get("fixture_name")
+        try:
+            wf = _load_clip_waveform(str(name))
+        except Exception as exc:
+            logger.opt(exception=True).error(
+                "swap_source_server_load_failed origin={} "
+                "name={} error={}",
+                origin, name, exc,
+            )
+            send_json({
+                "type": "swap_failed",
+                "error": f"server source load failed: {exc}",
+            })
+            return
+    else:
+        try:
+            # Every channel: a stream layout's encode_source
+            # reads them; the session clips to stereo for
+            # everything else. A ``pcm`` field describes a
+            # compact frame (16-bit, only the channels with
+            # audio), expanded here to the same full tensor.
+            pcm = data.get("pcm")
+            wf = (
+                _decode_compact_pcm(audio_msg, pcm) if pcm is not None
+                else _decode_audio_msg(audio_msg, max_channels=None)
+            )
+        except Exception as exc:
+            logger.opt(exception=True).error(
+                "swap_source_decode_failed origin={} error={}",
+                origin, exc,
+            )
+            send_json({"type": "swap_failed", "error": str(exc)})
+            return
+    swap_latent = None
+    if latent_msg is not None:
+        try:
+            swap_latent = swap_latent_streams(latent_spec, latent_msg)
+        except ValueError as exc:
+            logger.error(
+                "swap_source_latent_rejected origin={} error={}",
+                origin, exc,
+            )
+            send_json({"type": "swap_failed", "error": str(exc)})
+            return
+    streaming.swap_source(
+        Audio(waveform=wf, sample_rate=SAMPLE_RATE),
+        tags=data.get("tags"),
+        bpm=data.get("bpm"),
+        key=data.get("key"),
+        time_signature=data.get("time_signature"),
+        fixture_name=data.get("fixture_name"),
+        stem_source_mode=data.get("stem_source_mode"),
+        duration_s=data.get("duration_s"),
+        keep=data.get("keep"),
+        grow=data.get("grow"),
+        latent=swap_latent,
+        origin=origin,
+    )
 
 
 def _dispatch_extension_tool(data, streaming, reply, origin) -> None:
@@ -2197,6 +2282,16 @@ def _handle_client_body(
                     )
             except ConnectionClosed:
                 state.running = False
+        elif isinstance(event, ResultLatent):
+            try:
+                with send_lock:
+                    send_result_latent(
+                        ws, token=event.token, ok=event.ok,
+                        message=event.message, latent=event.latent,
+                        source_epoch=event.source_epoch,
+                    )
+            except ConnectionClosed:
+                state.running = False
         elif isinstance(event, BounceFailed):
             _send_json({
                 "type": "bounce_failed",
@@ -2714,63 +2809,8 @@ def _handle_client_body(
             elif mtype == "clear_structure_source":
                 streaming.clear_structure_source(origin=origin)
             elif mtype == "swap_source":
-                # Server-side source load: when the user picks a track that
-                # already lives on the pod (a built-in fixture or a
-                # persisted upload), the client sends the name alone with
-                # ``use_server_source`` set and NO binary PCM frame. We read
-                # the waveform straight off disk by name, so the sidecar +
-                # stem caches hit (no prepare_source, no Mel-Band RoFormer
-                # re-rip) instead of treating a re-decoded, re-uploaded PCM
-                # buffer as a brand-new source.
-                if data.get("use_server_source"):
-                    name = data.get("fixture_name")
-                    try:
-                        wf = _load_clip_waveform(str(name))
-                    except Exception as exc:
-                        logger.opt(exception=True).error(
-                            "swap_source_server_load_failed origin={} "
-                            "name={} error={}",
-                            origin, name, exc,
-                        )
-                        _send_json({
-                            "type": "swap_failed",
-                            "error": f"server source load failed: {exc}",
-                        })
-                        return
-                else:
-                    audio_msg = _recv_binary_payload("swap_failed")
-                    if audio_msg is None:
-                        return
-                    try:
-                        # Every channel: a stream layout's encode_source
-                        # reads them; the session clips to stereo for
-                        # everything else. A ``pcm`` field describes a
-                        # compact frame (16-bit, only the channels with
-                        # audio), expanded here to the same full tensor.
-                        pcm = data.get("pcm")
-                        wf = (
-                            _decode_compact_pcm(audio_msg, pcm) if pcm is not None
-                            else _decode_audio_msg(audio_msg, max_channels=None)
-                        )
-                    except Exception as exc:
-                        logger.opt(exception=True).error(
-                            "swap_source_decode_failed origin={} error={}",
-                            origin, exc,
-                        )
-                        _send_json({"type": "swap_failed", "error": str(exc)})
-                        return
-                streaming.swap_source(
-                    Audio(waveform=wf, sample_rate=SAMPLE_RATE),
-                    tags=data.get("tags"),
-                    bpm=data.get("bpm"),
-                    key=data.get("key"),
-                    time_signature=data.get("time_signature"),
-                    fixture_name=data.get("fixture_name"),
-                    stem_source_mode=data.get("stem_source_mode"),
-                    duration_s=data.get("duration_s"),
-                    keep=data.get("keep"),
-                    grow=data.get("grow"),
-                    origin=origin,
+                _dispatch_swap_source(
+                    data, streaming, _recv_binary_payload, _send_json, origin,
                 )
             elif mtype == "write_audio":
                 # "Play into the model": a binary PCM frame (only the
@@ -2802,6 +2842,10 @@ def _handle_client_body(
             elif mtype == "bounce":
                 streaming.bounce(
                     str(data.get("request_id") or ""), origin=origin,
+                )
+            elif mtype == "result_latent":
+                streaming.result_latent(
+                    str(data.get("token") or ""), origin=origin,
                 )
             elif mtype == "oneshot":
                 _dispatch_oneshot(

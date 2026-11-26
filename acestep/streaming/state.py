@@ -48,6 +48,9 @@ def _default_swap_pending() -> dict:
         # Optional in-place grow (wire ``grow``) for a stream layout's
         # encode_source; None = the field was absent.
         "grow": None,
+        # Streams the swap gives as latents (wire ``latent`` + its binary
+        # frame), ``{stream: [C, L]}``; None = the field was absent.
+        "latent": None,
     }
 
 

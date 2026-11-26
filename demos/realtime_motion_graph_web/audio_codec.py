@@ -221,9 +221,7 @@ def send_oneshot_payload(
         raise ValueError(f"oneshot pcm must be [V, S, N, C], got {a.shape}")
     lat = None
     if latents is not None:
-        lat = np.ascontiguousarray(latents, dtype="<f2")
-        if lat.ndim != 4:
-            raise ValueError(f"oneshot latents must be [V, S, C, L], got {lat.shape}")
+        lat_spec, lat = latent_frame(latents, 4, "oneshot latents [V, S, C, L]")
     head = {
         "type": "oneshot_ready",
         "request_id": request_id,
@@ -245,15 +243,50 @@ def send_oneshot_payload(
             "seconds": float(latent_header["seconds"]),
         }
     if lat is not None:
-        head["latents"] = {
-            "dtype": "float16",
-            "shape": [int(x) for x in lat.shape],
-            "bytes": int(lat.nbytes),
-        }
+        head["latents"] = lat_spec
     ws.send(json.dumps(head))
     chunked_ws_send(ws, a.tobytes())
     if lat is not None:
-        chunked_ws_send(ws, lat.tobytes())
+        chunked_ws_send(ws, lat)
+
+
+def latent_frame(latents, rank: int, what: str):
+    """``(header, frame)`` for a latent sent to the client: ``header`` is
+    ``{dtype: "float16", shape, bytes}`` and ``frame`` the raw
+    little-endian float16 bytes, C-order. A latent not of ``rank`` axes
+    raises ``ValueError`` (``what`` names it). The
+    one packer of a latent frame (a one-shot's returned latents, a
+    ``result_latent`` answer)."""
+    lat = np.ascontiguousarray(latents, dtype="<f2")
+    if lat.ndim != rank:
+        raise ValueError(f"{what}: got shape {lat.shape}")
+    return {
+        "dtype": "float16",
+        "shape": [int(x) for x in lat.shape],
+        "bytes": int(lat.nbytes),
+    }, lat.tobytes()
+
+
+def send_result_latent(
+    ws, *, token: str, ok: bool, message: str, latent, source_epoch: int,
+) -> None:
+    """Serialize a ``result_latent`` answer: the JSON header and, when
+    ``ok``, ONE binary frame (``latent``, float16 ``[S, C, L]``, announced
+    on the header as ``latent: {dtype, shape, bytes}``). Caller holds the
+    per-WS ``send_lock``."""
+    head = {
+        "type": "result_latent",
+        "token": str(token),
+        "ok": bool(ok),
+        "message": str(message or ""),
+        "source_epoch": int(source_epoch),
+    }
+    frame = None
+    if ok:
+        head["latent"], frame = latent_frame(latent, 3, "result latent [S, C, L]")
+    ws.send(json.dumps(head))
+    if frame is not None:
+        chunked_ws_send(ws, frame)
 
 
 def encode_oneshot_slice(
