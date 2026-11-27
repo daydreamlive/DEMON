@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import types
 from pathlib import Path
 
 import torch
@@ -281,3 +282,49 @@ def test_sa3_decode_rng_none_is_a_passthrough():
     torch.manual_seed(7)
     b = torch.randn(16)
     assert torch.equal(a, b)  # no reseed happened inside
+
+
+# ---- encode_sa3_source: the source encode is pinned --------------------------
+
+from acestep.engine.sa3_stream_helpers import (  # noqa: E402
+    SA3_ENCODE_SEED_SALT,
+    encode_sa3_source,
+)
+
+
+class _NoisyEncoder:
+    """A codec stand-in whose encode draws ``randn`` like SAME's
+    ``mask_noise``: the same audio gives a different latent per call
+    unless the RNG is pinned."""
+
+    def __init__(self):
+        self.model = types.SimpleNamespace(
+            pretransform=torch.nn.Linear(1, 1),
+        )
+
+    def _encode_audio_input(self, audio_input, audio_sample_size, inpaint_mask=None):
+        _sr, wav = audio_input
+        return wav.mean() + torch.randn(1, 4, 8), None
+
+
+def test_source_encode_repeats_and_leaves_the_outer_stream_untouched():
+    sam = _NoisyEncoder()
+    audio = (48000, torch.ones(2, 16))
+    torch.manual_seed(7)
+    a = encode_sa3_source(sam, audio, 16)
+    after_a = torch.randn(16)
+    b = encode_sa3_source(sam, audio, 16)
+    assert torch.equal(a, b)                       # same audio, same latent
+
+    torch.manual_seed(7)
+    assert torch.equal(after_a, torch.randn(16))   # the outer stream is as if no encode ran
+
+    # Without the pin the same stand-in differs from call to call.
+    c, _ = sam._encode_audio_input(audio, 16)
+    d, _ = sam._encode_audio_input(audio, 16)
+    assert not torch.equal(c, d)
+
+    # The encode's own salt, not the decode's.
+    torch.manual_seed(0 ^ SA3_ENCODE_SEED_SALT)
+    assert torch.equal(a, 1.0 + torch.randn(1, 4, 8))
+    assert SA3_ENCODE_SEED_SALT != SA3_DECODE_SEED_SALT
