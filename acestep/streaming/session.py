@@ -97,6 +97,7 @@ from acestep.streaming.events import (
     ParamsEcho,
     PromptApplied,
     PromptBlendEcho,
+    ResultLatent,
     SessionError,
     StructureCleared,
     StructureFailed,
@@ -645,6 +646,9 @@ class StreamingSession:
         # Appended by the dispatch thread, serviced on the runner thread
         # (_service_bounces, inside before_tick).
         self._bounces: list = []
+        # Queued result_latent tokens, answered on the session thread
+        # (_service_result_latents, inside before_tick).
+        self._result_latents: list = []
         # Queued one-shot requests (OneshotRequest), served on the session
         # thread (_service_oneshots): inside before_tick on a ring session,
         # by the render-only loop otherwise. The event wakes that loop.
@@ -1111,6 +1115,7 @@ class StreamingSession:
         self._apply_swap_if_pending()
         self._apply_depth_pending()
         self._service_bounces()
+        self._service_result_latents()
         self._service_oneshots()
 
     def _service_oneshots(self) -> None:
@@ -1401,6 +1406,7 @@ class StreamingSession:
             new_duration_s = state.swap_pending.get("duration_s")
             new_keep = state.swap_pending.get("keep")
             new_grow = state.swap_pending.get("grow")
+            new_latent = state.swap_pending.get("latent")
             if new_wf is None:
                 return
             state.swap_pending["waveform"] = None
@@ -1413,6 +1419,7 @@ class StreamingSession:
             state.swap_pending["duration_s"] = None
             state.swap_pending["keep"] = None
             state.swap_pending["grow"] = None
+            state.swap_pending["latent"] = None
 
         # Backend control hook (universal op, family-specific
         # implementation, the handle_set_prompt convention): a backend
@@ -1424,7 +1431,7 @@ class StreamingSession:
         if handle is not None:
             self._apply_swap_backend_owned(
                 handle, new_wf, new_fixture_name, new_duration_s, new_keep,
-                new_grow,
+                new_grow, new_latent,
             )
             return
         # The upload may carry more than two channels (only a stream
@@ -1665,7 +1672,7 @@ class StreamingSession:
 
     def _apply_swap_backend_owned(
         self, handle, new_wf, fixture_name, duration_s=None, keep=None,
-        grow=None,
+        grow=None, latent=None,
     ) -> None:
         """Swap for backends that own their source anchor (the
         ``handle_swap_source`` hook — SA3). None of the ACE body
@@ -1684,7 +1691,8 @@ class StreamingSession:
         ``SwapReady`` carries the RESIZED geometry to the client.
         ``keep`` (the wire's optional per-stream keep) is passed to the
         hook as ``keep=`` only when present; ``grow`` (the wire's optional
-        grow field) likewise as ``grow=``.
+        grow field) likewise as ``grow=``, and ``latent`` (the streams the
+        swap gives as latents, ``{k: [C, L]}``) as ``latent=``.
 
         Publishes :class:`SwapReady` / :class:`SwapFailed` like the ACE
         body. Runner thread (before_tick), like everything above."""
@@ -1731,6 +1739,8 @@ class StreamingSession:
                 hook_kw["keep"] = keep
             if grow is not None:
                 hook_kw["grow"] = grow
+            if latent is not None:
+                hook_kw["latent"] = latent
             new_playback = handle(wf, SAMPLE_RATE, **hook_kw)
 
             # Fresh client buffer: the (truncated) new source at the
@@ -2646,6 +2656,58 @@ class StreamingSession:
             )
         logger.info("bounce_requested origin={} id={}", origin.value, request_id)
 
+    def result_latent(
+        self,
+        token: str,
+        *,
+        origin: CommandOrigin = CommandOrigin.PRIMARY,
+    ) -> None:
+        """Queue a ``result_latent`` request: the latent the backend is
+        rendering now, copied on the session thread (where no slot can
+        land mid-copy) after every command sent before it. Answered on the
+        bus with :class:`ResultLatent`; at once, ``ok`` False, when the
+        backend has no ``result_latent``. Read only: it does not count as
+        activity (an idle-paused session is not woken to answer; the runner
+        loop still runs ``before_tick`` while paused)."""
+        state = self.state
+        if not getattr(self.backend.capabilities(), "result_latent", False):
+            self.bus.publish(ResultLatent(
+                token=token, ok=False,
+                message=f"backend {self.backend.name!r} has no result latent",
+                latent=None,
+                source_epoch=int(getattr(state, "source_epoch", 0) or 0),
+            ))
+            return
+        with state._lock:
+            self._result_latents.append(token)
+        logger.info("result_latent_requested origin={} token={}", origin.value, token)
+
+    def _service_result_latents(self) -> None:
+        """Answer queued ``result_latent`` requests (session thread, after
+        the pending swap of this tick): one copy of the backend's
+        ``result_latent()`` serves every request queued."""
+        if not self._result_latents:
+            return
+        state = self.state
+        with state._lock:
+            tokens = list(self._result_latents)
+            self._result_latents.clear()
+        latent = self.backend.result_latent()
+        epoch = int(getattr(state, "source_epoch", 0) or 0)
+        for token in tokens:
+            self.bus.publish(ResultLatent(
+                token=token, ok=latent is not None,
+                message="" if latent is not None else (
+                    "no latent rendered yet (none since the session or the "
+                    "last swap began)"
+                ),
+                latent=latent, source_epoch=epoch,
+            ))
+        logger.info(
+            "result_latent_answered n={} shape={} source_epoch={}",
+            len(tokens), None if latent is None else tuple(latent.shape), epoch,
+        )
+
     def call_extension_tool(
         self,
         name: str,
@@ -2980,6 +3042,7 @@ class StreamingSession:
         duration_s: float | int | None = None,
         keep: Mapping | None = None,
         grow: Mapping | None = None,
+        latent: Mapping | None = None,
         origin: CommandOrigin = CommandOrigin.PRIMARY,
     ) -> None:
         """Stage a source swap. The runner applies it inside
@@ -3001,9 +3064,27 @@ class StreamingSession:
         the backend's swap hook exactly like ``keep`` (e.g. ``{"from_s":
         16.0}``: the session grows in place from that point); the layout
         validates it.
+
+        ``latent`` (wire field of the same name, read from its binary
+        frame) is ``{stream: [C, L]}``: those streams take the latent as
+        their input as it is, with no encode. Handed to the backend's swap
+        hook as ``latent=``. A backend without ``swap_latent`` refuses the
+        whole swap here (:class:`SwapFailed`, nothing staged).
         """
         state = self.state
         state.last_activity_ts = time.monotonic()
+        if latent is not None and not getattr(
+            self.backend.capabilities(), "swap_latent", False,
+        ):
+            logger.info(
+                "swap_refused origin={} reason=no_swap_latent backend={}",
+                origin.value, self.backend.name,
+            )
+            self.bus.publish(SwapFailed(error=(
+                f"backend {self.backend.name!r} takes no latent in a swap; "
+                "send the streams as audio"
+            )))
+            return
         # Placement belongs to the old source's coordinate space. Clear as
         # soon as a swap is requested, before the runner can consume it again.
         # The queued anchors reference the same stale coordinates — drop both.
@@ -3029,6 +3110,9 @@ class StreamingSession:
             state.swap_pending["duration_s"] = dur if dur and dur > 0 else None
             state.swap_pending["keep"] = dict(keep) if isinstance(keep, Mapping) else None
             state.swap_pending["grow"] = dict(grow) if isinstance(grow, Mapping) else None
+            state.swap_pending["latent"] = (
+                dict(latent) if isinstance(latent, Mapping) else None
+            )
 
     @requires_capability("write_audio", "write_audio")
     def write_audio(

@@ -322,6 +322,15 @@ class StreamLayout:
     rendered until a new slot lands. A layout returns it once and clears
     it.
 
+    ``held_latent() -> {stream index: [C, L] tensor}``: the content the
+    layout holds for streams it is not generating (for example a stream
+    replaying a fixed take, or one frozen to its input), asked whenever
+    ``result_latent`` is answered. Each named stream whose tensor is
+    ``[C, L]`` at the session's length replaces that stream of the
+    reply, so the reply carries what the layout holds rather than its
+    rendered approximation; another shape is ignored. ``None`` (or the
+    field absent): the reply is the rendered latent only.
+
     Each stream is decoded separately: a decoder's receptive field would
     otherwise bleed across stream boundaries.
     """
@@ -344,6 +353,7 @@ class StreamLayout:
     keep_overwrite: Callable | bool = False
     render_decode: Callable | str | None = None
     carried_latent: Callable | None = None
+    held_latent: Callable | None = None
 
     def __post_init__(self):
         if int(self.n_streams) < 1:

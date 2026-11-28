@@ -1002,7 +1002,51 @@ class SA3Backend(DiffusionBackend):
                 self._layout is not None
                 and getattr(self._layout, "hold_streams", None) is not None
             ),
+            swap_latent=bool(
+                self._source_encoder is not None and self._layout_takes_latent()
+            ),
+            result_latent=True,
         )
+
+    def _layout_takes_latent(self) -> bool:
+        """The stream layout's ``encode_source`` names a ``latent`` keyword
+        (checked by signature: a bare ``**kw`` does not count, it could
+        drop the latent unread)."""
+        enc = getattr(self._layout, "encode_source", None)
+        if enc is None:
+            return False
+        try:
+            return "latent" in inspect.signature(enc).parameters
+        except (TypeError, ValueError):
+            return False
+
+    def result_latent(self):
+        """The latent this backend is rendering now (this tick's result,
+        else the newest one), every stream: float16 ``[S, C, L]`` on the
+        CPU, SA3-native per stream, a copy of its own. None when nothing
+        has been rendered since the session or the last swap began.
+        Session thread only, so no slot lands mid-copy. A stream the
+        layout holds (its ``held_latent`` hook) is answered with the held
+        content instead, when that is ``[C, L]`` at this length."""
+        src = (
+            self._current_result if self._current_result is not None
+            else self._last_result_latent
+        )
+        if src is None:
+            return None
+        n = int(self._layout.n_streams) if self._layout is not None else 1
+        x = src.detach()[0]                              # [n * L, C]
+        x = x.reshape(n, x.shape[0] // n, x.shape[1])    # [n, L, C]
+        out = x.transpose(1, 2).to("cpu", torch.float16).contiguous()
+        hook = getattr(self._layout, "held_latent", None)
+        held = hook() if hook is not None else None
+        for k, t in (held or {}).items():
+            if (
+                0 <= int(k) < n and isinstance(t, torch.Tensor)
+                and tuple(t.shape) == tuple(out.shape[1:])
+            ):
+                out[int(k)] = t.detach().to("cpu", torch.float16)
+        return out.numpy()
 
     def geometry(self) -> AudioGeometry:
         return AudioGeometry(
@@ -1385,7 +1429,7 @@ class SA3Backend(DiffusionBackend):
 
     def handle_swap_source(self, waveform, sample_rate,
                            duration_s: Optional[float] = None,
-                           keep=None, grow=None) -> Optional[int]:
+                           keep=None, grow=None, latent=None) -> Optional[int]:
         """Re-anchor the session on a new source (the session's
         backend-owned ``swap_source`` hook, dispatched from
         ``_apply_swap_if_pending`` on the runner thread). SAME-encodes
@@ -1411,7 +1455,12 @@ class SA3Backend(DiffusionBackend):
         layout's ``encode_source`` as ``keep=`` (the layout parses it; see
         ``StreamLayout.keep_mask``). Absent, the encode call is unchanged.
         ``grow`` (the wire's optional ``grow`` field) reaches it the same
-        way, as ``grow=``. After the encode a layout's ``carried_latent``
+        way, as ``grow=``, and ``latent`` (``{stream: [C, L]}``, the
+        streams given as latents) as ``latent=``: refused (RuntimeError,
+        before anything moves) unless the layout takes it
+        (``Capabilities.swap_latent``) and every stream index is the
+        layout's. The layout checks the rest (length, dtype, conflicts with
+        ``keep``). After the encode a layout's ``carried_latent``
         is asked once: a tensor at the new stacked length becomes the
         cached latent the runner renders until the first new slot lands
         (instead of nothing).
@@ -1438,6 +1487,19 @@ class SA3Backend(DiffusionBackend):
                 "SA3Backend was constructed without a resizer; "
                 "swap-resize requires the from_context assembly"
             )
+        if latent is not None:
+            if not self._layout_takes_latent():
+                raise RuntimeError(
+                    "this model takes no latent in a swap; send the streams "
+                    "as audio"
+                )
+            n = int(self._layout.n_streams)
+            bad = sorted(k for k in latent if not 0 <= int(k) < n)
+            if bad:
+                raise ValueError(
+                    f"swap latent names stream(s) {bad}; this session has "
+                    f"streams 0..{n - 1}"
+                )
         # Only a stream layout's own encode_source reads channels past
         # the first two (the raw upload, e.g. one stereo pair per
         # stream); everything else encodes the stereo source as before.
@@ -1532,6 +1594,8 @@ class SA3Backend(DiffusionBackend):
                 enc_kw["keep"] = keep
             if grow is not None:
                 enc_kw["grow"] = grow
+            if latent is not None:
+                enc_kw["latent"] = latent
             latent_bct = self._source_encoder(
                 waveform, sample_rate, sample_size, **enc_kw,
             )

@@ -186,6 +186,15 @@ class Capabilities:
     # stereo pair of a wide layout sends that pair, not every channel as
     # float32. Backends leave it False; the adapter sets the wire bit.
     compact_pcm: bool = False
+    # ``swap_source`` may give streams as latents (its ``latent`` field and
+    # a second binary frame): each such stream takes the latent as its
+    # input as it is, with no encode. True only when the backend's stream
+    # layout takes them (its ``encode_source`` has a ``latent`` keyword);
+    # otherwise a swap with a latent is refused.
+    swap_latent: bool = False
+    # The ``result_latent`` command: the backend hands back the latent it
+    # is rendering now, every stream, as one float16 binary frame.
+    result_latent: bool = False
     # The ``bounce`` command: the backend regenerates its whole fixed
     # window every generation and can hand back a full-window render of
     # a generation that started after a given point. A backend that

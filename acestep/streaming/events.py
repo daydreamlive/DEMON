@@ -73,6 +73,7 @@ __all__ = [
     "AudioWriteFailed",
     "BounceReady",
     "BounceFailed",
+    "ResultLatent",
     "SessionReady",
     "SessionError",
     "SubscriberDropped",
@@ -337,6 +338,20 @@ class BounceReady:
 class BounceFailed:
     request_id: str
     error: str
+
+
+@dataclass(frozen=True)
+class ResultLatent:
+    """Answer to ``result_latent``: the latent the backend is rendering now
+    (its newest rendered generation), every stream, float16 ``[S, C, L]``
+    on the CPU, copied on the session thread. ``ok`` False (``latent``
+    None, ``message`` says why) when there is none yet or the backend has
+    none. ``source_epoch`` is the session's at the copy."""
+    token: str
+    ok: bool
+    message: str
+    latent: np.ndarray | None
+    source_epoch: int
 
 
 @dataclass(frozen=True)

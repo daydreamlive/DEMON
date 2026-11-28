@@ -286,9 +286,32 @@ def prepare_sa3_conditioning(
 
 
 def encode_sa3_source(sam, audio_input, audio_sample_size: int) -> torch.Tensor:
-    """Encode an audio source through SAME for SA3 audio-to-audio streaming."""
-    encoded, _ = sam._encode_audio_input(audio_input, audio_sample_size, inpaint_mask=None)
+    """Encode an audio source through SAME for SA3 audio-to-audio streaming.
+
+    The encoder draws noise at inference (its ``mask_noise`` on the
+    resampling blocks' new tokens), so an unpinned encode of the same audio
+    differs from one call to the next. The RNG is always pinned here
+    (:func:`sa3_decode_rng` with the encode's own salt and a fixed seed; the
+    encode has no seed setting), so the same audio gives the same latent on
+    one build and one card, and no outer RNG stream is disturbed. Every
+    source encode goes through this function."""
+    with sa3_decode_rng(0, device=_codec_device(sam), salt=SA3_ENCODE_SEED_SALT):
+        encoded, _ = sam._encode_audio_input(
+            audio_input, audio_sample_size, inpaint_mask=None,
+        )
     return encoded
+
+
+def _codec_device(sam):
+    """The device the codec runs on (its first parameter's), or None."""
+    pretransform = getattr(getattr(sam, "model", None), "pretransform", None)
+    params = getattr(pretransform, "parameters", None)
+    if params is None:
+        return None
+    try:
+        return next(params()).device
+    except StopIteration:
+        return None
 
 
 def decode_sa3_latent(sam, latent_bct: torch.Tensor) -> torch.Tensor:
@@ -370,11 +393,16 @@ def resolve_sa3_decode_window(
 # the decode noise stream is decoupled from the (same-seeded) slot-init
 # and SDE renoise streams.
 SA3_DECODE_SEED_SALT = 0x53A3DEC0
+# The source encode's own salt (its seed is fixed at 0): its noise stream is
+# decoupled from the decode's and the slots'.
+SA3_ENCODE_SEED_SALT = 0x53A3E1C0
 
 
 @contextmanager
-def sa3_decode_rng(seed: Optional[int], device=None):
-    """Pin the RNG for one SAME decode so its noise sources are reproducible.
+def sa3_decode_rng(seed: Optional[int], device=None, salt: int = SA3_DECODE_SEED_SALT):
+    """Pin the RNG for one SAME decode (or, with ``salt`` =
+    ``SA3_ENCODE_SEED_SALT``, one source encode: :func:`encode_sa3_source`)
+    so its noise sources are reproducible.
 
     SAME decode draws unseeded noise at inference — SoftNormBottleneck's
     ``noise_regularize`` renoise plus the decoder's ``mask_noise`` on its
@@ -398,7 +426,7 @@ def sa3_decode_rng(seed: Optional[int], device=None):
     if device is not None and torch.device(device).type == "cuda":
         devices = [torch.device(device)]
     with torch.random.fork_rng(devices=devices):
-        torch.manual_seed(int(seed) ^ SA3_DECODE_SEED_SALT)
+        torch.manual_seed(int(seed) ^ int(salt))
         yield
 
 

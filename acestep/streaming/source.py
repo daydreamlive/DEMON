@@ -137,6 +137,37 @@ def _decode_compact_pcm(audio_msg: bytes, pcm: dict) -> torch.Tensor:
     return torch.from_numpy(out)
 
 
+def swap_latent_streams(spec, payload: bytes) -> dict:
+    """The streams a ``swap_source`` gives as latents: ``{k: [C, L]}``.
+
+    ``spec`` is the header's ``latent`` field, ``{dtype: "float16", shape:
+    [P, C, L], streams: [k0, k1, ...]}``, and ``payload`` the binary frame
+    that followed the PCM: raw little-endian float16, ``P x C x L`` values,
+    stream ``streams[i]`` at ``[i]``. Read by the same reader as a one-shot
+    redo's latent. ``streams`` must name P distinct stream indices in
+    ascending order; whether they exist is the backend's to say. Raises
+    ``ValueError`` (``OneshotError``) on any mismatch.
+    """
+    from acestep.streaming.oneshot import OneshotError, latent_shape, read_latent
+
+    what = "swap_source.latent"
+    shape = latent_shape(spec, what)
+    streams = spec.get("streams")
+    if not isinstance(streams, (list, tuple)) or len(streams) != shape[0] or any(
+        not isinstance(k, int) or isinstance(k, bool) or k < 0 for k in streams
+    ):
+        raise OneshotError(
+            f"{what}.streams must list {shape[0]} stream indices (one per "
+            f"latent), got {streams!r}"
+        )
+    if any(b <= a for a, b in zip(streams, streams[1:])):
+        raise OneshotError(
+            f"{what}.streams must be ascending with no repeats, got {list(streams)}"
+        )
+    arr = read_latent(shape, payload, what)
+    return {int(k): torch.from_numpy(arr[i]) for i, k in enumerate(streams)}
+
+
 def _load_waveform_from_path(path: str) -> torch.Tensor:
     """Read an on-disk audio file into the exact shape
     ``_decode_audio_msg`` produces (``[≤2, N]`` float32 at

@@ -167,29 +167,46 @@ def clamp_knobs(knobs: Mapping[str, float], specs_by_name: Mapping) -> dict:
     return clean
 
 
-def latent_shape(spec) -> tuple:
-    """The ``[n_streams, C, L]`` shape a ``redo.latent`` header declares.
+def latent_shape(spec, what: str = "redo.latent") -> tuple:
+    """The ``[n_streams, C, L]`` shape a latent header declares (``what``
+    names the field in the messages: ``redo.latent``, ``swap_source.latent``).
     Raises :class:`OneshotError` on anything but float16 and three
     positive integers."""
     if not isinstance(spec, Mapping):
-        raise OneshotError("redo.latent must be an object {dtype, shape}")
+        raise OneshotError(f"{what} must be an object {{dtype, shape}}")
     if spec.get("dtype", "float16") != "float16":
         raise OneshotError(
-            f"redo.latent.dtype must be 'float16', got {spec.get('dtype')!r}"
+            f"{what}.dtype must be 'float16', got {spec.get('dtype')!r}"
         )
     shape = spec.get("shape")
     if not isinstance(shape, (list, tuple)) or len(shape) != 3:
-        raise OneshotError("redo.latent.shape must be [n_streams, C, L]")
-    dims = tuple(_int(d, "redo.latent.shape") for d in shape)
+        raise OneshotError(f"{what}.shape must be [n_streams, C, L]")
+    dims = tuple(_int(d, f"{what}.shape") for d in shape)
     if any(d < 1 for d in dims):
-        raise OneshotError(f"redo.latent.shape must be positive, got {list(dims)}")
+        raise OneshotError(f"{what}.shape must be positive, got {list(dims)}")
     return dims
 
 
-def latent_nbytes(spec) -> int:
-    """Byte length of the binary frame a ``redo.latent`` header announces."""
-    n, c, length = latent_shape(spec)
+def latent_nbytes(spec, what: str = "redo.latent") -> int:
+    """Byte length of the binary frame a latent header announces."""
+    n, c, length = latent_shape(spec, what)
     return n * c * length * 2
+
+
+def read_latent(shape, payload, what: str = "redo.latent") -> np.ndarray:
+    """The latent a binary frame carries: raw little-endian float16,
+    C-order ``shape`` (a header's :func:`latent_shape`), as a float16
+    array of its own. The one reader of a client-held latent frame (a
+    one-shot redo's, a swap's). Raises :class:`OneshotError` when the frame
+    is not exactly that many bytes."""
+    want = shape[0] * shape[1] * shape[2] * 2
+    if payload is None or len(payload) != want:
+        got = 0 if payload is None else len(payload)
+        raise OneshotError(
+            f"{what} frame is {got} bytes, expected {want} "
+            f"(float16 {list(shape)})"
+        )
+    return np.frombuffer(payload, dtype="<f2").reshape(shape).copy()
 
 
 def latent_from_bytes(redo: Redo, payload) -> Redo:
@@ -198,15 +215,7 @@ def latent_from_bytes(redo: Redo, payload) -> Redo:
     shape = redo.latent_shape
     if shape is None:
         raise OneshotError("redo has no latent header")
-    want = shape[0] * shape[1] * shape[2] * 2
-    if payload is None or len(payload) != want:
-        got = 0 if payload is None else len(payload)
-        raise OneshotError(
-            f"redo.latent frame is {got} bytes, expected {want} "
-            f"(float16 {list(shape)})"
-        )
-    arr = np.frombuffer(payload, dtype="<f2").reshape(shape).copy()
-    return replace(redo, latent=arr)
+    return replace(redo, latent=read_latent(shape, payload))
 
 
 def _parse_redo(redo_raw) -> Redo:

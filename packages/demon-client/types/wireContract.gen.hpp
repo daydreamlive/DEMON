@@ -220,6 +220,8 @@ namespace command {
     inline constexpr const char* kKeep = "keep";
     /** Optional in-place grow for a stream layout, e.g. {from_s: 16.0} (the session grows to duration_s from that point, keeping what it already made). Handed to the layout's encode_source as grow=; the layout validates it. Absent = no change. */
     inline constexpr const char* kGrow = "grow";
+    /** Optional streams given as latents: {dtype: 'float16', shape: [P, C, L], streams: [k0, k1, ...]} (P streams, indices ascending, no repeats). ONE more binary frame follows the PCM frame: raw little-endian float16, P x C x L values, stream streams[i] at [i]. Each such stream takes its latent as its input as it is (no encode); its PCM channels are ignored. Honored only when ready's capabilities declare swap_latent; otherwise, or on any mismatch (frame length, shape, streams, L not the session's), the swap is refused with swap_failed. Absent = every stream from its PCM. */
+    inline constexpr const char* kLatent = "latent";
 
     namespace stem_source_mode {
       inline constexpr const char* kFull = "full";
@@ -281,6 +283,12 @@ namespace command {
     /** Client-chosen token echoed on bounce_ready / bounce_failed. */
     inline constexpr const char* kRequestId = "request_id";
   }  // namespace bounce
+
+  namespace result_latent {
+    inline constexpr const char* kType = "result_latent";
+    /** Caller's correlation id, echoed on the result_latent answer. */
+    inline constexpr const char* kToken = "token";
+  }  // namespace result_latent
 
   namespace oneshot {
     inline constexpr const char* kType = "oneshot";
@@ -554,6 +562,20 @@ namespace event {
     /** Generation counter at render time (same counter as params_update.num_gens). */
     inline constexpr const char* kNumGens = "num_gens";
   }  // namespace bounce_ready
+
+  namespace result_latent {
+    inline constexpr const char* kType = "result_latent";
+    /** Echo of the result_latent token. */
+    inline constexpr const char* kToken = "token";
+    /** true when a latent follows; false when there is none yet (nothing rendered since the session or the last swap began) or the backend has none. */
+    inline constexpr const char* kOk = "ok";
+    /** Why ok is false; empty when ok. */
+    inline constexpr const char* kMessage = "message";
+    /** Present when ok: {dtype: 'float16', shape: [S, C, L], bytes} (S = every stream, in order). */
+    inline constexpr const char* kLatent = "latent";
+    /** The session's source_epoch at the copy (as on ready / swap_ready). */
+    inline constexpr const char* kSourceEpoch = "source_epoch";
+  }  // namespace result_latent
 
   namespace bounce_failed {
     inline constexpr const char* kType = "bounce_failed";

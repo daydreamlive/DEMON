@@ -542,13 +542,31 @@ COMMANDS: tuple = (
                                   "keeping what it already made). Handed to "
                                   "the layout's encode_source as grow=; the "
                                   "layout validates it. Absent = no change."),
+            FieldSpec("latent", "dict",
+                      description="Optional streams given as latents: "
+                                  "{dtype: 'float16', shape: [P, C, L], "
+                                  "streams: [k0, k1, ...]} (P streams, "
+                                  "indices ascending, no repeats). ONE more "
+                                  "binary frame follows the PCM frame: raw "
+                                  "little-endian float16, P x C x L values, "
+                                  "stream streams[i] at [i]. Each such "
+                                  "stream takes its latent as its input as "
+                                  "it is (no encode); its PCM channels are "
+                                  "ignored. Honored only when ready's "
+                                  "capabilities declare swap_latent; "
+                                  "otherwise, or on any mismatch (frame "
+                                  "length, shape, streams, L not the "
+                                  "session's), the swap is refused with "
+                                  "swap_failed. Absent = every stream from "
+                                  "its PCM."),
         ),
         binary=True,
         binary_optional=True,
         requires="swap",
         description="Replace the playback source in-flight. A binary PCM frame "
-                    "follows UNLESS use_server_source is set. Acked by "
-                    "swap_ready (+ binary buffer) / swap_failed.",
+                    "follows UNLESS use_server_source is set, then one latent "
+                    "frame when latent is set. Acked by swap_ready (+ binary "
+                    "buffer) / swap_failed.",
     ),
     CommandSpec(
         "write_audio",
@@ -691,6 +709,21 @@ COMMANDS: tuple = (
                     "otherwise, or when no fresh generation lands within "
                     "30 s, answered with bounce_failed. Acked by "
                     "bounce_ready (+ binary) / bounce_failed.",
+    ),
+    CommandSpec(
+        "result_latent",
+        fields=(
+            FieldSpec("token", "str", required=True,
+                      description="Caller's correlation id, echoed on the "
+                                  "result_latent answer."),
+        ),
+        description="Return the latent the session is rendering now (its "
+                    "newest rendered generation), every stream, as ONE "
+                    "float16 binary frame, copied where no new generation "
+                    "can land mid-copy, after every command sent before "
+                    "this one. Read-only; streaming continues. Available "
+                    "when ready.capabilities.result_latent is true. "
+                    "Answered by result_latent (+ binary when ok).",
     ),
     CommandSpec(
         "oneshot",
@@ -1150,6 +1183,32 @@ EVENTS: tuple = (
                     "window from sample 0, interleaved [frames, channels] "
                     "float16 (the ready initial-buffer framing; ~11.5 MB "
                     "for 60 s stereo, sent as a fragmented message).",
+    ),
+    EventSpec(
+        "result_latent",
+        fields=(
+            FieldSpec("token", "str", required=True,
+                      description="Echo of the result_latent token."),
+            FieldSpec("ok", "bool", required=True,
+                      description="true when a latent follows; false when "
+                                  "there is none yet (nothing rendered "
+                                  "since the session or the last swap "
+                                  "began) or the backend has none."),
+            FieldSpec("message", "str", required=True,
+                      description="Why ok is false; empty when ok."),
+            FieldSpec("latent", "dict",
+                      description="Present when ok: {dtype: 'float16', "
+                                  "shape: [S, C, L], bytes} (S = every "
+                                  "stream, in order)."),
+            FieldSpec("source_epoch", "int", required=True,
+                      description="The session's source_epoch at the copy "
+                                  "(as on ready / swap_ready)."),
+        ),
+        binary_follow=True,
+        description="Answer to result_latent. When ok, ONE binary frame "
+                    "follows: raw little-endian float16 [S, C, L], C-order "
+                    "(the same framing as oneshot_ready's latents). None "
+                    "when not ok.",
     ),
     EventSpec(
         "bounce_failed",
