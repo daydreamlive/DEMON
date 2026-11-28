@@ -308,6 +308,27 @@ def test_backend_result_latent_is_every_stream_side_by_side():
     assert not b.result_latent().any()
 
 
+def test_result_latent_answers_the_streams_the_layout_holds():
+    torch.manual_seed(2)
+    take = torch.randn(C, L, dtype=torch.float32)
+    held = {1: take, 2: torch.ones(C, L + 1), 0: "not a tensor"}
+    b, _context, _ = _layout_backend(
+        runtime=_LayoutRuntime({"held_latent": lambda: held}),
+    )
+    b._current_result = None
+    native = torch.randn(1, C, N_STREAMS * L)
+    b._last_result_latent = native.movedim(1, 2).contiguous()
+    out = b.result_latent()
+    assert out.dtype == np.float16 and out.shape == (N_STREAMS, C, L)
+    assert np.array_equal(out[1], take.half().numpy()), "a held stream is its take"
+    for k in (0, 2):  # another shape, or not a tensor: the rendered stream stays
+        assert np.array_equal(out[k], native[0, :, k * L:(k + 1) * L].half().numpy())
+    held.clear()
+    assert np.array_equal(
+        b.result_latent()[1], native[0, :, L:2 * L].half().numpy(),
+    ), "nothing held: the rendered latent only"
+
+
 class _ResultSession:
     result_latent = StreamingSession.result_latent
     _service_result_latents = StreamingSession._service_result_latents

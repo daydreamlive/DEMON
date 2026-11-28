@@ -1025,7 +1025,9 @@ class SA3Backend(DiffusionBackend):
         else the newest one), every stream: float16 ``[S, C, L]`` on the
         CPU, SA3-native per stream, a copy of its own. None when nothing
         has been rendered since the session or the last swap began.
-        Session thread only, so no slot lands mid-copy."""
+        Session thread only, so no slot lands mid-copy. A stream the
+        layout holds (its ``held_latent`` hook) is answered with the held
+        content instead, when that is ``[C, L]`` at this length."""
         src = (
             self._current_result if self._current_result is not None
             else self._last_result_latent
@@ -1035,7 +1037,16 @@ class SA3Backend(DiffusionBackend):
         n = int(self._layout.n_streams) if self._layout is not None else 1
         x = src.detach()[0]                              # [n * L, C]
         x = x.reshape(n, x.shape[0] // n, x.shape[1])    # [n, L, C]
-        return x.transpose(1, 2).to("cpu", torch.float16).contiguous().numpy()
+        out = x.transpose(1, 2).to("cpu", torch.float16).contiguous()
+        hook = getattr(self._layout, "held_latent", None)
+        held = hook() if hook is not None else None
+        for k, t in (held or {}).items():
+            if (
+                0 <= int(k) < n and isinstance(t, torch.Tensor)
+                and tuple(t.shape) == tuple(out.shape[1:])
+            ):
+                out[int(k)] = t.detach().to("cpu", torch.float16)
+        return out.numpy()
 
     def geometry(self) -> AudioGeometry:
         return AudioGeometry(
